@@ -22,7 +22,7 @@ required gates rather than assuming a missing log is proof of completion.
 The requested completion order is: (1) automatic per-file standard .csproj
 pipeline, (2) demand-loaded default libraries, (3) complete lookup/generic
 coverage, (4) broader LTO, (5) end-to-end memory and self-hosting acceptance.
-Do not treat a supporting test or narrow fixture as completion of a stage.
+  Do not treat a supporting test or narrow fixture as completion of a stage.
 
 The current priority is again the compiler/linker interface, managed separate
 compilation, bounded declaration loading and LTO. The isolated CORSAC86 build

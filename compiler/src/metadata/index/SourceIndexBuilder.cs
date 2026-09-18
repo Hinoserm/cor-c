@@ -23,7 +23,8 @@ public static class SourceIndexBuilder
     }
 
     public static void Write(string output, IEnumerable<string> paths, string assembly,
-        IReadOnlyCollection<string>? symbols = null, int memoryBytes = 1024 * 1024)
+        IReadOnlyCollection<string>? symbols = null, int memoryBytes = 1024 * 1024,
+        IReadOnlyDictionary<string, IReadOnlyCollection<string>>? fileSymbols = null)
     {
         string identity = AssemblyIdentity(assembly);
         string[] files = paths.Select(System.IO.Path.GetFullPath).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
@@ -34,10 +35,11 @@ public static class SourceIndexBuilder
             List<(string Path, byte[] Hash)> snapshots = new();
             foreach (string path in files)
             {
+                IReadOnlyCollection<string>? activeSymbols = fileSymbols?.GetValueOrDefault(path) ?? symbols;
                 string text = File.ReadAllText(path);
                 byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(text));
                 snapshots.Add((path, hash));
-                Lexer lexer = new(text, path, 1, 1, symbols);
+                Lexer lexer = new(text, path, 1, 1, activeSymbols);
                 List<Token> tokens = new();
                 List<int> ends = new();
                 while (true)
@@ -97,7 +99,7 @@ public static class SourceIndexBuilder
                         Namespace = type.Namespace, Outer = type.Outer ?? "", Scope = scope,
                         From = type.SourceFrom, To = type.SourceTo, Line = type.Line, Column = type.Col,
                         SourceHash = hash, DeclarationHash = SHA256.HashData(canonical.ToArray()),
-                        ConditionalSymbols = (symbols ?? Array.Empty<string>()).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray(),
+                        ConditionalSymbols = (activeSymbols ?? Array.Empty<string>()).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray(),
                     }.Encode();
                     yield return new DeclarationRecord("B:" + identity + "\n" + Binder.TypeKey(type), Encoding.UTF8.GetBytes(key));
                     foreach (string method in type.Members.OfType<MethodDecl>()

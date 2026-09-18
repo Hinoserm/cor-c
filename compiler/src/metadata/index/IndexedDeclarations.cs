@@ -7,6 +7,7 @@ public sealed class IndexedDeclarations : IDisposable
     private readonly string assembly;
     private readonly HashSet<string> owned;
     private readonly HashSet<string> loaded = new(StringComparer.Ordinal);
+    private readonly HashSet<string> implementations = new(StringComparer.Ordinal);
     private readonly HashSet<string> resolvedExtensions = new(StringComparer.Ordinal);
     public long PayloadLoads => catalog.PayloadLoads;
     public long ResidentDeclarationBytes => catalog.ResidentBytes;
@@ -62,6 +63,7 @@ public sealed class IndexedDeclarations : IDisposable
                 TypeDecl root = header.Types.OrderBy(type => type.SourceFrom).First();
                 if (root.TypeParams.Count != 0 || root.Members.OfType<MethodDecl>().Any(method => method.TypeParams.Count != 0))
                 {
+                    implementations.Add(key);
                     // Templates need implementations for specialization. Keep
                     // unrelated ordinary bodies out of this imported tree.
                     CompilationUnit templates = Parser.ParseText(source.ReadSource(), source.Path,
@@ -93,4 +95,6 @@ public sealed class IndexedDeclarations : IDisposable
     {
         loaded.Clear(); catalog.Dispose();
     }
+
+    public void WriteDependencies(string path) => UnitDependencies.Write(path, catalog, loaded, implementations);
 }

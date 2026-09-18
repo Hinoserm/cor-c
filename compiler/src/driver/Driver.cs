@@ -32,6 +32,7 @@ public static class Driver
                 "compile" or "cc" => Compile(rest),
                 "link" => ObjectLinkCommand.Run(Response(rest), new UnitBackend()),
                 "index" => IndexCommand.Run(Response(rest)),
+                "project" => Projects.ProjectCommand.Run(rest),
                 "backend" when rest.Length == 0 => BackendCommand.Run(),
                 "build" or "asm" => Build(rest),
                 "help" or "--help" or "-h" => Usage(),
@@ -73,6 +74,7 @@ public static class Driver
               corc link <file.o> ... -o <output> [--entry <symbol>]
               corc link @objects.list -o <output> [--entry <symbol>]
               corc index --assembly <identity> <sources...> -o <declarations.idx>
+              corc project <file.csproj> [--configuration Release] [--framework net10.0] [--jobs N] [-o output]
               corc build --target x86-16 <file.asm> -o <output.bin>
               corc build --target x86-32 <file.asm> --obj -o <output.o>
 
@@ -84,6 +86,8 @@ public static class Driver
                                  its code is in a shared object being linked.
               --decl-index <file> demand-load non-generic declarations from an index
               --assembly <name>  assembly identity for indexed declaration lookup
+              --dependency-file <path> record consumed declarations for indexed objects
+              --main-type <name> select the class supplying the entry point
                                  May be repeated; how one library of several
                                  is built from sources they all have to see
               --dynamic          link the runtime and the class library as the
@@ -287,7 +291,7 @@ public static class Driver
                 if (args[i] is "-o" or "--target" or "--entry" or "--link-shared" or "--base" or "--tag"
                     or "--load" or "--paddr" or "--cpu" or "--with" or "--asm-entry"
                     or "--ref" or "--libdir" or "--runpath" or "--trace-opt" or "--batch-without"
-                    or "-D" or "--define" or "--jobs" or "--decl-index" or "--assembly")
+                    or "-D" or "--define" or "--jobs" or "--decl-index" or "--assembly" or "--dependency-file" or "--main-type")
                 {
                     i++;
                 }
@@ -332,6 +336,7 @@ public static class Driver
         string? asmEntry = Value(args, "--asm-entry");
         Corsac.Lang.Lower.Lowering.EntryName = asmEntry ?? "_start";
         Corsac.Lang.Lower.Lowering.EntryClearsBss = asmEntry is null;
+        Corsac.Lang.Lower.Lowering.StartupObject = Value(args, "--main-type");
 
         uint? loadBase = null;
         if (Value(args, "--base") is { } baseText)
@@ -447,6 +452,8 @@ public static class Driver
         string? declarationIndex = Value(args, "--decl-index");
         if (declarationIndex is not null && Value(args, "--assembly") is null)
             return Fail("--decl-index requires --assembly");
+        if (Value(args, "--dependency-file") is not null && (declarationIndex is null || !args.Contains("--obj")))
+            return Fail("--dependency-file requires indexed object compilation");
         using IndexedDeclarations? declarations = declarationIndex is null ? null
             : new IndexedDeclarations(declarationIndex, Value(args, "--assembly")!, files);
         (CompilationUnit unit, BindResult bound)? front =
@@ -637,6 +644,7 @@ public static class Driver
             if (x86Backend.EmitLinkSummary && !x86Backend.PositionIndependent && sharedLibs.Count == 0)
                 IrUnitCodec.Attach(obj, module, x86Backend.StackMaps);
             File.WriteAllBytes(output, ElfWriter.WriteObject(obj));
+            if (Value(args, "--dependency-file") is string dependencyFile) declarations!.WriteDependencies(dependencyFile);
             Console.Error.WriteLine($"{output}: {obj.Section(".text").Size} bytes of code");
             return 0;
         }
@@ -753,7 +761,7 @@ public static class Driver
         return root;
     }
 
-    private static List<string> DefaultLibraries(Target target, bool freestanding = false)
+    internal static List<string> DefaultLibraries(Target target, bool freestanding = false)
     {
         string? root = LibraryRoot();
         if (root is null)

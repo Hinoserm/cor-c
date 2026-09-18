@@ -25,8 +25,7 @@
   </Target>
 
   <Target Name="bootstrap" Steps="seed;native">
-    <Target Name="seed" Description="Build host seed tools explicitly with .NET">
-      <Compile Project="compiler" Toolchain="dotnet" />
+    <Target Name="seed" Description="Bootstrap only the build utility with MSBuild">
       <Compile Project="build-tool" Toolchain="dotnet" />
     </Target>
     <Target Name="native" DependsOnTargets="seed">

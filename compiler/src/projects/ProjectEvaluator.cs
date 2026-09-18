@@ -23,6 +23,7 @@ public sealed class ProjectEvaluator
         properties["Platform"] = "AnyCPU";
         properties["AssemblyName"] = Path.GetFileNameWithoutExtension(project);
         properties["OutputType"] = "Library";
+        properties["DefineConstants"] = configuration.Equals("Debug", StringComparison.OrdinalIgnoreCase) ? "TRACE;DEBUG" : "TRACE";
         properties["EnableDefaultItems"] = "true";
         properties["EnableDefaultCompileItems"] = "true";
         properties["MSBuildProjectFullPath"] = project;
@@ -63,6 +64,9 @@ public sealed class ProjectEvaluator
                 throw new InvalidDataException("Unsupported active project item: " + item.Type + " in " + project);
         string framework = Get("TargetFramework");
         if (framework.Length == 0) throw new InvalidDataException("Select a target framework for " + project);
+        string assembly = Get("AssemblyName");
+        if (assembly.Length == 0 || assembly.IndexOfAny(new[] { '/', '\\' }) >= 0 || assembly is "." or "..")
+            throw new InvalidDataException("AssemblyName must be a simple output name");
         if (Get("CheckForOverflowUnderflow").Equals("true", StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("Project-wide checked arithmetic is not yet implemented");
         string[] sources = items.Where(item => item.Type == "Compile").Select(item => item.Include).ToArray();
@@ -135,7 +139,11 @@ public sealed class ProjectEvaluator
             {
                 case "PropertyGroup":
                     foreach (XElement property in node.Elements())
-                        if (Condition(property) && !globals.Contains(property.Name.LocalName)) properties[property.Name.LocalName] = Expand(property.Value);
+                        if (Condition(property) && !globals.Contains(property.Name.LocalName))
+                        {
+                            if (property.HasElements) throw new InvalidDataException("Nested XML in project property " + property.Name);
+                            properties[property.Name.LocalName] = Expand(property.Value);
+                        }
                     break;
                 case "Import":
                     string imported = Expand((string?)node.Attribute("Project") ?? throw new InvalidDataException("Import requires Project"));

@@ -102,6 +102,7 @@ public sealed partial class Lowering
     /// </summary>
     public static string EntryName { get; set; } = "_start";
     public static bool EntryClearsBss { get; set; } = true;
+    public static string? StartupObject { get; set; }
 
     public List<CompileError> Errors { get; } = new();
 
@@ -273,7 +274,7 @@ public sealed partial class Lowering
         {
             foreach (MethodSymbol m in t.Methods)
             {
-                if (m.Name == "Main" && m.Static && Emits(m))
+                if (m.Name == "Main" && m.Static && Emits(m) && (StartupObject is null || t.Key == StartupObject))
                 {
                     entry = m;
                 }

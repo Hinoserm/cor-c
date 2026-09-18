@@ -34,8 +34,10 @@ public sealed class TaskExecutor
                 if (!File.Exists(project)) BuildManifest.Fail(task, "Project does not exist: " + project);
                 if (task.HasElements) BuildManifest.Fail(task, "Unexpected child");
                 string toolchain = manifest.Expand((string?)task.Attribute("Toolchain") ?? options.Toolchain);
-                if (!planning && toolchain != "dotnet")
-                    BuildManifest.Fail(task, "Native project provider is not implemented yet. Use --toolchain dotnet explicitly for host builds; bootstrap is not yet accepted.");
+                if (toolchain is not ("dotnet" or "corc" or "active")) BuildManifest.Fail(task, "Unknown project toolchain: " + toolchain);
+                if (toolchain == "dotnet" && (!task.Ancestors("Target").Any(target => (string?)target.Attribute("Name") == "bootstrap")
+                    || !manifest.Components.TryGetValue("build-tool", out string? bootstrapProject) || project != bootstrapProject))
+                    BuildManifest.Fail(task, "MSBuild is permitted only to bootstrap the build-tool component");
                 break;
             case "Exec": case "Test":
                 if (name == "Test")
@@ -101,14 +103,20 @@ public sealed class TaskExecutor
         incremental?.Invalidate();
         string executable;
         string? temporary = null;
+        bool bootstrap = task.Name == "Compile" && manifest.Expand((string?)task.Attribute("Toolchain") ?? options.Toolchain) == "dotnet";
         if (task.Name == "Compile")
         {
-            executable = "dotnet";
-            args = new List<string> { "build", Project(task), "--nologo", "-c",
-                manifest.Expand((string?)task.Attribute("Configuration") ?? "$(Configuration)"),
-                "-p:UseSharedCompilation=false" };
-            // MSBuild evaluates imports/references and owns .csproj incremental
-            // checking. Its worker count comes from the global CPU lease.
+            string configuration = manifest.Expand((string?)task.Attribute("Configuration") ?? "$(Configuration)");
+            if (bootstrap)
+            {
+                executable = "dotnet";
+                args = new List<string> { "build", Project(task), "--nologo", "-c", configuration, "-p:UseSharedCompilation=false" };
+            }
+            else
+            {
+                executable = manifest.Properties.TryGetValue("Compiler", out string? compiler) ? manifest.Expand(compiler) : "corc";
+                args = new List<string> { "project", Project(task), "--configuration", configuration };
+            }
         }
         else if (task.Name == "Script")
         {
@@ -133,7 +141,7 @@ public sealed class TaskExecutor
             bool compile = task.Name == "Compile";
             result = await runner.Run(target.Path, executable, args, directory, environment, Timeout(task), cancel,
                 compile || (string?)task.Attribute("Workers") == "auto",
-                compile ? count => new[] { "-maxcpucount:" + count } : null);
+                compile ? count => bootstrap ? new[] { "-maxcpucount:" + count } : new[] { "--jobs", count.ToString(CultureInfo.InvariantCulture) } : null);
             int expected = int.Parse((string?)task.Attribute("ExpectedExitCode") ?? "0", CultureInfo.InvariantCulture);
             bool passed = !result.TimedOut && result.ExitCode == expected;
             string detail = executable + (result.TimedOut ? " timed out" : " exited " + result.ExitCode + ", expected " + expected)
