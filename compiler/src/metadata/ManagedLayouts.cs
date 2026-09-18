@@ -21,6 +21,7 @@ public static class ManagedLayouts
                     writer.Write(value.Symbol?.Key ?? "");
                 }
                 writer.Write((int)type.Kind); writer.Write(type.InstanceSize); writer.Write(type.Depth);
+                writer.Write(type.Decl?.IsDelegate == true);
                 writer.Write((int)(type.Decl?.Mods ?? Mods.None));
                 writer.Write(type.Base?.Key ?? "");
                 foreach (TypeSymbol face in type.Interfaces.OrderBy(face => face.Key, StringComparer.Ordinal)) writer.Write(face.Key);

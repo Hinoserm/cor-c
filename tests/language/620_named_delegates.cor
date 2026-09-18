@@ -1,0 +1,24 @@
+// test: named delegate declarations, generic delegates, capture and invocation
+// expect-exit: 0
+// expect-output:
+// delegates 42 42
+
+using System;
+
+public delegate int Mapper(int value);
+public delegate TResult Transform<T, TResult>(T value);
+
+static class Program
+{
+    static int Main()
+    {
+        int offset = 10;
+        Mapper map = value => value + offset;
+        offset = 21;
+        Transform<int, int> transform = value => value + 1;
+        int first = map(21);
+        int second = transform(41);
+        Console.WriteLine("delegates " + first + " " + second);
+        return first == 42 && second == 42 ? 0 : 1;
+    }
+}

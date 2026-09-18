@@ -589,7 +589,7 @@ public sealed class Parser
              or Tok.KwInternal or Tok.KwStatic or Tok.KwReadonly or Tok.KwConst
              or Tok.KwVirtual or Tok.KwOverride or Tok.KwAbstract or Tok.KwSealed
              or Tok.KwClass or Tok.KwInterface or Tok.KwStruct or Tok.KwEnum
-             or Tok.KwVoid;
+             or Tok.KwVoid or Tok.KwDelegate;
 
     /// A word that is a keyword only where it is expected. See 'init'.
     private bool TakeContextual(string word)
@@ -1083,7 +1083,7 @@ public sealed class Parser
             break;
         }
 
-        if (Seen(at).Kind is Tok.KwClass or Tok.KwInterface or Tok.KwStruct or Tok.KwEnum)
+        if (Seen(at).Kind is Tok.KwClass or Tok.KwInterface or Tok.KwStruct or Tok.KwEnum or Tok.KwDelegate)
         {
             return true;
         }
@@ -1104,6 +1104,7 @@ public sealed class Parser
     {
         Token start = Cur;
         Mods mods = ParseMods();
+        if (Take(Tok.KwDelegate)) return ParseDelegateDeclaration(start, mods);
 
         // A RECORD IS A CLASS, and `record` is contextual so that nothing which
         // already uses the word as a name stops compiling.
@@ -1305,6 +1306,29 @@ public sealed class Parser
         decl.SourceTo = close.Pos + 1;
         _typePath = outer;
         return decl;
+    }
+
+    private TypeDecl ParseDelegateDeclaration(Token start, Mods mods)
+    {
+        TypeRef returns = ParseTypeRef();
+        string name = Expect(Tok.Ident, "a delegate name").Text;
+        TypeDecl declaration = new()
+        {
+            Kind = TypeKind.Interface, IsDelegate = true, Name = name, Mods = mods,
+            Namespace = _namespace, Scope = _fileScope, Outer = _typePath.Length == 0 ? null : _typePath,
+            File = _file, Line = start.Line, Col = start.Col, SourceFrom = start.Pos,
+        };
+        declaration.Attributes.AddRange(_attributes);
+        ParseTypeParams(declaration.TypeParams);
+        MethodDecl invoke = new()
+        {
+            Name = "Invoke", Returns = returns, Mods = Mods.Public | Mods.Abstract,
+            File = _file, Scope = _fileScope, Namespace = _namespace, Line = start.Line, Col = start.Col,
+        };
+        ParseParams(invoke.Params); ParseConstraints(declaration.TypeParams);
+        declaration.Members.Add(invoke);
+        declaration.SourceTo = Expect(Tok.Semi, "';' after delegate declaration").Pos + 1;
+        return declaration;
     }
 
     /// Turns a record's positional parameters into members.

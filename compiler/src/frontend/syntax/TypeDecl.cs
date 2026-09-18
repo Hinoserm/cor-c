@@ -10,6 +10,7 @@ public sealed class TypeDecl : Node
     public string? SourcePath { get; set; }
     /// <summary>An implementation-private generated type, such as a closure.</summary>
     public bool LocalOnly { get; set; }
+    public bool IsDelegate { get; set; }
 
     /// <summary>
     /// Its field initialisers are already in its constructors. A declaration

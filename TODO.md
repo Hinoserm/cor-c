@@ -123,6 +123,9 @@ tasks below track that work; moving files alone does not reduce the working set.
   next boot attempt; never load stage2 across the conventional-memory boundary.
 - [ ] Verify typed interface dispatch, private stable closures/async state machines,
   and source-scoped partial initializer helpers, including new focused tests.
+  Named delegate syntax was missing when the closure test used an ordinary C#
+  declaration. Add parsing/indexing and executable single-cast/generic coverage;
+  multicast operations and complete delegate reflection semantics remain separate.
 - [ ] Verify allocation-accounted IR decoding on the real kernel. Replace the
   serialized-size multiplier with pre-allocation node/array checks; retain the
   separate native-object/optimizer memory work rather than claiming total RSS.

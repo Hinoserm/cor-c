@@ -16,6 +16,7 @@ public sealed class Lexer
     {
         ["namespace"] = Tok.KwNamespace, ["using"] = Tok.KwUsing,
         ["class"] = Tok.KwClass, ["interface"] = Tok.KwInterface,
+        ["delegate"] = Tok.KwDelegate,
         ["struct"] = Tok.KwStruct, ["enum"] = Tok.KwEnum,
         ["public"] = Tok.KwPublic, ["private"] = Tok.KwPrivate,
         ["protected"] = Tok.KwProtected, ["internal"] = Tok.KwInternal,

@@ -978,6 +978,7 @@ public sealed class Monomorphiser
             Kind = d.Kind, Name = name, Mods = d.Mods, Line = d.Line, Col = d.Col, File = d.File,
             SourcePath = d.SourcePath,
             LocalOnly = d.LocalOnly,
+            IsDelegate = d.IsDelegate,
             InitialisersPlaced = d.InitialisersPlaced,
             FromLibrary = d.FromLibrary,
             External = d.External && d.TypeParams.Count == 0,
