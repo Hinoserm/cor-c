@@ -20,25 +20,29 @@ public static class IrDataCodec
         return stream.ToArray();
     }
 
-    public static DataItem Read(byte[] payload, long maximumBytes = 64L * 1024 * 1024)
+    public static DataItem Read(byte[] payload, long maximumBytes = 64L * 1024 * 1024, IrReadBudget? budget = null)
     {
+        budget ??= new();
+        budget.Charge(256L + payload.Length, 1, "data payload");
         using MemoryStream stream = new(payload, writable: false);
         using BinaryReader reader = new(stream, IrBinary.Utf8);
         try
         {
             if (reader.ReadInt32() != 1) throw new InvalidDataException("Unsupported IR data version");
-            string name = IrBinary.Name(reader); int align = reader.ReadInt32();
+            string name = IrBinary.Name(reader, budget); int align = reader.ReadInt32();
             bool readOnly = IrBinary.Flag(reader), zero = IrBinary.Flag(reader), exported = IrBinary.Flag(reader);
             bool library = IrBinary.Flag(reader), coalescible = IrBinary.Flag(reader);
             int size = reader.ReadInt32();
             if (align < 1 || align > 4096 || (align & (align - 1)) != 0 || size < 0 || size > maximumBytes
                 || !zero && size > stream.Length - stream.Position) throw new InvalidDataException("Invalid IR data layout");
+            budget.Charge(size, 1, "data bytes");
             byte[] bytes = zero ? new byte[size] : reader.ReadBytes(size);
             DataItem item = new(name, bytes) { Align = align, ReadOnly = readOnly, Zero = zero, Exported = exported, FromLibrary = library, Coalescible = coalescible };
             int relocations = IrBinary.Count(reader);
+            budget.Charge(relocations, 48, "data relocations");
             for (int i = 0; i < relocations; i++)
             {
-                int offset = reader.ReadInt32(); string symbol = IrBinary.Name(reader); long addend = reader.ReadInt64();
+                int offset = reader.ReadInt32(); string symbol = IrBinary.Name(reader, budget); long addend = reader.ReadInt64();
                 if (zero || offset < 0 || offset > size - 4) throw new InvalidDataException("Invalid IR data relocation");
                 item.Relocs.Add(new(offset, symbol, addend));
             }

@@ -56,6 +56,17 @@ Synthesized default constructors and static-initialization wrappers belong to
 the type owner. An explicit static constructor becomes a hidden ordinary helper
 in its original unit; the initialization wrapper calls it after field initializers.
 This preserves one initialization protocol without importing that method body.
+Indexed field initializers use private source-owned helper methods so each
+expression keeps its original aliases and namespace scope. A constructor or
+shared initialization wrapper can call another fragment's helper without
+binding that fragment's expression in the wrong lexical scope.
+
+Closures and async state machines have stable names derived from their owning
+method signature, not the set or order of bodies loaded in a worker. Their
+descriptors and generated methods are object-local. Interface dispatch retains
+a slot-to-implementation map: one method can implement several interface slots,
+and overloads are matched by parameter types and by-reference modifiers rather
+than argument count alone.
 
 An independent object is open to references from other units even if it owns
 `Main`. It publishes owned static storage and keeps exported methods, signatures
@@ -63,7 +74,7 @@ and stores live. Source-local reachability does not prove that an exported field
 has no reader or that a method has no external caller. Whole-program pruning is
 a final-link decision, not a per-unit assumption.
 
-Async specialization identities, closure ownership, full partial-type acceptance, fully
+Full async specialization acceptance, full partial-type acceptance, fully
 lazy generic method loading, and general IR import/regeneration remain work in
 progress. Uncertified duplicate helpers are rejected rather than silently merged.
 No whole-project memory bound or complete generic/runtime acceptance is claimed.

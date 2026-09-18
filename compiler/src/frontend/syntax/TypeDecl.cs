@@ -8,6 +8,8 @@ public sealed class TypeDecl : Node
     public Mods Mods { get; set; }
     /// <summary>Canonical source identity, separate from diagnostic spelling.</summary>
     public string? SourcePath { get; set; }
+    /// <summary>An implementation-private generated type, such as a closure.</summary>
+    public bool LocalOnly { get; set; }
 
     /// <summary>
     /// Its field initialisers are already in its constructors. A declaration

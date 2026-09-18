@@ -37,6 +37,8 @@ public sealed class TypeSymbol
     public List<TypeSymbol> Interfaces { get; } = new();
     public List<FieldSymbol> Fields { get; } = new();
     public List<MethodSymbol> Methods { get; } = new();
+    /// <summary>One implementation can occupy several distinct interface slots.</summary>
+    public Dictionary<int, MethodSymbol> InterfaceImplementations { get; } = new();
     public List<string> TypeParams { get; } = new();
     /// <summary>Enum member values, when this is an enum.</summary>
     public Dictionary<string, long> EnumValues { get; } = new();

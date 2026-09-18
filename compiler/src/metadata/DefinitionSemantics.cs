@@ -55,8 +55,13 @@ public static class DefinitionSemantics
                 else
                 {
                     Function function = functions[symbol];
-                    if (function.Async is not null) throw new InvalidDataException("Async definition requires a state-machine identity: " + symbol);
                     writer.Write((byte)2); writer.Write((byte)function.Returns);
+                    writer.Write(function.Async is not null);
+                    if (function.Async is { } state)
+                    {
+                        Register(state.StateMachine); writer.Write(state.StateOffset); writer.Write(state.FieldsStart);
+                        Reference(state.SizeSymbol);
+                    }
                     writer.Write(function.Params.Count);
                     foreach (VReg parameter in function.Params) Register(parameter);
                     writer.Write(function.Slots.Count);
@@ -93,7 +98,7 @@ public static class DefinitionSemantics
                 }
                 active.Remove(symbol);
             }
-            writer.Write(1); writer.Write(Target.Current.Name); writer.Write(Target.Current.WordSize);
+            writer.Write(2); writer.Write(Target.Current.Name); writer.Write(Target.Current.WordSize);
             Definition(name);
             writer.Flush(); stream.FlushFinalBlock(); result.Add(name, hash.Hash!);
         }

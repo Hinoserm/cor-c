@@ -66,26 +66,31 @@ public static class IrFunctionCodec
         return stream.ToArray();
     }
 
-    public static Function Read(byte[] payload)
+    public static Function Read(byte[] payload, IrReadBudget? budget = null)
     {
+        budget ??= new();
+        budget.Charge(512L + payload.Length, 1, "function payload");
         using MemoryStream stream = new(payload, writable: false);
         using BinaryReader reader = new(stream, IrBinary.Utf8);
         try
         {
             if (reader.ReadInt32() != 1) throw new InvalidDataException("Unsupported IR function version");
-            Function function = new(IrBinary.Name(reader), IrBinary.Type(reader))
+            Function function = new(IrBinary.Name(reader, budget), IrBinary.Type(reader))
             {
                 Exported = IrBinary.Flag(reader), Coalescible = IrBinary.Flag(reader), FromLibrary = IrBinary.Flag(reader),
-                SourceFile = IrBinary.Text(reader), Line = reader.ReadInt32(), Display = IrBinary.Text(reader),
+                SourceFile = IrBinary.Text(reader, budget), Line = reader.ReadInt32(), Display = IrBinary.Text(reader, budget),
             };
             int count = IrBinary.Count(reader);
+            budget.Charge(count, 64, "registers");
             VReg[] registers = new VReg[count];
             for (int i = 0; i < count; i++) registers[i] = function.NewReg(IrBinary.Type(reader));
             T At<T>(T[] values, int index) => index >= 0 && index < values.Length ? values[index]
                 : throw new InvalidDataException("IR reference outside table");
             int parameters = IrBinary.Count(reader);
+            budget.Charge(parameters, 16, "parameters");
             for (int i = 0; i < parameters; i++) function.Params.Add(At(registers, reader.ReadInt32()));
             int slotCount = IrBinary.Count(reader);
+            budget.Charge(slotCount, 96, "frame slots");
             FrameSlot[] slots = new FrameSlot[slotCount];
             for (int i = 0; i < slotCount; i++)
             {
@@ -95,11 +100,13 @@ public static class IrFunctionCodec
                 slots[i] = function.NewSlot(size, align);
             }
             int blockCount = IrBinary.Count(reader);
+            budget.Charge(blockCount, 160, "blocks");
             IrBlock[] blocks = new IrBlock[blockCount];
             for (int i = 0; i < blockCount; i++) { blocks[i] = function.NewBlock(); blocks[i].IsLandingPad = IrBinary.Flag(reader); }
             foreach (IrBlock block in blocks)
             {
                 int instructions = IrBinary.Count(reader);
+                budget.Charge(instructions, 256, "instructions");
                 for (int i = 0; i < instructions; i++)
                 {
                     Opcode opcode = (Opcode)reader.ReadInt32(); int destination = reader.ReadInt32();
@@ -108,9 +115,10 @@ public static class IrFunctionCodec
                     {
                         Op = opcode, Dest = destination == -1 ? null : At(registers, destination),
                         Size = reader.ReadInt32(), Signed = IrBinary.Flag(reader), Offset = reader.ReadInt64(),
-                        Callee = IrBinary.Text(reader), Line = reader.ReadInt32(),
+                        Callee = IrBinary.Text(reader, budget), Line = reader.ReadInt32(),
                     };
                     int operands = IrBinary.Count(reader);
+                    budget.Charge(operands, 64, "operands");
                     for (int operand = 0; operand < operands; operand++)
                     {
                         switch (reader.ReadByte())
@@ -119,12 +127,13 @@ public static class IrFunctionCodec
                             case 2:
                                 IrType type = IrBinary.Type(reader);
                                 instruction.Operands.Add(new ImmOperand(reader.ReadInt64(), type)); break;
-                            case 3: instruction.Operands.Add(new SymOperand(IrBinary.Name(reader), reader.ReadInt64())); break;
+                            case 3: instruction.Operands.Add(new SymOperand(IrBinary.Name(reader, budget), reader.ReadInt64())); break;
                             case 4: instruction.Operands.Add(new SlotOperand(At(slots, reader.ReadInt32()))); break;
                             default: throw new InvalidDataException("Unknown IR operand encoding");
                         }
                     }
                     int targets = IrBinary.Count(reader);
+                    budget.Charge(targets, 16, "block references");
                     for (int target = 0; target < targets; target++) instruction.Targets.Add(At(blocks, reader.ReadInt32()));
                     int otherwise = reader.ReadInt32();
                     if (otherwise < -1) throw new InvalidDataException("Invalid IR default target");

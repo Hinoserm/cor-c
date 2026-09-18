@@ -29,7 +29,6 @@ public sealed partial class Lowering
         MethodSymbol MoveNext, string SizeSymbol, int[] ParamOffsets, Type Result);
 
     private readonly Dictionary<MethodSymbol, AsyncMethod> _moveNext = new();
-    private int _asyncCount;
     private int _awaitPoints;
 
     /// <summary>The state machine register while a MoveNext is being lowered; null elsewhere.</summary>
@@ -73,13 +72,14 @@ public sealed partial class Lowering
             return null;
         }
 
-        int n = _asyncCount++;
-        string name = $"Async${n}";
+        string identity = ClosureIdentity.Of(m);
+        string name = "Async$" + identity;
         TypeSymbol machine = new()
         {
             Name = name,
             Key = name,
             Kind = TypeKind.Class,
+            Decl = new TypeDecl { Name = name, Kind = TypeKind.Class, LocalOnly = true },
             Depth = 0,
         };
         machine.Interfaces.Add(action);
@@ -104,7 +104,7 @@ public sealed partial class Lowering
         }
         machine.InstanceSize = at;
 
-        string size = $"smsize_{n}";
+        string size = "smsize_" + identity;
         byte[] initial = new byte[_t.WordSize];
         WriteWord(initial, 0, at);
         _m.Data.Add(new DataItem(size, initial) { Align = _t.WordSize, Exported = false });
@@ -125,7 +125,8 @@ public sealed partial class Lowering
             return;
         }
 
-        _f = new Function(Label(m), IrTypes.Of(m.Returns)) { SourceFile = _in, Line = decl.Line, Display = Display(m), FromLibrary = IsLibrary(m.Owner) };
+        _f = new Function(Label(m), IrTypes.Of(m.Returns)) { SourceFile = _in, Line = decl.Line, Display = Display(m), FromLibrary = IsLibrary(m.Owner),
+            Coalescible = decl.LocalCopy || m.Owner.Decl?.Specialised == true, Exported = m.Owner.Decl?.LocalOnly != true };
         _e = new Builder(_f, _f.NewBlock("entry"));
 
         if (m.Static && !m.IsCtor)
@@ -211,7 +212,7 @@ public sealed partial class Lowering
         _decl = decl;
         _in = m.Owner.Decl?.File ?? decl.File ?? "";
 
-        _f = new Function(Label(am.MoveNext), IrType.Void) { SourceFile = _in, Line = decl.Line, Display = Display(am.MoveNext), FromLibrary = IsLibrary(am.MoveNext.Owner) };
+        _f = new Function(Label(am.MoveNext), IrType.Void) { SourceFile = _in, Line = decl.Line, Display = Display(am.MoveNext), FromLibrary = IsLibrary(am.MoveNext.Owner), Exported = false };
         Block entry = _f.NewBlock("entry");
         _e = new Builder(_f, entry);
 

@@ -13,17 +13,18 @@ internal static class IrBinary
         if (bytes.Length > 16384 || value.Contains('\0')) throw new InvalidDataException("Invalid IR text");
         writer.Write(bytes.Length); writer.Write(bytes);
     }
-    public static string? Text(BinaryReader reader)
+    public static string? Text(BinaryReader reader, IrReadBudget? budget = null)
     {
         int length = reader.ReadInt32();
         if (length == -1) return null;
         if (length < 0 || length > 16384 || length > reader.BaseStream.Length - reader.BaseStream.Position)
             throw new InvalidDataException("Invalid IR text length");
+        budget?.Charge(32L + 3L * length, 1, "text");
         string value = Utf8.GetString(reader.ReadBytes(length));
         if (value.Contains('\0')) throw new InvalidDataException("Invalid IR text");
         return value;
     }
-    public static string Name(BinaryReader reader) => Text(reader) ?? throw new InvalidDataException("Null IR name");
+    public static string Name(BinaryReader reader, IrReadBudget? budget = null) => Text(reader, budget) ?? throw new InvalidDataException("Null IR name");
     public static bool Flag(BinaryReader reader) => reader.ReadByte() switch
     { 0 => false, 1 => true, _ => throw new InvalidDataException("Invalid IR flag") };
     public static int Count(BinaryReader reader, int maximum = 1000000)

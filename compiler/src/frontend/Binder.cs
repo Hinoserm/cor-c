@@ -838,8 +838,8 @@ public sealed partial class Binder
     private readonly Dictionary<LocalSym, LocalDecl> _declOf = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<LocalDecl, LocalSym> _hoistedFunctions = new(ReferenceEqualityComparer.Instance);
 
-    /// <summary>Stable body-queue identity; -1 covers declaration-time binding.</summary>
-    private int _bodyOrdinal = -1;
+    /// <summary>Stable source-method identity, independent of loaded declaration subsets.</summary>
+    private string _closureOwner = "declaration";
 
     /// <summary>Closure classes built within the current body work item.</summary>
     private int _closures;
@@ -1546,7 +1546,6 @@ public sealed partial class Binder
 
     private void CheckBodyItem(TypeDecl declaration, TypeSymbol symbol, int ordinal)
     {
-        _bodyOrdinal = ordinal;
         _closures = 0;
         _in = declaration.File;
         CheckBodies(declaration, symbol);
@@ -1629,6 +1628,7 @@ public sealed partial class Binder
         }
 
         List<Stmt> body = new();
+        List<MethodDecl> initializerMethods = new();
 
         foreach (MemberDecl m in d.Members)
         {
@@ -1646,7 +1646,7 @@ public sealed partial class Binder
                 Expr = new AssignExpr
                 {
                     Target = new NameExpr { Name = f.Name, Line = f.Line, Col = f.Col },
-                    Value = Retarget(f.Init, f.Type),
+                    Value = InitializerMethods.Value(f, f.Type, Retarget(f.Init, f.Type), initializerMethods),
                     Line = f.Line, Col = f.Col,
                 },
                 Line = f.Line, Col = f.Col,
@@ -1654,6 +1654,7 @@ public sealed partial class Binder
 
             f.Init = null;
         }
+        d.Members.AddRange(initializerMethods);
 
         // A C# static constructor runs after every static field initializer.
         // Before this lowering existed, `static Isa()` was parsed correctly but
@@ -1706,6 +1707,7 @@ public sealed partial class Binder
         d.InitialisersPlaced = true;
 
         List<Stmt> prologue = new();
+        List<MethodDecl> initializerMethods = new();
 
         foreach (MemberDecl m in d.Members)
         {
@@ -1750,13 +1752,14 @@ public sealed partial class Binder
                         Target = new ThisExpr { Line = m.Line, Col = m.Col },
                         Name = field, Line = m.Line, Col = m.Col,
                     },
-                    Value = Retarget(init, declared),
+                    Value = InitializerMethods.Value(m, declared, Retarget(init, declared), initializerMethods),
                     Line = m.Line, Col = m.Col,
                 },
                 Line = m.Line, Col = m.Col,
             });
         }
 
+        d.Members.AddRange(initializerMethods);
         if (prologue.Count == 0)
         {
             return;
@@ -2426,8 +2429,9 @@ public sealed partial class Binder
         {
             foreach (MethodSymbol want in iface.Methods)
             {
+                if (want.Static) continue;
                 MethodSymbol? impl = sym.FindMethods(want.Name)
-                    .FirstOrDefault(m => !m.Abstract && m.Params.Count == want.Params.Count);
+                    .FirstOrDefault(m => !m.Abstract && MethodSignatures.SameParameters(m, want));
 
                 // AN ABSTRACT CLASS MAY IMPLEMENT AN INTERFACE MEMBER AND LEAVE
                 // THE BODY TO ITS DERIVED CLASSES: `abstract class C : ICounted
@@ -2438,7 +2442,7 @@ public sealed partial class Binder
                 if (impl is null && (sym.Decl?.Mods.HasFlag(Mods.Abstract) ?? false))
                 {
                     impl = sym.FindMethods(want.Name)
-                        .FirstOrDefault(m => m.Abstract && m.Params.Count == want.Params.Count);
+                        .FirstOrDefault(m => m.Abstract && MethodSignatures.SameParameters(m, want));
                 }
 
                 if (impl is null)
@@ -2449,7 +2453,7 @@ public sealed partial class Binder
                     }
                     continue;
                 }
-                impl.VtableSlot = want.VtableSlot;
+                sym.InterfaceImplementations[want.VtableSlot] = impl;
             }
         }
 
@@ -2787,6 +2791,8 @@ public sealed partial class Binder
             }
 
             _method = _r.Methods[md];
+            _closureOwner = ClosureIdentity.Of(_method);
+            _closures = 0;
             _nextSlot = 0;
             _maxSlot = 0;
             PushScope(functionBoundary: true);
@@ -4342,8 +4348,8 @@ public sealed partial class Binder
         // somebody else's body: `l.Where(p).Sum(q)` summed the whole of l.
         // A source-ordered work identity, not a process-wide increment, lets
         // future worker contexts name closures without scheduling dependence.
-        string name2 = $"Lambda${_bodyOrdinal}${_closures++}";
-        TypeDecl decl = new() { Name = name2, Kind = TypeKind.Class, File = _in, Line = lam.Line, Col = lam.Col };
+        string name2 = $"Lambda${_closureOwner}${_closures++}";
+        TypeDecl decl = new() { Name = name2, Kind = TypeKind.Class, LocalOnly = true, File = _in, Line = lam.Line, Col = lam.Col };
 
         // KEYED UNDER THE TYPE THE LAMBDA WAS WRITTEN IN, so that names inside
         // its body are looked up from where they were written. A closure is a

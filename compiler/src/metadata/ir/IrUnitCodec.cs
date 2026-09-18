@@ -44,45 +44,43 @@ public static class IrUnitCodec
         IrArchive.Attach(obj, records);
     }
 
-    public static (Module Module, bool StackMaps) Read(IrArchive archive, long memoryBudget = 128L * 1024 * 1024,
+    public static (Module Module, bool StackMaps, long AccountedBytes) Read(IrArchive archive, long memoryBudget = 64L * 1024 * 1024,
         IReadOnlySet<string>? retained = null)
     {
+        IrReadBudget budget = new(memoryBudget);
         using MemoryStream stream = new(archive.ReadBody("M:unit"), writable: false);
         using BinaryReader reader = new(stream, IrBinary.Utf8);
         try
         {
             if (reader.ReadInt32() != 1) throw new InvalidDataException("Unsupported IR unit version");
-            Module module = new(IrBinary.Name(reader))
-            { Entry = IrBinary.Text(reader), NeedsHeap = IrBinary.Flag(reader), PreserveExports = IrBinary.Flag(reader) };
+            budget.Charge(1024, 1, "unit settings");
+            Module module = new(IrBinary.Name(reader, budget))
+            { Entry = IrBinary.Text(reader, budget), NeedsHeap = IrBinary.Flag(reader), PreserveExports = IrBinary.Flag(reader) };
             bool stackMaps = IrBinary.Flag(reader);
             int imports = IrBinary.Count(reader);
+            budget.Charge(imports, 64, "import table");
             for (int i = 0; i < imports; i++)
-                if (!module.Imports.Add(IrBinary.Name(reader))) throw new InvalidDataException("Duplicate IR import");
+                if (!module.Imports.Add(IrBinary.Name(reader, budget))) throw new InvalidDataException("Duplicate IR import");
             IrBinary.End(reader);
-            long resident = 0;
             foreach (IrArchiveEntry entry in archive.Entries.Values)
             {
                 if (entry.Key == "M:unit") continue;
                 if (retained is not null && !retained.Contains(entry.Key)) continue;
-                resident = checked(resident + 32L * entry.Length);
-                if (resident > memoryBudget) throw new InvalidDataException("IR unit exceeds backend memory budget");
                 if (entry.Key.StartsWith("F:", StringComparison.Ordinal))
                 {
-                    Function function = IrFunctionCodec.Read(archive.ReadBody(entry.Key));
+                    Function function = IrFunctionCodec.Read(archive.ReadBody(entry.Key), budget);
                     if (entry.Key != "F:" + function.Name) throw new InvalidDataException("IR function key mismatch");
                     module.Functions.Add(function);
                 }
                 else if (entry.Key.StartsWith("D:", StringComparison.Ordinal))
                 {
-                    DataItem item = IrDataCodec.Read(archive.ReadBody(entry.Key), memoryBudget - resident);
+                    DataItem item = IrDataCodec.Read(archive.ReadBody(entry.Key), memoryBudget, budget);
                     if (entry.Key != "D:" + item.Name) throw new InvalidDataException("IR data key mismatch");
-                    resident = checked(resident + item.Bytes.Length);
-                    if (resident > memoryBudget) throw new InvalidDataException("IR data exceeds backend memory budget");
                     module.Data.Add(item);
                 }
                 else throw new InvalidDataException("Unknown required IR record " + entry.Key);
             }
-            return (module, stackMaps);
+            return (module, stackMaps, budget.Used);
         }
         catch (EndOfStreamException) { throw new InvalidDataException("Truncated IR unit"); }
         catch (System.Text.DecoderFallbackException) { throw new InvalidDataException("Invalid IR UTF-8"); }

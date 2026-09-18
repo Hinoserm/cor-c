@@ -16,6 +16,8 @@ public sealed class UnitBackend : IUnitBackend
         Target.Current = Target.X86;
         IrArchive archive = IrArchive.Read(original) ?? throw new InvalidDataException("Backend input has no IR archive");
         var unit = IrUnitCodec.Read(archive, retained: retained);
+        Console.Error.WriteLine("IR backend: retained functions=" + unit.Module.Functions.Count + ", data=" + unit.Module.Data.Count
+            + ", accounted decode bytes=" + unit.AccountedBytes);
         Module module = unit.Module;
         module.PreserveExports = true;
         HashSet<string> originalNames = module.Functions.Select(function => function.Name).ToHashSet(StringComparer.Ordinal);

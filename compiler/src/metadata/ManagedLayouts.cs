@@ -11,7 +11,7 @@ public static class ManagedLayouts
     {
         IEnumerable<ManagedTypeLayout> Records()
         {
-            foreach (TypeSymbol type in bound.Types.Values.Distinct().Where(type => type.Decl is { Specialised: false, TypeParams.Count: 0 }))
+            foreach (TypeSymbol type in bound.Types.Values.Distinct().Where(type => type.Decl is { Specialised: false, LocalOnly: false, TypeParams.Count: 0 }))
             {
                 using MemoryStream stream = new();
                 using BinaryWriter writer = new(stream, Encoding.UTF8, leaveOpen: true);
@@ -32,6 +32,9 @@ public static class ManagedLayouts
                     writer.Write(field.Boxed); writer.Write(field.Volatile); writer.Write(field.Required);
                 }
                 writer.Write("");
+                foreach (var implementation in type.InterfaceImplementations.OrderBy(pair => pair.Key))
+                { writer.Write(implementation.Key); writer.Write(Lowering.Label(implementation.Value)); }
+                writer.Write(-1);
                 foreach (MethodSymbol method in type.Methods.Where(method => method.VtableSlot >= 0 && method.Decl?.LocalCopy != true)
                     .OrderBy(method => method.VtableSlot).ThenBy(method => method.Name, StringComparer.Ordinal)
                     .ThenBy(method => method.Signature, StringComparer.Ordinal))

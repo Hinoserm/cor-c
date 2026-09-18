@@ -49,6 +49,13 @@ The unit record retains entry identity, heap policy, export policy, stack-map
 configuration and native imports. Target and managed-layout contracts remain in
 their existing native notes and are preserved when code is regenerated.
 
+Decoding has a 64 MiB accounting budget. The reader charges registers, blocks,
+instructions, operands, reference arrays, strings and data bytes before their
+allocation, with object/list overhead allowances. Unretained records are never
+decoded. The backend reports the accounted total for each unit. This is distinct
+from process RSS: native-object storage, optimizer scratch and runtime overhead
+are not certified by the decoder's accounting.
+
 ## Import policy and transformations
 
 The initial planner imports at most 32 bodies and 1 MiB of payload per consumer.

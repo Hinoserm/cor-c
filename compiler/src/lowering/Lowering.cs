@@ -1136,6 +1136,7 @@ public sealed partial class Lowering
         int slots = t.Kind == TypeKind.Class ? Math.Max(Math.Max(_b.ToStringSlot, _b.CompareSlot), Math.Max(_b.EqualsSlot, _b.HashSlot)) + 1 : 0;
         for (TypeSymbol? s = t; s is not null; s = s.Base)
         {
+            foreach (int interfaceSlot in s.InterfaceImplementations.Keys) slots = Math.Max(slots, interfaceSlot + 1);
             foreach (MethodSymbol m in s.Methods.Where(m => m.VtableSlot >= 0))
             {
                 slots = Math.Max(slots, m.VtableSlot + 1);
@@ -1150,6 +1151,8 @@ public sealed partial class Lowering
         }
         foreach (TypeSymbol s in chain)
         {
+            foreach (var implementation in s.InterfaceImplementations)
+                table[implementation.Key] = implementation.Value.Abstract ? null : implementation.Value;
             foreach (MethodSymbol m in s.Methods.Where(m => m.VtableSlot >= 0))
             {
                 table[m.VtableSlot] = m.Abstract ? null : m;
@@ -1162,7 +1165,8 @@ public sealed partial class Lowering
         WriteWord(block, DescDepth * w, t.Depth);
         WriteWord(block, DescPayload * w, _t.ObjectHeaderBytes);
 
-        DataItem item = new(sym, block) { ReadOnly = true, Align = _t.Align64, FromLibrary = IsLibrary(t), Coalescible = t.Decl?.Specialised == true };
+        DataItem item = new(sym, block) { ReadOnly = true, Align = _t.Align64, FromLibrary = IsLibrary(t), Coalescible = t.Decl?.Specialised == true,
+            Exported = t.Decl?.LocalOnly != true };
         _m.Data.Add(item);
         item.Relocs.Add(new DataReloc(DescName * w, InternString(t.Name), 0));
         item.Relocs.Add(new DataReloc(DescSelf * w, sym, 0));
