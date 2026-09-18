@@ -1,0 +1,4 @@
+public static class Value
+{
+    public static int Get() { Sys.Print("effect\n"); return 42; }
+}

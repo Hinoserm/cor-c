@@ -86,6 +86,8 @@ public static class Driver
               --link-shared <so> link against a shared object; may be repeated
               --nostdlib         do not link the default libraries (std, runtime, system)
               --obj              write a relocatable object rather than an executable
+              --no-lto           omit link-time optimization summaries
+              --no-stackmaps     omit precise stack-map metadata (no precise-GC consumer)
               --dump-ir          print the IR after lowering
               --dump-opt         print the IR after optimisation
               --asm              print the generated assembly
@@ -529,6 +531,8 @@ public static class Driver
         {
             PositionIndependent = shared || args.Contains("--pic"),
             Workers = workers,
+            EmitLinkSummary = !args.Contains("--no-lto") && !args.Contains("--no-opt"),
+            StackMaps = !args.Contains("--no-stackmaps"),
         };
         foreach (string symbol in imported)
         {

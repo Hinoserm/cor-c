@@ -8,7 +8,7 @@ public static class Program
     {
         if (args.Length == 1 && args[0] is "--help" or "-h")
         {
-            Console.WriteLine("corlink <file.o> ... -o <executable> [--entry <symbol>]");
+            Console.WriteLine("corlink <file.o> ... -o <output> [--entry symbol] [--flat] [--base address] [--paddr address] [--no-lto]");
             return 0;
         }
         try { return ObjectLinkCommand.Run(args); }

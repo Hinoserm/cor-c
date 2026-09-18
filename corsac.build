@@ -34,7 +34,7 @@
     </Target>
   </Target>
 
-  <Target Name="test" Steps="unit;smoke">
+  <Target Name="test" Steps="unit;smoke;lto">
     <Target Name="unit" Steps="build-tool;optimizer;assembler;x86;linker">
       <Target Name="build-tool">
         <Test Name="build-runner" Executable="dotnet" Timeout="00:03:00">
@@ -71,6 +71,12 @@
       <Script Interpreter="sh" File="tests/integration/separate-link.sh">
         <Environment Name="CORC" Value="$(Compiler)" /><Environment Name="CORLINK" Value="$(Linker)" />
       </Script>
+    </Target>
+    <Target Name="lto" DependsOnTargets="/compiler">
+      <Test Name="cross-object-lto" Executable="sh" Timeout="00:05:00">
+        <Argument Value="tests/integration/lto.sh" />
+        <Environment Name="CORC" Value="$(Compiler)" /><Environment Name="CORLINK" Value="$(Linker)" />
+      </Test>
     </Target>
     <Target Name="language" DependsOnTargets="/compiler">
       <Test Name="language" Executable="bash" Timeout="01:00:00">

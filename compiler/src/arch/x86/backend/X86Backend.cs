@@ -2,6 +2,7 @@
 using System.Text;
 using System.Threading.Tasks;
 using Corsac.Lang.Ir;
+using Corsac.Lang.Lto;
 
 namespace Corsac.Lang.X86;
 
@@ -32,6 +33,7 @@ public sealed class X86Backend : IBackend
 
     /// <summary>Bounded task workers for selection/allocation; emission stays ordered.</summary>
     public int Workers { get; set; } = 1;
+    public bool EmitLinkSummary { get; set; }
 
     /// <summary>
     /// Position-independent code: globals through the GOT, calls through
@@ -98,6 +100,7 @@ public sealed class X86Backend : IBackend
     {
         if (Workers < 1 || Workers > 64) throw new ArgumentOutOfRangeException(nameof(Workers));
         ObjectFile obj = new();
+        OptimizationSummary summary = new();
         Section text = new(".text", SectionKind.Code) { Align = Math.Max(4, FunctionAlign) };
         Section rodata = new(".rodata", SectionKind.ReadOnlyData);
         Section data = new(".data", SectionKind.Data);
@@ -229,6 +232,16 @@ public sealed class X86Backend : IBackend
             Encoder.Nops(text.Bytes, gap);
             int start = text.Bytes.Count;
             int size = encoder.Encode(m);
+            if (EmitLinkSummary && !PositionIndependent)
+            {
+                HashSet<string> eligible = new(f.Blocks.SelectMany(b => b.Instrs)
+                    .Where(i => i.Op == Opcode.Call && i.Operands.Count == 0 && i.Dest?.Type == IrType.I32 && i.Callee is not null)
+                    .Select(i => i.Callee!), StringComparer.Ordinal);
+                foreach ((MInstr call, int ret) in encoder.CallSites)
+                    if (call.Op == MOp.Call && call.CallReloc == RelocKind.Rel32
+                        && call.Operands[0] is MImm { Symbol: { } callee, Value: 0 } && eligible.Contains(callee))
+                        summary.Calls.Add(new DirectCall(start + ret - 4, callee));
+            }
             FunctionSizes.Add((f.Name, size));
             obj.Symbols.Add(new Symbol
             {
@@ -348,6 +361,11 @@ public sealed class X86Backend : IBackend
             {
                 obj.Symbols.Add(new Symbol { Name = name });
             }
+        }
+        if (EmitLinkSummary && !PositionIndependent)
+        {
+            Corsac.Lang.Opt.LinkSummary.AddConstantReturns(module, obj, summary);
+            summary.Attach(obj);
         }
         return obj;
     }
