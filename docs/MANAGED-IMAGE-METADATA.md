@@ -40,3 +40,9 @@ traces crossing an indexed unit boundary. The latter checks exact source lines
 with and without LTO and compares object bytes across worker counts. Its runtime
 declaration list is deliberately explicit; eager standard-library declaration
 loading remains a separate open task.
+
+The accepted milestone also runs the standard stack-trace language fixture with
+the runtime in a shared library. Its ELF checks reject text/copy relocations and
+verify loader metadata. An isolated real-OS build with ABI-v3 objects boots on
+an ISA 486 and reaches login, shell execution and reboot. These acceptance gates
+do not claim native self-hosting or complete runtime type loading.

@@ -124,6 +124,17 @@ tasks below track that work; moving files alone does not reduce the working set.
 
 ## Demand-loaded declarations, not a whole-project metadata graph
 
+- [x] Verify the managed-image/initializer milestone at 4705796: all ten default
+  groups passed; shared-library acceptance passed 35 checks; the dynamic-runtime
+  stack-trace fixture additionally passed nine checks. The full language run
+  remained 266 passed / 6 known failures / 272 total, with no new failure names.
+  The rebuilt ABI-v3 stage2/kernel passed actual ISA-486 login/shell/reboot
+  acceptance from an isolated OS snapshot. Evidence:
+  build/logs/20260918-164246-f81e24b123d046b18e01d614842a2bdf/,
+  build/logs/20260918-164348-a011860f583c450787f831f7af127618/,
+  build/logs/20260918-162924-fa1fc56192da468e87b97c4dd55ff38a/,
+  build/shared.zf5qEQ/ and build/corsac-boot.Rfs3bV/.
+
 - [x] Add a linker-created image directory for every unit's frame/stack-map
   tables, with reserved-name/bounds validation and ABI version 3 rejection of
   stale objects. Fix cross-unit line-table lookup and preserve the throwing
@@ -200,17 +211,20 @@ tasks below track that work; moving files alone does not reduce the working set.
   bytes; physical removal and async/closure/partial ownership remain separate work.
   All eight groups passed at 6c6a9e6; logs:
   build/logs/20260918-142230-00afa03655fd49db97daffb50d82e3b0/.
-- [ ] Verify indexed partial-member ownership and cyclic references. Canonical
+- [x] Verify indexed partial-member ownership and cyclic references. Canonical
   fragment order owns the descriptor/static storage; each source unit owns its
   methods and accessors. Static-constructor helpers stay with their source unit
-  while the shared initialization wrapper stays with the type owner. Expand
-  runtime/static-initialization and scoped-initializer acceptance beyond the
-  initial static-field/accessor fixture before declaring partial support complete.
+  while the shared initialization wrapper stays with the type owner. Runtime
+  acceptance now includes per-fragment aliases, static auto-properties, two
+  instance constructions and once-only static construction. This is scoped
+  ownership/initialization acceptance, not every partial-type language feature.
   Initial metadata and executable partial/cycle fixtures passed at b6d107e.
   The broad language milestone was 265 passed / 6 failed / 271 total; failures
   remain the four moved OS-helper fixtures, kernel-script routing, and standard
   Thread(Action)/instance Start support. No new language failure appeared.
   Evidence: build/logs/20260918-143225-95b2895cfe584b6fb95e6c627726c9a0/.
+- [ ] Extend partial-type acceptance to generic constraints, attributes,
+  inheritance/interface reimplementation and partial-method edge cases.
 - [ ] Do not retain a full declaration footprint for every class in every file.
 - [ ] Maintain a compact disk-backed index from qualified type names to the
   locations of their declaration records. Access to the index itself must be
