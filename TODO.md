@@ -139,6 +139,9 @@ tasks below track that work; moving files alone does not reduce the working set.
   Evidence: build/logs/20260918-174943-54378661ac3147a2bb18222cbcb3fcf8/ and
   build/milestone3-language-focused.log. IR summary-open allocation measured
   5,728 bytes for a 4 MiB payload in the linker unit test.
+- [x] Rebuild the shared runtime/standard libraries for GIR v9 and verify
+  dynamic execution after the combined compatibility changes: 37/37 shared
+  checks passed (build/milestone3-libraries.log and build/milestone3-shared.log).
 - [ ] After the project path works, reorganize the compiler toward one top-level
   class/type per matching source file, following ordinary C# conventions.
 - [ ] Preserve useful partial-class subdivisions. Physical file boundaries must
