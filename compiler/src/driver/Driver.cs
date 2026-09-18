@@ -30,6 +30,7 @@ public static class Driver
             {
                 "compile" or "cc" => Compile(rest),
                 "link" => ObjectLinkCommand.Run(Response(rest)),
+                "index" => IndexCommand.Run(Response(rest)),
                 "build" or "asm" => Build(rest),
                 "help" or "--help" or "-h" => Usage(),
                 _ => Fail($"unknown command '{command}'"),
@@ -44,6 +45,9 @@ public static class Driver
         {
             return Fail(e.Message);
         }
+        catch (InvalidDataException e) { return Fail(e.Message); }
+        catch (ArgumentException e) { return Fail(e.Message); }
+        catch (CompileError e) { Console.Error.WriteLine(e.ToString()); return 1; }
         catch (LinkException e)
         {
             foreach (string error in e.Errors)
@@ -64,6 +68,7 @@ public static class Driver
               corc compile @sources.list -o <output> [options]
               corc link <file.o> ... -o <output> [--entry <symbol>]
               corc link @objects.list -o <output> [--entry <symbol>]
+              corc index --assembly <identity> <sources...> -o <declarations.idx>
               corc build --target x86-16 <file.asm> -o <output.bin>
               corc build --target x86-32 <file.asm> --obj -o <output.o>
 

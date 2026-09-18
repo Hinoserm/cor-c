@@ -17,6 +17,9 @@ public sealed class Parser
 {
     private readonly List<Token> _t;
     private readonly string _file;
+    private readonly bool _declarationsOnly;
+    /// <summary>Source ranges omitted by declaration-only parsing; end is exclusive.</summary>
+    public List<(int From, int To, bool Block)> OmittedBodies { get; } = new();
     private int _i;
     private string? _iteratorTarget;
     private TypeRef? _iteratorElement;
@@ -48,15 +51,16 @@ public sealed class Parser
     /// read that turns out not to be a type can put them back.
     private readonly List<(int At, Token Was)> _splits = new();
 
-    public Parser(List<Token> tokens, string file = "<source>")
+    public Parser(List<Token> tokens, string file = "<source>", bool declarationsOnly = false)
     {
         _t = tokens;
         _file = file;
+        _declarationsOnly = declarationsOnly;
     }
 
     public static CompilationUnit ParseText(string source, string file = "<source>",
-                                            IReadOnlyCollection<string>? symbols = null)
-        => new Parser(Lexer.Tokenize(source, file, 1, 1, symbols), file).ParseUnit();
+                                            IReadOnlyCollection<string>? symbols = null, bool declarationsOnly = false)
+        => new Parser(Lexer.Tokenize(source, file, 1, 1, symbols), file, declarationsOnly).ParseUnit();
 
     // ---- token helpers --------------------------------------------------
 
@@ -1691,7 +1695,7 @@ public sealed class Parser
         if (Take(Tok.FatArrow))
         {
             Token bodyAt = Cur;
-            Expr value = ParseExpr();
+            Expr value = ReadBodyExpression();
             Expect(Tok.Semi, "';' after an expression-bodied property");
 
             Block getter = new() { Line = bodyAt.Line, Col = bodyAt.Col };
@@ -2017,7 +2021,7 @@ public sealed class Parser
             // return: List.Add answers nothing, and returning it was reported as
             // a void method returning a value.
             Token at = Cur;
-            Expr value = ParseExpr();
+            Expr value = ReadBodyExpression();
 
             Expect(Tok.Semi, "';' after an expression body");
             body = new Block { Line = at.Line, Col = at.Col };
@@ -2114,7 +2118,7 @@ public sealed class Parser
         if (Take(Tok.FatArrow))
         {
             Token bodyAt = Cur;
-            Expr only = ParseExpr();
+            Expr only = ReadBodyExpression();
             Expect(Tok.Semi, "';' after an expression-bodied property");
 
             Block body = new() { Line = bodyAt.Line, Col = bodyAt.Col };
@@ -2152,7 +2156,7 @@ public sealed class Parser
                 {
                     auto = false;
                     Token at = Cur;
-                    Expr value = ParseExpr();
+                    Expr value = ReadBodyExpression();
                     Expect(Tok.Semi, "';' after the expression-bodied getter");
                     getter = new Block { Line = at.Line, Col = at.Col };
                     getter.Statements.Add(new ReturnStmt
@@ -2205,7 +2209,7 @@ public sealed class Parser
                 {
                     auto = false;
                     Token at = Cur;
-                    Expr value = ParseExpr();
+                    Expr value = ReadBodyExpression();
                     Expect(Tok.Semi, "';' after the expression-bodied setter");
                     setter = new Block { Line = at.Line, Col = at.Col };
                     setter.Statements.Add(new ExprStmt
@@ -2630,6 +2634,20 @@ public sealed class Parser
         Token at = Expect(Tok.LBrace, "'{'");
         Block block = new() { Line = at.Line, Col = at.Col };
 
+        if (_declarationsOnly)
+        {
+            int depth = 1;
+            while (depth > 0)
+            {
+                if (At(Tok.End)) throw Error("unterminated declaration body");
+                Token token = _t[_i++];
+                if (token.Kind == Tok.LBrace) depth++;
+                else if (token.Kind == Tok.RBrace) depth--;
+            }
+            OmittedBodies.Add((at.Pos, _t[_i - 1].Pos + 1, true));
+            return block;
+        }
+
         while (!At(Tok.RBrace) && !At(Tok.End))
         {
             block.Statements.Add(ParseStmt());
@@ -2637,6 +2655,25 @@ public sealed class Parser
 
         Expect(Tok.RBrace, "'}' to close the block");
         return LowerUsings(block);
+    }
+
+    private Expr ReadBodyExpression()
+    {
+        if (!_declarationsOnly) return ParseExpr();
+        Token start = Cur;
+        Stack<Tok> close = new();
+        while (!At(Tok.Semi) || close.Count != 0)
+        {
+            if (At(Tok.End)) throw Error("unterminated expression body");
+            Token token = _t[_i++];
+            if (token.Kind is Tok.LParen or Tok.LBracket or Tok.LBrace)
+                close.Push(token.Kind == Tok.LParen ? Tok.RParen : token.Kind == Tok.LBracket ? Tok.RBracket : Tok.RBrace);
+            else if (token.Kind is Tok.RParen or Tok.RBracket or Tok.RBrace)
+                if (close.Count == 0 || close.Pop() != token.Kind) throw Error("unbalanced expression body");
+        }
+        OmittedBodies.Add((start.Pos, Cur.Pos, false));
+        // This tree is a declaration marker, never executable implementation.
+        return new DefaultExpr { Type = new TypeRef { Name = "object" }, Line = start.Line, Col = start.Col };
     }
 
     private Block LowerUsings(Block block)

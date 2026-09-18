@@ -106,10 +106,15 @@ tasks below track that work; moving files alone does not reduce the working set.
 
 ## Demand-loaded declarations, not a whole-project metadata graph
 
-- [ ] Verify the new disk-backed declaration-index storage milestone: bounded
+- [x] Verify the new disk-backed declaration-index storage milestone: bounded
   external sorting, exact/prefix lookup, partial fragments, deterministic output,
   corruption rejection and atomic publication. Source indexing and demand-loaded
   binder integration remain distinct work; storage alone does not complete them.
+  Passed metadata suite at 4cc0529. Logs:
+  build/logs/20260918-125148-75ea0294c16d4917a12fc849dfac1859/.
+- [ ] Verify source-index generation: declaration-only parsing, lexical scopes,
+  partial/nested generic identities, body-independent declaration fingerprints
+  and stale-source rejection. Integrate indexed lookup into the binder next.
 - [ ] Do not retain a full declaration footprint for every class in every file.
 - [ ] Maintain a compact disk-backed index from qualified type names to the
   locations of their declaration records. Access to the index itself must be

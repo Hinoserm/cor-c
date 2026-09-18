@@ -128,6 +128,8 @@ public sealed class Lexer
     private char Cur => _pos < _src.Length ? _src[_pos] : '\0';
     private char Peek(int n = 1) => _pos + n < _src.Length ? _src[_pos + n] : '\0';
     private bool Done => _pos >= _src.Length;
+    /// <summary>End of the last consumed token, for source-index spelling preservation.</summary>
+    public int Position => _pos;
 
     private CompileError Error(string message, int line, int col) => new(_file, line, col, message);
 

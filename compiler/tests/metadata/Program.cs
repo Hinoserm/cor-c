@@ -21,6 +21,7 @@ public static class Program
         }
         try
         {
+            SourceIndexTests.Run(work);
             string path = Path.Combine(work, "declarations.idx");
             DeclarationRecord[] records = Enumerable.Range(0, 1000).Select(i =>
                 new DeclarationRecord("Namespace.Type" + i.ToString("D4"), BitConverter.GetBytes(i))).ToArray();
