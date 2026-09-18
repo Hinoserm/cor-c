@@ -92,7 +92,7 @@ public static class Driver
               --dump-opt         print the IR after optimisation
               --asm              print the generated assembly
               --stats            print whether a heap is needed and each function's code size
-              --jobs <count>     compiler task workers (1-64; default 1 during integration)
+              --jobs <count>     compiler task workers (positive count; default 1)
               --no-opt           skip the optimiser
               --opt-size         use experimental size-oriented inlining budgets
               --experimental-batch enable the staged large-batch optimizer checkpoint
@@ -265,8 +265,8 @@ public static class Driver
         if (args.Contains("--jobs"))
         {
             string? jobs = Value(args, "--jobs");
-            if (jobs is null || !int.TryParse(jobs, out workers) || workers < 1 || workers > 64)
-                return Fail("--jobs requires a worker count from 1 to 64");
+            if (jobs is null || !int.TryParse(jobs, out workers) || workers < 1)
+                return Fail("--jobs requires a positive worker count");
         }
         List<string> files = new();
         for (int i = 0; i < args.Length; i++)

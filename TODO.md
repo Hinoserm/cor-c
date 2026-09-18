@@ -46,6 +46,10 @@ tasks below track that work; moving files alone does not reduce the working set.
   JUnit reports. Thirteen focused runner checks passed at the first milestone.
   Full profile/artifact/resource semantics remain below as separate tasks.
 - [x] Supply cor-c's corsac.build and component directory defaults.
+- [ ] Verify the new logical-CPU default/global worker leases, native script
+  budget propagation and timestamp-based Inputs/Outputs task skipping. Standard
+  .csproj incrementality stays with MSBuild; missing/changed inputs, outputs and
+  options must invalidate state. Tests and undeclared side effects always run.
 - [x] Build compiler and linker as independent .NET-hosted executables and
   document ELF relocatable objects. Compiler -> `.o` -> corlink -> Linux program
   passed; this does not establish managed file-by-file compilation.

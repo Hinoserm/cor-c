@@ -10,7 +10,8 @@ public static class Program
             if (options.Help)
             {
                 Console.WriteLine("build [target/path] [--file corsac.build] [--list] [--plan] [--jobs N]\n"
-                    + "      [--configuration Release] [--toolchain dotnet] [--property Name=Value]");
+                    + "      [--configuration Release] [--toolchain dotnet] [--property Name=Value]\n"
+                    + "Default jobs: available logical CPUs; --jobs lowers the global worker budget.");
                 return 0;
             }
             BuildManifest manifest = BuildManifest.Load(options.File ?? BuildManifest.Discover(Environment.CurrentDirectory), options);

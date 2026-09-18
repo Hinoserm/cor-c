@@ -274,6 +274,61 @@ based on an unchecked property or downloaded manifest is permitted.
 
 ## Scheduling and resource limits
 
+The default CPU budget is Environment.ProcessorCount: the logical processors
+available to this process. `--jobs N` can lower it. Independent dependency
+branches run concurrently; Steps and tasks within a target remain ordered.
+The host Compile adapter leases currently idle worker slots and supplies that
+count to MSBuild and DOTNET_PROCESSOR_COUNT. Leases share one global semaphore
+and are returned on success, failure and cancellation; nested compilers do not
+each receive the full machine count.
+
+Exec, Script and Test use one slot by default. `Workers="auto"` allows a
+cooperating task to lease the remaining idle slots. Every child receives its
+lease as CORSAC_BUILD_JOBS and DOTNET_PROCESSOR_COUNT. Scripts must pass that
+budget to native tools, e.g. `corc --jobs` or `make -j`; arbitrary scripts which
+ignore it cannot be forcibly constrained by a process semaphore. The repository
+library-build script passes it to the compiler. Memory estimates and named
+resource locks below remain future scheduling work.
+
+## Incremental execution
+
+Compile uses the standard .csproj/MSBuild incremental engine: project references,
+SDK imports, source items, compiler options and outputs remain its responsibility.
+The build runner must not guess a project's dependencies by scanning only .cs
+files or skip evaluation just because its main executable already exists.
+
+File-producing Exec and Script tasks may declare semicolon-separated `Inputs`
+and `Outputs`, both required together. Paths are explicit files relative to the
+manifest directory, with property expansion; glob declarations are not yet
+implemented and fail explicitly. Script files and resolvable tool executables
+are added as inputs. Tool payloads behind wrappers must be declared explicitly.
+
+```xml
+<Exec Executable="$(Compiler)"
+      Inputs="program.cor;$(Compiler);compiler/bin/Release/net10.0/corc.dll"
+      Outputs="build/program">
+  <Argument Value="compile" />
+  <Argument Value="program.cor" />
+  <Argument Value="-o" /><Argument Value="build/program" />
+</Exec>
+```
+
+A successful task records input/output paths, byte lengths and UTC modification
+times under build/state. It skips only when every output exists, no input is
+newer than the oldest output, the expanded task/options match, and the recorded
+file state still matches. This also detects timestamp rollback and externally
+changed outputs. Missing required inputs fail. Missing outputs rerun. Failed or
+cancelled tasks never publish successful state; changes to inputs during a run
+invalidate publication. Timestamp/size checking is not content hashing: edits
+which preserve both cannot be detected by this initial mode.
+
+Tests and undeclared arbitrary commands always run. This avoids treating an
+interactive action, test result or side effect as a cacheable compiled artifact.
+Successful source and output timestamps need not be equal; literal inequality
+would rebuild ordinary successful compilations forever.
+
+### Remaining resource and artifact work
+
 The graph runner coordinates CPU workers, estimated resident memory, and named
 exclusive resources across tasks. A dependency wait must not hold a process
 slot. External tools receive the remaining worker budget; compiler jobs and

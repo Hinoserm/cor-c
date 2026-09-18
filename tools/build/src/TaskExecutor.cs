@@ -38,11 +38,13 @@ public sealed class TaskExecutor
                     BuildManifest.Fail(task, "Native project provider is not implemented yet. Use --toolchain dotnet explicitly for host builds; bootstrap is not yet accepted.");
                 break;
             case "Exec": case "Test":
-                BuildManifest.Check(task, name, "Executable", "WorkingDirectory", "Timeout", "ExpectedExitCode", "Name");
+                if (name == "Test")
+                    BuildManifest.Check(task, name, "Executable", "WorkingDirectory", "Timeout", "ExpectedExitCode", "Name", "Workers");
+                else BuildManifest.Check(task, name, "Executable", "WorkingDirectory", "Timeout", "ExpectedExitCode", "Name", "Workers", "Inputs", "Outputs");
                 manifest.Expand(BuildManifest.Required(task, "Executable"));
                 break;
             case "Script":
-                BuildManifest.Check(task, name, "Interpreter", "File", "WorkingDirectory", "Timeout", "ExpectedExitCode");
+                BuildManifest.Check(task, name, "Interpreter", "File", "WorkingDirectory", "Timeout", "ExpectedExitCode", "Workers", "Inputs", "Outputs");
                 manifest.Expand(BuildManifest.Required(task, "Interpreter"));
                 if ((task.Attribute("File") is null) == (task.Element("Body") is null))
                     BuildManifest.Fail(task, "Script needs exactly one File or Body");
@@ -75,6 +77,9 @@ public sealed class TaskExecutor
         if (task.Elements("Environment").GroupBy(e => (string?)e.Attribute("Name")).Any(g => g.Count() > 1))
             BuildManifest.Fail(task, "Duplicate environment variable");
         Timeout(task);
+        if ((string?)task.Attribute("Workers") is { } workers && workers is not ("auto" or "1"))
+            BuildManifest.Fail(task, "Workers must be auto or 1");
+        IncrementalTask.Validate(task);
         if (!int.TryParse((string?)task.Attribute("ExpectedExitCode") ?? "0", out _))
             BuildManifest.Fail(task, "ExpectedExitCode must be an integer");
     }
@@ -87,16 +92,22 @@ public sealed class TaskExecutor
         Dictionary<string, string> environment = task.Elements("Environment").ToDictionary(
             e => BuildManifest.Required(e, "Name"), e => manifest.Expand(BuildManifest.Required(e, "Value")));
         string directory = manifest.FullPath((string?)task.Attribute("WorkingDirectory") ?? ".");
+        IncrementalTask? incremental = IncrementalTask.Create(manifest, target, task);
+        if (incremental?.IsCurrent() == true)
+        {
+            Console.WriteLine("up-to-date /" + target.Path);
+            return;
+        }
         string executable;
         string? temporary = null;
         if (task.Name == "Compile")
         {
             executable = "dotnet";
-            args = new List<string> { "build", Project(task), "--nologo", "-m:1", "-c",
+            args = new List<string> { "build", Project(task), "--nologo", "-c",
                 manifest.Expand((string?)task.Attribute("Configuration") ?? "$(Configuration)"),
                 "-p:UseSharedCompilation=false" };
-            // External compilers get one worker. The graph runner owns the budget.
-            environment["DOTNET_PROCESSOR_COUNT"] = "1";
+            // MSBuild evaluates imports/references and owns .csproj incremental
+            // checking. Its worker count comes from the global CPU lease.
         }
         else if (task.Name == "Script")
         {
@@ -118,7 +129,10 @@ public sealed class TaskExecutor
         ProcessResult? result = null;
         try
         {
-            result = await runner.Run(target.Path, executable, args, directory, environment, Timeout(task), cancel);
+            bool compile = task.Name == "Compile";
+            result = await runner.Run(target.Path, executable, args, directory, environment, Timeout(task), cancel,
+                compile || (string?)task.Attribute("Workers") == "auto",
+                compile ? count => new[] { "-maxcpucount:" + count } : null);
             int expected = int.Parse((string?)task.Attribute("ExpectedExitCode") ?? "0", CultureInfo.InvariantCulture);
             bool passed = !result.TimedOut && result.ExitCode == expected;
             string detail = executable + (result.TimedOut ? " timed out" : " exited " + result.ExitCode + ", expected " + expected)
@@ -126,6 +140,7 @@ public sealed class TaskExecutor
             if (isTest) report.Add(new TestResult { Target = target.Path, Name = testName,
                 Status = result.TimedOut ? "timed-out" : passed ? "passed" : "failed", Detail = detail, Process = result });
             if (!passed) throw new BuildException(detail);
+            incremental?.RecordSuccess();
         }
         catch (Exception error)
         {

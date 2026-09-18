@@ -15,11 +15,17 @@ public sealed class ProcessRunner
     }
 
     public async Task<ProcessResult> Run(string label, string executable, IEnumerable<string> arguments,
-        string directory, IDictionary<string, string> environment, TimeSpan timeout, CancellationToken cancel)
+        string directory, IDictionary<string, string> environment, TimeSpan timeout, CancellationToken cancel,
+        bool useAvailableWorkers = false, Func<int, IEnumerable<string>>? workerArguments = null)
     {
         await slots.WaitAsync(cancel);
+        int workers = 1;
         try
         {
+            // Never wait while holding a partial multi-slot reservation: two
+            // compilers each waiting for the rest would deadlock. Lease the
+            // currently idle budget and return every slot on all exit paths.
+            if (useAvailableWorkers) while (slots.Wait(0)) workers++;
             Directory.CreateDirectory(logs);
             string prefix = Path.Combine(logs, Interlocked.Increment(ref sequence).ToString("D4") + "-" + label.Replace('/', '_'));
             ProcessStartInfo start = new(executable)
@@ -31,8 +37,12 @@ public sealed class ProcessRunner
                 RedirectStandardInput = true,
             };
             foreach (string argument in arguments) start.ArgumentList.Add(argument);
+            if (workerArguments is not null)
+                foreach (string argument in workerArguments(workers)) start.ArgumentList.Add(argument);
             foreach (var entry in environment) start.Environment[entry.Key] = entry.Value;
-            Console.WriteLine("run /" + label + ": " + executable);
+            start.Environment["CORSAC_BUILD_JOBS"] = workers.ToString();
+            start.Environment["DOTNET_PROCESSOR_COUNT"] = workers.ToString();
+            Console.WriteLine("run /" + label + ": " + executable + " (workers=" + workers + ")");
             using Process process = new() { StartInfo = start };
             Stopwatch watch = Stopwatch.StartNew();
             process.Start();
@@ -57,6 +67,6 @@ public sealed class ProcessRunner
             return new ProcessResult { ExitCode = process.ExitCode, TimedOut = timedOut,
                 Elapsed = watch.Elapsed, LogPrefix = prefix };
         }
-        finally { slots.Release(); }
+        finally { slots.Release(workers); }
     }
 }

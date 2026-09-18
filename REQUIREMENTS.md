@@ -83,6 +83,14 @@ work belong in [TODO.md](TODO.md).
   explicitly; native builds never silently switch to the host compiler.
 - `build bootstrap` prepares and verifies a native toolchain; subsequent
   `build` uses that toolchain. CPU and memory budgets cover the whole build.
+- The default CPU budget is the available logical processor count. Independent
+  tasks run concurrently; internally parallel tools share that same budget.
+  Explicit dependencies and ordered steps remain authoritative.
+- Compilation is incremental by default. Rebuild missing outputs or changed
+  source/dependency timestamps, toolchain inputs or options; otherwise retain
+  existing outputs. Compare inputs against outputs or recorded successful input
+  state, not literal source/output timestamp inequality. Standard .csproj
+  evaluation and incremental semantics remain authoritative for those projects.
 - [BUILD-SYSTEM.md](docs/BUILD-SYSTEM.md) defines orchestration
   semantics and the compatibility contract.
 

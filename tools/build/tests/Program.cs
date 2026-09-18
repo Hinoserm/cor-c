@@ -12,6 +12,43 @@ public static class Program
     public static async Task<int> Main()
     {
         Directory.CreateDirectory(Work);
+        Check("default worker budget uses available logical CPUs", () =>
+        {
+            Require(BuildOptions.Parse([]).Jobs == Environment.ProcessorCount);
+            Require(BuildOptions.Parse(["--jobs", "1"]).Jobs == 1);
+        });
+        Check("incremental timestamp state tracks inputs outputs and commands", () =>
+        {
+            BuildManifest manifest = Load("<Target Name='all'><Exec Executable='tool' Inputs='input' Outputs='output'/></Target>");
+            BuildTarget target = manifest.Targets["all"];
+            XElement task = target.Tasks.Single();
+            string source = Path.Combine(manifest.Root, "input");
+            string output = Path.Combine(manifest.Root, "output");
+            File.WriteAllText(source, "one");
+            DateTime original = DateTime.UtcNow.AddMinutes(-2);
+            File.SetLastWriteTimeUtc(source, original);
+            IncrementalTask State() => IncrementalTask.Create(manifest, target, task)!;
+            Require(!State().IsCurrent());
+            File.WriteAllText(output, "one");
+            State().RecordSuccess();
+            Require(State().IsCurrent());
+            File.SetLastWriteTimeUtc(source, original.AddSeconds(-1));
+            Require(!State().IsCurrent()); // A checkout can move timestamps backwards.
+            State().RecordSuccess();
+            Require(State().IsCurrent());
+            File.SetLastWriteTimeUtc(source, DateTime.UtcNow.AddMinutes(1));
+            Require(!State().IsCurrent());
+            File.SetLastWriteTimeUtc(source, original);
+            State().RecordSuccess();
+            task.Add(new XElement("Argument", new XAttribute("Value", "new-option")));
+            Require(!State().IsCurrent());
+            State().RecordSuccess();
+            File.Delete(output);
+            Require(!State().IsCurrent());
+            ExpectError(() => State().RecordSuccess(), "Missing incremental file");
+            File.Delete(source);
+            ExpectError(() => State(), "Missing incremental file");
+        });
         Check("nested lookup and prerequisite ordering", () =>
         {
             BuildManifest manifest = Load("""
@@ -60,6 +97,38 @@ public static class Program
         });
         if (!OperatingSystem.IsWindows())
         {
+            await CheckAsync("independent processes overlap and auto workers share a global lease", async () =>
+            {
+                string directory = Path.Combine(Work, "parallel");
+                Directory.CreateDirectory(directory);
+                ProcessRunner runner = new(2, Path.Combine(directory, "logs"));
+                Task<ProcessResult> First(string own, string other) => runner.Run(own, "sh",
+                    ["-c", "touch " + own + "; while [ ! -f " + other + " ]; do sleep 0.01; done; printf %s \"$CORSAC_BUILD_JOBS\""],
+                    directory, new Dictionary<string, string>(), TimeSpan.FromSeconds(5), CancellationToken.None);
+                ProcessResult[] results = await Task.WhenAll(First("one", "two"), First("two", "one"));
+                Require(results.All(r => r.ExitCode == 0 && !r.TimedOut && File.ReadAllText(r.LogPrefix + ".out.log") == "1"));
+                ProcessResult all = await runner.Run("all", "sh", ["-c", "printf %s \"$CORSAC_BUILD_JOBS\""],
+                    directory, new Dictionary<string, string>(), TimeSpan.FromSeconds(5), CancellationToken.None, true);
+                Require(all.ExitCode == 0 && File.ReadAllText(all.LogPrefix + ".out.log") == "2");
+            });
+            await CheckAsync("successful file tasks skip until an input or output changes", async () =>
+            {
+                BuildManifest manifest = Load("""
+                  <Target Name="all"><Script Interpreter="sh" Inputs="input" Outputs="output"><Body>cp input output; echo ran &gt;&gt; runs</Body></Script></Target>
+                  """);
+                string input = Path.Combine(manifest.Root, "input");
+                File.WriteAllText(input, "one");
+                File.SetLastWriteTimeUtc(input, DateTime.UtcNow.AddMinutes(-2));
+                Require(await Corsac.Build.Program.Main(["--file", manifest.File]) == 0);
+                Require(await Corsac.Build.Program.Main(["--file", manifest.File]) == 0);
+                Require(File.ReadAllLines(Path.Combine(manifest.Root, "runs")).Length == 1);
+                File.WriteAllText(input, "changed");
+                Require(await Corsac.Build.Program.Main(["--file", manifest.File]) == 0);
+                Require(File.ReadAllLines(Path.Combine(manifest.Root, "runs")).Length == 2);
+                File.Delete(Path.Combine(manifest.Root, "output"));
+                Require(await Corsac.Build.Program.Main(["--file", manifest.File]) == 0);
+                Require(File.ReadAllLines(Path.Combine(manifest.Root, "runs")).Length == 3);
+            });
             await CheckAsync("literal arguments without shell expansion", async () =>
             {
                 ProcessResult result = await new ProcessRunner(1, Path.Combine(Work, "argv")).Run("argv", "printf",
@@ -104,7 +173,7 @@ public static class Program
                     <Target Name="bad"><Test Executable="false"/></Target>
                   </Target>
                   """);
-                Require(await Corsac.Build.Program.Main(["--file", manifest.File, "--jobs", "2"]) != 0);
+                Require(await Corsac.Build.Program.Main(["--file", manifest.File, "--jobs", Math.Min(2, Environment.ProcessorCount).ToString()]) != 0);
                 string report = Directory.GetFiles(Path.Combine(manifest.Root, "build"), "tests.xml", SearchOption.AllDirectories).Single();
                 XElement suite = XDocument.Load(report).Root!;
                 Require((string?)suite.Attribute("tests") == "2" && (string?)suite.Attribute("failures") == "1");

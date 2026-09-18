@@ -5,7 +5,7 @@ public sealed class BuildOptions
     public string? File { get; private set; }
     public string? Target { get; private set; }
     public string Toolchain { get; private set; } = "active";
-    public int Jobs { get; private set; } = 1;
+    public int Jobs { get; private set; } = Environment.ProcessorCount;
     public bool List { get; private set; }
     public bool Plan { get; private set; }
     public bool Help { get; private set; }
@@ -27,8 +27,8 @@ public sealed class BuildOptions
                 case "--toolchain": result.Toolchain = Value(); break;
                 case "--configuration": result.Properties["Configuration"] = Value(); break;
                 case "--jobs":
-                    if (!int.TryParse(Value(), out int jobs) || jobs < 1 || jobs > 256)
-                        throw new BuildException("--jobs must be between 1 and 256");
+                    if (!int.TryParse(Value(), out int jobs) || jobs < 1 || jobs > Environment.ProcessorCount)
+                        throw new BuildException("--jobs must be between 1 and " + Environment.ProcessorCount);
                     result.Jobs = jobs;
                     break;
                 case "--property":

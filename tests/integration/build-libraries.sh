@@ -31,6 +31,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
 out="${OUT:-$root/build/lib}"
 corc="${CORC:-$root/compiler/bin/Release/net10.0/corc}"
+jobs="${CORSAC_BUILD_JOBS:-1}"
 force=0
 verbose=0
 
@@ -86,10 +87,21 @@ stale() {
     local target="$1"
     [ "$force" = 1 ] && return 0
     [ -f "$target" ] || return 0
-    [ "$target" -nt "$corc" ] || return 0
+    [ "$corc" -nt "$target" ] && return 0
+    [ "$here/build-libraries.sh" -nt "$target" ] && return 0
+    # A .NET apphost can remain unchanged while its compiler/linker DLLs are
+    # rebuilt. Treat those payloads as toolchain inputs, not just the launcher.
+    local payload
+    for payload in "$(dirname "$corc")/corc.dll" "$(dirname "$corc")/corlink.dll"; do
+        [ -f "$payload" ] && [ "$payload" -nt "$target" ] && return 0
+    done
     local src
     for src in $SOURCES; do
         [ "$root/$src" -nt "$target" ] && return 0
+    done
+    local dependency
+    for dependency in $linked; do
+        [ "$out/$dependency" -nt "$target" ] && return 0
     done
     return 1
 }
@@ -116,7 +128,7 @@ while IFS='|' read -r soname owned; do
     done
 
     if stale "$target"; then
-        if "$corc" compile --nostdlib --shared "${args[@]}" -o "$target" >"$out/$soname.log" 2>&1; then
+        if "$corc" compile --jobs "$jobs" --nostdlib --shared "${args[@]}" -o "$target" >"$out/$soname.log" 2>&1; then
             rm -f "$out/$soname.log"
             built=$((built + 1))
         else

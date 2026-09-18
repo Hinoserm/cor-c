@@ -19,7 +19,7 @@
   <Target Name="linker"><Compile Project="linker" /></Target>
   <Target Name="build-tool"><Compile Project="build-tool" /></Target>
   <Target Name="libraries" DependsOnTargets="compiler" Description="Build runtime and standard shared libraries">
-    <Script Interpreter="bash" File="tests/integration/build-libraries.sh">
+    <Script Interpreter="bash" File="tests/integration/build-libraries.sh" Workers="auto">
       <Environment Name="CORC" Value="$(Compiler)" />
     </Script>
   </Target>
