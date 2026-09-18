@@ -912,18 +912,26 @@ internal static class Program
         FrameSlot source = function.NewSlot(144, 8, "source"), destination = function.NewSlot(144, 8, "destination");
         foreach (int length in new[] { 0, 1, 31, 32, 33, 63, 64, 65, 127, 128, 129 })
         {
+            void Repeat(Action body)
+            {
+                VReg repetitions = b.Const(2, IrType.I32);
+                Block loop = function.NewBlock("repeat"), done = function.NewBlock("done");
+                b.Jump(loop); b.SetBlock(loop); body();
+                b.CopyTo(repetitions, R(b.Binary(Opcode.Sub, repetitions, 1)));
+                b.Branch(b.Binary(Opcode.Ne, repetitions, 0), loop, done); b.SetBlock(done);
+            }
             for (int offset = 0; offset < 144; offset++)
             {
                 b.Store(new SlotOperand(source), I((offset * 37 + 19) & 255), offset, 1);
                 b.Store(new SlotOperand(destination), I(0xa5), offset, 1);
             }
-            b.Emit(Opcode.MemCopy, null, new SlotOperand(destination), new SlotOperand(source), I(length));
+            Repeat(() => b.Emit(Opcode.MemCopy, null, new SlotOperand(destination), new SlotOperand(source), I(length)));
             for (int offset = 0; offset < 144; offset++)
             {
                 VReg actual = b.Load(IrType.I32, new SlotOperand(destination), offset, 1, false);
                 okay = b.Binary(Opcode.And, okay, b.Binary(Opcode.Eq, actual, offset < length ? (offset * 37 + 19) & 255 : 0xa5));
             }
-            b.Emit(Opcode.MemSet, null, new SlotOperand(destination), I(0), I(length));
+            Repeat(() => b.Emit(Opcode.MemSet, null, new SlotOperand(destination), I(0), I(length)));
             for (int offset = 0; offset < 144; offset++)
             {
                 VReg actual = b.Load(IrType.I32, new SlotOperand(destination), offset, 1, false);

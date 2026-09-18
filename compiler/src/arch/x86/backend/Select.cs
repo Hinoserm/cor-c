@@ -30,6 +30,7 @@ internal sealed partial class Selector
     private readonly Dictionary<VReg, List<Instr>> _rangeDefinitions = new();
     private int _rangeVisits;
     private MBlock _cur = null!;
+    private Block _sourceBlock = null!;
     private int _splits;
     private readonly bool _automaticPacked;
 
@@ -278,6 +279,7 @@ internal sealed partial class Selector
         foreach (Block b in _f.Blocks)
         {
             _cur = _heads[b];
+            _sourceBlock = b;
             _constants.Clear();
             for (int n = 0; n < b.Instrs.Count; n++)
             {

@@ -19,9 +19,16 @@ internal sealed partial class Selector
 
     private void EndMmx() => Emit(Target.Current.X86Profile.ThreeDNow ? MOp.Femms : MOp.Emms);
 
+    // Unrolled MOVQ regions trade bytes for throughput. Do not grow setup or
+    // conditional allocation paths: they enlarged real crypto functions without
+    // improving their measured hot path. A direct backedge proves this whole
+    // straight-line block repeats; wider loop profitability is separate work.
+    private bool RepeatingPackedMemory => _sourceBlock.Instrs.Any(instruction => instruction.Targets.Contains(_sourceBlock)
+        || instruction.Default == _sourceBlock);
+
     private bool SelectMmxFrameCopy(Instr instruction)
     {
-        if (instruction.Operands[2] is not ImmOperand count || !PackedMemorySize(count.Value)) return false;
+        if (instruction.Operands[2] is not ImmOperand count || !PackedMemorySize(count.Value) || !RepeatingPackedMemory) return false;
         FrameSlot? destination = FrameStorage(instruction.Operands[0]), source = FrameStorage(instruction.Operands[1]);
         // Widen only proven ordinary, non-overlapping frame storage. Never
         // widen volatile/device accesses or touch a byte outside either object.
@@ -46,6 +53,10 @@ internal sealed partial class Selector
     {
         if (instruction.Operands[2] is not ImmOperand count || !PackedMemorySize(count.Value)
             || instruction.Operands[1] is not ImmOperand fill || (byte)fill.Value != 0) return false;
+        // The existing <=32-byte frame-zero path is unrolled scalar stores, so
+        // packing 32 bytes shrinks code even outside a loop. Larger REP forms
+        // are compact and stay that way unless the region is known to repeat.
+        if (count.Value > 32 && !RepeatingPackedMemory) return false;
         FrameSlot? destination = FrameStorage(instruction.Operands[0]);
         if (destination is null || destination.Align < 4 || count.Value > destination.Bytes) return false;
         int dest = _m.Frame.SlotOffset(destination), offset = 0;
