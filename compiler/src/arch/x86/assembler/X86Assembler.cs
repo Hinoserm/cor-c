@@ -1307,6 +1307,7 @@ public sealed partial class X86Assembler : ISymbols
         "insb", "insw", "insd", "outsb", "outsw", "outsd",
         "rep", "repe", "repz", "repne", "repnz", "lock",
         "bswap", "xadd", "cmpxchg", "invd", "wbinvd", "invlpg",
+        "bsf", "bsr", "bt", "bts", "btr", "btc", "shld", "shrd",
         "pusha", "pushaw", "pushad", "popa", "popaw", "popad",
         "pushf", "pushfw", "pushfd", "popf", "popfw", "popfd", "ltr", "lldt", "str", "sldt",
     };

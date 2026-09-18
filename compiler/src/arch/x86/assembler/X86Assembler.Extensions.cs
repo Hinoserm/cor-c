@@ -47,6 +47,44 @@ public sealed partial class X86Assembler
 
     private bool ExtendedInstruction(string mn, string[] a)
     {
+        if (mn is "bsf" or "bsr" or "bt" or "bts" or "btr" or "btc" or "shld" or "shrd")
+        {
+            bool doubleShift = mn is "shld" or "shrd";
+            Need(a, doubleShift ? 3 : 2, mn);
+            Operand first = P(a[0]), second = P(a[1]);
+            bool scan = mn is "bsf" or "bsr";
+            Operand rm = scan ? second : first, register = scan ? first : second;
+            if (!rm.IsRegOrMem) throw Error(mn + " requires an integer register or memory operand");
+            bool immediateBit = !scan && !doubleShift && register.Kind == OperandKind.Immediate;
+            int size = immediateBit ? rm.Size : register.Size;
+            if (size is not (2 or 4) || (!immediateBit && register.Kind != OperandKind.Register)
+                || ((rm.Kind == OperandKind.Register || rm.SizeGiven) && rm.Size != size))
+                throw Error(mn + " requires matching 16-bit or 32-bit operands");
+            Prefixes(size, MemOf(rm));
+            if (scan)
+            { Emit(0x0f, mn == "bsf" ? (byte)0xbc : (byte)0xbd); EmitRM(register.Reg, rm); return true; }
+            if (doubleShift)
+            {
+                Operand count = P(a[2]);
+                bool immediate = count.Kind == OperandKind.Immediate;
+                if (!immediate && !(count.Kind == OperandKind.Register && count.Size == 1 && count.Reg == 1))
+                    throw Error(mn + " count must be CL or an unsigned byte");
+                long value = immediate ? Val(count.Value) : 0;
+                if (value < 0 || value > 255) throw Error(mn + " count must fit an unsigned byte");
+                Emit(0x0f, (byte)((mn == "shld" ? 0xa4 : 0xac) + (immediate ? 0 : 1)));
+                EmitRM(register.Reg, rm); if (immediate) Emit((byte)value); return true;
+            }
+            int operation = mn switch { "bt" => 4, "bts" => 5, "btr" => 6, _ => 7 };
+            if (immediateBit)
+            {
+                long bit = Val(register.Value);
+                if (bit < 0 || bit > 255) throw Error(mn + " bit index must fit an unsigned byte");
+                Emit(0x0f, 0xba); EmitRM(operation, rm); Emit((byte)bit);
+            }
+            else
+            { Emit(0x0f, (byte)(operation == 4 ? 0xa3 : 0xab + (operation - 5) * 8)); EmitRM(register.Reg, rm); }
+            return true;
+        }
         if (mn is "bswap" or "xadd" or "cmpxchg" or "invd" or "wbinvd" or "invlpg")
         {
             Require(_cpu.Name != "386", mn, "486");

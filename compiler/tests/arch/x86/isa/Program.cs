@@ -62,6 +62,15 @@ public static class Program
             cases.AddRange(["bswap eax", "invd", "wbinvd", "invlpg [ebx]", "xadd al, bl", "xadd word ptr [ebx], cx",
                 "cmpxchg dword ptr [ebx], ecx", "lock xadd dword ptr [ebx], eax", "lock cmpxchg8b qword ptr [ebx]",
                 "lock add dword ptr [ebx], 1", "lock xchg eax, dword ptr [ebx]"]);
+            foreach (string mnemonic in new[] { "bt", "bts", "btr", "btc" })
+            {
+                cases.Add(mnemonic + " dword ptr [ebx], ecx");
+                cases.Add(mnemonic + " ax, 15");
+                if (mnemonic != "bt") cases.Add("lock " + mnemonic + " dword ptr [ebx], 7");
+            }
+            foreach (string mnemonic in new[] { "bsf", "bsr" }) cases.Add(mnemonic + " eax, dword ptr [ebx]");
+            foreach (string mnemonic in new[] { "shld", "shrd" })
+            { cases.Add(mnemonic + " eax, ecx, 13"); cases.Add(mnemonic + " word ptr [ebx], cx, cl"); }
             foreach (int bits in new[] { 16, 32 })
             foreach (string instruction in cases)
             {
