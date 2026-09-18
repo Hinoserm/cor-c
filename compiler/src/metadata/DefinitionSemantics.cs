@@ -3,6 +3,7 @@ using System.Text;
 using Corsac.Lang.Elf;
 using Corsac.Lang.Ir;
 using Corsac.Lang.Lto;
+using Block = Corsac.Lang.Ir.Block;
 
 namespace Corsac.Lang.Metadata;
 
