@@ -9,7 +9,7 @@ namespace Corsac;
 /// <summary>Link previously compiled objects without invoking the frontend.</summary>
 public static class ObjectLinkCommand
 {
-    public static int Run(string[] args)
+    public static int Run(string[] args, IUnitBackend? backend = null)
     {
         string? output = null;
         string entry = "_start";
@@ -17,15 +17,23 @@ public static class ObjectLinkCommand
         uint? physicalAddress = null;
         bool flat = false;
         bool lto = true;
+        string? backendPath = null;
+        int importBytes = 1024 * 1024;
         List<string> paths = new();
         for (int i = 0; i < args.Length; i++)
         {
             string arg = args[i];
-            if (arg is "-o" or "--entry" or "--base" or "--paddr")
+            if (arg is "-o" or "--entry" or "--base" or "--paddr" or "--lto-backend" or "--lto-import-bytes")
             {
                 if (++i == args.Length) return Fail("missing value for " + arg);
                 if (arg == "-o") output = args[i];
                 else if (arg == "--entry") entry = args[i];
+                else if (arg == "--lto-backend") backendPath = args[i];
+                else if (arg == "--lto-import-bytes")
+                {
+                    if (!int.TryParse(args[i], NumberStyles.None, CultureInfo.InvariantCulture, out importBytes)
+                        || importBytes < 0 || importBytes > 16 * 1024 * 1024) return Fail("invalid LTO import budget");
+                }
                 else
                 {
                     string number = args[i];
@@ -62,6 +70,7 @@ public static class ObjectLinkCommand
         // LinkException is rendered by Driver, just as for compile-and-link.
         TargetContract.Validate(inputs);
         ManagedLayoutContract.Validate(inputs);
+        int regenerated = IrLinkOptimizer.Run(inputs, () => backend ?? new ProcessUnitBackend(backendPath), lto, importBytes);
         int folded = LinkTimeOptimizer.Run(inputs, lto);
         byte[] image;
         if (flat)
@@ -75,7 +84,7 @@ public static class ObjectLinkCommand
         if (!OperatingSystem.IsWindows())
             File.SetUnixFileMode(output, File.GetUnixFileMode(output)
                 | UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute);
-        Console.Error.WriteLine($"{output}: {inputs.Count} objects, {image.Length} bytes; LTO calls folded={folded}");
+        Console.Error.WriteLine($"{output}: {inputs.Count} objects, {image.Length} bytes; LTO calls folded={folded}; IR units regenerated={regenerated}");
         return 0;
     }
 

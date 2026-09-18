@@ -4,6 +4,7 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 cd "$root"
 corc=${CORC:-$root/compiler/bin/Release/net10.0/corc}
 corlink=${CORLINK:-$root/linker/bin/Release/net10.0/corlink}
+export CORC="$corc"
 mkdir -p build
 work=$(mktemp -d "$root/build/indexed.XXXXXX")
 "$corc" index --assembly Indexed tests/integration/indexed/Value.cor tests/integration/indexed/Unused.cor -o "$work/declarations.idx"

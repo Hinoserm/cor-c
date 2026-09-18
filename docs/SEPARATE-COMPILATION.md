@@ -92,7 +92,7 @@ hand-maintained header is introduced.
 | .corsac.unit | Target/assembly/ABI identity and compilation settings | Specified, pending |
 | .corsac.types | Indexed managed declarations and layout requirements | Specified, pending |
 | .corsac.generics | Indexed template and instantiation records | Specified, pending integration |
-| .corsac.ir | Independently addressable optimized IR function bodies | Specified, pending |
+| .corsac.ir | Independently addressable optimized IR function bodies | First indexed implementation; see IR-LINK-OPTIMIZATION.md |
 | .corsac.roots | Explicit retention and deferred-resolution contracts | Specified, pending |
 
 GIR is the existing generic syntax representation, not serialized optimization

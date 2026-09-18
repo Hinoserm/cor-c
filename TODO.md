@@ -106,6 +106,12 @@ tasks below track that work; moving files alone does not reduce the working set.
 
 ## Demand-loaded declarations, not a whole-project metadata graph
 
+- [ ] Verify the new indexed IR archive and persistent backend milestone:
+  payload/metadata integrity, complete function/data round trips, bounded
+  imports, cross-object argument inlining and constant propagation, native
+  execution, disabled/budget-limited modes, and stripped final IR notes.
+  Private dependency-closure imports and memory-aware concurrent backends remain.
+
 - [x] Verify the new disk-backed declaration-index storage milestone: bounded
   external sorting, exact/prefix lookup, partial fragments, deterministic output,
   corruption rejection and atomic publication. Source indexing and demand-loaded
@@ -143,6 +149,11 @@ tasks below track that work; moving files alone does not reduce the working set.
   while the shared initialization wrapper stays with the type owner. Expand
   runtime/static-initialization and scoped-initializer acceptance beyond the
   initial static-field/accessor fixture before declaring partial support complete.
+  Initial metadata and executable partial/cycle fixtures passed at b6d107e.
+  The broad language milestone was 265 passed / 6 failed / 271 total; failures
+  remain the four moved OS-helper fixtures, kernel-script routing, and standard
+  Thread(Action)/instance Start support. No new language failure appeared.
+  Evidence: build/logs/20260918-143225-95b2895cfe584b6fb95e6c627726c9a0/.
 - [ ] Do not retain a full declaration footprint for every class in every file.
 - [ ] Maintain a compact disk-backed index from qualified type names to the
   locations of their declaration records. Access to the index itself must be

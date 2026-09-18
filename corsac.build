@@ -34,7 +34,7 @@
     </Target>
   </Target>
 
-  <Target Name="test" Steps="unit;smoke;lto;indexed">
+  <Target Name="test" Steps="unit;smoke;lto;indexed;ir-lto">
     <Target Name="unit" Steps="build-tool;optimizer;assembler;x86;linker;metadata">
       <Target Name="metadata">
         <Test Name="metadata" Executable="dotnet" Timeout="00:03:00">
@@ -87,6 +87,12 @@
     <Target Name="indexed" DependsOnTargets="/compiler">
       <Test Name="indexed-compilation" Executable="sh" Timeout="00:05:00">
         <Argument Value="tests/integration/indexed.sh" />
+        <Environment Name="CORC" Value="$(Compiler)" /><Environment Name="CORLINK" Value="$(Linker)" />
+      </Test>
+    </Target>
+    <Target Name="ir-lto" DependsOnTargets="/compiler">
+      <Test Name="ir-link-optimization" Executable="sh" Timeout="00:05:00">
+        <Argument Value="tests/integration/ir-lto.sh" />
         <Environment Name="CORC" Value="$(Compiler)" /><Environment Name="CORLINK" Value="$(Linker)" />
       </Test>
     </Target>

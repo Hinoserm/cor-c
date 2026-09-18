@@ -1,0 +1,4 @@
+static class Program
+{
+    static int Main() => Compute.Choose(21);
+}

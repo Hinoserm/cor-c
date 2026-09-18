@@ -30,8 +30,9 @@ public static class Driver
             return command switch
             {
                 "compile" or "cc" => Compile(rest),
-                "link" => ObjectLinkCommand.Run(Response(rest)),
+                "link" => ObjectLinkCommand.Run(Response(rest), new UnitBackend()),
                 "index" => IndexCommand.Run(Response(rest)),
+                "backend" when rest.Length == 0 => BackendCommand.Run(),
                 "build" or "asm" => Build(rest),
                 "help" or "--help" or "-h" => Usage(),
                 _ => Fail($"unknown command '{command}'"),
@@ -47,6 +48,7 @@ public static class Driver
             return Fail(e.Message);
         }
         catch (InvalidDataException e) { return Fail(e.Message); }
+        catch (ElfFormatException e) { return Fail(e.Message); }
         catch (IOException e) { return Fail(e.Message); }
         catch (ArgumentException e) { return Fail(e.Message); }
         catch (CompileError e) { Console.Error.WriteLine(e.ToString()); return 1; }
@@ -566,6 +568,14 @@ public static class Driver
         }
 
         List<string> backendErrors = new();
+        // Flat stage-two objects must already place their managed entry first;
+        // the separate linker does not regenerate code or guess its prologue.
+        if (flat && module.Entry is { } flatEntry)
+        {
+            Function? first = module.Functions.Find(function => function.Name == flatEntry);
+            if (first is null) return Fail("flat entry is not a function: " + flatEntry);
+            module.Functions.Remove(first); module.Functions.Insert(0, first);
+        }
 #if COR_SELFHOST_BENCHMARK
         Program.BenchmarkStage("code-generation");
 #endif
@@ -624,6 +634,8 @@ public static class Driver
 
         if (args.Contains("--obj") || library)
         {
+            if (x86Backend.EmitLinkSummary && !x86Backend.PositionIndependent && sharedLibs.Count == 0)
+                IrUnitCodec.Attach(obj, module, x86Backend.StackMaps);
             File.WriteAllBytes(output, ElfWriter.WriteObject(obj));
             Console.Error.WriteLine($"{output}: {obj.Section(".text").Size} bytes of code");
             return 0;
@@ -653,29 +665,8 @@ public static class Driver
 
         if (flat)
         {
-            // A flat image is entered at its first byte, so the entry
-            // function has to be the first one emitted.
-            Function? first = module.Functions.Find(f => f.Name == entry);
-            if (first is null)
-            {
-                return Fail($"entry '{entry}' is not a function in this program");
-            }
-            module.Functions.Remove(first);
-            module.Functions.Insert(0, first);
-            List<string> flatErrors = new();
-            ObjectFile flatObj = backend.Generate(module, flatErrors);
-            foreach (string e in flatErrors)
-            {
-                Console.Error.WriteLine($"corc: {e}");
-            }
-            if (flatErrors.Count > 0)
-            {
-                return 1;
-            }
-            new TargetContract(Lowering.TlsGs ? 2u : 1u, requiresManagedLayouts: true).Attach(flatObj);
-            ManagedLayouts.Attach(flatObj, front.Value.bound);
-            DefinitionSemantics.Attach(flatObj, definitionSemantics);
-            link[0] = (name, flatObj);
+            // The entry was ordered before initial emission, exactly as for
+            // --flat --obj. Keep the original metadata and --with objects.
             TargetContract.Validate(link);
             Corsac.Lang.Lto.LinkTimeOptimizer.Run(link, !args.Contains("--no-lto") && !args.Contains("--no-opt"));
             Linker.FlatImage image = Linker.LinkFlat(link, entry, loadBase ?? 0x10000);

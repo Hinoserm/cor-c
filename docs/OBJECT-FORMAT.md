@@ -3,6 +3,9 @@
 The compiler/linker/runtime responsibility split, managed declaration design,
 LTO contracts and bare-metal build flow are specified in
 [SEPARATE-COMPILATION.md](SEPARATE-COMPILATION.md).
+The indexed IR/native-backend protocol is documented in
+[IR-LINK-OPTIMIZATION.md](IR-LINK-OPTIMIZATION.md), and shared-definition
+certificates in [DEFINITION-OWNERSHIP.md](DEFINITION-OWNERSHIP.md).
 
 ## Executables and ownership
 

@@ -4,11 +4,12 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 cd "$root"
 corc=${CORC:-$root/compiler/bin/Release/net10.0/corc}
 corlink=${CORLINK:-$root/linker/bin/Release/net10.0/corlink}
+export CORC="$corc"
 mkdir -p "$root/build"
 work=$(mktemp -d "$root/build/lto.XXXXXX")
 "$corc" compile --nostdlib --lib tests/integration/lto/Value.cor --obj -o "$work/value.o"
 "$corc" compile --nostdlib tests/integration/lto/Caller.cor --ref tests/integration/lto/Value.cor --obj -o "$work/caller.o"
-"$corlink" "$work/caller.o" "$work/value.o" -o "$work/on" 2> "$work/on.link.log"
+"$corlink" --lto-import-bytes 0 "$work/caller.o" "$work/value.o" -o "$work/on" 2> "$work/on.link.log"
 "$corlink" --no-lto "$work/caller.o" "$work/value.o" -o "$work/off" 2> "$work/off.link.log"
 grep -Eq 'LTO calls folded=[1-9]' "$work/on.link.log"
 grep -q 'LTO calls folded=0' "$work/off.link.log"

@@ -12,6 +12,7 @@ public static class LinkTimeOptimizer
         TargetContract.Validate(inputs);
         ManagedLayoutContract.Validate(inputs);
         DefinitionCoalescer.Run(inputs, validateOnly: true);
+        foreach (var input in inputs) _ = IrArchive.Read(input.Object);
         Dictionary<string, (ObjectFile Object, Symbol Symbol)> globals = new(StringComparer.Ordinal);
         Dictionary<ObjectFile, OptimizationSummary> summaries = new();
         Dictionary<ObjectFile, Dictionary<string, int>> constants = new();
@@ -71,7 +72,7 @@ public static class LinkTimeOptimizer
             change.Text.Relocs.Remove(change.Relocation);
         }
         // Summaries describe pre-link code. Do not leave stale summaries in output objects.
-        foreach (var input in inputs) input.Object.Sections.RemoveAll(s => s.Name == OptimizationSummary.SectionName);
+        foreach (var input in inputs) input.Object.Sections.RemoveAll(s => s.Name == OptimizationSummary.SectionName || s.Name == IrArchive.SectionName);
         return enabled ? changes.Count : 0;
     }
 }

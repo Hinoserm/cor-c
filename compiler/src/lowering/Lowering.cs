@@ -296,6 +296,7 @@ public sealed partial class Lowering
             foreach (TypeSymbol t in _b.Types.Values)
             {
                 if (t.Decl?.File == "<prelude>") continue;
+                if (t.Decl?.FromLibrary == true && !_library) continue;
                 // Another shared object's; and, when this is one library of
                 // several, an instantiation is reached rather than rooted.
                 if ((t.Decl?.Elsewhere == true && !t.Methods.Any(method => method.Decl?.OwnedImplementation == true))
