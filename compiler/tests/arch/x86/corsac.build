@@ -13,6 +13,16 @@
       <Argument Value="bin/managed/Release/net10.0/x86tests.dll" />
       <Argument Value="--cpu=pentium-mmx" />
     </Test>
+    <Test Name="backend-pentium-tcg" Executable="dotnet">
+      <Argument Value="bin/managed/Release/net10.0/x86tests.dll" />
+      <Argument Value="--cpu=pentium" />
+      <Argument Value="--qemu-cpu=pentium" />
+    </Test>
+    <Test Name="backend-pentium-mmx-tcg" Executable="dotnet">
+      <Argument Value="bin/managed/Release/net10.0/x86tests.dll" />
+      <Argument Value="--cpu=pentium-mmx" />
+      <Argument Value="--qemu-cpu=pentium,+mmx" />
+    </Test>
     <Test Name="backend-mmx-excluded" Executable="dotnet">
       <Argument Value="bin/managed/Release/net10.0/x86tests.dll" />
       <Argument Value="--cpu=pentium-mmx" />
