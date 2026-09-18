@@ -20,7 +20,8 @@ public static class PackedMemoryBenchmarks
         Console.WriteLine("operation,bytes,mmx,selected_packed,iterations,text_bytes,median_ms,ns_per_operation");
         List<string> rows = ["operation,bytes,mmx,selected_packed,iterations,text_bytes,median_ms,ns_per_operation"];
         foreach (string operation in new[] { "copy", "zero", "add8", "add16", "add32", "sub8", "sub16", "sub32", "and32", "or32", "xor32", "mul16", "mulhigh16",
-            "shl16", "shl32", "shr16", "shr32", "sar16", "sar32", "dot16", "xor-inplace32" }.Where(operation => filter is null || operation.StartsWith(filter, StringComparison.Ordinal)))
+            "shl16", "shl32", "shr16", "shr32", "sar16", "sar32", "dot16", "xor-inplace32",
+            "eq8", "eq16", "eq32", "gt8", "gt16", "gt32" }.Where(operation => filter is null || operation.StartsWith(filter, StringComparison.Ordinal)))
         foreach (int length in new[] { 32, 64, 128 })
         foreach (bool packed in new[] { false, true })
         {
@@ -56,19 +57,22 @@ public static class PackedMemoryBenchmarks
             else
             {
                 int width = operation.EndsWith("8") ? 1 : operation.EndsWith("16") ? 2 : 4;
-                Opcode op = operation[..3] switch { "add" => Opcode.Add, "sub" => Opcode.Sub, "and" => Opcode.And,
+                Opcode op = operation.StartsWith("eq") ? Opcode.Eq : operation.StartsWith("gt") ? Opcode.GtS : operation[..3] switch { "add" => Opcode.Add, "sub" => Opcode.Sub, "and" => Opcode.And,
                     "xor" => Opcode.Xor, "mul" => Opcode.Mul, "shl" => Opcode.Shl, "shr" => Opcode.ShrU, "sar" => Opcode.ShrS, _ => Opcode.Or };
                 bool shift = op is Opcode.Shl or Opcode.ShrS or Opcode.ShrU;
                 for (int offset = 0; offset < length; offset += width)
                 {
-                    VReg left = b.Load(IrType.I32, new SlotOperand(source), offset, width, operation == "mulhigh16" || op == Opcode.ShrS);
-                    VReg value = shift ? b.Binary(op, left, 5) : b.Binary(op, left, b.Load(IrType.I32, new SlotOperand(right), offset, width, operation == "mulhigh16"));
+                    VReg left = b.Load(IrType.I32, new SlotOperand(source), offset, width, operation == "mulhigh16" || op is Opcode.ShrS or Opcode.GtS);
+                    VReg value = shift ? b.Binary(op, left, 5) : b.Binary(op, left, b.Load(IrType.I32, new SlotOperand(right), offset, width, operation == "mulhigh16" || op == Opcode.GtS));
+                    if (op is Opcode.Eq or Opcode.GtS) value = b.Unary(Opcode.Neg, value);
                     if (operation == "mulhigh16") value = b.Binary(Opcode.ShrS, value, 16);
                     b.Store(new SlotOperand(destination), R(value), offset, width);
                 }
                 expected = op switch { Opcode.Add => 0x13355779, Opcode.Sub => 0x11335577, Opcode.And => 0x00000000,
                     Opcode.Or => 0x13355779, Opcode.Xor => 0x13355779, _ => unchecked((int)0x4634ce78) };
                 if (operation == "mulhigh16") expected = 0x00120056;
+                if (op == Opcode.Eq) expected = 0;
+                if (op == Opcode.GtS) expected = -1;
                 if (operation == "xor-inplace32") expected = 0x12345678; // Even iteration count restores every original lane.
                 if (shift) expected = op == Opcode.Shl ? (width == 2 ? 0x4680cf00 : 0x468acf00)
                     : width == 2 ? 0x009102b3 : 0x0091a2b3;
