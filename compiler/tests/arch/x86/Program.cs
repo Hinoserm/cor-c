@@ -81,6 +81,7 @@ internal static class Program
         Bytes(m);
         SmallFills(m);
         PackedFrames(m);
+        PackedArithmeticFrames(m);
         ByteSwaps(m);
         Exit(m);
         UDiv64(m);
@@ -111,6 +112,8 @@ internal static class Program
         Check(FunctionAsm(asm, "bswap64_inplace").Contains("bswap ") == usesBswap, "wide byte-swap instruction respects CPU profile");
         Check(FunctionAsm(asm, "packed_frames").Contains("movq ") == Target.X86.X86Profile.Mmx, "packed frame operations respect MMX exclusion");
         Check(FunctionAsm(asm, "packed_frames").Contains("femms") == Target.X86.X86Profile.ThreeDNow, "packed frame exit respects 3DNow selection");
+        Check(FunctionAsm(asm, "packed_arithmetic").Contains("paddb") == Target.X86.X86Profile.Mmx, "adjacent byte arithmetic is packed automatically");
+        Check(FunctionAsm(asm, "packed_arithmetic").Contains("pmullw") == Target.X86.X86Profile.Mmx, "adjacent low-word products are packed automatically");
         File.WriteAllText(Path.Combine(outDir, "tests.asm"), asm);
         Console.WriteLine(asm);
 
@@ -206,8 +209,11 @@ internal static class Program
             {
                 File.SetUnixFileMode(exePath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
             }
-            using Process p = Process.Start(new ProcessStartInfo(exePath) { RedirectStandardOutput = true })!;
-            p.WaitForExit();
+            string? emulation = args.FirstOrDefault(argument => argument.StartsWith("--qemu-cpu="));
+            ProcessStartInfo start = new(emulation is null ? exePath : "qemu-i386") { RedirectStandardOutput = true };
+            if (emulation is not null) { start.ArgumentList.Add("-cpu"); start.ArgumentList.Add(emulation[11..]); start.ArgumentList.Add(exePath); }
+            using Process p = Process.Start(start)!;
+            if (!p.WaitForExit(30000)) { p.Kill(true); p.WaitForExit(); throw new InvalidOperationException("Generated-code execution timed out"); }
             Check(p.ExitCode == 42, $"end-to-end executable exits 42 (got {p.ExitCode}{(p.ExitCode is > 0 and < 42 ? $": runtime check {p.ExitCode} (1-based, in Start) failed" : "")})");
         }
         catch (Exception e) when (e is LinkException or InvalidOperationException)
@@ -918,6 +924,39 @@ internal static class Program
         b.Ret(R(okay));
     }
 
+    private static void PackedArithmeticFrames(Module m)
+    {
+        (Function function, Builder b) = New(m, "packed_arithmetic", IrType.I32);
+        FrameSlot left = function.NewSlot(40, 8), right = function.NewSlot(40, 8), destination = function.NewSlot(40, 8);
+        VReg okay = b.Const(1, IrType.I32);
+        foreach (Opcode operation in new[] { Opcode.Add, Opcode.Sub, Opcode.And, Opcode.Or, Opcode.Xor, Opcode.Mul })
+        foreach (int width in new[] { 1, 2, 4 })
+        {
+            int mask = width == 4 ? -1 : (1 << (8 * width)) - 1;
+            for (int offset = 0; offset < 40; offset += width)
+            {
+                b.Store(new SlotOperand(left), I(unchecked((int)0x8000fff0 + offset * 37)), offset, width);
+                b.Store(new SlotOperand(right), I(unchecked((int)0xffff8001 + offset * 97)), offset, width);
+                b.Store(new SlotOperand(destination), I(0x55), offset, width);
+            }
+            for (int offset = 0; offset < 32; offset += width)
+            {
+                VReg a = b.Load(IrType.I32, new SlotOperand(left), offset, width, true);
+                VReg c = b.Load(IrType.I32, new SlotOperand(right), offset, width, true);
+                VReg value = b.Binary(operation, a, c); b.Store(new SlotOperand(destination), R(value), offset, width);
+            }
+            for (int offset = 0; offset < 40; offset += width)
+            {
+                int a = unchecked((int)0x8000fff0 + offset * 37), c = unchecked((int)0xffff8001 + offset * 97);
+                int expected = (offset >= 32 ? 0x55 : operation switch { Opcode.Add => unchecked(a + c), Opcode.Sub => unchecked(a - c),
+                    Opcode.And => a & c, Opcode.Or => a | c, Opcode.Xor => a ^ c, _ => unchecked(a * c) }) & mask;
+                VReg actual = b.Load(IrType.I32, new SlotOperand(destination), offset, width, false);
+                okay = b.Binary(Opcode.And, okay, b.Binary(Opcode.Eq, actual, expected));
+            }
+        }
+        b.Ret(R(okay));
+    }
+
     private static void SmallFills(Module m)
     {
         (Function f, Builder b) = New(m, "small_fills", IrType.I32);
@@ -1201,6 +1240,7 @@ internal static class Program
         Expect(b.Call("add", IrType.I32, I(2), I(3))!, I(5));
         Expect(b.Call("small_fills", IrType.I32)!, I(1));
         Expect(b.Call("packed_frames", IrType.I32)!, I(1));
+        Expect(b.Call("packed_arithmetic", IrType.I32)!, I(1));
         Expect(b.Call("bswap32", IrType.I32, I(0x11223344))!, I(0x44332211));
         Expect(b.Call("bswap32", IrType.I32, I(unchecked((int)0x80000001)))!, I(0x01000080));
         Expect(b.Call("bswap64_inplace", IrType.I64, I(0x0123456789abcdefL, IrType.I64))!,

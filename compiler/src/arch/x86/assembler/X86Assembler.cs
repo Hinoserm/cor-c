@@ -216,6 +216,7 @@ public sealed partial class X86Assembler : ISymbols
     private ObjectFile BuildObject()
     {
         ObjectFile obj = new();
+        _cpu.Contract.Attach(obj);
         Dictionary<string, Section> byName = new(StringComparer.Ordinal);
         foreach (Sec sec in _sections)
         {

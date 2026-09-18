@@ -65,6 +65,8 @@ public enum MOp : byte
     GotPc,
     // Closed MM0 regions; no MMX value is live across an IR instruction or call.
     MmxLoad, MmxStore, MmxZero, Emms, Femms,
+    MmxAddB, MmxAddW, MmxAddD, MmxSubB, MmxSubW, MmxSubD,
+    MmxAnd, MmxOr, MmxXor, MmxMulW,
 
     // ---- the thread block ----------------------------------------------------
     //

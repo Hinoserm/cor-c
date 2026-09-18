@@ -569,6 +569,16 @@ internal sealed class Encoder
             case MOp.MmxZero:
                 if (!Target.Current.X86Profile.Mmx) throw new InvalidOperationException("MMX is disabled");
                 B(0x0f, 0xef, 0xc0); break;
+            case MOp.MmxAddB: case MOp.MmxAddW: case MOp.MmxAddD:
+            case MOp.MmxSubB: case MOp.MmxSubW: case MOp.MmxSubD:
+            case MOp.MmxAnd: case MOp.MmxOr: case MOp.MmxXor: case MOp.MmxMulW:
+                if (!Target.Current.X86Profile.Mmx || i.Operands.Count != 1 || i.Operands[0] is not MMem)
+                    throw new InvalidOperationException("Packed arithmetic requires an MMX profile and memory");
+                B(0x0f, i.Op switch {
+                    MOp.MmxAddB => (byte)0xfc, MOp.MmxAddW => (byte)0xfd, MOp.MmxAddD => (byte)0xfe,
+                    MOp.MmxSubB => (byte)0xf8, MOp.MmxSubW => (byte)0xf9, MOp.MmxSubD => (byte)0xfa,
+                    MOp.MmxAnd => (byte)0xdb, MOp.MmxOr => (byte)0xeb, MOp.MmxXor => (byte)0xef, _ => (byte)0xd5 });
+                ModRM(0, i.Operands[0]); break;
             case MOp.Emms:
                 if (!Target.Current.X86Profile.Mmx) throw new InvalidOperationException("MMX is disabled");
                 B(0x0f, 0x77); break;
