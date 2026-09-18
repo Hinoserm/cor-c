@@ -264,6 +264,7 @@ static class Console
 
     public static void SetError(TextWriter writer)
     {
+        if (writer == null) throw new ArgumentNullException("newError");
         _error = writer;
     }
 

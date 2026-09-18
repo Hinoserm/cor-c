@@ -1,0 +1,27 @@
+// test: Console.SetError redirects output and rejects null without losing the writer
+// expect-exit: 0
+// expect-output:
+// error writer ok
+using System;
+using System.IO;
+
+static class Program
+{
+    static int Main()
+    {
+        TextWriter original = Console.Error;
+        StringWriter replacement = new StringWriter();
+        Console.SetError(replacement);
+        Console.Error.Write("redirected");
+        if (replacement.ToString() != "redirected") return 1;
+        bool rejected = false;
+        try { Console.SetError(null); }
+        catch (ArgumentNullException) { rejected = true; }
+        if (!rejected) return 2;
+        Console.Error.Write(" again");
+        Console.SetError(original);
+        if (replacement.ToString() != "redirected again") return 3;
+        Console.WriteLine("error writer ok");
+        return 0;
+    }
+}
