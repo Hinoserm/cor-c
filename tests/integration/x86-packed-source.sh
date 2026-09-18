@@ -6,13 +6,14 @@ cd "$root"
 corc=${CORC:-$root/compiler/bin/managed/Release/net10.0/corc}
 mkdir -p "$root/build"
 work=$(mktemp -d "$root/build/x86-packed-source.XXXXXX")
-export LD_LIBRARY_PATH="$root/build/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+# Static runtime avoids the host glibc loader, which may require i686/CMOV.
+# Both user code and runtime must be compiled for the selected CPU.
 for profile in 486 pentium pentium-mmx excluded k6-2 k6-3+; do
     case "$profile" in
         excluded) set -- --cpu=pentium-mmx --disable-mmx ;;
         *) set -- "--cpu=$profile" ;;
     esac
-    "$corc" compile "$@" --dynamic --libdir "$root/build/lib" --asm \
+    "$corc" compile "$@" --asm \
         tests/language/optimizer_packed_arrays.cor -o "$work/$profile" \
         > "$work/$profile.asm" 2> "$work/$profile.compile.log"
     case "$profile" in

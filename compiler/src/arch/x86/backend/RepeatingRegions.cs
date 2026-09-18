@@ -29,6 +29,13 @@ internal static class RepeatingRegions
         int words = (count + 63) / 64;
         ulong[][] dominates = Enumerable.Range(0, count).Select(_ => Enumerable.Repeat(ulong.MaxValue, words).ToArray()).ToArray();
         bool[] roots = Enumerable.Range(0, count).Select(index => index == 0 || predecessors[index].Count == 0 || function.Blocks[index].IsLandingPad).ToArray();
+        // Address-taken labels can be entered without a visible CFG edge.
+        // Match the optimizer's multi-entry dominance model conservatively.
+        foreach (Block block in function.Blocks)
+            foreach (Instr instruction in block.Instrs)
+                if (instruction.Op == Opcode.LabelAddr)
+                    foreach (Block target in instruction.Targets)
+                        if (ids.TryGetValue(target, out int index)) roots[index] = true;
         bool[] reachable = new bool[count]; Queue<int> pending = new();
         for (int index = 0; index < count; index++) if (roots[index]) { reachable[index] = true; pending.Enqueue(index); }
         while (pending.Count != 0)

@@ -1182,6 +1182,12 @@ internal static class Program
         HashSet<Block> repeating = RepeatingRegions.Find(function);
         Check(repeating.Contains(header) && repeating.Contains(body) && repeating.Contains(latch), "mandatory multi-block loop regions recognized");
         Check(!repeating.Contains(optional) && !repeating.Contains(entry) && !repeating.Contains(exit), "conditional and one-shot regions do not receive growing packed-memory code");
+        Block addressSource = function.NewBlock("address-source");
+        Builder addressBuilder = new(function, addressSource);
+        addressBuilder.LabelAddress(latch);
+        addressBuilder.Ret();
+        repeating = RepeatingRegions.Find(function);
+        Check(!repeating.Contains(header) && !repeating.Contains(body), "address-taken loop entry prevents a false dominance proof");
         for (int index = function.Blocks.Count; index <= 512; index++) function.NewBlock("bounded");
         Check(RepeatingRegions.Find(function).Count == 0, "packed loop analysis has a fixed memory bound");
     }
