@@ -570,7 +570,7 @@ public static class Driver
 #endif
         ObjectFile obj = backend.Generate(module, backendErrors);
         new TargetContract(freestanding ? (Lowering.TlsGs ? 2u : 1u) : 0u).Attach(obj);
-        ManagedLayouts.Attach(obj, bound);
+        ManagedLayouts.Attach(obj, front.Value.bound);
 #if COR_SELFHOST_BENCHMARK
         Program.BenchmarkStage("link-output");
 #endif
@@ -671,7 +671,7 @@ public static class Driver
                 return 1;
             }
             new TargetContract(Lowering.TlsGs ? 2u : 1u).Attach(flatObj);
-            ManagedLayouts.Attach(flatObj, bound);
+            ManagedLayouts.Attach(flatObj, front.Value.bound);
             link[0] = (name, flatObj);
             TargetContract.Validate(link);
             Corsac.Lang.Lto.LinkTimeOptimizer.Run(link, !args.Contains("--no-lto") && !args.Contains("--no-opt"));
