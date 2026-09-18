@@ -109,6 +109,32 @@ controls within a run rather than treating separate snapshots as speedups.
 
 ## Reproduction and remaining acceptance
 
+### Runtime byte comparison
+
+The string/byte comparison runtime now skips aligned equal 32-bit words and
+peels at most three leading bytes when both inputs have matching alignment.
+Differently aligned inputs retain byte loads. A differing word falls back to
+unsigned byte order, preserving endianness-independent results and exact
+requested bounds. Runtime-sized x86 copies also transfer complete words before
+their exact byte tail; no MMX/x87 state is borrowed by either change.
+
+The statically linked `memory-compare` benchmark compares the real runtime with
+a byte-at-a-time source reference, not an archived binary of the old runtime.
+Five paired native runs of 200,000 comparisons gave these median nanoseconds:
+
+| Equal span | Runtime | Byte reference |
+| --- | ---: | ---: |
+| 32 bytes, aligned | 7.621 | 22.234 |
+| 128 bytes, aligned | 27.457 | 99.127 |
+| 128 bytes, both offset by one byte | 26.622 | 98.915 |
+| 512 bytes, aligned | 95.530 | 377.741 |
+
+Late mismatches also passed and improved in this measurement. Full medians:
+[runtime comparison results](../tests/benchmarks/results/runtime-compare-20260918.csv).
+The host is not isolated and these are not legacy-CPU timing estimates.
+Reproduce with `CPU=pentium-mmx PERF_STATIC=1 BENCHMARKS=memory-compare bash tests/benchmarks/build.sh`,
+then run the produced binary with `200000` and `200000 reference` arguments.
+
 Comparison-mask measurements use the same native warmup/five-sample harness.
 For 64-byte batches, byte equality fell from 13.589 to 1.755 ns, signed word
 greater-than from 8.635 to 1.728 ns, and signed dword greater-than from 3.439

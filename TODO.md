@@ -33,6 +33,9 @@ per-file process scheduling work is paused separately.
     all three lane widths and execute boundary vectors across the CPU matrix.
   - [ ] Apply and measure CPU-specific runtime, standard-library and crypto
     optimizations on real library operations, beyond backend microbenchmarks.
+    - [x] Optimize runtime string/byte comparisons with aligned word skipping
+      and safe leading-byte handling; validate all alignments and first-difference
+      positions under the source CPU matrix and benchmark actual string storage.
   - [x] Preserve x87 state boundaries and prohibit implicit packed-register use
     in freestanding code without hosted state ownership.
   - [x] Execute ordinary array source with the complete statically linked runtime
