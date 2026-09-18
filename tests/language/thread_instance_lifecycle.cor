@@ -1,0 +1,29 @@
+// test: standard thread construction, start-once and join lifecycle
+// expect-exit: 0
+// expect-output:
+// thread lifecycle ok
+static class Program
+{
+    static int calls;
+    static void Work() { calls = calls + 1; }
+    static int Main()
+    {
+        ThreadStart body = Work;
+        Thread thread = new Thread(body);
+        if (thread.IsAlive) return 1;
+        bool rejected = false;
+        try { thread.Join(); }
+        catch (ThreadStateException) { rejected = true; }
+        if (!rejected) return 2;
+        thread.Start();
+        thread.Join();
+        thread.Join();
+        if (calls != 1 || thread.IsAlive) return 3;
+        rejected = false;
+        try { thread.Start(); }
+        catch (ThreadStateException) { rejected = true; }
+        if (!rejected || calls != 1) return 4;
+        Console.WriteLine("thread lifecycle ok");
+        return 0;
+    }
+}

@@ -67,7 +67,7 @@ static class Program
         // The parent must let go of the write end for the same reason.
         Os.Close(write);
 
-        FileReader from = new FileReader(read);
+        StreamReader from = new StreamReader(new FileStream(read, FileAccess.Read, true));
         string? said = from.ReadLine();
 
         from.Close();

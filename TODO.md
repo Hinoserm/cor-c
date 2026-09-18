@@ -79,6 +79,12 @@ tasks below track that work; moving files alone does not reduce the working set.
 
 ## Compatibility defects
 
+- [ ] Verify the current compatibility repair batch: standard ThreadStart
+  construction and instance Start/Join lifecycle; stream-based pipe fixtures;
+  ArgumentList boundary preservation; zero-error kernel snapshot compilation;
+  interface return/ref matching and inherited dispatch. Changes are implemented
+  but remain unchecked until the milestone tests run.
+
 - [ ] Complete interface contract matching: reject incompatible return/ref
   signatures, compare generic method parameters by position rather than spelling,
   and preserve inherited interface mappings through overrides/reimplementation.

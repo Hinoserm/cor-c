@@ -46,7 +46,7 @@ class Program
 
         Os.Close(pair[1]);
 
-        FileReader from = new FileReader(pair[0]);
+        StreamReader from = new StreamReader(new FileStream(pair[0], FileAccess.Read, true));
         string? line = from.ReadLine();
 
         from.Close();

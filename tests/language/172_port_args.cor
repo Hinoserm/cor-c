@@ -1,43 +1,31 @@
-// test: the old one-string argument convention over Linux's vector
+// test: ProcessStartInfo.ArgumentList preserves argument boundaries
 // expect-exit: 0
 // expect-output:
-// count 3
-// at0 one
-// at1 two words
-// at2 three
-// from1 'two words' three
-// empty 0
+// one
+// two words
+// three
+// empty argument preserved
 //
-// EVERY UTILITY IN os/bin READS ITS ARGUMENTS THIS WAY. The CORSAC kernel
-// handed a process ONE STRING and the shell joined the words into it; Linux
-// hands a vector. lib/sys/linux.cor's Args puts the vector back together,
-// quoting a word with a space in it, and takes it apart again -- so a program
-// ported from os/bin sees what it has always seen.
-//
-// The round trip is what is tested: the joining and the splitting have to
-// agree, or an argument with a space in it silently becomes two.
-
+// Replace the OS-only Args convention with the compiler library's process API.
+// Exercise a real child, including spaces and an empty argument.
 class Program
 {
     static int Main()
     {
-        string joined = "one 'two words' three";
-
-        Console.Write("count ");
-        Console.WriteLine(Args.Count(joined));
-
-        Console.WriteLine(String.Concat("at0 ", Args.At(joined, 0)));
-        Console.WriteLine(String.Concat("at1 ", Args.At(joined, 1)));
-        Console.WriteLine(String.Concat("at2 ", Args.At(joined, 2)));
-        Console.WriteLine(String.Concat("from1 ", Args.From(joined, 1)));
-
-        // A program run with no arguments of its own, which is how the test
-        // runner runs this one: One() is empty and Count says so rather than
-        // counting the program's own name.
-        Console.Write("empty ");
-        Console.WriteLine(Args.Count(Args.One()));
-
-        // And argv[0] is still the program, as the C convention has it.
-        return Os.Args().Length >= 1 ? 0 : 1;
+        ProcessStartInfo info = new ProcessStartInfo("/usr/bin/printf");
+        info.RedirectStandardOutput = true;
+        info.ArgumentList.Add("%s\n");
+        info.ArgumentList.Add("one");
+        info.ArgumentList.Add("two words");
+        info.ArgumentList.Add("three");
+        info.ArgumentList.Add("");
+        Process child = Process.Start(info);
+        StreamReader output = child.StandardOutput;
+        for (int i = 0; i < 3; i++) Console.WriteLine(output.ReadLine());
+        if (output.ReadLine() != "" || output.ReadLine() != null) return 1;
+        child.WaitForExit();
+        if (child.ExitCode != 0) return 2;
+        Console.WriteLine("empty argument preserved");
+        return 0;
     }
 }

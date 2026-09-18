@@ -2432,11 +2432,23 @@ public sealed partial class Binder
         // a call through the interface reaches it whatever class it is on.
         foreach (TypeSymbol iface in AllInterfaces(sym))
         {
+            bool reimplements = sym.Interfaces.Any(direct => Extended(direct).Contains(iface));
             foreach (MethodSymbol want in iface.Methods)
             {
                 if (want.Static) continue;
+                // Merely hiding a base member does not remap an inherited
+                // interface. An override does; naming the interface again
+                // explicitly requests a fresh implementation search.
+                if (!reimplements && sym.Base is not null
+                    && sym.Base.InterfaceImplementations.TryGetValue(want.VtableSlot, out MethodSymbol? inherited))
+                {
+                    MethodSymbol? replacement = sym.Methods.FirstOrDefault(m => m.Override
+                        && m.Name == inherited.Name && MethodSignatures.Implements(m, inherited));
+                    sym.InterfaceImplementations[want.VtableSlot] = replacement ?? inherited;
+                    continue;
+                }
                 MethodSymbol? impl = sym.FindMethods(want.Name)
-                    .FirstOrDefault(m => !m.Abstract && MethodSignatures.SameParameters(m, want));
+                    .FirstOrDefault(m => !m.Abstract && MethodSignatures.Implements(m, want));
 
                 // AN ABSTRACT CLASS MAY IMPLEMENT AN INTERFACE MEMBER AND LEAVE
                 // THE BODY TO ITS DERIVED CLASSES: `abstract class C : ICounted
@@ -2447,7 +2459,7 @@ public sealed partial class Binder
                 if (impl is null && (sym.Decl?.Mods.HasFlag(Mods.Abstract) ?? false))
                 {
                     impl = sym.FindMethods(want.Name)
-                        .FirstOrDefault(m => m.Abstract && MethodSignatures.SameParameters(m, want));
+                        .FirstOrDefault(m => m.Abstract && MethodSignatures.Implements(m, want));
                 }
 
                 if (impl is null)

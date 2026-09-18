@@ -73,7 +73,7 @@ class Program
         Os.Close(pipe[1]);
         Os.Close(answer[1]);
 
-        FileReader from = new FileReader(answer[0]);
+        StreamReader from = new StreamReader(new FileStream(answer[0], FileAccess.Read, true));
         string? said = from.ReadLine();
 
         from.Close();

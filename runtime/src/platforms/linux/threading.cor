@@ -353,6 +353,14 @@ static class Native
 /// A thread in a long computation that does none of those DELAYS every other
 /// thread's collection until it does one. See the note above GcLock in
 /// lib/rt/gc.cor for why, and for what fixes it.
+public delegate void ThreadStart();
+
+class ThreadStateException : SystemException
+{
+    public ThreadStateException() : base("Thread is in an invalid state.") { }
+    public ThreadStateException(string message) : base(message) { }
+}
+
 class Thread
 {
     // LAYOUT: these two must stay the first instance fields (see Atom). _done
@@ -362,6 +370,7 @@ class Thread
     int _lock;
 
     Action _body;
+    ThreadStart? _start;
     long _id;
     long _stack;
     long _stackBytes;
@@ -380,10 +389,16 @@ class Thread
         _slot = slot;
     }
 
+    public Thread(ThreadStart start)
+    {
+        if (start == null) throw new ArgumentNullException("start");
+        _start = start;
+    }
+
     /// The thread id the kernel gave it, or 0 before it has been started.
     public long Id => _id;
 
-    public bool IsAlive => _done == 0;
+    public bool IsAlive => _id != 0 && _done == 0;
 
     /// This thread's kernel thread id (gettid(2)), which is the process id on
     /// the first thread.
@@ -453,9 +468,19 @@ class Thread
 
         Thread t = new Thread(body, 0);
 
-        t._slot = Register(t);
-        t.Launch();
+        t.Start();
         return t;
+    }
+
+    public void Start()
+    {
+        Atom.CheckLayout();
+        // The second layout word is the one-time start claim, not a held
+        // mutex: even a completed thread cannot be started a second time.
+        if (Sys.Cas(Atom.At(this, Atom.SecondWord), 0, 1) != 0)
+            throw new ThreadStateException("Thread has already been started.");
+        _slot = Register(this);
+        Launch();
     }
 
     void Launch()
@@ -533,7 +558,9 @@ class Thread
     {
         try
         {
-            _body.Invoke();
+            ThreadStart? start = _start;
+            if (start != null) start.Invoke();
+            else _body.Invoke();
         }
         catch (Exception e)
         {
@@ -561,6 +588,7 @@ class Thread
     /// Waits for the thread to finish running its body.
     public void Join()
     {
+        if (_id == 0) throw new ThreadStateException("Thread has not been started.");
         long at = Atom.At(this, Atom.FirstWord);
 
         while (Sys.PeekWord(at) == 0)
