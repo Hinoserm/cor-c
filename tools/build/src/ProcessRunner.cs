@@ -16,7 +16,7 @@ public sealed class ProcessRunner
 
     public async Task<ProcessResult> Run(string label, string executable, IEnumerable<string> arguments,
         string directory, IDictionary<string, string> environment, TimeSpan timeout, CancellationToken cancel,
-        bool useAvailableWorkers = false, Func<int, IEnumerable<string>>? workerArguments = null)
+        bool useAvailableWorkers = false, Func<int, IEnumerable<string>>? workerArguments = null, bool interactive = false)
     {
         await slots.WaitAsync(cancel);
         int workers = 1;
@@ -32,9 +32,9 @@ public sealed class ProcessRunner
             {
                 WorkingDirectory = directory,
                 UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                RedirectStandardInput = true,
+                RedirectStandardOutput = !interactive,
+                RedirectStandardError = !interactive,
+                RedirectStandardInput = !interactive,
             };
             foreach (string argument in arguments) start.ArgumentList.Add(argument);
             if (workerArguments is not null)
@@ -46,11 +46,11 @@ public sealed class ProcessRunner
             using Process process = new() { StartInfo = start };
             Stopwatch watch = Stopwatch.StartNew();
             process.Start();
-            process.StandardInput.Close();
+            if (!interactive) process.StandardInput.Close();
             await using FileStream stdout = File.Create(prefix + ".out.log");
             await using FileStream stderr = File.Create(prefix + ".err.log");
-            Task outCopy = process.StandardOutput.BaseStream.CopyToAsync(stdout);
-            Task errCopy = process.StandardError.BaseStream.CopyToAsync(stderr);
+            Task outCopy = interactive ? Task.CompletedTask : process.StandardOutput.BaseStream.CopyToAsync(stdout);
+            Task errCopy = interactive ? Task.CompletedTask : process.StandardError.BaseStream.CopyToAsync(stderr);
             using CancellationTokenSource deadline = CancellationTokenSource.CreateLinkedTokenSource(cancel);
             deadline.CancelAfter(timeout);
             bool timedOut = false;

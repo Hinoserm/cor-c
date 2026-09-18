@@ -42,7 +42,7 @@ public sealed class TaskExecutor
             case "Exec": case "Test":
                 if (name == "Test")
                     BuildManifest.Check(task, name, "Executable", "WorkingDirectory", "Timeout", "ExpectedExitCode", "Name", "Workers");
-                else BuildManifest.Check(task, name, "Executable", "WorkingDirectory", "Timeout", "ExpectedExitCode", "Name", "Workers", "Inputs", "Outputs");
+                else BuildManifest.Check(task, name, "Executable", "WorkingDirectory", "Timeout", "ExpectedExitCode", "Name", "Workers", "Inputs", "Outputs", "Interactive");
                 manifest.Expand(BuildManifest.Required(task, "Executable"));
                 break;
             case "Script":
@@ -146,7 +146,8 @@ public sealed class TaskExecutor
             bool compile = task.Name == "Compile";
             result = await runner.Run(target.Path, executable, args, directory, environment, Timeout(task), cancel,
                 compile || (string?)task.Attribute("Workers") == "auto",
-                compile ? count => bootstrap ? new[] { "-maxcpucount:" + count } : new[] { "--jobs", count.ToString(CultureInfo.InvariantCulture) } : null);
+                compile ? count => bootstrap ? new[] { "-maxcpucount:" + count } : new[] { "--jobs", count.ToString(CultureInfo.InvariantCulture) } : null,
+                (string?)task.Attribute("Interactive") == "true");
             int expected = int.Parse((string?)task.Attribute("ExpectedExitCode") ?? "0", CultureInfo.InvariantCulture);
             bool passed = !result.TimedOut && result.ExitCode == expected;
             string detail = executable + (result.TimedOut ? " timed out" : " exited " + result.ExitCode + ", expected " + expected)
