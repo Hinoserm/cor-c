@@ -13,6 +13,7 @@ There is no enable switch per optimization. `--disable-mmx` and
 | Adjacent wrapping integer operations | PADDB/W/D, PSUBB/W/D, PAND, POR, PXOR | Contiguous independent frame lanes; no escaping intermediate values |
 | Word multiplication | PMULLW, PMULHW | Correct low-word truncation or signed high-word result |
 | Signed pairwise word dot products | PMADDWD | Includes the wrapping `(-32768 * -32768) * 2` boundary |
+| Equality and signed greater-than masks | PCMPEQB/W/D, PCMPGTB/W/D | All-bits masks only; matching extension for narrow equality; signed narrow greater-than inputs |
 | Word/dword shifts | PSLLW/D, PSRLW/D, PSRAW/D | C# shift-count masking and source sign extension preserved |
 | Rounded unsigned-byte averages | PAVGUSB | Proven unsigned byte inputs and exact round-up expression |
 | Rounded signed high-word products | PMULHRW | Proven signed word inputs and exact rounding expression |
@@ -107,6 +108,14 @@ Absolute timing varied between runs on this non-isolated host; compare paired
 controls within a run rather than treating separate snapshots as speedups.
 
 ## Reproduction and remaining acceptance
+
+Comparison-mask measurements use the same native warmup/five-sample harness.
+For 64-byte batches, byte equality fell from 13.589 to 1.755 ns, signed word
+greater-than from 8.635 to 1.728 ns, and signed dword greater-than from 3.439
+to 1.916 ns. These are bounded frame-array microbenchmarks, not measurements
+of an entire runtime or crypto workload. Raw data:
+[equality](../tests/benchmarks/results/x86-equality-20260918.csv) and
+[greater-than](../tests/benchmarks/results/x86-comparison-20260918.csv).
 
 ```sh
 tools/build/bin/managed/Release/net10.0/build --file compiler/tests/arch/x86/corsac.build benchmark
