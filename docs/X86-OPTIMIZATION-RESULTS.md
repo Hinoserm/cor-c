@@ -100,6 +100,12 @@ faster (4.597 to 3.469 ns). The selector therefore keeps in-place dword groups
 below 64 bytes scalar on the EMMS path. The FEMMS path remains separately gated
 and correctness-tested, without a native timing claim on this host.
 
+Raw data: [expanded candidate measurements](../tests/benchmarks/results/x86-packed-20260918-expanded.csv)
+and [post-threshold in-place measurements](../tests/benchmarks/results/x86-inplace-20260918-costed.csv).
+The latter confirms the 32-byte candidate stays scalar with identical text size.
+Absolute timing varied between runs on this non-isolated host; compare paired
+controls within a run rather than treating separate snapshots as speedups.
+
 ## Reproduction and remaining acceptance
 
 ```sh

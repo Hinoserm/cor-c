@@ -1,0 +1,7 @@
+operation,bytes,mmx,selected_packed,iterations,text_bytes,median_ms,ns_per_operation
+xor-inplace32,32,False,False,3000000,250,8.091,2.697
+xor-inplace32,32,True,False,3000000,250,7.662,2.554
+xor-inplace32,64,False,False,3000000,466,10.670,3.557
+xor-inplace32,64,True,True,3000000,371,9.320,3.107
+xor-inplace32,128,False,False,3000000,1058,18.661,6.220
+xor-inplace32,128,True,True,3000000,839,12.448,4.149
