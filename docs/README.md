@@ -9,6 +9,7 @@ and this index rather than creating a directory per topic.
 | [REPOSITORY-LAYOUT.md](REPOSITORY-LAYOUT.md) | Source ownership, directory layout and migration |
 | [BUILD-SYSTEM.md](BUILD-SYSTEM.md) | XML orchestration, nested targets, tasks, tests and bootstrap |
 | [OBJECT-FORMAT.md](OBJECT-FORMAT.md) | Separate compiler/linker executables and intermediate objects |
+| [SEPARATE-COMPILATION.md](SEPARATE-COMPILATION.md) | Managed metadata, compiler/linker/runtime ownership, LTO and bare-metal builds |
 | [X86-BACKEND.md](X86-BACKEND.md) | x86 code generation, ABI and runtime mechanisms |
 | [DOTNET-LIBRARY.md](DOTNET-LIBRARY.md) | Standard-library surface and compatibility status |
 | [SELFHOST.md](SELFHOST.md) | Native self-compilation workflow and historical findings |

@@ -19,9 +19,10 @@ required gates rather than assuming a missing log is proof of completion.
 
 ## Priority and purpose
 
-The current sequence is build utility design/implementation, the repository's
-corsac.build and source/project reorganization, then separate compilation and
-self-hosting memory work. Keep pushing documented implementation checkpoints.
+The current priority is the compiler/linker interface, separate compilation,
+link-time optimization and their tests, including bare-metal bootloader/kernel
+requirements. Self-hosting runs are paused. Build utility and memory work remain
+outstanding; keep pushing documented implementation checkpoints.
 
 Separate compilation must make self-hosting practical on small 486-class
 systems as well as use modern multicore hosts effectively. The implementation

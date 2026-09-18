@@ -1,5 +1,9 @@
 # Compiler/linker intermediate objects
 
+The compiler/linker/runtime responsibility split, managed declaration design,
+LTO contracts and bare-metal build flow are specified in
+[SEPARATE-COMPILATION.md](SEPARATE-COMPILATION.md).
+
 ## Executables and ownership
 
 `corc` is the compiler executable. `corlink` is the independent linker
