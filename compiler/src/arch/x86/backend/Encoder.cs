@@ -584,6 +584,12 @@ internal sealed class Encoder
                 if (!Target.Current.X86Profile.ThreeDNow || i.Operands.Count != 1 || i.Operands[0] is not MMem)
                     throw new InvalidOperationException("3DNow packed arithmetic requires an enabled profile and memory");
                 B(0x0f, 0x0f); ModRM(0, i.Operands[0]); B(i.Op == MOp.ThreeDNowAverageB ? (byte)0xbf : (byte)0xb7); break;
+            case MOp.MmxShlW: case MOp.MmxShlD: case MOp.MmxShrW: case MOp.MmxShrD: case MOp.MmxSarW: case MOp.MmxSarD:
+                if (!Target.Current.X86Profile.Mmx || i.Operands.Count != 1 || i.Operands[0] is not MImm { IsPlain: true, Value: >= 0 and <= 31 } shift)
+                    throw new InvalidOperationException("Packed shift requires MMX and a normalized C# shift count");
+                B(0x0f, i.Op is MOp.MmxShlW or MOp.MmxShrW or MOp.MmxSarW ? (byte)0x71 : (byte)0x72);
+                B(i.Op is MOp.MmxShlW or MOp.MmxShlD ? (byte)0xf0 : i.Op is MOp.MmxShrW or MOp.MmxShrD ? (byte)0xd0 : (byte)0xe0);
+                B((byte)shift.Value); break;
             case MOp.Emms:
                 if (!Target.Current.X86Profile.Mmx) throw new InvalidOperationException("MMX is disabled");
                 B(0x0f, 0x77); break;

@@ -56,7 +56,7 @@ internal static class Program
 
     private static int Main(string[] args)
     {
-        if (args.Contains("--benchmark-packed")) return PackedMemoryBenchmarks.Run();
+        if (args.Contains("--benchmark-packed")) return PackedMemoryBenchmarks.Run(args.FirstOrDefault(argument => argument.StartsWith("--benchmark-filter="))?.Substring(19));
         Target.Current = Target.X86;
         Target.X86.X86Profile = X86Cpu.Parse(args);
         PruneArithmetic();
@@ -83,6 +83,7 @@ internal static class Program
         PackedFrames(m);
         PackedArithmeticFrames(m);
         PackedRoundingFrames(m);
+        PackedShiftFrames(m);
         ByteSwaps(m);
         Exit(m);
         UDiv64(m);
@@ -119,6 +120,8 @@ internal static class Program
         Check(FunctionAsm(asm, "packed_rounding").Contains("pmulhw") == packed, "signed high-word products are packed automatically");
         Check(FunctionAsm(asm, "packed_rounding").Contains("pavgusb") == (packed && Target.X86.X86Profile.ThreeDNow), "rounded byte averages use 3DNow when enabled");
         Check(FunctionAsm(asm, "packed_rounding").Contains("pmulhrw") == (packed && Target.X86.X86Profile.ThreeDNow), "rounded signed high-word products use 3DNow when enabled");
+        foreach (string mnemonic in new[] { "psllw", "pslld", "psrlw", "psrld", "psraw", "psrad" })
+            Check(FunctionAsm(asm, "packed_shifts").Contains(mnemonic) == packed, mnemonic + " selected with correct profile");
         File.WriteAllText(Path.Combine(outDir, "tests.asm"), asm);
         Console.WriteLine(asm);
 
@@ -996,6 +999,36 @@ internal static class Program
         b.Ret(R(okay));
     }
 
+    private static void PackedShiftFrames(Module m)
+    {
+        (Function function, Builder b) = New(m, "packed_shifts", IrType.I32);
+        FrameSlot source = function.NewSlot(32, 8), destination = function.NewSlot(32, 8);
+        VReg okay = b.Const(1, IrType.I32);
+        foreach (int width in new[] { 2, 4 })
+        foreach (bool signed in new[] { false, true })
+        foreach (Opcode operation in new[] { Opcode.Shl, Opcode.ShrU, Opcode.ShrS })
+        foreach (int count in new[] { 0, 1, 15, 16, 31, 32, 33, -1 })
+        {
+            for (int offset = 0; offset < 32; offset += width)
+                b.Store(new SlotOperand(source), I(unchecked((int)0x9e3779b9 * (offset + 1))), offset, width);
+            for (int offset = 0; offset < 32; offset += width)
+            {
+                VReg value = b.Load(IrType.I32, new SlotOperand(source), offset, width, signed);
+                b.Store(new SlotOperand(destination), R(b.Binary(operation, value, count)), offset, width);
+            }
+            for (int offset = 0; offset < 32; offset += width)
+            {
+                int value = unchecked((int)0x9e3779b9 * (offset + 1));
+                if (width == 2) value = signed ? (short)value : (ushort)value;
+                int expected = operation == Opcode.Shl ? value << count : operation == Opcode.ShrS ? value >> count : (int)((uint)value >> count);
+                if (width == 2) expected &= 65535;
+                VReg actual = b.Load(IrType.I32, new SlotOperand(destination), offset, width, false);
+                okay = b.Binary(Opcode.And, okay, b.Binary(Opcode.Eq, actual, expected));
+            }
+        }
+        b.Ret(R(okay));
+    }
+
     private static void SmallFills(Module m)
     {
         (Function f, Builder b) = New(m, "small_fills", IrType.I32);
@@ -1281,6 +1314,7 @@ internal static class Program
         Expect(b.Call("packed_frames", IrType.I32)!, I(1));
         Expect(b.Call("packed_arithmetic", IrType.I32)!, I(1));
         Expect(b.Call("packed_rounding", IrType.I32)!, I(1));
+        Expect(b.Call("packed_shifts", IrType.I32)!, I(1));
         Expect(b.Call("bswap32", IrType.I32, I(0x11223344))!, I(0x44332211));
         Expect(b.Call("bswap32", IrType.I32, I(unchecked((int)0x80000001)))!, I(0x01000080));
         Expect(b.Call("bswap64_inplace", IrType.I64, I(0x0123456789abcdefL, IrType.I64))!,

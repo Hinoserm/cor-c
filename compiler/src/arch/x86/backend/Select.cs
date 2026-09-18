@@ -285,6 +285,7 @@ internal sealed partial class Selector
                 _line = i.Line;
                 NoteConstant(i);
                 if (TryPackedArithmetic(b.Instrs, n, out int consumed) || TryPackedRounding(b.Instrs, n, out consumed)
+                    || TryPackedShifts(b.Instrs, n, out consumed)
                     || TryRotate(b.Instrs, n, out consumed))
                 {
                     n += consumed - 1;
