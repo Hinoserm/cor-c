@@ -16,8 +16,9 @@ public sealed class UnitBackend : IUnitBackend
         Target.Current = Target.X86;
         // Each invocation must restore its own permissions; a previous unit may
         // have selected a newer CPU or explicitly disabled an extension.
-        X86CodeGenerationContract? cpu = X86CodeGenerationContract.Read(original);
-        Target.X86.X86Profile = X86Cpu.Parse(cpu?.Arguments() ?? Array.Empty<string>());
+        X86CodeGenerationContract cpu = X86CodeGenerationContract.Read(original)
+            ?? throw new InvalidDataException("IR unit has no CPU/FPU contract; rebuild the unit before LTO");
+        Target.X86.X86Profile = X86Cpu.Parse(cpu.Arguments());
         Target.X86.Cpu = Target.X86.X86Profile.Name;
         IrArchive archive = IrArchive.Read(original) ?? throw new InvalidDataException("Backend input has no IR archive");
         var visibility = original.Symbols.Where(symbol => symbol.IsDefined && symbol.IsFunction)
@@ -63,7 +64,7 @@ public sealed class UnitBackend : IUnitBackend
         }
         X86Backend backend = new()
         {
-            AutomaticPacked = cpu?.AutomaticPacked ?? false,
+            AutomaticPacked = cpu.AutomaticPacked,
             StackMaps = unit.StackMaps, EmitLinkSummary = true, Workers = Math.Max(1, Math.Min(64, Environment.ProcessorCount)),
             FunctionLoader = Load, FunctionLoadBytes = Cost, FunctionMemoryBudget = 64L * 1024 * 1024 - unit.AccountedBytes,
         };

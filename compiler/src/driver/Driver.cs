@@ -587,7 +587,7 @@ public static class Driver
         Program.BenchmarkStage("code-generation");
 #endif
         ObjectFile obj = backend.Generate(module, backendErrors);
-        new TargetContract(freestanding ? (Lowering.TlsGs ? 2u : 1u) : 0u, requiresManagedLayouts: true).Attach(obj);
+        new TargetContract(freestanding ? (Lowering.TlsGs ? 2u : 1u) : 0u, requiresManagedLayouts: true, requiresCodeGenerationContract: true).Attach(obj);
         ManagedLayouts.Attach(obj, front.Value.bound);
         DefinitionSemantics.Attach(obj, definitionSemantics);
 #if COR_SELFHOST_BENCHMARK

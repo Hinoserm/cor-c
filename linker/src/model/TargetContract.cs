@@ -9,11 +9,13 @@ public sealed class TargetContract
     public const string SectionName = ".corsac.abi";
     public uint TlsModel { get; }
     public bool RequiresManagedLayouts { get; }
-    public TargetContract(uint tlsModel, bool requiresManagedLayouts = false)
+    public bool RequiresCodeGenerationContract { get; }
+    public TargetContract(uint tlsModel, bool requiresManagedLayouts = false, bool requiresCodeGenerationContract = false)
     {
         if (tlsModel > 2) throw new ElfFormatException("unsupported TLS/platform contract");
         TlsModel = tlsModel;
         RequiresManagedLayouts = requiresManagedLayouts;
+        RequiresCodeGenerationContract = requiresCodeGenerationContract;
     }
     public void Attach(ObjectFile obj)
     {
@@ -25,7 +27,7 @@ public sealed class TargetContract
         BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(12), 486);
         BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(16), 1); // i386 cdecl, x87 floating results.
         BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(20), TlsModel);
-        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(24), RequiresManagedLayouts ? 1u : 0u);
+        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(24), (RequiresManagedLayouts ? 1u : 0u) | (RequiresCodeGenerationContract ? 2u : 0u));
         Section section = new(SectionName, SectionKind.Note);
         section.Bytes.AddRange(bytes);
         obj.Sections.Add(section);
@@ -49,7 +51,9 @@ public sealed class TargetContract
                 throw new ElfFormatException(input.Name + ": unsupported native ABI contract");
             uint current = BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(20));
             uint required = BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(24));
-            if ((required & ~1u) != 0) throw new ElfFormatException(input.Name + ": unknown required ABI metadata");
+            if ((required & ~3u) != 0) throw new ElfFormatException(input.Name + ": unknown required ABI metadata");
+            if ((required & 2) != 0 && X86CodeGenerationContract.Read(input.Object) is null)
+                throw new ElfFormatException(input.Name + ": required CPU/FPU code-generation contract is missing");
             if ((required & 1) != 0 && !input.Object.Sections.Any(section => section.Name == ManagedLayoutContract.SectionName))
                 throw new ElfFormatException(input.Name + ": required managed layout contract is missing");
             if (current > 2) throw new ElfFormatException(input.Name + ": unsupported TLS/platform contract");
