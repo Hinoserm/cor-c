@@ -123,6 +123,15 @@ contracts remain subsequent stages. Default library-source loading is unchanged
 until library indexes and implicit runtime dependencies are integrated. This
 path is not yet a complete project compiler.
 
+I: records reserve interface families without loading their declaration trees.
+Their payload is int32 version 1, int32 UTF-8 family-name byte length, name bytes,
+int32 generic arity and int32 method count (including accessor methods). Partial
+fragments contribute counts to the same family. The binder combines these
+project reservations with its implicit runtime families before allocating
+interface slots, so a unit's smaller set of imported declarations does not move
+the class virtual slots following them. This is compact global ABI planning,
+not eager loading of the project's class/member graphs.
+
 The initial end-to-end fixtures compile three consumers against an index, link
 their objects with a separately compiled provider, and check namespace, alias
 and qualified references. An unrelated unresolved type in the same namespace

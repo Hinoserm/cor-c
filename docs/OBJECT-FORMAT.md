@@ -53,6 +53,23 @@ Native assembly/C objects may omit this managed-compiler contract; omission is
 not permission to invent managed type identity. Assembly/type metadata remains
 the separately specified .corsac.unit/.corsac.types work.
 
+### Managed layout assumptions, version 1
+
+The non-loadable `.corsac.layout` section begins with uint32 magic CMLY,
+int32 version 1 and int32 record count. Each record is an int32 UTF-8 name byte
+length, name bytes and 32-byte SHA-256 compiler fingerprint. Names are nonempty,
+NUL-free and at most 4096 bytes. Duplicates, bad versions/lengths, truncated data
+and trailing bytes fail. The linker compares overlapping assumptions before LTO
+mutates code and before ELF or flat layout. Missing sections remain permitted
+for native assembly/C inputs.
+
+The initial compiler producer records non-generic, non-specialized type layout
+(instance size, base/depth, modifiers, instance fields and dispatch slots), plus
+independent static-field and native-method ABI facts. Independent records allow
+additional static helpers without falsely changing an object's instance layout.
+Generic identities/specializations and definition ownership are still separate
+work; this is a consistency guard, not a complete managed loader contract.
+
 ### LTO summary encoding, version 1
 
 The non-loadable .corsac.lto section begins with the four bytes `CLTO`, followed

@@ -87,6 +87,7 @@ public static partial class Linker
         }
 
         TargetContract.Validate(inputs.Select(i => (i.Name, i.Object)));
+        ManagedLayoutContract.Validate(inputs.Select(i => (i.Name, i.Object)));
         List<string> errors = new();
         Layout layout = new(loadAddress) { LoadBias = loadAddress - (physicalAddress ?? loadAddress) };
         layout.ArrangeStatic();
@@ -166,6 +167,7 @@ public static partial class Linker
         }
 
         TargetContract.Validate(inputs.Select(i => (i.Name, i.Object)));
+        ManagedLayoutContract.Validate(inputs.Select(i => (i.Name, i.Object)));
         List<string> errors = new();
         Layout layout = new(baseAddress);
         layout.ArrangeStatic();

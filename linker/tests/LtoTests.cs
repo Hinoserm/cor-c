@@ -107,6 +107,19 @@ public static class LtoTests
         TargetContract.Validate(new[] { ("bare", bare), ("bare2", bare2) });
         bare2.Section(TargetContract.SectionName).Bytes[4] = 9;
         Reject(() => TargetContract.Validate(new[] { ("bare2", bare2) }));
+        ObjectFile layoutA = Caller(), layoutB = Function(42);
+        ManagedLayoutContract.Attach(layoutA, new[] { new ManagedTypeLayout("type:Example", new byte[32]) });
+        ManagedLayoutContract.Attach(layoutB, new[] { new ManagedTypeLayout("type:Example", new byte[32]) });
+        ManagedLayoutContract.Validate(new[] { ("a", layoutA), ("b", ElfReader.ReadObject(ElfWriter.WriteObject(layoutB))) });
+        ObjectFile mismatch = Function(42);
+        byte[] different = new byte[32]; different[0] = 1;
+        ManagedLayoutContract.Attach(mismatch, new[] { new ManagedTypeLayout("type:Example", different) });
+        Reject(() => LinkTimeOptimizer.Run(new[] { ("a", layoutA), ("mismatch", mismatch) }));
+        Require(layoutA.Section(".text").Bytes[0] == 0xe8, "layout failure mutated LTO input");
+        Reject(() => Linker.Link(new[] { ("a", layoutA), ("mismatch", mismatch) }, "_start"));
+        Reject(() => Linker.LinkFlat(new[] { ("a", layoutA), ("mismatch", mismatch) }, "_start", 0x10000));
+        layoutB.Section(ManagedLayoutContract.SectionName).Bytes[4] = 99;
+        Reject(() => ManagedLayoutContract.Validate(new[] { ("b", layoutB) }));
         Console.WriteLine("  LTO metadata, scope, rejection, static/flat/physical-link checks passed");
     }
 }

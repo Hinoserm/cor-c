@@ -9,6 +9,8 @@ public static class LinkTimeOptimizer
     /// <summary>Static, non-interposable links only. Validates before changing any bytes.</summary>
     public static int Run(IReadOnlyList<(string Name, ObjectFile Object)> inputs, bool enabled = true)
     {
+        TargetContract.Validate(inputs);
+        ManagedLayoutContract.Validate(inputs);
         Dictionary<string, (ObjectFile Object, Symbol Symbol)> globals = new(StringComparer.Ordinal);
         Dictionary<ObjectFile, OptimizationSummary> summaries = new();
         Dictionary<ObjectFile, Dictionary<string, int>> constants = new();

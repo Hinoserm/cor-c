@@ -8,11 +8,13 @@ public sealed class IndexedDeclarations : IDisposable
     private readonly HashSet<string> owned;
     private readonly Dictionary<string, DeclarationLease> loaded = new(StringComparer.Ordinal);
     public long PayloadLoads => catalog.PayloadLoads;
+    public IReadOnlyDictionary<(string Name, int Arity), int> Interfaces { get; }
 
     public IndexedDeclarations(string path, string assembly, IEnumerable<string> ownedFiles)
     {
         catalog = new DeclarationCatalog(path);
         this.assembly = assembly;
+        Interfaces = catalog.Interfaces(assembly);
         owned = ownedFiles.Select(Path.GetFullPath).ToHashSet(StringComparer.Ordinal);
     }
 

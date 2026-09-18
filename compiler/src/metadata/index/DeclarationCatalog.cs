@@ -20,6 +20,14 @@ public sealed class DeclarationCatalog : IDisposable
     private bool disposed;
     public long ResidentBytes { get { lock (gate) return resident; } }
     public long PayloadLoads { get { lock (gate) return loads; } }
+    public IReadOnlyDictionary<(string Name, int Arity), int> Interfaces(string assembly)
+    {
+        lock (gate)
+        {
+            if (disposed) throw new ObjectDisposedException(nameof(DeclarationCatalog));
+            return InterfaceFamilies.Read(index, assembly);
+        }
+    }
 
     public DeclarationCatalog(string path, long budgetBytes = 2 * 1024 * 1024)
     {

@@ -100,6 +100,7 @@ public static class SourceIndexBuilder
                         ConditionalSymbols = (symbols ?? Array.Empty<string>()).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray(),
                     }.Encode();
                     yield return new DeclarationRecord("B:" + identity + "\n" + Binder.TypeKey(type), Encoding.UTF8.GetBytes(key));
+                    if (type.Kind == TypeKind.Interface) yield return InterfaceFamilies.Record(key, type);
                 }
             }
             // Validate the complete generation before the atomic publication.

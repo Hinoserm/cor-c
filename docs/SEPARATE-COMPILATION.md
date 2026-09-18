@@ -140,9 +140,11 @@ calling convention and GC reference maps. A missing mandatory layout cannot be
 deferred merely because the symbol name is known. Runtime-dependent layouts
 must use an explicit dictionary/descriptor access rather than a guessed offset.
 
-The current whole-program ancestor masks/interface numbering must be replaced
-or finalized by a deterministic link-plan phase before these records can support
-managed independent units. A machine-object test does not validate this ABI.
+Class identity already uses descriptor addresses and inheritance depth rather
+than the old whole-program ancestor masks. Interface slots still need a common
+reservation plan: the indexed path now reads compact family counts independently
+of loaded declarations. Full managed acceptance additionally requires canonical
+ownership and complete type contracts; a machine-object test alone is not proof.
 
 ## Generics, static initialization and open-world references
 

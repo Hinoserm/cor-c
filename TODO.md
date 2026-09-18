@@ -121,6 +121,10 @@ tasks below track that work; moving files alone does not reduce the working set.
   namespace/alias/qualified references. Complete generic body import, partial
   ownership and indexed extension candidates before marking managed independent
   compilation complete. Default library loading is still eager.
+  Initial namespace/alias/qualified integration and all eight test groups passed
+  at e101c50; logs: build/logs/20260918-131514-7bedac7ab133481eaf5806dde23ea7d2/.
+- [ ] Verify compact project-wide interface reservations and managed layout/
+  method ABI consistency contracts before extending generic and partial ownership.
 - [ ] Do not retain a full declaration footprint for every class in every file.
 - [ ] Maintain a compact disk-backed index from qualified type names to the
   locations of their declaration records. Access to the index itself must be

@@ -451,6 +451,7 @@ public sealed partial class Binder
     private readonly List<(TypeDecl Decl, TypeSymbol Symbol)> _bodyWork = new();
     private readonly string _file;
     private readonly Action<string>? _requireDeclaration;
+    private readonly IReadOnlyDictionary<(string Name, int Arity), int>? _indexedInterfaces;
 
     private TypeSymbol? _thisType;
     private MethodSymbol? _method;
@@ -734,10 +735,12 @@ public sealed partial class Binder
     /// <summary>Total bytes of static storage the program needs.</summary>
     public int StaticBytes => _staticNext;
 
-    public Binder(string file = "<source>", Action<string>? requireDeclaration = null)
+    public Binder(string file = "<source>", Action<string>? requireDeclaration = null,
+        IReadOnlyDictionary<(string Name, int Arity), int>? indexedInterfaces = null)
     {
         _file = file;
         _requireDeclaration = requireDeclaration;
+        _indexedInterfaces = indexedInterfaces;
     }
 
     /// <summary>
@@ -749,9 +752,10 @@ public sealed partial class Binder
     /// code cannot be told otherwise. Zero means nothing is being linked and
     /// the count decides.
     /// </summary>
-    public static BindResult Bind(CompilationUnit unit, string file = "<source>", Action<string>? requireDeclaration = null)
+    public static BindResult Bind(CompilationUnit unit, string file = "<source>", Action<string>? requireDeclaration = null,
+        IReadOnlyDictionary<(string Name, int Arity), int>? indexedInterfaces = null)
     {
-        Binder b = new(file, requireDeclaration);
+        Binder b = new(file, requireDeclaration, indexedInterfaces);
         b.Run(unit);
         b._r = b._r.CopyForBodyChecking();
         b.CheckBodyWork();
@@ -1334,6 +1338,15 @@ public sealed partial class Binder
         // together.
         Dictionary<(string, int, int), int> shared = new();
 
+        (string Template, int Arity) Family(TypeSymbol type)
+        {
+            TypeDecl? declaration = type.Decl;
+            string name = declaration?.Template ?? type.Name;
+            if (declaration?.Outer is string outer) name = outer + "." + name;
+            int arity = declaration?.Template is null ? declaration?.TypeParams.Count ?? 0 : declaration.TemplateArgs.Count;
+            return (name, arity);
+        }
+
         // IMPORTED GENERIC TEMPLATES ALREADY HAVE AN ABI. Reserve every slot
         // their GIR selected before allocating slots for interfaces declared
         // by this image. Otherwise the consumer numbers the same canonical
@@ -1342,8 +1355,7 @@ public sealed partial class Binder
         // after binding -- exactly the failure the GIR check is meant to stop.
         foreach (TypeSymbol t in _r.Types.Values.Where(t => t.Kind == TypeKind.Interface && !IsTemplate(t)))
         {
-            string template = t.Decl?.Template ?? t.Key;
-            int arity = t.Decl?.Template is null ? 0 : t.Decl.TemplateArgs.Count;
+            (string template, int arity) = Family(t);
 
             for (int i = 0; i < t.Methods.Count; i++)
             {
@@ -1381,12 +1393,9 @@ public sealed partial class Binder
         // with; reading it back out of `IReadOnlyList$ImageFile$Section` by
         // counting separators makes that a template of arity two, gives it
         // slots of its own, and every slot after it in the program moves.
-        (string Template, int Arity) Family(TypeSymbol t)
-            => IsTemplate(t)
-             ? (t.Name, t.Decl!.TypeParams.Count)
-             : (t.Decl?.Template ?? t.Key, t.Decl?.Template is null ? 0 : t.Decl.TemplateArgs.Count);
-
         SortedDictionary<(string, int), int> families = new();
+        if (_indexedInterfaces is not null)
+            foreach (var family in _indexedInterfaces) families[family.Key] = family.Value;
         foreach (TypeSymbol t in _r.Types.Values.Where(t => t.Kind == TypeKind.Interface))
         {
             (string, int) family = Family(t);

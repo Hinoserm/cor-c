@@ -17,4 +17,10 @@ for source in Caller AliasCaller QualifiedCaller; do
     "$work/$source" || status=$?
     test "$status" = 42
 done
+"$corc" compile --nostdlib --lib tests/integration/indexed/DifferentValue.cor --obj -o "$work/different.o"
+if "$corlink" "$work/Caller.o" "$work/different.o" -o "$work/incompatible" 2> "$work/incompatible.log"; then
+    echo 'Incompatible managed return ABI was accepted' >&2; exit 1
+fi
+grep -q 'managed layout.*conflicts' "$work/incompatible.log"
+test ! -e "$work/incompatible"
 printf 'PASS indexed namespace/alias/qualified consumers and separate linking: %s\n' "$work"
