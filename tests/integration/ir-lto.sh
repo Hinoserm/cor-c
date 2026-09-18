@@ -27,6 +27,9 @@ for mode in on off budget; do
     test "$status" = 42
     readelf -SW "$work/$mode" > "$work/$mode.sections"
     if grep -q '\.corsac\.ir' "$work/$mode.sections"; then echo 'Compiler IR leaked into final image' >&2; exit 1; fi
+    if grep -Eq '\.corsac\.(abi|cpu|layout)[[:space:]]' "$work/$mode.sections"; then
+        echo 'Consumed object contracts leaked into final image' >&2; exit 1
+    fi
     objdump -d "$work/$mode" > "$work/$mode.disassembly"
 done
 grep -q 'IR units regenerated=1' "$work/on.link.log"
