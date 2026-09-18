@@ -1,0 +1,36 @@
+// expect-exit: 0
+// Ordinary C# source for the packed-instruction integration gate.
+using System;
+
+static class PackedArrays
+{
+    static void Fill(int[] values, int seed)
+    {
+        uint state = (uint)seed;
+        for (int i = 0; i < values.Length; i++)
+        {
+            state = state * 1664525u + 1013904223u;
+            values[i] = (int)state;
+        }
+    }
+
+    static int Main()
+    {
+        int[] left = new int[8];
+        int[] right = new int[8];
+        int[] result = new int[8];
+        Fill(left, 17);
+        Fill(right, 91);
+        result[0] = left[0] + right[0];
+        result[1] = left[1] + right[1];
+        result[2] = left[2] + right[2];
+        result[3] = left[3] + right[3];
+        result[4] = left[4] + right[4];
+        result[5] = left[5] + right[5];
+        result[6] = left[6] + right[6];
+        result[7] = left[7] + right[7];
+        for (int i = 0; i < result.Length; i++)
+            if (result[i] != left[i] + right[i]) return 1;
+        return 0;
+    }
+}
