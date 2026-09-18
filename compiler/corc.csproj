@@ -10,13 +10,12 @@
     <StartupObject>Corsac.Program</StartupObject>
     <InvariantGlobalization>true</InvariantGlobalization>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- The old CORSAC code generator, kept for reference while the
-         retargetable backend is written against the same binder. -->
-    <Compile Remove="Lang/Legacy/**" />
-    <Compile Remove="tests/**" />
+    <Compile Include="src/**/*.cs" />
+    <Compile Include="../linker/src/**/*.cs" Link="linker/%(RecursiveDir)%(Filename)%(Extension)" />
   </ItemGroup>
 
 </Project>

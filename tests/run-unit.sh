@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
-projects=(asm elf opt x86)
-for name in "${projects[@]}"; do
-    dotnet run -c Release --project "$root/tests/unit/$name"/*tests.csproj
+projects=(
+    "$root/compiler/tests/optimizations/OptTests.csproj"
+    "$root/linker/tests/ElfTests.csproj"
+    "$root/compiler/tests/arch/corsac/asmtests.csproj"
+    "$root/compiler/tests/arch/x86/x86tests.csproj"
+)
+for project in "${projects[@]}"; do
+    dotnet run -c Release --project "$project"
 done

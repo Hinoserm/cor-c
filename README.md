@@ -35,10 +35,15 @@ running them. See the READMEs under `tests/` for narrower gates.
 ## Repository map
 
 - `compiler/`: compiler executable, target-independent frontend/IR/optimizer,
-  object formats, linker, and architecture backends.
+  lowering, and metadata.
+- `linker/`: object formats, relocations, static/dynamic linking, and focused
+  linker tests.
+- `compiler/src/arch/`: architecture-specific compiler support, including
+  assemblers, ABIs, code generation, and encoders. Its focused tests live
+  under `compiler/tests/arch/`.
 - `runtime/`: managed execution support plus architecture and host adapters.
 - `stdlib/`: C#/.NET-compatible public library implementation.
-- `tests/`: unit, language, integration, and benchmark coverage.
+- `tests/`: broad language, integration, and benchmark coverage.
 - `examples/`: small programs intended for readers and experiments.
 - `docs/`: design and development documentation.
 

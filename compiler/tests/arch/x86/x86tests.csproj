@@ -20,13 +20,13 @@
   <ItemGroup>
     <Compile Include="Program.cs" />
     <Compile Include="../../../compiler/src/ir/*.cs" />
-    <Compile Include="../../../compiler/src/arch/x86/backend/*.cs" />
-    <Compile Include="../../../compiler/src/formats/elf/*.cs" />
+    <Compile Include="../src/backend/*.cs" />
+    <Compile Include="../../../linker/src/elf/*.cs" />
     <Compile Include="../../../compiler/src/frontend/Types.cs" />
     <Compile Include="../../../compiler/src/frontend/Ast.cs" />
     <Compile Include="../../../compiler/src/frontend/Token.cs" />
-    <Compile Include="../../../compiler/src/arch/x86/MachineAbi.cs" />
-    <Compile Include="../../../compiler/src/arch/corsac/assembler/Isa.cs" />
+    <Compile Include="../src/MachineAbi.cs" />
+    <Compile Include="../../corsac/src/assembler/Isa.cs" />
   </ItemGroup>
 
 </Project>

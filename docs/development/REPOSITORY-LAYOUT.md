@@ -8,16 +8,17 @@ The user has approved public visibility: the project should be available for
 others to inspect and experiment with. Public documentation must distinguish
 working features from experimental, incomplete, and unverified requirements.
 
-The user has requested separate compiler, tests, examples, and documentation
-directories, compiler implementation under `compiler/src`, architecture-aware
-organization, and a README in every directory created. The user has also
-approved top-level `runtime/` and `stdlib/`, both with platform-specific
-subdirectories. Their detailed organization below is a proposal for discussion.
+The repository now has separate compiler, linker, runtime,
+standard-library, tests, examples, and documentation directories. Compiler
+implementation is under `compiler/src`; targeted tests live with their owning
+systems and broad tests remain at the repository root. Every maintained
+directory has a README. Runtime and standard-library platform boundaries below
+remain the design contract as the source split continues.
 
-This document records the design; it does not authorize starting the extraction
-or creating the GitHub repository before the layout discussion is complete.
-No migration is claimed complete. This document itself should move to the new
-repository's development documentation during extraction.
+This document records the chosen structure and migration contract. The public
+repository has been created and the initial source extraction is complete;
+separate project compilation, full source-file splitting, and CORSAC/OS consumer
+cleanup remain implementation work.
 
 ## Repository tree
 
@@ -25,26 +26,32 @@ repository's development documentation during extraction.
 cor-c/
   README.md
   LICENSE
+  REQUIREMENTS.md
+  TODO.md
   compiler/
     README.md
-    REQUIREMENTS.md
     corc.csproj
     src/
+      arch/
+        corsac/
+          assembler/
+        x86/
+          backend/
       driver/
       frontend/
       ir/
-      analysis/
       optimizations/
       metadata/
-      linker/
-      formats/
-        elf/
+    tests/
       arch/
+        corsac/
         x86/
-          assembler/
-          disassembler/
-          backend/
-      targets/
+      optimizations/
+  linker/
+    README.md
+    src/
+      elf/
+    tests/
   runtime/
     README.md
     src/
@@ -53,14 +60,7 @@ cor-c/
         x86/
       platforms/
         linux/
-          arch/
-            x86/
         corsac/
-          arch/
-            x86/
-        freestanding/
-          arch/
-            x86/
   stdlib/
     README.md
     src/
@@ -73,20 +73,11 @@ cor-c/
         Text/
         Threading/
       platforms/
-        posix/
         linux/
         corsac/
-        freestanding/
   tests/
     README.md
     language/
-    frontend/
-    optimizations/
-    arch/
-      x86/
-    linker/
-    runtime/
-    stdlib/
     integration/
     benchmarks/
   examples/
@@ -102,17 +93,20 @@ cor-c/
 ```
 
 Every actual directory receives a README, including `src/`, intermediate
-directories, and platform/architecture directories; repeated README entries are
+directories, and platform/arch directories; repeated README entries are
 omitted from the diagram for readability. Create a directory when it has actual
 content or is an explicitly requested root, not merely for a hypothetical port.
 No Windows, ARM, or other unimplemented port is implied by this tree.
 
 ## Compiler boundary
 
-`compiler/` contains only the implementation and build definition of the compiler
-toolchain executable: compilation, project orchestration, assembly/disassembly,
-metadata, object writing, and linking. Runtime and library implementations do not
-belong here merely because generated programs or self-hosting need them.
+`compiler/` contains the compiler executable, project orchestration, frontend,
+lowering, target-independent IR, optimization, metadata, and target-specific
+compiler support below `compiler/src/arch/`. Its architecture-focused tests are
+under `compiler/tests/arch/`. `linker/` contains object-format and linking
+implementation together with linker-focused tests. Runtime and library
+implementations do not belong in either subsystem merely because generated
+programs or self-hosting need them.
 
 Architecture-independent syntax, binding, IR, analyses, and optimizations remain
 separate from instruction selection, registers, encoding, and machine peepholes.
@@ -151,12 +145,12 @@ OS-and-architecture-specific code belongs below the combined location, such as
 syscall numbers in generic `arch/x86`, or duplicate OS-neutral x86 machinery in
 every platform directory.
 
-`corsac` denotes the CORSAC user-process environment. `freestanding` denotes
-bootloader/kernel-style execution without user-process OS services. They are
-different targets, not interchangeable implementations of every service.
-CORSAC device drivers, the kernel, and bootloader product code remain in
-`corsac86`; only reusable execution support and a defined host interface belong
-in this repository. Mixed current files must be split by responsibility.
+`corsac` denotes the CORSAC user-process environment. Bare x86 execution
+mechanisms without user-process OS services belong below `runtime/src/arch/x86`;
+they are not a separate top-level layout category. CORSAC device drivers, the
+kernel, and bootloader product code remain in `corsac86`; only reusable execution
+support and a defined host interface belong in this repository. Mixed current
+files must be split by responsibility.
 
 ## Standard-library layout
 
@@ -188,7 +182,7 @@ common to the supported POSIX targets. Linux and CORSAC adapters specialize
 actual differences; a POSIX label must not assume identical syscalls or layouts.
 Raw calling conventions stay in runtime platform/architecture support.
 
-The freestanding profile includes only support that can be implemented in that
+A bare x86 image includes only support that can be implemented in that
 environment. Where the standard permits unsupported-platform behavior, report
 it through the standard contract (for example, `PlatformNotSupportedException`),
 not silent success or fabricated results. Missing required behavior remains an
