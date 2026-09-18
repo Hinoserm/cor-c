@@ -95,6 +95,13 @@ public static class ObjectLinkCommand
             closedImageEntry: flat || physicalAddress is not null ? entry : null);
         int folded = LinkTimeOptimizer.Run(inputs, lto);
         if (selected is not null) X86CodeGenerationContract.ValidateTarget(inputs, selected);
+        // These contracts have been consumed by validation. Concatenating one
+        // copy per input into an executable is neither a valid contract nor
+        // runtime metadata, and can dwarf a small kernel's actual load image.
+        foreach (var input in inputs)
+            input.Item2.Sections.RemoveAll(section => section.Name == TargetContract.SectionName
+                || section.Name == X86CodeGenerationContract.SectionName
+                || section.Name == ManagedLayoutContract.SectionName);
         byte[] image;
         if (flat)
         {
