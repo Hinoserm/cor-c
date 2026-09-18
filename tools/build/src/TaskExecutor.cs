@@ -90,7 +90,7 @@ public sealed class TaskExecutor
     {
         if (task.Name == "Compile" && manifest.Expand((string?)task.Attribute("Toolchain") ?? options.Toolchain) == "managed")
         {
-            await ManagedProjectBuild.Run(Project(task), manifest.Expand((string?)task.Attribute("Configuration") ?? "$(Configuration)"), cancel);
+            await ManagedProjectBuild.Run(Project(task), manifest.Expand((string?)task.Attribute("Configuration") ?? "$(Configuration)"), cancel, runner);
             return;
         }
         if (task.Name == "Message") { Console.WriteLine(manifest.Expand(BuildManifest.Required(task, "Text"))); return; }

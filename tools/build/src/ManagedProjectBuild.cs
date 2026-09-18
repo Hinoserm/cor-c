@@ -9,7 +9,7 @@ namespace Corsac.Build;
 /// <summary>Standard SDK project evaluation is ours; Roslyn supplies managed code generation, never MSBuild.</summary>
 public static class ManagedProjectBuild
 {
-    public static async Task Run(string path, string configuration, CancellationToken cancel)
+    public static async Task Run(string path, string configuration, CancellationToken cancel, ProcessRunner runner)
     {
         string host = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet";
         ProcessStartInfo discover = new(host) { RedirectStandardOutput = true, UseShellExecute = false };
@@ -35,6 +35,7 @@ public static class ManagedProjectBuild
             string output = Path.Combine(root, "bin/managed", configuration, project.Framework);
             string work = Path.Combine(root, "obj/managed", configuration, project.Framework);
             Directory.CreateDirectory(output); Directory.CreateDirectory(work);
+            using FileStream buildLock = await Lock(Path.Combine(work, "build.lock"), cancel);
             string packRoot = Path.Combine(dotnet, "packs/Microsoft.NETCore.App.Ref");
             string[] packs = Directory.GetDirectories(packRoot).Where(pack => Directory.Exists(Path.Combine(pack, "ref", project.Framework)))
                 .OrderByDescending(pack => Version.Parse(Path.GetFileName(pack))).ToArray();
@@ -66,14 +67,11 @@ public static class ManagedProjectBuild
             {
                 string temporary = Path.Combine(work, project.AssemblyName + ".dll");
                 arguments.Add("-out:" + temporary);
-                ProcessStartInfo start = new(host) { UseShellExecute = false };
-                start.ArgumentList.Add(csc);
-                foreach (string argument in arguments) start.ArgumentList.Add(argument);
                 Console.WriteLine("managed compile " + project.Path);
-                using Process process = Process.Start(start) ?? throw new IOException("Cannot start managed C# compiler");
-                using var registration = cancel.Register(() => { try { if (!process.HasExited) process.Kill(true); } catch (InvalidOperationException) { } });
-                await process.WaitForExitAsync(cancel);
-                if (process.ExitCode != 0) throw new IOException("Managed compilation failed: " + project.Path);
+                ProcessResult result = await runner.Run("managed-" + project.AssemblyName, host,
+                    new[] { csc }.Concat(arguments), root, new Dictionary<string, string>(), TimeSpan.FromMinutes(10), cancel);
+                if (result.ExitCode != 0 || result.TimedOut)
+                    throw new IOException("Managed compilation failed: " + project.Path + "; logs: " + result.LogPrefix);
                 File.Move(temporary, dll, true);
                 File.WriteAllText(state, signature + "\n" + Identity(dll));
             }
@@ -105,5 +103,15 @@ public static class ManagedProjectBuild
     private static void WriteChanged(string path, string text)
     {
         if (!File.Exists(path) || File.ReadAllText(path) != text) File.WriteAllText(path, text);
+    }
+
+    private static async Task<FileStream> Lock(string path, CancellationToken cancel)
+    {
+        while (true)
+        {
+            cancel.ThrowIfCancellationRequested();
+            try { return new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
+            catch (IOException) { await Task.Delay(100, cancel); }
+        }
     }
 }
