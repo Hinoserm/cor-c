@@ -9,6 +9,9 @@ internal enum OperandKind
     Segment,
     Control,
     Mmx,
+    Float,
+    Debug,
+    Test,
     Memory,
     Immediate,
     FarPointer,
@@ -85,13 +88,24 @@ internal static class Operands
     /// <summary>True when the text names a register of any kind.</summary>
     public static bool IsRegisterName(string name)
         => Find(Reg8, name) >= 0 || Find(Reg16, name) >= 0 || Find(Reg32, name) >= 0
-           || Find(SegReg, name) >= 0 || ControlNumber(name) >= 0 || MmxNumber(name) >= 0;
+           || Find(SegReg, name) >= 0 || ControlNumber(name) >= 0 || MmxNumber(name) >= 0
+           || FloatNumber(name) >= 0 || SpecialNumber(name, "dr") >= 0 || SpecialNumber(name, "tr") >= 0;
+
+    private static int SpecialNumber(string name, string prefix)
+        => name.Length == 3 && name.StartsWith(prefix) && name[2] >= '0' && name[2] <= '7' ? name[2] - '0' : -1;
+
+    private static int FloatNumber(string name)
+    {
+        if (name == "st") return 0;
+        if (name.Length == 5 && name.StartsWith("st(") && name[4] == ')') name = "st" + name[3];
+        return SpecialNumber(name, "st");
+    }
 
     private static int MmxNumber(string name)
         => name.Length == 3 && name.StartsWith("mm") && name[2] >= '0' && name[2] <= '7' ? name[2] - '0' : -1;
 
     private static int ControlNumber(string name)
-        => name switch { "cr0" => 0, "cr1" => 1, "cr2" => 2, "cr3" => 3, "cr4" => 4, _ => -1 };
+        => name switch { "cr0" => 0, "cr2" => 2, "cr3" => 3, "cr4" => 4, _ => -1 };
 
     /// <summary>
     /// Parses one operand. <paramref name="bits"/> is the current default size,
@@ -109,7 +123,7 @@ internal static class Operands
         while (true)
         {
             string lower = Lower(FirstWord(rest));
-            int size = lower switch { "byte" => 1, "word" => 2, "dword" => 4, "qword" => 8, _ => 0 };
+            int size = lower switch { "byte" => 1, "word" => 2, "dword" => 4, "qword" => 8, "tword" or "tbyte" => 10, _ => 0 };
             if (size == 0)
             {
                 break;
@@ -139,6 +153,13 @@ internal static class Operands
         }
 
         string name = Lower(rest);
+
+        int special = FloatNumber(name);
+        if (special >= 0) { op.Kind = OperandKind.Float; op.Reg = special; op.Size = 10; return op; }
+        special = SpecialNumber(name, "dr");
+        if (special >= 0) { op.Kind = OperandKind.Debug; op.Reg = special; op.Size = 4; return op; }
+        special = SpecialNumber(name, "tr");
+        if (special >= 0) { op.Kind = OperandKind.Test; op.Reg = special; op.Size = 4; return op; }
 
         int mm = MmxNumber(name);
         if (mm >= 0)

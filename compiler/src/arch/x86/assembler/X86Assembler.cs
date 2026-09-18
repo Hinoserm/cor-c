@@ -1312,6 +1312,7 @@ public sealed partial class X86Assembler : ISymbols
 
     private static bool IsMnemonic(string word)
         => Mnemonics.Contains(word) || MmxOpcodes.ContainsKey(word) || ThreeDNowOpcodes.ContainsKey(word)
+            || FloatBare.ContainsKey(word) || FloatNames.Contains(word)
             || word is "cpuid" or "rdtsc" or "rdmsr" or "wrmsr" or "rsm" or "cmpxchg8b" or "prefetch" or "prefetchw" or "emms" or "femms" or "movd" or "movq"
             || (word.StartsWith('j') && word.Length > 1 && ConditionCode(word[1..]) >= 0);
 
@@ -1339,7 +1340,7 @@ public sealed partial class X86Assembler : ISymbols
 
         string[] a = Split(rest);
 
-        if (ExtendedInstruction(mn, a)) return;
+        if (ExtendedInstruction(mn, a) || FloatInstruction(mn, a)) return;
 
         switch (mn)
         {
@@ -1574,6 +1575,17 @@ public sealed partial class X86Assembler : ISymbols
         Need(a, 2, "mov");
         Operand d = P(a[0]);
         Operand s = P(a[1]);
+
+        if (d.Kind is OperandKind.Debug or OperandKind.Test || s.Kind is OperandKind.Debug or OperandKind.Test)
+        {
+            bool write = d.Kind is OperandKind.Debug or OperandKind.Test;
+            Operand special = write ? d : s, general = write ? s : d;
+            if (general.Kind != OperandKind.Register || general.Size != 4) throw Error("special registers require a 32-bit general register");
+            if (special.Kind == OperandKind.Test && (_cpu.Pentium || special.Reg < (_cpu.Name == "386" ? 6 : 3)))
+                throw Error("test register is unavailable on " + _cpu.Name);
+            Emit(0x0f, special.Kind == OperandKind.Debug ? (write ? (byte)0x23 : (byte)0x21) : (write ? (byte)0x26 : (byte)0x24));
+            Emit((byte)(0xc0 | special.Reg << 3 | general.Reg)); return;
+        }
 
         // The control registers are reached by their own two-byte opcode and
         // are always 32 bits wide, prefix or no prefix; that is how `mov eax,

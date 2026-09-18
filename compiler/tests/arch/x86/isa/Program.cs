@@ -43,6 +43,22 @@ public static class Program
                 cases.Add(mnemonic + " mm5, " + width + " ptr [ebx+ecx*4+16]");
             }
             foreach (string mnemonic in "psllw pslld psllq psraw psrad psrlw psrld psrlq".Split(' ')) cases.Add(mnemonic + " mm3, 255");
+            cases.AddRange("f2xm1 fabs fchs fnclex fcompp fcos fdecstp fincstp fninit fld1 fldl2t fldl2e fldpi fldlg2 fldln2 fldz fnop fpatan fprem fprem1 fptan frndint fscale fsin fsincos fsqrt ftst fucompp fxam fxtract fyl2x fyl2xp1 finit fclex fwait".Split(' '));
+            foreach (string mnemonic in "fadd fmul fsub fsubr fdiv fdivr".Split(' '))
+            {
+                cases.Add(mnemonic + " st(0), st(3)");
+                cases.Add(mnemonic + " st(3), st(0)");
+                cases.Add(mnemonic + "p st(3), st(0)");
+                cases.Add(mnemonic + " dword ptr [ebx+ecx*4+16]");
+                cases.Add(mnemonic + " qword ptr [ebx]");
+            }
+            foreach (string mnemonic in "fiadd fimul fisub fisubr fidiv fidivr ficom ficomp".Split(' '))
+                foreach (string width in new[] { "word", "dword" }) cases.Add(mnemonic + " " + width + " ptr [ebx]");
+            foreach (string mnemonic in "fld fst fstp fxch ffree fcom fcomp fucom fucomp".Split(' ')) cases.Add(mnemonic + " st(4)");
+            cases.AddRange(["fld tbyte ptr [ebx]", "fstp tbyte ptr [ebx]", "fild qword ptr [ebx]", "fistp qword ptr [ebx]",
+                "fbld tbyte ptr [ebx]", "fbstp tbyte ptr [ebx]", "fldcw word ptr [ebx]", "fstcw word ptr [ebx]",
+                "fnstsw ax", "fstsw ax", "fldenv [ebx]", "fnstenv [ebx]", "fsave [ebx]", "frstor [ebx]",
+                "mov eax, dr0", "mov dr7, eax"]);
             foreach (int bits in new[] { 16, 32 })
             foreach (string instruction in cases)
             {
@@ -65,6 +81,7 @@ public static class Program
             catch (Corsac.Asm.AsmException) { excluded = true; }
             Check(excluded, "486 accepted MMX");
             Console.WriteLine(checks + " CPU/profile/encoding checks passed; " + work);
+            ExecutionTests.Run(work);
             return 0;
         }
         catch (Exception error) { Console.Error.WriteLine(error + "\nEvidence: " + work); return 1; }

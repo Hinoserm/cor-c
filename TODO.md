@@ -19,8 +19,8 @@ required gates rather than assuming a missing log is proof of completion.
 
 ## Priority and purpose
 
-Immediate sequence: finish the isolated CORSAC86 production-build migration
-(including default nano/iperf3), then resume x86 instruction/profile work.
+Immediate sequence: resume x86 instruction/profile work. The isolated CORSAC86
+per-file process scheduling work is paused separately.
 
 - [ ] Complete CPU/ISA profiles, assembler encodings and automatic profitable
   code generation for Pentium/MMX/K6/K6-2/K6-III/plus and 3DNow! families.
@@ -34,8 +34,9 @@ Immediate sequence: finish the isolated CORSAC86 production-build migration
 - [ ] Preserve target requirements through objects, separate compilation and
   LTO; reject incompatible instruction/FPU selections.
 - [ ] Run encoding/correctness tests on Linux/QEMU and host-supported benchmarks.
-  The initial CPU/MMX assembler prototype is saved separately while OS build
-  migration is active; it is not complete or accepted.
+  CPU profiles and MMX/3DNow encodings are implemented; 550 encoding/profile
+  checks pass, including x87 and debug-register additions. Execution coverage,
+  automatic code generation and complete target contracts remain unfinished.
 - [ ] Validate LOCK operand restrictions. A separate kernel task owns F00F
   mitigation; do not duplicate its implementation here.
 
