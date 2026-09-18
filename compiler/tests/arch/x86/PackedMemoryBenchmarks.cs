@@ -19,7 +19,7 @@ public static class PackedMemoryBenchmarks
         Console.WriteLine("Native Linux packed benchmark; median of five runs after warmup; process startup included");
         Console.WriteLine("operation,bytes,mmx,iterations,text_bytes,median_ms,ns_per_operation");
         List<string> rows = ["operation,bytes,mmx,iterations,text_bytes,median_ms,ns_per_operation"];
-        foreach (string operation in new[] { "copy", "zero", "add8", "add16", "add32", "sub8", "sub16", "sub32", "and32", "or32", "xor32", "mul16" })
+        foreach (string operation in new[] { "copy", "zero", "add8", "add16", "add32", "sub8", "sub16", "sub32", "and32", "or32", "xor32", "mul16", "mulhigh16" })
         foreach (int length in new[] { 32, 64, 128 })
         foreach (bool packed in new[] { false, true })
         {
@@ -44,12 +44,15 @@ public static class PackedMemoryBenchmarks
                     "xor" => Opcode.Xor, "mul" => Opcode.Mul, _ => Opcode.Or };
                 for (int offset = 0; offset < length; offset += width)
                 {
-                    VReg left = b.Load(IrType.I32, new SlotOperand(source), offset, width, false);
-                    VReg second = b.Load(IrType.I32, new SlotOperand(right), offset, width, false);
-                    b.Store(new SlotOperand(destination), R(b.Binary(op, left, second)), offset, width);
+                    VReg left = b.Load(IrType.I32, new SlotOperand(source), offset, width, operation == "mulhigh16");
+                    VReg second = b.Load(IrType.I32, new SlotOperand(right), offset, width, operation == "mulhigh16");
+                    VReg value = b.Binary(op, left, second);
+                    if (operation == "mulhigh16") value = b.Binary(Opcode.ShrS, value, 16);
+                    b.Store(new SlotOperand(destination), R(value), offset, width);
                 }
                 expected = op switch { Opcode.Add => 0x13355779, Opcode.Sub => 0x11335577, Opcode.And => 0x00000000,
                     Opcode.Or => 0x13355779, Opcode.Xor => 0x13355779, _ => unchecked((int)0x4634ce78) };
+                if (operation == "mulhigh16") expected = 0x00120056;
             }
             b.CopyTo(count, R(b.Binary(Opcode.Sub, count, 1)));
             b.Branch(b.Binary(Opcode.Ne, count, 0), loop, done); b.SetBlock(done);

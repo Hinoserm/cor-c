@@ -67,6 +67,7 @@ public enum MOp : byte
     MmxLoad, MmxStore, MmxZero, Emms, Femms,
     MmxAddB, MmxAddW, MmxAddD, MmxSubB, MmxSubW, MmxSubD,
     MmxAnd, MmxOr, MmxXor, MmxMulW,
+    MmxMulHighW, ThreeDNowAverageB, ThreeDNowMulRoundW,
 
     // ---- the thread block ----------------------------------------------------
     //

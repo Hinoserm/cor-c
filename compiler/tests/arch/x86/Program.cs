@@ -82,6 +82,7 @@ internal static class Program
         SmallFills(m);
         PackedFrames(m);
         PackedArithmeticFrames(m);
+        PackedRoundingFrames(m);
         ByteSwaps(m);
         Exit(m);
         UDiv64(m);
@@ -115,6 +116,9 @@ internal static class Program
         Check(FunctionAsm(asm, "packed_frames").Contains("femms") == (packed && Target.X86.X86Profile.ThreeDNow), "packed frame exit respects 3DNow selection");
         Check(FunctionAsm(asm, "packed_arithmetic").Contains("paddb") == packed, "adjacent byte arithmetic is packed automatically");
         Check(FunctionAsm(asm, "packed_arithmetic").Contains("pmullw") == packed, "adjacent low-word products are packed automatically");
+        Check(FunctionAsm(asm, "packed_rounding").Contains("pmulhw") == packed, "signed high-word products are packed automatically");
+        Check(FunctionAsm(asm, "packed_rounding").Contains("pavgusb") == (packed && Target.X86.X86Profile.ThreeDNow), "rounded byte averages use 3DNow when enabled");
+        Check(FunctionAsm(asm, "packed_rounding").Contains("pmulhrw") == (packed && Target.X86.X86Profile.ThreeDNow), "rounded signed high-word products use 3DNow when enabled");
         File.WriteAllText(Path.Combine(outDir, "tests.asm"), asm);
         Console.WriteLine(asm);
 
@@ -958,6 +962,40 @@ internal static class Program
         b.Ret(R(okay));
     }
 
+    private static void PackedRoundingFrames(Module m)
+    {
+        (Function function, Builder b) = New(m, "packed_rounding", IrType.I32);
+        FrameSlot left = function.NewSlot(32, 8), right = function.NewSlot(32, 8), destination = function.NewSlot(32, 8);
+        VReg okay = b.Const(1, IrType.I32);
+        int[] values = [0, -1, 1, 32767, -32768, 255, 128, 127, 0x7007, 0x7ffe, 0x5321, 0xec22];
+        foreach (int kind in new[] { 0, 1, 2 })
+        {
+            int width = kind == 0 ? 1 : 2;
+            for (int offset = 0; offset < 32; offset += width)
+            {
+                b.Store(new SlotOperand(left), I(values[offset / width % values.Length]), offset, width);
+                b.Store(new SlotOperand(right), I(values[(offset / width + 1) % values.Length]), offset, width);
+            }
+            for (int offset = 0; offset < 32; offset += width)
+            {
+                VReg a = b.Load(IrType.I32, new SlotOperand(left), offset, width, width == 2);
+                VReg c = b.Load(IrType.I32, new SlotOperand(right), offset, width, width == 2);
+                VReg value = b.Binary(kind == 0 ? Opcode.Add : Opcode.Mul, a, c);
+                if (kind != 1) value = b.Binary(Opcode.Add, value, kind == 0 ? 1 : 32768);
+                value = b.Binary(Opcode.ShrS, value, kind == 0 ? 1 : 16);
+                b.Store(new SlotOperand(destination), R(value), offset, width);
+            }
+            for (int offset = 0; offset < 32; offset += width)
+            {
+                int a = values[offset / width % values.Length], c = values[(offset / width + 1) % values.Length];
+                int expected = kind == 0 ? ((byte)a + (byte)c + 1) >> 1 : ((short)a * (short)c + (kind == 2 ? 32768 : 0)) >> 16;
+                VReg actual = b.Load(IrType.I32, new SlotOperand(destination), offset, width, false);
+                okay = b.Binary(Opcode.And, okay, b.Binary(Opcode.Eq, actual, expected & (width == 1 ? 255 : 65535)));
+            }
+        }
+        b.Ret(R(okay));
+    }
+
     private static void SmallFills(Module m)
     {
         (Function f, Builder b) = New(m, "small_fills", IrType.I32);
@@ -1242,6 +1280,7 @@ internal static class Program
         Expect(b.Call("small_fills", IrType.I32)!, I(1));
         Expect(b.Call("packed_frames", IrType.I32)!, I(1));
         Expect(b.Call("packed_arithmetic", IrType.I32)!, I(1));
+        Expect(b.Call("packed_rounding", IrType.I32)!, I(1));
         Expect(b.Call("bswap32", IrType.I32, I(0x11223344))!, I(0x44332211));
         Expect(b.Call("bswap32", IrType.I32, I(unchecked((int)0x80000001)))!, I(0x01000080));
         Expect(b.Call("bswap64_inplace", IrType.I64, I(0x0123456789abcdefL, IrType.I64))!,
