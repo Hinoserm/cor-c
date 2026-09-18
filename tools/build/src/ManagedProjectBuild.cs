@@ -40,7 +40,7 @@ public static class ManagedProjectBuild
             }
             foreach (string reference in project.References) Visit(reference);
             string[] projectReferences = (Property("DisableTransitiveProjectReferences").Equals("true", StringComparison.OrdinalIgnoreCase)
-                ? project.References : closure.Order(StringComparer.Ordinal)).Select(reference => outputs[reference]).ToArray();
+                ? project.References.AsEnumerable() : closure.Order(StringComparer.Ordinal)).Select(reference => outputs[reference]).ToArray();
             string root = Path.GetDirectoryName(project.Path)!;
             string output = Path.Combine(root, "bin/managed", configuration, project.Framework);
             string work = Path.Combine(root, "obj/managed", configuration, project.Framework);
