@@ -10,7 +10,7 @@ public static class StructuralOwnershipTests
     public static void Run(string work)
     {
         string source = Path.Combine(work, "TupleOwner.cor");
-        File.WriteAllText(source, "class Program { public static int Main() { var pair = (17, 25); return pair.Item1 + pair.Item2; } }");
+        File.WriteAllText(source, "class Program { public static int Main() { Program instance = new Program(); var pair = (17, 25); return pair.Item1 + pair.Item2; } }");
         string[] runtime = RuntimeDeclarations.Sources();
         var front = Frontend.Compile(new[] { source }.Concat(runtime).ToArray(), "tuple-owner", false,
             libraryPaths: runtime, elsewherePaths: runtime) ?? throw new Exception("Tuple owner binding failed");
