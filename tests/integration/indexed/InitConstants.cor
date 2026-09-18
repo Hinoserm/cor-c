@@ -1,0 +1,5 @@
+namespace InitValues
+{
+    public static class One { public const int Value = 17; }
+    public static class Two { public const int Value = 25; }
+}

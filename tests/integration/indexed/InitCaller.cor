@@ -1,0 +1,13 @@
+static class Program
+{
+    static int Main()
+    {
+        if (Initialized.First + Initialized.Second != 42) return 31;
+        if (Initialized.Runs != 1) return 32;
+        Initialized first = new Initialized();
+        Initialized second = new Initialized();
+        if (first.Sum() != 42 || second.Sum() != 42) return 33;
+        if (Initialized.Runs != 1) return 34;
+        return 42;
+    }
+}

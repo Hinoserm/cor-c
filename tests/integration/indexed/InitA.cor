@@ -1,0 +1,8 @@
+using Values = InitValues.One;
+
+public partial class Initialized
+{
+    public static int First { get; } = Values.Value;
+    public int InstanceFirst = Values.Value;
+    public static int Runs;
+}

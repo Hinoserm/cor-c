@@ -1635,24 +1635,29 @@ public sealed partial class Binder
             // A CONST IS NOT STORAGE, exactly as in the instance case: the
             // value goes wherever the name appears and there is nothing to
             // assign to.
-            if (m is not FieldDecl f || f.Init is null
-                || !f.Mods.HasFlag(Mods.Static) || f.Mods.HasFlag(Mods.Const))
+            Expr initial;
+            TypeRef type;
+            string field;
+            if (m is FieldDecl f && f.Init is not null && f.Mods.HasFlag(Mods.Static) && !f.Mods.HasFlag(Mods.Const))
             {
-                continue;
+                initial = f.Init; type = f.Type; field = f.Name; f.Init = null;
             }
+            else if (m is PropertyDecl p && p.Init is not null && p.Auto && p.Mods.HasFlag(Mods.Static))
+            {
+                initial = p.Init; type = p.Type; field = "<" + p.Name + ">"; p.Init = null;
+            }
+            else continue;
 
             body.Add(new ExprStmt
             {
                 Expr = new AssignExpr
                 {
-                    Target = new NameExpr { Name = f.Name, Line = f.Line, Col = f.Col },
-                    Value = InitializerMethods.Value(f, f.Type, Retarget(f.Init, f.Type), initializerMethods),
-                    Line = f.Line, Col = f.Col,
+                    Target = new NameExpr { Name = field, Line = m.Line, Col = m.Col },
+                    Value = InitializerMethods.Value(m, type, Retarget(initial, type), initializerMethods),
+                    Line = m.Line, Col = m.Col,
                 },
-                Line = f.Line, Col = f.Col,
+                Line = m.Line, Col = m.Col,
             });
-
-            f.Init = null;
         }
         d.Members.AddRange(initializerMethods);
 

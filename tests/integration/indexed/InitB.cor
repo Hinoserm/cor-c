@@ -1,0 +1,9 @@
+using Values = InitValues.Two;
+
+public partial class Initialized
+{
+    public static int Second { get; } = Values.Value;
+    public int InstanceSecond = Values.Value;
+    static Initialized() { Runs++; }
+    public int Sum() => InstanceFirst + InstanceSecond;
+}

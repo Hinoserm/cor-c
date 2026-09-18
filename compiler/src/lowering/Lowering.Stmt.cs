@@ -617,12 +617,18 @@ public sealed partial class Lowering
         // Only a `throw expr`, never a bare `throw;`: a rethrow keeps the
         // trace the first throw recorded, which is what C# promises and the
         // whole reason the two are spelled differently.
-        if (RuntimeMethod("Capture", 2) is MethodSymbol capture)
+        if (RuntimeMethod("Capture", 3) is MethodSymbol capture)
         {
             Require(capture);
             VReg frame = _e.Reg(IrTypes.Word, "fp");
             _e.Emit(Opcode.FramePointer, frame);
-            _e.Call(CallLabel(capture), IrType.Void, R(obj), R(Widen(frame)));
+            // A frame chain names callers, not the current instruction. Keep
+            // the throwing source location explicitly, even if Capture or its
+            // callers are inlined; no extra machine frame is required.
+            string site = "   at " + (_f.Display ?? _f.Name);
+            string file = _f.SourceFile ?? at.File;
+            if (!string.IsNullOrEmpty(file)) site += " in " + file + ":line " + at.Line;
+            _e.Call(CallLabel(capture), IrType.Void, R(obj), R(Widen(frame)), new SymOperand(InternString(site + "\n")));
         }
 
         Rethrow(obj, at);

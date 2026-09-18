@@ -1119,7 +1119,7 @@ static class Runtime
             // read whatever memory that number points at.
             if (next != 0 && next <= frame) { break; }
 
-            string? said = Frame(ret);
+            string? said = Frame(ret - 1);
             if (said == null) { break; }
             made.Append(said);
             made.Append('\n');
@@ -1183,12 +1183,12 @@ static class Runtime
     /// which is when the stack still says, and is what .NET does too.
     ///
     /// The compiler emits the call, and passes the throwing function's own
-    /// frame pointer, so the answer does not depend on whether this was
-    /// inlined into the thrower.
-    public static void Capture(object thrown, long frame) {
+    /// frame pointer and source site. The frame chain begins with its callers;
+    /// the explicit site preserves the leaf even when Capture is inlined.
+    public static void Capture(object thrown, long frame, string site) {
         if (thrown is Exception) {
             Exception e = (Exception)thrown;
-            if (e.StackTrace.Length == 0) { e.Trace$ = Trace(frame); }
+            if (e.StackTrace.Length == 0) { e.Trace$ = String.Concat(site, Trace(frame)); }
         }
     }
 
