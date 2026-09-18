@@ -79,6 +79,13 @@ tasks below track that work; moving files alone does not reduce the working set.
 
 ## Compatibility defects
 
+- [ ] Complete interface contract matching: reject incompatible return/ref
+  signatures, compare generic method parameters by position rather than spelling,
+  and preserve inherited interface mappings through overrides/reimplementation.
+- [ ] Distinguish stack-trace reset for `throw exception;` from preservation for
+  bare `throw;` and exception-dispatch/task propagation. The existing capture
+  helper still preserves a previously populated trace for an explicit throw.
+
 - [x] Verify the standard Path.Combine params overload and fixed-overload null
   validation. This repairs the first post-extraction native bootstrap failure
   (five/six path segments); the implementation avoids intermediate join strings.

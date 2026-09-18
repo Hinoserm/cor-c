@@ -41,7 +41,10 @@ public static class ManagedDirectoryTests
         }
         Check(flat.Bytes.SequenceEqual(Linker.LinkFlat(inputs, "_start", 0x10000).Bytes), "Repeated linking mutates inputs");
         Check(Linker.Link(inputs, "_start").Length > 0, "Static metadata link");
-        Check(Linker.LinkShared(inputs, "libmetadata.so").Length > 0, "Shared metadata link");
+        byte[] shared = Linker.LinkShared(inputs, "libmetadata.so");
+        Check(shared.Length > 0, "Shared metadata link");
+        Check(!ElfReader.ExportsOf(shared).Any(name => name == ManagedDirectory.Symbol || name.StartsWith("__corsac_unit_", StringComparison.Ordinal)),
+            "Image-local metadata leaked into dynamically interposable exports");
         Check(beforeA.SequenceEqual(ElfWriter.WriteObject(a)) && beforeB.SequenceEqual(ElfWriter.WriteObject(b)), "Metadata synthesis changed original objects");
         ObjectFile bad = Unit("_start");
         bad.Symbols.Add(new Symbol { Name = ManagedDirectory.Symbol, Section = bad.Sections[0] });
