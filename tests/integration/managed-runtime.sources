@@ -1,4 +1,5 @@
 stdlib/src/System/Core.cor
+stdlib/src/System/Runtime/ExceptionServices/ExceptionDispatchInfo.cor
 runtime/src/core/runtime.cor
 runtime/src/core/gc.cor
 runtime/src/core/threading.cor

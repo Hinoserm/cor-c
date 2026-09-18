@@ -13,10 +13,10 @@ work="$(mktemp -d "$root/build/selfcompile.XXXXXX")"
 snapshot="$work/source"
 mkdir "$snapshot"
 printf 'selfcompile work: %s\n' "$work"
-git archive "$revision" compiler linker runtime stdlib tests/language/run.sh tests/benchmarks/selfcompile-smoke.cor | tar -x -C "$snapshot"
+git archive "$revision" compiler linker runtime stdlib tests/integration/managed-runtime.sources tests/benchmarks/selfcompile-smoke.cor | tar -x -C "$snapshot"
 cd "$snapshot"
 export CORC_LIB="$snapshot"
-read -r -a libraries <<< "$(sed -n 's/^libs="${CORC_LIBS:-\(.*\)}"/\1/p' tests/language/run.sh)"
+mapfile -t libraries < tests/integration/managed-runtime.sources
 test "${#libraries[@]}" -gt 0
 mapfile -t sources < <(rg --files compiler/src linker/src -g '*.cs' -g '!linker/src/driver/Program.cs' -g '!**/tests/**' -g '!**/bin/**' -g '!**/obj/**' -g '!**/Legacy/**' | LC_ALL=C sort)
 test "${#sources[@]}" -gt 0

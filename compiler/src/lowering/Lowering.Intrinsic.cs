@@ -48,6 +48,9 @@ public sealed partial class Lowering
 
         switch (name)
         {
+            case "Rethrow":
+                Rethrow(Arg(call, target, 0), call);
+                return Void();
             // ---- memory as words ------------------------------------------------
             case "Peek":
             case "PeekWord" when _t.WordSize == 4:

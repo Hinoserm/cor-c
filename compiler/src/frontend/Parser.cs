@@ -3186,8 +3186,7 @@ public sealed class Parser
                 // it is spelt as exactly that: a throw of the clause's
                 // variable. A clause that did not name its exception is given a
                 // hidden name for the purpose, which the binder declares like
-                // any other; nothing after the parser knows the statement had
-                // no operand.
+                // any other. Preserve its rethrow identity for stack traces.
                 if (At(Tok.Semi))
                 {
                     if (_catches.Count == 0)
@@ -3202,6 +3201,7 @@ public sealed class Parser
                     return new ThrowStmt
                     {
                         Value = new NameExpr { Name = caught.Name, Line = at.Line, Col = at.Col },
+                        IsRethrow = true,
                         Line = at.Line, Col = at.Col,
                     };
                 }

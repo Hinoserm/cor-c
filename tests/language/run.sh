@@ -26,7 +26,7 @@ set -u
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
-libs="${CORC_LIBS:-stdlib/src/System/Core.cor runtime/src/core/runtime.cor runtime/src/core/gc.cor runtime/src/core/threading.cor runtime/src/platforms/linux/threading.cor runtime/src/platforms/linux/system.cor stdlib/src/System/interop.cor stdlib/src/System/IO/io.cor stdlib/src/System/Collections/Collections.cor stdlib/src/System/IO/io-streams.cor stdlib/src/System/IO/compression.cor stdlib/src/System/IO/tar.cor stdlib/src/System/time.cor stdlib/src/System/values.cor stdlib/src/System/numerics.cor stdlib/src/System/Text/RegularExpressions.cor stdlib/src/System/console.cor stdlib/src/System/environment.cor stdlib/src/System/Net/Net.cor stdlib/src/System/Security/Cryptography/Cryptography.cor stdlib/src/System/signals.cor stdlib/src/System/unix.cor stdlib/src/System/process.cor stdlib/src/System/power.cor}"
+libs="${CORC_LIBS:-$(tr '\n' ' ' < "$root/tests/integration/managed-runtime.sources")}"
 timeout_s="${TIMEOUT:-10}"
 verbose=0
 filter=""
@@ -144,6 +144,12 @@ done
 
 for f in "${tests[@]}"; do
     name="$(basename "$f" .cor)"
+    timeout_s="${TIMEOUT:-$(header_value "$f" timeout)}"
+    timeout_s="${timeout_s:-10}"
+    if ! [[ "$timeout_s" =~ ^[1-9][0-9]*$ ]]; then
+        echo "invalid positive timeout for $name: $timeout_s" >&2
+        exit 2
+    fi
     exe="$work/$name"
     want_exit="$(header_value "$f" expect-exit)"
     [ -n "$want_exit" ] || want_exit=0

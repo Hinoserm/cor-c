@@ -258,7 +258,8 @@ public sealed partial class Lowering
             }
 
             case ThrowStmt th:
-                EmitThrow(th.Value, th);
+                if (th.IsRethrow) Rethrow(Eval(th.Value), th);
+                else EmitThrow(th.Value, th);
                 break;
 
             case TryStmt t:

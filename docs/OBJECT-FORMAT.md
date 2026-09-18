@@ -102,7 +102,8 @@ relocation; original function bodies remain. Dynamic/PIC objects do not publish
 these closed-world summaries. --no-lto disables transformations but retains
 metadata validation.
 
-Generic template serialization is now GIR major version 8: Block records carry
+Generic template serialization is now GIR major version 9: throw records retain
+the bare-rethrow flag so specialization preserves exception traces. Block records carry
 a checked/unchecked/inherited arithmetic-context byte. Older versions are
 rejected rather than interpreted with missing overflow semantics. This is
 compiler metadata versioning; ordinary ELF machine-object encoding is unchanged.

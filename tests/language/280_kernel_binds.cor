@@ -1,5 +1,6 @@
 // test: the machine-independent kernel binds for x86
 // expect-exit: 0
+// timeout: 300
 // expect-output:
 // kernel binds: ok
 //

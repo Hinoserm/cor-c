@@ -96,7 +96,7 @@ hand-maintained header is introduced.
 | .corsac.roots | Explicit retention and deferred-resolution contracts | Specified, pending |
 
 GIR is the existing generic syntax representation, not serialized optimization
-IR. Its major version is 8. The generic index must identify GIR version per
+IR. Its major version is 9. The generic index must identify GIR version per
 template payload and reject incompatible input rather than reinterpret it.
 
 All new indexed sections use little-endian fixed-width integers, section-relative

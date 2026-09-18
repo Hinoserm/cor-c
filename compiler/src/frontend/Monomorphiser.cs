@@ -1309,7 +1309,7 @@ public sealed class Monomorphiser
                 return new ReturnStmt { Value = r.Value is null ? null : Rewrite(r.Value, map), Line = r.Line, Col = r.Col };
 
             case ThrowStmt t:
-                return new ThrowStmt { Value = Rewrite(t.Value, map), Line = t.Line, Col = t.Col };
+                return new ThrowStmt { Value = Rewrite(t.Value, map), IsRethrow = t.IsRethrow, Line = t.Line, Col = t.Col };
 
             case BreakStmt:
                 return new BreakStmt { Line = s.Line, Col = s.Col };

@@ -293,13 +293,15 @@ class Task
 
         if (s == Faulted && e != null)
         {
-            throw e;
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(e);
+            return;
         }
         if (s == Canceled)
         {
             if (e != null)
             {
-                throw e;
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(e);
+                return;
             }
             throw new TaskCanceledException(this);
         }

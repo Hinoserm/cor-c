@@ -764,6 +764,7 @@ public static class Driver
         List<string> libs = new()
         {
             Path.Combine(root, "stdlib", "src", "System", "Core.cor"),
+            Path.Combine(root, "stdlib", "src", "System", "Runtime", "ExceptionServices", "ExceptionDispatchInfo.cor"),
             Path.Combine(root, "runtime", "src", "core", "runtime.cor"),
             Path.Combine(root, "runtime", "src", "core", "gc.cor"),
         };

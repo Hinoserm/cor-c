@@ -23,6 +23,10 @@ static class Program
         try { thread.Start(); }
         catch (ThreadStateException) { rejected = true; }
         if (!rejected || calls != 1) return 4;
+        Thread implicitConversion = new Thread(Work);
+        implicitConversion.Start();
+        implicitConversion.Join();
+        if (calls != 2) return 5;
         Console.WriteLine("thread lifecycle ok");
         return 0;
     }

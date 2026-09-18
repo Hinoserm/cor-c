@@ -1188,7 +1188,7 @@ static class Runtime
     public static void Capture(object thrown, long frame, string site) {
         if (thrown is Exception) {
             Exception e = (Exception)thrown;
-            if (e.StackTrace.Length == 0) { e.Trace$ = String.Concat(site, Trace(frame)); }
+            e.Trace$ = String.Concat(site, Trace(frame));
         }
     }
 

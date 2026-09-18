@@ -50,7 +50,7 @@ fi
 
 # ---- the sources, in the order every compilation must see them --------------
 
-SOURCES="stdlib/src/System/Core.cor runtime/src/core/runtime.cor runtime/src/core/gc.cor runtime/src/core/threading.cor \
+SOURCES="stdlib/src/System/Core.cor stdlib/src/System/Runtime/ExceptionServices/ExceptionDispatchInfo.cor runtime/src/core/runtime.cor runtime/src/core/gc.cor runtime/src/core/threading.cor \
 runtime/src/platforms/linux/threading.cor runtime/src/platforms/linux/system.cor stdlib/src/System/interop.cor stdlib/src/System/IO/io.cor \
 stdlib/src/System/Collections/Collections.cor stdlib/src/System/IO/io-streams.cor stdlib/src/System/IO/compression.cor stdlib/src/System/IO/tar.cor \
 stdlib/src/System/time.cor stdlib/src/System/values.cor stdlib/src/System/numerics.cor stdlib/src/System/Text/RegularExpressions.cor stdlib/src/System/console.cor \
@@ -64,7 +64,7 @@ stdlib/src/System/process.cor stdlib/src/System/power.cor"
 # list, which is checked after every build.
 
 LIBRARIES="
-libcorsacrt.so|stdlib/src/System/Core.cor runtime/src/core/runtime.cor runtime/src/core/gc.cor runtime/src/core/threading.cor runtime/src/platforms/linux/threading.cor runtime/src/platforms/linux/system.cor stdlib/src/System/signals.cor
+libcorsacrt.so|stdlib/src/System/Core.cor stdlib/src/System/Runtime/ExceptionServices/ExceptionDispatchInfo.cor runtime/src/core/runtime.cor runtime/src/core/gc.cor runtime/src/core/threading.cor runtime/src/platforms/linux/threading.cor runtime/src/platforms/linux/system.cor stdlib/src/System/signals.cor
 libSystem.Runtime.InteropServices.so|stdlib/src/System/interop.cor
 libSystem.Security.Cryptography.so|stdlib/src/System/Security/Cryptography/Cryptography.cor
 libSystem.Runtime.Extensions.so|stdlib/src/System/time.cor stdlib/src/System/values.cor stdlib/src/System/environment.cor

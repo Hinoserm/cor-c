@@ -973,6 +973,7 @@ public static class Prelude
             // and the chain of saved ones behind it is the stack of callers.
             public static long FrameTable() { return 0; }
             public static long FrameDirectory() { return 0; }
+            public static void Rethrow(object exception) { }
             public static long FramePointer() { return 0; }
 
             // ---- the thread block ----------------------------------------

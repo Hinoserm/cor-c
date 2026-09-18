@@ -45,7 +45,8 @@ public static class Gir
     // 7: a declaration carries the names of its attributes. `[Flags]` decides
     // what an enum prints, so dropping it on the way through here would make a
     // template's enum print differently from the same enum compiled directly.
-    public const ushort Major = 8;
+    // 9: throw statements preserve explicit throw versus bare rethrow.
+    public const ushort Major = 9;
 
     /// <summary>Bumped when something is APPENDED that an old reader can ignore.</summary>
     public const ushort Minor = 0;
@@ -569,6 +570,7 @@ public static class Gir
 
                 case ThrowStmt t:
                     U8((byte)S.Throw);
+                    U8(t.IsRethrow ? (byte)1 : (byte)0);
                     Expr(t.Value);
                     break;
 
@@ -1380,7 +1382,7 @@ public static class Gir
                     return new GotoCaseStmt { IsDefault = U8() != 0, Value = Expr() };
 
                 case S.Throw:
-                    return new ThrowStmt { Value = Need() };
+                    return new ThrowStmt { IsRethrow = U8() != 0, Value = Need() };
 
                 case S.Switch:
                 {

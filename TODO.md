@@ -89,8 +89,9 @@ tasks below track that work; moving files alone does not reduce the working set.
   signatures, compare generic method parameters by position rather than spelling,
   and preserve inherited interface mappings through overrides/reimplementation.
 - [ ] Distinguish stack-trace reset for `throw exception;` from preservation for
-  bare `throw;` and exception-dispatch/task propagation. The existing capture
-  helper still preserves a previously populated trace for an explicit throw.
+  bare `throw;` and exception-dispatch/task propagation. The current checkpoint
+  retains rethrow identity through GIR v9, implements ExceptionDispatchInfo,
+  and routes task propagation through it. Milestone verification is pending.
 
 - [x] Verify the standard Path.Combine params overload and fixed-overload null
   validation. This repairs the first post-extraction native bootstrap failure

@@ -3876,8 +3876,24 @@ public sealed partial class Binder
     /// </summary>
     private bool Fits(Type had, Type want, Expr? written)
         => had.IsError || Convertible(had, want) || Variant(had, want)
+        || (written is not null && MethodGroupFits(written, want))
         || (written is not null && had.IsInteger && want.IsInteger && !want.Nullable
             && ConstantValue(written, _thisType) is long value && Fits(value, want));
+
+    private bool MethodGroupFits(Expr written, Type wanted)
+    {
+        if (!_r.Resolved.TryGetValue(written, out Sym? symbol) || Grouped(symbol) is not { } methods)
+            return false;
+        MethodSymbol? invoke = wanted.Symbol?.FindMethods("Invoke").FirstOrDefault();
+        return invoke is not null && methods.Any(method => method.Params.Count == invoke.Params.Count
+            && method.TypeParams.Count == 0
+            && (method.Returns.Prim == Prim.Void ? invoke.Returns.Prim == Prim.Void
+                : Convertible(method.Returns, invoke.Returns))
+            && method.Params.Zip(invoke.Params).All(pair => pair.First.ByRef == pair.Second.ByRef
+                && pair.First.ReadOnly == pair.Second.ReadOnly
+                && (pair.First.ByRef ? MethodSignatures.SameType(pair.First.Type, pair.Second.Type)
+                    : Convertible(pair.Second.Type, pair.First.Type))));
+    }
 
     private bool Convertible(Type from, Type to)
     {
@@ -7737,6 +7753,12 @@ public sealed partial class Binder
                         _r.NewConstructors[nw] = ctor;
                         for (int i = 0; i < constructorArgs.Count; i++)
                         {
+                            if (MethodGroupLambda(nw.Args[i], ctor.Params[i].Type) is LambdaExpr wrapper)
+                            {
+                                _r.Rewrites[nw.Args[i]] = wrapper;
+                                constructorArgs[i] = CheckLambda(wrapper, ctor.Params[i].Type);
+                                continue;
+                            }
                             if (nw.Args[i] is NewExpr { Type.Name.Length: 0, Elements: null })
                             {
                                 Type? saved = _wanted;
