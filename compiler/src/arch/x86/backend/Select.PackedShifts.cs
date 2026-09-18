@@ -37,6 +37,10 @@ internal sealed partial class Selector
         }
         int bytes = lanes * width / 8 * 8;
         if (bytes < 16) return false;
+        // Native measurements show EMMS overhead erases the benefit of small
+        // dword-shift groups. Keep these scalar; FEMMS targets have a different
+        // transition path, and word shifts save substantially more work.
+        if (width == 4 && bytes < 64 && !Target.Current.X86Profile.ThreeDNow) return false;
         bool signed = firstShift.Op == Opcode.ShrS && (width == 4 || first.Signed);
         MOp packed = firstShift.Op == Opcode.Shl ? (width == 2 ? MOp.MmxShlW : MOp.MmxShlD)
             : signed ? (width == 2 ? MOp.MmxSarW : MOp.MmxSarD) : (width == 2 ? MOp.MmxShrW : MOp.MmxShrD);

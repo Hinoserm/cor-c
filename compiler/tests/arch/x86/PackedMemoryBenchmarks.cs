@@ -17,8 +17,8 @@ public static class PackedMemoryBenchmarks
         string work = Path.Combine(Path.GetTempPath(), "corc-packed-benchmark-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(work);
         Console.WriteLine("Native Linux packed benchmark; median of five runs after warmup; process startup included");
-        Console.WriteLine("operation,bytes,mmx,iterations,text_bytes,median_ms,ns_per_operation");
-        List<string> rows = ["operation,bytes,mmx,iterations,text_bytes,median_ms,ns_per_operation"];
+        Console.WriteLine("operation,bytes,mmx,selected_packed,iterations,text_bytes,median_ms,ns_per_operation");
+        List<string> rows = ["operation,bytes,mmx,selected_packed,iterations,text_bytes,median_ms,ns_per_operation"];
         foreach (string operation in new[] { "copy", "zero", "add8", "add16", "add32", "sub8", "sub16", "sub32", "and32", "or32", "xor32", "mul16", "mulhigh16",
             "shl16", "shl32", "shr16", "shr32", "sar16", "sar32" }.Where(operation => filter is null || operation.StartsWith(filter, StringComparison.Ordinal)))
         foreach (int length in new[] { 32, 64, 128 })
@@ -64,7 +64,8 @@ public static class PackedMemoryBenchmarks
             X86Backend backend = new(); List<string> errors = new(); ObjectFile obj = backend.Generate(module, errors);
             if (errors.Count != 0) throw new Exception(string.Join("; ", errors));
             string stem = operation + "-" + length + "-" + packed;
-            File.WriteAllText(Path.Combine(work, stem + ".asm"), backend.Assembly(module));
+            string assembly = backend.Assembly(module);
+            File.WriteAllText(Path.Combine(work, stem + ".asm"), assembly);
             string path = Path.Combine(work, stem); File.WriteAllBytes(path, Linker.Link([obj], "_start"));
             File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
             List<double> timings = [];
@@ -76,7 +77,7 @@ public static class PackedMemoryBenchmarks
                 if (run != 0) timings.Add(watch.Elapsed.TotalMilliseconds);
             }
             timings.Sort(); double median = timings[2];
-            string row = FormattableString.Invariant($"{operation},{length},{packed},{iterations},{obj.Section(".text").Bytes.Count},{median:F3},{median * 1000000 / iterations:F3}");
+            string row = FormattableString.Invariant($"{operation},{length},{packed},{assembly.Contains("mm0")},{iterations},{obj.Section(".text").Bytes.Count},{median:F3},{median * 1000000 / iterations:F3}");
             rows.Add(row); Console.WriteLine(row);
         }
         File.WriteAllLines(Path.Combine(work, "results.csv"), rows);

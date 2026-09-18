@@ -1005,21 +1005,21 @@ internal static class Program
     private static void PackedShiftFrames(Module m)
     {
         (Function function, Builder b) = New(m, "packed_shifts", IrType.I32);
-        FrameSlot source = function.NewSlot(32, 8), destination = function.NewSlot(32, 8);
+        FrameSlot source = function.NewSlot(64, 8), destination = function.NewSlot(64, 8);
         VReg okay = b.Const(1, IrType.I32);
         foreach (int width in new[] { 2, 4 })
         foreach (bool signed in new[] { false, true })
         foreach (Opcode operation in new[] { Opcode.Shl, Opcode.ShrU, Opcode.ShrS })
         foreach (int count in new[] { 0, 1, 15, 16, 31, 32, 33, -1 })
         {
-            for (int offset = 0; offset < 32; offset += width)
+            for (int offset = 0; offset < 64; offset += width)
                 b.Store(new SlotOperand(source), I(unchecked((int)0x9e3779b9 * (offset + 1))), offset, width);
-            for (int offset = 0; offset < 32; offset += width)
+            for (int offset = 0; offset < 64; offset += width)
             {
                 VReg value = b.Load(IrType.I32, new SlotOperand(source), offset, width, signed);
                 b.Store(new SlotOperand(destination), R(b.Binary(operation, value, count)), offset, width);
             }
-            for (int offset = 0; offset < 32; offset += width)
+            for (int offset = 0; offset < 64; offset += width)
             {
                 int value = unchecked((int)0x9e3779b9 * (offset + 1));
                 if (width == 2) value = signed ? (short)value : (ushort)value;
