@@ -1,0 +1,11 @@
+namespace ManagedTrace;
+
+public static class Provider
+{
+    public static int Sink;
+    public static void Throw(int depth)
+    {
+        if (depth > 0) { Throw(depth - 1); Sink += depth; return; }
+        throw new InvalidOperationException("separate unit");
+    }
+}

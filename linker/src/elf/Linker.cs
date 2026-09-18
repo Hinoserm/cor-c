@@ -92,8 +92,10 @@ public static partial class Linker
         List<string> errors = new();
         Layout layout = new(loadAddress) { LoadBias = loadAddress - (physicalAddress ?? loadAddress) };
         layout.ArrangeStatic();
+        AddManagedMetadata(inputs, layout, errors);
         Merge(inputs, layout, errors);
         Resolve(inputs, layout, errors);
+        ResolveManagedMetadata(layout, errors);
         AssignAddresses(layout);
         DefineLinkerSymbols(layout);
         Relocate(inputs, layout, errors);
@@ -173,8 +175,10 @@ public static partial class Linker
         List<string> errors = new();
         Layout layout = new(baseAddress);
         layout.ArrangeStatic();
+        AddManagedMetadata(inputs, layout, errors);
         Merge(inputs, layout, errors);
         Resolve(inputs, layout, errors);
+        ResolveManagedMetadata(layout, errors);
         AssignFlatAddresses(layout);
         DefineLinkerSymbols(layout);
         Relocate(inputs, layout, errors);
@@ -338,6 +342,7 @@ public static partial class Linker
 
     private sealed class Layout
     {
+        public List<(Input Input, string Alias, Symbol Symbol)> MetadataBindings { get; } = new();
         public uint LoadAddress { get; }
 
         /// <summary>

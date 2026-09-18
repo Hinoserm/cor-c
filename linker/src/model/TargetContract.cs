@@ -20,7 +20,7 @@ public sealed class TargetContract
         if (obj.Sections.Any(s => s.Name == SectionName)) throw new ElfFormatException("duplicate target contract");
         byte[] bytes = new byte[28];
         "CABI"u8.CopyTo(bytes);
-        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(4), 2);
+        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(4), 3);
         BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(8), 4); // Pointer bytes.
         BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(12), 486);
         BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(16), 1); // i386 cdecl, x87 floating results.
@@ -41,7 +41,7 @@ public sealed class TargetContract
             if (contracts.Length != 1) throw new ElfFormatException(input.Name + ": duplicate target contract");
             byte[] bytes = contracts[0].Bytes.ToArray();
             if (bytes.Length != 28 || !bytes.AsSpan(0, 4).SequenceEqual("CABI"u8)
-                || BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(4)) != 2
+                || BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(4)) != 3
                 || BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(8)) != 4
                 || BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(12)) != 486
                 || BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(16)) != 1)

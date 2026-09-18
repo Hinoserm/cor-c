@@ -34,7 +34,12 @@
     </Target>
   </Target>
 
-  <Target Name="test" Steps="unit;smoke;lto;indexed;ir-lto">
+  <Target Name="test" Steps="unit;smoke;lto;indexed;ir-lto;managed">
+    <Target Name="managed" DependsOnTargets="/compiler">
+      <Test Name="managed-units" Executable="bash" Workers="auto" Timeout="00:10:00">
+        <Argument Value="tests/integration/managed-units.sh" />
+      </Test>
+    </Target>
     <Target Name="unit" Steps="build-tool;optimizer;assembler;x86;linker;metadata">
       <Target Name="metadata">
         <Test Name="metadata" Executable="dotnet" Timeout="00:03:00">

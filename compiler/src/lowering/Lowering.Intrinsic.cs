@@ -207,6 +207,8 @@ public sealed partial class Lowering
                 return Widen(_e.Load(word, ThreadBlockNow(), TlsStackBase / 4 * _t.WordSize));
             case "FrameTable":
                 return Widen(_e.Address(Corsac.Lang.X86.FrameTable.Symbol));
+            case "FrameDirectory":
+                return Widen(_e.Address(ManagedDirectory.Symbol));
             case "FramePointer":
             {
                 VReg fp = _e.Reg(word, "fp");

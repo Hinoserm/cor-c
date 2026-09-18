@@ -45,10 +45,10 @@ ordinary object and independent-unit compatibility are not yet guaranteed.
 
 ## Separate-compilation extension work
 
-### Native ABI contract, version 2
+### Native ABI contract, version 3
 
 .corsac.abi is a 28-byte non-loadable section: four magic bytes CABI followed
-by six little-endian uint32 values: version 2, pointer size 4, baseline CPU 486,
+by six little-endian uint32 values: version 3, pointer size 4, baseline CPU 486,
 calling convention 1 (i386 cdecl with x87 floating returns), and TLS/platform
 model (0 hosted Linux GS, 1 bare-metal static block, 2 bare-metal GS), and required
 metadata flags. Flag 1 requires `.corsac.layout`; all other bits are rejected.

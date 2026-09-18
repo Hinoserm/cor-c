@@ -827,7 +827,7 @@ public sealed partial class Lowering
     }
 
     /// <summary>
-    /// `Runtime.BeginImage(__data_start, _end, __corsac_frames)`: what every
+    /// `Runtime.BeginImage(__data_start, _end, __corsac_units)`: what every
     /// image says about itself, and the three symbols that mean something
     /// different in each one.
     /// </summary>
@@ -841,7 +841,7 @@ public sealed partial class Lowering
         e.Call(CallLabel(begin), IrType.Void,
             new RegOperand(e.Unary(Opcode.ZExt32, e.Address("__data_start"))),
             new RegOperand(e.Unary(Opcode.ZExt32, e.Address("_end"))),
-            new RegOperand(e.Unary(Opcode.ZExt32, e.Address(Corsac.Lang.X86.FrameTable.Symbol))));
+            new RegOperand(e.Unary(Opcode.ZExt32, e.Address(ManagedDirectory.Symbol))));
     }
 
     /// <summary>A hook the runtime library provides, found by name and arity.</summary>

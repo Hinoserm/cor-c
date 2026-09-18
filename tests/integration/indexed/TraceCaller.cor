@@ -1,0 +1,18 @@
+using ManagedTrace;
+
+static class Program
+{
+    static int Main()
+    {
+        try { Provider.Throw(2); }
+        catch (InvalidOperationException error)
+        {
+            string trace = error.StackTrace;
+            Sys.Print(trace); Sys.PrintLine();
+            if (!trace.Contains("Provider.Throw") || !trace.Contains("TraceProvider.cor:line 9")) return 21;
+            if (!trace.Contains("Program.Main") || !trace.Contains("TraceCaller.cor:line 7")) return 22;
+            return 42;
+        }
+        return 23;
+    }
+}

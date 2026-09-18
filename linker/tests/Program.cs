@@ -37,6 +37,7 @@ public static class Program
         Try("certified shared definition ownership", () => { CoalescingTests.Run(); Check(true, "coalescing contract"); });
         Try("indexed IR archives and bounded import plans", () => { IrArchiveTests.Run(); Check(true, "IR archive contract"); });
         Try("closed-image IR retention", () => { IrReachabilityTests.Run(); Check(true, "IR retention graph"); });
+        Try("image-wide managed metadata", () => { ManagedDirectoryTests.Run(); Check(true, "unit metadata directory"); });
         Try("linked with gcc object", LinkWithGcc);
         Try("shared object structure", SharedObjectStructure);
         Try("relocated constants stay outside mutable static roots", RelocatedConstantRoots);

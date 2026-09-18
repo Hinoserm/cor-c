@@ -385,7 +385,7 @@ static class Runtime
 
     static long _imagesBegun;
 
-    /// This image's statics, and its frame table. Called once per image:
+    /// This image's statics, and its unit metadata directory. Called once per image:
     /// from __corsac_init for a shared object, from the entry stub for the
     /// program. Doing it twice is harmless and the generated initialiser
     /// guards against it anyway.
@@ -501,13 +501,11 @@ static class Runtime
 
     // ---- the frame tables of the other images -----------------------------
     //
-    // Every image -- the program and each shared object -- carries its own
-    // `__corsac_frames`, because the table is written when the code is
-    // generated and describes that code. Sys.FrameTable() answers with the
-    // one in THIS image, which is the runtime's, so a trace through a
-    // program's frames would name none of them. Each image hands its table
-    // over as it is initialised: the program in its entry stub, a shared
-    // object in the function the loader calls through DT_INIT.
+    // Each compilation unit carries an object-local frame table. The linker
+    // collects their addresses in one image-local directory. Registration is
+    // per image, not per source file, so splitting a program does not consume
+    // the registry's image slots. The entry stub and each DT_INIT register the
+    // directory for their own linked image.
     //
     // Room for the tables is taken from the operating system rather than
     // from a static array, for the reason GcRoots gives: registering must
@@ -520,14 +518,19 @@ static class Runtime
     static long _tables;
     static long _tableCount;
 
-    /// Adds a frame table -- the address of a `__corsac_frames` -- to the
-    /// ones a stack trace looks in. Answers false only if the table is full
-    /// or the operating system refuses the memory.
+    /// Registers an image directory or an explicitly supplied individual frame
+    /// table. Both are current metadata kinds, distinguished by their magic.
     public static bool RegisterFrames(long table)
     {
         if (table == 0)
         {
             return false;
+        }
+
+        if (Sys.PeekWord(table) != TableMagic && Sys.PeekWord(table) != DirectoryMagic) { return false; }
+        for (long i = 0; i < _tableCount; i++)
+        {
+            if (Sys.PeekWord(_tables + i * 4) == table) { return true; }
         }
 
         if (_tables == 0)
@@ -939,6 +942,7 @@ static class Runtime
     /// Spelled as the four letters rather than the number they come to, so
     /// that it cannot drift from Lang/X86/FrameTable.cs by a typing slip.
     const long TableMagic = 67 + (70 << 8) + (82 << 16) + (77 << 24);
+    const long DirectoryMagic = 67 + (77 << 8) + (68 << 16) + (82 << 24);
 
     /// A ULEB128 at `at`, with `at` left just past it. The table is written
     /// this way because it is in every image and the deltas are small.
@@ -990,15 +994,33 @@ static class Runtime
     static bool Lookup(long address, out long name, out long file, out long program, out long offset) {
         // This image's own table first, then every other image's, in the
         // order they introduced themselves.
-        if (LookupIn(Sys.FrameTable(), address, out name, out file, out program, out offset)) { return true; }
+        if (LookupMetadata(Sys.FrameDirectory(), address, out name, out file, out program, out offset)) { return true; }
 
         for (long i = 0; i < _tableCount; i++) {
-            if (LookupIn(Sys.PeekWord(_tables + i * 4), address, out name, out file, out program, out offset)) { return true; }
+            if (LookupMetadata(Sys.PeekWord(_tables + i * 4), address, out name, out file, out program, out offset)) { return true; }
         }
         return false;
     }
 
-    /// The same, in one table.
+    static bool LookupMetadata(long metadata, long address, out long name, out long file, out long program, out long offset) {
+        name = 0; file = 0; program = 0; offset = 0;
+        if (metadata == 0) { return false; }
+        if (Sys.PeekWord(metadata) == TableMagic) {
+            return LookupIn(metadata, address, out name, out file, out program, out offset);
+        }
+        if (Sys.PeekWord(metadata) != DirectoryMagic || Sys.PeekWord(metadata + 4) != 1 || Sys.PeekWord(metadata + 12) != 16) { return false; }
+        long count = Sys.PeekWord(metadata + 8);
+        if (count > 100000) { return false; }
+        for (long i = 0; i < count; i++) {
+            long record = metadata + 16 + i * 16;
+            long table = Sys.PeekWord(record);
+            if (table != 0 && Sys.PeekWord(record + 4) >= 20 && LookupIn(table, address, out name, out file, out program, out offset)) { return true; }
+        }
+        return false;
+    }
+
+    /// The same, in one table. The line program is an absolute address into
+    /// the matched table, not an offset relative to the runtime's own unit.
     static bool LookupIn(long table, long address, out long name, out long file, out long program, out long offset) {
         name = 0;
         file = 0;
@@ -1025,7 +1047,7 @@ static class Runtime
 
             name = strings + said;
             file = strings + source;
-            program = lines;
+            program = lines == 0 ? 0 : table + Sys.PeekWord(table + 16) + lines - 1;
             offset = address - walk;
             return true;
         }
@@ -1046,8 +1068,7 @@ static class Runtime
         string source = TextAt(file);
         if (source.Length == 0) { return where; }
 
-        long lines = Sys.FrameTable() + Sys.PeekWord(Sys.FrameTable() + 16);
-        long line = LineAt(lines, program, offset);
+        long line = LineAt(program, offset);
         if (line == 0) { return String.Concat(where, String.Concat(" in ", source)); }
 
         return String.Concat(where,
@@ -1057,10 +1078,10 @@ static class Runtime
 
     /// The line a byte of a function belongs to: the last one that begins at
     /// or before it, or 0 when the function carries no line program.
-    static long LineAt(long lines, long program, long offset) {
+    static long LineAt(long program, long offset) {
         if (program == 0) { return 0; }
 
-        long at = lines + program - 1;
+        long at = program;
         long count = Uleb(at, out at);
         long where = 0;
         long line = 0;

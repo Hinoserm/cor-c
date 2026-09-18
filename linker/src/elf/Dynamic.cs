@@ -145,8 +145,12 @@ public static partial class Linker
 
         List<string> errors = new();
         Layout layout = new(loadAddress) { Dyn = dyn };
+        TargetContract.Validate(inputs.Select(input => (input.Name, input.Object)));
+        ManagedLayoutContract.Validate(inputs.Select(input => (input.Name, input.Object)));
+        AddManagedMetadata(inputs, layout, errors);
         Merge(inputs, layout, errors);
         Resolve(inputs, layout, errors);
+        ResolveManagedMetadata(layout, errors);
         // Before the scan, because the scan decides what the LOADER has to
         // find and these are names this link defines itself -- even though
         // what they are worth is not known until the sections have addresses.
