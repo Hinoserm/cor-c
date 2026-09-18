@@ -19,8 +19,23 @@ required gates rather than assuming a missing log is proof of completion.
 
 ## Priority and purpose
 
-Immediate sequence: resume x86 instruction/profile work. The isolated CORSAC86
-per-file process scheduling work is paused separately.
+The x86 instruction/profile work is paused. The three functional blockers below
+are explicitly deferred by request; do not resume them without a new request.
+The isolated CORSAC86 per-file process scheduling work is paused separately.
+
+### Deferred functional blockers
+
+1. [ ] Implement Pentium FDIV detection and corrected division, including
+   forced-path regression tests on unaffected Linux/QEMU hosts.
+2. [ ] Complete 386+387 support, including the instruction and runtime audit
+   for accidental 486-or-newer instructions and runtime atomics.
+3. [ ] Implement software floating point for `--fpu=none` on all supported
+   CPUs, including arithmetic, comparisons, conversions, math/runtime helpers
+   and an emitted-code audit for accidental x87/MMX/3DNow instructions.
+
+These remain unfinished. The default stays 486+x87.
+
+### CPU work status
 
 - [ ] Complete CPU/ISA profiles, assembler encodings and automatic profitable
   code generation for Pentium/MMX/K6/K6-2/K6-III/plus and 3DNow! families.
@@ -46,13 +61,6 @@ per-file process scheduling work is paused separately.
     saturation/comparison/packing/reduction families, and validate source-level
     uptake. Do not substitute approximate reciprocal instructions for exact
     language division or change NaN/subnormal behavior.
-- [ ] Add 386 profiles with optional 387; audit 486-only integer instructions
-  and runtime atomics, and implement software floating point for no-coprocessor
-  builds. Keep 486+x87 as the default.
-- [ ] Support `--fpu=none` on every CPU, including software arithmetic/math
-  fallbacks and an emitted-code/runtime audit for accidental FPU instructions.
-- [ ] Implement Pentium FDIV detection and corrected division fallback, with
-  forced-path regression coverage on non-affected Linux/QEMU hosts.
 - [x] Preserve target requirements through owned objects, separate compilation and
   LTO; reject incompatible instruction/FPU selections.
   CPU contracts are required on newly compiled managed units; native project
