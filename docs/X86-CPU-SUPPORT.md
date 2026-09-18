@@ -61,9 +61,12 @@ instruction is already selected automatically.
   Athlon model: x87 arithmetic, saturated MMX addition, packed shifts,
   EMMS/x87 transition, 3DNow! conversion/addition, lane swapping, and
   prefetch/FEMMS/x87 transition.
-- The backend suite runs seven configurations: default 486, 386+387 selection,
+- The backend suite runs nine configurations: default 486, 386+387 selection,
   native MMX, explicitly excluded MMX, K6-2 TCG, K6-plus TCG, and kernel state
-  ownership. It includes byte swaps, buffer boundaries, wrapping arithmetic,
+  ownership, plain Pentium TCG, and Pentium-MMX TCG. The latter two use
+  `pentium` and `pentium,+mmx` respectively, since QEMU has no separate P55C
+  model. They execute generated code, including packed/x87 state transitions
+  where MMX is enabled. It includes byte swaps, buffer boundaries, wrapping arithmetic,
   shift counts/sign extension, dot products, signed zero, and saturating casts.
   These native-host checks do not prove an entire executable is 386-safe.
 
