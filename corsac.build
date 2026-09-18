@@ -34,7 +34,7 @@
     </Target>
   </Target>
 
-  <Target Name="test" Steps="unit;smoke;lto">
+  <Target Name="test" Steps="unit;smoke;lto;indexed">
     <Target Name="unit" Steps="build-tool;optimizer;assembler;x86;linker;metadata">
       <Target Name="metadata">
         <Test Name="metadata" Executable="dotnet" Timeout="00:03:00">
@@ -81,6 +81,12 @@
     <Target Name="lto" DependsOnTargets="/compiler">
       <Test Name="cross-object-lto" Executable="sh" Timeout="00:05:00">
         <Argument Value="tests/integration/lto.sh" />
+        <Environment Name="CORC" Value="$(Compiler)" /><Environment Name="CORLINK" Value="$(Linker)" />
+      </Test>
+    </Target>
+    <Target Name="indexed" DependsOnTargets="/compiler">
+      <Test Name="indexed-compilation" Executable="sh" Timeout="00:05:00">
+        <Argument Value="tests/integration/indexed.sh" />
         <Environment Name="CORC" Value="$(Compiler)" /><Environment Name="CORLINK" Value="$(Linker)" />
       </Test>
     </Target>

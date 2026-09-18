@@ -1,0 +1,5 @@
+using DemoLib;
+static class Program
+{
+    static int Main() => Value.Get();
+}

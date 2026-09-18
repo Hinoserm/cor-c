@@ -90,14 +90,16 @@ public static class SourceIndexBuilder
                         foreach (var import in scope.Imports) { writer.Write(import.In); writer.Write(import.Namespace); }
                         foreach (var alias in scope.Aliases) { writer.Write(alias.In); writer.Write(alias.Alias); writer.Write(alias.Target); }
                     }
+                    string key = "T:" + identity + "\n" + TypeName(type);
                     yield return new SourceDeclaration
                     {
-                        Key = "T:" + identity + "\n" + TypeName(type), Path = path, Text = syntax,
+                        Key = key, Path = path, Text = syntax,
                         Namespace = type.Namespace, Outer = type.Outer ?? "", Scope = scope,
                         From = type.SourceFrom, To = type.SourceTo, Line = type.Line, Column = type.Col,
                         SourceHash = hash, DeclarationHash = SHA256.HashData(canonical.ToArray()),
                         ConditionalSymbols = (symbols ?? Array.Empty<string>()).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray(),
                     }.Encode();
+                    yield return new DeclarationRecord("B:" + identity + "\n" + Binder.TypeKey(type), Encoding.UTF8.GetBytes(key));
                 }
             }
             // Validate the complete generation before the atomic publication.

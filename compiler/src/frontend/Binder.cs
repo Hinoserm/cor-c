@@ -450,6 +450,7 @@ public sealed partial class Binder
     // declaration discovery or silently omitting extending declarations.
     private readonly List<(TypeDecl Decl, TypeSymbol Symbol)> _bodyWork = new();
     private readonly string _file;
+    private readonly Action<string>? _requireDeclaration;
 
     private TypeSymbol? _thisType;
     private MethodSymbol? _method;
@@ -566,7 +567,7 @@ public sealed partial class Binder
         {
             for (string? at = from; at is not null; at = Enclosing(at))
             {
-                if (_r.Types.TryGetValue(at + "." + name, out sym))
+                if (TypeCandidate(at + "." + name, out sym))
                 {
                     return true;
                 }
@@ -578,7 +579,7 @@ public sealed partial class Binder
             }
         }
 
-        if (_r.Types.TryGetValue(name, out sym))
+        if (TypeCandidate(name, out sym))
         {
             return true;
         }
@@ -603,6 +604,13 @@ public sealed partial class Binder
         // the walk above from inside, and neither is sole, so an unqualified
         // mention from anywhere else is refused rather than guessed.
         return Sole(name, out sym);
+    }
+
+    private bool TypeCandidate(string key, out TypeSymbol? symbol)
+    {
+        if (_r.Types.TryGetValue(key, out symbol)) return true;
+        _requireDeclaration?.Invoke(key);
+        return false;
     }
 
     /// <summary>
@@ -630,7 +638,7 @@ public sealed partial class Binder
         foreach ((string In, string Alias, string Target) alias in file.Aliases)
         {
             if (alias.In == at && alias.Alias == name
-                && _r.Types.TryGetValue(alias.Target, out sym))
+                && TypeCandidate(alias.Target, out sym))
             {
                 return true;
             }
@@ -641,7 +649,7 @@ public sealed partial class Binder
         foreach ((string In, string Namespace) import in file.Imports)
         {
             if (import.In != at
-                || !_r.Types.TryGetValue(import.Namespace + "." + name, out TypeSymbol? found))
+                || !TypeCandidate(import.Namespace + "." + name, out TypeSymbol? found))
             {
                 continue;
             }
@@ -726,9 +734,10 @@ public sealed partial class Binder
     /// <summary>Total bytes of static storage the program needs.</summary>
     public int StaticBytes => _staticNext;
 
-    public Binder(string file = "<source>")
+    public Binder(string file = "<source>", Action<string>? requireDeclaration = null)
     {
         _file = file;
+        _requireDeclaration = requireDeclaration;
     }
 
     /// <summary>
@@ -740,9 +749,9 @@ public sealed partial class Binder
     /// code cannot be told otherwise. Zero means nothing is being linked and
     /// the count decides.
     /// </summary>
-    public static BindResult Bind(CompilationUnit unit, string file = "<source>")
+    public static BindResult Bind(CompilationUnit unit, string file = "<source>", Action<string>? requireDeclaration = null)
     {
-        Binder b = new(file);
+        Binder b = new(file, requireDeclaration);
         b.Run(unit);
         b._r = b._r.CopyForBodyChecking();
         b.CheckBodyWork();
@@ -1527,6 +1536,7 @@ public sealed partial class Binder
 
     private void CheckBodyItem(TypeDecl declaration, TypeSymbol symbol, int ordinal)
     {
+        if (declaration.SignatureOnly) return;
         _bodyOrdinal = ordinal;
         _closures = 0;
         _in = declaration.File;

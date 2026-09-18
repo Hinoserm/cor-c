@@ -117,6 +117,8 @@ public sealed class TypeDecl : Node
     /// library boundary. Only the emission is skipped.
     /// </summary>
     public bool Elsewhere { get; set; }
+    /// <summary>Indexed signatures, not executable bodies. Never lower their declaration markers.</summary>
+    public bool SignatureOnly { get; set; }
 
     /// <summary>Which library it came from, so its statics can be found.</summary>
     public int LibSlot { get; set; }

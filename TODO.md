@@ -117,6 +117,10 @@ tasks below track that work; moving files alone does not reduce the working set.
   and stale-source rejection. Integrate indexed lookup into the binder next.
   Source-generation checks passed at 348be5d; expanded key-checksum and bounded
   cache/pinning checks are added for the next metadata milestone.
+- [ ] Verify initial binder demand loading and separate-object integration for
+  namespace/alias/qualified references. Complete generic body import, partial
+  ownership and indexed extension candidates before marking managed independent
+  compilation complete. Default library loading is still eager.
 - [ ] Do not retain a full declaration footprint for every class in every file.
 - [ ] Maintain a compact disk-backed index from qualified type names to the
   locations of their declaration records. Access to the index itself must be

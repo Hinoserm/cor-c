@@ -31,6 +31,22 @@ public sealed class DeclarationCatalog : IDisposable
     public DeclarationLease? Acquire(string assembly, string metadataName)
         => AcquireKey("T:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + metadataName);
 
+    public string? BindingKey(string assembly, string bindingName)
+    {
+        lock (gate)
+        {
+            if (disposed) throw new ObjectDisposedException(nameof(DeclarationCatalog));
+            string? result = null;
+            foreach (DeclarationRecord record in index.Find("B:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + bindingName))
+            {
+                string found = DeclarationIndex.Utf8.GetString(record.Payload);
+                if (result is not null && result != found) throw new InvalidDataException("Ambiguous indexed type identity: " + bindingName);
+                result = found;
+            }
+            return result;
+        }
+    }
+
     public DeclarationLease? AcquireKey(string key)
     {
         lock (gate)

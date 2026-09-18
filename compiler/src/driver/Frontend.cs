@@ -1,5 +1,6 @@
 #nullable enable
 using Corsac.Lang;
+using Corsac.Lang.Metadata;
 using System.Threading.Tasks;
 
 namespace Corsac;
@@ -21,7 +22,19 @@ public static class Frontend
         IReadOnlyList<string> paths, string name, bool library,
         IReadOnlyCollection<string>? libraryPaths = null,
         IReadOnlyCollection<string>? symbols = null,
-        IReadOnlyCollection<string>? elsewherePaths = null, int workers = 1)
+        IReadOnlyCollection<string>? elsewherePaths = null, int workers = 1, IndexedDeclarations? declarations = null)
+    {
+        while (true)
+        {
+            try { return CompileCore(paths, name, library, libraryPaths, symbols, elsewherePaths, workers, declarations); }
+            catch (DeclarationDemand demand) when (declarations is not null) { declarations.Include(demand.Key); }
+        }
+    }
+
+    private static (CompilationUnit Unit, BindResult Bound)? CompileCore(
+        IReadOnlyList<string> paths, string name, bool library,
+        IReadOnlyCollection<string>? libraryPaths, IReadOnlyCollection<string>? symbols,
+        IReadOnlyCollection<string>? elsewherePaths, int workers, IndexedDeclarations? declarations)
     {
 #if COR_SELFHOST_BENCHMARK
         Program.BenchmarkStage("read-sources");
@@ -109,6 +122,7 @@ public static class Frontend
 #if COR_SELFHOST_BENCHMARK
         Program.BenchmarkStage("merge-expand");
 #endif
+        declarations?.AddHeaders(unit);
         MergePartialTypes(unit);
 
         IReadOnlyList<CompileError> generic;
@@ -122,7 +136,7 @@ public static class Frontend
 #if COR_SELFHOST_BENCHMARK
         Program.BenchmarkStage("bind-initial");
 #endif
-        BindResult bound = Binder.Bind(unit, name);
+        BindResult bound = Binder.Bind(unit, name, declarations is null ? null : declarations.Require);
 
         // The checker's first pass discovers which generic methods were called
         // with which type arguments; each becomes a copy, and the whole thing
@@ -153,7 +167,7 @@ public static class Frontend
 #if COR_SELFHOST_BENCHMARK
             Program.BenchmarkStage("bind-" + round);
 #endif
-            bound = Binder.Bind(unit, name);
+            bound = Binder.Bind(unit, name, declarations is null ? null : declarations.Require);
         }
 
         // WARNINGS ARE ERRORS. Every warning the binder raises is a statement

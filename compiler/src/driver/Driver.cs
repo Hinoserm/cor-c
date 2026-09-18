@@ -4,6 +4,7 @@ using Corsac.Lang.Elf;
 using Corsac.Lang.Ir;
 using Corsac.Lang.Lower;
 using Corsac.Lang.X86;
+using Corsac.Lang.Metadata;
 
 namespace Corsac;
 
@@ -79,6 +80,8 @@ public static class Driver
               --shared           build an ELF shared object (implies --lib and --pic)
               --ref <file.cor>   compile this source for its declarations only:
                                  its code is in a shared object being linked.
+              --decl-index <file> demand-load non-generic declarations from an index
+              --assembly <name>  assembly identity for indexed declaration lookup
                                  May be repeated; how one library of several
                                  is built from sources they all have to see
               --dynamic          link the runtime and the class library as the
@@ -282,7 +285,7 @@ public static class Driver
                 if (args[i] is "-o" or "--target" or "--entry" or "--link-shared" or "--base" or "--tag"
                     or "--load" or "--paddr" or "--cpu" or "--with" or "--asm-entry"
                     or "--ref" or "--libdir" or "--runpath" or "--trace-opt" or "--batch-without"
-                    or "-D" or "--define" or "--jobs")
+                    or "-D" or "--define" or "--jobs" or "--decl-index" or "--assembly")
                 {
                     i++;
                 }
@@ -432,15 +435,21 @@ public static class Driver
         // shadowing a library one be kept.
         List<string> libraryMark = library ? new List<string>(files) : classLibrary;
         Corsac.Lang.Lower.Lowering.SharedObject = shared;
-        Corsac.Lang.Lower.Lowering.PartOfALibrary = references.Count > 0;
+        Corsac.Lang.Lower.Lowering.PartOfALibrary = references.Count > 0 || args.Contains("--decl-index");
         Corsac.Lang.Lower.Lowering.Dynamic = !library && sharedLibs.Count > 0;
 #if !NET
         // Native task workers serve parsing, optimization and code generation.
         // Initialize once before publishing work in any compilation phase.
         if (workers > 1) Scheduler.UseThreads(workers);
 #endif
+        string? declarationIndex = Value(args, "--decl-index");
+        if (declarationIndex is not null && Value(args, "--assembly") is null)
+            return Fail("--decl-index requires --assembly");
+        using IndexedDeclarations? declarations = declarationIndex is null ? null
+            : new IndexedDeclarations(declarationIndex, Value(args, "--assembly")!, files);
         (CompilationUnit unit, BindResult bound)? front =
-            Frontend.Compile(files, name, library, libraryMark, symbols, references, workers);
+            Frontend.Compile(files, name, library, libraryMark, symbols, references, workers, declarations);
+        if (declarations is not null) Console.Error.WriteLine("indexed declaration payloads loaded=" + declarations.PayloadLoads);
         if (front is null)
         {
             return 1;

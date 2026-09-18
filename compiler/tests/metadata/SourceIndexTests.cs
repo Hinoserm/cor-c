@@ -32,7 +32,7 @@ public static class SourceIndexTests
         SourceDeclaration declaration;
         using (DeclarationIndex index = new(path))
         {
-            Require(index.Count == 3, "source fragment count");
+            Require(index.WithPrefix("T:").Count() == 3, "source fragment count");
             SourceDeclaration[] parts = index.Find(prefix + "Example.Box`1").Select(SourceDeclaration.Decode).ToArray();
             Require(parts.Length == 2, "partial fragments share identity");
             declaration = parts.Single(p => p.Path == first);

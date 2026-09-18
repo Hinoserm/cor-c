@@ -29,7 +29,7 @@ public static class IndexCommand
             throw new ArgumentException("index requires --assembly <identity>, source files and -o <index>");
         SourceIndexBuilder.Write(output, paths, assembly, symbols);
         using DeclarationIndex index = new(output);
-        Console.Error.WriteLine(output + ": " + index.Count + " declaration fragments; implementation bodies omitted");
+        Console.Error.WriteLine(output + ": " + index.Count + " index records; implementation bodies omitted");
         return 0;
     }
 }

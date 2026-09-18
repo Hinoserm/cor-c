@@ -940,6 +940,7 @@ public sealed class Monomorphiser
             // emitted beside List would make the collections library depend
             // on the file system's.
             Elsewhere = d.Elsewhere && d.TypeParams.Count == 0,
+            SignatureOnly = d.SignatureOnly,
             LibSlot = d.LibSlot,
 
             // WHAT IT WAS MADE FROM SURVIVES BEING COPIED AGAIN.

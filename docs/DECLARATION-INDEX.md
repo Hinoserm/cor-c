@@ -101,6 +101,29 @@ units or increase an explicit budget to make progress.
 
 The cache does not choose language lookup candidates or replace the binder's
 scope/accessibility checks. Its callers must supply the resolved assembly and
-metadata name; scoped lookup integration remains a separate milestone. Source
+metadata name. Source
 implementation consumers must use recorded command-line symbols and the full
 source's file-local defines, not compile a detached fragment with new defaults.
+
+## Initial binder connection
+
+The optional `compile --decl-index <file> --assembly <identity>` path asks the
+index about names considered by the binder's namespace/alias/qualified-name
+lookup. B: records map existing binder names to canonical T: records without
+loading type payloads. Only demanded declarations are pinned. Each new demand
+restarts the unit's binding transaction from fresh syntax, avoiding partially
+mutated AST state; this is bounded by the unit and demanded declarations but
+still has avoidable repeated parsing work.
+
+Imported signatures carry an explicit SignatureOnly marker. Their placeholder
+bodies are neither checked as implementation nor emitted. The initial path
+rejects indexed generic implementation imports explicitly; generic body fetching,
+cross-file partial ownership, extension discovery and stable dispatch/layout
+contracts remain subsequent stages. Default library-source loading is unchanged
+until library indexes and implicit runtime dependencies are integrated. This
+path is not yet a complete project compiler.
+
+The initial end-to-end fixtures compile three consumers against an index, link
+their objects with a separately compiled provider, and check namespace, alias
+and qualified references. An unrelated unresolved type in the same namespace
+proves that namespace import is not eager payload loading.

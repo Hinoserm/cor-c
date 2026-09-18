@@ -1,0 +1,7 @@
+namespace DemoLib;
+// Deliberately unresolved: an individual consumer must not bind this type
+// merely because its namespace is in scope. Compiling this unit would fail.
+public class Unused : NotProvided
+{
+    public static int Get() => 99;
+}
