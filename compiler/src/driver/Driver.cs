@@ -32,6 +32,8 @@ public static class Driver
                 "compile" or "cc" => Compile(rest),
                 "link" => ObjectLinkCommand.Run(Response(rest), new UnitBackend()),
                 "index" => IndexCommand.Run(Response(rest)),
+                "library-sources" => LibrarySources(rest),
+                "dependencies-current" => DependenciesCurrent(rest),
                 "project" => Projects.ProjectCommand.Run(rest),
                 "backend" when rest.Length == 0 => BackendCommand.Run(),
                 "build" or "asm" => Build(rest),
@@ -146,6 +148,19 @@ public static class Driver
                                  loader knows how much to zero. Needs --freestanding
             """);
         return 0;
+    }
+
+    private static int LibrarySources(string[] args)
+    {
+        if (args.Any(argument => argument != "--freestanding")) return Fail("library-sources accepts only --freestanding");
+        foreach (string path in DefaultLibraries(Target.X86, args.Contains("--freestanding"))) Console.WriteLine(path);
+        return 0;
+    }
+
+    private static int DependenciesCurrent(string[] args)
+    {
+        if (args.Length != 2) return Fail("dependencies-current needs a receipt and declaration index");
+        return UnitDependencies.IsCurrent(args[0], args[1]) ? 0 : 1;
     }
 
     private static int Fail(string message)
