@@ -1041,10 +1041,17 @@ static partial class Path {
     public static char VolumeSeparatorChar = ':';
 
     public static string Combine(string path1, string path2, string path3) {
+        if (path1 == null) { throw new ArgumentNullException("path1"); }
+        if (path2 == null) { throw new ArgumentNullException("path2"); }
+        if (path3 == null) { throw new ArgumentNullException("path3"); }
         return Combine(Combine(path1, path2), path3);
     }
 
     public static string Combine(string path1, string path2, string path3, string path4) {
+        if (path1 == null) { throw new ArgumentNullException("path1"); }
+        if (path2 == null) { throw new ArgumentNullException("path2"); }
+        if (path3 == null) { throw new ArgumentNullException("path3"); }
+        if (path4 == null) { throw new ArgumentNullException("path4"); }
         return Combine(Combine(Combine(path1, path2), path3), path4);
     }
 

@@ -45,7 +45,7 @@ public static class Gir
     // 7: a declaration carries the names of its attributes. `[Flags]` decides
     // what an enum prints, so dropping it on the way through here would make a
     // template's enum print differently from the same enum compiled directly.
-    public const ushort Major = 7;
+    public const ushort Major = 8;
 
     /// <summary>Bumped when something is APPENDED that an old reader can ignore.</summary>
     public const ushort Minor = 0;
@@ -476,6 +476,7 @@ public static class Gir
 
                 case Block b:
                     U8((byte)S.Block);
+                    U8(b.ArithmeticContext);
                     I32(b.Statements.Count);
 
                     foreach (Stmt one in b.Statements)
@@ -1275,7 +1276,9 @@ public static class Gir
 
                 case S.Block:
                 {
-                    Block b = new();
+                    byte arithmetic = U8();
+                    if (arithmetic > 2) throw new AsmException(0, "invalid block arithmetic context");
+                    Block b = new() { ArithmeticContext = arithmetic };
                     int n = Count();
 
                     for (int i = 0; i < n; i++)

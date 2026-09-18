@@ -1,0 +1,35 @@
+// test: checked statements preserve lexical overflow context and generic bodies
+// expect-exit: 0
+// expect-output:
+// checked statements passed
+using System;
+
+static class Program
+{
+    static int Add<T>(T ignored, int value)
+    {
+        checked { return value + 1; }
+    }
+
+    static int Main()
+    {
+        int value = int.MaxValue;
+        int caught = 0;
+        try { checked { value++; } } catch (OverflowException) { caught++; }
+        value = int.MaxValue;
+        checked
+        {
+            unchecked { value++; }
+            if (value != int.MinValue) return 1;
+            value = int.MaxValue;
+            try { value += 1; } catch (OverflowException) { caught++; }
+        }
+        value = int.MaxValue;
+        value++;
+        if (value != int.MinValue) return 2;
+        try { Add("generic", int.MaxValue); } catch (OverflowException) { caught++; }
+        if (caught != 3) return 3;
+        Console.WriteLine("checked statements passed");
+        return 0;
+    }
+}

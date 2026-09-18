@@ -30,6 +30,12 @@ public sealed partial class Lowering
         switch (s)
         {
             case AstBlock b:
+            {
+                int outside = _checkedDepth;
+                if (b.ArithmeticContext != 0)
+                    _checkedDepth = b.ArithmeticContext == 1 ? 1 : 0;
+                try
+                {
                 // A LOCAL FUNCTION IS CALLABLE FROM THE TOP OF ITS BLOCK, which is
                 // C#'s rule and is how they are written: `return flow;` and then
                 // the helpers, below everything that calls them. Its closure is
@@ -73,7 +79,10 @@ public sealed partial class Lowering
                         break;
                     }
                 }
+                }
+                finally { _checkedDepth = outside; }
                 break;
+            }
 
             case LocalDecl d:
                 EmitLocalDecl(d);

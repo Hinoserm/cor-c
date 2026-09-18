@@ -2724,6 +2724,13 @@ public sealed class Parser
 
         switch (Cur.Kind)
         {
+            case Tok.Ident when at.Text is "checked" or "unchecked" && Ahead().Kind == Tok.LBrace:
+            {
+                _i++;
+                Block block = ParseBlock();
+                block.ArithmeticContext = at.Text == "checked" ? (byte)1 : (byte)2;
+                return block;
+            }
             case Tok.LBrace:
                 return ParseBlock();
 

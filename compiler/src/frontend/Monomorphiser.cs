@@ -1168,7 +1168,7 @@ public sealed class Monomorphiser
         {
             case Block b:
             {
-                Block made = new() { Line = b.Line, Col = b.Col };
+                Block made = new() { Line = b.Line, Col = b.Col, ArithmeticContext = b.ArithmeticContext };
 
                 foreach (Stmt inner in b.Statements)
                 {

@@ -38,6 +38,11 @@ ordinary object and independent-unit compatibility are not yet guaranteed.
 
 ## Separate-compilation extension work
 
+Generic template serialization is now GIR major version 8: Block records carry
+a checked/unchecked/inherited arithmetic-context byte. Older versions are
+rejected rather than interpreted with missing overflow semantics. This is
+compiler metadata versioning; ordinary ELF machine-object encoding is unchanged.
+
 The following remain required before file-by-file managed compilation is
 accepted. Existing ELF objects alone do not establish these properties:
 
