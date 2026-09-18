@@ -1,0 +1,13 @@
+<Build FormatVersion="1" DefaultTargets="test">
+  <Target Name="test">
+    <Compile Project="x86tests.csproj" Toolchain="managed" />
+    <Test Name="backend-default-486" Executable="dotnet">
+      <Argument Value="bin/managed/Release/net10.0/x86tests.dll" />
+    </Test>
+    <Test Name="backend-386-selection" Executable="dotnet">
+      <Argument Value="bin/managed/Release/net10.0/x86tests.dll" />
+      <Argument Value="--cpu=386" />
+      <Argument Value="--fpu=387" />
+    </Test>
+  </Target>
+</Build>

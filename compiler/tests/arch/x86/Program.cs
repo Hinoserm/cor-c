@@ -57,6 +57,7 @@ internal static class Program
     private static int Main(string[] args)
     {
         Target.Current = Target.X86;
+        Target.X86.X86Profile = X86Cpu.Parse(args);
         PruneArithmetic();
         DeferredFunctions();
         string outDir = Path.Combine(Path.GetTempPath(), "corsac-x86tests");
@@ -103,6 +104,9 @@ internal static class Program
 
         X86Backend backend = new();
         string asm = backend.Assembly(m);
+        bool usesBswap = Target.X86.X86Profile.Name != "386";
+        Check(FunctionAsm(asm, "bswap32").Contains("bswap ") == usesBswap, "byte-swap instruction respects CPU profile");
+        Check(FunctionAsm(asm, "bswap64_inplace").Contains("bswap ") == usesBswap, "wide byte-swap instruction respects CPU profile");
         File.WriteAllText(Path.Combine(outDir, "tests.asm"), asm);
         Console.WriteLine(asm);
 

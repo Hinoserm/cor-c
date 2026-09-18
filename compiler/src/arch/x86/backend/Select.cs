@@ -480,7 +480,7 @@ internal sealed class Selector
                 VReg d = i.Dest!;
                 if (d.Type == IrType.I32)
                 {
-                    Mov(Lo(d), RM(i.Operands[0])); Emit(MOp.Bswap, Lo(d));
+                    Mov(Lo(d), RM(i.Operands[0])); ByteSwapWord(Lo(d));
                 }
                 else
                 {
@@ -489,7 +489,7 @@ internal sealed class Selector
                     var source = PairRM(i.Operands[0]);
                     MReg low = Temp(), high = Temp();
                     Mov(low, source.Hi); Mov(high, source.Lo);
-                    Emit(MOp.Bswap, low); Emit(MOp.Bswap, high);
+                    ByteSwapWord(low); ByteSwapWord(high);
                     Mov(Lo(d), low); Mov(Hi(d), high);
                 }
                 break;
@@ -1999,6 +1999,17 @@ internal sealed class Selector
     /// learns the dependency from Roles.ImplicitUses, exactly as it does for
     /// the system-call trap.
     /// </summary>
+    private void ByteSwapWord(MReg value)
+    {
+        if (Target.Current.X86Profile.Name != "386") { Emit(MOp.Bswap, value); return; }
+        // 386 has no BSWAP: exchange adjacent bytes, then exchange 16-bit halves.
+        // General-register temporaries avoid constraining allocation to AL/AH.
+        MReg other = Temp(); Mov(other, value);
+        Emit(MOp.Shl, value, Imm(8)); Emit(MOp.And, value, Imm(unchecked((int)0xff00ff00)));
+        Emit(MOp.Shr, other, Imm(8)); Emit(MOp.And, other, Imm(0x00ff00ff));
+        Emit(MOp.Or, value, other); Emit(MOp.Ror, value, Imm(16));
+    }
+
     private void SelectMachineIntrinsic(string name, Instr i)
     {
         switch (name)

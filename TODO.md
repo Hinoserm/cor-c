@@ -34,10 +34,12 @@ per-file process scheduling work is paused separately.
 - [ ] Preserve target requirements through objects, separate compilation and
   LTO; reject incompatible instruction/FPU selections.
 - [ ] Run encoding/correctness tests on Linux/QEMU and host-supported benchmarks.
-  CPU profiles and MMX/3DNow encodings are implemented; 550 encoding/profile
-  checks pass, including x87 and debug-register additions. Execution coverage,
+  CPU profiles and MMX/3DNow encodings are implemented; 627 encoding/profile
+  checks and seven QEMU TCG execution checks pass, including x87, MMX/3DNow,
+  debug registers, 386 bit operations and 486 atomics/cache instructions. Broader execution coverage,
   automatic code generation and complete target contracts remain unfinished.
-- [ ] Validate LOCK operand restrictions. A separate kernel task owns F00F
+- [x] Validate LOCK operand restrictions with positive and rejection fixtures.
+  A separate kernel task owns F00F
   mitigation; do not duplicate its implementation here.
 
 The requested completion order is: (1) automatic per-file standard .csproj
