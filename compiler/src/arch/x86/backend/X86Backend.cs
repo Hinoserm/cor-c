@@ -453,7 +453,7 @@ public sealed class X86Backend : IBackend
     }
 
     /// <summary>Select and allocate one function; null, with errors reported, if it cannot be compiled.</summary>
-    private static MFunction? Compile(Function f, List<string> errors, Func<string, bool>? isPrivate = null, Func<string, bool>? isDefined = null, Func<string, bool>? isImported = null)
+    private MFunction? Compile(Function f, List<string> errors, Func<string, bool>? isPrivate = null, Func<string, bool>? isDefined = null, Func<string, bool>? isImported = null)
     {
         int before = errors.Count;
         MFunction m = Selector.Run(f, errors, AutomaticPacked);
