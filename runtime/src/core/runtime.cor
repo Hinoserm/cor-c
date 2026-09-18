@@ -1204,6 +1204,8 @@ static class Runtime
     /// exits with, so a shell script sees the same thing it would from C.
     public static void Unhandled(object exception)
     {
+        // Do not recursively retry an output buffer which caused the failure.
+        _atExit = 0;
         WriteBytes(StdErr, BytesOf("Unhandled exception. "), 21);
 
         // An Exception prints as its type name and its message, written

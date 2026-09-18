@@ -262,6 +262,11 @@ static class Console
         _in = reader;
     }
 
+    public static void SetError(TextWriter writer)
+    {
+        _error = writer;
+    }
+
     public static Stream OpenStandardInput()
     {
         return new FileStream(Fd.In, FileAccess.Read, false);

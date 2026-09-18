@@ -92,6 +92,8 @@ static class Call
     public const long GetRandom = 355;
     public const long Utimensat = 320;
     public const long Sync = 36;
+    public const long Fsync = 118;
+    public const long Fdatasync = 148;
     public const long Mount = 21;       // (source, target, type, flags, data)
     public const long Umount2 = 52;     // (target, flags)
     public const long Statfs64 = 268;   // (path, size, buffer)
@@ -238,6 +240,8 @@ static class O
     public const int Truncate = 512;    // O_TRUNC
     public const int Append = 1024;     // O_APPEND
     public const int NonBlock = 2048;   // O_NONBLOCK
+    public const int Dsync = 0x1000;    // O_DSYNC
+    public const int Sync = 0x101000;   // O_SYNC includes O_DSYNC
     public const int Directory = 65536; // O_DIRECTORY
 
     /// O_LARGEFILE. On a 32-bit kernel an open WITHOUT this refuses, with
