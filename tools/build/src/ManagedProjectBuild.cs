@@ -27,10 +27,20 @@ public static class ManagedProjectBuild
         string sdk = sdks[0].Path, dotnet = Path.GetFullPath(Path.Combine(sdk, "../.."));
         string csc = Path.Combine(sdk, "Roslyn/bincore/csc.dll");
         IReadOnlyList<EvaluatedProject> graph = ProjectGraph.Evaluate(path, configuration, null, managed: true);
+        Dictionary<string, EvaluatedProject> projects = graph.ToDictionary(project => project.Path, StringComparer.Ordinal);
         Dictionary<string, string> outputs = new(StringComparer.Ordinal);
         foreach (EvaluatedProject project in graph)
         {
             string Property(string name, string fallback = "") => project.Properties.TryGetValue(name, out string? value) ? value : fallback;
+            HashSet<string> closure = new(StringComparer.Ordinal);
+            void Visit(string reference)
+            {
+                if (!closure.Add(reference)) return;
+                foreach (string child in projects[reference].References) Visit(child);
+            }
+            foreach (string reference in project.References) Visit(reference);
+            string[] projectReferences = (Property("DisableTransitiveProjectReferences").Equals("true", StringComparison.OrdinalIgnoreCase)
+                ? project.References : closure.Order(StringComparer.Ordinal)).Select(reference => outputs[reference]).ToArray();
             string root = Path.GetDirectoryName(project.Path)!;
             string output = Path.Combine(root, "bin/managed", configuration, project.Framework);
             string work = Path.Combine(root, "obj/managed", configuration, project.Framework);
@@ -57,11 +67,11 @@ public static class ManagedProjectBuild
                 "-optimize" + (Property("Optimize", configuration == "Release" ? "true" : "false") == "true" ? "+" : "-"),
                 "-warnaserror" + (project.WarningsAsErrors ? "+" : "-"), "-define:" + string.Join(';', project.Defines) };
             if (project.StartupObject.Length != 0) arguments.Add("-main:" + project.StartupObject);
-            foreach (string reference in references.Concat(project.References.Select(reference => outputs[reference]))) arguments.Add("-r:" + reference);
+            foreach (string reference in references.Concat(projectReferences)) arguments.Add("-r:" + reference);
             arguments.AddRange(sources);
             string Identity(string file) => file + ":" + File.GetLastWriteTimeUtc(file).Ticks + ":" + Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(file)));
             string signature = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(project.Evaluation + string.Join('\n', arguments)
-                + string.Join('\n', sources.Concat(references).Concat(project.References.Select(reference => outputs[reference])).Append(csc).Select(Identity)))));
+                + string.Join('\n', sources.Concat(references).Concat(projectReferences).Append(csc).Select(Identity)))));
             string state = Path.Combine(work, "compile.state");
             if (!File.Exists(dll) || !File.Exists(state) || File.ReadAllText(state) != signature + "\n" + Identity(dll))
             {
@@ -77,7 +87,7 @@ public static class ManagedProjectBuild
             }
             else Console.WriteLine("current managed " + project.Path);
             outputs.Add(project.Path, dll);
-            foreach (string dependency in outputs.Values.Where(file => file != dll))
+            foreach (string dependency in closure.Order(StringComparer.Ordinal).Select(reference => outputs[reference]))
             {
                 string destination = Path.Combine(output, Path.GetFileName(dependency));
                 if (!File.Exists(destination) || !SHA256.HashData(File.ReadAllBytes(destination)).AsSpan()
