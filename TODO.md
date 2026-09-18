@@ -19,16 +19,27 @@ required gates rather than assuming a missing log is proof of completion.
 
 ## Priority and purpose
 
-The current priority is the compiler/linker interface, separate compilation,
-link-time optimization and their tests, including bare-metal bootloader/kernel
-requirements. Self-hosting runs are paused. Build utility and memory work remain
-outstanding; keep pushing documented implementation checkpoints.
+The current priority is the CORSAC86 build-system migration on its isolated
+`build-system-migration` branch: command-line configuration, Python-free kernel
+generation and production images. The compiler/linker interface, separate
+compilation and LTO work below remains open, not superseded. Self-hosting runs
+are paused; keep pushing documented implementation checkpoints.
 
 Separate compilation must make self-hosting practical on small 486-class
 systems as well as use modern multicore hosts effectively. The implementation
 tasks below track that work; moving files alone does not reduce the working set.
 
 ## Build utility and executable separation
+
+- [x] Accept bare `Name=Value` arguments beside nested target names, preserving
+  spaces and additional equals signs. Strict manifests reject undeclared
+  property names. Nineteen build-runner checks passed at 4d76278.
+- [x] Integrate a production CORSAC86 manifest on an isolated branch without
+  changing the active kernel developer's workspace. The OS's C# configuration
+  component replaces Python schema/profile/source and syscall generation.
+  `build boot-test disk=output.bin arch=486 smp=0` produced an exact 32 MiB disk
+  and passed login/shell/mount/reboot acceptance. This is host .NET build support,
+  not native build-utility self-hosting or migration of every legacy Python test.
 
 - [ ] Replace Driver.DefaultLibraries' eager Linux library source loading with
   demand-loaded library resolution. Resolve names through each file's `using`
@@ -113,22 +124,27 @@ tasks below track that work; moving files alone does not reduce the working set.
   Private dependency-closure imports and memory-aware concurrent backends remain.
   All nine default groups passed at f6f9107, including executable IR inlining and
   smaller native text; logs: build/logs/20260918-144752-19120d49a7614350894efb744e8a63d8/.
-- [ ] Verify actual CORSAC stage2/kernel split linking and a 486/ISA boot.
+- [x] Verify actual CORSAC stage2/kernel split linking and a 486/ISA boot.
   The new `test/corsac-boot` target snapshots the OS's committed source, builds
   fresh static login/shell utilities, and retains exact symbols/provenance and
   serial/QEMU diagnostics. It does not modify another developer's checkout or
   saved image. This fixture is a boot gate, not full OS regression acceptance.
-  The first real image exposed an oversized stage2 after export preservation.
-  Add closed-image code/data reachability and regenerate metadata before the
-  next boot attempt; never load stage2 across the conventional-memory boundary.
+  Closed-image reachability fixes the oversized stage2 exposed by the initial
+  image. The bounded backend passed actual boot acceptance in
+  build/corsac-boot.fsaIh8. Stage2 has an explicit conventional-memory size guard.
 - [ ] Verify typed interface dispatch, private stable closures/async state machines,
   and source-scoped partial initializer helpers, including new focused tests.
   Named delegate syntax was missing when the closure test used an ordinary C#
   declaration. Add parsing/indexing and executable single-cast/generic coverage;
   multicast operations and complete delegate reflection semantics remain separate.
-- [ ] Verify allocation-accounted IR decoding on the real kernel. Replace the
-  serialized-size multiplier with pre-allocation node/array checks; retain the
-  separate native-object/optimizer memory work rather than claiming total RSS.
+- [x] Verify allocation-accounted IR decoding on the real kernel. Functions now
+  load/optimize/emit in bounded worker batches rather than retaining the complete
+  unit IR. The accepted kernel retained 604 functions and 1,998 data records:
+  1,392,143 bytes resident decode accounting, peak batch allowance 57,409,789
+  bytes at 32 workers. These are accounting figures, not measured total RSS.
+  All nine default groups passed at 038fa5c, including byte-identical deferred
+  codegen and budget rejection. Logs:
+  build/logs/20260918-153841-15e9e283a5d244808a6c9cddef9ad56b/.
 
 - [x] Verify the new disk-backed declaration-index storage milestone: bounded
   external sorting, exact/prefix lookup, partial fragments, deterministic output,

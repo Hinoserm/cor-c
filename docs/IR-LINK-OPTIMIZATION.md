@@ -109,7 +109,8 @@ exports; broader reflection/export-root policy is separate work.
 
 This first IR path is not whole-program LTO: private dependency closures,
 cross-unit devirtualization, summary-driven effect propagation, native-section
-dead stripping, fully streamed object I/O and memory-aware concurrent backend
-scheduling remain separate tasks. Dynamic/interposable links do not use this
+dead stripping, fully streamed object I/O and project-wide concurrent backend
+scheduling remain separate tasks. Function batches within one backend are now
+accounting-budgeted. Dynamic/interposable links do not use this
 closed static-link import policy. The current backend unit budget is a checked
 conservative estimate, not measured live heap usage or 486 acceptance.
