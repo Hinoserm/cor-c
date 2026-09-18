@@ -264,7 +264,6 @@ public sealed partial class Lowering
     private readonly HashSet<FieldSymbol> _statics = new();
     private readonly HashSet<MethodSymbol> _required = new();
     private readonly Queue<MethodSymbol> _work = new();
-    private bool _usesExceptions;
 
     private void Run(CompilationUnit unit)
     {
@@ -351,11 +350,12 @@ public sealed partial class Lowering
 
         SealFunctions();
 
-        if (_usesExceptions || true)
+        bool ownsRuntime = _b.Types.Values.Any(t => t.Name == RuntimeType && t.Decl?.Elsewhere != true);
+        if (!_library || ownsRuntime)
         {
             // The main thread's block, and the word that finds it where there
-            // is no GS. Both are .bss the runtime and the generated code
-            // share; a block of sixty-four bytes is cheap to always have.
+            // is no GS. Ordinary library objects reference this storage;
+            // only the entry/runtime-owning compilation defines it.
             // THE RUNTIME'S, not the program's: with a shared runtime there
             // is one thread block for the process and it is the library's,
             // and a program carrying a second one would have a handler chain
@@ -635,15 +635,17 @@ public sealed partial class Lowering
         // Linux: the block goes behind a GDT entry and GS names it. This is
         // the first call the program makes, because every `try` and every
         // allocation after it reads the block.
+        bool initializedThreadBlock = false;
         if (!Freestanding && RuntimeMethod("StartThreadBlock", 0) is MethodSymbol block)
         {
             Require(block);
             e.Call(CallLabel(block), IrType.Void);
+            initializedThreadBlock = true;
         }
 
         // The stack as the loader left it is the top of this thread's stack,
         // which is where the collector's scan of it ends.
-        if (entrySp is not null)
+        if (entrySp is not null && initializedThreadBlock)
         {
             e.Store(ThreadBlockOf(e), entrySp, TlsStackBase);
         }

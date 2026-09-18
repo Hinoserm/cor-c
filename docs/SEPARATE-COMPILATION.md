@@ -119,6 +119,11 @@ where applicable, exactly-once execution, synchronization and failure caching.
 The linker may order initialization tables only within those rules; it cannot
 eagerly run every constructor or deduplicate state by coincidental byte equality.
 
+The initial thread block is owned by the program-entry unit or the unit defining
+the runtime, not independently allocated by every object. Library exception/TLS
+references resolve to that owner. Minimal hosted --nostdlib programs which do
+not initialize the thread block must not read GS as if a runtime initialized it.
+
 References have three explicit resolution policies: static-required,
 managed-load-deferred, and runtime-generic. A plain undefined native relocation
 is static-required. Deferred references carry assembly/type/member identity and

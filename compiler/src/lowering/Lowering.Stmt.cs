@@ -576,7 +576,6 @@ public sealed partial class Lowering
     /// </summary>
     private FrameSlot PushHandler(Block landing)
     {
-        _usesExceptions = true;
         int w = _t.WordSize;
         FrameSlot rec = _f.NewSlot(4 * w, w, "handler");
         VReg recAddr = _e.SlotAddress(rec);
@@ -608,7 +607,6 @@ public sealed partial class Lowering
     /// </summary>
     private void EmitThrow(Expr value, Node at)
     {
-        _usesExceptions = true;
         VReg obj = Eval(value);
 
         // WHERE THIS THROW IS, recorded into the exception before anything
