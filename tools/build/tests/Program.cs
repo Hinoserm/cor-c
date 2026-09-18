@@ -12,6 +12,24 @@ public static class Program
     public static async Task<int> Main()
     {
         Directory.CreateDirectory(Work);
+        Check("owned managed evaluator retains standard SDK compiler settings", () =>
+        {
+            string project = Path.Combine(Work, "Managed.csproj");
+            File.WriteAllText(project, "<Project Sdk='Microsoft.NET.Sdk'><PropertyGroup><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><AllowUnsafeBlocks>true</AllowUnsafeBlocks><CheckForOverflowUnderflow>true</CheckForOverflowUnderflow><EnableDefaultCompileItems>false</EnableDefaultCompileItems></PropertyGroup></Project>");
+            Corsac.Projects.EvaluatedProject evaluated = Corsac.Projects.ProjectEvaluator.Evaluate(project, "Release", null, managed: true);
+            Require(evaluated.Properties["ImplicitUsings"] == "enable" && evaluated.Properties["Nullable"] == "enable"
+                && evaluated.Properties["AllowUnsafeBlocks"] == "true" && evaluated.Properties["CheckForOverflowUnderflow"] == "true");
+        });
+        Check("managed projects and interactive execution have explicit validation", () =>
+        {
+            BuildManifest manifest = Load("<Target Name='all'><Exec Executable='tool' Interactive='true'/></Target>");
+            BuildOptions options = BuildOptions.Parse([]);
+            TaskExecutor executor = new(manifest, options, new ProcessRunner(1, Work), new TestReport());
+            XElement task = manifest.Targets["all"].Tasks.Single();
+            executor.Validate(task, planning: true);
+            task.SetAttributeValue("Interactive", "maybe");
+            ExpectError(() => executor.Validate(task, planning: true), "Interactive must");
+        });
         Check("bare properties compose with targets without splitting values", () =>
         {
             BuildOptions options = BuildOptions.Parse(["disk=output file.bin", "arch=486", "configure", "smp=0", "label=a=b"]);

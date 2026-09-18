@@ -79,6 +79,8 @@ public sealed class TaskExecutor
         if (task.Elements("Environment").GroupBy(e => (string?)e.Attribute("Name")).Any(g => g.Count() > 1))
             BuildManifest.Fail(task, "Duplicate environment variable");
         Timeout(task);
+        if ((string?)task.Attribute("Interactive") is { } interactive && interactive is not ("true" or "false"))
+            BuildManifest.Fail(task, "Interactive must be true or false");
         if ((string?)task.Attribute("Workers") is { } workers && workers is not ("auto" or "1"))
             BuildManifest.Fail(task, "Workers must be auto or 1");
         IncrementalTask.Validate(task);
