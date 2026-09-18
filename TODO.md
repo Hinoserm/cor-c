@@ -79,19 +79,24 @@ tasks below track that work; moving files alone does not reduce the working set.
 
 ## Compatibility defects
 
-- [ ] Verify the current compatibility repair batch: standard ThreadStart
+- [x] Verify the current compatibility repair batch: standard ThreadStart
   construction and instance Start/Join lifecycle; stream-based pipe fixtures;
   ArgumentList boundary preservation; zero-error kernel snapshot compilation;
-  interface return/ref matching and inherited dispatch. Changes are implemented
-  but remain unchecked until the milestone tests run.
+  interface return/ref matching and inherited dispatch. All six original failing
+  fixtures passed focused acceptance after implementing missing constructor
+  method-group conversion and TextReader/TextWriter.Close. At 21a8209 the
+  default ten groups passed (build/logs/20260918-173351-09b8f91cc97f456a8da6adb3526566b4).
+  Full language acceptance and later extension/streaming changes are separate.
 
 - [ ] Complete interface contract matching: reject incompatible return/ref
   signatures, compare generic method parameters by position rather than spelling,
   and preserve inherited interface mappings through overrides/reimplementation.
-- [ ] Distinguish stack-trace reset for `throw exception;` from preservation for
+- [x] Distinguish stack-trace reset for `throw exception;` from preservation for
   bare `throw;` and exception-dispatch/task propagation. The current checkpoint
   retains rethrow identity through GIR v9, implements ExceptionDispatchInfo,
-  and routes task propagation through it. Milestone verification is pending.
+  and routes task propagation through it. exception_dispatch and
+  514_stack_traces passed; GIR round-trip coverage passed. Broader runtime
+  exception/async compatibility remains subject to the complete suite.
 
 - [x] Verify the standard Path.Combine params overload and fixed-overload null
   validation. This repairs the first post-extraction native bootstrap failure
@@ -111,10 +116,16 @@ tasks below track that work; moving files alone does not reduce the working set.
   units, and a separate final link step using the existing ELF linker.
 - [ ] Compile and release bounded units rather than retaining every source body,
   syntax tree, bound graph, and intermediate representation at once.
-  Current checkpoint queues paths instead of all source texts and releases
-  declaration-record pins once headers are parsed; verification is pending.
+  Queuing paths instead of all source texts and releasing declaration-record
+  pins once headers are parsed passed the metadata/default milestone, including
+  loading 100 declaration families through a 4 KiB serialized-record cache.
   Imported syntax and the bound unit remain separate memory costs, not included
   in the declaration cache accounting.
+
+- [ ] Verify indexed extension-method discovery and namespace-scoped candidate
+  lookup (CDIX v3), including rejection of candidates in unimported namespaces.
+- [ ] Verify non-copying LTO archive views and their allocation bound. Native ELF
+  input objects are still resident; this is not complete streamed object I/O.
 - [ ] After the project path works, reorganize the compiler toward one top-level
   class/type per matching source file, following ordinary C# conventions.
 - [ ] Preserve useful partial-class subdivisions. Physical file boundaries must

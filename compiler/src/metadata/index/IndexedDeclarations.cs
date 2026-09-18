@@ -7,6 +7,7 @@ public sealed class IndexedDeclarations : IDisposable
     private readonly string assembly;
     private readonly HashSet<string> owned;
     private readonly HashSet<string> loaded = new(StringComparer.Ordinal);
+    private readonly HashSet<string> resolvedExtensions = new(StringComparer.Ordinal);
     public long PayloadLoads => catalog.PayloadLoads;
     public long ResidentDeclarationBytes => catalog.ResidentBytes;
     public IReadOnlyDictionary<(string Name, int Arity), int> Interfaces { get; }
@@ -35,8 +36,11 @@ public sealed class IndexedDeclarations : IDisposable
 
     public void RequireExtensions(string space, string method)
     {
+        string query = space + "\n" + method;
+        if (resolvedExtensions.Contains(query)) return;
         foreach (string key in catalog.ExtensionKeys(assembly, space, method))
             if (!loaded.Contains(key)) throw new DeclarationDemand(key);
+        resolvedExtensions.Add(query);
     }
 
     public void AddHeaders(CompilationUnit unit)
