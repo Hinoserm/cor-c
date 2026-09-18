@@ -1,5 +1,5 @@
 using System.Diagnostics;
-using Corsac.Lang;
+using Target = Corsac.Lang.Target;
 using Corsac.Lang.Ir;
 using Corsac.Lang.Elf;
 using Corsac.Lang.X86;
