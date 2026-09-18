@@ -8,7 +8,17 @@ mkdir -p "$root/build"
 work=$(mktemp -d "$root/build/x86-packed-source.XXXXXX")
 # Static runtime avoids the host glibc loader, which may require i686/CMOV.
 # Both user code and runtime must be compiled for the selected CPU.
-for profile in 486 pentium pentium-mmx excluded k6-2 k6-3+; do
+run_target()
+{
+    case "$profile" in
+        486) timeout 30 qemu-i386 -cpu 486 "$1" ;;
+        pentium) timeout 30 qemu-i386 -cpu pentium "$1" ;;
+        pentium-mmx) timeout 30 qemu-i386 -cpu pentium,+mmx "$1" ;;
+        k6*) timeout 30 qemu-i386 -cpu athlon "$1" ;;
+        *) timeout 30 "$1" ;;
+    esac
+}
+for profile in 486 pentium pentium-mmx excluded k6 k6-2 k6-3 k6-2+ k6-3+; do
     case "$profile" in
         excluded) set -- --cpu=pentium-mmx --disable-mmx ;;
         *) set -- "--cpu=$profile" ;;
@@ -24,12 +34,11 @@ for profile in 486 pentium pentium-mmx excluded k6-2 k6-3+; do
         *) grep -q 'paddd mm' "$work/$profile.asm"
            grep -q 'pcmpgtd mm' "$work/$profile.asm" ;;
     esac
-    case "$profile" in
-        pentium) qemu-i386 -cpu pentium "$work/$profile" ;;
-        pentium-mmx) qemu-i386 -cpu pentium,+mmx "$work/$profile" ;;
-        k6-*) qemu-i386 -cpu athlon "$work/$profile" ;;
-        *) "$work/$profile" ;;
-    esac
+    run_target "$work/$profile"
     printf 'PASS ordinary source selection and execution: %s\n' "$profile"
+    "$corc" compile "$@" tests/language/runtime_compare_bytes.cor -o "$work/runtime-$profile" \
+        > "$work/runtime-$profile.compile.log" 2>&1
+    run_target "$work/runtime-$profile"
+    printf 'PASS runtime comparison alignments, tails and unsigned order: %s\n' "$profile"
 done
 printf 'Evidence: %s\n' "$work"
