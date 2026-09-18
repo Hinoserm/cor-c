@@ -9,6 +9,7 @@ jobs="${CORSAC_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN)}"
 mkdir -p "$root/build"
 work="$(mktemp -d "$root/build/corsac-boot.XXXXXX")"
 echo "CORSAC split-toolchain acceptance: $work"
+trap 'echo "Build/boot failed; complete diagnostics: $work" >&2' ERR
 revision="$(git -C "$os" rev-parse HEAD)"
 mkdir -p "$work/source" "$work/root/boot" "$work/root/bin" "$work/root/etc" "$work/root/dev" "$work/root/proc" "$work/root/tmp" "$work/root/root"
 # A fixed tracked-source snapshot does not race another kernel developer or
@@ -24,7 +25,7 @@ while IFS= read -r line; do
     sources+=("$snapshot/os/kernel/$line")
 done < "$snapshot/os/kernel/config/sources.list"
 "$corc" build --target x86-32 "$snapshot/os/kernel/arch/x86/entry.asm" --obj -o "$work/entry.o" > "$work/entry.log" 2>&1
-"$corc" compile "${sources[@]}" --jobs "$jobs" --nostdlib --freestanding --obj \
+"$corc" compile "${sources[@]}" --jobs "$jobs" --freestanding --obj \
     --asm-entry corc_start --tls-gs --cpu 486 --tag 'CORSAC/OS split-toolchain acceptance' \
     --stats -o "$work/kernel.o" > "$work/kernel.compile.log" 2>&1
 "$corlink" "$work/entry.o" "$work/kernel.o" --entry _start --base 0xc0100000 --paddr 0x100000 \
@@ -36,7 +37,7 @@ s2="$snapshot/os/boot/x86/stage2"
 "$corc" compile "$s2/uart8250.cor" "$s2/vga.cor" "$s2/console.cor" "$s2/kbd8042.cor" "$s2/ide.cor" \
     "$snapshot/os/kernel/fs/block.cor" "$snapshot/os/kernel/fs/minixformat.cor" \
     "$snapshot/os/kernel/fs/minixread.cor" "$snapshot/os/kernel/fs/ext3.cor" "$s2/bootfs.cor" "$s2/stage2.cor" \
-    --jobs "$jobs" --nostdlib --freestanding --flat --obj --cpu 486 --stats -o "$work/stage2.o" > "$work/stage2.compile.log" 2>&1
+    --jobs "$jobs" --freestanding --flat --obj --cpu 486 --stats -o "$work/stage2.o" > "$work/stage2.compile.log" 2>&1
 "$corlink" "$work/stage2.o" --flat --base 0x10000 -o "$work/stage2.bin" > "$work/stage2.link.log" 2>&1
 for program in init mount agetty login sh reboot cat ps tty; do
     extra=()
