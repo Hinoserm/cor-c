@@ -44,6 +44,12 @@
       <Argument Value="--kernel-abi" />
     </Test>
   </Target>
+  <Target Name="source">
+    <Compile Project="../../../corc.csproj" Toolchain="managed" />
+    <Test Name="ordinary-source-cpu-matrix" Executable="sh" Timeout="00:05:00">
+      <Argument Value="../../../../tests/integration/x86-packed-source.sh" />
+    </Test>
+  </Target>
   <Target Name="benchmark">
     <Compile Project="x86tests.csproj" Toolchain="managed" />
     <Exec Executable="dotnet">
