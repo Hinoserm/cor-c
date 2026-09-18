@@ -17,7 +17,7 @@ public sealed class OptimizationSummary
     {
         if (obj.Sections.Any(s => s.Name == SectionName)) throw new ElfFormatException("duplicate LTO section");
         Section text = obj.Section(".text");
-        TextHash = SHA256.HashData(text.Bytes.ToArray());
+        TextHash = HashCode(text, 0, text.Bytes.Count);
         Section output = new(SectionName, SectionKind.Note);
         output.Bytes.AddRange(Write());
         obj.Sections.Add(output);
@@ -60,6 +60,19 @@ public sealed class OptimizationSummary
         byte[] result = data.ToArray();
         BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(8), (uint)result.Length);
         return result;
+    }
+
+    /// <summary>ELF REL stores addends in code words; normalize those fields for hashing.</summary>
+    public static byte[] HashCode(Section section, int offset, int length)
+    {
+        byte[] code = section.Bytes.GetRange(offset, length).ToArray();
+        foreach (Relocation relocation in section.Relocs)
+        {
+            long start = Math.Max((long)offset, relocation.Offset);
+            long end = Math.Min((long)offset + length, (long)relocation.Offset + 4);
+            for (long i = start; i < end; i++) code[(int)(i - offset)] = 0;
+        }
+        return SHA256.HashData(code);
     }
 
     public static OptimizationSummary? Read(ObjectFile obj)
@@ -121,7 +134,7 @@ public sealed class OptimizationSummary
         if (at != bytes.Length) throw new ElfFormatException("trailing LTO data");
         Section[] text = obj.Sections.Where(s => s.Name == ".text").ToArray();
         if (text.Length != 1 || text[0].Kind != SectionKind.Code
-            || !SHA256.HashData(text[0].Bytes.ToArray()).SequenceEqual(result.TextHash))
+            || !HashCode(text[0], 0, text[0].Bytes.Count).SequenceEqual(result.TextHash))
             throw new ElfFormatException("LTO text hash mismatch");
         return result;
     }

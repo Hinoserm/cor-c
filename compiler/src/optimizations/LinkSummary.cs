@@ -32,7 +32,7 @@ public static class LinkSummary
             Symbol? symbol = obj.Symbols.FirstOrDefault(s => s.Name == function.Name && s.IsDefined && s.IsFunction);
             if (symbol is null) continue;
             summary.Returns.Add(new ConstantReturn(function.Name, constant,
-                SHA256.HashData(symbol.Section!.Bytes.GetRange((int)symbol.Offset, (int)symbol.Size).ToArray())));
+                OptimizationSummary.HashCode(symbol.Section!, (int)symbol.Offset, (int)symbol.Size)));
         }
     }
 }

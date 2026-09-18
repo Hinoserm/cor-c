@@ -32,7 +32,7 @@ public static class LinkTimeOptimizer
                 int length = symbol.Section!.Bytes.Count;
                 if (symbol.Offset < 0 || symbol.Size <= 0 || symbol.Offset > length
                     || symbol.Size > length - symbol.Offset
-                    || !SHA256.HashData(symbol.Section.Bytes.GetRange((int)symbol.Offset, (int)symbol.Size).ToArray()).SequenceEqual(returned.CodeHash))
+                    || !OptimizationSummary.HashCode(symbol.Section, (int)symbol.Offset, (int)symbol.Size).SequenceEqual(returned.CodeHash))
                     throw new ElfFormatException(input.Name + ": LTO function hash mismatch " + returned.Symbol);
                 values.Add(returned.Symbol, returned.Value);
             }

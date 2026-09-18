@@ -42,6 +42,31 @@ ordinary object and independent-unit compatibility are not yet guaranteed.
 
 ## Separate-compilation extension work
 
+### LTO summary encoding, version 1
+
+The non-loadable .corsac.lto section begins with the four bytes `CLTO`, followed
+by little-endian uint32 version (1), total section length, constant-return count
+and call-site count, then a 32-byte SHA-256 hash of canonical .text bytes. The
+header is 52 bytes. Canonical code replaces every four-byte relocation field
+with zeros: ELF REL serializes addends in those fields, so hashing their raw
+pre-emission values would not survive an object round trip.
+
+A constant-return record contains uint32 UTF-8 symbol byte length, symbol bytes,
+int32 return value and a 32-byte canonical function-code hash. Its contract is
+ordinary zero-argument i32 ABI, side-effect-free, finite and nonthrowing.
+A call record contains uint32 relocation-field offset, uint32 UTF-8 symbol byte
+length and symbol bytes. It certifies a direct zero-argument i32 call emitted
+by the backend; instruction-looking data is not inferred as a call.
+
+Records are sorted by symbol name and call offset respectively. Empty/duplicate
+names, invalid UTF-8, duplicate offsets, trailing/truncated data, unsupported
+versions, hash mismatches and relocation mismatches are rejected. Call records
+must point at the rel32 field immediately following E8, with addend -4 and the
+specified symbol. The first pass replaces E8+rel32 with B8+imm32 and removes the
+relocation; original function bodies remain. Dynamic/PIC objects do not publish
+these closed-world summaries. --no-lto disables transformations but retains
+metadata validation.
+
 Generic template serialization is now GIR major version 8: Block records carry
 a checked/unchecked/inherited arithmetic-context byte. Older versions are
 rejected rather than interpreted with missing overflow semantics. This is

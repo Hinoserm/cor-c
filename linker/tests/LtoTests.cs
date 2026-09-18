@@ -92,6 +92,7 @@ public static class LtoTests
         Linker.FlatImage flat = Linker.LinkFlat(new[] { ("caller", caller), ("callee", callee) }, "_start", 0x10000);
         Require(flat.Entry == 0x10000 && flat.Bytes[0] == 0xb8, "flat entry or optimization incorrect");
         Require(flat.BssSize >= 4096 && flat.MemorySize > flat.Bytes.Length, "flat BSS lost");
+        Require(flat.MemorySize == 4128, "flat memory size omitted BSS alignment padding");
         byte[] kernel = Linker.Link(new[] { ("caller", caller), ("callee", callee) }, "_start", 0xc0100000, 0x100000);
         uint entry = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(kernel.AsSpan(24, 4));
         Require(entry >= 0x100000 && entry < 0x101000, "kernel physical entry not relocated");

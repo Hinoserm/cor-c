@@ -211,8 +211,12 @@ public static partial class Linker
             }
         }
 
+        // Startup zeroes from the first byte after the file, so its range
+        // includes any alignment gap before the BSS section itself.
+        uint zeroBytes = layout.Bss.Size == 0 ? 0
+            : checked(layout.Bss.Addr + layout.Bss.Size - baseAddress - size);
         return new FlatImage(image, baseAddress, entry.Address,
-                             layout.Text.Size, layout.ReadOnlyData.Size, layout.Data.Size, layout.Bss.Size);
+                             layout.Text.Size, layout.ReadOnlyData.Size, layout.Data.Size, zeroBytes);
     }
 
     /// <summary>
