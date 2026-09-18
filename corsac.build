@@ -41,40 +41,28 @@
     </Target>
     <Target Name="unit" Steps="build-tool;optimizer;assembler;x86;linker;metadata">
       <Target Name="metadata">
-        <Test Name="metadata" Executable="dotnet" Timeout="00:03:00">
-          <Argument Value="run" /><Argument Value="--project" /><Argument Value="compiler/tests/metadata/MetadataTests.csproj" />
-          <Argument Value="-c" /><Argument Value="$(Configuration)" />
-        </Test>
+        <Compile Project="compiler/tests/metadata/MetadataTests.csproj" />
+        <Test Name="metadata" Executable="compiler/tests/metadata/bin/cor-c/$(Configuration)/net10.0/MetadataTests" Timeout="00:03:00" />
       </Target>
       <Target Name="build-tool">
-        <Test Name="build-runner" Executable="dotnet" Timeout="00:03:00">
-          <Argument Value="run" /><Argument Value="--project" /><Argument Value="tools/build/tests/BuildTests.csproj" />
-          <Argument Value="-c" /><Argument Value="$(Configuration)" />
-        </Test>
+        <Compile Project="tools/build/tests/BuildTests.csproj" />
+        <Test Name="build-runner" Executable="tools/build/tests/bin/cor-c/$(Configuration)/net10.0/BuildTests" Timeout="00:03:00" />
       </Target>
       <Target Name="optimizer">
-        <Test Name="optimizer" Executable="dotnet" Timeout="00:03:00">
-          <Argument Value="run" /><Argument Value="--project" /><Argument Value="compiler/tests/optimizations/OptTests.csproj" />
-          <Argument Value="-c" /><Argument Value="$(Configuration)" />
-        </Test>
+        <Compile Project="compiler/tests/optimizations/OptTests.csproj" />
+        <Test Name="optimizer" Executable="compiler/tests/optimizations/bin/cor-c/$(Configuration)/net10.0/OptTests" Timeout="00:03:00" />
       </Target>
       <Target Name="assembler">
-        <Test Name="assembler" Executable="dotnet" Timeout="00:03:00">
-          <Argument Value="run" /><Argument Value="--project" /><Argument Value="compiler/tests/arch/corsac/asmtests.csproj" />
-          <Argument Value="-c" /><Argument Value="$(Configuration)" />
-        </Test>
+        <Compile Project="compiler/tests/arch/corsac/asmtests.csproj" />
+        <Test Name="assembler" Executable="compiler/tests/arch/corsac/bin/cor-c/$(Configuration)/net10.0/asmtests" Timeout="00:03:00" />
       </Target>
       <Target Name="x86">
-        <Test Name="x86" Executable="dotnet" Timeout="00:03:00">
-          <Argument Value="run" /><Argument Value="--project" /><Argument Value="compiler/tests/arch/x86/x86tests.csproj" />
-          <Argument Value="-c" /><Argument Value="$(Configuration)" />
-        </Test>
+        <Compile Project="compiler/tests/arch/x86/x86tests.csproj" />
+        <Test Name="x86" Executable="compiler/tests/arch/x86/bin/cor-c/$(Configuration)/net10.0/x86tests" Timeout="00:03:00" />
       </Target>
       <Target Name="linker">
-        <Test Name="linker" Executable="dotnet" Timeout="00:03:00">
-          <Argument Value="run" /><Argument Value="--project" /><Argument Value="linker/tests/ElfTests.csproj" />
-          <Argument Value="-c" /><Argument Value="$(Configuration)" />
-        </Test>
+        <Compile Project="linker/tests/ElfTests.csproj" />
+        <Test Name="linker" Executable="linker/tests/bin/cor-c/$(Configuration)/net10.0/ElfTests" Timeout="00:03:00" />
       </Target>
     </Target>
     <Target Name="smoke" DependsOnTargets="/compiler">

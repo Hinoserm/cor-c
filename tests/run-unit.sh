@@ -8,5 +8,8 @@ projects=(
     "$root/compiler/tests/arch/x86/x86tests.csproj"
 )
 for project in "${projects[@]}"; do
-    dotnet run -c Release --project "$project"
+    "${CORC:-$root/compiler/bin/Release/net10.0/corc}" project "$project" --configuration Release
+    directory="$(dirname "$project")"
+    name="$(basename "$project" .csproj)"
+    "$directory/bin/cor-c/Release/net10.0/$name"
 done

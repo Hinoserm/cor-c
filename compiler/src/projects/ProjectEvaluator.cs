@@ -69,6 +69,8 @@ public sealed class ProjectEvaluator
             throw new InvalidDataException("AssemblyName must be a simple output name");
         if (Get("CheckForOverflowUnderflow").Equals("true", StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("Project-wide checked arithmetic is not yet implemented");
+        if (items.Any(item => item.Type == "Using") || Get("ImplicitUsings") is "enable" or "true")
+            throw new InvalidDataException("Generated project-wide using directives are not yet connected to indexed compilation");
         string[] sources = items.Where(item => item.Type == "Compile").Select(item => item.Include).ToArray();
         if (sources.Distinct(StringComparer.Ordinal).Count() != sources.Length) throw new InvalidDataException("Duplicate Compile items in " + project);
         List<string> defines = Split(Get("DefineConstants")).ToList();
@@ -184,8 +186,13 @@ public sealed class ProjectEvaluator
                     }
         }
         foreach (ProjectItem item in selected)
+        {
+            foreach (XAttribute attribute in node.Attributes())
+                if (attribute.Name.LocalName is not ("Include" or "Exclude" or "Remove" or "Update" or "Condition"))
+                    item.Metadata[attribute.Name.LocalName] = Expand(attribute.Value);
             foreach (XElement metadata in node.Elements())
                 if (Condition(metadata)) item.Metadata[metadata.Name.LocalName] = Expand(metadata.Value);
+        }
         if (type == "ProjectReference" && selected.Any(item => item.Metadata.Count != 0))
             throw new InvalidDataException("ProjectReference metadata is not yet implemented");
     }

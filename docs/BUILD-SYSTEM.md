@@ -238,6 +238,37 @@ rules rather than an unconditional rejection of every XML node.
 
 ## Bootstrap and toolchain publication
 
+### Owned project pipeline checkpoint
+
+`corc project component.csproj --configuration Release --jobs N` evaluates the
+supported SDK-style profile without launching MSBuild. Properties, conditions,
+imports, directory build props/targets, source globs, Include/Exclude/Remove/
+Update, and source project-reference traversal are implemented. Unsupported
+features fail explicitly; full profile acceptance is not claimed. Generated
+global usings, metadata transforms, custom targets/tasks, standalone library
+packaging and complete project-reference metadata remain outstanding.
+
+The coordinator indexes declarations, compiles source files one at a time in
+one compiler process, and uses the worker budget inside each unit. Cached units
+record source/tool/options identities and consumed declaration fingerprints.
+Name and extension lookup results, including misses, are recorded so adding a
+previously absent candidate invalidates consumers. Ordinary provider body edits
+do not invalidate callers; generic bodies use a conservative source fingerprint.
+Source-generation changes during compilation prevent final publication.
+
+The runtime provider still compiles the library source set together, and unit
+binding still uses library declaration sources. Replacing that eager library
+handling is the next requested stage. Bounded project-body residency does not
+establish a total process RSS ceiling.
+
+The Basic.csproj fixture passed native execution, unchanged output timestamps
+with zero rebuilt units, and a body-only edit with one of two units rebuilt.
+Evidence: build/native-project-pipeline.log and build/project-pipeline.Q0o4aB/.
+Evaluator and build-runner host checks were compiled directly with the C#
+compiler for diagnostics; they did not invoke MSBuild.
+
+### Activation requirements
+
 `build bootstrap` is a manifest-defined chain: host seed, native compiler/build
 utility, native rebuild, verification, and atomic activation. Versions, source
 identities, target host and artifact hashes are recorded. A failed verification
@@ -295,8 +326,9 @@ resource locks below remain future scheduling work.
 
 ## Incremental execution
 
-Compile uses the standard .csproj/MSBuild incremental engine: project references,
-SDK imports, source items, compiler options and outputs remain its responsibility.
+Compile uses COR-C#'s owned standard-project evaluator and incremental records:
+project references, supported SDK defaults, source items, compiler options and
+outputs remain its responsibility. MSBuild is not the operational engine.
 The build runner must not guess a project's dependencies by scanning only .cs
 files or skip evaluation just because its main executable already exists.
 

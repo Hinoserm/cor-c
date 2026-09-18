@@ -20,8 +20,8 @@ The design and current implementation limits are documented in
 
 ```sh
 dotnet build tools/build/build.csproj -c Release
-tools/build/bin/Release/net10.0/build --toolchain dotnet
-tools/build/bin/Release/net10.0/build test --toolchain dotnet
+tools/build/bin/Release/net10.0/build --list
+tools/build/bin/Release/net10.0/build --plan
 ```
 
 The independent linker is `linker/bin/Release/net10.0/corlink`. The compiler
@@ -29,10 +29,16 @@ emits ELF relocatable `.o` files with `--obj`; see
 [OBJECT-FORMAT.md](docs/OBJECT-FORMAT.md). Native bootstrap activation
 is not implemented yet; the runner never silently substitutes the host compiler.
 
-.NET 10 is required for the bootstrap compiler:
+.NET 10/MSBuild is permitted only to bootstrap the build utility above. Normal
+Compile tasks invoke COR-C#'s own .csproj evaluator and per-file pipeline. Its
+initial console-project acceptance passes, but the full compiler/self-hosting
+project profile is not yet accepted. Unsupported features fail rather than
+falling back to MSBuild.
+
+With a current compiler seed available:
 
 ```sh
-dotnet build compiler/corc.csproj -c Release
+compiler/bin/Release/net10.0/corc project tests/integration/project/Basic.csproj
 compiler/bin/Release/net10.0/corc compile examples/hello/Program.cor -o hello
 ./hello
 ```
