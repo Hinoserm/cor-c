@@ -2691,6 +2691,15 @@ public sealed partial class Binder
                 _declOf[made] = d;
                 Declare(d, d.Name, made);
                 if (d.Init is not null) { _assigned.Add(made); }
+                if (d.Init is not null)
+                {
+                    Type initialState = _r.TypeOf(d.Init);
+                    if (!initialState.Nullable && initialState.Prim != Prim.NullLiteral && !initialState.IsError)
+                    {
+                        _notNull.Add(made);
+                        _notNullPaths.Add(d.Name);
+                    }
+                }
 
                 // Object-initializer assignments are known facts about the
                 // fresh object held by this local. C# carries those facts into

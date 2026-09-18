@@ -1,0 +1,12 @@
+// expect-exit: 0
+interface IAnswer { int Value(); }
+class Answer : IAnswer { public int Value() { return 42; } }
+static class Program
+{
+    static IAnswer? Make() { return new Answer(); }
+    static int Main()
+    {
+        IAnswer? answer = Make()!;
+        return answer.Value() == 42 ? 0 : 1;
+    }
+}
