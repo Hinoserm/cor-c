@@ -19,6 +19,7 @@ public static class IrCodecTests
         Reject(() => IrFunctionCodec.Read(bytes, new IrReadBudget(512)));
         IrReadBudget budget = new(65536);
         _ = IrFunctionCodec.Read(bytes, budget);
+        Check(budget.Used == IrFunctionCodec.DecodeCost(function, bytes.Length), "Deferred decode cost differs from actual accounting");
         Check(budget.Used > bytes.Length && budget.Used < budget.Limit, "Decoded node accounting is missing");
         Check(bytes.SequenceEqual(IrFunctionCodec.Write(restored)), "IR function reserialization differs");
         Check(restored.Params.Count == 1 && restored.SourceFile == "test.cor" && restored.Coalescible, "IR function fields lost");

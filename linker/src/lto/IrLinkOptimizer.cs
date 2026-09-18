@@ -51,7 +51,7 @@ public static class IrLinkOptimizer
             {
                 service ??= backend();
                 ObjectFile original = inputs[plan.Index].Object;
-                IrImport[] imports = plan.Imports.Select(import => new IrImport(import.Symbol, import.Archive.ReadBody(import.Body.Key))).ToArray();
+                IrImport[] imports = plan.Imports.Select(import => new IrImport(import.Symbol, import.Archive.ReadBody(import.Body.Key), import.Body.DecodeBytes)).ToArray();
                 ObjectFile replacement = service.Recompile(original, imports, plan.Retained);
                 TargetContract.Validate(new[] { ("original", original), ("regenerated", replacement) });
                 ManagedLayoutContract.Validate(new[] { ("original", original), ("regenerated", replacement) });

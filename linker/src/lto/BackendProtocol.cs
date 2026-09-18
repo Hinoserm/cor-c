@@ -8,10 +8,10 @@ public static class BackendProtocol
     public static readonly UTF8Encoding Utf8 = new(false, true);
     public static void WriteRequest(BinaryWriter writer, BackendRequest request)
     {
-        writer.Write((byte)0x52); writer.Write(2);
+        writer.Write((byte)0x52); writer.Write(3);
         WriteText(writer, request.Input); WriteText(writer, request.Output); writer.Write(request.Imports.Count);
         foreach (IrImport import in request.Imports)
-        { WriteText(writer, import.Symbol); writer.Write(import.Body.Length); writer.Write(import.Body); }
+        { WriteText(writer, import.Symbol); writer.Write(import.DecodeBytes); writer.Write(import.Body.Length); writer.Write(import.Body); }
         writer.Write(request.Retained?.Count ?? -1);
         if (request.Retained is not null)
             foreach (string key in request.Retained.Order(StringComparer.Ordinal)) WriteText(writer, key);
@@ -21,18 +21,19 @@ public static class BackendProtocol
     {
         int marker = reader.BaseStream.ReadByte();
         if (marker == -1) return null;
-        if (marker != 0x52 || reader.ReadInt32() != 2) throw new InvalidDataException("Unsupported backend protocol");
+        if (marker != 0x52 || reader.ReadInt32() != 3) throw new InvalidDataException("Unsupported backend protocol");
         string input = ReadText(reader), output = ReadText(reader);
         int count = reader.ReadInt32(), bytes = 0;
         if (count < 0 || count > 256) throw new InvalidDataException("Backend import count exceeds budget");
         List<IrImport> imports = new(count);
         for (int i = 0; i < count; i++)
         {
-            string symbol = ReadText(reader); int length = reader.ReadInt32();
+            string symbol = ReadText(reader); long decodeBytes = reader.ReadInt64(); int length = reader.ReadInt32();
+            if (decodeBytes < 0 || decodeBytes > 64L * 1024 * 1024) throw new InvalidDataException("Invalid imported IR decode budget");
             if (length < 0 || length > 16 * 1024 * 1024 - bytes) throw new InvalidDataException("Backend import bytes exceed budget");
             byte[] body = reader.ReadBytes(length);
             if (body.Length != length) throw new EndOfStreamException("Truncated backend import");
-            imports.Add(new(symbol, body)); bytes += length;
+            imports.Add(new(symbol, body, decodeBytes)); bytes += length;
         }
         int retainedCount = reader.ReadInt32();
         if (retainedCount < -1 || retainedCount > 100000) throw new InvalidDataException("Invalid backend retention count");

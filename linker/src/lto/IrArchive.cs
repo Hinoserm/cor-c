@@ -43,6 +43,8 @@ public sealed class IrArchive
             IReadOnlyList<string> references = record.References ?? record.Calls;
             writer.Write(references.Count);
             foreach (string reference in references) WriteName(writer, reference);
+            if (record.DecodeBytes < 0) throw new ElfFormatException("Invalid IR decode estimate");
+            writer.Write(record.DecodeBytes);
             writer.Write(bodyBytes); writer.Write(record.Payload.Length); writer.Write(SHA256.HashData(record.Payload));
             bodyBytes = checked(bodyBytes + record.Payload.Length);
             if (bodyBytes > MaximumBytes || directory.Length > MaximumBytes - bodyBytes - 84)
@@ -50,7 +52,7 @@ public sealed class IrArchive
         }
         using MemoryStream stream = new();
         using BinaryWriter output = new(stream, Utf8, leaveOpen: true);
-        output.Write(0x52494343u); output.Write(2); output.Write(records.Count);
+        output.Write(0x52494343u); output.Write(3); output.Write(records.Count);
         output.Write(checked((int)directory.Length)); output.Write(checked(84 + (int)directory.Length + bodyBytes));
         byte[] index = directory.ToArray();
         output.Write(NativeHash(obj)); output.Write(SHA256.HashData(index)); output.Write(index);
@@ -68,7 +70,7 @@ public sealed class IrArchive
         using BinaryReader reader = new(stream, Utf8);
         try
         {
-            if (reader.ReadUInt32() != 0x52494343 || reader.ReadInt32() != 2) throw new ElfFormatException("Unsupported IR archive");
+            if (reader.ReadUInt32() != 0x52494343 || reader.ReadInt32() != 3) throw new ElfFormatException("Unsupported IR archive");
             int count = reader.ReadInt32(), directoryBytes = reader.ReadInt32(), total = reader.ReadInt32();
             byte[] native = reader.ReadBytes(32);
             byte[] directoryHash = reader.ReadBytes(32);
@@ -91,9 +93,11 @@ public sealed class IrArchive
                     throw new ElfFormatException("Invalid IR reference summary");
                 List<string> references = new(referenceCount);
                 for (int reference = 0; reference < referenceCount; reference++) references.Add(ReadName(reader));
+                long decodeBytes = reader.ReadInt64();
+                if (decodeBytes < 0) throw new ElfFormatException("Invalid IR decode estimate");
                 int offset = reader.ReadInt32(), length = reader.ReadInt32(); byte[] hash = reader.ReadBytes(32);
                 if (offset != next - bodyStart || length < 0 || length > bytes.Length - next || hash.Length != 32
-                    || stream.Position > bodyStart || !entries.TryAdd(key, new(key, flags != 0, instructions, calls, next, length, hash, references)))
+                    || stream.Position > bodyStart || !entries.TryAdd(key, new(key, flags != 0, instructions, calls, next, length, hash, references, decodeBytes)))
                     throw new ElfFormatException("Invalid IR body directory");
                 next += length;
             }

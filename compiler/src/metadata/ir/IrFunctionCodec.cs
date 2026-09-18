@@ -7,6 +7,21 @@ namespace Corsac.Lang.Metadata;
 /// <summary>Complete post-async IR function encoding, independently addressable in an object.</summary>
 public static class IrFunctionCodec
 {
+    public static long DecodeCost(Function function, int payloadBytes)
+    {
+        long bytes = 512L + payloadBytes + 64L * function.RegCount + 16L * function.Params.Count
+            + 96L * function.Slots.Count + 160L * function.Blocks.Count;
+        void Text(string? value) { if (value is not null) bytes = checked(bytes + 32 + 3L * IrBinary.Utf8.GetByteCount(value)); }
+        Text(function.Name); Text(function.SourceFile); Text(function.Display);
+        foreach (Instr instruction in function.Blocks.SelectMany(block => block.Instrs))
+        {
+            bytes = checked(bytes + 256 + 64L * instruction.Operands.Count + 16L * instruction.Targets.Count);
+            Text(instruction.Callee);
+            foreach (SymOperand address in instruction.Operands.OfType<SymOperand>()) Text(address.Name);
+        }
+        return bytes;
+    }
+
     public static byte[] Write(Function function)
     {
         if (function.Async is not null) throw new InvalidDataException("Serialize IR after async lowering");

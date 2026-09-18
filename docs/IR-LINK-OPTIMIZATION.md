@@ -18,14 +18,16 @@ The `corc link` convenience command supplies the same backend in-process.
 ## Container
 
 The archive is a non-loadable ELF note. Integers are little-endian. Its 84-byte
-header contains magic `CCIR`, version 2, record count, directory byte count,
+header contains magic `CCIR`, version 3, record count, directory byte count,
 total archive size, a 32-byte native-object digest and a 32-byte directory digest.
 Native-object hashing uses canonical ELF serialization with the archive omitted.
 
 Each directory record contains a length-prefixed UTF-8 key, a one-byte importable
 flag, instruction count, direct-call count and length-prefixed call names,
 then a reference count and length-prefixed code/data reference names, followed
-by body-relative offset, byte length and a 32-byte SHA-256 payload digest.
+by a 64-bit decoded-node accounting cost, body-relative offset, byte length
+and a 32-byte SHA-256 payload digest. Backend request protocol version 3 carries
+the same cost for each imported body. Earlier versions are rejected.
 Names have a 16 KiB ceiling. Records cover consecutive, nonoverlapping payload
 ranges exactly. Invalid versions, flags, lengths, hashes, duplicate keys and
 unclaimed bytes are errors. Payload integrity is checked when that body is read.
@@ -70,9 +72,15 @@ retain their normal binding. Functions needing private constants/closure code
 are conservatively kept as native calls until dependency-closure imports exist.
 
 Selected payloads are loaded one consumer at a time, not all project bodies at
-once. The backend decodes one unit under an explicit allocation budget, imports
-selected functions, performs bounded inlining and constant/copy/dead-code/branch
-cleanup, then removes the analysis-only imports. Remaining calls bind to the
+once. The backend retains unit data and lightweight function headers, then loads
+functions in worker batches bounded by the remaining 64 MiB accounting allowance.
+Each function loads only its selected direct-call imports, performs bounded
+inlining and constant/copy/dead-code/branch cleanup, and releases analysis-only
+imports. Batch costs reserve three times decoded-node costs plus 512 KiB per
+function for transformation/code-generation work; this is an accounting policy,
+not a measured RSS ceiling. A function exceeding the allowance is rejected
+before decoding. Emission remains ordered and releases decoded function bodies
+after their native bytes and compact metadata are emitted. Remaining calls bind to the
 original providers; imported copies are never accidentally emitted as new owners.
 Exports remain intact. Stack maps, frame tables and line tables are regenerated
 from the new code rather than patched with guessed offsets.

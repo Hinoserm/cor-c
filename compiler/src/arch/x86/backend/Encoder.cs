@@ -51,6 +51,12 @@ internal sealed class Encoder
         _out = text.Bytes;
     }
 
+    public void ReleaseFunction()
+    {
+        _m = null!;
+        _long.Clear(); Tables.Clear(); CallSites.Clear(); Lines.Clear(); _pending.Clear();
+    }
+
     /// <summary>Encode a function at the current end of the section; returns its size.</summary>
     public int Encode(MFunction m)
     {

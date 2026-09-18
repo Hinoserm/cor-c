@@ -7,8 +7,11 @@ namespace Corsac.Lang.Opt;
 public static class LinkSummary
 {
     public static void AddConstantReturns(Module module, ObjectFile obj, OptimizationSummary summary)
+        => AddConstantReturns(module.Functions, obj, summary);
+
+    public static void AddConstantReturns(IEnumerable<Function> functions, ObjectFile obj, OptimizationSummary summary)
     {
-        foreach (Function function in module.Functions)
+        foreach (Function function in functions)
         {
             if (function.Returns != IrType.I32 || function.Params.Count != 0 || function.Async is not null
                 || function.Blocks.Count != 1 || function.Blocks[0].IsLandingPad) continue;

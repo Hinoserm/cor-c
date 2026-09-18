@@ -34,6 +34,11 @@ public sealed class X86Backend : IBackend
     /// <summary>Bounded task workers for selection/allocation; emission stays ordered.</summary>
     public int Workers { get; set; } = 1;
     public bool EmitLinkSummary { get; set; }
+    public Func<int, Function>? FunctionLoader { get; set; }
+    public Func<int, long>? FunctionLoadBytes { get; set; }
+    public long FunctionMemoryBudget { get; set; } = 64L * 1024 * 1024;
+    public long PeakBatchBytes { get; private set; }
+    public int PeakBatchFunctions { get; private set; }
 
     /// <summary>
     /// Position-independent code: globals through the GOT, calls through
@@ -179,24 +184,43 @@ public sealed class X86Backend : IBackend
         // Workers only read the symbol sets and each owns disjoint functions,
         // results and diagnostics. Encoding and layout below remain serial.
         int workers = Workers;
-        int window = workers > 1 ? workers * 4 : 0;
+        int window = FunctionLoader is null ? workers * 4 : workers;
         MFunction?[] compiled = new MFunction?[window];
         List<string>?[] diagnostics = new List<string>?[window];
+        int batchStart = 0, batchEnd = 0;
+        PeakBatchBytes = 0; PeakBatchFunctions = 0;
         for (int functionIndex = 0; functionIndex < module.Functions.Count; functionIndex++)
         {
             Function f = module.Functions[functionIndex];
             MFunction? m;
-            if (workers == 1)
+            if (workers == 1 && FunctionLoader is null)
             {
                 m = Compile(f, errors, PositionIndependent ? IsPrivate : null, IsDefined,
                     imported.Count == 0 ? null : IsImported);
             }
             else
             {
-                if (functionIndex % window == 0)
+                if (functionIndex == batchEnd)
                 {
                     int first = functionIndex;
                     int count = Math.Min(window, module.Functions.Count - first);
+                    long bytes = 0;
+                    if (FunctionLoader is not null)
+                    {
+                        count = 0;
+                        while (count < window && first + count < module.Functions.Count)
+                        {
+                            long cost = FunctionLoadBytes?.Invoke(first + count)
+                                ?? throw new InvalidOperationException("Deferred functions require memory costs");
+                            if (cost <= 0 || cost > FunctionMemoryBudget)
+                                throw new InvalidDataException("Function exceeds backend working budget: " + module.Functions[first + count].Name);
+                            if (cost > FunctionMemoryBudget - bytes) break;
+                            bytes += cost; count++;
+                        }
+                    }
+                    batchStart = first; batchEnd = first + count;
+                    PeakBatchBytes = Math.Max(PeakBatchBytes, bytes);
+                    PeakBatchFunctions = Math.Max(PeakBatchFunctions, count);
                     int active = Math.Min(workers, count);
                     Task[] tasks = new Task[active];
                     for (int worker = 0; worker < active; worker++)
@@ -207,7 +231,7 @@ public sealed class X86Backend : IBackend
                             for (int item = lane; item < count; item += active)
                             {
                                 List<string> localErrors = new();
-                                compiled[item] = Compile(module.Functions[first + item], localErrors,
+                                compiled[item] = Compile(FunctionLoader?.Invoke(first + item) ?? module.Functions[first + item], localErrors,
                                     PositionIndependent ? IsPrivate : null, IsDefined,
                                     imported.Count == 0 ? null : IsImported);
                                 diagnostics[item] = localErrors;
@@ -216,7 +240,7 @@ public sealed class X86Backend : IBackend
                     }
                     Task.WhenAll(tasks).Wait();
                 }
-                int slot = functionIndex % window;
+                int slot = functionIndex - batchStart;
                 errors.AddRange(diagnostics[slot]!);
                 m = compiled[slot];
                 compiled[slot] = null;
@@ -226,6 +250,7 @@ public sealed class X86Backend : IBackend
             {
                 continue;
             }
+            f = m.Source;
             // The gap before a function is never executed, but it is filled
             // with real no-ops rather than zeros so a disassembly reads cleanly.
             int gap = (FunctionAlign - text.Bytes.Count % FunctionAlign) % FunctionAlign;
@@ -248,6 +273,8 @@ public sealed class X86Backend : IBackend
                 Name = f.Name, Section = text, Offset = start, Size = size, IsFunction = true, Global = f.Exported,
             });
             defined.Add(f.Name);
+            if (EmitLinkSummary && !PositionIndependent)
+                Corsac.Lang.Opt.LinkSummary.AddConstantReturns(new[] { f }, obj, summary);
 
             // WHAT THIS FUNCTION IS, for a fault to read back. Recorded per
             // function as it is encoded, because this is the one moment the
@@ -276,6 +303,7 @@ public sealed class X86Backend : IBackend
                     tables.Bytes.AddRange(new byte[4]);
                 }
             }
+            encoder.ReleaseFunction();
         }
 
         // THE FRAME TABLE, once every function's bytes are placed. It goes in
@@ -364,7 +392,6 @@ public sealed class X86Backend : IBackend
         }
         if (EmitLinkSummary && !PositionIndependent)
         {
-            Corsac.Lang.Opt.LinkSummary.AddConstantReturns(module, obj, summary);
             summary.Attach(obj);
         }
         return obj;

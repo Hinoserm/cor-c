@@ -17,10 +17,48 @@ internal static class Program
 {
     private static int _failures;
 
+    private static void DeferredFunctions()
+    {
+        Module shells = new("deferred");
+        Module eager = new("deferred");
+        Function Load(int index)
+        {
+            Function f = new("deferred" + index, IrType.I32) { Exported = true };
+            new Builder(f, f.NewBlock()).Ret(new ImmOperand(index, IrType.I32));
+            return f;
+        }
+        for (int i = 0; i < 7; i++)
+        {
+            shells.Functions.Add(new Function("deferred" + i, IrType.Void) { Exported = true });
+            eager.Functions.Add(Load(i));
+        }
+        List<string> errors = new();
+        ObjectFile expected = new X86Backend { EmitLinkSummary = true }.Generate(eager, errors);
+        foreach (int workers in new[] { 1, 4 })
+        {
+            int[] loads = new int[7];
+            X86Backend backend = new()
+            {
+                Workers = workers, EmitLinkSummary = true, FunctionMemoryBudget = 200,
+                FunctionLoadBytes = _ => 100,
+                FunctionLoader = i => { System.Threading.Interlocked.Increment(ref loads[i]); return Load(i); },
+            };
+            ObjectFile actual = backend.Generate(shells, errors);
+            Check(ElfWriter.WriteObject(actual).SequenceEqual(ElfWriter.WriteObject(expected)), "deferred codegen preserves object bytes");
+            Check(loads.All(count => count == 1) && shells.Functions.All(f => f.Blocks.Count == 0), "deferred bodies loaded once and not retained in module");
+            Check(backend.PeakBatchBytes <= 200 && backend.PeakBatchFunctions <= 2, "deferred worker window respects budget");
+        }
+        bool rejected = false;
+        try { new X86Backend { FunctionLoader = Load, FunctionLoadBytes = _ => 201, FunctionMemoryBudget = 200 }.Generate(shells, errors); }
+        catch (InvalidDataException) { rejected = true; }
+        Check(rejected && errors.Count == 0, "oversized deferred function rejected before loading");
+    }
+
     private static int Main(string[] args)
     {
         Target.Current = Target.X86;
         PruneArithmetic();
+        DeferredFunctions();
         string outDir = Path.Combine(Path.GetTempPath(), "corsac-x86tests");
         Directory.CreateDirectory(outDir);
 

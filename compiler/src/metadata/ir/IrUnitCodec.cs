@@ -36,7 +36,8 @@ public static class IrUnitCodec
                 && !instructions.SelectMany(instruction => instruction.Operands).OfType<SymOperand>().Any(address => locals.Contains(address.Name));
             string[] references = calls.Concat(instructions.SelectMany(instruction => instruction.Operands).OfType<SymOperand>()
                 .Select(address => address.Name)).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
-            records.Add(new("F:" + function.Name, importable, instructions.Length, calls, IrFunctionCodec.Write(function), references));
+            byte[] body = IrFunctionCodec.Write(function);
+            records.Add(new("F:" + function.Name, importable, instructions.Length, calls, body, references, IrFunctionCodec.DecodeCost(function, body.Length)));
         }
         foreach (DataItem item in module.Data)
             records.Add(new("D:" + item.Name, false, 0, Array.Empty<string>(), IrDataCodec.Write(item),
@@ -45,7 +46,7 @@ public static class IrUnitCodec
     }
 
     public static (Module Module, bool StackMaps, long AccountedBytes) Read(IrArchive archive, long memoryBudget = 64L * 1024 * 1024,
-        IReadOnlySet<string>? retained = null)
+        IReadOnlySet<string>? retained = null, IReadOnlyDictionary<string, bool>? functionHeaders = null)
     {
         IrReadBudget budget = new(memoryBudget);
         using MemoryStream stream = new(archive.ReadBody("M:unit"), writable: false);
@@ -68,6 +69,15 @@ public static class IrUnitCodec
                 if (retained is not null && !retained.Contains(entry.Key)) continue;
                 if (entry.Key.StartsWith("F:", StringComparison.Ordinal))
                 {
+                    if (functionHeaders is not null)
+                    {
+                        string name = entry.Key[2..];
+                        if (!functionHeaders.TryGetValue(name, out bool exported) || entry.DecodeBytes < entry.Length)
+                            throw new InvalidDataException("Invalid deferred IR function header");
+                        budget.Charge(512L + 2L * name.Length, 1, "function header");
+                        module.Functions.Add(new Function(name, IrType.Void) { Exported = exported });
+                        continue;
+                    }
                     Function function = IrFunctionCodec.Read(archive.ReadBody(entry.Key), budget);
                     if (entry.Key != "F:" + function.Name) throw new InvalidDataException("IR function key mismatch");
                     module.Functions.Add(function);
