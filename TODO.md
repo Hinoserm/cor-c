@@ -29,6 +29,8 @@ Immediate sequence: finish the isolated CORSAC86 production-build migration
   builds. Keep 486+x87 as the default.
 - [ ] Support `--fpu=none` on every CPU, including software arithmetic/math
   fallbacks and an emitted-code/runtime audit for accidental FPU instructions.
+- [ ] Implement Pentium FDIV detection and corrected division fallback, with
+  forced-path regression coverage on non-affected Linux/QEMU hosts.
 - [ ] Preserve target requirements through objects, separate compilation and
   LTO; reject incompatible instruction/FPU selections.
 - [ ] Run encoding/correctness tests on Linux/QEMU and host-supported benchmarks.

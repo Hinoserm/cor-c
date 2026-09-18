@@ -32,6 +32,11 @@ work belong in [TODO.md](TODO.md).
 - Include affected Pentium-family errata in acceptance. The assembler must
   reject invalid LOCK/register CMPXCHG8B forms; this is not a substitute for
   the operating system's F00F IDT/page-fault mitigation against arbitrary code.
+- Handle the Pentium FDIV erratum in compiler/runtime floating-point support:
+  detect affected hardware and select a correct division fallback. Tests must
+  force the fallback on unaffected hosts and cover known failing operands,
+  special values and rounding. Constant folding must not erase the detection
+  probe. F00F kernel work is separately owned.
 - Use QEMU software emulation for instruction correctness, and host benchmarks
   only for instructions the host supports. Host/emulator timings do not certify
   K6-family performance.
