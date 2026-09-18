@@ -27,6 +27,8 @@ Immediate sequence: finish the isolated CORSAC86 production-build migration
 - [ ] Add 386 profiles with optional 387; audit 486-only integer instructions
   and runtime atomics, and implement software floating point for no-coprocessor
   builds. Keep 486+x87 as the default.
+- [ ] Support `--fpu=none` on every CPU, including software arithmetic/math
+  fallbacks and an emitted-code/runtime audit for accidental FPU instructions.
 - [ ] Preserve target requirements through objects, separate compilation and
   LTO; reject incompatible instruction/FPU selections.
 - [ ] Run encoding/correctness tests on Linux/QEMU and host-supported benchmarks.

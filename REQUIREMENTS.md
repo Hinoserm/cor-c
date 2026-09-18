@@ -15,6 +15,10 @@ work belong in [TODO.md](TODO.md).
 - Support 386 with no coprocessor and with an optional 387, selected through
   `--cpu=386 --fpu=none` or `--cpu=386 --fpu=387`. The no-FPU profile requires
   software floating-point lowering/runtime support, not illegal x87 emission.
+- `--fpu=none` is supported on every CPU profile. Provide software fallbacks
+  for floating-point arithmetic, comparisons, conversions and math/runtime
+  helpers. No x87 or shared-state MMX/3DNow! register instructions may leak
+  through compiler selection, runtime libraries or LTO in that configuration.
 - `--cpu` automatically permits the complete supported ISA of the selected
   processor. Support Pentium, Pentium MMX, K6, K6-2, K6-III and their requested
   plus models, including their specific MMX and 3DNow! capabilities.
