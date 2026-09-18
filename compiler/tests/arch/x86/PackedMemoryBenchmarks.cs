@@ -20,7 +20,7 @@ public static class PackedMemoryBenchmarks
         Console.WriteLine("operation,bytes,mmx,selected_packed,iterations,text_bytes,median_ms,ns_per_operation");
         List<string> rows = ["operation,bytes,mmx,selected_packed,iterations,text_bytes,median_ms,ns_per_operation"];
         foreach (string operation in new[] { "copy", "zero", "add8", "add16", "add32", "sub8", "sub16", "sub32", "and32", "or32", "xor32", "mul16", "mulhigh16",
-            "shl16", "shl32", "shr16", "shr32", "sar16", "sar32", "dot16" }.Where(operation => filter is null || operation.StartsWith(filter, StringComparison.Ordinal)))
+            "shl16", "shl32", "shr16", "shr32", "sar16", "sar32", "dot16", "xor-inplace32" }.Where(operation => filter is null || operation.StartsWith(filter, StringComparison.Ordinal)))
         foreach (int length in new[] { 32, 64, 128 })
         foreach (bool packed in new[] { false, true })
         {
@@ -30,6 +30,7 @@ public static class PackedMemoryBenchmarks
             Function function = new("_start", IrType.Void) { Exported = true }; module.Functions.Add(function);
             Builder b = new(function, function.NewBlock("entry"));
             FrameSlot source = function.NewSlot(length, 8, "source"), right = function.NewSlot(length, 8, "right"), destination = function.NewSlot(length, 8, "destination");
+            if (operation == "xor-inplace32") destination = source;
             for (int offset = 0; offset < length; offset += 4)
             { b.Store(new SlotOperand(source), I(0x12345678), offset, 4); b.Store(new SlotOperand(right), I(0x01010101), offset, 4); }
             VReg count = b.Const(iterations, IrType.I32);
@@ -68,6 +69,7 @@ public static class PackedMemoryBenchmarks
                 expected = op switch { Opcode.Add => 0x13355779, Opcode.Sub => 0x11335577, Opcode.And => 0x00000000,
                     Opcode.Or => 0x13355779, Opcode.Xor => 0x13355779, _ => unchecked((int)0x4634ce78) };
                 if (operation == "mulhigh16") expected = 0x00120056;
+                if (operation == "xor-inplace32") expected = 0x12345678; // Even iteration count restores every original lane.
                 if (shift) expected = op == Opcode.Shl ? (width == 2 ? 0x4680cf00 : 0x468acf00)
                     : width == 2 ? 0x009102b3 : 0x0091a2b3;
             }
