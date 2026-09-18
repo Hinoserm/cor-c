@@ -17,7 +17,7 @@ work belong in [TODO.md](TODO.md).
   resolution, conversions, generic behavior, accessibility, exceptions,
   threading semantics, and observable evaluation order.
 - Missing standard language functionality is unfinished work. A custom syntax
-  or project-specific workaround does not satisfy the requirement.
+  or project-specific workaround is forbidden.
 - Valid standard C# programs must not be rewritten merely to accommodate a
   compiler limitation.
 
