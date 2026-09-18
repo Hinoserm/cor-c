@@ -33,6 +33,8 @@ public sealed class TypeSymbol
 
     public required TypeKind Kind { get; init; }
     public TypeDecl? Decl { get; init; }
+    /// <summary>Compiler-created closed tuple/array adapter shape, shared only after semantic certification.</summary>
+    public bool Structural { get; init; }
     public TypeSymbol? Base { get; set; }
     public List<TypeSymbol> Interfaces { get; } = new();
     public List<FieldSymbol> Fields { get; } = new();

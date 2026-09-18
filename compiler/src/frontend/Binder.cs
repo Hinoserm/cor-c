@@ -5646,7 +5646,7 @@ public sealed partial class Binder
         }
 
         TypeDecl decl = new() { Name = name, Kind = TypeKind.Class, File = _in };
-        TypeSymbol tuple = new() { Name = name, Kind = TypeKind.Class, Decl = decl };
+        TypeSymbol tuple = new() { Name = name, Kind = TypeKind.Class, Decl = decl, Structural = true };
         int at = 8;                             // past the vtable
 
         for (int i = 0; i < elements.Count; i++)
@@ -5706,7 +5706,7 @@ public sealed partial class Binder
         }
 
         TypeDecl decl = new() { Name = name, Kind = TypeKind.Class, File = _in };
-        TypeSymbol view = new() { Name = name, Kind = TypeKind.Class, Decl = decl };
+        TypeSymbol view = new() { Name = name, Kind = TypeKind.Class, Decl = decl, Structural = true };
 
         // EVERY SEQUENCE INTERFACE AN ARRAY HAS, not only the one asked for.
         //
@@ -5783,7 +5783,7 @@ public sealed partial class Binder
         }
 
         TypeDecl decl = new() { Name = name, Kind = TypeKind.Class, File = _in };
-        TypeSymbol walker = new() { Name = name, Kind = TypeKind.Class, Decl = decl };
+        TypeSymbol walker = new() { Name = name, Kind = TypeKind.Class, Decl = decl, Structural = true };
         int header = Target.Current.ObjectHeaderBytes;
         int word = Target.Current.WordSize;
 

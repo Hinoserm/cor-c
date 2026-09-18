@@ -1165,7 +1165,7 @@ public sealed partial class Lowering
         WriteWord(block, DescDepth * w, t.Depth);
         WriteWord(block, DescPayload * w, _t.ObjectHeaderBytes);
 
-        DataItem item = new(sym, block) { ReadOnly = true, Align = _t.Align64, FromLibrary = IsLibrary(t), Coalescible = t.Decl?.Specialised == true,
+        DataItem item = new(sym, block) { ReadOnly = true, Align = _t.Align64, FromLibrary = IsLibrary(t), Coalescible = t.Structural || t.Decl?.Specialised == true,
             Exported = t.Decl?.LocalOnly != true };
         _m.Data.Add(item);
         item.Relocs.Add(new DataReloc(DescName * w, InternString(t.Name), 0));
