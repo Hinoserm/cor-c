@@ -24,6 +24,16 @@ per-file process scheduling work is paused separately.
 
 - [ ] Complete CPU/ISA profiles, assembler encodings and automatic profitable
   code generation for Pentium/MMX/K6/K6-2/K6-III/plus and 3DNow! families.
+  - [x] Automatically pack proven frame-memory arithmetic, bitwise operations,
+    word/dword shifts, low/high word products and signed word dot products.
+  - [x] Select 3DNow rounded byte averages, rounded high-word products, exact
+    word-to-float conversion and range-proven floating arithmetic/conversion.
+  - [x] Preserve x87 state boundaries and prohibit implicit packed-register use
+    in freestanding code without hosted state ownership.
+  - [ ] Broaden patterns beyond current bounded frame regions, complete missing
+    saturation/comparison/packing/reduction families, and validate source-level
+    uptake. Do not substitute approximate reciprocal instructions for exact
+    language division or change NaN/subnormal behavior.
 - [ ] Add 386 profiles with optional 387; audit 486-only integer instructions
   and runtime atomics, and implement software floating point for no-coprocessor
   builds. Keep 486+x87 as the default.
@@ -31,13 +41,22 @@ per-file process scheduling work is paused separately.
   fallbacks and an emitted-code/runtime audit for accidental FPU instructions.
 - [ ] Implement Pentium FDIV detection and corrected division fallback, with
   forced-path regression coverage on non-affected Linux/QEMU hosts.
-- [ ] Preserve target requirements through objects, separate compilation and
+- [x] Preserve target requirements through owned objects, separate compilation and
   LTO; reject incompatible instruction/FPU selections.
+  CPU contracts are required on newly compiled managed units; native project
+  flags and cache identities retain CPU/FPU choices. Foreign objects without
+  owned metadata cannot be certified by this contract.
 - [ ] Run encoding/correctness tests on Linux/QEMU and host-supported benchmarks.
   CPU profiles and MMX/3DNow encodings are implemented; 627 encoding/profile
   checks and seven QEMU TCG execution checks pass, including x87, MMX/3DNow,
-  debug registers, 386 bit operations and 486 atomics/cache instructions. Broader execution coverage,
-  automatic code generation and complete target contracts remain unfinished.
+  debug registers, 386 bit operations and 486 atomics/cache instructions.
+  Seven backend configurations execute generated programs; native packed
+  benchmarks and real X25519/ChaCha workloads have run. Broader coverage and
+  hardware-specific profitability remain unfinished; see docs/X86-OPTIMIZATION-RESULTS.md.
+- [x] Match current .NET saturating float-to-integer conversions, including NaN,
+  infinity, signed boundaries and the upper half of UInt64.
+- [ ] Correct the existing Math.Clamp overloads' missing inverted-bound check;
+  found during the saturation-pattern audit. Keep standard .NET behavior.
 - [x] Validate LOCK operand restrictions with positive and rejection fixtures.
   A separate kernel task owns F00F
   mitigation; do not duplicate its implementation here.

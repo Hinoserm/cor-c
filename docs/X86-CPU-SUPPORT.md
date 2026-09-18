@@ -48,32 +48,61 @@ byte swaps. This is one completed lowering change, not complete 386 support.
 
 ## Verification
 
+Automatic selection now includes bounded packed-memory operations, integer
+arithmetic/bitwise groups, shifts, word multiplication and dot products, and
+range-proven 3DNow conversions/arithmetic. See
+[optimization results](X86-OPTIMIZATION-RESULTS.md) for precise coverage,
+profitability restrictions and measured outcomes. This does not imply every
+instruction is already selected automatically.
+
 - 627 encoding/profile checks compare with GNU assembler, including 16-bit
   and 32-bit encodings, malformed operands and feature exclusions.
 - Seven result checks execute COR-C#-assembled bytes under QEMU TCG with an
   Athlon model: x87 arithmetic, saturated MMX addition, packed shifts,
   EMMS/x87 transition, 3DNow! conversion/addition, lane swapping, and
   prefetch/FEMMS/x87 transition.
-- The backend suite runs generated Linux executables for the default profile
-  and 386+387 selection, including 32-bit and in-place 64-bit byte swaps.
+- The backend suite runs seven configurations: default 486, 386+387 selection,
+  native MMX, explicitly excluded MMX, K6-2 TCG, K6-plus TCG, and kernel state
+  ownership. It includes byte swaps, buffer boundaries, wrapping arithmetic,
+  shift counts/sign extension, dot products, signed zero, and saturating casts.
   These native-host checks do not prove an entire executable is 386-safe.
 
 Run the focused instruction and backend milestones from the repository root:
 
 ```sh
-tools/build/bin/Release/net10.0/build --file compiler/tests/arch/x86/isa/corsac.build
-tools/build/bin/Release/net10.0/build --file compiler/tests/arch/x86/corsac.build
+tools/build/bin/managed/Release/net10.0/build --file compiler/tests/arch/x86/isa/corsac.build
+tools/build/bin/managed/Release/net10.0/build --file compiler/tests/arch/x86/corsac.build
 ```
 
 QEMU execution establishes the tested instruction semantics, not K6 timing.
-No MMX/3DNow! optimizer speedup is claimed from these checks.
+Native-host packed measurements are recorded separately; emulator timing is
+not presented as real K6 performance.
+
+## Projects and link-time optimization
+
+Native `corc project` accepts the CPU/FPU flags. SDK-style projects can set
+`CorCCpu`, `CorCTune`, and `CorCFpu` using ordinary MSBuild properties; command
+line selections override them. The standard .NET toolchain ignores these
+native-only properties. Runtime/source units use the same selection, which
+also participates in incremental cache identities.
+
+`.corsac.cpu` records the `CCPU2` code-generation contract, including explicit
+extension exclusions and whether automatic packed operations are allowed by
+the execution environment. Owned managed objects require this metadata through
+their ABI contract. LTO restores each unit's selection and rejects changed
+permissions. Rebuild older IR units without this contract before using LTO.
+`corlink --cpu=...` checks declared input requirements against explicit output
+permissions, before and after LTO. Foreign objects without metadata are not
+certified by these checks.
+
+Freestanding builds do not implicitly borrow MMX/x87 state. Explicit assembly
+remains the responsibility of code that establishes and preserves that state.
 
 ## Remaining work
 
 - Complete instruction/profile coverage and compiler-emitter auditing.
-- Preserve CPU/FPU requirements through object files, projects and LTO.
-- Add profitable automatic MMX/3DNow! selection with correct state transitions
-  and language floating-point semantics.
+- Broaden profitable automatic selection and source-level recognition while
+  preserving state transitions and language floating-point semantics.
 - Implement software floating point and complete the 386 runtime audit.
 - Add Pentium FDIV detection/correction and forced-path regression checks.
 - Measure native-host-supported optimizations and retain K6 performance

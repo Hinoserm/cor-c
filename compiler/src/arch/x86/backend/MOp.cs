@@ -7,7 +7,8 @@ using Block = Corsac.Lang.Ir.Block;
 
 /// <summary>
 /// Machine opcodes. One entry per instruction form the selector emits; the
-/// encoder and the printer switch on this. Only what a 486 executes.
+/// encoder and the printer switch on this. Newer forms are gated by the selected
+/// CPU profile; the default remains 486 with x87.
 /// </summary>
 public enum MOp : byte
 {
