@@ -32,4 +32,14 @@ for source in GenericCaller GenericTypeCaller; do
     "$work/$source" || status=$?
     test "$status" = 42
 done
+"$corc" index --assembly SharedGenerics tests/integration/indexed/GenericFunctions.cor \
+    tests/integration/indexed/GenericType.cor tests/integration/indexed/GenericProvider.cor -o "$work/shared.idx"
+"$corc" compile --nostdlib --lib --decl-index "$work/shared.idx" --assembly SharedGenerics \
+    tests/integration/indexed/GenericProvider.cor --obj -o "$work/provider.o" 2> "$work/provider.compile.log"
+"$corc" compile --nostdlib --no-opt --decl-index "$work/shared.idx" --assembly SharedGenerics \
+    tests/integration/indexed/GenericSharedCaller.cor --obj -o "$work/shared-caller.o" 2> "$work/shared-caller.compile.log"
+"$corlink" "$work/shared-caller.o" "$work/provider.o" -o "$work/shared-generic" 2> "$work/shared-generic.link.log"
+status=0
+"$work/shared-generic" || status=$?
+test "$status" = 42
 printf 'PASS indexed namespace/alias/qualified consumers and separate linking: %s\n' "$work"

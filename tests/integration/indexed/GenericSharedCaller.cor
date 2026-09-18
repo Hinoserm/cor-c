@@ -1,0 +1,5 @@
+using GenericLib;
+static class Program
+{
+    static int Main() => GenericProvider.Answer() + Functions.Identity<int>(Box<int>.Echo(21));
+}

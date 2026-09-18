@@ -16,6 +16,7 @@ public sealed class DataItem
     /// <summary>Zero-filled and not stored in the file: .bss.</summary>
     public bool Zero { get; init; }
     public bool Exported { get; init; } = true;
+    public bool Coalescible { get; init; }
 
     /// <summary>The class library's rather than the program's; see Function.FromLibrary.</summary>
     public bool FromLibrary { get; init; }

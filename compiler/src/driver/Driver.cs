@@ -471,6 +471,7 @@ public static class Driver
             return 1;
         }
 
+        Dictionary<string, byte[]> definitionSemantics = DefinitionSemantics.Capture(module);
         if (args.Contains("--dump-ir"))
         {
             Console.Write(module.Dump());
@@ -571,6 +572,7 @@ public static class Driver
         ObjectFile obj = backend.Generate(module, backendErrors);
         new TargetContract(freestanding ? (Lowering.TlsGs ? 2u : 1u) : 0u, requiresManagedLayouts: true).Attach(obj);
         ManagedLayouts.Attach(obj, front.Value.bound);
+        DefinitionSemantics.Attach(obj, definitionSemantics);
 #if COR_SELFHOST_BENCHMARK
         Program.BenchmarkStage("link-output");
 #endif
@@ -672,6 +674,7 @@ public static class Driver
             }
             new TargetContract(Lowering.TlsGs ? 2u : 1u, requiresManagedLayouts: true).Attach(flatObj);
             ManagedLayouts.Attach(flatObj, front.Value.bound);
+            DefinitionSemantics.Attach(flatObj, definitionSemantics);
             link[0] = (name, flatObj);
             TargetContract.Validate(link);
             Corsac.Lang.Lto.LinkTimeOptimizer.Run(link, !args.Contains("--no-lto") && !args.Contains("--no-opt"));

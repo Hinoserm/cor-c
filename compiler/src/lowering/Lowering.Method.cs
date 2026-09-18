@@ -126,6 +126,7 @@ public sealed partial class Lowering
         _f = new Function(Label(m), IrTypes.Of(m.Returns))
         {
             SourceFile = _in, Line = decl.Line, Display = Display(m), FromLibrary = IsLibrary(m.Owner),
+            Coalescible = decl.LocalCopy || m.Owner.Decl?.Specialised == true,
         };
         Block entry = _f.NewBlock("entry");
         _e = new Builder(_f, entry);

@@ -88,6 +88,7 @@ public static partial class Linker
 
         TargetContract.Validate(inputs.Select(i => (i.Name, i.Object)));
         ManagedLayoutContract.Validate(inputs.Select(i => (i.Name, i.Object)));
+        Corsac.Lang.Lto.DefinitionCoalescer.Run(inputs.Select(i => (i.Name, i.Object)).ToArray());
         List<string> errors = new();
         Layout layout = new(loadAddress) { LoadBias = loadAddress - (physicalAddress ?? loadAddress) };
         layout.ArrangeStatic();
@@ -168,6 +169,7 @@ public static partial class Linker
 
         TargetContract.Validate(inputs.Select(i => (i.Name, i.Object)));
         ManagedLayoutContract.Validate(inputs.Select(i => (i.Name, i.Object)));
+        Corsac.Lang.Lto.DefinitionCoalescer.Run(inputs.Select(i => (i.Name, i.Object)).ToArray());
         List<string> errors = new();
         Layout layout = new(baseAddress);
         layout.ArrangeStatic();

@@ -11,14 +11,14 @@ public static class LinkTimeOptimizer
     {
         TargetContract.Validate(inputs);
         ManagedLayoutContract.Validate(inputs);
+        DefinitionCoalescer.Run(inputs, validateOnly: true);
         Dictionary<string, (ObjectFile Object, Symbol Symbol)> globals = new(StringComparer.Ordinal);
         Dictionary<ObjectFile, OptimizationSummary> summaries = new();
         Dictionary<ObjectFile, Dictionary<string, int>> constants = new();
-        foreach (var input in inputs)
+        foreach (var input in inputs.OrderBy(value => value.Name, StringComparer.Ordinal))
         {
             foreach (Symbol symbol in input.Object.Symbols.Where(s => s.IsDefined && s.Global))
-                if (!globals.TryAdd(symbol.Name, (input.Object, symbol)))
-                    throw new LinkException(new[] { "duplicate definition '" + symbol.Name + "' in " + input.Name });
+                globals.TryAdd(symbol.Name, (input.Object, symbol));
             OptimizationSummary? summary;
             try { summary = OptimizationSummary.Read(input.Object); }
             catch (ElfFormatException error) { throw new ElfFormatException(input.Name + ": " + error.Message); }
@@ -27,6 +27,7 @@ public static class LinkTimeOptimizer
             Dictionary<string, int> values = new(StringComparer.Ordinal);
             foreach (ConstantReturn returned in summary.Returns)
             {
+                if (input.Object.SuppressedDefinitions.Contains(returned.Symbol)) continue;
                 Symbol[] matches = input.Object.Symbols.Where(s => s.Name == returned.Symbol && s.IsDefined).ToArray();
                 if (matches.Length != 1 || !matches[0].IsFunction || matches[0].Section!.Kind != SectionKind.Code)
                     throw new ElfFormatException(input.Name + ": invalid LTO function definition " + returned.Symbol);
@@ -61,6 +62,7 @@ public static class LinkTimeOptimizer
                     changes.Add((text, matches[0], value));
             }
         }
+        DefinitionCoalescer.Run(inputs);
         if (enabled) foreach (var change in changes)
         {
             int offset = change.Relocation.Offset;

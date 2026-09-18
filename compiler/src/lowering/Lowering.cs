@@ -376,6 +376,7 @@ public sealed partial class Lowering
             _m.Data.Add(new DataItem(StaticSymbol(f), new byte[size])
             {
                 Zero = true, Align = AlignFor(size, _t.Align64), FromLibrary = IsLibrary(f.Owner),
+                Coalescible = f.Owner.Decl?.Specialised == true,
             });
         }
     }
@@ -1011,7 +1012,7 @@ public sealed partial class Lowering
         // Structural, and shared with the library when it has one: `x is
         // byte[]` compares descriptor addresses, so two copies of an array's
         // descriptor would be two types.
-        DataItem item = new(sym, d) { ReadOnly = true, Align = _t.Align64, FromLibrary = true };
+        DataItem item = new(sym, d) { ReadOnly = true, Align = _t.Align64, FromLibrary = true, Coalescible = true };
         _sequenceDescriptors[key] = sym;
         _m.Data.Add(item);
         item.Relocs.Add(new DataReloc(DescName * w, InternString(isString ? "string" : element + "[]"), 0));
@@ -1096,7 +1097,7 @@ public sealed partial class Lowering
         int w = _t.WordSize;
         WriteWord(d, DescDepth * w, -1);
 
-        DataItem item = new(sym, d) { ReadOnly = true, Align = _t.Align64, FromLibrary = IsLibrary(t) };
+        DataItem item = new(sym, d) { ReadOnly = true, Align = _t.Align64, FromLibrary = IsLibrary(t), Coalescible = t.Decl?.Specialised == true };
         _m.Data.Add(item);
         item.Relocs.Add(new DataReloc(DescName * w, InternString(t.Name), 0));
         item.Relocs.Add(new DataReloc(DescSelf * w, sym, 0));
@@ -1156,7 +1157,7 @@ public sealed partial class Lowering
         WriteWord(block, DescDepth * w, t.Depth);
         WriteWord(block, DescPayload * w, _t.ObjectHeaderBytes);
 
-        DataItem item = new(sym, block) { ReadOnly = true, Align = _t.Align64, FromLibrary = IsLibrary(t) };
+        DataItem item = new(sym, block) { ReadOnly = true, Align = _t.Align64, FromLibrary = IsLibrary(t), Coalescible = t.Decl?.Specialised == true };
         _m.Data.Add(item);
         item.Relocs.Add(new DataReloc(DescName * w, InternString(t.Name), 0));
         item.Relocs.Add(new DataReloc(DescSelf * w, sym, 0));

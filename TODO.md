@@ -130,6 +130,11 @@ tasks below track that work; moving files alone does not reduce the working set.
 - [ ] Verify indexed template-body imports, ordinary-body omission, namespaced
   specialization identities and consumer-owned generic method code. Multi-unit
   specialization ownership/deduplication and partial ownership still remain.
+  Initial template integration passed all eight groups at 7551fcb.
+- [ ] Verify compiler-certified shared definitions across independent consumers,
+  including different optimization choices, integrity rejection, stable ownership
+  and stack-map preservation. The first implementation retains duplicate local
+  bytes; physical removal and async/closure/partial ownership remain separate work.
 - [ ] Do not retain a full declaration footprint for every class in every file.
 - [ ] Maintain a compact disk-backed index from qualified type names to the
   locations of their declaration records. Access to the index itself must be

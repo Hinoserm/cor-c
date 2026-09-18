@@ -10,6 +10,7 @@ public sealed class ObjectFile
 {
     public List<Section> Sections { get; } = new();
     public List<Symbol> Symbols { get; } = new();
+    internal HashSet<string> SuppressedDefinitions { get; } = new(StringComparer.Ordinal);
 
     public Section Section(string name)
     {

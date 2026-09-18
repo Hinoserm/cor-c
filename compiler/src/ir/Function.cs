@@ -17,6 +17,8 @@ public sealed class Function
 
     /// <summary>Whether other objects may reference this by name.</summary>
     public bool Exported { get; set; } = true;
+    /// <summary>A specialization whose equivalent definitions share one linked identity.</summary>
+    public bool Coalescible { get; init; }
 
     /// <summary>
     /// Whether this came out of the class library's sources rather than the
