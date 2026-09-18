@@ -21,10 +21,10 @@ internal sealed partial class Selector
 
     // Unrolled MOVQ regions trade bytes for throughput. Do not grow setup or
     // conditional allocation paths: they enlarged real crypto functions without
-    // improving their measured hot path. A direct backedge proves this whole
-    // straight-line block repeats; wider loop profitability is separate work.
-    private bool RepeatingPackedMemory => _sourceBlock.Instrs.Any(instruction => instruction.Targets.Contains(_sourceBlock)
-        || instruction.Default == _sourceBlock);
+    // improving their measured hot path. Require the block to dominate a loop
+    // backedge, not merely occur in a conditional arm inside a loop.
+    private HashSet<Corsac.Lang.Ir.Block>? _repeatingMemory;
+    private bool RepeatingPackedMemory => (_repeatingMemory ??= RepeatingRegions.Find(_f)).Contains(_sourceBlock);
 
     private bool SelectMmxFrameCopy(Instr instruction)
     {

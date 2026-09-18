@@ -60,6 +60,7 @@ internal static class Program
         Target.Current = Target.X86;
         Target.X86.X86Profile = X86Cpu.Parse(args);
         PruneArithmetic();
+        RepeatingMemoryRegions();
         DeferredFunctions();
         string outDir = Path.Combine(Path.GetTempPath(), "corsac-x86tests");
         Directory.CreateDirectory(outDir);
@@ -1163,6 +1164,26 @@ internal static class Program
             okay = b.Binary(Opcode.And, okay, b.Binary(Opcode.Eq, b.Load(IrType.I32, new SlotOperand(destination), lane * 2, 4), expected));
         }
         b.Ret(R(okay));
+    }
+
+    private static void RepeatingMemoryRegions()
+    {
+        Function function = new("loop-profitability", IrType.Void);
+        Block entry = function.NewBlock("entry"), header = function.NewBlock("header"), body = function.NewBlock("body"),
+            optional = function.NewBlock("optional"), latch = function.NewBlock("latch"), exit = function.NewBlock("exit"),
+            unreachable = function.NewBlock("unreachable-cycle");
+        new Builder(function, entry).Jump(header);
+        new Builder(function, header).Branch(I(1), body, exit);
+        new Builder(function, body).Branch(I(1), optional, latch);
+        new Builder(function, optional).Jump(latch);
+        new Builder(function, latch).Jump(header);
+        new Builder(function, exit).Ret();
+        new Builder(function, unreachable).Branch(I(1), unreachable, entry);
+        HashSet<Block> repeating = RepeatingRegions.Find(function);
+        Check(repeating.Contains(header) && repeating.Contains(body) && repeating.Contains(latch), "mandatory multi-block loop regions recognized");
+        Check(!repeating.Contains(optional) && !repeating.Contains(entry) && !repeating.Contains(exit), "conditional and one-shot regions do not receive growing packed-memory code");
+        for (int index = function.Blocks.Count; index <= 512; index++) function.NewBlock("bounded");
+        Check(RepeatingRegions.Find(function).Count == 0, "packed loop analysis has a fixed memory bound");
     }
 
     private static void SmallFills(Module m)
