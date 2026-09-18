@@ -10,7 +10,7 @@ public static class StructuralOwnershipTests
     public static void Run(string work)
     {
         string source = Path.Combine(work, "TupleOwner.cor");
-        File.WriteAllText(source, "class Program { public static int Main() { var pair = (17, 25); return pair.Item1 + pair.Item2; } }");
+        File.WriteAllText(source, "class Program { public static int Sum((int, int) pair) => pair.Item1 + pair.Item2; public static int Main() => 42; }");
         var front = Frontend.Compile(new[] { source }, "tuple-owner", false) ?? throw new Exception("Tuple owner binding failed");
         TypeSymbol tuple = front.Bound.Types.Values.Single(type => type.Name.StartsWith("ValueTuple$", StringComparison.Ordinal));
         if (!tuple.Structural) throw new Exception("Structural tuple identity lost");
