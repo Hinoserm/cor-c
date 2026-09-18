@@ -46,10 +46,15 @@ tasks below track that work; moving files alone does not reduce the working set.
   JUnit reports. Thirteen focused runner checks passed at the first milestone.
   Full profile/artifact/resource semantics remain below as separate tasks.
 - [x] Supply cor-c's corsac.build and component directory defaults.
-- [ ] Verify the new logical-CPU default/global worker leases, native script
+- [x] Verify the new logical-CPU default/global worker leases, native script
   budget propagation and timestamp-based Inputs/Outputs task skipping. Standard
   .csproj incrementality stays with MSBuild; missing/changed inputs, outputs and
   options must invalidate state. Tests and undeclared side effects always run.
+  Seventeen runner checks passed. A default 32-worker host build rebuilt all
+  fourteen libraries; the next unchanged build rebuilt zero, preserving the
+  compiler/linker/build DLL and library output timestamps and sizes. Logs:
+  build/logs/20260918-123831-662d268f3da84087a98a35a51cc09216/ and
+  build/logs/20260918-123920-d04b01be073e444ca862d78bd425b22c/.
 - [x] Build compiler and linker as independent .NET-hosted executables and
   document ELF relocatable objects. Compiler -> `.o` -> corlink -> Linux program
   passed; this does not establish managed file-by-file compilation.
@@ -165,6 +170,10 @@ tasks below track that work; moving files alone does not reduce the working set.
   At b6def5e, build-runner, optimizer, assembler, x86 backend and linker suites,
   separate-link smoke and extended LTO integration all passed. Logs:
   build/logs/20260918-122219-c31c0674fb0245f7860c57d18e45e842/.
+  Repeated successfully at 73b07ef with object-local stack-map boundaries and
+  normal stack maps enabled in separate-object tests. That run also covers
+  the expanded build-runner tests. Logs:
+  build/logs/20260918-123725-7c9cce0156064c8996cd3f1caf7ba0ae/.
 - [x] Link compiler-produced bare-metal caller/callee objects with an assembly
   startup object as flat output and biased physical/virtual ELF. Verify the
   convenience flat path retains --with inputs and rejects mixed ABI contracts.
@@ -175,8 +184,10 @@ tasks below track that work; moving files alone does not reduce the working set.
   fixtures expose ignored lambda-result unification failure; collection-release
   coverage needs the missing standard Thread(Action)/Start() instance API.
   Logs: build/logs/20260918-122403-d76a02cc819a41bf8ea70255984d19ff/.
-- [ ] Verify the lambda-result overload rejection and corrected namespace
+- [x] Verify the lambda-result overload rejection and corrected namespace
   fixture path. Do not rewrite valid LINQ callers to avoid overload resolution.
+  All four LINQ fixtures and 607_namespaces passed after the fix. The full
+  271-case suite has not been rerun; the six other classified failures remain.
 - [ ] Implement the standard Thread constructor and instance Start API needed
   by optimizer_collection_release; retain its original test expectations.
 - [ ] Separate OS-project integration fixtures from compiler language acceptance
