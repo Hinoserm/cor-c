@@ -1544,11 +1544,18 @@ internal sealed partial class Selector
         Fstp(i.Dest!);
     }
 
-    private void SelectFloatToInt(Instr i)
+    private void SelectFloatToIntCore(Instr i, bool unsignedHighHalf = false)
     {
         VReg d = i.Dest!;
         int s = _m.Frame.Scratch;
         Fld(i.Operands[0]);
+        if (unsignedHighHalf)
+        {
+            // Convert the upper half of UInt64 through a signed FISTP, without
+            // overflowing its signed range. The power-of-two subtraction is exact.
+            Emit(MOp.Push, Imm(0x5f000000));
+            EmitW(MOp.Fsub, 4, new MMem(Esp, 0)); Emit(MOp.Add, Esp, Imm(4));
+        }
         // fistp rounds by the control word, which defaults to nearest; C#
         // truncates. Save the word, set RC=11 (chop), convert, restore.
         EmitW(MOp.Fnstcw, 2, MMem.Frame(s));
@@ -1566,6 +1573,7 @@ internal sealed partial class Selector
         if (d.Type == IrType.I64)
         {
             Mov(Hi(d), MMem.Frame(s + 12));
+            if (unsignedHighHalf) Emit(MOp.Or, Hi(d), Imm(int.MinValue));
         }
     }
 

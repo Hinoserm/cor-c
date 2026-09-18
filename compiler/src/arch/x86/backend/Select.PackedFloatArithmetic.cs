@@ -14,9 +14,8 @@ internal sealed partial class Selector
         bool integerResult = instructions[start + 5].Op == Opcode.FToI;
         int stride = integerResult ? 7 : 6;
         if (start + stride - 1 >= instructions.Count || instructions[start + stride - 1].Operands.Count != 2) return false;
-        // Products of two unsigned words may exceed Int32; do not substitute
-        // PF2ID's saturation for the language/runtime overflow behavior.
-        if (integerResult && math.Op == Opcode.FMul && !first.Signed && !second.Signed) return false;
+        // All results are finite. PF2ID saturation agrees with the current
+        // .NET Int32 conversion, including products of two unsigned words.
         FrameSlot? left = FrameStorage(first.Operands[0]), right = FrameStorage(second.Operands[0]),
             destination = FrameStorage(instructions[start + stride - 1].Operands[0]);
         if (left is null || right is null || destination is null || left == destination || right == destination

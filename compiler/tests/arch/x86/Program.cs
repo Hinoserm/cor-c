@@ -86,6 +86,7 @@ internal static class Program
         PackedShiftFrames(m);
         PackedConversionFrames(m);
         PackedFloatArithmeticFrames(m);
+        SaturatingFloatCasts(m);
         ByteSwaps(m);
         Exit(m);
         UDiv64(m);
@@ -1107,6 +1108,31 @@ internal static class Program
         b.Ret(R(okay));
     }
 
+    private static void SaturatingFloatCasts(Module m)
+    {
+        (Function function, Builder b) = New(m, "saturating_float_casts", IrType.I32);
+        VReg okay = b.Const(1, IrType.I32);
+        double[] inputs = [double.NaN, double.PositiveInfinity, double.NegativeInfinity, 0.0, -0.0, double.Epsilon,
+            -double.Epsilon, 1.75, -1.75, 2147483647.0, 2147483648.0, -2147483648.0, -2147483649.0,
+            4294967295.0, 4294967296.0, 9223372036854774784.0, 9223372036854775808.0,
+            9223372036854777856.0, -9223372036854775808.0, 18446744073709549568.0, 18446744073709551616.0, 1e30, -1e30];
+        foreach (bool single in new[] { false, true })
+        foreach (bool wide in new[] { false, true })
+        foreach (bool unsigned in new[] { false, true })
+        foreach (double input in inputs)
+        {
+            double rounded = single ? (float)input : input;
+            long bits = single ? BitConverter.SingleToInt32Bits((float)input) : BitConverter.DoubleToInt64Bits(input);
+            VReg real = b.Unary(Opcode.Bits, I(bits, single ? IrType.I32 : IrType.I64), single ? IrType.F32 : IrType.F64);
+            IrType resultType = wide ? IrType.I64 : IrType.I32;
+            VReg result = b.Unary(unsigned ? Opcode.FToU : Opcode.FToI, R(real), resultType);
+            long expected = wide ? (unsigned ? unchecked((long)(ulong)rounded) : unchecked((long)rounded))
+                : unsigned ? unchecked((int)(uint)rounded) : unchecked((int)rounded);
+            okay = b.Binary(Opcode.And, okay, b.Binary(Opcode.Eq, R(result), I(expected, resultType), IrType.I32));
+        }
+        b.Ret(R(okay));
+    }
+
     private static void SmallFills(Module m)
     {
         (Function f, Builder b) = New(m, "small_fills", IrType.I32);
@@ -1395,6 +1421,7 @@ internal static class Program
         Expect(b.Call("packed_shifts", IrType.I32)!, I(1));
         Expect(b.Call("packed_conversions", IrType.I32)!, I(1));
         Expect(b.Call("packed_float_math", IrType.I32)!, I(1));
+        Expect(b.Call("saturating_float_casts", IrType.I32)!, I(1));
         Expect(b.Call("bswap32", IrType.I32, I(0x11223344))!, I(0x44332211));
         Expect(b.Call("bswap32", IrType.I32, I(unchecked((int)0x80000001)))!, I(0x01000080));
         Expect(b.Call("bswap64_inplace", IrType.I64, I(0x0123456789abcdefL, IrType.I64))!,
