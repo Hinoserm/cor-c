@@ -1642,6 +1642,21 @@ static class Runtime
     {
         long i = 0;
 
+        // Aligned equal words can be skipped on every target. A differing
+        // word still goes through the unsigned-byte comparison below, so the
+        // answer does not depend on target endianness. Never read past count.
+        if (((a | b) & 3) == 0)
+        {
+            while (count - i >= 4)
+            {
+                if (Sys.PeekWord(a + i) != Sys.PeekWord(b + i))
+                {
+                    break;
+                }
+                i = i + 4;
+            }
+        }
+
         while (i < count)
         {
             long x = Sys.PeekByte(a + i);
