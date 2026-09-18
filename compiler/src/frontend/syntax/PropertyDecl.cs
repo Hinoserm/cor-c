@@ -21,7 +21,7 @@ public sealed class PropertyDecl : MemberDecl
     /// <summary>True for <c>{ get; set; }</c> with no bodies.</summary>
     public bool Auto { get; init; }
     public bool HasSetter { get; init; }
-    public Expr? Init { get; init; }
+    public Expr? Init { get; set; }
 
     /// <summary>
     /// The parameters of an INDEXER, and empty for an ordinary property.
