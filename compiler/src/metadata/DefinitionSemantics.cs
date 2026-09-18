@@ -3,7 +3,7 @@ using System.Text;
 using Corsac.Lang.Elf;
 using Corsac.Lang.Ir;
 using Corsac.Lang.Lto;
-using Block = Corsac.Lang.Ir.Block;
+using IrBlock = Corsac.Lang.Ir.Block;
 
 namespace Corsac.Lang.Metadata;
 
@@ -61,9 +61,9 @@ public static class DefinitionSemantics
                     foreach (VReg parameter in function.Params) Register(parameter);
                     writer.Write(function.Slots.Count);
                     foreach (FrameSlot slot in function.Slots) { writer.Write(slot.Id); writer.Write(slot.Bytes); writer.Write(slot.Align); }
-                    Dictionary<Block, int> blocks = function.Blocks.Select((block, ordinal) => (block, ordinal)).ToDictionary(value => value.block, value => value.ordinal);
+                    Dictionary<IrBlock, int> blocks = function.Blocks.Select((block, ordinal) => (block, ordinal)).ToDictionary(value => value.block, value => value.ordinal);
                     writer.Write(function.Blocks.Count);
-                    foreach (Block block in function.Blocks)
+                    foreach (IrBlock block in function.Blocks)
                     {
                         writer.Write(block.IsLandingPad); writer.Write(block.Instrs.Count);
                         foreach (Instr instruction in block.Instrs)
@@ -86,7 +86,7 @@ public static class DefinitionSemantics
                                 }
                             }
                             writer.Write(instruction.Targets.Count);
-                            foreach (Block target in instruction.Targets) writer.Write(blocks[target]);
+                            foreach (IrBlock target in instruction.Targets) writer.Write(blocks[target]);
                             writer.Write(instruction.Default is null ? -1 : blocks[instruction.Default]);
                         }
                     }
