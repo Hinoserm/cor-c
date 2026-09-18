@@ -18,12 +18,12 @@ public static class UnitDependencies
         return SHA256.HashData(buffer.ToArray());
     }
 
-    public static void Write(string path, DeclarationCatalog catalog, IEnumerable<string> keys, IReadOnlySet<string> implementations)
+    public static void Write(string path, DeclarationCatalog catalog, IEnumerable<string> keys, IReadOnlySet<string> implementations, IEnumerable<string> queries)
     {
         using FileStream stream = new(path, FileMode.Create, FileAccess.Write, FileShare.None);
         using BinaryWriter writer = new(stream, Encoding.UTF8);
         string[] ordered = keys.Order(StringComparer.Ordinal).ToArray();
-        writer.Write(0x50454443u); writer.Write(1); writer.Write(ordered.Length);
+        writer.Write(0x50454443u); writer.Write(2); writer.Write(ordered.Length);
         foreach (string key in ordered)
         {
             using DeclarationLease lease = catalog.AcquireKey(key) ?? throw new InvalidDataException("Missing dependency " + key);
@@ -31,6 +31,14 @@ public static class UnitDependencies
             byte[] encoded = Encoding.UTF8.GetBytes(key);
             if (encoded.Length > 4096) throw new InvalidDataException("Dependency key exceeds format limit");
             writer.Write(encoded.Length); writer.Write(encoded); writer.Write(body); writer.Write(Fingerprint(lease.Records, body));
+        }
+        string[] lookups = queries.Order(StringComparer.Ordinal).ToArray();
+        writer.Write(lookups.Length);
+        foreach (string key in lookups)
+        {
+            byte[] encoded = Encoding.UTF8.GetBytes(key);
+            if (encoded.Length > 4096) throw new InvalidDataException("Dependency lookup exceeds format limit");
+            writer.Write(encoded.Length); writer.Write(encoded); writer.Write(catalog.QueryFingerprint(key));
         }
     }
 
@@ -42,7 +50,7 @@ public static class UnitDependencies
             using DeclarationCatalog catalog = new(index);
             using FileStream stream = File.OpenRead(path);
             using BinaryReader reader = new(stream, Encoding.UTF8);
-            if (reader.ReadUInt32() != 0x50454443u || reader.ReadInt32() != 1) return false;
+            if (reader.ReadUInt32() != 0x50454443u || reader.ReadInt32() != 2) return false;
             int count = reader.ReadInt32();
             if (count < 0 || count > 100000) return false;
             for (int i = 0; i < count; i++)
@@ -54,6 +62,15 @@ public static class UnitDependencies
                 bool body = flag != 0; byte[] fingerprint = reader.ReadBytes(32);
                 using DeclarationLease? lease = catalog.AcquireKey(key);
                 if (lease is null || !fingerprint.SequenceEqual(Fingerprint(lease.Records, body))) return false;
+            }
+            count = reader.ReadInt32();
+            if (count < 0 || count > 100000) return false;
+            for (int i = 0; i < count; i++)
+            {
+                int length = reader.ReadInt32();
+                if (length < 1 || length > 4096 || length > stream.Length - stream.Position - 32) return false;
+                string key = Encoding.UTF8.GetString(reader.ReadBytes(length));
+                if (!reader.ReadBytes(32).SequenceEqual(catalog.QueryFingerprint(key))) return false;
             }
             return stream.Position == stream.Length;
         }

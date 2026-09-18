@@ -58,6 +58,7 @@ public static class ProjectCommand
             }
         }
         if (entries.Count != 1) throw new InvalidDataException("Project must select exactly one entry point; found " + entries.Count);
+        Dictionary<string, string> generation = owners.Keys.ToDictionary(source => source, ProjectState.FileIdentity, StringComparer.Ordinal);
         string index = Path.Combine(work, "declarations.idx");
         SourceIndexBuilder.Write(index, owners.Keys, project.AssemblyName, fileSymbols: symbols);
         string[] libraries = Driver.DefaultLibraries(Target.X86).ToArray();
@@ -79,7 +80,8 @@ public static class ProjectCommand
         {
             string source = owned.Key; EvaluatedProject owner = owned.Value;
             string destination = Path.Combine(work, ProjectState.Digest(source)[..24] + ".o");
-            string signature = ProjectState.Digest(settings + "\n" + ProjectState.FileIdentity(source) + "\n" + string.Join(";", owner.Defines)
+            if (ProjectState.FileIdentity(source) != generation[source]) throw new InvalidDataException("Source changed during project compilation: " + source);
+            string signature = ProjectState.Digest(settings + "\n" + generation[source] + "\n" + string.Join(";", owner.Defines)
                 + "\n" + owner.WarningsAsErrors + "\n" + entries[0].Type);
             List<string> args = new() { "compile", "--nostdlib", "--obj", "--jobs", workers.ToString(), "--decl-index", index,
                 "--assembly", project.AssemblyName, source };
@@ -93,6 +95,10 @@ public static class ProjectCommand
             if (!current) changed++;
             objects.Add(destination);
         }
+        foreach (var source in generation)
+            if (ProjectState.FileIdentity(source.Key) != source.Value) throw new InvalidDataException("Source changed during project compilation: " + source.Key);
+        if (ProjectState.Digest(string.Join("\n", libraries.Select(ProjectState.FileIdentity))) != libraryState)
+            throw new InvalidDataException("Runtime sources changed during project compilation");
         string linkSignature = ProjectState.Digest(toolchain + "\n" + string.Join("\n", objects.Select(ProjectState.FileIdentity)));
         string linkState = Path.Combine(work, "link.state");
         if (!ProjectState.Current(linkState, linkSignature, output))

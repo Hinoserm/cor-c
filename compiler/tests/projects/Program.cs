@@ -17,6 +17,7 @@ public static class Program
         }
         try
         {
+            DependencyTests.Run(work);
             string path = Path.Combine(work, "app.csproj");
             File.WriteAllText(Path.Combine(work, "Program.cs"), "class Program { static int Main() => 0; }");
             File.WriteAllText(Path.Combine(work, "Removed.cs"), "class Removed { }");

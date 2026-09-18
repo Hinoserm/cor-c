@@ -66,6 +66,19 @@ public sealed class DeclarationCatalog : IDisposable
         }
     }
 
+    public byte[] QueryFingerprint(string key)
+    {
+        lock (gate)
+        {
+            if (disposed) throw new ObjectDisposedException(nameof(DeclarationCatalog));
+            using MemoryStream stream = new();
+            using BinaryWriter writer = new(stream);
+            foreach (DeclarationRecord record in index.Find(key))
+            { writer.Write(record.Payload.Length); writer.Write(record.Payload); }
+            return System.Security.Cryptography.SHA256.HashData(stream.ToArray());
+        }
+    }
+
     public DeclarationLease? AcquireKey(string key)
     {
         lock (gate)

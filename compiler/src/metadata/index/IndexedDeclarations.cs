@@ -8,6 +8,7 @@ public sealed class IndexedDeclarations : IDisposable
     private readonly HashSet<string> owned;
     private readonly HashSet<string> loaded = new(StringComparer.Ordinal);
     private readonly HashSet<string> implementations = new(StringComparer.Ordinal);
+    private readonly HashSet<string> queries = new(StringComparer.Ordinal);
     private readonly HashSet<string> resolvedExtensions = new(StringComparer.Ordinal);
     public long PayloadLoads => catalog.PayloadLoads;
     public long ResidentDeclarationBytes => catalog.ResidentBytes;
@@ -24,6 +25,7 @@ public sealed class IndexedDeclarations : IDisposable
 
     public void Require(string bindingName)
     {
+        queries.Add("B:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + bindingName);
         string? key = catalog.BindingKey(assembly, bindingName);
         if (key is not null && !loaded.Contains(key)) throw new DeclarationDemand(key);
     }
@@ -38,6 +40,7 @@ public sealed class IndexedDeclarations : IDisposable
     public void RequireExtensions(string space, string method)
     {
         string query = space + "\n" + method;
+        queries.Add("E:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + query);
         if (resolvedExtensions.Contains(query)) return;
         foreach (string key in catalog.ExtensionKeys(assembly, space, method))
             if (!loaded.Contains(key)) throw new DeclarationDemand(key);
@@ -96,5 +99,5 @@ public sealed class IndexedDeclarations : IDisposable
         loaded.Clear(); catalog.Dispose();
     }
 
-    public void WriteDependencies(string path) => UnitDependencies.Write(path, catalog, loaded, implementations);
+    public void WriteDependencies(string path) => UnitDependencies.Write(path, catalog, loaded, implementations, queries);
 }
