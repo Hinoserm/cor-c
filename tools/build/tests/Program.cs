@@ -104,12 +104,26 @@ public static class Program
             Require(BuildManifest.Discover(child) == manifest.File);
             Require(manifest.Select(null, child).Path == "compiler");
         });
-        Check("native provider cannot silently use .NET", () =>
+        Check("native provider accepts project work without .NET fallback", () =>
         {
             BuildManifest manifest = Load("<Target Name='all'><Compile Project='a.csproj'/></Target>");
             File.WriteAllText(Path.Combine(manifest.Root, "a.csproj"), "<Project/>");
             TaskExecutor executor = new(manifest, BuildOptions.Parse([]), new ProcessRunner(1, Work), new TestReport());
-            ExpectError(() => executor.Validate(manifest.Targets["all"].Tasks.Single(), false), "Native project provider");
+            executor.Validate(manifest.Targets["all"].Tasks.Single(), false);
+        });
+        Check("MSBuild is rejected outside build-tool bootstrap", () =>
+        {
+            BuildManifest manifest = Load("<Target Name='all'><Compile Project='a.csproj' Toolchain='dotnet'/></Target>");
+            File.WriteAllText(Path.Combine(manifest.Root, "a.csproj"), "<Project/>");
+            TaskExecutor executor = new(manifest, BuildOptions.Parse([]), new ProcessRunner(1, Work), new TestReport());
+            ExpectError(() => executor.Validate(manifest.Targets["all"].Tasks.Single(), false), "only to bootstrap");
+        });
+        Check("MSBuild may bootstrap the build utility", () =>
+        {
+            BuildManifest manifest = Load("<Components><Project Name='build-tool' Path='build.csproj'/></Components><Target Name='bootstrap'><Compile Project='build-tool' Toolchain='dotnet'/></Target>");
+            File.WriteAllText(Path.Combine(manifest.Root, "build.csproj"), "<Project/>");
+            TaskExecutor executor = new(manifest, BuildOptions.Parse([]), new ProcessRunner(1, Work), new TestReport());
+            executor.Validate(manifest.Targets["bootstrap"].Tasks.Single(), false);
         });
         if (!OperatingSystem.IsWindows())
         {

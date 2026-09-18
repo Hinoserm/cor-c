@@ -17,7 +17,6 @@ public static class Program
         }
         try
         {
-            DependencyTests.Run(work);
             string path = Path.Combine(work, "app.csproj");
             File.WriteAllText(Path.Combine(work, "Program.cs"), "class Program { static int Main() => 0; }");
             File.WriteAllText(Path.Combine(work, "Removed.cs"), "class Removed { }");
@@ -53,6 +52,7 @@ public static class Program
             Reject(() => ProjectEvaluator.Evaluate(path, "Release", null));
             File.WriteAllText(path, "<Project Sdk='Microsoft.NET.Sdk'><ItemGroup><ProjectReference Include='app.csproj'/></ItemGroup></Project>");
             Reject(() => ProjectGraph.Evaluate(path, "Release", null));
+            DependencyTests.Run(work);
             Console.WriteLine("project evaluation: " + checks + " checks passed without MSBuild");
             return 0;
         }

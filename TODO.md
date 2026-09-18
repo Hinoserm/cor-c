@@ -77,6 +77,13 @@ tasks below track that work; moving files alone does not reduce the working set.
 - [ ] Restore project paths, split source types, and verify the reorganized repo.
 - [ ] Implement native MSBuild-compatible project evaluation and compilation;
   a host dotnet adapter alone does not satisfy this requirement.
+  The owned evaluator and `corc project` coordinator are now implemented for
+  an initial SDK-style profile, without invoking MSBuild. The two-file fixture
+  builds and runs, and an unchanged build reports zero rebuilt units. Full
+  project-profile acceptance, native library packaging, target hooks, metadata
+  transforms and all project-reference semantics are still outstanding.
+  Normal Compile tasks route to COR-C#; MSBuild is restricted to bootstrapping
+  the build-tool component. No later stage is marked complete by this work.
 - [ ] Implement verified bootstrap and atomic native toolchain activation.
 - [ ] Implement source locks/fetching, artifact references, installation/image
   tasks, profiles, imports and whole-build memory/resource budgeting.
