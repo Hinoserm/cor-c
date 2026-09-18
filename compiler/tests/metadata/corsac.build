@@ -1,0 +1,8 @@
+<Build FormatVersion="1" DefaultTargets="test">
+  <Target Name="test">
+    <Compile Project="MetadataTests.csproj" Toolchain="managed" />
+    <Test Name="separate-compilation-metadata" Executable="dotnet" Timeout="00:05:00">
+      <Argument Value="bin/managed/Release/net10.0/MetadataTests.dll" />
+    </Test>
+  </Target>
+</Build>

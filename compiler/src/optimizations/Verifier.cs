@@ -289,6 +289,19 @@ public sealed class Verifier : IPass
                 });
                 break;
 
+            case Opcode.ArrayLength:
+                Operands(i, 1);
+                Address(i, 0);
+                Dest(i, IrType.I32);
+                break;
+
+            case Opcode.InitArrayLength:
+                Operands(i, 2);
+                Address(i, 0);
+                Is(i, 1, IrType.I32);
+                NoDest(i);
+                break;
+
             case Opcode.Load:
                 Operands(i, 1);
                 Address(i, 0);
