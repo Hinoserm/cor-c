@@ -20,10 +20,18 @@ public static class ObjectLinkCommand
         string? backendPath = null;
         int importBytes = 1024 * 1024;
         List<string> paths = new();
+        List<string> sharedLibraries = new();
+        string? runpath = null;
         List<string> cpuArguments = new();
         for (int i = 0; i < args.Length; i++)
         {
             string arg = args[i];
+            if (arg is "--link-shared" or "--runpath")
+            {
+                if (++i == args.Length) return Fail("missing value for " + arg);
+                if (arg == "--runpath") runpath = args[i]; else sharedLibraries.Add(args[i]);
+                continue;
+            }
             if (arg is "--cpu" or "--tune" or "--fpu")
             {
                 if (++i == args.Length) return Fail("missing value for " + arg);
@@ -63,6 +71,8 @@ public static class ObjectLinkCommand
         if (output is null || paths.Count == 0)
             return Fail("usage: corlink <file.o> ... -o <output> [--entry symbol] [--flat] [--base address] [--paddr address] [--no-lto]");
         if (flat && physicalAddress is not null) return Fail("--paddr is for ELF output; use --base for flat images");
+        if (sharedLibraries.Count > 0 && (flat || physicalAddress is not null || baseAddress is not null))
+            return Fail("shared libraries cannot be combined with flat or fixed-address output");
         string destination = Path.GetFullPath(output);
         List<(string, ObjectFile)> inputs = new();
         HashSet<string> seen = new(StringComparer.Ordinal);
@@ -91,6 +101,13 @@ public static class ObjectLinkCommand
             Linker.FlatImage linked = Linker.LinkFlat(inputs, entry, baseAddress ?? 0x10000);
             image = linked.Bytes;
             Console.Error.WriteLine($"flat: entry=0x{linked.Entry:x} base=0x{linked.Base:x} bss={linked.BssSize} memory={linked.MemorySize}");
+        }
+        else if (sharedLibraries.Count > 0)
+        {
+            HashSet<string> defined = new(inputs.SelectMany(x => x.Item2.Symbols).Where(s => s.IsDefined).Select(s => s.Name), StringComparer.Ordinal);
+            HashSet<string> unresolved = new(inputs.SelectMany(x => x.Item2.Symbols).Where(s => !s.IsDefined && !defined.Contains(s.Name)).Select(s => s.Name), StringComparer.Ordinal);
+            List<string> needed = sharedLibraries.Distinct(StringComparer.Ordinal).Where(path => ElfReader.ExportsOf(File.ReadAllBytes(path)).Any(unresolved.Contains)).ToList();
+            image = Linker.Link(inputs, entry, needed, runpath);
         }
         else image = Linker.Link(inputs, entry, baseAddress ?? Linker.DefaultLoadAddress, physicalAddress);
         File.WriteAllBytes(output, image);
