@@ -64,13 +64,13 @@ public sealed partial class X86Assembler
                 if (memory.Kind != OperandKind.Memory) throw Error("invlpg requires memory");
                 Prefixes(0, memory); Emit(0x0f, 0x01); EmitRM(7, memory); return true;
             }
-            Need(a, 2, mn); Operand dest = P(a[0]), src = P(a[1]);
-            if (!dest.IsRegOrMem || src.Kind != OperandKind.Register || (dest.SizeGiven && dest.Size != src.Size)
-                || (dest.Kind == OperandKind.Register && dest.Size != src.Size))
+            Need(a, 2, mn); Operand atomicDest = P(a[0]), atomicSrc = P(a[1]);
+            if (!atomicDest.IsRegOrMem || atomicSrc.Kind != OperandKind.Register || (atomicDest.SizeGiven && atomicDest.Size != atomicSrc.Size)
+                || (atomicDest.Kind == OperandKind.Register && atomicDest.Size != atomicSrc.Size))
                 throw Error(mn + " requires matching integer register/memory and register operands");
-            Prefixes(src.Size, MemOf(dest));
-            Emit(0x0f, (byte)((mn == "xadd" ? 0xc0 : 0xb0) + (src.Size == 1 ? 0 : 1)));
-            EmitRM(src.Reg, dest); return true;
+            Prefixes(atomicSrc.Size, MemOf(atomicDest));
+            Emit(0x0f, (byte)((mn == "xadd" ? 0xc0 : 0xb0) + (atomicSrc.Size == 1 ? 0 : 1)));
+            EmitRM(atomicSrc.Reg, atomicDest); return true;
         }
         if (mn is "cpuid" or "rdtsc" or "rdmsr" or "wrmsr" or "rsm")
         {
