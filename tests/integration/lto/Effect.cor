@@ -1,4 +1,5 @@
 public static class Value
 {
-    public static int Get() { Sys.Print("effect\n"); return 42; }
+    public static int Calls;
+    public static int Get() { Calls++; return 42; }
 }

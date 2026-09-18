@@ -350,8 +350,9 @@ public sealed partial class Lowering
 
         SealFunctions();
 
-        bool ownsRuntime = _b.Types.Values.Any(t => t.Name == RuntimeType && t.Decl?.Elsewhere != true);
-        if (!_library || ownsRuntime)
+        TypeSymbol? runtimeOwner = _b.Types.Values.FirstOrDefault(t => t.Name == RuntimeType);
+        bool ownsRuntime = runtimeOwner is not null && runtimeOwner.Decl?.Elsewhere != true;
+        if (ownsRuntime || (!_library && runtimeOwner is null))
         {
             // The main thread's block, and the word that finds it where there
             // is no GS. Ordinary library objects reference this storage;

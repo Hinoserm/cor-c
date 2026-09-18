@@ -20,10 +20,10 @@ status=0
 test "$status" = 42
 if cmp -s "$work/on" "$work/off"; then echo 'LTO did not change output' >&2; exit 1; fi
 "$corc" compile --nostdlib --lib --no-stackmaps tests/integration/lto/Effect.cor --obj -o "$work/effect.o"
-"$corlink" "$work/caller.o" "$work/effect.o" -o "$work/effect" 2> "$work/effect.link.log"
+"$corc" compile --nostdlib --no-stackmaps tests/integration/lto/EffectCaller.cor --ref tests/integration/lto/Effect.cor --obj -o "$work/effect-caller.o"
+"$corlink" "$work/effect-caller.o" "$work/effect.o" -o "$work/effect" 2> "$work/effect.link.log"
 grep -q 'LTO calls folded=0' "$work/effect.link.log"
 status=0
 "$work/effect" > "$work/effect.txt" || status=$?
-test "$status" = 42
-printf 'effect\n' | cmp - "$work/effect.txt"
+test "$status" = 43
 printf 'PASS cross-object LTO and side-effect guard: %s\n' "$work"
