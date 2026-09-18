@@ -39,6 +39,10 @@ s2="$snapshot/os/boot/x86/stage2"
     "$snapshot/os/kernel/fs/minixread.cor" "$snapshot/os/kernel/fs/ext3.cor" "$s2/bootfs.cor" "$s2/stage2.cor" \
     --jobs "$jobs" --freestanding --flat --obj --cpu 486 --stats -o "$work/stage2.o" > "$work/stage2.compile.log" 2>&1
 "$corlink" "$work/stage2.o" --flat --base 0x10000 -o "$work/stage2.bin" > "$work/stage2.link.log" 2>&1
+# The boot gap on disk is larger than conventional RAM. Never attempt to
+# execute an image that overlaps the VGA aperture/firmware region.
+stage2_memory="$(sed -n 's/.* memory=\([0-9]*\).*/\1/p' "$work/stage2.link.log")"
+test -n "$stage2_memory" && test "$stage2_memory" -le $((0x90000 - 0x10000))
 for program in init mount agetty login sh reboot cat ps tty; do
     extra=()
     if [ "$program" = sh ]; then extra=("$snapshot/os/lib/shell.cor" "$snapshot/os/bin/edit.cor"); fi

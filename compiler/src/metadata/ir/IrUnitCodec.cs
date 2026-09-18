@@ -34,14 +34,18 @@ public static class IrUnitCodec
                 && Inline.Inlineable(function, addressed)
                 && !calls.Any(locals.Contains)
                 && !instructions.SelectMany(instruction => instruction.Operands).OfType<SymOperand>().Any(address => locals.Contains(address.Name));
-            records.Add(new("F:" + function.Name, importable, instructions.Length, calls, IrFunctionCodec.Write(function)));
+            string[] references = calls.Concat(instructions.SelectMany(instruction => instruction.Operands).OfType<SymOperand>()
+                .Select(address => address.Name)).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
+            records.Add(new("F:" + function.Name, importable, instructions.Length, calls, IrFunctionCodec.Write(function), references));
         }
         foreach (DataItem item in module.Data)
-            records.Add(new("D:" + item.Name, false, 0, Array.Empty<string>(), IrDataCodec.Write(item)));
+            records.Add(new("D:" + item.Name, false, 0, Array.Empty<string>(), IrDataCodec.Write(item),
+                item.Relocs.Select(relocation => relocation.Symbol).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray()));
         IrArchive.Attach(obj, records);
     }
 
-    public static (Module Module, bool StackMaps) Read(IrArchive archive, long memoryBudget = 64L * 1024 * 1024)
+    public static (Module Module, bool StackMaps) Read(IrArchive archive, long memoryBudget = 128L * 1024 * 1024,
+        IReadOnlySet<string>? retained = null)
     {
         using MemoryStream stream = new(archive.ReadBody("M:unit"), writable: false);
         using BinaryReader reader = new(stream, IrBinary.Utf8);
@@ -59,6 +63,7 @@ public static class IrUnitCodec
             foreach (IrArchiveEntry entry in archive.Entries.Values)
             {
                 if (entry.Key == "M:unit") continue;
+                if (retained is not null && !retained.Contains(entry.Key)) continue;
                 resident = checked(resident + 32L * entry.Length);
                 if (resident > memoryBudget) throw new InvalidDataException("IR unit exceeds backend memory budget");
                 if (entry.Key.StartsWith("F:", StringComparison.Ordinal))

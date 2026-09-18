@@ -26,7 +26,7 @@ public static class IrArchiveTests
         Check(archive.ReadBody("F:function").SequenceEqual(new byte[] { 1, 2, 3 }), "IR body round trip");
         source.Section(".text").Bytes[0] = 0x90;
         Reject(() => IrArchive.Read(source));
-        source = Make("function", true, Array.Empty<string>()); source.Section(IrArchive.SectionName).Bytes[4] = 2;
+        source = Make("function", true, Array.Empty<string>()); source.Section(IrArchive.SectionName).Bytes[4] = 99;
         Reject(() => IrArchive.Read(source));
         source = Make("function", true, Array.Empty<string>()); source.Section(IrArchive.SectionName).Bytes[90] ^= 1;
         Reject(() => IrArchive.Read(source));

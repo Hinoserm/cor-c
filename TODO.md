@@ -118,6 +118,9 @@ tasks below track that work; moving files alone does not reduce the working set.
   fresh static login/shell utilities, and retains exact symbols/provenance and
   serial/QEMU diagnostics. It does not modify another developer's checkout or
   saved image. This fixture is a boot gate, not full OS regression acceptance.
+  The first real image exposed an oversized stage2 after export preservation.
+  Add closed-image code/data reachability and regenerate metadata before the
+  next boot attempt; never load stage2 across the conventional-memory boundary.
 
 - [x] Verify the new disk-backed declaration-index storage milestone: bounded
   external sorting, exact/prefix lookup, partial fragments, deterministic output,

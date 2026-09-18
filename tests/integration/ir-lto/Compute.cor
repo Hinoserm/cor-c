@@ -1,6 +1,7 @@
 public static class Compute
 {
     public static int Twice(int value) => value * 2;
+    public static int Unreachable(int value) => value + 1234;
     public static int Choose(int value)
     {
         if (value > 0) return Twice(value);

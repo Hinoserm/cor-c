@@ -27,13 +27,13 @@ public sealed class ProcessUnitBackend : IUnitBackend, IDisposable
         reader = new BinaryReader(process.StandardOutput.BaseStream, BackendProtocol.Utf8, leaveOpen: true);
     }
 
-    public ObjectFile Recompile(ObjectFile original, IReadOnlyList<IrImport> imports)
+    public ObjectFile Recompile(ObjectFile original, IReadOnlyList<IrImport> imports, IReadOnlySet<string>? retained = null)
     {
         string input = Path.Combine(work, "input-" + sequence + ".o"), output = Path.Combine(work, "output-" + sequence++ + ".o");
         try
         {
             File.WriteAllBytes(input, ElfWriter.WriteObject(original));
-            BackendProtocol.WriteRequest(writer, new(input, output, imports));
+            BackendProtocol.WriteRequest(writer, new(input, output, imports, retained));
             Task response = Task.Run(() => BackendProtocol.ReadResponse(reader));
             try { response.WaitAsync(TimeSpan.FromMinutes(5)).GetAwaiter().GetResult(); }
             catch (TimeoutException)

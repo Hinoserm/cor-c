@@ -50,6 +50,7 @@ test ! -e "$work/mixed"
 "$corc" compile --nostdlib --freestanding --asm-entry managed_entry tests/integration/lto/Caller.cor --ref tests/integration/lto/Value.cor --obj -o "$work/bare-caller.o"
 "$corlink" --flat --base 0x10000 "$work/start.o" "$work/bare-caller.o" "$work/bare-value.o" -o "$work/stage2.bin" 2> "$work/flat.log"
 grep -q 'flat: entry=0x10000 base=0x10000' "$work/flat.log"
+grep -Eq 'IR units regenerated=[1-9]' "$work/flat.log"
 test "$(od -An -tx1 -N1 "$work/stage2.bin" | tr -d ' ')" = fa
 "$corlink" --base 0xc0100000 --paddr 0x100000 "$work/start.o" "$work/bare-caller.o" "$work/bare-value.o" -o "$work/kernel" 2> "$work/kernel.log"
 readelf -lW "$work/kernel" > "$work/kernel.headers"

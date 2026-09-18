@@ -11,11 +11,11 @@ namespace Corsac;
 /// <summary>IR-only compiler backend. Does not parse or bind source files.</summary>
 public sealed class UnitBackend : IUnitBackend
 {
-    public ObjectFile Recompile(ObjectFile original, IReadOnlyList<IrImport> imports)
+    public ObjectFile Recompile(ObjectFile original, IReadOnlyList<IrImport> imports, IReadOnlySet<string>? retained = null)
     {
         Target.Current = Target.X86;
         IrArchive archive = IrArchive.Read(original) ?? throw new InvalidDataException("Backend input has no IR archive");
-        var unit = IrUnitCodec.Read(archive);
+        var unit = IrUnitCodec.Read(archive, retained: retained);
         Module module = unit.Module;
         module.PreserveExports = true;
         HashSet<string> originalNames = module.Functions.Select(function => function.Name).ToHashSet(StringComparer.Ordinal);

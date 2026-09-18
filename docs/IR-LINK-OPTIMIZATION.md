@@ -18,12 +18,13 @@ The `corc link` convenience command supplies the same backend in-process.
 ## Container
 
 The archive is a non-loadable ELF note. Integers are little-endian. Its 84-byte
-header contains magic `CCIR`, version 1, record count, directory byte count,
+header contains magic `CCIR`, version 2, record count, directory byte count,
 total archive size, a 32-byte native-object digest and a 32-byte directory digest.
 Native-object hashing uses canonical ELF serialization with the archive omitted.
 
 Each directory record contains a length-prefixed UTF-8 key, a one-byte importable
-flag, instruction count, direct-call count and length-prefixed call names, followed
+flag, instruction count, direct-call count and length-prefixed call names,
+then a reference count and length-prefixed code/data reference names, followed
 by body-relative offset, byte length and a 32-byte SHA-256 payload digest.
 Names have a 16 KiB ceiling. Records cover consecutive, nonoverlapping payload
 ranges exactly. Invalid versions, flags, lengths, hashes, duplicate keys and
@@ -73,6 +74,21 @@ The final link discards IR and pre-link optimization certificates. Logs report
 imported body counts/bytes and regenerated unit counts. Those counts are not
 performance claims; integration checks additionally inspect machine code and
 run the resulting executable.
+
+## Closed bare-metal retention
+
+Flat and physical-load-address links are closed images. Their entry symbol and
+every relocation in a non-IR native object are roots. Reachability follows both
+calls and code/data addresses, including vtables and native interrupt vectors.
+Private references resolve inside their original object; globals resolve to the
+same certified owner used by native linking. Unreachable function/data records
+are omitted before decoding and regenerating an affected unit.
+
+This keeps ordinary objects open to external callers while allowing the final
+boot image to discard unused exports. Debug/frame tables are regenerated from
+retained functions and do not artificially root every otherwise dead function.
+Native objects without IR remain intact. Hosted links currently preserve their
+exports; broader reflection/export-root policy is separate work.
 
 ## Remaining limits
 

@@ -70,7 +70,8 @@ public static class ObjectLinkCommand
         // LinkException is rendered by Driver, just as for compile-and-link.
         TargetContract.Validate(inputs);
         ManagedLayoutContract.Validate(inputs);
-        int regenerated = IrLinkOptimizer.Run(inputs, () => backend ?? new ProcessUnitBackend(backendPath), lto, importBytes);
+        int regenerated = IrLinkOptimizer.Run(inputs, () => backend ?? new ProcessUnitBackend(backendPath), lto, importBytes,
+            closedImageEntry: flat || physicalAddress is not null ? entry : null);
         int folded = LinkTimeOptimizer.Run(inputs, lto);
         byte[] image;
         if (flat)

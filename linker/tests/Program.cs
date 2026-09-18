@@ -36,6 +36,7 @@ public static class Program
         Try("summary-driven cross-object LTO and bare-metal layouts", () => { LtoTests.Run(); Check(true, "LTO contract"); });
         Try("certified shared definition ownership", () => { CoalescingTests.Run(); Check(true, "coalescing contract"); });
         Try("indexed IR archives and bounded import plans", () => { IrArchiveTests.Run(); Check(true, "IR archive contract"); });
+        Try("closed-image IR retention", () => { IrReachabilityTests.Run(); Check(true, "IR retention graph"); });
         Try("linked with gcc object", LinkWithGcc);
         Try("shared object structure", SharedObjectStructure);
         Try("relocated constants stay outside mutable static roots", RelocatedConstantRoots);
