@@ -1,0 +1,42 @@
+// Runtime string/byte comparison versus a byte-at-a-time source reference.
+using System;
+
+static class MemoryCompareBenchmark
+{
+    static int Reference(string a, int aAt, string b, int bAt, int count)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            int x = Sys.GetByte(a, aAt + i), y = Sys.GetByte(b, bAt + i);
+            if (x != y) return x < y ? -1 : 1;
+        }
+        return 0;
+    }
+
+    static int Main()
+    {
+        string[] args = Environment.GetCommandLineArgs();
+        int iterations = args.Length > 1 ? int.Parse(args[1]) : 50000;
+        bool reference = args.Length > 2 && args[2] == "reference";
+        if (iterations < 1 || iterations > 1000000) return 2;
+        foreach (int length in new int[] { 32, 128, 512 })
+        for (int offset = 0; offset < 2; offset++)
+        for (int different = 0; different < 2; different++)
+        {
+            string a = new string('x', length + 4), b = new string('x', length + 4);
+            if (different != 0) Sys.SetByte(b, offset + length - 1, 255);
+            int expected = different != 0 ? -iterations : 0;
+            int sum = 0;
+            long start = Stopwatch.GetTimestamp();
+            for (int i = 0; i < iterations; i++)
+                sum += reference ? Reference(a, offset, b, offset, length)
+                    : Sys.CompareBytes(a, offset, b, offset, length);
+            long elapsed = Stopwatch.GetTimestamp() - start;
+            Console.WriteLine("memory-compare,reference=" + reference + ",length=" + length
+                + ",offset=" + offset + ",different=" + different + ",iterations=" + iterations
+                + ",ticks=" + elapsed + ",frequency=" + Stopwatch.Frequency + ",valid=" + (sum == expected));
+            if (sum != expected) return 1;
+        }
+        return 0;
+    }
+}

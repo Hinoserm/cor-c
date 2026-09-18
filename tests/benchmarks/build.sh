@@ -23,7 +23,7 @@ for workload in "${workloads[@]}"; do
       sources+=("$CRYPTO_ROOT/crypto_base.cor")
       if [ "$workload" = crypto ]; then sources+=("$CRYPTO_ROOT/crypto_field25519.cor" "$CRYPTO_ROOT/crypto_x25519.cor")
       else sources+=("$CRYPTO_ROOT/crypto_chacha.cor"); fi ;;
-    allocation|loops|division|power-divide|byte-swap|byte-packing|arithmetic|constant-chains|owned-paths) ;;
+    allocation|loops|division|power-divide|byte-swap|byte-packing|arithmetic|constant-chains|owned-paths|memory-compare) ;;
     *) echo "Unknown benchmark: $workload" >&2; exit 2 ;;
   esac
   sources+=("tests/benchmarks/$workload.cor")
