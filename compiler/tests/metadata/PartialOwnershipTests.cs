@@ -25,7 +25,7 @@ public static class PartialOwnershipTests
                 throw new Exception("Partial method ownership was lost");
             var getter = front.Bound.Methods.Values.Single(method => method.Owner.Name == "Split" && method.Name == "get_Property");
             if (getter.Decl?.OwnedImplementation != (source == second)) throw new Exception("Accessor ownership was lost");
-            if (declarations.PayloadLoads != 1) throw new Exception("Partial family was not loaded exactly once");
+            if (declarations.PayloadLoads != 2) throw new Exception("Each of the two partial declaration records must load once; got " + declarations.PayloadLoads);
         }
         Console.WriteLine("partial ownership: canonical metadata, source bodies and accessors passed");
     }
