@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-os="${CORSAC_ROOT:-$root/../corsac-pc}"
+os="${CORSAC_ROOT:-$root/../corsac86-integration}"
 corc="${CORC:-$root/compiler/bin/Release/net10.0/corc}"
 corlink="${CORLINK:-$root/linker/bin/Release/net10.0/corlink}"
 export CORC="$corc"
