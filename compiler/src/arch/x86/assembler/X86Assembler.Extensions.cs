@@ -47,6 +47,31 @@ public sealed partial class X86Assembler
 
     private bool ExtendedInstruction(string mn, string[] a)
     {
+        if (mn is "bswap" or "xadd" or "cmpxchg" or "invd" or "wbinvd" or "invlpg")
+        {
+            Require(_cpu.Name != "386", mn, "486");
+            if (mn is "invd" or "wbinvd")
+            { Need(a, 0, mn); Emit(0x0f, mn == "invd" ? (byte)0x08 : (byte)0x09); return true; }
+            if (mn == "bswap")
+            {
+                Need(a, 1, mn); Operand reg = P(a[0]);
+                if (reg.Kind != OperandKind.Register || reg.Size != 4) throw Error("bswap requires a 32-bit register");
+                Prefixes(4, null); Emit(0x0f, (byte)(0xc8 + reg.Reg)); return true;
+            }
+            if (mn == "invlpg")
+            {
+                Need(a, 1, mn); Operand memory = P(a[0]);
+                if (memory.Kind != OperandKind.Memory) throw Error("invlpg requires memory");
+                Prefixes(0, memory); Emit(0x0f, 0x01); EmitRM(7, memory); return true;
+            }
+            Need(a, 2, mn); Operand dest = P(a[0]), src = P(a[1]);
+            if (!dest.IsRegOrMem || src.Kind != OperandKind.Register || (dest.SizeGiven && dest.Size != src.Size)
+                || (dest.Kind == OperandKind.Register && dest.Size != src.Size))
+                throw Error(mn + " requires matching integer register/memory and register operands");
+            Prefixes(src.Size, MemOf(dest));
+            Emit(0x0f, (byte)((mn == "xadd" ? 0xc0 : 0xb0) + (src.Size == 1 ? 0 : 1)));
+            EmitRM(src.Reg, dest); return true;
+        }
         if (mn is "cpuid" or "rdtsc" or "rdmsr" or "wrmsr" or "rsm")
         {
             Require(_cpu.Pentium, mn, "Pentium"); Need(a, 0, mn);

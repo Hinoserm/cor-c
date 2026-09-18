@@ -59,6 +59,9 @@ public static class Program
                 "fbld tbyte ptr [ebx]", "fbstp tbyte ptr [ebx]", "fldcw word ptr [ebx]", "fstcw word ptr [ebx]",
                 "fnstsw ax", "fstsw ax", "fldenv [ebx]", "fnstenv [ebx]", "fsave [ebx]", "frstor [ebx]",
                 "mov eax, dr0", "mov dr7, eax"]);
+            cases.AddRange(["bswap eax", "invd", "wbinvd", "invlpg [ebx]", "xadd al, bl", "xadd word ptr [ebx], cx",
+                "cmpxchg dword ptr [ebx], ecx", "lock xadd dword ptr [ebx], eax", "lock cmpxchg8b qword ptr [ebx]",
+                "lock add dword ptr [ebx], 1", "lock xchg eax, dword ptr [ebx]"]);
             foreach (int bits in new[] { 16, 32 })
             foreach (string instruction in cases)
             {
@@ -69,7 +72,9 @@ public static class Program
                 byte[] expected = File.ReadAllBytes(binary);
                 Check(actual.SequenceEqual(expected), bits + " " + instruction + ": expected " + Convert.ToHexString(expected) + ", got " + Convert.ToHexString(actual));
             }
-            foreach (string invalid in new[] { "paddd eax, ebx", "paddd mm0, dword ptr [ebx]", "movd mm0, mm1", "movq mm0, eax", "psllq mm0, 256", "cmpxchg8b eax", "prefetch eax" })
+            foreach (string invalid in new[] { "paddd eax, ebx", "paddd mm0, dword ptr [ebx]", "movd mm0, mm1", "movq mm0, eax", "psllq mm0, 256", "cmpxchg8b eax", "prefetch eax",
+                "lock cmpxchg8b eax", "lock add eax, ebx", "lock mov dword ptr [ebx], eax", "lock nop", "lock lock add dword ptr [ebx], eax",
+                "bswap ax", "xadd ax, ebx", "cmpxchg dword ptr [ebx], cx", "invlpg eax" })
             {
                 bool rejected = false;
                 try { X86Assembler.Assemble(invalid, "bad.asm", bits: 32, cpu: X86Cpu.Parse(["--cpu=k6-3+"])); }

@@ -1306,6 +1306,7 @@ public sealed partial class X86Assembler : ISymbols
         "movsb", "movsw", "movsd", "scasb", "scasw", "scasd", "cmpsb", "cmpsw", "cmpsd",
         "insb", "insw", "insd", "outsb", "outsw", "outsd",
         "rep", "repe", "repz", "repne", "repnz", "lock",
+        "bswap", "xadd", "cmpxchg", "invd", "wbinvd", "invlpg",
         "pusha", "pushaw", "pushad", "popa", "popaw", "popad",
         "pushf", "pushfw", "pushfd", "popf", "popfw", "popfd", "ltr", "lldt", "str", "sldt",
     };
@@ -1331,8 +1332,18 @@ public sealed partial class X86Assembler : ISymbols
                 {
                     throw Error($"{mn} has to be followed by an instruction");
                 }
-                Emit(mn switch { "rep" or "repe" or "repz" => (byte)0xF3, "lock" => (byte)0xF0, _ => (byte)0xF2 });
                 string inner = Head(rest).ToLowerInvariant();
+                if (mn == "lock")
+                {
+                    string[] operands = Split(rest[Head(rest).Length..].Trim());
+                    bool writable = inner is "add" or "adc" or "and" or "or" or "sbb" or "sub" or "xor"
+                        or "inc" or "dec" or "neg" or "not" or "xadd" or "cmpxchg" or "cmpxchg8b"
+                        or "bts" or "btr" or "btc" or "xchg";
+                    bool memory = operands.Length > 0 && P(operands[0]).Kind == OperandKind.Memory;
+                    if (inner == "xchg" && operands.Length == 2) memory |= P(operands[1]).Kind == OperandKind.Memory;
+                    if (!writable || !memory) throw Error("lock requires a supported read-modify-write instruction with a memory destination");
+                }
+                Emit(mn switch { "rep" or "repe" or "repz" => (byte)0xF3, "lock" => (byte)0xF0, _ => (byte)0xF2 });
                 Instruction(inner, rest[Head(rest).Length..].Trim());
                 return;
             }
