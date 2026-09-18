@@ -9,6 +9,26 @@ work belong in [TODO.md](TODO.md).
 
 ## Standards compatibility
 
+### x86 CPU and floating-point profiles
+
+- The default target remains 486 with x87 floating point.
+- Support 386 with no coprocessor and with an optional 387, selected through
+  `--cpu=386 --fpu=none` or `--cpu=386 --fpu=387`. The no-FPU profile requires
+  software floating-point lowering/runtime support, not illegal x87 emission.
+- `--cpu` automatically permits the complete supported ISA of the selected
+  processor. Support Pentium, Pentium MMX, K6, K6-2, K6-III and their requested
+  plus models, including their specific MMX and 3DNow! capabilities.
+- `--tune` changes optimization preferences without expanding instruction
+  permission. Features supported by the selected CPU are enabled by default;
+  explicit disable switches exclude them. Disabling MMX excludes dependent
+  3DNow! register operations as well.
+- Compiler instruction selection, assembler validation, runtime dependencies
+  and LTO must agree on CPU/FPU requirements. Architecture-specific optimization
+  must preserve C#/.NET semantics, calling conventions and x87/MMX state.
+- Use QEMU software emulation for instruction correctness, and host benchmarks
+  only for instructions the host supports. Host/emulator timings do not certify
+  K6-family performance.
+
 ### C# language
 
 - Any departure from the applicable C# language specification is a product

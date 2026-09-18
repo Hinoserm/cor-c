@@ -19,6 +19,20 @@ required gates rather than assuming a missing log is proof of completion.
 
 ## Priority and purpose
 
+Immediate sequence: finish the isolated CORSAC86 production-build migration
+(including default nano/iperf3), then resume x86 instruction/profile work.
+
+- [ ] Complete CPU/ISA profiles, assembler encodings and automatic profitable
+  code generation for Pentium/MMX/K6/K6-2/K6-III/plus and 3DNow! families.
+- [ ] Add 386 profiles with optional 387; audit 486-only integer instructions
+  and runtime atomics, and implement software floating point for no-coprocessor
+  builds. Keep 486+x87 as the default.
+- [ ] Preserve target requirements through objects, separate compilation and
+  LTO; reject incompatible instruction/FPU selections.
+- [ ] Run encoding/correctness tests on Linux/QEMU and host-supported benchmarks.
+  The initial CPU/MMX assembler prototype is saved separately while OS build
+  migration is active; it is not complete or accepted.
+
 The requested completion order is: (1) automatic per-file standard .csproj
 pipeline, (2) demand-loaded default libraries, (3) complete lookup/generic
 coverage, (4) broader LTO, (5) end-to-end memory and self-hosting acceptance.
