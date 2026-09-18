@@ -2,8 +2,7 @@
 
 ## Decision status
 
-The intended repository is `Hinoserm/cor-c`, with a checkout at
-`~/projects/cor-c` and an MIT license, subject to a provenance/license audit.
+The repository is `Hinoserm/cor-c`, with a checkout at `~/projects/cor-c`.
 The user has approved public visibility: the project should be available for
 others to inspect and experiment with. Public documentation must distinguish
 working features from experimental, incomplete, and unverified requirements.
@@ -94,12 +93,17 @@ cor-c/
     README.md
   docs/
     README.md
-    language/
-    compiler/
-    runtime/
-    stdlib/
-    targets/
-    development/
+    BUILD-SYSTEM.md
+    REPOSITORY-LAYOUT.md
+    OBJECT-FORMAT.md
+    X86-BACKEND.md
+    DOTNET-LIBRARY.md
+    SELFHOST.md
+    LANGUAGE-TESTS.md
+    BENCHMARKS.md
+    OPTIMIZATIONS.md
+    PASS-INVENTORY.md
+    LARGE-BATCH.md
 ```
 
 Every actual directory receives a README, including `src/`, intermediate
@@ -222,7 +226,8 @@ explicit compatibility defect, not a completed alternative implementation.
 
 ## Tests, documentation, and migration
 
-Move compiler-specific tests and benchmarks to the top-level `tests/` tree,
+Keep focused subsystem tests alongside their owners. Broad language,
+integration and benchmark fixtures live in the top-level `tests/` tree,
 including runtime and standard-library tests needed by this toolchain. Keep
 kernel/driver/boot acceptance in the OS repository, with explicit integration
 coverage at the boundary. Do not copy large generated results or private machine
@@ -230,23 +235,25 @@ images into Git.
 
 Move compiler-specific documentation to `docs/`; split mixed compiler/OS
 documents so ownership is clear and the OS repository retains its requirements.
-READMEs explain purpose, dependencies, target selection where relevant, build/test
-entry points, and which contents belong elsewhere.
+Keep docs/ flat and index it with docs/README.md. Optimization plans, pass
+inventories and measured performance write-ups are documentation and belong
+there, not beneath tests/. Short local READMEs explain directory purpose and
+build/test entry points, linking to the detailed guides. Root REQUIREMENTS.md
+and TODO.md keep their existing responsibilities.
 
 Migration sequence:
 
 1. Agree on the detailed layout (public repository visibility is approved).
 2. Inventory source, tests, documents, scripts, and cross-repository dependencies.
-3. Audit provenance and licensing; retain required third-party notices. MIT for
-   this project does not override licenses on incorporated third-party material.
-4. Extract relevant history where practical, excluding unrelated OS material,
+3. Extract relevant history where practical, excluding unrelated OS material,
    private conversations, credentials, build outputs, and temporary artifacts.
-5. Move files and repair all build/test/source inventories without algorithmic
+4. Move files and repair all build/test/source inventories without algorithmic
    changes mixed into the initial migration.
-6. Verify a standalone checkout can build and run representative tests without
+5. Verify a standalone checkout can build and run representative tests without
    undeclared reads from `corsac86`. Record pre-existing failures explicitly.
-7. Create/push the new repository and establish the agreed OS dependency on it
+6. Create/push the new repository and establish the agreed OS dependency on it
    before removing the recoverable original compiler copy.
 
-Still to decide: approval of the runtime/stdlib subdivisions and how `corsac86`
-pins or obtains the extracted compiler, runtime, and library.
+The runtime/stdlib subdivisions are approved. CORSAC86 will obtain pinned
+toolchain inputs through the build utility; source-lock and dependency-fetch
+implementation remains tracked in the root TODO.md.

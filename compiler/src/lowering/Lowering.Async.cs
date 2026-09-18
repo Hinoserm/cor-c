@@ -19,7 +19,7 @@ using AstBlock = Corsac.Lang.Block;
 /// Lowering writes MoveNext as an ordinary function with a marked place at
 /// each await where it may suspend; the async transform, which runs after
 /// the optimiser, turns those places into saves, returns, a dispatch on
-/// entry and reloads. See docs/software/X86-BACKEND.md, "Async".
+/// entry and reloads. See docs/X86-BACKEND.md, "Async".
 /// </summary>
 public sealed partial class Lowering
 {

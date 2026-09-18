@@ -22,7 +22,7 @@ namespace Corsac.Lang.X86;
 ///     is reached through its GOT slot, `mov r, [got + sym@GOT]`;
 ///   * a call to a symbol this object defines is a direct relative call.
 ///     The linker binds defined symbols to their own definitions (GNU ld's
-///     -Bsymbolic; see docs/software/X86-BACKEND.md), so there is nothing
+///     -Bsymbolic; see docs/X86-BACKEND.md), so there is nothing
 ///     for an indirection to decide.
 ///   * a call to a symbol this object does NOT define goes through the GOT
 ///     rather than through a PLT: `mov r, [got + sym@GOT]; call r`.

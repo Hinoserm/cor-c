@@ -443,7 +443,7 @@ public sealed class X86Backend : IBackend
     }
 
     /// <summary>
-    /// The stack-map table, as described in docs/software/X86-BACKEND.md.
+    /// The stack-map table, as described in docs/X86-BACKEND.md.
     ///
     ///   header, 16 bytes: magic 'CSM1', version, entry count, entry stride
     ///   entries, 16 bytes each, in code order within each function:

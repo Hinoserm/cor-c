@@ -1,7 +1,7 @@
 # Build utility
 
 The installed `build` executable discovers corsac.build and executes its nested
-target graph. The contract is in ../../docs/development/BUILD-SYSTEM.md.
+target graph. The contract is in ../../docs/BUILD-SYSTEM.md.
 
 Bootstrap the host runner with `dotnet build tools/build/build.csproj -c Release`.
 Its executable is tools/build/bin/Release/net10.0/build. Add that directory to

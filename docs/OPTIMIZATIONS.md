@@ -58,7 +58,7 @@ remain milestone gates. No relaxed FP or managed semantics are intended.
 
 ## Measured batch effects
 
-- Alternating original/wide-selection X25519 measurements are in README.md.
+- Alternating original/wide-selection X25519 measurements are in [BENCHMARKS.md](BENCHMARKS.md).
 - Context specialization removes local-buffer heap pressure: 97 collections
   become zero for 200,000 iterations; retained buffers still allocate.
 - Latest combined benchmark (build/perf-narrow-compare): X25519 reuse
@@ -94,9 +94,9 @@ a bounded backward scan, stopping at calls, control flow, unknown memory,
 overlaps or source-register clobbers. It is not enabled in the executable
 used for the first-batch language suite. A separately built candidate succeeds
 with zero build warnings/errors and valid crypto, allocation and loop checks.
-Scalar replacement and redundant-load elimination from LLVM, and argument
-specialization from GCC, are reference techniques rather than new completed
-ledger entries; the reference links are in README.md.
+Scalar replacement, redundant-load elimination and argument specialization
+are algorithm references studied in LLVM and GCC documentation, not completed
+ledger entries; the reference links are in [BENCHMARKS.md](BENCHMARKS.md).
 
 ## Milestone results
 

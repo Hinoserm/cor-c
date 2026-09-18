@@ -38,7 +38,8 @@ tasks below track that work; moving files alone does not reduce the working set.
   Removing unused code after loading the entire library does not satisfy this.
 
 - [x] Specify XML orchestration, nested scope, ordered/parallel execution,
-  process/script/test behavior and MSBuild compatibility in BUILD-SYSTEM.md.
+  process/script/test behavior and MSBuild compatibility in
+  [BUILD-SYSTEM.md](docs/BUILD-SYSTEM.md).
 - [x] Implement the initial host runner: discovery, nested target scope, graph
   validation, ordered steps, subprocess limits, scripts, timeout/cleanup and
   JUnit reports. Thirteen focused runner checks passed at the first milestone.
@@ -64,6 +65,9 @@ tasks below track that work; moving files alone does not reduce the working set.
 
 ## Project compilation and source organization
 
+- [x] Audit documentation placement; move optimization plans, pass inventory,
+  benchmark write-ups and the detailed language-test guide into flat docs/.
+  Keep short local READMEs, update references, and index the documents.
 - [ ] Support projects containing multiple source files, independently compiled
   units, and a separate final link step using the existing ELF linker.
 - [ ] Compile and release bounded units rather than retaining every source body,
@@ -175,12 +179,12 @@ tasks below track that work; moving files alone does not reduce the working set.
   real workload relevance and correctness evidence. Existing passes,
   equivalent variants, runtime/library tuning and policy flags do not
   count as separate newly delivered compiler optimizations.
-  Inventory: tests/benchmarks/OPTIMIZATIONS.md. Candidate counts are not accepted
+  Inventory: docs/OPTIMIZATIONS.md. Candidate counts are not accepted
   completion counts; the per-entry evidence audit is still outstanding.
 - [ ] Continue the requested substantial batch of roughly 40 transformations,
   with benchmark checkpoints after cohesive sub-batches. This is part of,
   not a replacement for, the 100-optimization requirement.
-  Inventory and legality obligations: tests/benchmarks/LARGE-BATCH.md.
+  Inventory and legality obligations: docs/LARGE-BATCH.md.
 - [ ] Enable accepted integrated optimizations by default, with explicit
   exclusions for diagnosis. Do not require per-optimization opt-in flags.
   The temporary --experimental-batch/--batch-without policy remains to be

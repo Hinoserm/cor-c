@@ -9,6 +9,7 @@ The main goal remains every TODO item, including at least 100 real compiler
 optimizations; this document is the next batch, not a replacement goal.
 
 References consulted:
+
 - https://llvm.org/docs/Passes.html
 - https://llvm.org/docs/InstCombineContributorGuide.html
 - https://llvm.org/doxygen/structllvm_1_1KnownBits.html

@@ -13,7 +13,7 @@
 #
 # It also checks the ELF the compiler emits against what the CORSAC kernel's
 # loader is written to read -- see "The ELF contract" in
-# docs/software/X86-BACKEND.md. Those checks are the reason this is a script
+# docs/X86-BACKEND.md. Those checks are the reason this is a script
 # and not another .cor file.
 
 set -u

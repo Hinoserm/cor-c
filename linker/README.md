@@ -7,4 +7,4 @@ target-independent link orchestration. Focused link tests live in `tests/`.
 and ELF implementation do not depend on the compiler project. The compiler
 references this project to emit objects and provide convenience linking.
 The exchange format and managed separate-compilation gaps are documented in
-`../docs/compiler/OBJECT-FORMAT.md`.
+`../docs/OBJECT-FORMAT.md`.

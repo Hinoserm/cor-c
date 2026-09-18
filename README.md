@@ -16,7 +16,7 @@ in [REQUIREMENTS.md](REQUIREMENTS.md).
 
 The XML build utility and repository manifest are under active development.
 The design and current implementation limits are documented in
-[BUILD-SYSTEM.md](docs/development/BUILD-SYSTEM.md). Build the host runner with:
+[BUILD-SYSTEM.md](docs/BUILD-SYSTEM.md). Build the host runner with:
 
 ```sh
 dotnet build tools/build/build.csproj -c Release
@@ -26,7 +26,7 @@ tools/build/bin/Release/net10.0/build test --toolchain dotnet
 
 The independent linker is `linker/bin/Release/net10.0/corlink`. The compiler
 emits ELF relocatable `.o` files with `--obj`; see
-[OBJECT-FORMAT.md](docs/compiler/OBJECT-FORMAT.md). Native bootstrap activation
+[OBJECT-FORMAT.md](docs/OBJECT-FORMAT.md). Native bootstrap activation
 is not implemented yet; the runner never silently substitutes the host compiler.
 
 .NET 10 is required for the bootstrap compiler:
@@ -60,10 +60,11 @@ running them. See the READMEs under `tests/` for narrower gates.
 - `stdlib/`: C#/.NET-compatible public library implementation.
 - `tests/`: broad language, integration, and benchmark coverage.
 - `examples/`: small programs intended for readers and experiments.
-- `docs/`: design and development documentation.
+- `docs/`: a flat, [indexed collection](docs/README.md) of designs, guides,
+  optimization plans and performance write-ups.
 
 The planned memory-bounded project compiler and detailed ownership boundaries
-are documented in [docs/development/REPOSITORY-LAYOUT.md](docs/development/REPOSITORY-LAYOUT.md).
+are documented in [docs/REPOSITORY-LAYOUT.md](docs/REPOSITORY-LAYOUT.md).
 
 ## Status and compatibility
 
@@ -76,7 +77,3 @@ current compiler can accept multiple sources together, but still performs too
 much whole-program work and uses too much memory for the intended small-system
 self-hosting target. Do not interpret the presence of a command or test fixture
 as a claim that every requirement is complete.
-
-## License
-
-MIT. See [LICENSE](LICENSE).

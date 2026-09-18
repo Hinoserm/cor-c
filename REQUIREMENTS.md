@@ -40,7 +40,7 @@ work belong in [TODO.md](TODO.md).
 
 ## Repository and source organization
 
-- The public project repository is `Hinoserm/cor-c` and uses the MIT license.
+- The public project repository is `Hinoserm/cor-c`.
 - The repository must remain buildable without undeclared reads from the
   CORSAC/OS source tree.
 - Top-level ownership is:
@@ -58,6 +58,10 @@ work belong in [TODO.md](TODO.md).
   - `docs/`: design and development documentation.
 - Every maintained directory must contain a README explaining its purpose and
   ownership boundary.
+- Detailed design documents, guides, optimization plans and performance
+  write-ups belong directly under a flat docs/ directory, indexed by its README.
+  Test directories contain executable fixtures and scripts, plus short local
+  READMEs linking to docs/. REQUIREMENTS.md and TODO.md remain at the root.
 - Compiler implementation files belong under `compiler/src/`.
 - A repository-wide `architectures/` directory is forbidden. Architecture code
   belongs under the subsystem that owns it, using the short `arch` name.
@@ -79,7 +83,7 @@ work belong in [TODO.md](TODO.md).
   explicitly; native builds never silently switch to the host compiler.
 - `build bootstrap` prepares and verifies a native toolchain; subsequent
   `build` uses that toolchain. CPU and memory budgets cover the whole build.
-- [BUILD-SYSTEM.md](docs/development/BUILD-SYSTEM.md) defines orchestration
+- [BUILD-SYSTEM.md](docs/BUILD-SYSTEM.md) defines orchestration
   semantics and the compatibility contract.
 
 - Projects must support multiple source files compiled as bounded independent
@@ -235,7 +239,6 @@ work belong in [TODO.md](TODO.md).
 - LLVM and GCC may inform algorithms, but legality must be adapted to managed
   semantics and the local IR. C undefined behavior, LLVM poison assumptions,
   unsafe floating-point reassociation, and later-ISA assumptions may not leak in.
-- Applicable source licenses and notices must be honored.
 
 ## Benchmarking and generated-code quality
 
