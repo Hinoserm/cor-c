@@ -5,21 +5,6 @@ using Corsac.Lang.Ir;
 namespace Corsac.Lang.Elf;
 
 /// <summary>
-/// Thrown when a link fails. Every problem found is in <see cref="Errors"/>,
-/// each naming the symbol or section and the object it came from, so one
-/// run reports everything rather than the first thing.
-/// </summary>
-public sealed class LinkException : Exception
-{
-    public IReadOnlyList<string> Errors { get; }
-
-    public LinkException(IReadOnlyList<string> errors) : base(string.Join(Environment.NewLine, errors))
-    {
-        Errors = errors;
-    }
-}
-
-/// <summary>
 /// The static linker: several objects in, one ET_EXEC out, laid out the way
 /// GNU ld lays out a non-PIE i386 executable so gdb, objdump and the
 /// kernel are all on familiar ground.
@@ -46,6 +31,8 @@ public sealed class LinkException : Exception
 /// </summary>
 public static partial class Linker
 {
+    /// <summary>Managed shared-library initializer entry point.</summary>
+    public const string SharedInitName = Elf.SharedInitName;
     public const uint DefaultLoadAddress = 0x08048000;
 
     public static byte[] Link(IEnumerable<ObjectFile> objects, string entrySymbol, uint loadAddress = DefaultLoadAddress)

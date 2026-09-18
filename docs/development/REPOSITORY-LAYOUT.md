@@ -39,6 +39,8 @@ cor-c/
           backend/
       driver/
       frontend/
+        syntax/
+        symbols/
       ir/
       optimizations/
       metadata/
@@ -49,8 +51,11 @@ cor-c/
       optimizations/
   linker/
     README.md
+    linker.csproj
     src/
+      driver/
       elf/
+      model/
     tests/
   runtime/
     README.md
@@ -80,6 +85,11 @@ cor-c/
     language/
     integration/
     benchmarks/
+  tools/
+    build/
+      build.csproj
+      src/
+      tests/
   examples/
     README.md
   docs/
@@ -115,8 +125,15 @@ the architecture, ABI, object format, and platform; it must not hard-code that
 every x86 program is a Linux program.
 
 Use one top-level class/type per matching source file where practical, retaining
-purposeful partial-class subdivisions. Apply this organization after the project
-compilation path exists; do not confuse moving files with independent compilation.
+purposeful partial-class subdivisions. The syntax and symbol models, IR model,
+x86 machine IR, and ELF records have been split this way. Do not confuse moving
+files with independent compilation or bounded compiler memory use.
+
+`corc` and `corlink` are separate executable projects. The linker owns the
+relocatable object model and has no dependency on compiler frontend code. The
+compiler references the linker project for emission and convenience linking.
+The root corsac.build and tools/build utility orchestrate projects without a
+solution file; see [BUILD-SYSTEM.md](BUILD-SYSTEM.md).
 
 ## Runtime layout
 

@@ -77,7 +77,7 @@ public sealed partial class Lowering
     public static bool SharedObject { get; set; }
 
     /// <summary>What DT_INIT points at in a COR-C# shared object.</summary>
-    public const string SharedInitName = Corsac.Lang.Elf.Elf.SharedInitName;
+    public const string SharedInitName = Corsac.Lang.Elf.Linker.SharedInitName;
 
     /// <summary>
     /// Some of the sources given are here for their declarations only (see
