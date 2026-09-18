@@ -51,6 +51,10 @@ internal sealed partial class Selector
         // At least two packed operations amortize the x87/MMX state transition.
         int bytes = lanes * width / 8 * 8;
         if (bytes < 16) return false;
+        // In-place dword groups introduce a loop-carried memory dependency.
+        // Native measurements show EMMS outweighs the gain below 64 bytes.
+        if (width == 4 && (destination == left || destination == right)
+            && bytes < 64 && !Target.Current.X86Profile.ThreeDNow) return false;
         for (int offset = 0; offset < bytes; offset += 8)
         {
             Emit(MOp.MmxLoad, MMem.Frame(_m.Frame.SlotOffset(left) + (int)leftStart + offset));

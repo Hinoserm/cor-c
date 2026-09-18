@@ -992,17 +992,17 @@ internal static class Program
         foreach (string mode in new[] { "left", "right", "shifted" })
         {
             (Function function, Builder b) = New(m, "packed_inplace_" + mode, IrType.I32);
-            FrameSlot left = function.NewSlot(40, 8), right = function.NewSlot(40, 8);
+            FrameSlot left = function.NewSlot(72, 8), right = function.NewSlot(72, 8);
             FrameSlot destination = mode == "right" ? right : left;
             int shift = mode == "shifted" ? 1 : 0;
-            int[] a = Enumerable.Range(0, 10).Select(i => unchecked(int.MaxValue - i * 19)).ToArray();
-            int[] c = Enumerable.Range(0, 10).Select(i => i * 97 + 101).ToArray();
-            for (int i = 0; i < 10; i++)
+            int[] a = Enumerable.Range(0, 18).Select(i => unchecked(int.MaxValue - i * 19)).ToArray();
+            int[] c = Enumerable.Range(0, 18).Select(i => i * 97 + 101).ToArray();
+            for (int i = 0; i < 18; i++)
             {
                 b.Store(new SlotOperand(left), I(a[i]), i * 4, 4);
                 b.Store(new SlotOperand(right), I(c[i]), i * 4, 4);
             }
-            for (int i = 0; i < 8; i++)
+            for (int i = 0; i < 16; i++)
             {
                 VReg x = b.Load(IrType.I32, new SlotOperand(left), i * 4, 4, true);
                 VReg y = b.Load(IrType.I32, new SlotOperand(right), i * 4, 4, true);
@@ -1010,7 +1010,7 @@ internal static class Program
                 (mode == "right" ? c : a)[i + shift] = unchecked(a[i] + c[i]);
             }
             VReg okay = b.Const(1, IrType.I32);
-            for (int i = 0; i < 10; i++)
+            for (int i = 0; i < 18; i++)
             {
                 VReg x = b.Load(IrType.I32, new SlotOperand(left), i * 4, 4, true);
                 VReg y = b.Load(IrType.I32, new SlotOperand(right), i * 4, 4, true);

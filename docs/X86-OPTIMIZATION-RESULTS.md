@@ -81,8 +81,24 @@ substantially in these builds, so packed microbenchmark gains must not be
 presented as an SSH throughput or latency improvement.
 
 That result led to the tighter memory-region profitability policy above.
-Re-measuring the final policy and extending recognition into genuinely hot
-application loops remain acceptance work, not completed performance claims.
+After that policy and immutable-array-length propagation, five new paired runs
+measured median X25519 times of 488.411 microseconds scalar and 489.006
+microseconds packed: still no demonstrated gain. ChaCha medians were 379.018
+and 386.014 nanoseconds per block, respectively; run variation precludes a
+speedup claim. All known-answer checks passed with no timed-region collections.
+Packed X25519 emitted code fell from the earlier 67,131 bytes to 62,287 bytes;
+the current scalar control is 62,431 bytes. Both current ChaCha variants emit
+19,941 bytes. These builds precede the new in-place arithmetic extension.
+
+## In-place arithmetic
+
+Exact same-offset frame aliases now support packed arithmetic; shifted aliases
+remain scalar to preserve dependencies between lanes. A 3-million-iteration,
+five-sample XOR benchmark found 32-byte groups slower (1.337 to 2.114 ns),
+64-byte groups approximately even (2.462 to 2.456 ns), and 128-byte groups
+faster (4.597 to 3.469 ns). The selector therefore keeps in-place dword groups
+below 64 bytes scalar on the EMMS path. The FEMMS path remains separately gated
+and correctness-tested, without a native timing claim on this host.
 
 ## Reproduction and remaining acceptance
 
