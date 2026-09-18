@@ -5,7 +5,7 @@
 #   tests/tools/shared-libraries.sh          build build/lib and run them all
 #   tests/tools/shared-libraries.sh 621      run the one whose name matches
 #
-# tests/lang/run.sh compiles every test with the class library's source
+# tests/language/run.sh compiles every test with the class library's source
 # compiled into it. These are the tests numbered 620 and up, compiled
 # `--dynamic` instead: the runtime and the class library are the shared
 # objects in build/lib, the system's ld-linux.so.2 links them at load, and
@@ -20,7 +20,6 @@ set -u
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
-. "$root/tools/fresh-corc.sh"
 corc="${CORC:-$root/compiler/bin/Release/net10.0/corc}"
 filter="${1:-}"
 work="${TMPDIR:-/tmp}/corsac-shared.$$"
@@ -34,7 +33,7 @@ failed_names=""
 ok() { passed=$((passed + 1)); printf 'PASS %s\n' "$1"; }
 bad() { failed=$((failed + 1)); failed_names="$failed_names $1"; printf 'FAIL %s (%s)\n' "$1" "$2"; }
 
-if ! bash "$root/os/build-libs.sh" > "$work/libs.log" 2>&1; then
+if ! bash "$root/tests/integration/build-libraries.sh" > "$work/libs.log" 2>&1; then
     sed 's/^/    /' "$work/libs.log"
     echo "the shared libraries did not build" >&2
     exit 2
@@ -114,7 +113,7 @@ expected_output() {
 }
 
 first=1
-for source in "$root"/tests/lang/6[2-9][0-9]_shared_*.cor; do
+for source in "$root"/tests/language/6[2-9][0-9]_shared_*.cor; do
     [ -e "$source" ] || continue
     name="$(basename "$source" .cor)"
     if [ -n "$filter" ] && [[ "$name" != *"$filter"* ]]; then

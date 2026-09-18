@@ -39,11 +39,14 @@ tasks below track that work; moving files alone does not reduce the working set.
 
 - [x] Specify XML orchestration, nested scope, ordered/parallel execution,
   process/script/test behavior and MSBuild compatibility in BUILD-SYSTEM.md.
-- [ ] Implement manifest discovery, strict validation, nested target resolution,
-  graph planning, task execution, cancellation, bounded parallelism and reports.
-- [ ] Supply cor-c's corsac.build and component directory defaults.
-- [ ] Build the compiler and linker as independent executables. Preserve and
-  document ELF relocatable objects as their intermediate exchange format.
+- [x] Implement the initial host runner: discovery, nested target scope, graph
+  validation, ordered steps, subprocess limits, scripts, timeout/cleanup and
+  JUnit reports. Thirteen focused runner checks passed at the first milestone.
+  Full profile/artifact/resource semantics remain below as separate tasks.
+- [x] Supply cor-c's corsac.build and component directory defaults.
+- [x] Build compiler and linker as independent .NET-hosted executables and
+  document ELF relocatable objects. Compiler -> `.o` -> corlink -> Linux program
+  passed; this does not establish managed file-by-file compilation.
 - [ ] Restore project paths, split source types, and verify the reorganized repo.
 - [ ] Implement native MSBuild-compatible project evaluation and compilation;
   a host dotnet adapter alone does not satisfy this requirement.
@@ -78,6 +81,10 @@ tasks below track that work; moving files alone does not reduce the working set.
 - [x] The first one-type-per-file source split is complete for the IR object
   model and the call-boundary optimizer helpers and passes. Larger frontend,
   IR, and backend groups remain to be split without changing behavior.
+- [x] Split syntax nodes, bound symbols, IR values/functions/blocks, x86 machine
+  IR and ELF records into individually named files. Host compiler and linker
+  build with zero warnings/errors; optimizer, assembler, x86 and linker suites
+  passed through the new runner after this milestone.
 
 ## Demand-loaded declarations, not a whole-project metadata graph
 

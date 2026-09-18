@@ -11,7 +11,7 @@
 # System.Net -- so that a program loads what it uses and nothing else. The
 # exception is the bottom of the stack, and it is an honest one: the runtime
 # is written in COR-C# and the core of the class library is written against
-# the runtime, so `lib/std.cor` and `lib/rt/*.cor` refer to each other and
+# the runtime, so `stdlib/src/System/Core.cor` and `lib/rt/*.cor` refer to each other and
 # cannot be two files. That one is libcorsacrt.so.
 #
 # THE SOURCE LIST IS PART OF THE ABI. Interface method slots are numbered
@@ -19,7 +19,7 @@
 # have been compiled from the same sources in the same order -- which is why
 # each library is given the whole list and marks everything that is not its
 # own `--ref`. The list here and Driver.DefaultLibraries must agree, and
-# tests/lang/run.sh's CORC_LIBS with them.
+# tests/language/run.sh's CORC_LIBS with them.
 #
 # Environment:
 #   CORC   the compiler (default: compiler/bin/Release/net10.0/corc)
@@ -28,9 +28,8 @@
 set -u
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-root="$(cd "$here/.." && pwd)"
+root="$(cd "$here/../.." && pwd)"
 out="${OUT:-$root/build/lib}"
-. "$root/tools/fresh-corc.sh"
 corc="${CORC:-$root/compiler/bin/Release/net10.0/corc}"
 force=0
 verbose=0
@@ -50,12 +49,12 @@ fi
 
 # ---- the sources, in the order every compilation must see them --------------
 
-SOURCES="lib/std.cor lib/rt/runtime.cor lib/rt/gc.cor lib/threading.cor \
-lib/threading-linux.cor lib/sys/linux.cor lib/interop.cor lib/io.cor \
-lib/collections.cor lib/io-streams.cor lib/compression.cor lib/tar.cor \
-lib/time.cor lib/values.cor lib/numerics.cor lib/regex.cor lib/console.cor \
-lib/environment.cor lib/net.cor lib/security.cor lib/signals.cor lib/unix.cor \
-lib/process.cor lib/power.cor"
+SOURCES="stdlib/src/System/Core.cor runtime/src/core/runtime.cor runtime/src/core/gc.cor runtime/src/core/threading.cor \
+runtime/src/platforms/linux/threading.cor runtime/src/platforms/linux/system.cor stdlib/src/System/interop.cor stdlib/src/System/IO/io.cor \
+stdlib/src/System/Collections/Collections.cor stdlib/src/System/IO/io-streams.cor stdlib/src/System/IO/compression.cor stdlib/src/System/IO/tar.cor \
+stdlib/src/System/time.cor stdlib/src/System/values.cor stdlib/src/System/numerics.cor stdlib/src/System/Text/RegularExpressions.cor stdlib/src/System/console.cor \
+stdlib/src/System/environment.cor stdlib/src/System/Net/Net.cor stdlib/src/System/Security/Cryptography/Cryptography.cor stdlib/src/System/signals.cor stdlib/src/System/unix.cor \
+stdlib/src/System/process.cor stdlib/src/System/power.cor"
 
 # ---- what goes where, bottom of the stack first -----------------------------
 #
@@ -64,20 +63,20 @@ lib/process.cor lib/power.cor"
 # list, which is checked after every build.
 
 LIBRARIES="
-libcorsacrt.so|lib/std.cor lib/rt/runtime.cor lib/rt/gc.cor lib/threading.cor lib/threading-linux.cor lib/sys/linux.cor lib/signals.cor
-libSystem.Runtime.InteropServices.so|lib/interop.cor
-libSystem.Security.Cryptography.so|lib/security.cor
-libSystem.Runtime.Extensions.so|lib/time.cor lib/values.cor lib/environment.cor
-libSystem.Runtime.Numerics.so|lib/numerics.cor
-libSystem.Collections.so|lib/collections.cor
-libSystem.Text.RegularExpressions.so|lib/regex.cor
-libSystem.IO.so|lib/io.cor lib/io-streams.cor
-libSystem.IO.Compression.so|lib/compression.cor
-libSystem.Formats.Tar.so|lib/tar.cor
-libSystem.Console.so|lib/console.cor
-libSystem.Net.so|lib/net.cor
-libMono.Posix.so|lib/unix.cor lib/power.cor
-libSystem.Diagnostics.Process.so|lib/process.cor
+libcorsacrt.so|stdlib/src/System/Core.cor runtime/src/core/runtime.cor runtime/src/core/gc.cor runtime/src/core/threading.cor runtime/src/platforms/linux/threading.cor runtime/src/platforms/linux/system.cor stdlib/src/System/signals.cor
+libSystem.Runtime.InteropServices.so|stdlib/src/System/interop.cor
+libSystem.Security.Cryptography.so|stdlib/src/System/Security/Cryptography/Cryptography.cor
+libSystem.Runtime.Extensions.so|stdlib/src/System/time.cor stdlib/src/System/values.cor stdlib/src/System/environment.cor
+libSystem.Runtime.Numerics.so|stdlib/src/System/numerics.cor
+libSystem.Collections.so|stdlib/src/System/Collections/Collections.cor
+libSystem.Text.RegularExpressions.so|stdlib/src/System/Text/RegularExpressions.cor
+libSystem.IO.so|stdlib/src/System/IO/io.cor stdlib/src/System/IO/io-streams.cor
+libSystem.IO.Compression.so|stdlib/src/System/IO/compression.cor
+libSystem.Formats.Tar.so|stdlib/src/System/IO/tar.cor
+libSystem.Console.so|stdlib/src/System/console.cor
+libSystem.Net.so|stdlib/src/System/Net/Net.cor
+libMono.Posix.so|stdlib/src/System/unix.cor stdlib/src/System/power.cor
+libSystem.Diagnostics.Process.so|stdlib/src/System/process.cor
 "
 
 mkdir -p "$out"
