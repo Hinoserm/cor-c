@@ -67,6 +67,11 @@ public static class SourceIndexTests
             "generic method implementation omitted");
         Require(templates.Types.Single(type => type.Name == "Box").Members.OfType<MethodDecl>().Single().Body!.Statements.Count == 1,
             "generic type implementation omitted");
+        string conditional = Path.Combine(work, "Conditional.cor");
+        File.WriteAllText(conditional, "#if FIRST && SECOND\nclass Enabled { }\n#endif\n");
+        IndexCommand.Run(new[] { "--assembly", "Conditional", "--define", "FIRST;SECOND", conditional, "-o", path });
+        using (DeclarationIndex index = new(path))
+            Require(index.WithPrefix("T:").Count() == 1, "index command did not split project conditional symbols");
         Console.WriteLine("  source declarations: scopes, partials, nested arity, lazy bodies, fingerprints and body omission passed");
     }
 

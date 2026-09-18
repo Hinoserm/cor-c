@@ -19,7 +19,9 @@ public static class IndexCommand
             {
                 case "-o": output = Value(); break;
                 case "--assembly": assembly = Value(); break;
-                case "-D": case "--define": symbols.Add(Value()); break;
+                case "-D": case "--define":
+                    symbols.AddRange(Value().Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries));
+                    break;
                 default:
                     if (args[i].StartsWith('-')) throw new ArgumentException("Unknown index option: " + args[i]);
                     paths.Add(args[i]); break;

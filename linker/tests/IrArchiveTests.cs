@@ -36,6 +36,7 @@ public static class IrArchiveTests
         long allocated = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
         Check(allocated < 1024 * 1024 && largeView.Entries.Count == 1,
             "Opening IR summaries copied payload bytes: " + allocated);
+        Console.WriteLine("  IR summary view: 4194304 payload bytes, " + allocated + " bytes allocated while opening");
         source.Section(".text").Bytes[0] = 0x90;
         Reject(() => IrArchive.Read(source));
         source = Make("function", true, Array.Empty<string>()); source.Section(IrArchive.SectionName).Bytes[4] = 99;
