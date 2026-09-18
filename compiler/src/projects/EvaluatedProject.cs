@@ -12,4 +12,5 @@ public sealed class EvaluatedProject
     public required string[] Defines { get; init; }
     public required string Evaluation { get; init; }
     public bool WarningsAsErrors { get; init; }
+    public IReadOnlyDictionary<string, string> Properties { get; init; } = new Dictionary<string, string>();
 }

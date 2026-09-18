@@ -2,7 +2,7 @@ namespace Corsac.Projects;
 
 public static class ProjectGraph
 {
-    public static IReadOnlyList<EvaluatedProject> Evaluate(string root, string configuration, string? framework)
+    public static IReadOnlyList<EvaluatedProject> Evaluate(string root, string configuration, string? framework, bool managed = false)
     {
         Dictionary<string, EvaluatedProject> complete = new(StringComparer.Ordinal);
         HashSet<string> active = new(StringComparer.Ordinal);
@@ -12,7 +12,7 @@ public static class ProjectGraph
             path = Path.GetFullPath(path);
             if (complete.ContainsKey(path)) return;
             if (!active.Add(path)) throw new InvalidDataException("ProjectReference cycle: " + path);
-            EvaluatedProject project = ProjectEvaluator.Evaluate(path, configuration, framework);
+            EvaluatedProject project = ProjectEvaluator.Evaluate(path, configuration, framework, managed);
             foreach (string reference in project.References) Visit(reference);
             active.Remove(path); complete.Add(path, project); order.Add(project);
         }

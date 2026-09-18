@@ -1,5 +1,18 @@
 # CORSAC build system
 
+## Hosted managed components without MSBuild
+
+`<Compile Project="..." Toolchain="managed" />` uses the same owned SDK-project
+evaluator as the native compiler, then invokes the installed SDK's C# compiler
+directly. It does not invoke MSBuild. This permits host build utilities to use
+standard C# and .NET before native self-hosting is complete. `corc` remains the
+native code-generation route; `dotnet` remains the MSBuild bootstrap-only route.
+Managed outputs are under `bin/managed/<Configuration>/<TargetFramework>/`.
+Project references are built first; framework references, conditional symbols,
+implicit global usings, startup class, nullable, unsafe, overflow and optimization
+settings are passed to the managed compiler. Unsupported packages/items still
+fail explicitly. Native project support is not implied by managed acceptance.
+
 ## Contract and implementation status
 
 `build` is an installed executable which discovers `corsac.build` from the

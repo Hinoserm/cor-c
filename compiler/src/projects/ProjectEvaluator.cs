@@ -15,9 +15,11 @@ public sealed class ProjectEvaluator
     private readonly List<string> inputs = new();
     private readonly string project;
     private readonly string root;
+    private readonly bool managed;
 
-    private ProjectEvaluator(string path, string configuration, string? framework)
+    private ProjectEvaluator(string path, string configuration, string? framework, bool managed)
     {
+        this.managed = managed;
         project = Path.GetFullPath(path); root = Path.GetDirectoryName(project)!;
         properties["Configuration"] = configuration; globals.Add("Configuration");
         properties["Platform"] = "AnyCPU";
@@ -33,8 +35,8 @@ public sealed class ProjectEvaluator
         if (framework is not null) { properties["TargetFramework"] = framework; globals.Add("TargetFramework"); }
     }
 
-    public static EvaluatedProject Evaluate(string path, string configuration, string? framework)
-        => new ProjectEvaluator(path, configuration, framework).Run();
+    public static EvaluatedProject Evaluate(string path, string configuration, string? framework, bool managed = false)
+        => new ProjectEvaluator(path, configuration, framework, managed).Run();
 
     private EvaluatedProject Run()
     {
@@ -67,9 +69,9 @@ public sealed class ProjectEvaluator
         string assembly = Get("AssemblyName");
         if (assembly.Length == 0 || assembly.IndexOfAny(new[] { '/', '\\' }) >= 0 || assembly is "." or "..")
             throw new InvalidDataException("AssemblyName must be a simple output name");
-        if (Get("CheckForOverflowUnderflow").Equals("true", StringComparison.OrdinalIgnoreCase))
+        if (!managed && Get("CheckForOverflowUnderflow").Equals("true", StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("Project-wide checked arithmetic is not yet implemented");
-        if (items.Any(item => item.Type == "Using") || Get("ImplicitUsings") is "enable" or "true")
+        if (items.Any(item => item.Type == "Using") || (!managed && Get("ImplicitUsings") is "enable" or "true"))
             throw new InvalidDataException("Generated project-wide using directives are not yet connected to indexed compilation");
         string[] sources = items.Where(item => item.Type == "Compile").Select(item => item.Include).ToArray();
         if (sources.Distinct(StringComparer.Ordinal).Count() != sources.Length) throw new InvalidDataException("Duplicate Compile items in " + project);
@@ -86,6 +88,7 @@ public sealed class ProjectEvaluator
             Framework = framework, StartupObject = Get("StartupObject"), Sources = sources,
             References = items.Where(item => item.Type == "ProjectReference").Select(item => item.Include).ToArray(),
             Defines = defines.Distinct(StringComparer.Ordinal).ToArray(), WarningsAsErrors = Get("TreatWarningsAsErrors") == "true",
+            Properties = new Dictionary<string, string>(properties, StringComparer.OrdinalIgnoreCase),
             Evaluation = string.Join("\n", inputs.Select(path => path + ":" + File.GetLastWriteTimeUtc(path).Ticks)) };
     }
 

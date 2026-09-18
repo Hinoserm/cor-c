@@ -34,7 +34,7 @@ public sealed class TaskExecutor
                 if (!File.Exists(project)) BuildManifest.Fail(task, "Project does not exist: " + project);
                 if (task.HasElements) BuildManifest.Fail(task, "Unexpected child");
                 string toolchain = manifest.Expand((string?)task.Attribute("Toolchain") ?? options.Toolchain);
-                if (toolchain is not ("dotnet" or "corc" or "active")) BuildManifest.Fail(task, "Unknown project toolchain: " + toolchain);
+                if (toolchain is not ("dotnet" or "managed" or "corc" or "active")) BuildManifest.Fail(task, "Unknown project toolchain: " + toolchain);
                 if (toolchain == "dotnet" && (!task.Ancestors("Target").Any(target => (string?)target.Attribute("Name") == "bootstrap")
                     || !manifest.Components.TryGetValue("build-tool", out string? bootstrapProject) || project != bootstrapProject))
                     BuildManifest.Fail(task, "MSBuild is permitted only to bootstrap the build-tool component");
@@ -88,6 +88,11 @@ public sealed class TaskExecutor
 
     public async Task Execute(BuildTarget target, XElement task, CancellationToken cancel)
     {
+        if (task.Name == "Compile" && manifest.Expand((string?)task.Attribute("Toolchain") ?? options.Toolchain) == "managed")
+        {
+            await ManagedProjectBuild.Run(Project(task), manifest.Expand((string?)task.Attribute("Configuration") ?? "$(Configuration)"), cancel);
+            return;
+        }
         if (task.Name == "Message") { Console.WriteLine(manifest.Expand(BuildManifest.Required(task, "Text"))); return; }
         if (task.Name == "Error") throw new BuildException(manifest.Expand(BuildManifest.Required(task, "Text")));
         List<string> args = task.Elements("Argument").Select(e => manifest.Expand(BuildManifest.Required(e, "Value"))).ToList();

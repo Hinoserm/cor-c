@@ -10,5 +10,11 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="src/**/*.cs" />
+    <Compile Include="../../compiler/src/projects/EvaluatedProject.cs" />
+    <Compile Include="../../compiler/src/projects/ProjectEvaluator.cs" />
+    <Compile Include="../../compiler/src/projects/ProjectGraph.cs" />
+    <Compile Include="../../compiler/src/projects/ProjectCondition.cs" />
+    <Compile Include="../../compiler/src/projects/ProjectGlob.cs" />
+    <Compile Include="../../compiler/src/projects/ProjectItem.cs" />
   </ItemGroup>
 </Project>

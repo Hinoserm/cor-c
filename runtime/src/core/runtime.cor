@@ -372,6 +372,11 @@ static class Runtime
         return GcRoots.Register(start, end);
     }
 
+    public static bool UnregisterRoots(long start, long end)
+    {
+        return GcRoots.Unregister(start, end);
+    }
+
     // ---- the images this process is made of -------------------------------
     //
     // A program is its own image and one shared object per library, and the

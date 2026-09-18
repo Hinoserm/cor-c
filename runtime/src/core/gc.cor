@@ -2072,7 +2072,8 @@ static class GcRoots
 
         while (i < _extraCount)
         {
-            Gc.ScanRange(Sys.Peek(_extra + i * 8), Sys.Peek(_extra + i * 8 + 4));
+            long start = Sys.Peek(_extra + i * 8);
+            if (start != 0) Gc.ScanRange(start, Sys.Peek(_extra + i * 8 + 4));
             i = i + 1;
         }
     }
@@ -2118,6 +2119,13 @@ static class GcRoots
             }
         }
 
+        for (long i = 0; i < _extraCount; i++)
+        {
+            if (Sys.Peek(_extra + i * 8) != 0) continue;
+            Sys.Poke(_extra + i * 8 + 4, end);
+            Sys.Poke(_extra + i * 8, start);
+            return true;
+        }
         if (_extraCount >= ExtraMax)
         {
             return false;
@@ -2126,6 +2134,20 @@ static class GcRoots
         Sys.Poke(_extra + _extraCount * 8 + 4, end);
         _extraCount = _extraCount + 1;
         return true;
+    }
+
+    // The caller serializes root registration/removal against collection.
+    public static bool Unregister(long start, long end)
+    {
+        for (long i = 0; i < _extraCount; i++)
+        {
+            long at = _extra + i * 8;
+            if (start == 0 || Sys.Peek(at) != start || Sys.Peek(at + 4) != end) continue;
+            Sys.Poke(at, 0);
+            Sys.Poke(at + 4, 0);
+            return true;
+        }
+        return false;
     }
 }
 
