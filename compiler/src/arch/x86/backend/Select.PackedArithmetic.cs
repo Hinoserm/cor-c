@@ -21,9 +21,13 @@ internal sealed partial class Selector
             return false;
         FrameSlot? left = FrameStorage(firstLoad.Operands[0]), right = FrameStorage(instructions[start + 1].Operands[0]),
             destination = FrameStorage(firstStore.Operands[0]);
-        if (left is null || right is null || destination is null || destination == left || destination == right
+        if (left is null || right is null || destination is null
             || left.Align < 4 || right.Align < 4 || destination.Align < 4) return false;
         long leftStart = firstLoad.Offset, rightStart = instructions[start + 1].Offset, destStart = firstStore.Offset;
+        // Exact in-place lanes are independent. Shifted overlap is not: scalar
+        // stores can feed subsequent loads, unlike an eight-byte packed load.
+        if ((destination == left && destStart != leftStart)
+            || (destination == right && destStart != rightStart)) return false;
         if (leftStart < 0 || rightStart < 0 || destStart < 0 || leftStart > left.Bytes || rightStart > right.Bytes || destStart > destination.Bytes
             || (leftStart | rightStart | destStart) % 4 != 0) return false;
         bool Single(Instr instruction) => instruction.Dest is { Type: IrType.I32 } value

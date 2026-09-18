@@ -83,6 +83,7 @@ internal static class Program
         SmallFills(m);
         PackedFrames(m);
         PackedArithmeticFrames(m);
+        PackedInPlaceFrames(m);
         PackedRoundingFrames(m);
         PackedShiftFrames(m);
         PackedConversionFrames(m);
@@ -122,6 +123,9 @@ internal static class Program
         Check(FunctionAsm(asm, "packed_frames").Contains("femms") == (packed && Target.X86.X86Profile.ThreeDNow), "packed frame exit respects 3DNow selection");
         Check(FunctionAsm(asm, "packed_arithmetic").Contains("paddb") == packed, "adjacent byte arithmetic is packed automatically");
         Check(FunctionAsm(asm, "packed_arithmetic").Contains("pmullw") == packed, "adjacent low-word products are packed automatically");
+        Check(FunctionAsm(asm, "packed_inplace_left").Contains("paddd") == packed, "exact left in-place arithmetic is packed");
+        Check(FunctionAsm(asm, "packed_inplace_right").Contains("paddd") == packed, "exact right in-place arithmetic is packed");
+        Check(!FunctionAsm(asm, "packed_inplace_shifted").Contains("paddd"), "shifted alias dependency stays scalar");
         Check(FunctionAsm(asm, "packed_rounding").Contains("pmulhw") == packed, "signed high-word products are packed automatically");
         Check(FunctionAsm(asm, "packed_rounding").Contains("pavgusb") == (packed && Target.X86.X86Profile.ThreeDNow), "rounded byte averages use 3DNow when enabled");
         Check(FunctionAsm(asm, "packed_rounding").Contains("pmulhrw") == (packed && Target.X86.X86Profile.ThreeDNow), "rounded signed high-word products use 3DNow when enabled");
@@ -983,6 +987,40 @@ internal static class Program
         b.Ret(R(okay));
     }
 
+    private static void PackedInPlaceFrames(Module m)
+    {
+        foreach (string mode in new[] { "left", "right", "shifted" })
+        {
+            (Function function, Builder b) = New(m, "packed_inplace_" + mode, IrType.I32);
+            FrameSlot left = function.NewSlot(40, 8), right = function.NewSlot(40, 8);
+            FrameSlot destination = mode == "right" ? right : left;
+            int shift = mode == "shifted" ? 1 : 0;
+            int[] a = Enumerable.Range(0, 10).Select(i => unchecked(int.MaxValue - i * 19)).ToArray();
+            int[] c = Enumerable.Range(0, 10).Select(i => i * 97 + 101).ToArray();
+            for (int i = 0; i < 10; i++)
+            {
+                b.Store(new SlotOperand(left), I(a[i]), i * 4, 4);
+                b.Store(new SlotOperand(right), I(c[i]), i * 4, 4);
+            }
+            for (int i = 0; i < 8; i++)
+            {
+                VReg x = b.Load(IrType.I32, new SlotOperand(left), i * 4, 4, true);
+                VReg y = b.Load(IrType.I32, new SlotOperand(right), i * 4, 4, true);
+                b.Store(new SlotOperand(destination), R(b.Binary(Opcode.Add, x, y)), (i + shift) * 4, 4);
+                (mode == "right" ? c : a)[i + shift] = unchecked(a[i] + c[i]);
+            }
+            VReg okay = b.Const(1, IrType.I32);
+            for (int i = 0; i < 10; i++)
+            {
+                VReg x = b.Load(IrType.I32, new SlotOperand(left), i * 4, 4, true);
+                VReg y = b.Load(IrType.I32, new SlotOperand(right), i * 4, 4, true);
+                okay = b.Binary(Opcode.And, okay, b.Binary(Opcode.Eq, x, a[i]));
+                okay = b.Binary(Opcode.And, okay, b.Binary(Opcode.Eq, y, c[i]));
+            }
+            b.Ret(R(okay));
+        }
+    }
+
     private static void PackedRoundingFrames(Module m)
     {
         (Function function, Builder b) = New(m, "packed_rounding", IrType.I32);
@@ -1476,6 +1514,9 @@ internal static class Program
         Expect(b.Call("small_fills", IrType.I32)!, I(1));
         Expect(b.Call("packed_frames", IrType.I32)!, I(1));
         Expect(b.Call("packed_arithmetic", IrType.I32)!, I(1));
+        Expect(b.Call("packed_inplace_left", IrType.I32)!, I(1));
+        Expect(b.Call("packed_inplace_right", IrType.I32)!, I(1));
+        Expect(b.Call("packed_inplace_shifted", IrType.I32)!, I(1));
         Expect(b.Call("packed_rounding", IrType.I32)!, I(1));
         Expect(b.Call("packed_shifts", IrType.I32)!, I(1));
         Expect(b.Call("packed_conversions", IrType.I32)!, I(1));

@@ -30,6 +30,8 @@ per-file process scheduling work is paused separately.
     word-to-float conversion and range-proven floating arithmetic/conversion.
   - [x] Preserve x87 state boundaries and prohibit implicit packed-register use
     in freestanding code without hosted state ownership.
+  - [x] Execute ordinary array source with the complete statically linked runtime
+    for 486, Pentium, Pentium-MMX, excluded MMX, K6-2 and K6-plus profiles.
   - [ ] Broaden patterns beyond current bounded frame regions, complete missing
     saturation/comparison/packing/reduction families, and validate source-level
     uptake. Do not substitute approximate reciprocal instructions for exact
@@ -50,7 +52,7 @@ per-file process scheduling work is paused separately.
   CPU profiles and MMX/3DNow encodings are implemented; 627 encoding/profile
   checks and seven QEMU TCG execution checks pass, including x87, MMX/3DNow,
   debug registers, 386 bit operations and 486 atomics/cache instructions.
-  Seven backend configurations execute generated programs; native packed
+  Nine backend configurations execute generated programs; native packed
   benchmarks and real X25519/ChaCha workloads have run. Broader coverage and
   hardware-specific profitability remain unfinished; see docs/X86-OPTIMIZATION-RESULTS.md.
 - [x] Match current .NET saturating float-to-integer conversions, including NaN,

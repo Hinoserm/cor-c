@@ -31,6 +31,16 @@ static class PackedArrays
         result[7] = left[7] + right[7];
         for (int i = 0; i < result.Length; i++)
             if (result[i] != left[i] + right[i]) return 1;
+        result[0] += left[0];
+        result[1] += left[1];
+        result[2] += left[2];
+        result[3] += left[3];
+        result[4] += left[4];
+        result[5] += left[5];
+        result[6] += left[6];
+        result[7] += left[7];
+        for (int i = 0; i < result.Length; i++)
+            if (result[i] != left[i] + right[i] + left[i]) return 2;
         return 0;
     }
 }

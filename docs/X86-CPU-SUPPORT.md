@@ -69,6 +69,10 @@ instruction is already selected automatically.
   where MMX is enabled. It includes byte swaps, buffer boundaries, wrapping arithmetic,
   shift counts/sign extension, dot products, signed zero, and saturating casts.
   These native-host checks do not prove an entire executable is 386-safe.
+- `sh tests/integration/x86-packed-source.sh` compiles ordinary array source,
+  verifies packed instruction selection/exclusion, and executes six CPU
+  profiles with a statically compiled runtime. Static linking avoids an
+  unrelated host glibc loader that requires CMOV on this development machine.
 
 Run the focused instruction and backend milestones from the repository root:
 
