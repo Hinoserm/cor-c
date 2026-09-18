@@ -566,6 +566,20 @@ internal sealed class Encoder
                     throw new InvalidOperationException("MMX memory move requires an enabled MMX profile and memory");
                 B(0x0f, i.Op == MOp.MmxLoad ? (byte)0x6f : (byte)0x7f); ModRM(0, i.Operands[0]);
                 break;
+            case MOp.MmxLoadD:
+                if (!Target.Current.X86Profile.Mmx || i.Operands.Count != 1 || i.Operands[0] is not MMem)
+                    throw new InvalidOperationException("MOVD requires MMX and memory");
+                B(0x0f, 0x6e); ModRM(0, i.Operands[0]); break;
+            case MOp.MmxDuplicateLowWords:
+                if (!Target.Current.X86Profile.Mmx) throw new InvalidOperationException("MMX is disabled");
+                B(0x0f, 0x61, 0xc0); break;
+            case MOp.MmxWidenUnsignedWords:
+                if (!Target.Current.X86Profile.Mmx) throw new InvalidOperationException("MMX is disabled");
+                B(0x0f, 0xef, 0xc9, 0x0f, 0x61, 0xc1); break;
+            case MOp.ThreeDNowIntToFloat: case MOp.ThreeDNowShortToFloat:
+                if (!Target.Current.X86Profile.ThreeDNow || (i.Op == MOp.ThreeDNowShortToFloat && !Target.Current.X86Profile.ThreeDNowExtended))
+                    throw new InvalidOperationException("Packed conversion requires the selected 3DNow extension");
+                B(0x0f, 0x0f, 0xc0, i.Op == MOp.ThreeDNowIntToFloat ? (byte)0x0d : (byte)0x0c); break;
             case MOp.MmxZero:
                 if (!Target.Current.X86Profile.Mmx) throw new InvalidOperationException("MMX is disabled");
                 B(0x0f, 0xef, 0xc0); break;

@@ -23,6 +23,11 @@
       <Argument Value="--cpu=k6-3+" />
       <Argument Value="--qemu-cpu=athlon" />
     </Test>
+    <Test Name="backend-k6-base-tcg" Executable="dotnet">
+      <Argument Value="bin/managed/Release/net10.0/x86tests.dll" />
+      <Argument Value="--cpu=k6-2" />
+      <Argument Value="--qemu-cpu=athlon" />
+    </Test>
     <Test Name="backend-kernel-state-ownership" Executable="dotnet">
       <Argument Value="bin/managed/Release/net10.0/x86tests.dll" />
       <Argument Value="--cpu=k6-3+" />

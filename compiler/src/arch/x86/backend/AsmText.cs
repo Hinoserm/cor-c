@@ -111,6 +111,16 @@ internal static class AsmText
                 yield return "movq " + Op(i.Operands[0], 8, true) + ", mm0"; yield break;
             case MOp.MmxZero:
                 yield return "pxor mm0, mm0"; yield break;
+            case MOp.MmxLoadD:
+                yield return "movd mm0, " + Op(i.Operands[0], 4, true); yield break;
+            case MOp.MmxDuplicateLowWords:
+                yield return "punpcklwd mm0, mm0"; yield break;
+            case MOp.MmxWidenUnsignedWords:
+                yield return "pxor mm1, mm1"; yield return "punpcklwd mm0, mm1"; yield break;
+            case MOp.ThreeDNowIntToFloat:
+                yield return "pi2fd mm0, mm0"; yield break;
+            case MOp.ThreeDNowShortToFloat:
+                yield return "pi2fw mm0, mm0"; yield break;
             case MOp.MmxShlW: case MOp.MmxShlD: case MOp.MmxShrW: case MOp.MmxShrD: case MOp.MmxSarW: case MOp.MmxSarD:
                 string shift = i.Op switch { MOp.MmxShlW => "psllw", MOp.MmxShlD => "pslld", MOp.MmxShrW => "psrlw",
                     MOp.MmxShrD => "psrld", MOp.MmxSarW => "psraw", _ => "psrad" };
