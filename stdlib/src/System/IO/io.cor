@@ -355,6 +355,11 @@ class MemoryStream : Stream
 /// .NET's TextWriter: characters out. UTF-8 here, as .NET's default is.
 abstract class TextWriter : IDisposable
 {
+    public virtual void Close()
+    {
+        Dispose();
+    }
+
     public abstract void Write(char value);
 
     public virtual void Write(object? value)
@@ -404,6 +409,11 @@ abstract class TextWriter : IDisposable
 
 abstract class TextReader : IDisposable
 {
+    public virtual void Close()
+    {
+        Dispose();
+    }
+
     public abstract int Read();
 
     public virtual int Peek()
