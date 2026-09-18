@@ -63,9 +63,10 @@ tasks below track that work; moving files alone does not reduce the working set.
 
 ## Compatibility defects
 
-- [ ] Verify the standard Path.Combine params overload and fixed-overload null
+- [x] Verify the standard Path.Combine params overload and fixed-overload null
   validation. This repairs the first post-extraction native bootstrap failure
   (five/six path segments); the implementation avoids intermediate join strings.
+  The path_combine_params language fixture passed in the 271-case milestone.
 - [ ] Audit and repair compatibility gaps as they are found, record them as
   open defects, and add standard-behavior regression coverage. A feature
   with a known compatibility failure must not be marked complete merely
@@ -168,8 +169,18 @@ tasks below track that work; moving files alone does not reduce the working set.
   startup object as flat output and biased physical/virtual ELF. Verify the
   convenience flat path retains --with inputs and rejects mixed ABI contracts.
   This verifies image layout/linkage, not booting CORSAC on hardware or a VM.
-- [ ] Run and classify the post-extraction language suite at this milestone;
-  distinguish compiler regressions from OS-only fixtures and moved paths.
+- [x] Run and classify the post-extraction language suite at this milestone.
+  At b6def5e: 262 passed, 9 failed, 271 total. Five failures require OS-project
+  helpers/kernel sources; 607_namespaces uses a stale moved path; two LINQ
+  fixtures expose ignored lambda-result unification failure; collection-release
+  coverage needs the missing standard Thread(Action)/Start() instance API.
+  Logs: build/logs/20260918-122403-d76a02cc819a41bf8ea70255984d19ff/.
+- [ ] Verify the lambda-result overload rejection and corrected namespace
+  fixture path. Do not rewrite valid LINQ callers to avoid overload resolution.
+- [ ] Implement the standard Thread constructor and instance Start API needed
+  by optimizer_collection_release; retain its original test expectations.
+- [ ] Separate OS-project integration fixtures from compiler language acceptance
+  without deleting their coverage or hiding failed external prerequisites.
 - [ ] Extend the existing object writer/linker; do not build a second linker.
 - [ ] Link independently compiled units without duplicate runtime/type identities
   or silently accepting conflicting definitions.

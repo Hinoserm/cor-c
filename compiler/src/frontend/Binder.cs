@@ -4743,7 +4743,10 @@ public sealed partial class Binder
                 Type gives = Substitute(Invoked(m.Params[i].Type)?.Returns ?? Type.Error,
                                         Applied(m.Params[i].Type));
 
-                Unify(m, gives, made, bound);
+                // A concrete delegate result is a constraint too. Ignoring
+                // failure keeps (for example) the int-returning Sum overload
+                // eligible for a lambda whose result is long or double.
+                if (!Unify(m, gives, made, bound)) return false;
             }
         }
 

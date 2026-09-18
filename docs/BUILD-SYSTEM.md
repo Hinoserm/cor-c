@@ -13,10 +13,11 @@ does not imply that its executor is implemented.
 The first implementation checkpoint provides a host .NET runner: discovery,
 directory defaults, nested targets, prerequisites/ordered steps, cycle checks,
 simple properties, Compile through the explicit dotnet provider, Exec, Script,
-Test, Message, Error and Finally. It limits simultaneous subprocesses, retains
-stdout/stderr logs and writes JUnit test reports. Imports, profiles, native
-project evaluation, source fetching/locks, artifact references, resource budgets
-beyond a subprocess count, and bootstrap activation remain implementation work.
+Test, Message, Error and Finally. It shares a logical-CPU worker budget across
+subprocesses and cooperating tools, supports timestamp-based declared file
+tasks, retains stdout/stderr logs and writes JUnit test reports. Imports,
+profiles, native project evaluation, source fetching/locks, artifact references,
+memory/resource estimates and bootstrap activation remain implementation work.
 The repository's bootstrap/native target deliberately fails with this status;
 building a host seed must never falsely activate a native toolchain.
 

@@ -1,5 +1,5 @@
 // test: namespaces
-// sources: tests/lang/support/607_ir.cor tests/lang/support/607_ast.cor tests/lang/support/607_helper.cor
+// sources: tests/language/support/607_ir.cor tests/language/support/607_ast.cor tests/language/support/607_helper.cor
 // expect-exit: 0
 // expect-output:
 // aliased ir 3
