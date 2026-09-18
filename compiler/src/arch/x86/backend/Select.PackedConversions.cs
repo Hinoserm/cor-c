@@ -4,6 +4,16 @@ namespace Corsac.Lang.X86;
 
 internal sealed partial class Selector
 {
+    private void ConvertPackedWords(bool signed)
+    {
+        if (signed)
+        {
+            Emit(MOp.MmxDuplicateLowWords);
+            if (Target.Current.X86Profile.ThreeDNowExtended) Emit(MOp.ThreeDNowShortToFloat);
+            else { Emit(MOp.MmxSarD, Imm(16)); Emit(MOp.ThreeDNowIntToFloat); }
+        }
+        else { Emit(MOp.MmxWidenUnsignedWords); Emit(MOp.ThreeDNowIntToFloat); }
+    }
     private bool TryPackedConversions(List<Instr> instructions, int start, out int consumed)
     {
         consumed = 0;
@@ -39,13 +49,7 @@ internal sealed partial class Selector
         for (int lane = 0; lane < lanes; lane += 2)
         {
             Emit(MOp.MmxLoadD, MMem.Frame(_m.Frame.SlotOffset(source) + (int)srcStart + lane * 2));
-            if (first.Signed)
-            {
-                Emit(MOp.MmxDuplicateLowWords);
-                if (Target.Current.X86Profile.ThreeDNowExtended) Emit(MOp.ThreeDNowShortToFloat);
-                else { Emit(MOp.MmxSarD, Imm(16)); Emit(MOp.ThreeDNowIntToFloat); }
-            }
-            else { Emit(MOp.MmxWidenUnsignedWords); Emit(MOp.ThreeDNowIntToFloat); }
+            ConvertPackedWords(first.Signed);
             Emit(MOp.MmxStore, MMem.Frame(_m.Frame.SlotOffset(destination) + (int)destStart + lane * 4));
         }
         EndMmx(); consumed = lanes * 3; return true;

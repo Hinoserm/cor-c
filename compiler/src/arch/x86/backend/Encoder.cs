@@ -580,6 +580,14 @@ internal sealed class Encoder
                 if (!Target.Current.X86Profile.ThreeDNow || (i.Op == MOp.ThreeDNowShortToFloat && !Target.Current.X86Profile.ThreeDNowExtended))
                     throw new InvalidOperationException("Packed conversion requires the selected 3DNow extension");
                 B(0x0f, 0x0f, 0xc0, i.Op == MOp.ThreeDNowIntToFloat ? (byte)0x0d : (byte)0x0c); break;
+            case MOp.MmxSaveToTwo:
+                if (!Target.Current.X86Profile.Mmx) throw new InvalidOperationException("MMX is disabled");
+                B(0x0f, 0x6f, 0xd0); break;
+            case MOp.ThreeDNowAddFromTwo: case MOp.ThreeDNowSubFromTwo: case MOp.ThreeDNowMulFromTwo: case MOp.ThreeDNowFloatToInt:
+                if (!Target.Current.X86Profile.ThreeDNow) throw new InvalidOperationException("3DNow is disabled");
+                B(0x0f, 0x0f, i.Op == MOp.ThreeDNowFloatToInt ? (byte)0xc0 : (byte)0xc2,
+                    i.Op switch { MOp.ThreeDNowAddFromTwo => (byte)0x9e, MOp.ThreeDNowSubFromTwo => (byte)0xaa,
+                        MOp.ThreeDNowMulFromTwo => (byte)0xb4, _ => (byte)0x1d }); break;
             case MOp.MmxZero:
                 if (!Target.Current.X86Profile.Mmx) throw new InvalidOperationException("MMX is disabled");
                 B(0x0f, 0xef, 0xc0); break;

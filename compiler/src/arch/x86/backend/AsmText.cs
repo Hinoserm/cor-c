@@ -121,6 +121,16 @@ internal static class AsmText
                 yield return "pi2fd mm0, mm0"; yield break;
             case MOp.ThreeDNowShortToFloat:
                 yield return "pi2fw mm0, mm0"; yield break;
+            case MOp.MmxSaveToTwo:
+                yield return "movq mm2, mm0"; yield break;
+            case MOp.ThreeDNowAddFromTwo:
+                yield return "pfadd mm0, mm2"; yield break;
+            case MOp.ThreeDNowSubFromTwo:
+                yield return "pfsubr mm0, mm2"; yield break;
+            case MOp.ThreeDNowMulFromTwo:
+                yield return "pfmul mm0, mm2"; yield break;
+            case MOp.ThreeDNowFloatToInt:
+                yield return "pf2id mm0, mm0"; yield break;
             case MOp.MmxShlW: case MOp.MmxShlD: case MOp.MmxShrW: case MOp.MmxShrD: case MOp.MmxSarW: case MOp.MmxSarD:
                 string shift = i.Op switch { MOp.MmxShlW => "psllw", MOp.MmxShlD => "pslld", MOp.MmxShrW => "psrlw",
                     MOp.MmxShrD => "psrld", MOp.MmxSarW => "psraw", _ => "psrad" };

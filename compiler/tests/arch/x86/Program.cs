@@ -85,6 +85,7 @@ internal static class Program
         PackedRoundingFrames(m);
         PackedShiftFrames(m);
         PackedConversionFrames(m);
+        PackedFloatArithmeticFrames(m);
         ByteSwaps(m);
         Exit(m);
         UDiv64(m);
@@ -125,6 +126,8 @@ internal static class Program
             Check(FunctionAsm(asm, "packed_shifts").Contains(mnemonic) == packed, mnemonic + " selected with correct profile");
         Check(FunctionAsm(asm, "packed_conversions").Contains("pi2fd") == (packed && Target.X86.X86Profile.ThreeDNow), "exact word-to-float conversions use PI2FD");
         Check(FunctionAsm(asm, "packed_conversions").Contains("pi2fw") == (packed && Target.X86.X86Profile.ThreeDNowExtended), "signed word conversion uses plus extension only when enabled");
+        foreach (string mnemonic in new[] { "pfadd", "pfsubr", "pfmul", "pf2id" })
+            Check(FunctionAsm(asm, "packed_float_math").Contains(mnemonic) == (packed && Target.X86.X86Profile.ThreeDNow), mnemonic + " selected only with proven floating range");
         File.WriteAllText(Path.Combine(outDir, "tests.asm"), asm);
         Console.WriteLine(asm);
 
@@ -1065,6 +1068,45 @@ internal static class Program
         b.Ret(R(okay));
     }
 
+    private static void PackedFloatArithmeticFrames(Module m)
+    {
+        (Function function, Builder b) = New(m, "packed_float_math", IrType.I32);
+        FrameSlot left = function.NewSlot(32, 8), right = function.NewSlot(32, 8), destination = function.NewSlot(64, 8);
+        VReg okay = b.Const(1, IrType.I32);
+        int[] values = [0, -1, 1, 32767, -32768, 65535, 65535, 255, 128, 127, 0x7007, 0x7ffe, 0x5321, 0xec22, 2, -2];
+        foreach (Opcode operation in new[] { Opcode.FAdd, Opcode.FSub, Opcode.FMul })
+        foreach (bool leftSigned in new[] { false, true })
+        foreach (bool rightSigned in new[] { false, true })
+        foreach (bool integerResult in new[] { false, true })
+        {
+            for (int lane = 0; lane < values.Length; lane++)
+            {
+                b.Store(new SlotOperand(left), I(values[lane]), lane * 2, 2);
+                b.Store(new SlotOperand(right), I(values[(lane + 1) % values.Length]), lane * 2, 2);
+            }
+            for (int lane = 0; lane < values.Length; lane++)
+            {
+                VReg a = b.Load(IrType.I32, new SlotOperand(left), lane * 2, 2, leftSigned);
+                VReg af = b.Unary(Opcode.IToF, R(a), IrType.F32);
+                VReg c = b.Load(IrType.I32, new SlotOperand(right), lane * 2, 2, rightSigned);
+                VReg cf = b.Unary(Opcode.IToF, R(c), IrType.F32);
+                VReg result = b.Binary(operation, af, cf);
+                if (integerResult) result = b.Unary(Opcode.FToI, R(result), IrType.I32);
+                b.Store(new SlotOperand(destination), R(result), lane * 4, 4);
+            }
+            for (int lane = 0; lane < values.Length; lane++)
+            {
+                float a = leftSigned ? (short)values[lane] : (ushort)values[lane];
+                float c = rightSigned ? (short)values[(lane + 1) % values.Length] : (ushort)values[(lane + 1) % values.Length];
+                float result = operation == Opcode.FAdd ? a + c : operation == Opcode.FSub ? a - c : a * c;
+                int expected = integerResult ? unchecked((int)result) : BitConverter.SingleToInt32Bits(result);
+                VReg actual = b.Load(IrType.I32, new SlotOperand(destination), lane * 4, 4, false);
+                okay = b.Binary(Opcode.And, okay, b.Binary(Opcode.Eq, actual, expected));
+            }
+        }
+        b.Ret(R(okay));
+    }
+
     private static void SmallFills(Module m)
     {
         (Function f, Builder b) = New(m, "small_fills", IrType.I32);
@@ -1352,6 +1394,7 @@ internal static class Program
         Expect(b.Call("packed_rounding", IrType.I32)!, I(1));
         Expect(b.Call("packed_shifts", IrType.I32)!, I(1));
         Expect(b.Call("packed_conversions", IrType.I32)!, I(1));
+        Expect(b.Call("packed_float_math", IrType.I32)!, I(1));
         Expect(b.Call("bswap32", IrType.I32, I(0x11223344))!, I(0x44332211));
         Expect(b.Call("bswap32", IrType.I32, I(unchecked((int)0x80000001)))!, I(0x01000080));
         Expect(b.Call("bswap64_inplace", IrType.I64, I(0x0123456789abcdefL, IrType.I64))!,

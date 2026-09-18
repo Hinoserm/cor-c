@@ -289,6 +289,7 @@ internal sealed partial class Selector
                 if (TryPackedArithmetic(b.Instrs, n, out int consumed) || TryPackedRounding(b.Instrs, n, out consumed)
                     || TryPackedShifts(b.Instrs, n, out consumed)
                     || TryPackedConversions(b.Instrs, n, out consumed)
+                    || TryPackedFloatArithmetic(b.Instrs, n, out consumed)
                     || TryRotate(b.Instrs, n, out consumed))
                 {
                     n += consumed - 1;
