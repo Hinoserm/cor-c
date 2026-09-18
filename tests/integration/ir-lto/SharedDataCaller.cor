@@ -1,0 +1,8 @@
+static class Program
+{
+    static int Main()
+    {
+        SharedData.Value = 42;
+        return SharedData.Value;
+    }
+}

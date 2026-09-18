@@ -569,7 +569,10 @@ public static class Driver
         X86Backend x86Backend = new()
         {
             AutomaticPacked = !freestanding,
-            PositionIndependent = shared || args.Contains("--pic"),
+            // A relocatable dynamic unit must use standard ELF GOT relocations.
+            // Absolute GOT-slot addresses exist only inside a final executable
+            // link and cannot be serialized as relocatable object relocations.
+            PositionIndependent = shared || args.Contains("--pic") || (sharedLibs.Count > 0 && args.Contains("--obj")),
             Workers = workers,
             EmitLinkSummary = !args.Contains("--no-lto") && !args.Contains("--no-opt"),
             StackMaps = !args.Contains("--no-stackmaps"),

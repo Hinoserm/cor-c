@@ -18,4 +18,11 @@ for mode in lto native; do
     readelf -d "$work/$mode" > "$work/$mode.dynamic"
     grep -q 'Shared library: \[libCompute.so\]' "$work/$mode.dynamic"
 done
+"$corc" compile --nostdlib --shared tests/integration/ir-lto/SharedData.cor -o "$work/libData.so"
+"$corc" compile --nostdlib --obj tests/integration/ir-lto/SharedDataCaller.cor \
+    --ref tests/integration/ir-lto/SharedData.cor --link-shared "$work/libData.so" -o "$work/data.o"
+"$corlink" "$work/data.o" --link-shared "$work/libData.so" --runpath "$work" -o "$work/data"
+status=0
+"$work/data" || status=$?
+test "$status" = 42
 printf 'PASS separate dynamic linking with and without LTO: %s\n' "$work"
