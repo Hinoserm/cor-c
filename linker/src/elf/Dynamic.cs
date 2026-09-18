@@ -147,6 +147,7 @@ public static partial class Linker
         Layout layout = new(loadAddress) { Dyn = dyn };
         TargetContract.Validate(inputs.Select(input => (input.Name, input.Object)));
         ManagedLayoutContract.Validate(inputs.Select(input => (input.Name, input.Object)));
+        Corsac.Lang.Lto.DefinitionCoalescer.Run(inputs.Select(input => (input.Name, input.Object)).ToArray());
         AddManagedMetadata(inputs, layout, errors);
         Merge(inputs, layout, errors);
         Resolve(inputs, layout, errors);

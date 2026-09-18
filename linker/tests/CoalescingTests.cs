@@ -65,6 +65,12 @@ public static class CoalescingTests
         OptimizationSummary summary = new(); summary.Returns.Add(new ConstantReturn("missing", 1, new byte[32])); summary.Attach(b);
         Reject(() => LinkTimeOptimizer.Run(new[] { ("a", a), ("b", b) }));
         Check(b.Symbols.Count == 1 && b.Symbols[0].IsDefined, "LTO validation changed symbol ownership");
+        a = Definition(0x90); b = Definition(0x91);
+        byte[] shared = Linker.LinkShared(new[] { ("b", b), ("a", a) }, "libcoalesced.so");
+        Check(ElfReader.ExportsOf(shared).Count(name => name == "specialization") == 1,
+            "Shared linking did not coalesce certified duplicate exports");
+        Reject(() => Linker.LinkShared(new[] { ("a", Definition(0x90)),
+            ("b", Definition(0x90, semantic: 2)) }, "libinvalid.so"));
         Console.WriteLine("  coalescing ownership, integrity, conflict and metadata checks passed");
     }
 }

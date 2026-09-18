@@ -29,6 +29,7 @@ public static class Program
             ExportBoundaryTests.Run();
             IrCodecTests.Run();
             InterfaceDispatchTests.Run(work);
+            RethrowTests.Run();
             InitializerScopeTests.Run(work);
             ClosureOwnershipTests.Run(work);
             StructuralOwnershipTests.Run(work);

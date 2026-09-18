@@ -1542,7 +1542,18 @@ public sealed class Monomorphiser
 
             case CallExpr c:
             {
-                CallExpr made = new() { Target = Rewrite(c.Target, map), Line = c.Line, Col = c.Col };
+                Expr target;
+                if (c.Target is NameExpr { TypeArgs.Count: > 0 } method)
+                {
+                    // In call position these are method type arguments. Type
+                    // instantiation drops unknown names, which used to erase
+                    // the only inference input of parameterless M<T>() calls.
+                    NameExpr named = new() { Name = method.Name, Line = method.Line, Col = method.Col };
+                    named.TypeArgs.AddRange(method.TypeArgs.Select(argument => Sub(argument, map)));
+                    target = named;
+                }
+                else target = Rewrite(c.Target, map);
+                CallExpr made = new() { Target = target, Line = c.Line, Col = c.Col };
 
                 foreach (Expr a in c.Args)
                 {
