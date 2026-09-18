@@ -79,14 +79,15 @@ public static class Program
                 File.WriteAllText(source, ".intel_syntax noprefix\n.code" + bits + "\n.text\n" + instruction + "\n");
                 Tool("as", "--32", "-o", obj, source); Tool("objcopy", "-O", "binary", "-j", ".text", obj, binary);
                 byte[] expected = File.ReadAllBytes(binary);
-                // Operand/address-size prefixes commute; GNU and our assembler choose
+                // LOCK and operand/address-size prefixes commute; GNU and our assembler choose
                 // different legal orders when both are required. Preserve all other bytes.
                 static byte[] PrefixOrder(byte[] bytes)
                 {
                     byte[] normalized = (byte[])bytes.Clone();
-                    int first = normalized.Length > 0 && normalized[0] == 0xf0 ? 1 : 0;
-                    if (normalized.Length > first + 1 && normalized[first] == 0x67 && normalized[first + 1] == 0x66)
-                    { normalized[first] = 0x66; normalized[first + 1] = 0x67; }
+                    int count = 0;
+                    while (count < normalized.Length && normalized[count] is 0x66 or 0x67 or 0xf0) count++;
+                    if (normalized.Take(count).Distinct().Count() != count) throw new Exception("Duplicate instruction prefix in encoding fixture");
+                    Array.Sort(normalized, 0, count);
                     return normalized;
                 }
                 Check(PrefixOrder(actual).SequenceEqual(PrefixOrder(expected)), bits + " " + instruction + ": expected " + Convert.ToHexString(expected) + ", got " + Convert.ToHexString(actual));
@@ -104,6 +105,23 @@ public static class Program
             try { X86Assembler.Assemble("paddd mm0, mm1", "bad.asm", bits: 32); }
             catch (Corsac.Asm.AsmException) { excluded = true; }
             Check(excluded, "486 accepted MMX");
+            foreach (var forbidden in new[] {
+                ("386", "bswap eax"), ("386", "xadd eax, ebx"), ("386", "invlpg [eax]"),
+                ("486", "rdtsc"), ("486", "cmpxchg8b qword [eax]"), ("pentium", "emms"),
+                ("k6", "femms"), ("k6-2", "pswapd mm0, mm1") })
+            {
+                bool rejected = false;
+                try { X86Assembler.Assemble(forbidden.Item2, "profile.asm", bits: 32, cpu: X86Cpu.Parse(["--cpu=" + forbidden.Item1])); }
+                catch (Corsac.Asm.AsmException) { rejected = true; }
+                Check(rejected, forbidden.Item1 + " accepted " + forbidden.Item2);
+            }
+            foreach (string forbidden in new[] { "fld1", "fadd st0, st1", "emms", "femms" })
+            {
+                bool rejected = false;
+                try { X86Assembler.Assemble(forbidden, "no-fpu.asm", bits: 32, cpu: X86Cpu.Parse(["--cpu=k6-3+", "--fpu=none"])); }
+                catch (Corsac.Asm.AsmException) { rejected = true; }
+                Check(rejected, "no-FPU accepted " + forbidden);
+            }
             Console.WriteLine(checks + " CPU/profile/encoding checks passed; " + work);
             ExecutionTests.Run(work);
             return 0;
