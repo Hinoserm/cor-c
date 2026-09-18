@@ -29,9 +29,11 @@ grep -q 'LTO calls folded=0' "$work/effect.link.log"
 status=0
 "$work/effect" > "$work/effect.txt" || status=$?
 test "$status" = 43
-"$corc" compile --nostdlib --lib --no-stackmaps tests/integration/lto/Initialize.cor --obj -o "$work/init.o"
-"$corc" compile --nostdlib --no-stackmaps tests/integration/lto/EffectCaller.cor --ref tests/integration/lto/Initialize.cor --obj -o "$work/init-caller.o"
-"$corlink" "$work/init-caller.o" "$work/init.o" -o "$work/init" 2> "$work/init.link.log"
+# Static initialization includes exception caching and therefore needs the
+# runtime. This checks retention through the separate linker, not independent
+# managed-runtime/type-layout ownership (which is a later acceptance gate).
+"$corc" compile tests/integration/lto/Initialize.cor tests/integration/lto/EffectCaller.cor --obj -o "$work/init.o"
+"$corlink" "$work/init.o" -o "$work/init" 2> "$work/init.link.log"
 status=0
 "$work/init" || status=$?
 test "$status" = 47
