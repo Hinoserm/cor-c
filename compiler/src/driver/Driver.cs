@@ -723,14 +723,8 @@ public static class Driver
     /// </summary>
     private static string? SharedLibraryDirectory()
     {
-        for (DirectoryInfo? d = new(AppContext.BaseDirectory); d is not null; d = d.Parent)
-        {
-            if (File.Exists(Path.Combine(d.FullName, "lib", "std.cor")))
-            {
-                return Path.Combine(d.FullName, "build", "lib");
-            }
-        }
-        return null;
+        string? root = LibraryRoot();
+        return root is null ? null : Path.Combine(root, "build", "lib");
     }
 
     /// <summary>
@@ -740,7 +734,7 @@ public static class Driver
     /// repository the compiler
     /// was built in.
     /// </summary>
-    private static List<string> DefaultLibraries(Target target, bool freestanding = false)
+    private static string? LibraryRoot()
     {
         string? root = Environment.GetEnvironmentVariable("CORC_LIB");
         if (root is null)
@@ -756,6 +750,12 @@ public static class Driver
                 }
             }
         }
+        return root;
+    }
+
+    private static List<string> DefaultLibraries(Target target, bool freestanding = false)
+    {
+        string? root = LibraryRoot();
         if (root is null)
         {
             return new List<string>();
