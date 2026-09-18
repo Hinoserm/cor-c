@@ -20,7 +20,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="../../../compiler/corc.csproj" />
+    <ProjectReference Include="../../../corc.csproj" />
   </ItemGroup>
 
 </Project>

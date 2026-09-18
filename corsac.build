@@ -1,0 +1,77 @@
+<Build FormatVersion="1" DefaultTargets="all">
+  <PropertyGroup>
+    <Configuration>Release</Configuration>
+    <Compiler>$(WorkspaceDirectory)/compiler/bin/$(Configuration)/net10.0/corc</Compiler>
+    <Linker>$(WorkspaceDirectory)/linker/bin/$(Configuration)/net10.0/corlink</Linker>
+  </PropertyGroup>
+  <Components>
+    <Project Name="compiler" Path="compiler/corc.csproj" />
+    <Project Name="linker" Path="linker/linker.csproj" />
+    <Project Name="build-tool" Path="tools/build/build.csproj" />
+  </Components>
+  <Directory Path="compiler" DefaultTargets="compiler" />
+  <Directory Path="linker" DefaultTargets="linker" />
+  <Directory Path="tools/build" DefaultTargets="build-tool" />
+
+  <!-- The compiler's ProjectReference builds the linker dependency once. -->
+  <Target Name="all" DependsOnTargets="compiler;build-tool" />
+  <Target Name="compiler"><Compile Project="compiler" /></Target>
+  <Target Name="linker"><Compile Project="linker" /></Target>
+  <Target Name="build-tool"><Compile Project="build-tool" /></Target>
+
+  <Target Name="bootstrap" Steps="seed;native">
+    <Target Name="seed" Description="Build host seed tools explicitly with .NET">
+      <Compile Project="compiler" Toolchain="dotnet" />
+      <Compile Project="build-tool" Toolchain="dotnet" />
+    </Target>
+    <Target Name="native" DependsOnTargets="seed">
+      <Error Text="Native project evaluation and verified build-utility self-hosting are not implemented yet. Host seed tools are available; bootstrap has not been activated." />
+    </Target>
+  </Target>
+
+  <Target Name="test" Steps="unit;smoke">
+    <Target Name="unit" Steps="build-tool;optimizer;assembler;x86;linker">
+      <Target Name="build-tool">
+        <Test Name="build-runner" Executable="dotnet" Timeout="00:03:00">
+          <Argument Value="run" /><Argument Value="--project" /><Argument Value="tools/build/tests/BuildTests.csproj" />
+          <Argument Value="-c" /><Argument Value="$(Configuration)" />
+        </Test>
+      </Target>
+      <Target Name="optimizer">
+        <Test Name="optimizer" Executable="dotnet" Timeout="00:03:00">
+          <Argument Value="run" /><Argument Value="--project" /><Argument Value="compiler/tests/optimizations/OptTests.csproj" />
+          <Argument Value="-c" /><Argument Value="$(Configuration)" />
+        </Test>
+      </Target>
+      <Target Name="assembler">
+        <Test Name="assembler" Executable="dotnet" Timeout="00:03:00">
+          <Argument Value="run" /><Argument Value="--project" /><Argument Value="compiler/tests/arch/corsac/asmtests.csproj" />
+          <Argument Value="-c" /><Argument Value="$(Configuration)" />
+        </Test>
+      </Target>
+      <Target Name="x86">
+        <Test Name="x86" Executable="dotnet" Timeout="00:03:00">
+          <Argument Value="run" /><Argument Value="--project" /><Argument Value="compiler/tests/arch/x86/x86tests.csproj" />
+          <Argument Value="-c" /><Argument Value="$(Configuration)" />
+        </Test>
+      </Target>
+      <Target Name="linker">
+        <Test Name="linker" Executable="dotnet" Timeout="00:03:00">
+          <Argument Value="run" /><Argument Value="--project" /><Argument Value="linker/tests/ElfTests.csproj" />
+          <Argument Value="-c" /><Argument Value="$(Configuration)" />
+        </Test>
+      </Target>
+    </Target>
+    <Target Name="smoke" DependsOnTargets="/compiler">
+      <Script Interpreter="sh" File="tests/integration/separate-link.sh">
+        <Environment Name="CORC" Value="$(Compiler)" /><Environment Name="CORLINK" Value="$(Linker)" />
+      </Script>
+    </Target>
+    <Target Name="language" DependsOnTargets="/compiler">
+      <Test Name="language" Executable="bash" Timeout="01:00:00">
+        <Argument Value="tests/language/run.sh" />
+        <Environment Name="CORC" Value="$(Compiler)" />
+      </Test>
+    </Target>
+  </Target>
+</Build>

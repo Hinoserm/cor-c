@@ -26,7 +26,7 @@ public static class ObjectLinkCommand
             else paths.Add(arg);
         }
         if (output is null || paths.Count == 0)
-            return Fail("usage: corc link <file.o> ... -o <executable> [--entry <symbol>]");
+            return Fail("usage: corlink <file.o> ... -o <executable> [--entry <symbol>]");
         string destination = Path.GetFullPath(output);
         List<(string, ObjectFile)> inputs = new();
         HashSet<string> seen = new(StringComparer.Ordinal);
@@ -52,7 +52,7 @@ public static class ObjectLinkCommand
 
     private static int Fail(string message)
     {
-        Console.Error.WriteLine("corc: " + message);
+        Console.Error.WriteLine("corlink: " + message);
         return 1;
     }
 }

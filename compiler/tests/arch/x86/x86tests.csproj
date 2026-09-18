@@ -19,14 +19,14 @@
 
   <ItemGroup>
     <Compile Include="Program.cs" />
-    <Compile Include="../../../compiler/src/ir/*.cs" />
-    <Compile Include="../src/backend/*.cs" />
-    <Compile Include="../../../linker/src/elf/*.cs" />
-    <Compile Include="../../../compiler/src/frontend/Types.cs" />
-    <Compile Include="../../../compiler/src/frontend/Ast.cs" />
-    <Compile Include="../../../compiler/src/frontend/Token.cs" />
-    <Compile Include="../src/MachineAbi.cs" />
-    <Compile Include="../../corsac/src/assembler/Isa.cs" />
+    <Compile Include="../../../src/ir/*.cs" />
+    <Compile Include="../../../src/arch/x86/backend/*.cs" />
+    <ProjectReference Include="../../../../linker/linker.csproj" />
+    <Compile Include="../../../src/frontend/Types.cs" />
+    <Compile Include="../../../src/frontend/Ast.cs" />
+    <Compile Include="../../../src/frontend/Token.cs" />
+    <Compile Include="../../../src/arch/x86/MachineAbi.cs" />
+    <Compile Include="../../../src/arch/corsac/assembler/Isa.cs" />
   </ItemGroup>
 
 </Project>

@@ -14,6 +14,21 @@ in [REQUIREMENTS.md](REQUIREMENTS.md).
 
 ## Build
 
+The XML build utility and repository manifest are under active development.
+The design and current implementation limits are documented in
+[BUILD-SYSTEM.md](docs/development/BUILD-SYSTEM.md). Build the host runner with:
+
+```sh
+dotnet build tools/build/build.csproj -c Release
+tools/build/bin/Release/net10.0/build --toolchain dotnet
+tools/build/bin/Release/net10.0/build test --toolchain dotnet
+```
+
+The independent linker is `linker/bin/Release/net10.0/corlink`. The compiler
+emits ELF relocatable `.o` files with `--obj`; see
+[OBJECT-FORMAT.md](docs/compiler/OBJECT-FORMAT.md). Native bootstrap activation
+is not implemented yet; the runner never silently substitutes the host compiler.
+
 .NET 10 is required for the bootstrap compiler:
 
 ```sh

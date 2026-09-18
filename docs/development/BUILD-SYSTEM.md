@@ -10,6 +10,16 @@ This document specifies the intended system. The implementation milestones in
 TODO.md distinguish available features from requirements; a declaration here
 does not imply that its executor is implemented.
 
+The first implementation checkpoint provides a host .NET runner: discovery,
+directory defaults, nested targets, prerequisites/ordered steps, cycle checks,
+simple properties, Compile through the explicit dotnet provider, Exec, Script,
+Test, Message, Error and Finally. It limits simultaneous subprocesses, retains
+stdout/stderr logs and writes JUnit test reports. Imports, profiles, native
+project evaluation, source fetching/locks, artifact references, resource budgets
+beyond a subprocess count, and bootstrap activation remain implementation work.
+The repository's bootstrap/native target deliberately fails with this status;
+building a host seed must never falsely activate a native toolchain.
+
 There is no solution file or parallel build.conf. Component sources, project
 references, resources, and language options have one authority: standard
 SDK-style .csproj files and their standard imports. The orchestration file
