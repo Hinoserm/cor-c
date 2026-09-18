@@ -70,7 +70,17 @@ public static class Program
                 File.WriteAllText(source, ".intel_syntax noprefix\n.code" + bits + "\n.text\n" + instruction + "\n");
                 Tool("as", "--32", "-o", obj, source); Tool("objcopy", "-O", "binary", "-j", ".text", obj, binary);
                 byte[] expected = File.ReadAllBytes(binary);
-                Check(actual.SequenceEqual(expected), bits + " " + instruction + ": expected " + Convert.ToHexString(expected) + ", got " + Convert.ToHexString(actual));
+                // Operand/address-size prefixes commute; GNU and our assembler choose
+                // different legal orders when both are required. Preserve all other bytes.
+                static byte[] PrefixOrder(byte[] bytes)
+                {
+                    byte[] normalized = (byte[])bytes.Clone();
+                    int first = normalized.Length > 0 && normalized[0] == 0xf0 ? 1 : 0;
+                    if (normalized.Length > first + 1 && normalized[first] == 0x67 && normalized[first + 1] == 0x66)
+                    { normalized[first] = 0x66; normalized[first + 1] = 0x67; }
+                    return normalized;
+                }
+                Check(PrefixOrder(actual).SequenceEqual(PrefixOrder(expected)), bits + " " + instruction + ": expected " + Convert.ToHexString(expected) + ", got " + Convert.ToHexString(actual));
             }
             foreach (string invalid in new[] { "paddd eax, ebx", "paddd mm0, dword ptr [ebx]", "movd mm0, mm1", "movq mm0, eax", "psllq mm0, 256", "cmpxchg8b eax", "prefetch eax",
                 "lock cmpxchg8b eax", "lock add eax, ebx", "lock mov dword ptr [ebx], eax", "lock nop", "lock lock add dword ptr [ebx], eax",
