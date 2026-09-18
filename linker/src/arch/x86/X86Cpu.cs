@@ -1,6 +1,6 @@
 namespace Corsac.Lang.X86;
 
-/// <summary>Instruction permission and tuning are separate, immutable per invocation.</summary>
+/// <summary>Shared compiler/linker instruction permissions; tuning never grants instructions.</summary>
 public sealed class X86Cpu
 {
     public string Name { get; }

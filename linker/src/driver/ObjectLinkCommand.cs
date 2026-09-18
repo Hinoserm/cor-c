@@ -20,9 +20,18 @@ public static class ObjectLinkCommand
         string? backendPath = null;
         int importBytes = 1024 * 1024;
         List<string> paths = new();
+        List<string> cpuArguments = new();
         for (int i = 0; i < args.Length; i++)
         {
             string arg = args[i];
+            if (arg is "--cpu" or "--tune" or "--fpu")
+            {
+                if (++i == args.Length) return Fail("missing value for " + arg);
+                cpuArguments.Add(arg); cpuArguments.Add(args[i]); continue;
+            }
+            if (arg.StartsWith("--cpu=") || arg.StartsWith("--tune=") || arg.StartsWith("--fpu=")
+                || arg is "--enable-mmx" or "--disable-mmx" or "--enable-3dnow" or "--disable-3dnow")
+            { cpuArguments.Add(arg); continue; }
             if (arg is "-o" or "--entry" or "--base" or "--paddr" or "--lto-backend" or "--lto-import-bytes")
             {
                 if (++i == args.Length) return Fail("missing value for " + arg);
@@ -69,10 +78,13 @@ public static class ObjectLinkCommand
         // Resolve every input and relocation before writing the destination.
         // LinkException is rendered by Driver, just as for compile-and-link.
         TargetContract.Validate(inputs);
+        X86CodeGenerationContract? selected = cpuArguments.Count == 0 ? null : Lang.X86.X86Cpu.Parse(cpuArguments).Contract;
+        if (selected is not null) X86CodeGenerationContract.ValidateTarget(inputs, selected);
         ManagedLayoutContract.Validate(inputs);
         int regenerated = IrLinkOptimizer.Run(inputs, () => backend ?? new ProcessUnitBackend(backendPath), lto, importBytes,
             closedImageEntry: flat || physicalAddress is not null ? entry : null);
         int folded = LinkTimeOptimizer.Run(inputs, lto);
+        if (selected is not null) X86CodeGenerationContract.ValidateTarget(inputs, selected);
         byte[] image;
         if (flat)
         {

@@ -44,6 +44,20 @@ public sealed record X86CodeGenerationContract(string Cpu, string Tune, string F
     public string[] Arguments() => ["--cpu=" + Cpu, "--tune=" + Tune, "--fpu=" + Fpu,
         Mmx ? "--enable-mmx" : "--disable-mmx", ThreeDNow ? "--enable-3dnow" : "--disable-3dnow"];
 
+    public static void ValidateTarget(IEnumerable<(string Name, ObjectFile Object)> inputs, X86CodeGenerationContract target)
+    {
+        target.Validate();
+        static int Generation(string cpu) => cpu switch { "386" => 3, "486" => 4, "686" => 6, _ => 5 };
+        foreach (var input in inputs)
+        {
+            X86CodeGenerationContract? required = Read(input.Object);
+            if (required is null) continue; // Foreign objects carry no owned target declaration.
+            if (Generation(required.Cpu) > Generation(target.Cpu) || (required.Fpu != "none" && target.Fpu == "none")
+                || (required.Mmx && !target.Mmx) || (required.ThreeDNow && !target.ThreeDNow) || (required.Extended && !target.Extended))
+                throw new ElfFormatException(input.Name + ": instruction requirements exceed selected CPU/FPU target " + target.Cpu);
+        }
+    }
+
     public static void ValidateRegeneration(ObjectFile original, ObjectFile regenerated)
     {
         if (Read(original) != Read(regenerated))

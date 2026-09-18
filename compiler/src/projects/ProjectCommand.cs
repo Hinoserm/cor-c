@@ -122,6 +122,7 @@ public static class ProjectCommand
         {
             string temporary = output + "." + Guid.NewGuid().ToString("N");
             List<string> link = new() { "link" }; link.AddRange(objects); link.Add("-o"); link.Add(temporary);
+            link.AddRange(cpuArguments);
             try
             {
                 if (Driver.Run(link.ToArray()) != 0) return 1;

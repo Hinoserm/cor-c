@@ -129,6 +129,9 @@ public static class LtoTests
         Require(X86CodeGenerationContract.Read(ElfReader.ReadObject(ElfWriter.WriteObject(cpuA))) == profile,
             "CPU permissions did not survive object serialization");
         X86CodeGenerationContract.ValidateRegeneration(cpuA, cpuB);
+        X86CodeGenerationContract.ValidateTarget(new[] { ("plus", cpuA) }, profile);
+        Reject(() => X86CodeGenerationContract.ValidateTarget(new[] { ("plus", cpuA) }, Corsac.Lang.X86.X86Cpu.Parse(["--cpu=486"]).Contract));
+        Reject(() => X86CodeGenerationContract.ValidateTarget(new[] { ("plus", cpuA) }, Corsac.Lang.X86.X86Cpu.Parse(["--cpu=k6-3+", "--disable-mmx"]).Contract));
         ObjectFile excluded = Function(3);
         new X86CodeGenerationContract("k6-3+", "486", "x87", false, false, false).Attach(excluded);
         Reject(() => X86CodeGenerationContract.ValidateRegeneration(cpuA, excluded));
