@@ -59,8 +59,7 @@ public static class LinkTimeOptimizer
                     changes.Add((text, matches[0], value));
             }
         }
-        if (!enabled) return 0;
-        foreach (var change in changes)
+        if (enabled) foreach (var change in changes)
         {
             int offset = change.Relocation.Offset;
             change.Text.Bytes[offset - 1] = 0xb8;
@@ -69,6 +68,6 @@ public static class LinkTimeOptimizer
         }
         // Summaries describe pre-link code. Do not leave stale summaries in output objects.
         foreach (var input in inputs) input.Object.Sections.RemoveAll(s => s.Name == OptimizationSummary.SectionName);
-        return changes.Count;
+        return enabled ? changes.Count : 0;
     }
 }

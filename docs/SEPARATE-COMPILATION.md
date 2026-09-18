@@ -54,6 +54,7 @@ hand-maintained header is introduced.
 | .text/.rodata/.data/.bss | Native fallback code and storage | Implemented |
 | .symtab and relocation sections | Native definitions/references | Implemented |
 | .corsac.lto | Versioned summary-only optimization records | First implementation in this milestone |
+| .corsac.abi | Native calling convention and hosted/bare-metal TLS contract | Implemented |
 | .corsac.unit | Target/assembly/ABI identity and compilation settings | Specified, pending |
 | .corsac.types | Indexed managed declarations and layout requirements | Specified, pending |
 | .corsac.generics | Indexed template and instantiation records | Specified, pending integration |
@@ -86,6 +87,10 @@ unit identity, target triple/profile, minimum CPU features, pointer width,
 endianness, calling convention, exception/TLS/GC modes, declaration-index hash
 and compiler-option fingerprint. Hosted and bare-metal profiles cannot be mixed
 accidentally; neutral native assembly may omit managed records.
+
+The initial implemented .corsac.abi section already enforces the native
+hosted/bare-metal/TLS boundary. Its exact encoding is in OBJECT-FORMAT.md; it
+does not substitute for the assembly and managed-layout identity records.
 
 The .corsac.types index is sorted by identity key. Each index record gives the
 identity-string offset, declaration offset/length and declaration fingerprint.

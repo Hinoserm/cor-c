@@ -1,0 +1,6 @@
+public static class Value
+{
+    public static int Calls;
+    static Value() { Calls = 5; }
+    public static int Get() { return 42; }
+}

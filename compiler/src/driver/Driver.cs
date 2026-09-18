@@ -554,6 +554,7 @@ public static class Driver
         Program.BenchmarkStage("code-generation");
 #endif
         ObjectFile obj = backend.Generate(module, backendErrors);
+        new TargetContract(freestanding ? (Lowering.TlsGs ? 2u : 1u) : 0u).Attach(obj);
 #if COR_SELFHOST_BENCHMARK
         Program.BenchmarkStage("link-output");
 #endif
@@ -663,6 +664,11 @@ public static class Driver
             return 0;
         }
 
+        if (sharedLibs.Count == 0)
+        {
+            TargetContract.Validate(link);
+            Corsac.Lang.Lto.LinkTimeOptimizer.Run(link, !args.Contains("--no-lto") && !args.Contains("--no-opt"));
+        }
         byte[] exe = sharedLibs.Count > 0
             ? Linker.Link(new[] { (name, obj) }, entry, Needed(obj, sharedLibs, exports), Value(args, "--runpath"))
             : Linker.Link(link, entry, loadBase ?? Linker.DefaultLoadAddress, physicalBase);

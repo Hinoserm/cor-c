@@ -60,6 +60,7 @@ public static class ObjectLinkCommand
         }
         // Resolve every input and relocation before writing the destination.
         // LinkException is rendered by Driver, just as for compile-and-link.
+        TargetContract.Validate(inputs);
         int folded = LinkTimeOptimizer.Run(inputs, lto);
         byte[] image;
         if (flat)

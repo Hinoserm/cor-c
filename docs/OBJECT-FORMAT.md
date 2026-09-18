@@ -42,6 +42,17 @@ ordinary object and independent-unit compatibility are not yet guaranteed.
 
 ## Separate-compilation extension work
 
+### Native ABI contract, version 1
+
+.corsac.abi is a 24-byte non-loadable section: four magic bytes CABI followed
+by five little-endian uint32 values: version 1, pointer size 4, baseline CPU 486,
+calling convention 1 (i386 cdecl with x87 floating returns), and TLS/platform
+model (0 hosted Linux GS, 1 bare-metal static block, 2 bare-metal GS). corlink
+rejects incompatible models and unknown contracts before LTO or output creation.
+Native assembly/C objects may omit this managed-compiler contract; omission is
+not permission to invent managed type identity. Assembly/type metadata remains
+the separately specified .corsac.unit/.corsac.types work.
+
 ### LTO summary encoding, version 1
 
 The non-loadable .corsac.lto section begins with the four bytes `CLTO`, followed

@@ -146,6 +146,17 @@ tasks below track that work; moving files alone does not reduce the working set.
 
 ## Linking, incremental work, and cross-unit optimization
 
+- [x] Define compiler/linker/runtime ownership, indexed declaration and generic
+  records, selective LTO imports, and bootloader/kernel profiles in
+  [SEPARATE-COMPILATION.md](docs/SEPARATE-COMPILATION.md).
+- [x] Implement compiler-certified constant-return/call-site summaries and the
+  first cross-object LTO pass. Separate caller/callee objects linked with LTO
+  on/off both return 42; a state-changing callee remains a call and returns 43
+  through its caller. General IR importing/inlining remains outstanding.
+- [x] Expose flat output and virtual/physical base controls in corlink; unit
+  checks cover flat entry, BSS alignment padding and physical kernel entry.
+- [ ] Verify native ABI contract rejection, static-initializer preservation,
+  and all current compiler/linker suites after the complete LTO milestone.
 - [ ] Extend the existing object writer/linker; do not build a second linker.
 - [ ] Link independently compiled units without duplicate runtime/type identities
   or silently accepting conflicting definitions.

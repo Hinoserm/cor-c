@@ -96,6 +96,15 @@ public static class LtoTests
         byte[] kernel = Linker.Link(new[] { ("caller", caller), ("callee", callee) }, "_start", 0xc0100000, 0x100000);
         uint entry = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(kernel.AsSpan(24, 4));
         Require(entry >= 0x100000 && entry < 0x101000, "kernel physical entry not relocated");
+        ObjectFile hosted = Caller(), bare = Function(42);
+        new TargetContract(0).Attach(hosted);
+        new TargetContract(1).Attach(bare);
+        Reject(() => TargetContract.Validate(new[] { ("hosted", hosted), ("bare", bare) }));
+        ObjectFile bare2 = Function(43);
+        new TargetContract(1).Attach(bare2);
+        TargetContract.Validate(new[] { ("bare", bare), ("bare2", bare2) });
+        bare2.Section(TargetContract.SectionName).Bytes[4] = 9;
+        Reject(() => TargetContract.Validate(new[] { ("bare2", bare2) }));
         Console.WriteLine("  LTO metadata, scope, rejection, static/flat/physical-link checks passed");
     }
 }
