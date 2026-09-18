@@ -18,12 +18,12 @@ git -C "$os" archive "$revision" | tar -x -C "$work/source"
 snapshot="$work/source"
 printf 'CORSAC commit: %s\nprofile: x86-486-isa\n' "$revision" > "$work/provenance.txt"
 sha256sum "$corc" "$(dirname "$corc")/corc.dll" "$(dirname "$corlink")/corlink.dll" >> "$work/provenance.txt"
-python3 "$snapshot/tools/kconfig.py" --root "$snapshot/os/kernel" x86-486-isa > "$work/config.log"
+bash "$snapshot/tools/kconfig" --root "$snapshot/os/kernel" --out "$work/config" x86-486-isa > "$work/config.log"
 sources=()
 while IFS= read -r line; do
     case "$line" in ''|'#'*) continue ;; esac
-    sources+=("$snapshot/os/kernel/$line")
-done < "$snapshot/os/kernel/config/sources.list"
+    sources+=("$line")
+done < "$work/config/sources.list"
 "$corc" build --target x86-32 "$snapshot/os/kernel/arch/x86/entry.asm" --obj -o "$work/entry.o" > "$work/entry.log" 2>&1
 "$corc" compile "${sources[@]}" --jobs "$jobs" --freestanding --obj \
     --asm-entry corc_start --tls-gs --cpu 486 --tag 'CORSAC/OS split-toolchain acceptance' \
