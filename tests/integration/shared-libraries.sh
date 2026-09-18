@@ -22,9 +22,9 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
 corc="${CORC:-$root/compiler/bin/Release/net10.0/corc}"
 filter="${1:-}"
-work="${TMPDIR:-/tmp}/corsac-shared.$$"
-mkdir -p "$work"
-trap 'rm -rf "$work"' EXIT
+mkdir -p "$root/build"
+work="$(mktemp -d "$root/build/shared.XXXXXX")"
+echo "Shared-library acceptance; diagnostics retained: $work"
 
 passed=0
 failed=0
