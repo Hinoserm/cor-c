@@ -67,14 +67,18 @@ public sealed class IndexedDeclarations : IDisposable
             foreach (SourceDeclaration source in lease.Records)
             {
                 if (owned.Contains(source.Path)) { _ = source.ReadSource(); continue; }
-                CompilationUnit header = Parser.ParseText(source.Text, source.Path, declarationsOnly: true);
+                // Match the direct frontend's diagnostic file spelling. Throw
+                // sites embed it in executable string data, so different paths
+                // would make identical generic instantiations disagree at link.
+                string displayFile = Path.GetFileName(source.Path);
+                CompilationUnit header = Parser.ParseText(source.Text, displayFile, declarationsOnly: true);
                 TypeDecl root = header.Types.OrderBy(type => type.SourceFrom).First();
                 if (root.TypeParams.Count != 0 || root.Members.OfType<MethodDecl>().Any(method => method.TypeParams.Count != 0))
                 {
                     implementations.Add(key);
                     // Templates need implementations for specialization. Keep
                     // unrelated ordinary bodies out of this imported tree.
-                    CompilationUnit templates = Parser.ParseText(source.ReadSource(), source.Path,
+                    CompilationUnit templates = Parser.ParseText(source.ReadSource(), displayFile,
                         source.ConditionalSymbols, declarationsOnly: true, includeTemplateBodies: true);
                     root = templates.Types.Single(type => type.SourceFrom == source.From && type.SourceTo == source.To);
                 }
@@ -83,13 +87,13 @@ public sealed class IndexedDeclarations : IDisposable
                 root.Namespace = source.Namespace;
                 root.Outer = source.Outer.Length == 0 ? null : source.Outer;
                 root.Scope = source.Scope;
-                root.File = source.Path;
+                root.File = displayFile;
                 root.SourcePath = source.Path;
                 root.Elsewhere = true;
                 root.SignatureOnly = true;
                 foreach (MemberDecl member in root.Members)
                 {
-                    member.File = source.Path;
+                    member.File = displayFile;
                     member.Namespace = source.Namespace;
                     member.Scope = source.Scope;
                     member.OwnedImplementation = false;
