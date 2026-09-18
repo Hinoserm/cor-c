@@ -1,0 +1,139 @@
+// test: lib/unix.cor -- fork, exec, pipe, dup2, waitpid, process groups
+// expect-exit: 0
+// expect-output:
+// fork ok
+// exit status ok
+// signal ok
+// pipe ok
+// exec ok
+// group ok
+// umask ok
+//
+// The POSIX process layer .NET has no API for. Every one of these is
+// something a shell does on every command line, and nothing else in lib/
+// can say it.
+
+class Program
+{
+    static int Main()
+    {
+        // ---- fork, and a child that just exits -----------------------------
+        int pid = UnixProcess.Fork();
+
+        if (pid == 0)
+        {
+            Environment.Exit(7);
+        }
+
+        Console.WriteLine(pid > 0 ? "fork ok" : "fork bad");
+
+        int status = 0;
+        int got = UnixProcess.WaitPid(pid, out status);
+
+        Console.WriteLine(got == pid && UnixProcess.Exited(status)
+                          && UnixProcess.ExitStatus(status) == 7
+                          && UnixProcess.Result(status) == 7
+                          ? "exit status ok" : "exit status bad");
+
+        // ---- a child that is killed, which is a different answer -----------
+        int victim = UnixProcess.Fork();
+
+        if (victim == 0)
+        {
+            // Nothing this child does matters; it is waiting to be stopped.
+            while (true)
+            {
+                Thread.Sleep(50);
+            }
+        }
+
+        Thread.Sleep(50);
+        UnixProcess.Kill(victim, 9);
+        got = UnixProcess.WaitPid(victim, out status);
+
+        Console.WriteLine(got == victim && UnixProcess.Signalled(status)
+                          && UnixProcess.TerminatingSignal(status) == 9
+                          && UnixProcess.Result(status) == 137
+                          ? "signal ok" : "signal bad");
+
+        // ---- a pipe between this process and a child -----------------------
+        int[]? pair = UnixProcess.Pipe();
+
+        if (pair == null)
+        {
+            Console.WriteLine("pipe bad");
+            return 1;
+        }
+
+        int writer = UnixProcess.Fork();
+
+        if (writer == 0)
+        {
+            UnixProcess.Close(pair[0]);
+            UnixProcess.Dup2(pair[1], 1);
+            UnixProcess.Close(pair[1]);
+            Console.Write("through the pipe");
+            Console.Flush();
+            Environment.Exit(0);
+        }
+
+        UnixProcess.Close(pair[1]);
+
+        StreamReader reading = new StreamReader(new FileStream(pair[0], FileAccess.Read, true));
+        string? said = reading.ReadLine();
+
+        reading.Dispose();
+        UnixProcess.WaitPid(writer, out status);
+        Console.WriteLine(said == "through the pipe" ? "pipe ok" : "pipe bad: " + said);
+
+        // ---- fork, rearrange descriptors, exec -----------------------------
+        //
+        // What a shell does for `echo ... > file`: the child opens the file,
+        // puts it at descriptor one, and only then becomes another program.
+        string path = "/tmp/cor-306-" + Environment.ProcessId + ".txt";
+        int child = UnixProcess.Fork();
+
+        if (child == 0)
+        {
+            FileStream into = new FileStream(path, FileMode.Create, FileAccess.Write);
+
+            UnixProcess.Dup2(into.Handle, 1);
+
+            string[] argv = new string[3];
+
+            argv[0] = "/bin/echo";
+            argv[1] = "from";
+            argv[2] = "exec";
+            UnixProcess.Exec("/bin/echo", argv, Environment.EnvironmentBlock());
+            Environment.Exit(127);
+        }
+
+        UnixProcess.WaitPid(child, out status);
+        Console.WriteLine(UnixProcess.Exited(status) && UnixProcess.ExitStatus(status) == 0
+                          && File.Exists(path) && File.ReadAllText(path) == "from exec\n"
+                          ? "exec ok" : "exec bad");
+        File.Delete(path);
+
+        // ---- a process group of its own ------------------------------------
+        int mine = UnixProcess.Fork();
+
+        if (mine == 0)
+        {
+            int self = Environment.ProcessId;
+
+            Environment.Exit(UnixProcess.SetProcessGroup(0, 0) >= 0
+                             && UnixProcess.GetProcessGroup(0) == self ? 0 : 1);
+        }
+
+        UnixProcess.WaitPid(mine, out status);
+        Console.WriteLine(UnixProcess.Exited(status) && UnixProcess.ExitStatus(status) == 0
+                          ? "group ok" : "group bad");
+
+        // ---- umask, which answers the mask it replaced ---------------------
+        int was = UnixProcess.Umask(0x12);          // 022
+        int back = UnixProcess.Umask(was);
+
+        Console.WriteLine(back == 0x12 ? "umask ok" : "umask bad");
+        return 0;
+    }
+}

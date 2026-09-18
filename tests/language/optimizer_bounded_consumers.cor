@@ -1,0 +1,31 @@
+// test: bounded arithmetic consumers preserve carries and mutable-source snapshots
+// expect-exit: 0
+// expect-output:
+// bounded consumers True
+static class Program
+{
+    static long Mutate(long value)
+    {
+        long source = value & 65535;
+        long product = source * 65535;
+        source = value;
+        return product + source;
+    }
+    static int Main()
+    {
+        long[] values = new long[] { 0, 1, 65535, 65536, -1, long.MinValue, 9223372036854775807, 4294967295 };
+        long[] expected = new long[] { 0, 65536, 4294901760, 65536, 4294836224, long.MinValue, -9223372032559939584, 8589803520 };
+        bool valid = true;
+        for (int i = 0; i < values.Length; i++)
+        {
+            long small = values[i] & 255;
+            long product = small * 257;
+            long copy = product;
+            valid = valid && (copy >> 32) == 0;
+            valid = valid && ((product + 4294967295L) >> 32) == (small == 0 ? 0 : 1);
+            valid = valid && Mutate(values[i]) == expected[i];
+        }
+        Console.WriteLine("bounded consumers " + valid);
+        return valid ? 0 : 1;
+    }
+}

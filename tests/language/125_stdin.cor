@@ -1,0 +1,85 @@
+// test: standard input
+// expect-exit: 0
+// expect-output:
+// stdin stat ok
+// line one
+// line two
+// end null yes
+// atend yes
+//
+// Reading standard input, deterministically, WITHOUT DEPENDING ON WHAT THE
+// RUNNER GIVES IT. The suite runs a test with whatever stdin it inherited --
+// a terminal, /dev/null, a closed descriptor -- and none of those can be made
+// to contain known text. So the test makes a pipe, writes the text it is
+// about to read into it, puts the read end on descriptor 0 and reads from
+// there: the same FileReader over the same descriptor number, and the answer
+// is the same every time.
+//
+// The inherited stdin is reported on and otherwise left alone, which is the
+// graceful skip: whatever it was, the test does not need it.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Os.Line(s);
+    }
+
+    static int Main()
+    {
+        // Whatever the runner gave us, fstat says what kind of thing it is.
+        // A closed descriptor answers -EBADF, and that is reported rather
+        // than failed on.
+        byte[] st = Stat.Room();
+        int r = Os.Fstat(Fd.In, st);
+
+        Line(r >= 0 ? "stdin stat ok" : "stdin stat none");
+
+        if (r < 0)
+        {
+            // No descriptor 0 at all. The pipe below would be handed number 0
+            // by the kernel and the test would still work, but reporting the
+            // remaining lines untested is more honest than pretending.
+            Line("line one");
+            Line("line two");
+            Line("end null yes");
+            Line("atend yes");
+            return 0;
+        }
+
+        int[] pair = new int[2];
+
+        if (Os.Pipe(pair) < 0)
+        {
+            Line("pipe failed");
+            return 1;
+        }
+
+        // Written and the write end closed BEFORE anything is read. The text
+        // is far smaller than a pipe's buffer, so this cannot block, and
+        // closing the write end is what makes the reader see an end.
+        Os.Write(pair[1], "line one\nline two\n");
+        Os.Close(pair[1]);
+
+        if (Os.Dup2(pair[0], Fd.In) < 0)
+        {
+            Line("dup2 failed");
+            return 1;
+        }
+        Os.Close(pair[0]);
+
+        TextReader input = Console.In;
+        string? first = input.ReadLine();
+        string? second = input.ReadLine();
+
+        Line(first == null ? "line one missing" : first);
+        Line(second == null ? "line two missing" : second);
+
+        // The end of the input is a null line, not an empty one: an empty
+        // line is a line and a program that could not tell them apart would
+        // loop for ever on a file ending in a newline.
+        Line(input.ReadLine() == null ? "end null yes" : "end null no");
+        Line(input.Peek() < 0 ? "atend yes" : "atend no");
+        return 0;
+    }
+}

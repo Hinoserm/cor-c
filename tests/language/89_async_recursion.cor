@@ -1,0 +1,95 @@
+// test: async_recursion
+// expect-exit: 0
+// expect-output:
+// yield first 948735669 max 201
+// yield after 948735669 max 201
+// fib 610 calls 1973
+//
+// Recursive async methods. Two hundred levels deep, each level yields at
+// once (so every level suspends before calling the next) or only after
+// its child returned (so all 201 levels are suspended on each other at the
+// same moment, and completing the innermost one resumes the chain one
+// level at a time). The result is a checksum r(n) = (r(n-1) * 31 + n) mod
+// 1000000007, and the number of levels in progress at once is counted.
+// An async Fibonacci that yields in every call makes nearly two thousand
+// tasks.
+
+static class Program
+{
+    static int active;
+    static int maxActive;
+    static int calls;
+
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static void Enter()
+    {
+        active = active + 1;
+        if (active > maxActive)
+        {
+            maxActive = active;
+        }
+    }
+
+    static async Task<long> YieldFirst(int n)
+    {
+        Enter();
+        await Task.Yield();
+        long below = 0;
+        if (n > 0)
+        {
+            below = await YieldFirst(n - 1);
+        }
+        active = active - 1;
+        return (below * 31 + n) % 1000000007L;
+    }
+
+    static async Task<long> YieldAfter(int n)
+    {
+        Enter();
+        long below = 0;
+        if (n > 0)
+        {
+            below = await YieldAfter(n - 1);
+        }
+        await Task.Yield();
+        active = active - 1;
+        return (below * 31 + n) % 1000000007L;
+    }
+
+    static async Task<int> Fib(int n)
+    {
+        calls = calls + 1;
+        await Task.Yield();
+        if (n < 2)
+        {
+            return n;
+        }
+        int a = await Fib(n - 1);
+        int b = await Fib(n - 2);
+        return a + b;
+    }
+
+    static async Task Main()
+    {
+        int depth = 200;
+
+        active = 0;
+        maxActive = 0;
+        long first = await YieldFirst(depth);
+        Line("yield first " + first + " max " + maxActive);
+
+        active = 0;
+        maxActive = 0;
+        long after = await YieldAfter(depth);
+        Line("yield after " + after + " max " + maxActive);
+
+        int fifteen = 15;
+        int f = await Fib(fifteen);
+        Line("fib " + f + " calls " + calls);
+    }
+}

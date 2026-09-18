@@ -1,0 +1,47 @@
+// test: interp_format
+// expect-exit: 0
+// expect-output:
+// align [  255][255  ][255][  ab]
+// hex [ff][000000ff][FF][0000FF]
+// dec [255][00255]
+// mixed [   ff][0ff][005][5]
+// holes [3][a,b][yes]
+// verbatim v255\n and "quoted"
+//
+// The alignment and the format of an interpolated hole -- `{x,5}` and
+// `{x:x8}` -- which were being read as part of the expression and then thrown
+// away, so the string said one thing and printed another. Also `$@"..."`,
+// where a backslash is a backslash and `""` is one quote.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Two(int a, int b)
+    {
+        return a + b;
+    }
+
+    static int Main()
+    {
+        int x = 255;
+        string ab = "ab";
+        Line($"align [{x,5}][{x,-5}][{x,2}][{ab,4}]");
+        Line($"hex [{x:x}][{x:x8}][{x:X}][{x:X6}]");
+        Line($"dec [{x:d}][{x:D5}]");
+        int? n = 5;
+        Line($"mixed [{x,5:x}][{x:x3}][{(n == null ? 0 : n.Value):d3}][{n ?? 7:d}]");
+
+        int one = 1;
+        int two = 2;
+        string[] parts = new string[] { "a", "b" };
+        Line($"holes [{Two(one, two)}][{parts[0]},{parts[1]}][{(one < two ? "yes" : "no")}]");
+
+        Line($@"verbatim v{x}\n and ""quoted""");
+        return 0;
+    }
+}

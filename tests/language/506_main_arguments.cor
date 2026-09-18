@@ -1,0 +1,30 @@
+// test: main_arguments
+// expect-exit: 0
+// expect-output:
+// count 0
+//
+// `static int Main(string[] args)` IS ONE OF THE FOUR SHAPES C# ALLOWS, and
+// the entry stub called it with no arguments at all: the program read whatever
+// the register happened to hold as an array, and os/bin/ps.cor crashed the
+// moment it asked for the length. It also brought the INLINER down, which
+// copies each argument into the matching parameter and walked off the end of
+// an operand list one short of the parameter list.
+//
+// The runner passes no arguments, so what is checked here is that the array
+// exists, is empty, and can be walked. The words themselves are the ones
+// Environment.GetCommandLineArgs answers with, less the program's own name.
+static class Program
+{
+    static int Main(string[] args)
+    {
+        Sys.Print("count " + args.Length);
+        Sys.PrintLine();
+
+        for (int i = 0; i < args.Length; i++)
+        {
+            Sys.Print(args[i]);
+            Sys.PrintLine();
+        }
+        return 0;
+    }
+}

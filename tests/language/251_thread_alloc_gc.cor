@@ -1,0 +1,170 @@
+// test: thread alloc gc
+// expect-exit: 0
+// expect-output:
+// lists 4
+// nodes 40000
+// sum 799980000
+// strings True
+// collected True
+//
+// Four threads each build a linked list of ten thousand nodes while the heap
+// is capped small enough that collections happen underneath them, and the main
+// thread allocates at the same time. Every list is then walked and every value
+// and every string checked: a collector that missed one thread's stack, or
+// swept while another thread was bumping in its allocation buffer, loses a
+// node here and cannot lose it quietly.
+//
+// The cap is what makes the collections happen: with a megabyte to work in,
+// forty thousand nodes and their strings do not fit without several.
+
+class Node
+{
+    public int Value;
+    public string Name;
+    public Node Next;
+}
+
+/// Builds a list of `Count` nodes and keeps it. The garbage between the nodes
+// -- the strings that are not kept -- is what the collector has to find.
+class Builder : Action
+{
+    public const int Count = 10000;
+
+    public Node Head;
+    public int Made;
+
+    int _seed;
+
+    public Builder(int seed)
+    {
+        _seed = seed;
+    }
+
+    public void Invoke()
+    {
+        Node head = null;
+
+        for (int i = 0; i < Count; i++)
+        {
+            Node n = new Node();
+
+            n.Value = _seed * Count + i;
+            n.Name = "n" + i;
+            n.Next = head;
+            head = n;
+
+            // Garbage, deliberately: a string that nothing keeps, so that a
+            // collection has something to reclaim on this thread's own buffer.
+            string waste = "waste " + i;
+
+            if (waste.Length == 0)
+            {
+                return;
+            }
+            Made = Made + 1;
+        }
+        Head = head;
+    }
+}
+
+static class Program
+{
+    static void Say(string label, long value)
+    {
+        Sys.Print(label);
+        Sys.PrintInt(value);
+        Sys.PrintLine();
+    }
+
+    static void SayBool(string label, bool value)
+    {
+        Sys.Print(label);
+
+        if (value)
+        {
+            Sys.Print("True");
+        }
+        else
+        {
+            Sys.Print("False");
+        }
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        int workers = 4;
+
+        Gc.SetLimit(8388608);
+
+        Builder[] bodies = new Builder[workers];
+        Thread[] threads = new Thread[workers];
+
+        for (int i = 0; i < workers; i++)
+        {
+            Builder body = new Builder(i);
+
+            bodies[i] = body;
+            threads[i] = Thread.Start(body);
+        }
+
+        // The main thread allocates while they do, so that the thread that
+        // collects is not always the same one.
+        long mine = 0;
+
+        for (int i = 0; i < 20000; i++)
+        {
+            string s = "main " + i;
+
+            mine = mine + s.Length;
+        }
+
+        for (int i = 0; i < workers; i++)
+        {
+            threads[i].Join();
+        }
+
+        long lists = 0;
+        long nodes = 0;
+        long sum = 0;
+        bool names = true;
+
+        for (int i = 0; i < workers; i++)
+        {
+            Node n = bodies[i].Head;
+
+            if (n != null)
+            {
+                lists = lists + 1;
+            }
+
+            int expect = Builder.Count - 1;
+
+            while (n != null)
+            {
+                nodes = nodes + 1;
+                sum = sum + n.Value;
+
+                if (n.Name != "n" + expect)
+                {
+                    names = false;
+                }
+                expect = expect - 1;
+                n = n.Next;
+            }
+        }
+
+        Say("lists ", lists);
+        Say("nodes ", nodes);
+        Say("sum ", sum);
+        SayBool("strings ", names);
+        SayBool("collected ", Gc.Collections > 0);
+
+        if (mine == 0)
+        {
+            return 1;
+        }
+        if (!Gc.CheckFreeIndex()) return 2;
+        return 0;
+    }
+}

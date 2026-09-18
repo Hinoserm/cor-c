@@ -1,0 +1,93 @@
+// test: null_state
+// expect-exit: 0
+// expect-output:
+// walk 2
+// lambda 7
+// made 10
+// coalesce 5 uint
+//
+// THE NULL STATE, in the three places C# keeps it and this checker did not.
+//
+// A DEREFERENCE PROVES IT. `_idom![b]` says so about _idom, and every later
+// `_idom[x]` reads it without a second `!` -- C# sets the state at the
+// dereference, so there is one diagnostic per place a proof is missing rather
+// than one per use of the same thing afterwards.
+//
+// WHAT WAS PROVED OUTSIDE A LAMBDA HOLDS INSIDE IT. A captured local is a
+// field of the closure, and the proof travels with it -- it stopped travelling
+// the moment the local was captured, because capturing set a flag that was
+// part of the symbol's own identity and the set it was in lost track of it.
+//
+// AND AN ASSIGNMENT IS WORTH WHAT WAS PUT THERE. `MReg Got() => got ??=
+// New();` returns an MReg: the variable holds one after the write, whatever
+// its declaration allows.
+
+sealed class Block { public int Id; }
+
+sealed class Reg { public int N; }
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    private static Dictionary<Block, Block?>? _idom;
+
+    static int Walk(Block a, Block b)
+    {
+        _idom = new Dictionary<Block, Block?>();
+        _idom[a] = b;
+        _idom[b] = null;
+
+        Block? stop = _idom![b];
+        Block? runner = a;
+        int steps = 0;
+
+        while (runner is not null && !ReferenceEquals(runner, stop))
+        {
+            runner = _idom[runner];
+            steps++;
+        }
+        return steps;
+    }
+
+    static int Inside(Block? held)
+    {
+        if (held is null)
+        {
+            return 0;
+        }
+
+        List<int> ids = new List<int>();
+
+        ids.Add(1);
+        return ids.Count(x => x == held.Id) + held.Id;
+    }
+
+    static int Made()
+    {
+        Reg? got = null;
+        Reg Got() => got ??= new Reg { N = 5 };
+
+        return Got().N + Got().N;
+    }
+
+    static int Main()
+    {
+        Line("walk " + Walk(new Block { Id = 1 }, new Block { Id = 2 }));
+        Line("lambda " + Inside(new Block { Id = 7 }));
+        Line("made " + Made());
+
+        uint? loadBase = null;
+
+        // `uint? ?? 5` is a uint, because the right side is converted to what
+        // the left side holds -- which is the whole point of writing it.
+        uint chosen = loadBase ?? 5;
+
+        Line("coalesce " + chosen + " uint");
+        return 0;
+    }
+}

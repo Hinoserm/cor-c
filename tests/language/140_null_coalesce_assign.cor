@@ -1,0 +1,73 @@
+// test: null_coalesce_assign
+// expect-exit: 0
+// expect-output:
+// local first second
+// field one one
+// element a b
+// chain 5 5
+// once 1
+//
+// `??=` assigns only when what is there is null, and evaluates its right side
+// only then: the whole point of the operator is that the fallback is not built
+// when it is not needed. Locals, fields, array elements and a nullable int are
+// each tested, together with the count of how often the right side ran.
+
+class Box
+{
+    public string? Text;
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int _made;
+
+    static string Make(string s)
+    {
+        _made++;
+        return s;
+    }
+
+    static int Main()
+    {
+        string? a = null;
+        a ??= "first";
+        string? b = "second";
+        b ??= "other";
+        Line("local " + a + " " + b);
+
+        Box box = new Box();
+        box.Text ??= "one";
+        box.Text ??= "two";
+        Line("field " + box.Text + " " + box.Text);
+
+        string?[] cells = new string?[2];
+        cells[0] = "a";
+        cells[0] ??= "z";
+        cells[1] ??= "b";
+        Line("element " + cells[0] + " " + cells[1]);
+
+        int? n = null;
+        n ??= 5;
+        int? m = n;
+        m ??= 9;
+        Sys.Print("chain ");
+        Sys.PrintInt(n.Value);
+        Sys.Print(" ");
+        Sys.PrintInt(m.Value);
+        Sys.PrintLine();
+
+        string? held = null;
+        held ??= Make("x");
+        held ??= Make("y");
+        Sys.Print("once ");
+        Sys.PrintInt(_made);
+        Sys.PrintLine();
+        return 0;
+    }
+}

@@ -1,0 +1,101 @@
+// test: tuples
+// expect-exit: 0
+// expect-output:
+// bare 7 seven
+// named 3 40 3 40
+// three here 12 True
+// sum 13
+// labels x 9
+// decon 7 seven
+// divmod 3 2
+// swap 2 1
+// list 2 b 3 ab
+// long 34359738368 -1
+//
+// Tuples: returned from methods unnamed and named, accessed by name and by
+// Item position, passed as a parameter, written with labels, deconstructed
+// into new locals with and without `var`, held in a List, taken apart by a
+// foreach, and holding two longs.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static (int, string) Bare()
+    {
+        return (7, "seven");
+    }
+
+    static (int Reg, long Off) Memory()
+    {
+        return (3, 40);
+    }
+
+    static (string Text, int Line, bool Wide) Where()
+    {
+        return ("here", 12, true);
+    }
+
+    static long Sum((int A, int B) pair)
+    {
+        return pair.A + pair.B;
+    }
+
+    static (int, int) DivMod(int a, int b)
+    {
+        return (a / b, a % b);
+    }
+
+    static (long, long) Wide()
+    {
+        return (1L << 35, -1);
+    }
+
+    static int Main()
+    {
+        (int, string) two = Bare();
+        Line("bare " + two.Item1 + " " + two.Item2);
+
+        (int Reg, long Off) mem = Memory();
+        Line("named " + mem.Reg + " " + mem.Off + " " + mem.Item1 + " " + mem.Item2);
+
+        (string Text, int Line, bool Wide) three = Where();
+        Line("three " + three.Text + " " + three.Line + " " + three.Wide);
+
+        Line("sum " + Sum((6, 7)));
+
+        (string text, int kind) named = (text: "x", kind: 9);
+        Line("labels " + named.text + " " + named.kind);
+
+        (int number, string word) = Bare();
+        Line("decon " + number + " " + word);
+
+        var (q, r) = DivMod(17, 5);
+        Line("divmod " + q + " " + r);
+
+        int x = 1;
+        int y = 2;
+        var (sx, sy) = (y, x);
+        Line("swap " + sx + " " + sy);
+
+        List<(int At, string Label)> fixups = new List<(int At, string Label)>();
+        fixups.Add((1, "a"));
+        fixups.Add((2, "b"));
+        int total = 0;
+        string joined = "";
+        foreach ((int at, string label) in fixups)
+        {
+            total = total + at;
+            joined = joined + label;
+        }
+        Line("list " + fixups.Count + " " + fixups[1].Label + " " + total + " " + joined);
+
+        (long, long) w = Wide();
+        Line("long " + w.Item1 + " " + w.Item2);
+        return 0;
+    }
+}

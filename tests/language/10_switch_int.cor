@@ -1,0 +1,109 @@
+// test: switch_int
+// expect-exit: 0
+// expect-output:
+// dense zero one two three four other
+// sparse one hundred thousand minus ?
+// multi odd even odd even odd
+// loop 5
+// long big small
+//
+// switch on integers: a dense range (which a compiler may turn into a jump
+// table), a sparse one with a negative label (which it may not), several
+// labels sharing one body, a break inside a switch that must not leave the
+// enclosing loop, and a switch on a long subject.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static string Dense(int n)
+    {
+        switch (n)
+        {
+            case 0: return "zero";
+            case 1: return "one";
+            case 2: return "two";
+            case 3: return "three";
+            case 4: return "four";
+            default: return "other";
+        }
+    }
+
+    static string Sparse(int n)
+    {
+        string result = "?";
+        switch (n)
+        {
+            case 1:
+                result = "one";
+                break;
+            case 100:
+                result = "hundred";
+                break;
+            case 1000:
+                result = "thousand";
+                break;
+            case -5:
+                result = "minus";
+                break;
+        }
+        return result;
+    }
+
+    static string Multi(int n)
+    {
+        switch (n)
+        {
+            case 1:
+            case 3:
+            case 5:
+                return "odd";
+            case 2:
+            case 4:
+                return "even";
+            default:
+                return "?";
+        }
+    }
+
+    static string Wide(long n)
+    {
+        switch (n)
+        {
+            case 4294967296L: return "big";
+            case 0: return "small";
+            default: return "?";
+        }
+    }
+
+    static int Main()
+    {
+        Line("dense " + Dense(0) + " " + Dense(1) + " " + Dense(2) + " " + Dense(3) + " " + Dense(4) + " " + Dense(99));
+        Line("sparse " + Sparse(1) + " " + Sparse(100) + " " + Sparse(1000) + " " + Sparse(-5) + " " + Sparse(2));
+        Line("multi " + Multi(1) + " " + Multi(2) + " " + Multi(3) + " " + Multi(4) + " " + Multi(5));
+
+        int passes = 0;
+        for (int i = 0; i < 5; i++)
+        {
+            switch (i)
+            {
+                case 2:
+                    passes++;
+                    break;
+                default:
+                    passes++;
+                    break;
+            }
+        }
+        Line("loop " + passes);
+
+        long big = 4294967296L;
+        long small = 0;
+        Line("long " + Wide(big) + " " + Wide(small));
+        return 0;
+    }
+}

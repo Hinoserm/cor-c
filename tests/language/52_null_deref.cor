@@ -1,0 +1,36 @@
+// test: null_deref
+// expect-exit: nonzero
+//
+// Reading a field through a null reference is a runtime failure with a
+// non-zero exit code; it must not read address zero and carry on. Output is
+// not compared. The reference is chosen at run time so the compiler cannot
+// see that it is null.
+
+class Node
+{
+    public int Value;
+}
+
+static class Program
+{
+    static Node? Pick(int n)
+    {
+        if (n > 0)
+        {
+            return new Node();
+        }
+        return null;
+    }
+
+    static int Main()
+    {
+        int zero = 0;
+        Node? n = Pick(zero);
+        Sys.Print("before");
+        Sys.PrintLine();
+        Sys.PrintInt(n.Value);
+        Sys.Print("after");
+        Sys.PrintLine();
+        return 0;
+    }
+}

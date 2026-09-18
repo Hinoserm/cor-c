@@ -1,0 +1,73 @@
+// test: enums
+// expect-exit: 0
+// expect-output:
+// values 0 5 6
+// compare True True
+// switch green red blue
+// cast True
+// list 3 11
+// field 5
+//
+// Enums: implicit and explicit member values, comparison, switch on an
+// enum, casting from an int, enums in a List, and an enum-typed field.
+
+enum Color
+{
+    Red,
+    Green = 5,
+    Blue,
+}
+
+class Pixel
+{
+    public Color Tint;
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static string Name(Color c)
+    {
+        switch (c)
+        {
+            case Color.Red: return "red";
+            case Color.Green: return "green";
+            case Color.Blue: return "blue";
+            default: return "?";
+        }
+    }
+
+    static int Main()
+    {
+        Line("values " + (int)Color.Red + " " + (int)Color.Green + " " + (int)Color.Blue);
+
+        Color c = Color.Green;
+        Line("compare " + (c == Color.Green) + " " + (c != Color.Red));
+        Line("switch " + Name(c) + " " + Name(Color.Red) + " " + Name(Color.Blue));
+
+        int six = 6;
+        Color fromInt = (Color)six;
+        Line("cast " + (fromInt == Color.Blue));
+
+        List<Color> all = new List<Color>();
+        all.Add(Color.Red);
+        all.Add(Color.Green);
+        all.Add(Color.Blue);
+        int sum = 0;
+        foreach (Color k in all)
+        {
+            sum += (int)k;
+        }
+        Line("list " + all.Count + " " + sum);
+
+        Pixel p = new Pixel();
+        p.Tint = Color.Green;
+        Line("field " + (int)p.Tint);
+        return 0;
+    }
+}

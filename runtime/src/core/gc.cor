@@ -1,0 +1,2486 @@
+// The memory library: a garbage-collected heap, so a program only ever says
+// `new` and nothing about memory at all.
+//
+// Runtime.Alloc(bytes) is the one call the compiler makes for memory
+// (docs/software/X86-BACKEND.md, "Memory"), and it comes here. This is the
+// kernel's heap (lib/heap.cor) -- a free list with boundary-tag coalescing
+// and a conservative mark-sweep collector -- ported to a 32-bit user process:
+// no locks, no per-processor caches, no firmware tables, and memory from
+// the operating system through Platform.Map in large chunks.
+//
+// What stays the same is the part that matters: the collector is
+// CONSERVATIVE and NON-MOVING. It does not know which words are pointers,
+// so every word of every root and of every reachable object that lands on
+// a live block keeps that block, and nothing is ever moved because a word
+// that is only guessed to be a pointer cannot be updated. Being wrong that
+// way retains something already dead, which costs a little memory; being
+// wrong the other way frees something in use, which costs everything. So
+// every uncertainty here is resolved towards keeping.
+//
+// Compiled with every program (the compiler links it by default); see the
+// Runtime class in lib/rt/runtime.cor for the forwarders.
+//
+// THREE MODULES, because this collector is the bootstrap and not the design.
+// The design (X86-BACKEND.md, "Memory") is a precise, generational, moving
+// collector the compiler cooperates with; it keeps the chunk manager and
+// the sweep/free-list code for its old generation and replaces marking,
+// allocation and root finding. So those seams are classes here:
+//
+//   HeapChunks   memory from the operating system: the chunk list, the cap,
+//                which chunk an address is in. Knows nothing about blocks.
+//   GcRoots      where the roots are: the stack, the registers, the statics.
+//                The conservative version hands every word to Gc.MarkAt; the
+//                precise one will hand exact slots from stack maps instead.
+//   Gc           blocks, the free list, allocation, conservative marking and
+//                the sweep. The block layout below is Gc's alone.
+
+// ---- what a block looks like ------------------------------------------------
+//
+// Sizes are multiples of eight, so the low three bits of the size word carry
+// the flags. Offsets are in bytes; a word is four.
+//
+//   +0          size | flags                    (the header word)
+//   +4          the next free block             while it is free
+//   +8          the payload, the address handed out; 8-aligned
+//   +8          the PREVIOUS free block          while it is free
+//   +size-4     size | flags again               (the footer word)
+// Large free blocks instead use +4/+8 for AVL children, +12 for their parent,
+// +16 for height and +20 for largest size. Those words are payload again once
+// the block is allocated.
+//
+// The size is at BOTH ENDS on purpose, and that is what makes coalescing
+// possible: the block after this one is at +size, and the one BEFORE it can
+// only be found by reading backwards, through its footer. Removing a neighbour
+// uses its links in an exact-size list or its parent in a large-bin AVL tree.
+//
+// A payload is 8-aligned because the block is and the header is 8 bytes,
+// which is what a long or a double field in an object needs.
+
+// ---- what a chunk looks like ------------------------------------------------
+//
+// The heap is a list of chunks from the operating system, each carrying a
+// small record in its own first bytes -- so taking a chunk never itself needs
+// an allocation, which matters because a chunk is taken exactly when the
+// heap cannot allocate anything:
+//
+//   +0    next chunk, or 0
+//   +4    end: one past the last block laid down (the bump pointer's floor)
+//   +8    limit: one past the chunk's memory
+//   +12   raw page-anchor table, or 0 when not allocated
+//   +16   the first block
+//
+// The record is not a block and is never swept.
+
+static class Gc
+{
+    const long HeaderBytes = 8;
+    const long FooterBytes = 4;
+    const long Overhead = 12;
+
+    const long FlagFree = 1;
+    const long FlagMark = 2;
+    const long FlagScan = 4;
+    const long FlagMask = 7;
+    const long SizeMask = -8;
+
+    // The smallest block that can describe itself while free: header, two
+    // links, footer. A remainder below this cannot be a block, so a split
+    // that would leave one gives the caller the extra bytes instead.
+    const long Smallest = 16;
+
+    // Collect when this much has been allocated since the last collection:
+    // 256 KB to begin with, and thereafter the live size, so that a program
+    // with a large live heap is not collected every quarter megabyte and a
+    // small one never grows past a couple of chunks. The threshold is a
+    // function of the LIVE size after the last collection, which is the
+    // only measure of the program that the collector actually knows.
+    const long MinThreshold = 262144;
+
+    // The mark queue: a block of the operating system's, not a heap block,
+    // taken once at start. 64K entries; a live graph wider than that
+    // finishes through the rescan path below, which needs no memory at all.
+    const long MarkBytes = 262144;
+
+    // Exact-size doubly linked lists through 256 bytes (31 bins), then an
+    // AVL size/address tree per power-of-two range. Coarse bins alone were
+    // insufficient: native selfcompilation accumulated 249,079 fragments
+    // in one range and billions of first-fit probes. Tree lower bounds keep
+    // searches logarithmic without external nodes or a bigger block header.
+    const long Bins = 64;
+    const long BinsBytes = 512; // roots followed by per-bin largest-size hints
+    const long ExactLimit = 256;
+
+    // A long zero and one, named: assigning an int literal to a long local
+    // inside a nested block is mis-typed by the lowering as of this writing
+    // (see Runtime.Alloc's note in runtime.cor), and a const long is not.
+    const long Zero = 0;
+    const long One = 1;
+
+    static long _current;       // the chunk the bump pointer is in
+    static long _bump;          // first untouched byte in the current chunk
+    static long _limit;         // one past the current chunk
+    static long _bins;          // Bins free-list heads, a page of the OS's, or 0
+    static long _smallFree;     // blocks in the exact-size bins, 16..256 bytes
+
+    static long _since;         // bytes allocated since the last collection
+    static long _threshold;     // collect when _since reaches this
+    static long _liveBytes;     // block bytes found live by the last sweep
+    static long _liveBlocks;
+
+    static long _markAt;        // the mark queue, or 0
+    static long _markCount;     // its capacity in entries
+    static long _markHead;
+    static long _markTail;
+    static long _markPeak;
+    static bool _markOverflow;
+
+
+    // Work counters, for finding out where a collection's time goes.
+    public static long MarkCalls;
+    public static long WalkSteps;
+    public static long ProbeSteps;
+    public static long SweepVisits;
+    public static long RescanPasses;
+    static bool _collecting;
+    static bool _ready;
+
+    /// How many collections have run. A test reads it to prove one happened.
+    public static long Collections;
+
+    // ---- what a program can ask ---------------------------------------------
+
+    /// Bytes the sweep found live at the last collection.
+    public static long LiveBytes
+    {
+        get { return _liveBytes; }
+    }
+
+    /// Blocks the sweep found live at the last collection.
+    public static long LiveBlocks
+    {
+        get { return _liveBlocks; }
+    }
+
+    /// The deepest the mark queue got in the last collection: how many
+    /// blocks were reached through other blocks rather than from a root.
+    public static long MarkPeak
+    {
+        get { return _markPeak; }
+    }
+
+    /// Bytes allocated since the last collection, and the amount that
+    /// triggers the next one.
+    public static long Since
+    {
+        get { return _since; }
+    }
+
+    public static long Threshold
+    {
+        get { return _threshold; }
+    }
+
+    /// Bytes taken from the operating system so far.
+    public static long HeapBytes
+    {
+        get { return HeapChunks.HeapBytes; }
+    }
+
+    /// Caps what the heap may take from the operating system. Zero removes
+    /// the cap. A program that knows it must fit in so much memory says so
+    /// here, and gets a collection instead of a bigger heap when it reaches
+    /// it -- and an out-of-memory stop if the collection does not help.
+    public static void SetLimit(long bytes)
+    {
+        HeapChunks.SetLimit(bytes);
+    }
+
+    // ---- reading and writing a block ----------------------------------------
+
+    static long SizeOfBlock(long block)
+    {
+        return Sys.Peek(block) & SizeMask;
+    }
+
+    static bool IsFree(long block)
+    {
+        return (Sys.Peek(block) & FlagFree) != 0;
+    }
+
+    /// Writes a block's size and flags at BOTH ENDS, so it can be found from
+    /// either side.
+    static void Stamp(long block, long size, long flags)
+    {
+        Sys.Poke(block, size | flags);
+        Sys.Poke(block + size - FooterBytes, size | flags);
+    }
+
+    // ---- the free list ------------------------------------------------------
+
+    /// Which bin a block of `size` bytes belongs in.
+    static long BinOf(long size)
+    {
+        if (size <= ExactLimit)
+        {
+            return (size >> 3) - 2;
+        }
+
+        // 264..511 is bin 31, 512..1023 bin 32, and so on: 31 plus the bit
+        // length above nine. Sizes are below 2^31, so this stays under 64.
+        long length = 64 - Runtime.LeadingZeroCount(size);
+        return 31 + length - 9;
+    }
+
+    static long BinHead(long bin)
+    {
+        return Sys.Peek(_bins + bin * 4);
+    }
+
+    static void SetBinHead(long bin, long block)
+    {
+        Sys.Poke(_bins + bin * 4, block);
+    }
+
+    // Large free blocks are AVL nodes ordered by (size, address). Their
+    // otherwise-unused payload holds the extra metadata; allocated layout,
+    // boundary tags and the smallest allocation are unchanged. Exact-size
+    // small bins retain their doubly linked lists.
+    const long TreeLeft = 4;
+    const long TreeRight = 8;
+    const long TreeParent = 12;
+    const long TreeHeight = 16;
+    const long TreeMaxSize = 20;
+
+    static long Height(long node)
+    {
+        return node == 0 ? Zero : Sys.Peek(node + TreeHeight);
+    }
+
+    static void FixHeight(long node)
+    {
+        long left = Height(Sys.Peek(node + TreeLeft));
+        long right = Height(Sys.Peek(node + TreeRight));
+        Sys.Poke(node + TreeHeight, (left > right ? left : right) + 1);
+        long rightNode = Sys.Peek(node + TreeRight);
+        Sys.Poke(node + TreeMaxSize, rightNode == 0 ? SizeOfBlock(node) : Sys.Peek(rightNode + TreeMaxSize));
+    }
+
+    static void PublishLargest(long bin)
+    {
+        long root = BinHead(bin);
+        Sys.Poke(_bins + Bins * 4 + bin * 4, root == 0 ? Zero : Sys.Peek(root + TreeMaxSize));
+    }
+
+    static void TreeReplace(long bin, long old, long replacement)
+    {
+        long parent = Sys.Peek(old + TreeParent);
+        if (parent == 0) SetBinHead(bin, replacement);
+        else if (Sys.Peek(parent + TreeLeft) == old) Sys.Poke(parent + TreeLeft, replacement);
+        else Sys.Poke(parent + TreeRight, replacement);
+        if (replacement != 0) Sys.Poke(replacement + TreeParent, parent);
+    }
+
+    static long RotateLeft(long bin, long node)
+    {
+        long top = Sys.Peek(node + TreeRight);
+        long middle = Sys.Peek(top + TreeLeft);
+        TreeReplace(bin, node, top);
+        Sys.Poke(node + TreeRight, middle);
+        if (middle != 0) Sys.Poke(middle + TreeParent, node);
+        Sys.Poke(top + TreeLeft, node);
+        Sys.Poke(node + TreeParent, top);
+        FixHeight(node);
+        FixHeight(top);
+        return top;
+    }
+
+    static long RotateRight(long bin, long node)
+    {
+        long top = Sys.Peek(node + TreeLeft);
+        long middle = Sys.Peek(top + TreeRight);
+        TreeReplace(bin, node, top);
+        Sys.Poke(node + TreeLeft, middle);
+        if (middle != 0) Sys.Poke(middle + TreeParent, node);
+        Sys.Poke(top + TreeRight, node);
+        Sys.Poke(node + TreeParent, top);
+        FixHeight(node);
+        FixHeight(top);
+        return top;
+    }
+
+    static void Balance(long bin, long node)
+    {
+        while (node != 0)
+        {
+            FixHeight(node);
+            long left = Sys.Peek(node + TreeLeft);
+            long right = Sys.Peek(node + TreeRight);
+            long difference = Height(left) - Height(right);
+            if (difference > 1)
+            {
+                if (Height(Sys.Peek(left + TreeLeft)) < Height(Sys.Peek(left + TreeRight)))
+                    RotateLeft(bin, left);
+                node = RotateRight(bin, node);
+            }
+            else if (difference < -1)
+            {
+                if (Height(Sys.Peek(right + TreeRight)) < Height(Sys.Peek(right + TreeLeft)))
+                    RotateRight(bin, right);
+                node = RotateLeft(bin, node);
+            }
+            node = Sys.Peek(node + TreeParent);
+        }
+    }
+
+    static void TreeLink(long bin, long block, long size)
+    {
+        Sys.Poke(block + TreeLeft, Zero);
+        Sys.Poke(block + TreeRight, Zero);
+        Sys.Poke(block + TreeParent, Zero);
+        Sys.Poke(block + TreeHeight, One);
+        Sys.Poke(block + TreeMaxSize, size);
+        long node = BinHead(bin);
+        if (node == 0) { SetBinHead(bin, block); return; }
+        while (true)
+        {
+            long otherSize = SizeOfBlock(node);
+            long side = size < otherSize || (size == otherSize && block < node) ? TreeLeft : TreeRight;
+            long next = Sys.Peek(node + side);
+            if (next == 0)
+            {
+                Sys.Poke(node + side, block);
+                Sys.Poke(block + TreeParent, node);
+                Balance(bin, node);
+                return;
+            }
+            node = next;
+        }
+    }
+
+    static void TreeUnlink(long bin, long block)
+    {
+        long left = Sys.Peek(block + TreeLeft);
+        long right = Sys.Peek(block + TreeRight);
+        long start = Sys.Peek(block + TreeParent);
+        if (left == 0 || right == 0)
+        {
+            TreeReplace(bin, block, left != 0 ? left : right);
+        }
+        else
+        {
+            // Move the successor node itself, never its size/header: those
+            // bytes describe a physical block and cannot be exchanged.
+            long successor = right;
+            while (Sys.Peek(successor + TreeLeft) != 0)
+                successor = Sys.Peek(successor + TreeLeft);
+            start = Sys.Peek(successor + TreeParent);
+            if (start != block)
+            {
+                TreeReplace(bin, successor, Sys.Peek(successor + TreeRight));
+                Sys.Poke(successor + TreeRight, right);
+                Sys.Poke(right + TreeParent, successor);
+            }
+            else start = successor;
+            TreeReplace(bin, block, successor);
+            Sys.Poke(successor + TreeLeft, left);
+            Sys.Poke(left + TreeParent, successor);
+            FixHeight(successor);
+        }
+        Balance(bin, start);
+    }
+
+    static long TreeFit(long node, long need)
+    {
+        long best = 0;
+        while (node != 0)
+        {
+            ProbeSteps = ProbeSteps + 1;
+            if (SizeOfBlock(node) >= need)
+            {
+                best = node;
+                node = Sys.Peek(node + TreeLeft);
+            }
+            else node = Sys.Peek(node + TreeRight);
+        }
+        return best;
+    }
+
+    // Allocation-free diagnostic. Run under the heap lock so a failure
+    // describes one consistent index. Normal programs do not call this.
+    public static long FreeIndexErrorBlock;
+    public static long FreeIndexErrorKind;
+
+    static long BadIndex(long node, long kind)
+    {
+        FreeIndexErrorBlock = node;
+        FreeIndexErrorKind = kind;
+        return -1;
+    }
+
+    static bool IndexBlock(long node, long bin)
+    {
+        if ((node & 7) != 0) return false;
+        long chunk = HeapChunks.Of(node);
+        if (chunk == 0) return false;
+        long header = Sys.Peek(node);
+        long size = header & SizeMask;
+        return size >= Smallest && node >= HeapChunks.First(chunk)
+            && node + size <= HeapChunks.End(chunk) && (header & FlagFree) != 0
+            && Sys.Peek(node + size - FooterBytes) == header && BinOf(size) == bin;
+    }
+
+    static long CheckTree(long node, long parent, long bin, long minSize, long minAddress,
+        long maxSize, long maxAddress, int depth)
+    {
+        if (node == 0) return 0;
+        if (depth > 64) return BadIndex(node, 1);
+        if (!IndexBlock(node, bin)) return BadIndex(node, 2);
+        if (Sys.Peek(node + TreeParent) != parent) return BadIndex(node, 3);
+        long size = SizeOfBlock(node);
+        if (minAddress != 0 && (size < minSize || (size == minSize && node <= minAddress)))
+            return BadIndex(node, 4);
+        if (maxAddress != 0 && (size > maxSize || (size == maxSize && node >= maxAddress)))
+            return BadIndex(node, 4);
+        long left = CheckTree(Sys.Peek(node + TreeLeft), node, bin,
+            minSize, minAddress, size, node, depth + 1);
+        if (left < 0) return -1;
+        long right = CheckTree(Sys.Peek(node + TreeRight), node, bin,
+            size, node, maxSize, maxAddress, depth + 1);
+        if (right < 0) return -1;
+        long height = (left > right ? left : right) + 1;
+        if (left - right > 1 || right - left > 1 || Sys.Peek(node + TreeHeight) != height)
+            return BadIndex(node, 5);
+        long rightNode = Sys.Peek(node + TreeRight);
+        long largest = rightNode == 0 ? size : Sys.Peek(rightNode + TreeMaxSize);
+        if (Sys.Peek(node + TreeMaxSize) != largest) return BadIndex(node, 8);
+        return height;
+    }
+
+    public static bool CheckFreeIndex()
+    {
+        GcLock.Enter();
+        FreeIndexErrorBlock = Zero;
+        FreeIndexErrorKind = Zero;
+        long small = 0;
+        bool okay = true;
+        if (_bins != 0)
+        {
+            long bin = 0;
+            while (bin < Bins && okay)
+            {
+                long node = BinHead(bin);
+                if (bin > BinOf(ExactLimit))
+                {
+                    okay = CheckTree(node, Zero, bin, Zero, Zero, Zero, Zero, 0) >= 0;
+                    long largest = node == 0 ? Zero : Sys.Peek(node + TreeMaxSize);
+                    if (okay && Sys.Peek(_bins + Bins * 4 + bin * 4) != largest)
+                    { BadIndex(node, 8); okay = false; }
+                }
+                else
+                {
+                    long previous = 0;
+                    while (node != 0 && okay)
+                    {
+                        small = small + 1;
+                        if (small > HeapChunks.HeapBytes / Smallest || !IndexBlock(node, bin)
+                            || Sys.Peek(node + HeaderBytes) != previous)
+                        { BadIndex(node, 6); okay = false; }
+                        else { previous = node; node = Sys.Peek(node + 4); }
+                    }
+                }
+                bin = bin + 1;
+            }
+            if (okay && small != _smallFree) { BadIndex(Zero, 7); okay = false; }
+        }
+        GcLock.Exit();
+        return okay;
+    }
+
+    static void Link(long block)
+    {
+        long size = SizeOfBlock(block);
+        long bin = BinOf(size);
+        if (size > ExactLimit) { TreeLink(bin, block, size); PublishLargest(bin); return; }
+        long head = BinHead(bin);
+
+        if (size <= ExactLimit)
+        {
+            _smallFree = _smallFree + 1;
+        }
+
+        Sys.Poke(block + 4, head);
+        Sys.Poke(block + HeaderBytes, Zero);
+
+        if (head != 0)
+        {
+            Sys.Poke(head + HeaderBytes, block);
+        }
+        SetBinHead(bin, block);
+    }
+
+    static void Unlink(long block)
+    {
+        long size = SizeOfBlock(block);
+        if (size > ExactLimit)
+        {
+            long bin = BinOf(size);
+            TreeUnlink(bin, block);
+            PublishLargest(bin);
+            return;
+        }
+        long next = Sys.Peek(block + 4);
+        long prev = Sys.Peek(block + HeaderBytes);
+
+        if (size <= ExactLimit)
+        {
+            _smallFree = _smallFree - 1;
+        }
+
+        if (prev == 0)
+        {
+            SetBinHead(BinOf(size), next);
+        }
+        else
+        {
+            Sys.Poke(prev + 4, next);
+        }
+
+        if (next != 0)
+        {
+            Sys.Poke(next + HeaderBytes, prev);
+        }
+    }
+
+    /// Empties every bin; the sweep rebuilds them.
+    static void ClearBins()
+    {
+        long bin = 0;
+        _smallFree = 0;
+
+        while (bin < Bins)
+        {
+            SetBinHead(bin, Zero);
+            Sys.Poke(_bins + Bins * 4 + bin * 4, Zero);
+            bin = bin + 1;
+        }
+    }
+
+    // ---- chunks ---------------------------------------------------------------
+
+    /// Takes a chunk of at least `need` block bytes and makes it current.
+    /// Whatever the old current chunk had left above its bump pointer
+    /// becomes a free block first, so nothing is stranded. Answers false
+    /// when the cap or the operating system refuses.
+    static bool Grow(long need)
+    {
+        long raw = HeapChunks.Take(need);
+
+        if (raw == 0)
+        {
+            SayNumber("heap: no chunk for ", need);
+            return false;
+        }
+
+        // The tail of the chunk being left. If it cannot describe itself
+        // (below Smallest) it stays unused; that is at most fifteen bytes.
+        if (_current != 0)
+        {
+            long tail = _limit - _bump;
+
+            if (tail >= Smallest)
+            {
+                Stamp(_bump, tail, FlagFree);
+                Link(_bump);
+                _bump = _limit;
+            }
+            HeapChunks.SetEnd(_current, _bump);
+        }
+
+        _current = raw;
+        _bump = HeapChunks.First(raw);
+        _limit = HeapChunks.Limit(raw);
+        return true;
+    }
+
+    // ---- handing memory out ---------------------------------------------------
+
+    // The largest request: leaves room for the rounding below.
+    const long MaxRequest = 0x7FFFFFFF - Overhead - 7;
+
+    /// The heap. Zeroed memory for `bytes`, 8-aligned.
+    ///
+    /// THE FAST PATH, kept to a few instructions so the inliner can put it at
+    /// every `new`: round the size, bump the pointer within the current
+    /// chunk, stamp the block, and count it towards the next collection.
+    /// An available fitting block in the request's size bin diverts it to the
+    /// locked index for reuse. Unrelated free sizes do not prevent a thread
+    /// from using its private buffer. The unlocked head/maximum check is only
+    /// a hint; the slow path takes a block under the heap lock.
+    /// Everything else -- a full chunk, a collection due, a size out of
+    /// range, the heap not started -- falls to AllocSlow. Memory above the
+    /// bump pointer is untouched since the operating system zeroed it, so
+    /// the fast path clears nothing; that is why the bump pointer never
+    /// moves backwards.
+    ///
+    /// The chunk's own end word is NOT updated here; the slow path, a
+    /// collection and Free bring it up to date first (SyncEnd), which is
+    /// every place that reads it.
+    public static long Alloc(long bytes)
+    {
+        long tb = Sys.ThreadBlock();
+        long need = (bytes + Overhead + 7) & SizeMask;
+        long block = Sys.Peek(tb + Tls.AllocPtr);
+        long next = block + need;
+
+        if (bytes < 0 || bytes > MaxRequest || next + Smallest > Sys.Peek(tb + Tls.AllocLimit)
+            || HasReusableFree(need))
+        {
+            return AllocSlow(bytes);
+        }
+
+        Sys.Poke(tb + Tls.AllocPtr, next);
+        Sys.Poke(block, need);
+        Sys.Poke(next - FooterBytes, need);
+        return block + HeaderBytes;
+    }
+
+    // ---- allocation buffers ---------------------------------------------------
+    //
+    // A thread bumps in a buffer of its OWN -- a block taken from the shared
+    // heap under the lock and then carved up with no lock at all -- which is
+    // what makes allocation on several threads cost what it costs on one.
+    //
+    // THE ONE INVARIANT the rest of this file depends on: every byte of every
+    // chunk below its end word must be walkable as a chain of blocks, because
+    // marking, sweeping and coalescing all walk. A buffer between its pointer
+    // and its limit is NOT a block -- it is untouched memory -- so a buffer is
+    // RETIRED (its tail stamped as one free block) before anything walks, and
+    // the only thing that walks is a collection, which happens with every
+    // thread stopped. That is the whole reason the world is stopped at all.
+    //
+    // The fast path keeps Smallest bytes back so that the tail is always big
+    // enough to describe itself; a remainder of eight bytes would be a hole
+    // nothing could walk past.
+
+    const long BufferBytes = 65536;
+
+    // This is only an allocation-policy hint. A concurrent owner may change
+    // the bin after this read; AllocSlow always rechecks/takes under the heap
+    // lock. Never dereference the observed free-block address without that
+    // lock. The bin table itself remains mapped for the heap's lifetime.
+    static bool HasReusableFree(long need)
+    {
+        if (_bins == 0) return false;
+        if (need <= ExactLimit)
+            return _smallFree != 0 && BinHead((need >> 3) - 2) != 0;
+        // Never walk a concurrently rotating tree. Only the published size
+        // hint is read here; the locked allocation path resolves stale hints.
+        return Sys.Peek(_bins + Bins * 4 + BinOf(need) * 4) >= need;
+    }
+
+    /// A fresh allocation buffer for the thread whose block is `block`, big
+    /// enough for a request of `need`. The heap lock must be held.
+    static bool Refill(long block, long need)
+    {
+        Retire(block);
+
+        // Reuse free memory before consuming fresh address space. A 64 KiB
+        // buffer is a preference, not a minimum: otherwise thousands of
+        // smaller holes can coexist with repeated megabyte heap growth.
+        long arena = TakeFree(BufferBytes);
+        if (arena == 0) arena = TakeBufferFragment(need + Smallest);
+        if (arena != 0)
+            ZeroWords(arena + HeaderBytes, arena + SizeOfBlock(arena) - FooterBytes);
+        else arena = TakeBump(BufferBytes);
+
+        if (arena == 0)
+        {
+            if (Grow(BufferBytes))
+            {
+                arena = Take(BufferBytes);
+            }
+        }
+
+        if (arena == 0)
+        {
+            return false;
+        }
+
+        long size = SizeOfBlock(arena);
+
+        // The pressure counter is charged the whole buffer here, once, rather
+        // than each allocation out of it: the fast path must not touch a word
+        // another thread also writes, and the buffer is what this thread has
+        // actually taken out of the heap.
+        _since = _since + size;
+        Sys.Poke(block + Tls.AllocBase, arena);
+        Sys.Poke(block + Tls.AllocPtr, arena);
+        Sys.Poke(block + Tls.AllocLimit, arena + size);
+        return true;
+    }
+
+    // Largest available fragment below the preferred buffer size. Keep it
+    // whole for this thread rather than splitting off a one-object buffer.
+    // All tree/list reads occur under the heap lock held by Refill.
+    static long TakeBufferFragment(long minimum)
+    {
+        long lowest = BinOf(minimum);
+        for (long bin = BinOf(BufferBytes - 8); bin >= lowest; bin--)
+        {
+            long block = BinHead(bin);
+            if (block == 0) continue;
+            if (bin > BinOf(ExactLimit))
+            {
+                if (Sys.Peek(block + TreeMaxSize) < minimum) continue;
+                while (Sys.Peek(block + TreeRight) != 0)
+                    block = Sys.Peek(block + TreeRight);
+            }
+            long size = SizeOfBlock(block);
+            if (size < minimum) continue;
+            Unlink(block);
+            Stamp(block, size, Zero);
+            return block;
+        }
+        return 0;
+    }
+
+    /// Gives a thread's buffer back: whatever it has not handed out becomes
+    /// one free block, so the chunk can be walked again. The heap lock must be
+    /// held -- by the thread itself as it starts a collection, or by the
+    /// collector on behalf of a thread it has already stopped.
+    public static void Retire(long block)
+    {
+        if (block == 0)
+        {
+            return;
+        }
+
+        long at = Sys.Peek(block + Tls.AllocPtr);
+        long limit = Sys.Peek(block + Tls.AllocLimit);
+
+        // A thread that was STOPPED had its limit taken away to stop it (see
+        // StopWorld), which is where the real one went.
+        if (limit == 0)
+        {
+            limit = Sys.Peek(block + Tls.AllocSaved);
+        }
+
+        Sys.Poke(block + Tls.AllocSaved, Zero);
+        Sys.Poke(block + Tls.AllocBase, Zero);
+        Sys.Poke(block + Tls.AllocPtr, Zero);
+        Sys.Poke(block + Tls.AllocLimit, Zero);
+
+        if (at == 0 || limit - at < Smallest)
+        {
+            return;
+        }
+        // Refill charged the entire arena. Its unused tail has now been
+        // returned, so it is no longer allocation pressure. Buffers never
+        // survive a collection: retirement precedes resetting _since.
+        _since = _since - (limit - at);
+        if (_since < 0) _since = Zero;
+        Stamp(at, limit - at, FlagFree);
+        Link(at);
+    }
+
+    /// The current chunk's end word, brought up to the bump pointer.
+    static void SyncEnd()
+    {
+        if (_current != 0)
+        {
+            HeapChunks.SetEnd(_current, _bump);
+        }
+    }
+
+    /// Everything the fast path does not: the free list, a collection when
+    /// one is due, a new chunk, and out of memory.
+    ///
+    /// THIS AND EVERYTHING IT CALLS ALLOCATES NOTHING: no `new`, no arrays, no
+    /// strings. Every one of those is a call to this.
+    static long AllocSlow(long bytes)
+    {
+        // The size checked BEFORE it is rounded, with a bound that leaves
+        // room for the rounding: rounding first lets a huge request wrap
+        // negative and slip past the check.
+        if (bytes < 0 || bytes > MaxRequest)
+        {
+            OutOfMemory("out of memory: a request larger than any object may be\n");
+        }
+
+        long need = (bytes + Overhead + 7) & SizeMask;
+        long tb = Sys.ThreadBlock();
+
+        // A thread that cannot bump in its own buffer is about to touch the
+        // shared heap, which is exactly what it may not do while somebody is
+        // collecting: this is the safepoint every thread eventually reaches.
+        if (GcLock.IsCollecting())
+        {
+            GcThreads.Park();
+        }
+
+        GcLock.Enter();
+
+        if (!_ready)
+        {
+            Start();
+        }
+        SyncEnd();
+
+        // Pressure first: a program that has allocated a threshold's worth
+        // since the last collection is collected now, whether or not this
+        // request would have fitted, so the heap tracks the live size rather
+        // than the allocation rate.
+        if (_since + need >= _threshold && HeapChunks.Any())
+        {
+            CollectLocked();
+        }
+
+        // A small request takes a buffer of its own and is answered from it,
+        // so the allocations after it need no lock. Prefer an existing fitting
+        // size-class block, but unrelated free sizes must not disable every
+        // thread's private buffer. If refill fails, Take below can still split
+        // a larger free block; the heap cap and collection policy are unchanged.
+        // A different thread may have consumed the exact-bin hint which
+        // brought us here. Keep our existing arena if it still has room;
+        // replacing it would throw away capacity merely because of a race.
+        bool room = Sys.Peek(tb + Tls.AllocPtr) != 0
+            && Sys.Peek(tb + Tls.AllocPtr) + need + Smallest <= Sys.Peek(tb + Tls.AllocLimit);
+        if (!HasReusableFree(need) && need + Smallest <= BufferBytes && (room || Refill(tb, need)))
+        {
+            long from = Sys.Peek(tb + Tls.AllocPtr);
+
+            Sys.Poke(tb + Tls.AllocPtr, from + need);
+            Sys.Poke(from, need);
+            Sys.Poke(from + need - FooterBytes, need);
+            GcLock.Exit();
+            return from + HeaderBytes;
+        }
+
+        // Large backing arrays must not share their mapping with small,
+        // long-lived nodes: one surviving node would pin the whole mapping
+        // after the array dies. Give these objects page-rounded chunks whose
+        // padding belongs to the same block, so no small allocation enters it.
+        bool dedicated = need >= BufferBytes;
+        long block = dedicated ? TakeDedicated(need) : Take(need);
+
+        if (block == 0)
+        {
+            if (!dedicated && Grow(need))
+            {
+                block = Take(need);
+            }
+        }
+
+        // Growth refused -- the cap, or the operating system. A collection
+        // may free enough; if it does not, the last resort is to ask for a
+        // chunk once more (the cap may have been met by garbage just freed).
+        if (block == 0)
+        {
+            CollectLocked();
+            block = dedicated ? TakeDedicated(need) : Take(need);
+
+            if (block == 0 && !dedicated && Grow(need))
+            {
+                block = Take(need);
+            }
+            // Mapping failure must not reject usable existing free space.
+            if (block == 0 && dedicated) block = Take(need);
+        }
+
+        if (block == 0)
+        {
+            SayNumber("out of memory: request ", need);
+            SayNumber("out of memory: heap ", HeapChunks.HeapBytes);
+            SayNumber("out of memory: since last collection ", _since);
+            SayNumber("out of memory: live bytes at last collection ", _liveBytes);
+            SayNumber("out of memory: live blocks at last collection ", _liveBlocks);
+            SayNumber("out of memory: small free blocks ", _smallFree);
+            SayNumber("out of memory: bump bytes remaining ", _limit - _bump);
+            SayNumber("out of memory: anchor metadata bytes ", HeapChunks.BlockAnchorBytes);
+            if (_bins != 0)
+            {
+                for (long bin = 0; bin < Bins; bin++)
+                {
+                    long root = BinHead(bin);
+                    if (root == 0) continue;
+                    SayNumber("out of memory: free bin ", bin);
+                    SayNumber("out of memory: largest block ", bin <= BinOf(ExactLimit)
+                        ? SizeOfBlock(root) : Sys.Peek(root + TreeMaxSize));
+                }
+            }
+            OutOfMemory();
+        }
+
+        _since = _since + SizeOfBlock(block);
+        GcLock.Exit();
+        return block + HeaderBytes;
+    }
+
+    /// A label and a number on standard error without allocating: the
+    /// digits are written into a fixed buffer on the stack of static data.
+    static long _digits;            // a page for the digits, mapped in Start
+
+    static void SayNumber(string label, long value)
+    {
+        Platform.WriteBytes(2, Sys.ArrayData(label), label.Length);
+
+        if (_digits == 0)
+        {
+            return;
+        }
+
+        long n = value < 0 ? 0 - value : value;
+        int at = 24;
+
+        if (n == 0)
+        {
+            at = at - 1;
+            Sys.PokeByte(_digits + at, 48);
+        }
+
+        while (n > 0 && at > 1)
+        {
+            at = at - 1;
+            Sys.PokeByte(_digits + at, 48 + n % 10);
+            n = n / 10;
+        }
+
+        if (value < 0)
+        {
+            at = at - 1;
+            Sys.PokeByte(_digits + at, 45);
+        }
+
+        Platform.WriteBytes(2, _digits + at, 24 - at);
+        string end = "\n";
+        Platform.WriteBytes(2, Sys.ArrayData(end), 1);
+    }
+
+    /// A block of `need` bytes from the free list or the bump pointer, stamped
+    /// allocated and with its payload zeroed, or zero.
+    static long Take(long need)
+    {
+        long block = TakeFree(need);
+
+        if (block != 0)
+        {
+            // Reused memory holds whatever its last owner left; a field read
+            // before it is assigned must see its default.
+            ZeroWords(block + HeaderBytes, block + SizeOfBlock(block) - FooterBytes);
+            return block;
+        }
+
+        block = TakeBump(need);
+
+        // Memory above the bump pointer has never been touched since the
+        // operating system handed it over zeroed, so it needs no clearing.
+        // That is the one reason the bump pointer never moves backwards.
+        return block;
+    }
+
+    static long TakeDedicated(long need)
+    {
+        long chunk = HeapChunks.Take(need, true);
+        if (chunk == 0) return 0;
+        long block = HeapChunks.First(chunk);
+        long end = HeapChunks.Limit(chunk);
+        Stamp(block, end - block, Zero);
+        HeapChunks.SetEnd(chunk, end);
+        return block;
+    }
+
+    /// A free block of at least `need` bytes: an exact-bin head or tree lower
+    /// bound in the request's bin, else the smallest block in the next
+    /// non-empty bin. The remainder of a larger block is split off
+    /// and put back, unless it would be too small to describe itself, in
+    /// which case the caller gets it.
+    static long TakeFree(long need)
+    {
+        long bin = BinOf(need);
+        long block = BinHead(bin);
+
+        // Exact bins need only their head. Large bins use a logarithmic
+        // lower-bound query, not a scan through every smaller free block.
+        if (need > ExactLimit) block = TreeFit(block, need);
+
+        if (block == 0)
+        {
+            long above = bin + 1;
+
+            while (above < Bins && block == 0)
+            {
+                block = BinHead(above);
+                if (block != 0 && above > BinOf(ExactLimit))
+                    block = TreeFit(block, need);
+                above = above + 1;
+            }
+        }
+
+        if (block == 0)
+        {
+            return 0;
+        }
+
+        long size = SizeOfBlock(block);
+        Unlink(block);
+
+        if (size - need >= Smallest)
+        {
+            long rest = block + need;
+            Stamp(rest, size - need, FlagFree);
+            Link(rest);
+        }
+        else
+        {
+            need = size;
+        }
+        Stamp(block, need, Zero);
+        return block;
+    }
+
+    static long TakeBump(long need)
+    {
+        if (_current == 0 || _bump + need > _limit)
+        {
+            return 0;
+        }
+
+        long block = _bump;
+        _bump = _bump + need;
+        HeapChunks.SetEnd(_current, _bump);
+        Stamp(block, need, Zero);
+        return block;
+    }
+
+    /// Zeroes [from, to) a word at a time. A loop rather than the block-set
+    /// intrinsic because the string instruction the backend selects for it
+    /// mis-assigns its fixed registers as of this writing (see the note on
+    /// Os.CString in lib/sys/linux.cor); a loop is right on any backend.
+    static void ZeroWords(long from, long to)
+    {
+        long p = from;
+
+        while (p < to)
+        {
+            Sys.Poke(p, Zero);
+            p = p + 4;
+        }
+    }
+
+    static void Start()
+    {
+        _ready = true;
+        _threshold = MinThreshold;
+        _digits = Platform.Map(4096);
+        _bins = Platform.Map(BinsBytes);
+
+        if (_bins == 0)
+        {
+            OutOfMemory();
+        }
+        _markAt = Platform.Map(MarkBytes);
+
+        if (_markAt != 0)
+        {
+            _markCount = MarkBytes / 4;
+        }
+    }
+
+    /// Nothing left: the message is a literal, which is data the compiler laid
+    /// out and not an object this heap made, so printing it allocates nothing.
+    static void OutOfMemory()
+    {
+        OutOfMemory("out of memory: the operating system would give no more\n");
+    }
+
+    /// The report, and then WHO ASKED: the frame table the code generator
+    /// writes says what each address in the image is, and the saved frame
+    /// pointers are a list of callers with each return address beside them.
+    /// Runtime.SayTrace walks the one and writes names out of the other
+    /// without building anything, which is the only kind of trace this path
+    /// may print -- Exception.StackTrace's needs a string, and a string needs
+    /// the heap that has just run out.
+    static void OutOfMemory(string text)
+    {
+        Platform.WriteBytes(2, Sys.ArrayData(text), text.Length);
+        Runtime.SayTrace(2, Sys.FramePointer());
+        Platform.Exit(137);
+    }
+
+    // ---- giving memory back by hand -----------------------------------------------
+    //
+    // The COMPILER calls this, through Runtime.Free, for the objects it
+    // proves dead: a tier 1 allocation whose size is not a constant and so
+    // could not become a frame slot, and a tier 2 owned object at the last
+    // use the optimiser found (X86-BACKEND.md, "Memory"). A program still
+    // never frees anything itself, and this is exactly as safe as the proof
+    // behind it -- a freed object still referenced is memory handed out twice,
+    // which is why only the optimiser, and not source, is allowed to say it.
+
+    /// Returns an allocation to the free list, merged with its free
+    /// neighbours. Boundary tags find the neighbours directly; exact bins
+    /// unlink in constant time and large-bin trees in logarithmic time.
+    /// Anything that is not exactly the payload of a live
+    /// block -- zero, a null reference, an interior pointer, a frame slot, a
+    /// pointer into someone else's memory, a block already free -- is ignored,
+    /// because the compiler frees what it has proved dead and a wrong proof
+    /// must cost nothing worse than the memory it forgot to give back.
+    public static void Free(long at)
+    {
+        long tb = Sys.ThreadBlock();
+        long block = ValidAllocated(at);
+
+        if (block == 0)
+        {
+            return;
+        }
+
+        long size = SizeOfBlock(block);
+
+        // THE TOP BLOCK OF THIS THREAD'S OWN BUFFER goes straight back to it:
+        // the last thing the thread bumped is the next thing it will get, at
+        // the same address, through the fast path and with no lock -- which is
+        // the whole of what a formatting buffer or an enumerator in a loop
+        // costs. Only this thread may touch this buffer, so nothing is held.
+        long ptr = Sys.Peek(tb + Tls.AllocPtr);
+
+        if (ptr != 0 && block + size == ptr && block >= Sys.Peek(tb + Tls.AllocBase))
+        {
+            // The fast path's one assumption is that memory above the pointer
+            // has never been written; the bytes are cleared here instead.
+            ZeroWords(block, ptr);
+            Sys.Poke(tb + Tls.AllocPtr, block);
+            Frees = Frees + 1;
+            return;
+        }
+
+        GcLock.Enter();
+        SyncEnd();
+
+        // The bytes go back off the pressure counter. `_since` measures how
+        // much of the heap has gone out and not come back, because that is
+        // what says a collection would find something; memory returned by
+        // hand has already been found, and counting it again would collect a
+        // program that frees everything it allocates -- exactly the program
+        // that needs no collection at all.
+        _since = _since - size;
+
+        if (_since < 0)
+        {
+            _since = 0;
+        }
+        Frees = Frees + 1;
+
+        // Dedicated arrays own their complete chunk, including page padding.
+        // Return it directly rather than putting it into bins where small
+        // objects could occupy it and pin the former large-object mapping.
+        long whole = HeapChunks.Of(block);
+        if (whole != 0 && whole != _current && block == HeapChunks.First(whole)
+            && block + size == HeapChunks.Limit(whole))
+        {
+            HeapChunks.Release(whole);
+            GcLock.Exit();
+            return;
+        }
+
+        // THE TOP BLOCK GOES BACK TO THE BUMP POINTER, not to a bin. A small
+        // object allocated and freed in a loop -- the formatting buffer, the
+        // enumerator, the closure the optimiser could not turn into a frame
+        // slot -- is the last thing the bump pointer handed out, so giving
+        // the bytes straight back means the next allocation reuses the same
+        // address through the fast path and the heap does not move at all.
+        //
+        // The cost is restoring the fast path's one assumption: memory above
+        // the bump pointer has never been written, so allocation zeroes
+        // nothing. The bytes are cleared here instead, which is why only
+        // small blocks take this road -- clearing a megabyte on the way past
+        // would be a worse bargain than a bin.
+        if (_current != 0 && block + size == _bump && size <= ExactLimit
+            && block >= HeapChunks.First(_current))
+        {
+            ZeroWords(block, _bump);
+            _bump = block;
+            SyncEnd();
+            GcLock.Exit();
+            return;
+        }
+        Merge(block);
+        GcLock.Exit();
+    }
+
+    /// How many calls to Free actually returned a block. A test reads it to
+    /// tell a free that happened from one that was ignored.
+    public static long Frees;
+
+    /// The header of an exact, live allocation, or zero for anything foreign,
+    /// interior, malformed or already free.
+    static long ValidAllocated(long at)
+    {
+        if ((at & 7) != 0 || at < HeaderBytes)
+        {
+            return 0;
+        }
+
+        long block = at - HeaderBytes;
+        long chunk = HeapChunks.Of(block);
+
+        if (chunk == 0)
+        {
+            return 0;
+        }
+
+        long end = HeapChunks.End(chunk);
+        long word = Sys.Peek(block);
+        long size = word & SizeMask;
+
+        if (size < Smallest || block + size > end || (word & FlagFree) != 0)
+        {
+            return 0;
+        }
+        if (Sys.Peek(block + size - FooterBytes) != word)
+        {
+            return 0;
+        }
+        return block;
+    }
+
+    /// Frees a block and coalesces it with a free neighbour on either side.
+    static void Merge(long block)
+    {
+        long chunk = HeapChunks.Of(block);
+
+        if (chunk == 0)
+        {
+            return;
+        }
+
+        long first = HeapChunks.First(chunk);
+        long end = HeapChunks.End(chunk);
+        long size = SizeOfBlock(block);
+
+        // Forward: the block after this one starts where this one ends.
+        long next = block + size;
+
+        if (next < end && IsFree(next))
+        {
+            Unlink(next);
+            size = size + SizeOfBlock(next);
+        }
+
+        // Backward: through the footer of the block below, which is the word
+        // just under this header. That is what the footer is for.
+        if (block > first)
+        {
+            long back = Sys.Peek(block - FooterBytes);
+
+            if ((back & FlagFree) != 0)
+            {
+                long prev = block - (back & SizeMask);
+
+                Unlink(prev);
+                size = size + SizeOfBlock(prev);
+                block = prev;
+            }
+        }
+
+        Stamp(block, size, FlagFree);
+        Link(block);
+    }
+
+    // ---- collecting -------------------------------------------------------------
+
+    /// The block a word might point at or into, or zero.
+    ///
+    /// The header and footer agreeing is a strong test: two words, far apart,
+    /// both saying the same size, on an eight-byte boundary, inside the heap.
+    /// A number that passes by accident costs one retained block.
+    ///
+    /// An exact payload address is the common case and constant time. An
+    /// INTERIOR pointer -- a span into the middle of an array, an address
+    /// computed by the string routines -- starts at the first block touching
+    /// its page. The collection-time anchors preserve the authoritative block
+    /// walk and its inclusive payload-end rule, without starting at the
+    /// beginning of a potentially very densely populated megabyte chunk.
+    static long BlockForPointer(long at)
+    {
+        // One past a payload -- a span's end -- is one past the block's
+        // footer's start, which is still inside the chunk's used extent, so
+        // the plain lookup finds it; no boundary case needs a second look.
+        long chunk = HeapChunks.Of(at);
+
+        if (chunk == 0)
+        {
+            return 0;
+        }
+
+        long first = HeapChunks.First(chunk);
+        long end = HeapChunks.End(chunk);
+
+        if ((at & 7) == 0 && at >= first + HeaderBytes)
+        {
+            long exact = at - HeaderBytes;
+            long word = Sys.Peek(exact);
+            long size = word & SizeMask;
+
+            if (size >= Smallest && exact + size <= end
+                && Sys.Peek(exact + size - FooterBytes) == word)
+            {
+                return exact;
+            }
+        }
+
+        long block = HeapChunks.MarkStart(chunk, at);
+
+        while (block < end)
+        {
+            // Blocks advance monotonically. Once this payload starts after
+            // the candidate, no later block can contain it. The preceding
+            // block's inclusive one-past-end test has already had its turn.
+            if (at < block + HeaderBytes) return 0;
+
+            long word = Sys.Peek(block);
+            long size = word & SizeMask;
+
+            if (size < Smallest || block + size > end
+                || Sys.Peek(block + size - FooterBytes) != word)
+            {
+                // The chain of sizes is broken; nothing below is trustworthy.
+                return 0;
+            }
+
+            // The payload, INCLUDING one past its end: a span's end pointer is
+            // a real root, and retaining one block by accident is the cheap
+            // side of that bet.
+            if (at >= block + HeaderBytes && at <= block + size - FooterBytes)
+            {
+                return block;
+            }
+            WalkSteps = WalkSteps + 1;
+            block = block + size;
+        }
+        return 0;
+    }
+
+    /// Marks the block a word might refer to and queues it for scanning.
+    static void MarkAt(long at)
+    {
+        MarkCalls = MarkCalls + 1;
+        long block = BlockForPointer(at);
+
+        if (block == 0)
+        {
+            return;
+        }
+
+        long word = Sys.Peek(block);
+
+        // A live object is never on the free list, so a word pointing at a
+        // free block is a number that happens to look like a pointer.
+        if ((word & FlagFree) != 0 || (word & FlagMark) != 0)
+        {
+            return;
+        }
+
+        Stamp(block, word & SizeMask, (word & FlagMask) | FlagMark);
+
+        if (_markAt != 0 && _markTail < _markCount)
+        {
+            Sys.Poke(_markAt + _markTail * 4, block);
+            _markTail = _markTail + 1;
+
+            if (_markTail > _markPeak)
+            {
+                _markPeak = _markTail;
+            }
+        }
+        else
+        {
+            _markOverflow = true;
+        }
+    }
+
+    /// Scans every queued block, and everything they queue, until the queue
+    /// is empty, then resets it so it can fill again: a queue whose head and
+    /// tail only ever advanced was full for good after its first overflow.
+    /// A block scanned here is flagged so a rescan pass skips it.
+    static void Drain()
+    {
+        while (_markHead < _markTail)
+        {
+            long block = Sys.Peek(_markAt + _markHead * 4);
+            _markHead = _markHead + 1;
+
+            long word = Sys.Peek(block);
+            long size = word & SizeMask;
+            Stamp(block, size, (word & FlagMask) | FlagScan);
+            ScanRange(block + HeaderBytes, block + size - FooterBytes);
+        }
+        _markHead = Zero;
+        _markTail = Zero;
+    }
+
+    /// Marks everything reachable from a range of memory, a word at a time.
+    /// Public because GcRoots feeds the roots through it.
+    public static void ScanRange(long from, long to)
+    {
+        long p = (from + 3) & -4;
+
+        while (p < to)
+        {
+            MarkAt(Sys.Peek(p));
+            p = p + 4;
+        }
+    }
+
+    /// Runs a collection. Everything reachable from the stack, the registers
+    /// and the statics is kept; everything else goes back on the free list.
+    /// Entered through GcRoots so the registers are on the stack first --
+    /// see GcRoots for the reasoning -- and reached only from Alloc.
+    public static void Collect()
+    {
+        GcLock.Enter();
+        CollectLocked();
+        GcLock.Exit();
+    }
+
+    /// A collection with the heap lock already held: stop every other thread,
+    /// give up this thread's own allocation buffer -- after which every chunk
+    /// is a walkable chain of blocks again -- collect, and let them go.
+    static void CollectLocked()
+    {
+        if (!HeapChunks.Any() || _collecting)
+        {
+            return;
+        }
+
+        GcThreads.StopWorld();
+        Retire(Sys.ThreadBlock());
+        GcRoots.Enter();
+        GcThreads.StartWorld();
+    }
+
+    /// The collection proper; see Collect for why it is entered this way.
+    public static void CollectInner()
+    {
+        _collecting = true;
+        SyncEnd();
+        BuildBlockAnchors();
+        _markHead = Zero;
+        _markTail = Zero;
+        _markPeak = Zero;
+        _markOverflow = _markAt == 0;
+
+        GcRoots.ScanAll();
+        Drain();
+
+        // A live graph wider than the queue leaves blocks marked but never
+        // queued. Each pass over the heap scans those, draining the queue
+        // as it goes so their descendants are followed transitively rather
+        // than one pass per generation -- which, for a list whose links run
+        // against address order, was one pass per NODE. Passes are bounded
+        // by how often the queue overflowed. Correctness never depends on
+        // the queue: with no queue at all this still terminates.
+        while (_markOverflow)
+        {
+            _markOverflow = false;
+            RescanPasses = RescanPasses + 1;
+            long chunk = HeapChunks.Newest();
+
+            while (chunk != 0)
+            {
+                long block = HeapChunks.First(chunk);
+                long end = HeapChunks.End(chunk);
+
+                while (block < end)
+                {
+                    long word = Sys.Peek(block);
+                    long size = word & SizeMask;
+
+                    if (size < Smallest || block + size > end)
+                    {
+                        // Broken metadata cannot be walked safely; stop at
+                        // this chunk rather than read what is not there.
+                        block = end;
+                    }
+                    else
+                    {
+                        if ((word & FlagMark) != 0 && (word & FlagScan) == 0)
+                        {
+                            Stamp(block, size, (word & FlagMask) | FlagScan);
+                            ScanRange(block + HeaderBytes, block + size - FooterBytes);
+                            Drain();
+                        }
+                        block = block + size;
+                    }
+                }
+                chunk = HeapChunks.Next(chunk);
+            }
+        }
+
+        HeapChunks.SetBlockAnchorsActive(false);
+        Sweep();
+
+        _since = Zero;
+        _threshold = _liveBytes > MinThreshold ? _liveBytes : MinThreshold;
+        Collections = Collections + 1;
+        _collecting = false;
+    }
+
+    // Build only while the world is stopped and all allocation buffers have
+    // been retired. Marking changes flags, not block boundaries. The anchors
+    // are disabled before sweep can merge blocks, and rebuilt next time.
+    static void BuildBlockAnchors()
+    {
+        HeapChunks.SetBlockAnchorsActive(false);
+        long chunk = HeapChunks.Newest();
+        while (chunk != 0)
+        {
+            long anchors = HeapChunks.PrepareBlockAnchors(chunk);
+            if (anchors != 0)
+            {
+                long pages = HeapChunks.BlockAnchorCount(chunk);
+                for (long i = 0; i < pages; i++) Sys.Poke(anchors + i * 4, Zero);
+                long block = HeapChunks.First(chunk);
+                long end = HeapChunks.End(chunk);
+                long page = 0;
+                while (block < end)
+                {
+                    long header = Sys.Peek(block);
+                    long size = header & SizeMask;
+                    if (size < Smallest || block + size > end
+                        || Sys.Peek(block + size - FooterBytes) != header) break;
+                    long last = (block + size - 1 - chunk) / 4096;
+                    while (page <= last)
+                    {
+                        Sys.Poke(anchors + page * 4, block);
+                        page = page + 1;
+                    }
+                    block = block + size;
+                }
+            }
+            chunk = HeapChunks.Next(chunk);
+        }
+        HeapChunks.SetBlockAnchorsActive(true);
+    }
+
+    /// Walks every block in every chunk: unmarked ones become free, adjacent
+    /// dead ones become one free block, and the marks on the survivors are
+    /// cleared. The free list is rebuilt from nothing, which is simpler than
+    /// editing it and no slower, since every block is visited anyway.
+    /// Whether any block in a chunk was marked by this collection.
+    static bool AnyLive(long chunk)
+    {
+        long block = HeapChunks.First(chunk);
+        long end = HeapChunks.End(chunk);
+
+        while (block < end)
+        {
+            long word = Sys.Peek(block);
+            long size = word & SizeMask;
+
+            if (size < Smallest || block + size > end)
+            {
+                return false;
+            }
+
+            if ((word & FlagMark) != 0)
+            {
+                return true;
+            }
+
+            block = block + size;
+        }
+
+        return false;
+    }
+
+    static void Sweep()
+    {
+        ClearBins();
+        long live = 0;
+        long liveBytes = 0;
+        long chunk = HeapChunks.Newest();
+
+        while (chunk != 0)
+        {
+            // A CHUNK WITH NOTHING LIVE IN IT GOES BACK. Not the current one,
+            // which the bump pointer is in the middle of; every other chunk
+            // this collection found wholly dead is unmapped whole and its
+            // pages are the operating system's again. That is what makes a
+            // program's memory shrink after it has grown, and the kernel's.
+            long after = HeapChunks.Next(chunk);
+
+            if (chunk != _current && !AnyLive(chunk))
+            {
+                HeapChunks.Release(chunk);
+                chunk = after;
+                continue;
+            }
+
+            long block = HeapChunks.First(chunk);
+            long end = HeapChunks.End(chunk);
+            long deadStart = 0;
+            long deadSize = 0;
+
+            while (block < end)
+            {
+                long word = Sys.Peek(block);
+                long size = word & SizeMask;
+                SweepVisits = SweepVisits + 1;
+
+                if (size < Smallest || block + size > end)
+                {
+                    block = end;
+                }
+                else
+                {
+                    if ((word & FlagMark) == 0)
+                    {
+                        if (deadSize == 0)
+                        {
+                            deadStart = block;
+                        }
+                        deadSize = deadSize + size;
+                    }
+                    else
+                    {
+                        if (deadSize != 0)
+                        {
+                            Stamp(deadStart, deadSize, FlagFree);
+                            Link(deadStart);
+                            deadSize = Zero;
+                        }
+
+                        Stamp(block, size, Zero);
+                        live = live + 1;
+                        liveBytes = liveBytes + size;
+                    }
+                    block = block + size;
+                }
+            }
+
+            if (deadSize != 0)
+            {
+                Stamp(deadStart, deadSize, FlagFree);
+                Link(deadStart);
+            }
+            chunk = HeapChunks.Next(chunk);
+        }
+
+        _liveBlocks = live;
+        _liveBytes = liveBytes;
+    }
+}
+
+// ---- chunks: memory from the operating system --------------------------------
+//
+// The heap is a list of chunks, each carrying a small record in its own
+// first bytes -- so taking a chunk never itself needs an allocation, which
+// matters because a chunk is taken exactly when the heap cannot allocate:
+//
+//   +0    next chunk, or 0
+//   +4    end: one past the last block laid down (the bump pointer's floor)
+//   +8    limit: one past the chunk's memory
+//   +12   raw page-anchor table, or 0 when not allocated
+//   +16   the first block
+//
+// The record is not a block and is never swept. This class knows nothing
+// about blocks; it is the part of the heap a precise collector keeps.
+
+static class HeapChunks
+{
+    const long ChunkNext = 0;
+    const long ChunkEnd = 4;
+    const long ChunkLimit = 8;
+    const long ChunkAnchors = 12;
+    const long ChunkBytes = 16;
+
+    // What a chunk is normally: a megabyte, so the operating system is asked
+    // rarely and the chunk list stays short for the collector to walk. A
+    // single allocation larger than that gets a chunk of its own size.
+    const long ChunkAsk = 1048576;
+
+    static long _chunks;        // newest chunk first
+    static long _floor;         // lowest block address in any chunk
+    static long _ceiling;       // one past the highest chunk
+    static long _memo;          // the chunk the last lookup hit
+    static long _heapBytes;     // every chunk's size, summed
+    static long _cap;           // the most to take from the OS; 0 = no cap
+    // Raw metadata, not managed objects: allocating it must not recurse into
+    // the collector. Mutations, like the chunk list, hold the heap lock.
+    // Four bytes per chunk; one initial page covers a 1 GiB ordinary heap.
+    static long _index;
+    static long _indexCount;
+    static long _indexCapacity;
+    static bool _indexFailed;
+    static bool _anchorsActive;
+    static long _anchorBytes;
+
+    public static long BlockAnchorBytes { get { return _anchorBytes; } }
+
+    public static long BlockAnchorCount(long chunk)
+    {
+        return (Limit(chunk) - chunk + 4095) / 4096;
+    }
+
+    static long AnchorBytes(long chunk)
+    {
+        return (BlockAnchorCount(chunk) * 4 + 4095) & -4096;
+    }
+
+    public static long PrepareBlockAnchors(long chunk)
+    {
+        long anchors = Sys.Peek(chunk + ChunkAnchors);
+        if (anchors == 0)
+        {
+            long bytes = AnchorBytes(chunk);
+            anchors = Platform.Map(bytes);
+            if (anchors != 0)
+            {
+                Sys.Poke(chunk + ChunkAnchors, anchors);
+                _anchorBytes = _anchorBytes + bytes;
+            }
+        }
+        return anchors;
+    }
+
+    public static void SetBlockAnchorsActive(bool active) { _anchorsActive = active; }
+
+    public static long MarkStart(long chunk, long address)
+    {
+        if (_anchorsActive)
+        {
+            long anchors = Sys.Peek(chunk + ChunkAnchors);
+            if (anchors != 0)
+            {
+                long block = Sys.Peek(anchors + ((address - chunk) / 4096) * 4);
+                if (block != 0) return block;
+            }
+        }
+        // A metadata allocation failure preserves the authoritative walk.
+        return First(chunk);
+    }
+
+    static long IndexLowerBound(long address)
+    {
+        long low = 0, high = _indexCount;
+        while (low < high)
+        {
+            long middle = low + (high - low) / 2;
+            if (Sys.Peek(_index + middle * 4) < address) low = middle + 1;
+            else high = middle;
+        }
+        return low;
+    }
+
+    static void IndexAdd(long chunk)
+    {
+        if (_indexFailed) return;
+        if (_indexCount == _indexCapacity)
+        {
+            long capacity = _indexCapacity == 0 ? 1024 : _indexCapacity * 2;
+            long grown = Platform.Map(capacity * 4);
+            if (grown == 0)
+            {
+                // Never publish an incomplete index. The authoritative list
+                // still contains every chunk and remains a correct fallback.
+                _indexFailed = true;
+                if (_index != 0) Platform.Unmap(_index, _indexCapacity * 4);
+                _index = 0;
+                _indexCount = 0;
+                _indexCapacity = 0;
+                return;
+            }
+            for (long i = 0; i < _indexCount; i++)
+                Sys.Poke(grown + i * 4, Sys.Peek(_index + i * 4));
+            if (_index != 0) Platform.Unmap(_index, _indexCapacity * 4);
+            _index = grown;
+            _indexCapacity = capacity;
+        }
+        long at = IndexLowerBound(chunk);
+        for (long i = _indexCount; i > at; i--)
+            Sys.Poke(_index + i * 4, Sys.Peek(_index + (i - 1) * 4));
+        Sys.Poke(_index + at * 4, chunk);
+        _indexCount++;
+    }
+
+    static void IndexRemove(long chunk)
+    {
+        if (_indexFailed || _indexCount == 0) return;
+        long at = IndexLowerBound(chunk);
+        if (at == _indexCount || Sys.Peek(_index + at * 4) != chunk) return;
+        for (long i = at + 1; i < _indexCount; i++)
+            Sys.Poke(_index + (i - 1) * 4, Sys.Peek(_index + i * 4));
+        _indexCount--;
+        Sys.Poke(_index + _indexCount * 4, 0);
+    }
+
+    public static long HeapBytes
+    {
+        get { return _heapBytes; }
+    }
+
+    public static void SetLimit(long bytes)
+    {
+        _cap = bytes;
+    }
+
+    public static bool Any()
+    {
+        return _chunks != 0;
+    }
+
+    /// The newest chunk, the head of the list; Next walks towards the oldest.
+    public static long Newest()
+    {
+        return _chunks;
+    }
+
+    public static long Next(long chunk)
+    {
+        return Sys.Peek(chunk + ChunkNext);
+    }
+
+    /// Where a chunk's blocks begin.
+    public static long First(long chunk)
+    {
+        return chunk + ChunkBytes;
+    }
+
+    /// One past the last block laid down in a chunk.
+    public static long End(long chunk)
+    {
+        return Sys.Peek(chunk + ChunkEnd);
+    }
+
+    /// Takes a chunk out of the list and gives its memory back. The floor and
+    /// ceiling are left as they were: an address inside a gone chunk still
+    /// fails the lookup that follows the envelope test.
+    public static void Release(long chunk)
+    {
+        long size = Sys.Peek(chunk + ChunkLimit) - chunk;
+        IndexRemove(chunk);
+
+        if (_chunks == chunk)
+        {
+            _chunks = Sys.Peek(chunk + ChunkNext);
+        }
+        else
+        {
+            long walk = _chunks;
+
+            while (walk != 0 && Sys.Peek(walk + ChunkNext) != chunk)
+            {
+                walk = Sys.Peek(walk + ChunkNext);
+            }
+
+            if (walk != 0)
+            {
+                Sys.Poke(walk + ChunkNext, Sys.Peek(chunk + ChunkNext));
+            }
+        }
+
+        if (_memo == chunk)
+        {
+            _memo = 0;
+        }
+
+        _heapBytes = _heapBytes - size;
+        long anchors = Sys.Peek(chunk + ChunkAnchors);
+        if (anchors != 0)
+        {
+            long bytes = AnchorBytes(chunk);
+            Platform.Unmap(anchors, bytes);
+            _anchorBytes = _anchorBytes - bytes;
+        }
+        Platform.Unmap(chunk, size);
+    }
+
+    public static void SetEnd(long chunk, long end)
+    {
+        Sys.Poke(chunk + ChunkEnd, end);
+    }
+
+    /// One past the chunk's memory.
+    public static long Limit(long chunk)
+    {
+        return Sys.Peek(chunk + ChunkLimit);
+    }
+
+    /// The chunk whose laid-down blocks contain an address, or zero. The
+    /// chunk hit last is tried first, because a run of pointers from one
+    /// object mostly lands in one chunk. Other addresses use binary search;
+    /// only an index allocation failure requires walking the chunk list.
+    public static long Of(long at)
+    {
+        if (at < _floor || at >= _ceiling)
+        {
+            return 0;
+        }
+
+        long memo = _memo;
+
+        if (memo != 0 && at >= memo + ChunkBytes && at < Sys.Peek(memo + ChunkEnd))
+        {
+            return memo;
+        }
+
+        if (!_indexFailed)
+        {
+            // Find the greatest chunk base <= at. Mappings cannot overlap;
+            // the live extent check rejects headers, gaps and unused tails.
+            long low = 0, high = _indexCount;
+            while (low < high)
+            {
+                long middle = low + (high - low) / 2;
+                if (Sys.Peek(_index + middle * 4) <= at) low = middle + 1;
+                else high = middle;
+            }
+            if (low == 0) return 0;
+            long candidate = Sys.Peek(_index + (low - 1) * 4);
+            if (at >= candidate + ChunkBytes && at < Sys.Peek(candidate + ChunkEnd))
+            {
+                _memo = candidate;
+                return candidate;
+            }
+            return 0;
+        }
+
+        long chunk = _chunks;
+
+        while (chunk != 0)
+        {
+            if (at >= chunk + ChunkBytes && at < Sys.Peek(chunk + ChunkEnd))
+            {
+                _memo = chunk;
+                return chunk;
+            }
+            chunk = Sys.Peek(chunk + ChunkNext);
+        }
+        return 0;
+    }
+
+    /// A new chunk with room for at least `need` bytes of blocks, or zero
+    /// when the cap or the operating system refuses. Zeroed, page-aligned.
+    public static long Take(long need, bool dedicated = false)
+    {
+        long minimum = (need + ChunkBytes + 4095) & -4096;
+        long ask = dedicated || minimum > ChunkAsk ? minimum : ChunkAsk;
+
+        // The preferred growth quantum is not a minimum allocation size.
+        // A smaller remaining cap (or address-space hole) can still satisfy
+        // this request. Count actual mapped pages against the heap cap.
+        if (_cap != 0 && _heapBytes + ask > _cap) ask = minimum;
+
+        if (_cap != 0 && _heapBytes + ask > _cap)
+        {
+            string capped = "heap: the cap refused a chunk\n";
+            Platform.WriteBytes(2, Sys.ArrayData(capped), capped.Length);
+            return 0;
+        }
+
+        long raw = Platform.Map(ask);
+        if (raw == 0 && ask > minimum)
+        {
+            ask = minimum;
+            raw = Platform.Map(ask);
+        }
+
+        if (raw == 0)
+        {
+            return 0;
+        }
+
+        Sys.Poke(raw + ChunkNext, _chunks);
+        Sys.Poke(raw + ChunkEnd, raw + ChunkBytes);
+        Sys.Poke(raw + ChunkLimit, raw + ask);
+        _chunks = raw;
+        _heapBytes = _heapBytes + ask;
+        IndexAdd(raw);
+
+        // Most words a conservative collector looks at are integers, code
+        // addresses or null; the envelope rejects them before the list is
+        // walked.
+        if (_floor == 0 || raw + ChunkBytes < _floor)
+        {
+            _floor = raw + ChunkBytes;
+        }
+        if (raw + ask > _ceiling)
+        {
+            _ceiling = raw + ask;
+        }
+        return raw;
+    }
+}
+
+// ---- roots: where the live pointers begin ----------------------------------------
+//
+// The conservative collector's roots are RANGES OF MEMORY: every word in
+// them is handed to Gc.MarkAt, and the ones that land on a block keep it.
+// A precise collector replaces this class with one that walks stack maps
+// and reference maps and hands over exact slots; Gc's marking does not
+// care which.
+
+static class GcRoots
+{
+    /// Enters a collection with every register on the stack.
+    ///
+    /// THE REGISTERS. A pointer held only in a register is still a pointer,
+    /// and the collector reads memory, so every register must be in memory
+    /// below the point the stack scan starts from. The reasoning, which is
+    /// the reason Collect is reached only from Alloc:
+    ///
+    ///   - EAX, ECX and EDX are caller-saved: any value the caller of Alloc
+    ///     still needs after the call is already somewhere else -- a frame
+    ///     slot or a callee-saved register -- because the call clobbers them.
+    ///   - EBX, ESI and EDI are callee-saved: a caller's live value in one of
+    ///     them survives the call untouched, which means it may be ONLY in
+    ///     that register. It reaches the stack when some frame between the
+    ///     caller and the scan pushes that register in its prologue. The
+    ///     backend pushes exactly the callee-saved registers a function uses,
+    ///     so the guarantee is made explicit: Platform.EnterCollection uses
+    ///     all of them (on Linux, by making a system call, which needs EBX,
+    ///     ECX, EDX, ESI and EDI), so its prologue pushes them, and only THEN
+    ///     calls back into Gc.CollectInner. Those pushes are above
+    ///     CollectInner's ESP and inside the range ScanAll scans.
+    ///   - EBP is the frame pointer, pushed by every prologue.
+    ///
+    /// This is a property of the backend's prologue that a test checks by
+    /// reading the assembly; it is not something the language can state.
+    public static void Enter()
+    {
+        Platform.EnterCollection();
+    }
+
+    /// Every root range: the machine stack from the current ESP (which
+    /// includes the collector's own frames, harmlessly) up to the stack
+    /// pointer the process was entered with, and the statics between the
+    /// linker's __data_start and _end -- the data and bss sections, where
+    /// every static field lives.
+    public static void ScanAll()
+    {
+        // This thread's stack, from where the collector is standing to the
+        // top the thread began at, and then every OTHER registered thread's,
+        // from the stack pointer it wrote down when it stopped. A thread that
+        // is running is not scanned, because a running thread has no stack a
+        // collector could believe -- which is why the world is stopped first.
+        Gc.ScanRange(Sys.Stack(), Sys.EntryStack());
+        GcThreads.ScanStacks(Sys.ThreadBlock());
+        Gc.ScanRange(Sys.DataStart(), Sys.DataEnd());
+
+        long i = 0;
+
+        while (i < _extraCount)
+        {
+            Gc.ScanRange(Sys.Peek(_extra + i * 8), Sys.Peek(_extra + i * 8 + 4));
+            i = i + 1;
+        }
+    }
+
+    // ---- roots the collector is told about ----------------------------------
+    //
+    // Sys.DataStart and Sys.DataEnd are the linker's __data_start and _end,
+    // which describe ONE image. When this library is a shared object, its
+    // statics and the executable's statics are two separate ranges and only
+    // one of them is the one those symbols resolve to, so the other has to be
+    // handed over at start -- as does any memory outside the heap that holds
+    // references (a mapped region, a thread's stack). A range registered here
+    // is scanned exactly as the statics are.
+    //
+    // The table is memory of the operating system's rather than a static
+    // array, because registering a root must not itself allocate: it happens
+    // before the heap is up, and a heap block would also be a block the
+    // collector has to keep alive forever.
+
+    const long ExtraMax = 32;
+    const long ExtraBytes = 256;
+
+    static long _extra;
+    static long _extraCount;
+
+    /// Adds [start, end) to the root ranges every collection scans. Answers
+    /// false only if the table is full or the operating system refuses it,
+    /// which a caller registering a handful of ranges at start cannot hit.
+    public static bool Register(long start, long end)
+    {
+        if (start == 0 || end <= start)
+        {
+            return false;
+        }
+
+        if (_extra == 0)
+        {
+            _extra = Platform.Map(ExtraBytes);
+
+            if (_extra == 0)
+            {
+                return false;
+            }
+        }
+
+        if (_extraCount >= ExtraMax)
+        {
+            return false;
+        }
+        Sys.Poke(_extra + _extraCount * 8, start);
+        Sys.Poke(_extra + _extraCount * 8 + 4, end);
+        _extraCount = _extraCount + 1;
+        return true;
+    }
+}
+
+// ---- one heap, many threads ---------------------------------------------------
+//
+// THE RULE. The heap -- the free lists, the chunk list, the bump pointer, the
+// mark queue and every counter here -- belongs to whoever holds GcLock. A
+// thread allocating out of its own buffer holds nothing, because nothing else
+// may touch that buffer; everything else takes the lock.
+//
+// STOPPING THE WORLD, without a signal. A conservative collector reads other
+// threads' stacks, so they must not be running while it does, and it must not
+// sweep while another thread is bumping in a buffer whose tail is not yet a
+// block. So the collector:
+//
+//   1. sets `collecting`, with the lock held (only the holder ever collects),
+//   2. takes every other thread's allocation buffer away, by zeroing its
+//      limit -- the fast path's bound, so the very next allocation on that
+//      thread cannot bump and comes to the slow path,
+//   3. waits until every other registered thread says it has stopped: at the
+//      slow path, at the lock, or on its way into a system call that blocks,
+//   4. retires their buffers itself, with the lock held, so every chunk is a
+//      chain of blocks again, then marks and sweeps,
+//   5. clears `collecting` and wakes everyone.
+//
+// WHAT THIS DOES NOT DO, and it is the known limitation: a thread that is
+// neither allocating nor blocking is not stopped, and the collector waits for
+// it. A long computation that allocates nothing therefore DELAYS every other
+// thread's collection until it allocates, blocks or ends. Nothing is lost and
+// nothing is corrupted -- the collector simply waits -- but a program can be
+// written whose pause is as long as its longest allocation-free stretch. The
+// fix is the safepoint poll the design calls for (X86-BACKEND.md, "Memory"):
+// the compiler emitting a check of one word at every back edge and call, which
+// turns "eventually allocates" into "within a loop iteration". Until then this
+// is the contract, and it is why the runtime's own waits -- the futex in
+// lib/threading.cor, the sleep in the scheduler -- say so through
+// Runtime.BeginBlocking.
+
+/// The heap lock, and the flag that says a collection is running. Both are
+/// words of memory from the operating system rather than static fields: a
+/// futex needs an address, and a static field has none the language can take.
+static class GcLock
+{
+    public const long Collecting = 0;   // 1 while a collection is running
+    public const long Held = 4;         // the heap lock: 0 free, 1 held
+
+    static long _words;
+
+    public static long Words()
+    {
+        if (_words == 0)
+        {
+            _words = Platform.Map(4096);
+        }
+        return _words;
+    }
+
+    /// Whether somebody is collecting, at the moment of asking. Cheap, and
+    /// false before anything has ever allocated.
+    public static bool IsCollecting()
+    {
+        long at = _words;
+
+        if (at == 0)
+        {
+            return false;
+        }
+        return Sys.Peek(at + Collecting) != 0;
+    }
+
+    public static void Enter()
+    {
+        long at = Words() + Held;
+
+        while (Sys.Cas(at, 0, 1) != 0)
+        {
+            // A thread spinning for this lock is a thread the collector is
+            // waiting for; without this the two would wait for each other.
+            if (IsCollecting())
+            {
+                GcThreads.Park();
+            }
+            Sys.Pause();
+        }
+    }
+
+    public static void Exit()
+    {
+        Sys.AtomicSwap(Words() + Held, 0);
+    }
+}
+
+/// Every thread the collector must know about: where its stack is, and
+/// whether it is running.
+///
+/// The table is memory of the operating system's and not an array, for the
+/// same reason GcRoots' extra roots are: registering a thread must not
+/// allocate, and a heap block here would be one the collector had to keep
+/// alive forever. A program with one thread never makes the table at all.
+static class GcThreads
+{
+    const long Max = 256;
+
+    static long _blocks;        // Max words: the registered threads' blocks
+    static long _count;
+    static long _first;         // the one thread, before there is a table
+
+    /// A thread has stopped and its stack can be read.
+    public const long Stopped = 1;
+
+    public static long Count()
+    {
+        return _count;
+    }
+
+    static long At(long i)
+    {
+        return Sys.Peek(_blocks + i * 4);
+    }
+
+    /// Adds a thread. The first one is only written down, because a program
+    /// with one thread needs no table and must not ask for memory it will
+    /// never read (a bare-metal program has no heap at all until it says so).
+    public static void Register(long block)
+    {
+        if (block == 0)
+        {
+            return;
+        }
+
+        // The FIRST thread is only written down, and takes no lock: a program
+        // with one thread must not be made to ask for memory it will never
+        // read, and on bare metal there is no memory to ask for until the
+        // program has said where the heap is.
+        if (_blocks == 0 && _first == 0)
+        {
+            _first = block;
+            return;
+        }
+
+        GcLock.Enter();
+
+        // Tested again with the lock held: two threads starting a third and a
+        // fourth at once would otherwise both make the table.
+        if (_blocks == 0)
+        {
+            _blocks = Platform.Map(Max * 4);
+            Add(_first);
+            _first = 0;
+        }
+        Add(block);
+        GcLock.Exit();
+    }
+
+    /// Called with the lock held.
+    static void Add(long block)
+    {
+        if (_blocks != 0 && _count < Max && block != 0)
+        {
+            Sys.Poke(_blocks + _count * 4, block);
+            _count = _count + 1;
+        }
+    }
+
+    /// Takes a thread out: its stack is about to stop being a stack.
+    public static void Deregister(long block)
+    {
+        if (_blocks == 0)
+        {
+            if (_first == block)
+            {
+                _first = 0;
+            }
+            return;
+        }
+
+        GcLock.Enter();
+        Gc.Retire(block);
+
+        long i = 0;
+
+        while (i < _count)
+        {
+            if (At(i) == block)
+            {
+                Sys.Poke(_blocks + i * 4, At(_count - 1));
+                _count = _count - 1;
+                i = _count;
+            }
+            else
+            {
+                i = i + 1;
+            }
+        }
+
+        GcLock.Exit();
+    }
+
+    // ---- stopping ------------------------------------------------------------
+
+    /// Stops here until the collection that is running has finished.
+    public static void Park()
+    {
+        Platform.SafePoint(0);
+    }
+
+    /// This thread is about to wait on something that only another thread can
+    /// answer: it counts as stopped, and its stack is read where it stands,
+    /// until EndBlocking. Without this a collector would wait for a thread
+    /// that is asleep in the kernel and will not allocate until woken.
+    public static void BeginBlocking()
+    {
+        Platform.SafePoint(Stopped);
+    }
+
+    public static void EndBlocking()
+    {
+        long block = Sys.ThreadBlock();
+
+        Sys.AtomicSwap(block + Tls.State, 0);
+
+        // Read AFTER saying this thread runs again: a collection that began in
+        // between has not seen the store, and would otherwise sweep while this
+        // thread allocated.
+        if (GcLock.IsCollecting())
+        {
+            Park();
+        }
+    }
+
+    /// What Platform.SafePoint calls once every callee-saved register is on
+    /// the stack -- which is the whole reason it is entered that way, and the
+    /// same reasoning as GcRoots.Enter's.
+    public static void SafePoint(long mode)
+    {
+        long block = Sys.ThreadBlock();
+
+        // Where this thread's live stack begins. Everything above it, up to
+        // the top it started from, is what the collector reads.
+        Sys.Poke(block + Tls.StackLimit, Sys.Stack());
+        Sys.AtomicSwap(block + Tls.State, Stopped);
+
+        if (mode != 0)
+        {
+            return;
+        }
+
+        long at = GcLock.Words() + GcLock.Collecting;
+
+        while (Sys.Peek(at) != 0)
+        {
+            Platform.Wait(at, 1);
+        }
+        Sys.AtomicSwap(block + Tls.State, 0);
+    }
+
+    /// Brings every other thread to a stop. The heap lock must be held.
+    public static void StopWorld()
+    {
+        long ctl = GcLock.Words();
+        long self = Sys.ThreadBlock();
+
+        Sys.AtomicSwap(ctl + GcLock.Collecting, 1);
+
+        if (_blocks == 0)
+        {
+            return;     // one thread: it is the one asking
+        }
+
+        // Taking a thread's buffer away is what stops it: with no room left
+        // in it, its next allocation must come to the slow path, and the slow
+        // path parks. The limit is put aside first and not simply dropped --
+        // it is the end of a stretch of memory that is not yet a block, and
+        // Gc.Retire needs it to make one.
+        long i = 0;
+
+        while (i < _count)
+        {
+            if (At(i) != self)
+            {
+                Sys.Poke(At(i) + Tls.AllocSaved, Sys.Peek(At(i) + Tls.AllocLimit));
+                Sys.AtomicSwap(At(i) + Tls.AllocLimit, 0);
+            }
+            i = i + 1;
+        }
+
+        while (Running(self) > 0)
+        {
+            Sys.Pause();
+        }
+
+        // Stopped threads cannot retire their own buffers -- they are not
+        // running -- and the tails have to become blocks before anything
+        // walks a chunk. The lock is held here, so it can be done for them.
+        i = 0;
+
+        while (i < _count)
+        {
+            if (At(i) != self)
+            {
+                Gc.Retire(At(i));
+            }
+            i = i + 1;
+        }
+    }
+
+    static long Running(long self)
+    {
+        long running = 0;
+        long i = 0;
+
+        while (i < _count)
+        {
+            if (At(i) != self && Sys.Peek(At(i) + Tls.State) == 0)
+            {
+                running = running + 1;
+            }
+            i = i + 1;
+        }
+        return running;
+    }
+
+    public static void StartWorld()
+    {
+        long at = GcLock.Words() + GcLock.Collecting;
+
+        Sys.AtomicSwap(at, 0);
+        Platform.Wake(at, 0x7FFFFFFF);
+    }
+
+    /// Hands every stopped thread's stack to the collector.
+    public static void ScanStacks(long self)
+    {
+        if (_blocks == 0)
+        {
+            return;
+        }
+
+        long i = 0;
+
+        while (i < _count)
+        {
+            long block = At(i);
+
+            if (block != self)
+            {
+                long from = Sys.Peek(block + Tls.StackLimit);
+                long to = Sys.Peek(block + Tls.StackBase);
+
+                if (from != 0 && to > from)
+                {
+                    Gc.ScanRange(from, to);
+                }
+            }
+            i = i + 1;
+        }
+    }
+}

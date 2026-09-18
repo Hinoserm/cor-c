@@ -1,0 +1,114 @@
+// test: string_surface
+// expect-exit: 0
+// expect-output:
+// split1 4[a][b][][c]
+// split2 3[a][b][c]
+// split3 3[one][two][three]
+// split4 1[x]
+// split5 3[a][b][c]
+// split6 2[a][b]
+// split7 3[a][b][c]
+// find1 6 6 6 0
+// find2 0 -1 True
+// find3 2 8
+// cmp 0 1 -1
+// splice hello|hello|hello, world|hell0 w0rld
+// trim [hi][a_][__a][a	b]
+// trim2 [hi]
+// misc dcba abc abcd 0 3
+// join x-y
+// char1 True True True True True True
+// char2 q Q True
+//
+// The parts of System.String a program reaches for once it is past
+// concatenation: splitting on strings and on sets of characters with the
+// options that drop and trim the pieces, searching from a position and
+// without regard to case, trimming particular characters, cutting and
+// splicing, and the character predicates that go with them.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static string Show(string[] parts)
+    {
+        string shown = "" + parts.Length;
+        foreach (string p in parts)
+        {
+            shown = shown + "[" + p + "]";
+        }
+        return shown;
+    }
+
+    // .NET's Compare answers "some number of the right sign"; this library
+    // answers -1, 0 or 1. The sign is the whole of the contract, so the test
+    // checks the sign.
+    static int Sign(int n)
+    {
+        if (n < 0) { return -1; }
+        if (n > 0) { return 1; }
+        return 0;
+    }
+
+    static int Main()
+    {
+        string csv = "a,b,,c";
+        Line("split1 " + Show(csv.Split(',')));
+        Line("split2 " + Show(String.Split(csv, ',', StringSplitOptions.RemoveEmptyEntries)));
+
+        string sentence = "one::two::three";
+        Line("split3 " + Show(String.Split(sentence, "::")));
+        Line("split4 " + Show(String.Split("x", "::")));
+
+        char[] seps = new char[] { ',', ';' };
+        Line("split5 " + Show(String.Split("a,b;c", seps)));
+        Line("split6 " + Show(String.Split(" a , b ", ',', StringSplitOptions.TrimEntries)));
+
+        string[] many = new string[] { "--", "++" };
+        Line("split7 " + Show(String.Split("a--b++c", many, StringSplitOptions.None)));
+
+        string hay = "abcABCabc";
+        Line("find1 " + String.IndexOf(hay, 'a', 1) + " " + String.IndexOf(hay, "abc", 1)
+             + " " + String.LastIndexOf(hay, "abc") + " " + String.LastIndexOf(hay, 'a', 5));
+        Line("find2 " + String.IndexOf(hay, "ABC", 0, StringComparison.OrdinalIgnoreCase)
+             + " " + String.IndexOf(hay, "zz", 0)
+             + " " + String.Contains(hay, "BCA", StringComparison.OrdinalIgnoreCase));
+
+        char[] any = new char[] { 'B', 'c' };
+        Line("find3 " + String.IndexOfAny(hay, any) + " " + String.LastIndexOfAny(hay, any));
+
+        Line("cmp " + Sign(String.Compare("abc", "ABC", true)) + " "
+             + Sign(String.Compare("abc", "ABC", StringComparison.Ordinal)) + " "
+             + Sign(String.Compare("a", "ab", StringComparison.Ordinal)));
+
+        string spliced = "hello world";
+        Line("splice " + String.Remove(spliced, 5) + "|" + String.Remove(spliced, 5, 6)
+             + "|" + String.Insert(spliced, 5, ",") + "|" + String.Replace(spliced, 'o', '0'));
+
+        Line("trim [" + String.Trim("xxhixx", 'x') + "][" + String.TrimStart("__a_", '_')
+             + "][" + String.TrimEnd("__a_", '_') + "][" + String.Trim("  a\tb\f ") + "]");
+
+        char[] cut = new char[] { '*', '#' };
+        Line("trim2 [" + String.Trim("*#hi#*", cut) + "]");
+
+        Line("misc " + String.Reverse("abcd") + " " + String.Concat("a", "b", "c")
+             + " " + String.Concat("a", "b", "c", "d") + " " + string.Empty.Length
+             + " " + String.ToCharArray("abc").Length);
+
+        List<string> words = new List<string>();
+        words.Add("x");
+        words.Add("y");
+        Line("join " + String.Join("-", words));
+
+        Line("char1 " + Char.IsWhiteSpace('\f') + " " + Char.IsControl('\n')
+             + " " + Char.IsPunctuation('.') + " " + Char.IsSymbol('+')
+             + " " + Char.IsAsciiHexDigit('F') + " " + Char.IsAscii('a'));
+        char one = 'q';
+        Line("char2 " + Char.ToString(one) + " " + Char.ToUpper('q') + " " + Char.IsAsciiLetterUpper('Q'));
+        return 0;
+    }
+}

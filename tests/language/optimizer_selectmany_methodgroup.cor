@@ -1,0 +1,26 @@
+// test: SelectMany accepts iterator method groups and defers enumeration
+// expect-exit: 0
+// expect-output:
+// selectmany passed
+class FlattenGroup {
+    public List<int> Values = new() { 2, 3 };
+}
+static class Program {
+    static int Calls;
+    static IEnumerable<int> Expand(int value) {
+        Calls++;
+        yield return value;
+        yield return value + 10;
+    }
+    static int Main() {
+        List<FlattenGroup> groups = new() { new FlattenGroup() };
+        IEnumerable<int> query = groups.SelectMany(g => g.Values).SelectMany(Expand);
+        if (Calls != 0) return 1;
+        HashSet<int> values = new(query);
+        if (Calls != 2 || values.Count != 4 || !values.Contains(12) || !values.Contains(13)) return 2;
+        HashSet<int> repeated = new(query);
+        if (Calls != 4 || repeated.Count != 4) return 3;
+        Sys.Print("selectmany passed\n");
+        return 0;
+    }
+}

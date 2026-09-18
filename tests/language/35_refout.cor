@@ -1,0 +1,141 @@
+// test: refout
+// expect-exit: 0
+// expect-output:
+// out 5 True
+// split 4 7
+// ref 6 8
+// deep 21
+// static 10
+// field 15
+// outvar 123 False
+// array 2
+// swap 2 1
+// double 45
+//
+// ref and out parameters: the callee writes the caller's variable; ref reads
+// what was there; a by-ref parameter passed on again; more parameters than
+// fit in registers; the target being a static field, an object field and an
+// array element; `out var`; and a double passed by reference.
+
+static class Div
+{
+    public static bool Half(long n, out long half)
+    {
+        half = n / 2;
+        return n % 2 == 0;
+    }
+
+    public static void Split(long n, out long tens, out long units)
+    {
+        tens = n / 10;
+        units = n % 10;
+    }
+
+    public static void Bump(ref long n)
+    {
+        n = n + 1;
+    }
+
+    public static void BumpTwice(ref long n)
+    {
+        Bump(ref n);
+        Bump(ref n);
+    }
+
+    public static void Deep(long a, long b, long c, long d, long e, long f, out long sum)
+    {
+        sum = a + b + c + d + e + f;
+    }
+
+    public static void HalfF(double x, out double y)
+    {
+        y = x / 2.0;
+    }
+
+    public static void Swap(ref int a, ref int b)
+    {
+        int t = a;
+        a = b;
+        b = t;
+    }
+
+    public static void BumpInt(ref int n)
+    {
+        n = n + 1;
+    }
+}
+
+static class Kept
+{
+    public static long Half;
+}
+
+class Box
+{
+    public long N;
+
+    public void Fill(long from)
+    {
+        Div.Half(from, out N);
+    }
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        long h = 0;
+        bool even = Div.Half(10, out h);
+        Line("out " + h + " " + even);
+
+        long tens = 0;
+        long units = 0;
+        Div.Split(47, out tens, out units);
+        Line("split " + tens + " " + units);
+
+        long n = 5;
+        Div.Bump(ref n);
+        long once = n;
+        Div.BumpTwice(ref n);
+        Line("ref " + once + " " + n);
+
+        long sum = 0;
+        Div.Deep(1, 2, 3, 4, 5, 6, out sum);
+        Line("deep " + sum);
+
+        Div.Half(20, out Kept.Half);
+        Line("static " + Kept.Half);
+
+        Box box = new Box();
+        box.Fill(30);
+        Line("field " + box.N);
+
+        int parsed = 0;
+        if (Int32.TryParse("123", out int v))
+        {
+            parsed = v;
+        }
+        bool bad = Int64.TryParse("bad", out long l);
+        Line("outvar " + parsed + " " + bad);
+
+        int[] arr = new int[] { 0, 1, 0 };
+        Div.BumpInt(ref arr[1]);
+        Line("array " + arr[1]);
+
+        int x = 1;
+        int y = 2;
+        Div.Swap(ref x, ref y);
+        Line("swap " + x + " " + y);
+
+        double half = 0.0;
+        Div.HalfF(9.0, out half);
+        Line("double " + (long)(half * 10.0));
+        return 0;
+    }
+}

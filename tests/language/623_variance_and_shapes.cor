@@ -1,0 +1,102 @@
+// test: variance_and_shapes
+// expect-exit: 0
+// expect-output:
+// members z,a,b
+// through 2
+// zip same differ
+// roots 2 2
+// pattern field a
+// named 1 2
+//
+// A VARIANT INTERFACE, as C# declares it. `IEnumerable<out T>` says the
+// sequence only ever hands a T OUT, so a sequence of FieldDecl IS a sequence of
+// MemberDecl -- `decl.Members.AddRange(several.More)` is a line in this
+// compiler's own parser and had nowhere to go. Nothing is made and nothing is
+// wrapped: an interface's methods share one vtable slot across every
+// specialisation of its template, so a call through either reaches the same
+// implementation.
+//
+// Zip NAMES ITS PAIRS, as .NET does -- `IEnumerable<(TFirst First, TSecond
+// Second)>` -- and the names have to survive being spliced into a
+// specialisation's name.
+//
+// A METHOD GROUP CHOOSES BY ITS ARITY, exactly as a written lambda does:
+// `Blocks.Where(IsRoot)` names a method of one parameter, which is the
+// one-argument Where.
+//
+// And a pattern over a type in a namespace is tested for the type the CHECKER
+// resolved, not the name as written.
+
+namespace Corsac.Shapes;
+
+abstract class MemberDecl { public abstract string Name(); }
+sealed class FieldDecl : MemberDecl { public string N = "f"; public override string Name() => N; }
+sealed class MethodDecl : MemberDecl { public string N = "m"; public override string Name() => N; }
+
+sealed class Block { public int Id; public bool Root; }
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static bool IsRoot(Block b) => b.Root;
+
+    static string Which(MemberDecl m)
+        => m switch
+        {
+            FieldDecl f => "field " + f.N,
+            MethodDecl d => "method " + d.N,
+            _ => "other",
+        };
+
+    static int Main()
+    {
+        List<MemberDecl> all = new List<MemberDecl>();
+        List<FieldDecl> fields = new List<FieldDecl>();
+
+        fields.Add(new FieldDecl { N = "a" });
+        fields.Add(new FieldDecl { N = "b" });
+        all.Add(new MethodDecl { N = "z" });
+        all.AddRange(fields);
+
+        Line("members " + string.Join(",", all.Select(m => m.Name())));
+
+        IEnumerable<MemberDecl> seen = fields;
+        int through = 0;
+
+        foreach (MemberDecl m in seen)
+        {
+            through++;
+        }
+        Line("through " + through);
+
+        List<FieldDecl> other = new List<FieldDecl>();
+
+        other.Add(new FieldDecl { N = "a" });
+        other.Add(new FieldDecl { N = "c" });
+        Line("zip " + (fields.Zip(fields).All(p => p.First.N == p.Second.N) ? "same" : "differ")
+             + " " + (fields.Zip(other).All(p => p.First.N == p.Second.N) ? "same" : "differ"));
+
+        List<Block> blocks = new List<Block>();
+
+        blocks.Add(new Block { Id = 1, Root = true });
+        blocks.Add(new Block { Id = 2, Root = false });
+        blocks.Add(new Block { Id = 3, Root = true });
+        Line("roots " + blocks.Where(IsRoot).Count() + " " + blocks.Count(IsRoot));
+
+        Line("pattern " + Which(fields[0]));
+
+        // A shape whose elements are types of this namespace: the class the
+        // checker writes for it and the one the specialiser names must be the
+        // same class.
+        List<(Block Where, Block What)> pairs = new List<(Block Where, Block What)>();
+
+        pairs.Add((blocks[0], blocks[1]));
+        Line("named " + pairs[0].Where.Id + " " + pairs[0].What.Id);
+        return 0;
+    }
+}

@@ -1,0 +1,78 @@
+// test: tostring
+// expect-exit: 0
+// expect-output:
+// hello hello
+// Bare
+// sub
+// <hello>
+// x
+// hello,sub
+//
+// ToString: an override is used when an object is concatenated with a
+// string, a class without one renders as its type name, the override runs
+// through a base-typed reference, null renders as nothing, and string.Join
+// renders each element through it.
+
+class Bare
+{
+    public int n;
+}
+
+class Named
+{
+    public string what;
+
+    public Named(string w)
+    {
+        what = w;
+    }
+
+    public override string ToString()
+    {
+        return what;
+    }
+}
+
+class Sub : Named
+{
+    public Sub() : base("base")
+    {
+    }
+
+    public override string ToString()
+    {
+        return "sub";
+    }
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        Named n = new Named("hello");
+        Line("" + n + " " + n.ToString());
+
+        Bare b = new Bare();
+        Line("" + b);
+
+        Named held = new Sub();
+        Line("" + held);
+
+        Line("<" + n + ">");
+
+        Named? missing = null;
+        Line("x" + missing);
+
+        List<Named> all = new List<Named>();
+        all.Add(n);
+        all.Add(held);
+        Line(string.Join(",", all));
+        return 0;
+    }
+}

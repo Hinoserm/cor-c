@@ -1,0 +1,57 @@
+// test: stat fields at Linux's offsets
+// expect-exit: 0
+// expect-output:
+// size 5
+// regular file
+// directory
+// not there
+// mode 420
+//
+// THE SECOND MISTAKE THE PORT WAS ABOUT. os/ read a stat buffer with one
+// Sys.Peek at a byte offset, because the old kernel's stat was an array of
+// 64-bit words. Linux's struct stat64 is not that: st_mode is 32 bits at 16
+// and st_size is 64 bits at 44 on a four-byte alignment, so a word peek
+// answers two fields glued together. This proves the accessors read what the
+// kernel actually wrote.
+
+class Program
+{
+    static int Main()
+    {
+        string path = String.Concat("/tmp/cor-stat-", String.FromInt(Os.Getpid()));
+
+        File.WriteAllText(path, "hello");
+
+        byte[] info = Stat.Room();
+
+        if (Os.Stat(path, info) < 0)
+        {
+            Console.WriteLine("stat failed");
+            return 1;
+        }
+
+        Console.Write("size ");
+        Console.WriteLine(Stat.Size(info));
+        Console.WriteLine(Stat.IsFileMode(Stat.Mode(info)) ? "regular file" : "NOT a regular file");
+
+        if (Os.Stat("/tmp", info) < 0)
+        {
+            Console.WriteLine("stat of /tmp failed");
+            return 1;
+        }
+        Console.WriteLine(Stat.IsDirMode(Stat.Mode(info)) ? "directory" : "NOT a directory");
+
+        Os.Unlink(path);
+        Console.WriteLine(Os.Exists(path) ? "STILL THERE" : "not there");
+
+        // 0644 is what File.WriteAllText creates with, and the permission
+        // bits are the low twelve of the mode -- 420 in decimal.
+        string second = String.Concat(path, "-mode");
+
+        File.WriteAllText(second, "x");
+        Console.Write("mode ");
+        Console.WriteLine(Os.ModeOf(second) & StatBuf.PermissionMask);
+        Os.Unlink(second);
+        return 0;
+    }
+}

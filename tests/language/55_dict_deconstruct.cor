@@ -1,0 +1,48 @@
+// test: dict_deconstruct
+// expect-exit: 0
+// expect-output:
+// pairs 60 6
+// var 60
+// kvp 7 x
+//
+// Deconstruction of KeyValuePair: a foreach over a Dictionary that takes
+// each entry apart into two locals, with explicit types and with `var`, and
+// a deconstruction declaration from a single KeyValuePair.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        Dictionary<int, int> small = new Dictionary<int, int>();
+        small[1] = 10;
+        small[2] = 20;
+        small[3] = 30;
+
+        int values = 0;
+        int keys = 0;
+        foreach ((int k, int v) in small)
+        {
+            values += v;
+            keys += k;
+        }
+        Line("pairs " + values + " " + keys);
+
+        int again = 0;
+        foreach (var (k2, v2) in small)
+        {
+            again += v2;
+        }
+        Line("var " + again);
+
+        KeyValuePair<int, string> kv = new KeyValuePair<int, string>(7, "x");
+        (int key, string word) = kv;
+        Line("kvp " + key + " " + word);
+        return 0;
+    }
+}

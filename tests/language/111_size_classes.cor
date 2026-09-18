@@ -1,0 +1,111 @@
+// test: size classes
+// expect-exit: 0
+// expect-output:
+// holes 127
+// from holes 127
+// grew from bump 0
+// collections 0
+// heap steady True
+//
+// The free lists are segregated by size: one list per eight-byte class up to
+// 256 bytes. Two hundred and fifty-six small blocks of mixed sizes are
+// allocated, every other one below the top of the heap is freed -- leaving
+// holes that cannot coalesce, because a live block sits between each pair --
+// and then the same sizes are
+// asked for again. Every one of them must come back out of a hole rather than
+// off the bump pointer, which is what a size class is for: without one, a
+// request walks a single list of slightly-wrong sizes and carves it finer.
+
+static class Program
+{
+    static void Say(string label, long value)
+    {
+        Sys.Print(label);
+        Sys.PrintInt(value);
+        Sys.PrintLine();
+    }
+
+    static long SizeFor(int i)
+    {
+        // 8, 16, ... 256 and round again: every exact bin, several times.
+        return ((i % 32) + 1) * 8;
+    }
+
+    static int Main()
+    {
+        long[] live = new long[256];
+        long[] holes = new long[128];
+
+        for (int i = 0; i < 256; i++)
+        {
+            live[i] = Runtime.Alloc(SizeFor(i));
+        }
+
+        // The high-water mark of the bump pointer: everything allocated after
+        // this point that lies below it came out of a hole.
+        long top = live[255];
+        long holeCount = 0;
+
+        // The last two blocks stay live, so that every hole is strictly below
+        // the high-water mark and an allocation above it can only be fresh
+        // memory rather than the top block handed back.
+        for (int i = 1; i < 254; i = i + 2)
+        {
+            Runtime.Free(live[i]);
+            holes[holeCount] = live[i];
+            holeCount = holeCount + 1;
+            live[i] = 0;
+        }
+
+        long startHeap = Gc.HeapBytes;
+        long fromHoles = 0;
+        long fresh = 0;
+
+        for (int i = 1; i < 254; i = i + 2)
+        {
+            long at = Runtime.Alloc(SizeFor(i));
+
+            if (at <= top)
+            {
+                fromHoles = fromHoles + 1;
+            }
+            else
+            {
+                fresh = fresh + 1;
+            }
+            live[i] = at;
+        }
+
+        // Nothing handed out twice: every address is distinct from the ones
+        // that were never freed.
+        long clash = 0;
+
+        for (int i = 1; i < 254; i = i + 2)
+        {
+            for (int j = 0; j < 256; j = j + 2)
+            {
+                if (live[i] == live[j])
+                {
+                    clash = clash + 1;
+                }
+            }
+        }
+
+        Say("holes ", holeCount + clash);
+        Say("from holes ", fromHoles);
+        Say("grew from bump ", fresh);
+        Say("collections ", Gc.Collections);
+        Sys.Print("heap steady ");
+
+        if (Gc.HeapBytes == startHeap)
+        {
+            Sys.Print("True");
+        }
+        else
+        {
+            Sys.Print("False");
+        }
+        Sys.PrintLine();
+        return 0;
+    }
+}

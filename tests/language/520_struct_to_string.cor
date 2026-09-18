@@ -1,0 +1,70 @@
+// test: struct_to_string
+// expect-exit: 0
+// expect-output:
+// joined (1,2)
+// interpolated (1,2)
+// tostring (1,2)
+// format (1,2)
+// boxed (1,2)
+// undeclared Bare
+// nested at (1,2) and (3,4)
+// nullable (1,2)
+// nullable empty []
+// list (1,2), (3,4)
+//
+// A STRUCT JOINED TO A STRING SAYS WHAT ITS ToString SAYS. `"at " + point` is
+// ordinary C# and was refused outright -- "'Vec' cannot be joined to a string"
+// -- while the SAME struct, boxed, already reached the same method through the
+// box's descriptor. Two answers to one question, and one of them was no.
+//
+// The call is direct, because a struct has no vtable to dispatch through, and
+// the register holding a struct holds its address, which is what the method
+// wants for `this`. A struct that declares no ToString says its type's name,
+// which is what object.ToString answers for everything else here.
+struct Vec
+{
+    public int X;
+    public int Y;
+
+    public Vec(int x, int y) { X = x; Y = y; }
+
+    public override string ToString() { return "(" + X + "," + Y + ")"; }
+}
+
+struct Bare
+{
+    public int N;
+}
+
+static class Program
+{
+    static void Main()
+    {
+        Vec v = new Vec(1, 2);
+
+        Console.WriteLine("joined " + v);
+        Console.WriteLine($"interpolated {v}");
+        Console.WriteLine("tostring " + v.ToString());
+        Console.WriteLine("format " + string.Format("{0}", v));
+
+        object boxed = v;
+
+        Console.WriteLine("boxed " + boxed);
+        Console.WriteLine("undeclared " + new Bare());
+        Console.WriteLine("nested at " + v + " and " + new Vec(3, 4));
+
+        Vec? maybe = v;
+
+        Console.WriteLine("nullable " + maybe);
+
+        Vec? nothing = null;
+
+        Console.WriteLine("nullable empty [" + nothing + "]");
+
+        List<Vec> all = new List<Vec>();
+
+        all.Add(v);
+        all.Add(new Vec(3, 4));
+        Console.WriteLine("list " + string.Join(", ", all));
+    }
+}

@@ -1,0 +1,70 @@
+// test: narrow_types
+// expect-exit: 0
+// expect-output:
+// byte 4
+// sbyte -128
+// short -32768
+// ushort 0
+// casts 44 -56 4464 65535 255
+// promote 400
+// array True 256
+// char A
+//
+// byte, sbyte, short and ushort: they wrap at their own width, promote to int
+// in arithmetic, and narrowing casts keep the low bits with the right sign.
+// The casts go through variables so nothing is folded at compile time.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        byte b = 250;
+        b += 10;
+        Line("byte " + b);
+
+        sbyte sb = 127;
+        sb++;
+        Line("sbyte " + sb);
+
+        short sh = 32767;
+        sh += 1;
+        Line("short " + sh);
+
+        ushort us = 65535;
+        us += 1;
+        Line("ushort " + us);
+
+        int v300 = 300;
+        int v200 = 200;
+        int v70000 = 70000;
+        int vm1 = -1;
+        byte c1 = (byte)v300;
+        sbyte c2 = (sbyte)v200;
+        short c3 = (short)v70000;
+        ushort c4 = (ushort)vm1;
+        byte c5 = (byte)vm1;
+        Line("casts " + c1 + " " + c2 + " " + c3 + " " + c4 + " " + c5);
+
+        byte x = 200;
+        int sum = x + x;
+        Line("promote " + sum);
+
+        byte[] arr = new byte[] { 255 };
+        bool is255 = arr[0] == 255;
+        int plus = arr[0] + 1;
+        Line("array " + is255 + " " + plus);
+
+        int code = 65;
+        char ch = (char)code;
+        Sys.Print("char ");
+        Sys.PrintChar(ch);
+        Sys.PrintLine();
+        return 0;
+    }
+}

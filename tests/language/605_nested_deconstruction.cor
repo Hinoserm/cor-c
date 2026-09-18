@@ -1,0 +1,76 @@
+// test: nested_deconstruction
+// expect-exit: 0
+// expect-output:
+// entry 1 a 10
+// sizes 1 10
+// stmt 1 2 3
+// local 4 1
+// pairs 5 six 7
+//
+// A deconstruction target may be a LIST of its own -- `foreach ((long index,
+// (Block block, Instr at)) in suspends)` is a line in this compiler's own
+// async transform -- and it comes apart out of the element it stands for by
+// the same two rules: a tuple by position, anything else through Deconstruct.
+// With it, a local function may return a tuple, whose type is the one type
+// written in brackets.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        Dictionary<long, (string Name, int Size)> table = new Dictionary<long, (string Name, int Size)>();
+
+        // One entry, because what a Dictionary hands back it hands back in
+        // its own order, which .NET does not promise either.
+        table[1] = ("a", 10);
+
+        // A KeyValuePair comes apart through Deconstruct; its value is a tuple
+        // and comes apart by position.
+        foreach ((long index, (string name, int size)) in table)
+        {
+            Line("entry " + index + " " + name + " " + size);
+        }
+
+        foreach ((long index, (string _, int size)) in table)
+        {
+            Line("sizes " + index + " " + size);
+        }
+
+        (int x, (int y, int z)) = (1, (2, 3));
+
+        Line("stmt " + x + " " + y + " " + z);
+
+        (int End, int Hops) Final(int from)
+        {
+            int hops = 0;
+            int at = from;
+
+            while (at < 4)
+            {
+                at++;
+                hops++;
+            }
+            return (at, hops);
+        }
+
+        (int end, int hops) = Final(3);
+
+        Line("local " + end + " " + hops);
+
+        List<(int N, (string Word, int After))> rows = new();
+
+        rows.Add((5, ("six", 7)));
+
+        foreach ((int n, (string word, int after)) in rows)
+        {
+            Line("pairs " + n + " " + word + " " + after);
+        }
+        return 0;
+    }
+}

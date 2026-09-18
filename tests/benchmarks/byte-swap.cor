@@ -1,0 +1,49 @@
+static class Program
+{
+    static uint Next(ref uint state) { state = unchecked(state * 1664525u + 1013904223u); return state; }
+    static long Work(int count)
+    {
+        uint state = 12345; long checksum = 0;
+        for (int i = 0; i < count; i++)
+        {
+            long value = ((long)Next(ref state) << 32) | Next(ref state);
+            checksum ^= Sys.ByteSwap(value);
+        }
+        return checksum;
+    }
+    static long Reference(int count)
+    {
+        uint state = 12345; ulong checksum = 0;
+        for (int i = 0; i < count; i++)
+        {
+            ulong value = ((ulong)Next(ref state) << 32) | Next(ref state), swapped = 0;
+            for (int b = 0; b < 8; b++) { swapped = (swapped << 8) | (value & 255); value >>= 8; }
+            checksum ^= swapped;
+        }
+        return (long)checksum;
+    }
+    static long Roundtrip(int count, bool reference)
+    {
+        uint state = 12345; long checksum = 0;
+        for (int i = 0; i < count; i++)
+        {
+            long value = ((long)Next(ref state) << 32) | Next(ref state);
+            checksum ^= reference ? value : Sys.ByteSwap(Sys.ByteSwap(value));
+        }
+        return checksum;
+    }
+    static int Main()
+    {
+        string[] args = Environment.GetCommandLineArgs();
+        int count = args.Length > 1 ? int.Parse(args[1]) : 1000000;
+        if (count < 1 || count > 10000000) return 2;
+        bool roundtrip = args.Length > 2 && args[2] == "roundtrip";
+        long start = Stopwatch.GetTimestamp();
+        long value = roundtrip ? Roundtrip(count, false) : Work(count);
+        long elapsed = Stopwatch.GetTimestamp() - start;
+        bool valid = value == (roundtrip ? Roundtrip(count, true) : Reference(count));
+        Console.WriteLine("byte-swap,roundtrip=" + roundtrip + ",iterations=" + count + ",ticks=" + elapsed + ",frequency=" + Stopwatch.Frequency
+            + ",checksum=" + value + ",valid=" + valid);
+        return valid ? 0 : 1;
+    }
+}

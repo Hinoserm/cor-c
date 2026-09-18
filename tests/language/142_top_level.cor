@@ -1,0 +1,38 @@
+// test: top_level
+// expect-exit: 0
+// expect-output:
+// top 6
+// helper 4
+//
+// A file with no type declaration in it at all, only statements: C# calls them
+// top-level statements and wraps them in a Main of its making, and so does
+// this. A local function and a class declared after the statements are both
+// part of the same file, exactly as C# arranges them.
+
+int total = 0;
+
+for (int i = 1; i <= 3; i++)
+{
+    total += i;
+}
+
+Sys.Print("top ");
+Sys.PrintInt(total);
+Sys.PrintLine();
+
+Counter c = new Counter();
+c.Bump();
+c.Bump();
+Sys.Print("helper ");
+Sys.PrintInt(c.N + 2);
+Sys.PrintLine();
+
+class Counter
+{
+    public int N;
+
+    public void Bump()
+    {
+        N++;
+    }
+}

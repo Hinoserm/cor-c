@@ -1,0 +1,58 @@
+// test: static_local_functions
+// expect-exit: 0
+// expect-output:
+// add 7
+// fact 120
+// mixed 30
+//
+// `static` on a local function, which says the body captures nothing from
+// around it. A static one, a recursive static one, and a static one sitting
+// beside an ordinary capturing local function in the same method.
+
+static class Program
+{
+    static int Main()
+    {
+        static int Add(int a, int b)
+        {
+            return a + b;
+        }
+
+        int x = 3;
+        int y = 4;
+        Sys.Print("add ");
+        Sys.PrintInt(Add(x, y));
+        Sys.PrintLine();
+
+        static int Fact(int n)
+        {
+            if (n <= 1)
+            {
+                return 1;
+            }
+            return n * Fact(n - 1);
+        }
+
+        int five = 5;
+        Sys.Print("fact ");
+        Sys.PrintInt(Fact(five));
+        Sys.PrintLine();
+
+        int scale = 10;
+
+        int Scaled(int v)
+        {
+            return v * scale;
+        }
+
+        static int Twice(int v)
+        {
+            return v + v;
+        }
+
+        Sys.Print("mixed ");
+        Sys.PrintInt(Scaled(Twice(x) - 3));
+        Sys.PrintLine();
+        return 0;
+    }
+}

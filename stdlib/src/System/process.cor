@@ -1,0 +1,268 @@
+// System.Diagnostics.Process, the parts a program uses to run another:
+// Start with a file name and arguments, optional redirection of the
+// standard streams through pipes, WaitForExit, ExitCode.
+class ProcessStartInfo
+{
+    public string FileName = "";
+    public List<string> ArgumentList = new List<string>();
+    public string Arguments = "";
+    public bool RedirectStandardOutput;
+    public bool RedirectStandardInput;
+    public bool RedirectStandardError;
+    public string WorkingDirectory = "";
+
+    public ProcessStartInfo()
+    {
+    }
+
+    public ProcessStartInfo(string fileName)
+    {
+        FileName = fileName;
+    }
+
+    public ProcessStartInfo(string fileName, string arguments)
+    {
+        FileName = fileName;
+        Arguments = arguments;
+    }
+}
+
+class Process : IDisposable
+{
+    int _pid;
+    int _exitCode;
+    bool _exited;
+    StreamReader? _stdout;
+    StreamReader? _stderr;
+    StreamWriter? _stdin;
+    public ProcessStartInfo StartInfo = new ProcessStartInfo();
+
+    public static Process Start(string fileName, string arguments)
+    {
+        Process p = new Process();
+        p.StartInfo = new ProcessStartInfo(fileName, arguments);
+        p.Start();
+        return p;
+    }
+
+    public static Process Start(string fileName)
+    {
+        return Start(fileName, "");
+    }
+
+    public static Process Start(ProcessStartInfo info)
+    {
+        Process p = new Process();
+        p.StartInfo = info;
+        p.Start();
+        return p;
+    }
+
+    public int Id
+    {
+        get { return _pid; }
+    }
+
+    public bool HasExited
+    {
+        get
+        {
+            if (!_exited)
+            {
+                Reap(true);
+            }
+            return _exited;
+        }
+    }
+
+    public int ExitCode
+    {
+        get { return _exitCode; }
+    }
+
+    public StreamReader StandardOutput
+    {
+        get { return _stdout!; }
+    }
+
+    public StreamReader StandardError
+    {
+        get { return _stderr!; }
+    }
+
+    public StreamWriter StandardInput
+    {
+        get { return _stdin!; }
+    }
+
+    /// The program is found on PATH when its name has no slash, as .NET's
+    /// UseShellExecute=false does.
+    static string Resolve(string name)
+    {
+        if (name.IndexOf('/') >= 0)
+        {
+            return name;
+        }
+        return UnixProcess.Find(name);
+    }
+
+    /// Arguments as a string are split on spaces, with double quotes
+    /// grouping, as .NET's parser does for the common cases.
+    static List<string> Split(string arguments)
+    {
+        List<string> words = new List<string>();
+        StringBuilder word = new StringBuilder();
+        bool quoted = false;
+        bool any = false;
+        for (int i = 0; i < arguments.Length; i++)
+        {
+            char c = arguments[i];
+            if (c == '"')
+            {
+                quoted = !quoted;
+                any = true;
+            }
+            else if (c == ' ' && !quoted)
+            {
+                if (any)
+                {
+                    words.Add(word.ToString());
+                    word.Clear();
+                    any = false;
+                }
+            }
+            else
+            {
+                word.Append(c);
+                any = true;
+            }
+        }
+        if (any)
+        {
+            words.Add(word.ToString());
+        }
+        return words;
+    }
+
+    public bool Start()
+    {
+        List<string> args = new List<string>();
+        args.Add(StartInfo.FileName);
+        for (int i = 0; i < StartInfo.ArgumentList.Count; i++)
+        {
+            args.Add(StartInfo.ArgumentList[i]);
+        }
+        List<string> fromString = Split(StartInfo.Arguments);
+        for (int i = 0; i < fromString.Count; i++)
+        {
+            args.Add(fromString[i]);
+        }
+        string program = Resolve(StartInfo.FileName);
+        int[] outPipe = new int[2];
+        int[] errPipe = new int[2];
+        int[] inPipe = new int[2];
+        if (StartInfo.RedirectStandardOutput && UnixProcess.Pipe(outPipe) < 0)
+        {
+            throw new IOException("pipe failed");
+        }
+        if (StartInfo.RedirectStandardError && UnixProcess.Pipe(errPipe) < 0)
+        {
+            throw new IOException("pipe failed");
+        }
+        if (StartInfo.RedirectStandardInput && UnixProcess.Pipe(inPipe) < 0)
+        {
+            throw new IOException("pipe failed");
+        }
+        int pid = UnixProcess.Fork();
+        if (pid < 0)
+        {
+            throw new IOException("fork failed");
+        }
+        if (pid == 0)
+        {
+            if (StartInfo.RedirectStandardOutput)
+            {
+                UnixProcess.Dup2(outPipe[1], 1);
+                UnixProcess.Close(outPipe[0]);
+                UnixProcess.Close(outPipe[1]);
+            }
+            if (StartInfo.RedirectStandardError)
+            {
+                UnixProcess.Dup2(errPipe[1], 2);
+                UnixProcess.Close(errPipe[0]);
+                UnixProcess.Close(errPipe[1]);
+            }
+            if (StartInfo.RedirectStandardInput)
+            {
+                UnixProcess.Dup2(inPipe[0], 0);
+                UnixProcess.Close(inPipe[0]);
+                UnixProcess.Close(inPipe[1]);
+            }
+            if (StartInfo.WorkingDirectory.Length > 0)
+            {
+                UnixProcess.ChangeDirectory(StartInfo.WorkingDirectory);
+            }
+            UnixProcess.Exec(program, args.ToArray(), Environment.EnvironmentBlock());
+            Environment.Exit(127);
+        }
+        _pid = pid;
+        if (StartInfo.RedirectStandardOutput)
+        {
+            UnixProcess.Close(outPipe[1]);
+            _stdout = new StreamReader(new FileStream(outPipe[0], FileAccess.Read, true));
+        }
+        if (StartInfo.RedirectStandardError)
+        {
+            UnixProcess.Close(errPipe[1]);
+            _stderr = new StreamReader(new FileStream(errPipe[0], FileAccess.Read, true));
+        }
+        if (StartInfo.RedirectStandardInput)
+        {
+            UnixProcess.Close(inPipe[0]);
+            _stdin = new StreamWriter(new FileStream(inPipe[1], FileAccess.Write, true));
+        }
+        return true;
+    }
+
+    void Reap(bool noHang)
+    {
+        int status = 0;
+        int got;
+        while (true)
+        {
+            got = UnixProcess.WaitPid(_pid, out status,
+                                      noHang ? WaitOptions.NoHang : WaitOptions.None);
+            if (got != -Err.Intr)
+            {
+                break;
+            }
+        }
+        if (got == _pid)
+        {
+            _exited = true;
+            _exitCode = UnixProcess.Result(status);
+        }
+    }
+
+    public void WaitForExit()
+    {
+        if (_stdin != null)
+        {
+            _stdin.Dispose();
+            _stdin = null;
+        }
+        if (!_exited)
+        {
+            Reap(false);
+        }
+    }
+
+    public void Kill()
+    {
+        UnixProcess.Kill(_pid, 9);
+    }
+
+    public void Dispose()
+    {
+    }
+}

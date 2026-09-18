@@ -1,0 +1,95 @@
+// test: lib/io-streams.cor -- StringWriter, StringReader, BinaryWriter/Reader, BufferedStream
+// expect-exit: 0
+// expect-output:
+// sw=[abc\n42] len=6
+// line=one peek=t rest=[two|three] eof=-1
+// len=33 head=01-C8-FE-FF-04-03-02-01-FF-FF-FF-FF
+// True 200 -2 16909060 -1 hello 2.5 Z 300
+// eos throws
+// buffered=0,1,2,3,4,5,6,7,8,9
+// sum=45
+//
+// The byte format is the reason for the hex line: a BinaryWriter here lays
+// numbers down little-endian and prefixes a string with its length in
+// seven-bit groups, so the same bytes are what .NET writes and reads. Every
+// line was taken from the same program run there.
+
+class Program
+{
+    static string Show(string s, string newline)
+    {
+        return String.Replace(s, "\n", newline);
+    }
+
+    static string Hex(byte[] bytes, int count)
+    {
+        StringBuilder made = new StringBuilder();
+
+        for (int i = 0; i < count; i++)
+        {
+            if (i > 0) { made.Append('-'); }
+            made.Append(((long)bytes[i]).ToString("X2"));
+        }
+        return made.ToString();
+    }
+
+    static int Main()
+    {
+        StringWriter sw = new StringWriter();
+        sw.Write("ab");
+        sw.Write('c');
+        sw.WriteLine();
+        sw.Write(42L);
+        Console.WriteLine("sw=[" + Show(sw.ToString(), "\\n") + "] len=" + sw.GetStringBuilder().Length);
+
+        StringReader sr = new StringReader("one\ntwo\nthree");
+        Console.WriteLine($"line={sr.ReadLine()} peek={(char)sr.Peek()} rest=[{Show(sr.ReadToEnd(), "|")}] eof={sr.Read()}");
+
+        MemoryStream ms = new MemoryStream();
+        BinaryWriter bw = new BinaryWriter(ms);
+        bw.Write(true);
+        bw.Write((byte)200);
+        bw.Write((short)-2);
+        bw.Write(0x01020304);
+        bw.Write(-1L);
+        bw.Write("hello");
+        bw.Write(2.5);
+        bw.Write('Z');
+        bw.Write7BitEncodedInt(300);
+        bw.Flush();
+
+        byte[] bytes = ms.ToArray();
+        Console.WriteLine("len=" + bytes.Length + " head=" + Hex(bytes, 12));
+
+        BinaryReader br = new BinaryReader(new MemoryStream(bytes));
+        bool flag = br.ReadBoolean();
+        byte one = br.ReadByte();
+        short back = br.ReadInt16();
+        int word = br.ReadInt32();
+        long wide = br.ReadInt64();
+        string text = br.ReadString();
+        double real = br.ReadDouble();
+        char letter = br.ReadChar();
+        int packed = br.Read7BitEncodedInt();
+        Console.WriteLine($"{flag} {one} {back} {word} {wide} {text} {real} {letter} {packed}");
+
+        try { int past = br.ReadInt32(); } catch (EndOfStreamException) { Console.WriteLine("eos throws"); }
+
+        MemoryStream buf = new MemoryStream();
+        BufferedStream bs = new BufferedStream(buf, 4);
+        for (int i = 0; i < 10; i++) { bs.WriteByte((byte)i); }
+        bs.Flush();
+        Console.WriteLine("buffered=" + String.Join(",", buf.ToArray()));
+
+        BufferedStream rd = new BufferedStream(new MemoryStream(buf.ToArray()), 4);
+        int sum = 0;
+        int c = rd.ReadByte();
+        while (c >= 0)
+        {
+            sum = sum + c;
+            c = rd.ReadByte();
+        }
+        Console.WriteLine("sum=" + sum);
+        return 0;
+    }
+}

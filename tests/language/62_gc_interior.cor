@@ -1,0 +1,91 @@
+// test: gc interior pointers
+// expect-exit: 0
+// expect-output:
+// middle 1500 1501 1502
+// end 1999
+// static 42
+// span 700 701 702
+// collected True
+//
+// Pointers INTO the middle of arrays survive collection. A conservative
+// collector must keep a block that is referenced only by an interior
+// address: a raw address into an int array held in a local and in a static,
+// and a span over a slice of an array, all kept across collections forced
+// by churning garbage, and then read back.
+
+static class Program
+{
+    static long staticInterior;
+
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    // The garbage must ESCAPE, as 60_gc_churn's does: a block that never
+    // leaves the loop body is freed by the compiler before the next one is
+    // made, and the collector is never asked to run -- which is the point
+    // of the compiler's memory tiers, and would leave this test with
+    // nothing to prove. Parking each block in a holder makes it the
+    // collector's, so the interior pointers below face a real collection.
+    static byte[][] holder = new byte[1][];
+
+    static void Churn(int rounds)
+    {
+        for (int i = 0; i < rounds; i++)
+        {
+            byte[] garbage = new byte[4000];
+            garbage[0] = 1;
+            holder[0] = garbage;
+        }
+    }
+
+    /// Makes an array and answers an address into its middle. The array
+    /// reference itself lives only in this frame, which later calls reuse.
+    static long MakeInterior(int count, int at)
+    {
+        int[] values = new int[count];
+        for (int i = 0; i < count; i++)
+        {
+            values[i] = 1000 + i;
+        }
+        return Sys.Word(values) + 16 + at * 4;
+    }
+
+    static long MakeStaticInterior()
+    {
+        long[] values = new long[64];
+        values[10] = 42;
+        return Sys.Word(values) + 16 + 10 * 8;
+    }
+
+    static ReadOnlySpan<int> MakeSpan()
+    {
+        int[] values = new int[1000];
+        for (int i = 0; i < 1000; i++)
+        {
+            values[i] = i;
+        }
+        return new ReadOnlySpan<int>(values, 700, 100);
+    }
+
+    static int Main()
+    {
+        Gc.SetLimit(67108864);
+
+        long middle = MakeInterior(1000, 500);
+        long end = MakeInterior(1000, 999);
+        staticInterior = MakeStaticInterior();
+        ReadOnlySpan<int> span = MakeSpan();
+
+        Churn(100000);
+
+        Line("middle " + Sys.PeekWord(middle) + " " + Sys.PeekWord(middle + 4) + " " + Sys.PeekWord(middle + 8));
+        Line("end " + Sys.PeekWord(end));
+        Line("static " + Sys.PeekWord(staticInterior));
+        Line("span " + span[0] + " " + span[1] + " " + span[2]);
+        Line("collected " + (Gc.Collections > 0));
+        return 0;
+    }
+}

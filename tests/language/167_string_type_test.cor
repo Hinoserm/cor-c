@@ -1,0 +1,112 @@
+// test: string_type_test
+// expect-exit: 0
+// expect-output:
+// is hi
+// case hi
+// arm hi
+// as hi
+// other not string
+// other case other
+// other as null
+// null not string
+//
+// `is string s`, `case string s:`, a switch expression arm and `as string`
+// over an object-typed value. String is a primitive with no class descriptor
+// to compare against, so these once reported "this type cannot be tested at
+// run time"; they read the string bit out of the object's descriptor instead.
+class Other
+{
+    public int Value;
+}
+
+static class Program
+{
+    static void Line(string text)
+    {
+        Sys.Print(text);
+        Sys.PrintLine();
+    }
+
+    static string Describe(object o)
+    {
+        return o switch
+        {
+            string s => "arm " + s,
+            _ => "arm other",
+        };
+    }
+
+    static void Check(object o, string label)
+    {
+        if (o is string s)
+        {
+            Line(label + "is " + s);
+        }
+        else
+        {
+            Line(label + "not string");
+        }
+
+        switch (o)
+        {
+            case string t:
+                Line(label + "case " + t);
+                break;
+            default:
+                Line(label + "case other");
+                break;
+        }
+
+        string? maybe = o as string;
+        if (maybe == null)
+        {
+            Line(label + "as null");
+        }
+        else
+        {
+            Line(label + "as " + maybe);
+        }
+    }
+
+    static int Main()
+    {
+        object o = "hi";
+        if (o is string first)
+        {
+            Line("is " + first);
+        }
+
+        switch (o)
+        {
+            case string second:
+                Line("case " + second);
+                break;
+            default:
+                Line("case other");
+                break;
+        }
+
+        Line(Describe(o));
+
+        string? third = o as string;
+        if (third != null)
+        {
+            Line("as " + third);
+        }
+
+        Other other = new Other();
+        other.Value = 1;
+        Check(other, "other ");
+
+        object? nothing = null;
+        if (nothing is string)
+        {
+            Line("null is string");
+        }
+        else
+        {
+            Line("null not string");
+        }
+        return 0;
+    }
+}

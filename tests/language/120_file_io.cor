@@ -1,0 +1,98 @@
+// test: file io
+// expect-exit: 0
+// expect-output:
+// created yes
+// wrote 12
+// size 12
+// isfile yes
+// read hello world
+// seek 6
+// tail world
+// unlinked yes
+// gone yes
+//
+// The whole life of a file through the Linux system-call library: create,
+// write, stat, read back, seek within, remove, and confirm it is removed.
+// The path carries this process's pid so two copies of the suite cannot
+// collide in /tmp.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Os.Line(s);
+    }
+
+    static int Main()
+    {
+        string path = $"/tmp/corsac-test-120-{Os.Getpid()}";
+        string text = "hello world\n";
+
+        // Create it fresh. O_EXCL so a leftover from a crashed run is a
+        // failure here rather than a file whose contents are somebody else's.
+        int fd = Os.Open(path, O.Write | O.Create | O.Exclusive | O.Truncate, 0x1A4);
+
+        Line(fd >= 0 ? "created yes" : $"created no {fd}");
+
+        if (fd < 0)
+        {
+            return 1;
+        }
+
+        int wrote = Os.Write(fd, text);
+
+        Line($"wrote {wrote}");
+        Os.Close(fd);
+
+        byte[] st = Stat.Room();
+        int r = Os.Stat(path, st);
+
+        if (r < 0)
+        {
+            Line($"stat failed {r}");
+            return 1;
+        }
+        Line($"size {Stat.Size(st)}");
+        Line(Stat.IsFileMode(Stat.Mode(st)) ? "isfile yes" : "isfile no");
+
+        // Read the whole thing back through the buffered reader, which is the
+        // path every ported utility will take.
+        string? back = File.ReadAllText(path);
+
+        if (back == null)
+        {
+            Line("read failed");
+            return 1;
+        }
+        Os.Write(Fd.Out, String.Concat("read ", back));
+
+        // And the raw descriptor, to prove seeking.
+        fd = Os.Open(path, O.Read);
+
+        if (fd < 0)
+        {
+            Line($"reopen failed {fd}");
+            return 1;
+        }
+
+        long at = Os.Lseek(fd, 6, Whence.Set);
+
+        Line($"seek {at}");
+
+        byte[] room = new byte[16];
+        int got = Os.Read(fd, room, 0, room.Length);
+
+        Os.Close(fd);
+
+        if (got <= 0)
+        {
+            Line($"tail failed {got}");
+            return 1;
+        }
+        Os.Write(Fd.Out, String.Concat("tail ", Raw.Text(room, 0, got)));
+
+        Line(Os.Unlink(path) == 0 ? "unlinked yes" : "unlinked no");
+        Line(Os.Exists(path) ? "gone no" : "gone yes");
+        return 0;
+    }
+}

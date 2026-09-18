@@ -1,0 +1,51 @@
+// test: library_workarounds
+// expect-exit: 0
+// expect-output:
+// date 2001-02-03
+// hex 00ff
+// resized 6 1 2
+// found 3
+// first 5
+// last 3
+// none 0
+//
+// WHAT THE LIBRARY HAD TO WORK AROUND, now that the compiler does not need it
+// to. String.Format's date branch tests a boxed DateTime -- a user-defined
+// struct -- and formats through it; Array.Resize infers its type argument
+// through a `ref T[]`; and Enumerable's ...OrDefault family is declared `T?`,
+// which for a value type is still that value type and not a cell.
+static class Program
+{
+    static void Line(string text)
+    {
+        Sys.Print(text);
+        Sys.PrintLine();
+    }
+
+    static void Main()
+    {
+        DateTime when = new DateTime(2001, 2, 3);
+        Line("date " + String.Format("{0:yyyy-MM-dd}", when));
+        Line("hex " + String.Format("{0:x4}", 255));
+
+        int[] numbers = new int[2];
+        numbers[0] = 1;
+        numbers[1] = 2;
+        Array.Resize(ref numbers, 6);
+        Line("resized " + numbers.Length + " " + numbers[0] + " " + numbers[1]);
+
+        int[] three = new int[2];
+        three[0] = 5;
+        three[1] = 3;
+        Line("found " + Array.Find(three, n => n < 4));
+
+        List<int> held = new List<int>();
+        held.Add(5);
+        held.Add(3);
+        Line("first " + held.FirstOrDefault());
+        Line("last " + held.LastOrDefault());
+
+        List<int> empty = new List<int>();
+        Line("none " + empty.FirstOrDefault());
+    }
+}

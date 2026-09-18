@@ -1,0 +1,104 @@
+// test: enumerable_custom
+// expect-exit: 0
+// expect-output:
+// countdown 3 2 1 0
+// sum 6
+// iface 15
+// readonly 3 7
+//
+// A user class implementing IEnumerable<T> with its own IEnumerator<T>, so
+// foreach dispatches GetEnumerator, MoveNext and Current through interfaces
+// on user-written code; a List<T> walked through an IEnumerable<T>
+// variable; and a List<T> passed as IReadOnlyList<T>.
+
+class Countdown : IEnumerable<int>
+{
+    int from;
+
+    public Countdown(int start)
+    {
+        from = start;
+    }
+
+    public IEnumerator<int> GetEnumerator()
+    {
+        return new CountdownEnumerator(from);
+    }
+}
+
+class CountdownEnumerator : IEnumerator<int>
+{
+    int current;
+    int next;
+
+    public CountdownEnumerator(int start)
+    {
+        next = start;
+        current = -1;
+    }
+
+    public int Current => current;
+
+    public bool MoveNext()
+    {
+        if (next < 0)
+        {
+            return false;
+        }
+        current = next;
+        next = next - 1;
+        return true;
+    }
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Total(IReadOnlyList<int> items)
+    {
+        int sum = 0;
+        for (int i = 0; i < items.Count; i++)
+        {
+            sum += items[i];
+        }
+        return sum;
+    }
+
+    static int Main()
+    {
+        string shown = "";
+        int sum = 0;
+        foreach (int n in new Countdown(3))
+        {
+            shown = shown + n + " ";
+            sum += n;
+        }
+        Line("countdown " + String.Trim(shown));
+        Line("sum " + sum);
+
+        List<int> list = new List<int>();
+        for (int i = 1; i <= 5; i++)
+        {
+            list.Add(i);
+        }
+        IEnumerable<int> seq = list;
+        int through = 0;
+        foreach (int n in seq)
+        {
+            through += n;
+        }
+        Line("iface " + through);
+
+        List<int> few = new List<int>();
+        few.Add(3);
+        few.Add(4);
+        IReadOnlyList<int> ro = few;
+        Line("readonly " + ro[0] + " " + Total(few));
+        return 0;
+    }
+}

@@ -1,0 +1,59 @@
+// test: indexer_overloads
+// expect-exit: 0
+// expect-output:
+// 5
+// none x
+// 11
+// slot y
+// 7
+// 3
+// 9
+//
+// Indexers overload by parameter TYPE, exactly as methods do. Binding by the
+// number of indices alone made `this[int]` and `this[string]` unable to live
+// on one class: the first one declared answered every use and the second was
+// reported as a conversion error at the call. The setter side has to choose
+// the pair of whichever getter was chosen, not the first setter of that arity.
+
+class Table {
+    int[] slots = new int[4];
+    string named = "none";
+
+    public int this[int i] {
+        get { return slots[i]; }
+        set { slots[i] = value; }
+    }
+
+    public string this[string key] {
+        get { return named + " " + key; }
+        set { named = value; }
+    }
+
+    // THREE INDICES, to show arity still separates what type cannot.
+    public int this[int a, int b] { get { return a * b; } }
+}
+
+class Program {
+    static int Main() {
+        Table t = new Table();
+
+        t[0] = 5;
+        Console.WriteLine(t[0]);
+        Console.WriteLine(t["x"]);
+
+        t["y"] = "slot";
+        t[1] = 11;
+        Console.WriteLine(t[1]);
+        Console.WriteLine(t["y"]);
+
+        Console.WriteLine(t[1, 7]);
+
+        // COMPOUND ASSIGNMENT reads and writes through the same indexer.
+        t[2] = 1;
+        t[2] += 2;
+        Console.WriteLine(t[2]);
+
+        Console.WriteLine(t[3, 3]);
+        return 0;
+    }
+}

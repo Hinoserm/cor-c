@@ -1,0 +1,162 @@
+// test: async_nested_try
+// expect-exit: 0
+// expect-output:
+// 0,0 3{f3}21
+// 3,3 [c3]{f3}21
+// 2,3 {f3}[c2]1
+// 1,3 {f3}[c1]
+// 9,3 escaped other
+// 3,2 escaped e3
+// 2,2 3{f3}[c2]1
+// 1,2 3{f3}[c1]
+// 2,1 escaped e2
+// 1,1 3{f3}2[c1]
+// pair {f3}[c2]1 3{f3}[c1]
+//
+// Three nested try blocks, each spanning several awaits, with an exception
+// of a chosen type thrown at a chosen depth after the method has resumed
+// (at the innermost depth it arrives through an awaited faulted task). The
+// handler that catches must be the innermost one whose type matches, the
+// inner finally must run on the way out, and an exception no level
+// catches must escape into the returned task. Each resumption lands in a
+// new stack frame, so this checks that the handlers open at an await are
+// linked again on resume, in the right nesting. The last line runs two
+// of these interleaved, so their handler chains must not mix.
+
+class E1 : Exception
+{
+    public E1() : base("e1")
+    {
+    }
+}
+
+class E2 : Exception
+{
+    public E2() : base("e2")
+    {
+    }
+}
+
+class E3 : Exception
+{
+    public E3() : base("e3")
+    {
+    }
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static void Maybe(int kind, int where, int here)
+    {
+        if (where != here)
+        {
+            return;
+        }
+        if (kind == 1)
+        {
+            throw new E1();
+        }
+        if (kind == 2)
+        {
+            throw new E2();
+        }
+        if (kind == 3)
+        {
+            throw new E3();
+        }
+        if (kind != 0)
+        {
+            throw new Exception("other");
+        }
+    }
+
+    static async Task MaybeAsync(int kind, int where, int here)
+    {
+        await Task.Yield();
+        Maybe(kind, where, here);
+    }
+
+    static async Task<string> Run(int kind, int where)
+    {
+        string log = "";
+        try
+        {
+            await Task.Yield();
+            try
+            {
+                await Task.Yield();
+                try
+                {
+                    await Task.Yield();
+                    await MaybeAsync(kind, where, 3);
+                    await Task.Yield();
+                    log = log + "3";
+                }
+                catch (E3 e)
+                {
+                    await Task.Yield();
+                    log = log + "[c3]";
+                }
+                finally
+                {
+                    log = log + "{f3}";
+                }
+                await Task.Yield();
+                Maybe(kind, where, 2);
+                log = log + "2";
+            }
+            catch (E2 e)
+            {
+                log = log + "[c2]";
+            }
+            await Task.Yield();
+            Maybe(kind, where, 1);
+            log = log + "1";
+        }
+        catch (E1 e)
+        {
+            log = log + "[c1]";
+        }
+        return log;
+    }
+
+    static async Task Case(int kind, int where)
+    {
+        string head = kind + "," + where + " ";
+        try
+        {
+            string s = await Run(kind, where);
+            Line(head + s);
+        }
+        catch (Exception e)
+        {
+            Line(head + "escaped " + e.Message);
+        }
+    }
+
+    static async Task Main()
+    {
+        await Case(0, 0);
+        await Case(3, 3);
+        await Case(2, 3);
+        await Case(1, 3);
+        await Case(9, 3);
+        await Case(3, 2);
+        await Case(2, 2);
+        await Case(1, 2);
+        await Case(2, 1);
+        await Case(1, 1);
+
+        Task<string> t1 = Run(2, 3);
+        Task<string> t2 = Run(1, 2);
+        string p1 = await t1;
+        string p2 = await t2;
+        Line("pair " + p1 + " " + p2);
+    }
+}

@@ -1,0 +1,26 @@
+// test: further_along_a_conditional_chain
+// expect-exit: 0
+// expect-output:
+// False True True
+// 1 [] True False False
+//
+// FURTHER ALONG A `?.` CHAIN IS STILL IN IT. `d?.TypeParams.Count` is an `int?`
+// and nothing at all when `d` was nothing. Read as an ordinary member, the
+// count came back a plain number where a cell was promised, and `!=` read the
+// number as an address -- which is where the compiler, compiled by itself,
+// fell over the first generic call it checked.
+
+using System;
+using System.Collections.Generic;
+sealed class Decl { public List<string> TypeParams { get; } = new(); public int N = 2; }
+sealed class Sym { public Decl? Decl; }
+class P {
+  static bool Differs(Sym s, List<int> args) { return s.Decl?.TypeParams.Count != args.Count; }
+  static int Main() {
+    Sym with = new Sym { Decl = new Decl() }; with.Decl.TypeParams.Add("T");
+    Sym without = new Sym();
+    List<int> one = new List<int> { 1 }; List<int> two = new List<int> { 1, 2 };
+    Console.WriteLine(Differs(with, one) + " " + Differs(with, two) + " " + Differs(without, one));
+    int? n = with.Decl?.TypeParams.Count; int? m = without.Decl?.TypeParams.Count;
+    Console.WriteLine(n + " [" + m + "] " + (with.Decl?.N == 2) + " " + (without.Decl?.N == 2) + " " + (with.Decl?.TypeParams.Count is null or 0));
+    return 0; } }

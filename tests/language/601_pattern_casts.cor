@@ -1,0 +1,91 @@
+// test: pattern_casts
+// expect-exit: 0
+// expect-output:
+// callee True False True
+// cl False True
+// movable False False True
+// eax 0
+// reg 6
+// other
+// grouped True False
+// site 1 7
+// pair 3 4
+//
+// A constant pattern may be a CAST -- `is (int)Gpr.Ebx` -- which starts with
+// the same bracket a grouped pattern does, and only what is inside settles it.
+// With it: `and` and `or` are ordinary words that join two patterns when a
+// pattern follows and NAME the thing matched when one does not, and a tuple
+// type may be written after `out`.
+
+enum Gpr { Eax = 0, Ecx = 1, Edx = 2, Ebx = 3, Esp = 4, Ebp = 5, Esi = 6, Edi = 7 }
+
+class MReg
+{
+    public int Id;
+
+    public MReg(int id)
+    {
+        Id = id;
+    }
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static bool Callee(int r) => r is (int)Gpr.Ebx or (int)Gpr.Esi or (int)Gpr.Edi;
+
+    static bool NotCl(object o) => o is not MReg { Id: (int)Gpr.Ecx };
+
+    static bool Movable(MReg r) => r is MReg { Id: not ((int)Gpr.Esp or (int)Gpr.Ebp) };
+
+    static bool Low(int r) => r is not ((int)Gpr.Esi or (int)Gpr.Edi);
+
+    // `and` here is the name the pattern binds, not a word joining two.
+    static string Kind(object o)
+    {
+        switch (o)
+        {
+            case MReg { Id: (int)Gpr.Eax } and:
+                return "eax " + and.Id;
+            case MReg m:
+                return "reg " + m.Id;
+            default:
+                return "other";
+        }
+    }
+
+    static bool Site(int key, out (int Block, int Index) found)
+    {
+        found = (key, key + 6);
+        return key > 0;
+    }
+
+    static int Main()
+    {
+        int ebx = 3;
+        int eax = 0;
+        int edi = 7;
+
+        Line("callee " + Callee(ebx) + " " + Callee(eax) + " " + Callee(edi));
+        Line("cl " + NotCl(new MReg(1)) + " " + NotCl(new MReg(2)));
+        Line("movable " + Movable(new MReg(4)) + " " + Movable(new MReg(5)) + " " + Movable(new MReg(0)));
+        Line(Kind(new MReg(0)));
+        Line(Kind(new MReg(6)));
+        Line(Kind("x"));
+        Line("grouped " + Low(eax) + " " + Low(edi));
+
+        if (Site(1, out (int Block, int Index) s))
+        {
+            Line("site " + s.Block + " " + s.Index);
+        }
+
+        (int Block, int Index) pair = (3, 4);
+        Line("pair " + pair.Block + " " + pair.Index);
+        return 0;
+    }
+}

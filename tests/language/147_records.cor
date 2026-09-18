@@ -1,0 +1,63 @@
+// test: records
+// expect-exit: 0
+// expect-output:
+// read 1 2
+// tostring Point { X = 1, Y = 2 }
+// decon 1 2
+// named 3 4
+// single Wrapped { Value = 7 }
+// own Pair(5,6)
+// struct Size { W = 8, H = 9 }
+//
+// A positional record's parameter list becomes the constructor, the
+// properties, a Deconstruct that reads them back in order, and a ToString
+// spelled the way C# spells one. A record that writes its own ToString keeps
+// it. Value equality is deliberately NOT generated -- see AddRecordMembers.
+
+record Point(int X, int Y);
+
+record Wrapped(int Value);
+
+record Pair(int A, int B)
+{
+    public override string ToString()
+    {
+        return "Pair(" + A + "," + B + ")";
+    }
+}
+
+record struct Size(int W, int H);
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        int one = 1;
+        int two = 2;
+        Point p = new Point(one, two);
+        Line("read " + p.X + " " + p.Y);
+        Line("tostring " + p.ToString());
+
+        var (x, y) = p;
+        Line("decon " + x + " " + y);
+
+        Point q = new Point(one + 2, two + 2);
+        int qx = 0;
+        int qy = 0;
+        q.Deconstruct(out qx, out qy);
+        Line("named " + qx + " " + qy);
+
+        Line("single " + new Wrapped(one + 6).ToString());
+        Line("own " + new Pair(5, 6).ToString());
+
+        Size s = new Size(8, 9);
+        Line("struct " + s.ToString());
+        return 0;
+    }
+}

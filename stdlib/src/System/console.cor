@@ -1,0 +1,886 @@
+// System.Console, as .NET spells it, over the platform's descriptors.
+//
+// Out and Error are TextWriters over the standard descriptors, Out
+// buffered a line at a time on a terminal and fully when redirected --
+// which is what .NET does, and why a program must Flush (or exit through
+// Environment.Exit, which does) before it ends abruptly. In is a
+// TextReader. ReadKey puts the terminal into raw mode for one key and
+// restores it, as .NET's does on Unix; KeyAvailable asks whether a key is
+// waiting; CancelKeyPress is SIGINT delivered as an event.
+
+/// The keys, as System.ConsoleKey names and numbers them.
+///
+/// THE WHOLE TABLE, values and all, because it is .NET's and not ours to
+/// invent: a program written against System.ConsoleKey elsewhere must mean
+/// the same thing here, and half an enum is a trap for whoever reaches for
+/// the member that is missing.
+enum ConsoleKey
+{
+    None = 0,
+    Backspace = 8,
+    Tab = 9,
+    Clear = 12,
+    Enter = 13,
+    Pause = 19,
+    Escape = 27,
+    Spacebar = 32,
+    PageUp = 33,
+    PageDown = 34,
+    End = 35,
+    Home = 36,
+    LeftArrow = 37,
+    UpArrow = 38,
+    RightArrow = 39,
+    DownArrow = 40,
+    Select = 41,
+    Print = 42,
+    Execute = 43,
+    PrintScreen = 44,
+    Insert = 45,
+    Delete = 46,
+    Help = 47,
+    D0 = 48,
+    D1 = 49,
+    D2 = 50,
+    D3 = 51,
+    D4 = 52,
+    D5 = 53,
+    D6 = 54,
+    D7 = 55,
+    D8 = 56,
+    D9 = 57,
+    A = 65,
+    B = 66,
+    C = 67,
+    D = 68,
+    E = 69,
+    F = 70,
+    G = 71,
+    H = 72,
+    I = 73,
+    J = 74,
+    K = 75,
+    L = 76,
+    M = 77,
+    N = 78,
+    O = 79,
+    P = 80,
+    Q = 81,
+    R = 82,
+    S = 83,
+    T = 84,
+    U = 85,
+    V = 86,
+    W = 87,
+    X = 88,
+    Y = 89,
+    Z = 90,
+    LeftWindows = 91,
+    RightWindows = 92,
+    Applications = 93,
+    Sleep = 95,
+    NumPad0 = 96,
+    NumPad1 = 97,
+    NumPad2 = 98,
+    NumPad3 = 99,
+    NumPad4 = 100,
+    NumPad5 = 101,
+    NumPad6 = 102,
+    NumPad7 = 103,
+    NumPad8 = 104,
+    NumPad9 = 105,
+    Multiply = 106,
+    Add = 107,
+    Separator = 108,
+    Subtract = 109,
+    Decimal = 110,
+    Divide = 111,
+    F1 = 112,
+    F2 = 113,
+    F3 = 114,
+    F4 = 115,
+    F5 = 116,
+    F6 = 117,
+    F7 = 118,
+    F8 = 119,
+    F9 = 120,
+    F10 = 121,
+    F11 = 122,
+    F12 = 123,
+    F13 = 124,
+    F14 = 125,
+    F15 = 126,
+    F16 = 127,
+    F17 = 128,
+    F18 = 129,
+    F19 = 130,
+    F20 = 131,
+    F21 = 132,
+    F22 = 133,
+    F23 = 134,
+    F24 = 135,
+    BrowserBack = 166,
+    BrowserForward = 167,
+    BrowserRefresh = 168,
+    BrowserStop = 169,
+    BrowserSearch = 170,
+    BrowserFavorites = 171,
+    BrowserHome = 172,
+    VolumeMute = 173,
+    VolumeDown = 174,
+    VolumeUp = 175,
+    MediaNext = 176,
+    MediaPrevious = 177,
+    MediaStop = 178,
+    MediaPlay = 179,
+    LaunchMail = 180,
+    LaunchMediaSelect = 181,
+    LaunchApp1 = 182,
+    LaunchApp2 = 183,
+    Oem1 = 186,
+    OemPlus = 187,
+    OemComma = 188,
+    OemMinus = 189,
+    OemPeriod = 190,
+    Oem2 = 191,
+    Oem3 = 192,
+    Oem4 = 219,
+    Oem5 = 220,
+    Oem6 = 221,
+    Oem7 = 222,
+    Oem8 = 223,
+    Oem102 = 226,
+    Process = 229,
+    Packet = 231,
+    Attention = 246,
+    CrSel = 247,
+    ExSel = 248,
+    EraseEndOfFile = 249,
+    Play = 250,
+    Zoom = 251,
+    NoName = 252,
+    Pa1 = 253,
+    OemClear = 254
+}
+
+enum ConsoleModifiers
+{
+    None = 0,
+    Alt = 1,
+    Shift = 2,
+    Control = 4
+}
+
+class ConsoleKeyInfo
+{
+    public char KeyChar;
+    public ConsoleKey Key;
+    public ConsoleModifiers Modifiers;
+
+    public ConsoleKeyInfo(char keyChar, ConsoleKey key, bool shift, bool alt, bool control)
+    {
+        KeyChar = keyChar;
+        Key = key;
+        Modifiers = (shift ? ConsoleModifiers.Shift : ConsoleModifiers.None)
+                  | (alt ? ConsoleModifiers.Alt : ConsoleModifiers.None)
+                  | (control ? ConsoleModifiers.Control : ConsoleModifiers.None);
+    }
+}
+
+class ConsoleCancelEventArgs
+{
+    public bool Cancel;
+    public PosixSignal SpecialKey;
+}
+
+interface ConsoleCancelEventHandler
+{
+    void Invoke(object? sender, ConsoleCancelEventArgs e);
+}
+
+static class Console
+{
+    static TextWriter? _out;
+    static TextWriter? _error;
+    static TextReader? _in;
+    static bool _controlCAsInput;
+    static List<ConsoleCancelEventHandler>? _cancel;
+    static PosixSignalRegistration? _cancelRegistration;
+
+    public static TextWriter Out
+    {
+        get
+        {
+            if (_out == null)
+            {
+                StreamWriter w = new StreamWriter(new FileStream(Fd.Out, FileAccess.Write, false));
+                w.AutoFlush = Os.IsTty(Fd.Out);
+                _out = w;
+                // WHAT IS FLUSHED WHEN THE PROCESS ENDS. The address goes
+                // to the runtime, which is below every library and calls it
+                // on the way out; the platform library that ends the process
+                // cannot name Console, and must not have to.
+                Runtime.OnExit(Sys.AddressOf(Console.Flush));
+            }
+            return _out;
+        }
+    }
+
+    public static TextWriter Error
+    {
+        get
+        {
+            if (_error == null)
+            {
+                StreamWriter w = new StreamWriter(new FileStream(Fd.Err, FileAccess.Write, false));
+                w.AutoFlush = true;
+                _error = w;
+            }
+            return _error;
+        }
+    }
+
+    public static TextReader In
+    {
+        get
+        {
+            if (_in == null)
+            {
+                _in = new StreamReader(new FileStream(Fd.In, FileAccess.Read, false));
+            }
+            return _in;
+        }
+    }
+
+    public static void SetOut(TextWriter writer)
+    {
+        _out = writer;
+    }
+
+    public static void SetIn(TextReader reader)
+    {
+        _in = reader;
+    }
+
+    public static Stream OpenStandardInput()
+    {
+        return new FileStream(Fd.In, FileAccess.Read, false);
+    }
+
+    public static Stream OpenStandardOutput()
+    {
+        return new FileStream(Fd.Out, FileAccess.Write, false);
+    }
+
+    public static Stream OpenStandardError()
+    {
+        return new FileStream(Fd.Err, FileAccess.Write, false);
+    }
+
+    public static bool IsInputRedirected
+    {
+        get { return !Os.IsTty(Fd.In); }
+    }
+
+    public static bool IsOutputRedirected
+    {
+        get { return !Os.IsTty(Fd.Out); }
+    }
+
+    public static bool IsErrorRedirected
+    {
+        get { return !Os.IsTty(Fd.Err); }
+    }
+
+    // ---- the size of the window ------------------------------------------------
+
+    /// How wide and how tall the terminal is, in characters.
+    ///
+    /// ASKED OF THE OUTPUT, which is where the drawing goes: a program whose
+    /// input is a pipe and whose output is still the screen -- everything in a
+    /// `... | less` -- has a window to fit, and asking the input would say
+    /// nothing. Eighty by twenty-four when there is no terminal to ask, which
+    /// is the size of the thing the question is named after.
+    public static int WindowWidth
+    {
+        get
+        {
+            int columns = Terminal.Columns(Fd.Out);
+            if (columns <= 0) { columns = Terminal.Columns(Fd.In); }
+            return columns > 0 ? columns : 80;
+        }
+    }
+
+    public static int WindowHeight
+    {
+        get
+        {
+            int rows = Terminal.Rows(Fd.Out);
+            if (rows <= 0) { rows = Terminal.Rows(Fd.In); }
+            return rows > 0 ? rows : 24;
+        }
+    }
+
+    // ---- writing --------------------------------------------------------------
+
+    public static void Write(string value)
+    {
+        Out.Write(value);
+    }
+
+    public static void Write(char value)
+    {
+        Out.Write(value);
+    }
+
+    public static void Write(long value)
+    {
+        Out.Write(value);
+    }
+
+    public static void Write(int value)
+    {
+        Out.Write((long)value);
+    }
+
+    public static void Write(bool value)
+    {
+        Out.Write(value ? "True" : "False");
+    }
+
+    public static void WriteLine()
+    {
+        Out.WriteLine();
+    }
+
+    public static void WriteLine(string value)
+    {
+        Out.WriteLine(value);
+    }
+
+    public static void WriteLine(char value)
+    {
+        Out.Write(value);
+        Out.WriteLine();
+    }
+
+    public static void WriteLine(long value)
+    {
+        Out.WriteLine(value);
+    }
+
+    public static void WriteLine(int value)
+    {
+        Out.WriteLine((long)value);
+    }
+
+    public static void WriteLine(bool value)
+    {
+        Out.WriteLine(value ? "True" : "False");
+    }
+
+    /// Console.WriteLine(object) and Write(object): whatever it is, as its own
+    /// ToString says it -- an enum by the member's name, as .NET prints it, and
+    /// nothing at all for null.
+    public static void WriteLine(object? value)
+    {
+        Out.WriteLine(value == null ? "" : "" + value);
+    }
+
+    public static void Write(object? value)
+    {
+        Out.Write(value == null ? "" : "" + value);
+    }
+
+    public static void Flush()
+    {
+        if (_out != null)
+        {
+            _out.Flush();
+        }
+        if (_error != null)
+        {
+            _error.Flush();
+        }
+    }
+
+    // ---- reading ----------------------------------------------------------------
+
+    public static string? ReadLine()
+    {
+        Flush();
+        return In.ReadLine();
+    }
+
+    public static int Read()
+    {
+        return In.Read();
+    }
+
+    /// Whether a key is waiting on the terminal: poll on standard input
+    /// with no wait, which is what .NET's does.
+    public static bool KeyAvailable
+    {
+        get { return Os.Poll(Fd.In, 1, 0) > 0; }
+    }
+
+    /// One key, without echo when `intercept`, the terminal put into raw
+    /// mode for the duration and restored after. Escape sequences for the
+    /// arrows and the editing keys are folded into ConsoleKey; anything
+    /// else is its character.
+    public static ConsoleKeyInfo ReadKey(bool intercept)
+    {
+        Flush();
+        byte[]? saved = Terminal.EnterRaw(Fd.In, !_controlCAsInput);
+        int c = Terminal.ReadByte(Fd.In);
+        ConsoleKeyInfo info;
+        if (c == 27 && Os.Poll(Fd.In, 1, 20) > 0)
+        {
+            int second = Terminal.ReadByte(Fd.In);
+            int third = second == 91 || second == 79 ? Terminal.ReadByte(Fd.In) : -1;
+            info = Escape(second, third);
+        }
+        else
+        {
+            info = Plain(c);
+        }
+        if (saved != null)
+        {
+            Terminal.Leave(Fd.In, saved);
+        }
+        if (!intercept && info.KeyChar != (char)0)
+        {
+            Out.Write(info.KeyChar);
+            Out.Flush();
+        }
+        return info;
+    }
+
+    public static ConsoleKeyInfo ReadKey()
+    {
+        return ReadKey(false);
+    }
+
+    static ConsoleKeyInfo Plain(int c)
+    {
+        if (c == 13 || c == 10)
+        {
+            return new ConsoleKeyInfo('\n', ConsoleKey.Enter, false, false, false);
+        }
+        if (c == 127 || c == 8)
+        {
+            return new ConsoleKeyInfo((char)8, ConsoleKey.Backspace, false, false, false);
+        }
+        if (c == 9)
+        {
+            return new ConsoleKeyInfo('\t', ConsoleKey.Tab, false, false, false);
+        }
+        if (c == 27)
+        {
+            return new ConsoleKeyInfo((char)27, ConsoleKey.Escape, false, false, false);
+        }
+        if (c < 32)
+        {
+            // Control-A .. Control-Z: the letter, with Control.
+            return new ConsoleKeyInfo((char)c, (ConsoleKey)(ConsoleKey.A + (c - 1)), false, false, true);
+        }
+        if (c == 32)
+        {
+            return new ConsoleKeyInfo(' ', ConsoleKey.Spacebar, false, false, false);
+        }
+        if (c >= 'a' && c <= 'z')
+        {
+            return new ConsoleKeyInfo((char)c, (ConsoleKey)(ConsoleKey.A + (c - 'a')), false, false, false);
+        }
+        if (c >= 'A' && c <= 'Z')
+        {
+            return new ConsoleKeyInfo((char)c, (ConsoleKey)(ConsoleKey.A + (c - 'A')), true, false, false);
+        }
+        if (c >= '0' && c <= '9')
+        {
+            return new ConsoleKeyInfo((char)c, (ConsoleKey)(ConsoleKey.D0 + (c - '0')), false, false, false);
+        }
+        if (c < 0)
+        {
+            // THE FAR END HAS GONE: no key, and the enum has a word for it.
+            return new ConsoleKeyInfo((char)0, ConsoleKey.None, false, false, false);
+        }
+        return new ConsoleKeyInfo((char)c, ConsoleKey.None, false, false, false);
+    }
+
+    static ConsoleKeyInfo Escape(int second, int third)
+    {
+        ConsoleKey key = ConsoleKey.Escape;
+        if (third == 65) { key = ConsoleKey.UpArrow; }
+        else if (third == 66) { key = ConsoleKey.DownArrow; }
+        else if (third == 67) { key = ConsoleKey.RightArrow; }
+        else if (third == 68) { key = ConsoleKey.LeftArrow; }
+        else if (third == 72) { key = ConsoleKey.Home; }
+        else if (third == 70) { key = ConsoleKey.End; }
+        else if (third >= 49 && third <= 54)
+        {
+            // ESC [ n ~ : Home, Insert, Delete, End, PageUp, PageDown.
+            Terminal.ReadByte(Fd.In);
+            if (third == 49) { key = ConsoleKey.Home; }
+            else if (third == 50) { key = ConsoleKey.Insert; }
+            else if (third == 51) { key = ConsoleKey.Delete; }
+            else if (third == 52) { key = ConsoleKey.End; }
+            else if (third == 53) { key = ConsoleKey.PageUp; }
+            else { key = ConsoleKey.PageDown; }
+        }
+        return new ConsoleKeyInfo((char)0, key, false, second == -1, false);
+    }
+
+    /// When true, Control-C is a key ReadKey returns rather than a
+    /// CancelKeyPress.
+    public static bool TreatControlCAsInput
+    {
+        get { return _controlCAsInput; }
+        set { _controlCAsInput = value; }
+    }
+
+    /// .NET's event: raised on SIGINT. A handler that sets Cancel keeps
+    /// the process alive; otherwise it exits, as .NET's does.
+    public static void AddCancelKeyPress(ConsoleCancelEventHandler handler)
+    {
+        if (_cancel == null)
+        {
+            _cancel = new List<ConsoleCancelEventHandler>();
+            _cancelRegistration = PosixSignalRegistration.Create(PosixSignal.SIGINT, new CancelRelay());
+        }
+        _cancel.Add(handler);
+    }
+
+    public static void RemoveCancelKeyPress(ConsoleCancelEventHandler handler)
+    {
+        if (_cancel != null)
+        {
+            _cancel.Remove(handler);
+        }
+    }
+
+    class CancelRelay : PosixSignalHandler
+    {
+        public void Invoke(PosixSignalContext context)
+        {
+            ConsoleCancelEventArgs e = new ConsoleCancelEventArgs();
+            e.SpecialKey = context.Signal;
+            List<ConsoleCancelEventHandler>? handlers = _cancel;
+            if (handlers != null)
+            {
+                for (int i = 0; i < handlers.Count; i++)
+                {
+                    handlers[i].Invoke(null, e);
+                }
+            }
+            context.Cancel = e.Cancel;
+        }
+    }
+}
+
+/// Raw terminal mode -- the one thing here .NET has no public API for.
+/// .NET's Console does exactly this inside ReadKey; a program that needs
+/// a raw terminal for longer (a remote shell relaying keystrokes) uses
+/// this directly, and it is the only class in this file that is ours.
+static class Terminal
+{
+    /// Puts `fd` into raw mode: no line assembly, no echo, no CR/NL
+    /// translation, and -- when `signals` -- Control-C still a signal.
+    /// Returns the attributes to restore, or null if `fd` is no terminal.
+    public static byte[]? EnterRaw(int fd, bool signals)
+    {
+        byte[] saved = Termios.Room();
+        if (Os.GetAttributes(fd, saved) < 0)
+        {
+            return null;
+        }
+        byte[] raw = Termios.Room();
+        Array.Copy(saved, 0, raw, 0, Termios.Bytes);
+        long local = Termios.Local(raw) & ~Termios.Canonical & ~Termios.Echo;
+        if (!signals)
+        {
+            local = local & ~Termios.Signals;
+        }
+        Termios.SetLocal(raw, local);
+        Termios.SetInput(raw, Termios.Input(raw) & ~Termios.CrToNl & ~Termios.IgnoreCr & ~Termios.FlowControl);
+        Termios.SetOutput(raw, Termios.Output(raw) & ~Termios.PostProcess);
+        Termios.SetChar(raw, Termios.Min, 1);
+        Termios.SetChar(raw, Termios.Time, 0);
+        if (Os.SetAttributes(fd, raw) < 0)
+        {
+            return null;
+        }
+        return saved;
+    }
+
+    public static byte[]? EnterRaw(bool signals)
+    {
+        return EnterRaw(Fd.In, signals);
+    }
+
+    /// Restores attributes saved by EnterRaw; false when the terminal
+    /// would not take them.
+    public static bool Leave(int fd, byte[] saved)
+    {
+        for (int attempt = 0; attempt < 4; attempt++)
+        {
+            if (Os.SetAttributes(fd, saved) >= 0)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public static bool Leave(byte[] saved)
+    {
+        return Leave(Fd.In, saved);
+    }
+
+    /// Whether a byte can be read from `fd` within `milliseconds`; false
+    /// on the timeout, on a signal, or on a dead descriptor.
+    public static bool WaitReadable(int fd, int milliseconds)
+    {
+        return Os.Poll(fd, 1, milliseconds) > 0;
+    }
+
+    public static int Columns()
+    {
+        return Columns(Fd.In);
+    }
+
+    /// The terminal's settings as an object: read with GetSettings, change
+    /// the properties, write back with SetSettings. stty is written on it.
+    public static TerminalSettings? GetSettings(int fd)
+    {
+        byte[] t = Termios.Room();
+        if (Os.GetAttributes(fd, t) < 0)
+        {
+            return null;
+        }
+        return new TerminalSettings(t);
+    }
+
+    public static TerminalSettings? GetSettings()
+    {
+        return GetSettings(Fd.In);
+    }
+
+    public static bool SetSettings(int fd, TerminalSettings settings)
+    {
+        return Os.SetAttributes(fd, settings.Raw) >= 0;
+    }
+
+    public static bool SetSettings(TerminalSettings settings)
+    {
+        return SetSettings(Fd.In, settings);
+    }
+
+    /// The device name of the terminal on `fd` ("/dev/pts/3"), or null
+    /// when it is not a terminal or the name cannot be found.
+    public static string? Name(int fd)
+    {
+        if (!Os.IsTty(fd))
+        {
+            return null;
+        }
+        return Os.Readlink("/proc/self/fd/" + fd);
+    }
+
+    /// The modem control lines (TIOCMGET): a mask of ModemLines, or -1
+    /// when the terminal has none.
+    public static int ModemLines(int fd)
+    {
+        byte[] bits = new byte[4];
+        long r = Os.Ioctl(fd, 0x5415, Os.AddressOf(bits));
+        return r < 0 ? -1 : (int)Raw.U32(bits, 0);
+    }
+
+    /// Raises or drops the modem control lines (TIOCMSET). A getty raises
+    /// DTR and RTS to say the machine is here and willing, which is what
+    /// makes a modem answer the telephone.
+    public static bool SetModemLines(int fd, int lines)
+    {
+        byte[] bits = new byte[4];
+        Raw.SetU32(bits, 0, lines);
+        return Os.Ioctl(fd, Tio.SetModemLines, Os.AddressOf(bits)) >= 0;
+    }
+
+    /// HANGS THE LINE UP: the speed set to zero, which is what tells the
+    /// hardware to drop the call, and then the settings put back. On a
+    /// terminal wired to a fixed cable there is no call to end and this
+    /// does nothing at all, which is correct -- you cannot hang up a wire.
+    public static bool HangUp(int fd)
+    {
+        byte[] saved = Termios.Room();
+        if (Os.GetAttributes(fd, saved) < 0)
+        {
+            return false;
+        }
+        byte[] down = Termios.Room();
+        Array.Copy(saved, 0, down, 0, Termios.Bytes);
+        Termios.SetControl(down, Termios.Control(down) & ~0xF);     // B0
+        if (Os.SetAttributes(fd, down) < 0)
+        {
+            return false;
+        }
+        Thread.Sleep(50);
+        return Os.SetAttributes(fd, saved) >= 0;
+    }
+
+    /// Waits until somebody is actually on the far end -- carrier detect up
+    /// -- or until `milliseconds` have passed; a negative wait is forever.
+    ///
+    /// A LINE WITH NO MODEM ANSWERS AT ONCE, and must: carrier on a cable
+    /// soldered at both ends is a question with no meaning, and a getty that
+    /// waited for a call on the terminal at the front of the machine would be
+    /// a machine that never offers a login at all.
+    public static bool WaitForCarrier(int fd, int milliseconds)
+    {
+        int lines = ModemLines(fd);
+        if (lines < 0)
+        {
+            return true;
+        }
+        int waited = 0;
+        while ((ModemLines(fd) & (int)ModemLines.CarrierDetect) == 0)
+        {
+            if (milliseconds >= 0 && waited >= milliseconds)
+            {
+                return false;
+            }
+            Thread.Sleep(100);
+            waited = waited + 100;
+        }
+        return true;
+    }
+
+    /// Throws away anything typed at `fd` and not yet read (TCIFLUSH).
+    public static bool FlushInput(int fd)
+    {
+        return Os.Ioctl(fd, Tio.FlushInput, 0) >= 0;
+    }
+
+    public static int Rows()
+    {
+        return Rows(Fd.In);
+    }
+
+    public static int ReadByte(int fd)
+    {
+        byte[] one = new byte[1];
+        while (true)
+        {
+            int n = Os.Read(fd, one, 0, 1);
+            if (n == -Err.Intr)
+            {
+                continue;
+            }
+            return n == 1 ? one[0] & 255 : -1;
+        }
+    }
+
+    public static bool IsTerminal(int fd)
+    {
+        return Os.IsTty(fd);
+    }
+
+    /// Columns and rows, or 0,0 when `fd` is not a terminal.
+    ///
+    /// COLUMNS ARE THE HIGH HALF of what Os.WindowSize answers, and these two
+    /// had them the other way round: a terminal eighty wide and twenty-four
+    /// tall reported itself twenty-four columns wide, and everything that
+    /// drew to the width of the screen drew to a third of it.
+    public static int Columns(int fd)
+    {
+        long size = Os.WindowSize(fd);
+        return size <= 0 ? 0 : (int)((size >> 16) & 0xFFFF);
+    }
+
+    public static int Rows(int fd)
+    {
+        long size = Os.WindowSize(fd);
+        return size <= 0 ? 0 : (int)(size & 0xFFFF);
+    }
+}
+
+
+enum ModemLines
+{
+    DataTerminalReady = 0x002,
+    RequestToSend = 0x004,
+    ClearToSend = 0x020,
+    CarrierDetect = 0x040,
+    RingIndicator = 0x080,
+    DataSetReady = 0x100
+}
+
+/// A terminal's line-discipline settings, the termios flags a program
+/// changes exposed as properties over the kernel's structure.
+class TerminalSettings
+{
+    byte[] _t;
+
+    public TerminalSettings(byte[] termios)
+    {
+        _t = termios;
+    }
+
+    public byte[] Raw
+    {
+        get { return _t; }
+    }
+
+    bool Local(long bit) { return (Termios.Local(_t) & bit) != 0; }
+    void SetLocal(long bit, bool on) { Termios.SetLocal(_t, on ? Termios.Local(_t) | bit : Termios.Local(_t) & ~bit); }
+    bool Input(long bit) { return (Termios.Input(_t) & bit) != 0; }
+    void SetInput(long bit, bool on) { Termios.SetInput(_t, on ? Termios.Input(_t) | bit : Termios.Input(_t) & ~bit); }
+    bool Output(long bit) { return (Termios.Output(_t) & bit) != 0; }
+    void SetOutput(long bit, bool on) { Termios.SetOutput(_t, on ? Termios.Output(_t) | bit : Termios.Output(_t) & ~bit); }
+
+    /// Typed characters are repeated on the screen (ECHO).
+    public bool Echo { get { return Local(Termios.Echo); } set { SetLocal(Termios.Echo, value); } }
+    /// Erase rubs the character out visibly (ECHOE).
+    public bool EchoErase { get { return Local(Termios.EchoErase); } set { SetLocal(Termios.EchoErase, value); } }
+    /// Input arrives a line at a time, with erase and kill (ICANON).
+    public bool Canonical { get { return Local(Termios.Canonical); } set { SetLocal(Termios.Canonical, value); } }
+    /// Ctrl+C and Ctrl+\ send signals (ISIG).
+    public bool Signals { get { return Local(Termios.Signals); } set { SetLocal(Termios.Signals, value); } }
+    /// A typed carriage return arrives as a newline (ICRNL).
+    public bool CrToNl { get { return Input(Termios.CrToNl); } set { SetInput(Termios.CrToNl, value); } }
+    /// Ctrl+S and Ctrl+Q stop and start output (IXON).
+    public bool FlowControl { get { return Input(Termios.FlowControl); } set { SetInput(Termios.FlowControl, value); } }
+    /// Output is processed at all (OPOST).
+    public bool PostProcess { get { return Output(Termios.PostProcess); } set { SetOutput(Termios.PostProcess, value); } }
+    /// A written newline goes out as return plus newline (ONLCR).
+    public bool NlToCrNl { get { return Output(Termios.NlToCrNl); } set { SetOutput(Termios.NlToCrNl, value); } }
+
+    public int InterruptChar { get { return (int)Termios.Char(_t, Termios.Intr); } set { Termios.SetChar(_t, Termios.Intr, value); } }
+    public int QuitChar { get { return (int)Termios.Char(_t, Termios.Quit); } set { Termios.SetChar(_t, Termios.Quit, value); } }
+    public int EraseChar { get { return (int)Termios.Char(_t, Termios.Erase); } set { Termios.SetChar(_t, Termios.Erase, value); } }
+    public int KillChar { get { return (int)Termios.Char(_t, Termios.Kill); } set { Termios.SetChar(_t, Termios.Kill, value); } }
+    public int EndOfFileChar { get { return (int)Termios.Char(_t, Termios.Eof); } set { Termios.SetChar(_t, Termios.Eof, value); } }
+    /// The minimum bytes a raw read waits for, and the tenths of a second
+    /// it waits (VMIN, VTIME).
+    public int MinimumBytes { get { return (int)Termios.Char(_t, Termios.Min); } set { Termios.SetChar(_t, Termios.Min, value); } }
+    public int TimeoutTenths { get { return (int)Termios.Char(_t, Termios.Time); } set { Termios.SetChar(_t, Termios.Time, value); } }
+
+    /// Raw: every key as it is pressed, no echo, no signal keys, no
+    /// translation either way.
+    public void MakeRaw()
+    {
+        Canonical = false; Echo = false; Signals = false;
+        CrToNl = false; FlowControl = false; PostProcess = false;
+        MinimumBytes = 1; TimeoutTenths = 0;
+    }
+
+    /// Sane: what a person can type at.
+    public void MakeSane()
+    {
+        Termios.SetLocal(_t, Termios.Canonical | Termios.Echo | Termios.EchoErase | 0x20 | Termios.Signals);   // ECHOK too
+        Termios.SetInput(_t, Termios.CrToNl | Termios.FlowControl);
+        Termios.SetOutput(_t, Termios.PostProcess | Termios.NlToCrNl);
+        InterruptChar = 3; QuitChar = 28; EraseChar = 127; KillChar = 21; EndOfFileChar = 4;
+        MinimumBytes = 1; TimeoutTenths = 0;
+    }
+}

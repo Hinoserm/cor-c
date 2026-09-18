@@ -1,0 +1,101 @@
+// test: async_sync_wait
+// expect-exit: 0
+// expect-output:
+// w start
+// main called
+// w resumed
+// main waited
+// result 42
+// again 42
+// guard sync fail
+// getresult sync fail
+// chained 105
+//
+// A synchronous `static int Main` that blocks on tasks. Wait() runs the
+// scheduler until the task completes (the method resumes inside the
+// Wait), Result does the same for Task<int> -- here through a timer --
+// and reading Result of a completed task returns at once. Wait and Result
+// on a faulted task would throw AggregateException, so a faulted task is
+// observed through an async guard, then GetAwaiter().GetResult() on the
+// completed faulted task rethrows the original exception. Only one task
+// is ever pending during a blocking wait: what else runs during it is
+// not something C# specifies.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static async Task Work(string name)
+    {
+        Line(name + " start");
+        await Task.Yield();
+        Line(name + " resumed");
+    }
+
+    static async Task<int> Value(int x)
+    {
+        await Task.Delay(20);
+        return x * 2;
+    }
+
+    static async Task Fail()
+    {
+        await Task.Yield();
+        throw new InvalidOperationException("sync fail");
+    }
+
+    static async Task Guard(Task f)
+    {
+        try
+        {
+            await f;
+            Line("not reached");
+        }
+        catch (InvalidOperationException e)
+        {
+            Line("guard " + e.Message);
+        }
+    }
+
+    static async Task<int> Chained(int x)
+    {
+        int a = await Value(x);
+        await Task.Yield();
+        int b = await Value(a);
+        return b + x;
+    }
+
+    static int Main()
+    {
+        Task t = Work("w");
+        Line("main called");
+        t.Wait();
+        Line("main waited");
+
+        Task<int> v = Value(21);
+        Line("result " + v.Result);
+        Line("again " + v.Result);
+
+        Task f = Fail();
+        Task g = Guard(f);
+        g.Wait();
+        try
+        {
+            f.GetAwaiter().GetResult();
+            Line("not reached");
+        }
+        catch (InvalidOperationException e)
+        {
+            Line("getresult " + e.Message);
+        }
+
+        int x = 21;
+        Task<int> c = Chained(x);
+        Line("chained " + c.Result);
+        return 0;
+    }
+}

@@ -1,0 +1,53 @@
+// test: nested_type_vs_method
+// expect-exit: 0
+// expect-output:
+// 20
+// 4
+// 24
+// 30
+//
+// A nested type's name may also be a method of the type that holds it.
+// `Entry.Size()` reaches the nested class, `Entry(2)` the method, and the
+// nested type is still reachable by its full path from outside.
+
+static class Table
+{
+    public static class Entry
+    {
+        public static long Size()
+        {
+            return 20;
+        }
+    }
+
+    public static long Entry(long n)
+    {
+        return n + n;
+    }
+
+    public static long Both()
+    {
+        long two = 2;
+        return Entry.Size() + Entry(two);
+    }
+}
+
+static class Program
+{
+    static void Line(long v)
+    {
+        Sys.PrintInt(v);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        long three = 3;
+
+        Line(Table.Entry.Size());
+        Line(Table.Entry(2));
+        Line(Table.Both());
+        Line(Table.Entry.Size() + Table.Entry(three) + 4);
+        return 0;
+    }
+}

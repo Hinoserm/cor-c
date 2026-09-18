@@ -1,0 +1,94 @@
+// test: interface_inheritance
+// expect-exit: 0
+// expect-output:
+// own stop
+// inherited go
+// property 4
+// auto 5
+// indexer 6
+// two deep deeper
+// through the base inherited go
+// is True True True
+// list 2
+//
+// AN INTERFACE THAT EXTENDS ANOTHER HAS THE OTHER'S MEMBERS. `interface IB :
+// IA` is an IA, and `b.Go()` on an IB is IA's Go -- C#'s rule, and member
+// lookup here walked base CLASSES and stopped, so it answered "'IB' has no
+// member 'Go'". The interfaces a class implements were not closed over either,
+// so `class Both : IB` implemented IB and not IA: IA's members took no vtable
+// slot on it, and a class that implemented none of them was never told.
+//
+// AND AN AUTO PROPERTY SATISFIES AN INTERFACE PROPERTY. `public int N { get;
+// set; }` was a field and nothing else, so the class was reported as not
+// implementing `IA.get_N` and the property could only be written longhand --
+// which is not how nearly any C# class is written. The accessors are real
+// methods now, reached only through an interface, because a read written
+// through the class finds the field first and loads it with no call at all.
+interface ICounted
+{
+    void Go();
+
+    int N { get; }
+
+    int Auto { get; set; }
+
+    int this[int i] { get; }
+}
+
+interface IStoppable : ICounted
+{
+    void Stop();
+}
+
+interface IDeeper : IStoppable
+{
+    string Deeper();
+}
+
+class Both : IDeeper
+{
+    public void Go() { Console.WriteLine("inherited go"); }
+
+    public void Stop() { Console.WriteLine("own stop"); }
+
+    public int N => 4;
+
+    public int Auto { get; set; }
+
+    public int this[int i] => i * 2;
+
+    public string Deeper() { return "deeper"; }
+}
+
+static class Program
+{
+    static void Main()
+    {
+        IDeeper d = new Both();
+
+        d.Stop();
+        d.Go();
+        Console.WriteLine("property " + d.N);
+
+        d.Auto = 5;
+        Console.WriteLine("auto " + d.Auto);
+        Console.WriteLine("indexer " + d[3]);
+        Console.WriteLine("two deep " + d.Deeper());
+
+        // THE SLOTS ARE THE INTERFACE'S OWN, so the same object reached
+        // through the interface that declared the member finds the same code.
+        ICounted c = d;
+
+        Console.Write("through the base ");
+        c.Go();
+
+        Console.WriteLine("is " + (d is ICounted) + " " + (d is IStoppable) + " " + (c is IDeeper));
+
+        // And a list of the base interface holds the derived one.
+        List<ICounted> all = new List<ICounted>();
+
+        all.Add(d);
+        all.Add(new Both());
+        Console.WriteLine("list " + all.Count);
+    }
+}

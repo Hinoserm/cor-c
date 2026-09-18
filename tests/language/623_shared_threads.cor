@@ -1,0 +1,58 @@
+// test: shared threads
+// expect-exit: 0
+// expect-output:
+// threads 4
+// total 40000
+// main alive True
+//
+// FOUR THREADS THROUGH A SHARED RUNTIME. Everything a thread needs of its own
+// -- the handler chain, the allocation buffer, the stack it was started on --
+// is in the sixty-four byte block the runtime keeps per thread, reached
+// through GS. There is one runtime in the process and therefore one set of
+// those blocks; a program that carried its own copy of __corsac_tls0 would
+// have a second main thread nobody else could see, and the first allocation
+// on a second thread would find a buffer the collector never registered.
+class Counter : Action
+{
+    public int Made;
+
+    public void Invoke()
+    {
+        string last = "";
+        for (int i = 0; i < 10000; i++)
+        {
+            last = "n" + i;
+            Made = Made + 1;
+        }
+        if (last.Length == 0)
+        {
+            Made = 0;
+        }
+    }
+}
+
+static class Program
+{
+    static void Main()
+    {
+        Counter[] work = new Counter[4];
+        Thread[] threads = new Thread[4];
+
+        for (int i = 0; i < 4; i++)
+        {
+            work[i] = new Counter();
+            threads[i] = Thread.Start(work[i]);
+        }
+
+        int total = 0;
+        for (int i = 0; i < 4; i++)
+        {
+            threads[i].Join();
+            total = total + work[i].Made;
+        }
+
+        Console.WriteLine("threads " + threads.Length);
+        Console.WriteLine("total " + total);
+        Console.WriteLine("main alive " + ("still here".Length == 10));
+    }
+}

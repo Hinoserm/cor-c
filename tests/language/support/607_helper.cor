@@ -1,0 +1,16 @@
+// A third file in the SAME namespace as the test, with different using
+// directives: here Block is the AST's. See 607_namespaces.cor.
+
+namespace App.Opt;
+
+using Block = App.Ast.Block;
+
+public static class Helper
+{
+    public static string Describe()
+    {
+        Block b = new Block("from a partial");
+
+        return b.Say();
+    }
+}

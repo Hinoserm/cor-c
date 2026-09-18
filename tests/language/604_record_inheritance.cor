@@ -1,0 +1,107 @@
+// test: record_inheritance
+// expect-exit: 0
+// expect-output:
+// reg 3 w4
+// mem 16+8 w2 vFalse
+// loud 32+0 w1 vTrue
+// through the base 4 2 1
+// iterator 3 a b c
+// empty 0
+//
+// A record whose base is constructed where it is named --
+// `record RegPlace(VReg Reg, Type Type) : Place(Type)` -- and whose positional
+// parameter therefore does NOT make a second property, because one is
+// inherited. A constructor parameter with a default need not be passed, here
+// as anywhere else. And a property's getter may be an iterator.
+
+abstract record Place(int Width);
+
+sealed record RegPlace(int Reg, int Width) : Place(Width);
+
+sealed record MemPlace(int Address, long Offset, int Width, bool Volatile = false) : Place(Width);
+
+class Node
+{
+    public List<string> Names = new();
+
+    public IEnumerable<string> Each
+    {
+        get
+        {
+            if (Names.Count == 0)
+            {
+                yield break;
+            }
+
+            foreach (string n in Names)
+            {
+                yield return n;
+            }
+        }
+    }
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static string Show(Place p)
+    {
+        switch (p)
+        {
+            case RegPlace r:
+                return "reg " + r.Reg + " w" + r.Width;
+            case MemPlace m:
+                return "mem " + m.Address + "+" + m.Offset + " w" + m.Width + " v" + m.Volatile;
+            default:
+                return "other";
+        }
+    }
+
+    static int Main()
+    {
+        int reg = 3;
+        int width = 4;
+
+        Place a = new RegPlace(reg, width);
+        Place b = new MemPlace(16, 8, 2);
+        Place c = new MemPlace(32, 0, 1, true);
+
+        Line(Show(a));
+        Line(Show(b));
+        Line("loud " + ((MemPlace)c).Address + "+" + ((MemPlace)c).Offset
+             + " w" + c.Width + " v" + ((MemPlace)c).Volatile);
+        Line("through the base " + a.Width + " " + b.Width + " " + c.Width);
+
+        Node n = new Node();
+
+        n.Names.Add("a");
+        n.Names.Add("b");
+        n.Names.Add("c");
+
+        int count = 0;
+        string joined = "";
+
+        foreach (string s in n.Each)
+        {
+            count++;
+            joined = joined + " " + s;
+        }
+
+        Line("iterator " + count + joined);
+
+        int none = 0;
+
+        foreach (string s in new Node().Each)
+        {
+            none++;
+        }
+
+        Line("empty " + none);
+        return 0;
+    }
+}

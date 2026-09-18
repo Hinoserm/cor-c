@@ -1,0 +1,69 @@
+// test: array data on this target
+// expect-exit: 0
+// expect-output:
+// header 16
+// payload matches
+// string payload matches
+// object header 8
+//
+// THE MISTAKE THIS PORT WAS MOSTLY ABOUT. os/ had 391 sites spelling the
+// address of an array's first element as `Sys.Word(x) + 24`, because the old
+// machine's array header was 24 bytes. This one's is 16, so every one of them
+// addressed eight bytes past the data -- and a program that reads or writes
+// there compiles perfectly and answers the wrong bytes.
+//
+// Sys.ArrayData asks the target, which is why the port is a rewrite to it and
+// not a rewrite to `+ 16`.
+
+class Program
+{
+    static int Main()
+    {
+        byte[] b = new byte[8];
+
+        Console.Write("header ");
+        Console.WriteLine(Sys.ArrayData(b) - Sys.Word(b));
+
+        for (int i = 0; i < b.Length; i++)
+        {
+            b[i] = (byte)(i + 1);
+        }
+
+        // Read the same bytes twice: once as an array and once through the
+        // address, which is what a system call is handed.
+        long at = Sys.ArrayData(b);
+        bool same = true;
+
+        for (int i = 0; i < b.Length; i++)
+        {
+            if (Sys.PeekByte(at + i) != b[i])
+            {
+                same = false;
+            }
+        }
+        Console.WriteLine(same ? "payload matches" : "payload DIFFERS");
+
+        // A string is a byte array with a flag, and its payload is found the
+        // same way -- which is what Os.Write(fd, string) relies on.
+        string s = "abc";
+        long sat = Sys.ArrayData(s);
+
+        Console.WriteLine(Sys.PeekByte(sat) == 97 && Sys.PeekByte(sat + 1) == 98
+                       && Sys.PeekByte(sat + 2) == 99
+                        ? "string payload matches" : "string payload DIFFERS");
+
+        // And an object's header is eight, not sixteen: the other half of the
+        // same change.
+        Cell c = new Cell();
+
+        c.Value = 0x11223344;
+        Console.Write("object header ");
+        Console.WriteLine(Sys.PeekWord(Sys.Word(c) + 8) == 0x11223344 ? 8 : -1);
+        return 0;
+    }
+}
+
+class Cell
+{
+    public int Value;
+}

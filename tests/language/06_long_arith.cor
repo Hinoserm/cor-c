@@ -1,0 +1,112 @@
+// test: long_arith
+// expect-exit: 0
+// expect-output:
+// add 8589934591 4294967296
+// sub 4294967295 -4294967296
+// mul -3000000000000 121932631112635269 -121932631112635269 -3500000000
+// div 123456789 0 -2250000000 0 1 -1
+// cmp True True True True True True True False
+// conv -5 7 -7 -1 4294967295 4294967295 -1 -1
+// ulong True 1844674407370955161 5 True -1
+// limits 9223372036854775807 -9223372036854775808 -9223372036854775808
+// loop 499995000000000
+//
+// 64-bit arithmetic on a target whose registers are 32 bits wide: a long is a
+// register pair, so carries between the halves, mixed-sign multiplication,
+// division through the runtime helper, comparisons that differ only in the
+// high or only in the low word, and conversions in both directions are the
+// things most likely to be wrong. Every operand is a variable so that nothing
+// here is folded away by the compiler.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static string U(ulong v)
+    {
+        string tail = String.FromInt((long)(v % 10));
+        if (v < 10)
+        {
+            return tail;
+        }
+        return U(v / 10) + tail;
+    }
+
+    static int Main()
+    {
+        long a = 4294967296L;
+        long b = 4294967295L;
+        long one = 1;
+        long zero = 0;
+
+        Line("add " + (a + b) + " " + (b + one));
+        Line("sub " + (a - one) + " " + (zero - a));
+
+        long m3 = -3;
+        long tera = 1000000000000L;
+        long p = 123456789L;
+        long q = 987654321L;
+        int x = -50000;
+        int y = 70000;
+        Line("mul " + (m3 * tera) + " " + (p * q) + " " + (-p * q) + " " + ((long)x * y));
+
+        long product = p * q;
+        long nine = -9000000000L;
+        long four = 4;
+        long nine1 = 9000000001L;
+        long mnine1 = -9000000001L;
+        Line("div " + (product / q) + " " + (product % q) + " " + (nine / four) + " " + (nine % four)
+             + " " + (nine1 % four) + " " + (mnine1 % four));
+
+        long m1 = -1;
+        long maxInt = 2147483647L;
+        long negA = -a;
+        long lo = 0xFFFFFFFFL;
+        long hi = 0x100000000L;
+        long hi1 = 0x100000001L;
+        long hi1b = 0x100000001L;
+        long hi2 = 0x200000001L;
+        Line("cmp " + (m1 < one) + " " + (m1 < a) + " " + (a > maxInt) + " " + (negA < m1) + " " + (lo < hi)
+             + " " + (hi1 == hi1b) + " " + (hi1 != hi2) + " " + (m1 == lo));
+
+        int i = -5;
+        long fromInt = i;
+        long seven = a + 7;
+        long mseven = negA - 7;
+        int t1 = (int)seven;
+        int t2 = (int)mseven;
+        int t3 = (int)b;
+        uint t4 = (uint)b;
+        uint umax = 4294967295u;
+        long t5 = umax;
+        int mi = -1;
+        long t6 = mi;
+        long lmax = long.MaxValue;
+        int t7 = unchecked((int)lmax);
+        Line("conv " + fromInt + " " + t1 + " " + t2 + " " + t3 + " " + U(t4) + " " + t5 + " " + t6 + " " + t7);
+
+        ulong u = 0;
+        bool parsed = UInt64.TryParse("18446744073709551615", out u);
+        ulong ten = 10;
+        ulong uone = 1;
+        long asLong = (long)u;
+        Line("ulong " + parsed + " " + U(u / ten) + " " + U(u % ten) + " " + (u > uone) + " " + asLong);
+
+        long lmin = long.MinValue;
+        long parsedMin = Int64.Parse("-9223372036854775808");
+        Line("limits " + lmax + " " + lmin + " " + parsedMin);
+
+        long total = 0;
+        long scale = 100000;
+        for (long k = 0; k < 100000; k++)
+        {
+            total = total + k * scale;
+        }
+        Line("loop " + total);
+        return 0;
+    }
+}

@@ -1,0 +1,489 @@
+// The bare-metal platform library: the ONLY file that knows there is no
+// operating system under the program.
+//
+// It sits exactly where lib/sys/linux.cor sits and answers exactly the same
+// questions, so that nothing above it -- lib/rt/runtime.cor, lib/rt/gc.cor,
+// lib/std.cor, the program -- can tell which one is linked. Where linux.cor
+// makes an `int 0x80`, this drives the hardware directly with the port I/O
+// intrinsics (docs/software/X86-BACKEND.md and X86-KERNEL.md, "Drivers: port
+// I/O").
+//
+//   corc compile program.cor --freestanding --base 0x10000 --flat -o image.bin
+//
+// The driver links this file instead of linux.cor when --freestanding is
+// given, and drops lib/threading.cor: a scheduler wants timers, clone(2) and
+// futexes, and there is no kernel to ask.
+//
+// THE CONTRACT, the same one linux.cor's header states:
+//
+//   Platform   what lib/rt/runtime.cor needs from a system: memory, exit,
+//              and writing bytes. The runtime calls nothing else here.
+//                long Platform.Map(long bytes)  zeroed, aligned, or 0
+//                void Platform.Exit(int code)   does not return
+//                long Platform.WriteBytes(int fd, long at, long count)
+//                void Platform.EnterCollection()
+//   Serial, Vga, Os
+//              what a bare-metal program has instead of an API: a console on
+//              the first serial port, the text-mode screen, and the handful
+//              of Os names that mean anything with no files and no processes.
+//
+// THREE THINGS ARE DIFFERENT FROM LINUX, and every one of them is a fact
+// about the machine rather than a shortcut:
+//
+//   - MEMORY IS NOT ASKED FOR, it is taken. There is no mmap and nothing that
+//     knows what is already in use, so the heap is one bump region whose
+//     bounds the image is given: Platform.SetHeap, called before anything
+//     allocates, or else everything from the end of the image to a default
+//     top. Nothing is ever returned, which is what Runtime.AllocBump already
+//     assumes and what Gc's chunk list tolerates.
+//   - NOTHING ZEROES .bss. The flat image's loader is told how many bytes
+//     follow the image and has to clear them; a program that skipped that
+//     would find its statics full of whatever was in memory.
+//   - EXIT IS NOT A RETURN TO ANYTHING. There is nowhere to go, so the code
+//     goes out of QEMU's isa-debug-exit port when one is attached -- that
+//     machine exits with (code << 1) | 1 -- and then the processor is halted
+//     with interrupts off, forever.
+
+/// The I/O ports this file drives, all of them fixed by forty years of PC
+/// hardware. A number here is a place on the machine, not a choice.
+static class Port
+{
+
+    /// FIFO control: writing here turns the buffers on and clears them.
+    /// Modem control: DTR, RTS and the loopback bit.
+    /// Line status: bit 5 is "the transmit register is empty".
+
+    /// The transmit holding register is empty and another byte may go in.
+
+    /// QEMU's isa-debug-exit device, when the machine was started with
+    /// `-device isa-debug-exit,iobase=0xf4,iosize=4`. Writing a byte ends the
+    /// emulation with (byte << 1) | 1, so 3 becomes an exit status of 7 and
+    /// zero is not available -- which is why a success is reported as some
+    /// agreed non-zero number and not as 0.
+    public const int DebugExit = 0xF4;
+
+    /// The keyboard controller's fast A20 gate: bit 1 of port 0x92.
+    public const int SystemControlA = 0x92;
+}
+
+/// The first serial port, as a console.
+///
+/// A serial line is the one output a machine with no drivers always has, it
+/// needs no memory, and it works before anything else does -- which is why a
+/// kernel's first print goes here and not to the screen.
+/// Where the bytes a program prints go. The platform library knows no
+/// hardware: the program links the driver it wants (os/kernel/drivers/
+/// uart8250.cor, vga.cor) and points this at it before printing. Until
+/// then output is dropped, which is what a machine with no console does.
+interface IConsole
+{
+    void Write(long address, long count);
+}
+
+/// What lib/rt/runtime.cor and lib/rt/gc.cor ask of the system.
+///
+/// The heap is the caller of Map, so NOTHING in this class may allocate: no
+/// `new`, no arrays, no strings built at run time. A string LITERAL is data
+/// the compiler laid out, and is fine. That is linux.cor's rule and it is
+/// the same rule here.
+static class Platform
+{
+    /// Where the bump region begins and ends. Zero means "not yet decided",
+    /// and the first call to Map decides it.
+    private static long _at;
+    private static long _limit;
+
+    /// A megabyte of heap above the image, when nobody said otherwise. Enough
+    /// for a driver and a console and small enough to fit under the 640K line
+    /// on a machine that has only conventional memory, if the image is low.
+
+    /// The loader's word on where memory is.
+    ///
+    /// Called before the program allocates anything -- from the top of Main,
+    /// or by whatever set the image up -- with the bounds of a region that is
+    /// really there and really free. Whoever loaded the image is the only
+    /// thing that knows: the firmware's memory map is gone by the time this
+    /// code runs.
+    public static void SetHeap(long start, long end)
+    {
+        _at = (start + 7) & (0 - 8);
+        _limit = end;
+    }
+
+    /// Fresh, zeroed, 8-aligned memory of `bytes`, or 0 when the region is
+    /// exhausted.
+    ///
+    /// A bump and nothing else. There is no operating system to take memory
+    /// back to, so nothing here ever frees; Runtime.AllocBump assumes exactly
+    /// that, and Gc's chunk list tolerates it.
+    /// Where memory comes from once there is an operating system in this
+    /// image: the kernel installs the two routines (by Sys.AddressOf) that
+    /// map and unmap kernel memory page by page, and from then on the bump
+    /// region below is only what was handed out before they existed.
+    public static long MapHook;
+    public static long UnmapHook;
+
+    /// Memory given back: to the hook, which returns its frames. Nothing
+    /// from before the hook can be given back, and is not.
+    public static void Unmap(long at, long bytes)
+    {
+        if (UnmapHook != 0 && (at < _at || at >= _limit))
+        {
+            Sys.Call(UnmapHook, at, bytes, 0);
+        }
+    }
+
+    public static long Map(long bytes)
+    {
+        if (MapHook != 0)
+        {
+            return Sys.Call(MapHook, bytes, 0, 0);
+        }
+
+        if (_limit == 0)
+        {
+            // Nobody said where memory is, and on bare metal nobody can
+            // guess: the megabyte after the image may be the video hole,
+            // the kernel's load address, or not exist. The program says,
+            // from the memory map it was handed, before it allocates.
+            string text = "no heap: Platform.SetHeap was not called\n";
+            WriteBytes(2, Sys.ArrayData(text), text.Length);
+            Exit(137);
+        }
+
+        long need = (bytes + 7) & (0 - 8);
+
+        if (need <= 0 || _at + need > _limit)
+        {
+            return 0;
+        }
+
+        long got = _at;
+        _at = _at + need;
+        Zero(got, need);
+        return got;
+    }
+
+    /// The promise Map makes: every byte handed out is zero.
+    ///
+    /// Memory left by a bootloader is not, and a heap that inherited it would
+    /// hand an object a vtable pointer made of stale bytes.
+    private static void Zero(long at, long count)
+    {
+        long i = 0;
+
+        while (i + 4 <= count)
+        {
+            Sys.PokeWord(at + i, 0);
+            i = i + 4;
+        }
+        while (i < count)
+        {
+            Sys.PokeByte(at + i, 0);
+            i = i + 1;
+        }
+    }
+
+    /// Where EnterCollection's spill values are kept between calls, so that
+    /// nothing can prove them dead. Never read for its value.
+    private static long _spill;
+
+    // ---- the thread block ------------------------------------------------
+    //
+    // ONE THREAD, and no operating system to give it a segment: the block's
+    // address lives in a word of .bss that Sys.ThreadBlock reads and the
+    // compiler's entry stub has already filled in, so a freestanding program
+    // needs neither GS nor a call here to throw or to allocate. These exist
+    // so that the runtime above is written once.
+
+    public static void SetThreadBlock(long block)
+    {
+        Sys.PokeWord(block + Tls.Self, block);
+        Sys.SetThreadBlock(block);
+    }
+
+    /// Nobody else can change the word, so a wait would never end: the
+    /// collector here is the only thread there is.
+    public static void Wait(long at, long value)
+    {
+    }
+
+    public static void Wake(long at, long count)
+    {
+    }
+
+    /// The one thread never has to stop for another, but the shape is the
+    /// runtime's and not the machine's. The register pressure is the same
+    /// trick EnterCollection uses below, for the same reason.
+    public static void SafePoint(long mode)
+    {
+        long a = _spill + 1;
+        long b = _spill + 2;
+        long c = _spill + 3;
+        GcThreads.SafePoint(mode);
+        _spill = a + b + c;
+    }
+
+    /// Enters a collection with every callee-saved register on the stack.
+    ///
+    /// The collector scans from Gc.CollectInner's stack pointer upwards, so a
+    /// reference that the caller of Runtime.Alloc left in EBX, ESI or EDI is
+    /// invisible to it unless something pushed those registers first. What
+    /// pushes them is this function's own prologue, and the prologue pushes
+    /// exactly the callee-saved registers the allocator handed out -- so the
+    /// job here is to need all three.
+    ///
+    /// linux.cor gets that from a system call, whose arguments the backend
+    /// loads into EBX, ECX, EDX, ESI and EDI. There is no system call here,
+    /// and `int 0x80` on a machine with no interrupt table is a triple fault,
+    /// so the pressure is made honestly instead: six 32-bit halves live
+    /// across the call, more than the three registers that survive one, which
+    /// leaves the allocator no choice. See GcRoots in lib/rt/gc.cor for the
+    /// full reasoning.
+    public static void EnterCollection()
+    {
+        long a = _spill + 1;
+        long b = _spill + 2;
+        long c = _spill + 3;
+        Gc.CollectInner();
+        _spill = a + b + c;
+    }
+
+    /// Ends the program. There is nothing to return to, so this stops.
+    ///
+    /// Under QEMU with `-device isa-debug-exit,iobase=0xf4,iosize=4` the
+    /// write ends the emulation and the process exits with (code << 1) | 1,
+    /// which is how a test harness reads the result. On real hardware the
+    /// port is nothing, the write goes nowhere, and the halt below is the
+    /// whole of it.
+    public static void Exit(int code)
+    {
+        Sys.PortOut8(Port.DebugExit, code & 0xFF);
+        Sys.Cli();
+
+        while (true)
+        {
+            Sys.Hlt();
+        }
+    }
+
+    /// Where the runtime's output goes. Everything goes to the serial line:
+    /// there is one console, and fd 1 and fd 2 are both it.
+    ///
+    /// Returns the count, always: a serial port that is not there swallows
+    /// bytes rather than failing, and there is nowhere to report a failure to.
+    public static IConsole? Console;
+
+    public static long WriteBytes(int fd, long address, long count)
+    {
+        if (Console != null)
+        {
+            Console.Write(address, count);
+        }
+        return count;
+    }
+}
+
+/// The parts of linux.cor's `Os` that mean anything with no kernel.
+///
+/// Deliberately small. A name that cannot be honoured is worse than a name
+/// that is not there: a program that calls Os.Open on bare metal has a
+/// mistake in it, and a compile error is where that mistake should surface.
+static class Os
+{
+    /// Everything written goes to the console whatever the descriptor.
+    public static int Write(int fd, string s)
+    {
+        Platform.WriteBytes(fd, Sys.ArrayData(s), s.Length);
+        return s.Length;
+    }
+
+    public static void Print(string s)
+    {
+        Platform.WriteBytes(1, Sys.ArrayData(s), s.Length);
+    }
+
+    public static void PrintLine(string s)
+    {
+        Platform.WriteBytes(1, Sys.ArrayData(s), s.Length);
+        Platform.WriteBytes(1, Sys.ArrayData("\n"), 1);
+    }
+
+    /// Stops the program with `code`, which is what returning from Main does.
+    public static void Exit(int code)
+    {
+        Platform.Exit(code);
+    }
+
+    /// Opens the A20 gate through the system control port, so that addresses
+    /// above the first megabyte do not wrap onto it. A bootloader that has
+    /// already done this may call it again; setting the bit twice is
+    /// harmless.
+    public static void EnableA20()
+    {
+        int now = Sys.PortIn8(Port.SystemControlA);
+
+        if ((now & 2) == 0)
+        {
+            // Bit 0 of that port is a system reset. It is masked off here
+            // because writing it back as read is fine and writing it set is
+            // a reboot.
+            Sys.PortOut8(Port.SystemControlA, (now | 2) & 0xFE);
+        }
+    }
+
+    /// Stops this processor until an interrupt arrives. With interrupts off
+    /// this is the end of the program, which is what an idle loop in a
+    /// program with no scheduler means.
+    public static void Idle()
+    {
+        Sys.Hlt();
+    }
+}
+
+// ---- what the scheduler asks of the machine -------------------------------
+//
+// lib/threading.cor runs tasks here exactly as it does under Linux; these
+// are the four things it asks for, answered with no kernel: the time, a
+// sleep until a deadline, a wait and a wake on a word. There are no
+// threads on bare metal until the kernel makes them, so a wait is a spin
+// on the clock and a wake is nothing.
+
+/// A monotonic nanosecond clock from the PIT, with no interrupts.
+///
+/// The 8254's channel 0 counts down at 1193182 Hz from whatever the BIOS
+/// loaded (65536, every 54.9 ms, in mode 3) -- or from what StartClock
+/// loads, once a kernel wants a tick. Read by latching, and the wraps are
+/// counted by noticing the count went up: which works only if Now() is
+/// called at least once a period, and it is, because the only thing that
+/// waits on this clock is a loop that calls Now().
+static class Clock
+{
+    const int Control = 0x43;
+    const int Channel0 = 0x40;
+    const long Hz = 1193182;
+    const long NanosPerSecond = 1000000000;
+
+    static long _reload = 65536;         // what channel 0 reloads to
+    static long _last = -1;              // the count last seen
+    static long _elapsedTicks;           // PIT ticks accumulated across wraps
+    static long _tickNanos;              // added per interrupt when the kernel drives it
+    static long _tickedNanos;
+    static bool _interrupts;
+
+    /// The count now, latched so both bytes belong to one instant.
+    static long Count()
+    {
+        Sys.PortOut8(Control, 0x00);    // latch channel 0
+        int lo = Sys.PortIn8(Channel0);
+        int hi = Sys.PortIn8(Channel0);
+        return lo | (hi << 8);
+    }
+
+    public static long Now()
+    {
+        if (_interrupts)
+        {
+            // The interrupt counts whole periods; the counter says how far
+            // into the current one.
+            long into = _reload - Count();
+            return _tickedNanos + into * NanosPerSecond / Hz;
+        }
+        long c = Count();
+        if (_last < 0)
+        {
+            _last = c;
+        }
+        // The counter counts DOWN, so what elapsed is last minus now; a
+        // negative answer means it reloaded in between, and the period
+        // that reload stands for is added back.
+        long delta = _last - c;
+        if (delta < 0)
+        {
+            delta = delta + _reload;
+        }
+        _elapsedTicks = _elapsedTicks + delta;
+        _last = c;
+        return _elapsedTicks * NanosPerSecond / Hz;
+    }
+
+    public static long NowMilliseconds()
+    {
+        return Now() / 1000000;
+    }
+
+    /// Programs channel 0 for a periodic interrupt at `hz` (mode 2) and
+    /// switches Now() to counting the kernel's ticks. The kernel's timer
+    /// handler calls OnTick each period.
+    public static void StartClock(long hz)
+    {
+        if (hz < 19)
+        {
+            hz = 19;
+        }
+        _reload = Hz / hz;
+        _tickNanos = NanosPerSecond / hz;
+        Sys.PortOut8(Control, 0x34);    // channel 0, lo/hi, mode 2, binary
+        Sys.PortOut8(Channel0, (int)(_reload & 0xFF));
+        Sys.PortOut8(Channel0, (int)((_reload >> 8) & 0xFF));
+        _tickedNanos = 0;
+        _interrupts = true;
+    }
+
+    public static void OnTick()
+    {
+        _tickedNanos = _tickedNanos + _tickNanos;
+    }
+
+    public static bool InterruptsOn()
+    {
+        return _interrupts;
+    }
+
+    /// Waits for the clock to reach `deadline`: a halt per tick when the
+    /// kernel drives interrupts, a spin on the counter otherwise.
+    public static void SleepUntil(long deadline)
+    {
+        while (Now() < deadline)
+        {
+            if (_interrupts)
+            {
+                Sys.Hlt();
+            }
+        }
+    }
+}
+
+/// Waiting and waking with no threads: a wait on a word returns when the
+/// word changes, which on bare metal can only be an interrupt handler's
+/// doing, so it is a bounded spin with the processor halted between looks
+/// when interrupts are on. The rest of the Linux Native surface --
+/// stacks, clone, thread ids -- has no meaning here and is not offered;
+/// a program that asks for a Thread on bare metal gets a compile error,
+/// which is the right answer until the kernel provides one.
+static class Native
+{
+    public static void Wait(long at, long expect)
+    {
+        for (int i = 0; i < 1000000 && Sys.PeekWord(at) == expect; i++)
+        {
+            if (Clock.InterruptsOn())
+            {
+                Sys.Hlt();
+            }
+        }
+    }
+
+    public static void Wake(long at, long count)
+    {
+    }
+
+    public static void WakeAll(long at)
+    {
+    }
+
+    public static long CurrentThreadId()
+    {
+        return 0;
+    }
+}

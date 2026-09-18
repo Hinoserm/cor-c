@@ -1,0 +1,382 @@
+// test: tasks_manual
+// expect-exit: 0
+// expect-output:
+// tcs completed False
+// after SetResult
+// completed True True
+// continuation sees 42
+// result 42
+// TrySetResult again False
+// SetResult again threw
+// first
+// second
+// run item
+// faulted True
+// message boom
+// same exception True
+// result rethrew boom
+// canceled exception set False
+// canceled True faulted False
+// canceled: A task was canceled.
+// delay pending False
+// delay waited True
+// delay done True
+// d10
+// d10b
+// d20
+// whenall done
+// whenall fault first
+// whenall empty True
+// whenany picked fast True
+// params all True any True
+// yield completed False
+// yielded
+// posted after
+// pool item
+// inner set
+// unwrapped True
+// unwrapped fault inner-bad
+// run func 42
+// run task func 43
+// from result x
+// token before False
+// cb2
+// cb1
+// token after True
+// throw if: The operation was canceled.
+// none False
+// pre-canceled True
+// delay canceled True
+// cancel after True
+// continued True
+// deadlock: nothing can complete this task
+// result deadlock: nothing can complete this task
+// done
+//
+// The task library with no async/await: TaskCompletionSource, continuations
+// registered through GetAwaiter().OnCompleted (posted, never run inline),
+// Wait running the scheduler, faulted and canceled tasks rethrowing the
+// original exception, Task.Delay ordering through the timer heap, WhenAll
+// and WhenAny, Task.Yield, Task.Run unwrapping a Func<Task>, cancellation
+// tokens with Delay and CancelAfter, and the scheduler's deadlock report.
+
+class Log : Action
+{
+    string _text;
+
+    public Log(string text)
+    {
+        _text = text;
+    }
+
+    public void Invoke()
+    {
+        Program.Line(_text);
+    }
+}
+
+static class Program
+{
+    public static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static void Basics()
+    {
+        TaskCompletionSource<int> tcs = new TaskCompletionSource<int>();
+        Task<int> t = tcs.Task;
+
+        Line("tcs completed " + t.IsCompleted);
+        t.GetAwaiter().OnCompleted(() => Line("continuation sees " + t.Result));
+        tcs.SetResult(42);
+        Line("after SetResult");
+        Line("completed " + t.IsCompleted + " " + t.IsCompletedSuccessfully);
+        Scheduler.RunUntilIdle();
+        Line("result " + t.GetAwaiter().GetResult());
+        Line("TrySetResult again " + tcs.TrySetResult(7));
+
+        try
+        {
+            tcs.SetResult(8);
+            Line("SetResult again did not throw");
+        }
+        catch (InvalidOperationException)
+        {
+            Line("SetResult again threw");
+        }
+    }
+
+    static void Order()
+    {
+        TaskCompletionSource<string> tcs = new TaskCompletionSource<string>();
+        TaskAwaiter<string> awaiter = tcs.Task.GetAwaiter();
+
+        awaiter.OnCompleted(new Log("first"));
+        awaiter.OnCompleted(new Log("second"));
+        tcs.SetResult("go");
+        Task.Run(new Log("run item")).Wait();
+    }
+
+    static void Faults()
+    {
+        TaskCompletionSource<int> tcs = new TaskCompletionSource<int>();
+        InvalidOperationException boom = new InvalidOperationException("boom");
+
+        tcs.SetException(boom);
+
+        Task<int> t = tcs.Task;
+        Line("faulted " + t.IsFaulted);
+
+        Exception? stored = t.Exception;
+
+        if (stored != null)
+        {
+            Line("message " + stored.Message);
+        }
+
+        try
+        {
+            t.Wait();
+        }
+        catch (InvalidOperationException e)
+        {
+            Line("same exception " + (e == boom));
+        }
+
+        try
+        {
+            int value = t.Result;
+            Line("result did not throw " + value);
+        }
+        catch (Exception e)
+        {
+            Line("result rethrew " + e.Message);
+        }
+
+        TaskCompletionSource cancel = new TaskCompletionSource();
+        cancel.SetCanceled();
+
+        Task c = cancel.Task;
+        Line("canceled exception set " + (c.Exception != null));
+        Line("canceled " + c.IsCanceled + " faulted " + c.IsFaulted);
+
+        try
+        {
+            c.GetAwaiter().GetResult();
+        }
+        catch (OperationCanceledException e)
+        {
+            Line("canceled: " + e.Message);
+        }
+    }
+
+    static void Delays()
+    {
+        long start = Clock.NowMilliseconds();
+        Task d = Task.Delay(30);
+
+        Line("delay pending " + d.IsCompleted);
+        d.Wait();
+
+        long elapsed = Clock.NowMilliseconds() - start;
+        Line("delay waited " + (elapsed >= 30));
+        Line("delay done " + d.IsCompletedSuccessfully);
+
+        Task slow = Task.Delay(20);
+        Task fast = Task.Delay(10);
+        Task fast2 = Task.Delay(10);
+
+        slow.GetAwaiter().OnCompleted(new Log("d20"));
+        fast.GetAwaiter().OnCompleted(new Log("d10"));
+        fast2.GetAwaiter().OnCompleted(new Log("d10b"));
+
+        Task[] all = new Task[3];
+        all[0] = slow;
+        all[1] = fast;
+        all[2] = fast2;
+        Task.WhenAll(all).Wait();
+        Line("whenall done");
+
+        Task[] mixed = new Task[3];
+        mixed[0] = Task.CompletedTask;
+        mixed[1] = Task.FromException(new InvalidOperationException("first"));
+        mixed[2] = Task.FromException(new InvalidOperationException("second"));
+
+        try
+        {
+            Task.WhenAll(mixed).Wait();
+        }
+        catch (Exception e)
+        {
+            Line("whenall fault " + e.Message);
+        }
+
+        Line("whenall empty " + Task.WhenAll(new List<Task>()).IsCompleted);
+
+        Task late = Task.Delay(50);
+        Task early = Task.Delay(5);
+        Task[] race = new Task[2];
+        race[0] = late;
+        race[1] = early;
+
+        Task winner = Task.WhenAny(race).Result;
+        Line("whenany picked fast " + (winner == early));
+
+        Task one = Task.Delay(2);
+        Task two = Task.CompletedTask;
+        Task both = Task.WhenAll(one, two);
+        Task first = Task.WhenAny(one, two).Result;
+        both.Wait();
+        Line("params all " + both.IsCompletedSuccessfully + " any " + (first == two));
+    }
+
+    static void Yields()
+    {
+        YieldAwaiter y = Task.Yield().GetAwaiter();
+
+        Line("yield completed " + y.IsCompleted);
+        y.OnCompleted(new Log("yielded"));
+        Scheduler.Post(new Log("posted after"));
+        Scheduler.RunUntilIdle();
+    }
+
+    static void Runs()
+    {
+        TaskCompletionSource inner = new TaskCompletionSource();
+        Func<Task> giveInner = () => inner.Task;
+        Task outer = Task.Run(giveInner);
+
+        ThreadPool.QueueUserWorkItem(new Log("pool item"));
+        ThreadPool.QueueUserWorkItem(() =>
+        {
+            Line("inner set");
+            inner.SetResult();
+        });
+        outer.Wait();
+        Line("unwrapped " + outer.IsCompletedSuccessfully);
+
+        Func<Task> bad = () => Task.FromException(new InvalidOperationException("inner-bad"));
+
+        try
+        {
+            Task.Run(bad).Wait();
+        }
+        catch (InvalidOperationException e)
+        {
+            Line("unwrapped fault " + e.Message);
+        }
+
+        int six = 6;
+        Task<int> product = TaskOf<int>.Run(() => six * 7);
+        Line("run func " + product.Result);
+
+        TaskCompletionSource<int> later = new TaskCompletionSource<int>();
+        Func<Task<int>> giveLater = () => later.Task;
+        Task<int> unwrapped = TaskOf<int>.Run(giveLater);
+        Task.Run(() => later.SetResult(43));
+        Line("run task func " + unwrapped.Result);
+        Line("from result " + TaskOf<string>.FromResult("x").Result);
+    }
+
+    static void Cancellation()
+    {
+        CancellationTokenSource cts = new CancellationTokenSource();
+        CancellationToken token = cts.Token;
+
+        Line("token before " + token.IsCancellationRequested);
+        token.Register(new Log("cb1"));
+        token.Register(new Log("cb2"));
+
+        CancellationTokenRegistration removed = token.Register(new Log("cb3"));
+        removed.Dispose();
+
+        cts.Cancel();
+        Line("token after " + token.IsCancellationRequested);
+
+        try
+        {
+            token.ThrowIfCancellationRequested();
+        }
+        catch (OperationCanceledException e)
+        {
+            Line("throw if: " + e.Message);
+        }
+
+        Line("none " + CancellationToken.None.CanBeCanceled);
+        Line("pre-canceled " + new CancellationToken(true).IsCancellationRequested);
+
+        CancellationTokenSource stopper = new CancellationTokenSource();
+        Task sleeper = Task.Delay(10000, stopper.Token);
+
+        Task.Run(() => stopper.Cancel());
+
+        try
+        {
+            sleeper.Wait();
+            Line("delay not canceled");
+        }
+        catch (TaskCanceledException)
+        {
+            Line("delay canceled " + sleeper.IsCanceled);
+        }
+
+        CancellationTokenSource timed = new CancellationTokenSource();
+        timed.CancelAfter(10);
+
+        try
+        {
+            Task.Delay(-1, timed.Token).Wait();
+        }
+        catch (OperationCanceledException)
+        {
+            Line("cancel after " + timed.IsCancellationRequested);
+        }
+    }
+
+    static void Continuations()
+    {
+        Task source = Task.Delay(1);
+        source.ContinueWith(x => Line("continued " + x.IsCompleted)).Wait();
+    }
+
+    static void Deadlock()
+    {
+        TaskCompletionSource<int> never = new TaskCompletionSource<int>();
+
+        try
+        {
+            never.Task.Wait();
+        }
+        catch (InvalidOperationException e)
+        {
+            Line(e.Message);
+        }
+
+        try
+        {
+            int value = never.Task.Result;
+            Line("got " + value);
+        }
+        catch (InvalidOperationException e)
+        {
+            Line("result " + e.Message);
+        }
+    }
+
+    static int Main()
+    {
+        Basics();
+        Order();
+        Faults();
+        Delays();
+        Yields();
+        Runs();
+        Cancellation();
+        Continuations();
+        Deadlock();
+        Line("done");
+        return 0;
+    }
+}

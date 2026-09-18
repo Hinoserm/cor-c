@@ -1,0 +1,92 @@
+// test: continue_in_switch
+// expect-exit: 0
+// expect-output:
+// a <b>
+// 1 3 5 done
+// finally 2
+//
+// `continue` INSIDE A SWITCH BELONGS TO THE LOOP AROUND IT. Only `break` is
+// the switch's own. Given the switch's end for both, `default: continue;` fell
+// out of the switch and ran the rest of the loop's body with the last turn's
+// values -- and the compiler, compiled by itself, put every field initialiser
+// into its constructor twice and under the wrong name.
+
+using System;
+using System.Collections.Generic;
+
+abstract class Member { public string Name = ""; public string? Init; }
+sealed class Field : Member { }
+sealed class Property : Member { public bool Auto; }
+sealed class Method : Member { }
+
+class P
+{
+    static int Main()
+    {
+        List<Member> members = new List<Member>
+        {
+            new Field { Name = "a", Init = "1" }, new Method { Name = "m" },
+            new Property { Name = "b", Init = "2", Auto = true }, new Field { Name = "c" },
+        };
+        string line = "";
+
+        foreach (Member m in members)
+        {
+            string field;
+
+            switch (m)
+            {
+                case Field f when f.Init != null:
+                    field = f.Name;
+                    break;
+
+                case Property p when p.Init != null && p.Auto:
+                    field = "<" + p.Name + ">";
+                    break;
+
+                default:
+                    continue;
+            }
+
+            line = line.Length == 0 ? field : line + " " + field;
+        }
+
+        Console.WriteLine(line);
+
+        string odd = "";
+
+        for (int i = 0; i < 6; i++)
+        {
+            switch (i % 2)
+            {
+                case 0:
+                    continue;
+            }
+
+            odd += i + " ";
+        }
+
+        Console.WriteLine(odd + "done");
+
+        int ran = 0;
+
+        for (int i = 0; i < 2; i++)
+        {
+            try
+            {
+                switch (i)
+                {
+                    default:
+                        continue;
+                }
+            }
+            finally
+            {
+                ran++;
+            }
+        }
+
+        Console.WriteLine("finally " + ran);
+        return 0;
+    }
+}

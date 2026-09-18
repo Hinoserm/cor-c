@@ -1,0 +1,55 @@
+// test: float_math
+// expect-exit: 0
+// expect-output:
+// sqrt 4000 1414
+// abs 2500 2500
+// pow 1024000
+// trig 0 1000 1000 500
+// exp 2718 3142
+// minmax 3 1099511627776
+// clamp 2000 2500
+//
+// The Math class: Sqrt and Abs (compiler intrinsics), and Pow, Sin, Cos, Exp,
+// Pi, Min, Max, Clamp and Lerp from the standard library. Results are
+// rounded to the nearest thousandth before printing so a last-bit difference
+// in a series does not change the output.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static long R(double x)
+    {
+        return (long)(x * 1000.0 + 0.5);
+    }
+
+    static int Main()
+    {
+        double sixteen = 16.0;
+        double two = 2.0;
+        Line("sqrt " + R(Math.Sqrt(sixteen)) + " " + R(Math.Sqrt(two)));
+
+        double neg = -2.5;
+        double pos = 2.5;
+        Line("abs " + R(Math.Abs(neg)) + " " + R(Math.Abs(pos)));
+
+        Line("pow " + R(Math.Pow(2.0, 10)));
+
+        double zero = 0.0;
+        Line("trig " + R(Math.Sin(zero)) + " " + R(Math.Sin(Math.Pi() / 2.0)) + " " + R(Math.Cos(zero)) + " " + R(Math.Sin(Math.Pi() / 6.0)));
+
+        double one = 1.0;
+        Line("exp " + R(Math.Exp(one)) + " " + R(Math.Pi()));
+
+        long big = 1L << 40;
+        long five = 5;
+        Line("minmax " + Math.Min(3, 5) + " " + Math.Max(big, five));
+
+        Line("clamp " + R(Math.Clamp(5.0, 0.0, 2.0)) + " " + R(Math.Lerp(0.0, 10.0, 0.25)));
+        return 0;
+    }
+}

@@ -1,0 +1,43 @@
+// Actual software ChaCha20, RFC 8439 section 2.3.2 block vector.
+// Counter/key/nonce reuse here is only for a known-answer benchmark.
+static class Program
+{
+    static byte[] Hex(string text)
+    {
+        byte[] result = new byte[text.Length / 2];
+        string digits = "0123456789abcdef";
+        for (int i = 0; i < result.Length; i++)
+            result[i] = (byte)(digits.IndexOf(text[i * 2]) * 16 + digits.IndexOf(text[i * 2 + 1]));
+        return result;
+    }
+    static int Main()
+    {
+        string[] args = Environment.GetCommandLineArgs();
+        int count = args.Length > 1 ? int.Parse(args[1]) : 100000;
+        if (count < 1 || count > 1000000) return 2;
+        bool fresh = args.Length > 2 && args[2] == "fresh";
+        byte[] key = Hex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
+        byte[] nonce = Hex("000000090000004a00000000");
+        byte[] expected = Hex("10f1e7e4d13b5915500fdd1fa32071c4c7d1f4c733c068030422aa9ac3d46c4e"
+            + "d2826446079faa0914c2d705d98b02a2b5129cd1de164eb9cbd083e8a2503c4e");
+        byte[] output = new byte[64];
+        CorsacSecureCrypto_ChaCha20Context context = new CorsacSecureCrypto_ChaCha20Context(key, 0);
+        bool valid = context.Error == 0;
+        long collections = Gc.Collections;
+        long start = Stopwatch.GetTimestamp();
+        for (int i = 0; i < count; i++)
+        {
+            bool okay = fresh ? CorsacSecureCrypto_ChaCha20.Block(key, 0, 1, nonce, 0, output, 0)
+                : context.Block(1, nonce, 0, output, 0);
+            valid = okay && valid;
+            for (int b = 0; b < 64; b++) valid = output[b] == expected[b] && valid;
+        }
+        long elapsed = Stopwatch.GetTimestamp() - start;
+        long collected = Gc.Collections - collections;
+        context.Close();
+        Console.WriteLine("chacha20-block,mode=" + (fresh ? "fresh" : "reuse") + ",iterations=" + count
+            + ",bytes=" + ((long)count * 64) + ",ticks=" + elapsed + ",frequency=" + Stopwatch.Frequency
+            + ",collections=" + collected + ",valid=" + valid);
+        return valid ? 0 : 1;
+    }
+}

@@ -1,0 +1,88 @@
+// test: boxing
+// expect-exit: 0
+// expect-output:
+// a 5
+// b hi
+// d 2.5
+// t True
+// c q
+// n 
+// L -7
+// type int
+// type double
+// type string
+// is int
+// not string
+// not short
+// unboxed 5
+// equal True
+// pattern 41
+// caught
+//
+// A VALUE TYPE CONVERTED TO OBJECT IS COPIED ONTO THE HEAP, behind an
+// ordinary object header, exactly as C# does it. `object a = 5` used to put
+// five in the word, and joining it to a string read five as an address.
+//
+// Covers what a box has to answer: its ToString through the shared slot, its
+// type name, `is` against the exact type and no other, an unboxing cast, value
+// equality between two separate boxes, a type pattern that binds the value,
+// and the InvalidCastException a mismatched unboxing throws. A string held as
+// an object is here too: it has no vtable of its own, so it is its own
+// ToString, and reading a slot it does not have was the same crash.
+static class Program
+{
+    static void Line(string text)
+    {
+        Sys.Print(text);
+        Sys.PrintLine();
+    }
+
+    static void Main()
+    {
+        object a = 5;
+        object b = "hi";
+        object d = 2.5;
+        object t = true;
+        object c = 'q';
+        object? n = null;
+        object l = -7L;
+
+        Line("a " + a);
+        Line("b " + b);
+        Line("d " + d);
+        Line("t " + t);
+        Line("c " + c);
+        Line("n " + n);
+        Line("L " + l);
+
+        Line("type " + a.GetType().Name);
+        Line("type " + d.GetType().Name);
+        Line("type " + b.GetType().Name);
+
+        Line(a is int ? "is int" : "not int");
+        Line(a is string ? "is string" : "not string");
+        Line(a is short ? "is short" : "not short");
+
+        int back = (int)a;
+        Line("unboxed " + back);
+
+        object other = 5;
+        Line("equal " + a.Equals(other));
+
+        object boxed = 41;
+        if (boxed is int got)
+        {
+            Line("pattern " + got);
+        }
+
+        try
+        {
+            short bad = (short)d;
+            Line("uncaught " + bad);
+        }
+        catch (InvalidCastException)
+        {
+            Line("caught");
+        }
+    }
+}

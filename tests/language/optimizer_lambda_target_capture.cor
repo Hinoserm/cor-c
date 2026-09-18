@@ -1,0 +1,19 @@
+// test: target typed expression lambda captures
+// expect-exit: 0
+// expect-output:
+// 42 43 44
+class ValueBox
+{
+    public int Value;
+}
+static class Program
+{
+    static void Main()
+    {
+        int value = 42;
+        ValueBox First() => new() { Value = value };
+        ValueBox Second() => new() { Value = First().Value + 1 };
+        Func<ValueBox> third = () => new() { Value = Second().Value + 1 };
+        Console.WriteLine(First().Value + " " + Second().Value + " " + third().Value);
+    }
+}

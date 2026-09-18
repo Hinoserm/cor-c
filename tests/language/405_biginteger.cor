@@ -1,0 +1,47 @@
+// test: lib/numerics.cor -- System.Numerics.BigInteger
+// expect-exit: 0
+// expect-output:
+// 123456789012345678902222222211
+// -123456789012345678900246913569
+// 15241578753238836750495351562536198787501905199875019052100
+// 124999998873437499901 rem 574845669
+// -124999998873437499901 -574845669
+// 340282366920938463463374607431768211456
+// 445
+// 9 123456789012345678901234567890
+// cmp=1 zero=True one=True even=True sign=-1
+// -9223372036854775808 0 0
+//
+// Division truncates towards zero and the remainder takes the dividend's
+// sign, which is C#'s rule for the built-in integers and the reason a
+// calculation does not change answer when a number outgrows a long. Every
+// line came from the same program run on .NET.
+
+class Program
+{
+    static int Main()
+    {
+        BigInteger a = BigInteger.Parse("123456789012345678901234567890");
+        BigInteger b = new BigInteger(987654321);
+
+        Console.WriteLine(BigInteger.Add(a, b).ToString());
+        Console.WriteLine(BigInteger.Subtract(b, a).ToString());
+        Console.WriteLine(BigInteger.Multiply(a, a).ToString());
+
+        BigInteger rest = BigInteger.Zero;
+        BigInteger whole = BigInteger.DivRem(a, b, out rest);
+        Console.WriteLine(whole.ToString() + " rem " + rest.ToString());
+
+        BigInteger negative = BigInteger.Negate(a);
+        Console.WriteLine(BigInteger.Divide(negative, b).ToString() + " " + BigInteger.Remainder(negative, b).ToString());
+
+        Console.WriteLine(BigInteger.Pow(new BigInteger(2), 128).ToString());
+        Console.WriteLine(BigInteger.ModPow(new BigInteger(4), new BigInteger(13), new BigInteger(497)).ToString());
+        Console.WriteLine(BigInteger.GreatestCommonDivisor(a, b).ToString() + " " + BigInteger.Abs(negative).ToString());
+
+        Console.WriteLine($"cmp={BigInteger.Compare(a, b)} zero={BigInteger.Zero.IsZero} one={BigInteger.One.IsOne} even={a.IsEven} sign={negative.Sign}");
+        Console.WriteLine(new BigInteger(-9223372036854775808).ToString() + " " + BigInteger.Parse("-0").ToString()
+            + " " + BigInteger.Multiply(BigInteger.Zero, a).ToString());
+        return 0;
+    }
+}

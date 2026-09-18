@@ -1,0 +1,63 @@
+// test: override_overload_slots
+// expect-exit: 0
+// expect-output:
+// Dchar c
+// Dstring s
+// Dlong 7
+// Dchar c
+// Dstring s
+// Dlong 7
+// Wchar x
+// Wstring hello
+//
+// TWO OVERLOADS OF THE SAME ARITY, EACH OVERRIDDEN. The slot an override
+// takes over was found in the base by NAME AND ARGUMENT COUNT alone, so
+// Write(char) and Write(string) were given the same one: a call correctly
+// resolved to Write(char) dispatched through the slot Write(string) had been
+// written into, and read the character code as a pointer. A library
+// TextWriter subclass -- the shape this was found in -- crashed on Write('c').
+class B
+{
+    public virtual void Write(char c) { Line("Bchar " + c); }
+    public virtual void Write(string s) { Line("Bstring " + s); }
+    public virtual void Write(long v) { Line("Blong " + v); }
+
+    public static void Line(string text)
+    {
+        Sys.Print(text);
+        Sys.PrintLine();
+    }
+}
+
+class D : B
+{
+    public override void Write(char c) { Line("Dchar " + c); }
+    public override void Write(string s) { Line("Dstring " + s); }
+    public override void Write(long v) { Line("Dlong " + v); }
+}
+
+class W : TextWriter
+{
+    public override void Write(char value) { B.Line("Wchar " + value); }
+    public override void Write(string value) { B.Line("Wstring " + value); }
+}
+
+static class Program
+{
+    static void Main()
+    {
+        D d = new D();
+        d.Write('c');
+        d.Write("s");
+        d.Write(7);
+
+        B b = d;
+        b.Write('c');
+        b.Write("s");
+        b.Write(7);
+
+        TextWriter w = new W();
+        w.Write('x');
+        w.Write("hello");
+    }
+}

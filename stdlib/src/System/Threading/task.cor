@@ -1,0 +1,337 @@
+// Tasks, and the queue that runs them.
+//
+//   corsac cc lib/heap.cor lib/task.cor myprogram.cor --run
+//
+// An async method returns one of these. It is NOT a thread: awaiting does not
+// block a processor, it puts the awaiting work aside and lets the processor go
+// and do something else. Concurrency and parallelism are different things and
+// this is the first of them; several processors draining this queue at once is
+// the second, and the queue is written so that they could.
+//
+// The compiler knows the ORDER of the fields on Task, because it reads and
+// writes them directly when it lowers an await. Reordering them without
+// changing Codegen alongside will not fail to compile, it will simply do the
+// wrong thing.
+//
+// Inside, a task is carried as a plain address rather than as a Task?. The
+// binder has no flow-sensitive narrowing yet, so every use of a nullable would
+// need a check it cannot see through — and a scheduler written around
+// appeasing that would be harder to read than one written around addresses,
+// which is what it is really moving anyway.
+
+static class TaskState
+{
+    public const int Running   = 0;   // somebody is inside it
+    public const int Suspended = 1;   // waiting on another task
+    public const int Done      = 2;
+    public const int Failed    = 3;
+}
+
+class Task
+{
+    // ---- known to the compiler, in this order -------------------------------
+    public long State;
+    public long Result;
+    /// The heap frame the suspended method left behind, and where to re-enter it.
+    public long Frame;
+    public long Resume;
+    /// The task this one waits on, and the one waiting on this one. Addresses.
+    public long Awaiting;
+    public long Waiter;
+    public long Failure;
+    // ---- end of the compiler's business -------------------------------------
+
+    public bool IsDone()
+    {
+        return State == TaskState.Done || State == TaskState.Failed;
+    }
+}
+
+// Where the fields are, so the scheduler can reach a task it holds as an
+// address. These have to agree with the order above.
+static class TaskAt
+{
+    // AFTER THE SIXTEEN-BYTE OBJECT HEADER.  Revision 1.5 gave every object
+    // a descriptor word AND a synchronization word before its payload, and
+    // this table -- the hand-written mirror of class Task above -- still said
+    // eight.  Every scheduler read was off by one field: Peek(t + 32) landed
+    // on Frame instead of Resume, the dispatcher jumped INTO THE HEAP FRAME,
+    // and all eight of spin's runners page-faulted executing their own saved
+    // locals, 328 bytes apart.
+    //
+    // A layout written down twice drifts; this is the same disease as the
+    // duplicated pattern parsers and the duplicated JIT context key, caught
+    // the same way -- by a corpse, not by a compiler.  If this table and the
+    // class above ever disagree again, suspect the header first: these
+    // offsets are Isa.ObjectHeaderBytes plus the field's position, and the
+    // header is the part that moves.
+    public const long State    = 16;
+    public const long Result   = 24;
+    public const long Frame    = 32;
+    public const long Resume   = 40;
+    public const long Awaiting = 48;
+    public const long Waiter   = 56;
+}
+
+// The run queue: work that is ready with nobody inside it.
+//
+// A ring rather than a list, because pushing needs no allocator. The heap is a
+// thing that can fail, and a scheduler that could fail to schedule has nothing
+// to fall back on.
+static class Sched
+{
+    const int Capacity = 256;
+
+    static long[] _ready;
+    static int _head;
+    static int _tail;
+    static bool _made;
+
+    /// The queue's lock, in memory rather than in a static because an atomic
+    /// needs an address and a static's is not something this language can take.
+    static long _lockAt;
+
+    /// Builds the queue BEFORE there is anybody to race for it.
+    ///
+    /// A program with one runner never needs this -- the first Post builds the
+    /// ring on the way past. A program with several does, and not calling it is
+    /// not a small bug: two runners arriving in Ensure at once both build a
+    /// ring, both store it, and one of them wins. Everything posted to the
+    /// loser is then held by a queue nothing will ever look at again, and the
+    /// symptom is work that silently never runs.
+    public static void Start()
+    {
+        Ensure();
+    }
+
+    static void Ensure()
+    {
+        if (!_made)
+        {
+            _ready = new long[Capacity];
+            _head = 0;
+            _tail = 0;
+            _lockAt = Heap.Alloc(8);
+            Sys.Poke(_lockAt, 0);
+            _made = true;
+        }
+    }
+
+    /// Held across the handful of instructions that move head or tail, and
+    /// never across running anything.
+    ///
+    /// A lock rather than a pair of atomics on head and tail. Lock-free rings
+    /// exist and are faster, and they are also where a concurrency bug hides
+    /// for a month; this one is provably right and is contended for about as
+    /// long as it takes to write two words.
+    ///
+    /// AND IT SHUTS OUT INTERRUPTS while it is held, when it can. This queue is
+    /// posted to from interrupt context -- that is how a device completing a
+    /// transfer turns into work something will run -- so a handler that
+    /// interrupts the code holding this lock would spin waiting for a lock its
+    /// own processor is holding. Which is exactly what happened: the async I/O
+    /// test stopped dead the first time a card finished while the program was
+    /// inside Take.
+    ///
+    /// Only in kernel mode, because only there can it be done and only there
+    /// is it needed. A program in user mode may not touch the priority level,
+    /// and nothing it wrote runs in interrupt context.
+    ///
+    /// A user thread CAN now be preempted while holding this, since the kernel
+    /// schedules on a timer. That is not a deadlock and does not need fixing
+    /// here: the holder is Ready and will be run again, and the other runners
+    /// spin for a slice rather than for ever. It is the ordinary cost of a
+    /// spin lock in user space on a preemptive system, and the answer when it
+    /// starts to matter is for the kernel to be told this thread is holding
+    /// something -- not for the lock to become cleverer.
+    static long Hold()
+    {
+        long was = 0;
+
+        if (Sys.Ring() <= 1)
+        {
+            was = Sys.Level();
+            Sys.SetLevel(7);
+        }
+
+        // The owner token is the THREAD pointer, not the processor number.
+        // Sys.CpuId reads the ring-1 processor block -- Rev 1.5 moved it
+        // there deliberately -- so a user-mode Hold() taking it was a
+        // privilege fault on the lock's first spin, which is how every
+        // program using this queue died the moment it started.  The thread
+        // pointer is user-readable, nonzero for any thread far enough along
+        // to take a lock, and names the actual holder rather than wherever
+        // the holder happened to be scheduled -- which is what a lock owner
+        // means.
+        while (Sys.Cas(_lockAt, 0, Sys.Mine() + 1) != 0)
+        {
+            Sys.Pause();
+        }
+        return was;
+    }
+
+    static void Release(long was)
+    {
+        Sys.Fence();
+        Sys.AtomicSwap(_lockAt, 0);
+
+        if (Sys.Ring() <= 1)
+        {
+            Sys.SetLevel(was);
+        }
+    }
+
+    /// Puts a task where a processor will find it. Answers false when the queue
+    /// is full, which a caller must not ignore: work dropped quietly is a
+    /// program that stops for no visible reason.
+    public static bool Post(long t)
+    {
+        Ensure();
+
+        long was = Hold();
+
+        int next = _tail + 1;
+
+        if (next == Capacity)
+        {
+            next = 0;
+        }
+
+        if (next == _head)
+        {
+            Release(was);
+            return false;
+        }
+
+        _ready[_tail] = t;
+        _tail = next;
+        Release(was);
+        return true;
+    }
+
+    /// Takes one piece of work, or zero when there is none.
+    ///
+    /// The taking is what has to be atomic, not the looking. Two processors
+    /// that both read head, both find the same task and both run it produce a
+    /// method entered twice on one frame -- which is not a crash, it is two
+    /// processors writing the same locals, and it looks like the machine
+    /// miscomputing arithmetic.
+    public static long Take()
+    {
+        Ensure();
+
+        long was = Hold();
+
+        if (_head == _tail)
+        {
+            Release(was);
+            return 0;
+        }
+
+        long t = _ready[_head];
+        _head = _head + 1;
+
+        if (_head == Capacity)
+        {
+            _head = 0;
+        }
+
+        Release(was);
+        return t;
+    }
+
+    /// Runs until nothing is ready. A program's Main calls this once it has
+    /// started the work it cares about; a kernel replaces it with a loop that
+    /// waits for an interrupt rather than stopping.
+    public static void Drain()
+    {
+        long t = Take();
+
+        while (t != 0)
+        {
+            Continuation.Enter(t);
+            t = Take();
+        }
+    }
+}
+
+// Re-entering a suspended method. The compiler emits the other half: an async
+// method can be resumed with its frame instead of called with arguments, and
+// carries on at the await it stopped on.
+static class Continuation
+{
+    public static void Enter(long t)
+    {
+        Sys.Resume(Sys.Peek(t + TaskAt.Frame), Sys.Peek(t + TaskAt.Resume));
+    }
+
+    /// Called by the compiler when an async method reaches its end. The task is
+    /// finished, so whatever was waiting on it is ready.
+    ///
+    /// The state is written BEFORE the waiter is taken, and taking it is an
+    /// atomic exchange rather than a read. Both halves matter -- see Suspend.
+    public static void Complete(long t, long result)
+    {
+        Sys.Poke(t + TaskAt.Result, result);
+        Sys.Poke(t + TaskAt.State, TaskState.Done);
+        Sys.Fence();
+
+        Wake(Sys.AtomicSwap(t + TaskAt.Waiter, 0));
+    }
+
+    /// The other ending. The failure rides on the task rather than being thrown
+    /// here, because here is whichever processor happened to run the
+    /// continuation and it has nothing to do with the code that awaits it.
+    public static void Fail(long t, long failure)
+    {
+        Sys.Poke(t + TaskAt.State, TaskState.Failed);
+        Sys.Fence();
+
+        Wake(Sys.AtomicSwap(t + TaskAt.Waiter, 0));
+    }
+
+    static void Wake(long waiter)
+    {
+        if (waiter != 0)
+        {
+            Sys.Poke(waiter + TaskAt.State, TaskState.Running);
+            Sched.Post(waiter);
+        }
+    }
+
+    /// Called by the compiler at an await whose task is not finished. Records
+    /// who is waiting on whom, and then the caller hands the processor back.
+    ///
+    /// THE TASK MAY FINISH IN THE MIDDLE OF THIS, and that is the whole reason
+    /// it is written the way it is.
+    ///
+    /// The compiler emits "is it done? no -- then suspend", and between those
+    /// two the thing being awaited can finish: a card's interrupt, or another
+    /// processor draining the queue. If it does, Complete looks for a waiter,
+    /// finds none recorded yet, and wakes nobody -- and then this records a
+    /// waiter on a task that is already finished and will never be completed
+    /// again. The method sleeps for ever with its result sitting next to it.
+    ///
+    /// So the handoff is atomic on both sides. Complete swaps the waiter out;
+    /// this swaps itself in and then LOOKS AGAIN, and if the task finished it
+    /// tries to swap itself back out. Exactly one of the two swaps returns a
+    /// waiter, so the continuation is posted exactly once -- posting it twice
+    /// would be worse than never, because a continuation entered twice runs a
+    /// method's second half on a frame another processor is already inside.
+    public static void Suspend(long self, long on)
+    {
+        Sys.Poke(self + TaskAt.State, TaskState.Suspended);
+        Sys.Poke(self + TaskAt.Awaiting, on);
+        Sys.AtomicSwap(on + TaskAt.Waiter, self);
+
+        long state = Sys.Peek(on + TaskAt.State);
+
+        if (state == TaskState.Done || state == TaskState.Failed)
+        {
+            if (Sys.AtomicSwap(on + TaskAt.Waiter, 0) == self)
+            {
+                Wake(self);
+            }
+        }
+    }
+}

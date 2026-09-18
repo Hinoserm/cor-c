@@ -1,0 +1,88 @@
+// test: nullable_conversions
+// expect-exit: 0
+// expect-output:
+// conditional True 5
+// cast True 5
+// empty False
+// member s 7
+// missing null -1
+// chained 3
+//
+// A T becoming a T? is a real conversion: the value goes into a cell. It was
+// made at an assignment and nowhere else, so `int? n = yes ? 5 : null` handed
+// back a bare number that the first HasValue read as an address. The arms of a
+// conditional and the operand of a cast make the cell too.
+//
+// With it, `x?.Member` on a NULLABLE VALUE reaches inside the cell, which is
+// what the question mark means in C#: the member of the value, and the answer
+// nullable.
+
+class Sym
+{
+    public string Name = "s";
+}
+
+struct Def
+{
+    public Sym? Symbol;
+    public int Address;
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        bool yes = true;
+
+        int? a = yes ? 5 : null;
+
+        Line("conditional " + a.HasValue + " " + a.Value);
+
+        int? b = yes ? (int?)5 : null;
+
+        Line("cast " + b.HasValue + " " + b.Value);
+
+        int? c = yes ? null : 9;
+
+        Line("empty " + c.HasValue);
+
+        Def d = new Def();
+
+        d.Symbol = new Sym();
+        d.Address = 7;
+
+        Def? some = d;
+        Def? none = null;
+
+        Line("member " + some?.Symbol!.Name + " " + some?.Address);
+
+        int? gone = none?.Address;
+
+        Line("missing " + (none?.Symbol == null ? "null" : "got") + " " + (gone.HasValue ? gone.Value : -1));
+
+        // The subject is read once, whatever it took to produce.
+        int? once = Read(d)?.Address;
+
+        Line("chained " + (_reads + once.Value - 5));
+        return 0;
+    }
+
+    static int _reads;
+
+    static Def? Read(Def d)
+    {
+        _reads = _reads + 1;
+        return d;
+    }
+
+    static string Take()
+    {
+        return " " + (_reads + 2);
+    }
+}

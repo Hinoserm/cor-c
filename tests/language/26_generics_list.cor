@@ -1,0 +1,94 @@
+// test: generics_list
+// expect-exit: 0
+// expect-output:
+// ints 10 0 27
+// removeat 9 3
+// insert 100 3 True
+// remove True 9 27 9
+// longs 1099511627777
+// strings b,a True
+// objects 6
+// grow 1000 999
+// init 3
+//
+// List<T> instantiated over int, long (two words per element), string and a
+// user class: Add, indexing, RemoveAt, Insert, IndexOf, Contains, Remove,
+// Reverse, ToArray, foreach, growth well past the initial capacity, and a
+// collection initialiser.
+
+class Node
+{
+    public int Value;
+
+    public Node(int v)
+    {
+        Value = v;
+    }
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        List<int> xs = new List<int>();
+        for (int i = 0; i < 10; i++)
+        {
+            xs.Add(i * 3);
+        }
+        Line("ints " + xs.Count + " " + xs[0] + " " + xs[9]);
+
+        xs.RemoveAt(0);
+        Line("removeat " + xs.Count + " " + xs[0]);
+
+        xs.Insert(0, 100);
+        Line("insert " + xs[0] + " " + xs.IndexOf(9) + " " + xs.Contains(27));
+
+        bool removed = xs.Remove(9);
+        xs.Reverse();
+        int[] arr = xs.ToArray();
+        Line("remove " + removed + " " + xs.Count + " " + xs[0] + " " + arr.Length);
+
+        List<long> ls = new List<long>();
+        ls.Add(1L << 40);
+        ls.Add(1);
+        long total = 0;
+        foreach (long v in ls)
+        {
+            total += v;
+        }
+        Line("longs " + total);
+
+        List<string> ss = new List<string>();
+        ss.Add("b");
+        ss.Add("a");
+        Line("strings " + string.Join(",", ss) + " " + ss.Contains("a"));
+
+        List<Node> nodes = new List<Node>();
+        nodes.Add(new Node(1));
+        nodes.Add(new Node(2));
+        nodes.Add(new Node(3));
+        int sum = 0;
+        foreach (Node n in nodes)
+        {
+            sum += n.Value;
+        }
+        Line("objects " + sum);
+
+        List<int> many = new List<int>();
+        for (int i = 0; i < 1000; i++)
+        {
+            many.Add(i);
+        }
+        Line("grow " + many.Count + " " + many[999]);
+
+        List<int> init = new List<int> { 3, 5, 7 };
+        Line("init " + init.Count);
+        return 0;
+    }
+}

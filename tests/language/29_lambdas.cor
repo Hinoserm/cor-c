@@ -1,0 +1,89 @@
+// test: lambdas
+// expect-exit: 0
+// expect-output:
+// expr 42
+// capture 101 201
+// write 7
+// loop 0 10 20
+// this 2
+// nested 7
+// long 1099511627777
+// block 6
+//
+// Lambdas and closures: an expression lambda; a captured local that is
+// changed AFTER the lambda was made (the closure must see the new value); a
+// lambda that writes a captured local; a per-iteration capture in a loop;
+// capture of `this`; a lambda returning a lambda; a captured long; and a
+// block-bodied lambda with its own locals.
+
+class Counter
+{
+    int n;
+
+    public int N => n;
+
+    public Func<int> Make()
+    {
+        return () => ++n;
+    }
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        Func<int, int> twice = x => x + x;
+        Line("expr " + twice(21));
+
+        int bump = 100;
+        Func<int, int> add = y => y + bump;
+        int first = add(1);
+        bump = 200;
+        Line("capture " + first + " " + add(1));
+
+        int acc = 0;
+        Action<int> accumulate = n => { acc += n; };
+        accumulate(3);
+        accumulate(4);
+        Line("write " + acc);
+
+        List<Func<int>> fs = new List<Func<int>>();
+        for (int i = 0; i < 3; i++)
+        {
+            int j = i;
+            fs.Add(() => j * 10);
+        }
+        Line("loop " + fs[0]() + " " + fs[1]() + " " + fs[2]());
+
+        Counter c = new Counter();
+        Func<int> tick = c.Make();
+        tick();
+        tick();
+        Line("this " + c.N);
+
+        Func<int, Func<int, int>> adder = a => b => a + b;
+        Line("nested " + adder(3)(4));
+
+        long big = 1L << 40;
+        Func<long> plusOne = () => big + 1;
+        Line("long " + plusOne());
+
+        Func<int, int> stepped = n =>
+        {
+            int total = 0;
+            for (int k = 0; k < n; k++)
+            {
+                total = total + k;
+            }
+            return total;
+        };
+        Line("block " + stepped(4));
+        return 0;
+    }
+}

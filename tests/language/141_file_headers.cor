@@ -1,0 +1,45 @@
+// test: file_headers
+// expect-exit: 0
+// expect-output:
+// headers 3
+//
+// A file written the way current C# projects write one -- a file-scoped
+// namespace, `global using`, `using static`, an aliased using, `#nullable` and
+// `#region` directives and `///` documentation -- compiles without its header
+// being stripped first. None of it means anything to this compiler; all of it
+// has to be READ rather than rejected.
+
+#nullable enable
+
+global using System;
+
+namespace Corsac.Tests;
+
+using System.Text;
+using static System.Math;
+using Chars = System.Char;
+
+#region the program
+
+/// <summary>Adds, and says so.</summary>
+static class Program
+{
+    /// <summary>Prints one line.</summary>
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        int a = 1;
+        int b = 2;
+        Sys.Print("headers ");
+        Sys.PrintInt(a + b);
+        Sys.PrintLine();
+        return 0;
+    }
+}
+
+#endregion

@@ -1,0 +1,135 @@
+// test: interfaces
+// expect-exit: 0
+// expect-output:
+// areas 34
+// kinds rect circle rect
+// named True False R
+// list 34
+// override big
+// param 12
+//
+// Interfaces: two interfaces on one class, dispatch through an interface
+// reference held in an array and in a List, `is` and `as` against an
+// interface, a virtual implementation overridden in a subclass and reached
+// through the interface, and an interface-typed parameter.
+
+interface IShape
+{
+    long Area();
+    string Kind();
+}
+
+interface INamed
+{
+    string Name();
+}
+
+class Rect : IShape, INamed
+{
+    long w;
+    long h;
+
+    public Rect(long width, long height)
+    {
+        w = width;
+        h = height;
+    }
+
+    public long Area()
+    {
+        return w * h;
+    }
+
+    public virtual string Kind()
+    {
+        return "rect";
+    }
+
+    public string Name()
+    {
+        return "R";
+    }
+}
+
+class Big : Rect
+{
+    public Big() : base(10, 10)
+    {
+    }
+
+    public override string Kind()
+    {
+        return "big";
+    }
+}
+
+class Circle : IShape
+{
+    long r;
+
+    public Circle(long radius)
+    {
+        r = radius;
+    }
+
+    public long Area()
+    {
+        return 3 * r * r;
+    }
+
+    public string Kind()
+    {
+        return "circle";
+    }
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static long AreaOf(IShape s)
+    {
+        return s.Area();
+    }
+
+    static int Main()
+    {
+        IShape[] shapes = new IShape[] { new Rect(2, 3), new Circle(2), new Rect(4, 4) };
+        long total = 0;
+        string kinds = "";
+        foreach (IShape s in shapes)
+        {
+            total += s.Area();
+            kinds = kinds + s.Kind() + " ";
+        }
+        Line("areas " + total);
+        Line("kinds " + String.Trim(kinds));
+
+        IShape first = shapes[0];
+        IShape second = shapes[1];
+        INamed? named = first as INamed;
+        string name = named == null ? "-" : named.Name();
+        Line("named " + (first is INamed) + " " + (second is INamed) + " " + name);
+
+        List<IShape> list = new List<IShape>();
+        foreach (IShape s in shapes)
+        {
+            list.Add(s);
+        }
+        long listTotal = 0;
+        foreach (IShape s in list)
+        {
+            listTotal += s.Area();
+        }
+        Line("list " + listTotal);
+
+        IShape big = new Big();
+        Line("override " + big.Kind());
+        Line("param " + AreaOf(new Circle(2)));
+        return 0;
+    }
+}

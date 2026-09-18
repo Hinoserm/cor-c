@@ -1,0 +1,82 @@
+// test: keys_have_an_order
+// expect-exit: 0
+// expect-output:
+// queue a b c d e
+// sorted (1, 2) (1, 9) (2, 0) (3, -4)
+// texts ant bee cat
+// own 1.2 1.10 2.0
+//
+// THE DEFAULT ORDER OF A KEY IS THE KEY'S, as .NET has it: a tuple is ordered
+// element by element, a string as text, a class by its own CompareTo. The
+// compiler's register allocator takes intervals from a PriorityQueue whose
+// priority is (start, sequence); ordered by where each tuple happened to be,
+// it took them in no order at all.
+
+using System;
+using System.Collections.Generic;
+
+sealed class Version : IComparable<Version>
+{
+    public int Major;
+    public int Minor;
+
+    public int CompareTo(Version? other)
+    {
+        if (other is null) { return 1; }
+        if (Major != other.Major) { return Major < other.Major ? -1 : 1; }
+        return Minor < other.Minor ? -1 : Minor > other.Minor ? 1 : 0;
+    }
+
+    public override string ToString() => Major + "." + Minor;
+}
+
+class P
+{
+    static int Main()
+    {
+        PriorityQueue<string, (int, int)> unhandled = new();
+        int seq = 0;
+
+        unhandled.Enqueue("d", (7, seq++));
+        unhandled.Enqueue("b", (2, seq++));
+        unhandled.Enqueue("e", (9, seq++));
+        unhandled.Enqueue("a", (0, seq++));
+        unhandled.Enqueue("c", (2, seq++));
+
+        string line = "queue";
+
+        while (unhandled.TryDequeue(out string? name, out _))
+        {
+            line += " " + name;
+        }
+
+        Console.WriteLine(line);
+
+        List<(int A, int B)> pairs = new() { (2, 0), (1, 9), (3, -4), (1, 2) };
+
+        pairs.Sort();
+        line = "sorted";
+
+        foreach ((int a, int b) in pairs)
+        {
+            line += " (" + a + ", " + b + ")";
+        }
+
+        Console.WriteLine(line);
+
+        List<string> texts = new() { "cat", "ant", "bee" };
+
+        texts.Sort();
+        Console.WriteLine("texts " + string.Join(" ", texts));
+
+        List<Version> versions = new()
+        {
+            new Version { Major = 2, Minor = 0 }, new Version { Major = 1, Minor = 10 },
+            new Version { Major = 1, Minor = 2 },
+        };
+
+        versions.Sort();
+        Console.WriteLine("own " + string.Join(" ", versions));
+        return 0;
+    }
+}

@@ -1,0 +1,77 @@
+// test: shared gc roots
+// expect-exit: 0
+// expect-output:
+// collected True
+// program static held 512
+// library static held 400
+// local held 256
+//
+// ROOTS IN BOTH IMAGES. The collector scans the statics between the linker's
+// __data_start and _end -- and those two symbols describe ONE image. In a
+// shared runtime they describe the runtime, so a program's statics are scanned
+// only because the program's startup handed its own range over
+// (Runtime.RegisterRoots, from the entry stub), and each library's only
+// because its DT_INIT did the same.
+//
+// So: something live in a program static, something live in a library static
+// (a StringBuilder's buffer is the library's own field), something live only
+// on the stack, and a collection in the middle of it. Anything the collector
+// failed to see comes back as rubbish or brings the process down.
+class Held
+{
+    public string[] Items;
+}
+
+static class Program
+{
+    static Held _mine = new Held();
+
+    static void Main()
+    {
+        _mine.Items = new string[512];
+        for (int i = 0; i < 512; i++)
+        {
+            _mine.Items[i] = "kept " + i;
+        }
+
+        StringBuilder theirs = new StringBuilder();
+        for (int i = 0; i < 400; i++)
+        {
+            theirs.Append('x');
+        }
+
+        string[] local = new string[256];
+        for (int i = 0; i < 256; i++)
+        {
+            local[i] = "local " + i;
+        }
+
+        // Rubbish enough that the heap has to be collected under it.
+        for (int i = 0; i < 40000; i++)
+        {
+            string waste = "waste " + i;
+            if (waste.Length == 0)
+            {
+                Console.WriteLine("impossible");
+            }
+        }
+
+        Gc.Collect();
+        Console.WriteLine("collected " + (Gc.Collections > 0));
+
+        int good = 0;
+        for (int i = 0; i < 512; i++)
+        {
+            if (_mine.Items[i] == "kept " + i) { good = good + 1; }
+        }
+        Console.WriteLine("program static held " + good);
+        Console.WriteLine("library static held " + theirs.ToString().Length);
+
+        good = 0;
+        for (int i = 0; i < 256; i++)
+        {
+            if (local[i] == "local " + i) { good = good + 1; }
+        }
+        Console.WriteLine("local held " + good);
+    }
+}

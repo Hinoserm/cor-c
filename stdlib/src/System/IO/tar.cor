@@ -1,0 +1,1286 @@
+// System.Formats.Tar, as .NET spells it: TarReader, TarWriter, TarEntry and
+// the four entry formats a tar archive can be in.
+//
+// The archive is a sequence of 512-byte records. Every one of the three
+// interchange formats is the same ustar header with a different answer to the
+// one question the header cannot answer -- what to do when a value does not
+// fit in its field:
+//
+//   V7      nothing does. A name is 100 bytes and that is the end of it.
+//   Ustar   POSIX.1-1988: a 155-byte prefix in front of the name, so a long
+//           path splits at a slash.
+//   Gnu     a 'L' record whose DATA is the long name, ahead of the entry it
+//           names, and 'K' for a long link target. Large numbers go in
+//           base 256 with the top bit of the field set.
+//   Pax     POSIX.1-2001: an 'x' record whose data is a set of
+//           "<length> <key>=<value>\n" lines that override the header, which
+//           is how a path, a link, a size or a timestamp of any length is
+//           carried without inventing a new field.
+//
+// Reading accepts all four, and every archive that gzip's own tar, bsdtar or
+// .NET writes. Writing produces whichever TarWriter was asked for, and only
+// spends an extra record when the header genuinely cannot hold the value.
+
+/// Which of the four interchange formats an entry is in.
+enum TarEntryFormat
+{
+    V7 = 1,
+    Ustar = 2,
+    Pax = 3,
+    Gnu = 4
+}
+
+/// The typeflag byte of a header, under .NET's names. The values are the
+/// ASCII characters the format actually stores.
+enum TarEntryType
+{
+    V7RegularFile = 0,
+    RegularFile = 48,                           // '0'
+    HardLink = 49,                              // '1'
+    SymbolicLink = 50,                          // '2'
+    CharacterDevice = 51,                       // '3'
+    BlockDevice = 52,                           // '4'
+    Directory = 53,                             // '5'
+    Fifo = 54,                                  // '6'
+    ContiguousFile = 55,                        // '7'
+    DirectoryList = 68,                         // 'D', GNU dumpdir
+    LongLink = 75,                              // 'K', GNU long link name
+    LongPath = 76,                              // 'L', GNU long path
+    MultiVolume = 77,                           // 'M'
+    RenamedOrSymlinked = 78,                    // 'N'
+    SparseFile = 83,                            // 'S'
+    TapeVolume = 86,                            // 'V'
+    GlobalExtendedAttributes = 103,             // 'g'
+    ExtendedAttributes = 120                    // 'x'
+}
+
+/// The 512-byte header record: where each field is, and how a value gets
+/// into and out of one.
+static class TarHeaderFields
+{
+    public const int BlockSize = 512;
+
+    public const int NameAt = 0;
+    public const int NameLength = 100;
+    public const int ModeAt = 100;
+    public const int UidAt = 108;
+    public const int GidAt = 116;
+    public const int SizeAt = 124;
+    public const int MtimeAt = 136;
+    public const int ChecksumAt = 148;
+    public const int TypeAt = 156;
+    public const int LinkNameAt = 157;
+    public const int MagicAt = 257;
+    public const int VersionAt = 263;
+    public const int UserNameAt = 265;
+    public const int GroupNameAt = 297;
+    public const int DeviceMajorAt = 329;
+    public const int DeviceMinorAt = 337;
+    public const int PrefixAt = 345;
+    public const int PrefixLength = 155;
+    public const int GnuAtimeAt = 345;
+    public const int GnuCtimeAt = 357;
+
+    /// The largest value an n-digit octal field holds: 8^n - 1.
+    public static long OctalLimit(int digits)
+    {
+        return (1L << (3 * digits)) - 1;
+    }
+
+    /// Reads a numeric field. A field whose top bit is set is GNU's base-256
+    /// form, which is how a size above 8 GiB or a uid above two million is
+    /// stored; everything else is octal with whatever padding the writer
+    /// happened to use.
+    public static long Number(byte[] block, int at, int width)
+    {
+        if ((block[at] & 0x80) != 0)
+        {
+            long wide = block[at] & 0x7F;
+            for (int i = 1; i < width; i++)
+            {
+                wide = (wide << 8) | block[at + i];
+            }
+            return wide;
+        }
+        long value = 0;
+        int scan = at;
+        int end = at + width;
+        while (scan < end && (block[scan] == 32 || block[scan] == 0)) { scan = scan + 1; }
+        while (scan < end && block[scan] >= 48 && block[scan] <= 55)
+        {
+            value = value * 8 + (block[scan] - 48);
+            scan = scan + 1;
+        }
+        return value;
+    }
+
+    /// Writes a numeric field: octal with a trailing NUL while it fits, and
+    /// base 256 when it does not.
+    public static void PutNumber(byte[] block, int at, int width, long value)
+    {
+        int digits = width - 1;
+        if (value < 0 || value > OctalLimit(digits))
+        {
+            for (int i = width - 1; i >= 1; i--)
+            {
+                block[at + i] = (byte)(value & 255);
+                value = value >> 8;
+            }
+            block[at] = 0x80;
+            return;
+        }
+        for (int i = digits - 1; i >= 0; i--)
+        {
+            block[at + i] = (byte)(48 + (int)(value & 7));
+            value = value >> 3;
+        }
+        block[at + digits] = 0;
+    }
+
+    /// A NUL-terminated (or field-filling) string out of a header field.
+    public static string Text(byte[] block, int at, int width)
+    {
+        int length = 0;
+        while (length < width && block[at + length] != 0) { length = length + 1; }
+        return Encoding.UTF8.GetString(block, at, length);
+    }
+
+    /// Puts as much of `text` as fits, NUL-padding the rest. Returns false
+    /// when it did not all fit, which is what makes the caller reach for a
+    /// long-name record.
+    public static bool PutText(byte[] block, int at, int width, string text)
+    {
+        byte[] bytes = Encoding.UTF8.GetBytes(text);
+        int take = bytes.Length < width ? bytes.Length : width;
+        for (int i = 0; i < take; i++) { block[at + i] = bytes[i]; }
+        for (int i = take; i < width; i++) { block[at + i] = 0; }
+        return bytes.Length <= width;
+    }
+
+    /// The header checksum: every byte of the record with the checksum field
+    /// itself read as spaces.
+    public static int Checksum(byte[] block)
+    {
+        int sum = 0;
+        for (int i = 0; i < BlockSize; i++)
+        {
+            sum = sum + (i >= ChecksumAt && i < ChecksumAt + 8 ? 32 : block[i]);
+        }
+        return sum;
+    }
+
+    /// The same sum with the bytes read as signed, which is what a handful of
+    /// pre-POSIX tars wrote. Accepting either is what every tar does.
+    public static int SignedChecksum(byte[] block)
+    {
+        int sum = 0;
+        for (int i = 0; i < BlockSize; i++)
+        {
+            int value = i >= ChecksumAt && i < ChecksumAt + 8 ? 32 : block[i];
+            sum = sum + (value > 127 ? value - 256 : value);
+        }
+        return sum;
+    }
+
+    public static void PutChecksum(byte[] block)
+    {
+        int sum = Checksum(block);
+        for (int i = 5; i >= 0; i--)
+        {
+            block[ChecksumAt + i] = (byte)(48 + (sum & 7));
+            sum = sum >> 3;
+        }
+        block[ChecksumAt + 6] = 0;
+        block[ChecksumAt + 7] = 32;
+    }
+
+    public static bool AllZero(byte[] block)
+    {
+        for (int i = 0; i < BlockSize; i++)
+        {
+            if (block[i] != 0) return false;
+        }
+        return true;
+    }
+}
+
+/// A read-only view of the next `length` bytes of an archive: what a
+/// TarEntry's DataStream is while the reader is still positioned on it.
+class TarSubStream : Stream
+{
+    Stream _source;
+    long _length;
+    long _position;
+
+    public TarSubStream(Stream source, long length)
+    {
+        _source = source;
+        _length = length;
+    }
+
+    public override bool CanRead { get { return true; } }
+    public override bool CanWrite { get { return false; } }
+    public override bool CanSeek { get { return false; } }
+    public override long Length { get { return _length; } }
+    public override long Position
+    {
+        get { return _position; }
+        set { throw new NotSupportedException("a tar entry's data stream cannot seek"); }
+    }
+
+    public override int Read(byte[] buffer, int offset, int count)
+    {
+        long left = _length - _position;
+        if (left <= 0) return 0;
+        if (count > left) count = (int)left;
+        int got = _source.Read(buffer, offset, count);
+        if (got > 0) _position = _position + got;
+        return got;
+    }
+
+    public override void Write(byte[] buffer, int offset, int count)
+    {
+        throw new NotSupportedException("a tar entry's data stream is read-only");
+    }
+}
+
+/// One archive member. .NET's shape: the type and the format are what the
+/// entry was made as, the rest is metadata, and the bytes arrive through
+/// DataStream.
+abstract class TarEntry
+{
+    string _name = "";
+    string _linkName = "";
+    TarEntryType _entryType;
+    TarEntryFormat _format;
+    int _mode = 420;                            // 0644
+    int _uid;
+    int _gid;
+    long _size;
+    long _mtime;
+    int _deviceMajor;
+    int _deviceMinor;
+    int _checksum;
+    Stream? _dataStream;
+
+    protected TarEntry(TarEntryType entryType, string entryName, TarEntryFormat format)
+    {
+        _entryType = entryType;
+        _name = entryName;
+        _format = format;
+        if (entryType == TarEntryType.Directory) _mode = 493;   // 0755
+    }
+
+    public string Name
+    {
+        get { return _name; }
+        set { _name = value; }
+    }
+
+    public string LinkName
+    {
+        get { return _linkName; }
+        set { _linkName = value; }
+    }
+
+    public TarEntryType EntryType { get { return _entryType; } }
+    public TarEntryFormat Format { get { return _format; } }
+
+    /// The permission bits, as lib/io.cor spells UnixFileMode: an int.
+    public int Mode
+    {
+        get { return _mode; }
+        set { _mode = value; }
+    }
+
+    public int Uid
+    {
+        get { return _uid; }
+        set { _uid = value; }
+    }
+
+    public int Gid
+    {
+        get { return _gid; }
+        set { _gid = value; }
+    }
+
+    public int DeviceMajor
+    {
+        get { return _deviceMajor; }
+        set { _deviceMajor = value; }
+    }
+
+    public int DeviceMinor
+    {
+        get { return _deviceMinor; }
+        set { _deviceMinor = value; }
+    }
+
+    public int Checksum { get { return _checksum; } }
+
+    public DateTimeOffset ModificationTime
+    {
+        get { return DateTimeOffset.FromUnixTimeSeconds(_mtime); }
+        set { _mtime = value.ToUnixTimeSeconds(); }
+    }
+
+    /// The length of the entry's data. A written entry takes it from the
+    /// stream it was given; a read one from the header.
+    public long Length
+    {
+        get { return _dataStream != null ? _dataStream.Length : _size; }
+    }
+
+    public Stream? DataStream
+    {
+        get { return _dataStream; }
+        set { _dataStream = value; }
+    }
+
+    // What the reader and writer need at, which is not part of .NET's
+    // public surface but is the same state under it.
+    internal long RawSize { get { return _size; } set { _size = value; } }
+    internal long RawMtime { get { return _mtime; } set { _mtime = value; } }
+    internal int RawChecksum { get { return _checksum; } set { _checksum = value; } }
+    internal void SetEntryType(TarEntryType value) { _entryType = value; }
+
+    public bool IsRegularFile
+    {
+        get
+        {
+            return _entryType == TarEntryType.RegularFile
+                || _entryType == TarEntryType.V7RegularFile
+                || _entryType == TarEntryType.ContiguousFile;
+        }
+    }
+
+    /// Writes the entry's data to a file, and its mode and modification time
+    /// with it. A directory, a link or a device is made as itself.
+    public void ExtractToFile(string destinationFileName, bool overwrite)
+    {
+        if (_entryType == TarEntryType.Directory
+            || _entryType == TarEntryType.DirectoryList)
+        {
+            Directory.CreateDirectory(destinationFileName);
+            File.SetUnixFileMode(destinationFileName, (UnixFileMode)(_mode & 4095));
+            return;
+        }
+        if (!overwrite && File.Exists(destinationFileName))
+        {
+            throw new IOException("the file '" + destinationFileName + "' already exists");
+        }
+        if (_entryType == TarEntryType.SymbolicLink)
+        {
+            if (File.Exists(destinationFileName)) File.Delete(destinationFileName);
+            File.CreateSymbolicLink(destinationFileName, _linkName);
+            return;
+        }
+        if (_entryType == TarEntryType.HardLink)
+        {
+            if (File.Exists(destinationFileName)) File.Delete(destinationFileName);
+            File.CreateHardLink(destinationFileName, _linkName);
+            return;
+        }
+        if (!IsRegularFile)
+        {
+            throw new NotSupportedException("a " + (int)_entryType
+                + " entry cannot be written to a file");
+        }
+
+        FileStream into = new FileStream(destinationFileName, FileMode.Create, FileAccess.Write);
+        Stream? from = _dataStream;
+        if (from != null)
+        {
+            byte[] chunk = new byte[65536];
+            while (true)
+            {
+                int got = from.Read(chunk, 0, chunk.Length);
+                if (got <= 0) break;
+                into.Write(chunk, 0, got);
+            }
+        }
+        into.Dispose();
+        // The old GNU format stores the whole st_mode, file type and all;
+        // only the permission bits belong in a chmod.
+        File.SetUnixFileMode(destinationFileName, (UnixFileMode)(_mode & 4095));
+        File.SetLastWriteTimeUtc(destinationFileName, DateTime.FromUnixTimeSeconds(_mtime));
+    }
+}
+
+/// An entry in the original Seventh Edition format: a name, a mode, three
+/// numbers and nothing else.
+class V7TarEntry : TarEntry
+{
+    public V7TarEntry(TarEntryType entryType, string entryName)
+        : base(entryType, entryName, TarEntryFormat.V7)
+    {
+    }
+}
+
+/// Everything POSIX added to V7: the owner and group by name, and a device
+/// number for a device node.
+abstract class PosixTarEntry : TarEntry
+{
+    string _userName = "";
+    string _groupName = "";
+
+    protected PosixTarEntry(TarEntryType entryType, string entryName, TarEntryFormat format)
+        : base(entryType, entryName, format)
+    {
+    }
+
+    public string UserName
+    {
+        get { return _userName; }
+        set { _userName = value; }
+    }
+
+    public string GroupName
+    {
+        get { return _groupName; }
+        set { _groupName = value; }
+    }
+}
+
+class UstarTarEntry : PosixTarEntry
+{
+    public UstarTarEntry(TarEntryType entryType, string entryName)
+        : base(entryType, entryName, TarEntryFormat.Ustar)
+    {
+    }
+}
+
+/// A PAX entry, which is a ustar entry plus the extended attributes that
+/// override it.
+class PaxTarEntry : PosixTarEntry
+{
+    Dictionary<string, string> _attributes;
+
+    public PaxTarEntry(TarEntryType entryType, string entryName)
+        : base(entryType, entryName, TarEntryFormat.Pax)
+    {
+        _attributes = new Dictionary<string, string>();
+    }
+
+    public Dictionary<string, string> ExtendedAttributes { get { return _attributes; } }
+}
+
+/// A GNU entry, which carries the two extra timestamps GNU tar put where
+/// ustar keeps its prefix.
+class GnuTarEntry : PosixTarEntry
+{
+    long _atime;
+    long _ctime;
+
+    public GnuTarEntry(TarEntryType entryType, string entryName)
+        : base(entryType, entryName, TarEntryFormat.Gnu)
+    {
+    }
+
+    public DateTimeOffset AccessTime
+    {
+        get { return DateTimeOffset.FromUnixTimeSeconds(_atime); }
+        set { _atime = value.ToUnixTimeSeconds(); }
+    }
+
+    public DateTimeOffset ChangeTime
+    {
+        get { return DateTimeOffset.FromUnixTimeSeconds(_ctime); }
+        set { _ctime = value.ToUnixTimeSeconds(); }
+    }
+}
+
+/// Reads the entries of an archive in order.
+class TarReader : IDisposable
+{
+    Stream _archive;
+    bool _leaveOpen;
+    bool _disposed;
+    bool _ended;
+    byte[] _block;
+    TarSubStream? _pending;
+    long _pendingPad;
+    Dictionary<string, string> _global;
+
+    public TarReader(Stream archiveStream) : this(archiveStream, false)
+    {
+    }
+
+    public TarReader(Stream archiveStream, bool leaveOpen)
+    {
+        _archive = archiveStream;
+        _leaveOpen = leaveOpen;
+        _block = new byte[TarHeaderFields.BlockSize];
+        _global = new Dictionary<string, string>();
+    }
+
+    /// The next entry, or null at the end of the archive. With copyData the
+    /// entry owns its bytes and stays valid afterwards; without it the data
+    /// stream is a view that the next call moves past.
+    public TarEntry? GetNextEntry() { return GetNextEntry(false); }
+
+    public TarEntry? GetNextEntry(bool copyData)
+    {
+        if (_ended) return null;
+        Skip();
+
+        string longPath = "";
+        string longLink = "";
+        Dictionary<string, string> local = new Dictionary<string, string>();
+
+        while (true)
+        {
+            if (!ReadBlock())
+            {
+                _ended = true;
+                return null;
+            }
+            if (TarHeaderFields.AllZero(_block))
+            {
+                // The end of the archive is two zero records; one is enough
+                // to stop, and tars that wrote only one are still readable.
+                _ended = true;
+                return null;
+            }
+
+            int stored = (int)TarHeaderFields.Number(_block, TarHeaderFields.ChecksumAt, 8);
+            if (stored != TarHeaderFields.Checksum(_block)
+                && stored != TarHeaderFields.SignedChecksum(_block))
+            {
+                throw new InvalidDataException("tar header checksum mismatch");
+            }
+
+            int typeByte = _block[TarHeaderFields.TypeAt];
+            long size = TarHeaderFields.Number(_block, TarHeaderFields.SizeAt, 12);
+
+            if (typeByte == (int)TarEntryType.LongPath)
+            {
+                longPath = TrimNul(Encoding.UTF8.GetString(ReadData(size), 0, (int)size));
+                continue;
+            }
+            if (typeByte == (int)TarEntryType.LongLink)
+            {
+                longLink = TrimNul(Encoding.UTF8.GetString(ReadData(size), 0, (int)size));
+                continue;
+            }
+            if (typeByte == (int)TarEntryType.ExtendedAttributes)
+            {
+                ParseExtended(ReadData(size), local);
+                continue;
+            }
+            if (typeByte == (int)TarEntryType.GlobalExtendedAttributes)
+            {
+                ParseExtended(ReadData(size), _global);
+                continue;
+            }
+
+            return Build(typeByte, size, longPath, longLink, local, copyData);
+        }
+    }
+
+    TarEntry Build(int typeByte, long size, string longPath, string longLink,
+                   Dictionary<string, string> local, bool copyData)
+    {
+        TarEntryFormat format = FormatOf(local.Count != 0 || _global.Count != 0);
+        TarEntryType type = (TarEntryType)typeByte;
+
+        string name = TarHeaderFields.Text(_block, TarHeaderFields.NameAt,
+                                           TarHeaderFields.NameLength);
+        if (format == TarEntryFormat.Ustar || format == TarEntryFormat.Pax)
+        {
+            string prefix = TarHeaderFields.Text(_block, TarHeaderFields.PrefixAt,
+                                                 TarHeaderFields.PrefixLength);
+            if (prefix.Length != 0) name = prefix + "/" + name;
+        }
+        string link = TarHeaderFields.Text(_block, TarHeaderFields.LinkNameAt,
+                                           TarHeaderFields.NameLength);
+        if (longPath.Length != 0) name = longPath;
+        if (longLink.Length != 0) link = longLink;
+
+        TarEntry entry = format == TarEntryFormat.V7 ? new V7TarEntry(type, name)
+                       : format == TarEntryFormat.Gnu ? new GnuTarEntry(type, name)
+                       : format == TarEntryFormat.Pax ? new PaxTarEntry(type, name)
+                       : new UstarTarEntry(type, name);
+        entry.LinkName = link;
+        entry.Mode = (int)TarHeaderFields.Number(_block, TarHeaderFields.ModeAt, 8);
+        entry.Uid = (int)TarHeaderFields.Number(_block, TarHeaderFields.UidAt, 8);
+        entry.Gid = (int)TarHeaderFields.Number(_block, TarHeaderFields.GidAt, 8);
+        entry.RawMtime = TarHeaderFields.Number(_block, TarHeaderFields.MtimeAt, 12);
+        entry.RawChecksum = (int)TarHeaderFields.Number(_block, TarHeaderFields.ChecksumAt, 8);
+        entry.DeviceMajor = (int)TarHeaderFields.Number(_block, TarHeaderFields.DeviceMajorAt, 8);
+        entry.DeviceMinor = (int)TarHeaderFields.Number(_block, TarHeaderFields.DeviceMinorAt, 8);
+
+        PosixTarEntry? posix = entry as PosixTarEntry;
+        if (posix != null)
+        {
+            posix.UserName = TarHeaderFields.Text(_block, TarHeaderFields.UserNameAt, 32);
+            posix.GroupName = TarHeaderFields.Text(_block, TarHeaderFields.GroupNameAt, 32);
+        }
+        GnuTarEntry? gnu = entry as GnuTarEntry;
+        if (gnu != null)
+        {
+            long atime = TarHeaderFields.Number(_block, TarHeaderFields.GnuAtimeAt, 12);
+            long ctime = TarHeaderFields.Number(_block, TarHeaderFields.GnuCtimeAt, 12);
+            gnu.AccessTime = DateTimeOffset.FromUnixTimeSeconds(atime);
+            gnu.ChangeTime = DateTimeOffset.FromUnixTimeSeconds(ctime);
+        }
+
+        // The extended records win over the header, which is the whole point
+        // of them: the header carries a truncated or placeholder value so
+        // that a tar which has never heard of PAX still sees something.
+        PaxTarEntry? pax = entry as PaxTarEntry;
+        Apply(entry, pax, posix, _global, ref size);
+        Apply(entry, pax, posix, local, ref size);
+
+        entry.RawSize = size;
+
+        // A directory sometimes arrives as a name ending in '/' with the
+        // regular-file type, which is what V7 had instead of a type for one.
+        if (type == TarEntryType.V7RegularFile && entry.Name.EndsWith("/"))
+        {
+            entry.SetEntryType(TarEntryType.Directory);
+            size = 0;
+            entry.RawSize = 0;
+        }
+
+        long padding = (TarHeaderFields.BlockSize
+                        - (size % TarHeaderFields.BlockSize)) % TarHeaderFields.BlockSize;
+        if (copyData)
+        {
+            byte[] bytes = ReadData(size);
+            // ReadData already stepped over the padding.
+            entry.DataStream = new MemoryStream(bytes);
+            _pending = null;
+            _pendingPad = 0;
+        }
+        else
+        {
+            TarSubStream view = new TarSubStream(_archive, size);
+            entry.DataStream = view;
+            _pending = view;
+            _pendingPad = padding;
+        }
+        return entry;
+    }
+
+    void Apply(TarEntry entry, PaxTarEntry? pax, PosixTarEntry? posix,
+               Dictionary<string, string> records, ref long size)
+    {
+        if (records.Count == 0) return;
+        foreach (KeyValuePair<string, string> record in records)
+        {
+            if (pax != null) pax.ExtendedAttributes[record.Key] = record.Value;
+            string key = record.Key;
+            string value = record.Value;
+            if (key == "path") entry.Name = value;
+            else if (key == "linkpath") entry.LinkName = value;
+            else if (key == "size") size = Whole(value);
+            else if (key == "uid") entry.Uid = (int)Whole(value);
+            else if (key == "gid") entry.Gid = (int)Whole(value);
+            else if (key == "mtime") entry.RawMtime = Whole(value);
+            else if (key == "uname" && posix != null) posix.UserName = value;
+            else if (key == "gname" && posix != null) posix.GroupName = value;
+        }
+    }
+
+    /// A PAX value is decimal and may carry a fraction, which the header
+    /// field cannot: whole seconds are what a tar archive stores.
+    static long Whole(string text)
+    {
+        long value = 0;
+        bool negative = text.Length > 0 && text[0] == '-';
+        for (int i = negative ? 1 : 0; i < text.Length; i++)
+        {
+            char c = text[i];
+            if (c == '.') break;
+            if (c < '0' || c > '9') break;
+            value = value * 10 + (c - '0');
+        }
+        return negative ? -value : value;
+    }
+
+    /// Which format the header in hand is in, from its magic.
+    TarEntryFormat FormatOf(bool extended)
+    {
+        bool ustar = _block[TarHeaderFields.MagicAt] == 117
+                  && _block[TarHeaderFields.MagicAt + 1] == 115
+                  && _block[TarHeaderFields.MagicAt + 2] == 116
+                  && _block[TarHeaderFields.MagicAt + 3] == 97
+                  && _block[TarHeaderFields.MagicAt + 4] == 114;
+        if (!ustar) return TarEntryFormat.V7;
+        // GNU writes "ustar  \0" where POSIX writes "ustar\0" and "00".
+        if (_block[TarHeaderFields.MagicAt + 5] == 32) return TarEntryFormat.Gnu;
+        return extended ? TarEntryFormat.Pax : TarEntryFormat.Ustar;
+    }
+
+    static string TrimNul(string text)
+    {
+        int length = text.Length;
+        while (length > 0 && text[length - 1] == '\0') { length = length - 1; }
+        return length == text.Length ? text : text.Substring(0, length);
+    }
+
+    /// "<length> <key>=<value>\n", where the length counts itself.
+    static void ParseExtended(byte[] data, Dictionary<string, string> into)
+    {
+        int at = 0;
+        while (at < data.Length)
+        {
+            int length = 0;
+            int scan = at;
+            while (scan < data.Length && data[scan] >= 48 && data[scan] <= 57)
+            {
+                length = length * 10 + (data[scan] - 48);
+                scan = scan + 1;
+            }
+            if (length <= 0 || at + length > data.Length
+                || scan >= data.Length || data[scan] != 32)
+            {
+                throw new InvalidDataException("malformed pax extended header record");
+            }
+            scan = scan + 1;
+            int equals = scan;
+            while (equals < at + length && data[equals] != 61) { equals = equals + 1; }
+            if (equals >= at + length)
+            {
+                throw new InvalidDataException("malformed pax extended header record");
+            }
+            string key = Encoding.UTF8.GetString(data, scan, equals - scan);
+            int valueAt = equals + 1;
+            int valueLength = at + length - valueAt;
+            // The record ends with a newline that is not part of the value.
+            if (valueLength > 0 && data[valueAt + valueLength - 1] == 10)
+            {
+                valueLength = valueLength - 1;
+            }
+            into[key] = Encoding.UTF8.GetString(data, valueAt, valueLength);
+            at = at + length;
+        }
+    }
+
+    bool ReadBlock()
+    {
+        int got = 0;
+        while (got < TarHeaderFields.BlockSize)
+        {
+            int n = _archive.Read(_block, got, TarHeaderFields.BlockSize - got);
+            if (n <= 0) break;
+            got = got + n;
+        }
+        return got == TarHeaderFields.BlockSize;
+    }
+
+    /// The whole of an entry's data, with the record padding consumed.
+    byte[] ReadData(long size)
+    {
+        byte[] bytes = new byte[size];
+        long got = 0;
+        while (got < size)
+        {
+            int n = _archive.Read(bytes, (int)got, (int)(size - got));
+            if (n <= 0) throw new EndOfStreamException("the archive ends inside an entry");
+            got = got + n;
+        }
+        Discard((TarHeaderFields.BlockSize - (size % TarHeaderFields.BlockSize))
+                % TarHeaderFields.BlockSize);
+        return bytes;
+    }
+
+    /// Steps over whatever of the previous entry the caller did not read.
+    void Skip()
+    {
+        TarSubStream? view = _pending;
+        if (view == null) return;
+        _pending = null;
+        Discard(view.Length - view.Position);
+        Discard(_pendingPad);
+        _pendingPad = 0;
+    }
+
+    void Discard(long count)
+    {
+        byte[] sink = new byte[4096];
+        while (count > 0)
+        {
+            int take = count < sink.Length ? (int)count : sink.Length;
+            int got = _archive.Read(sink, 0, take);
+            if (got <= 0) throw new EndOfStreamException("the archive ends inside an entry");
+            count = count - got;
+        }
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        if (!_leaveOpen) _archive.Dispose();
+    }
+}
+
+/// Writes entries to an archive in the format it was made with.
+class TarWriter : IDisposable
+{
+    Stream _archive;
+    TarEntryFormat _format;
+    bool _leaveOpen;
+    bool _disposed;
+    byte[] _block;
+    byte[] _pad;
+
+    public TarWriter(Stream archiveStream)
+        : this(archiveStream, TarEntryFormat.Pax, false)
+    {
+    }
+
+    public TarWriter(Stream archiveStream, bool leaveOpen)
+        : this(archiveStream, TarEntryFormat.Pax, leaveOpen)
+    {
+    }
+
+    public TarWriter(Stream archiveStream, TarEntryFormat format)
+        : this(archiveStream, format, false)
+    {
+    }
+
+    public TarWriter(Stream archiveStream, TarEntryFormat format, bool leaveOpen)
+    {
+        _archive = archiveStream;
+        _format = format;
+        _leaveOpen = leaveOpen;
+        _block = new byte[TarHeaderFields.BlockSize];
+        _pad = new byte[TarHeaderFields.BlockSize];
+    }
+
+    public TarEntryFormat Format { get { return _format; } }
+
+    public void WriteEntry(TarEntry entry)
+    {
+        string name = entry.Name;
+        if (entry.EntryType == TarEntryType.Directory && !name.EndsWith("/"))
+        {
+            name = name + "/";
+        }
+        string link = entry.LinkName;
+        long size = entry.IsRegularFile ? entry.Length : 0;
+
+        PosixTarEntry? posix = entry as PosixTarEntry;
+        string user = posix != null ? posix.UserName : "";
+        string group = posix != null ? posix.GroupName : "";
+
+        int nameBytes = Encoding.UTF8.GetBytes(name).Length;
+        int linkBytes = Encoding.UTF8.GetBytes(link).Length;
+
+        if (_format == TarEntryFormat.Gnu)
+        {
+            if (nameBytes > TarHeaderFields.NameLength)
+            {
+                WriteLong(TarEntryType.LongPath, name);
+            }
+            if (linkBytes > TarHeaderFields.NameLength)
+            {
+                WriteLong(TarEntryType.LongLink, link);
+            }
+        }
+        else if (_format == TarEntryFormat.V7 || _format == TarEntryFormat.Ustar)
+        {
+            // Neither format has anywhere to put what does not fit, so
+            // saying so is the only honest answer. GNU tar refuses the same
+            // archive with "file name is too long".
+            bool fits = _format == TarEntryFormat.Ustar
+                      ? nameBytes <= TarHeaderFields.NameLength || Splits(name)
+                      : nameBytes <= TarHeaderFields.NameLength;
+            if (!fits)
+            {
+                throw new ArgumentException("the entry name '" + name
+                    + "' is too long for a " + (_format == TarEntryFormat.V7 ? "v7" : "ustar")
+                    + " archive");
+            }
+            if (linkBytes > TarHeaderFields.NameLength)
+            {
+                throw new ArgumentException("the link name '" + link
+                    + "' is too long for a " + (_format == TarEntryFormat.V7 ? "v7" : "ustar")
+                    + " archive");
+            }
+        }
+        else if (_format == TarEntryFormat.Pax)
+        {
+            StringBuilder records = new StringBuilder();
+            if (nameBytes > TarHeaderFields.NameLength && !Splits(name))
+            {
+                Record(records, "path", name);
+            }
+            if (linkBytes > TarHeaderFields.NameLength)
+            {
+                Record(records, "linkpath", link);
+            }
+            if (size > TarHeaderFields.OctalLimit(11))
+            {
+                Record(records, "size", size.ToString());
+            }
+            if (entry.Uid > TarHeaderFields.OctalLimit(7))
+            {
+                Record(records, "uid", entry.Uid.ToString());
+            }
+            if (entry.Gid > TarHeaderFields.OctalLimit(7))
+            {
+                Record(records, "gid", entry.Gid.ToString());
+            }
+            if (entry.RawMtime < 0 || entry.RawMtime > TarHeaderFields.OctalLimit(11))
+            {
+                Record(records, "mtime", entry.RawMtime.ToString());
+            }
+            if (Encoding.UTF8.GetBytes(user).Length > 32)
+            {
+                Record(records, "uname", user);
+            }
+            if (Encoding.UTF8.GetBytes(group).Length > 32)
+            {
+                Record(records, "gname", group);
+            }
+            PaxTarEntry? pax = entry as PaxTarEntry;
+            if (pax != null)
+            {
+                foreach (KeyValuePair<string, string> extra in pax.ExtendedAttributes)
+                {
+                    if (extra.Key != "path" && extra.Key != "linkpath"
+                        && extra.Key != "size" && extra.Key != "uid"
+                        && extra.Key != "gid" && extra.Key != "mtime"
+                        && extra.Key != "uname" && extra.Key != "gname")
+                    {
+                        Record(records, extra.Key, extra.Value);
+                    }
+                }
+            }
+            if (records.Length != 0)
+            {
+                WriteExtended(name, records.ToString());
+            }
+        }
+
+        Clear(_block);
+        string headerName = name;
+        if (_format == TarEntryFormat.Ustar || _format == TarEntryFormat.Pax)
+        {
+            string prefix = "";
+            if (nameBytes > TarHeaderFields.NameLength && Split(name, out prefix, out headerName))
+            {
+                TarHeaderFields.PutText(_block, TarHeaderFields.PrefixAt,
+                                        TarHeaderFields.PrefixLength, prefix);
+            }
+        }
+        TarHeaderFields.PutText(_block, TarHeaderFields.NameAt,
+                                TarHeaderFields.NameLength, headerName);
+        TarHeaderFields.PutNumber(_block, TarHeaderFields.ModeAt, 8, entry.Mode & 4095);
+        TarHeaderFields.PutNumber(_block, TarHeaderFields.UidAt, 8, entry.Uid);
+        TarHeaderFields.PutNumber(_block, TarHeaderFields.GidAt, 8, entry.Gid);
+        TarHeaderFields.PutNumber(_block, TarHeaderFields.SizeAt, 12, size);
+        TarHeaderFields.PutNumber(_block, TarHeaderFields.MtimeAt, 12,
+                                  entry.RawMtime < 0 ? 0 : entry.RawMtime);
+        _block[TarHeaderFields.TypeAt] = (byte)(int)entry.EntryType;
+        TarHeaderFields.PutText(_block, TarHeaderFields.LinkNameAt,
+                                TarHeaderFields.NameLength, link);
+
+        if (_format != TarEntryFormat.V7)
+        {
+            PutMagic();
+            TarHeaderFields.PutText(_block, TarHeaderFields.UserNameAt, 32, user);
+            TarHeaderFields.PutText(_block, TarHeaderFields.GroupNameAt, 32, group);
+            TarHeaderFields.PutNumber(_block, TarHeaderFields.DeviceMajorAt, 8, entry.DeviceMajor);
+            TarHeaderFields.PutNumber(_block, TarHeaderFields.DeviceMinorAt, 8, entry.DeviceMinor);
+        }
+        TarHeaderFields.PutChecksum(_block);
+        _archive.Write(_block, 0, TarHeaderFields.BlockSize);
+
+        if (size > 0)
+        {
+            Stream? data = entry.DataStream;
+            if (data == null)
+            {
+                throw new InvalidOperationException("the entry has a length but no data stream");
+            }
+            Copy(data, size);
+        }
+    }
+
+    /// The .NET convenience: an entry made from a file on disk.
+    public void WriteEntry(string fileName, string? entryName)
+    {
+        string name = entryName != null ? entryName : fileName;
+        FileInfo info = new FileInfo(fileName);
+        TarEntry entry = Make(TarEntryType.RegularFile, name);
+        entry.Mode = (int)File.GetUnixFileMode(fileName);
+        entry.ModificationTime = new DateTimeOffset(
+            File.GetLastWriteTimeUtc(fileName), TimeSpan.Zero);
+        FileStream data = new FileStream(fileName, FileMode.Open, FileAccess.Read);
+        entry.DataStream = data;
+        WriteEntry(entry);
+        data.Dispose();
+    }
+
+    /// An entry of this writer's format.
+    public TarEntry Make(TarEntryType entryType, string entryName)
+    {
+        if (_format == TarEntryFormat.V7) return new V7TarEntry(entryType, entryName);
+        if (_format == TarEntryFormat.Gnu) return new GnuTarEntry(entryType, entryName);
+        if (_format == TarEntryFormat.Ustar) return new UstarTarEntry(entryType, entryName);
+        return new PaxTarEntry(entryType, entryName);
+    }
+
+    void PutMagic()
+    {
+        // "ustar" either way; the two bytes after it are what tells a GNU
+        // archive from a POSIX one.
+        _block[TarHeaderFields.MagicAt] = 117;
+        _block[TarHeaderFields.MagicAt + 1] = 115;
+        _block[TarHeaderFields.MagicAt + 2] = 116;
+        _block[TarHeaderFields.MagicAt + 3] = 97;
+        _block[TarHeaderFields.MagicAt + 4] = 114;
+        if (_format == TarEntryFormat.Gnu)
+        {
+            _block[TarHeaderFields.MagicAt + 5] = 32;
+            _block[TarHeaderFields.VersionAt] = 32;
+            _block[TarHeaderFields.VersionAt + 1] = 0;
+        }
+        else
+        {
+            _block[TarHeaderFields.MagicAt + 5] = 0;
+            _block[TarHeaderFields.VersionAt] = 48;
+            _block[TarHeaderFields.VersionAt + 1] = 48;
+        }
+    }
+
+    /// Whether a name splits into a 155-byte prefix and a 100-byte name at a
+    /// slash, which is all ustar has for a long path.
+    bool Splits(string name)
+    {
+        string prefix;
+        string tail;
+        return Split(name, out prefix, out tail);
+    }
+
+    static bool Split(string name, out string prefix, out string tail)
+    {
+        prefix = "";
+        tail = name;
+        byte[] bytes = Encoding.UTF8.GetBytes(name);
+        if (bytes.Length <= TarHeaderFields.NameLength) return false;
+        if (bytes.Length > TarHeaderFields.PrefixLength + 1 + TarHeaderFields.NameLength)
+        {
+            return false;
+        }
+        // The last slash that leaves a tail the name field can hold.
+        int cut = -1;
+        for (int i = 0; i < bytes.Length; i++)
+        {
+            if (bytes[i] != 47) continue;
+            if (i <= TarHeaderFields.PrefixLength
+                && bytes.Length - i - 1 <= TarHeaderFields.NameLength)
+            {
+                cut = i;
+            }
+        }
+        if (cut <= 0) return false;
+        prefix = Encoding.UTF8.GetString(bytes, 0, cut);
+        tail = Encoding.UTF8.GetString(bytes, cut + 1, bytes.Length - cut - 1);
+        return true;
+    }
+
+    static void Record(StringBuilder into, string key, string value)
+    {
+        // The length field counts itself, so it is found by trying.
+        int body = Encoding.UTF8.GetBytes(key).Length
+                 + Encoding.UTF8.GetBytes(value).Length + 3;   // ' ', '=', '\n'
+        int total = body + 1;
+        while (total.ToString().Length + body != total)
+        {
+            total = total + 1;
+        }
+        into.Append(total.ToString()).Append(' ').Append(key)
+            .Append('=').Append(value).Append('\n');
+    }
+
+    void WriteExtended(string name, string records)
+    {
+        byte[] data = Encoding.UTF8.GetBytes(records);
+        Clear(_block);
+        // GNU tar names the record after the entry it belongs to; nothing
+        // reads the name, and this is what makes `tar tv` on an old tar show
+        // something recognisable if it shows it at all.
+        string label = "PaxHeaders/" + BaseName(name);
+        TarHeaderFields.PutText(_block, TarHeaderFields.NameAt,
+                                TarHeaderFields.NameLength, label);
+        TarHeaderFields.PutNumber(_block, TarHeaderFields.ModeAt, 8, 420);
+        TarHeaderFields.PutNumber(_block, TarHeaderFields.UidAt, 8, 0);
+        TarHeaderFields.PutNumber(_block, TarHeaderFields.GidAt, 8, 0);
+        TarHeaderFields.PutNumber(_block, TarHeaderFields.SizeAt, 12, data.Length);
+        TarHeaderFields.PutNumber(_block, TarHeaderFields.MtimeAt, 12, 0);
+        _block[TarHeaderFields.TypeAt] = (byte)(int)TarEntryType.ExtendedAttributes;
+        PutMagic();
+        TarHeaderFields.PutChecksum(_block);
+        _archive.Write(_block, 0, TarHeaderFields.BlockSize);
+        WriteData(data);
+    }
+
+    void WriteLong(TarEntryType type, string value)
+    {
+        byte[] data = Encoding.UTF8.GetBytes(value + "\0");
+        Clear(_block);
+        TarHeaderFields.PutText(_block, TarHeaderFields.NameAt,
+                                TarHeaderFields.NameLength, "././@LongLink");
+        TarHeaderFields.PutNumber(_block, TarHeaderFields.ModeAt, 8, 0);
+        TarHeaderFields.PutNumber(_block, TarHeaderFields.UidAt, 8, 0);
+        TarHeaderFields.PutNumber(_block, TarHeaderFields.GidAt, 8, 0);
+        TarHeaderFields.PutNumber(_block, TarHeaderFields.SizeAt, 12, data.Length);
+        TarHeaderFields.PutNumber(_block, TarHeaderFields.MtimeAt, 12, 0);
+        _block[TarHeaderFields.TypeAt] = (byte)(int)type;
+        PutMagic();
+        TarHeaderFields.PutChecksum(_block);
+        _archive.Write(_block, 0, TarHeaderFields.BlockSize);
+        WriteData(data);
+    }
+
+    void WriteData(byte[] data)
+    {
+        _archive.Write(data, 0, data.Length);
+        Pad(data.Length);
+    }
+
+    void Copy(Stream from, long size)
+    {
+        byte[] chunk = new byte[65536];
+        long left = size;
+        while (left > 0)
+        {
+            int take = left < chunk.Length ? (int)left : chunk.Length;
+            int got = from.Read(chunk, 0, take);
+            if (got <= 0)
+            {
+                throw new EndOfStreamException("the entry's data stream ended early");
+            }
+            _archive.Write(chunk, 0, got);
+            left = left - got;
+        }
+        Pad(size);
+    }
+
+    void Pad(long written)
+    {
+        long extra = (TarHeaderFields.BlockSize
+                      - (written % TarHeaderFields.BlockSize)) % TarHeaderFields.BlockSize;
+        if (extra != 0)
+        {
+            Clear(_pad);
+            _archive.Write(_pad, 0, (int)extra);
+        }
+    }
+
+    static void Clear(byte[] block)
+    {
+        for (int i = 0; i < block.Length; i++) { block[i] = 0; }
+    }
+
+    static string BaseName(string path)
+    {
+        int cut = path.LastIndexOf('/');
+        return cut < 0 ? path : path.Substring(cut + 1);
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        // Two zero records end an archive.
+        Clear(_block);
+        _archive.Write(_block, 0, TarHeaderFields.BlockSize);
+        _archive.Write(_block, 0, TarHeaderFields.BlockSize);
+        _archive.Flush();
+        if (!_leaveOpen) _archive.Dispose();
+    }
+}
+
+/// The two whole-directory conveniences .NET puts beside the reader and the
+/// writer.
+static class TarFile
+{
+    public static void CreateFromDirectory(string sourceDirectoryName,
+                                           string destinationFileName,
+                                           bool includeBaseDirectory)
+    {
+        FileStream file = new FileStream(destinationFileName, FileMode.Create, FileAccess.Write);
+        CreateFromDirectory(sourceDirectoryName, file, includeBaseDirectory);
+        file.Dispose();
+    }
+
+    public static void CreateFromDirectory(string sourceDirectoryName,
+                                           Stream destination,
+                                           bool includeBaseDirectory)
+    {
+        TarWriter writer = new TarWriter(destination, TarEntryFormat.Pax, true);
+        string root = includeBaseDirectory
+            ? BaseName(sourceDirectoryName) + "/" : "";
+        Add(writer, sourceDirectoryName, root);
+        writer.Dispose();
+    }
+
+    static void Add(TarWriter writer, string directory, string prefix)
+    {
+        string[] entries = Directory.GetFileSystemEntries(directory);
+        Array.Sort(entries);
+        foreach (string path in entries)
+        {
+            string name = prefix + BaseName(path);
+            if (Directory.Exists(path))
+            {
+                TarEntry made = writer.Make(TarEntryType.Directory, name);
+                made.Mode = (int)File.GetUnixFileMode(path);
+                writer.WriteEntry(made);
+                Add(writer, path, name + "/");
+                continue;
+            }
+            writer.WriteEntry(path, name);
+        }
+    }
+
+    public static void ExtractToDirectory(string sourceFileName,
+                                          string destinationDirectoryName,
+                                          bool overwriteFiles)
+    {
+        FileStream file = new FileStream(sourceFileName, FileMode.Open, FileAccess.Read);
+        ExtractToDirectory(file, destinationDirectoryName, overwriteFiles);
+        file.Dispose();
+    }
+
+    public static void ExtractToDirectory(Stream source,
+                                          string destinationDirectoryName,
+                                          bool overwriteFiles)
+    {
+        Directory.CreateDirectory(destinationDirectoryName);
+        TarReader reader = new TarReader(source, true);
+        while (true)
+        {
+            TarEntry? entry = reader.GetNextEntry();
+            if (entry == null) break;
+            string target = destinationDirectoryName + "/" + entry.Name;
+            if (entry.EntryType == TarEntryType.Directory)
+            {
+                Directory.CreateDirectory(target);
+                continue;
+            }
+            string? parent = Path.GetDirectoryName(target);
+            if (parent != null && parent.Length != 0) Directory.CreateDirectory(parent);
+            entry.ExtractToFile(target, overwriteFiles);
+        }
+        reader.Dispose();
+    }
+
+    static string BaseName(string path)
+    {
+        while (path.Length > 1 && path.EndsWith("/"))
+        {
+            path = path.Substring(0, path.Length - 1);
+        }
+        int cut = path.LastIndexOf('/');
+        return cut < 0 ? path : path.Substring(cut + 1);
+    }
+}

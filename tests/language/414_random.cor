@@ -1,0 +1,41 @@
+// test: System.Random reproduces .NET's seeded sequence
+// expect-exit: 0
+// expect-output:
+// 822959691 1871007331 66 10 0.366433
+// 98,225,104,255,65
+// 857019877 895 0.319203 -2033103374
+// 1559595546 1755192844
+// different True
+//
+// A SEEDED SEQUENCE IS A PROMISE: a test, a simulation or a game that replays
+// from a seed has to get the same numbers on any machine and any version, so
+// .NET's Random(seed) is still Knuth's subtractive generator with the
+// constants it shipped with. Every number here came from the same program run
+// on .NET; they are what says the generator here IS that one, rather than
+// merely being a good one.
+
+class Program
+{
+    static int Main()
+    {
+        Random r = new Random(7);
+        Console.WriteLine($"{r.Next()} {r.Next()} {r.Next(100)} {r.Next(10, 20)} {r.NextDouble().ToString("0.000000")}");
+
+        byte[] bytes = new byte[5];
+        r.NextBytes(bytes);
+        Console.WriteLine(String.Join(",", bytes));
+
+        Random second = new Random(1234);
+        Console.WriteLine($"{second.Next()} {second.Next(1000)} {second.NextDouble().ToString("0.000000")} {second.Next(-2147483648, 2147483647)}");
+
+        Random third = new Random(0);
+        Console.WriteLine($"{third.Next()} {third.Next()}");
+
+        // Two unseeded generators must not walk in step -- there is no entropy
+        // below this file, so what separates them is a counter.
+        Random a = new Random();
+        Random b = new Random();
+        Console.WriteLine("different " + (a.Next() != b.Next()));
+        return 0;
+    }
+}

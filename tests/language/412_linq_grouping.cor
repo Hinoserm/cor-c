@@ -1,0 +1,61 @@
+// test: System.Linq -- GroupBy, ToLookup and the aggregates that were missing
+// expect-exit: 0
+// expect-output:
+// group a 2 apple,avocado
+// group f 1 fig
+// group b 2 banana,blueberry
+// group c 1 cherry
+// lookup3=fig missing=0 has6=True
+// minby=fig maxby=blueberry
+// takelast=9,1 skiplast=5,3 long=4 empty=7
+// idx=50,31,92,13 zip=5apple,3avocado,9fig,1banana
+// 6.75 2.25 1.5 3 36 6
+//
+// The groups come out in the order their keys were FIRST SEEN and each
+// group's elements in source order -- .NET's promise, and what makes a
+// grouped report read the same way twice. A Lookup asked about a key it has
+// never heard of answers an empty sequence rather than throwing, which is the
+// whole difference from a Dictionary.
+
+class Program
+{
+    static int Main()
+    {
+        List<string> words = new List<string>();
+        words.Add("apple");
+        words.Add("avocado");
+        words.Add("fig");
+        words.Add("banana");
+        words.Add("blueberry");
+        words.Add("cherry");
+
+        List<Grouping<char, string>> groups = words.GroupBy(w => (char)Sys.GetByte(w, 0));
+
+        foreach (Grouping<char, string> g in groups)
+        {
+            Console.WriteLine($"group {g.Key} {g.Count} {String.Join(",", g)}");
+        }
+
+        Lookup<int, string> look = words.ToLookup(w => w.Length);
+        Console.WriteLine($"lookup3={String.Join(",", look[3])} missing={look[99].Count} has6={look.Contains(6)}");
+        Console.WriteLine($"minby={words.MinBy(w => w.Length)} maxby={words.MaxBy(w => w.Length)}");
+
+        List<int> nums = new List<int>();
+        nums.Add(5);
+        nums.Add(3);
+        nums.Add(9);
+        nums.Add(1);
+
+        Console.WriteLine($"takelast={String.Join(",", nums.TakeLast(2))} skiplast={String.Join(",", nums.SkipLast(2))} long={nums.LongCount()} empty={String.Join(",", new List<int>().DefaultIfEmpty(7))}");
+        Console.WriteLine($"idx={String.Join(",", nums.Select((n, i) => n * 10 + i))} zip={String.Join(",", nums.Zip(words, (n, w) => n + w))}");
+
+        List<double> ds = new List<double>();
+        ds.Add(1.5);
+        ds.Add(2.25);
+        ds.Add(3.0);
+
+        Console.WriteLine(ds.Sum().ToString("0.###") + " " + ds.Average().ToString("0.###") + " " + ds.Min() + " " + ds.Max()
+            + " " + words.Sum(w => (double)w.Length) + " " + words.Average(w => (double)w.Length).ToString("0.###"));
+        return 0;
+    }
+}

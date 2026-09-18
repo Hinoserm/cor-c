@@ -1,0 +1,88 @@
+// test: int_arith
+// expect-exit: 0
+// expect-output:
+// add 22
+// sub 12
+// mul 85
+// div 3
+// rem 2
+// neg -17
+// prec 14 20 3 5
+// compound 15 12 24 4 1
+// inc 5 6 7 7 6 5
+// wrap -2147483648 2147483647
+// mulwrap 0 1410065408
+// bits 8 14 6 -1 -6
+//
+// 32-bit int arithmetic: the operators, precedence, compound assignment,
+// pre/post increment, two's-complement wrap on overflow (the default is
+// unchecked) and the bitwise operators.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        int a = 17;
+        int b = 5;
+
+        Line("add " + (a + b));
+        Line("sub " + (a - b));
+        Line("mul " + (a * b));
+        Line("div " + (a / b));
+        Line("rem " + (a % b));
+        Line("neg " + (-a));
+
+        int p1 = 2 + 3 * 4;
+        int p2 = (2 + 3) * 4;
+        int p3 = 10 - 4 - 3;
+        int p4 = 100 / 10 / 2;
+        Line("prec " + p1 + " " + p2 + " " + p3 + " " + p4);
+
+        int x = 10;
+        x += 5;
+        int c1 = x;
+        x -= 3;
+        int c2 = x;
+        x *= 2;
+        int c3 = x;
+        x /= 5;
+        int c4 = x;
+        x %= 3;
+        int c5 = x;
+        Line("compound " + c1 + " " + c2 + " " + c3 + " " + c4 + " " + c5);
+
+        int i = 5;
+        int post = i++;
+        int afterPost = i;
+        int pre = ++i;
+        int postDec = i--;
+        int afterDec = i;
+        int preDec = --i;
+        Line("inc " + post + " " + afterPost + " " + pre + " " + postDec + " " + afterDec + " " + preDec);
+
+        int max = int.MaxValue;
+        int min = int.MinValue;
+        int wrapped = max + 1;
+        int wrappedDown = min - 1;
+        Line("wrap " + wrapped + " " + wrappedDown);
+
+        int big = 65536;
+        int big2 = 100000;
+        int m1 = big * big;
+        int m2 = big2 * big2;
+        Line("mulwrap " + m1 + " " + m2);
+
+        int twelve = 12;
+        int ten = 10;
+        int zero = 0;
+        int five = 5;
+        Line("bits " + (twelve & ten) + " " + (twelve | ten) + " " + (twelve ^ ten) + " " + (~zero) + " " + (~five));
+        return 0;
+    }
+}

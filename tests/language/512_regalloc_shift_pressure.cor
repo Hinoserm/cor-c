@@ -1,0 +1,58 @@
+// test: regalloc_shift_pressure
+// expect-exit: 0
+// expect-output:
+// 1 2 2147483648
+// 4294967296 1099511627776 4611686018427387904
+// -1 -2 -4294967296
+// signalled
+//
+// A 64-BIT SHIFT UNDER REGISTER PRESSURE. `shld v15, v14, cl` wants two
+// registers of its own beside the count, and in a body where the selector had
+// already pinned four physical ones -- a loop with a signal delivery inlined
+// into it -- one register was left and both halves of the long wanted it.
+// Every active interval was passed over as a victim because its next use was
+// this very instruction, and the allocator gave up: "no register for v14".
+//
+// It need not have. The first operand of `shld`, like most of this machine's
+// instructions, may be memory: an interval whose every appearance here can be
+// read from its spill slot does not need the register at all, and spilling it
+// from this instruction hands the register over. The answers below are the
+// point -- the shift still has to be right.
+static class Program
+{
+    static void Line(string text)
+    {
+        Sys.Print(text);
+        Sys.PrintLine();
+    }
+
+    static long Left(int n)
+    {
+        long one = 1;
+        return one << n;
+    }
+
+    static long Right(int n)
+    {
+        long all = -1;
+        return all << n;
+    }
+
+    static void Main()
+    {
+        Line("" + Left(0) + " " + Left(1) + " " + Left(31));
+        Line("" + Left(32) + " " + Left(40) + " " + Left(62));
+        Line("" + Right(0) + " " + Right(1) + " " + Right(32));
+
+        // The shape the allocator fell over on: a loop body with a signal
+        // delivery in it, which is inlined at more than one call site and so
+        // holds several physical registers across the shift above.
+        long mask = 0;
+        for (int i = 0; i < 3; i++)
+        {
+            PosixSignalRegistration.Deliver();
+            mask = mask | (Left(i) << 32);
+        }
+        if (mask != 0) { Line("signalled"); }
+    }
+}

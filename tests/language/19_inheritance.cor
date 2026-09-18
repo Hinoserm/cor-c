@@ -1,0 +1,102 @@
+// test: inheritance
+// expect-exit: 0
+// expect-output:
+// dog says woof on 4 legs
+// bird says tweet on 2 legs
+// dog says woof-yip on 4 legs
+// count 3
+// direct yip-direct
+//
+// Inheritance: an abstract base with an abstract method, virtual methods
+// with and without overrides, a base constructor call, `base.Method()` from
+// an override, and dispatch through the base type across two levels of
+// derivation.
+
+abstract class Animal
+{
+    public string Name;
+
+    public Animal(string name)
+    {
+        Name = name;
+    }
+
+    public abstract string Sound();
+
+    public virtual int Legs()
+    {
+        return 4;
+    }
+
+    public string Describe()
+    {
+        return Name + " says " + Sound() + " on " + Legs() + " legs";
+    }
+}
+
+class Dog : Animal
+{
+    public Dog() : base("dog")
+    {
+    }
+
+    public override string Sound()
+    {
+        return "woof";
+    }
+}
+
+class Bird : Animal
+{
+    public Bird() : base("bird")
+    {
+    }
+
+    public override string Sound()
+    {
+        return "tweet";
+    }
+
+    public override int Legs()
+    {
+        return 2;
+    }
+}
+
+class Puppy : Dog
+{
+    public override string Sound()
+    {
+        return base.Sound() + "-yip";
+    }
+
+    public string Direct()
+    {
+        return "yip-direct";
+    }
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        Animal[] zoo = new Animal[] { new Dog(), new Bird(), new Puppy() };
+        int count = 0;
+        foreach (Animal a in zoo)
+        {
+            Line(a.Describe());
+            count++;
+        }
+        Line("count " + count);
+
+        Puppy p = new Puppy();
+        Line("direct " + p.Direct());
+        return 0;
+    }
+}

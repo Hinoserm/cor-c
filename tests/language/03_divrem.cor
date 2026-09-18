@@ -1,0 +1,64 @@
+// test: divrem
+// expect-exit: 0
+// expect-output:
+// sdiv 3 -3 -3 3
+// srem 1 -1 1 -1
+// udiv 2147483647 5 1431655765
+// ucast -1
+// ucmp True
+// ldiv 428571431 -142857142857 -1
+//
+// Division and remainder: signed truncates toward zero and the remainder
+// takes the sign of the dividend; unsigned 32-bit division must not treat the
+// high bit as a sign; 64-bit division on a 32-bit target goes through a
+// runtime helper and must still get the signs right.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    // Decimal text of an unsigned 64-bit value, without relying on any
+    // library formatter for unsigned numbers.
+    static string U(ulong v)
+    {
+        string tail = String.FromInt((long)(v % 10));
+        if (v < 10)
+        {
+            return tail;
+        }
+        return U(v / 10) + tail;
+    }
+
+    static int Main()
+    {
+        int seven = 7;
+        int two = 2;
+        int mseven = -7;
+        int mtwo = -2;
+
+        Line("sdiv " + (seven / two) + " " + (mseven / two) + " " + (seven / mtwo) + " " + (mseven / mtwo));
+        Line("srem " + (seven % two) + " " + (mseven % two) + " " + (seven % mtwo) + " " + (mseven % mtwo));
+
+        uint u = 4294967295u;
+        uint ten = 10u;
+        uint three = 3u;
+        Line("udiv " + U(u / 2u) + " " + U(u % ten) + " " + U(u / three));
+
+        int asInt = (int)u;
+        Line("ucast " + asInt);
+
+        uint one = 1u;
+        bool bigger = u > one;
+        Line("ucmp " + bigger);
+
+        long p = 1000000007L;
+        long q = -1000000000000L;
+        long sevenL = 7;
+        Line("ldiv " + (p * 3 / sevenL) + " " + (q / sevenL) + " " + (q % sevenL));
+        return 0;
+    }
+}

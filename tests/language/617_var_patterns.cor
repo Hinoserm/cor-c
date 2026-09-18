@@ -1,0 +1,88 @@
+// test: var_patterns
+// expect-exit: 0
+// expect-output:
+// index 2
+// missing no
+// null matched, and it is null
+// pair 3 4
+// discard yes
+// switch small 7
+// switch big 900
+// nested Ecx 16
+//
+// A VAR PATTERN matches anything at all and names what it found. It is not
+// `is { }`, which tests for null first: C# says `x is var y` is true even when
+// x is null, and y then holds the null. The name keeps the subject's own type,
+// nullability and all, because a pattern that asked nothing has proved
+// nothing.
+//
+// `var _` is the discard designation: it matches and names nothing.
+
+sealed class Slot
+{
+    public int Index { get; set; }
+    public string? Label { get; set; }
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static string Describe(int n)
+        => n switch
+        {
+            < 100 => "small " + n,
+            var big => "big " + big,
+        };
+
+    static int Main()
+    {
+        object? holder = new Slot { Index = 2, Label = "two" };
+
+        // A var pattern inside a property pattern: nothing is asked of Index.
+        if (holder is Slot { Index: var index })
+        {
+            Line("index " + index);
+        }
+
+        // ... and the type test around it still has to pass.
+        object other = "not a slot";
+        Line(other is Slot { Index: var _ } ? "missing yes" : "missing no");
+
+        // NULL MATCHES. `is { } y` would not.
+        string? absent = null;
+        if (absent is var kept)
+        {
+            Line("null matched, and it is " + (kept is null ? "null" : kept));
+        }
+
+        // Two of them, in a positional pattern over a tuple.
+        (int, int) pair = (3, 4);
+        if (pair is (var first, var second))
+        {
+            Line("pair " + first + " " + second);
+        }
+
+        // The discard names nothing and is always true.
+        Line(holder is var _ ? "discard yes" : "discard no");
+
+        Line("switch " + Describe(7));
+        Line("switch " + Describe(900));
+
+        // A var pattern as the tail of a `switch` over a nested property.
+        Slot inner = new Slot { Index = 16, Label = "Ecx" };
+        string told = inner switch
+        {
+            // A bare property pattern is not exhaustive on its own -- it tests
+            // for null first -- so the switch needs an arm for the rest.
+            { Label: var name, Index: var slot } => name + " " + slot,
+            _ => "none",
+        };
+        Line("nested " + told);
+        return 0;
+    }
+}

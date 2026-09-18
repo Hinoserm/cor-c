@@ -1,0 +1,161 @@
+// test: exceptions_finally
+// expect-exit: 0
+// expect-output:
+// try
+// finally
+// after
+// t
+// f
+// c
+// fin
+// 9
+// inner-fin
+// outer-catch
+// outer-fin
+// B-fin
+// A-fin
+// main-catch
+// loop 2
+//
+// finally ordering: on the normal path, on the throwing path, around a
+// return inside try (the finally runs, and the returned value survives it),
+// nested try/finally inside try/catch/finally, finally blocks unwound
+// through several frames in the right order, and a finally run by a break
+// out of a loop.
+
+class Boom : Exception
+{
+    public Boom() : base("boom")
+    {
+    }
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Returning()
+    {
+        try
+        {
+            return 9;
+        }
+        finally
+        {
+            Line("fin");
+        }
+    }
+
+    static void C()
+    {
+        throw new Boom();
+    }
+
+    static void B()
+    {
+        try
+        {
+            C();
+        }
+        finally
+        {
+            Line("B-fin");
+        }
+    }
+
+    static void A()
+    {
+        try
+        {
+            B();
+        }
+        finally
+        {
+            Line("A-fin");
+        }
+    }
+
+    static int Main()
+    {
+        try
+        {
+            Line("try");
+        }
+        finally
+        {
+            Line("finally");
+        }
+        Line("after");
+
+        try
+        {
+            try
+            {
+                Line("t");
+                throw new Boom();
+            }
+            finally
+            {
+                Line("f");
+            }
+        }
+        catch (Boom b)
+        {
+            Line("c");
+        }
+
+        int got = Returning();
+        Line("" + got);
+
+        try
+        {
+            try
+            {
+                throw new Boom();
+            }
+            finally
+            {
+                Line("inner-fin");
+            }
+        }
+        catch (Boom b)
+        {
+            Line("outer-catch");
+        }
+        finally
+        {
+            Line("outer-fin");
+        }
+
+        try
+        {
+            A();
+        }
+        catch (Boom b)
+        {
+            Line("main-catch");
+        }
+
+        int count = 0;
+        for (int i = 0; i < 3; i++)
+        {
+            try
+            {
+                if (i == 1)
+                {
+                    break;
+                }
+            }
+            finally
+            {
+                count++;
+            }
+        }
+        Line("loop " + count);
+        return 0;
+    }
+}

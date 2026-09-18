@@ -1,0 +1,40 @@
+// test: string_plus_char
+// expect-exit: 0
+// expect-output:
+// xb
+// abc
+// q
+// b
+// bx
+// digit 7
+// interp [b]
+//
+// A CHAR JOINED TO A STRING IS THE CHARACTER, not its code: C# prints "xb"
+// for "x" + 'b' and this used to print "x98". Covers both operand orders,
+// the empty-string start, a computed char, and interpolation.
+static class Program
+{
+    static void Line(string text)
+    {
+        Sys.Print(text);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        string s = "abc";
+        char c = s[1];
+
+        Line("x" + c);
+        Line("" + s[0] + s[1] + s[2]);
+        Line("" + 'q');
+        Line("" + c);
+        Line(c + "x");
+
+        int d = 7;
+        char digit = (char)(48 + d);
+        Line("digit " + digit);
+        Line($"interp [{c}]");
+        return 0;
+    }
+}

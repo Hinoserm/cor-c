@@ -1,0 +1,140 @@
+// test: exceptions_filter_rethrow
+// expect-exit: 0
+// expect-output:
+// filter 10 20 30
+// inner rethrown 5
+// wrapped 7
+// evaluated 1
+// generic ok
+//
+// Exception filters (`catch ... when`), a bare `throw;` rethrowing the
+// current exception to an outer frame, throwing a new exception from a
+// catch with the original as InnerException, a filter that runs exactly
+// once, and a catch clause naming a type but no variable.
+
+class Boom : Exception
+{
+    public int Code;
+
+    public Boom(int c) : base("boom")
+    {
+        Code = c;
+    }
+}
+
+class Wrapped : Exception
+{
+    public Wrapped(string message, Exception inner) : base(message, inner)
+    {
+    }
+}
+
+static class Program
+{
+    static int filterCalls;
+
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Try(int c)
+    {
+        try
+        {
+            throw new Boom(c);
+        }
+        catch (Boom b) when (b.Code == 1)
+        {
+            return 10;
+        }
+        catch (Boom b) when (b.Code == 2)
+        {
+            return 20;
+        }
+        catch (Boom b)
+        {
+            return 30;
+        }
+    }
+
+    static void Inner()
+    {
+        try
+        {
+            throw new Boom(5);
+        }
+        catch (Boom b)
+        {
+            Sys.Print("inner ");
+            throw;
+        }
+    }
+
+    static void Wrap()
+    {
+        try
+        {
+            throw new Boom(7);
+        }
+        catch (Boom b)
+        {
+            throw new Wrapped("wrapped", b);
+        }
+    }
+
+    static bool Note(bool answer)
+    {
+        filterCalls = filterCalls + 1;
+        return answer;
+    }
+
+    static int Main()
+    {
+        Line("filter " + Try(1) + " " + Try(2) + " " + Try(9));
+
+        try
+        {
+            Inner();
+        }
+        catch (Boom b)
+        {
+            Line("rethrown " + b.Code);
+        }
+
+        try
+        {
+            Wrap();
+        }
+        catch (Wrapped w)
+        {
+            int code = -1;
+            if (w.InnerException is Boom inner)
+            {
+                code = inner.Code;
+            }
+            Line(w.Message + " " + code);
+        }
+
+        filterCalls = 0;
+        try
+        {
+            throw new Boom(1);
+        }
+        catch (Boom b) when (Note(true))
+        {
+        }
+        Line("evaluated " + filterCalls);
+
+        try
+        {
+            throw new Boom(2);
+        }
+        catch (Boom)
+        {
+            Line("generic ok");
+        }
+        return 0;
+    }
+}

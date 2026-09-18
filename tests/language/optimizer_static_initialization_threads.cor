@@ -1,0 +1,92 @@
+// test: concurrent type initialization, GC-safe waiting, cycles and cached failures
+// expect-exit: 0
+// expect-output:
+// static initialization threads passed
+static class Control
+{
+    public static AtomicCell Entered = new();
+    public static AtomicCell Release = new();
+    public static AtomicCell Readers = new();
+    public static AtomicCell Cycle = new();
+    public static int Attempts;
+    public static int Failures;
+}
+static class Slow
+{
+    public static int Value = Build();
+    static int Build()
+    {
+        Control.Attempts++;
+        Control.Entered.Add(1);
+        while (Control.Release.Read() == 0) Thread.Sleep(1);
+        Gc.Collect();
+        return 42;
+    }
+}
+class Reader : Action
+{
+    public int Seen;
+    public void Invoke() { Control.Readers.Add(1); Seen = Slow.Value; }
+}
+static class Broken
+{
+    public static int Value = Build();
+    static int Build() { Control.Failures++; throw new InvalidOperationException("boom"); }
+}
+static class RecursiveA { public static int Value = 1 + RecursiveB.Value; }
+static class RecursiveB { public static int Value = 1 + RecursiveA.Value; }
+static class EarlyReturn
+{
+    public static int Value;
+    static EarlyReturn() { Value = 7; return; }
+}
+static class CycleA
+{
+    public static int Value = Build();
+    static int Build() { Control.Cycle.Add(1); while (Control.Cycle.Read() < 2) Thread.Sleep(1); return 1 + CycleB.Value; }
+}
+static class CycleB
+{
+    public static int Value = Build();
+    static int Build() { Control.Cycle.Add(1); while (Control.Cycle.Read() < 2) Thread.Sleep(1); return 1 + CycleA.Value; }
+}
+class CycleReader : Action
+{
+    public bool First;
+    public int Seen;
+    public void Invoke() { Seen = First ? CycleA.Value : CycleB.Value; }
+}
+static class Program
+{
+    static int Main()
+    {
+        Reader first = new(); Reader second = new();
+        Thread one = Thread.Start(first);
+        while (Control.Entered.Read() == 0) Thread.Sleep(1);
+        Thread two = Thread.Start(second);
+        while (Control.Readers.Read() < 2) Thread.Sleep(1);
+        Thread.Sleep(20);
+        Control.Release.Add(1);
+        one.Join(); two.Join();
+        if (first.Seen != 42 || second.Seen != 42 || Control.Attempts != 1) return 1;
+        TypeInitializationException? saved = null;
+        for (int i = 0; i < 2; i++)
+        {
+            try { int unused = Broken.Value; return 2; }
+            catch (TypeInitializationException error)
+            {
+                if (error.TypeName != "Broken" || error.InnerException?.Message != "boom") return 3;
+                if (saved is null) saved = error;
+                else if (!object.ReferenceEquals(saved, error)) return 4;
+            }
+        }
+        if (Control.Failures != 1) return 5;
+        if (RecursiveA.Value != 2 || RecursiveB.Value != 1 || EarlyReturn.Value != 7) return 6;
+        CycleReader a = new() { First = true }; CycleReader b = new();
+        Thread ta = Thread.Start(a); Thread tb = Thread.Start(b);
+        ta.Join(); tb.Join();
+        if (a.Seen < 1 || b.Seen < 1 || a.Seen + b.Seen != 3) return 7;
+        Sys.Print("static initialization threads passed\n");
+        return 0;
+    }
+}

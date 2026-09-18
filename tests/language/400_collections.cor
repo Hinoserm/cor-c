@@ -1,0 +1,93 @@
+// test: lib/collections.cor -- Stack, LinkedList, SortedList, SortedDictionary
+// expect-exit: 0
+// expect-output:
+// stack count=3 peek=3 pop=3
+// stack order: 2 1
+// stack toarray: 2,1
+// contains2=True contains9=False
+// list: a x b c
+// count=4 first=a last=c findc=b
+// list2: b c
+// sl apple=9
+// sl fig=3
+// sl pear=2
+// idx fig=1 idx nope=-1 keyat0=apple hasval3=True
+// dup throws
+// missing throws
+// sl count=2 remove pear=True remove nope=False
+// sd: 1:a 2:b 3:c
+// sd try=True/b has4=False vals=a,b,c
+//
+// Every line was produced by the same program run on .NET first; the
+// containers here answer what the reference answers, enumeration order
+// included -- a stack walks top to bottom, the two maps walk in key order.
+
+class Program
+{
+    static int Main()
+    {
+        Stack<int> st = new Stack<int>();
+        st.Push(1);
+        st.Push(2);
+        st.Push(3);
+        Console.WriteLine($"stack count={st.Count} peek={st.Peek()} pop={st.Pop()}");
+
+        Console.Write("stack order:");
+        foreach (int v in st) { Console.Write(" " + v); }
+        Console.WriteLine();
+
+        Console.WriteLine("stack toarray: " + String.Join(",", st.ToArray()));
+        Console.WriteLine($"contains2={st.Contains(2)} contains9={st.Contains(9)}");
+
+        LinkedList<string> ll = new LinkedList<string>();
+        LinkedListNode<string> b = ll.AddLast("b");
+        ll.AddFirst("a");
+        ll.AddAfter(b, "c");
+        ll.AddBefore(b, "x");
+
+        Console.Write("list:");
+        foreach (string v in ll) { Console.Write(" " + v); }
+        Console.WriteLine();
+
+        Console.WriteLine($"count={ll.Count} first={ll.First!.Value} last={ll.Last!.Value} findc={ll.Find("c")!.Previous!.Value}");
+
+        ll.Remove("x");
+        ll.RemoveFirst();
+
+        Console.Write("list2:");
+        foreach (string v in ll) { Console.Write(" " + v); }
+        Console.WriteLine();
+
+        SortedList<string, int> sl = new SortedList<string, int>();
+        sl.Add("pear", 2);
+        sl.Add("apple", 1);
+        sl["fig"] = 3;
+        sl["apple"] = 9;
+
+        foreach (KeyValuePair<string, int> kv in sl) {
+            Console.WriteLine($"sl {kv.Key}={kv.Value}");
+        }
+
+        Console.WriteLine($"idx fig={sl.IndexOfKey("fig")} idx nope={sl.IndexOfKey("nope")} keyat0={sl.GetKeyAtIndex(0)} hasval3={sl.ContainsValue(3)}");
+
+        try { sl.Add("fig", 0); } catch (ArgumentException) { Console.WriteLine("dup throws"); }
+        try { int ignored = sl["nope"]; } catch (KeyNotFoundException) { Console.WriteLine("missing throws"); }
+
+        sl.RemoveAt(0);
+        Console.WriteLine("sl count=" + sl.Count + " remove pear=" + sl.Remove("pear") + " remove nope=" + sl.Remove("nope"));
+
+        SortedDictionary<int, string> sd = new SortedDictionary<int, string>();
+        sd[3] = "c";
+        sd[1] = "a";
+        sd[2] = "b";
+
+        Console.Write("sd:");
+        foreach (KeyValuePair<int, string> kv in sd) { Console.Write($" {kv.Key}:{kv.Value}"); }
+        Console.WriteLine();
+
+        string got = "";
+        bool found = sd.TryGetValue(2, out got);
+        Console.WriteLine($"sd try={found}/{got} has4={sd.ContainsKey(4)} vals={String.Join(",", sd.Values)}");
+        return 0;
+    }
+}

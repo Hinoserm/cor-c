@@ -1,0 +1,51 @@
+// test: shared generics
+// expect-exit: 0
+// expect-output:
+// library instantiation 3 middle
+// program instantiation 2 Node(7)
+// nested 1 4
+// dictionary 2 two
+//
+// WHICH IMAGE A GENERIC INSTANTIATION IS COMPILED INTO. A library carries the
+// instantiations its own code needs; anything else is compiled into whoever
+// asked for it. `List<string>` is the library's, because the class library
+// uses one; `List<Node>` is nobody's until this program names it, and is
+// compiled here.
+//
+// The two must be indistinguishable to the program, and a type's identity is
+// its descriptor's address -- so a `List<string>` made here and one made in
+// the library have to be the same type, which they are only because the
+// program drops its own copy in favour of the one the library exports.
+class Node
+{
+    public int Value;
+    public Node(int value) { Value = value; }
+    public override string ToString() { return "Node(" + Value + ")"; }
+}
+
+static class Program
+{
+    static void Main()
+    {
+        List<string> theirs = new List<string>();
+        theirs.Add("first");
+        theirs.Add("middle");
+        theirs.Add("last");
+        Console.WriteLine("library instantiation " + theirs.Count + " " + theirs[1]);
+
+        List<Node> mine = new List<Node>();
+        mine.Add(new Node(3));
+        mine.Add(new Node(7));
+        Console.WriteLine("program instantiation " + mine.Count + " " + mine[1]);
+
+        List<List<Node>> nested = new List<List<Node>>();
+        nested.Add(mine);
+        nested.Add(mine);
+        Console.WriteLine("nested " + (nested.Count - 1) + " " + (nested[0].Count + nested[1].Count));
+
+        Dictionary<int, string> map = new Dictionary<int, string>();
+        map[1] = "one";
+        map[2] = "two";
+        Console.WriteLine("dictionary " + map.Count + " " + map[2]);
+    }
+}

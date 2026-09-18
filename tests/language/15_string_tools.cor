@@ -1,0 +1,61 @@
+// test: string_tools
+// expect-exit: 0
+// expect-output:
+// join 1,2,3 a-b-c x
+// split 4 [a][b][][c]
+// parse 124 -9000000000 False 255 ff 101
+// builder a5!x 4 0 200
+// repeat -----
+//
+// The standard library's string tools: string.Join over an array and a list,
+// String.Split, integer parsing and formatting in several bases, and
+// StringBuilder including growth past its first buffer.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        int[] nums = new int[] { 1, 2, 3 };
+        List<string> letters = new List<string>();
+        letters.Add("a");
+        letters.Add("b");
+        letters.Add("c");
+        string[] single = new string[] { "x" };
+        Line("join " + string.Join(",", nums) + " " + string.Join("-", letters) + " " + string.Join(",", single));
+
+        string[] parts = String.Split("a,b,,c", ',');
+        string shown = "";
+        foreach (string p in parts)
+        {
+            shown = shown + "[" + p + "]";
+        }
+        Line("split " + parts.Length + " " + shown);
+
+        int v = 0;
+        bool ok = Int32.TryParse("x1", out v);
+        Line("parse " + (Int32.Parse("123") + 1) + " " + Int64.Parse("-9000000000") + " " + ok + " "
+             + Convert.ToInt32("ff", 16) + " " + Convert.ToString(255, 16) + " " + Convert.ToString(5, 2));
+
+        StringBuilder sb = new StringBuilder();
+        sb.Append("a").Append(5).Append('!').Append("x");
+        string text = sb.ToString();
+        int length = sb.Length;
+        sb.Clear();
+        int cleared = sb.Length;
+        StringBuilder big = new StringBuilder();
+        for (int i = 0; i < 100; i++)
+        {
+            big.Append("ab");
+        }
+        Line("builder " + text + " " + length + " " + cleared + " " + big.ToString().Length);
+
+        Line("repeat " + String.Repeat('-', 5));
+        return 0;
+    }
+}

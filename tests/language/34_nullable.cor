@@ -1,0 +1,77 @@
+// test: nullable
+// expect-exit: 0
+// expect-output:
+// null True True
+// has False True 5
+// eq True True True False
+// plain True False
+// coalesce 5 99
+// call 10 True
+// long 9000000000 True
+// field True 42 True
+//
+// Nullable value types: null and non-null int?, HasValue and Value,
+// equality between nullables and against plain values (an empty one equals
+// nothing but another empty one), ??, passing and returning them, long?
+// holding a value wider than a register, and a nullable field.
+
+class Holder
+{
+    public int? Amount;
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int? Doubled(int? n)
+    {
+        if (n == null)
+        {
+            return null;
+        }
+        return n.Value * 2;
+    }
+
+    static long? Big(bool give)
+    {
+        if (give)
+        {
+            return 9000000000L;
+        }
+        return null;
+    }
+
+    static int Main()
+    {
+        int? empty = null;
+        int? five = 5;
+        Line("null " + (empty == null) + " " + (five != null));
+        Line("has " + empty.HasValue + " " + five.HasValue + " " + five.Value);
+
+        int? alsoFive = 5;
+        int? six = 6;
+        int? otherEmpty = null;
+        Line("eq " + (five == alsoFive) + " " + (five != six) + " " + (empty == otherEmpty) + " " + (empty == five));
+        Line("plain " + (five == 5) + " " + (empty == 0));
+        Line("coalesce " + (five ?? 99) + " " + (empty ?? 99));
+
+        int? doubled = Doubled(five);
+        Line("call " + doubled.Value + " " + (Doubled(null) == null));
+
+        long? big = Big(true);
+        Line("long " + big.Value + " " + (Big(false) == null));
+
+        Holder h = new Holder();
+        bool startsEmpty = h.Amount == null;
+        h.Amount = 42;
+        int held = h.Amount.Value;
+        h.Amount = null;
+        Line("field " + startsEmpty + " " + held + " " + (h.Amount == null));
+        return 0;
+    }
+}

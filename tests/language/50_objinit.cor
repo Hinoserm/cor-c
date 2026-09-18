@@ -1,0 +1,82 @@
+// test: objinit
+// expect-exit: 0
+// expect-output:
+// init 3 x
+// ctor 5 y
+// nested b 1
+// list 2 3
+// dict 2 100
+// setter 20
+//
+// Object initialisers on fields, auto-properties and init-only properties,
+// combined with a constructor, nested, and collection initialisers for
+// List and Dictionary; a property setter with a body runs during an
+// initialiser.
+
+class Card
+{
+    public long Slot;
+    public string Name { get; set; }
+    public long Size { get; init; }
+
+    long _latency;
+
+    public long Latency
+    {
+        get { return _latency; }
+        set { _latency = value * 2; }
+    }
+
+    public Card()
+    {
+        Slot = 99;
+        Name = "unset";
+    }
+
+    public Card(long slot)
+    {
+        Slot = slot;
+        Name = "from-ctor";
+    }
+}
+
+class Backplane
+{
+    public string Label { get; set; }
+    public Card First { get; set; }
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        Card c = new Card { Slot = 3, Name = "x" };
+        Line("init " + c.Slot + " " + c.Name);
+
+        Card d = new Card(5) { Name = "y" };
+        Line("ctor " + d.Slot + " " + d.Name);
+
+        Backplane b = new Backplane { Label = "b", First = new Card { Slot = 1 } };
+        Line("nested " + b.Label + " " + b.First.Slot);
+
+        List<int> list = new List<int> { 1, 3 };
+        Line("list " + list.Count + " " + list[1]);
+
+        Dictionary<string, int> sizes = new Dictionary<string, int>
+        {
+            { "small", 1 },
+            { "large", 100 },
+        };
+        Line("dict " + sizes.Count + " " + sizes["large"]);
+
+        Card e = new Card { Latency = 10, Size = 4 };
+        Line("setter " + e.Latency);
+        return 0;
+    }
+}

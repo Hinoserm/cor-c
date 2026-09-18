@@ -1,0 +1,263 @@
+// test: compression
+// expect-exit: 0
+// expect-output:
+// crc32 3421780262
+// adler32 152961502
+// zlib blob 180 ok
+// deflate blob 180 ok
+// gzip blob 180 ok
+// zlib header 120 156
+// deflate 0 same True stored True
+// deflate 1 same True
+// deflate 6 same True
+// deflate 9 same True
+// levels ordered True
+// gzip same True
+// zlib same True
+// empty deflate 2 back 0
+// empty gzip 20 back 0
+// two members 400000
+// stored round trip True
+// leaveOpen True
+// crc mismatch caught
+// truncated caught
+// not gzip caught
+// bytewise True
+//
+// System.IO.Compression: DeflateStream, ZLibStream and GZipStream.
+//
+// THE THREE FIXED BLOBS ARE THE POINT. They were made by zlib, and a
+// compressor that only ever reads its own output is a compressor nobody
+// else can read; pinning three real streams in the test is what keeps
+// that from being discovered by a user. The rest is the shape of the API
+// -- the four levels, leaveOpen, an empty member, concatenated members,
+// stored blocks -- and the three ways a bad stream has to fail rather
+// than quietly hand back the wrong bytes.
+
+using System;
+using System.IO;
+using System.Text;
+
+class Program
+{
+    // zlib.compress(text, 9)
+    static byte[] ZlibBlob = new byte[] {
+        120, 218, 11, 201, 72, 85, 40, 44, 205, 76, 206, 86,
+        72, 42, 202, 47, 207, 83, 72, 203, 175, 80, 200, 42,
+        205, 45, 40, 86, 200, 47, 75, 45, 82, 40, 1, 74,
+        231, 36, 86, 85, 42, 164, 228, 167, 235, 113, 133, 12,
+        14, 197, 0, 226, 212, 64, 69,
+    };
+
+    // zlib.compressobj(6, DEFLATED, -15): raw RFC 1951, no header at all
+    static byte[] DeflateBlob = new byte[] {
+        11, 201, 72, 85, 40, 44, 205, 76, 206, 86, 72, 42,
+        202, 47, 207, 83, 72, 203, 175, 80, 200, 42, 205, 45,
+        40, 86, 200, 47, 75, 45, 82, 40, 201, 72, 85, 200,
+        73, 172, 170, 84, 72, 201, 79, 215, 227, 10, 25, 28,
+        138, 1,
+    };
+
+    // gzip.compress(text, 6)
+    static byte[] GzipBlob = new byte[] {
+        31, 139, 8, 0, 0, 0, 0, 0, 0, 255, 11, 201,
+        72, 85, 40, 44, 205, 76, 206, 86, 72, 42, 202, 47,
+        207, 83, 72, 203, 175, 80, 200, 42, 205, 45, 40, 86,
+        200, 47, 75, 45, 82, 40, 201, 72, 85, 200, 73, 172,
+        170, 84, 72, 201, 79, 215, 227, 10, 25, 28, 138, 1,
+        142, 112, 127, 88, 180, 0, 0, 0,
+    };
+
+    static string Sentence()
+    {
+        string one = "The quick brown fox jumps over the lazy dog.\n";
+        return one + one + one + one;
+    }
+
+    /// Something with structure in it: runs, repeats and a little noise, so
+    /// that the levels actually differ from one another.
+    static byte[] Sample(int size)
+    {
+        byte[] made = new byte[size];
+        int state = 12345;
+        for (int i = 0; i < size; i++)
+        {
+            state = (state * 1103515245 + 12345) & 0x3FFFFFFF;
+            int pick = (state >> 8) % 100;
+            made[i] = (byte)(pick < 70 ? 97 + (i % 26)
+                           : pick < 95 ? 32 : 65 + ((state >> 4) & 31));
+        }
+        return made;
+    }
+
+    static byte[] Drain(Stream from)
+    {
+        MemoryStream into = new MemoryStream();
+        byte[] chunk = new byte[4096];
+        while (true)
+        {
+            int got = from.Read(chunk, 0, chunk.Length);
+            if (got <= 0) break;
+            into.Write(chunk, 0, got);
+        }
+        return into.ToArray();
+    }
+
+    static bool Same(byte[] a, byte[] b)
+    {
+        if (a.Length != b.Length) return false;
+        for (int i = 0; i < a.Length; i++)
+        {
+            if (a[i] != b[i]) return false;
+        }
+        return true;
+    }
+
+    static byte[] Pack(byte[] data, int kind, CompressionLevel level)
+    {
+        MemoryStream packed = new MemoryStream();
+        Stream writer = kind == 0 ? new DeflateStream(packed, level, true)
+                      : kind == 1 ? new GZipStream(packed, level, true)
+                      : (Stream)new ZLibStream(packed, level, true);
+        writer.Write(data, 0, data.Length);
+        writer.Dispose();
+        return packed.ToArray();
+    }
+
+    static byte[] Unpack(byte[] data, int kind)
+    {
+        MemoryStream source = new MemoryStream(data);
+        Stream reader = kind == 0
+            ? new DeflateStream(source, CompressionMode.Decompress, true)
+            : kind == 1 ? new GZipStream(source, CompressionMode.Decompress, true)
+            : (Stream)new ZLibStream(source, CompressionMode.Decompress, true);
+        byte[] back = Drain(reader);
+        reader.Dispose();
+        return back;
+    }
+
+    static int Main()
+    {
+        byte[] nine = Encoding.ASCII.GetBytes("123456789");
+        Console.WriteLine("crc32 " + Crc32.Append(0, nine, 0, nine.Length));
+        Console.WriteLine("adler32 " + Adler32.Append(Adler32.Seed, nine, 0, nine.Length));
+
+        byte[] text = Encoding.ASCII.GetBytes(Sentence());
+        byte[] fromZlib = Unpack(ZlibBlob, 2);
+        Console.WriteLine("zlib blob " + fromZlib.Length + " " + (Same(fromZlib, text) ? "ok" : "WRONG"));
+        byte[] fromDeflate = Unpack(DeflateBlob, 0);
+        Console.WriteLine("deflate blob " + fromDeflate.Length + " " + (Same(fromDeflate, text) ? "ok" : "WRONG"));
+        byte[] fromGzip = Unpack(GzipBlob, 1);
+        Console.WriteLine("gzip blob " + fromGzip.Length + " " + (Same(fromGzip, text) ? "ok" : "WRONG"));
+
+        byte[] ownZlib = Pack(text, 2, CompressionLevel.Optimal);
+        Console.WriteLine("zlib header " + ownZlib[0] + " " + ownZlib[1]);
+
+        byte[] data = Sample(200000);
+        // The exact sizes are the compressor's business and may be tuned;
+        // what the test holds it to is that every level round-trips, that
+        // NoCompression really does not compress, and that asking for more
+        // effort never gets less.
+        byte[] a = Pack(data, 0, CompressionLevel.NoCompression);
+        Console.WriteLine("deflate 0 same " + Same(Unpack(a, 0), data)
+            + " stored " + (a.Length > data.Length));
+        byte[] b = Pack(data, 0, CompressionLevel.Fastest);
+        Console.WriteLine("deflate 1 same " + Same(Unpack(b, 0), data));
+        byte[] c = Pack(data, 0, CompressionLevel.Optimal);
+        Console.WriteLine("deflate 6 same " + Same(Unpack(c, 0), data));
+        byte[] d = Pack(data, 0, CompressionLevel.SmallestSize);
+        Console.WriteLine("deflate 9 same " + Same(Unpack(d, 0), data));
+        Console.WriteLine("levels ordered "
+            + (b.Length < a.Length && c.Length <= b.Length && d.Length <= c.Length));
+
+        byte[] g = Pack(data, 1, CompressionLevel.Optimal);
+        Console.WriteLine("gzip same " + Same(Unpack(g, 1), data));
+        byte[] z = Pack(data, 2, CompressionLevel.Optimal);
+        Console.WriteLine("zlib same " + Same(Unpack(z, 2), data));
+
+        byte[] nothing = new byte[0];
+        byte[] emptyDeflate = Pack(nothing, 0, CompressionLevel.Optimal);
+        Console.WriteLine("empty deflate " + emptyDeflate.Length
+            + " back " + Unpack(emptyDeflate, 0).Length);
+        byte[] emptyGzip = Pack(nothing, 1, CompressionLevel.Optimal);
+        Console.WriteLine("empty gzip " + emptyGzip.Length
+            + " back " + Unpack(emptyGzip, 1).Length);
+
+        // RFC 1952 members concatenate, and a reader has to keep going.
+        MemoryStream both = new MemoryStream();
+        both.Write(g, 0, g.Length);
+        both.Write(g, 0, g.Length);
+        Console.WriteLine("two members " + Unpack(both.ToArray(), 1).Length);
+
+        // A stored block is the one form a decoder cannot get wrong by
+        // arithmetic, so it gets its own round trip.
+        byte[] stored = Pack(data, 1, CompressionLevel.NoCompression);
+        Console.WriteLine("stored round trip " + Same(Unpack(stored, 1), data));
+
+        // leaveOpen: the stream underneath is still the caller's.
+        MemoryStream kept = new MemoryStream();
+        GZipStream keeper = new GZipStream(kept, CompressionLevel.Fastest, true);
+        keeper.Write(text, 0, text.Length);
+        keeper.Dispose();
+        kept.Write(nine, 0, nine.Length);
+        Console.WriteLine("leaveOpen " + (kept.Length == keeper.BaseStream.Length));
+
+        // A damaged stream must say so rather than hand back the wrong bytes.
+        byte[] broken = new byte[g.Length];
+        Array.Copy(g, 0, broken, 0, g.Length);
+        broken[broken.Length - 5] = (byte)(broken[broken.Length - 5] ^ 255);
+        try
+        {
+            Unpack(broken, 1);
+            Console.WriteLine("crc mismatch NOT caught");
+        }
+        catch (InvalidDataException)
+        {
+            Console.WriteLine("crc mismatch caught");
+        }
+
+        byte[] cut = new byte[g.Length / 2];
+        Array.Copy(g, 0, cut, 0, cut.Length);
+        try
+        {
+            Unpack(cut, 1);
+            Console.WriteLine("truncated NOT caught");
+        }
+        catch (Exception)
+        {
+            Console.WriteLine("truncated caught");
+        }
+
+        try
+        {
+            Unpack(text, 1);
+            Console.WriteLine("not gzip NOT caught");
+        }
+        catch (InvalidDataException)
+        {
+            Console.WriteLine("not gzip caught");
+        }
+
+        // One byte at a time through the whole engine, which is where an
+        // off-by-one in the window or the bit reader shows up.
+        MemoryStream slow = new MemoryStream();
+        DeflateStream slowly = new DeflateStream(slow, CompressionLevel.Optimal, true);
+        byte[] one = new byte[1];
+        for (int i = 0; i < 4096; i++)
+        {
+            one[0] = data[i];
+            slowly.Write(one, 0, 1);
+        }
+        slowly.Dispose();
+        MemoryStream back = new MemoryStream(slow.ToArray());
+        DeflateStream unslowly = new DeflateStream(back, CompressionMode.Decompress, true);
+        bool bytewise = true;
+        for (int i = 0; i < 4096; i++)
+        {
+            if (unslowly.Read(one, 0, 1) != 1 || one[0] != data[i]) { bytewise = false; break; }
+        }
+        if (unslowly.Read(one, 0, 1) != 0) bytewise = false;
+        Console.WriteLine("bytewise " + bytewise);
+        return 0;
+    }
+}

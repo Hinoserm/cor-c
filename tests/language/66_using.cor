@@ -1,0 +1,62 @@
+// test: using
+// expect-exit: 0
+// expect-output:
+// open a
+// open b
+// inside
+// close b
+// close a
+// open early
+// close early
+// 1
+// open early
+// body
+// close early
+// 0
+// open thrower
+// close thrower
+// caught boom
+// open loop0
+// close loop0
+// open loop1
+// close loop1
+// open loop2
+// close loop2
+//
+// using, as a statement and as a declaration: the resource is disposed
+// on every way out of its scope -- the end of the block, a return, an
+// exception, a break and a continue -- innermost first.
+
+class Res : IDisposable {
+    string name;
+    public Res(string n) { name = n; Sys.Print("open " + n); Sys.PrintLine(); }
+    public void Dispose() { Sys.Print("close " + name); Sys.PrintLine(); }
+}
+static class Program {
+    static int Early(int x) {
+        using (Res r = new Res("early")) {
+            if (x > 0) { return 1; }
+            Sys.Print("body"); Sys.PrintLine();
+        }
+        return 0;
+    }
+    static void Throws() {
+        using var r = new Res("thrower");
+        throw new Exception("boom");
+    }
+    static int Main() {
+        using (var a = new Res("a")) {
+            using var b = new Res("b");
+            Sys.Print("inside"); Sys.PrintLine();
+        }
+        Sys.PrintInt(Early(1)); Sys.PrintLine();
+        Sys.PrintInt(Early(0)); Sys.PrintLine();
+        try { Throws(); } catch (Exception e) { Sys.Print("caught " + e.Message); Sys.PrintLine(); }
+        for (int i = 0; i < 3; i++) {
+            using var c = new Res("loop" + i);
+            if (i == 1) { continue; }
+            if (i == 2) { break; }
+        }
+        return 0;
+    }
+}

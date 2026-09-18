@@ -1,0 +1,102 @@
+// test: widen_assign
+// expect-exit: 0
+// expect-output:
+// assign -9
+// compound 991
+// element -9
+// field -9
+// static -9
+// return -9
+// uint 4294967292
+// short -300
+// sbyte -5
+// ulong -9
+//
+// Implicit widening on the ASSIGNMENT path, which is a different path from a
+// declaration with an initialiser and from an argument at a call. `long b; b =
+// anInt;` stored only the low half: the binder resolves a plain name target
+// without checking the target expression, so nothing recorded a type for it,
+// the lowering's conversion had an error type to convert to, and the value went
+// in unextended. Every lvalue form is here -- local, compound, array element,
+// field, static, and the value returned from a helper -- and both signednesses:
+// int widens by sign, uint by zero.
+
+class Box
+{
+    public long V;
+    public int I;
+}
+
+static class Program
+{
+    static long Stat;
+
+    // Opaque to the optimiser: a syscall the compiler cannot fold, so the
+    // widening has to happen at run time and not in the constant folder.
+    static int Opaque(int v)
+    {
+        return (int)Sys.Syscall(20, 0, 0, 0) * 0 + v;
+    }
+
+    static void L(string t, long v)
+    {
+        Sys.Print(t);
+        Sys.Print(" ");
+        Sys.Print(v.ToString());
+        Sys.PrintLine();
+    }
+
+    static long Widen(int v)
+    {
+        long r = 0;
+        r = v;
+        return r;
+    }
+
+    static int Main()
+    {
+        int n = Opaque(-9);
+        uint u = (uint)Opaque(-4);
+        short s = (short)Opaque(-300);
+        sbyte b = (sbyte)Opaque(-5);
+
+        long a = 0;
+        a = n;
+        L("assign", a);
+
+        long c = 1000;
+        c += n;
+        L("compound", c);
+
+        long[] arr = new long[2];
+        arr[1] = n;
+        L("element", arr[1]);
+
+        Box bx = new Box();
+        bx.V = n;
+        L("field", bx.V);
+
+        Stat = n;
+        L("static", Stat);
+
+        L("return", Widen(n));
+
+        long z = 0;
+        z = u;
+        L("uint", z);
+
+        long w = 0;
+        w = s;
+        L("short", w);
+
+        int q = 0;
+        q = b;
+        L("sbyte", (long)q);
+
+        ulong ul = 0;
+        ul = n;
+        L("ulong", (long)ul);
+
+        return 0;
+    }
+}

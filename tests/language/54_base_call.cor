@@ -1,0 +1,77 @@
+// test: base_call
+// expect-exit: 0
+// expect-output:
+// sound woof-yip
+// legs 5
+// chain a>b>c
+//
+// `base.Method()` from an override calls the base class's implementation
+// non-virtually, including through two levels, and a base call inside a
+// method reached through a base-typed reference still binds to the base.
+
+class Animal
+{
+    public virtual string Sound()
+    {
+        return "...";
+    }
+
+    public virtual int Legs()
+    {
+        return 4;
+    }
+
+    public virtual string Chain()
+    {
+        return "a";
+    }
+}
+
+class Dog : Animal
+{
+    public override string Sound()
+    {
+        return "woof";
+    }
+
+    public override int Legs()
+    {
+        return base.Legs() + 1;
+    }
+
+    public override string Chain()
+    {
+        return base.Chain() + ">b";
+    }
+}
+
+class Puppy : Dog
+{
+    public override string Sound()
+    {
+        return base.Sound() + "-yip";
+    }
+
+    public override string Chain()
+    {
+        return base.Chain() + ">c";
+    }
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        Animal a = new Puppy();
+        Line("sound " + a.Sound());
+        Line("legs " + a.Legs());
+        Line("chain " + a.Chain());
+        return 0;
+    }
+}

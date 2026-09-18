@@ -1,0 +1,83 @@
+// test: colour_colour_field
+// expect-exit: 0
+// expect-output:
+// 7
+// 3
+// 40
+// 11
+// 46
+//
+// The C# colour-colour rule: a field or property may be named after its own
+// type, and `Tint.Red` then names the TYPE's static member while `paint.Tint`
+// still reads the field and `Tint.Shade` reads the field's own member.
+
+static class Tint
+{
+    public static long Red = 7;
+
+    public static long Mix(long a, long b)
+    {
+        return a * b;
+    }
+}
+
+class Paint
+{
+    // A field named exactly like a type, which is legal and common.
+    public Swatch Swatch;
+
+    // And one named after a type it has nothing to do with, so that the two
+    // readings of `Tint` really do differ.
+    public long Tint;
+
+    public Paint(long shade)
+    {
+        Swatch = new Swatch(shade);
+        Tint = shade;
+    }
+
+    public long Blend(long by)
+    {
+        // Tint.Mix is the static class's method; the bare Tint is the field.
+        return Tint.Mix(Tint, by) + Tint.Red;
+    }
+
+    public long Bright()
+    {
+        // Swatch.Red is the TYPE's static field; Swatch.Shade is this field's.
+        return Swatch.Red + Swatch.Shade;
+    }
+}
+
+class Swatch
+{
+    public static long Red = 4;
+    public long Shade;
+
+    public Swatch(long shade)
+    {
+        Shade = shade;
+    }
+}
+
+static class Program
+{
+    static void Line(long v)
+    {
+        Sys.PrintInt(v);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        long five = 5;
+        long eight = 8;
+
+        Line(Tint.Red);
+        Line(new Paint(3).Swatch.Shade);
+        Line(Tint.Mix(five, eight));
+        Line(new Paint(7).Bright());
+        Line(new Paint(3).Blend(13));
+        return 0;
+    }
+}

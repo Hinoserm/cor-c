@@ -1,0 +1,53 @@
+// test: lib/text.cor -- Rune and UnicodeEncoding
+// expect-exit: 0
+// expect-output:
+// 65 ascii=True u8=1 u16=1
+// 128512 bmp=False plane=1 u8=4 u16=2 text=😀
+// é up=81 letter=True digit=True ws=True
+// valid=False create=False repl=65533
+// utf16 count=10 bytes=61-00-E9-00-3D-D8-00-DE-7A-00
+// back=True bigendian=00-E9
+// preamble=FF-FE
+//
+// The bytes are the point: a string here is UTF-8, so UnicodeEncoding has to
+// decode it and lay it out again as UTF-16 -- little end first, and a
+// character above the basic plane as the surrogate pair D83D DE00. Every line
+// came from the same program run on .NET.
+
+class Program
+{
+    static string Hex(byte[] bytes)
+    {
+        StringBuilder made = new StringBuilder();
+
+        for (int i = 0; i < bytes.Length; i++)
+        {
+            if (i > 0) { made.Append('-'); }
+            made.Append(((long)bytes[i]).ToString("X2"));
+        }
+        return made.ToString();
+    }
+
+    static int Main()
+    {
+        Rune r = new Rune('A');
+        Rune e = new Rune(0x1F600);
+        Rune acc = new Rune(0xE9);
+        Rune ignored = Rune.ReplacementChar;
+
+        Console.WriteLine($"{r.Value} ascii={r.IsAscii} u8={r.Utf8SequenceLength} u16={r.Utf16SequenceLength}");
+        Console.WriteLine($"{e.Value} bmp={e.IsBmp} plane={e.Plane} u8={e.Utf8SequenceLength} u16={e.Utf16SequenceLength} text={e.ToString()}");
+        Console.WriteLine($"{acc.ToString()} up={Rune.ToUpperInvariant(new Rune('q')).Value} letter={Rune.IsLetter(r)} digit={Rune.IsDigit(new Rune('7'))} ws={Rune.IsWhiteSpace(new Rune(' '))}");
+        Console.WriteLine($"valid={Rune.IsValid(0xD800)} create={Rune.TryCreate(0x110000, out ignored)} repl={Rune.ReplacementChar.Value}");
+
+        string s = "aé😀z";
+        UnicodeEncoding u = new UnicodeEncoding();
+        byte[] bytes = u.GetBytes(s);
+
+        Console.WriteLine("utf16 count=" + u.GetByteCount(s) + " bytes=" + Hex(bytes));
+        Console.WriteLine("back=" + (String.Compare(u.GetString(bytes), s) == 0)
+            + " bigendian=" + Hex(new UnicodeEncoding(true, false).GetBytes("é")));
+        Console.WriteLine("preamble=" + Hex(new UnicodeEncoding(false, true).GetPreamble()));
+        return 0;
+    }
+}

@@ -1,0 +1,39 @@
+// test: System.Math -- the functions a 486 with no coprocessor still owes
+// expect-exit: 0
+// expect-output:
+// 2.718282 485165195.409790 0.030197 6.907755
+// 0.463648 1.249046 2.356194 -2.356194 1.570796
+// 0.523599 1.047198 1.175201 1.543081 0.761594
+// 3.000000 -2.000000 1.414214 1.414214
+// 2 4 3 2.35 -2
+// 3 2 10000000000 -1 -1.000000 -3.000000 -5 3
+//
+// Every value is .NET's, printed to six places -- which is where a software
+// exponential and a hardware one still agree. Math.Round's DEFAULT is the
+// half that surprises people: 2.5 rounds to 2 and 3.5 to 4, because always
+// rounding a half upwards biases a column of figures upwards.
+
+class Program
+{
+    static string F(double d) { return d.ToString("0.000000"); }
+
+    static int Main()
+    {
+        Console.WriteLine($"{F(Math.Exp(1.0))} {F(Math.Exp(20.0))} {F(Math.Exp(-3.5))} {F(Math.Log(1000.0))}");
+        Console.WriteLine($"{F(Math.Atan(0.5))} {F(Math.Atan(3.0))} {F(Math.Atan2(1.0, -1.0))} {F(Math.Atan2(-1.0, -1.0))} {F(Math.Atan2(1.0, 0.0))}");
+        Console.WriteLine($"{F(Math.Asin(0.5))} {F(Math.Acos(0.5))} {F(Math.Sinh(1.0))} {F(Math.Cosh(1.0))} {F(Math.Tanh(1.0))}");
+        Console.WriteLine($"{F(Math.Cbrt(27.0))} {F(Math.Cbrt(-8.0))} {F(Math.Sqrt(2.0))} {F(Math.Pow(2.0, 0.5))}");
+
+        Console.WriteLine(Math.Round(2.5).ToString("0.##") + " " + Math.Round(3.5).ToString("0.##")
+            + " " + Math.Round(2.5, MidpointRounding.AwayFromZero).ToString("0.##")
+            + " " + Math.Round(2.345, 2).ToString("0.##")
+            + " " + Math.Round(-2.5, MidpointRounding.ToZero).ToString("0.##"));
+
+        int rest = 0;
+        int whole = Math.DivRem(17, 5, out rest);
+        Console.WriteLine(whole + " " + rest + " " + Math.BigMul(100000, 100000) + " " + Math.Sign(-2.5)
+            + " " + F(Math.IEEERemainder(5.0, 3.0)) + " " + F(Math.CopySign(3.0, -1.0))
+            + " " + Math.MaxMagnitude(-5.0, 3.0).ToString("0.##") + " " + Math.MinMagnitude(-5.0, 3.0).ToString("0.##"));
+        return 0;
+    }
+}

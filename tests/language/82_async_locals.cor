@@ -1,0 +1,149 @@
+// test: async_locals
+// expect-exit: 0
+// expect-output:
+// int 123457
+// long 1099511640122
+// negative -5000000001
+// double 5000
+// bool False
+// string text!
+// object tag
+// array 1 20 3
+// struct 8 34359738368
+// loop 386547056640
+// params p 2500 True 7 -34359738368
+// this1 103079215137 15
+// this2 206158430450 120
+//
+// Every kind of local survives a suspension: int, long (two registers on a
+// 32-bit target, one of them negative), double, bool, string, object,
+// array, a struct with a long field, and a loop counter and accumulator
+// across an await in every iteration. Parameters of each kind are read
+// after the method resumed, and an instance method reads and writes
+// `this` fields after resuming while a second instance of the same method
+// is suspended alongside it, so the two state machines must not share
+// anything. Each value is changed between awaits and printed afterwards.
+
+class Tag
+{
+    public string Name;
+
+    public Tag(string name)
+    {
+        Name = name;
+    }
+}
+
+struct Point
+{
+    public int X;
+    public long Y;
+
+    public Point(int x, long y)
+    {
+        X = x;
+        Y = y;
+    }
+}
+
+class Holder
+{
+    int field;
+    long big;
+    string name;
+
+    public int Field => field;
+
+    public Holder(int f, string n, long b)
+    {
+        field = f;
+        name = n;
+        big = b;
+    }
+
+    public async Task<long> Run(int p, long q)
+    {
+        int before = field;
+        await Task.Yield();
+        field = field + p;
+        await Task.Yield();
+        big = big + q;
+        int small = before + field + name.Length + p;
+        return big + q + small;
+    }
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static async Task<string> Params(string tag, double x, bool b, Point p)
+    {
+        await Task.Yield();
+        await Task.Yield();
+        return tag + " " + (long)(x * 1000.0) + " " + b + " " + p.X + " " + p.Y;
+    }
+
+    static async Task Main()
+    {
+        int i32 = 123456;
+        long l64 = (1L << 40) + 12345;
+        long neg = -5000000000L;
+        double d = 2.5;
+        bool flag = true;
+        string s = "text";
+        object o = new Tag("tag");
+        int[] arr = new int[] { 1, 2, 3 };
+        Point pt = new Point(7, 1L << 35);
+
+        await Task.Yield();
+
+        i32 = i32 + 1;
+        l64 = l64 + 1;
+        neg = neg - 1;
+        d = d * 2.0;
+        flag = !flag;
+        s = s + "!";
+        arr[1] = 20;
+        pt.X = 8;
+
+        await Task.Yield();
+
+        Line("int " + i32);
+        Line("long " + l64);
+        Line("negative " + neg);
+        Line("double " + (long)(d * 1000.0));
+        Line("bool " + flag);
+        Line("string " + s);
+        Line("object " + ((Tag)o).Name);
+        Line("array " + arr[0] + " " + arr[1] + " " + arr[2]);
+        Line("struct " + pt.X + " " + pt.Y);
+
+        long total = 0;
+        for (int k = 0; k < 10; k++)
+        {
+            await Task.Yield();
+            total = total + k * (1L << 33);
+        }
+        Line("loop " + total);
+
+        double half = 2.5;
+        bool yes = true;
+        Point pp = new Point(7, -(1L << 35));
+        string ps = await Params("p", half, yes, pp);
+        Line("params " + ps);
+
+        Holder h1 = new Holder(5, "abc", 1L << 36);
+        Holder h2 = new Holder(100, "xy", 1L << 37);
+        Task<long> t1 = h1.Run(10, 1L << 34);
+        Task<long> t2 = h2.Run(20, 1L << 35);
+        long r1 = await t1;
+        long r2 = await t2;
+        Line("this1 " + r1 + " " + h1.Field);
+        Line("this2 " + r2 + " " + h2.Field);
+    }
+}

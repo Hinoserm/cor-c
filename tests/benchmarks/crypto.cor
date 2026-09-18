@@ -1,0 +1,115 @@
+// Profile actual SSH X25519 code with and without workspace reuse.
+// The expected output is RFC 7748's first function vector.
+static class Program
+{
+    static byte[] Hex(string text)
+    {
+        byte[] result = new byte[text.Length / 2];
+        string digits = "0123456789abcdef";
+        for (int i = 0; i < result.Length; i++)
+            result[i] = (byte)(digits.IndexOf(text[i * 2]) * 16 + digits.IndexOf(text[i * 2 + 1]));
+        return result;
+    }
+    static int Main()
+    {
+        string[] args = Environment.GetCommandLineArgs();
+        int count = args.Length > 1 ? int.Parse(args[1]) : 200;
+        if (args.Length > 2 && args[2] == "sha256-short") return HashWork(count);
+        if (args.Length > 2 && args[2] == "hmac-fresh") return HmacWork(count, true);
+        if (args.Length > 2 && args[2] == "hmac-reuse") return HmacWork(count, false);
+        bool fresh = args.Length > 2 && args[2] == "fresh";
+        if (count < 1 || count > 100000) return 2;
+        byte[] scalar = Hex("a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4");
+        byte[] coordinate = Hex("e6db6867583030db3594c1a424b15f7c726624ec26b3353b10a903a6d0ab1c4c");
+        byte[] expected = Hex("c3da55379de9c6908e94ea4df28d084f32eccf03491c71f754b4075577a28552");
+        byte[] output = new byte[32];
+        CorsacSecureCrypto_X25519Workspace workspace = new CorsacSecureCrypto_X25519Workspace();
+        long collections = Gc.Collections;
+        long start = Stopwatch.GetTimestamp();
+        bool valid = true;
+        for (int i = 0; i < count; i++)
+        {
+            bool okay = fresh
+                ? CorsacSecureCrypto_X25519.Calculate(scalar, 0, coordinate, 0, output, 0)
+                : workspace.Calculate(scalar, 0, coordinate, 0, output, 0);
+            valid = okay && valid;
+            for (int b = 0; b < 32; b++) valid = output[b] == expected[b] && valid;
+        }
+        long elapsed = Stopwatch.GetTimestamp() - start;
+        long collected = Gc.Collections - collections;
+        workspace.Close();
+        Console.WriteLine("x25519,mode=" + (fresh ? "fresh" : "reuse") + ",iterations=" + count
+            + ",ticks=" + elapsed + ",frequency=" + Stopwatch.Frequency
+            + ",ticks-per-operation=" + (elapsed / count)
+            + ",collections=" + collected + ",valid=" + valid);
+        return valid ? 0 : 1;
+    }
+
+    static int HashWork(int count)
+    {
+        if (count < 1 || count > 1000000) return 2;
+        byte[] input = Hex("616263");
+        byte[] expected = Hex("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        byte[] output = new byte[32];
+        bool valid = true;
+        long collections = Gc.Collections;
+        long markWords = Gc.MarkCalls, interiorSteps = Gc.WalkSteps;
+        long start = Stopwatch.GetTimestamp();
+        for (int i = 0; i < count; i++)
+        {
+            CorsacSecureCrypto_Hash hash = new CorsacSecureCrypto_Hash();
+            valid = hash.Update(input, 0, input.Length) && valid;
+            valid = hash.Finish(output, 0) && valid;
+            hash.Close();
+            for (int b = 0; b < 32; b++) valid = output[b] == expected[b] && valid;
+        }
+        long elapsed = Stopwatch.GetTimestamp() - start;
+        long collected = Gc.Collections - collections;
+        long scanned = Gc.MarkCalls - markWords, walked = Gc.WalkSteps - interiorSteps;
+        Console.WriteLine("sha256-short,iterations=" + count + ",ticks=" + elapsed
+            + ",ticks-per-operation=" + (elapsed / count)
+            + ",frequency=" + Stopwatch.Frequency + ",collections=" + collected
+            + ",mark-words=" + scanned + ",interior-steps=" + walked
+            + ",valid=" + valid);
+        return valid ? 0 : 1;
+    }
+
+    static int HmacWork(int count, bool fresh)
+    {
+        if (count < 1 || count > 1000000) return 2;
+        // RFC 4231 case 1. Context setup is timed only in fresh mode.
+        byte[] key = Hex("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b");
+        byte[] input = Hex("4869205468657265");
+        byte[] expected = Hex("b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7");
+        byte[] output = new byte[32];
+        CorsacSecureCrypto_Hmac reusable = new CorsacSecureCrypto_Hmac(key, 0, key.Length);
+        bool valid = reusable.Error == 0;
+        long collections = Gc.Collections;
+        long markWords = Gc.MarkCalls, interiorSteps = Gc.WalkSteps;
+        long start = Stopwatch.GetTimestamp();
+        for (int i = 0; i < count; i++)
+        {
+            if (fresh)
+                valid = CorsacSecureCrypto_Hmac.Sha256(key, 0, key.Length,
+                    input, 0, input.Length, output, 0) && valid;
+            else
+            {
+                valid = reusable.Start() && valid;
+                valid = reusable.Update(input, 0, input.Length) && valid;
+                valid = reusable.Finish(output, 0) && valid;
+            }
+            for (int b = 0; b < 32; b++) valid = output[b] == expected[b] && valid;
+        }
+        long elapsed = Stopwatch.GetTimestamp() - start;
+        long collected = Gc.Collections - collections;
+        long scanned = Gc.MarkCalls - markWords, walked = Gc.WalkSteps - interiorSteps;
+        reusable.Close();
+        Console.WriteLine("hmac-sha256,mode=" + (fresh ? "fresh" : "reuse")
+            + ",iterations=" + count + ",ticks=" + elapsed
+            + ",ticks-per-operation=" + (elapsed / count)
+            + ",frequency=" + Stopwatch.Frequency + ",collections=" + collected
+            + ",mark-words=" + scanned + ",interior-steps=" + walked
+            + ",valid=" + valid);
+        return valid ? 0 : 1;
+    }
+}

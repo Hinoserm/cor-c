@@ -1,0 +1,34 @@
+// test: left-first rotate idioms retain width, sign and shared intermediates
+// expect-exit: 0
+// expect-output:
+// left rotates passed
+static class Program
+{
+    static uint[] _values = new uint[] { 0, 1, 2147483648u, 305419896u, 4294967295u };
+    static int[] _counts = new int[] { 1, 7, 31 };
+    static uint L1(uint x) { return (x << 1) | (x >> 31); }
+    static uint L7(uint x) { return (x << 7) | (x >> 25); }
+    static uint L31(uint x) { return (x << 31) | (x >> 1); }
+    static long Wide(long x) { return (((x & 0xffffffffL) << 7) | ((x & 0xffffffffL) >> 25)) & 0xffffffffL; }
+    static uint Reference(uint x, int count) { return (x >> (32 - count)) | (x << count); }
+    static int Main()
+    {
+        foreach (uint x in _values)
+        {
+            if (L1(x) != Reference(x, _counts[0])) return 1;
+            if (L7(x) != Reference(x, _counts[1])) return 2;
+            if (L31(x) != Reference(x, _counts[2])) return 3;
+            long high = unchecked((long)(0xfedcba9800000000UL | x));
+            if (Wide(high) != (long)Reference(x, _counts[1])) return 4;
+            int signed = unchecked((int)x);
+            int actual = (signed << 7) | (signed >> 25);
+            int expected = (signed << _counts[1]) | (signed >> (32 - _counts[1]));
+            if (actual != expected) return 5;
+            uint shared = x << 7;
+            uint combined = shared | (x >> 25);
+            if ((combined ^ shared) != (Reference(x, _counts[1]) ^ (x << _counts[1]))) return 6;
+        }
+        Console.WriteLine("left rotates passed");
+        return 0;
+    }
+}

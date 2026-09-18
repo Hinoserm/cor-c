@@ -1,0 +1,34 @@
+// test: numeric_limits
+// expect-exit: 0
+// expect-output:
+// signed 2147483647 -2147483648 9223372036854775807 -9223372036854775808
+// narrow 127 -128 32767 -32768
+// unsigned 255 0 65535 4294967295
+// big 18446744073709551615
+// same True True
+//
+// The limits under the type's own name. `int.MaxValue` is answered by the
+// compiler, which knows the keyword; `Int32.MaxValue` is the same constant
+// spelled the other way C# allows it, and nothing answered it at all.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        Line("signed " + Int32.MaxValue + " " + Int32.MinValue + " "
+             + Int64.MaxValue + " " + Int64.MinValue);
+        Line("narrow " + SByte.MaxValue + " " + SByte.MinValue + " "
+             + Int16.MaxValue + " " + Int16.MinValue);
+        Line("unsigned " + Byte.MaxValue + " " + Byte.MinValue + " "
+             + UInt16.MaxValue + " " + UInt32.MaxValue);
+        Line("big " + UInt64.ToString(UInt64.MaxValue, "G"));
+        Line("same " + (Int32.MaxValue == int.MaxValue) + " " + (Int64.MinValue == long.MinValue));
+        return 0;
+    }
+}

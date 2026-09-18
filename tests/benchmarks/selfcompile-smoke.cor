@@ -1,0 +1,11 @@
+static class Program
+{
+    static int Main()
+    {
+        int value = 0;
+        for (int n = 0; n < 10; n++) value += n;
+        if (value != 45) return 1;
+        Sys.Print("selfcompile smoke passed\n");
+        return 0;
+    }
+}

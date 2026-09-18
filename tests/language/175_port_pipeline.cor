@@ -1,0 +1,116 @@
+// test: a two-stage pipeline, built the way sh(1) builds one
+// expect-exit: 0
+// expect-output:
+// count 3
+// both ended
+//
+// THE MILESTONE OF THE PORT, with the shell taken out of it: two processes,
+// a pipe between them, each with one end of it, and the parent holding
+// neither -- which is the part that is easy to get wrong. A parent that keeps
+// the write end open means the second stage never reads an end of file and
+// the whole pipeline hangs, and a test runner reports that as a timeout
+// rather than as the bug it is.
+//
+// `echo hi | wc -c` answers 3: two letters and the newline.
+
+class Program
+{
+    static int Main()
+    {
+        int[] pipe = new int[2];
+
+        if (Os.Pipe(pipe) != 0)
+        {
+            Console.WriteLine("no pipe");
+            return 1;
+        }
+
+        // Where the answer comes back to this process.
+        int[] answer = new int[2];
+
+        if (Os.Pipe(answer) != 0)
+        {
+            Console.WriteLine("no second pipe");
+            return 1;
+        }
+
+        int left = Os.Fork();
+
+        if (left == 0)
+        {
+            Os.Dup2(pipe[1], Fd.Out);
+            Close4(pipe, answer);
+
+            string[] argv = new string[2];
+
+            argv[0] = "/bin/echo";
+            argv[1] = "hi";
+            Os.Exec("/bin/echo", argv);
+            Os.Exit(127);
+        }
+
+        int right = Os.Fork();
+
+        if (right == 0)
+        {
+            Os.Dup2(pipe[0], Fd.In);
+            Os.Dup2(answer[1], Fd.Out);
+            Close4(pipe, answer);
+
+            string[] argv = new string[2];
+
+            argv[0] = "/usr/bin/wc";
+            argv[1] = "-c";
+            Os.Exec("/usr/bin/wc", argv);
+
+            // Not every system keeps wc in the same place.
+            Os.Exec("/bin/wc", argv);
+            Os.Exit(127);
+        }
+
+        // THE PARENT HOLDS NOTHING. Both children have what they need.
+        Os.Close(pipe[0]);
+        Os.Close(pipe[1]);
+        Os.Close(answer[1]);
+
+        FileReader from = new FileReader(answer[0]);
+        string? said = from.ReadLine();
+
+        from.Close();
+
+        int a = Os.Wait(left);
+        int b = Os.Wait(right);
+
+        Console.Write("count ");
+        Console.WriteLine(Trim(said == null ? "" : said));
+        Console.WriteLine(a == 0 && b == 0 ? "both ended" : "one did NOT end well");
+        return 0;
+    }
+
+    /// wc pads its count; the number is what is being tested.
+    static string Trim(string s)
+    {
+        int start = 0;
+
+        while (start < s.Length && s[start] == ' ')
+        {
+            start = start + 1;
+        }
+
+        int end = s.Length;
+
+        while (end > start && s[end - 1] == ' ')
+        {
+            end = end - 1;
+        }
+        return String.Substring(s, start, end - start);
+    }
+
+    static void Close4(int[] a, int[] b)
+    {
+        Os.Close(a[0]);
+        Os.Close(a[1]);
+        Os.Close(b[0]);
+        Os.Close(b[1]);
+    }
+}

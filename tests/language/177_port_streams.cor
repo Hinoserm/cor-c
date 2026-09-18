@@ -1,0 +1,80 @@
+// test: buffered reading and writing, and what a short write means
+// expect-exit: 0
+// expect-output:
+// lines 4
+// first alpha
+// last delta
+// no trailing empty line
+// bytes 6
+// flushed 12
+//
+// THE LINE TOOLS -- head, tail, grep, sort, cut, uniq -- are a reader, a
+// decision and a writer. Two of the things they rely on are easy to get
+// wrong and silent when they are: a file whose last line has no newline is
+// still a line, and a file that ends WITH one does not have an empty line
+// after it. A tool that disagrees with either counts one line too many or
+// too few, forever.
+
+class Program
+{
+    static int Main()
+    {
+        string path = String.Concat("/tmp/cor-stream-", String.FromInt(Os.Getpid()));
+
+        File.WriteAllText(path, "alpha\nbeta\ngamma\ndelta\n");
+
+        string[]? lines = File.ReadAllLines(path);
+
+        if (lines == null)
+        {
+            Console.WriteLine("cannot read");
+            return 1;
+        }
+
+        Console.Write("lines ");
+        Console.WriteLine(lines.Length);
+        Console.WriteLine(String.Concat("first ", lines[0]));
+        Console.WriteLine(String.Concat("last ", lines[lines.Length - 1]));
+        Console.WriteLine(lines.Length == 4 ? "no trailing empty line" : "COUNTED THE NEWLINE");
+
+        // A reader hands out bytes in blocks and a short read is honest: the
+        // caller that wants a fixed number asks again, which is what it would
+        // have to do on a pipe anyway.
+        int fd = Os.Open(path, O.Read);
+        FileStream reader = new FileStream(fd, FileAccess.Read, true);
+        byte[] room = new byte[6];
+        int got = 0;
+
+        while (got < 6)
+        {
+            int n = reader.Read(room, got, 6 - got);
+
+            if (n <= 0)
+            {
+                break;
+            }
+            got = got + n;
+        }
+        reader.Dispose();
+        Console.Write("bytes ");
+        Console.WriteLine(got);
+
+        // And a writer holds what it was given until it is flushed, which is
+        // the whole reason Flush exists and the reason a program that
+        // exits without it loses its last line.
+        int out2 = Os.Create(path, 0x1A4);
+        StreamWriter writer = new StreamWriter(new FileStream(out2, FileAccess.Write, true));
+
+        writer.Write("hello ");
+        writer.WriteLine("world");
+        writer.Flush();
+        long wrote = Os.SizeOf(out2);
+
+        writer.Dispose();
+        Console.Write("flushed ");
+        Console.WriteLine(wrote);
+
+        Os.Unlink(path);
+        return 0;
+    }
+}

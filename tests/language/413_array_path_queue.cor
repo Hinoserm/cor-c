@@ -1,0 +1,52 @@
+// test: System.Array's searches, System.IO.Path's joins, Queue's rest
+// expect-exit: 0
+// expect-output:
+// [a/b/c][a/b][/b][b]
+// [a/b][a/b][a/b]
+// [dir/file.md][file.md][file][True][False]
+// [/][][/usr][True][\][:]
+// True 0 5,9 True 2
+// n5,n3,n9,n1
+// 3 True 1,2,3 1,2,3
+// True 1 True 2
+//
+// Combine and Join differ in the one place it matters: Combine("a", "/b") is
+// "/b", because an absolute second part replaces the first, and Join("a",
+// "/b") is "a/b", because it is putting parts together. Both are .NET's, and
+// choosing the wrong one is how a program writes to the root.
+//
+// Array.Find and Array.FindLast are not read here, and Array.Resize is not
+// called: the first two are declared `T?` as .NET declares them and the
+// compiler hands back rubbish for a value type through that, and Resize takes
+// `ref T[]`, which the compiler will not infer a type argument through. Both
+// are reported; both come back into this test when they are fixed.
+
+class Program
+{
+    static int Main()
+    {
+        Console.WriteLine($"[{Path.Combine("a", "b", "c")}][{Path.Combine("a/", "b")}][{Path.Combine("a", "/b")}][{Path.Combine("", "b")}]");
+        Console.WriteLine($"[{Path.Join("a", "b")}][{Path.Join("a/", "b")}][{Path.Join("a", "/b")}]");
+        Console.WriteLine($"[{Path.ChangeExtension("dir/file.txt", ".md")}][{Path.ChangeExtension("file", "md")}][{Path.ChangeExtension("file.txt", null)}][{Path.HasExtension("a.b")}][{Path.HasExtension("ab")}]");
+        Console.WriteLine($"[{Path.GetPathRoot("/usr/bin")}][{Path.GetPathRoot("rel/x")}][{Path.TrimEndingDirectorySeparator("/usr/")}][{Path.EndsInDirectorySeparator("/usr/")}][{Path.AltDirectorySeparatorChar}][{Path.PathSeparator}]");
+
+        int[] a = new int[] { 5, 3, 9, 1 };
+        Console.WriteLine($"{Array.Exists(a, x => x > 8)} {Array.FindIndex(a, x => x > 4)} {String.Join(",", Array.FindAll(a, x => x > 3))} {Array.TrueForAll(a, x => x > 0)} {Array.FindLastIndex(a, x => x > 2)}");
+
+        string[] named = Array.ConvertAll(a, x => "n" + x);
+        Console.WriteLine(String.Join(",", named));
+
+        Queue<int> q = new Queue<int>();
+        q.Enqueue(1);
+        q.Enqueue(2);
+        q.Enqueue(3);
+        Console.WriteLine($"{q.Count} {q.Contains(2)} {String.Join(",", q.ToArray())} {String.Join(",", q)}");
+
+        int one = 0;
+        bool took = q.TryDequeue(out one);
+        int next = 0;
+        bool peeked = q.TryPeek(out next);
+        Console.WriteLine($"{took} {one} {peeked} {next}");
+        return 0;
+    }
+}

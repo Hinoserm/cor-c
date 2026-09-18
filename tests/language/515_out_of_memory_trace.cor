@@ -1,0 +1,151 @@
+// test: out_of_memory_trace
+// expect-exit: 0
+// expect-output:
+// died 137
+// frames Program.Third Program.Second Program.First
+// lines no
+//
+// A HEAP THAT HAS RUN OUT still says who asked. .NET prints the frames of an
+// unhandled OutOfMemoryException as it prints any other exception's; here the
+// report is written by the heap itself, because the ordinary path -- make an
+// exception, build its trace into a string, print it -- wants the memory that
+// has just gone.
+//
+// So the names are written STRAIGHT OUT OF THE FRAME TABLE the code generator
+// puts in every image (docs/software/X86-BACKEND.md): each is a
+// zero-terminated run of bytes in .rodata, and Platform.WriteBytes takes an
+// address and a count, so nothing at all is built. No line numbers appear,
+// because a line means decoding a second program for every frame and what
+// this report is for is WHICH FUNCTIONS were on the stack.
+//
+// The child is a separate process because the report ends it: the heap writes
+// what it can and stops with 137, which is the only honest thing left to do.
+// The parent reads its standard error and asks what the trace named.
+static class Program
+{
+    static int Sink;
+
+    /// Asks for a megabyte at a time and keeps every one, so a capped heap
+    /// reaches its cap and a collection finds nothing to free. The three
+    /// recurse so that the optimiser leaves them standing: an inlined frame
+    /// is not a frame, here or in .NET.
+    static void Third(int n, byte[][] kept)
+    {
+        if (n > 0) { Third(n - 1, kept); Sink = Sink + n; return; }
+
+        for (int i = 0; i < kept.Length; i++)
+        {
+            kept[i] = new byte[1048576];
+        }
+    }
+
+    static void Second(int n, byte[][] kept)
+    {
+        if (n > 0) { Second(n - 1, kept); Sink = Sink + n; return; }
+        Third(1, kept);
+    }
+
+    static void First(int n, byte[][] kept)
+    {
+        if (n > 0) { First(n - 1, kept); Sink = Sink + n; return; }
+        Second(1, kept);
+    }
+
+    /// The name on one row of the report: what follows "   at ". A run of the
+    /// same name counts once, because each helper recurses and so appears
+    /// twice, and rows that are not frames -- the heap's own numbers -- are
+    /// passed over.
+    static string Named(string report, int which)
+    {
+        int at = 0;
+        int seen = 0;
+        string last = "";
+
+        while (at < report.Length)
+        {
+            int end = report.IndexOf('\n', at);
+            if (end < 0) { end = report.Length; }
+
+            string row = report.Substring(at, end - at);
+            at = end + 1;
+
+            if (!row.StartsWith("   at ")) { continue; }
+
+            string name = row.Substring(6);
+            if (name == last) { continue; }
+            last = name;
+
+            if (seen == which) { return name; }
+            seen = seen + 1;
+        }
+        return "";
+    }
+
+    /// The frames the report named that belong to THIS test, innermost
+    /// first. What the heap and the entry stub were doing around them
+    /// depends on what the optimiser inlined into what, and is not the
+    /// test's business; that the three it wrote are there, in order, is.
+    static string Ours(string report)
+    {
+        string said = "";
+
+        for (int i = 0; Named(report, i).Length > 0; i++)
+        {
+            string name = Named(report, i);
+
+            if (!name.StartsWith("Program.")) { continue; }
+            said = said.Length == 0 ? name : said + " " + name;
+        }
+        return said;
+    }
+
+    static void Starve()
+    {
+        byte[][] kept = new byte[64][];
+
+        Gc.SetLimit(4194304);
+        First(1, kept);
+
+        // Never reached: the heap stops this process with 137.
+        Environment.Exit(0);
+    }
+
+    static int Main()
+    {
+        int[]? pair = UnixProcess.Pipe();
+
+        if (pair == null)
+        {
+            Console.WriteLine("pipe bad");
+            return 1;
+        }
+
+        int child = UnixProcess.Fork();
+
+        if (child == 0)
+        {
+            UnixProcess.Close(pair[0]);
+            UnixProcess.Dup2(pair[1], 2);
+            UnixProcess.Close(pair[1]);
+            Starve();
+        }
+
+        UnixProcess.Close(pair[1]);
+
+        StreamReader reading = new StreamReader(new FileStream(pair[0], FileAccess.Read, true));
+        string report = reading.ReadToEnd();
+
+        reading.Dispose();
+
+        int status = 0;
+
+        UnixProcess.WaitPid(child, out status);
+        Console.WriteLine("died " + UnixProcess.Result(status));
+
+        Console.WriteLine("frames " + Ours(report));
+
+        // No line numbers: this walk does not decode a line program.
+        Console.WriteLine(report.Contains(":line ") ? "lines yes" : "lines no");
+        return 0;
+    }
+}

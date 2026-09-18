@@ -1,0 +1,81 @@
+// test: async_basic
+// expect-exit: 0
+// expect-output:
+// before completed
+// after completed
+// fromresult 42
+// sync start
+// sync end
+// sync returned True
+// twice done True
+// twice 6
+// chain 12000000001
+// done
+//
+// The simplest async code. Awaiting a task that is already complete
+// (Task.CompletedTask, Task.FromResult, an async method that never
+// suspended) does not suspend: the code after the await runs at once, and
+// an async method that finishes without suspending hands back a completed
+// task. An async Task<int> returns its value through the await, and a chain
+// of awaits -- one of which really suspends -- carries a long result back
+// through three methods.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static async Task Sync()
+    {
+        Line("sync start");
+        await Task.CompletedTask;
+        Line("sync end");
+    }
+
+    static async Task<int> Add(int a, int b)
+    {
+        await Task.CompletedTask;
+        return a + b;
+    }
+
+    static async Task<int> Twice(int x)
+    {
+        int y = await Add(x, x);
+        return y;
+    }
+
+    static async Task<long> Chain(int x)
+    {
+        int a = await Twice(x);
+        await Task.Yield();
+        int b = await Twice(a);
+        long c = await Task.FromResult((long)b * 1000000000L);
+        return c + 1;
+    }
+
+    static async Task Main()
+    {
+        Line("before completed");
+        await Task.CompletedTask;
+        Line("after completed");
+
+        int v = await Task.FromResult(41);
+        Line("fromresult " + (v + 1));
+
+        Task s = Sync();
+        Line("sync returned " + s.GetAwaiter().IsCompleted);
+        await s;
+
+        int three = 3;
+        Task<int> t = Twice(three);
+        Line("twice done " + t.GetAwaiter().IsCompleted);
+        Line("twice " + await t);
+
+        string label = "chain ";
+        Line(label + await Chain(three));
+        Line("done");
+    }
+}

@@ -1,0 +1,102 @@
+// test: foreach
+// expect-exit: 0
+// expect-output:
+// ints 15
+// strings abbccc 6
+// longs 4294967299
+// break 3
+// continue 9
+// nested 9
+// empty 0
+// chars HEY
+//
+// foreach over arrays of int, string and long (the long case reads a register
+// pair per element), with break and continue inside, nested loops, an empty
+// array, and foreach over the characters of a string.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        int[] xs = new int[] { 1, 2, 3, 4, 5 };
+        int sum = 0;
+        foreach (int x in xs)
+        {
+            sum += x;
+        }
+        Line("ints " + sum);
+
+        string[] words = new string[] { "a", "bb", "ccc" };
+        string joined = "";
+        int letters = 0;
+        foreach (string w in words)
+        {
+            joined = joined + w;
+            letters += w.Length;
+        }
+        Line("strings " + joined + " " + letters);
+
+        long[] big = new long[] { 4294967296L, 1, 2 };
+        long total = 0;
+        foreach (long v in big)
+        {
+            total += v;
+        }
+        Line("longs " + total);
+
+        sum = 0;
+        foreach (int x in xs)
+        {
+            if (x == 3)
+            {
+                break;
+            }
+            sum += x;
+        }
+        Line("break " + sum);
+
+        sum = 0;
+        foreach (int x in xs)
+        {
+            if (x % 2 == 0)
+            {
+                continue;
+            }
+            sum += x;
+        }
+        Line("continue " + sum);
+
+        int pairs = 0;
+        int[] three = new int[] { 7, 8, 9 };
+        foreach (int a in three)
+        {
+            foreach (int b in three)
+            {
+                pairs++;
+            }
+        }
+        Line("nested " + pairs);
+
+        int[] none = new int[0];
+        int visits = 0;
+        foreach (int x in none)
+        {
+            visits++;
+        }
+        Line("empty " + visits);
+
+        Sys.Print("chars ");
+        foreach (char c in "hey")
+        {
+            Sys.PrintChar(c - 32);
+        }
+        Sys.PrintLine();
+        return 0;
+    }
+}

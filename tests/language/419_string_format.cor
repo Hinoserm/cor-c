@@ -1,0 +1,41 @@
+// test: string.Format and StringBuilder.AppendFormat
+// expect-exit: 0
+// expect-output:
+// a and 2
+// [      hi][hi      ][ 00FF]
+// 2.50 1,234,567 00042 True
+// {literal} 1
+// xyx
+// 7-FF
+// range: Index (zero based) must be greater than or equal to zero and less than the size of the argument list.
+//
+// The same grammar an interpolated string is written in, and not the same
+// machinery: an interpolation is taken apart by the compiler where it stands,
+// and this one chooses its format string at RUN time -- out of a message
+// table, a configuration or a resource. A positive alignment pads on the left
+// and a negative one on the right. Lines from the same program on .NET.
+//
+// A DATE ARGUMENT IS NOT EXERCISED HERE. String.Format asks a boxed value
+// what type it is before handing it the format string, as .NET does, and
+// type-testing a boxed user-defined struct currently faults the machine
+// (reported); the branch is written and this test grows a line when it lands.
+
+class Program
+{
+    static int Main()
+    {
+        Console.WriteLine(String.Format("{0} and {1}", "a", 2));
+        Console.WriteLine(String.Format("[{0,8}][{0,-8}][{1,5:X4}]", "hi", 255));
+        Console.WriteLine(String.Format("{0:0.00} {1:N0} {2:D5} {3}", 2.5, 1234567, 42, true));
+        Console.WriteLine(String.Format("{{literal}} {0}", 1));
+        Console.WriteLine(String.Format("{0}{1}{0}", "x", "y"));
+
+        StringBuilder sb = new StringBuilder();
+        sb.AppendFormat("{0}-{1:X2}", 7, 255);
+        Console.WriteLine(sb.ToString());
+
+        try { Console.WriteLine(String.Format("{5}", 1)); }
+        catch (FormatException e) { Console.WriteLine("range: " + e.Message); }
+        return 0;
+    }
+}

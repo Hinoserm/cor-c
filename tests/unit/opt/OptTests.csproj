@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Tests for Corsac.Lang.Opt: small functions built by hand with the
+       IR Builder, run through the passes, and their dumps checked. Plain
+       console program, like tests/elf: no test framework, no packages.
+       Exit status is the verdict. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Corsac.Tests.Opt</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../../compiler/corc.csproj" />
+  </ItemGroup>
+
+</Project>

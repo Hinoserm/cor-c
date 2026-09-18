@@ -1,0 +1,191 @@
+// System.Runtime.InteropServices.PosixSignalRegistration, as .NET spells
+// it: a handler for a POSIX signal, run on the signal, able to cancel the
+// default action.
+//
+// The kernel calls a handler as a C function with the number in its one
+// argument; a static COR-C# method has exactly that shape, so Dispatch
+// below is what the kernel is told to call, through Sys.AddressOf. It
+// runs at any instruction of the program, so it does the minimum: it
+// remembers which signal arrived and returns; the program's handlers are
+// run on the next PosixSignalRegistration.Deliver, which the console and
+// the scheduler call at their quiet moments. That is the discipline .NET
+// itself keeps (its handlers run on a thread pool thread, not in the
+// signal frame).
+
+enum PosixSignal
+{
+    SIGHUP = 1,
+    SIGINT = 2,
+    SIGQUIT = 3,
+    SIGKILL = 9,
+    SIGPIPE = 13,
+    SIGALRM = 14,
+    SIGTERM = 15,
+    SIGCHLD = 17,
+    SIGCONT = 18,
+    SIGTSTP = 20,
+    SIGTTIN = 21,
+    SIGTTOU = 22,
+    SIGWINCH = 28
+}
+
+class PosixSignalContext
+{
+    public PosixSignal Signal;
+    public bool Cancel;
+}
+
+interface PosixSignalHandler
+{
+    void Invoke(PosixSignalContext context);
+}
+
+class PosixSignalRegistration : IDisposable
+{
+    const int MaxSignal = 32;
+    static PosixSignalHandler?[]? _handlers;
+    static long _pending;                       // a bit per signal that arrived
+    static long _restorer;
+
+    PosixSignal _signal;
+
+    PosixSignalRegistration(PosixSignal signal)
+    {
+        _signal = signal;
+    }
+
+    public static PosixSignalRegistration Create(PosixSignal signal, PosixSignalHandler handler)
+    {
+        if (_handlers == null)
+        {
+            _handlers = new PosixSignalHandler?[MaxSignal];
+        }
+        int n = (int)signal;
+        _handlers[n] = handler;
+        Install(n, Sys.AddressOf(PosixSignalRegistration.Dispatch));
+        return new PosixSignalRegistration(signal);
+    }
+
+    /// The default action again for this signal.
+    public void Dispose()
+    {
+        int n = (int)_signal;
+        if (_handlers != null)
+        {
+            _handlers[n] = null;
+        }
+        Install(n, 0);
+    }
+
+    /// Ignores a signal outright (SIG_IGN), for the ones a program never
+    /// wants to see -- SIGPIPE on a closed socket, in every network
+    /// program ever written.
+    public static void Ignore(PosixSignal signal)
+    {
+        Install((int)signal, 1);
+    }
+
+    /// Called from the kernel's signal frame. Only a bit is set.
+    public static void Dispatch(int signal)
+    {
+        if (signal > 0 && signal < MaxSignal)
+        {
+            _pending = _pending | (1L << signal);
+        }
+    }
+
+    /// Whether any registered signal has arrived and not been delivered.
+    public static bool Pending
+    {
+        get { return _pending != 0; }
+    }
+
+    /// Runs the handlers for what arrived; a handler that does not set
+    /// Cancel gets the signal's default action afterwards: the process
+    /// ends, as .NET's does.
+    public static void Deliver()
+    {
+        long got = _pending;
+        if (got == 0)
+        {
+            return;
+        }
+        _pending = 0;
+        for (int n = 1; n < MaxSignal; n++)
+        {
+            if ((got & (1L << n)) == 0)
+            {
+                continue;
+            }
+            PosixSignalHandler? h = _handlers == null ? null : _handlers[n];
+            PosixSignalContext context = new PosixSignalContext();
+            context.Signal = (PosixSignal)n;
+            if (h != null)
+            {
+                h.Invoke(context);
+            }
+            if (!context.Cancel && n != (int)PosixSignal.SIGCHLD && n != (int)PosixSignal.SIGWINCH && n != (int)PosixSignal.SIGCONT)
+            {
+                Os.Exit(128 + n);
+            }
+        }
+    }
+
+    /// The kernel's sigaction: handler, flags, restorer, mask (64 bits).
+    ///
+    /// SA_RESTORER names the few bytes the kernel returns THROUGH when a
+    /// handler finishes, and two things about them are easy to get wrong and
+    /// fatal when they are:
+    ///
+    ///   THE CALL IS sigreturn(119), NOT rt_sigreturn(173). On i386 the
+    ///   kernel builds the OLD signal frame for a handler registered without
+    ///   SA_SIGINFO -- whichever call registered it -- and the two frames are
+    ///   not the same shape. Returning through the wrong one restores a
+    ///   context of rubbish: the program resumes at address zero and dies of
+    ///   a fault nowhere near the signal. `pop %eax` first, as glibc's own
+    ///   __restore does, because the legacy frame wants the signal number off
+    ///   the stack before the sigcontext underneath it is read.
+    ///
+    ///   THE BYTES MUST BE EXECUTABLE. The heap is mapped read/write and
+    ///   nothing else, so a thunk kept in an ordinary array is data the
+    ///   processor refuses to run: a fault on the way out of every handler.
+    ///   They live in a page of their own, mapped with PROT_EXEC.
+    ///
+    /// SA_RESTART keeps a read or a wait from failing with EINTR under a
+    /// signal the program handles.
+    static void Install(int signal, long handler)
+    {
+        if (_restorer == 0)
+        {
+            long page = Os.MapExecutable(4096);
+            if (page == 0)
+            {
+                return;
+            }
+            Sys.PokeByte(page, 0xB8);                                 // mov eax,
+            Sys.PokeByte(page + 1, 173);                              //   173 (rt_sigreturn)
+            Sys.PokeByte(page + 2, 0);
+            Sys.PokeByte(page + 3, 0);
+            Sys.PokeByte(page + 4, 0);
+            Sys.PokeByte(page + 5, 0xCD);                             // int
+            Sys.PokeByte(page + 6, 0x80);                             //   0x80
+            _restorer = page;
+        }
+        byte[] act = new byte[20];
+        Raw.SetU32(act, 0, handler);
+        long flags = 0x04000000;                                      // SA_RESTORER
+        if (handler > 1)
+        {
+            // SA_SIGINFO AS WELL AS SA_RESTART, and not for the extra
+            // arguments: it is what makes the kernel build the MODERN signal
+            // frame, the one rt_sigreturn above knows how to return through.
+            // Without it i386 builds the old frame for a handler registered
+            // through rt_sigaction, and returning through the wrong one
+            // restores a context of rubbish.
+            flags = flags | 0x10000000 | 0x00000004;                  // SA_RESTART|SA_SIGINFO
+        }
+        Raw.SetU32(act, 4, flags);
+        Raw.SetU32(act, 8, _restorer);
+        Os.SigAction(signal, act);
+    }
+}

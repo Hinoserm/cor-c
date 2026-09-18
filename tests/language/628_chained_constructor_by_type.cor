@@ -1,0 +1,91 @@
+// test: chained_constructor_by_type
+// expect-exit: 0
+// expect-output:
+// graph of seven, ssa True
+// graph of nine, ssa False
+// base text: hello
+// base number: 12
+// counted 2 2
+//
+// WHICH CONSTRUCTOR `: this(...)` RUNS IS DECIDED BY WHAT IT IS GIVEN, as any
+// call is. Decided by how many, `Defs(Function f) : this(new Cfg(f))` beside
+// `Defs(Cfg cfg)` chose the first constructor of two arguments -- itself -- and
+// handed a graph to the code that wanted a function. That is where the
+// compiler, compiled by itself, stopped after it had checked everything.
+
+using System;
+using System.Collections.Generic;
+
+sealed class Function { public string Name = ""; }
+
+sealed class Cfg
+{
+    public Function Function;
+
+    public Cfg(Function f)
+    {
+        Function = f;
+    }
+}
+
+sealed class Defs
+{
+    // Initialised ONCE, by the constructor that is chained to. Initialised by
+    // both, the second emptied what the first had filled.
+    public readonly List<string> Seen = new();
+    public string Said;
+
+    public Defs(Function f, bool ssa = false) : this(new Cfg(f), ssa)
+    {
+    }
+
+    public Defs(Cfg cfg, bool ssa = false)
+    {
+        Said = "graph of " + cfg.Function.Name + ", ssa " + ssa;
+        Seen.Add(cfg.Function.Name);
+        Seen.Add(Said);
+    }
+}
+
+class Root
+{
+    public string Said;
+
+    public Root(string text)
+    {
+        Said = "base text: " + text;
+    }
+
+    public Root(int number)
+    {
+        Said = "base number: " + number;
+    }
+}
+
+sealed class Texted : Root
+{
+    public Texted() : base("hello")
+    {
+    }
+}
+
+sealed class Numbered : Root
+{
+    public Numbered() : base(12)
+    {
+    }
+}
+
+class P
+{
+    static int Main()
+    {
+        Console.WriteLine(new Defs(new Function { Name = "seven" }, true).Said);
+        Console.WriteLine(new Defs(new Cfg(new Function { Name = "nine" })).Said);
+        Console.WriteLine(new Texted().Said);
+        Console.WriteLine(new Numbered().Said);
+        Console.WriteLine("counted " + new Defs(new Function { Name = "f" }).Seen.Count
+                          + " " + new Defs(new Cfg(new Function { Name = "g" })).Seen.Count);
+        return 0;
+    }
+}

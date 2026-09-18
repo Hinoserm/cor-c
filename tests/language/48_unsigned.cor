@@ -1,0 +1,75 @@
+// test: unsigned
+// expect-exit: 0
+// expect-output:
+// uint 0 4294967294 2147483647 3 True -1 4294967295 4294967295
+// ulong 0 1844674407370955161 5 True 9223372036854775807 -1 18446744073709551615
+// umul 18446744069414584320 True 3074457345618258602 2
+// parse True 18446744073709551615
+// loop 4294967295
+//
+// uint and ulong: wrap at their width, division and remainder and
+// comparison that ignore the sign bit, conversions to and from the signed
+// types, 64-bit unsigned multiply, and parsing the largest ulong. Unsigned
+// values are printed by a helper that itself relies on unsigned 64-bit
+// division.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static string U(ulong v)
+    {
+        string tail = String.FromInt((long)(v % 10));
+        if (v < 10)
+        {
+            return tail;
+        }
+        return U(v / 10) + tail;
+    }
+
+    static int Main()
+    {
+        uint u = 4294967295u;
+        uint one = 1u;
+        uint two = 2u;
+        uint seven = 7u;
+        uint half = 2147483648u;
+        int minus = -1;
+        uint fromInt = (uint)minus;
+        int asInt = (int)u;
+        long asLong = u;
+        Line("uint " + U(u + one) + " " + U(u * two) + " " + U(u / two) + " " + U(u % seven) + " " + (u > half)
+             + " " + asInt + " " + asLong + " " + U(fromInt));
+
+        ulong m = 18446744073709551615UL;
+        ulong uone = 1;
+        ulong ten = 10;
+        long lminus = -1;
+        ulong fromLong = (ulong)lminus;
+        long mAsLong = (long)m;
+        Line("ulong " + U(m + uone) + " " + U(m / ten) + " " + U(m % ten) + " " + (m > uone) + " " + U(m >> 1)
+             + " " + mAsLong + " " + U(fromLong));
+
+        ulong a = 4294967296UL;
+        ulong b = 4294967295UL;
+        ulong top = 0x8000000000000000UL;
+        ulong three = 3;
+        Line("umul " + U(a * b) + " " + (top > uone) + " " + U(top / three) + " " + U(top % three));
+
+        ulong parsed = 0;
+        bool ok = UInt64.TryParse("18446744073709551615", out parsed);
+        Line("parse " + ok + " " + U(parsed));
+
+        uint acc = 0;
+        for (uint i = 0; i < 32; i++)
+        {
+            acc = acc | (one << (int)i);
+        }
+        Line("loop " + U(acc));
+        return 0;
+    }
+}

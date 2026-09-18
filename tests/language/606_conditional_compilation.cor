@@ -1,0 +1,97 @@
+// test: conditional_compilation
+// expect-exit: 0
+// expect-output:
+// defined here
+// not FOO
+// one of two
+// negated
+// bracketed
+// equal
+// undefined again
+// field True
+// nested inner
+//
+// `#if`, `#elif`, `#else` and `#endif`, with the symbols `#define` and
+// `#undef` name. The excluded text is skipped a LINE at a time and never
+// tokenized, which is what lets a branch that is not being compiled hold
+// something that is not a program at all -- half of what the feature is for.
+// Symbols from the command line (`-D NAME`) go in the same set; this test can
+// only define its own.
+
+#define HERE
+#define OTHER
+#define GONE
+#undef GONE
+
+#region a region says nothing about meaning
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    // A directive may split an expression, which is how a debug build turns a
+    // default on: the text is read, not the statements.
+    public static bool Verify = false
+#if HERE
+        || true
+#endif
+        ;
+
+    static int Main()
+    {
+#if HERE
+        Line("defined here");
+#else
+        Line("not here");
+#endif
+
+#if FOO
+        ( this is not a program at all &&& ]]]
+#else
+        Line("not FOO");
+#endif
+
+#if FOO
+        Line("foo");
+#elif OTHER
+        Line("one of two");
+#else
+        Line("neither");
+#endif
+
+#if !FOO
+        Line("negated");
+#endif
+
+#if (HERE || FOO) && !GONE
+        Line("bracketed");
+#endif
+
+#if HERE == true
+        Line("equal");
+#endif
+
+#if GONE
+        Line("still defined");
+#else
+        Line("undefined again");
+#endif
+
+        Line("field " + Verify);
+
+#if HERE
+#if OTHER
+        Line("nested inner");
+#else
+        Line("nested other");
+#endif
+#endif
+        return 0;
+    }
+}
+
+#endregion

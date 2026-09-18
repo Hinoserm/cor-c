@@ -1,0 +1,25 @@
+// Runtime inputs prevent constant folding the whole workload.
+static class Program
+{
+    static long Work(long seed, int count)
+    {
+        long sum = 0;
+        for (int i = 0; i < count; i++)
+            sum += ((seed * 17) ^ (seed >> 3)) + i;
+        return sum;
+    }
+    static int Main()
+    {
+        string[] args = Environment.GetCommandLineArgs();
+        int count = args.Length > 1 ? int.Parse(args[1]) : 10000000;
+        long seed = args.Length > 2 ? long.Parse(args[2]) : 12345;
+        if (count < 1 || count > 100000000 || seed < 0 || seed > 1000000) return 2;
+        long start = Stopwatch.GetTimestamp();
+        long got = Work(seed, count);
+        long elapsed = Stopwatch.GetTimestamp() - start;
+        long expected = ((seed * 17) ^ (seed >> 3)) * count + (long)count * (count - 1) / 2;
+        Console.WriteLine("loop-invariant,iterations=" + count + ",ticks=" + elapsed
+            + ",frequency=" + Stopwatch.Frequency + ",checksum=" + got + ",valid=" + (got == expected));
+        return got == expected ? 0 : 1;
+    }
+}

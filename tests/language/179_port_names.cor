@@ -1,0 +1,68 @@
+// test: the name space -- cwd, links, and the environment
+// expect-exit: 0
+// expect-output:
+// absolute true
+// chdir /tmp
+// link points at target
+// link is a link
+// target is not
+// PATH is set
+// nothing is not
+// fallback used
+//
+// ls -l, rm, cp and find all ask these questions. Two are worth calling out.
+// A symbolic link has to be distinguishable from what it points at -- rm
+// following one turns `rm -r link` into a walk through somebody else's
+// directory -- and Os.Getcwd answers the NAME, with the NUL the kernel counts
+// already taken off, which is the detail pwd(1) got wrong on the old library.
+
+class Program
+{
+    static int Main()
+    {
+        string? here = Os.Getcwd();
+
+        if (here == null)
+        {
+            Console.WriteLine("no working directory");
+            return 1;
+        }
+        Console.Write("absolute ");
+        Console.WriteLine(here.Length > 0 && here[0] == '/' ? "true" : "false");
+
+        Os.Chdir("/tmp");
+        Console.WriteLine(String.Concat("chdir ", Os.Getcwd()));
+        Os.Chdir(here);
+
+        string stem = String.Concat("/tmp/cor-name-", String.FromInt(Os.Getpid()));
+        string target = String.Concat(stem, ".target");
+        string link = String.Concat(stem, ".link");
+
+        File.WriteAllText(target, "x");
+        Os.Symlink(target, link);
+
+        string? points = Os.Readlink(link);
+
+        Console.WriteLine(points == target ? "link points at target" : "link points ELSEWHERE");
+
+        // lstat sees the link; stat sees through it. The difference is the
+        // whole safety of rm -r.
+        byte[] info = Stat.Room();
+
+        Os.Lstat(link, info);
+        Console.WriteLine(Stat.IsLinkMode(Stat.Mode(info)) ? "link is a link" : "link is NOT a link");
+
+        Os.Lstat(target, info);
+        Console.WriteLine(Stat.IsLinkMode(Stat.Mode(info)) ? "target IS a link" : "target is not");
+
+        Os.Unlink(link);
+        Os.Unlink(target);
+
+        // The environment, which is where a shell finds PATH.
+        Console.WriteLine(Environment.GetEnvironmentVariable("PATH") != null ? "PATH is set" : "PATH is NOT set");
+        Console.WriteLine(Environment.GetEnvironmentVariable("CORSAC_NO_SUCH_VARIABLE") == null
+                        ? "nothing is not" : "nothing IS set");
+        Console.WriteLine(String.Concat((Environment.GetEnvironmentVariable("CORSAC_NO_SUCH_VARIABLE") ?? "fallback"), " used"));
+        return 0;
+    }
+}

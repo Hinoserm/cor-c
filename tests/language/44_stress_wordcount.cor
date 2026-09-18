@@ -1,0 +1,61 @@
+// test: stress_wordcount
+// expect-exit: 0
+// expect-output:
+// keys 13
+// counts 77 77 77 77 77 77 76 77 77 77 77 77 77
+// the 3 9
+// total 1000
+//
+// A Dictionary<string,int> word count over a thousand generated words with
+// thirteen distinct keys, so the same keys are hit over and over, and a
+// second count over a split sentence.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        Dictionary<string, int> counts = new Dictionary<string, int>();
+        for (int i = 0; i < 1000; i++)
+        {
+            string word = "w" + (i * 7 % 13);
+            int have = 0;
+            if (counts.TryGetValue(word, out have))
+            {
+                counts[word] = have + 1;
+            }
+            else
+            {
+                counts[word] = 1;
+            }
+        }
+        Line("keys " + counts.Count);
+
+        string shown = "";
+        int total = 0;
+        for (int k = 0; k < 13; k++)
+        {
+            int c = counts["w" + k];
+            total += c;
+            shown = shown + c + " ";
+        }
+        Line("counts " + String.Trim(shown));
+
+        string text = "the quick brown fox jumps over the lazy dog the end";
+        Dictionary<string, int> words = new Dictionary<string, int>();
+        foreach (string w in String.Split(text, ' '))
+        {
+            int have = 0;
+            words.TryGetValue(w, out have);
+            words[w] = have + 1;
+        }
+        Line("the " + words["the"] + " " + words.Count);
+        Line("total " + total);
+        return 0;
+    }
+}

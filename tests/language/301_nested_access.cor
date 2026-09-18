@@ -1,0 +1,138 @@
+// test: nested types reach their enclosing type's members
+// expect-exit: 0
+// expect-output:
+// field 7
+// method 21
+// const 5
+// enum 2
+// prop 9
+// generic outer 42
+// qualified 7
+// instance 13
+// write 8
+//
+// A nested type sees everything its enclosing types declare, private
+// included, and an unqualified name resolves outwards through the chain
+// of enclosing types: static fields, static methods, static properties,
+// constants and nested types or enums. Instance members are reached the
+// only way they can be, through an explicit reference to an outer object.
+
+static class Outer
+{
+    private static int _count = 7;
+    private const int Limit = 5;
+
+    private static int Triple(int x)
+    {
+        return x * 3;
+    }
+
+    private static int Nine
+    {
+        get { return 9; }
+    }
+
+    enum Colour
+    {
+        Red,
+        Green,
+        Blue,
+    }
+
+    public class Inner
+    {
+        public int Field()
+        {
+            return _count;
+        }
+
+        public int Method()
+        {
+            return Triple(_count);
+        }
+
+        public int Const()
+        {
+            return Limit;
+        }
+
+        public int Enum()
+        {
+            Colour c = Colour.Blue;
+
+            return (int)c;
+        }
+
+        public int Prop()
+        {
+            return Nine;
+        }
+
+        public void Bump()
+        {
+            _count = _count + 1;
+        }
+    }
+}
+
+class Host
+{
+    static int _base = 40;
+
+    int _value;
+
+    public Host(int v)
+    {
+        _value = v;
+    }
+
+    public class Helper
+    {
+        public int Sum()
+        {
+            return _base + 2;
+        }
+
+        public int Of(Host h)
+        {
+            return h._value;
+        }
+    }
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Console.WriteLine(s);
+    }
+
+    static int Main()
+    {
+        Outer.Inner inner = new Outer.Inner();
+
+        Line("field " + inner.Field().ToString());
+        Line("method " + inner.Method().ToString());
+        Line("const " + inner.Const().ToString());
+        Line("enum " + inner.Enum().ToString());
+        Line("prop " + inner.Prop().ToString());
+
+        Host.Helper helper = new Host.Helper();
+
+        Line("generic outer " + helper.Sum().ToString());
+
+        Outer.Inner again = new Outer.Inner();
+
+        Line("qualified " + again.Field().ToString());
+
+        Host host = new Host(13);
+
+        Line("instance " + helper.Of(host).ToString());
+
+        inner.Bump();
+
+        Line("write " + inner.Field().ToString());
+
+        return 0;
+    }
+}

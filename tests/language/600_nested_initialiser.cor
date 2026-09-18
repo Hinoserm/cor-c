@@ -1,0 +1,87 @@
+// test: nested_initialiser
+// expect-exit: 0
+// expect-output:
+// ops 3 10 20 30
+// targets 2 b1 b2
+// getonly 2 7 9
+// field 3 a b c
+// dict 2 one=1 two=2
+// deep 2 41 42
+// mixed 5 4 8
+//
+// `Member = { ... }` inside an object initialiser, which C# does NOT define as
+// an assignment: the member is READ and what it already holds is initialised
+// in place, so a get-only collection property can be filled in this way. Both
+// kinds of brace contents are tried -- elements, which call Add, and further
+// assignments, which reach further in -- and so is a nested `[key] = value`.
+
+class Instr
+{
+    public int Op { get; set; }
+    public List<int> Operands { get; } = new();
+    public List<string> Targets { get; } = new();
+    public List<string> Names = new();
+    public Dictionary<string, int> Table { get; } = new();
+}
+
+class Inner
+{
+    public int A;
+    public int B;
+}
+
+class Outer
+{
+    public Inner Held { get; } = new Inner();
+    public List<int> Numbers { get; } = new();
+    public int Count;
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        int x = 10;
+        int y = 20;
+        int z = 30;
+
+        Instr one = new Instr
+        {
+            Op = 3,
+            Operands = { x, y, z },
+            Targets = { "b1", "b2" },
+            Names = { "a", "b", "c" },
+            Table = { ["one"] = 1, ["two"] = 2 },
+        };
+
+        Line("ops " + one.Op + " " + one.Operands[0] + " " + one.Operands[1] + " " + one.Operands[2]);
+        Line("targets " + one.Targets.Count + " " + one.Targets[0] + " " + one.Targets[1]);
+
+        // A get-only property, which no assignment could reach.
+        Instr two = new Instr { Operands = { 7, 9 } };
+        Line("getonly " + two.Operands.Count + " " + two.Operands[0] + " " + two.Operands[1]);
+
+        Line("field " + one.Names.Count + " " + one.Names[0] + " " + one.Names[1] + " " + one.Names[2]);
+        Line("dict " + one.Table.Count + " one=" + one.Table["one"] + " two=" + one.Table["two"]);
+
+        // Assignments inside the braces reach further in rather than replacing
+        // what is there.
+        int a = 41;
+        Outer deep = new Outer
+        {
+            Held = { A = a, B = a + 1 },
+            Numbers = { 4, 8 },
+            Count = 5,
+        };
+
+        Line("deep " + deep.Numbers.Count + " " + deep.Held.A + " " + deep.Held.B);
+        Line("mixed " + deep.Count + " " + deep.Numbers[0] + " " + deep.Numbers[1]);
+        return 0;
+    }
+}

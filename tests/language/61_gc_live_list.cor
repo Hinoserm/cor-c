@@ -1,0 +1,86 @@
+// test: gc live list
+// expect-exit: 0
+// expect-output:
+// count 100000
+// sum 4999950000
+// names True
+// collected True
+//
+// A linked list of a hundred thousand nodes, each with a number and a
+// string, stays live while garbage is churned through several collections.
+// The list is then walked and every value and every string checked. A
+// collector that freed or corrupted a reachable node fails this.
+
+class Node
+{
+    public int Value;
+    public string Name;
+    public Node? Next;
+
+    public Node(int value, string name, Node? next)
+    {
+        Value = value;
+        Name = name;
+        Next = next;
+    }
+}
+
+static class Program
+{
+    static Node? head;
+
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static void Churn(int rounds)
+    {
+        for (int i = 0; i < rounds; i++)
+        {
+            byte[] garbage = new byte[4000];
+            garbage[0] = 1;
+        }
+    }
+
+    static int Main()
+    {
+        Gc.SetLimit(67108864);
+
+        for (int i = 0; i < 100000; i++)
+        {
+            head = new Node(i, "node" + i, head);
+            if (i % 5000 == 0)
+            {
+                Churn(200);
+            }
+        }
+
+        Churn(100000);
+
+        long count = 0;
+        long sum = 0;
+        bool names = true;
+        int expect = 100000 - 1;
+        Node? n = head;
+
+        while (n != null)
+        {
+            count = count + 1;
+            sum = sum + n.Value;
+            if (n.Value != expect || n.Name != "node" + expect)
+            {
+                names = false;
+            }
+            expect = expect - 1;
+            n = n.Next;
+        }
+
+        Line("count " + count);
+        Line("sum " + sum);
+        Line("names " + names);
+        Line("collected " + (Gc.Collections > 0));
+        return 0;
+    }
+}

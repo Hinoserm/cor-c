@@ -1,0 +1,54 @@
+// test: stat_nsec
+// expect-exit: 0
+// expect-output:
+// mtime nsec in range
+// atime nsec in range
+// ctime nsec in range
+// nonzero
+// write and change agree
+//
+// A TIMESTAMP IS A SECOND AND A NANOSECOND, and struct stat64 has always held
+// both: the nanoseconds sit in the word after each seconds field, at 68, 76
+// and 84. Only the seconds were read, so two events inside one second could
+// not be told apart -- which is exactly the comparison `cp -u` and `mv -u`
+// make, and why they decided nothing had changed.
+//
+// The offsets are what this checks. A nanosecond count is under a thousand
+// million, which no neighbouring field in the structure is: seconds are near
+// 1.7 thousand million and a size or a block count is whatever the file is.
+// A freshly written file also has the same modification and change time, down
+// to the nanosecond, which a misaligned read would not reproduce.
+//
+// It does NOT check that two writes a moment apart differ, because on some
+// hosts they genuinely do not: the filesystem stamps a coarse clock.
+
+class Program {
+    static int Main() {
+        string path = "/tmp/corsac-stat-nsec.tmp";
+
+        File.WriteAllText(path, "one");
+
+        byte[] d = Stat.Room();
+        Os.Stat(path, d);
+
+        long m = Stat.MtimeNsec(d);
+        long a = Stat.AtimeNsec(d);
+        long c = Stat.CtimeNsec(d);
+
+        Console.WriteLine(m >= 0 && m < 1000000000 ? "mtime nsec in range" : "mtime nsec out of range " + m);
+        Console.WriteLine(a >= 0 && a < 1000000000 ? "atime nsec in range" : "atime nsec out of range " + a);
+        Console.WriteLine(c >= 0 && c < 1000000000 ? "ctime nsec in range" : "ctime nsec out of range " + c);
+
+        // ALL THREE ZERO would mean the field is read from somewhere that
+        // happens to be empty rather than from the clock.
+        Console.WriteLine(m != 0 || a != 0 || c != 0 ? "nonzero" : "all zero");
+
+        // A FILE JUST WRITTEN was modified and changed at the same instant.
+        Console.WriteLine(Stat.Mtime(d) == Stat.Ctime(d) && m == c
+            ? "write and change agree"
+            : "write and change disagree");
+
+        File.Delete(path);
+        return 0;
+    }
+}

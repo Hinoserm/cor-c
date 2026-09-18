@@ -1,0 +1,65 @@
+// test: DateTime's standard formats, Parse, TimeSpan.Parse and DateTimeOffset
+// expect-exit: 0
+// expect-output:
+// d -> 02/29/2024
+// D -> Thursday, 29 February 2024
+// f -> Thursday, 29 February 2024 13:45
+// F -> Thursday, 29 February 2024 13:45:30
+// g -> 02/29/2024 13:45
+// G -> 02/29/2024 13:45:30
+// m -> February 29
+// o -> 2024-02-29T13:45:30.2500000
+// R -> Thu, 29 Feb 2024 13:45:30 GMT
+// s -> 2024-02-29T13:45:30
+// t -> 13:45
+// T -> 13:45:30
+// u -> 2024-02-29 13:45:30Z
+// y -> 2024 February
+// Thu Thursday Feb February PM 01
+// 2024-02-29T13:45:30.0000000
+// 638448111300000000 638447616000000000
+// 2024-02-29T13:45:30
+// 937845000000 02:03:00 -00:00:30
+// False False
+// 2024-02-29T13:45:30.2500000-05:00|02/29/2024 13:45:30 -05:00|-05:00:00|2024-02-29T18:45:30|2024-02-29T13:45:30
+// 1709232330 1709232330250 638448111302500000 638448291302500000 2024 13
+// 2024-02-29T18:45:30.0000000+00:00 00:00:00
+// 2024-02-29T15:45:30.2500000-05:00 -1 2
+//
+// A SINGLE LETTER IS A STANDARD FORMAT, not a one-letter picture: "d" is the
+// short date and not the day of the month, which is .NET's rule and was not
+// this library's. A DateTimeOffset is a reading AND the offset it was read
+// in, which is the difference between "half past one" and a point in time --
+// so its Ticks is the local reading and its UtcTicks the moment. Every line
+// came from the same program run on .NET against the invariant culture.
+
+class Program
+{
+    static int Main()
+    {
+        DateTime d = new DateTime(2024, 2, 29, 13, 45, 30, 250);
+        string[] fs = new string[] { "d", "D", "f", "F", "g", "G", "m", "o", "R", "s", "t", "T", "u", "y" };
+
+        for (int i = 0; i < fs.Length; i++) { Console.WriteLine(fs[i] + " -> " + d.ToString(fs[i])); }
+        Console.WriteLine(d.ToString("ddd dddd MMM MMMM tt hh"));
+
+        Console.WriteLine(DateTime.Parse("2024-02-29T13:45:30").ToString("o"));
+        Console.WriteLine(DateTime.Parse("2024-02-29 13:45:30").Ticks + " " + DateTime.Parse("2024-02-29").Ticks);
+        Console.WriteLine(DateTime.Parse("02/29/2024 13:45:30").ToString("s"));
+        Console.WriteLine(TimeSpan.Parse("1.02:03:04.5").Ticks + " " + TimeSpan.Parse("02:03").ToString() + " " + TimeSpan.Parse("-00:00:30").ToString());
+
+        DateTime bad = DateTime.MinValue;
+        Console.WriteLine(DateTime.TryParse("nonsense", out bad) + " " + DateTime.TryParse("2024-13-01", out bad));
+
+        DateTimeOffset o = new DateTimeOffset(d, TimeSpan.FromHours(-5));
+        Console.WriteLine($"{o.ToString("o")}|{o.ToString()}|{o.Offset.ToString()}|{o.UtcDateTime.ToString("s")}|{o.DateTime.ToString("s")}");
+        Console.WriteLine($"{o.ToUnixTimeSeconds()} {o.ToUnixTimeMilliseconds()} {o.Ticks} {o.UtcTicks} {o.Year} {o.Hour}");
+
+        DateTimeOffset epoch = DateTimeOffset.FromUnixTimeSeconds(1709232330);
+        Console.WriteLine($"{epoch.ToString("o")} {epoch.Offset.ToString()}");
+
+        DateTimeOffset later = o.AddHours(2);
+        Console.WriteLine($"{later.ToString("o")} {o.CompareTo(later)} {(later - o).TotalHours}");
+        return 0;
+    }
+}

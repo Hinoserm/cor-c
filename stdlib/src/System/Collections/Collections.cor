@@ -1,0 +1,873 @@
+// System.Collections.Generic -- the containers std.cor does not carry.
+//
+// std.cor has List, Dictionary, HashSet, Queue and a small SortedSet, which
+// are the ones its own compiler needed. These are the rest of the ones a
+// program written for .NET reaches for: a stack, a doubly linked list, and the
+// two ordered maps.
+//
+// SortedList<K,V> and SortedDictionary<K,V> differ in .NET by their storage --
+// parallel arrays against a red-black tree -- and so in which operation is
+// cheap, not in what they answer. Both are parallel arrays here; the cost is
+// that an insert into the middle of a large SortedDictionary shifts rather
+// than rotates, and every answer, ordering and exception is .NET's.
+
+// ---- Stack ----------------------------------------------------------------
+//
+// LAST IN, FIRST OUT, on a growable array whose top is its end -- so Push and
+// Pop are both a store and an increment, and nothing ever shifts.
+//
+// Enumeration is TOP TO BOTTOM, which is .NET's order and the opposite of the
+// storage order; a caller who writes `foreach` over a stack expects to see
+// what Pop would hand back, in that sequence.
+
+class StackEnumerator<T> : IEnumerator<T> {
+    private Stack<T> over;
+    private int at;
+
+    public StackEnumerator(Stack<T> stack) {
+        over = stack;
+        at = stack.Count;
+    }
+
+    public T Current => over.ElementFromTop(over.Count - 1 - at);
+
+    public bool MoveNext() {
+        at = at - 1;
+        return at >= 0;
+    }
+}
+
+class Stack<T> : IEnumerable<T> {
+    private T[] items;
+    private int count;
+
+    public Stack() {
+        items = new T[8];
+        count = 0;
+    }
+
+    /// STARTED FROM A SEQUENCE, which .NET pushes in the order it walks: the
+    /// last one walked is the first one popped.
+    public Stack(IEnumerable<T> collection) : this() {
+        foreach (T each in collection) { Push(each); }
+    }
+
+    /// Room for this many before the first growth. Nothing about what it
+    /// holds, which is why .NET's is a hint and not a count.
+    public Stack(int capacity) {
+        items = new T[capacity < 1 ? 1 : capacity];
+        count = 0;
+    }
+
+    public int Count => count;
+
+    public void Push(T value) {
+        if (count == items.Length) { Grow(); }
+        items[count] = value;
+        count = count + 1;
+    }
+
+    public T Pop() {
+        if (count == 0) { throw new InvalidOperationException("Stack empty."); }
+        count = count - 1;
+        T value = items[count];
+        items[count] = default(T)!;
+        return value;
+    }
+
+    public T Peek() {
+        if (count == 0) { throw new InvalidOperationException("Stack empty."); }
+        return items[count - 1];
+    }
+
+    /// .NET's non-throwing pair, added in Core 2.0: false and default(T) when
+    /// the stack is empty, instead of the exception.
+    public bool TryPop(out T value) {
+        if (count == 0) { value = default(T); return false; }
+        value = Pop();
+        return true;
+    }
+
+    public bool TryPeek(out T value) {
+        if (count == 0) { value = default(T); return false; }
+        value = items[count - 1];
+        return true;
+    }
+
+    public bool Contains(T value) {
+        IEqualityComparer<T> same = EqualityComparer<T>.Default;
+        for (int i = 0; i < count; i++) {
+            if (same.Equals(items[i], value)) { return true; }
+        }
+        return false;
+    }
+
+    public void Clear() {
+        for (int i = 0; i < count; i++) { items[i] = default(T)!; }
+        count = 0;
+    }
+
+    /// The element `depth` places below the top, which is what the enumerator
+    /// walks. Not a .NET member: an enumerator written outside the class has
+    /// no other way to read the store.
+    public T ElementFromTop(int depth) { return items[count - 1 - depth]; }
+
+    /// TOP FIRST, like the enumeration, which is what .NET's ToArray gives.
+    public T[] ToArray() {
+        T[] copy = new T[count];
+        for (int i = 0; i < count; i++) { copy[i] = items[count - 1 - i]; }
+        return copy;
+    }
+
+    public void CopyTo(T[] target, int index) {
+        for (int i = 0; i < count; i++) { target[index + i] = items[count - 1 - i]; }
+    }
+
+    public IEnumerator<T> GetEnumerator() { return new StackEnumerator<T>(this); }
+
+    private void Grow() {
+        T[] bigger = new T[items.Length * 2];
+        for (int i = 0; i < count; i++) { bigger[i] = items[i]; }
+        items = bigger;
+    }
+}
+
+// ---- LinkedList -----------------------------------------------------------
+//
+// A node holds its own links and the list it belongs to, which is what makes
+// LinkedList's contract enforceable: AddAfter and Remove take a NODE, and .NET
+// throws InvalidOperationException when that node came from another list.
+// Without the back-pointer the operation would quietly corrupt both lists.
+
+class LinkedListNode<T> {
+    internal LinkedList<T>? owner;
+    internal LinkedListNode<T>? next;
+    internal LinkedListNode<T>? prev;
+
+    public T Value;
+
+    public LinkedListNode(T value) {
+        Value = value;
+        owner = null;
+        next = null;
+        prev = null;
+    }
+
+    public LinkedList<T>? List => owner;
+
+    /// NULL AT THE ENDS. .NET's list is circular inside and its Next hides the
+    /// wrap by returning null at the last node; the links here are plain, so
+    /// the property is the field.
+    public LinkedListNode<T>? Next => next;
+    public LinkedListNode<T>? Previous => prev;
+}
+
+class LinkedListEnumerator<T> : IEnumerator<T> {
+    private LinkedList<T> over;
+    private LinkedListNode<T>? at;
+    private bool started;
+
+    public LinkedListEnumerator(LinkedList<T> list) {
+        over = list;
+        at = null;
+        started = false;
+    }
+
+    /// MoveNext answered true to get here, so there is a node; C# spells
+    /// that with the '!' rather than a test nobody can fail.
+    public T Current => at!.Value;
+
+    public bool MoveNext() {
+        if (!started) {
+            started = true;
+            at = over.First;
+        } else if (at != null) {
+            at = at.Next;
+        }
+        return at != null;
+    }
+}
+
+class LinkedList<T> : IEnumerable<T> {
+    private LinkedListNode<T>? head;
+    private LinkedListNode<T>? tail;
+    private int count;
+
+    public LinkedList() {
+        head = null;
+        tail = null;
+        count = 0;
+    }
+
+    public int Count => count;
+    public LinkedListNode<T>? First => head;
+    public LinkedListNode<T>? Last => tail;
+
+    public LinkedListNode<T> AddFirst(T value) {
+        LinkedListNode<T> node = new LinkedListNode<T>(value);
+        AddFirst(node);
+        return node;
+    }
+
+    public void AddFirst(LinkedListNode<T> node) {
+        Adopt(node);
+        node.prev = null;
+        node.next = head;
+        if (head != null) { head.prev = node; } else { tail = node; }
+        head = node;
+        count = count + 1;
+    }
+
+    public LinkedListNode<T> AddLast(T value) {
+        LinkedListNode<T> node = new LinkedListNode<T>(value);
+        AddLast(node);
+        return node;
+    }
+
+    public void AddLast(LinkedListNode<T> node) {
+        Adopt(node);
+        node.next = null;
+        node.prev = tail;
+        if (tail != null) { tail.next = node; } else { head = node; }
+        tail = node;
+        count = count + 1;
+    }
+
+    public LinkedListNode<T> AddAfter(LinkedListNode<T> node, T value) {
+        LinkedListNode<T> fresh = new LinkedListNode<T>(value);
+        AddAfter(node, fresh);
+        return fresh;
+    }
+
+    public void AddAfter(LinkedListNode<T> node, LinkedListNode<T> fresh) {
+        Mine(node);
+        Adopt(fresh);
+        fresh.prev = node;
+        fresh.next = node.next;
+        if (node.next != null) { node.next!.prev = fresh; } else { tail = fresh; }
+        node.next = fresh;
+        count = count + 1;
+    }
+
+    public LinkedListNode<T> AddBefore(LinkedListNode<T> node, T value) {
+        LinkedListNode<T> fresh = new LinkedListNode<T>(value);
+        AddBefore(node, fresh);
+        return fresh;
+    }
+
+    public void AddBefore(LinkedListNode<T> node, LinkedListNode<T> fresh) {
+        Mine(node);
+        Adopt(fresh);
+        fresh.next = node;
+        fresh.prev = node.prev;
+        if (node.prev != null) { node.prev!.next = fresh; } else { head = fresh; }
+        node.prev = fresh;
+        count = count + 1;
+    }
+
+    public LinkedListNode<T>? Find(T value) {
+        IEqualityComparer<T> same = EqualityComparer<T>.Default;
+        for (LinkedListNode<T>? walk = head; walk != null; walk = walk!.Next) {
+            if (same.Equals(walk.Value, value)) { return walk; }
+        }
+        return null;
+    }
+
+    public LinkedListNode<T>? FindLast(T value) {
+        IEqualityComparer<T> same = EqualityComparer<T>.Default;
+        for (LinkedListNode<T>? walk = tail; walk != null; walk = walk!.Previous) {
+            if (same.Equals(walk.Value, value)) { return walk; }
+        }
+        return null;
+    }
+
+    public bool Contains(T value) { return Find(value) != null; }
+
+    public void Remove(LinkedListNode<T> node) {
+        Mine(node);
+        if (node.prev != null) { node.prev!.next = node.next; } else { head = node.next; }
+        if (node.next != null) { node.next!.prev = node.prev; } else { tail = node.prev; }
+        node.owner = null;
+        node.next = null;
+        node.prev = null;
+        count = count - 1;
+    }
+
+    /// True when a node holding that value was there, which is .NET's contract:
+    /// the FIRST such node goes, not all of them.
+    public bool Remove(T value) {
+        LinkedListNode<T>? found = Find(value);
+        if (found == null) { return false; }
+        Remove(found);
+        return true;
+    }
+
+    public void RemoveFirst() {
+        if (head == null) { throw new InvalidOperationException("The LinkedList is empty."); }
+        Remove(head!);
+    }
+
+    public void RemoveLast() {
+        if (tail == null) { throw new InvalidOperationException("The LinkedList is empty."); }
+        Remove(tail!);
+    }
+
+    public void Clear() {
+        LinkedListNode<T>? walk = head;
+        while (walk != null) {
+            LinkedListNode<T>? after = walk.next;
+            walk.owner = null;
+            walk.next = null;
+            walk.prev = null;
+            walk = after;
+        }
+        head = null;
+        tail = null;
+        count = 0;
+    }
+
+    public void CopyTo(T[] target, int index) {
+        int i = index;
+        for (LinkedListNode<T>? walk = head; walk != null; walk = walk!.Next) {
+            target[i] = walk.Value;
+            i = i + 1;
+        }
+    }
+
+    public IEnumerator<T> GetEnumerator() { return new LinkedListEnumerator<T>(this); }
+
+    // A node already in a list cannot be added to another, and a node from
+    // another list cannot be used as a position in this one. .NET's wording
+    // for both is InvalidOperationException.
+    private void Adopt(LinkedListNode<T> node) {
+        if (node == null) { throw new ArgumentNullException("node"); }
+        if (node.owner != null) {
+            throw new InvalidOperationException("The LinkedList node already belongs to a LinkedList.");
+        }
+        node.owner = this;
+    }
+
+    private void Mine(LinkedListNode<T> node) {
+        if (node == null) { throw new ArgumentNullException("node"); }
+        if (node.owner != this) {
+            throw new InvalidOperationException("The LinkedList node does not belong to current LinkedList.");
+        }
+    }
+}
+
+// ---- the ordered maps -----------------------------------------------------
+//
+// Both keep their keys sorted, so a lookup is a binary search and enumeration
+// is in key order. The shared engine is SortedPairs: the two public classes
+// differ only in which members .NET gives them.
+
+class SortedPairs<K, V> {
+    internal List<K> keys;
+    internal List<V> values;
+    internal IComparer<K> order;
+
+    public SortedPairs(IComparer<K> comparer) {
+        keys = new List<K>();
+        values = new List<V>();
+        order = comparer;
+    }
+
+    /// The index of the key, or the ones' complement of where it would go --
+    /// Array.BinarySearch's convention, and the reason IndexOfKey can return
+    /// the insertion point without a second search.
+    public int Search(K key) {
+        int low = 0;
+        int high = keys.Count - 1;
+
+        while (low <= high) {
+            int middle = low + (high - low) / 2;
+            int sign = order.Compare(keys[middle], key);
+
+            if (sign == 0) { return middle; }
+            if (sign < 0) { low = middle + 1; } else { high = middle - 1; }
+        }
+        return ~low;
+    }
+
+    public void Insert(int at, K key, V value) {
+        keys.Insert(at, key);
+        values.Insert(at, value);
+    }
+
+    public void RemoveAt(int at) {
+        keys.RemoveAt(at);
+        values.RemoveAt(at);
+    }
+}
+
+class SortedPairsEnumerator<K, V> : IEnumerator<KeyValuePair<K, V>> {
+    private SortedPairs<K, V> over;
+    private int at;
+
+    public SortedPairsEnumerator(SortedPairs<K, V> pairs) {
+        over = pairs;
+        at = -1;
+    }
+
+    public KeyValuePair<K, V> Current => new KeyValuePair<K, V>(over.keys[at], over.values[at]);
+
+    public bool MoveNext() {
+        at = at + 1;
+        return at < over.keys.Count;
+    }
+}
+
+/// .NET's array-backed ordered map: a lookup is a binary search, and the
+/// position of a key is part of the API -- IndexOfKey, GetKeyAtIndex,
+/// RemoveAt. That is the whole difference from SortedDictionary.
+class SortedList<K, V> : IEnumerable<KeyValuePair<K, V>> {
+    private SortedPairs<K, V> pairs;
+
+    public SortedList() { pairs = new SortedPairs<K, V>(Comparer<K>.Default); }
+    public SortedList(IComparer<K> comparer) { pairs = new SortedPairs<K, V>(comparer); }
+
+    public int Count => pairs.keys.Count;
+    public IComparer<K> Comparer => pairs.order;
+
+    /// The keys in order, and the values in the order of their keys.
+    public List<K> Keys => pairs.keys;
+    public List<V> Values => pairs.values;
+
+    /// A DUPLICATE KEY THROWS, which is Add's contract and the difference from
+    /// the indexer's setter -- that one replaces.
+    public void Add(K key, V value) {
+        int at = pairs.Search(key);
+        if (at >= 0) { throw new ArgumentException("An item with the same key has already been added."); }
+        pairs.Insert(~at, key, value);
+    }
+
+    public V this[K key] {
+        get {
+            int at = pairs.Search(key);
+            if (at < 0) { throw new KeyNotFoundException("The given key was not present in the dictionary."); }
+            return pairs.values[at];
+        }
+        set {
+            int at = pairs.Search(key);
+            if (at >= 0) { pairs.values[at] = value; } else { pairs.Insert(~at, key, value); }
+        }
+    }
+
+    public bool ContainsKey(K key) { return pairs.Search(key) >= 0; }
+
+    public bool ContainsValue(V value) { return IndexOfValue(value) >= 0; }
+
+    public bool TryGetValue(K key, out V value) {
+        int at = pairs.Search(key);
+        if (at < 0) { value = default(V); return false; }
+        value = pairs.values[at];
+        return true;
+    }
+
+    /// NEGATIVE WHEN ABSENT, and .NET promises only "negative" rather than the
+    /// complement, so a caller reads it as a not-found flag.
+    public int IndexOfKey(K key) {
+        int at = pairs.Search(key);
+        if (at < 0) { return -1; }
+        return at;
+    }
+
+    public int IndexOfValue(V value) {
+        IEqualityComparer<V> same = EqualityComparer<V>.Default;
+        for (int i = 0; i < pairs.values.Count; i++) {
+            if (same.Equals(pairs.values[i], value)) { return i; }
+        }
+        return -1;
+    }
+
+    public K GetKeyAtIndex(int index) { return pairs.keys[index]; }
+    public V GetValueAtIndex(int index) { return pairs.values[index]; }
+    public void SetValueAtIndex(int index, V value) { pairs.values[index] = value; }
+
+    public bool Remove(K key) {
+        int at = pairs.Search(key);
+        if (at < 0) { return false; }
+        pairs.RemoveAt(at);
+        return true;
+    }
+
+    public void RemoveAt(int index) {
+        if (index < 0 || index >= pairs.keys.Count) {
+            throw new ArgumentOutOfRangeException("index");
+        }
+        pairs.RemoveAt(index);
+    }
+
+    public void Clear() {
+        pairs.keys.Clear();
+        pairs.values.Clear();
+    }
+
+    public IEnumerator<KeyValuePair<K, V>> GetEnumerator() { return new SortedPairsEnumerator<K, V>(pairs); }
+}
+
+/// The ordered map without the positions: a Dictionary whose enumeration is in
+/// key order. In .NET it is a tree and inserting is logarithmic; here it is the
+/// same store as SortedList, so the ANSWERS match and the insert cost does not.
+class SortedDictionary<K, V> : IReadOnlyDictionary<K, V>, IEnumerable<KeyValuePair<K, V>> {
+    private SortedPairs<K, V> pairs;
+
+    public SortedDictionary() { pairs = new SortedPairs<K, V>(Comparer<K>.Default); }
+    public SortedDictionary(IComparer<K> comparer) { pairs = new SortedPairs<K, V>(comparer); }
+
+    public int Count => pairs.keys.Count;
+    public IComparer<K> Comparer => pairs.order;
+    public List<K> Keys => pairs.keys;
+    public List<V> Values => pairs.values;
+
+    public void Add(K key, V value) {
+        int at = pairs.Search(key);
+        if (at >= 0) { throw new ArgumentException("An item with the same key has already been added."); }
+        pairs.Insert(~at, key, value);
+    }
+
+    public V this[K key] {
+        get {
+            int at = pairs.Search(key);
+            if (at < 0) { throw new KeyNotFoundException("The given key was not present in the dictionary."); }
+            return pairs.values[at];
+        }
+        set {
+            int at = pairs.Search(key);
+            if (at >= 0) { pairs.values[at] = value; } else { pairs.Insert(~at, key, value); }
+        }
+    }
+
+    public bool ContainsKey(K key) { return pairs.Search(key) >= 0; }
+
+    public bool ContainsValue(V value) {
+        IEqualityComparer<V> same = EqualityComparer<V>.Default;
+        for (int i = 0; i < pairs.values.Count; i++) {
+            if (same.Equals(pairs.values[i], value)) { return true; }
+        }
+        return false;
+    }
+
+    public bool TryGetValue(K key, out V value) {
+        int at = pairs.Search(key);
+        if (at < 0) { value = default(V); return false; }
+        value = pairs.values[at];
+        return true;
+    }
+
+    public bool Remove(K key) {
+        int at = pairs.Search(key);
+        if (at < 0) { return false; }
+        pairs.RemoveAt(at);
+        return true;
+    }
+
+    public void Clear() {
+        pairs.keys.Clear();
+        pairs.values.Clear();
+    }
+
+    public IEnumerator<KeyValuePair<K, V>> GetEnumerator() { return new SortedPairsEnumerator<K, V>(pairs); }
+}
+
+// ---- PriorityQueue --------------------------------------------------------
+//
+// A BINARY HEAP: the smallest priority is always at the root, so Peek is free
+// and both Enqueue and Dequeue cost a walk of the tree's depth. .NET's shape,
+// with the ELEMENT AND ITS PRIORITY SEPARATE -- a work item and the time it is
+// due, a node and its distance -- rather than making the element comparable.
+//
+// TIES ARE NOT ORDERED. Two items of equal priority come out in whichever
+// order the heap happens to hold them, which is .NET's documented behaviour
+// and not an accident of this implementation.
+
+class PriorityQueue<TElement, TPriority> {
+    private List<TElement> items;
+    private List<TPriority> keys;
+    private IComparer<TPriority> order;
+
+    public PriorityQueue() {
+        items = new List<TElement>();
+        keys = new List<TPriority>();
+        order = Comparer<TPriority>.Default;
+    }
+
+    public PriorityQueue(IComparer<TPriority> comparer) {
+        items = new List<TElement>();
+        keys = new List<TPriority>();
+        order = comparer;
+    }
+
+    public int Count => items.Count;
+    public IComparer<TPriority> Comparer => order;
+
+    public void Enqueue(TElement element, TPriority priority) {
+        items.Add(element);
+        keys.Add(priority);
+        Up(items.Count - 1);
+    }
+
+    public TElement Peek() {
+        if (items.Count == 0) { throw new InvalidOperationException("The queue is empty."); }
+        return items[0];
+    }
+
+    public TElement Dequeue() {
+        if (items.Count == 0) { throw new InvalidOperationException("The queue is empty."); }
+
+        TElement top = items[0];
+        int last = items.Count - 1;
+
+        items[0] = items[last];
+        keys[0] = keys[last];
+        items.RemoveAt(last);
+        keys.RemoveAt(last);
+
+        if (items.Count > 0) { Down(0); }
+        return top;
+    }
+
+    public bool TryPeek(out TElement element, out TPriority priority) {
+        if (items.Count == 0) {
+            element = default(TElement);
+            priority = default(TPriority);
+            return false;
+        }
+        element = items[0];
+        priority = keys[0];
+        return true;
+    }
+
+    public bool TryDequeue(out TElement element, out TPriority priority) {
+        if (items.Count == 0) {
+            element = default(TElement);
+            priority = default(TPriority);
+            return false;
+        }
+        priority = keys[0];
+        element = Dequeue();
+        return true;
+    }
+
+    /// ENQUEUE AND DEQUEUE IN ONE, and cheaper than the two: when the new item
+    /// is already the smallest it never enters the heap at all.
+    public TElement EnqueueDequeue(TElement element, TPriority priority) {
+        if (items.Count == 0 || order.Compare(priority, keys[0]) <= 0) { return element; }
+
+        TElement top = items[0];
+
+        items[0] = element;
+        keys[0] = priority;
+        Down(0);
+        return top;
+    }
+
+    public void Clear() {
+        items.Clear();
+        keys.Clear();
+    }
+
+    private void Up(int at) {
+        while (at > 0) {
+            int parent = (at - 1) / 2;
+
+            if (order.Compare(keys[at], keys[parent]) >= 0) { return; }
+            Swap(at, parent);
+            at = parent;
+        }
+    }
+
+    private void Down(int at) {
+        while (true) {
+            int left = at * 2 + 1;
+            int right = left + 1;
+            int least = at;
+
+            if (left < items.Count && order.Compare(keys[left], keys[least]) < 0) { least = left; }
+            if (right < items.Count && order.Compare(keys[right], keys[least]) < 0) { least = right; }
+            if (least == at) { return; }
+
+            Swap(at, least);
+            at = least;
+        }
+    }
+
+    private void Swap(int a, int b) {
+        TElement element = items[a];
+        TPriority key = keys[a];
+
+        items[a] = items[b];
+        keys[a] = keys[b];
+        items[b] = element;
+        keys[b] = key;
+    }
+}
+
+// ---- BitArray -------------------------------------------------------------
+//
+// System.Collections' array of bits, thirty-two to a word. A bool[] would do
+// the same job at eight times the storage, which is exactly the trade the type
+// exists to make -- a sieve or a free-space map is millions of bits.
+
+class BitArray {
+    private int[] words;
+    private int length;
+
+    public BitArray(int count) : this(count, false) {
+    }
+
+    public BitArray(int count, bool value) {
+        if (count < 0) { throw new ArgumentOutOfRangeException("length"); }
+
+        length = count;
+        words = new int[(count + 31) / 32];
+        if (value) { SetAll(true); }
+    }
+
+    public BitArray(bool[] values) {
+        length = values.Length;
+        words = new int[(length + 31) / 32];
+        for (int i = 0; i < length; i++) { Set(i, values[i]); }
+    }
+
+    /// EIGHT BITS PER BYTE, the lowest bit of the first byte first, which is
+    /// .NET's layout and the one a bitmap on disk is written in.
+    public BitArray(byte[] bytes) {
+        length = bytes.Length * 8;
+        words = new int[(length + 31) / 32];
+        for (int i = 0; i < bytes.Length; i++) {
+            for (int bit = 0; bit < 8; bit++) {
+                if (((bytes[i] >> bit) & 1) == 1) { Set(i * 8 + bit, true); }
+            }
+        }
+    }
+
+    public int Length => length;
+    public int Count => length;
+
+    public bool this[int index] {
+        get { return Get(index); }
+        set { Set(index, value); }
+    }
+
+    public bool Get(int index) {
+        if (index < 0 || index >= length) { throw new ArgumentOutOfRangeException("index"); }
+        return ((words[index / 32] >> (index % 32)) & 1) == 1;
+    }
+
+    public void Set(int index, bool value) {
+        if (index < 0 || index >= length) { throw new ArgumentOutOfRangeException("index"); }
+
+        int at = index / 32;
+        int mask = 1 << (index % 32);
+
+        if (value) { words[at] = words[at] | mask; } else { words[at] = words[at] & ~mask; }
+    }
+
+    public void SetAll(bool value) {
+        int fill = value ? -1 : 0;
+
+        for (int i = 0; i < words.Length; i++) { words[i] = fill; }
+    }
+
+    /// EACH OF THESE CHANGES THIS ARRAY and returns it, which is .NET's
+    /// contract and the half that surprises people: `a.And(b)` is not a new
+    /// array, it IS a, altered.
+    public BitArray And(BitArray other) {
+        Same(other);
+        for (int i = 0; i < words.Length; i++) { words[i] = words[i] & other.Word(i); }
+        return this;
+    }
+
+    public BitArray Or(BitArray other) {
+        Same(other);
+        for (int i = 0; i < words.Length; i++) { words[i] = words[i] | other.Word(i); }
+        return this;
+    }
+
+    public BitArray Xor(BitArray other) {
+        Same(other);
+        for (int i = 0; i < words.Length; i++) { words[i] = words[i] ^ other.Word(i); }
+        return this;
+    }
+
+    public BitArray Not() {
+        for (int i = 0; i < words.Length; i++) { words[i] = ~words[i]; }
+        return this;
+    }
+
+    public bool HasAnySet() {
+        for (int i = 0; i < length; i++) {
+            if (Get(i)) { return true; }
+        }
+        return false;
+    }
+
+    public bool HasAllSet() {
+        for (int i = 0; i < length; i++) {
+            if (!Get(i)) { return false; }
+        }
+        return true;
+    }
+
+    /// Not a .NET member: one storage word, so that And and its fellows can
+    /// read another array's words. Privacy is per instance here.
+    public int Word(int at) { return words[at]; }
+
+    private void Same(BitArray other) {
+        if (other == null) { throw new ArgumentNullException("value"); }
+        if (other.Length != length) { throw new ArgumentException("Array lengths must be the same."); }
+    }
+}
+
+// ---- System.Collections.ObjectModel ---------------------------------------
+//
+// A WRAPPER, NOT A COPY: these hand out a view of a live collection through an
+// interface with no way to change it. What they promise is that the CALLER
+// cannot add or remove -- the owner still can, and the view shows it.
+
+class ReadOnlyCollection<T> : IReadOnlyList<T>, IEnumerable<T> {
+    private IReadOnlyList<T> inner;
+
+    public ReadOnlyCollection(IReadOnlyList<T> list) {
+        if (list == null) { throw new ArgumentNullException("list"); }
+        inner = list;
+    }
+
+    public int Count => inner.Count;
+    public T this[int index] => inner[index];
+
+    public bool Contains(T value) { return IndexOf(value) >= 0; }
+
+    public int IndexOf(T value) {
+        IEqualityComparer<T> same = EqualityComparer<T>.Default;
+
+        for (int i = 0; i < inner.Count; i++) {
+            if (same.Equals(inner[i], value)) { return i; }
+        }
+        return -1;
+    }
+
+    public IEnumerator<T> GetEnumerator() { return new ListEnumerator<T>(inner); }
+}
+
+class ReadOnlyDictionary<K, V> : IReadOnlyDictionary<K, V> {
+    private Dictionary<K, V> inner;
+
+    public ReadOnlyDictionary(Dictionary<K, V> dictionary) {
+        if (dictionary == null) { throw new ArgumentNullException("dictionary"); }
+        inner = dictionary;
+    }
+
+    public int Count => inner.Count;
+    public V this[K key] => inner[key];
+
+    public List<K> Keys => inner.Keys;
+    public List<V> Values => inner.Values;
+
+    public bool ContainsKey(K key) { return inner.ContainsKey(key); }
+
+    public bool TryGetValue(K key, out V value) { return inner.TryGetValue(key, out value); }
+
+    public IEnumerator<KeyValuePair<K, V>> GetEnumerator() { return inner.GetEnumerator(); }
+}

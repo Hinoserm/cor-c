@@ -1,0 +1,220 @@
+// System.Environment: the process's arguments, environment, working
+// directory and exit, as .NET spells them.
+static class Environment
+{
+    static string[]? _args;
+    static string[]? _env;
+    public static int ExitCode;
+    public static string NewLine = "\n";
+
+    /// THE PROGRAM'S OWN PATH, which .NET 6 added and which is the only honest
+    /// way to find anything installed beside it. /proc/self/exe is what the
+    /// kernel answers with; argv[0] is what the caller chose to say and may be
+    /// a bare name found on PATH.
+    public static string? ProcessPath
+    {
+        get
+        {
+            string? real = Os.Readlink("/proc/self/exe");
+
+            if (real != null) { return real; }
+
+            string[] argv = GetCommandLineArgs();
+
+            return argv.Length > 0 ? argv[0] : null;
+        }
+    }
+
+    /// argv as the kernel laid it on the entry stack, argv[0] included, as
+    /// .NET's GetCommandLineArgs has it.
+    public static string[] GetCommandLineArgs()
+    {
+        string[]? have = _args;
+        if (have != null)
+        {
+            return have;
+        }
+        long sp = Sys.EntryStack();
+        int argc = (int)Sys.PeekWord(sp);
+        string[] args = new string[argc];
+        for (int i = 0; i < argc; i++)
+        {
+            args[i] = Os.StringAt(Sys.PeekWord(sp + 4 + 4 * i));
+        }
+        _args = args;
+        return args;
+    }
+
+    static string[] Environ()
+    {
+        string[]? have = _env;
+        if (have != null)
+        {
+            return have;
+        }
+        long sp = Sys.EntryStack();
+        long argc = Sys.PeekWord(sp);
+        long at = sp + 4 + 4 * argc + 4;
+        int n = 0;
+        while (Sys.PeekWord(at + 4 * n) != 0)
+        {
+            n = n + 1;
+        }
+        string[] all = new string[n];
+        for (int i = 0; i < n; i++)
+        {
+            all[i] = Os.StringAt(Sys.PeekWord(at + 4 * i));
+        }
+        _env = all;
+        return all;
+    }
+
+    /// The address of envp, for execve.
+    public static long EnvironAddress()
+    {
+        return Os.EnvironAddress();
+    }
+
+    public static string[] EnvironmentBlock()
+    {
+        return Environ();
+    }
+
+    public static string? GetEnvironmentVariable(string name)
+    {
+        string[] all = Environ();
+        for (int i = 0; i < all.Length; i++)
+        {
+            string entry = all[i];
+            if (entry.Length > name.Length && entry[name.Length] == '=' && String.StartsWith(entry, name))
+            {
+                return entry.Substring(name.Length + 1);
+            }
+        }
+        return null;
+    }
+
+    public static Dictionary<string, string> GetEnvironmentVariables()
+    {
+        Dictionary<string, string> vars = new Dictionary<string, string>();
+        string[] all = Environ();
+        for (int i = 0; i < all.Length; i++)
+        {
+            int eq = all[i].IndexOf('=');
+            if (eq > 0)
+            {
+                vars[all[i].Substring(0, eq)] = all[i].Substring(eq + 1);
+            }
+        }
+        return vars;
+    }
+
+    public static string CurrentDirectory
+    {
+        get
+        {
+            string? cwd = Os.Getcwd();
+            return cwd == null ? "/" : cwd;
+        }
+        set
+        {
+            if (Os.Chdir(value) < 0)
+            {
+                throw new IOException("cannot change directory to " + value);
+            }
+        }
+    }
+
+    public static int ProcessId
+    {
+        get { return Os.Getpid(); }
+    }
+
+    /// THE CALLS THAT LED HERE, in the same wording an exception's own
+    /// StackTrace uses -- `   at Type.Method in file.cor:line N`, newest
+    /// first, one to a line.
+    ///
+    /// The frame pointer is read HERE and handed over rather than read inside
+    /// the walk, so the answer does not change with what the optimiser
+    /// inlined into what.
+    public static string StackTrace
+    {
+        get { return Runtime.Trace(Sys.FramePointer()); }
+    }
+
+    public static string UserName
+    {
+        get
+        {
+            string? user = GetEnvironmentVariable("USER");
+            return user == null ? "" : user;
+        }
+    }
+
+    public static long TickCount64
+    {
+        get { return Os.Micros() / 1000; }
+    }
+
+    /// Ends the process now, flushing the console first, as .NET does.
+    /// Os.Exit runs whatever was left with Runtime.OnExit, which is the
+    /// flush.
+    public static void Exit(int code)
+    {
+        Os.Exit(code);
+    }
+
+}
+
+/// System.OperatingSystem -- which one this is, asked the way .NET 5 added.
+///
+/// The answers are settled at compile time on this machine: it is Linux when
+/// it is hosted and nothing at all when it is not, and there is no Windows
+/// anywhere. A program that asks is usually about to do something Unix-shaped,
+/// and .NET's is the spelling it asks with.
+static class OperatingSystem
+{
+    public static bool IsLinux() { return true; }
+    public static bool IsWindows() { return false; }
+    public static bool IsMacOS() { return false; }
+    public static bool IsFreeBSD() { return false; }
+    public static bool IsAndroid() { return false; }
+    public static bool IsIOS() { return false; }
+    public static bool IsBrowser() { return false; }
+    public static bool IsOSPlatform(string platform) { return platform == "LINUX"; }
+    public static bool IsUnix() { return true; }
+}
+
+/// System.AppContext -- where the program was loaded from, and the switches it
+/// was started with. BaseDirectory is the one this compiler uses to find the
+/// class library beside itself.
+static class AppContext
+{
+    public static string BaseDirectory
+    {
+        get
+        {
+            string? self = Environment.ProcessPath;
+
+            // getcwd(2) directly: System.Environment sits below System.IO in
+            // the library the machine links, and asking Directory for it would
+            // make the lower one need the higher.
+            string? cwd = Os.Getcwd();
+
+            if (self == null) { return cwd == null ? "/" : cwd; }
+
+            string? directory = Path.GetDirectoryName(self);
+
+            return directory == null ? (cwd == null ? "/" : cwd)
+                                     : (directory.EndsWith("/") ? directory : directory + "/");
+        }
+    }
+
+    public static bool TryGetSwitch(string switchName, out bool isEnabled)
+    {
+        isEnabled = false;
+        return false;
+    }
+
+    public static object? GetData(string name) { return null; }
+}

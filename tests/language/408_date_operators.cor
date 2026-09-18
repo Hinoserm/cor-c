@@ -1,0 +1,36 @@
+// test: DateTime and TimeSpan arithmetic through operators
+// expect-exit: 0
+// expect-output:
+// days=9 hours=6 total=222 str=9.06:00:00
+// 2024-01-11 06:00:00 2024-01-10 00:00:00
+// True False True False True cmp=1
+// 02:00:00 01:00:00 03:00:00 00:45:00 ratio=3
+// True True True True
+//
+// ONE DATE MINUS ANOTHER IS A LENGTH OF TIME and a date plus a length is
+// another date: two different operations that happen to be spelt with the
+// same sign, which is why .NET makes them operators rather than one Subtract.
+// The compiler resolves each to the static method the struct declared, under
+// the name the operator has in metadata. Values from the same program on .NET.
+
+class Program
+{
+    static int Main()
+    {
+        DateTime a = new DateTime(2024, 1, 10, 6, 0, 0);
+        DateTime b = new DateTime(2024, 1, 1, 0, 0, 0);
+        TimeSpan d = a - b;
+
+        Console.WriteLine($"days={d.Days} hours={d.Hours} total={(long)d.TotalHours} str={d.ToString()}");
+        Console.WriteLine((a + TimeSpan.FromDays(1)).ToString("yyyy-MM-dd HH:mm:ss") + " "
+            + (a - TimeSpan.FromHours(6)).ToString("yyyy-MM-dd HH:mm:ss"));
+        Console.WriteLine($"{a > b} {a < b} {a >= a} {a == b} {a != b} cmp={DateTime.Compare(a, b)}");
+
+        TimeSpan x = TimeSpan.FromMinutes(90);
+        TimeSpan y = TimeSpan.FromMinutes(30);
+
+        Console.WriteLine($"{(x + y).ToString()} {(x - y).ToString()} {(x * 2.0).ToString()} {(x / 2.0).ToString()} ratio={(long)(x / y)}");
+        Console.WriteLine($"{x > y} {x == TimeSpan.FromHours(1.5)} {x != y} {y <= x}");
+        return 0;
+    }
+}

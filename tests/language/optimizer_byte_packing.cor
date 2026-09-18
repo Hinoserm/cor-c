@@ -1,0 +1,36 @@
+// test: byte-range masks and left shifts preserve high bits, signs and snapshots
+// expect-exit: 0
+// expect-output:
+// byte packing passed
+static class Program
+{
+    static long P8(long x) { return (x & 255) << 8; }
+    static long P16(long x) { return (x & 255) << 16; }
+    static long P24(long x) { return (x & 255) << 24; }
+    static long P32(long x) { return (x & 255) << 32; }
+    static long P63(long x) { return (x & 255) << 63; }
+    static long P64(long x) { return (x & 255) << 64; }
+    static int Main()
+    {
+        long[] values = new long[] { 0, 1, 255, 256, 511, -1, long.MinValue, long.MaxValue };
+        byte[] bytes = new byte[] { 255, 2, 1, 128 };
+        long packed = ((long)bytes[0] & 255) | (((long)bytes[1] & 255) << 8)
+            | (((long)bytes[2] & 255) << 16) | (((long)bytes[3] & 255) << 24);
+        if (packed != 2147549951L) return 1;
+        foreach (long x in values)
+        {
+            long v = x & 255;
+            if (P8(x) != v * 256 || P16(x) != v * 65536 || P24(x) != v * 16777216) return 2;
+            if (P32(x) != v * 4294967296L || P64(x) != v) return 3;
+            if (P63(x) != ((v & 1) == 0 ? 0 : long.MinValue)) return 4;
+            long captured = v;
+            v = x;
+            if ((captured & 255) != (x & 255) || (v & 255) != (x % 256 + 256) % 256) return 5;
+            if (((x & 511) & 255) != (x & 255)) return 6;
+        }
+        sbyte signed = -1;
+        if (((long)signed & 255) != 255) return 7;
+        Console.WriteLine("byte packing passed");
+        return 0;
+    }
+}

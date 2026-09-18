@@ -1,0 +1,41 @@
+// test: optional constructor overloads use argument types and preserve named argument order
+// expect-exit: 0
+// expect-output:
+// constructor defaults passed
+class FunctionInput { }
+class GraphInput { }
+class Analysis
+{
+    public int Kind;
+    public bool Ssa;
+    public bool Build;
+    public Analysis(FunctionInput f, bool ssa = false, bool buildCfg = true)
+    { Kind = 1; Ssa = ssa; Build = buildCfg; }
+    public Analysis(GraphInput cfg, bool ssa = false)
+    { Kind = 2; Ssa = ssa; }
+}
+class Ordered
+{
+    public int Value;
+    public Ordered(int a = 7, int b = 8, int c = 9) { Value = 100 * a + 10 * b + c; }
+}
+static class Program
+{
+    static int Trace;
+    static int Next(int value) { Trace = Trace * 10 + value; return value; }
+    static int Main()
+    {
+        FunctionInput f = new();
+        GraphInput g = new();
+        Analysis one = new(f, true);
+        Analysis two = new(g);
+        Analysis three = new(f, buildCfg: false);
+        if (one.Kind != 1 || !one.Ssa || !one.Build) return 1;
+        if (two.Kind != 2 || two.Ssa) return 2;
+        if (three.Kind != 1 || three.Ssa || three.Build) return 3;
+        Ordered order = new(c: Next(3), a: Next(1));
+        if (Trace != 31 || order.Value != 183) return 4;
+        Sys.Print("constructor defaults passed\n");
+        return 0;
+    }
+}

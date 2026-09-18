@@ -1,0 +1,68 @@
+// test: tuple names belong to the use site, including generic round trips
+// expect-exit: 0
+// expect-output:
+// tuple contexts passed
+class TupleHolder<T>
+{
+    private T _value;
+    public T Field;
+    public T Auto { get; set; }
+    public TupleHolder(T value) { _value = value; Field = value; Auto = value; }
+    public T Read(int ignored) => _value;
+    public T Read(string ignored) => _value;
+    public T Value => _value;
+    public List<T> Items() => new() { _value };
+}
+class ReorderedHolder<Unused, T> : TupleHolder<T>
+{
+    public ReorderedHolder(T value) : base(value) { }
+}
+class FixedHolder : TupleHolder<(int Right, int Left)>
+{
+    public FixedHolder((int Right, int Left) value) : base(value) { }
+}
+static class Program
+{
+    static T Identity<T>(T value) => value;
+    static int Main()
+    {
+        var first = (Left: 11, Right: 22);
+        var second = (Right: 33, Left: 44);
+        if (first.Left != 11 || second.Left != 44) return 1;
+        var firstCopy = Identity(first);
+        var secondCopy = Identity(second);
+        if (firstCopy.Left != 11 || firstCopy.Right != 22) return 2;
+        if (secondCopy.Left != 44 || secondCopy.Right != 33) return 3;
+        (int Right, int Left) reassigned = first;
+        if (reassigned.Right != 11 || reassigned.Left != 22) return 4;
+        if (firstCopy.Item1 != 11 || secondCopy.Item2 != 44) return 5;
+        List<(int Left, int Right)> firstList = new() { first };
+        List<(int Right, int Left)> secondList = new() { second };
+        if (firstList[0].Left != 11 || firstList[0].Right != 22) return 6;
+        if (secondList[0].Left != 44 || secondList[0].Right != 33) return 7;
+        TupleHolder<(int Left, int Right)> firstHolder = new(first);
+        TupleHolder<(int Right, int Left)> secondHolder = new(second);
+        if (firstHolder.Read(0).Left != 11 || secondHolder.Read(0).Left != 44) return 8;
+        if (firstHolder.Read("x").Right != 22 || secondHolder.Read("x").Right != 33) return 9;
+        if (firstHolder.Value.Left != 11 || secondHolder.Value.Left != 44) return 10;
+        if (firstHolder.Items()[0].Left != 11 || secondHolder.Items()[0].Left != 44) return 11;
+        if (firstHolder.Field.Left != 11 || secondHolder.Field.Left != 44) return 12;
+        if (firstHolder.Auto.Left != 11 || secondHolder.Auto.Left != 44) return 13;
+        List<(string Name, int Bytes)> sizes = new() { ("small", 2), ("big", 9) };
+        List<(string Other, int Count)> otherNames = new() { ("other", 1) };
+        int total = 0;
+        string order = "";
+        foreach ((string name, int bytes) in sizes.OrderByDescending(f => f.Bytes))
+        { total += bytes; order += name; }
+        if (total != 11 || order != "bigsmall") return 14;
+        if (otherNames.OrderByDescending(f => f.Count)[0].Count != 1) return 15;
+        ReorderedHolder<int, (int Left, int Right)> inheritedFirst = new(first);
+        ReorderedHolder<int, (int Right, int Left)> inheritedSecond = new(second);
+        if (inheritedFirst.Value.Left != 11 || inheritedSecond.Value.Left != 44) return 16;
+        if (inheritedFirst.Read(0).Right != 22 || inheritedSecond.Field.Right != 33) return 17;
+        FixedHolder fixedHolder = new(second);
+        if (fixedHolder.Auto.Left != 44 || fixedHolder.Items()[0].Right != 33) return 18;
+        Sys.Print("tuple contexts passed\n");
+        return 0;
+    }
+}

@@ -1,0 +1,38 @@
+// test: optimizer_ranges
+// expect-exit: 0
+// expect-output:
+// optimizer ranges and ABI passed
+static class Program
+{
+    static long[] _values = new long[] { -1, 65535, 65536, 1099511627776L };
+    static long _address;
+    static void Target() { }
+    static long StoreAddress(long address) { _address = address; return address; }
+    static long Mixed(long input, bool large)
+    {
+        long value = input & 65535;
+        if (large) value = 65536;
+        return unchecked(value * value);
+    }
+    static long Parameter(long input)
+    {
+        long result = unchecked(input * 19);
+        input = 1;
+        return result + input;
+    }
+    static int Main()
+    {
+        long masked = _values[0] & 65535;
+        if (masked * masked != 4294836225L) return 1;
+        if (Mixed(_values[0], false) != 4294836225L) return 2;
+        if (Mixed(_values[0], true) != 4294967296L) return 3;
+        if (Parameter(_values[3]) != 20890720927745L) return 4;
+        long running = 0;
+        for (int i = 0; i < 20; i++) running = (running + 65536) * 3;
+        if (running != 342764853657600L) return 5;
+        long address = StoreAddress(Sys.AddressOf(Target));
+        if (address == 0 || address != _address || ((ulong)address >> 32) != 0) return 6;
+        Console.WriteLine("optimizer ranges and ABI passed");
+        return 0;
+    }
+}

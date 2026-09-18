@@ -1,0 +1,163 @@
+// test: thread exceptions
+// expect-exit: 0
+// expect-output:
+// caught 2000
+// finally 4000
+// inner 2000
+// main 500
+// alive 4
+//
+// Four threads throw and catch in a loop, each through a nested try/finally,
+// while the main thread does the same thing at the same time. The exception
+// handler chain is a word of each thread's own block, so the records one
+// thread pushes are invisible to the others; before that it was one word of
+// .bss for the whole process and this program interleaved four lists into one
+// and jumped into a dead frame.
+//
+// Everything printed is a count, and every count is the number of times
+// something that MUST happen happened -- nothing here depends on which thread
+// runs when.
+
+class Trouble : Exception
+{
+    public int Round;
+
+    public Trouble(int round) : base("trouble")
+    {
+        Round = round;
+    }
+}
+
+/// Throws and catches `Rounds` times, counting what it saw. The counters are
+/// fields, not statics: every thread has its own, and the main thread adds
+/// them up after Join.
+class Thrower : Action
+{
+    public int Caught;
+    public int Finallys;
+    public int Inner;
+
+    const int Rounds = 500;
+
+    public void Invoke()
+    {
+        for (int i = 0; i < Rounds; i++)
+        {
+            try
+            {
+                try
+                {
+                    // The inner handler lets it past, so the record this frame
+                    // pushed has to be unlinked by the unwind and not by a
+                    // `finally` that never runs.
+                    if (i >= 0)
+                    {
+                        throw new Trouble(i);
+                    }
+                }
+                catch (InvalidOperationException e)
+                {
+                    Inner = Inner - 1000;
+                }
+                finally
+                {
+                    Finallys = Finallys + 1;
+                }
+            }
+            catch (Trouble t)
+            {
+                if (t.Round == i)
+                {
+                    Caught = Caught + 1;
+                }
+            }
+            finally
+            {
+                Finallys = Finallys + 1;
+            }
+
+            // And once more, caught where it was thrown, so that a record
+            // pushed and popped normally is mixed in with the ones unwound.
+            try
+            {
+                throw new Trouble(i);
+            }
+            catch (Trouble t)
+            {
+                Inner = Inner + 1;
+            }
+        }
+    }
+}
+
+static class Program
+{
+    static void Say(string label, long value)
+    {
+        Sys.Print(label);
+        Sys.PrintInt(value);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        int workers = 4;
+        Thrower[] bodies = new Thrower[workers];
+        Thread[] threads = new Thread[workers];
+
+        for (int i = 0; i < workers; i++)
+        {
+            Thrower body = new Thrower();
+
+            bodies[i] = body;
+            threads[i] = Thread.Start(body);
+        }
+
+        // The main thread throws and catches while they do, on its own chain.
+        int mine = 0;
+
+        for (int i = 0; i < 500; i++)
+        {
+            try
+            {
+                try
+                {
+                    throw new Trouble(i);
+                }
+                finally
+                {
+                    mine = mine + 1;
+                }
+            }
+            catch (Trouble t)
+            {
+            }
+        }
+
+        int alive = 0;
+
+        for (int i = 0; i < workers; i++)
+        {
+            threads[i].Join();
+            alive = alive + 1;
+        }
+
+        int caught = 0;
+        int finallys = 0;
+        int inner = 0;
+
+        for (int i = 0; i < workers; i++)
+        {
+            caught = caught + bodies[i].Caught;
+            finallys = finallys + bodies[i].Finallys;
+            inner = inner + bodies[i].Inner;
+        }
+
+        Say("caught ", caught);
+        Say("finally ", finallys);
+        Say("inner ", inner);
+        Say("main ", mine);
+        Say("alive ", alive);
+        return 0;
+    }
+}

@@ -1,0 +1,83 @@
+// test: shared exceptions
+// expect-exit: 0
+// expect-output:
+// caught mine
+// caught theirs DivideByZeroException
+// finally ran 3
+// rethrown mine
+//
+// AN EXCEPTION CROSSES THE BOUNDARY IN BOTH DIRECTIONS. The handler chain is
+// a per-thread list whose head is in the runtime's thread block, so a program
+// that enters `try` and a library that throws have to agree about where that
+// block is -- there is exactly one of it per process, and it is the shared
+// runtime's.
+//
+// The second case is the one that only a shared library can get wrong: the
+// program never constructs a DivideByZeroException, the runtime does, and the
+// catch clause is a type test against a descriptor. If the program carried a
+// copy of that descriptor rather than using the library's, the test would
+// compare two addresses of one type and the exception would go unhandled.
+class Mine : Exception
+{
+    public Mine(string message) : base(message) { }
+}
+
+static class Program
+{
+    static int _finally;
+
+    static void Throwing()
+    {
+        try
+        {
+            throw new Mine("mine");
+        }
+        finally
+        {
+            _finally = _finally + 1;
+        }
+    }
+
+    static void Main()
+    {
+        try
+        {
+            Throwing();
+        }
+        catch (Mine e)
+        {
+            Console.WriteLine("caught " + e.Message);
+        }
+
+        try
+        {
+            int zero = 0;
+            Console.WriteLine("" + (7 / zero));
+        }
+        catch (DivideByZeroException e)
+        {
+            Console.WriteLine("caught theirs " + e.GetType().Name);
+        }
+        finally
+        {
+            _finally = _finally + 1;
+        }
+
+        try
+        {
+            try
+            {
+                Throwing();
+            }
+            catch (Mine)
+            {
+                throw;
+            }
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine("finally ran " + _finally);
+            Console.WriteLine("rethrown " + e.Message);
+        }
+    }
+}

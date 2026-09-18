@@ -1,0 +1,98 @@
+// test: keys_are_asked
+// expect-exit: 0
+// expect-output:
+// tuple 7 True False
+// set 2 True
+// type 5 True
+// text 1 True
+// hash True True
+// plain 1 False
+// search True 1 True 2 False
+//
+// A TABLE ASKS THE KEY, as .NET's does: its Equals and its GetHashCode. A
+// tuple is equal to a tuple of equal things, and is looked up with one made
+// for the question -- never the one that went in. A class that says what
+// makes two of it equal is found again by an equal one. A class that says
+// nothing is only ever itself.
+//
+// The compiler's register allocator keys a table by (register, instruction);
+// compiled by itself, with keys compared by where they were, it never found
+// anything it had put there.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+sealed class Ty : IEquatable<Ty>
+{
+    public int Prim;
+    public Ty? Element;
+
+    public bool Equals(Ty? other)
+    {
+        return other is not null && Prim == other.Prim && Equals(Element, other.Element);
+    }
+
+    public override bool Equals(object? o) => Equals(o as Ty);
+    public override int GetHashCode() => HashCode.Combine(Prim, Element);
+}
+
+sealed class Plain { public int N; }
+
+class P
+{
+    static int Main()
+    {
+        Dictionary<(int VReg, int Instr), int> shortReg = new();
+
+        for (int v = 0; v < 40; v++)
+        {
+            shortReg[(v, v * 3)] = v + 1;
+        }
+
+        Console.WriteLine("tuple " + shortReg[(6, 18)] + " " + shortReg.ContainsKey((39, 117))
+                          + " " + shortReg.ContainsKey((6, 19)));
+
+        HashSet<(int Instr, string Name)> folded = new();
+
+        folded.Add((1, "a" + 1));
+        folded.Add((1, "a" + 1));
+        folded.Add((2, "a1"));
+        Console.WriteLine("set " + folded.Count + " " + folded.Contains((2, "a" + "1")));
+
+        Dictionary<Ty, int> sizes = new();
+
+        sizes[new Ty { Prim = 3, Element = new Ty { Prim = 1 } }] = 5;
+        sizes[new Ty { Prim = 3, Element = new Ty { Prim = 1 } }] = 5;
+        Console.WriteLine("type " + sizes[new Ty { Prim = 3, Element = new Ty { Prim = 1 } }]
+                          + " " + (sizes.Count == 1));
+
+        HashSet<string> names = new();
+
+        names.Add("on" + "e");
+        names.Add("o" + "ne");
+        Console.WriteLine("text " + names.Count + " " + names.Contains("one"));
+
+        Ty left = new Ty { Prim = 9 };
+        Ty right = new Ty { Prim = 9 };
+
+        Console.WriteLine("hash " + (left.GetHashCode() == right.GetHashCode())
+                          + " " + (HashCode.Combine(4, "x" + 1) == HashCode.Combine(4, "x1")));
+
+        Dictionary<Plain, int> plain = new();
+        Plain kept = new Plain { N = 1 };
+
+        plain[kept] = 1;
+        Console.WriteLine("plain " + plain[kept] + " " + plain.ContainsKey(new Plain { N = 1 }));
+
+        // And every search asks the same way: the text, not where it is.
+        string[] args = new string[] { "compile", "-W" + "no-error", "x.cor" };
+        List<string> words = new List<string>(args);
+        List<int> numbers = new List<int> { 4, 5, 6 };
+
+        Console.WriteLine("search " + args.Contains("-Wno-error") + " " + words.IndexOf("-Wno" + "-error")
+                          + " " + words.Contains("x" + ".cor") + " " + numbers.IndexOf(6)
+                          + " " + numbers.Contains(7));
+        return 0;
+    }
+}

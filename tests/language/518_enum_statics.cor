@@ -1,0 +1,115 @@
+// test: enum_statics
+// expect-exit: 0
+// expect-output:
+// getname Blue
+// getname by type Green
+// getname none []
+// getnames Red,Green,Blue
+// getnames by type None,Read,Write,Run
+// getvalues 3 Red Blue
+// getvalues by type 4
+// isdefined True False
+// isdefined by type True
+// parse Blue
+// parse ignoring case Blue
+// parse a number 9
+// parse a list Read, Run
+// tryparse True Green
+// tryparse declaring True Write
+// tryparse nothing False 0
+// tryparse a list True Read, Write
+// hasflag True False
+// threw Requested value 'Mauve' was not found.
+// null concat [x]
+//
+// THE STATIC HALF OF System.Enum. Only the compiler can answer any of it: an
+// enum's members exist at compile time and nowhere else, so the code generator
+// writes a table of them (docs/software/X86-BACKEND.md) and these read the
+// same table `e.ToString()` reads.
+//
+// BOTH SPELLINGS .NET HAS. `Enum.GetName<Colour>(c)` is what anything written
+// since .NET 5 says and `Enum.GetName(typeof(Colour), c)` is what came before;
+// they mean the same thing and there is one implementation. GetValues and
+// GetNames become the array C# would have written, in value order, because
+// .NET's answer is a fresh array the caller may write to.
+//
+// Parse reads a member's name, a comma-separated list of them -- for any enum,
+// not only a [Flags] one -- or a plain decimal number, which it accepts even
+// when no member has it; TryParse answers false where Parse throws.
+enum Colour
+{
+    Red,
+    Green = 5,
+    Blue,
+}
+
+[Flags]
+enum Ways
+{
+    None = 0,
+    Read = 1,
+    Write = 2,
+    Run = 4,
+}
+
+static class Program
+{
+    static void Main()
+    {
+        Console.WriteLine("getname " + Enum.GetName<Colour>(Colour.Blue));
+        Console.WriteLine("getname by type " + Enum.GetName(typeof(Colour), Colour.Green));
+
+        // GetName does NOT take a set of bits apart and does not answer a
+        // number: a value no member has has no name.
+        Console.WriteLine("getname none [" + Enum.GetName<Colour>((Colour)9) + "]");
+
+        Console.WriteLine("getnames " + string.Join(",", Enum.GetNames<Colour>()));
+        Console.WriteLine("getnames by type " + string.Join(",", Enum.GetNames(typeof(Ways))));
+
+        Colour[] all = Enum.GetValues<Colour>();
+
+        Console.WriteLine("getvalues " + all.Length + " " + all[0] + " " + all[2]);
+        Console.WriteLine("getvalues by type " + Enum.GetValues(typeof(Ways)).Length);
+
+        Console.WriteLine("isdefined " + Enum.IsDefined<Colour>(Colour.Blue)
+                          + " " + Enum.IsDefined<Colour>((Colour)9));
+        Console.WriteLine("isdefined by type " + Enum.IsDefined(typeof(Ways), Ways.Run));
+
+        Console.WriteLine("parse " + Enum.Parse<Colour>("Blue"));
+        Console.WriteLine("parse ignoring case " + Enum.Parse<Colour>("blue", true));
+        Console.WriteLine("parse a number " + (int)Enum.Parse<Colour>("9"));
+        Console.WriteLine("parse a list " + Enum.Parse<Ways>("Read, Run"));
+
+        Colour got;
+
+        Console.WriteLine("tryparse " + Enum.TryParse<Colour>("Green", out got) + " " + got);
+        Console.WriteLine("tryparse declaring " + Enum.TryParse<Ways>("Write", out Ways w) + " " + w);
+
+        // A name nothing has: false, and the variable left at its zero, which
+        // is what .NET promises about an `out` on the failing path.
+        Console.WriteLine("tryparse nothing " + Enum.TryParse<Colour>("Mauve", out Colour bad)
+                          + " " + (int)bad);
+        Console.WriteLine("tryparse a list " + Enum.TryParse<Ways>("Read,Write", out Ways two)
+                          + " " + two);
+
+        Ways flags = Ways.Read | Ways.Run;
+
+        Console.WriteLine("hasflag " + flags.HasFlag(Ways.Read) + " " + flags.HasFlag(Ways.Write));
+
+        try
+        {
+            Enum.Parse<Colour>("Mauve");
+            Console.WriteLine("threw nothing");
+        }
+        catch (ArgumentException e)
+        {
+            Console.WriteLine("threw " + e.Message);
+        }
+
+        // GetName answers null, and .NET says a null joined to a string is the
+        // empty string rather than a fault.
+        string? missing = Enum.GetName<Colour>((Colour)11);
+
+        Console.WriteLine("null concat [" + "x" + missing + "]");
+    }
+}

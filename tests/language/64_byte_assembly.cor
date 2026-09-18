@@ -1,0 +1,56 @@
+// test: byte_assembly
+// expect-exit: 0
+// expect-output:
+// word 2882400018
+// word 4294967295
+// word 2147680769
+// word 67305985
+//
+// A 32-bit word assembled little-endian from four bytes, widened to long,
+// the way the runtime's CRC table lookup does it: the first three bytes
+// shifted as ints, the last as a long so its top bit lands in bit 31
+// without sign extension. The bytes and the shift distance are only known
+// at run time, so nothing folds. Guards a backend peephole that renamed a shift's CL count to
+// another register, so 0xabcdef12 came out as 0xab7fa012.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    // The shift distances arrive as a parameter so they stay variable
+    // after optimisation: the fault was in a variable shift, whose count
+    // must be in CL.
+    static long Word(byte[] data, int at, int unit)
+    {
+        int b0 = data[at];
+        int b1 = data[at + 1];
+        int b2 = data[at + 2];
+        int b3 = data[at + 3];
+        return b0 | (b1 << unit) | (b2 << (unit * 2)) | ((long)b3 << (unit * 3));
+    }
+
+    static int Main()
+    {
+        // 12 EF CD AB, FF FF FF FF, 01 02 03 80, 01 02 03 04.
+        int[] seeds = { 0x12, 0xEF, 0xCD, 0xAB, 0xFF, 0xFF, 0xFF, 0xFF, 0x01, 0x02, 0x03, 0x80, 0x01, 0x02, 0x03, 0x04 };
+        byte[] data = new byte[16];
+        for (int i = 0; i < 16; i++)
+        {
+            data[i] = (byte)seeds[i];
+        }
+
+        // 8, read back out of the array (0xFF & 8) rather than written as a literal.
+        int unit = data[4] & 8;
+
+        for (int i = 0; i < 16; i += 4)
+        {
+            Line("word " + Word(data, i, unit));
+        }
+
+        return 0;
+    }
+}

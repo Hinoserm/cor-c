@@ -1,0 +1,81 @@
+// test: free reuse
+// expect-exit: 0
+// expect-output:
+// checksum 12800000
+// reused True
+// collections 0
+// heap steady True
+//
+// Runtime.Free gives a block back to the heap at once. Two hundred thousand
+// blocks are allocated, written, read back and freed one at a time; every one
+// of them must come back at the same address as the last, no collection may
+// happen (a program that returns what it takes has nothing for a collector to
+// find), and the heap must not grow past the chunk it started in.
+
+static class Program
+{
+    static void Say(string label, long value)
+    {
+        Sys.Print(label);
+        Sys.PrintInt(value);
+        Sys.PrintLine();
+    }
+
+    static void SayBool(string label, bool value)
+    {
+        Sys.Print(label);
+
+        if (value)
+        {
+            Sys.Print("True");
+        }
+        else
+        {
+            Sys.Print("False");
+        }
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        // Wake the heap up first, so that the address of the first block in
+        // the loop is a bump-pointer address like all the others.
+        long warm = Runtime.Alloc(64);
+        Runtime.Free(warm);
+
+        // Freeing what was never allocated must be safe and do nothing: the
+        // compiler emits these calls from a proof, and a proof about a
+        // reference that turned out to be null must cost nothing.
+        Runtime.Free(0);
+        Runtime.Free(4);
+
+        long first = 0;
+        long moved = 0;
+        long sum = 0;
+        long startHeap = Gc.HeapBytes;
+
+        for (int i = 0; i < 200000; i++)
+        {
+            long at = Runtime.Alloc(64);
+
+            if (first == 0)
+            {
+                first = at;
+            }
+            else if (at != first)
+            {
+                moved = moved + 1;
+            }
+
+            Sys.Poke(at, 64);
+            sum = sum + Sys.Peek(at);
+            Runtime.Free(at);
+        }
+
+        Say("checksum ", sum);
+        SayBool("reused ", moved == 0);
+        Say("collections ", Gc.Collections);
+        SayBool("heap steady ", Gc.HeapBytes == startHeap);
+        return 0;
+    }
+}

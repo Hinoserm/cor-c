@@ -1,0 +1,92 @@
+// test: tables_keep_their_order
+// expect-exit: 0
+// expect-output:
+// map zeta alpha mid beta q0 q1 q2 q3 q4 q5 q6 q7 q8 q9 q10 q11 q12 q13 q14 q15 q16 q17 q18 q19
+// keys 24 zeta 24 1
+// set 9 3 7 1 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59
+// after zeta mid q0 last
+// copy zeta mid q0 last
+// cleared first second
+//
+// A TABLE IS WALKED IN THE ORDER IT WAS FILLED, which is what .NET's does while
+// nothing has been removed, and what a program that fills one and then writes
+// it out depends on without ever saying so. The compiler's static data came
+// out in a different order once it was compiled by itself, because its
+// library walked a table in the order the hashes fell.
+
+using System;
+using System.Collections.Generic;
+
+class P
+{
+    static int Main()
+    {
+        Dictionary<string, int> map = new();
+
+        map["zeta"] = 1;
+        map["alpha"] = 2;
+        map["mid"] = 3;
+        map["beta"] = 4;
+
+        for (int i = 0; i < 20; i++)
+        {
+            map["q" + i] = i;           // through a growth or two
+        }
+
+        map["alpha"] = 22;              // written again: it keeps its place
+
+        string line = "map";
+
+        foreach (KeyValuePair<string, int> pair in map)
+        {
+            line += " " + pair.Key;
+        }
+
+        Console.WriteLine(line);
+        Console.WriteLine("keys " + map.Keys.Count + " " + map.Keys[0] + " " + map.Values.Count + " " + map.Values[0]);
+
+        HashSet<int> set = new() { 9, 3, 7, 1 };
+
+        for (int i = 40; i < 60; i++)
+        {
+            set.Add(i);
+        }
+
+        set.Add(3);
+        line = "set";
+
+        foreach (int each in set)
+        {
+            line += " " + each;
+        }
+
+        Console.WriteLine(line);
+
+        for (int i = 1; i < 20; i++)
+        {
+            map.Remove("q" + i);
+        }
+
+        map.Remove("alpha");
+        map.Remove("beta");
+        map["last"] = 9;
+        line = "after";
+
+        foreach (KeyValuePair<string, int> pair in map)
+        {
+            line += " " + pair.Key;
+        }
+
+        Console.WriteLine(line);
+
+        Dictionary<string, int> copy = new(map);
+
+        Console.WriteLine("copy " + string.Join(" ", copy.Keys));
+
+        map.Clear();
+        map["first"] = 1;
+        map["second"] = 2;
+        Console.WriteLine("cleared " + string.Join(" ", map.Keys));
+        return 0;
+    }
+}

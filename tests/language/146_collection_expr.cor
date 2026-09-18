@@ -1,0 +1,53 @@
+// test: collection_expr
+// expect-exit: 0
+// expect-output:
+// ints 3 1 3
+// empty 0
+// strings 2 ab
+// field 2 9
+// jagged 2 3 40
+// built 7
+//
+// A collection expression -- `int[] a = [1, 2, 3];` -- which is the braced
+// array initialiser written with square brackets. C# takes the type from what
+// it is being given to, which here is the declaration standing beside it, so
+// the two spellings build the same array.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int[] _table = [9, 8];
+
+    static int Main()
+    {
+        int one = 1;
+        int three = 3;
+        int[] a = [one, 2, three];
+        Line("ints " + a.Length + " " + a[0] + " " + a[2]);
+
+        long[] none = [];
+        Line("empty " + none.Length);
+
+        string[] names = ["a", "b"];
+        Line("strings " + names.Length + " " + names[0] + names[1]);
+
+        Line("field " + _table.Length + " " + _table[0]);
+
+        int[][] rows = [[1, 2, 3], [4, 5, 6]];
+        Line("jagged " + rows.Length + " " + rows[0].Length + " " + (rows[1][0] * 10));
+
+        int total = 0;
+
+        foreach (int v in a)
+        {
+            total += v;
+        }
+        Line("built " + (total + one));
+        return 0;
+    }
+}

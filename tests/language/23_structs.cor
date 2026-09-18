@@ -1,0 +1,88 @@
+// test: structs
+// expect-exit: 0
+// expect-output:
+// copy 1 10
+// dot 11
+// add 11 4
+// array 0 5
+// byval 1
+// kvp k 7
+// list 1 2
+// ret 3 4
+//
+// Structs are values: assignment copies, passing to a method copies, array
+// elements are stored inline and default to zero. The fields are long so a
+// struct is more than one register wide. KeyValuePair is the standard
+// library's struct.
+
+struct Vec
+{
+    public long X;
+    public long Y;
+
+    public Vec(long x, long y)
+    {
+        X = x;
+        Y = y;
+    }
+
+    public long Dot(Vec o)
+    {
+        return X * o.X + Y * o.Y;
+    }
+
+    public Vec Add(Vec o)
+    {
+        return new Vec(X + o.X, Y + o.Y);
+    }
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static void Bump(Vec v)
+    {
+        v.X = 100;
+    }
+
+    static Vec Make()
+    {
+        return new Vec(3, 4);
+    }
+
+    static int Main()
+    {
+        Vec a = new Vec(1, 2);
+        Vec b = a;
+        b.X = 10;
+        Line("copy " + a.X + " " + b.X);
+
+        Line("dot " + a.Dot(new Vec(3, 4)));
+
+        Vec sum = a.Add(b);
+        Line("add " + sum.X + " " + sum.Y);
+
+        Vec[] arr = new Vec[3];
+        arr[1].X = 5;
+        Line("array " + arr[0].X + " " + arr[1].X);
+
+        Bump(a);
+        Line("byval " + a.X);
+
+        KeyValuePair<string, int> kv = new KeyValuePair<string, int>("k", 7);
+        Line("kvp " + kv.Key + " " + kv.Value);
+
+        List<Vec> list = new List<Vec>();
+        list.Add(a);
+        Line("list " + list[0].X + " " + list[0].Y);
+
+        Vec r = Make();
+        Line("ret " + r.X + " " + r.Y);
+        return 0;
+    }
+}

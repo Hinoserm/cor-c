@@ -1,0 +1,75 @@
+// test: the file calls every utility in os/bin is made of
+// expect-exit: 0
+// expect-output:
+// wrote 11
+// read back hello world
+// size 11
+// tell 5
+// seek back hello
+// renamed
+// appended hello world!
+// unlinked
+// made and removed
+//
+// cat, cp, mv, rm and mkdir are these calls and a loop. Each one is checked
+// for the answer the kernel gives rather than only for not failing: a write
+// that takes a prefix, a seek that lands somewhere else, or a size read out
+// of the wrong half of st_size all "succeed".
+
+class Program
+{
+    static int Main()
+    {
+        string stem = String.Concat("/tmp/cor-file-", String.FromInt(Os.Getpid()));
+        string path = String.Concat(stem, ".a");
+        string other = String.Concat(stem, ".b");
+
+        int fd = Os.Create(path, 0x1A4);
+
+        if (fd < 0)
+        {
+            Console.WriteLine("cannot create");
+            return 1;
+        }
+
+        Console.Write("wrote ");
+        Console.WriteLine(Os.Write(fd, "hello world"));
+        Os.Close(fd);
+
+        Console.WriteLine(String.Concat("read back ", File.ReadAllText(path)));
+
+        fd = Os.Open(path, O.Read);
+        Console.Write("size ");
+        Console.WriteLine(Os.SizeOf(fd));
+
+        byte[] room = new byte[5];
+
+        Os.Read(fd, room, 0, 5);
+        Console.Write("tell ");
+        Console.WriteLine(Os.Tell(fd));
+
+        Os.Lseek(fd, 0, Whence.Set);
+        Os.Read(fd, room, 0, 5);
+        Console.WriteLine(String.Concat("seek back ", Raw.Text(room, 0, 5)));
+        Os.Close(fd);
+
+        Os.Rename(path, other);
+        Console.WriteLine(!Os.Exists(path) && Os.Exists(other) ? "renamed" : "did NOT rename");
+
+        File.AppendAllText(other, "!");
+        Console.WriteLine(String.Concat("appended ", File.ReadAllText(other)));
+
+        Os.Unlink(other);
+        Console.WriteLine(Os.Exists(other) ? "STILL THERE" : "unlinked");
+
+        string dir = String.Concat(stem, ".d");
+
+        Os.Mkdir(dir);
+
+        bool made = Stat.IsDir(dir);
+
+        Os.Rmdir(dir);
+        Console.WriteLine(made && !Os.Exists(dir) ? "made and removed" : "directory went WRONG");
+        return 0;
+    }
+}

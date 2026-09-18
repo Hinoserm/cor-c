@@ -1,0 +1,133 @@
+// test: enum_names
+// expect-exit: 0
+// expect-output:
+// tostring Green
+// concat Green
+// interpolated Green
+// format Green
+// boxed Green
+// boxed object Green
+// unnamed 9
+// zero Red
+// combined Read, Run
+// exact All
+// bare None
+// unaccounted 9
+// plain 7
+// aliased Small
+// masked Write
+// nullable Blue
+// nullable empty []
+// joined Red, Green, Blue
+//
+// AN ENUM SAYS WHAT ITS MEMBER IS CALLED. .NET reads that out of the type's
+// metadata; there is none here, because an enum is a four-byte number with a
+// symbol beside it and by the time a program runs the names have gone. So the
+// code generator writes a table for every enum a program renders -- the names
+// in one array and their values in another, both in value order, both in
+// read-only memory -- and one runtime call reads it.
+//
+// ONE MECHANISM FOR ALL OF THEM. `e.ToString()`, `"" + e`, `$"{e}"`,
+// string.Format and a boxed enum's ToString all end in the same call, which is
+// what keeps them from disagreeing: before this, `e.ToString()` expanded to a
+// switch at the call site and said "Green" while every other one said 5.
+//
+// `[Flags]` is the one attribute that means something: C# says such an enum is
+// a set of bits, and a value no single member has is written as the members it
+// is made of, largest first, in value order.
+enum Colour
+{
+    Red,
+    Green = 5,
+    Blue,
+}
+
+[Flags]
+enum Ways
+{
+    None = 0,
+    Read = 1,
+    Write = 2,
+    Run = 4,
+    All = 7,
+}
+
+/// Two names for one value: C# lets an enum alias, and either name is a
+/// correct answer -- .NET answers with one of them and so does this.
+enum Sized
+{
+    Small = 1,
+    Little = 1,
+}
+
+static class Program
+{
+    static void Main()
+    {
+        Colour c = Colour.Green;
+
+        Console.WriteLine("tostring " + c.ToString());
+        Console.WriteLine("concat " + ("" + c));
+        Console.WriteLine("interpolated " + $"{c}");
+        Console.WriteLine("format " + string.Format("{0}", c));
+
+        // A BOXED ENUM TOO: the box's descriptor carries a ToString of its
+        // own, and it has to reach the same table.
+        object boxed = c;
+
+        Console.WriteLine("boxed " + boxed.ToString());
+        Console.WriteLine("boxed object " + boxed);
+
+        // A value no member has is the number, which is what .NET prints.
+        Console.WriteLine("unnamed " + ((Colour)9).ToString());
+
+        // The default of an enum is its zero member, named like any other.
+        Colour first = default;
+
+        Console.WriteLine("zero " + first);
+
+        // ---- a set of bits ------------------------------------------------
+        //
+        // `Read | Run` is a Ways, not the 5 it is made of: combining two of an
+        // enum gives that enum in C#, and promoting the result to int was
+        // invisible while an enum printed as its number.
+        Ways some = Ways.Read | Ways.Run;
+
+        Console.WriteLine("combined " + some);
+
+        // A member that IS the combination wins outright.
+        Console.WriteLine("exact " + (Ways.Read | Ways.Write | Ways.Run));
+
+        // Zero is its own member's name, not an empty list.
+        Console.WriteLine("bare " + Ways.None);
+
+        // Bits no member accounts for: the whole value as a number, again as
+        // .NET does rather than naming half of it.
+        Console.WriteLine("unaccounted " + (Ways)9);
+
+        // The same value in an enum NOT marked [Flags] is just a number:
+        // Green is 5 and Blue is 6, and 7 is neither of them nor both.
+        Console.WriteLine("plain " + (Colour)7);
+        Console.WriteLine("aliased " + Sized.Little);
+
+        // `~E` is an E, which is what makes this a Ways rather than an int.
+        Console.WriteLine("masked " + ((Ways.Read | Ways.Write) & ~Ways.Read));
+
+        // ---- through a nullable cell ---------------------------------------
+        Colour? maybe = Colour.Blue;
+
+        Console.WriteLine("nullable " + maybe);
+
+        Colour? nothing = null;
+
+        Console.WriteLine("nullable empty [" + nothing + "]");
+
+        // ---- through a container -------------------------------------------
+        List<Colour> all = new List<Colour>();
+
+        all.Add(Colour.Red);
+        all.Add(Colour.Green);
+        all.Add(Colour.Blue);
+        Console.WriteLine("joined " + string.Join(", ", all));
+    }
+}

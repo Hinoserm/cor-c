@@ -1,0 +1,88 @@
+// test: generic_method_in_generic_class
+// expect-exit: 0
+// expect-output:
+// map ann30 31
+// map 101 100x
+// chain [Person:tail]
+// chain [100:7]
+// static Person 30
+// static 8589934593 x
+//
+// A generic method declared inside a generic class, with no async anywhere.
+// Two class instantiations, each asked for two different method type
+// arguments; a generic method that calls another generic method of the same
+// class; and a static generic method in a generic class.
+
+class Person
+{
+    public string Name;
+    public int Age;
+
+    public Person(string name, int age)
+    {
+        Name = name;
+        Age = age;
+    }
+}
+
+class Store<T>
+{
+    T value;
+
+    public Store(T initial)
+    {
+        value = initial;
+    }
+
+    public U Map<U>(Func<T, U> f)
+    {
+        return f(value);
+    }
+
+    public string Tag<U>(U extra)
+    {
+        return value + ":" + extra;
+    }
+
+    // ONE GENERIC METHOD CALLING ANOTHER of the same generic class: the copy
+    // made for Wrap<U> asks for a copy of Tag<U> from inside a body that only
+    // exists because Wrap was specialised.
+    public string Wrap<U>(U extra)
+    {
+        return "[" + Tag<U>(extra) + "]";
+    }
+
+    public static string Describe<U>(T held, U extra)
+    {
+        return held + " " + extra;
+    }
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static void Main()
+    {
+        Store<Person> sp = new Store<Person>(new Person("ann", 30));
+        string named = sp.Map<string>(p => p.Name + p.Age);
+        int older = sp.Map<int>(p => p.Age + 1);
+        Line("map " + named + " " + older);
+
+        Store<int> si = new Store<int>(100);
+        int plus = si.Map<int>(n => n + 1);
+        string text = si.Map<string>(n => n + "x");
+        Line("map " + plus + " " + text);
+
+        Line("chain " + sp.Wrap<string>("tail"));
+        Line("chain " + si.Wrap<int>(7));
+
+        Person ann = new Person("ann", 30);
+        Line("static " + Store<Person>.Describe<int>(ann, 30));
+        Line("static " + Store<long>.Describe<string>((1L << 33) + 1, "x"));
+    }
+}

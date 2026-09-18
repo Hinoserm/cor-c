@@ -1,0 +1,66 @@
+// test: default_literal
+// expect-exit: 0
+// expect-output:
+// local 0 0 null
+// field 0 null
+// return 0 null 0
+// struct 0 0
+//
+// `default` written without a type after it, which C# takes from whatever the
+// value is being given to. The type is the one written beside it -- a
+// declaration's type, a method's return type -- so a bare `default` means what
+// `default(T)` means with the T that is already there.
+
+struct Point
+{
+    public int X;
+    public long Y;
+}
+
+class Holder
+{
+    public int N = default;
+    public string? S = default;
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Zero()
+    {
+        return default;
+    }
+
+    static string? Nothing()
+    {
+        return default;
+    }
+
+    static long Wide()
+    {
+        return default;
+    }
+
+    static int Main()
+    {
+        int a = default;
+        long b = default;
+        string? s = default;
+        Line("local " + a + " " + b + " " + (s == null ? "null" : s));
+
+        Holder h = new Holder();
+        Line("field " + h.N + " " + (h.S == null ? "null" : h.S));
+
+        string? got = Nothing();
+        Line("return " + Zero() + " " + (got == null ? "null" : got) + " " + Wide());
+
+        Point p = default;
+        Line("struct " + p.X + " " + p.Y);
+        return 0;
+    }
+}

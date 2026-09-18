@@ -1,0 +1,27 @@
+// test: native byte reversal preserves full words and constant values
+// expect-exit: 0
+// expect-output:
+// byte swaps True True True
+static class Program
+{
+    static long Reference(long source)
+    {
+        ulong value = (ulong)source, result = 0;
+        for (int b = 0; b < 8; b++) { result = (result << 8) | (value & 255); value >>= 8; }
+        return (long)result;
+    }
+    static int Main()
+    {
+        long[] values = new long[] { 0, 1, -1, long.MinValue, long.MaxValue, 0x0123456789abcdefL, 4294967295 };
+        bool words = true, roundtrip = true;
+        for (int i = 0; i < values.Length; i++)
+        {
+            long swapped = Sys.ByteSwap(values[i]);
+            words = words && swapped == Reference(values[i]);
+            roundtrip = roundtrip && Sys.ByteSwap(swapped) == values[i];
+        }
+        bool constant = Sys.ByteSwap(0x0102030405060708L) == 0x0807060504030201L;
+        Console.WriteLine("byte swaps " + words + " " + roundtrip + " " + constant);
+        return words && roundtrip && constant ? 0 : 1;
+    }
+}

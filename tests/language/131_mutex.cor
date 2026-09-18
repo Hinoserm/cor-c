@@ -1,0 +1,95 @@
+// test: mutex
+// expect-exit: 0
+// expect-output:
+// unlocked True
+// trylock while held False
+// total 40000
+// balanced True
+//
+// A futex mutex under contention: four threads each take the lock and add to
+// two plain (non-atomic) fields, which only comes out right if the lock really
+// excludes. The second field counts down, so the two must cancel exactly.
+//
+// Thread bodies do arithmetic only: see the note on Thread in
+// lib/threading.cor for what is not safe off the first thread yet.
+
+class Ledger
+{
+    public int Total;
+    public int Mirror;
+}
+
+class Adder : Action
+{
+    Mutex _lock;
+    Ledger _ledger;
+    int _times;
+
+    public Adder(Mutex l, Ledger ledger, int times)
+    {
+        _lock = l;
+        _ledger = ledger;
+        _times = times;
+    }
+
+    public void Invoke()
+    {
+        for (int i = 0; i < _times; i++)
+        {
+            _lock.Lock();
+            _ledger.Total = _ledger.Total + 1;
+            _ledger.Mirror = _ledger.Mirror - 1;
+            _lock.Unlock();
+        }
+    }
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static void Flag(string name, bool value)
+    {
+        Sys.Print(name);
+        Sys.Print(" ");
+        Line(value ? "True" : "False");
+    }
+
+    static int Main()
+    {
+        Mutex m = new Mutex();
+
+        Flag("unlocked", !m.IsHeld);
+
+        m.Lock();
+        Flag("trylock while held", m.TryLock());
+        m.Unlock();
+
+        Ledger ledger = new Ledger();
+        int threads = 4;
+        int each = 10000;
+
+        Thread[] all = new Thread[threads];
+
+        for (int i = 0; i < threads; i++)
+        {
+            all[i] = Thread.Start(new Adder(m, ledger, each));
+        }
+
+        for (int i = 0; i < threads; i++)
+        {
+            all[i].Join();
+        }
+
+        Sys.Print("total ");
+        Sys.PrintInt(ledger.Total);
+        Sys.PrintLine();
+
+        Flag("balanced", ledger.Total + ledger.Mirror == 0);
+        return 0;
+    }
+}

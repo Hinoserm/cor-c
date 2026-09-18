@@ -1,0 +1,80 @@
+// test: owned descendants preserve capture return and loop lifetimes
+// expect-exit: 0
+// expect-output:
+// owned graphs True True True True True
+class GraphBranch { public byte[] Buffer; }
+class GraphRoot { public GraphBranch Child; }
+static class Program
+{
+    static byte[] _saved;
+    static byte[] _garbage;
+    static byte[] Leaf(GraphRoot root) => root.Child.Buffer;
+    static GraphBranch Branch(GraphRoot root) => root.Child;
+    static void Save(GraphRoot root) { _saved = root.Child.Buffer; }
+    static int Value(GraphRoot root) => root.Child.Buffer[0];
+
+    static byte[] Returned()
+    {
+        GraphRoot root = new GraphRoot();
+        root.Child = new GraphBranch(); root.Child.Buffer = new byte[64];
+        root.Child.Buffer[0] = 37; root.Child.Buffer[63] = 91;
+        return Leaf(root);
+    }
+    static GraphBranch ReturnedBranch()
+    {
+        GraphRoot root = new GraphRoot();
+        root.Child = new GraphBranch(); root.Child.Buffer = new byte[64];
+        root.Child.Buffer[0] = 42;
+        return Branch(root);
+    }
+    static void Retained()
+    {
+        GraphRoot root = new GraphRoot();
+        root.Child = new GraphBranch(); root.Child.Buffer = new byte[64];
+        root.Child.Buffer[0] = 53;
+        Save(root);
+    }
+    static bool LoopCarried()
+    {
+        byte[] previous = new byte[64];
+        previous[0] = 0;
+        for (int i = 1; i < 64; i++)
+        {
+            GraphRoot root = new GraphRoot();
+            root.Child = new GraphBranch(); root.Child.Buffer = new byte[64];
+            root.Child.Buffer[0] = (byte)i;
+            if (previous[0] != i - 1) return false;
+            previous = Leaf(root);
+        }
+        return previous[0] == 63;
+    }
+    static int LocalRead()
+    {
+        int sum = 0;
+        for (int i = 0; i < 64; i++)
+        {
+            GraphRoot root = new GraphRoot();
+            root.Child = new GraphBranch(); root.Child.Buffer = new byte[64];
+            root.Child.Buffer[0] = (byte)i;
+            sum += Value(root);
+        }
+        return sum;
+    }
+    static int Main()
+    {
+        // Preserve the real call boundaries: returned objects must survive
+        // the producing frame, not merely an inlined temporary in Main.
+        if (Sys.AddressOf(Leaf) == 0 || Sys.AddressOf(Branch) == 0 || Sys.AddressOf(Save) == 0
+            || Sys.AddressOf(Value) == 0 || Sys.AddressOf(Returned) == 0
+            || Sys.AddressOf(ReturnedBranch) == 0 || Sys.AddressOf(Retained) == 0) return 2;
+        byte[] leaf = Returned(); GraphBranch branch = ReturnedBranch(); Retained();
+        bool loop = LoopCarried(); bool local = LocalRead() == 2016;
+        for (int i = 0; i < 64; i++) { _garbage = new byte[8192]; _garbage[0] = (byte)i; }
+        Gc.Collect();
+        bool returned = leaf[0] == 37 && leaf[63] == 91;
+        bool retained = _saved[0] == 53;
+        bool parent = branch.Buffer[0] == 42;
+        Console.WriteLine("owned graphs " + returned + " " + retained + " " + parent + " " + loop + " " + local);
+        return returned && retained && parent && loop && local ? 0 : 1;
+    }
+}

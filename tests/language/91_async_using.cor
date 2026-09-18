@@ -1,0 +1,177 @@
+// test: async_using
+// expect-exit: 0
+// expect-output:
+// open a
+// open b
+// body
+// close b
+// close a
+// after block
+// across 1
+// open failing
+// resumed
+// close failing
+// caught after resume
+// open early
+// close early
+// early 5
+// open early
+// not early
+// close early
+// early 0
+// open loop0
+// iter0
+// close loop0
+// open loop1
+// close loop1
+// open loop2
+// iter2
+// close loop2
+// open outer
+// close outer
+// caught inner failed
+// open h1
+// open h2
+// close h1
+// close h2
+// done
+//
+// using inside async methods: resources opened before an await are
+// disposed after the method resumed, innermost first, on every way out --
+// the end of the block, an exception thrown after resumption, a return
+// after resumption, continue in a loop whose body awaits, and an exception
+// arriving through an awaited faulted task. Two methods suspended inside
+// their using blocks at the same time close in the order they resume.
+
+class Res : IDisposable
+{
+    string name;
+
+    public Res(string n)
+    {
+        name = n;
+        Sys.Print("open " + n);
+        Sys.PrintLine();
+    }
+
+    public void Dispose()
+    {
+        Sys.Print("close " + name);
+        Sys.PrintLine();
+    }
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static async Task<int> Across()
+    {
+        using (Res a = new Res("a"))
+        {
+            await Task.Yield();
+            using var b = new Res("b");
+            await Task.Yield();
+            Line("body");
+        }
+        Line("after block");
+        return 1;
+    }
+
+    static async Task Fails()
+    {
+        using var r = new Res("failing");
+        await Task.Yield();
+        Line("resumed");
+        throw new InvalidOperationException("after resume");
+    }
+
+    static async Task<int> EarlyReturn(int x)
+    {
+        using (Res r = new Res("early"))
+        {
+            await Task.Yield();
+            if (x > 0)
+            {
+                return x;
+            }
+            Line("not early");
+        }
+        return 0;
+    }
+
+    static async Task Loop()
+    {
+        for (int i = 0; i < 3; i++)
+        {
+            using var c = new Res("loop" + i);
+            await Task.Yield();
+            if (i == 1)
+            {
+                continue;
+            }
+            Line("iter" + i);
+        }
+    }
+
+    static async Task Inner()
+    {
+        await Task.Yield();
+        throw new InvalidOperationException("inner failed");
+    }
+
+    static async Task Outer()
+    {
+        using (Res r = new Res("outer"))
+        {
+            await Inner();
+            Line("not reached");
+        }
+    }
+
+    static async Task Held(string n)
+    {
+        using var r = new Res(n);
+        await Task.Yield();
+    }
+
+    static async Task Main()
+    {
+        int across = await Across();
+        Line("across " + across);
+
+        try
+        {
+            await Fails();
+        }
+        catch (Exception e)
+        {
+            Line("caught " + e.Message);
+        }
+
+        int five = 5;
+        Line("early " + await EarlyReturn(five));
+        Line("early " + await EarlyReturn(0));
+
+        await Loop();
+
+        try
+        {
+            await Outer();
+        }
+        catch (Exception e)
+        {
+            Line("caught " + e.Message);
+        }
+
+        Task h1 = Held("h1");
+        Task h2 = Held("h2");
+        await h1;
+        await h2;
+        Line("done");
+    }
+}

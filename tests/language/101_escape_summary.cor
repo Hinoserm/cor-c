@@ -1,0 +1,74 @@
+// test: escape summary
+// expect-exit: 0
+// expect-output:
+// sum 140
+// checked 212
+// heap 0
+//
+// An object handed to a function is not thereby lost. Escape analysis
+// summarises every function bottom-up over the call graph -- which of its
+// parameters it lets escape, by storing, returning or passing on -- and an
+// allocation that only ever reaches parameters that stay put does not
+// escape either. Both arrays here are passed to helpers too big to inline,
+// so the summary, not inlining, is what decides; both stay off the heap,
+// and the heap is untouched at the end.
+
+static class Program
+{
+    // Reads its argument and keeps nothing. Padded past the inliner's size
+    // limit on purpose: this must be a call at the time escape analysis
+    // runs, or it would prove nothing about summaries.
+    static long Total(int[] v)
+    {
+        long t = 0;
+        for (int i = 0; i < v.Length; i++)
+        {
+            t = t + v[i];
+        }
+        t = t + (v[0] & 0) + (v[1] & 0) + (v[2] & 0) + (v[3] & 0);
+        t = t + (v[4] & 0) + (v[5] & 0) + (v[6] & 0) + (v[7] & 0);
+        t = t - (v[0] & 0) - (v[1] & 0) - (v[2] & 0) - (v[3] & 0);
+        t = t - (v[4] & 0) - (v[5] & 0) - (v[6] & 0) - (v[7] & 0);
+        return t;
+    }
+
+    // Passes its argument on to another function that keeps nothing: the
+    // summary has to travel up the call graph for this one.
+    static long Checked(int[] v, int scale)
+    {
+        long t = Total(v) * scale;
+        t = t + (v[0] & 0) + (v[1] & 0) + (v[2] & 0) + (v[3] & 0);
+        t = t + (v[4] & 0) + (v[5] & 0) + (v[6] & 0) + (v[7] & 0);
+        t = t - (v[0] & 0) - (v[1] & 0) - (v[2] & 0) - (v[3] & 0);
+        t = t - (v[4] & 0) - (v[5] & 0) - (v[6] & 0) - (v[7] & 0);
+        return t;
+    }
+
+    static int Main()
+    {
+        int[] a = new int[8];
+        for (int i = 0; i < 8; i++)
+        {
+            a[i] = i * i;
+        }
+
+        Sys.Print("sum ");
+        Sys.PrintInt(Total(a));
+        Sys.PrintLine();
+
+        int[] b = new int[8];
+        for (int i = 0; i < 8; i++)
+        {
+            b[i] = i + 1;
+        }
+
+        Sys.Print("checked ");
+        Sys.PrintInt(Checked(b, 2) + Total(a));
+        Sys.PrintLine();
+
+        Sys.Print("heap ");
+        Sys.PrintInt(Gc.HeapBytes);
+        Sys.PrintLine();
+        return 0;
+    }
+}

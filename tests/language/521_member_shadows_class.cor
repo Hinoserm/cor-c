@@ -1,0 +1,91 @@
+// test: member_shadows_class
+// expect-exit: 0
+// expect-output:
+// static field 1
+// instance field 2
+// property 3
+// local 4
+// parameter 5
+// this 6
+// method 7
+// deeper 8
+// still a namespace ok
+//
+// A MEMBER ACCESS BINDS A MEMBER. `bunch.Files` is the Files OF bunch, and
+// which types happen to be declared elsewhere in the program has nothing to
+// say about it.
+//
+// It had. The rule for a namespace-qualified type -- `System.Text.Encoding`,
+// where the qualifier is not a declared thing at all -- asked whether the
+// qualifier was a local or a type name and stopped there, so a FIELD, a
+// PROPERTY or a METHOD with a capital letter looked like a namespace. With a
+// `static class Files` anywhere in the program, `Shared.Files` read as the
+// type `Files` and the property returning it was told it could not convert
+// 'Files' to what it was declared to return. The kernel hit it exactly that
+// way, one `static class Files` in sys.cor against `Shared.Files` in the x86
+// user-mode entry.
+//
+// C#'s rule is the other way round: a simple name takes the innermost
+// declaration that matches, and a type name only when nothing else does.
+static class Files
+{
+    public static int Count = 99;
+}
+
+class Bunch
+{
+    public int[] Files = new int[1];
+
+    public Bunch(int n) { Files[0] = n; }
+}
+
+static class Program
+{
+    static Bunch Shared = new Bunch(1);
+
+    static Bunch Held = new Bunch(2);
+
+    static Bunch Owned { get { return new Bunch(3); } }
+
+    static Bunch Make() { return new Bunch(7); }
+
+    static int Through(Bunch Given)
+    {
+        return Given.Files[0];
+    }
+
+    static void Main()
+    {
+        Console.WriteLine("static field " + Shared.Files[0]);
+        Console.WriteLine("instance field " + Held.Files[0]);
+        Console.WriteLine("property " + Owned.Files[0]);
+
+        Bunch Local = new Bunch(4);
+
+        Console.WriteLine("local " + Local.Files[0]);
+        Console.WriteLine("parameter " + Through(new Bunch(5)));
+        Console.WriteLine("this " + new Holder(6).Read());
+        Console.WriteLine("method " + Make().Files[0]);
+
+        // Two deep, which is the shape the namespace rule is really for.
+        Console.WriteLine("deeper " + Nested.Inner.Files[0]);
+
+        // AND THE NAMESPACE RULE STILL WORKS: a qualifier that names nothing
+        // at all is a namespace, and the last part names the type.
+        Console.WriteLine("still a namespace " + System.String.Concat("o", "k"));
+    }
+}
+
+static class Nested
+{
+    public static Bunch Inner = new Bunch(8);
+}
+
+class Holder
+{
+    Bunch Files;
+
+    public Holder(int n) { Files = new Bunch(n); }
+
+    public int Read() { return Files.Files[0]; }
+}

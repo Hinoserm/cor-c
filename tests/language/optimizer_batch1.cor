@@ -1,0 +1,46 @@
+// test: optimizer_batch1
+// expect-exit: 0
+// expect-output:
+// optimizer batch1 boundaries passed
+static class Program
+{
+    static long[] _inputs = new long[] { -1, 0, 1, 3, 32, 63 };
+    static int _failures;
+    static void Check(bool okay) { if (!okay) _failures++; }
+    static long ZeroTrip(int count, long divisor)
+    {
+        long result = 0;
+        for (int i = 0; i < count; i++) result += 10 / divisor;
+        return result;
+    }
+    static long Nested(int outer, int inner, long seed)
+    {
+        long result = 0;
+        for (int i = 0; i < outer; i++)
+            for (int j = 0; j < inner; j++) result += (seed * 17) + i + j;
+        return result;
+    }
+    static int Main()
+    {
+        long all = _inputs[0];
+        long narrow = all & 0xffffffffL;
+        Check(narrow == 4294967295L);
+        Check(narrow > 2147483648L && narrow >= 4294967295L);
+        Check(narrow < 4294967296L && narrow != 0);
+        Check(narrow / _inputs[3] == 1431655765L);
+        Check(narrow % _inputs[3] == 0);
+        Check(narrow * 19 == 81604378605L);
+        Check(narrow * 4294967296L == -4294967296L);
+        Check(unchecked(narrow * narrow) == -8589934591L);
+        Check((narrow >> 31) == 1 && (narrow >> 32) == 0 && (narrow >> 63) == 0);
+        Check((all >> 32) == -1 && (all >> 63) == -1);
+        Check(((ulong)all >> 32) == 4294967295UL);
+        Check((narrow << 32) == -4294967296L);
+        Check((narrow << 63) == long.MinValue);
+        Check(ZeroTrip(0, _inputs[1]) == 0);
+        Check(Nested(3, 4, _inputs[3]) == 642);
+        if (_failures != 0) { Console.WriteLine("failures " + _failures); return 1; }
+        Console.WriteLine("optimizer batch1 boundaries passed");
+        return 0;
+    }
+}

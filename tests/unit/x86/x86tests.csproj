@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Compiles the backend's sources directly rather than referencing
+    corc.csproj, so the backend can be tested while other parts of the
+    compiler are mid-change. Everything the IR needs (Types, Target) comes
+    along; the front end, the optimiser and the driver do not.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Corsac.Tests.X86</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="../../../compiler/src/ir/*.cs" />
+    <Compile Include="../../../compiler/src/arch/x86/backend/*.cs" />
+    <Compile Include="../../../compiler/src/formats/elf/*.cs" />
+    <Compile Include="../../../compiler/src/frontend/Types.cs" />
+    <Compile Include="../../../compiler/src/frontend/Ast.cs" />
+    <Compile Include="../../../compiler/src/frontend/Token.cs" />
+    <Compile Include="../../../compiler/src/arch/x86/MachineAbi.cs" />
+    <Compile Include="../../../compiler/src/arch/corsac/assembler/Isa.cs" />
+  </ItemGroup>
+
+</Project>

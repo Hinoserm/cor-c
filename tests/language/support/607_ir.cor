@@ -1,0 +1,27 @@
+// A namespace is a path on the types inside it: this Block and the one in
+// support/607_ast.cor share a simple name and are two types. Compiled as an
+// extra source of 607_namespaces.cor, which is where the test lives.
+
+namespace App.Ir;
+
+public class Block
+{
+    public int Id;
+
+    public Block(int id)
+    {
+        Id = id;
+    }
+
+    public string Say() => "ir " + Id;
+}
+
+public class Operand
+{
+    public int Slot;
+
+    public Operand(int slot)
+    {
+        Slot = slot;
+    }
+}

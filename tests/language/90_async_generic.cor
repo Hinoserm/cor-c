@@ -1,0 +1,135 @@
+// test: async_generic
+// expect-exit: 0
+// expect-output:
+// long 1099511627776 -2199023255549
+// string first second
+// person ann 30 bob 41
+// map ann30
+// echo 5000000000 echo carl 7
+// repeat 3 ab ab
+// pair 8589934593 x
+//
+// Async methods in a generic class and generic async methods, with Task<T>
+// for T = long (a register pair on a 32-bit target), string and a user
+// class: reading and writing a field of type T across an await, a generic
+// async method inside the generic class, generic async methods called with
+// explicit and inferred type arguments, one that builds a List<T> from
+// awaited values, and one with two type parameters.
+
+class Person
+{
+    public string Name;
+    public int Age;
+
+    public Person(string name, int age)
+    {
+        Name = name;
+        Age = age;
+    }
+}
+
+class Store<T>
+{
+    T value;
+
+    public Store(T v)
+    {
+        value = v;
+    }
+
+    public async Task<T> GetLater()
+    {
+        await Task.Yield();
+        return value;
+    }
+
+    public async Task SetLater(T v)
+    {
+        await Task.Yield();
+        value = v;
+    }
+
+    public async Task<U> Map<U>(Func<T, U> f)
+    {
+        T held = value;
+        await Task.Yield();
+        return f(held);
+    }
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static async Task<T> Echo<T>(T x)
+    {
+        await Task.Yield();
+        return x;
+    }
+
+    static async Task<List<T>> Repeat<T>(T x, int n)
+    {
+        List<T> r = new List<T>();
+        for (int i = 0; i < n; i++)
+        {
+            T item = await Echo<T>(x);
+            r.Add(item);
+        }
+        return r;
+    }
+
+    static async Task<B> Second<A, B>(A a, B b)
+    {
+        A keep = a;
+        await Task.Yield();
+        await Task.Yield();
+        return b;
+    }
+
+    static async Task<A> First<A, B>(A a, B b)
+    {
+        await Task.Yield();
+        return a;
+    }
+
+    static async Task Main()
+    {
+        Store<long> sl = new Store<long>(1L << 40);
+        long lv = await sl.GetLater();
+        long newValue = -(1L << 41) + 3;
+        await sl.SetLater(newValue);
+        long lv2 = await sl.GetLater();
+        Line("long " + lv + " " + lv2);
+
+        Store<string> ss = new Store<string>("first");
+        string s1 = await ss.GetLater();
+        await ss.SetLater("second");
+        string s2 = await ss.GetLater();
+        Line("string " + s1 + " " + s2);
+
+        Store<Person> sp = new Store<Person>(new Person("ann", 30));
+        Person p1 = await sp.GetLater();
+        Task<string> mapped = sp.Map<string>(p => p.Name + p.Age);
+        await sp.SetLater(new Person("bob", 41));
+        Person p2 = await sp.GetLater();
+        Line("person " + p1.Name + " " + p1.Age + " " + p2.Name + " " + p2.Age);
+        Line("map " + await mapped);
+
+        long e1 = await Echo<long>(5000000000L);
+        string e2 = await Echo("echo");
+        Person e3 = await Echo(new Person("carl", 7));
+        Line("echo " + e1 + " " + e2 + " " + e3.Name + " " + e3.Age);
+
+        List<string> reps = await Repeat("ab", 3);
+        Line("repeat " + reps.Count + " " + reps[0] + " " + reps[2]);
+
+        long big = (1L << 33) + 1;
+        long fst = await First<long, string>(big, "y");
+        string snd = await Second<long, string>(big, "x");
+        Line("pair " + fst + " " + snd);
+    }
+}

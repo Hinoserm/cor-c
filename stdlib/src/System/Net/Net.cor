@@ -1,0 +1,1945 @@
+// System.Net and System.Net.Sockets, as .NET spells them: IPAddress,
+// IPEndPoint, Dns, Socket, TcpClient, TcpListener, NetworkStream. IPv4
+// only for now, which is what the machine this is for will speak.
+
+enum AddressFamily
+{
+    Unspecified = 0,
+    Unix = 1,
+    InterNetwork = 2,
+    InterNetworkV6 = 10
+}
+
+enum SocketType
+{
+    Stream = 1,
+    Dgram = 2,
+    Raw = 3
+}
+
+enum ProtocolType
+{
+    IP = 0,
+    IPv6HopByHopOptions = 0,
+    Unspecified = 0,
+    Icmp = 1,
+    Igmp = 2,
+    Ggp = 3,
+    IPv4 = 4,
+    Tcp = 6,
+    Pup = 12,
+    Udp = 17,
+    Idp = 22,
+    IPv6 = 41,
+    IPv6RoutingHeader = 43,
+    IPv6FragmentHeader = 44,
+    IPSecEncapsulatingSecurityPayload = 50,
+    IPSecAuthenticationHeader = 51,
+    IcmpV6 = 58,
+    IPv6NoNextHeader = 59,
+    IPv6DestinationOptions = 60,
+    ND = 77,
+    Raw = 255,
+    Unknown = -1,
+}
+
+enum SelectMode
+{
+    SelectRead = 0,
+    SelectWrite = 1,
+    SelectError = 2
+}
+
+/// send(2) and recv(2)'s flags, .NET's names for them.
+enum SocketFlags
+{
+    None = 0,
+    OutOfBand = 1,
+    Peek = 2,
+    DontRoute = 4,
+    Truncated = 256,
+    ControlDataTruncated = 512,
+    Broadcast = 1024,
+    Multicast = 2048,
+    Partial = 32768,
+}
+
+enum SocketShutdown
+{
+    Receive = 0,
+    Send = 1,
+    Both = 2
+}
+
+/// .NET's socket errors, by .NET's numbers (the Winsock ones, which is what
+/// SocketException.SocketErrorCode has always answered on every platform).
+enum SocketError
+{
+    Success = 0,
+    SocketError = -1,
+    Interrupted = 10004,
+    AccessDenied = 10013,
+    Fault = 10014,
+    InvalidArgument = 10022,
+    TooManyOpenSockets = 10024,
+    WouldBlock = 10035,
+    InProgress = 10036,
+    AlreadyInProgress = 10037,
+    NotSocket = 10038,
+    DestinationAddressRequired = 10039,
+    MessageSize = 10040,
+    ProtocolType = 10041,
+    ProtocolOption = 10042,
+    ProtocolNotSupported = 10043,
+    SocketNotSupported = 10044,
+    OperationNotSupported = 10045,
+    ProtocolFamilyNotSupported = 10046,
+    AddressFamilyNotSupported = 10047,
+    AddressAlreadyInUse = 10048,
+    AddressNotAvailable = 10049,
+    NetworkDown = 10050,
+    NetworkUnreachable = 10051,
+    NetworkReset = 10052,
+    ConnectionAborted = 10053,
+    ConnectionReset = 10054,
+    NoBufferSpaceAvailable = 10055,
+    IsConnected = 10056,
+    NotConnected = 10057,
+    Shutdown = 10058,
+    TimedOut = 10060,
+    ConnectionRefused = 10061,
+    HostDown = 10064,
+    HostUnreachable = 10065,
+    ProcessLimit = 10067,
+    SystemNotReady = 10091,
+    VersionNotSupported = 10092,
+    NotInitialized = 10093,
+    Disconnecting = 10101,
+    TypeNotFound = 10109,
+    HostNotFound = 11001,
+    TryAgain = 11002,
+    NoRecovery = 11003,
+    NoData = 11004,
+}
+
+class SocketException : IOException
+{
+    /// The errno, which is what .NET's NativeErrorCode is on Unix.
+    public int ErrorCode;
+    public int NativeErrorCode;
+    public SocketError SocketErrorCode;
+
+    public SocketException(int errorCode) : base(Describe(errorCode))
+    {
+        ErrorCode = errorCode;
+        NativeErrorCode = errorCode;
+        SocketErrorCode = Map(errorCode);
+        HResult = errorCode;
+    }
+
+    /// errno to SocketError, the table .NET keeps on Unix.
+    public static SocketError Map(int errno)
+    {
+        if (errno == 0) { return SocketError.Success; }
+        if (errno == Err.Intr) { return SocketError.Interrupted; }
+        if (errno == Err.Access || errno == Err.Perm) { return SocketError.AccessDenied; }
+        if (errno == Err.Fault) { return SocketError.Fault; }
+        if (errno == Err.Inval) { return SocketError.InvalidArgument; }
+        if (errno == Err.MFile) { return SocketError.TooManyOpenSockets; }
+        if (errno == Err.Again) { return SocketError.WouldBlock; }
+        if (errno == Err.InProgress) { return SocketError.InProgress; }
+        if (errno == Err.Already) { return SocketError.AlreadyInProgress; }
+        if (errno == Err.NotSock) { return SocketError.NotSocket; }
+        if (errno == Err.MsgSize) { return SocketError.MessageSize; }
+        if (errno == Err.ProtoNoSupport) { return SocketError.ProtocolNotSupported; }
+        if (errno == Err.NotSup) { return SocketError.OperationNotSupported; }
+        if (errno == Err.AFNoSupport) { return SocketError.AddressFamilyNotSupported; }
+        if (errno == Err.AddrInUse) { return SocketError.AddressAlreadyInUse; }
+        if (errno == Err.NetDown) { return SocketError.NetworkDown; }
+        if (errno == Err.NetUnreach) { return SocketError.NetworkUnreachable; }
+        if (errno == Err.ConnAborted) { return SocketError.ConnectionAborted; }
+        if (errno == Err.ConnReset) { return SocketError.ConnectionReset; }
+        if (errno == Err.NoBufs) { return SocketError.NoBufferSpaceAvailable; }
+        if (errno == Err.IsConn) { return SocketError.IsConnected; }
+        if (errno == Err.NotConn) { return SocketError.NotConnected; }
+        if (errno == Err.TimedOut) { return SocketError.TimedOut; }
+        if (errno == Err.ConnRefused) { return SocketError.ConnectionRefused; }
+        if (errno == Err.HostUnreach) { return SocketError.HostUnreachable; }
+        if (errno == Err.Pipe) { return SocketError.Shutdown; }
+        return SocketError.SocketError;
+    }
+
+    static string Describe(int errno)
+    {
+        return Marshal.GetPInvokeErrorMessage(errno);
+    }
+}
+
+class IPAddress
+{
+    long _bits;                       // host order: a.b.c.d = a<<24 | ... | d
+
+    public IPAddress(long address)
+    {
+        _bits = address & 0xFFFFFFFF;
+    }
+
+    public IPAddress(byte[] address)
+    {
+        _bits = ((long)(address[0] & 255) << 24) | ((long)(address[1] & 255) << 16)
+              | ((long)(address[2] & 255) << 8) | (long)(address[3] & 255);
+    }
+
+    public static IPAddress Any = new IPAddress(0);
+    public static IPAddress Loopback = new IPAddress(0x7F000001);
+    public static IPAddress Broadcast = new IPAddress(0xFFFFFFFF);
+    public static IPAddress None = new IPAddress(0xFFFFFFFF);
+
+    public AddressFamily AddressFamily
+    {
+        get { return AddressFamily.InterNetwork; }
+    }
+
+    public long HostOrder
+    {
+        get { return _bits; }
+    }
+
+    public byte[] GetAddressBytes()
+    {
+        byte[] b = new byte[4];
+        b[0] = (byte)(_bits >> 24);
+        b[1] = (byte)(_bits >> 16);
+        b[2] = (byte)(_bits >> 8);
+        b[3] = (byte)_bits;
+        return b;
+    }
+
+    public static bool TryParse(string text, out IPAddress? address)
+    {
+        address = null;
+        long[] part = new long[4];
+        int n = 0;
+        long value = 0;
+        int digits = 0;
+        for (int i = 0; i <= text.Length; i++)
+        {
+            int c = i == text.Length ? '.' : Sys.GetByte(text, i);
+            if (c == '.')
+            {
+                if (digits == 0 || n >= 4 || value > 255)
+                {
+                    return false;
+                }
+                part[n] = value;
+                n = n + 1;
+                value = 0;
+                digits = 0;
+            }
+            else if (c >= '0' && c <= '9' && digits < 3)
+            {
+                value = value * 10 + (c - '0');
+                digits = digits + 1;
+            }
+            else
+            {
+                return false;
+            }
+        }
+        if (n != 4)
+        {
+            return false;
+        }
+        address = new IPAddress((part[0] << 24) | (part[1] << 16) | (part[2] << 8) | part[3]);
+        return true;
+    }
+
+    public static IPAddress Parse(string text)
+    {
+        IPAddress? a;
+        if (!TryParse(text, out a) || a == null)
+        {
+            throw new FormatException("not an IPv4 address: " + text);
+        }
+        return a;
+    }
+
+    public override string ToString()
+    {
+        return "" + ((_bits >> 24) & 255) + "." + ((_bits >> 16) & 255) + "." + ((_bits >> 8) & 255) + "." + (_bits & 255);
+    }
+
+    public bool Equals(IPAddress other)
+    {
+        return other != null && other._bits == _bits;
+    }
+
+    /// 127.0.0.0/8, which is the whole of what IsLoopback answers for IPv4.
+    public static bool IsLoopback(IPAddress address)
+    {
+        return (address._bits >> 24) == 127;
+    }
+
+    /// The two that turn a number the wire's way round and back. THIS
+    /// MACHINE IS LITTLE-ENDIAN AND THE WIRE IS NOT, so a port or an
+    /// address taken out of a structure with a word read has its bytes the
+    /// wrong way about, and these are what .NET gives a program to say so.
+    public static short HostToNetworkOrder(short host)
+    {
+        return (short)(((host & 0xFF) << 8) | ((host >> 8) & 0xFF));
+    }
+
+    public static int HostToNetworkOrder(int host)
+    {
+        return (int)((((long)host & 0xFF) << 24) | (((long)host & 0xFF00) << 8)
+            | ((((long)host >> 8) & 0xFF00)) | (((long)host >> 24) & 0xFF));
+    }
+
+    public static long HostToNetworkOrder(long host)
+    {
+        long swapped = 0;
+
+        for (int i = 0; i < 8; i++)
+        {
+            swapped = (swapped << 8) | ((host >> (i * 8)) & 0xFF);
+        }
+
+        return swapped;
+    }
+
+    public static short NetworkToHostOrder(short network)
+    {
+        return HostToNetworkOrder(network);
+    }
+
+    public static int NetworkToHostOrder(int network)
+    {
+        return HostToNetworkOrder(network);
+    }
+
+    public static long NetworkToHostOrder(long network)
+    {
+        return HostToNetworkOrder(network);
+    }
+}
+
+class IPEndPoint
+{
+    public IPAddress Address;
+    public int Port;
+
+    public IPEndPoint(IPAddress address, int port)
+    {
+        Address = address;
+        Port = port;
+    }
+
+    public override string ToString()
+    {
+        return Address.ToString() + ":" + Port;
+    }
+
+    /// The sockaddr_in the kernel takes.
+    public byte[] Serialize()
+    {
+        byte[] a = new byte[16];
+        a[0] = 2;                                   // AF_INET
+        a[1] = 0;
+        a[2] = (byte)(Port >> 8);
+        a[3] = (byte)Port;
+        byte[] ip = Address.GetAddressBytes();
+        a[4] = ip[0];
+        a[5] = ip[1];
+        a[6] = ip[2];
+        a[7] = ip[3];
+        return a;
+    }
+
+    public static IPEndPoint FromSockaddr(byte[] a)
+    {
+        byte[] ip = new byte[4];
+        ip[0] = a[4]; ip[1] = a[5]; ip[2] = a[6]; ip[3] = a[7];
+        return new IPEndPoint(new IPAddress(ip), ((a[2] & 255) << 8) | (a[3] & 255));
+    }
+}
+
+/// A host's name and addresses: what System.Net.Dns answers with.
+class IPHostEntry
+{
+    public string HostName = "";
+    public string[] Aliases = new string[0];
+    public IPAddress[] AddressList = new IPAddress[0];
+}
+
+/// The record types RFC 1035 numbers, as far as this resolver reads them.
+enum DnsRecordType
+{
+    A = 1,
+    Ns = 2,
+    CName = 5,
+    Soa = 6,
+    Ptr = 12,
+    Mx = 15,
+    Txt = 16,
+    Aaaa = 28,
+    Any = 255,
+}
+
+/// The header's RCODE: what the server made of the question.
+enum DnsResponseCode
+{
+    NoError = 0,
+    FormatError = 1,
+    ServerFailure = 2,
+    NameError = 3,              // NXDOMAIN: the name does not exist
+    NotImplemented = 4,
+    Refused = 5,
+}
+
+/// One resource record.
+class DnsRecord
+{
+    public string Name = "";
+    public DnsRecordType Type;
+    public int Class;
+    public long Ttl;
+
+    /// An A record's address, and nothing else's.
+    public IPAddress? Address;
+
+    /// The name in the data of an NS, a CNAME, a PTR or an MX, with the
+    /// root's trailing dot, as every tool that prints one shows it.
+    public string Target = "";
+
+    /// An MX record's preference, and nothing else's.
+    public int Preference;
+}
+
+/// A server's reply, taken apart.
+class DnsAnswer
+{
+    public int Id;
+    public DnsResponseCode Code;
+    public bool Authoritative;
+    public bool Truncated;
+    public string Question = "";
+    public DnsRecordType QuestionType;
+    public List<DnsRecord> Answers = new List<DnsRecord>();
+    public List<DnsRecord> Authority = new List<DnsRecord>();
+
+    /// Who answered. nslookup prints it before anything else.
+    public IPAddress Server = IPAddress.Any;
+}
+
+/// RFC 1035 messages: what a resolver sends a name server, and what comes
+/// back.
+///
+/// THE NAMES IN A REPLY ARE COMPRESSED. A label sequence may end in a
+/// pointer back into the message -- two bytes with the top bits set, naming
+/// an offset -- which is what makes a reply with a dozen records fit in one
+/// datagram and is the one thing a hand-written parser gets wrong. Name()
+/// follows those pointers, and follows no more of them than the message has
+/// bytes, so a reply that points at itself ends the parse instead of the
+/// program.
+static class DnsMessage
+{
+    public const int HeaderBytes = 12;
+
+    /// The most a reply may be without EDNS0. A longer one comes back with
+    /// the truncated bit set, which is the server saying "ask me over TCP".
+    public const int MaxBytes = 512;
+
+    /// A question, with recursion asked for, ready for a datagram.
+    public static byte[] Query(int id, string name, DnsRecordType type)
+    {
+        byte[] work = new byte[MaxBytes];
+        int at = HeaderBytes;
+
+        at = PutName(work, at, name);
+        Put16(work, at, (int)type);
+        Put16(work, at + 2, 1);                     // IN
+        at = at + 4;
+
+        Put16(work, 0, id);
+        Put16(work, 2, 0x0100);                     // RD: please recurse
+        Put16(work, 4, 1);                          // one question
+
+        byte[] made = new byte[at];
+
+        for (int i = 0; i < at; i++)
+        {
+            made[i] = work[i];
+        }
+
+        return made;
+    }
+
+    /// A reply, or null if it is not one this resolver can read.
+    public static DnsAnswer? Parse(byte[] message, int length)
+    {
+        if (length < HeaderBytes)
+        {
+            return null;
+        }
+
+        int flags = Get16(message, 2);
+
+        if ((flags & 0x8000) == 0)
+        {
+            return null;                            // a question, not an answer
+        }
+
+        DnsAnswer answer = new DnsAnswer();
+        answer.Id = Get16(message, 0);
+        answer.Code = (DnsResponseCode)(flags & 15);
+        answer.Authoritative = (flags & 0x0400) != 0;
+        answer.Truncated = (flags & 0x0200) != 0;
+
+        int questions = Get16(message, 4);
+        int answers = Get16(message, 6);
+        int authority = Get16(message, 8);
+        int at = HeaderBytes;
+
+        for (int i = 0; i < questions; i++)
+        {
+            int next;
+            string name = Name(message, length, at, out next);
+
+            if (next < 0 || next + 4 > length)
+            {
+                return null;
+            }
+
+            if (i == 0)
+            {
+                answer.Question = name;
+                answer.QuestionType = (DnsRecordType)Get16(message, next);
+            }
+
+            at = next + 4;
+        }
+
+        for (int i = 0; i < answers; i++)
+        {
+            DnsRecord? record = Record(message, length, at, out at);
+
+            if (record == null)
+            {
+                return answer;
+            }
+
+            answer.Answers.Add(record);
+        }
+
+        for (int i = 0; i < authority; i++)
+        {
+            DnsRecord? record = Record(message, length, at, out at);
+
+            if (record == null)
+            {
+                return answer;
+            }
+
+            answer.Authority.Add(record);
+        }
+
+        return answer;
+    }
+
+    /// One resource record at `at`; `next` is where the one after it starts.
+    static DnsRecord? Record(byte[] m, int length, int at, out int next)
+    {
+        next = -1;
+
+        int after;
+        string name = Name(m, length, at, out after);
+
+        if (after < 0 || after + 10 > length)
+        {
+            return null;
+        }
+
+        DnsRecord record = new DnsRecord();
+        record.Name = name;
+        record.Type = (DnsRecordType)Get16(m, after);
+        record.Class = Get16(m, after + 2);
+        record.Ttl = ((long)Get16(m, after + 4) << 16) | (long)Get16(m, after + 6);
+
+        int data = Get16(m, after + 8);
+        int from = after + 10;
+
+        if (from + data > length)
+        {
+            return null;
+        }
+
+        if (record.Type == DnsRecordType.A && data == 4)
+        {
+            byte[] address = new byte[4];
+
+            for (int i = 0; i < 4; i++)
+            {
+                address[i] = m[from + i];
+            }
+
+            record.Address = new IPAddress(address);
+        }
+        else if (record.Type == DnsRecordType.Ns || record.Type == DnsRecordType.CName
+              || record.Type == DnsRecordType.Ptr)
+        {
+            int end;
+            record.Target = Dotted(Name(m, length, from, out end));
+        }
+        else if (record.Type == DnsRecordType.Mx && data > 2)
+        {
+            int end;
+            record.Preference = Get16(m, from);
+            record.Target = Dotted(Name(m, length, from + 2, out end));
+        }
+
+        next = from + data;
+        return record;
+    }
+
+    /// The labels at `at`, as a dotted name without the root's dot, with
+    /// `next` left at the byte after the name -- which, when the name ended
+    /// in a pointer, is two bytes on from where the pointer was and not
+    /// wherever it pointed.
+    public static string Name(byte[] m, int length, int at, out int next)
+    {
+        string name = "";
+        int hops = 0;
+        next = -1;
+
+        while (at >= 0 && at < length)
+        {
+            int count = m[at] & 255;
+
+            if (count == 0)
+            {
+                if (next < 0)
+                {
+                    next = at + 1;
+                }
+
+                return name;
+            }
+
+            if ((count & 0xC0) == 0xC0)
+            {
+                if (at + 1 >= length)
+                {
+                    return name;
+                }
+
+                if (next < 0)
+                {
+                    next = at + 2;
+                }
+
+                hops = hops + 1;
+
+                if (hops > length)
+                {
+                    return name;                    // a message that points at itself
+                }
+
+                at = ((count & 0x3F) << 8) | (m[at + 1] & 255);
+                continue;
+            }
+
+            if (at + 1 + count > length)
+            {
+                return name;
+            }
+
+            if (name.Length > 0)
+            {
+                name = name + ".";
+            }
+
+            for (int i = 0; i < count; i++)
+            {
+                name = name + (char)(m[at + 1 + i] & 255);
+            }
+
+            at = at + 1 + count;
+        }
+
+        return name;
+    }
+
+    /// A name with the root's trailing dot, which is how a record's data is
+    /// printed and how it differs from a name somebody typed.
+    public static string Dotted(string name)
+    {
+        return name.Length == 0 ? "." : name + ".";
+    }
+
+    /// `d.c.b.a.in-addr.arpa`, the name a PTR query for an address asks
+    /// about (RFC 1035, 3.5).
+    public static string ArpaName(IPAddress address)
+    {
+        byte[] b = address.GetAddressBytes();
+        return "" + (b[3] & 255) + "." + (b[2] & 255) + "." + (b[1] & 255) + "."
+             + (b[0] & 255) + ".in-addr.arpa";
+    }
+
+    /// The labels of `name` at `at`, returning where the name ended. A name
+    /// with a trailing dot is the same name: the root is the empty label
+    /// that ends every one of them.
+    static int PutName(byte[] into, int at, string name)
+    {
+        int start = 0;
+
+        while (start < name.Length)
+        {
+            int dot = name.IndexOf('.', start);
+            int end = dot < 0 ? name.Length : dot;
+            int count = end - start;
+
+            if (count > 63)
+            {
+                count = 63;
+            }
+
+            if (count > 0)
+            {
+                into[at] = (byte)count;
+
+                for (int i = 0; i < count; i++)
+                {
+                    into[at + 1 + i] = (byte)Sys.GetByte(name, start + i);
+                }
+
+                at = at + 1 + count;
+            }
+
+            start = end + 1;
+        }
+
+        into[at] = 0;
+        return at + 1;
+    }
+
+    public static int Get16(byte[] b, int at)
+    {
+        return ((b[at] & 255) << 8) | (b[at + 1] & 255);
+    }
+
+    public static void Put16(byte[] b, int at, int value)
+    {
+        b[at] = (byte)(value >> 8);
+        b[at + 1] = (byte)value;
+    }
+}
+
+/// Waiting for a socket to have something.
+///
+/// POLL IS THE WHOLE OF IT, which is what .NET's Socket.Poll is for and
+/// what poll(2) has honoured to the millisecond since this kernel learned
+/// to block on it (os/kernel/arch/x86/sysx86.cor, SysPoll): the process
+/// waits in the kernel until a descriptor is ready or the time is up, and
+/// nothing here spins or sleeps around it.
+static class SocketWait
+{
+    public static bool Readable(Socket socket, long microSeconds)
+    {
+        return socket.Poll(microSeconds > 2000000000 ? 2000000000 : (int)microSeconds,
+            SelectMode.SelectRead);
+    }
+}
+
+/// /etc/hosts: the names this machine knows without asking anybody.
+static class HostsFile
+{
+    public const string Path = "/etc/hosts";
+
+    /// Every address listed for `host`, and the canonical name it was
+    /// listed under.
+    public static List<IPAddress> Lookup(string host, out string canonical)
+    {
+        List<IPAddress> found = new List<IPAddress>();
+        canonical = "";
+
+        string[] lines = Lines();
+
+        for (int i = 0; i < lines.Length; i++)
+        {
+            string[] words = Words(lines[i]);
+
+            if (words.Length < 2)
+            {
+                continue;
+            }
+
+            IPAddress? address;
+
+            if (!IPAddress.TryParse(words[0], out address) || address == null)
+            {
+                continue;
+            }
+
+            for (int w = 1; w < words.Length; w++)
+            {
+                if (String.Compare(words[w], host, true) == 0)
+                {
+                    if (canonical.Length == 0)
+                    {
+                        canonical = words[1];
+                    }
+
+                    found.Add(address);
+                    break;
+                }
+            }
+        }
+
+        return found;
+    }
+
+    /// The name listed for an address, or "".
+    public static string Reverse(IPAddress address)
+    {
+        string[] lines = Lines();
+
+        for (int i = 0; i < lines.Length; i++)
+        {
+            string[] words = Words(lines[i]);
+
+            if (words.Length < 2)
+            {
+                continue;
+            }
+
+            IPAddress? listed;
+
+            if (!IPAddress.TryParse(words[0], out listed) || listed == null)
+            {
+                continue;
+            }
+
+            if (listed.Equals(address))
+            {
+                return words[1];
+            }
+        }
+
+        return "";
+    }
+
+    static string[] Lines()
+    {
+        if (!File.Exists(Path))
+        {
+            return new string[0];
+        }
+
+        try
+        {
+            return File.ReadAllText(Path).Split('\n');
+        }
+        catch (Exception)
+        {
+            return new string[0];
+        }
+    }
+
+    /// A line's words, with the comment taken off.
+    static string[] Words(string line)
+    {
+        int hash = line.IndexOf('#');
+
+        if (hash >= 0)
+        {
+            line = line.Substring(0, hash);
+        }
+
+        return line.Split(new char[] { ' ', '\t', '\r' }, StringSplitOptions.RemoveEmptyEntries);
+    }
+}
+
+/// The resolver /etc/resolv.conf configures: which servers to ask, what to
+/// add to a name that has no dots in it, and how long to wait.
+///
+/// resolv.conf(5) is the contract, and the defaults are its defaults: five
+/// seconds, two attempts, and the servers in the order they are written.
+class DnsResolver
+{
+    public const string Path = "/etc/resolv.conf";
+
+    /// The port a name server listens on, which nobody moves and every
+    /// resolver lets you move anyway.
+    public const int DefaultPort = 53;
+
+    public int Port = DefaultPort;
+    public List<IPAddress> Servers = new List<IPAddress>();
+    public List<string> Search = new List<string>();
+    public int Timeout = 5;                 // seconds, per attempt per server
+    public int Attempts = 2;
+    public int Ndots = 1;
+
+    static int _id;
+
+    /// The resolver this machine is configured with. A machine with no
+    /// resolv.conf has no servers, and a lookup that needs one fails
+    /// instead of guessing.
+    public static DnsResolver FromResolvConf()
+    {
+        DnsResolver made = new DnsResolver();
+
+        if (!File.Exists(Path))
+        {
+            return made;
+        }
+
+        string text;
+
+        try
+        {
+            text = File.ReadAllText(Path);
+        }
+        catch (Exception)
+        {
+            return made;
+        }
+
+        string[] lines = text.Split('\n');
+
+        for (int i = 0; i < lines.Length; i++)
+        {
+            string line = lines[i];
+            int hash = line.IndexOf('#');
+
+            if (hash >= 0)
+            {
+                line = line.Substring(0, hash);
+            }
+
+            int semi = line.IndexOf(';');
+
+            if (semi >= 0)
+            {
+                line = line.Substring(0, semi);
+            }
+
+            string[] words = line.Split(new char[] { ' ', '\t', '\r' }, StringSplitOptions.RemoveEmptyEntries);
+
+            if (words.Length < 2)
+            {
+                continue;
+            }
+
+            if (words[0] == "nameserver")
+            {
+                IPAddress? server;
+
+                if (IPAddress.TryParse(words[1], out server) && server != null && made.Servers.Count < 3)
+                {
+                    made.Servers.Add(server);
+                }
+            }
+            else if (words[0] == "domain")
+            {
+                made.Search.Clear();
+                made.Search.Add(words[1]);
+            }
+            else if (words[0] == "search")
+            {
+                made.Search.Clear();
+
+                for (int w = 1; w < words.Length && w <= 6; w++)
+                {
+                    made.Search.Add(words[w]);
+                }
+            }
+            else if (words[0] == "options")
+            {
+                for (int w = 1; w < words.Length; w++)
+                {
+                    made.Option(words[w]);
+                }
+            }
+        }
+
+        return made;
+    }
+
+    void Option(string word)
+    {
+        int colon = word.IndexOf(':');
+
+        if (colon < 0)
+        {
+            return;
+        }
+
+        string name = word.Substring(0, colon);
+        int value;
+
+        if (!int.TryParse(word.Substring(colon + 1), out value) || value < 0)
+        {
+            return;
+        }
+
+        if (name == "timeout") { Timeout = value > 30 ? 30 : value; }
+        else if (name == "attempts") { Attempts = value > 5 ? 5 : value; }
+        else if (name == "ndots") { Ndots = value > 15 ? 15 : value; }
+    }
+
+    /// Asks one server one question. null when it did not answer.
+    public DnsAnswer? Ask(IPAddress server, string name, DnsRecordType type)
+    {
+        _id = _id == 0 ? (int)(Stopwatch.GetTimestamp() & 0xFFFF) : (_id + 1) & 0xFFFF;
+
+        int id = _id;
+        byte[] query = DnsMessage.Query(id, name, type);
+        Socket socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+
+        try
+        {
+            IPEndPoint to = new IPEndPoint(server, Port);
+
+            for (int attempt = 0; attempt < (Attempts < 1 ? 1 : Attempts); attempt++)
+            {
+                try
+                {
+                    socket.SendTo(query, to);
+                }
+                catch (SocketException)
+                {
+                    return null;
+                }
+
+                long deadline = Stopwatch.GetTimestamp() + (long)Timeout * 1000000000;
+
+                while (true)
+                {
+                    long left = deadline - Stopwatch.GetTimestamp();
+
+                    if (left <= 0)
+                    {
+                        break;
+                    }
+
+                    if (!SocketWait.Readable(socket, left / 1000))
+                    {
+                        continue;
+                    }
+
+                    byte[] buffer = new byte[DnsMessage.MaxBytes];
+                    IPEndPoint from = new IPEndPoint(IPAddress.Any, 0);
+                    int n;
+
+                    try
+                    {
+                        n = socket.ReceiveFrom(buffer, 0, buffer.Length, SocketFlags.None, ref from);
+                    }
+                    catch (SocketException)
+                    {
+                        break;
+                    }
+
+                    DnsAnswer? answer = DnsMessage.Parse(buffer, n);
+
+                    if (answer == null || answer.Id != id)
+                    {
+                        continue;               // somebody else's datagram
+                    }
+
+                    answer.Server = server;
+                    return answer;
+                }
+            }
+        }
+        finally
+        {
+            socket.Close();
+        }
+
+        return null;
+    }
+
+    /// The same question of each server in turn, until one answers.
+    public DnsAnswer? Resolve(string name, DnsRecordType type)
+    {
+        foreach (IPAddress server in Servers)
+        {
+            DnsAnswer? answer = Ask(server, name, type);
+
+            if (answer != null)
+            {
+                return answer;
+            }
+        }
+
+        return null;
+    }
+
+    /// The names to try for what somebody typed: the name itself, and the
+    /// name under each search domain. A name with a trailing dot is
+    /// absolute and is the only one tried.
+    public List<string> Candidates(string name)
+    {
+        List<string> tries = new List<string>();
+
+        if (name.EndsWith("."))
+        {
+            tries.Add(name.Substring(0, name.Length - 1));
+            return tries;
+        }
+
+        int dots = 0;
+
+        for (int i = 0; i < name.Length; i++)
+        {
+            if (name[i] == '.')
+            {
+                dots = dots + 1;
+            }
+        }
+
+        if (dots >= Ndots)
+        {
+            tries.Add(name);
+        }
+
+        foreach (string domain in Search)
+        {
+            tries.Add(name + "." + domain);
+        }
+
+        if (dots < Ndots)
+        {
+            tries.Add(name);
+        }
+
+        return tries;
+    }
+}
+
+/// Name resolution: numeric addresses, "localhost", /etc/hosts, and the
+/// name servers /etc/resolv.conf names -- which is the order nsswitch.conf
+/// puts them in on every machine that has one, and the order a program
+/// expects whether or not this system has grown one of those yet.
+static class Dns
+{
+    public static string GetHostName()
+    {
+        try
+        {
+            if (File.Exists("/proc/sys/kernel/hostname"))
+            {
+                return File.ReadAllText("/proc/sys/kernel/hostname").Trim();
+            }
+        }
+        catch (Exception)
+        {
+        }
+
+        return "localhost";
+    }
+
+    public static IPAddress[] GetHostAddresses(string hostNameOrAddress)
+    {
+        IPAddress? numeric;
+
+        if (IPAddress.TryParse(hostNameOrAddress, out numeric) && numeric != null)
+        {
+            IPAddress[] one = new IPAddress[1];
+            one[0] = numeric;
+            return one;
+        }
+
+        return GetHostEntry(hostNameOrAddress).AddressList;
+    }
+
+    /// The host an address belongs to: a PTR query, /etc/hosts first.
+    public static IPHostEntry GetHostEntry(IPAddress address)
+    {
+        IPHostEntry entry = new IPHostEntry();
+        entry.AddressList = new IPAddress[1];
+        entry.AddressList[0] = address;
+
+        string listed = HostsFile.Reverse(address);
+
+        if (listed.Length > 0)
+        {
+            entry.HostName = listed;
+            return entry;
+        }
+
+        DnsResolver resolver = DnsResolver.FromResolvConf();
+        DnsAnswer? answer = resolver.Resolve(DnsMessage.ArpaName(address), DnsRecordType.Ptr);
+
+        if (answer != null)
+        {
+            foreach (DnsRecord record in answer.Answers)
+            {
+                if (record.Type == DnsRecordType.Ptr && record.Target.Length > 1)
+                {
+                    entry.HostName = record.Target.Substring(0, record.Target.Length - 1);
+                    return entry;
+                }
+            }
+        }
+
+        throw new SocketException((int)Err.HostUnreach);
+    }
+
+    public static IPHostEntry GetHostEntry(string hostNameOrAddress)
+    {
+        IPAddress? numeric;
+
+        if (IPAddress.TryParse(hostNameOrAddress, out numeric) && numeric != null)
+        {
+            return GetHostEntry(numeric);
+        }
+
+        IPHostEntry entry = new IPHostEntry();
+        entry.HostName = hostNameOrAddress;
+
+        if (String.Compare(hostNameOrAddress, "localhost", true) == 0)
+        {
+            entry.AddressList = new IPAddress[1];
+            entry.AddressList[0] = IPAddress.Loopback;
+            return entry;
+        }
+
+        string canonical;
+        List<IPAddress> listed = HostsFile.Lookup(hostNameOrAddress, out canonical);
+
+        if (listed.Count > 0)
+        {
+            entry.HostName = canonical;
+            entry.AddressList = listed.ToArray();
+            return entry;
+        }
+
+        DnsResolver resolver = DnsResolver.FromResolvConf();
+
+        foreach (string candidate in resolver.Candidates(hostNameOrAddress))
+        {
+            DnsAnswer? answer = resolver.Resolve(candidate, DnsRecordType.A);
+
+            if (answer == null)
+            {
+                continue;
+            }
+
+            List<IPAddress> found = new List<IPAddress>();
+            string name = candidate;
+
+            foreach (DnsRecord record in answer.Answers)
+            {
+                if (record.Type == DnsRecordType.CName)
+                {
+                    name = record.Target.Length > 1
+                        ? record.Target.Substring(0, record.Target.Length - 1) : name;
+                }
+                else if (record.Type == DnsRecordType.A && record.Address != null)
+                {
+                    found.Add(record.Address);
+                }
+            }
+
+            if (found.Count > 0)
+            {
+                entry.HostName = name;
+                entry.AddressList = found.ToArray();
+                return entry;
+            }
+        }
+
+        throw new SocketException((int)Err.HostUnreach);
+    }
+}
+
+/// System.Net.Sockets.Socket over the platform's descriptor calls.
+class Socket : IDisposable
+{
+    int _fd;
+    bool _connected;
+    AddressFamily _family;
+    SocketType _type;
+    ProtocolType _protocol;
+
+    public Socket(AddressFamily family, SocketType type, ProtocolType protocol)
+    {
+        _family = family;
+        _type = type;
+        _protocol = protocol;
+        _fd = Os.Socket((int)family, (int)type, (int)protocol);
+        if (_fd < 0)
+        {
+            throw new SocketException(-_fd);
+        }
+    }
+
+    /// A socket this process already has a descriptor for -- .NET's
+    /// Socket(SafeSocketHandle). What a program started by inetd is given:
+    /// the connection is already open, on descriptor zero, and the program
+    /// has to be able to say so.
+    public Socket(int fd)
+    {
+        _fd = fd;
+        _connected = true;
+        _family = AddressFamily.InterNetwork;
+        _type = SocketType.Stream;
+        _protocol = ProtocolType.Tcp;
+    }
+
+    public int Handle
+    {
+        get { return _fd; }
+    }
+
+    public bool Connected
+    {
+        get { return _connected; }
+    }
+
+    public AddressFamily AddressFamily
+    {
+        get { return _family; }
+    }
+
+    public void Connect(IPEndPoint endPoint)
+    {
+        int r = Os.Connect(_fd, endPoint.Serialize());
+        if (r < 0)
+        {
+            throw new SocketException(-r);
+        }
+        _connected = true;
+    }
+
+    public void Connect(IPAddress address, int port)
+    {
+        Connect(new IPEndPoint(address, port));
+    }
+
+    public void Connect(string host, int port)
+    {
+        IPAddress[] addresses = Dns.GetHostAddresses(host);
+        int last = 0;
+        for (int i = 0; i < addresses.Length; i++)
+        {
+            int r = Os.Connect(_fd, new IPEndPoint(addresses[i], port).Serialize());
+            if (r >= 0)
+            {
+                _connected = true;
+                return;
+            }
+            last = -r;
+        }
+        throw new SocketException(last);
+    }
+
+    public void Bind(IPEndPoint endPoint)
+    {
+        int r = Os.Bind(_fd, endPoint.Serialize());
+        if (r < 0)
+        {
+            throw new SocketException(-r);
+        }
+    }
+
+    public void Listen(int backlog)
+    {
+        int r = Os.Listen(_fd, backlog);
+        if (r < 0)
+        {
+            throw new SocketException(-r);
+        }
+    }
+
+    public Socket Accept()
+    {
+        byte[] peer = new byte[16];
+        int fd;
+        while (true)
+        {
+            fd = Os.Accept(_fd, peer);
+            if (fd != -Err.Intr)
+            {
+                break;
+            }
+        }
+        if (fd < 0)
+        {
+            throw new SocketException(-fd);
+        }
+        return new Socket(fd);
+    }
+
+    public int Send(byte[] buffer, int offset, int count)
+    {
+        while (true)
+        {
+            int n = Os.Send(_fd, buffer, offset, count, 0);
+            if (n == -Err.Intr)
+            {
+                continue;
+            }
+            if (n < 0)
+            {
+                throw new SocketException(-n);
+            }
+            return n;
+        }
+    }
+
+    public int Send(byte[] buffer)
+    {
+        return Send(buffer, 0, buffer.Length);
+    }
+
+    public int Receive(byte[] buffer, int offset, int count)
+    {
+        while (true)
+        {
+            int n = Os.Recv(_fd, buffer, offset, count, 0);
+            if (n == -Err.Intr)
+            {
+                continue;
+            }
+            if (n < 0)
+            {
+                throw new SocketException(-n);
+            }
+            return n;
+        }
+    }
+
+    public int Receive(byte[] buffer)
+    {
+        return Receive(buffer, 0, buffer.Length);
+    }
+
+    /// A datagram to an address, whichever the socket was connected to.
+    public int SendTo(byte[] buffer, int offset, int count, SocketFlags flags, IPEndPoint remote)
+    {
+        while (true)
+        {
+            int n = Os.SendTo(_fd, buffer, offset, count, (int)flags, remote.Serialize());
+            if (n == -Err.Intr)
+            {
+                continue;
+            }
+            if (n < 0)
+            {
+                throw new SocketException(-n);
+            }
+            return n;
+        }
+    }
+
+    public int SendTo(byte[] buffer, IPEndPoint remote)
+    {
+        return SendTo(buffer, 0, buffer.Length, SocketFlags.None, remote);
+    }
+
+    /// A datagram, and who sent it: `remote` is replaced by the sender.
+    public int ReceiveFrom(byte[] buffer, int offset, int count, SocketFlags flags, ref IPEndPoint remote)
+    {
+        byte[] from = new byte[16];
+        while (true)
+        {
+            int n = Os.RecvFrom(_fd, buffer, offset, count, (int)flags, from);
+            if (n == -Err.Intr)
+            {
+                continue;
+            }
+            if (n < 0)
+            {
+                throw new SocketException(-n);
+            }
+            remote = IPEndPoint.FromSockaddr(from);
+            return n;
+        }
+    }
+
+    public int ReceiveFrom(byte[] buffer, ref IPEndPoint remote)
+    {
+        return ReceiveFrom(buffer, 0, buffer.Length, SocketFlags.None, ref remote);
+    }
+
+    /// Whether the socket is readable, writable or in error within
+    /// `microSeconds` (-1 waits), as .NET's Poll: poll(2) on one descriptor.
+    public bool Poll(int microSeconds, SelectMode mode)
+    {
+        int events = mode == SelectMode.SelectRead ? 1 : mode == SelectMode.SelectWrite ? 4 : 8;
+        int timeout = microSeconds < 0 ? -1 : (microSeconds + 999) / 1000;
+        return Os.Poll(_fd, events, timeout) > 0;
+    }
+
+    /// Socket.Select, as .NET has it: each list comes back holding only the
+    /// sockets that are ready, within `microSeconds` (-1 waits for ever). One
+    /// poll(2) per list that was given; a server with several ears gives the
+    /// first and sleeps until one of them is called.
+    public static void Select(List<Socket>? checkRead, List<Socket>? checkWrite, List<Socket>? checkError, int microSeconds)
+    {
+        int timeout = microSeconds < 0 ? -1 : (microSeconds + 999) / 1000;
+
+        SelectOne(checkRead, 1, timeout);
+        SelectOne(checkWrite, 4, checkRead == null ? timeout : 0);
+        SelectOne(checkError, 8, checkRead == null && checkWrite == null ? timeout : 0);
+    }
+
+    static void SelectOne(List<Socket>? sockets, int events, int timeout)
+    {
+        if (sockets == null || sockets.Count == 0)
+        {
+            return;
+        }
+
+        int count = sockets.Count;
+        int[] fds = new int[count];
+        bool[] ready = new bool[count];
+
+        for (int i = 0; i < count; i++)
+        {
+            fds[i] = sockets[i]._fd;
+        }
+
+        Os.PollMany(fds, count, events, timeout, ready);
+
+        for (int i = count - 1; i >= 0; i--)
+        {
+            if (!ready[i])
+            {
+                sockets.RemoveAt(i);
+            }
+        }
+    }
+
+    /// getsockname(2): which of this machine's addresses the connection
+    /// arrived on. An ftp server answering PASV has to name it, and the
+    /// machine has more than one.
+    public IPEndPoint LocalEndPoint
+    {
+        get
+        {
+            byte[] name = new byte[16];
+            if (Os.GetSockName(_fd, name) < 0)
+            {
+                return new IPEndPoint(IPAddress.Any, 0);
+            }
+            return IPEndPoint.FromSockaddr(name);
+        }
+    }
+
+    /// getpeername(2): who is at the other end.
+    public IPEndPoint RemoteEndPoint
+    {
+        get
+        {
+            byte[] name = new byte[16];
+            if (Os.GetPeerName(_fd, name) < 0)
+            {
+                return new IPEndPoint(IPAddress.Any, 0);
+            }
+            return IPEndPoint.FromSockaddr(name);
+        }
+    }
+
+    /// Whether a call on this socket waits. FALSE IS HOW ONE PROCESS SERVES
+    /// SEVERAL PORTS: accept on a socket nobody has called answers
+    /// WouldBlock instead of waiting, so the next port can be asked.
+    public bool Blocking
+    {
+        get
+        {
+            int flags = Os.Fcntl(_fd, 3, 0);        // F_GETFL
+
+            return flags < 0 || (flags & O.NonBlock) == 0;
+        }
+        set
+        {
+            int flags = Os.Fcntl(_fd, 3, 0);        // F_GETFL
+
+            if (flags < 0)
+            {
+                return;
+            }
+            Os.Fcntl(_fd, 4, value ? flags & ~O.NonBlock : flags | O.NonBlock);
+        }
+    }
+
+    /// Bytes that can be read without blocking (FIONREAD).
+    public int Available
+    {
+        get { return (int)Os.Available(_fd); }
+    }
+
+    public void Shutdown(SocketShutdown how)
+    {
+        Os.Shutdown(_fd, (int)how);
+    }
+
+    /// ioctl(2) on the socket: .NET's Socket.IOControl, and the door a
+    /// program goes through to ask the stack about the machine itself --
+    /// SIOCGIFCONF and its family, which is how ifconfig learns an
+    /// interface's address and route learns the table. The request's
+    /// structure is the buffer, and the kernel writes through it, so the
+    /// same array serves as both arguments; that is what net-tools does
+    /// with it and what .NET's own Unix implementation allows.
+    public int IOControl(int ioControlCode, byte[]? optionInValue, byte[]? optionOutValue)
+    {
+        byte[]? argument = optionInValue != null ? optionInValue : optionOutValue;
+        long r = Os.Ioctl(_fd, ioControlCode, argument == null ? 0 : Os.AddressOf(argument));
+
+        if (r < 0)
+        {
+            throw new SocketException((int)(0 - r));
+        }
+
+        if (optionOutValue != null && optionInValue != null && optionOutValue != optionInValue)
+        {
+            int n = optionInValue.Length < optionOutValue.Length
+                ? optionInValue.Length : optionOutValue.Length;
+
+            for (int i = 0; i < n; i++)
+            {
+                optionOutValue[i] = optionInValue[i];
+            }
+        }
+
+        return optionOutValue == null ? 0 : optionOutValue.Length;
+    }
+
+    public void SetSocketOption(int level, int name, int value)
+    {
+        byte[] v = new byte[4];
+        v[0] = (byte)value;
+        v[1] = (byte)(value >> 8);
+        v[2] = (byte)(value >> 16);
+        v[3] = (byte)(value >> 24);
+        SetSocketOption(level, name, v);
+    }
+
+    public void SetSocketOption(int level, int name, byte[] value)
+    {
+        int result = Os.SetSockOpt(_fd, level, name, value);
+        if (result < 0) { throw new SocketException(-result); }
+    }
+
+    public void Close()
+    {
+        Dispose();
+    }
+
+    public void Dispose()
+    {
+        if (_fd >= 0)
+        {
+            Os.Close(_fd);
+            _fd = -1;
+            _connected = false;
+        }
+    }
+}
+
+/// A Stream over a connected Socket.
+class NetworkStream : Stream
+{
+    Socket _socket;
+    bool _owns;
+
+    public NetworkStream(Socket socket) : this(socket, false)
+    {
+    }
+
+    public NetworkStream(Socket socket, bool ownsSocket)
+    {
+        _socket = socket;
+        _owns = ownsSocket;
+    }
+
+    public Socket Socket
+    {
+        get { return _socket; }
+    }
+
+    public override bool CanRead { get { return true; } }
+    public override bool CanWrite { get { return true; } }
+    public override bool CanSeek { get { return false; } }
+
+    /// Whether Read would return without waiting, as .NET's DataAvailable.
+    public bool DataAvailable
+    {
+        get { return _socket.Poll(0, SelectMode.SelectRead); }
+    }
+
+    public override int Read(byte[] buffer, int offset, int count)
+    {
+        return _socket.Receive(buffer, offset, count);
+    }
+
+    public override void Write(byte[] buffer, int offset, int count)
+    {
+        int done = 0;
+        while (done < count)
+        {
+            done = done + _socket.Send(buffer, offset + done, count - done);
+        }
+    }
+
+    public override void Dispose()
+    {
+        if (_owns)
+        {
+            _socket.Dispose();
+        }
+    }
+}
+
+class TcpClient : IDisposable
+{
+    Socket _socket;
+    NetworkStream? _stream;
+
+    public TcpClient()
+    {
+        _socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+    }
+
+    public TcpClient(string host, int port) : this()
+    {
+        Connect(host, port);
+    }
+
+    public TcpClient(Socket accepted)
+    {
+        _socket = accepted;
+    }
+
+    public void Connect(string host, int port)
+    {
+        _socket.Connect(host, port);
+    }
+
+    public void Connect(IPAddress address, int port)
+    {
+        _socket.Connect(address, port);
+    }
+
+    public bool Connected
+    {
+        get { return _socket.Connected; }
+    }
+
+    public Socket Client
+    {
+        get { return _socket; }
+    }
+
+    public int Available
+    {
+        get { return _socket.Available; }
+    }
+
+    public NetworkStream GetStream()
+    {
+        if (_stream == null)
+        {
+            _stream = new NetworkStream(_socket, true);
+        }
+        return _stream;
+    }
+
+    public void Close()
+    {
+        Dispose();
+    }
+
+    public void Dispose()
+    {
+        _socket.Dispose();
+    }
+}
+
+class TcpListener
+{
+    Socket _socket;
+    IPEndPoint _endPoint;
+
+    public TcpListener(IPAddress address, int port)
+    {
+        _endPoint = new IPEndPoint(address, port);
+        _socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+    }
+
+    public void Start()
+    {
+        _socket.SetSocketOption(1, 2, 1);        // SOL_SOCKET, SO_REUSEADDR
+        _socket.Bind(_endPoint);
+        _socket.Listen(16);
+    }
+
+    /// Where the listener is bound -- the port the kernel chose when 0 was asked for.
+    public IPEndPoint LocalEndpoint
+    {
+        get
+        {
+            byte[] name = new byte[16];
+            if (Os.GetSockName(_socket.Handle, name) < 0)
+            {
+                return _endPoint;
+            }
+            return IPEndPoint.FromSockaddr(name);
+        }
+    }
+
+    public bool Pending()
+    {
+        return _socket.Poll(0, SelectMode.SelectRead);
+    }
+
+    public Socket AcceptSocket()
+    {
+        return _socket.Accept();
+    }
+
+    public TcpClient AcceptTcpClient()
+    {
+        return new TcpClient(_socket.Accept());
+    }
+
+    public void Stop()
+    {
+        _socket.Close();
+    }
+}
+
+/// System.Net.Sockets.UdpClient: a datagram socket with the sending and the
+/// receiving done for you. Send(dgram, bytes, host, port) resolves the host
+/// each time, as .NET does; Connect fixes a destination for the shorter
+/// Send and makes Receive take only that peer's datagrams, which is what a
+/// connected datagram socket is.
+class UdpClient : IDisposable
+{
+    Socket _socket;
+    bool _connected;
+
+    public UdpClient()
+    {
+        _socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+    }
+
+    public UdpClient(int port)
+    {
+        _socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+        _socket.Bind(new IPEndPoint(IPAddress.Any, port));
+    }
+
+    public UdpClient(IPEndPoint local)
+    {
+        _socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+        _socket.Bind(local);
+    }
+
+    public UdpClient(string host, int port)
+    {
+        _socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+        Connect(host, port);
+    }
+
+    public Socket Client
+    {
+        get { return _socket; }
+    }
+
+    public int Available
+    {
+        get { return _socket.Available; }
+    }
+
+    public void Connect(string host, int port)
+    {
+        IPAddress[] addresses = Dns.GetHostAddresses(host);
+        if (addresses.Length == 0)
+        {
+            throw new SocketException((int)Err.HostUnreach);
+        }
+        Connect(new IPEndPoint(addresses[0], port));
+    }
+
+    public void Connect(IPAddress address, int port)
+    {
+        Connect(new IPEndPoint(address, port));
+    }
+
+    public void Connect(IPEndPoint endPoint)
+    {
+        _socket.Connect(endPoint);
+        _connected = true;
+    }
+
+    public int Send(byte[] dgram, int bytes, IPEndPoint? endPoint)
+    {
+        if (endPoint == null)
+        {
+            return Send(dgram, bytes);
+        }
+        if (_connected)
+        {
+            throw new InvalidOperationException("Cannot send packets to an arbitrary host while connected.");
+        }
+        return _socket.SendTo(dgram, 0, bytes, SocketFlags.None, endPoint);
+    }
+
+    public int Send(byte[] dgram, int bytes, string? hostname, int port)
+    {
+        if (hostname == null)
+        {
+            return Send(dgram, bytes);
+        }
+        IPAddress[] addresses = Dns.GetHostAddresses(hostname);
+        if (addresses.Length == 0)
+        {
+            throw new SocketException((int)Err.HostUnreach);
+        }
+        return Send(dgram, bytes, new IPEndPoint(addresses[0], port));
+    }
+
+    public int Send(byte[] dgram, int bytes)
+    {
+        if (!_connected)
+        {
+            throw new InvalidOperationException("The operation is not allowed on non-connected sockets.");
+        }
+        return _socket.Send(dgram, 0, bytes);
+    }
+
+    public int Send(byte[] dgram)
+    {
+        return Send(dgram, dgram.Length);
+    }
+
+    /// One datagram, whole: the array is exactly as long as it was.
+    public byte[] Receive(ref IPEndPoint? remoteEP)
+    {
+        byte[] buffer = new byte[65536];
+        IPEndPoint from = new IPEndPoint(IPAddress.Any, 0);
+        int n = _socket.ReceiveFrom(buffer, 0, buffer.Length, SocketFlags.None, ref from);
+        remoteEP = from;
+        byte[] gram = new byte[n];
+        for (int i = 0; i < n; i++)
+        {
+            gram[i] = buffer[i];
+        }
+        return gram;
+    }
+
+    public void Close()
+    {
+        Dispose();
+    }
+
+    public void Dispose()
+    {
+        _socket.Dispose();
+    }
+}

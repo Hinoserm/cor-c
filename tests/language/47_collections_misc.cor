@@ -1,0 +1,79 @@
+// test: collections_misc
+// expect-exit: 0
+// expect-output:
+// set 1 0 1 0
+// set2 1 0 1 1
+// many 200 200 0
+// queue 3 1 1 2 1
+// strings 2 True False
+// foreach 15
+//
+// HashSet<T> (Add reports whether the value was new, Remove leaves the rest
+// findable, growth past the first table), Queue<T> ordering, a set of
+// strings, and foreach over a set.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int B(bool b)
+    {
+        return b ? 1 : 0;
+    }
+
+    static int Main()
+    {
+        HashSet<long> seen = new HashSet<long>();
+        Line("set " + B(seen.Add(5)) + " " + B(seen.Add(5)) + " " + B(seen.Contains(5)) + " " + B(seen.Contains(6)));
+        Line("set2 " + B(seen.Remove(5)) + " " + B(seen.Remove(5)) + " " + B(seen.Add(5)) + " " + B(seen.Contains(5)));
+
+        HashSet<long> many = new HashSet<long>();
+        for (long i = 0; i < 200; i++)
+        {
+            many.Add(i * 7);
+        }
+        int found = 0;
+        for (long i = 0; i < 200; i++)
+        {
+            if (many.Contains(i * 7))
+            {
+                found++;
+            }
+        }
+        Line("many " + many.Count + " " + found + " " + B(many.Contains(3)));
+
+        Queue<long> q = new Queue<long>();
+        q.Enqueue(1);
+        q.Enqueue(2);
+        q.Enqueue(3);
+        int count = q.Count;
+        long peek = q.Peek();
+        long first = q.Dequeue();
+        long second = q.Dequeue();
+        Line("queue " + count + " " + peek + " " + first + " " + second + " " + q.Count);
+
+        HashSet<string> words = new HashSet<string>();
+        words.Add("a");
+        words.Add("b");
+        words.Add("a");
+        Line("strings " + words.Count + " " + words.Contains("b") + " " + words.Contains("c"));
+
+        HashSet<int> nums = new HashSet<int>();
+        nums.Add(1);
+        nums.Add(2);
+        nums.Add(3);
+        nums.Add(4);
+        nums.Add(5);
+        int sum = 0;
+        foreach (int n in nums)
+        {
+            sum += n;
+        }
+        Line("foreach " + sum);
+        return 0;
+    }
+}

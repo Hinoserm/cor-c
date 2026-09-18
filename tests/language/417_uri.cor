@@ -1,0 +1,34 @@
+// test: System.Uri -- a URI taken apart, and the escaping
+// expect-exit: 0
+// expect-output:
+// https example.com 8443 /a/b/c.html ?x=1&y=2 #frag user:pw True False
+// https://user:pw@example.com:8443/a/b/c.html?x=1&y=2#frag|/a/b/c.html|/ a/ b/ c.html|/a/b/c.html?x=1&y=2|example.com:8443
+// 80 True 0 0 //path
+// file 0 /usr/local/bin /usr/local/bin
+// a%20b%26c%2Fd%3Fe a b&c True False
+// True False
+// http://a.b/ /y
+//
+// .NET's Query KEEPS its '?' and its Fragment keeps its '#', so that joining
+// the pieces back up is concatenation; Port reports the scheme's default when
+// none was written; and the path is normalised, because two URIs that name
+// the same resource have to compare equal. Segments is the odd one: each
+// piece keeps the slash that ended it, and concatenating them gives the path.
+// Every line came from the same program run on .NET.
+
+class Program {
+    static int Main() {
+        Uri u = new Uri("https://user:pw@example.com:8443/a/b/c.html?x=1&y=2#frag");
+        Console.WriteLine($"{u.Scheme} {u.Host} {u.Port} {u.AbsolutePath} {u.Query} {u.Fragment} {u.UserInfo} {u.IsAbsoluteUri} {u.IsDefaultPort}");
+        Console.WriteLine($"{u.AbsoluteUri}|{u.LocalPath}|{String.Join(" ", u.Segments)}|{u.PathAndQuery}|{u.Authority}");
+        Uri d = new Uri("http://example.com/path");
+        Console.WriteLine($"{d.Port} {d.IsDefaultPort} {d.Query.Length} {d.Fragment.Length} {String.Join("/", d.Segments)}");
+        Uri f = new Uri("file:///usr/local/bin");
+        Console.WriteLine($"{f.Scheme} {f.Host.Length} {f.AbsolutePath} {f.LocalPath}");
+        Console.WriteLine($"{Uri.EscapeDataString("a b&c/d?e")} {Uri.UnescapeDataString("a%20b%26c")} {Uri.IsHexDigit('f')} {Uri.IsHexDigit('g')}");
+        Uri? made = null;
+        Console.WriteLine($"{Uri.TryCreate("http://a.b/", UriKind.Absolute, out made)} {Uri.TryCreate("nonsense", UriKind.Absolute, out made)}");
+        Console.WriteLine(new Uri("http://a.b").ToString() + " " + new Uri("http://a.b/x/../y").AbsolutePath);
+        return 0;
+    }
+}

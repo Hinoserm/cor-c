@@ -1,0 +1,87 @@
+// test: boxing_structs
+// expect-exit: 0
+// expect-output:
+// is True
+// not int
+// str S5
+// name Small
+// back 5
+// bare 1 2
+// equal True
+// different False
+// date True
+// caught
+//
+// A USER-DEFINED STRUCT IS BOXED LIKE ANY OTHER VALUE TYPE. It was left out,
+// because a struct's Prim is Void -- a struct is not a machine word -- and the
+// test that refused void refused every struct with it: `object o = new
+// Small(5)` stored the block's address with no header in front of it, so `o is
+// Small` was false and joining it to a string walked off into the block. A
+// DateTime is such a struct, which is how a runtime string.Format over one
+// crashed.
+//
+// A boxed struct is a COPY of the block behind an object header, its ToString
+// is the one the struct declared, and unboxing copies back out -- so writing
+// to what came out does not write through to the box.
+struct Small
+{
+    public int V;
+
+    public Small(int v) { V = v; }
+
+    public override string ToString() { return "S" + V; }
+}
+
+struct Bare
+{
+    public int A;
+    public int B;
+}
+
+static class Program
+{
+    static void Line(string text)
+    {
+        Sys.Print(text);
+        Sys.PrintLine();
+    }
+
+    static void Main()
+    {
+        object o = new Small(5);
+        Line("is " + (o is Small));
+        Line(o is int ? "int" : "not int");
+        Line("str " + o);
+        Line("name " + o.GetType().Name);
+
+        Small back = (Small)o;
+        Line("back " + back.V);
+
+        Bare a = new Bare();
+        a.A = 1;
+        a.B = 2;
+        object p = a;
+        Bare q = (Bare)p;
+        Line("bare " + q.A + " " + q.B);
+
+        object r = a;
+        Line("equal " + p.Equals(r));
+
+        a.B = 7;
+        object changed = a;
+        Line("different " + p.Equals(changed));
+
+        object when = new DateTime(2001, 2, 3);
+        Line("date " + (when is DateTime));
+
+        try
+        {
+            Bare wrong = (Bare)o;
+            Line("uncaught " + wrong.A);
+        }
+        catch (InvalidCastException)
+        {
+            Line("caught");
+        }
+    }
+}

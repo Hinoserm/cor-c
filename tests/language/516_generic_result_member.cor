@@ -1,0 +1,126 @@
+// test: generic_result_member
+// expect-exit: 0
+// expect-output:
+// field one two
+// property one two
+// nested 7 one 7 two
+// inferred 3
+// chained two one
+//
+// A MEMBER OF A CONSTRUCTED TYPE CARRIES THAT TYPE'S ARGUMENTS.
+// `Holder<string>.Items` is a `List<string>`, not the `List<T>` the class was
+// written with -- and that has to hold when the receiver's type was INFERRED
+// rather than written down.
+//
+// It showed as `return Hold(source, key).Items;` being refused with "cannot
+// convert 'List<T>' to 'List$Pair$int$string'", where the same thing through a
+// local compiled: a written `Holder<string>` asks for the specialisation and
+// is given it, while an inferred one is the template with its arguments beside
+// it until the copy that spells it has been made. Reading a field off that
+// answered the member's type as the class declared it, with nothing put in.
+class Holder<T>
+{
+    public List<T> Items = new List<T>();
+
+    public List<T> Kept => Items;
+
+    public T First => Items[0];
+}
+
+class Pair<K, V>
+{
+    public K Key;
+    public V Value;
+
+    public Pair(K key, V value) { Key = key; Value = value; }
+}
+
+static class Program
+{
+    static Holder<T> Hold<T>(List<T> source)
+    {
+        Holder<T> made = new Holder<T>();
+
+        for (int i = 0; i < source.Count; i++) { made.Items.Add(source[i]); }
+        return made;
+    }
+
+    static Holder<Pair<K, T>> Paired<T, K>(List<T> source, K key)
+    {
+        Holder<Pair<K, T>> made = new Holder<Pair<K, T>>();
+
+        for (int i = 0; i < source.Count; i++) { made.Items.Add(new Pair<K, T>(key, source[i])); }
+        return made;
+    }
+
+    /// The field, straight off the call.
+    static List<T> Fielded<T>(List<T> source)
+    {
+        return Hold(source).Items;
+    }
+
+    /// The property, which resolves by a different path in the checker.
+    static List<T> Propertied<T>(List<T> source)
+    {
+        return Hold(source).Kept;
+    }
+
+    /// The shape the library hit: the argument is itself a constructed type
+    /// built out of the method's own parameters.
+    static List<Pair<K, T>> Grouped<T, K>(List<T> source, K key)
+    {
+        return Paired(source, key).Items;
+    }
+
+    /// From a caller that is not generic at all, which is where this first
+    /// showed: nothing has asked for a `Holder$string` yet.
+    static int Counted()
+    {
+        return Hold(Three()).Items.Count;
+    }
+
+    static List<string> Three()
+    {
+        List<string> made = new List<string>();
+
+        made.Add("one");
+        made.Add("two");
+        made.Add("three");
+        return made;
+    }
+
+    static List<string> Two()
+    {
+        List<string> made = new List<string>();
+
+        made.Add("one");
+        made.Add("two");
+        return made;
+    }
+
+    static void Main()
+    {
+        List<string> got = Fielded(Two());
+
+        Console.WriteLine("field " + got[0] + " " + got[1]);
+
+        List<string> kept = Propertied(Two());
+
+        Console.WriteLine("property " + kept[0] + " " + kept[1]);
+
+        List<Pair<int, string>> pairs = Grouped(Two(), 7);
+        string said = "nested";
+
+        for (int i = 0; i < pairs.Count; i++)
+        {
+            said = said + " " + pairs[i].Key + " " + pairs[i].Value;
+        }
+        Console.WriteLine(said);
+
+        Console.WriteLine("inferred " + Counted());
+
+        // An indexer and a property whose type is the parameter ITSELF, each
+        // read straight off an inferred receiver and used as the string it is.
+        Console.WriteLine("chained " + Hold(Two()).Items[1] + " " + Hold(Two()).First.Substring(0, 3));
+    }
+}

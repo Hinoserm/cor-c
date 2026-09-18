@@ -1,0 +1,45 @@
+// test: signed power-of-two quotient and remainder extremes
+// expect-exit: 0
+// expect-output:
+// signed powers 176
+static class Program
+{
+    static int[] _d32 = new int[] { 2, -2, 8, -8, 1073741824, -1073741824, int.MinValue };
+    static long[] _d64 = new long[] { 2, -2, 8, -8, 2147483648, -2147483648,
+        4611686018427387904, -4611686018427387904, long.MinValue };
+    static bool Check32(int n)
+    {
+        return n / 2 == n / _d32[0] && n % 2 == n % _d32[0]
+            && n / -2 == n / _d32[1] && n % -2 == n % _d32[1]
+            && n / 8 == n / _d32[2] && n % 8 == n % _d32[2]
+            && n / -8 == n / _d32[3] && n % -8 == n % _d32[3]
+            && n / 1073741824 == n / _d32[4] && n % 1073741824 == n % _d32[4]
+            && n / -1073741824 == n / _d32[5] && n % -1073741824 == n % _d32[5]
+            && n / int.MinValue == n / _d32[6] && n % int.MinValue == n % _d32[6];
+    }
+    static bool Check64(long n)
+    {
+        return n / 2 == n / _d64[0] && n % 2 == n % _d64[0]
+            && n / -2 == n / _d64[1] && n % -2 == n % _d64[1]
+            && n / 8 == n / _d64[2] && n % 8 == n % _d64[2]
+            && n / -8 == n / _d64[3] && n % -8 == n % _d64[3]
+            && n / 2147483648 == n / _d64[4] && n % 2147483648 == n % _d64[4]
+            && n / -2147483648 == n / _d64[5] && n % -2147483648 == n % _d64[5]
+            && n / 4611686018427387904 == n / _d64[6] && n % 4611686018427387904 == n % _d64[6]
+            && n / -4611686018427387904 == n / _d64[7] && n % -4611686018427387904 == n % _d64[7]
+            && n / long.MinValue == n / _d64[8] && n % long.MinValue == n % _d64[8];
+    }
+    static int Main()
+    {
+        long[] values = new long[] { 0, 1, -1, 7, -7, int.MinValue, int.MaxValue,
+            long.MinValue, long.MaxValue, long.MinValue + 1, long.MaxValue - 1 };
+        int checks = 0;
+        for (int i = 0; i < values.Length; i++)
+        {
+            if (!Check32((int)values[i]) || !Check64(values[i])) return 1;
+            checks += 16;
+        }
+        Console.WriteLine("signed powers " + checks);
+        return 0;
+    }
+}

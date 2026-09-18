@@ -1,0 +1,33 @@
+// test: double_to_string
+// expect-exit: 0
+// expect-output:
+// x 2.5
+// -0.125
+// 100
+// 0
+// f 1.5
+// i 2.5
+//
+// A DOUBLE JOINED TO A STRING was refused outright -- "'double' cannot be
+// joined to a string" -- although the library has had String.FromDouble
+// waiting for it. Covers both operand orders, a float, and interpolation.
+static class Program
+{
+    static void Line(string text)
+    {
+        Sys.Print(text);
+        Sys.PrintLine();
+    }
+
+    static void Main()
+    {
+        double d = 2.5;
+        Line("x " + d);
+        Line("" + -0.125);
+        Line("" + 100.0);
+        Line("" + 0.0);
+        float f = 1.5f;
+        Line("f " + f);
+        Line($"i {d}");
+    }
+}

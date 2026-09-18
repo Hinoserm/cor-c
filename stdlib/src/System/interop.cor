@@ -1,0 +1,199 @@
+// System.Runtime.InteropServices.Marshal, the error half of it.
+//
+// A system call that fails answers a number, and every layer above it has to
+// turn that number back into the sentence a person reads: "Permission denied",
+// "No such file or directory", "Directory not empty". Before this each utility
+// GUESSED -- it caught an exception that had thrown the errno away, looked at
+// the file again, and printed whichever of two messages seemed to fit -- and
+// the guess was wrong exactly when it mattered: `touch /bob` as an ordinary
+// user said "No such file or directory" about a file it was not allowed to
+// create.
+//
+// .NET has this, and the shape here is .NET's, not ours:
+//
+//   Marshal.GetPInvokeErrorMessage(int)   strerror(3), as a string
+//   Marshal.GetLastPInvokeError()         the errno of the last failed call
+//   Marshal.SetLastPInvokeError(int)      what sets it
+//   Marshal.GetLastSystemError()          the same number under its other name
+//
+// And Interop.GetExceptionForIoErrno, which is how .NET's own System.IO turns
+// an errno into the exception the caller catches -- FileNotFoundException,
+// DirectoryNotFoundException, UnauthorizedAccessException or IOException --
+// with the errno kept in HResult so the message can still be recovered.
+
+static class Marshal
+{
+    static int _lastError;
+
+    /// The errno of the last call that failed, as this process last recorded
+    /// it. .NET's is per-thread and set by the P/Invoke layer; ours is set by
+    /// the library that made the call.
+    public static int GetLastPInvokeError()
+    {
+        return _lastError;
+    }
+
+    public static void SetLastPInvokeError(int error)
+    {
+        _lastError = error;
+    }
+
+    /// The same number under the name .NET uses for it on Unix, where the
+    /// "system error" and the P/Invoke error are one and the same.
+    public static int GetLastSystemError()
+    {
+        return _lastError;
+    }
+
+    public static void SetLastSystemError(int error)
+    {
+        _lastError = error;
+    }
+
+    public static string GetLastPInvokeErrorMessage()
+    {
+        return GetPInvokeErrorMessage(_lastError);
+    }
+
+    /// strerror(3), word for word, because these strings are the ones every
+    /// Unix program in the world prints and a person recognises them. A number
+    /// with no name gets the form strerror gives an unknown error.
+    public static string GetPInvokeErrorMessage(int error)
+    {
+        if (error < 0) { error = -error; }
+
+        if (error == 0) { return "Success"; }
+        if (error == 1) { return "Operation not permitted"; }
+        if (error == 2) { return "No such file or directory"; }
+        if (error == 3) { return "No such process"; }
+        if (error == 4) { return "Interrupted system call"; }
+        if (error == 5) { return "Input/output error"; }
+        if (error == 6) { return "No such device or address"; }
+        if (error == 7) { return "Argument list too long"; }
+        if (error == 8) { return "Exec format error"; }
+        if (error == 9) { return "Bad file descriptor"; }
+        if (error == 10) { return "No child processes"; }
+        if (error == 11) { return "Resource temporarily unavailable"; }
+        if (error == 12) { return "Cannot allocate memory"; }
+        if (error == 13) { return "Permission denied"; }
+        if (error == 14) { return "Bad address"; }
+        if (error == 15) { return "Block device required"; }
+        if (error == 16) { return "Device or resource busy"; }
+        if (error == 17) { return "File exists"; }
+        if (error == 18) { return "Invalid cross-device link"; }
+        if (error == 19) { return "No such device"; }
+        if (error == 20) { return "Not a directory"; }
+        if (error == 21) { return "Is a directory"; }
+        if (error == 22) { return "Invalid argument"; }
+        if (error == 23) { return "Too many open files in system"; }
+        if (error == 24) { return "Too many open files"; }
+        if (error == 25) { return "Inappropriate ioctl for device"; }
+        if (error == 26) { return "Text file busy"; }
+        if (error == 27) { return "File too large"; }
+        if (error == 28) { return "No space left on device"; }
+        if (error == 29) { return "Illegal seek"; }
+        if (error == 30) { return "Read-only file system"; }
+        if (error == 31) { return "Too many links"; }
+        if (error == 32) { return "Broken pipe"; }
+        if (error == 33) { return "Numerical argument out of domain"; }
+        if (error == 34) { return "Numerical result out of range"; }
+        if (error == 35) { return "Resource deadlock avoided"; }
+        if (error == 36) { return "File name too long"; }
+        if (error == 37) { return "No locks available"; }
+        if (error == 38) { return "Function not implemented"; }
+        if (error == 39) { return "Directory not empty"; }
+        if (error == 40) { return "Too many levels of symbolic links"; }
+        if (error == 42) { return "No message of desired type"; }
+        if (error == 61) { return "No data available"; }
+        if (error == 62) { return "Timer expired"; }
+        if (error == 63) { return "Too many references: cannot splice"; }
+        if (error == 71) { return "Protocol error"; }
+        if (error == 75) { return "Value too large for defined data type"; }
+        if (error == 84) { return "Invalid or incomplete multibyte or wide character"; }
+        if (error == 88) { return "Socket operation on non-socket"; }
+        if (error == 89) { return "Destination address required"; }
+        if (error == 90) { return "Message too long"; }
+        if (error == 95) { return "Operation not supported"; }
+        if (error == 97) { return "Address family not supported by protocol"; }
+        if (error == 98) { return "Address already in use"; }
+        if (error == 99) { return "Cannot assign requested address"; }
+        if (error == 100) { return "Network is down"; }
+        if (error == 101) { return "Network is unreachable"; }
+        if (error == 102) { return "Network dropped connection on reset"; }
+        if (error == 103) { return "Software caused connection abort"; }
+        if (error == 104) { return "Connection reset by peer"; }
+        if (error == 105) { return "No buffer space available"; }
+        if (error == 106) { return "Transport endpoint is already connected"; }
+        if (error == 107) { return "Transport endpoint is not connected"; }
+        if (error == 110) { return "Connection timed out"; }
+        if (error == 111) { return "Connection refused"; }
+        if (error == 113) { return "No route to host"; }
+        if (error == 114) { return "Operation already in progress"; }
+        if (error == 115) { return "Operation now in progress"; }
+
+        return "Unknown error " + error.ToString();
+    }
+}
+
+/// What System.IO throws for an errno, which in .NET is Interop's job and not
+/// each caller's. The errno itself is kept in HResult, so a program that wants
+/// the exact sentence can ask Marshal for it rather than reconstructing one
+/// from the type.
+static class Interop
+{
+    public static Exception GetExceptionForIoErrno(int error, string path)
+    {
+        return GetExceptionForIoErrno(error, path, false);
+    }
+
+    /// `isDirectory` says the path was being used as a directory, which is the
+    /// one thing the errno cannot tell us and which decides between
+    /// FileNotFoundException and DirectoryNotFoundException -- the same
+    /// decision .NET makes at the same place.
+    public static Exception GetExceptionForIoErrno(int error, string path, bool isDirectory)
+    {
+        if (error < 0) { error = -error; }
+        Marshal.SetLastPInvokeError(error);
+
+        string message = Marshal.GetPInvokeErrorMessage(error);
+        string full = path.Length == 0 ? message : message + " : '" + path + "'";
+
+        Exception made;
+        if (error == 2)                                  // ENOENT
+        {
+            made = isDirectory ? new DirectoryNotFoundException(full)
+                               : new FileNotFoundException(full);
+        }
+        else if (error == 1 || error == 13 || error == 30)   // EPERM, EACCES, EROFS
+        {
+            made = new UnauthorizedAccessException(full);
+        }
+        else if (error == 20)                            // ENOTDIR
+        {
+            made = new DirectoryNotFoundException(full);
+        }
+        else
+        {
+            made = new IOException(full);
+        }
+        made.HResult = error;
+        return made;
+    }
+}
+
+/// System.Runtime.InteropServices.CollectionsMarshal -- a list's own storage,
+/// without the copy.
+///
+/// .NET's AsSpan hands back a span over the List's backing array: writing
+/// through it writes the list, and adding to the list afterwards may leave the
+/// span pointing at the array the list has abandoned. That is .NET's contract
+/// and it is what makes patching bytes already appended cheap.
+static class CollectionsMarshal
+{
+    public static Span<T> AsSpan<T>(List<T>? list)
+    {
+        if (list == null) { return new Span<T>(new T[0]); }
+
+        return new Span<T>(list.Backing(), 0, list.Count);
+    }
+}

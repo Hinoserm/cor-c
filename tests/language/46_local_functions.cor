@@ -1,0 +1,84 @@
+// test: local_functions
+// expect-exit: 0
+// expect-output:
+// local 3 105 5 21 120
+//
+// Local functions: one that writes an enclosing local, one that reads a
+// local changed after it was declared, one with two parameters, an
+// expression-bodied one, and a recursive one.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static long Accumulate()
+    {
+        long total = 0;
+
+        void Bump()
+        {
+            total = total + 1;
+        }
+
+        Bump();
+        Bump();
+        Bump();
+        return total;
+    }
+
+    static long Reads()
+    {
+        long b = 10;
+
+        long Plus(long n)
+        {
+            return n + b;
+        }
+
+        b = 100;
+        return Plus(5);
+    }
+
+    static long Two()
+    {
+        long Sum(long a, long c)
+        {
+            return a + c;
+        }
+
+        return Sum(2, 3);
+    }
+
+    static long Short()
+    {
+        long factor = 3;
+
+        long Times(long n) => n * factor;
+
+        return Times(7);
+    }
+
+    static long Recursive()
+    {
+        long Fact(long n)
+        {
+            if (n <= 1)
+            {
+                return 1;
+            }
+            return n * Fact(n - 1);
+        }
+
+        return Fact(5);
+    }
+
+    static int Main()
+    {
+        Line("local " + Accumulate() + " " + Reads() + " " + Two() + " " + Short() + " " + Recursive());
+        return 0;
+    }
+}

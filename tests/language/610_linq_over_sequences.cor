@@ -1,0 +1,85 @@
+// test: linq_over_sequences
+// expect-exit: 0
+// expect-output:
+// list 3 6
+// set 3 abc
+// dict 3 a=1 b=2 c=3
+// readonly 2
+// ordered c b a
+// through 2
+//
+// LINQ takes an IEnumerable<T>, which is what .NET's takes and the reason a
+// Dictionary, a HashSet and an interface-typed sequence can all be asked. The
+// collection interfaces have .NET's shape too -- IReadOnlyList<T> is an
+// IReadOnlyCollection<T> is an IEnumerable<T> -- so the operators reach
+// everything that is one.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Total(IEnumerable<int> sequence)
+    {
+        return sequence.Count();
+    }
+
+    static int Main()
+    {
+        List<int> numbers = new List<int> { 1, 2, 3 };
+
+        Line("list " + numbers.Count() + " " + numbers.Sum());
+
+        HashSet<string> set = new HashSet<string>();
+
+        set.Add("a");
+        set.Add("b");
+        set.Add("c");
+
+        List<string> sorted = set.OrderBy(s => s);
+        string joined = "";
+
+        foreach (string s in sorted)
+        {
+            joined = joined + s;
+        }
+
+        Line("set " + set.Count() + " " + joined);
+
+        Dictionary<string, int> map = new Dictionary<string, int>();
+
+        map["a"] = 1;
+        map["b"] = 2;
+        map["c"] = 3;
+
+        List<KeyValuePair<string, int>> pairs = map.OrderBy(p => p.Key);
+        string shown = "";
+
+        foreach (KeyValuePair<string, int> p in pairs)
+        {
+            shown = shown + " " + p.Key + "=" + p.Value;
+        }
+
+        Line("dict " + map.Count() + shown);
+
+        IReadOnlyList<int> view = numbers;
+
+        Line("readonly " + view.Where(n => n > 1).Count());
+
+        // An ordering the comparer decides rather than the key's own.
+        List<string> down = set.OrderByDescending(s => s, StringComparer.Ordinal);
+        string backwards = "";
+
+        foreach (string s in down)
+        {
+            backwards = backwards + " " + s;
+        }
+
+        Line("ordered" + backwards);
+        Line("through " + Total(numbers.Where(n => n != 2)));
+        return 0;
+    }
+}

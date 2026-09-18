@@ -1,0 +1,40 @@
+// test: the machine-independent kernel binds for x86
+// expect-exit: 0
+// expect-output:
+// kernel binds: ok
+//
+// The work is all in tests/lang/280_kernel_binds.sh, which points the compiler
+// at every file in os/kernel that is not under arch/ and accounts for every
+// error it gets back (docs/software/X86-KERNEL.md, "Layers"). This file exists
+// because the language runner runs *.cor, so a shell check reaches it the way
+// tests/lang/192_ext3_read.cor reaches its image builder: through Fork and
+// Exec, with the script's own output shown only when it fails.
+
+static class Program
+{
+    static int Main()
+    {
+        int pid = Os.Fork();
+
+        if (pid == 0)
+        {
+            // Quiet on success. The script prints a histogram of every name
+            // the kernel still refers to and nothing can yet declare, which is
+            // what somebody debugging the split wants and is not what a
+            // passing test should put on the runner's stdout.
+            int quiet = Os.Open("/dev/null", O.Write);
+            Os.Dup2(quiet, 1);
+            string[] argv = new string[2];
+            argv[0] = "bash";
+            argv[1] = "tests/lang/280_kernel_binds.sh";
+            Os.Exec("/bin/bash", argv, Environment.EnvironmentBlock());
+            Os.Exit(127);
+        }
+
+        int[] status = new int[1];
+        Os.Waitpid(pid, status, 0);
+        Sys.Print(status[0] == 0 ? "kernel binds: ok" : "kernel binds: FAILED");
+        Sys.PrintLine();
+        return status[0] == 0 ? 0 : 1;
+    }
+}

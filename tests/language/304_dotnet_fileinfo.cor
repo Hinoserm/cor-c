@@ -1,0 +1,52 @@
+// test: FileInfo, DirectoryInfo, file times, symbolic links, DateTime.Now
+// expect-exit: 0
+// expect-output:
+// info ok
+// dir ok
+// link ok
+// times ok
+// now ok
+// delete ok
+
+class Program
+{
+    static int Main()
+    {
+        string root = "/tmp/cor-304-" + Environment.ProcessId;
+        Directory.CreateDirectory(root);
+        string file = Path.Combine(root, "a.txt");
+        File.WriteAllText(file, "hello");
+        FileInfo info = new FileInfo(file);
+        Console.WriteLine(info.Exists && info.Length == 5 && info.Name == "a.txt"
+            && (info.Attributes & FileAttributes.Directory) == 0 && !info.IsSymbolicLink
+            && info.DirectoryName == root ? "info ok" : "info bad");
+
+        DirectoryInfo dir = new DirectoryInfo(root);
+        dir.CreateSubdirectory("sub");
+        FileSystemInfo[] entries = dir.GetFileSystemInfos();
+        Console.WriteLine(dir.Exists && entries.Length == 2 && dir.GetFiles().Length == 1
+            && dir.GetDirectories().Length == 1 && (dir.Attributes & FileAttributes.Directory) != 0
+            ? "dir ok" : "dir bad " + entries.Length);
+
+        string link = Path.Combine(root, "l");
+        File.CreateSymbolicLink(link, "a.txt");
+        FileInfo li = new FileInfo(link);
+        FileSystemInfo? target = File.ResolveLinkTarget(link, false);
+        Console.WriteLine(li.IsSymbolicLink && li.LinkTarget == "a.txt" && target != null
+            && target.Name == "a.txt" && (li.Attributes & FileAttributes.ReparsePoint) != 0
+            ? "link ok" : "link bad");
+
+        DateTime when = new DateTime(2001, 9, 9, 1, 46, 40);
+        File.SetLastWriteTimeUtc(file, when);
+        DateTime back = File.GetLastWriteTimeUtc(file);
+        long backSeconds = new DateTimeOffset(back, TimeSpan.Zero).ToUnixTimeSeconds();
+        Console.WriteLine(backSeconds == 1000000000 && back.Year == 2001 ? "times ok" : "times bad " + backSeconds);
+
+        DateTime now = DateTime.UtcNow;
+        Console.WriteLine(now.Year >= 2025 && now.Year < 2100 ? "now ok" : "now bad");
+
+        Directory.Delete(root, true);
+        Console.WriteLine(!Directory.Exists(root) ? "delete ok" : "delete bad");
+        return 0;
+    }
+}

@@ -1,0 +1,46 @@
+// test: local_function_after_return
+// expect-exit: 0
+// expect-output:
+// 2 False
+//
+// A LOCAL FUNCTION IS CALLABLE FROM THE TOP OF ITS BLOCK. `return flow;` and
+// then the helper, below everything that calls it, is how they are written.
+// Its closure was made where the text is, so one written after the return was
+// never made, and the call went through whatever the register held. It
+// captures locals declared above it in the same block, which therefore have
+// their cells before it does.
+
+using System;
+using System.Collections.Generic;
+sealed class Flow { public HashSet<string> Derived = new(); public bool Escapes; }
+class P {
+  static Flow Analyse(List<string?> items, Dictionary<string, int> defs) {
+    Flow flow = new();
+    bool changed = true;
+    while (changed && !flow.Escapes) {
+      changed = false;
+      foreach (string? i in items) {
+        switch (i) {
+          case "a":
+          case "b":
+            Derive(i);
+            break;
+          case "c":
+            flow.Escapes = false;
+            Derive(i);
+            break;
+        }
+      }
+    }
+    return flow;
+
+    void Derive(string? d) {
+      if (d is null) { return; }
+      if (defs.GetValueOrDefault(d) > 1) { flow.Escapes = true; return; }
+      if (flow.Derived.Add(d)) { changed = true; }
+    }
+  }
+  static int Main() {
+    Flow f = Analyse(new List<string?> { "a", null, "c", "z" }, new Dictionary<string, int> { ["a"] = 1 });
+    Console.WriteLine(f.Derived.Count + " " + f.Escapes);
+    return 0; } }

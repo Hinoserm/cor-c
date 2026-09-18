@@ -1,0 +1,104 @@
+// test: library_surface
+// expect-exit: 0
+// expect-output:
+// params 3 mov eax ebx
+// full /a/c/d /tmp/here/x.txt
+// stack 3 2 1
+// dict 2 a=1 b=2
+// builder start-more 13 True
+// span 3 -1 0
+// argument why (Parameter 'which')
+// range value out of range (Parameter 'n') Actual value was 9.
+// state Operation is not valid due to the current state of the object.
+// names 2
+//
+// .NET members this compiler's own sources are written against: a `params`
+// CONSTRUCTOR, Path.GetFullPath, Stack and Dictionary built from what another
+// holds, StringBuilder(string) and Append(object), ReadOnlySpan's Empty and
+// IndexOf, and the exception constructors that carry a parameter name.
+
+class Sym
+{
+    public override string ToString() => "sym";
+}
+
+class MInstr
+{
+    public string Op;
+    public List<string> Operands = new();
+
+    public MInstr(string op, params string[] operands)
+    {
+        Op = op;
+        Operands.AddRange(operands);
+    }
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        MInstr i = new MInstr("mov", "eax", "ebx");
+
+        Line("params " + (i.Operands.Count + 1) + " " + i.Op + " " + i.Operands[0] + " " + i.Operands[1]);
+        Line("full " + Path.GetFullPath("/a/b/../c/./d") + " " + Path.GetFullPath("x.txt", "/tmp/here"));
+
+        List<int> source = new List<int> { 1, 2, 3 };
+        Stack<int> stack = new Stack<int>(source);
+
+        Line("stack " + stack.Pop() + " " + stack.Pop() + " " + stack.Pop());
+
+        Dictionary<string, int> first = new Dictionary<string, int>();
+
+        first["a"] = 1;
+        first["b"] = 2;
+
+        Dictionary<string, int> second = new Dictionary<string, int>(first);
+
+        Line("dict " + second.Count + " a=" + second["a"] + " b=" + second["b"]);
+
+        StringBuilder made = new StringBuilder("start");
+
+        made.Append("-more");
+
+        string text = made.ToString();
+
+        // Append(object?), which is what a value with no better overload
+        // reaches: a null adds nothing, and anything else says what it says.
+        Sym? nothing = null;
+
+        made.Append(new Sym());
+        made.Append(nothing);
+        Line("builder " + text + " " + made.Length + " " + (made.Length == 13));
+
+        byte[] bytes = new byte[] { 1, 2, 0 };
+        ReadOnlySpan<byte> span = new ReadOnlySpan<byte>(bytes);
+
+        Line("span " + span.Length + " " + ReadOnlySpan<byte>.Empty.IndexOf((byte)1) + " " + span.IndexOf((byte)1));
+
+        ArgumentException why = new ArgumentException("why", "which");
+
+        Line("argument " + why.Message);
+
+        ArgumentOutOfRangeException big = new ArgumentOutOfRangeException("n", 9, "value out of range");
+
+        Line("range " + big.Message);
+
+        InvalidOperationException state = new InvalidOperationException();
+
+        Line("state " + state.Message);
+
+        HashSet<string> set = new HashSet<string>();
+
+        set.Add("x");
+        set.Add("y");
+        Line("names " + set.Count);
+        return 0;
+    }
+}

@@ -1,0 +1,448 @@
+// The POSIX process layer .NET does not have.
+//
+// EVERYTHING ELSE IN lib/ IS .NET. A program on this system is an ordinary
+// C# program: it reads files through System.IO, prints through
+// System.Console, asks System.Environment for its arguments, and starts
+// other programs through System.Diagnostics.Process. That is the rule, and
+// this file is the one exception to it.
+//
+// The exception exists because four programs -- a shell, init, login and a
+// getty -- need things the .NET class library has never had an API for, and
+// cannot be written without them:
+//
+//   fork, execve            a shell's children are made by SPLITTING it and
+//                           then replacing the copy; Process.Start cannot
+//                           express a child that inherits arbitrary
+//                           descriptors, changes its own process group, and
+//                           only then becomes another program.
+//   dup2, pipe              a pipeline and `> file` are descriptor
+//                           arrangements made in the child between the fork
+//                           and the exec.
+//   setpgid, getpgid        a job is a process GROUP, so ^C stops `a | b`
+//   setsid                  and a login session is a session.
+//   tcsetpgrp, tcgetpgrp    which group the keys on the terminal go to.
+//   waitpid                 with WNOHANG, and with the difference between a
+//                           child that exited and one that was killed.
+//   setuid, setgid,         login gives away the machine's authority; that
+//   initgroups              is the last thing it does with it.
+//   the controlling         a getty opens a line and makes it THIS session's
+//   terminal                terminal, which is an ioctl on the open file.
+//   umask, chdir            the two pieces of process state a shell sets.
+//
+// ORDINARY PROGRAMS USE System.Diagnostics.Process INSTEAD. If what you want
+// is "run this program and read what it printed", Process and
+// ProcessStartInfo say it in two lines and are portable; reach for this file
+// only when you are writing the part of the system that Process itself is
+// built out of. (lib/process.cor is built out of it, and is the worked
+// example.)
+//
+// Everything here is a thin, named wrapper over lib/sys/linux.cor -- that
+// file is still the only one that issues a system call.
+
+/// waitpid(2)'s options.
+static class WaitOptions
+{
+    public const int None = 0;
+    public const int NoHang = 1;            // WNOHANG
+    public const int Untraced = 2;          // WUNTRACED
+}
+
+/// mount(2)'s flags, as C# spells a set of them: the ones a person writes
+/// after -o and the kernel acts on itself.
+enum MountFlags
+{
+    None = 0,
+    ReadOnly = 1,               // MS_RDONLY
+    NoSetUserId = 2,            // MS_NOSUID
+    NoDevices = 4,              // MS_NODEV
+    NoExecute = 8,              // MS_NOEXEC
+    Synchronous = 16,           // MS_SYNCHRONOUS
+    Remount = 32,               // MS_REMOUNT
+    MandatoryLocks = 64,        // MS_MANDLOCK
+    DirectorySync = 128,        // MS_DIRSYNC
+    NoAccessTimes = 1024,       // MS_NOATIME
+    NoDirectoryAccessTimes = 2048, // MS_NODIRATIME
+    Bind = 4096,                // MS_BIND
+    Move = 8192,                // MS_MOVE
+    Recursive = 16384,          // MS_REC
+    Silent = 32768,             // MS_SILENT
+    RelativeAccessTimes = 2097152, // MS_RELATIME
+    StrictAccessTimes = 16777216   // MS_STRICTATIME
+}
+
+/// umount2(2)'s flags.
+enum UnmountFlags
+{
+    None = 0,
+    Force = 1,                  // MNT_FORCE: give up on a server that is gone
+    Detach = 2,                 // MNT_DETACH: lazy; the tree goes when it is idle
+    Expire = 4,                 // MNT_EXPIRE
+    NoFollow = 8                // UMOUNT_NOFOLLOW
+}
+
+/// mount(2) and umount2(2), which .NET has no API for at all: attaching a
+/// filing system to the tree is a thing a system has, not a thing a program
+/// portable between systems does.
+static class UnixMount
+{
+    /// mount(2). `type` is the filing system's name -- "ext2", "minix" -- and
+    /// `data` its own options, the ones after -o that the kernel passes
+    /// straight through to it; null when there are none. 0, or a negative
+    /// errno.
+    public static int Mount(string source, string target, string type,
+                            MountFlags flags, string? data)
+    {
+        return Os.Mount(source, target, type, (long)flags, data);
+    }
+
+    public static int Mount(string source, string target, string type, MountFlags flags)
+    {
+        return Os.Mount(source, target, type, (long)flags, null);
+    }
+
+    /// umount2(2). Detach is the lazy unmount: the tree comes away now and the
+    /// filing system goes when the last thing using it lets go.
+    public static int Unmount(string target, UnmountFlags flags)
+    {
+        return Os.Umount(target, (int)flags);
+    }
+
+    public static int Unmount(string target)
+    {
+        return Os.Umount(target, 0);
+    }
+}
+
+static class UnixProcess
+{
+    // ---- making a process -------------------------------------------------
+
+    /// fork(2): the child's pid here, 0 over there, a negative errno if the
+    /// kernel would not. Console output is flushed first, or whatever this
+    /// process has buffered would be printed TWICE -- once by each half.
+    public static int Fork()
+    {
+        Console.Flush();
+        return Os.Fork();
+    }
+
+    /// execve(2): this process becomes the named program, keeping its pid,
+    /// its descriptors, its process group and its terminal. It does not
+    /// return on success; on failure it answers a negative errno.
+    ///
+    /// `argv` includes the program's own name at index 0, as C's does. A
+    /// null `envp` means the environment this process was started with.
+    public static int Exec(string path, string[] argv, string[]? envp)
+    {
+        return Os.Exec(path, argv, envp);
+    }
+
+    public static int Exec(string path, string[] argv)
+    {
+        return Os.Exec(path, argv, null);
+    }
+
+    /// The program named on PATH when its name has no slash, as execvp(3)
+    /// and .NET's UseShellExecute=false both do.
+    public static string Find(string name)
+    {
+        if (name.IndexOf('/') >= 0)
+        {
+            return name;
+        }
+        string? path = Environment.GetEnvironmentVariable("PATH");
+        string[] dirs = (path == null ? "/bin:/usr/bin" : path).Split(':');
+        for (int i = 0; i < dirs.Length; i++)
+        {
+            string full = dirs[i].Length == 0 ? name : dirs[i] + "/" + name;
+            if (File.Exists(full))
+            {
+                return full;
+            }
+        }
+        return name;
+    }
+
+    // ---- descriptors ------------------------------------------------------
+
+    /// dup2(2): `to` becomes another name for `fd`, closing whatever `to`
+    /// was. This is how a child is given a pipe as its standard output.
+    public static int Dup2(int fd, int to)
+    {
+        return Os.Dup2(fd, to);
+    }
+
+    /// dup(2): the same open file under the lowest free number, which is how
+    /// a shell remembers a descriptor it is about to redirect.
+    public static int Dup(int fd)
+    {
+        return Os.Dup(fd);
+    }
+
+    public static int Close(int fd)
+    {
+        return Os.Close(fd);
+    }
+
+    /// pipe(2). The two descriptors come back in a new int[2]: [0] reads,
+    /// [1] writes. Null if the kernel would not.
+    public static int[]? Pipe()
+    {
+        int[] pair = new int[2];
+        if (Os.Pipe(pair) != 0)
+        {
+            return null;
+        }
+        return pair;
+    }
+
+    /// The same, into an array the caller owns; 0, or a negative errno.
+    public static int Pipe(int[] pair)
+    {
+        return Os.Pipe(pair);
+    }
+
+    // ---- groups, sessions and the terminal --------------------------------
+
+    /// setpgid(2). A zero `pid` means this process and a zero `group` means
+    /// "its own pid", so SetProcessGroup(0, 0) is a shell putting itself in
+    /// a group of its own.
+    public static int SetProcessGroup(int pid, int group)
+    {
+        return Os.Setpgid(pid, group);
+    }
+
+    /// getpgid(2); a zero `pid` means this process.
+    public static int GetProcessGroup(int pid)
+    {
+        return Os.Getpgid(pid);
+    }
+
+    public static int GetProcessGroup()
+    {
+        return Os.Getpgid(0);
+    }
+
+    /// setsid(2): a new session led by this process, with no controlling
+    /// terminal. Answers the session id, or a negative errno -- which is
+    /// what a process that already leads a group gets.
+    public static int SetSession()
+    {
+        return Os.Setsid();
+    }
+
+    /// tcsetpgrp(3): which process group the terminal's keys belong to.
+    /// THE SIGNAL KEYS FOLLOW THIS: ^C reaches the foreground group and
+    /// nobody else, which is what makes a job something a person can stop.
+    public static int SetForegroundProcessGroup(int fd, int group)
+    {
+        int[] want = new int[1];
+        want[0] = group;
+        return (int)Os.Ioctl(fd, Tio.SetForeground, Sys.ArrayData(want));
+    }
+
+    /// tcgetpgrp(3), or a negative errno when `fd` is not a terminal.
+    public static int GetForegroundProcessGroup(int fd)
+    {
+        int[] got = new int[1];
+        long r = Os.Ioctl(fd, Tio.Foreground, Sys.ArrayData(got));
+        if (r < 0)
+        {
+            return (int)r;
+        }
+        return got[0];
+    }
+
+    /// Opens a terminal by name and makes it THIS SESSION'S OWN -- which is
+    /// what a getty does after setsid(), and the reason a hangup on the line
+    /// reaches exactly the people on it. Answers the descriptor, or a
+    /// negative errno; TIOCSCTTY fails when another session still holds the
+    /// line, and that failure is reported rather than hidden.
+    public static int OpenControllingTerminal(string path)
+    {
+        int fd = Os.Open(path, O.ReadWrite);
+        if (fd < 0)
+        {
+            return fd;
+        }
+        long r = Os.Ioctl(fd, Tio.SetControlling, 0);
+        if (r < 0)
+        {
+            Os.Close(fd);
+            return (int)r;
+        }
+        return fd;
+    }
+
+    /// Unix98 master plus an opened, unlocked slave. The caller owns both.
+    public static int OpenPseudoTerminal(out int slave)
+    {
+        slave = -1;
+        int master = Os.Open("/dev/ptmx", O.ReadWrite);
+        if (master < 0) return master;
+        byte[] word = new byte[4];
+        long result = Os.Ioctl(master, 0x80045430, Sys.ArrayData(word)); // TIOCGPTN
+        long number = Raw.U32(word, 0);
+        if (result >= 0)
+        {
+            Raw.SetU32(word, 0, 0);
+            result = Os.Ioctl(master, 0x40045431, Sys.ArrayData(word)); // TIOCSPTLCK
+        }
+        if (result >= 0) result = Os.Open("/dev/pts/" + number, O.ReadWrite);
+        if (result < 0) { Os.Close(master); return (int)result; }
+        slave = (int)result;
+        return master;
+    }
+
+    public static int TakeControllingTerminal(int fd)
+    { return (int)Os.Ioctl(fd, Tio.SetControlling, 0); }
+
+    public static int SetTerminalSize(int fd, int rows, int columns)
+    {
+        byte[] size = new byte[8];
+        Raw.SetU32(size, 0, ((long)(columns & 65535) << 16) | (rows & 65535));
+        return (int)Os.Ioctl(fd, 0x5414, Sys.ArrayData(size));
+    }
+
+    public static int GetTerminalSize(int fd, out int rows, out int columns)
+    {
+        byte[] size = new byte[8];
+        long result = Os.Ioctl(fd, 0x5413, Sys.ArrayData(size));
+        long packed = Raw.U32(size, 0);
+        rows = (int)(packed & 65535);
+        columns = (int)((packed >> 16) & 65535);
+        return (int)result;
+    }
+
+    /// TIOCNOTTY: this process gives up its controlling terminal.
+    public static int ReleaseControllingTerminal(int fd)
+    {
+        return (int)Os.Ioctl(fd, Tio.GiveUpControlling, 0);
+    }
+
+    // ---- who this process is ----------------------------------------------
+
+    public static int UserId
+    {
+        get { return Os.Getuid(); }
+    }
+
+    public static int GroupId
+    {
+        get { return Os.Getgid(); }
+    }
+
+    /// setuid(2). Once this succeeds for a non-zero id there is no way back,
+    /// which is the whole point: login does it last.
+    public static int SetUserId(int uid)
+    {
+        return Os.Setuid(uid);
+    }
+
+    public static int SetGroupId(int gid)
+    {
+        return Os.Setgid(gid);
+    }
+
+    /// initgroups(3): the supplementary groups this user is in. THE ORDER
+    /// MATTERS and is fixed -- groups, then gid, then uid -- because each
+    /// step needs the authority the next one gives away.
+    public static int InitGroups(int[] groups, int count)
+    {
+        return Os.Setgroups(groups, count);
+    }
+
+    /// chown(2). .NET can set a file's permission bits (File.SetUnixFileMode)
+    /// and not its owner, and login has to: a terminal is 0666 until somebody
+    /// logs in on it, and the moment they do it becomes theirs alone.
+    public static int ChangeOwner(string path, int uid, int gid)
+    {
+        return Os.Chown(path, uid, gid);
+    }
+
+    /// umask(2): the permission bits taken OUT of every file this process
+    /// creates. Answers the mask it replaced.
+    public static int Umask(int mask)
+    {
+        return Os.Umask(mask);
+    }
+
+    /// chdir(2). Environment.CurrentDirectory is the .NET spelling and the
+    /// one to use; this one answers an errno instead of throwing, which is
+    /// what a shell's `cd` wants so it can name the reason.
+    public static int ChangeDirectory(string path)
+    {
+        return Os.Chdir(path);
+    }
+
+    // ---- waiting ----------------------------------------------------------
+
+    /// waitpid(2). -1 for `pid` means any child. `status` comes back as the
+    /// kernel's raw status word, which the helpers below take apart.
+    /// Answers the pid that was collected, 0 under NoHang when the child is
+    /// still running, or a negative errno.
+    public static int WaitPid(int pid, out int status, int options)
+    {
+        int[] room = new int[1];
+        int got = Os.Waitpid(pid, room, options);
+        status = room[0];
+        return got;
+    }
+
+    public static int WaitPid(int pid, out int status)
+    {
+        return WaitPid(pid, out status, WaitOptions.None);
+    }
+
+    /// The same, into an array the caller owns and keeps. init waits in a
+    /// loop that never ends, and a loop that never ends must not allocate:
+    /// this one asks the kernel and touches nothing else.
+    public static int WaitPid(int pid, int[] status, int options)
+    {
+        return Os.Waitpid(pid, status, options);
+    }
+
+    /// Whether the child ran to its own end rather than being killed.
+    public static bool Exited(int status)
+    {
+        return WaitStatus.Exited(status);
+    }
+
+    /// What it returned from Main; meaningful only when Exited.
+    public static int ExitStatus(int status)
+    {
+        return WaitStatus.Code(status);
+    }
+
+    public static bool Signalled(int status)
+    {
+        return WaitStatus.Signalled(status);
+    }
+
+    /// Which signal killed it; meaningful only when Signalled.
+    public static int TerminatingSignal(int status)
+    {
+        return WaitStatus.Signal(status);
+    }
+
+    public static bool Stopped(int status)
+    {
+        return WaitStatus.Stopped(status);
+    }
+
+    /// The way a shell reports a child in one number: its exit code, or
+    /// 128 + the signal that killed it.
+    public static int Result(int status)
+    {
+        return WaitStatus.Result(status);
+    }
+
+    // ---- signals ----------------------------------------------------------
+
+    /// kill(2). A NEGATIVE pid is a process GROUP, which is how a shell
+    /// stops every stage of a pipeline at once.
+    public static int Kill(int pid, int signal)
+    {
+        return Os.Kill(pid, signal);
+    }
+}

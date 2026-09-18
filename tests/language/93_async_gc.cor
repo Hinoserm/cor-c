@@ -1,0 +1,144 @@
+// test: async_gc
+// expect-exit: 0
+// expect-output:
+// sums 629340 630292
+// tags tag0 tag7
+// keep 10 True 10 True
+// collected True
+// under cap True
+//
+// Collection while async methods are suspended. Two methods each run 5000
+// iterations with the heap capped at 16 MB; every iteration allocates four
+// kilobyte arrays of garbage and one kilobyte array that is held in a
+// local ACROSS an await, written before and read after it, so while the
+// method is suspended the only reference to that array is in its state
+// machine. Every 500 iterations a small array is added to a List that is
+// itself only a local of the suspended method. Forty megabytes of
+// allocation must force collections, nothing reachable only from a
+// suspended state machine may be freed or moved without its reference
+// being updated, and the kept arrays must still hold their patterns.
+
+static class Program
+{
+    // Garbage is parked here so that it escapes and has to be the heap's;
+    // an array that never left the loop body could live on the stack.
+    static byte[]? sink;
+
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static bool Check(List<byte[]> keep)
+    {
+        if (keep.Count != 10)
+        {
+            return false;
+        }
+        for (int n = 0; n < keep.Count; n++)
+        {
+            byte[] kept = keep[n];
+            for (int j = 0; j < 64; j++)
+            {
+                if (kept[j] != (byte)((n * 3 + j) & 255))
+                {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    static async Task<long> Churn(int seed, int rounds)
+    {
+        List<byte[]> keep = new List<byte[]>();
+        string tag = "tag" + seed;
+        long sum = 0;
+        for (int i = 0; i < rounds; i++)
+        {
+            for (int g = 0; g < 4; g++)
+            {
+                byte[] garbage = new byte[1000];
+                garbage[g] = 1;
+                sink = garbage;
+            }
+
+            byte[] block = new byte[1000];
+            int at = i % 1000;
+            block[at] = (byte)((i + seed) & 255);
+
+            await Task.Yield();
+
+            sum = sum + block[at];
+
+            if (i % 500 == 0)
+            {
+                byte[] kept = new byte[64];
+                int n = i / 500;
+                for (int j = 0; j < 64; j++)
+                {
+                    kept[j] = (byte)((n * 3 + j) & 255);
+                }
+                keep.Add(kept);
+            }
+        }
+
+        if (!Check(keep))
+        {
+            return -1;
+        }
+        if (tag != "tag" + seed)
+        {
+            return -2;
+        }
+        return sum;
+    }
+
+    static async Task<string> TagAfter(int seed, Task<long> work)
+    {
+        string tag = "tag" + seed;
+        await work;
+        return tag;
+    }
+
+    static async Task Main()
+    {
+        Gc.SetLimit(16 * 1024 * 1024);
+
+        List<byte[]> mainKeep = new List<byte[]>();
+        for (int n = 0; n < 10; n++)
+        {
+            byte[] kept = new byte[64];
+            for (int j = 0; j < 64; j++)
+            {
+                kept[j] = (byte)((n * 3 + j) & 255);
+            }
+            mainKeep.Add(kept);
+        }
+
+        int rounds = 5000;
+        Task<long> a = Churn(0, rounds);
+        Task<long> b = Churn(7, rounds);
+        Task<string> ta = TagAfter(0, a);
+        Task<string> tb = TagAfter(7, b);
+
+        long sa = await a;
+        long sb = await b;
+        Line("sums " + sa + " " + sb);
+
+        string na = await ta;
+        string nb = await tb;
+        Line("tags " + na + " " + nb);
+
+        await Task.Yield();
+        List<byte[]> fresh = new List<byte[]>();
+        for (int n = 0; n < 10; n++)
+        {
+            fresh.Add(mainKeep[n]);
+        }
+        Line("keep " + mainKeep.Count + " " + Check(mainKeep) + " " + fresh.Count + " " + Check(fresh));
+        Line("collected " + (Gc.Collections > 0));
+        Line("under cap " + (Gc.HeapBytes <= 16 * 1024 * 1024));
+    }
+}

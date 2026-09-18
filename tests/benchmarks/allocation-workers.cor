@@ -1,0 +1,58 @@
+// Profile the real allocator under concurrent allocation and explicit reuse.
+// Raw addresses deliberately exercise Runtime.Alloc/Free, not compiler escape
+// elimination. A live guard on each side keeps the small free block separate.
+class AllocationWorker : Action
+{
+    public int Count;
+    public bool Valid;
+    public void Invoke()
+    {
+        long left = Runtime.Alloc(32);
+        long hole = Runtime.Alloc(32);
+        long right = Runtime.Alloc(32);
+        Sys.Poke(left, 111);
+        Sys.Poke(right, 222);
+        Runtime.Free(hole);
+        bool okay = true;
+        for (int i = 0; i < Count; i++)
+        {
+            int bytes = 1024 + (i & 7) * 8;
+            long memory = Runtime.Alloc(bytes);
+            if (Sys.Peek(memory) != 0 || Sys.Peek(memory + bytes - 4) != 0) okay = false;
+            Sys.Poke(memory, i + 1);
+            Sys.Poke(memory + bytes - 4, i + 2);
+            if (Sys.Peek(memory) != i + 1 || Sys.Peek(memory + bytes - 4) != i + 2) okay = false;
+            Runtime.Free(memory);
+        }
+        if (Sys.Peek(left) != 111 || Sys.Peek(right) != 222) okay = false;
+        Runtime.Free(right);
+        Runtime.Free(left);
+        Valid = okay;
+    }
+}
+static class Program
+{
+    static int Main()
+    {
+        string[] args = Environment.GetCommandLineArgs();
+        int count = args.Length > 1 ? int.Parse(args[1]) : 200000;
+        int workers = args.Length > 2 ? int.Parse(args[2]) : 4;
+        if (count < 1 || count > 10000000 || workers < 1 || workers > 32) return 2;
+        AllocationWorker[] work = new AllocationWorker[workers];
+        Thread[] threads = new Thread[workers];
+        for (int i = 0; i < workers; i++) work[i] = new AllocationWorker { Count = count };
+        Gc.Collect();
+        long collections = Gc.Collections;
+        long start = Stopwatch.GetTimestamp();
+        for (int i = 0; i < workers; i++) threads[i] = Thread.Start(work[i]);
+        bool valid = true;
+        for (int i = 0; i < workers; i++)
+        { threads[i].Join(); valid &= work[i].Valid; }
+        long elapsed = Stopwatch.GetTimestamp() - start;
+        long collected = Gc.Collections - collections;
+        Sys.Print("allocation-workers,workers=" + workers + ",iterations-per-worker=" + count
+            + ",ticks=" + elapsed + ",frequency=" + Stopwatch.Frequency
+            + ",collections=" + collected + ",valid=" + valid + "\n");
+        return valid ? 0 : 1;
+    }
+}

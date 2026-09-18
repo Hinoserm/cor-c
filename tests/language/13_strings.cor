@@ -1,0 +1,74 @@
+// test: strings
+// expect-exit: 0
+// expect-output:
+// concat foobar a12 3a True 5 0
+// index e 104
+// eq True False True
+// order True True False True
+// compare 1 -1 0 True
+// sub world hello 4 6 -1
+// pred True True True False
+// case HELLO WORLD hello world
+// edit heLLo worLd [x] 007 [7  ]
+//
+// Strings: concatenation with strings, numbers and booleans; Length;
+// indexing; equality and ordering operators; the String helpers of the
+// standard library, called in their static spelling.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Sign(int n)
+    {
+        if (n > 0)
+        {
+            return 1;
+        }
+        if (n < 0)
+        {
+            return -1;
+        }
+        return 0;
+    }
+
+    static int Main()
+    {
+        string foo = "foo";
+        string bar = "bar";
+        int one = 1;
+        int two = 2;
+        bool yes = true;
+        string empty = "";
+        Line("concat " + (foo + bar) + " " + ("a" + one + two) + " " + (one + two + "a") + " " + ("" + yes)
+             + " " + "hello".Length + " " + empty.Length);
+
+        string hello = "hello";
+        Sys.Print("index ");
+        Sys.PrintChar(hello[1]);
+        Sys.Print(" " + (int)hello[0]);
+        Sys.PrintLine();
+
+        string abc = "abc";
+        string abd = "abd";
+        string abc2 = "ab" + "c";
+        Line("eq " + (abc == abc2) + " " + (abc == abd) + " " + (abc != abd));
+        Line("order " + ("apple" < "banana") + " " + ("ab" < "abc") + " " + ("banana" < "apple") + " " + ("abc" >= "abc"));
+        Line("compare " + Sign(String.Compare("b", "a")) + " " + Sign(String.Compare("a", "b")) + " " + Sign(String.Compare("a", "a"))
+             + " " + String.Equals("x", "x"));
+
+        string hw = "hello world";
+        Line("sub " + String.Substring(hw, 6) + " " + String.Substring(hw, 0, 5) + " " + String.IndexOf(hw, 'o')
+             + " " + String.IndexOf(hw, "world") + " " + String.IndexOf(hw, "xyz"));
+        Line("pred " + String.StartsWith(hw, "hello") + " " + String.EndsWith(hw, "world") + " " + String.Contains(hw, "lo w")
+             + " " + String.StartsWith(hw, "world"));
+        Line("case " + String.ToUpper(hw) + " " + String.ToLower("HELLO WORLD"));
+        Line("edit " + String.Replace(hw, "l", "L") + " [" + String.Trim("  x  ") + "] " + String.PadLeft("7", 3, '0')
+             + " [" + String.PadRight("7", 3) + "]");
+        return 0;
+    }
+}

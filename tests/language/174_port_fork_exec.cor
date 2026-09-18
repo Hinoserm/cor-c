@@ -1,0 +1,77 @@
+// test: fork, exec and a pipe -- the mechanism a shell is built on
+// expect-exit: 0
+// expect-output:
+// child said hello
+// status 0
+// status 7
+//
+// THIS IS WHAT os/lib/shell.cor's Job.Spawn DOES, one layer down: the shell
+// forks, the child replaces itself with the program, and the parent collects
+// the exit code. Everything sh(1) can do rests on these three calls agreeing
+// about which side of the fork they are on.
+
+class Program
+{
+    static int Main()
+    {
+        int[] pair = new int[2];
+
+        if (Os.Pipe(pair) != 0)
+        {
+            Console.WriteLine("no pipe");
+            return 1;
+        }
+
+        int pid = Os.Fork();
+
+        if (pid == 0)
+        {
+            // THE CHILD. Its standard output becomes the pipe's write end,
+            // the ends it does not need are closed -- a reader that keeps a
+            // write end open never sees the end of the input -- and then it
+            // stops being this program.
+            Os.Dup2(pair[1], Fd.Out);
+            Os.Close(pair[0]);
+            Os.Close(pair[1]);
+
+            string[] argv = new string[2];
+
+            argv[0] = "/bin/echo";
+            argv[1] = "hello";
+            Os.Exec("/bin/echo", argv);
+
+            // Only a failed exec arrives here.
+            Os.Exit(127);
+        }
+
+        Os.Close(pair[1]);
+
+        FileReader from = new FileReader(pair[0]);
+        string? line = from.ReadLine();
+
+        from.Close();
+        Console.WriteLine(String.Concat("child said ", line == null ? "NOTHING" : line));
+
+        Console.Write("status ");
+        Console.WriteLine(Os.Wait(pid));
+
+        // And an exit code comes back as itself, which is how the shell
+        // reports the one a command chose.
+        int second = Os.Fork();
+
+        if (second == 0)
+        {
+            string[] argv = new string[3];
+
+            argv[0] = "/bin/sh";
+            argv[1] = "-c";
+            argv[2] = "exit 7";
+            Os.Exec("/bin/sh", argv);
+            Os.Exit(127);
+        }
+
+        Console.Write("status ");
+        Console.WriteLine(Os.Wait(second));
+        return 0;
+    }
+}

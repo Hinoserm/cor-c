@@ -1,0 +1,106 @@
+// Native acceptance for the actual module passes, not a simulated scheduler.
+using Corsac.Lang.Ir;
+using Corsac.Lang.Opt;
+static class Program
+{
+    static Module Make()
+    {
+        Module module = new("module-workers");
+        module.Data.Add(new DataItem("readonly", new byte[] { 7, 0, 0, 0 }) { ReadOnly = true });
+        for (int i = 0; i < 64; i++)
+        {
+            Function function = new("worker_" + i, IrType.I32);
+            module.Functions.Add(function);
+            Builder b = new(function, function.NewBlock("entry"));
+            VReg value = b.Load(IrType.I32, new SymOperand("readonly"), 0, 4, false);
+            VReg memory = b.Call(Escape.Allocator, IrType.I64, new ImmOperand(32, IrType.I64))!;
+            VReg address = b.Unary(Opcode.Trunc64, memory);
+            b.Store(new RegOperand(address), new RegOperand(value), 8, 4);
+            b.Ret(new RegOperand(b.Load(IrType.I32, address, 8, 4)));
+        }
+        return module;
+    }
+    static string Build(int workers)
+    {
+        Module module = Make();
+        ReadOnlyFold readOnly = new();
+        ScalarObjects scalar = new();
+        Pipeline pipeline = new() { Workers = workers, Rounds = 0 };
+        pipeline.ModulePasses.Add(readOnly);
+        pipeline.ModulePasses.Add(scalar);
+        pipeline.Run(module);
+        if (readOnly.Workers != workers || scalar.Workers != workers)
+            throw new InvalidOperationException("pipeline worker propagation");
+        if (scalar.Replaced != 64) throw new InvalidOperationException("replacement count");
+        StringBuilder text = new();
+        foreach (Function function in module.Functions)
+        {
+            Verifier.Check(function, "native module workers");
+            foreach (var block in function.Blocks)
+                foreach (Instr instruction in block.Instrs)
+                    if (instruction.Op == Opcode.Load || instruction.Op == Opcode.Store
+                        || instruction.Op == Opcode.Call)
+                        throw new InvalidOperationException("unfolded field memory");
+            function.Dump(text);
+        }
+        return text.ToString();
+    }
+    static int Main()
+    {
+        Target.Current = Target.X86;
+        Scheduler.UseThreads(4);
+        string serial = Build(1);
+        string parallel = Build(4);
+        if (serial != parallel) return 1;
+        if (BuildReturns(1) != BuildReturns(4)) return 2;
+        Gc.Collect();
+        Sys.Print("native module worker parity passed\n");
+        return 0;
+    }
+
+    static string BuildReturns(int workers)
+    {
+        Module module = new("return-workers") { Entry = "caller_0" };
+        for (int i = 0; i < 64; i++)
+        {
+            Function value = new("value_" + i, IrType.I32);
+            value.Params.Add(value.NewReg(IrType.I32));
+            Builder body = new(value, value.NewBlock("entry"));
+            body.Store(new SymOperand("effect"), new ImmOperand(i, IrType.I32), 0, 4);
+            body.Ret(new ImmOperand(i, IrType.I32));
+            module.Functions.Add(value);
+            Function caller = new("caller_" + i, IrType.I32);
+            Builder call = new(caller, caller.NewBlock("entry"));
+            VReg result = call.Call(value.Name, IrType.I32, new ImmOperand(i + 1, IrType.I32))!;
+            call.Ret(new RegOperand(result));
+            module.Functions.Add(caller);
+        }
+        new DeadArguments { Workers = workers }.Run(module);
+        new ConstantReturns { Workers = workers }.Run(module);
+        new DeadReturns { Workers = workers }.Run(module);
+        int calls = 0, copies = 0, stores = 0, erased = 0;
+        StringBuilder text = new();
+        foreach (Function function in module.Functions)
+        {
+            Verifier.Check(function, "native return workers");
+            if (function.Params.Count != 0) throw new InvalidOperationException("unused formal remains");
+            if (function.Returns == IrType.Void) erased++;
+            foreach (var block in function.Blocks)
+                foreach (Instr instruction in block.Instrs)
+                {
+                    if (instruction.Op == Opcode.Call)
+                    {
+                        if (instruction.Dest is not null) throw new InvalidOperationException("return transport remains");
+                        if (instruction.Operands.Count != 0) throw new InvalidOperationException("unused argument remains");
+                        calls++;
+                    }
+                    if (instruction.Op == Opcode.Copy) copies++;
+                    if (instruction.Op == Opcode.Store) stores++;
+                }
+            function.Dump(text);
+        }
+        if (calls != 64 || copies != 64 || stores != 64 || erased != 64)
+            throw new InvalidOperationException("return transform changed effects or missed calls");
+        return text.ToString();
+    }
+}

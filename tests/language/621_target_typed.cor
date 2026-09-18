@@ -1,0 +1,90 @@
+// test: target_typed
+// expect-exit: 0
+// expect-output:
+// copy 1 2 4
+// pick 14 10 4
+// undo 2 null some
+// call no yes
+//
+// WHAT SOMETHING IS WAITING FOR DECIDES WHAT IT IS.
+//
+// A switch expression whose arms do not agree among themselves is converted to
+// the type its context wants -- `o switch { RegOperand r => …, SlotOperand s
+// => … }` in a method returning Operand is an Operand and not two unrelated
+// classes -- and an expression-bodied lambda is target-typed by what it
+// returns, whatever shape the body is.
+//
+// A constant arm of a conditional takes the other arm's type, which is C#'s
+// implicit constant expression conversion: `flags ? TextRel : 0` over a uint
+// is a uint, and without it the zero stayed an int and `uint | int` widened to
+// long to hold both.
+//
+// A tuple literal is shaped by the parameter it is passed to, which is the only
+// thing that can say what a `null` in it is. And the right side of `??` is told
+// what the left side is, which is what gives a lambda there a type at all.
+
+abstract class Operand { public abstract int Size(); }
+sealed class RegOperand : Operand { public int R; public override int Size() => 1; }
+sealed class ImmOperand : Operand { public long V; public override int Size() => 4; }
+sealed class SlotOperand : Operand { public int S; public override int Size() => 2; }
+
+sealed class Reg { public int N; }
+
+static class Flags
+{
+    public const uint BindNow = 0x08;
+    public const uint Symbolic = 0x02;
+    public const uint TextRel = 0x04;
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Copy(Operand a)
+    {
+        // A LOCAL FUNCTION'S BODY is target-typed by what it returns, exactly
+        // as a method's is.
+        Operand Op(Operand o) => o switch
+        {
+            RegOperand r => new RegOperand { R = r.R + 1 },
+            SlotOperand s => new SlotOperand { S = s.S + 2 },
+            _ => o,
+        };
+
+        return Op(a).Size();
+    }
+
+    static bool Never(string s) => false;
+
+    static bool Call(Func<string, bool>? given) => (given ?? (_ => false))("x");
+
+    static int Main()
+    {
+        Line("copy " + Copy(new RegOperand { R = 1 })
+             + " " + Copy(new SlotOperand { S = 1 })
+             + " " + Copy(new ImmOperand { V = 1 }));
+
+        bool textRel = true;
+        uint flags = Flags.BindNow | Flags.Symbolic | (textRel ? Flags.TextRel : 0);
+        uint two = Flags.BindNow | Flags.Symbolic;
+        uint pick = textRel ? Flags.TextRel : 0;
+
+        Line("pick " + flags + " " + two + " " + pick);
+
+        List<(string Key, Reg? Old)> undo = new List<(string Key, Reg? Old)>();
+
+        undo.Add(("a", null));
+        undo.Add(("b", new Reg { N = 2 }));
+        Line("undo " + undo.Count
+             + " " + (undo[0].Old is null ? "null" : "some")
+             + " " + (undo[1].Old is null ? "null" : "some"));
+
+        Line("call " + (Call(null) ? "yes" : "no") + " " + (Call(s => true) ? "yes" : "no"));
+        return 0;
+    }
+}

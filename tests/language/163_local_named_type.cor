@@ -1,0 +1,71 @@
+// test: local_named_type
+// expect-exit: 0
+// expect-output:
+// 12
+// 9
+// 21
+// 6
+// 27
+//
+// A local variable may be named after a type. `Gear.Teeth` then reads the
+// local's field, while `Gear.Count` -- which the local's type does not have --
+// names the type's static property, and the local still works as a value. A
+// local named after a type it is unrelated to reads the same way.
+
+class Gear
+{
+    public long Teeth;
+
+    private static long _made;
+
+    public static long Count
+    {
+        get { return _made; }
+    }
+
+    public Gear(long teeth)
+    {
+        Teeth = teeth;
+        _made = _made + 1;
+    }
+
+    public long Plus(long n)
+    {
+        return Teeth + n;
+    }
+}
+
+static class Ratio
+{
+    public static long Of(long a, long b)
+    {
+        return a / b;
+    }
+}
+
+static class Program
+{
+    static void Line(long v)
+    {
+        Sys.PrintInt(v);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        long nine = 9;
+        Gear Gear = new Gear(12);
+
+        Line(Gear.Teeth);
+        Line(Gear.Plus(nine) - 12);
+        Line(Gear.Plus(nine));
+        Line(Gear.Count + new Gear(3).Teeth + Gear.Count);
+
+        // A local named after a static class it has nothing to do with: the
+        // bare name is the local, `Ratio.Of` is the class's method.
+        long Ratio = 54;
+
+        Line(Ratio.Of(Ratio, nine) - 3 + Gear.Teeth + 12);
+        return 0;
+    }
+}

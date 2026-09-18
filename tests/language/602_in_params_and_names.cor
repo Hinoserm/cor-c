@@ -1,0 +1,99 @@
+// test: in_params_and_names
+// expect-exit: 0
+// expect-output:
+// consts 1 2 3
+// lookup True 2
+// missing False 3
+// kind 47
+// value 42 12
+// alias 59
+// verbatim 11 base class
+//
+// Four things this compiler's own sources are written with and could not
+// compile: `in` parameters, an explicit interface implementation, several
+// names in one field declaration, and `@name` for a name that is also a
+// keyword.
+
+interface ISymbols
+{
+    bool TryLookup(string name, out long value);
+}
+
+struct Header
+{
+    public int Type;
+    public int Flags;
+}
+
+class Table : ISymbols
+{
+    private const int A = 1, B = 2, C = 3;
+
+    // Explicit: the interface is named and the member follows it.
+    bool ISymbols.TryLookup(string name, out long value)
+    {
+        value = name == "a" ? A : name == "b" ? B : C;
+        return name.Length == 1;
+    }
+
+    public string Constants => A + " " + B + " " + C;
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static Header _shared;
+
+    // `in` is the address, as `ref` is, and the caller writes no word.
+    static int Kind(in Header h) => h.Type * 10 + h.Flags;
+
+    static int Twice(in int n) => n * 2;
+
+    // The caller's storage, not a copy of it: what Bump writes is read back
+    // through the parameter.
+    static int Alias(in Header h)
+    {
+        int before = h.Type;
+
+        Bump();
+        return before * 10 + h.Type;
+    }
+
+    static void Bump() => _shared.Type = 9;
+
+    static Header Make() => new Header { Type = 1, Flags = 2 };
+
+    static int Base(int @base, int @class) => @base + @class;
+
+    static string Words(string @string, string @class) => @string + " " + @class;
+
+    static int Main()
+    {
+        Table t = new Table();
+        ISymbols s = t;
+
+        Line("consts " + t.Constants);
+        Line("lookup " + s.TryLookup("b", out long v) + " " + v);
+        Line("missing " + s.TryLookup("zz", out long w) + " " + w);
+
+        Header h = new Header { Type = 4, Flags = 7 };
+
+        Line("kind " + Kind(h));
+
+        // A value has no address of its own, so C# copies it into a temporary
+        // and passes that: a literal and the result of a call both go in.
+        Line("value " + Twice(21) + " " + Kind(Make()));
+
+        _shared = new Header { Type = 5, Flags = 0 };
+        Line("alias " + Alias(_shared));
+
+        int @base = 5;
+        Line("verbatim " + Base(@base, 6) + " " + Words("base", "class"));
+        return 0;
+    }
+}

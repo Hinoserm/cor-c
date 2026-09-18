@@ -1,0 +1,57 @@
+// test: null_attributes
+// expect-exit: 0
+// expect-output:
+// dir /a/b
+// blank none
+// output x.o
+// none nothing
+//
+// WHAT A METHOD PROVES ABOUT NULL, written the way .NET writes it.
+//
+// `[NotNullWhen(false)] string? value` on string.IsNullOrEmpty says a false
+// answer means there was a string, which is what makes
+// `if (!string.IsNullOrEmpty(dir)) { Use(dir); }` the ordinary way to write the
+// check -- and it was refused here until the attribute was read.
+//
+// `[return: NotNullIfNotNull(nameof(path))]` on Path.ChangeExtension says the
+// result is null exactly where the path was: a caller who passed a string is
+// handed one, which is why the declared type is `string?` and the ordinary call
+// still needs no cast.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static string Where(string? dir)
+    {
+        if (!string.IsNullOrEmpty(dir))
+        {
+            List<string> found = new List<string>();
+
+            found.Add(dir);
+            return found[0];
+        }
+        return "none";
+    }
+
+    static int Main()
+    {
+        Line("dir " + Where("/a/b"));
+        Line("blank " + Where(""));
+
+        string output = Path.ChangeExtension("x.cor", ".o");
+
+        Line("output " + output);
+
+        // The other half of the same attribute: a null path really does give
+        // a null back, and the checker still says so.
+        string? nothing = Path.ChangeExtension(null, ".o");
+
+        Line("none " + (nothing is null ? "nothing" : nothing));
+        return 0;
+    }
+}

@@ -1,0 +1,84 @@
+// test: datetime
+// expect-exit: 0
+// expect-output:
+// parts 2024 2 29 13 45 30
+// format 2024-02-29 13:45:30 | 02/29/2024 13:45:30
+// epochticks 638448111300000000
+// week Thursday 60
+// date 2024-02-29 00:00:00 13:45:30
+// add 2024-03-01 2024-03-29 2025-02-28 2024-03-01 00
+// clamp 2023-02-28
+// gap 10:14:30 10.2417 10 14 0
+// span 01:30:00 1 30 90.0
+// negative -00:01:30 00:01:30
+// build 2.03:04:05 00:00:00
+// bounds 1970-01-01 0001-01-01 9999-12-31
+// calendar True False True 28 29
+// roundtrip True 0
+//
+// DateTime and TimeSpan as arithmetic: no clock is read anywhere here, which
+// is the point -- the calendar conversion, the field properties, the Add
+// family including the month-end clamping, the difference between two moments
+// and the custom format picture are all a number and a rule, and the number is
+// .NET's tick so that a program moved between the two keeps its values.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        DateTime d = new DateTime(2024, 2, 29, 13, 45, 30);
+        Line("parts " + d.Year + " " + d.Month + " " + d.Day + " " + d.Hour + " "
+             + d.Minute + " " + d.Second);
+        Line("format " + d.ToString("yyyy-MM-dd HH:mm:ss") + " | " + d.ToString());
+        Line("epochticks " + d.Ticks);
+        Line("week " + d.DayOfWeek.ToString() + " " + d.DayOfYear);
+        Line("date " + d.Date.ToString("yyyy-MM-dd HH:mm:ss") + " " + d.TimeOfDay.ToString());
+
+        Line("add " + d.AddDays(1.0).ToString("yyyy-MM-dd") + " "
+             + d.AddMonths(1).ToString("yyyy-MM-dd") + " "
+             + d.AddYears(1).ToString("yyyy-MM-dd") + " "
+             + d.AddHours(11.0).ToString("yyyy-MM-dd HH"));
+
+        // The 31st of January plus a month is the end of February, not the
+        // 31st of it: .NET clamps, and so does this.
+        DateTime endOfJanuary = new DateTime(2023, 1, 31);
+        Line("clamp " + endOfJanuary.AddMonths(1).ToString("yyyy-MM-dd"));
+
+        DateTime later = new DateTime(2024, 3, 1);
+        TimeSpan gap = later.Subtract(d);
+        Line("gap " + gap.ToString() + " " + gap.TotalHours.ToString("F4") + " "
+             + gap.Hours + " " + gap.Minutes + " " + gap.Days);
+
+        TimeSpan hourAndAHalf = TimeSpan.FromHours(1.5);
+        Line("span " + hourAndAHalf.ToString() + " " + hourAndAHalf.Hours + " "
+             + hourAndAHalf.Minutes + " " + hourAndAHalf.TotalMinutes.ToString("F1"));
+        Line("negative " + TimeSpan.FromSeconds(0.0 - 90.0).ToString() + " "
+             + TimeSpan.FromSeconds(0.0 - 90.0).Duration().ToString());
+        Line("build " + new TimeSpan(2, 3, 4, 5).ToString() + " " + TimeSpan.Zero.ToString());
+
+        Line("bounds " + DateTime.UnixEpoch.ToString("yyyy-MM-dd") + " "
+             + DateTime.MinValue.ToString("yyyy-MM-dd") + " "
+             + DateTime.MaxValue.ToString("yyyy-MM-dd"));
+        Line("calendar " + DateTime.IsLeapYear(2024) + " " + DateTime.IsLeapYear(1900)
+             + " " + DateTime.IsLeapYear(2000) + " " + DateTime.DaysInMonth(2023, 2)
+             + " " + DateTime.DaysInMonth(2024, 2));
+
+        // A round trip through the calendar for a year either side of every
+        // rule the Gregorian calendar has.
+        bool trips = true;
+        int[] years = new int[] { 1, 99, 100, 400, 1582, 1900, 1999, 2000, 2024, 9999 };
+        foreach (int year in years)
+        {
+            DateTime made = new DateTime(year, 12, 31);
+            if (made.Year != year || made.Month != 12 || made.Day != 31) { trips = false; }
+        }
+        Line("roundtrip " + trips + " " + new DateTime(1, 1, 1).Ticks);
+        return 0;
+    }
+}

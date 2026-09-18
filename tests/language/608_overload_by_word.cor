@@ -1,0 +1,61 @@
+// test: overload_by_word
+// expect-exit: 0
+// expect-output:
+// is 7 True
+// is not 3 False
+// value 7
+// defaults 1 short x 2 long y
+//
+// `out` and `ref` are part of a signature: `IsImm(o, 0)` and `IsImm(o, out v)`
+// are two methods, and what tells them apart is the word at the call site.
+// With it, an overload short of its full complement is completed from the
+// defaults of the one whose written arguments FIT, not of the first that could
+// be completed at all.
+
+class Operand
+{
+    public long Value;
+
+    public Operand(long value)
+    {
+        Value = value;
+    }
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static bool Is(Operand o, long expected) => o.Value == expected;
+
+    static bool Is(Operand o, out long value)
+    {
+        value = o.Value;
+        return true;
+    }
+
+    static string Take(string s, long n = 0, int width = 4, bool wide = false) => "long " + s;
+
+    static string Take(string s, int n = 0, int width = 4, bool wide = false) => "short " + s;
+
+    static int Main()
+    {
+        Operand seven = new Operand(7);
+
+        Line("is 7 " + Is(seven, 7));
+        Line("is not 3 " + Is(seven, 3));
+
+        Is(seven, out long got);
+        Line("value " + got);
+
+        int small = 1;
+        long big = 2;
+
+        Line("defaults " + small + " " + Take("x", small) + " " + big + " " + Take("y", big));
+        return 0;
+    }
+}

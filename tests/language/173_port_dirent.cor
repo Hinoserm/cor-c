@@ -1,0 +1,80 @@
+// test: getdents64 records, not packed names
+// expect-exit: 0
+// expect-output:
+// found 3
+// no dot entries
+// records walk out
+//
+// THE THIRD LAYOUT MISTAKE. The CORSAC kernel packed directory names with a
+// zero byte after each, so ls and rm walked the buffer scanning for zeroes.
+// Linux's getdents64 packs RECORDS -- inode, offset, a record length, a type,
+// then the name -- and the length in each record is the only way to find the
+// next one, because the name is padded to an alignment a program must not
+// guess. A scan for zeroes finds the first name and then garbage.
+
+class Program
+{
+    static int Main()
+    {
+        string dir = String.Concat("/tmp/cor-dir-", String.FromInt(Os.Getpid()));
+
+        Os.Mkdir(dir);
+        File.WriteAllText(String.Concat(dir, "/alpha"), "a");
+        File.WriteAllText(String.Concat(dir, "/beta"), "b");
+        File.WriteAllText(String.Concat(dir, "/gamma"), "c");
+
+        string[]? names = Os.ListDir(dir);
+
+        if (names == null)
+        {
+            Console.WriteLine("cannot list");
+            return 1;
+        }
+
+        Console.Write("found ");
+        Console.WriteLine(names.Length);
+
+        bool dots = false;
+
+        for (int i = 0; i < names.Length; i++)
+        {
+            if (names[i] == "." || names[i] == "..")
+            {
+                dots = true;
+            }
+        }
+        Console.WriteLine(dots ? "DOT ENTRIES" : "no dot entries");
+
+        // And the raw walk, which is what os/lib/utility.cor's UnixDirectory
+        // does: each record says how long it is, and the names come out whole.
+        int fd = Os.Open(dir, O.Read | O.Directory);
+        byte[] block = new byte[4096];
+        int got = Os.Getdents(fd, block, block.Length);
+        int at = 0;
+        int seen = 0;
+
+        while (at < got)
+        {
+            string name = Dirent.Name(block, at);
+            int length = Dirent.Length(block, at);
+
+            // A record that claims no length would loop forever, and one
+            // whose name is empty means the walk lost its place.
+            if (length <= 0 || name.Length == 0)
+            {
+                Console.WriteLine("records do NOT walk out");
+                return 1;
+            }
+            at = at + length;
+            seen = seen + 1;
+        }
+        Os.Close(fd);
+        Console.WriteLine(seen == 5 ? "records walk out" : "records do NOT walk out");
+
+        Os.Unlink(String.Concat(dir, "/alpha"));
+        Os.Unlink(String.Concat(dir, "/beta"));
+        Os.Unlink(String.Concat(dir, "/gamma"));
+        Os.Rmdir(dir);
+        return 0;
+    }
+}

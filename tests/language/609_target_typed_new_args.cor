@@ -1,0 +1,53 @@
+// test: target_typed_new_args
+// expect-exit: 0
+// expect-output:
+// item s True 16
+// tuples x 1
+// listed 2 4
+//
+// `new(sym, block) { ReadOnly = true }` -- a target-typed new with arguments
+// AND an initialiser. Its arguments read as a tuple type, and `new (int,
+// int)[] { … }` really is one, so what tells them apart is the array: a brace
+// after a tuple type means a list of tuples and after nothing else.
+
+class DataItem
+{
+    public string Sym;
+    public bool ReadOnly { get; set; }
+    public int Align { get; set; }
+
+    public DataItem(string sym, int size)
+    {
+        Sym = sym;
+        Align = size;
+    }
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        string sym = "s";
+        int size = 8;
+
+        DataItem item = new(sym, size) { ReadOnly = true, Align = 16 };
+
+        Line("item " + item.Sym + " " + item.ReadOnly + " " + item.Align);
+
+        (string A, int B)[] pairs = new (string A, int B)[2];
+
+        pairs[0] = ("x", 1);
+        Line("tuples " + pairs[0].A + " " + pairs[0].B);
+
+        (int, int)[] more = new (int, int)[] { (1, 2), (3, 4) };
+
+        Line("listed " + more.Length + " " + more[1].Item2);
+        return 0;
+    }
+}

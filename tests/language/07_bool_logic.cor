@@ -1,0 +1,76 @@
+// test: bool_logic
+// expect-exit: 0
+// expect-output:
+// and False 1
+// or True 1
+// and2 False 2
+// or2 True 2
+// not False True
+// eq True False
+// tern yes no
+// chain True
+// stored True False
+//
+// Booleans: && and || short-circuit, so the right operand runs only when it
+// has to; the call counter proves which side ran. Also !, comparison of
+// booleans, the conditional operator and booleans stored in variables.
+
+static class Program
+{
+    static int calls;
+
+    static bool T()
+    {
+        calls = calls + 1;
+        return true;
+    }
+
+    static bool F()
+    {
+        calls = calls + 1;
+        return false;
+    }
+
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        calls = 0;
+        bool r1 = F() && T();
+        Line("and " + r1 + " " + calls);
+
+        calls = 0;
+        bool r2 = T() || F();
+        Line("or " + r2 + " " + calls);
+
+        calls = 0;
+        bool r3 = T() && F();
+        Line("and2 " + r3 + " " + calls);
+
+        calls = 0;
+        bool r4 = F() || T();
+        Line("or2 " + r4 + " " + calls);
+
+        bool t = true;
+        bool f = false;
+        Line("not " + (!t) + " " + (!f));
+        Line("eq " + (t == !f) + " " + (t == f));
+
+        int n = 3;
+        string big = n > 2 ? "yes" : "no";
+        string small = n < 2 ? "yes" : "no";
+        Line("tern " + big + " " + small);
+
+        bool chain = t && (f || t) && !f;
+        Line("chain " + chain);
+
+        bool stored = n == 3;
+        bool stored2 = n != 3;
+        Line("stored " + stored + " " + stored2);
+        return 0;
+    }
+}

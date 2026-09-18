@@ -1,0 +1,135 @@
+// test: exceptions_random
+// expect-exit: 0
+// expect-output:
+// message nope
+// tostring NotSupportedException: nope
+// inner IOException: disk
+// inner  ---> TimeoutException: the operation timed out
+// default the given key was not present
+// invented NotImplementedException: the method is not implemented
+// disposed Cannot access a disposed object: reader
+// caught base True True
+// repeat True True
+// range True True True True
+// double True
+// bytes 8 True
+//
+// The exceptions a C# program catches by name and does not otherwise touch --
+// they exist so that `catch (IOException)` has something to name -- and a
+// seeded pseudo-random source, whose whole contract is that the same seed
+// gives the same numbers.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        try
+        {
+            throw new NotSupportedException("nope");
+        }
+        catch (NotSupportedException e)
+        {
+            Line("message " + e.Message);
+            Line("tostring " + e.ToString());
+        }
+
+        try
+        {
+            throw new IOException("disk", new TimeoutException());
+        }
+        catch (IOException e)
+        {
+            string[] lines = String.Split(e.ToString(), '\n');
+            foreach (string one in lines)
+            {
+                Line("inner " + one);
+            }
+        }
+
+        try
+        {
+            throw new KeyNotFoundException();
+        }
+        catch (KeyNotFoundException e)
+        {
+            Line("default " + e.Message);
+        }
+
+        try
+        {
+            throw new NotImplementedException();
+        }
+        catch (Exception e)
+        {
+            Line("invented " + e.ToString());
+        }
+
+        try
+        {
+            throw new ObjectDisposedException("reader");
+        }
+        catch (Exception e)
+        {
+            Line("disposed " + e.Message);
+        }
+
+        // A derived exception must be reachable through its base, which is how
+        // every `catch (Exception)` in a program works.
+        bool byBase = false;
+        bool byExact = false;
+        try
+        {
+            throw new ArithmeticException("bad sum");
+        }
+        catch (Exception e)
+        {
+            byBase = true;
+            byExact = e is ArithmeticException;
+        }
+        Line("caught base " + byBase + " " + byExact);
+
+        Random first = new Random(7);
+        Random second = new Random(7);
+        bool same = first.Next() == second.Next();
+        bool moves = first.Next() != first.Next();
+        Line("repeat " + same + " " + moves);
+
+        Random r = new Random(12345);
+        bool nonNegative = r.Next() >= 0;
+        bool bounded = true;
+        bool ranged = true;
+        for (int i = 0; i < 200; i++)
+        {
+            int one = r.Next(10);
+            if (one < 0 || one >= 10) { bounded = false; }
+            int two = r.Next(5, 8);
+            if (two < 5 || two >= 8) { ranged = false; }
+        }
+        bool wide = r.NextInt64() >= 0;
+        Line("range " + nonNegative + " " + bounded + " " + ranged + " " + wide);
+
+        bool unit = true;
+        for (int i = 0; i < 200; i++)
+        {
+            double d = r.NextDouble();
+            if (d < 0.0 || d >= 1.0) { unit = false; }
+        }
+        Line("double " + unit);
+
+        byte[] block = new byte[8];
+        r.NextBytes(block);
+        bool varied = false;
+        for (int i = 1; i < block.Length; i++)
+        {
+            if (block[i] != block[0]) { varied = true; }
+        }
+        Line("bytes " + block.Length + " " + varied);
+        return 0;
+    }
+}

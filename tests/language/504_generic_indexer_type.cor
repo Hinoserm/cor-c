@@ -1,0 +1,56 @@
+// test: generic_indexer_type
+// expect-exit: 0
+// expect-output:
+// 2
+// one
+// neg -3
+//
+// A MEMBER WHOSE TYPE IS GENERIC AND WHOSE NAME IS A KEYWORD. The parser took
+// a list of type arguments only when an ordinary token followed the '>', and
+// `this` was not one: `public IReadOnlyList<T> this[int i]` was read as the
+// type `IReadOnlyList` followed by a comparison, and reported as a member with
+// no name. The same held for `operator`.
+class Shelf<T>
+{
+    private List<T> _rows = new List<T>();
+
+    public void Add(T row) { _rows.Add(row); }
+
+    public int Count => _rows.Count;
+
+    public IReadOnlyList<T> this[int i] { get { return _rows; } }
+}
+
+struct Tally
+{
+    public int Value;
+
+    public Tally(int value) { Value = value; }
+
+    public static Tally operator -(Tally a, Tally b)
+    {
+        return new Tally(a.Value - b.Value);
+    }
+}
+
+static class Program
+{
+    static void Line(string text)
+    {
+        Sys.Print(text);
+        Sys.PrintLine();
+    }
+
+    static void Main()
+    {
+        Shelf<string> shelf = new Shelf<string>();
+        shelf.Add("one");
+        shelf.Add("two");
+        Line("" + shelf.Count);
+        Line(shelf[0][0]);
+
+        Tally a = new Tally(2);
+        Tally b = new Tally(5);
+        Line("neg " + (a - b).Value);
+    }
+}

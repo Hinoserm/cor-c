@@ -1,0 +1,68 @@
+// test: bare_default_argument
+// expect-exit: 0
+// expect-output:
+// element 1 0 0
+// added 2 0 7
+// chose int 0
+// chose string null
+// member 0 none
+// indexed 0
+//
+// A bare `default` written where the type is not on the line: an argument,
+// and the element of a collection initialiser, which C# defines as a call to
+// Add and so is an argument too. The type belongs to a parameter of an
+// overload that is not chosen until the arguments are read, so it is settled
+// afterwards -- the same two steps `out var` takes.
+
+struct Entry
+{
+    public int A;
+    public long B;
+}
+
+class Holder
+{
+    public int N { get; set; }
+    public string? Name { get; set; }
+    public Dictionary<string, int> Table { get; } = new();
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static string Chose(int n) => "chose int " + n;
+
+    static string Chose(string? s) => "chose string " + (s == null ? "null" : s);
+
+    static int Main()
+    {
+        List<Entry> entries = new() { default };
+
+        Line("element " + entries.Count + " " + entries[0].A + " " + entries[0].B);
+
+        List<int> numbers = new List<int>();
+
+        numbers.Add(default);
+        numbers.Add(7);
+        Line("added " + numbers.Count + " " + numbers[0] + " " + numbers[1]);
+
+        Line(Chose(default(int)));
+        Line(Chose(default(string)));
+
+        Holder h = new Holder
+        {
+            N = default,
+            Name = default,
+            Table = { ["k"] = default },
+        };
+
+        Line("member " + h.N + " " + (h.Name == null ? "none" : h.Name));
+        Line("indexed " + h.Table["k"]);
+        return 0;
+    }
+}

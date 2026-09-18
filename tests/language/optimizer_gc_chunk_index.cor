@@ -1,0 +1,56 @@
+// test: GC chunk address index growth, boundaries, removal and reuse
+// expect-exit: 0
+// expect-output:
+// chunk index passed
+static class Program
+{
+    static int Main()
+    {
+        // Raw metadata avoids managed allocations while synthetic chunks have
+        // no block chain. Only their first page is touched; large virtual size
+        // exercises index growth without requiring a gigabyte of resident RAM.
+        const int count = 1030;
+        long table = Platform.Map(count * 4);
+        if (table == 0) return 1;
+        long before = HeapChunks.HeapBytes;
+        for (int i = 0; i < count; i++)
+        {
+            long chunk = HeapChunks.Take(64);
+            if (chunk == 0) return 2;
+            Sys.Poke(table + i * 4, chunk);
+            HeapChunks.SetEnd(chunk, chunk + 80);
+        }
+        // Walk in reverse and nonadjacent order to defeat the one-entry memo.
+        for (int i = 0; i < count; i++)
+        {
+            long chunk = Sys.Peek(table + ((i * 37) % count) * 4);
+            if (HeapChunks.Of(chunk + 16) != chunk) return 3;
+            if (HeapChunks.Of(chunk + 79) != chunk) return 4;
+            if (HeapChunks.Of(chunk + 15) != 0) return 5;
+            if (HeapChunks.Of(chunk + 80) != 0) return 6;
+            if (HeapChunks.Of(HeapChunks.Limit(chunk) - 1) != 0) return 7;
+        }
+        for (int i = count - 1; i >= 0; i -= 2)
+        {
+            long chunk = Sys.Peek(table + i * 4);
+            if (HeapChunks.Of(chunk + 32) != chunk) return 8;
+            HeapChunks.Release(chunk);
+            if (HeapChunks.Of(chunk + 32) != 0) return 9;
+        }
+        for (int i = 0; i < count; i += 2)
+        {
+            long chunk = Sys.Peek(table + i * 4);
+            if (HeapChunks.Of(chunk + 32) != chunk) return 10;
+            HeapChunks.Release(chunk);
+        }
+        long replacement = HeapChunks.Take(64);
+        if (replacement == 0) return 11;
+        HeapChunks.SetEnd(replacement, replacement + 80);
+        if (HeapChunks.Of(replacement + 24) != replacement) return 12;
+        HeapChunks.Release(replacement);
+        if (HeapChunks.HeapBytes != before) return 13;
+        Platform.Unmap(table, count * 4);
+        Sys.Print("chunk index passed\n");
+        return 0;
+    }
+}

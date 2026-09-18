@@ -1,0 +1,123 @@
+// test: async_lambdas
+// expect-exit: 0
+// expect-output:
+// after call 1
+// after await 11
+// compute 30 factor 6
+// delta 100
+// squares 5
+// param 45
+// run 42 2
+// run void 3
+//
+// Async lambdas are async methods. An async lambda as Func<Task> writes a
+// captured local before and after its await (the caller sees the first
+// write at once and the second only after awaiting); one as
+// Func<Task<int>> reads a capture changed by the caller after the lambda
+// was made, and writes it across awaits; a capture changed by the caller
+// while the lambda is suspended is seen on resumption; per-iteration
+// captures in a list of async lambdas; a lambda with a parameter; and
+// Task.Run given async lambdas, with and without a result.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static async Task Main()
+    {
+        int counter = 0;
+        Func<Task> bump = async () =>
+        {
+            counter = counter + 1;
+            await Task.Yield();
+            counter = counter + 10;
+        };
+        Task b1 = bump();
+        Line("after call " + counter);
+        await b1;
+        Line("after await " + counter);
+
+        int factor = 3;
+        Func<Task<int>> compute = async () =>
+        {
+            int local = factor;
+            await Task.Yield();
+            factor = factor + 1;
+            await Task.Yield();
+            return local * factor;
+        };
+        factor = 5;
+        int r = await compute();
+        Line("compute " + r + " factor " + factor);
+
+        int shared = 0;
+        Func<Task<int>> reader = async () =>
+        {
+            int before = shared;
+            await Task.Yield();
+            return shared - before;
+        };
+        Task<int> rt = reader();
+        shared = 100;
+        int delta = await rt;
+        Line("delta " + delta);
+
+        List<Func<Task<int>>> jobs = new List<Func<Task<int>>>();
+        for (int i = 0; i < 3; i++)
+        {
+            int j = i;
+            jobs.Add(async () =>
+            {
+                await Task.Yield();
+                return j * j;
+            });
+        }
+        int squares = 0;
+        foreach (Func<Task<int>> job in jobs)
+        {
+            squares = squares + await job();
+        }
+        Line("squares " + squares);
+
+        Func<int, Task<int>> sumTo = async n =>
+        {
+            int total = 0;
+            for (int k = 0; k < n; k++)
+            {
+                await Task.Yield();
+                total = total + k;
+            }
+            return total;
+        };
+        int ten = 10;
+        Line("param " + await sumTo(ten));
+
+        int ran = 0;
+        Func<Task<int>> work = async () =>
+        {
+            ran = 1;
+            await Task.Yield();
+            ran = 2;
+            return 42;
+        };
+        Task<int> run = Task.Run(work);
+        int rv = await run;
+        Line("run " + rv + " " + ran);
+
+        int steps = 0;
+        Func<Task> voidWork = async () =>
+        {
+            steps = steps + 1;
+            await Task.Yield();
+            steps = steps + 1;
+            await Task.Yield();
+            steps = steps + 1;
+        };
+        await Task.Run(voidWork);
+        Line("run void " + steps);
+    }
+}

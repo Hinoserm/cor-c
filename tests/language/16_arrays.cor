@@ -1,0 +1,98 @@
+// test: arrays
+// expect-exit: 0
+// expect-output:
+// length 5 0
+// init 5
+// alias 99
+// null True True
+// jagged 36
+// objects 7 True
+// indexof 2
+// fill 4
+// copy 3 1
+//
+// Arrays: new with a length and default elements, initialisers, Length,
+// reference semantics when assigned or passed, null elements in reference
+// arrays, jagged arrays, arrays of objects, and Array.IndexOf.
+
+class Node
+{
+    public int Value;
+
+    public Node(int v)
+    {
+        Value = v;
+    }
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static void Fill(int[] target, int value)
+    {
+        for (int i = 0; i < target.Length; i++)
+        {
+            target[i] = value;
+        }
+    }
+
+    static int Main()
+    {
+        int[] a = new int[5];
+        Line("length " + a.Length + " " + a[3]);
+
+        int[] b = new int[] { 3, 1, 2 };
+        Line("init " + (b[0] + b[1] * b[2]));
+
+        int[] c = b;
+        c[0] = 99;
+        Line("alias " + b[0]);
+
+        string[] s = new string[2];
+        Node[] nodes = new Node[2];
+        Line("null " + (s[0] == null) + " " + (nodes[1] == null));
+
+        int[][] grid = new int[3][];
+        for (int i = 0; i < 3; i++)
+        {
+            grid[i] = new int[3];
+            for (int j = 0; j < 3; j++)
+            {
+                grid[i][j] = i * 3 + j;
+            }
+        }
+        int total = 0;
+        for (int i = 0; i < grid.Length; i++)
+        {
+            for (int j = 0; j < grid[i].Length; j++)
+            {
+                total += grid[i][j];
+            }
+        }
+        Line("jagged " + total);
+
+        nodes[1] = new Node(7);
+        Node? first = nodes[0];
+        Line("objects " + nodes[1].Value + " " + (first == null));
+
+        int[] d = new int[] { 10, 20, 30, 40 };
+        Line("indexof " + Array.IndexOf(d, 30));
+
+        Fill(a, 4);
+        Line("fill " + a[4]);
+
+        int[] copy = new int[3];
+        for (int i = 0; i < 3; i++)
+        {
+            copy[i] = b[i];
+        }
+        copy[1] = 3;
+        Line("copy " + copy[1] + " " + b[1]);
+        return 0;
+    }
+}

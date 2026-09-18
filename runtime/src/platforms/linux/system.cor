@@ -1,0 +1,2460 @@
+// The Linux system-call library: the ONLY file that knows the program is a
+// Linux i386 process.
+//
+// Everything here is an `int 0x80` through Sys.Syscall, the one intrinsic the
+// compiler provides for reaching the kernel (docs/software/X86-BACKEND.md,
+// "Linux is a target, not a model"). The number goes in EAX and the arguments
+// in EBX, ECX, EDX, ESI, EDI, EBP -- the backend does that; this file only
+// says which number and what to pass.
+//
+//   corc compile lib/std.cor lib/rt/runtime.cor lib/sys/linux.cor program.cor -o program
+//
+// Two layers live here:
+//
+//   Platform   what lib/rt/runtime.cor needs from an operating system:
+//              memory, exit, and writing bytes. The runtime calls nothing
+//              else in this file.
+//   Os, Console, Fd, O, Err, Call
+//              the beginnings of the API a program written for this system
+//              uses, as thin wrappers, named after os/lib/user.cor's so the
+//              OS's own utilities port with the fewest edits.
+//
+// THE ONE FACT ABOUT THE KERNEL'S ANSWERS. A Linux system call returns its
+// result in EAX, and an error is a SMALL NEGATIVE number: -errno, in
+// -4095..-1. Sys.Syscall hands that 32-bit register back zero-extended into a
+// long, so -2 arrives as 4294967294. Result() below turns that range, and
+// only that range, back into the negative number it is; an address above
+// 2 GB (which brk can legitimately return) stays positive.
+
+/// The i386 system-call numbers this file uses, from asm/unistd_32.h. The
+/// name matches os/lib/user.cor's `Call` on purpose -- a utility that says
+/// Call.Write means the same thing here -- but the NUMBERS are Linux's and
+/// the argument conventions are Linux's, and they are not the same as the
+/// CORSAC kernel's.
+static class Call
+{
+    public const long Exit = 1;         // (status)
+    public const long Read = 3;         // (fd, address, count) -> read, or -errno
+    public const long Write = 4;        // (fd, address, count) -> written, or -errno
+    public const long Open = 5;         // (path, flags, mode) -> fd, or -errno
+    public const long Close = 6;        // (fd) -> 0, or -errno
+    public const long Getpid = 20;      // () -> pid; the cheapest call there is
+    public const long Brk = 45;         // (address) -> the break now; unused
+    public const long Mmap2 = 192;      // (addr, len, prot, flags, fd, pgoff) -> address
+    public const long ExitGroup = 252;  // (status): every thread, not just this one
+    public const long SetThreadArea = 243;  // (user_desc): a GDT entry of this thread's own
+    public const long Futex = 240;      // (uaddr, op, val, timeout, uaddr2, val3)
+
+    // ---- processes -------------------------------------------------------
+    public const long Fork = 2;         // () -> child pid in the parent, 0 in the child
+    public const long Waitpid = 7;      // (pid, status, options) -> pid, or -errno
+    public const long Execve = 11;      // (path, argv, envp): does not return on success
+    public const long Kill = 37;        // (pid, signal)
+    public const long Getppid = 64;
+    public const long Getuid = 199;     // getuid32; the 16-bit getuid (24) truncates
+    public const long Getgid = 200;     // getgid32
+    public const long Setpgid = 57;     // (pid, pgid)
+    public const long Getpgid = 132;    // (pid) -> the group it is in
+    public const long Setsid = 66;      // () -> the new session id
+    public const long Setuid = 213;     // setuid32; the 16-bit one (23) truncates
+    public const long Setgid = 214;     // setgid32
+    public const long Setgroups = 206;  // setgroups32 (count, list)
+    public const long Umask = 60;       // (mask) -> the mask it replaced
+    public const long Chown = 212;      // chown32 (path, uid, gid)
+
+    // ---- files and directories -------------------------------------------
+    public const long Unlink = 10;
+    public const long Link = 9;         // (existing, new): a second name for one inode
+    public const long Chdir = 12;
+    public const long Lseek = 19;       // 32-bit offsets only; LlSeek is the one to use
+    public const long Rename = 38;
+    public const long Mkdir = 39;       // (path, mode)
+    public const long Rmdir = 40;
+    public const long Dup = 41;
+    public const long Pipe = 42;        // (int[2]) -> 0; the two descriptors go in the array
+    public const long Ioctl = 54;
+    public const long Dup2 = 63;        // (from, to)
+    public const long Ftruncate = 93;
+    public const long LlSeek = 140;     // (fd, high, low, result, whence): 64-bit lseek
+    public const long Getcwd = 183;     // (buffer, size) -> length INCLUDING the NUL
+    public const long Stat64 = 195;     // (path, buffer)
+    public const long Lstat64 = 196;    // (path, buffer): the link itself, not its target
+    public const long Fstat64 = 197;    // (fd, buffer)
+    public const long Getdents64 = 220; // (fd, buffer, count) -> bytes of records
+    public const long Access = 33;      // (path, mode)
+    public const long Chmod = 15;
+    public const long Symlink = 83;
+    public const long Readlink = 85;
+    public const long Poll = 168;       // (fds, nfds, timeout_ms)
+    public const long Fcntl = 55;       // (fd, cmd, arg)
+    public const long RtSigaction = 174;
+    public const long RtSigprocmask = 175;
+    public const long GetRandom = 355;
+    public const long Utimensat = 320;
+    public const long Sync = 36;
+    public const long Mount = 21;       // (source, target, type, flags, data)
+    public const long Umount2 = 52;     // (target, flags)
+    public const long Statfs64 = 268;   // (path, size, buffer)
+    public const long Fstatfs64 = 269;  // (fd, size, buffer)
+    public const long Reboot = 88;      // (magic1, magic2, cmd, arg)  // (dirfd, path, times[2], flags)  // (buffer, count, flags)
+    public const long Munmap = 91;
+
+    // ---- time ------------------------------------------------------------
+    public const long Time = 13;        // (address or 0) -> seconds since the epoch
+    public const long GetTimeOfDay = 78;
+    public const long NanoSleep = 162;  // (request, remainder)
+    public const long ClockGetTime = 265;
+    public const long ClockGetRes = 266;
+    public const long Sched_Yield = 158;
+
+    // ---- sockets ---------------------------------------------------------
+    //
+    // TWO WAYS IN, and which one works is the kernel's choice. i386 grew
+    // separate socket calls in Linux 4.3; before that every one of them went
+    // through socketcall(2) with its arguments in a block of words. Os.Sock
+    // below tries the direct call and falls back on -ENOSYS, so this library
+    // runs on either without being told which it is on.
+    public const long SocketCall = 102; // (which, args): the old, universal door
+    public const long Socket = 359;
+    public const long SocketPair = 360;
+    public const long Bind = 361;
+    public const long Connect = 362;
+    public const long Listen = 363;
+    public const long Accept4 = 364;
+    public const long GetSockOpt = 365;
+    public const long SetSockOpt = 366;
+    public const long GetSockName = 367;
+    public const long GetPeerName = 368;
+    public const long SendTo = 369;
+    public const long SendMsg = 370;
+    public const long RecvFrom = 371;
+    public const long RecvMsg = 372;
+    public const long Shutdown = 373;
+}
+
+/// Which socket operation, when they go through socketcall(2). The numbers
+/// are the kernel's SYS_SOCKET family from linux/net.h and have nothing to do
+/// with the system-call numbers above.
+static class SockCall
+{
+    public const long Socket = 1;
+    public const long Bind = 2;
+    public const long Connect = 3;
+    public const long Listen = 4;
+    public const long Accept = 5;
+    public const long GetSockName = 6;
+    public const long GetPeerName = 7;
+    public const long SocketPair = 8;
+    public const long Send = 9;
+    public const long Recv = 10;
+    public const long SendTo = 11;
+    public const long RecvFrom = 12;
+    public const long Shutdown = 13;
+    public const long SetSockOpt = 14;
+    public const long GetSockOpt = 15;
+    public const long SendMsg = 16;
+    public const long RecvMsg = 17;
+    public const long Accept4 = 18;
+}
+
+/// The control messages recvmsg(2) answers with: a list of headers, each
+/// four words of its own length, a level and a type, then the data, and
+/// each one starting on a word boundary whatever the last one's length was.
+///
+/// A PROGRAM MUST WALK THIS AND MUST NOT INDEX IT. The kernel writes as
+/// many as it has to say and in whatever order it likes, and a program that
+/// assumes the one it asked for is the first one works until the day
+/// somebody turns on a second option.
+static class Cmsg
+{
+    public const int HeaderBytes = 12;
+
+    // The levels and types a program on this machine actually reads.
+    public const int LevelIp = 0;               // SOL_IP
+    public const int TimeToLive = 2;            // IP_TTL, with IP_RECVTTL set
+    public const int Error = 11;                // IP_RECVERR's answer
+
+    /// Where the first header is, or -1 when there is none.
+    public static int First(int controlBytes)
+    {
+        return controlBytes >= HeaderBytes ? 0 : -1;
+    }
+
+    /// Where the header after the one at `at` is, or -1.
+    public static int Next(byte[] control, int controlBytes, int at)
+    {
+        long length = Length(control, at);
+
+        if (length < HeaderBytes)
+        {
+            return -1;
+        }
+
+        int next = at + (int)((length + 3) & ~3);
+        return next + HeaderBytes <= controlBytes ? next : -1;
+    }
+
+    public static long Length(byte[] control, int at)
+    {
+        return Raw.U32(control, at);
+    }
+
+    public static int Level(byte[] control, int at)
+    {
+        return (int)Raw.I32(control, at + 4);
+    }
+
+    public static int Type(byte[] control, int at)
+    {
+        return (int)Raw.I32(control, at + 8);
+    }
+
+    /// Where this header's data starts.
+    public static int Data(int at)
+    {
+        return at + HeaderBytes;
+    }
+}
+
+/// The three standard descriptors, as os/lib/user.cor spells them.
+static class Fd
+{
+    public const int In = 0;
+    public const int Out = 1;
+    public const int Err = 2;
+}
+
+/// open(2) flags, Linux i386 values. The same names and -- not by accident --
+/// the same numbers as os/lib/user.cor's O, which took them from Linux.
+static class O
+{
+    public const int Read = 0;          // O_RDONLY
+    public const int Write = 1;         // O_WRONLY
+    public const int ReadWrite = 2;     // O_RDWR
+    public const int AccessMask = 3;
+
+    public const int Create = 64;       // O_CREAT
+    public const int Exclusive = 128;   // O_EXCL
+    public const int Truncate = 512;    // O_TRUNC
+    public const int Append = 1024;     // O_APPEND
+    public const int NonBlock = 2048;   // O_NONBLOCK
+    public const int Directory = 65536; // O_DIRECTORY
+
+    /// O_LARGEFILE. On a 32-bit kernel an open WITHOUT this refuses, with
+    /// EOVERFLOW, any file whose size does not fit in 31 bits -- which is
+    /// every disc image and every block device of 2 GiB or more. .NET opens
+    /// with it always on Linux, and so does everything here.
+    public const int LargeFile = 32768; // 0100000
+}
+
+/// The errno values a program here has a reason to test for. A failed call
+/// answers the NEGATIVE of one of these, as the raw kernel interface does;
+/// there is no errno variable because there is no libc.
+static class Err
+{
+    public const long Perm = 1;         // EPERM
+    public const long NoEnt = 2;        // ENOENT
+    public const long Intr = 4;         // EINTR
+    public const long Io = 5;           // EIO
+    public const long BadF = 9;         // EBADF
+    public const long Again = 11;       // EAGAIN
+    public const long NoMem = 12;       // ENOMEM
+    public const long Access = 13;      // EACCES
+    public const long NoDev = 19;
+    public const long NetDown = 100;
+    public const long ConnReset = 104;
+    public const long NoBufs = 105;
+    public const long Fault = 14;
+
+    public const long MFile = 24;
+    public const long MsgSize = 90;
+    public const long ProtoNoSupport = 93;      // EPROTONOSUPPORT
+    public const long NotSup = 95;
+    public const long AFNoSupport = 97;
+    public const long AddrInUse = 98;
+    public const long NetUnreach = 101;
+    public const long ConnAborted = 103;
+    public const long IsConn = 106;
+    public const long TimedOut = 110;
+    public const long ConnRefused = 111;
+    public const long HostUnreach = 113;
+    public const long Already = 114;
+    public const long InProgress = 115;
+    public const long NotConn = 107;
+    public const long Exist = 17;       // EEXIST
+    public const long NotDir = 20;      // ENOTDIR
+    public const long IsDir = 21;       // EISDIR
+    public const long Inval = 22;       // EINVAL
+    public const long NoSpc = 28;       // ENOSPC
+    public const long Pipe = 32;        // EPIPE
+    public const long Range = 34;       // ERANGE
+    public const long NameTooLong = 36; // ENAMETOOLONG
+    public const long NotEmpty = 39;    // ENOTEMPTY
+    public const long NoSys = 38;       // ENOSYS: the kernel has no such call
+    public const long NotSock = 88;     // ENOTSOCK
+    public const long NoTty = 25;       // ENOTTY: not a terminal
+    public const long Spipe = 29;       // ESPIPE: a pipe cannot seek
+}
+
+/// What lib/rt/runtime.cor and lib/rt/gc.cor ask of the operating system,
+/// and nothing else. The heap is the caller of Map, so NOTHING in this
+/// class may allocate: no `new`, no arrays, no strings built at run time.
+/// A string LITERAL is data the compiler laid out, and is fine.
+static class Platform
+{
+    // Sys.Syscall answers the 32-bit EAX zero-extended. -errno lives in
+    // the top 4095 values of the unsigned range; nothing else does.
+    public static long Result(long raw)
+    {
+        // The register is 32 bits: an address in the top half of the space
+        // arrives here with its sign extended, and is not an error. Only
+        // the last 4095 values are (asm/errno: -MAX_ERRNO).
+        long word = raw & 0xFFFFFFFF;
+        if (word >= 0xFFFFF001)
+        {
+            return word - 0x100000000;
+        }
+        return word;
+    }
+
+    /// Fresh, zeroed, page-aligned memory of `bytes`, or 0.
+    ///
+    /// mmap2 of anonymous private pages: the kernel zeroes every page it
+    /// hands over, which is the promise the heap's bump allocation relies
+    /// on, and each call is a chunk of its own, which is what the heap's
+    /// chunk list expects. mmap2 rather than mmap because the i386 ABI's
+    /// six-argument form is mmap2 (the offset is in pages) and the old
+    /// mmap takes its arguments in a structure.
+    /// A label and a number on standard error, allocating nothing: for the
+    /// allocator's own paths, where a `new` would recurse.
+    static long _traceDigits;
+
+    public static void Trace(string label, long value)
+    {
+        if (_traceDigits == 0)
+        {
+            long got = Sys.Syscall(Call.Mmap2, 0, 4096, 3, 0x22, 0 - 1, 0);
+            _traceDigits = Result(got) > 0 ? Result(got) : 0 - 1;
+        }
+
+        WriteBytes(2, Sys.ArrayData(label), label.Length);
+
+        if (_traceDigits > 0)
+        {
+            long n = value < 0 ? 0 - value : value;
+            long at = 24;
+
+            if (n == 0)
+            {
+                at = at - 1;
+                Sys.PokeByte(_traceDigits + at, 48);
+            }
+
+            while (n > 0 && at > 1)
+            {
+                at = at - 1;
+                Sys.PokeByte(_traceDigits + at, 48 + n % 10);
+                n = n / 10;
+            }
+
+            if (value < 0)
+            {
+                at = at - 1;
+                Sys.PokeByte(_traceDigits + at, 45);
+            }
+
+            WriteBytes(2, _traceDigits + at, 24 - at);
+        }
+
+        string end = "\n";
+        WriteBytes(2, Sys.ArrayData(end), 1);
+    }
+
+    /// Memory given back to the kernel: munmap(2). What the collector does
+    /// with a chunk it has emptied.
+    public static void Unmap(long at, long bytes)
+    {
+        Sys.Syscall(Call.Munmap, at, bytes, 0);
+    }
+
+    public static long Map(long bytes)
+    {
+        // PROT_READ | PROT_WRITE = 3; MAP_PRIVATE | MAP_ANONYMOUS = 0x22;
+        // no file (-1), offset 0.
+        long got = Sys.Syscall(Call.Mmap2, 0, bytes, 3, 0x22, 0 - 1, 0);
+        long answer = Result(got);
+
+        if (answer < 0)
+        {
+            // Said here, without allocating (this is the allocator's own
+            // failure path): the kernel's log has the numbers.
+            string text = "mmap refused by the kernel\n";
+            WriteBytes(2, Sys.ArrayData(text), text.Length);
+            return 0;
+        }
+        if (answer == 0)
+        {
+            string zero = "mmap answered address 0\n";
+            WriteBytes(2, Sys.ArrayData(zero), zero.Length);
+        }
+        return answer;
+    }
+
+    // ---- the thread block ----------------------------------------------------
+
+    /// Puts `block` where Sys.ThreadBlock() will find it, for this thread and
+    /// no other.
+    ///
+    /// set_thread_area(2) writes one of the three GDT entries the kernel keeps
+    /// PER THREAD and reloads them on every switch, so each thread asking for
+    /// entry -1 gets one of its own with its own base. The selector it answers
+    /// with, shifted and with the requested privilege level, goes into GS; a
+    /// load through GS then adds that base, and the block's first word holding
+    /// its own address (glibc's convention) is what turns one such load into a
+    /// flat address every other instruction can use.
+    ///
+    /// Nothing here allocates: the structure the call reads is sixteen bytes
+    /// of the block itself, because a thread sets its block up before it is
+    /// allowed to touch the heap.
+    public static void SetThreadBlock(long block)
+    {
+        Sys.PokeWord(block + Tls.Self, block);
+
+        long desc = block + Tls.Scratch;
+
+        Sys.PokeWord(desc, 0 - 1);              // entry_number: any free one
+        Sys.PokeWord(desc + 4, block);          // base_addr
+        Sys.PokeWord(desc + 8, 0xFFFFF);        // limit: the whole space, in pages
+        // seg_32bit | limit_in_pages | useable; a writable data segment that
+        // is present, which is the rest of the bits being zero.
+        Sys.PokeWord(desc + 12, 0x51);
+
+        if (Result(Sys.Syscall(Call.SetThreadArea, desc, 0, 0)) < 0)
+        {
+            string text = "set_thread_area failed: this kernel cannot give a thread its own block\n";
+
+            WriteBytes(2, Sys.ArrayData(text), text.Length);
+            Exit(134);
+        }
+
+        Sys.SetGs((Sys.PeekWord(desc) << 3) | 3);
+    }
+
+    // ---- waiting ---------------------------------------------------------------
+    //
+    // The collector's stop-the-world, and nothing else, uses these. FUTEX_WAIT
+    // and FUTEX_WAKE with the private flag: no shared memory is involved, so
+    // the kernel can skip the page lookup entirely.
+
+    public static void Wait(long at, long value)
+    {
+        Sys.Syscall(Call.Futex, at, 128, value, 0, 0, 0);
+    }
+
+    public static void Wake(long at, long count)
+    {
+        Sys.Syscall(Call.Futex, at, 129, count, 0, 0, 0);
+    }
+
+    /// Stops this thread at a safepoint, with every callee-saved register on
+    /// the stack. The system call is the same trick EnterCollection uses and
+    /// for the same reason: a reference the caller left in EBX, ESI or EDI is
+    /// invisible to a collector that reads memory unless a prologue pushed it,
+    /// and the stack pointer written down inside GcThreads.SafePoint is below
+    /// these pushes. See GcRoots in lib/rt/gc.cor.
+    public static void SafePoint(long mode)
+    {
+        Sys.Syscall(Call.Getpid, 0, 0, 0, 0, 0, 0);
+        GcThreads.SafePoint(mode);
+    }
+
+    /// Enters a collection with every callee-saved register on the stack.
+    ///
+    /// The system call below is the whole trick. The backend loads its
+    /// arguments into EBX, ECX, EDX, ESI and EDI, so this function USES
+    /// every callee-saved register and its prologue pushes them; the values
+    /// the caller of Runtime.Alloc left in them are then on the stack, above
+    /// the ESP that Gc.CollectInner scans from. getpid is the cheapest call
+    /// with no effect. See GcRoots in lib/rt/gc.cor for the full reasoning.
+    public static void EnterCollection()
+    {
+        Sys.Syscall(Call.Getpid, 0, 0, 0, 0, 0, 0);
+        Gc.CollectInner();
+    }
+
+    /// Ends the whole process. exit_group rather than exit, so that the day
+    /// this runtime has threads, exiting means what a C program means by it.
+    public static void Exit(int code)
+    {
+        // Buffered console output reaches the terminal before the process
+        // ends, as it does when a .NET Main returns. What to flush was left
+        // with the runtime by whoever buffered it: this library is below the
+        // class library and may not name Console.
+        Runtime.AtExit();
+        Sys.Syscall(Call.ExitGroup, code, 0, 0);
+        // The kernel does not return from that; if it somehow did, the plain
+        // exit is the next best thing, and after that there is nothing.
+        Sys.Syscall(Call.Exit, code, 0, 0);
+    }
+
+    /// One write(2): how many bytes the kernel took, or -errno. The runtime
+    /// loops on short writes and EINTR; this does not, so a caller that
+    /// wants the raw answer can have it.
+    public static long WriteBytes(int fd, long address, long count)
+    {
+        return Result(Sys.Syscall(Call.Write, fd, address, count));
+    }
+}
+
+/// The system API a program uses, as thin wrappers over the calls above.
+///
+/// NAMED AFTER os/lib/user.cor's Os so the utilities port. Where this file
+/// diverges from user.cor, and why:
+///
+///   - Descriptors, counts and results are `int` where user.cor has `long`.
+///     This machine's word is 32 bits and its arrays index by int; a long
+///     here would be two registers for a number that never exceeds one.
+///     Every raw-address form (Write/Read with an address and a count) keeps
+///     `long` for the address, which is what an address is in the language.
+///   - Object bytes are found with Sys.ArrayData, never by adding a header
+///     size: user.cor's `Sys.Word(x) + 24` was the old machine's header.
+///   - Paths are NUL-terminated on the way in. The CORSAC kernel took a
+///     length-prefixed string; Linux takes C's, so Open copies the path
+///     into a fresh block with a trailing zero.
+///   - Errors are the negative errno, exactly as user.cor's are, and Result
+///     above is why they come out negative at all.
+///   - Args() is new: user.cor's Getarg read one argument string from the
+///     kernel; Linux left argc and argv on the stack at entry.
+static class Os
+{
+
+    /// The address of a string's or byte array's first byte.
+    private static long BytesOf(string s)
+    {
+        return Sys.ArrayData(s);
+    }
+
+    private static long BytesOf(byte[] b)
+    {
+        return Sys.ArrayData(b);
+    }
+
+    /// A copy of `s` with a zero byte after it, which is what the kernel
+    /// means by a path. The block from Sys.NewBytes is zeroed by the
+    /// allocator; the store is there so nothing depends on that.
+    ///
+    /// A byte loop rather than Sys.Copy: a path is short, and the block
+    /// copy the backend selects for Sys.Copy (rep movsb) mis-assigns its
+    /// registers as of this writing when an operand already sits in one of
+    /// them. The loop is correct on any backend and costs nothing here.
+    private static string CString(string s)
+    {
+        int n = s.Length;
+        string c = Sys.NewBytes(n + 1);
+
+        for (int i = 0; i < n; i++)
+        {
+            Sys.SetByte(c, i, Sys.GetByte(s, i));
+        }
+        Sys.SetByte(c, n, 0);
+        return c;
+    }
+
+    public static void Exit(int code)
+    {
+        Platform.Exit(code);
+    }
+
+    /// open(2). The mode is what a file is CREATED with and is ignored
+    /// otherwise, exactly as open(2)'s third argument is.
+    public static int Open(string path, int flags, int mode)
+    {
+        string c = CString(path);
+        return (int)Platform.Result(Sys.Syscall(Call.Open, BytesOf(c), flags, mode));
+    }
+
+    /// Two-argument open, with the 0644 (0x1A4) a Unix makes a file with when
+    /// nothing says otherwise -- user.cor's default, kept.
+    public static int Open(string path, int flags)
+    {
+        return Open(path, flags, 0x1A4);
+    }
+
+    public static int Close(int fd)
+    {
+        return (int)Platform.Result(Sys.Syscall(Call.Close, fd, 0, 0));
+    }
+
+    /// read(2) into part of an array. Zero means the end; negative is -errno.
+    /// The range is checked here because the kernel would happily write past
+    /// the array, and that is the one bug a language with bounds checks is
+    /// supposed to make impossible.
+    public static int Read(int fd, byte[] buf, int at, int count)
+    {
+        if (at < 0 || count < 0 || at > buf.Length - count)
+        {
+            throw new IndexOutOfRangeException("read range is outside its buffer");
+        }
+        return (int)Platform.Result(Sys.Syscall(Call.Read, fd, BytesOf(buf) + at, count));
+    }
+
+    /// The raw form: an address and a count, for code that manages its own
+    /// buffer. Answers the kernel's number as a long, like user.cor's.
+    public static long Read(int fd, long into, long count)
+    {
+        return Platform.Result(Sys.Syscall(Call.Read, fd, into, count));
+    }
+
+    /// write(2) from part of an array. ONE call: the kernel may take fewer
+    /// bytes than offered, and the caller that cares loops. Negative is -errno.
+    public static int Write(int fd, byte[] buf, int at, int count)
+    {
+        if (at < 0 || count < 0 || at > buf.Length - count)
+        {
+            throw new IndexOutOfRangeException("write range is outside its buffer");
+        }
+        return (int)Platform.Result(Sys.Syscall(Call.Write, fd, BytesOf(buf) + at, count));
+    }
+
+    public static long Write(int fd, long at, long count)
+    {
+        return Platform.Result(Sys.Syscall(Call.Write, fd, at, count));
+    }
+
+    /// The WHOLE string, however many calls that takes. A terminal, pipe or
+    /// socket may honestly accept part of it; this keeps offering the rest,
+    /// and retries an interrupted call, so text written this way arrives
+    /// complete or not at all. Answers the length, or the error if nothing
+    /// at all was written.
+    public static int Write(int fd, string s)
+    {
+        long at = BytesOf(s);
+        long done = 0;
+        long length = s.Length;
+
+        while (done < length)
+        {
+            long n = Platform.WriteBytes(fd, at + done, length - done);
+
+            if (n == 0 - Err.Intr)
+            {
+                continue;
+            }
+            if (n <= 0)
+            {
+                return done > 0 ? (int)done : (int)n;
+            }
+            done = done + n;
+        }
+        return (int)done;
+    }
+
+    public static void Print(string s)
+    {
+        Write(Fd.Out, s);
+    }
+
+    /// A whole line in ONE write, so another process's output cannot land
+    /// between the text and its newline.
+    public static void Line(string s)
+    {
+        Write(Fd.Out, String.Concat(s, "\n"));
+    }
+
+    // ---- raw memory, and why there is any ---------------------------------
+    //
+    // Every structure the kernel fills in -- a stat, a timespec, a directory
+    // record, a termios -- is a block of bytes with fields at fixed offsets,
+    // and this language has no way to declare one. A byte[] is the block; Raw
+    // below reads and writes its fields. The alternative, a class per
+    // structure with the kernel writing into its fields, needs the compiler to
+    // promise a layout it does not promise.
+
+    /// The address of a byte array's first byte. Public because the structure
+    /// helpers below and any program that manages its own buffer need it.
+    /// The address of envp as the kernel laid it on the entry stack: past
+    /// argc, past argc pointers, past the null that ends them.
+    /// System.Environment answers with this; execve needs it here, and the
+    /// entry stack is this library's business rather than the class
+    /// library's.
+    public static long EnvironAddress()
+    {
+        long sp = Sys.EntryStack();
+        return sp + 4 + 4 * Sys.PeekWord(sp) + 4;
+    }
+
+    public static long AddressOf(byte[] b)
+    {
+        return Sys.ArrayData(b);
+    }
+
+    /// A copy of `s` with a zero byte after it, for the calls that take a
+    /// path. Public for the same reason AddressOf is.
+    public static string CStr(string s)
+    {
+        return CString(s);
+    }
+
+    // ---- seeking ----------------------------------------------------------
+
+    /// lseek(2) with a 64-bit offset.
+    ///
+    /// _llseek, not lseek: the i386 lseek takes and returns a 32-bit offset,
+    /// so it cannot say where it is in a file over 2 GB and cannot be asked to
+    /// go there. _llseek splits the offset into two words and writes the
+    /// answer into a buffer, which is why this one needs eight bytes of room.
+    public static long Lseek(int fd, long offset, int whence)
+    {
+        byte[] where = new byte[8];
+        long got = Platform.Result(Sys.Syscall(Call.LlSeek, fd,
+            (offset >> 32) & 0xFFFFFFFF, offset & 0xFFFFFFFF,
+            AddressOf(where), whence, 0));
+
+        if (got < 0)
+        {
+            return got;
+        }
+        return Raw.I64(where, 0);
+    }
+
+    /// Where the descriptor is now, without moving it.
+    public static long Tell(int fd)
+    {
+        return Lseek(fd, 0, Whence.Current);
+    }
+
+    /// How long an open file is: to the end and back again. A pipe answers
+    /// -ESPIPE, which is the honest answer to "how long is a pipe".
+    public static long SizeOf(int fd)
+    {
+        long here = Lseek(fd, 0, Whence.Current);
+
+        if (here < 0)
+        {
+            return here;
+        }
+
+        long end = Lseek(fd, 0, Whence.End);
+
+        if (end < 0)
+        {
+            return end;
+        }
+        Lseek(fd, here, Whence.Set);
+        return end;
+    }
+
+    public static int Truncate(int fd, long length)
+    {
+        return (int)Platform.Result(Sys.Syscall(Call.Ftruncate, fd, length, 0));
+    }
+
+    // ---- what a file is ---------------------------------------------------
+
+    public static int Stat(string path, byte[] into)
+    {
+        StatBuf.Check(into);
+        string c = CString(path);
+        return (int)Platform.Result(Sys.Syscall(Call.Stat64, BytesOf(c), AddressOf(into), 0));
+    }
+
+    /// The link itself rather than what it points at.
+    public static int Lstat(string path, byte[] into)
+    {
+        StatBuf.Check(into);
+        string c = CString(path);
+        return (int)Platform.Result(Sys.Syscall(Call.Lstat64, BytesOf(c), AddressOf(into), 0));
+    }
+
+    public static int Fstat(int fd, byte[] into)
+    {
+        StatBuf.Check(into);
+        return (int)Platform.Result(Sys.Syscall(Call.Fstat64, fd, AddressOf(into), 0));
+    }
+
+    /// Whether the name resolves to anything at all.
+    public static bool Exists(string path)
+    {
+        byte[] st = StatBuf.Room();
+        return Stat(path, st) >= 0;
+    }
+
+    /// The mode word, or 0 when the name is not there -- 0 is not a mode any
+    /// real file has, so "not there" and "there" stay distinguishable without
+    /// a second call.
+    public static long ModeOf(string path)
+    {
+        byte[] st = StatBuf.Room();
+
+        if (Stat(path, st) < 0)
+        {
+            return 0;
+        }
+        return StatBuf.Mode(st);
+    }
+
+    /// How many bytes the named file holds, or -errno.
+    public static long SizeOf(string path)
+    {
+        byte[] st = StatBuf.Room();
+        int r = Stat(path, st);
+
+        if (r < 0)
+        {
+            return r;
+        }
+        return StatBuf.Size(st);
+    }
+
+    // ---- the name space ---------------------------------------------------
+
+    public static int Create(string path, int mode)
+    {
+        return Open(path, O.Write | O.Create | O.Truncate, mode);
+    }
+
+    public static int Unlink(string path)
+    {
+        string c = CString(path);
+        return (int)Platform.Result(Sys.Syscall(Call.Unlink, BytesOf(c), 0, 0));
+    }
+
+    /// rename(2). BOTH paths are copied before either address is taken: a
+    /// second allocation can collect, and a collection can run while the first
+    /// address is only in a register, which no conservative scan of the stack
+    /// would find.
+    public static int Rename(string from, string to)
+    {
+        string a = CString(from);
+        string b = CString(to);
+        return (int)Platform.Result(Sys.Syscall(Call.Rename, BytesOf(a), BytesOf(b), 0));
+    }
+
+    public static int Mkdir(string path, int mode)
+    {
+        string c = CString(path);
+        return (int)Platform.Result(Sys.Syscall(Call.Mkdir, BytesOf(c), mode, 0));
+    }
+
+    /// 0755, which is what mkdir(1) makes a directory with.
+    public static int Mkdir(string path)
+    {
+        return Mkdir(path, 0x1ED);
+    }
+
+    public static int Rmdir(string path)
+    {
+        string c = CString(path);
+        return (int)Platform.Result(Sys.Syscall(Call.Rmdir, BytesOf(c), 0, 0));
+    }
+
+    public static int Chdir(string path)
+    {
+        string c = CString(path);
+        return (int)Platform.Result(Sys.Syscall(Call.Chdir, BytesOf(c), 0, 0));
+    }
+
+    public static int Chmod(string path, int mode)
+    {
+        string c = CString(path);
+        return (int)Platform.Result(Sys.Syscall(Call.Chmod, BytesOf(c), mode, 0));
+    }
+
+    /// access(2). 0 asks only whether the name resolves; 1/2/4 are execute,
+    /// write and read.
+    public static int Access(string path, int mode)
+    {
+        string c = CString(path);
+        return (int)Platform.Result(Sys.Syscall(Call.Access, BytesOf(c), mode, 0));
+    }
+
+    /// link(2): another directory entry for the inode `existing` already
+    /// names. Not a copy -- the two names are the same file thereafter.
+    public static int Link(string existing, string name)
+    {
+        string a = CString(existing);
+        string b = CString(name);
+        return (int)Platform.Result(Sys.Syscall(Call.Link, BytesOf(a), BytesOf(b), 0));
+    }
+
+    public static int Symlink(string target, string name)
+    {
+        string a = CString(target);
+        string b = CString(name);
+        return (int)Platform.Result(Sys.Syscall(Call.Symlink, BytesOf(a), BytesOf(b), 0));
+    }
+
+    /// Where a symbolic link points, or null when it is not one.
+    public static string? Readlink(string path)
+    {
+        string c = CString(path);
+        byte[] room = new byte[4096];
+        int n = (int)Platform.Result(Sys.Syscall(Call.Readlink, BytesOf(c), AddressOf(room), room.Length));
+
+        if (n < 0)
+        {
+            return null;
+        }
+        return Raw.Text(room, 0, n);
+    }
+
+    /// The working directory, or null when it is longer than the buffer or has
+    /// been removed underneath us.
+    public static string? Getcwd()
+    {
+        byte[] room = new byte[4096];
+        int n = (int)Platform.Result(Sys.Syscall(Call.Getcwd, AddressOf(room), room.Length, 0));
+
+        if (n <= 0)
+        {
+            return null;
+        }
+        // The kernel counts the NUL it wrote; a string here does not have one.
+        return Raw.Text(room, 0, n - 1);
+    }
+
+    // ---- directories ------------------------------------------------------
+
+    /// One getdents64(2): as many whole records as fit, or 0 at the end.
+    /// Dirent below walks the buffer.
+    public static int Getdents(int fd, byte[] into, int count)
+    {
+        if (count < 0 || count > into.Length)
+        {
+            throw new IndexOutOfRangeException("directory buffer is too small for that count");
+        }
+        return (int)Platform.Result(Sys.Syscall(Call.Getdents64, fd, AddressOf(into), count));
+    }
+
+    /// Every name in a directory except "." and "..", or null when it cannot
+    /// be opened. Sorted by nothing: the order is the filing system's, which
+    /// is what readdir(3) gives too.
+    public static string[]? ListDir(string path)
+    {
+        int fd = Open(path, O.Read | O.Directory);
+
+        if (fd < 0)
+        {
+            return null;
+        }
+
+        List<string> names = new List<string>();
+        byte[] block = new byte[4096];
+
+        while (true)
+        {
+            int got = Getdents(fd, block, block.Length);
+
+            if (got <= 0)
+            {
+                break;
+            }
+
+            int at = 0;
+
+            while (at < got)
+            {
+                string name = Dirent.Name(block, at);
+
+                if (name != "." && name != "..")
+                {
+                    names.Add(name);
+                }
+                at = at + Dirent.Length(block, at);
+            }
+        }
+        Close(fd);
+        return names.ToArray();
+    }
+
+    // ---- descriptors ------------------------------------------------------
+
+    public static int Dup(int fd)
+    {
+        return (int)Platform.Result(Sys.Syscall(Call.Dup, fd, 0, 0));
+    }
+
+    /// dup2(2): `to` becomes another name for `fd`, closing whatever it was.
+    public static int Dup2(int fd, int to)
+    {
+        return (int)Platform.Result(Sys.Syscall(Call.Dup2, fd, to, 0));
+    }
+
+    /// pipe(2). `pair` gets the read end at 0 and the write end at 1.
+    public static int Pipe(int[] pair)
+    {
+        if (pair.Length < 2)
+        {
+            throw new IndexOutOfRangeException("a pipe needs two descriptors");
+        }
+        return (int)Platform.Result(Sys.Syscall(Call.Pipe, Sys.ArrayData(pair), 0, 0));
+    }
+
+    public static long Ioctl(int fd, long request, long argument)
+    {
+        return Platform.Result(Sys.Syscall(Call.Ioctl, fd, request, argument));
+    }
+
+
+    /// utimensat(2) on a path: access and modification times as seconds
+    /// and nanoseconds; a negative seconds value leaves that time alone.
+    /// `follow` false changes a symbolic link itself.
+    public static int Utimensat(string path, long atimeSeconds, long atimeNanos, long mtimeSeconds, long mtimeNanos, bool follow)
+    {
+        byte[] times = new byte[16];
+        Raw.SetU32(times, 0, atimeSeconds < 0 ? 0 : atimeSeconds);
+        Raw.SetU32(times, 4, atimeSeconds < 0 ? 1073741822 : atimeNanos);   // UTIME_OMIT
+        Raw.SetU32(times, 8, mtimeSeconds < 0 ? 0 : mtimeSeconds);
+        Raw.SetU32(times, 12, mtimeSeconds < 0 ? 1073741822 : mtimeNanos);
+        return (int)Platform.Result(Sys.Syscall(Call.Utimensat, -100, BytesOf(CString(path)), AddressOf(times), follow ? 0 : 0x100, 0, 0));
+    }
+
+    /// sync(2): every dirty block to the disc.
+    public static void Sync()
+    {
+        Sys.Syscall(Call.Sync, 0, 0, 0);
+    }
+
+    /// reboot(2) with Linux's two magic numbers and a command:
+    /// 0x01234567 restart, 0x4321FEDC power off, 0xCDEF0123 halt.
+    /// Does not return when it works; -errno when it does not.
+    public static long Reboot(long command)
+    {
+        return Platform.Result(Sys.Syscall(Call.Reboot, 0xFEE1DEAD, 672274793, command, 0, 0, 0));
+    }
+
+    // ---- waiting, randomness, signals ----------------------------------------
+
+    /// fcntl(2)'s two commands a program actually needs: the descriptor's
+    /// flags, and the same flags changed. O_NONBLOCK is what a server with
+    /// more than one ear sets, and is what .NET spells Socket.Blocking.
+    public static int Fcntl(int fd, int command, int argument)
+    {
+        return (int)Platform.Result(Sys.Syscall(Call.Fcntl, fd, command, argument));
+    }
+
+    /// poll(2) on one descriptor: >0 when an event in `events` (1 read,
+    /// 4 write, 8 error) is ready within `timeoutMs` (-1 forever), 0 on
+    /// the timeout, -errno otherwise.
+    public static int Poll(int fd, int events, int timeoutMs)
+    {
+        byte[] pfd = new byte[8];
+        Raw.SetU32(pfd, 0, fd);
+        pfd[4] = (byte)events;
+        pfd[5] = (byte)(events >> 8);
+        while (true)
+        {
+            long r = Platform.Result(Sys.Syscall(Call.Poll, AddressOf(pfd), 1, timeoutMs));
+            if (r == -Err.Intr || PosixSignalRegistration.Pending)
+            {
+                // A signal arrived while waiting -- or just before, with
+                // nothing blocked for it to interrupt: this is the quiet
+                // moment at which the program's handlers run. The caller
+                // sees the interruption and decides whether it still wants
+                // to wait.
+                PosixSignalRegistration.Deliver();
+            }
+            return (int)r;
+        }
+    }
+
+    /// pause(2): asleep until a signal, whose handlers have run by the time
+    /// this returns. Spelt poll(2) of nothing, for ever, which is the same
+    /// wait on every kernel that has poll.
+    public static void Pause()
+    {
+        if (!PosixSignalRegistration.Pending)
+        {
+            Platform.Result(Sys.Syscall(Call.Poll, 0, 0, -1));
+        }
+
+        PosixSignalRegistration.Deliver();
+    }
+
+    /// poll(2) on several descriptors at once, each for the same `events`.
+    /// `ready[i]` says which answered. The count of them, 0 on the timeout,
+    /// -errno otherwise; a signal is delivered and reported as -EINTR.
+    public static int PollMany(int[] fds, int count, int events, int timeoutMs, bool[] ready)
+    {
+        byte[] pfd = new byte[8 * count];
+
+        for (int i = 0; i < count; i++)
+        {
+            Raw.SetU32(pfd, 8 * i, fds[i]);
+            pfd[8 * i + 4] = (byte)events;
+            pfd[8 * i + 5] = (byte)(events >> 8);
+            ready[i] = false;
+        }
+
+        long r = Platform.Result(Sys.Syscall(Call.Poll, AddressOf(pfd), count, timeoutMs));
+
+        if (r == -Err.Intr || PosixSignalRegistration.Pending)
+        {
+            PosixSignalRegistration.Deliver();
+        }
+
+        for (int i = 0; i < count && r > 0; i++)
+        {
+            ready[i] = (pfd[8 * i + 6] | pfd[8 * i + 7]) != 0;
+        }
+
+        return (int)r;
+    }
+
+    /// getrandom(2): bytes into the buffer, blocking until the pool is seeded.
+    public static long GetRandom(byte[] buffer, int at, int count)
+    {
+        if (at < 0 || count < 0 || at > buffer.Length - count)
+        {
+            throw new IndexOutOfRangeException("getrandom range is outside its buffer");
+        }
+        return Platform.Result(Sys.Syscall(Call.GetRandom, AddressOf(buffer) + at, count, 0));
+    }
+
+    /// rt_sigaction(2) with a 20-byte kernel sigaction (handler, flags,
+    /// restorer, 64-bit mask) and no request for the old one.
+    public static long SigAction(int signal, byte[] action)
+    {
+        return Platform.Result(Sys.Syscall(Call.RtSigaction, signal, AddressOf(action), 0, 8, 0, 0));
+    }
+
+    /// Bytes waiting to be read on `fd` (FIONREAD), or -errno.
+    public static long Available(int fd)
+    {
+        byte[] n = new byte[4];
+        long r = Ioctl(fd, 0x541B, AddressOf(n));
+        return r < 0 ? r : Raw.U32(n, 0);
+    }
+
+    // ---- processes --------------------------------------------------------
+
+    /// Pages the processor may EXECUTE, as well as read and write.
+    ///
+    /// THE HEAP IS NOT EXECUTABLE -- it is mapped PROT_READ|PROT_WRITE and
+    /// nothing else, which is what keeps a buffer somebody overran from
+    /// becoming a program. The one thing in this system that must be code at
+    /// run time is the signal restorer: the six bytes the kernel returns
+    /// THROUGH when a handler finishes. Those live here, and nothing else
+    /// does.
+    ///
+    /// The address, or 0.
+    public static long MapExecutable(long bytes)
+    {
+        // PROT_READ | PROT_WRITE | PROT_EXEC = 7; MAP_PRIVATE | MAP_ANONYMOUS.
+        long got = Platform.Result(Sys.Syscall(Call.Mmap2, 0, bytes, 7, 0x22, 0 - 1, 0));
+        return got < 0 ? 0 : got;
+    }
+
+    /// fork(2): the child's pid here, 0 over there, -errno on failure.
+    ///
+    /// EVERYTHING the process has is duplicated, the heap included, so the
+    /// child is running the same program with the same objects and neither
+    /// side can see the other's writes afterwards. Nothing in this runtime
+    /// needs to be told: there is one thread, and the collector's state is as
+    /// valid in the copy as it was in the original.
+    public static int Fork()
+    {
+        return (int)Platform.Result(Sys.Syscall(Call.Fork, 0, 0, 0));
+    }
+
+    public static int Getpid()
+    {
+        return (int)Platform.Result(Sys.Syscall(Call.Getpid, 0, 0, 0));
+    }
+
+    public static int Getppid()
+    {
+        return (int)Platform.Result(Sys.Syscall(Call.Getppid, 0, 0, 0));
+    }
+
+    public static int Getuid()
+    {
+        return (int)Platform.Result(Sys.Syscall(Call.Getuid, 0, 0, 0));
+    }
+
+    public static int Getgid()
+    {
+        return (int)Platform.Result(Sys.Syscall(Call.Getgid, 0, 0, 0));
+    }
+
+    public static int Kill(int pid, int signal)
+    {
+        return (int)Platform.Result(Sys.Syscall(Call.Kill, pid, signal, 0));
+    }
+
+    /// setpgid(2). A zero for either means "this process" and "its own pid",
+    /// which is how a shell puts itself in a group of its own.
+    public static int Setpgid(int pid, int group)
+    {
+        return (int)Platform.Result(Sys.Syscall(Call.Setpgid, pid, group, 0));
+    }
+
+    /// getpgid(2); zero means this process.
+    public static int Getpgid(int pid)
+    {
+        return (int)Platform.Result(Sys.Syscall(Call.Getpgid, pid, 0, 0));
+    }
+
+    /// setsid(2): a new session, with no controlling terminal, this process
+    /// leading it. Fails with -EPERM when this process already leads a group.
+    public static int Setsid()
+    {
+        return (int)Platform.Result(Sys.Syscall(Call.Setsid, 0, 0, 0));
+    }
+
+    public static int Setuid(int uid)
+    {
+        return (int)Platform.Result(Sys.Syscall(Call.Setuid, uid, 0, 0));
+    }
+
+    public static int Setgid(int gid)
+    {
+        return (int)Platform.Result(Sys.Syscall(Call.Setgid, gid, 0, 0));
+    }
+
+    /// setgroups(2): the supplementary groups, as a block of 32-bit ids.
+    public static int Setgroups(int[] groups, int count)
+    {
+        return (int)Platform.Result(Sys.Syscall(Call.Setgroups, count, Sys.ArrayData(groups), 0));
+    }
+
+    /// umask(2): the bits taken OUT of every mode this process creates with.
+    /// Answers the mask it replaced, and cannot fail.
+    public static int Umask(int mask)
+    {
+        return (int)Sys.Syscall(Call.Umask, mask, 0, 0);
+    }
+
+    /// chown(2), by name, following symbolic links.
+    public static int Chown(string path, int uid, int gid)
+    {
+        string c = CString(path);
+        return (int)Platform.Result(Sys.Syscall(Call.Chown, BytesOf(c), uid, gid));
+    }
+
+    /// mount(2). `data` is the filing system's own options, the ones after
+    /// -o that the kernel does not understand itself; null when there are
+    /// none.
+    public static int Mount(string source, string target, string type,
+                            long flags, string? data)
+    {
+        string from = CString(source);
+        string onto = CString(target);
+        string kind = CString(type);
+        long options = 0;
+        if (data != null)
+        {
+            string extra = CString(data);
+            options = BytesOf(extra);
+        }
+        return (int)Platform.Result(Sys.Syscall(Call.Mount, BytesOf(from), BytesOf(onto),
+                                                BytesOf(kind), flags, options, 0));
+    }
+
+    /// umount2(2). The flags are MNT_FORCE, MNT_DETACH and the rest.
+    public static int Umount(string target, int flags)
+    {
+        string c = CString(target);
+        return (int)Platform.Result(Sys.Syscall(Call.Umount2, BytesOf(c), flags, 0));
+    }
+
+    /// statfs64(2): how big a filing system is and how much of it is left.
+    public static int Statfs(string path, byte[] into)
+    {
+        StatFs.Check(into);
+        string c = CString(path);
+        return (int)Platform.Result(Sys.Syscall(Call.Statfs64, BytesOf(c),
+                                                StatFs.Bytes, BytesOf(into)));
+    }
+
+    public static int Fstatfs(int fd, byte[] into)
+    {
+        StatFs.Check(into);
+        return (int)Platform.Result(Sys.Syscall(Call.Fstatfs64, fd,
+                                                StatFs.Bytes, BytesOf(into)));
+    }
+
+    /// An array of C strings, then a null, as execve(2) wants it: the strings
+    /// in `keep` so a collection during the build cannot free them, and their
+    /// addresses in a block of words.
+    ///
+    /// The block is a byte[] rather than an int[] only because Raw writes
+    /// words into byte[]; the kernel sees the same four bytes either way.
+    private static byte[] Vector(string[] items, string[] keep, int at)
+    {
+        byte[] block = new byte[(items.Length + 1) * 4];
+
+        for (int i = 0; i < items.Length; i++)
+        {
+            string c = CString(items[i]);
+            keep[at + i] = c;
+            Raw.SetU32(block, i * 4, BytesOf(c));
+        }
+        Raw.SetU32(block, items.Length * 4, 0);
+        return block;
+    }
+
+    /// execve(2). On success it does not return: this process becomes the
+    /// named program. On failure it answers -errno, and the caller -- which in
+    /// a forked child is usually about to exit -- learns why.
+    ///
+    /// A null environment means the one this process was started with, passed
+    /// straight through by address rather than copied out and back.
+    public static int Exec(string path, string[] argv, string[]? envp)
+    {
+        string c = CString(path);
+        int room = argv.Length + (envp == null ? 0 : envp.Length);
+        string[] keep = new string[room];
+
+        byte[] args = Vector(argv, keep, 0);
+        long env;
+
+        if (envp == null)
+        {
+            env = EnvironAddress();
+        }
+        else
+        {
+            byte[] block = Vector(envp, keep, argv.Length);
+            env = AddressOf(block);
+        }
+        return (int)Platform.Result(Sys.Syscall(Call.Execve, BytesOf(c), AddressOf(args), env));
+    }
+
+    /// The common shape: the program's own path as argv[0], the caller's
+    /// environment, nothing else.
+    public static int Exec(string path, string[] argv)
+    {
+        return Exec(path, argv, null);
+    }
+
+    /// waitpid(2). -1 for `pid` means any child. `status` gets the raw status
+    /// word at index 0; Wait below reads it.
+    public static int Waitpid(int pid, int[] status, int options)
+    {
+        if (status.Length < 1)
+        {
+            throw new IndexOutOfRangeException("waitpid needs somewhere for the status");
+        }
+        return (int)Platform.Result(Sys.Syscall(Call.Waitpid, pid, Sys.ArrayData(status), options));
+    }
+
+    /// Waits for one child and answers the way a shell reports it: its exit
+    /// code, or 128 + the signal that killed it, or -errno.
+    public static int Wait(int pid)
+    {
+        int[] status = new int[1];
+        int got = Waitpid(pid, status, 0);
+
+        if (got < 0)
+        {
+            return got;
+        }
+        return WaitStatus.Result(status[0]);
+    }
+
+    // ---- time -------------------------------------------------------------
+
+    /// Seconds since the epoch.
+    public static long Time()
+    {
+        return Platform.Result(Sys.Syscall(Call.Time, 0, 0, 0));
+    }
+
+    /// clock_gettime(2) into a timespec of TimeSpec.Bytes.
+    public static int ClockGetTime(int clock, byte[] into)
+    {
+        TimeSpec.Check(into);
+        return (int)Platform.Result(Sys.Syscall(Call.ClockGetTime, clock, AddressOf(into), 0));
+    }
+
+    public static int ClockGetRes(int clock, byte[] into)
+    {
+        TimeSpec.Check(into);
+        return (int)Platform.Result(Sys.Syscall(Call.ClockGetRes, clock, AddressOf(into), 0));
+    }
+
+    /// A clock as ONE number of nanoseconds, which is what code that measures
+    /// an interval actually wants. Monotonic nanoseconds fit in a long for
+    /// 292 years, so there is no wrap to reason about.
+    public static long Nanos(int clock)
+    {
+        byte[] t = TimeSpec.Room();
+
+        if (ClockGetTime(clock, t) < 0)
+        {
+            return 0;
+        }
+        return TimeSpec.Seconds(t) * 1000000000 + TimeSpec.Nanos(t);
+    }
+
+    /// Microseconds since the epoch, gettimeofday(2)'s answer as one number.
+    public static long Micros()
+    {
+        byte[] tv = new byte[TimeVal.Bytes];
+
+        if (Platform.Result(Sys.Syscall(Call.GetTimeOfDay, AddressOf(tv), 0, 0)) < 0)
+        {
+            return 0;
+        }
+        // U32 rather than I32 so the multiply is 64-bit: seconds since the
+        // epoch times a million overflows an int before the end of an hour.
+        return Raw.U32(tv, 0) * 1000000 + Raw.U32(tv, 4);
+    }
+
+    /// nanosleep(2), restarted when a signal interrupts it, so that asking to
+    /// sleep for a second sleeps for a second.
+    public static void Sleep(long nanoseconds)
+    {
+        byte[] want = TimeSpec.Room();
+        byte[] left = TimeSpec.Room();
+
+        TimeSpec.Set(want, nanoseconds / 1000000000, nanoseconds % 1000000000);
+
+        while (true)
+        {
+            long r = Platform.Result(Sys.Syscall(Call.NanoSleep, AddressOf(want), AddressOf(left), 0));
+
+            if (r != 0 - Err.Intr)
+            {
+                if (PosixSignalRegistration.Pending)
+                {
+                    PosixSignalRegistration.Deliver();
+                }
+                return;
+            }
+
+            // A signal arrived while asleep, which is as quiet a moment as
+            // a program has: its handlers run now (as they do in Poll), and
+            // then the rest of the sleep is slept.
+            PosixSignalRegistration.Deliver();
+            TimeSpec.Set(want, TimeSpec.Seconds(left), TimeSpec.Nanos(left));
+        }
+    }
+
+    public static void SleepMillis(long millis)
+    {
+        Sleep(millis * 1000000);
+    }
+
+    public static void Yield()
+    {
+        Sys.Syscall(Call.Sched_Yield, 0, 0, 0);
+    }
+
+    // ---- the terminal -----------------------------------------------------
+
+    /// Whether the descriptor is a terminal: TCGETS succeeds on one and
+    /// answers -ENOTTY on anything else, which is exactly how isatty(3) is
+    /// implemented and why there is no separate call for it.
+    public static bool IsTty(int fd)
+    {
+        byte[] t = Termios.Room();
+        return Ioctl(fd, Tio.GetAttributes, AddressOf(t)) >= 0;
+    }
+
+    public static long GetAttributes(int fd, byte[] into)
+    {
+        Termios.Check(into);
+        return Ioctl(fd, Tio.GetAttributes, AddressOf(into));
+    }
+
+    /// The change takes effect at once. Tio.SetAttributesDrain is the form
+    /// that waits for what is already queued to go out, which is what a
+    /// program changing the speed of a line wants.
+    public static long SetAttributes(int fd, byte[] from)
+    {
+        Termios.Check(from);
+        return Ioctl(fd, Tio.SetAttributes, AddressOf(from));
+    }
+
+    /// Characters as they are typed, no echo: what a full-screen program does
+    /// on the way in. Answers the previous settings so it can be undone.
+    public static byte[]? RawMode(int fd)
+    {
+        byte[] was = Termios.Room();
+
+        if (GetAttributes(fd, was) < 0)
+        {
+            return null;
+        }
+
+        byte[] now = Termios.Room();
+
+        for (int i = 0; i < Termios.Bytes; i++)
+        {
+            now[i] = was[i];
+        }
+
+        Termios.SetLocal(now, Termios.Local(now) & ~(Termios.Canonical | Termios.Echo));
+        Termios.SetChar(now, Termios.Min, 1);
+        Termios.SetChar(now, Termios.Time, 0);
+
+        if (SetAttributes(fd, now) < 0)
+        {
+            return null;
+        }
+        return was;
+    }
+
+    /// How wide and how tall the terminal is, as (columns << 16) | rows, or 0
+    /// when the descriptor is not one.
+    public static long WindowSize(int fd)
+    {
+        byte[] w = new byte[8];
+
+        if (Ioctl(fd, Tio.WindowSize, AddressOf(w)) < 0)
+        {
+            return 0;
+        }
+        return (Raw.U16(w, 1) << 16) | Raw.U16(w, 0);
+    }
+
+    // ---- memory -----------------------------------------------------------
+
+    public static long Mmap(long address, long length, long protection, long flags, long fd, long pages)
+    {
+        return Platform.Result(Sys.Syscall(Call.Mmap2, address, length, protection, flags, fd, pages));
+    }
+
+    public static int Munmap(long address, long length)
+    {
+        return (int)Platform.Result(Sys.Syscall(Call.Munmap, address, length, 0));
+    }
+
+    // ---- sockets ----------------------------------------------------------
+    //
+    // Two doors, one question. i386 gained an ordinary system call per socket
+    // operation in Linux 4.3; before that the only way in was socketcall(2),
+    // which takes the operation number and a block of argument words. Which
+    // one a kernel has is not something a library can be told at build time --
+    // the same binary has to run on both -- so every call below tries the
+    // direct number first and falls back when the kernel says -ENOSYS.
+
+    private static long Sock(long direct, long which, long a, long b, long c, long d, long e, long f)
+    {
+        long got = Platform.Result(Sys.Syscall(direct, a, b, c, d, e, f));
+
+        if (got != 0 - Err.NoSys)
+        {
+            return got;
+        }
+
+        // socketcall copies as many words as the operation takes; the ones
+        // beyond that are never read, so one six-word block serves them all.
+        byte[] block = new byte[24];
+
+        Raw.SetU32(block, 0, a);
+        Raw.SetU32(block, 4, b);
+        Raw.SetU32(block, 8, c);
+        Raw.SetU32(block, 12, d);
+        Raw.SetU32(block, 16, e);
+        Raw.SetU32(block, 20, f);
+        return Platform.Result(Sys.Syscall(Call.SocketCall, which, AddressOf(block), 0));
+    }
+
+    public static int Socket(int family, int kind, int protocol)
+    {
+        return (int)Sock(Call.Socket, SockCall.Socket, family, kind, protocol, 0, 0, 0);
+    }
+
+    public static int Bind(int fd, byte[] address)
+    {
+        return (int)Sock(Call.Bind, SockCall.Bind, fd, AddressOf(address), address.Length, 0, 0, 0);
+    }
+
+    public static int Listen(int fd, int backlog)
+    {
+        return (int)Sock(Call.Listen, SockCall.Listen, fd, backlog, 0, 0, 0, 0);
+    }
+
+    /// accept(2), through accept4 with no flags where the direct calls exist:
+    /// there is no separate accept system call on i386's modern numbering.
+    /// `address` may be null when the caller does not care who connected.
+    public static int Accept(int fd, byte[]? address)
+    {
+        if (address == null)
+        {
+            return (int)Sock(Call.Accept4, SockCall.Accept, fd, 0, 0, 0, 0, 0);
+        }
+
+        byte[] length = new byte[4];
+
+        Raw.SetU32(length, 0, address.Length);
+        return (int)Sock(Call.Accept4, SockCall.Accept, fd, AddressOf(address), AddressOf(length), 0, 0, 0);
+    }
+
+    public static int Connect(int fd, byte[] address)
+    {
+        return (int)Sock(Call.Connect, SockCall.Connect, fd, AddressOf(address), address.Length, 0, 0, 0);
+    }
+
+    public static int GetSockName(int fd, byte[] address)
+    {
+        byte[] length = new byte[4];
+
+        Raw.SetU32(length, 0, address.Length);
+        return (int)Sock(Call.GetSockName, SockCall.GetSockName, fd, AddressOf(address), AddressOf(length), 0, 0, 0);
+    }
+
+    public static int GetPeerName(int fd, byte[] address)
+    {
+        byte[] length = new byte[4];
+
+        Raw.SetU32(length, 0, address.Length);
+        return (int)Sock(Call.GetPeerName, SockCall.GetPeerName, fd, AddressOf(address), AddressOf(length), 0, 0, 0);
+    }
+
+    /// send(2) is sendto(2) with no address, which is what the kernel makes of
+    /// it too -- there is no separate send system call.
+    public static int Send(int fd, byte[] buffer, int at, int count, int flags)
+    {
+        if (at < 0 || count < 0 || at > buffer.Length - count)
+        {
+            throw new IndexOutOfRangeException("send range is outside its buffer");
+        }
+        return (int)Sock(Call.SendTo, SockCall.Send, fd, AddressOf(buffer) + at, count, flags, 0, 0);
+    }
+
+    public static int Recv(int fd, byte[] buffer, int at, int count, int flags)
+    {
+        if (at < 0 || count < 0 || at > buffer.Length - count)
+        {
+            throw new IndexOutOfRangeException("recv range is outside its buffer");
+        }
+        return (int)Sock(Call.RecvFrom, SockCall.Recv, fd, AddressOf(buffer) + at, count, flags, 0, 0);
+    }
+
+    /// sendto(2) and recvfrom(2) with an address: a datagram's destination,
+    /// and where one came from. `address` is a sockaddr the caller sized;
+    /// recvfrom writes what it can of the sender's into it.
+    public static int SendTo(int fd, byte[] buffer, int at, int count, int flags, byte[] address)
+    {
+        if (at < 0 || count < 0 || at > buffer.Length - count)
+        {
+            throw new IndexOutOfRangeException("sendto range is outside its buffer");
+        }
+        return (int)Sock(Call.SendTo, SockCall.SendTo, fd, AddressOf(buffer) + at, count, flags,
+            AddressOf(address), address.Length);
+    }
+
+    public static int RecvFrom(int fd, byte[] buffer, int at, int count, int flags, byte[] address)
+    {
+        if (at < 0 || count < 0 || at > buffer.Length - count)
+        {
+            throw new IndexOutOfRangeException("recvfrom range is outside its buffer");
+        }
+        byte[] length = new byte[4];
+        Raw.SetU32(length, 0, address.Length);
+        return (int)Sock(Call.RecvFrom, SockCall.RecvFrom, fd, AddressOf(buffer) + at, count, flags,
+            AddressOf(address), AddressOf(length));
+    }
+
+    /// recvmsg(2): a datagram AND WHAT THE KERNEL KNOWS ABOUT IT.
+    ///
+    /// THE CONTROL DATA IS THE WHOLE POINT. recvfrom answers the bytes and
+    /// the sender and nothing else; there is no room in it for the things
+    /// that are true of a packet rather than in it -- the time to live it
+    /// arrived with, the ICMP error that came back instead of an answer.
+    /// Those arrive here, as a list of `struct cmsghdr` in `control`, and
+    /// a program that wants them has to ask for each with setsockopt first
+    /// (IP_RECVTTL, IP_RECVERR) and walk them afterwards. Cmsg.Next is the
+    /// walk.
+    ///
+    /// Returns the bytes received, or -errno; `controlBytes` is how much of
+    /// `control` the kernel wrote.
+    public static int RecvMsg(int fd, byte[] buffer, int at, int count, int flags,
+        byte[]? address, byte[]? control, out int controlBytes)
+    {
+        controlBytes = 0;
+
+        if (at < 0 || count < 0 || at > buffer.Length - count)
+        {
+            throw new IndexOutOfRangeException("recvmsg range is outside its buffer");
+        }
+
+        // The structures are the kernel's, laid out as a 32-bit machine
+        // lays them out: a msghdr of seven words, and an iovec of two.
+        byte[] iov = new byte[8];
+        byte[] message = new byte[28];
+
+        Raw.SetU32(iov, 0, AddressOf(buffer) + at);
+        Raw.SetU32(iov, 4, count);
+
+        Raw.SetU32(message, 0, address == null ? 0 : AddressOf(address));
+        Raw.SetU32(message, 4, address == null ? 0 : address.Length);
+        Raw.SetU32(message, 8, AddressOf(iov));
+        Raw.SetU32(message, 12, 1);
+        Raw.SetU32(message, 16, control == null ? 0 : AddressOf(control));
+        Raw.SetU32(message, 20, control == null ? 0 : control.Length);
+        Raw.SetU32(message, 24, 0);
+
+        int got = (int)Sock(Call.RecvMsg, SockCall.RecvMsg, fd, AddressOf(message), flags, 0, 0, 0);
+
+        if (got >= 0)
+        {
+            controlBytes = (int)Raw.U32(message, 20);
+        }
+
+        return got;
+    }
+
+    public static int SetSockOpt(int fd, int level, int option, byte[] value)
+    {
+        return (int)Sock(Call.SetSockOpt, SockCall.SetSockOpt, fd, level, option, AddressOf(value), value.Length, 0);
+    }
+
+    /// The one every server needs: SO_REUSEADDR, so a restart does not have to
+    /// wait out the previous socket's TIME_WAIT.
+    public static int ReuseAddress(int fd)
+    {
+        byte[] one = new byte[4];
+
+        Raw.SetU32(one, 0, 1);
+        return SetSockOpt(fd, 1, 2, one);
+    }
+
+    public static int Shutdown(int fd, int how)
+    {
+        return (int)Sock(Call.Shutdown, SockCall.Shutdown, fd, how, 0, 0, 0, 0);
+    }
+
+    // ---- the shapes os/lib/user.cor had ------------------------------------
+    //
+    // That library counted descriptors and byte counts in `long`, because its
+    // machine's word was 64 bits. This one counts them in `int`, which is what
+    // a 32-bit word and an int-indexed array make them. These overloads take
+    // the old shapes so a ported utility's `long fd` still compiles; they do
+    // nothing but narrow and call the real one.
+
+    public static int Close(long fd)
+    {
+        return Close((int)fd);
+    }
+
+    public static long Read(long fd, string into, long count)
+    {
+        if (count < 0 || count > into.Length)
+        {
+            throw new IndexOutOfRangeException("read range is outside its buffer");
+        }
+        return Platform.Result(Sys.Syscall(Call.Read, fd, BytesOf(into), count));
+    }
+
+    public static long Write(long fd, string s)
+    {
+        return Write((int)fd, s);
+    }
+
+    public static long Lseek(long fd, long offset, long whence)
+    {
+        return Lseek((int)fd, offset, (int)whence);
+    }
+
+    public static long Ioctl(long fd, long request, long argument)
+    {
+        return Ioctl((int)fd, request, argument);
+    }
+
+    /// The old library's exit took the enum; a utility says
+    /// Os.Exit(ExitCode.NoInput) and means 66.
+    public static void Exit(ExitCode code)
+    {
+        Platform.Exit((int)code);
+    }
+
+    // ---- the command line -------------------------------------------------------
+    //
+    // At entry ESP pointed at argc, then argc pointers to NUL-terminated
+    // strings, then a null, then the environment. The compiler saved that
+    // ESP for us (Sys.EntryStack); this reads it once and keeps the result,
+    // because the strings are the kernel's and copying them each time would
+    // be a heap of identical arrays.
+
+    static string[] _args;
+
+    /// The length of a C string at `at`.
+    private static int CLength(long at)
+    {
+        int n = 0;
+
+        while (Sys.PeekByte(at + n) != 0)
+        {
+            n = n + 1;
+        }
+        return n;
+    }
+
+    /// A COR-C# string from a C string.
+    private static string FromC(long at)
+    {
+        int n = CLength(at);
+        string s = Sys.NewBytes(n);
+
+        for (int i = 0; i < n; i++)
+        {
+            Sys.SetByte(s, i, (int)Sys.PeekByte(at + i));
+        }
+        return s;
+    }
+
+    /// A COR-C# string from a NUL-terminated C string at an address. Public
+    /// because Env reads the kernel's environment block, which is C strings
+    /// and nothing else.
+    public static string StringAt(long at)
+    {
+        return FromC(at);
+    }
+
+    /// argv, including the program's own name at index 0, as the C
+    /// convention has it. Main's `string[] args` in C# leaves the name out;
+    /// a caller that wants that shape takes it from index 1.
+    public static string[] Args()
+    {
+        string[] have = _args;
+
+        if (have != null)
+        {
+            return have;
+        }
+
+        // EntryStack is ESP exactly as the kernel handed it over, before
+        // _start's own prologue: argc at [sp], then the argv pointers.
+        long sp = Sys.EntryStack();
+        int argc = (int)Sys.PeekWord(sp);
+
+        if (argc < 0)
+        {
+            argc = 0;
+        }
+
+        string[] args = new string[argc];
+
+        for (int i = 0; i < argc; i++)
+        {
+            args[i] = FromC(Sys.PeekWord(sp + 4 + 4 * i));
+        }
+        _args = args;
+        return args;
+    }
+
+    // ---- standard input, a line at a time -----------------------------------------
+
+    static string _readAhead;      // bytes read and not yet handed out
+    static int _readAheadAt;
+    static int _readAheadCount;
+    static bool _ended;
+
+    const int ReadAheadBytes = 1024;
+
+    /// Whether standard input has ended. Set by the read that found it.
+    public static bool AtEnd()
+    {
+        return _ended;
+    }
+
+    /// A line from standard input without its newline (a "\r\n" loses both),
+    /// or null when the input is finished and there is nothing left. The last
+    /// line of a file with no newline is a line.
+    ///
+    /// Reads in blocks and keeps the tail, because a pipe or a file gives
+    /// several lines per read and a byte-at-a-time read is a system call
+    /// per character.
+    public static string? ReadLine()
+    {
+        StringBuilder line = new StringBuilder();
+        bool any = false;
+
+        while (true)
+        {
+            if (_readAheadAt >= _readAheadCount)
+            {
+                if (_ended)
+                {
+                    return any ? line.ToString() : null;
+                }
+
+                string buffer = _readAhead;
+
+                if (buffer == null)
+                {
+                    buffer = Sys.NewBytes(ReadAheadBytes);
+                    _readAhead = buffer;
+                }
+
+                long got = Read(Fd.In, BytesOf(buffer), ReadAheadBytes);
+
+                if (got == 0 - Err.Intr)
+                {
+                    continue;
+                }
+                if (got <= 0)
+                {
+                    _ended = true;
+                    return any ? line.ToString() : null;
+                }
+                _readAheadAt = 0;
+                _readAheadCount = (int)got;
+            }
+
+            int ch = Sys.GetByte(_readAhead, _readAheadAt);
+            _readAheadAt = _readAheadAt + 1;
+            any = true;
+
+            if (ch == 10)
+            {
+                return line.ToString();
+            }
+            if (ch != 13)
+            {
+                line.Append((char)ch);
+            }
+        }
+    }
+}
+
+/// Little-endian fields in a byte array. The one place that knows how the
+/// machine spells a number wider than a byte.
+static class Raw
+{
+    public static long U8(byte[] b, int at)
+    {
+        return b[at];
+    }
+
+    public static long U16(byte[] b, int at)
+    {
+        return b[at * 2 + 0] | (b[at * 2 + 1] << 8);
+    }
+
+    /// An unsigned 32-bit field, widened into a long so that 0x80000000 is
+    /// two billion and not minus two billion.
+    public static long U32(byte[] b, int at)
+    {
+        long low = b[at + 0] | (b[at + 1] << 8);
+        long high = b[at + 2] | (b[at + 3] << 8);
+        return low | (high << 16);
+    }
+
+    /// The same four bytes read as a signed number, which is what a mode, a
+    /// uid or a seconds-since-the-epoch is.
+    public static int I32(byte[] b, int at)
+    {
+        return (int)U32(b, at);
+    }
+
+    public static long I64(byte[] b, int at)
+    {
+        return U32(b, at) | (((long)I32(b, at + 4)) << 32);
+    }
+
+    public static void SetU32(byte[] b, int at, long value)
+    {
+        b[at + 0] = (byte)(value & 0xFF);
+        b[at + 1] = (byte)((value >> 8) & 0xFF);
+        b[at + 2] = (byte)((value >> 16) & 0xFF);
+        b[at + 3] = (byte)((value >> 24) & 0xFF);
+    }
+
+    public static void SetI64(byte[] b, int at, long value)
+    {
+        SetU32(b, at, value & 0xFFFFFFFF);
+        SetU32(b, at + 4, (value >> 32) & 0xFFFFFFFF);
+    }
+
+    /// `count` bytes as text. The kernel's strings are bytes and this treats
+    /// them as bytes: no decoding, because a path is not necessarily UTF-8 and
+    /// a program that round-trips one must not change it.
+    public static string Text(byte[] b, int at, int count)
+    {
+        string s = Sys.NewBytes(count);
+
+        for (int i = 0; i < count; i++)
+        {
+            Sys.SetByte(s, i, b[at + i]);
+        }
+        return s;
+    }
+
+    /// Text up to the first zero byte, which is how the kernel ends a name.
+    public static string CText(byte[] b, int at, int limit)
+    {
+        int n = 0;
+
+        while (at + n < limit && b[at + n] != 0)
+        {
+            n = n + 1;
+        }
+        return Text(b, at, n);
+    }
+}
+
+/// lseek(2)'s third argument.
+static class Whence
+{
+    public const int Set = 0;
+    public const int Current = 1;
+    /// os/lib/user.cor's name for Current; a ported utility says Whence.Cur.
+    public const int Cur = 1;
+    public const int End = 2;
+}
+
+/// The i386 `struct stat64` that stat64/lstat64/fstat64 fill in. The odd
+/// offsets are real: the 64-bit fields in it are packed to four bytes, so
+/// st_size sits at 44 and not at 48.
+static class StatBuf
+{
+    public const int Bytes = 96;
+
+    public const int Dev = 0;           // 8 bytes
+    public const int ModeAt = 16;
+    public const int NlinkAt = 20;
+    public const int UidAt = 24;
+    public const int GidAt = 28;
+    public const int RdevAt = 32;       // 8 bytes
+    public const int SizeAt = 44;       // 8 bytes, four-byte aligned
+    public const int BlkSizeAt = 52;
+    public const int BlocksAt = 56;     // 8 bytes
+    public const int AtimeAt = 64;
+    public const int MtimeAt = 72;
+    public const int CtimeAt = 80;
+
+    // THE NANOSECONDS EACH TIME ALREADY HAS. struct stat64 stores every
+    // timestamp as a pair -- seconds, then nanoseconds in the word after it --
+    // so these are not new fields the kernel has to fill: they are the four
+    // bytes at 68, 76 and 84 that were being skipped over.
+    //
+    // Without them no two events inside one second can be told apart, and
+    // `cp -u` and `mv -u` are exactly the programs that have to: a file
+    // rewritten a moment after the copy has the same whole second and is
+    // judged unchanged.
+    public const int AtimeNsecAt = 68;
+    public const int MtimeNsecAt = 76;
+    public const int CtimeNsecAt = 84;
+    public const int InoAt = 88;        // 8 bytes
+
+    public const long TypeMask = 0xF000;
+    public const long Fifo = 0x1000;
+    public const long Char = 0x2000;
+    public const long Dir = 0x4000;
+    public const long Block = 0x6000;
+    public const long File = 0x8000;
+    public const long Link = 0xA000;
+    public const long Socket = 0xC000;
+
+    public const long PermissionMask = 0xFFF;
+
+    /// Somewhere to put one.
+    public static byte[] Room()
+    {
+        return new byte[Bytes];
+    }
+
+    /// Refuses a buffer that cannot hold one, rather than letting the kernel
+    /// write past the end of an array -- the one thing a language with bounds
+    /// checks must not allow a system call to do behind its back.
+    public static void Check(byte[] b)
+    {
+        if (b.Length < Bytes)
+        {
+            throw new ArgumentException("a stat buffer is 96 bytes");
+        }
+    }
+
+    public static long Device(byte[] b) { return Raw.I64(b, Dev); }
+    public static long Rdev(byte[] b)   { return Raw.I64(b, RdevAt); }
+    public static long Mode(byte[] b)   { return Raw.U32(b, ModeAt); }
+    public static long Links(byte[] b)  { return Raw.U32(b, NlinkAt); }
+    public static long Uid(byte[] b)    { return Raw.U32(b, UidAt); }
+    public static long Gid(byte[] b)    { return Raw.U32(b, GidAt); }
+    public static long Size(byte[] b)   { return Raw.I64(b, SizeAt); }
+    public static long Blocks(byte[] b) { return Raw.I64(b, BlocksAt); }
+    public static long Ino(byte[] b)    { return Raw.I64(b, InoAt); }
+    public static long Mtime(byte[] b)  { return Raw.I32(b, MtimeAt); }
+    public static long Atime(byte[] b)  { return Raw.I32(b, AtimeAt); }
+    public static long Ctime(byte[] b)  { return Raw.I32(b, CtimeAt); }
+
+    public static long MtimeNsec(byte[] b) { return Raw.U32(b, MtimeNsecAt); }
+    public static long AtimeNsec(byte[] b) { return Raw.U32(b, AtimeNsecAt); }
+    public static long CtimeNsec(byte[] b) { return Raw.U32(b, CtimeNsecAt); }
+
+    /// What POSIX spells S_ISDIR and its family, asked of a mode word.
+    public static bool IsDirMode(long mode)   { return (mode & TypeMask) == Dir; }
+    public static bool IsFileMode(long mode)  { return (mode & TypeMask) == File; }
+    public static bool IsCharMode(long mode)  { return (mode & TypeMask) == Char; }
+    public static bool IsBlockMode(long mode) { return (mode & TypeMask) == Block; }
+    public static bool IsLinkMode(long mode)  { return (mode & TypeMask) == Link; }
+    public static bool IsFifoMode(long mode)  { return (mode & TypeMask) == Fifo; }
+    public static bool IsSocketMode(long mode) { return (mode & TypeMask) == Socket; }
+
+    /// And asked of a path, which is what a program usually has.
+    public static bool IsDir(string path)  { return IsDirMode(Os.ModeOf(path)); }
+    public static bool IsFile(string path) { return IsFileMode(Os.ModeOf(path)); }
+}
+
+/// StatBuf under os/lib/user.cor's name for it.
+///
+/// THE ONLY REASON THIS EXISTS is that a static method and a type cannot share
+/// a name here: `Os.Stat(path, buffer)` is a method on Os, and inside Os the
+/// name Stat then means that method and never the type, so the type had to be
+/// called something else. A utility written against user.cor says Stat.IsDir
+/// and Stat.Room, and outside Os those resolve to this.
+static class Stat
+{
+    public const int Bytes = StatBuf.Bytes;
+
+    public const long TypeMask = StatBuf.TypeMask;
+    public const long Fifo = StatBuf.Fifo;
+    public const long Char = StatBuf.Char;
+    public const long Dir = StatBuf.Dir;
+    public const long Block = StatBuf.Block;
+    public const long File = StatBuf.File;
+    public const long Link = StatBuf.Link;
+    public const long Socket = StatBuf.Socket;
+
+    public static byte[] Room()            { return StatBuf.Room(); }
+    public static void Check(byte[] b)     { StatBuf.Check(b); }
+
+    public static long Device(byte[] b)    { return StatBuf.Device(b); }
+    public static long Rdev(byte[] b)      { return StatBuf.Rdev(b); }
+    public static long Mode(byte[] b)      { return StatBuf.Mode(b); }
+    public static long Links(byte[] b)     { return StatBuf.Links(b); }
+    public static long Uid(byte[] b)       { return StatBuf.Uid(b); }
+    public static long Gid(byte[] b)       { return StatBuf.Gid(b); }
+    public static long Size(byte[] b)      { return StatBuf.Size(b); }
+    public static long Blocks(byte[] b)    { return StatBuf.Blocks(b); }
+    public static long Ino(byte[] b)       { return StatBuf.Ino(b); }
+    public static long Mtime(byte[] b)     { return StatBuf.Mtime(b); }
+    public static long Atime(byte[] b)     { return StatBuf.Atime(b); }
+    public static long Ctime(byte[] b)     { return StatBuf.Ctime(b); }
+
+    public static long MtimeNsec(byte[] b) { return StatBuf.MtimeNsec(b); }
+    public static long AtimeNsec(byte[] b) { return StatBuf.AtimeNsec(b); }
+    public static long CtimeNsec(byte[] b) { return StatBuf.CtimeNsec(b); }
+
+    public static bool IsDirMode(long mode)   { return StatBuf.IsDirMode(mode); }
+    public static bool IsFileMode(long mode)  { return StatBuf.IsFileMode(mode); }
+    public static bool IsCharMode(long mode)  { return StatBuf.IsCharMode(mode); }
+    public static bool IsBlockMode(long mode) { return StatBuf.IsBlockMode(mode); }
+    public static bool IsLinkMode(long mode)  { return StatBuf.IsLinkMode(mode); }
+    public static bool IsFifoMode(long mode)  { return StatBuf.IsFifoMode(mode); }
+    public static bool IsSocketMode(long mode) { return StatBuf.IsSocketMode(mode); }
+
+    public static bool IsDir(string path)  { return StatBuf.IsDir(path); }
+    public static bool IsFile(string path) { return StatBuf.IsFile(path); }
+}
+
+/// The i386 `struct statfs64` that statfs64(2) fills in. Its 64-bit fields
+/// are packed to four bytes, as the stat structure's are, so the offsets run
+/// on without padding.
+static class StatFs
+{
+    public const int Bytes = 84;
+
+    public const int TypeAt = 0;        // the filing system's magic number
+    public const int BlockSizeAt = 4;   // the unit the counts below are in
+    public const int BlocksAt = 8;      // 8 bytes
+    public const int FreeAt = 16;       // 8 bytes: free to the superuser
+    public const int AvailableAt = 24;  // 8 bytes: free to everybody else
+    public const int FilesAt = 32;      // 8 bytes
+    public const int FilesFreeAt = 40;  // 8 bytes
+    public const int FsidAt = 48;       // 8 bytes
+    public const int NameLengthAt = 56;
+    public const int FragmentSizeAt = 60;
+    public const int FlagsAt = 64;
+
+    public static byte[] Room()
+    {
+        return new byte[Bytes];
+    }
+
+    public static void Check(byte[] b)
+    {
+        if (b.Length < Bytes)
+        {
+            throw new ArgumentException("a statfs buffer is 84 bytes");
+        }
+    }
+
+    public static long Type(byte[] b)         { return Raw.U32(b, TypeAt); }
+    public static long BlockSize(byte[] b)    { return Raw.I32(b, BlockSizeAt); }
+    public static long Blocks(byte[] b)       { return Raw.I64(b, BlocksAt); }
+    public static long Free(byte[] b)         { return Raw.I64(b, FreeAt); }
+    public static long Available(byte[] b)    { return Raw.I64(b, AvailableAt); }
+    public static long Files(byte[] b)        { return Raw.I64(b, FilesAt); }
+    public static long FilesFree(byte[] b)    { return Raw.I64(b, FilesFreeAt); }
+    public static long NameLength(byte[] b)   { return Raw.I32(b, NameLengthAt); }
+    public static long FragmentSize(byte[] b) { return Raw.I32(b, FragmentSizeAt); }
+    public static long Flags(byte[] b)        { return Raw.I32(b, FlagsAt); }
+}
+
+/// One record in a getdents64(2) buffer: an inode, an offset, the length of
+/// the record itself, a kind, and a NUL-terminated name. The records are
+/// variable length, which is why the length is in the record.
+static class Dirent
+{
+    public const int InoAt = 0;         // 8 bytes
+    public const int OffAt = 8;         // 8 bytes
+    public const int LengthAt = 16;     // 2 bytes: the WHOLE record
+    public const int TypeAt = 18;
+    public const int NameAt = 19;
+
+    public const long Unknown = 0;
+    public const long Fifo = 1;
+    public const long Char = 2;
+    public const long DirKind = 4;
+    public const long Block = 6;
+    public const long FileKind = 8;
+    public const long LinkKind = 10;
+    public const long SocketKind = 12;
+
+    /// How far to the next record. Zero would be a loop, so it is refused.
+    public static int Length(byte[] b, int at)
+    {
+        int n = (int)(b[at + LengthAt] | (b[at + LengthAt + 1] << 8));
+
+        if (n <= 0)
+        {
+            throw new InvalidOperationException("a directory record of no length");
+        }
+        return n;
+    }
+
+    public static long Ino(byte[] b, int at)
+    {
+        return Raw.I64(b, at + InoAt);
+    }
+
+    /// The kind without a stat, when the filing system bothered to say; most
+    /// do, and Unknown is the answer when one does not.
+    public static long Kind(byte[] b, int at)
+    {
+        return b[at + TypeAt];
+    }
+
+    public static string Name(byte[] b, int at)
+    {
+        return Raw.CText(b, at + NameAt, at + Length(b, at));
+    }
+}
+
+/// The 32-bit `struct timespec`: whole seconds and nanoseconds within the
+/// second, both signed words on i386.
+static class TimeSpec
+{
+    public const int Bytes = 8;
+
+    public static byte[] Room()
+    {
+        return new byte[Bytes];
+    }
+
+    public static void Check(byte[] b)
+    {
+        if (b.Length < Bytes)
+        {
+            throw new ArgumentException("a timespec is 8 bytes");
+        }
+    }
+
+    public static long Seconds(byte[] b) { return Raw.I32(b, 0); }
+    public static long Nanos(byte[] b)   { return Raw.I32(b, 4); }
+
+    public static void Set(byte[] b, long seconds, long nanos)
+    {
+        Raw.SetU32(b, 0, seconds);
+        Raw.SetU32(b, 4, nanos);
+    }
+}
+
+/// `struct timeval`: seconds and MICROseconds, which is the older call's
+/// resolution and the reason it is a different structure.
+static class TimeVal
+{
+    public const int Bytes = 8;
+
+    public static byte[] Room()
+    {
+        return new byte[Bytes];
+    }
+
+    public static long Seconds(byte[] b) { return Raw.I32(b, 0); }
+    public static long Micros(byte[] b)  { return Raw.I32(b, 4); }
+}
+
+/// Which clock. Realtime can jump -- it is the one a user sets -- so anything
+/// measuring an interval must use Monotonic and nothing else.
+static class ClockId
+{
+    public const int Realtime = 0;
+    public const int Monotonic = 1;
+    public const int ProcessCpu = 2;
+    public const int ThreadCpu = 3;
+    public const int MonotonicRaw = 4;
+}
+
+/// The kernel's `struct termios` as the TCGETS/TCSETS ioctls use it: four
+/// flag words, a line discipline byte, then nineteen special characters.
+/// (glibc's termios is a different, larger structure; this is the kernel's.)
+static class Termios
+{
+    public const int Bytes = 36;
+
+    public const int InputAt = 0;
+    public const int OutputAt = 4;
+    public const int ControlAt = 8;
+    public const int LocalAt = 12;
+    public const int LineAt = 16;
+    public const int CharsAt = 17;
+
+    // c_lflag, the bits a program actually changes.
+    public const long Signals = 0x1;        // ISIG
+    public const long Canonical = 0x2;      // ICANON: input arrives a LINE at a time
+    public const long Echo = 0x8;           // ECHO
+    public const long EchoErase = 0x10;     // ECHOE
+
+    // c_iflag
+    public const long CrToNl = 0x100;       // ICRNL
+    public const long IgnoreCr = 0x80;      // IGNCR
+    public const long FlowControl = 0x400;  // IXON
+
+    // c_oflag
+    public const long PostProcess = 0x1;    // OPOST
+    public const long NlToCrNl = 0x4;       // ONLCR
+
+    // indices into c_cc
+    public const int Intr = 0;
+    public const int Quit = 1;
+    public const int Erase = 2;
+    public const int Kill = 3;
+    public const int Eof = 4;
+    public const int Time = 5;
+    public const int Min = 6;
+
+    public static byte[] Room()
+    {
+        return new byte[Bytes];
+    }
+
+    public static void Check(byte[] b)
+    {
+        if (b.Length < Bytes)
+        {
+            throw new ArgumentException("a termios is 36 bytes");
+        }
+    }
+
+    public static long Input(byte[] t)   { return Raw.U32(t, InputAt); }
+    public static long Output(byte[] t)  { return Raw.U32(t, OutputAt); }
+    public static long Control(byte[] t) { return Raw.U32(t, ControlAt); }
+    public static long Local(byte[] t)   { return Raw.U32(t, LocalAt); }
+
+    public static void SetInput(byte[] t, long v)   { Raw.SetU32(t, InputAt, v); }
+    public static void SetOutput(byte[] t, long v)  { Raw.SetU32(t, OutputAt, v); }
+    public static void SetControl(byte[] t, long v) { Raw.SetU32(t, ControlAt, v); }
+    public static void SetLocal(byte[] t, long v)   { Raw.SetU32(t, LocalAt, v); }
+
+    public static long Char(byte[] t, int which)
+    {
+        return t[CharsAt + which];
+    }
+
+    public static void SetChar(byte[] t, int which, long ch)
+    {
+        t[CharsAt + which] = (byte)(ch & 0xFF);
+    }
+}
+
+/// The terminal ioctls, by their traditional numbers.
+static class Tio
+{
+    public const long GetAttributes = 0x5401;       // TCGETS
+    public const long SetAttributes = 0x5402;       // TCSETS, at once
+    public const long SetAttributesDrain = 0x5403;  // TCSETSW, after the output goes out
+    public const long SetAttributesFlush = 0x5404;  // TCSETSF, and throw the input away
+    public const long WindowSize = 0x5413;          // TIOCGWINSZ
+    public const long SetWindowSize = 0x5414;
+    public const long Foreground = 0x540F;          // TIOCGPGRP
+    public const long SetForeground = 0x5410;
+    public const long Exclusive = 0x540C;
+    public const long SetControlling = 0x540E;      // TIOCSCTTY
+    public const long GiveUpControlling = 0x5422;   // TIOCNOTTY
+    public const long GetModemLines = 0x5415;       // TIOCMGET
+    public const long SetModemLines = 0x5418;       // TIOCMSET
+    public const long FlushInput = 0x540B;          // TCFLSH
+}
+
+
+/// The status word waitpid(2) writes, and what it means. The encoding is the
+/// kernel's and has been since v6: the low byte says how it ended.
+static class WaitStatus
+{
+    public const int NoHang = 1;        // WNOHANG
+    public const int Untraced = 2;      // WUNTRACED
+
+    /// Whether the child ran to its own end rather than being killed.
+    public static bool Exited(int status)
+    {
+        return (status & 0x7F) == 0;
+    }
+
+    /// What it returned from Main, meaningful only when Exited.
+    public static int Code(int status)
+    {
+        return (status >> 8) & 0xFF;
+    }
+
+    public static bool Signalled(int status)
+    {
+        return (status & 0x7F) != 0 && (status & 0x7F) != 0x7F;
+    }
+
+    /// Which signal killed it, or 0.
+    public static int Signal(int status)
+    {
+        return status & 0x7F;
+    }
+
+    public static bool Stopped(int status)
+    {
+        return (status & 0xFF) == 0x7F;
+    }
+
+    /// A shell's one number for how a child ended: its exit code, or
+    /// 128 + the signal. Every Unix shell reports it this way and every
+    /// script that tests $? expects it.
+    public static int Result(int status)
+    {
+        if (Exited(status))
+        {
+            return Code(status);
+        }
+        return 128 + Signal(status);
+    }
+}
+
+enum ExitCode
+{
+    Success = 0,
+    Failure = 1,
+
+    Usage = 64,             // the command was used incorrectly
+    DataErr = 65,           // the input was wrong
+    NoInput = 66,           // an input file was missing or unreadable
+    NoUser = 67,            // no such user
+    NoHost = 68,            // no such host
+    Unavailable = 69,       // a service is not available
+    Software = 70,          // an internal error: the program's own fault
+    OsErr = 71,             // the operating system said no
+    OsFile = 72,            // a system file is missing or wrong
+    CantCreate = 73,        // an output file could not be made
+    IoErr = 74,             // an error while reading or writing
+    TempFail = 75,          // try again later
+    Protocol = 76,          // the other end did not follow the protocol
+    NoPerm = 77,            // not permitted, and not a file-permission problem
+    Config = 78,            // something is misconfigured
+
+    NotExecutable = 126,
+    NotFound = 127,
+    Signalled = 128,        // a BASE: add the signal, so an interrupt is 130
+}

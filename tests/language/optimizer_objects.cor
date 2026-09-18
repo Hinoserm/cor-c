@@ -1,0 +1,41 @@
+// test: optimizer_objects
+// expect-exit: 0
+// expect-output:
+// optimizer object lifetimes passed
+class TestCell { public long Value; public byte Byte; public sbyte Signed; public short Short; public ushort Word; public byte[] Buffer; }
+static class Program
+{
+    static TestCell _saved;
+    static byte[] _buffer;
+    static void Capture(TestCell cell) { _saved = cell; }
+    static void CaptureChild(TestCell cell) { _buffer = cell.Buffer; }
+    static int Main()
+    {
+        TestCell previous = new TestCell(); previous.Value = -1;
+        for (int i = 0; i < 1000; i++)
+        {
+            TestCell current = new TestCell();
+            if (current.Value != 0 || previous.Value != i - 1 || current == previous) return 1;
+            current.Value = i;
+            if ((i & 1) != 0) current.Byte = unchecked((byte)i);
+            current.Signed = unchecked((sbyte)i);
+            current.Short = unchecked((short)(i + 32700));
+            current.Word = unchecked((ushort)(i + 65000));
+            int low8 = i & 255, low16 = (i + 32700) & 65535;
+            if (current.Byte != ((i & 1) != 0 ? low8 : 0)) return 2;
+            if (current.Signed != (low8 < 128 ? low8 : low8 - 256)) return 3;
+            if (current.Short != (low16 < 32768 ? low16 : low16 - 65536)) return 4;
+            if (current.Word != ((i + 65000) & 65535)) return 5;
+            previous = current;
+        }
+        Capture(previous);
+        previous.Value = 1234;
+        if (_saved.Value != 1234) return 6;
+        TestCell owner = new TestCell(); owner.Buffer = new byte[8];
+        CaptureChild(owner);
+        owner.Buffer[3] = 91;
+        if (_buffer[3] != 91) return 7;
+        Console.WriteLine("optimizer object lifetimes passed");
+        return 0;
+    }
+}

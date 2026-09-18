@@ -1,0 +1,38 @@
+// test: string_from_chars
+// expect-exit: 0
+// expect-output:
+// xyz
+// qqq
+// yz
+// 0
+// 3
+// ok
+//
+// `new string(chars)` and `new string(chars, start, length)` are constructors
+// in C#. A string here is a primitive with a static class beside it rather
+// than a class of its own, so the construction has to become the call it
+// means -- which `new string(c, n)` already did and the array forms did not,
+// failing with "'string' cannot be allocated".
+
+class Program {
+    static int Main() {
+        char[] a = new char[3];
+
+        a[0] = 'x'; a[1] = 'y'; a[2] = 'z';
+
+        Console.WriteLine(new string(a));
+        Console.WriteLine(new string('q', 3));
+        Console.WriteLine(new string(a, 1, 2));
+        Console.WriteLine(new string(a, 0, 0).Length);
+        Console.WriteLine(new string(a).Length);
+
+        // OUT OF RANGE THROWS, as the constructor does in C#.
+        try {
+            string bad = new string(a, 2, 5);
+            Console.WriteLine(bad);
+        } catch (ArgumentOutOfRangeException) {
+            Console.WriteLine("ok");
+        }
+        return 0;
+    }
+}

@@ -1,0 +1,506 @@
+// System -- the small values a program passes around: an identifier nobody
+// else will generate, a version number, a value computed once, and a pair.
+//
+// None of them needs an operating system and none of them belongs to a larger
+// area, which is why they are together here rather than each in a file.
+
+// ---- Guid -----------------------------------------------------------------
+//
+// SIXTEEN BYTES, and the text form is NOT their order: the first three fields
+// are a 32-bit and two 16-bit numbers written the way the machine stores them,
+// little end first, and the last eight bytes are written in order. That is why
+// the same Guid reads as 00112233-4455-6677-8899-aabbccddeeff from the bytes
+// 00 11 22 33 44 55 66 77 88 99 aa bb cc dd ee ff. Microsoft's layout, kept
+// because a Guid that does not round-trip through a file or a wire is not one.
+
+struct Guid {
+    // Bytes 0-7 and 8-15, each byte i of the half at bit 8*i. Two words rather
+    // than an array because a Guid is a VALUE: copying one must copy it.
+    private long low;
+    private long high;
+
+    public Guid(byte[] bytes) {
+        if (bytes == null) { throw new ArgumentNullException("b"); }
+        if (bytes.Length != 16) {
+            throw new ArgumentException("Byte array for GUID must be exactly 16 bytes long.");
+        }
+
+        low = 0;
+        high = 0;
+        for (int i = 0; i < 8; i++) {
+            low = low | ((long)(bytes[i] & 255) << (i * 8));
+            high = high | ((long)(bytes[i + 8] & 255) << (i * 8));
+        }
+    }
+
+    public static Guid Empty => new Guid(new byte[16]);
+
+    /// VERSION 4: sixteen random bytes with six bits spoken for -- four saying
+    /// how it was made and two saying which variant it is. .NET generates the
+    /// same kind, from the same source of randomness the system offers.
+    public static Guid NewGuid() {
+        byte[] bytes = RandomNumberGenerator.GetBytes(16);
+
+        bytes[7] = (byte)((bytes[7] & 0x0F) | 0x40);
+        bytes[8] = (byte)((bytes[8] & 0x3F) | 0x80);
+        return new Guid(bytes);
+    }
+
+    public byte[] ToByteArray() {
+        byte[] made = new byte[16];
+
+        for (int i = 0; i < 8; i++) {
+            made[i] = (byte)((low >> (i * 8)) & 255);
+            made[i + 8] = (byte)((high >> (i * 8)) & 255);
+        }
+        return made;
+    }
+
+    public bool Equals(Guid other) { return low == other.Low && high == other.High; }
+
+    public int CompareTo(Guid other) {
+        byte[] mine = ToByteArray();
+        byte[] theirs = other.ToByteArray();
+
+        // .NET compares the FIELDS in their numeric order, not the bytes in
+        // storage order, which is the order the text form shows.
+        int[] order = new int[] { 3, 2, 1, 0, 5, 4, 7, 6, 8, 9, 10, 11, 12, 13, 14, 15 };
+
+        for (int i = 0; i < 16; i++) {
+            int a = mine[order[i]] & 255;
+            int b = theirs[order[i]] & 255;
+
+            if (a < b) { return -1; }
+            if (a > b) { return 1; }
+        }
+        return 0;
+    }
+
+    public int GetHashCode() { return (int)(low ^ (low >> 32) ^ high ^ (high >> 32)); }
+
+    /// Not .NET members: the two halves, so that Equals can read another Guid's
+    /// state. C# would say `other.low` because privacy is per type there, and
+    /// it is per instance here.
+    public long Low => low;
+    public long High => high;
+
+    /// "D", the hyphenated form without braces, which is what .NET prints.
+    public string ToString() { return ToString("D"); }
+
+    /// N (32 digits), D (hyphens), B (braces), P (parentheses), X (a C
+    /// initialiser). The letters .NET accepts, with the same output.
+    public string ToString(string format) {
+        byte[] b = ToByteArray();
+
+        if (format == null || format.Length == 0) { format = "D"; }
+
+        char kind = (char)Sys.GetByte(format, 0);
+        string plain = String.Concat(
+            Hex(b, 3), String.Concat(Hex(b, 2), String.Concat(Hex(b, 1), Hex(b, 0))));
+        string second = String.Concat(Hex(b, 5), Hex(b, 4));
+        string third = String.Concat(Hex(b, 7), Hex(b, 6));
+        string fourth = String.Concat(Hex(b, 8), Hex(b, 9));
+        StringBuilder rest = new StringBuilder();
+
+        for (int i = 10; i < 16; i++) { rest.Append(Hex(b, i)); }
+
+        if (kind == 'N' || kind == 'n') {
+            return String.Concat(plain, String.Concat(second, String.Concat(third,
+                String.Concat(fourth, rest.ToString()))));
+        }
+
+        StringBuilder made = new StringBuilder();
+
+        if (kind == 'B' || kind == 'b') { made.Append('{'); }
+        if (kind == 'P' || kind == 'p') { made.Append('('); }
+
+        if (kind == 'X' || kind == 'x') {
+            made.Append("{0x");
+            made.Append(plain);
+            made.Append(",0x");
+            made.Append(second);
+            made.Append(",0x");
+            made.Append(third);
+            made.Append(",{");
+            for (int i = 8; i < 16; i++) {
+                if (i > 8) { made.Append(','); }
+                made.Append("0x");
+                made.Append(Hex(b, i));
+            }
+            made.Append("}}");
+            return made.ToString();
+        }
+
+        made.Append(plain);
+        made.Append('-');
+        made.Append(second);
+        made.Append('-');
+        made.Append(third);
+        made.Append('-');
+        made.Append(fourth);
+        made.Append('-');
+        made.Append(rest.ToString());
+
+        if (kind == 'B' || kind == 'b') { made.Append('}'); }
+        if (kind == 'P' || kind == 'p') { made.Append(')'); }
+        return made.ToString();
+    }
+
+    /// Every form ToString writes, and the braces or parentheses are optional
+    /// on the way in as they are in .NET.
+    public static Guid Parse(string text) {
+        Guid made = Empty;
+
+        if (!TryParse(text, out made)) {
+            throw new FormatException("Unrecognized Guid format.");
+        }
+        return made;
+    }
+
+    public static bool TryParse(string text, out Guid value) {
+        value = Empty;
+        if (text == null) { return false; }
+
+        StringBuilder digits = new StringBuilder();
+
+        for (int i = 0; i < text.Length; i++) {
+            char c = (char)Sys.GetByte(text, i);
+
+            if (c == '-' || c == '{' || c == '}' || c == '(' || c == ')' || c == ' ') { continue; }
+            if (Digit(c) < 0) { return false; }
+            digits.Append(c);
+        }
+
+        string all = digits.ToString();
+        if (all.Length != 32) { return false; }
+
+        byte[] bytes = new byte[16];
+        int[] order = new int[] { 3, 2, 1, 0, 5, 4, 7, 6, 8, 9, 10, 11, 12, 13, 14, 15 };
+
+        for (int i = 0; i < 16; i++) {
+            int hi = Digit((char)Sys.GetByte(all, i * 2));
+            int lo = Digit((char)Sys.GetByte(all, i * 2 + 1));
+
+            bytes[order[i]] = (byte)(hi * 16 + lo);
+        }
+        value = new Guid(bytes);
+        return true;
+    }
+
+    // LOWER CASE, which is what .NET writes; its parser takes either.
+    private static string Hex(byte[] bytes, int at) {
+        string alphabet = "0123456789abcdef";
+        int value = bytes[at] & 255;
+
+        return String.Concat(String.Substring(alphabet, value >> 4, 1),
+                             String.Substring(alphabet, value & 15, 1));
+    }
+
+    private static int Digit(char c) {
+        if (c >= '0' && c <= '9') { return c - '0'; }
+        if (c >= 'a' && c <= 'f') { return c - 'a' + 10; }
+        if (c >= 'A' && c <= 'F') { return c - 'A' + 10; }
+        return -1;
+    }
+}
+
+// ---- Version --------------------------------------------------------------
+
+/// Major.Minor.Build.Revision, where the last two may be ABSENT rather than
+/// zero -- .NET reports -1 for a field that was never given, and "1.0" and
+/// "1.0.0" are different Versions that compare equal. The distinction is what
+/// lets ToString give back what Parse was handed.
+class Version : IComparable<Version> {
+    private int major;
+    private int minor;
+    private int build;
+    private int revision;
+
+    public Version() {
+        major = 0;
+        minor = 0;
+        build = -1;
+        revision = -1;
+    }
+
+    public Version(int majorIn, int minorIn) {
+        Check(majorIn, minorIn, 0, 0);
+        major = majorIn;
+        minor = minorIn;
+        build = -1;
+        revision = -1;
+    }
+
+    public Version(int majorIn, int minorIn, int buildIn) {
+        Check(majorIn, minorIn, buildIn, 0);
+        major = majorIn;
+        minor = minorIn;
+        build = buildIn;
+        revision = -1;
+    }
+
+    public Version(int majorIn, int minorIn, int buildIn, int revisionIn) {
+        Check(majorIn, minorIn, buildIn, revisionIn);
+        major = majorIn;
+        minor = minorIn;
+        build = buildIn;
+        revision = revisionIn;
+    }
+
+    public Version(string text) {
+        Version parsed = Parse(text);
+
+        major = parsed.Major;
+        minor = parsed.Minor;
+        build = parsed.Build;
+        revision = parsed.Revision;
+    }
+
+    public int Major => major;
+    public int Minor => minor;
+    public int Build => build;
+    public int Revision => revision;
+
+    /// The low and high sixteen bits of the revision, which is how a build
+    /// system that packs two numbers into one gets them out again.
+    public short MajorRevision => (short)(revision >> 16);
+    public short MinorRevision => (short)(revision & 65535);
+
+    public static Version Parse(string text) {
+        Version? made = null;
+
+        if (!TryParse(text, out made) || made == null) {
+            throw new FormatException("Version string portion was too short or too long.");
+        }
+        return made;
+    }
+
+    /// NULL WHEN IT FAILS, which is why the out parameter is nullable: .NET
+    /// declares this one `out Version? result` for the same reason.
+    public static bool TryParse(string text, out Version? value) {
+        value = null;
+        if (text == null || text.Length == 0) { return false; }
+
+        string[] parts = String.Split(text, '.');
+
+        if (parts.Length < 2 || parts.Length > 4) { return false; }
+
+        int[] fields = new int[4];
+
+        for (int i = 0; i < parts.Length; i++) {
+            int one = 0;
+
+            if (!Int32.TryParse(parts[i], out one) || one < 0) { return false; }
+            fields[i] = one;
+        }
+
+        if (parts.Length == 2) { value = new Version(fields[0], fields[1]); return true; }
+        if (parts.Length == 3) { value = new Version(fields[0], fields[1], fields[2]); return true; }
+
+        value = new Version(fields[0], fields[1], fields[2], fields[3]);
+        return true;
+    }
+
+    /// AN ABSENT FIELD IS BELOW ZERO, not equal to it: .NET compares the -1 it
+    /// stores for a field nobody gave, so 1.2 sorts before 1.2.0 and the two are
+    /// not equal. A Version remembers how many numbers it was built from.
+    public int CompareTo(Version other) {
+        if (other == null) { return 1; }
+
+        int sign = Compare(major, other.Major);
+        if (sign != 0) { return sign; }
+
+        sign = Compare(minor, other.Minor);
+        if (sign != 0) { return sign; }
+
+        sign = Compare(build, other.Build);
+        if (sign != 0) { return sign; }
+
+        return Compare(revision, other.Revision);
+    }
+
+    public bool Equals(Version other) { return other != null && CompareTo(other) == 0; }
+
+    public int GetHashCode() {
+        return HashCode.Combine(major, minor, build, revision);
+    }
+
+    /// AS MANY FIELDS AS WERE GIVEN, which is .NET's rule: a Version built with
+    /// two numbers prints two.
+    public string ToString() {
+        if (build < 0) { return ToString(2); }
+        if (revision < 0) { return ToString(3); }
+        return ToString(4);
+    }
+
+    public string ToString(int fieldCount) {
+        if (fieldCount < 0 || fieldCount > 4) {
+            throw new ArgumentException("Argument must be between 0 and 4.");
+        }
+        if (fieldCount == 0) { return ""; }
+        if (fieldCount == 1) { return String.FromInt(major); }
+
+        StringBuilder made = new StringBuilder();
+
+        made.Append(major);
+        made.Append('.');
+        made.Append(minor);
+
+        if (fieldCount >= 3) {
+            if (build < 0) { throw new ArgumentException("Argument must be between 0 and 2."); }
+            made.Append('.');
+            made.Append(build);
+        }
+        if (fieldCount == 4) {
+            if (revision < 0) { throw new ArgumentException("Argument must be between 0 and 3."); }
+            made.Append('.');
+            made.Append(revision);
+        }
+        return made.ToString();
+    }
+
+    private static int Compare(int a, int b) {
+        if (a < b) { return -1; }
+        if (a > b) { return 1; }
+        return 0;
+    }
+
+    private static void Check(int majorIn, int minorIn, int buildIn, int revisionIn) {
+        if (majorIn < 0 || minorIn < 0 || buildIn < 0 || revisionIn < 0) {
+            throw new ArgumentOutOfRangeException("version", "Version's parameters must be greater than or equal to zero.");
+        }
+    }
+}
+
+// ---- Lazy -----------------------------------------------------------------
+
+/// A value computed the first time somebody asks for it, and never again.
+///
+/// THE FACTORY IS DROPPED once it has run, which is what .NET does and is not
+/// mere tidiness: it is the only way a closure over something large stops
+/// holding it alive for as long as the Lazy lives.
+class Lazy<T> {
+    /// NULL ONCE IT HAS RUN, which is the whole point -- see above -- so the
+    /// field says so. Only the getter ever reads it, and only while `made` is
+    /// still false.
+    private Func<T>? make;
+    private T value;
+    private bool made;
+
+    public Lazy(Func<T> factory) {
+        if (factory == null) { throw new ArgumentNullException("valueFactory"); }
+        make = factory;
+    }
+
+    public bool IsValueCreated => made;
+
+    public T Value {
+        get {
+            if (!made) {
+                value = make!.Invoke();
+                made = true;
+                make = null;
+            }
+            return value;
+        }
+    }
+
+    /// "Value is not created." until it is, and then the value's own text --
+    /// .NET's ToString deliberately does NOT force the computation.
+    public string ToString() {
+        if (!made) { return "Value is not created."; }
+        return ("" + value);
+    }
+}
+
+// ---- Tuple ----------------------------------------------------------------
+//
+// The reference tuples, which are ordinary classes with Item1, Item2 and so
+// on. C#'s (int, string) syntax is ValueTuple and the compiler does not spell
+// it yet; these are what a method returning two things says meanwhile, and
+// they are .NET types rather than ours.
+
+/// .NET's factory, which exists because `Tuple.Create(1, "a")` infers what
+/// `new Tuple<int, string>(1, "a")` makes you write out.
+static class Tuple {
+    public static Tuple<T1, T2> Create<T1, T2>(T1 one, T2 two) {
+        return new Tuple<T1, T2>(one, two);
+    }
+
+    public static Tuple<T1, T2, T3> Create<T1, T2, T3>(T1 one, T2 two, T3 three) {
+        return new Tuple<T1, T2, T3>(one, two, three);
+    }
+
+    public static Tuple<T1, T2, T3, T4> Create<T1, T2, T3, T4>(T1 one, T2 two, T3 three, T4 four) {
+        return new Tuple<T1, T2, T3, T4>(one, two, three, four);
+    }
+}
+
+class Tuple<T1, T2> {
+    public T1 Item1;
+    public T2 Item2;
+
+    public Tuple(T1 one, T2 two) {
+        Item1 = one;
+        Item2 = two;
+    }
+
+    public string ToString() {
+        return String.Concat("(", String.Concat(("" + Item1),
+            String.Concat(", ", String.Concat(("" + Item2), ")"))));
+    }
+}
+
+class Tuple<T1, T2, T3> {
+    public T1 Item1;
+    public T2 Item2;
+    public T3 Item3;
+
+    public Tuple(T1 one, T2 two, T3 three) {
+        Item1 = one;
+        Item2 = two;
+        Item3 = three;
+    }
+
+    public string ToString() {
+        StringBuilder made = new StringBuilder();
+
+        made.Append('(');
+        made.Append(("" + Item1));
+        made.Append(", ");
+        made.Append(("" + Item2));
+        made.Append(", ");
+        made.Append(("" + Item3));
+        made.Append(')');
+        return made.ToString();
+    }
+}
+
+class Tuple<T1, T2, T3, T4> {
+    public T1 Item1;
+    public T2 Item2;
+    public T3 Item3;
+    public T4 Item4;
+
+    public Tuple(T1 one, T2 two, T3 three, T4 four) {
+        Item1 = one;
+        Item2 = two;
+        Item3 = three;
+        Item4 = four;
+    }
+
+    public string ToString() {
+        StringBuilder made = new StringBuilder();
+
+        made.Append('(');
+        made.Append(("" + Item1));
+        made.Append(", ");
+        made.Append(("" + Item2));
+        made.Append(", ");
+        made.Append(("" + Item3));
+        made.Append(", ");
+        made.Append(("" + Item4));
+        made.Append(')');
+        return made.ToString();
+    }
+}

@@ -1,0 +1,51 @@
+// test: System.Convert and System.BitConverter
+// expect-exit: 0
+// expect-output:
+// aGVsbG8= aGk= aA== 
+// hello 2
+// 0011FF 00-11-FF 2
+// 42 255 -9 2.5 True 3 2 4 1
+// 87-D6-12-00 FE-FF 00-00-00-00-00-00-04-40 True
+// 1234567890123 -7 -2.5 True
+// format: The input string 'bad' was not in a correct format.
+// overflow: Value was either too large or too small for an unsigned byte.
+//
+// Base 64 is three bytes to four characters and a padded tail, fixed by RFC
+// 4648, so the strings here are the ones .NET writes. The other half worth
+// pinning down is that Convert ROUNDS where a cast truncates, and rounds a
+// half to the even neighbour: 2.5 converts to 2 and 3.5 to 4.
+
+class Program
+{
+    static int Main()
+    {
+        Console.WriteLine(Convert.ToBase64String(Encoding.UTF8.GetBytes("hello"))
+            + " " + Convert.ToBase64String(Encoding.UTF8.GetBytes("hi"))
+            + " " + Convert.ToBase64String(Encoding.UTF8.GetBytes("h"))
+            + " " + Convert.ToBase64String(new byte[0]));
+
+        Console.WriteLine(Encoding.UTF8.GetString(Convert.FromBase64String("aGVsbG8="))
+            + " " + Convert.FromBase64String("aGk=").Length);
+
+        Console.WriteLine(Convert.ToHexString(new byte[] { 0, 17, 255 })
+            + " " + BitConverter.ToString(new byte[] { 0, 17, 255 })
+            + " " + Convert.FromHexString("00FF").Length);
+
+        Console.WriteLine($"{Convert.ToInt32("42")} {Convert.ToInt32("ff", 16)} {Convert.ToInt64("-9")} {Convert.ToDouble("2.5")} {Convert.ToBoolean("True")} {Convert.ToInt32(2.6)} {Convert.ToInt32(2.5)} {Convert.ToInt32(3.5)} {Convert.ToInt32(true)}");
+
+        Console.WriteLine(BitConverter.ToString(BitConverter.GetBytes(1234567))
+            + " " + BitConverter.ToString(BitConverter.GetBytes((short)-2))
+            + " " + BitConverter.ToString(BitConverter.GetBytes(2.5))
+            + " " + BitConverter.IsLittleEndian);
+
+        byte[] wide = BitConverter.GetBytes(1234567890123L);
+        Console.WriteLine($"{BitConverter.ToInt64(wide, 0)} {BitConverter.ToInt32(BitConverter.GetBytes(-7), 0)} {BitConverter.ToDouble(BitConverter.GetBytes(-2.5), 0)} {BitConverter.ToBoolean(new byte[] { 1 }, 0)}");
+
+        try { int bad = Convert.ToInt32("bad"); }
+        catch (FormatException e) { Console.WriteLine("format: " + e.Message); }
+
+        try { byte big = Convert.ToByte(300); }
+        catch (OverflowException e) { Console.WriteLine("overflow: " + e.Message); }
+        return 0;
+    }
+}

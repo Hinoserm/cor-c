@@ -1,0 +1,188 @@
+// test: pool exceptions
+// expect-exit: 0
+// expect-output:
+// workers 4
+// faulted 25
+// results 19600
+// order True
+// unhandled 25
+//
+// Task.Run bodies that throw, on a pool of four real threads. An exception
+// raised on a worker is caught by the compiler's own handler around the work
+// item, stored on the task, and rethrown where the task is awaited -- here, on
+// the main thread -- which is a throw on one thread and a catch on another and
+// needs both to have a handler chain of their own.
+//
+// The last count is the one that would have been silent before: a work item
+// posted with no task to carry its exception is caught by the scheduler and
+// reported, and a worker that could not catch would have taken the process
+// with it instead.
+
+class Boom : Exception
+{
+    public int Which;
+
+    public Boom(int which) : base("boom")
+    {
+        Which = which;
+    }
+}
+
+/// Answers n*n, or throws for an odd n. Allocates on the way, so that a worker
+/// is doing all three things -- allocating, throwing and catching -- at once.
+class MaybeSquare : Func<int>
+{
+    int _n;
+
+    public MaybeSquare(int n)
+    {
+        _n = n;
+    }
+
+    public int Invoke()
+    {
+        string note = "item " + _n;
+
+        if (note.Length == 0)
+        {
+            return 0;
+        }
+
+        if ((_n & 1) != 0)
+        {
+            throw new Boom(_n);
+        }
+
+        // A try/finally inside the work item, so the worker's chain has a
+        // record of its own on it when the throw above happens on another.
+        int total = 0;
+
+        try
+        {
+            for (int i = 0; i < _n; i++)
+            {
+                total = total + _n;
+            }
+        }
+        finally
+        {
+            total = total + 0;
+        }
+        return total;
+    }
+}
+
+/// A work item with no task behind it: whatever it throws is unhandled, and
+/// the scheduler reports it rather than letting it escape a worker.
+class Loose : Action
+{
+    public static AtomicCell Seen;
+
+    int _n;
+
+    public Loose(int n)
+    {
+        _n = n;
+    }
+
+    public void Invoke()
+    {
+        try
+        {
+            throw new Boom(_n);
+        }
+        catch (Boom b)
+        {
+            Seen.Add(1);
+        }
+    }
+}
+
+static class Program
+{
+    static void Say(string label, long value)
+    {
+        Sys.Print(label);
+        Sys.PrintInt(value);
+        Sys.PrintLine();
+    }
+
+    static void SayBool(string label, bool value)
+    {
+        Sys.Print(label);
+
+        if (value)
+        {
+            Sys.Print("True");
+        }
+        else
+        {
+            Sys.Print("False");
+        }
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        int workers = 4;
+        int count = 50;
+
+        Loose.Seen = new AtomicCell();
+
+        Scheduler.UseThreads(workers);
+
+        Say("workers ", Scheduler.WorkerCount);
+
+        Task<int>[] work = new Task<int>[count];
+
+        for (int i = 0; i < count; i++)
+        {
+            work[i] = TaskOf<int>.Run(new MaybeSquare(i));
+        }
+
+        for (int i = 0; i < count / 2; i++)
+        {
+            Scheduler.Post(new Loose(i));
+        }
+
+        int faulted = 0;
+        int results = 0;
+        bool order = true;
+
+        for (int i = 0; i < count; i++)
+        {
+            try
+            {
+                // Result waits, and rethrows what faulted the task: the
+                // exception object crossed from a worker to this thread.
+                results = results + work[i].Result;
+
+                if ((i & 1) != 0)
+                {
+                    order = false;      // an odd item must have thrown
+                }
+            }
+            catch (Boom b)
+            {
+                faulted = faulted + 1;
+
+                if (b.Which != i)
+                {
+                    order = false;
+                }
+            }
+        }
+
+        // The loose items have no task to wait on; wait for their count.
+        while (Loose.Seen.Read() < count / 2)
+        {
+            Thread.Sleep(1);
+        }
+
+        Say("faulted ", faulted);
+        Say("results ", results);
+        SayBool("order ", order);
+        Say("unhandled ", Loose.Seen.Read());
+        return 0;
+    }
+}

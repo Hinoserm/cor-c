@@ -1,0 +1,92 @@
+// test: directories
+// expect-exit: 0
+// expect-output:
+// mkdir ok
+// isdir yes
+// count 3
+// alpha
+// beta
+// gamma
+// rmdir busy yes
+// rmdir ok
+// gone yes
+//
+// mkdir, getdents64 through Os.ListDir, and rmdir. The names are sorted here
+// because the order a filing system hands them back is its own business and
+// a test that depended on it would be testing the filing system.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Os.Line(s);
+    }
+
+    /// An insertion sort: three names, and no dependence on whatever sorting
+    /// the library may or may not offer.
+    static void Sort(string[] names)
+    {
+        for (int i = 1; i < names.Length; i++)
+        {
+            string value = names[i];
+            int j = i - 1;
+
+            while (j >= 0 && String.Compare(names[j], value) > 0)
+            {
+                names[j + 1] = names[j];
+                j = j - 1;
+            }
+            names[j + 1] = value;
+        }
+    }
+
+    static int Main()
+    {
+        string dir = $"/tmp/corsac-test-122-{Os.Getpid()}";
+
+        Line(Os.Mkdir(dir) == 0 ? "mkdir ok" : "mkdir failed");
+        Line(Stat.IsDir(dir) ? "isdir yes" : "isdir no");
+
+        string[] made = new string[] { "beta", "gamma", "alpha" };
+
+        for (int i = 0; i < made.Length; i++)
+        {
+            int fd = Os.Create($"{dir}/{made[i]}", 0x1A4);
+
+            if (fd < 0)
+            {
+                Line($"create failed {fd}");
+                return 1;
+            }
+            Os.Close(fd);
+        }
+
+        string[]? names = Os.ListDir(dir);
+
+        if (names == null)
+        {
+            Line("list failed");
+            return 1;
+        }
+        Line($"count {names.Length}");
+        Sort(names);
+
+        for (int i = 0; i < names.Length; i++)
+        {
+            Line(names[i]);
+        }
+
+        // A directory with anything in it cannot be removed, and the kernel
+        // says so rather than removing the contents.
+        Line(Os.Rmdir(dir) == 0 - (int)Err.NotEmpty ? "rmdir busy yes" : "rmdir busy no");
+
+        for (int i = 0; i < names.Length; i++)
+        {
+            Os.Unlink($"{dir}/{names[i]}");
+        }
+
+        Line(Os.Rmdir(dir) == 0 ? "rmdir ok" : "rmdir failed");
+        Line(Os.Exists(dir) ? "gone no" : "gone yes");
+        return 0;
+    }
+}

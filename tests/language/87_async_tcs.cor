@@ -1,0 +1,136 @@
+// test: async_tcs
+// expect-exit: 0
+// expect-output:
+// w1 waiting
+// producer start
+// main waiting
+// producer setting
+// producer set
+// w1 got 21
+// results 21 42 63
+// many 21000
+// wb waiting
+// failer setting
+// failer done
+// wb failed tcs failed
+// again tcs failed
+// same True
+// many failed 100
+//
+// TaskCompletionSource: a task completed by other async code. Three
+// awaiters wait on the same task (a printing waiter, a silent one, and
+// Main itself); setting the result does not run them inline -- the
+// producer carries on to its next line first -- and each sees the value.
+// An already-completed task is then awaited a thousand times. SetException
+// faults the task: its awaiter gets the exception, and awaiting the same
+// faulted task again (many times) rethrows the same exception object.
+// Only one of the waiters prints, because C# does not promise the order in
+// which several continuations of one task run.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static async Task<int> Waiter(string name, Task<int> t)
+    {
+        Line(name + " waiting");
+        int v = await t;
+        Line(name + " got " + v);
+        return v * 2;
+    }
+
+    static async Task<int> Silent(Task<int> t)
+    {
+        int v = await t;
+        return v * 3;
+    }
+
+    static async Task Producer(TaskCompletionSource<int> src, int value)
+    {
+        Line("producer start");
+        await Task.Yield();
+        Line("producer setting");
+        src.SetResult(value);
+        Line("producer set");
+    }
+
+    static async Task Failer(TaskCompletionSource<int> src)
+    {
+        await Task.Yield();
+        Line("failer setting");
+        src.SetException(new InvalidOperationException("tcs failed"));
+        Line("failer done");
+    }
+
+    static async Task Main()
+    {
+        TaskCompletionSource<int> src = new TaskCompletionSource<int>();
+        Task<int> w1 = Waiter("w1", src.Task);
+        Task<int> w2 = Silent(src.Task);
+        Task p = Producer(src, 21);
+        Line("main waiting");
+        int direct = await src.Task;
+        int r1 = await w1;
+        int r2 = await w2;
+        await p;
+        Line("results " + direct + " " + r1 + " " + r2);
+
+        long many = 0;
+        for (int i = 0; i < 1000; i++)
+        {
+            many = many + await src.Task;
+        }
+        Line("many " + many);
+
+        TaskCompletionSource<int> bad = new TaskCompletionSource<int>();
+        Task<int> wb = Waiter("wb", bad.Task);
+        Task f = Failer(bad);
+        InvalidOperationException? first = null;
+        try
+        {
+            await wb;
+            Line("not reached");
+        }
+        catch (InvalidOperationException e)
+        {
+            first = e;
+            Line("wb failed " + e.Message);
+        }
+        await f;
+
+        bool same = false;
+        try
+        {
+            await bad.Task;
+            Line("not reached");
+        }
+        catch (InvalidOperationException e)
+        {
+            same = e == first;
+            Line("again " + e.Message);
+        }
+        Line("same " + same);
+
+        int failures = 0;
+        for (int i = 0; i < 100; i++)
+        {
+            try
+            {
+                int v = await bad.Task;
+                Line("not reached " + v);
+            }
+            catch (InvalidOperationException e)
+            {
+                if (e == first)
+                {
+                    failures = failures + 1;
+                }
+            }
+        }
+        Line("many failed " + failures);
+    }
+}

@@ -1,0 +1,85 @@
+// test: method_group_still_wins
+// expect-exit: 0
+// expect-output:
+// 8
+// 7
+// 5
+// 100
+// 13
+//
+// The other half of the rule: a method group named like a type still wins
+// where it IS being invoked, with or without arguments, and a member the
+// value really has still beats a static member of the type of the same name.
+
+static class Ruler
+{
+    public static long Width = 999;
+
+    public static long Span()
+    {
+        return 100;
+    }
+}
+
+class Board
+{
+    public long Width;
+
+    public Board(long width)
+    {
+        Width = width;
+    }
+}
+
+static class Shop
+{
+    public static long Ruler(long n)
+    {
+        return n + n;
+    }
+
+    public static long Ruler()
+    {
+        return 7;
+    }
+
+    public static long Called(long n)
+    {
+        // Invoked, so the method wins; the type is reached only without an
+        // argument list, as `Ruler.Span()` below does.
+        return Ruler(n);
+    }
+
+    public static long NoArgs()
+    {
+        return Ruler();
+    }
+
+    public static long Measured(Board Ruler)
+    {
+        // The parameter really has Width, so the value beats Ruler.Width.
+        return Ruler.Width;
+    }
+}
+
+static class Program
+{
+    static void Line(long v)
+    {
+        Sys.PrintInt(v);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        long four = 4;
+        long five = 5;
+
+        Line(Shop.Called(four));
+        Line(Shop.NoArgs());
+        Line(Shop.Measured(new Board(five)));
+        Line(Ruler.Span());
+        Line(Shop.Called(four) + five);
+        return 0;
+    }
+}

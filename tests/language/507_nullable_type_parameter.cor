@@ -1,0 +1,73 @@
+// test: nullable_type_parameter
+// expect-exit: 0
+// expect-output:
+// pick 5
+// pick one
+// none 0
+// resized 6
+// kept 1 2
+// first 3
+//
+// `T?` ON AN UNCONSTRAINED T IS AN ANNOTATION, NOT A CELL. C# 9 settled this:
+// without `where T : struct` the '?' says only that the value may be absent,
+// and for a value type T the type is still T. Or-ing the flag together made
+// `T?` into Nullable<int> once T was int, so a method declared to return T? --
+// which is how .NET declares FirstOrDefault and its neighbours -- handed back
+// the address of a cell where the caller read a number, and printed an
+// address instead of the element.
+//
+// A TYPE ARGUMENT IS INFERRED THROUGH A BY-REFERENCE PARAMETER too. The
+// argument was compared against the parameter as the symbol still spells it --
+// 'T[]' -- rather than against what it is for this call, so Array.Resize(ref a,
+// n) was refused having just inferred that T is int.
+static class Program
+{
+    static void Line(string text)
+    {
+        Sys.Print(text);
+        Sys.PrintLine();
+    }
+
+    static T? Pick<T>(T[] items)
+    {
+        for (int i = 0; i < items.Length; i++)
+        {
+            return items[i];
+        }
+        return default(T);
+    }
+
+    static void Grow<T>(ref T[] items, int size)
+    {
+        T[] made = new T[size];
+        for (int i = 0; i < items.Length && i < size; i++)
+        {
+            made[i] = items[i];
+        }
+        items = made;
+    }
+
+    static void Main()
+    {
+        int[] numbers = new int[2];
+        numbers[0] = 5;
+        numbers[1] = 3;
+        Line("pick " + Pick(numbers));
+
+        string[] words = new string[1];
+        words[0] = "one";
+        Line("pick " + Pick(words));
+
+        int[] empty = new int[0];
+        Line("none " + Pick(empty));
+
+        int[] grown = new int[2];
+        grown[0] = 1;
+        grown[1] = 2;
+        Grow(ref grown, 6);
+        Line("resized " + grown.Length);
+        Line("kept " + grown[0] + " " + grown[1]);
+
+        Line("first " + numbers[1]);
+    }
+}

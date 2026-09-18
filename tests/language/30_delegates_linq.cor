@@ -1,0 +1,75 @@
+// test: delegates_linq
+// expect-exit: 0
+// expect-output:
+// apply 15
+// each 6
+// mul 1099511627776
+// field 10
+// linq 3 91 True True 21 4 3
+// wrap [x]
+//
+// Func and Action passed as arguments, stored in a field, taking and
+// returning longs and strings; and the standard library's LINQ-style
+// extension methods driven by lambdas.
+
+class Holder
+{
+    public Func<int, int> Op;
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Apply(Func<int, int> f, int x)
+    {
+        return f(x);
+    }
+
+    static void Each(int[] xs, Action<int> a)
+    {
+        foreach (int x in xs)
+        {
+            a(x);
+        }
+    }
+
+    static int Main()
+    {
+        Line("apply " + Apply(x => x * 3, 5));
+
+        int sum = 0;
+        Each(new int[] { 1, 2, 3 }, x => { sum += x; });
+        Line("each " + sum);
+
+        Func<long, long, long> mul = (a, b) => a * b;
+        Line("mul " + mul(1L << 20, 1L << 20));
+
+        Holder h = new Holder();
+        h.Op = v => v + 9;
+        Line("field " + h.Op(1));
+
+        List<int> nums = new List<int>();
+        for (int i = 1; i <= 6; i++)
+        {
+            nums.Add(i);
+        }
+        List<int> evens = nums.Where(x => x % 2 == 0);
+        List<int> squares = nums.Select(x => x * x);
+        int squareSum = 0;
+        foreach (int q in squares)
+        {
+            squareSum += q;
+        }
+        Line("linq " + evens.Count + " " + squareSum + " " + nums.Any(x => x > 5) + " " + nums.All(x => x > 0)
+             + " " + nums.Sum(x => (long)x) + " " + nums.First(x => x > 3) + " " + nums.Count(x => x % 2 == 1));
+
+        Func<string, string> wrap = s => "[" + s + "]";
+        Line("wrap " + wrap("x"));
+        return 0;
+    }
+}

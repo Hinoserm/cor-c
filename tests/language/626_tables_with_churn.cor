@@ -1,0 +1,89 @@
+// test: tables_with_churn
+// expect-exit: 0
+// expect-output:
+// set 1 True False
+// map 1 7 1
+// again 3 3
+//
+// A TABLE THAT IS ADDED TO AND REMOVED FROM FOR A LONG TIME. An erased slot
+// ends no probe, so growth has to count the erased with the held: counted by
+// what was held, a set holding one thing filled with erased slots until there
+// was no empty one, and the search for one never ended. That is where the
+// compiler, compiled by itself, stood still -- its scopes are that set.
+//
+// And a write looks along the WHOLE chain before it takes an erased slot, or a
+// key that lives past one is written a second time.
+
+using System;
+using System.Collections.Generic;
+
+sealed class Thing { }
+
+class P
+{
+    static int Main()
+    {
+        HashSet<Thing> seen = new HashSet<Thing>();
+        Thing kept = new Thing();
+
+        seen.Add(kept);
+
+        for (int i = 0; i < 5000; i++)
+        {
+            Thing passing = new Thing();
+
+            seen.Add(passing);
+            seen.Remove(passing);
+        }
+
+        Console.WriteLine("set " + seen.Count + " " + seen.Contains(kept) + " " + seen.Contains(new Thing()));
+
+        Dictionary<int, int> map = new Dictionary<int, int>();
+
+        map[-1] = 7;
+
+        for (int i = 0; i < 5000; i++)
+        {
+            map[i] = i;
+            map.Remove(i);
+        }
+
+        int found = 0;
+
+        foreach (KeyValuePair<int, int> pair in map)
+        {
+            found++;
+        }
+
+        Console.WriteLine("map " + map.Count + " " + map[-1] + " " + found);
+
+        // Three keys that land together; the first is erased and the last
+        // written again. It is still one key.
+        Dictionary<string, int> names = new Dictionary<string, int>();
+
+        for (int i = 0; i < 12; i++)
+        {
+            names["n" + i] = i;
+        }
+
+        for (int i = 0; i < 9; i++)
+        {
+            names.Remove("n" + i);
+        }
+
+        for (int i = 9; i < 12; i++)
+        {
+            names["n" + i] = 3;
+        }
+
+        int walked = 0;
+
+        foreach (KeyValuePair<string, int> pair in names)
+        {
+            walked++;
+        }
+
+        Console.WriteLine("again " + names.Count + " " + walked);
+        return 0;
+    }
+}

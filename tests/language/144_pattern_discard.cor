@@ -1,0 +1,83 @@
+// test: pattern_discard
+// expect-exit: 0
+// expect-output:
+// quad origin x y other
+// is 1 0
+// nested yes no
+// null empty empty short long
+// notnull 7
+//
+// `_` as a pattern rather than as a whole arm: it matches anything and binds
+// nothing wherever a pattern belongs, so a positional pattern can ask about
+// one item and say nothing about the rest. With it, the `not`, `null` and
+// parenthesised forms that `is` already accepted in switch ARMS as well.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static string Quadrant(int a, int b)
+    {
+        return (a, b) switch
+        {
+            (0, 0) => "origin",
+            (_, 0) => "x",
+            (0, _) => "y",
+            _ => "other",
+        };
+    }
+
+    static string Size(string? s)
+    {
+        return s switch
+        {
+            null or "" => "empty",
+            not null when s.Length > 3 => "long",
+            _ => "short",
+        };
+    }
+
+    static int Main()
+    {
+        int zero = 0;
+        int one = 1;
+        int two = 2;
+        Line("quad " + Quadrant(zero, zero) + " " + Quadrant(one, zero)
+                     + " " + Quadrant(zero, two) + " " + Quadrant(one, two));
+
+        (int, int) pair = (one, zero);
+        int hits = 0;
+
+        if (pair is (1, _))
+        {
+            hits++;
+        }
+        if (pair is (_, 9))
+        {
+            hits += 10;
+        }
+        Sys.Print("is ");
+        Sys.PrintInt(hits);
+        Sys.Print(" ");
+        Sys.PrintInt(pair.Item2);
+        Sys.PrintLine();
+
+        (int, (int, int)) deep = (one, (two, zero));
+        Line("nested " + (deep is (_, (2, _)) ? "yes" : "no")
+                       + " " + (deep is (9, (_, _)) ? "yes" : "no"));
+
+        string? nothing = null;
+        Line("null " + Size(nothing) + " " + Size("") + " " + Size("ab") + " " + Size("abcd"));
+
+        int seven = 7;
+        int? held = seven;
+        Sys.Print("notnull ");
+        Sys.PrintInt(held is not null ? held.Value : 0);
+        Sys.PrintLine();
+        return 0;
+    }
+}

@@ -1,0 +1,30 @@
+// test: local function optional arguments and source evaluation order
+// expect-exit: 0
+// expect-output:
+// local defaults passed
+static class Program
+{
+    static int trace;
+    static int Next(int value) { trace = trace * 10 + value; return value; }
+    static int Main()
+    {
+        const int Seed = 2;
+        if (Add(4) != 7) return 1;
+        int Add(int value, int extra = Seed + 1) => value + extra;
+        if (Add(4, 8) != 12) return 2;
+        if (Add(extra: 8, value: 4) != 12) return 3;
+        Func<int> captured = () => Add(5);
+        if (captured() != 8) return 4;
+        int Count(int n, int step = 2) => n == 0 ? 0 : step + Count(n - 1);
+        if (Count(3) != 6) return 5;
+        int Ordered(int first = 7, int second = 8) => first * 100 + second;
+        if (Ordered(second: Next(1), first: Next(2)) != 201 || trace != 12) return 6;
+        if (Ordered(second: 9) != 709) return 7;
+        bool Select(bool value = true) => value;
+        if (!Select() || Select(false)) return 8;
+        Func<int, int, int> alias = Add;
+        if (alias(2, 3) != 5) return 9;
+        Sys.Print("local defaults passed\n");
+        return 0;
+    }
+}

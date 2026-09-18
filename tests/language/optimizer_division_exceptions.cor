@@ -1,0 +1,54 @@
+// test: checked quotient overflow and signed remainder exception corners
+// expect-exit: 0
+// expect-output:
+// q32 overflow -3 zero
+// q64 overflow -3 zero
+// r32 0 -1 zero
+// r64 0 -1 zero
+// m32 overflow overflow 14
+// m64 overflow overflow 14
+static class Program
+{
+    static string Q32(int a, int b)
+    {
+        try { return checked(a / b).ToString(); }
+        catch (OverflowException e) { return "overflow"; }
+        catch (DivideByZeroException e) { return "zero"; }
+    }
+    static string Q64(long a, long b)
+    {
+        try { return checked(a / b).ToString(); }
+        catch (OverflowException e) { return "overflow"; }
+        catch (DivideByZeroException e) { return "zero"; }
+    }
+    static string R32(int a, int b)
+    {
+        try { return checked(a % b).ToString(); }
+        catch (DivideByZeroException e) { return "zero"; }
+    }
+    static string R64(long a, long b)
+    {
+        try { return unchecked(a % b).ToString(); }
+        catch (DivideByZeroException e) { return "zero"; }
+    }
+    static int Main()
+    {
+        Console.WriteLine("q32 " + Q32(int.MinValue, -1) + " " + Q32(-7, 2) + " " + Q32(1, 0));
+        Console.WriteLine("q64 " + Q64(long.MinValue, -1) + " " + Q64(-7, 2) + " " + Q64(1, 0));
+        Console.WriteLine("r32 " + R32(int.MinValue, -1) + " " + R32(-7, 2) + " " + R32(1, 0));
+        Console.WriteLine("r64 " + R64(long.MinValue, -1) + " " + R64(-7, 2) + " " + R64(1, 0));
+        Console.WriteLine("m32 " + M32(int.MinValue, -1) + " " + M32(-1, int.MinValue) + " " + M32(-7, -2));
+        Console.WriteLine("m64 " + M64(long.MinValue, -1) + " " + M64(-1, long.MinValue) + " " + M64(-7, -2));
+        return 0;
+    }
+    static string M32(int a, int b)
+    {
+        try { return checked(a * b).ToString(); }
+        catch (OverflowException e) { return "overflow"; }
+    }
+    static string M64(long a, long b)
+    {
+        try { return checked(a * b).ToString(); }
+        catch (OverflowException e) { return "overflow"; }
+    }
+}

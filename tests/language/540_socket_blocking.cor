@@ -1,0 +1,84 @@
+// test: Socket.Blocking, LocalEndPoint, RemoteEndPoint and a socket made from a descriptor
+// expect-exit: 0
+// expect-output:
+// would block
+// accepted
+// endpoints ok
+// handle ok
+//
+// What a server with more than one port to watch needs, in .NET's words:
+// a socket that answers WouldBlock instead of waiting, the addresses at
+// either end of a connection, and the socket a program was handed on a
+// descriptor rather than one it opened itself.
+
+class Program
+{
+    static int Main()
+    {
+        Socket ear = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+
+        ear.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+        ear.Listen(4);
+        ear.Blocking = false;
+
+        try
+        {
+            ear.Accept();
+            Console.WriteLine("waited");
+        }
+        catch (SocketException e)
+        {
+            Console.WriteLine(e.SocketErrorCode == SocketError.WouldBlock ? "would block" : "wrong error");
+        }
+
+        int port = ear.LocalEndPoint.Port;
+        Socket caller = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+
+        caller.Connect(new IPEndPoint(IPAddress.Loopback, port));
+
+        Socket answered = Wait(ear);
+
+        Console.WriteLine("accepted");
+        Console.WriteLine(answered.LocalEndPoint.Port == port
+                       && answered.RemoteEndPoint.Address.HostOrder == IPAddress.Loopback.HostOrder
+                       && caller.RemoteEndPoint.Port == port ? "endpoints ok" : "endpoints bad");
+
+        // The socket a program is handed on a descriptor, which is what inetd
+        // gives a service it starts.
+        Socket given = new Socket(answered.Handle);
+        byte[] hello = Encoding.ASCII.GetBytes("hello");
+
+        given.Send(hello, 0, hello.Length);
+
+        byte[] back = new byte[5];
+        int n = caller.Receive(back, 0, back.Length);
+
+        Console.WriteLine(n == 5 && Encoding.ASCII.GetString(back) == "hello" ? "handle ok" : "handle bad");
+
+        caller.Close();
+        answered.Close();
+        ear.Close();
+        return 0;
+    }
+
+    /// The connection, once the kernel has finished making it: a non-blocking
+    /// accept answers WouldBlock until the handshake is over.
+    static Socket Wait(Socket ear)
+    {
+        while (true)
+        {
+            try
+            {
+                return ear.Accept();
+            }
+            catch (SocketException e)
+            {
+                if (e.SocketErrorCode != SocketError.WouldBlock)
+                {
+                    throw;
+                }
+                Thread.Sleep(10);
+            }
+        }
+    }
+}

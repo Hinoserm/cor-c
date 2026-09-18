@@ -1,0 +1,3858 @@
+// A heap that gives memory back, and puts it back together.
+//
+//   corsac cc lib/heap.cor myprogram.cor --run
+//
+// Compiling a program with this replaces the arena. Without it, `new` is the
+// machine's allocation instruction: a control register add, nothing to free,
+// and the whole heap reclaimed by one write when the script that owned it
+// finishes. That is right for a script, and most of what this machine runs is a
+// script.
+//
+// It is wrong for a program that never finishes. A kernel cannot reclaim its
+// heap by ending, because it does not end, and an async one allocates a frame
+// and a task for every operation in flight. That program compiles with this.
+
+// ---- what a block looks like -----------------------------------------------
+//
+//   +0            size, with flags in the low bits
+//   +8            the next free block, while it is free
+//   +16           the payload, and the address handed out
+//   +16           the PREVIOUS free block, while it is free
+//   +size-8       the size again
+//
+// The size appears at BOTH ENDS on purpose, and that is the whole of what makes
+// coalescing possible. Given a block, the one after it is at +size; the one
+// BEFORE it can only be found by reading backwards, and the footer is what is
+// there to read. Without it a heap merges forwards and never backwards, and a
+// run of frees in the wrong order leaves holes nothing can fill.
+//
+// The free list is doubly linked for the same reason: merging with a neighbour
+// means taking that neighbour off the list, and it is in the middle of it. A
+// singly linked list would have to be walked to find what points at it, which
+// turns every free into a scan of every free block.
+static class Heap
+{
+    /// Before the payload: the size and the forward link.
+    public const long HeaderBytes = 16;
+    /// After it: the size again.
+    const long FooterBytes = 8;
+    const long Overhead = 24;
+
+    // Sizes are eight-aligned, so the low three bits are free to say things.
+    const long FlagFree = 1;
+    const long FlagMark = 2;
+    // Cached blocks and mark-scan work never coexist: every cache is drained
+    // before marking starts. Sharing this last low bit lets the coalescer tell
+    // a private cached neighbour from a block already linked on the shared
+    // free list.
+    const long FlagCached = 4;
+    const long FlagScan = 4;
+    const long SizeMask = -8;
+    const long FlagMask = 7;
+
+    // Small enough to be worth splitting off, big enough to hold both links and
+    // a footer. A remainder below this could not describe itself, and memory
+    // that cannot describe itself is memory nothing can hand out again.
+    const long Smallest = 48;
+
+    static long _free;          // the free list, or 0
+
+    /// Exact-size class lists: the twelve sizes string and object churn
+    /// actually produces, each a push/pop stack of blocks of EXACTLY that
+    /// size. The general free list is first-fit and walks; a program that
+    /// frees a 64-byte string and allocates another paid that walk twice
+    /// per object -- measured at four and a half thousand cycles for the
+    /// pair, which made a directory listing cost half a second per line.
+    /// A classed block is FlagCached: on no list the sweep walks, exactly
+    /// like a processor-cache block, and drained back before collection.
+    const long Classes = 12;
+    static long _classAt;       // Classes head words, carved once, or 0
+    static long _base;          // first block in the CURRENT memory run
+    static long _bump;          // untouched memory in the current run
+    static long _limit;
+    static long _runs;          // newest in-band run record, then older ones
+    static long _runFloor;      // lowest possible payload in any memory run
+    static long _runCeiling;    // one past the broadest run allocation
+    static bool _ready;
+    static long _stackTop;      // the far end of the stack, for scanning
+    static long _staticBottom;  // bounded static roots; never wrap below zero
+    static long _staticTop;
+    static bool _staticRangeValid;
+    static bool _heapBoundsValid;
+
+    // A normal mark traces each reachable block once. The kernel's one safe
+    // bootstrap collection sizes this raw work block from the number of live
+    // allocations immediately before tracing, so every live block can be
+    // queued exactly once. Ordinary pressure collection remains allocation
+    // free: without a prepared work block it uses the repeated-scan fallback.
+    const long DefaultMarkWork = 2048;
+    static long _markWorkAt;
+    static long _markWorkCount;
+    static long _markHead;
+    static long _markTail;
+    static bool _markOverflow;
+    static bool _collecting;
+
+    // ---- more than one processor --------------------------------------------
+    //
+    // Every field above is shared, and every operation on them is a read, a
+    // change and a write with room between. Two processors in that gap both
+    // take the same block off the free list, or both bump the same pointer and
+    // are handed the same memory, and each looks perfectly correct until the
+    // other writes.
+    //
+    // So the shared state is under a lock. The lock is the cheapest thing that
+    // is definitely right, and being definitely right is worth more here than
+    // being fast: a heap that is subtly wrong under contention corrupts memory
+    // in a way that shows up somewhere else entirely, hours later.
+    //
+    // The COMMON PATH avoids it entirely. Each processor keeps a small cache of
+    // blocks it freed recently, in the block firmware gave it, and allocates
+    // from there without an atomic at all. That is also why it is worth doing:
+    // two processors never touch the same memory to allocate, so they never
+    // fight over the same cache line either.
+    static long _lock;
+    static long _lockDepth;
+    static long _waitChange;
+
+    /// A supervisor may supply a mapping-aware wait without making the shared
+    /// allocator depend on its page-table layout. Ordinary programs cannot
+    /// inspect privileged page tables: absent a supplied waiter, a contended
+    /// lock uses the universally legal Pause/recheck path, not an unconditional
+    /// WAITEQ on an allocation which might reside in noncoherent memory.
+    public static void Waiter(long function)
+    {
+        _waitChange = function;
+    }
+
+    static void WaitForChange(long at, long expected)
+    {
+        if (_waitChange != 0)
+        {
+            Sys.Call(_waitChange, at, expected, 0);
+        }
+        else
+        {
+            Sys.Pause();
+        }
+    }
+
+    /// Blocks a processor keeps to itself. Its own memory, so reaching it needs
+    /// no lock and no atomic -- nothing else can be looking at it.
+    const long CacheHeadAt = 0;
+    const long CacheCountAt = 8;
+    const long CacheLimit = 32;
+
+    // A heap can outgrow the run it began in.  Every later run carries this
+    // small record in its own first bytes, and the initial run does too:
+    //
+    //   +0   previous run record
+    //   +8   first untouched byte after the blocks laid down in this run
+    //   +16  one past the memory belonging to this run
+    //   +24  kernel chunk handle, or zero for the initial/kernel arena
+    //   +32  first block
+    //
+    // The record is not an allocated object and is never swept.  Keeping it
+    // in the memory it describes means recording another run never itself
+    // needs an allocation -- especially important because More is reached at
+    // exactly the moment the old run cannot allocate anything.
+    const long RunNext = 0;
+    const long RunEnd = 8;
+    const long RunLimit = 16;
+    const long RunChunk = 24;
+    const long RunBytes = 32;
+
+    /// WHERE THIS PROGRAM'S CACHE LIVES, which is not the same place for the
+    /// kernel as for everybody else.
+    ///
+    /// The kernel keeps one per PROCESSOR, in the block firmware laid down for
+    /// each of them. That is kernel memory, which the kernel can reach because
+    /// the kernel can reach everything.
+    ///
+    /// A PROCESS CANNOT. An address space holds the program, its libraries and
+    /// the machine's description of itself, and nothing else -- so a user
+    /// program following that pointer dereferences an address it has no mapping
+    /// for. The way that presents is the worst kind of bug: it depends on WHICH
+    /// PROCESSOR the program is running on when it allocates. Some processors'
+    /// blocks sit inside the span a process can see and it works; one does not,
+    /// and that program dies with a page fault in the allocator, at an address
+    /// in no program's code, one run in several, and only once the scheduler
+    /// starts moving things around enough to land it there.
+    ///
+    /// So a program keeps one per THREAD instead, in sixteen bytes the kernel
+    /// reserves at the top of that thread's own stack and points a register at
+    /// on every switch. Per thread rather than per processor is not a
+    /// compromise: threads share a heap, so a per-processor cache can be raced
+    /// by a thread that migrates in the middle of taking a block off it, and
+    /// one belonging to the thread cannot be raced at all.
+    ///
+    /// This was OFF for user programs for a while, after the fault above was
+    /// found and before there was anywhere else to put it. What that cost is
+    /// every allocation and every free in every program taking one lock shared
+    /// by the whole machine.
+    static bool _perProcessor;
+    static bool _supervisor;
+
+    /// Says this program's allocator may keep per-processor caches, which is
+    /// true of exactly one program on the machine.
+    public static void UseProcessorCache(bool on)
+    {
+        _perProcessor = on;
+    }
+
+    static void Take()
+    {
+        long me = _supervisor ? Sys.CpuId() + 1 : 1;
+        long lockAt = HeapLockAt();
+
+        // Re-entrant on one supervisor processor. Stand-alone firmware and the
+        // kernel can allocate while servicing a call made from an allocator
+        // operation; treating that as another contender leaves the processor
+        // spinning on a lock which only that same processor can release.
+        //
+        // Outer rings deliberately do not identify the owner this way. CpuId
+        // is kept in firmware's protected per-processor block, which Rev. 1.4
+        // gives an ordinary process no mapping for. User heaps take the shared
+        // lock with one anonymous nonzero token; they must contend rather than
+        // mistake another thread using that token for recursive ownership.
+        if (_supervisor && Sys.Peek(lockAt) == me)
+        {
+            _lockDepth = _lockDepth + 1;
+            return;
+        }
+
+        long owner = Sys.Peek(lockAt);
+
+        while (true)
+        {
+            if (owner == 0)
+            {
+                owner = Sys.Cas(lockAt, 0, me);
+
+                if (owner == 0)
+                {
+                    break;
+                }
+            }
+
+            // A failed coherent CAS has already paid for exclusive ownership
+            // of the whole line.  Do not manufacture an ownership storm while
+            // another CPU plainly holds the word. A mapping-aware supervisor
+            // waiter can close the check-to-park race with WAITEQ; other memory
+            // uses Pause. Interrupts and spurious wakes remain hints, so reload.
+            if (_supervisor && owner == me)
+            {
+                _lockDepth = _lockDepth + 1;
+                return;
+            }
+            WaitForChange(lockAt, owner);
+            owner = Sys.Peek(lockAt);
+        }
+        if (!_supervisor && _criticalAt != 0)
+        {
+            // This is a witness for the lock, not another test of atomics.
+            // Using AtomicAdd here made a broken AMO indistinguishable from
+            // two successful CAS acquisitions.  If exclusion is real, plain
+            // accesses inside the critical section are sufficient and give
+            // the diagnostic an independent observation path.
+            long before = Sys.Peek(_criticalAt);
+
+            if (before != 0)
+            {
+                Sys.Breakpoint(0x1235);
+            }
+            Sys.Poke(_criticalAt, 1);
+        }
+        if (_supervisor)
+        {
+            _lockDepth = 0;
+        }
+    }
+
+    static void Give()
+    {
+        if (_supervisor && _lockDepth > 0)
+        {
+            _lockDepth = _lockDepth - 1;
+            return;
+        }
+
+        if (!_supervisor && _criticalAt != 0)
+        {
+            long before = Sys.Peek(_criticalAt);
+
+            if (before != 1)
+            {
+                Sys.Breakpoint(0x1236);
+            }
+            Sys.Poke(_criticalAt, 0);
+        }
+        Sys.Fence();
+        Sys.AtomicSwap(HeapLockAt(), 0);
+    }
+
+    /// The lock word's address. A static's address is not something this
+    /// language can take, so it lives in a block of its own.
+    static long HeapLockAt()
+    {
+        return _lockAt;
+    }
+
+    static long _lockAt;
+
+    /// Thrown when there is nothing left, and allocated BEFORE it is needed:
+    /// the one moment a program cannot allocate is when it has run out.
+    static OutOfMemory _oom;
+
+    public static long Collections;
+
+    /// How many separate chunks this program has taken from the kernel, and how
+    /// many times it got out of taking one by having the chunk it was already
+    /// in made longer.
+    ///
+    /// Worth counting, and worth a program being able to read: the ratio is the
+    /// whole story about how fragmented the machine has become underneath it.
+    /// A program that grew nine times and took one chunk has a heap that is one
+    /// unbroken run; one that took ten chunks has ten pieces that can never be
+    /// merged across, and it did not do anything differently to deserve it.
+    /// Where this program's heap lock actually is.
+    ///
+    /// Worth being able to ask, and not only for debugging: the lock is the one
+    /// piece of the allocator that lives at an address rather than in a static,
+    /// so it is the one piece that can be pointing somewhere that does not
+    /// belong to this program -- which is a thing a fork can arrange and a
+    /// thing nothing else can see.
+    public static long LockAt
+    {
+        get { return _lockAt; }
+    }
+
+    public static long Chunks;
+    public static long Grown;
+
+    /// Live blocks and blocks ever freed. In MEMORY rather than in statics
+    /// because several processors update them and an atomic needs an address --
+    /// a static's is not something this language can take.
+    static long _countsAt;
+    static long _moreAt;
+    // Temporary exclusion audit: an atomic depth word beside the allocator
+    // controls catches two user threads entering the supposedly serialized
+    // heap before either can damage a free-list link.
+    static long _criticalAt;
+    static long _moreDepth;
+
+    const long CountLive = 0;
+    const long CountFreed = 8;
+    const long CountInvalid = 16;
+    const long CountLiveBytes = 24;
+    const long CountPeakBytes = 32;
+    const long CountAllocations = 40;
+    const long AllocatorBytes = 72;
+
+    public static long InUse
+    {
+        get { return Sys.Peek(_countsAt + CountLive); }
+    }
+
+    public static long Freed
+    {
+        get { return Sys.Peek(_countsAt + CountFreed); }
+    }
+
+    public static long InvalidFrees
+    {
+        get { return Sys.Peek(_countsAt + CountInvalid); }
+    }
+
+    public static long LiveBytes
+    {
+        get { return Sys.Peek(_countsAt + CountLiveBytes); }
+    }
+
+    public static long PeakBytes
+    {
+        get { return Sys.Peek(_countsAt + CountPeakBytes); }
+    }
+
+    public static long Allocations
+    {
+        get { return Sys.Peek(_countsAt + CountAllocations); }
+    }
+
+    public static long CollectorCapacity
+    {
+        get { return _markWorkCount; }
+    }
+
+    // ---- where the machine keeps its memory ---------------------------------
+    //
+    // Firmware seals the current table and its byte extent in CR48/49 before
+    // handoff. Everything else about this machine is found through that pair.
+    const long SysSignature = 0x43535953;      // 'CSYS'
+    const long SysVersion = 7;
+    const long SysHeaderBytes = 232;
+    const long PhysicalLast = 0x0000_FFFF_FFFF_FFFF;
+
+    const long TableCpuCount = 16;
+    const long TableCpusAt = 24;
+    const long CpuIdAt = 0;
+    const long CpuSelfAt = 32;
+    const long CpuMachineAt = 40;
+    const long CpuCfcAt = 48;
+    const long CpuPortAt = 56;
+    const long TableRegionCount = 32;
+    const long TableRegionsAt = 40;
+    const long RegionStride = 48;
+    const long RegionKind = 16;
+    const long RegionLatency = 24;
+    const long RegionLocation = 32;
+    const long RegionFlags = 40;
+    const long RegionSize = 8;
+    const long RegionRam = 0;
+    const long RegionDualRam = 3;
+    const long RegionReadable = 0x0001;
+    const long RegionWritable = 0x0002;
+    const long RegionDevicePrivate = 0x0200;
+    const long RegionDualPorted = 0x0400;
+    const long RegionKnownFlags = 0x1FFF;
+    const long TableDeviceCount = 48;
+    const long TableDevicesAt = 56;
+    const long DeviceStride = 160;
+    const long TableFrameCount = 184;
+    const long TableFramesAt = 192;
+    const long TableFrameStride = 200;
+    const long FrameStride = 64;
+    const long TableBootLocal = 160;
+    const long TableBootSystem = 168;
+    const long TableBootBytes = 176;
+    const long BootstrapLocal = 0x1000_0000;
+    const long BootstrapBytes = 0x0040_0000;
+    const long TableReservationCount = 208;
+    const long TableReservationsAt = 216;
+    const long TableReservationStride = 224;
+    const long ReservationStride = 32;
+    const long RemoteReservationBytes = 0x8000;
+    const long RemoteSelfOffset = 0x4200;
+    const long CpuStride = 64;
+    const long CpuSelfBytes = 512;
+    static long _systemTable;
+    static bool _systemTableChecked;
+    static long _systemTableReject;
+
+    static void Start()
+    {
+        // A heap's privilege domain never changes. Remember it once instead
+        // of executing Mfc CtlRing on every allocation, free, and lock pair.
+        _supervisor = Sys.Ring() <= 1;
+        _bump = Sys.Arena();
+        _base = _bump;
+        _staticBottom = Sys.StaticBase();
+        _staticTop = Sys.StaticTop();
+
+        // Current compilers describe the exact data section. An absent or
+        // malformed bound cannot be replaced by a guessed page: a collector
+        // which misses one static root frees a live object.
+        _staticRangeValid = ValidStaticRange(_staticBottom, _staticTop, _bump);
+        if (!_staticRangeValid)
+        {
+            _staticBottom = 0;
+            _staticTop = 0;
+        }
+
+        // Where memory ENDS comes from the table firmware published, and from
+        // nowhere else.
+        //
+        // Not from the processor, which does not know what is plugged in beside
+        // it. Not from the arena ceiling either: that is a control register,
+        // and on a machine whose stack is nowhere near its memory it points a
+        // long way past the last card. Trusting it meant handing out addresses
+        // no card answers for, and the first write to one was a memory fault
+        // inside the allocator rather than an honest refusal.
+        //
+        // A program with no table is a program that did not boot, and it does
+        // not get a heap. That is not a limitation to work around: firmware is
+        // the only thing that has looked at the machine, so a program that
+        // needs to know what the machine is made of is a program that boots.
+        // WHICHEVER IS NEARER, because the two answers are wrong in opposite
+        // directions and each is right where the other is not.
+        //
+        // On the machine's own program the ceiling is a control register left
+        // pointing past the last card, so the table is the only honest answer.
+        // Inside a process it is the reverse: the table describes the whole
+        // card, and the whole card is not this program's -- there are others on
+        // it, and a heap that believed the card was its own would grow straight
+        // through the next process. The ceiling is what the kernel set when it
+        // gave this process its ground, and that is the true edge.
+        //
+        // Neither can be preferred outright, so take the lower of the two that
+        // exist. It is right in both worlds and it is the arrangement that
+        // stops being needed the day there is an MMU, when a process's memory
+        // is bounded by hardware rather than by agreement.
+        // A CEILING BELOW THE FLOOR IS NOT A CEILING.
+        //
+        // All of the above holds only while both answers describe the same
+        // piece of memory. The control register is worked out from the stack
+        // pointer -- the arena grows up towards the stack coming down -- and
+        // that is right for a program whose stack and heap are in one region.
+        //
+        // On a machine whose banks are megabytes rather than hundreds of them,
+        // they are not. Firmware puts the stack at the top of whichever bank it
+        // judged quickest and the program is loaded into another, so the
+        // "ceiling" lands below where the heap begins, the heap is given
+        // negative room, and the first allocation fails on a machine with
+        // megabytes free. Worse, the failure object is itself allocated -- so
+        // there is nothing to throw, and what the machine does with an
+        // exception at address zero is spin in firmware for ever.
+        //
+        // It is exactly the mistake the kernel made about its own arena, for
+        // exactly the same reason, and it went unnoticed in programs because
+        // every bank used to be big enough to hold both.
+        long ceiling = Sys.ArenaEnd();
+
+        // A user process must not inspect firmware SRAM to discover the card
+        // containing it. The kernel publishes its exact arena ceiling in a
+        // control register. Firmware and stand-alone programs instead require
+        // the current physical system table.
+        bool arenaRangeValid = false;
+        if (!_supervisor)
+        {
+            // The kernel's value is exact even when it equals the floor: that
+            // is a valid demand-backed process with no eager bump arena. The
+            // separate AskRegion result remains mandatory for its root scan.
+            arenaRangeValid = ceiling >= _bump && ceiling < (1L << 48);
+            _limit = arenaRangeValid ? ceiling : 0;
+        }
+        else
+        {
+            long tableEnd = HeapEnd(_bump);
+            arenaRangeValid = tableEnd > _bump;
+            _limit = arenaRangeValid
+                   ? Nearer(tableEnd, ceiling > _bump ? ceiling : 0) : 0;
+        }
+
+        // Where the stack runs to. The far end of the range the collector
+        // scans for roots -- not reaching far enough misses a root and
+        // collects something live, which is the worst bug a collector has.
+        //
+        // Reaching TOO far used to be described here as merely wasting a
+        // little time. That was true of a program that owned the machine and
+        // false of one running under an operating system, where the memory
+        // above a program's stack is the next program's. Scanning it read
+        // several megabytes of somebody else's process looking for pointers on
+        // a machine with no protection, and page faulted inside the collector
+        // on one with.
+        //
+        // So: ask, when there is anybody to ask. A program in user mode is by
+        // definition running under a kernel, and its kernel is the only thing
+        // that knows how much room it was given.
+        long stack = Sys.Stack();
+        _stackTop = !_supervisor ? MyRegion() : RegionEnd(stack);
+        _heapBoundsValid = _staticRangeValid && arenaRangeValid
+                        && stack > 0 && _stackTop >= stack
+                        && _stackTop <= (1L << 48);
+        if (!_heapBoundsValid)
+        {
+            _limit = 0;
+        }
+
+        _free = 0;
+        _runs = 0;
+
+        // The lock lives in memory rather than in a static, because a static's
+        // address is not something this language can take and an atomic needs
+        // an address. Carved straight off the bump before anything else, so it
+        // exists before the first allocation can contend for it.
+        if (_limit != 0
+            && _bump <= long.MaxValue - AllocatorBytes - RunBytes - Smallest
+            && _bump + AllocatorBytes + RunBytes + Smallest <= _limit)
+        {
+            _lockAt = _bump;
+            Sys.Poke(_lockAt, 0);
+            _countsAt = _bump + 8;
+            long clear = _countsAt;
+
+            while (clear < _bump + AllocatorBytes)
+            {
+                Sys.Poke(clear, 0);
+                clear = clear + 8;
+            }
+
+            _moreAt = _bump + 56;
+            _criticalAt = _bump + 64;
+            _moreDepth = 0;
+            _bump = _bump + AllocatorBytes;
+            BeginRun(_bump, _limit, 0);
+        }
+        else if (!_supervisor)
+        {
+            // No eager arena is required merely to hold allocator controls.
+            // CR17 names eighty bytes reserved in the already-dirtied top
+            // stack page: sixteen for the thread cache, then this sixty-four.
+            // It is architectural context state and follows this thread when
+            // the scheduler moves it to another processor.
+            long control = Sys.Mine();
+            _lockAt = control > 0 ? control + 16 : 0;
+            _countsAt = _lockAt + 8;
+            long clear = _lockAt;
+
+            while (_lockAt != 0 && clear < _lockAt + AllocatorBytes)
+            {
+                Sys.Poke(clear, 0);
+                clear = clear + 8;
+            }
+
+            _moreAt = _lockAt == 0 ? 0 : _lockAt + 56;
+            _criticalAt = _lockAt == 0 ? 0 : _lockAt + 64;
+            _moreDepth = 0;
+            _limit = 0;
+        }
+        else
+        {
+            // A non-zero ceiling which cannot hold even the allocator's own
+            // record is no heap.  Treating it as one writes the bookkeeping
+            // over the stack and turns a clean refusal into corruption.
+            _limit = 0;
+        }
+
+        _ready = true;
+
+        // Reserve a modest allocation-free queue while the initial arena is
+        // known healthy. The kernel replaces it with an exactly-sized queue
+        // immediately before its one bootstrap collection.
+        _markWorkAt = _heapBoundsValid ? Alloc(DefaultMarkWork * 8) : 0;
+        _markWorkCount = _markWorkAt == 0 ? 0 : DefaultMarkWork;
+
+        // The failure object, made while there is still memory to make it in.
+        if (_limit != 0)
+        {
+            _oom = new OutOfMemory();
+        }
+
+        // Every ordinary program politely tells the kernel where its collector
+        // can be entered.  The kernel's own heap cannot trap into itself.
+        if (!_supervisor)
+        {
+            Sys.Syscall(ReclaimCall, ReclaimRegister,
+                        Sys.AddressOf(Heap.ReclaimEntry), AllocationTimeout);
+        }
+    }
+
+    static bool TableRange(long bytes, long count, long offset, long stride)
+    {
+        return count >= 0 && offset >= SysHeaderBytes && (offset & 7) == 0
+            && offset <= bytes && count <= (bytes - offset) / stride;
+    }
+
+    static bool ValidStaticRange(long bottom, long top, long bump)
+    {
+        return bottom > 0 && top >= bottom && top < (1L << 48)
+            && bump > 0 && bump < (1L << 48);
+    }
+
+    static bool PhysicalRange(long at, long bytes)
+    {
+        return at >= 0 && at <= PhysicalLast && bytes > 0
+            && bytes - 1 <= PhysicalLast - at;
+    }
+
+    static bool OrdinaryRam(long entry)
+    {
+        long kind = Sys.Peek(entry + RegionKind);
+        long flags = Sys.Peek(entry + RegionFlags);
+        return (kind == RegionRam
+                || (kind == RegionDualRam
+                    && (flags & RegionDualPorted) != 0))
+            && (flags & (RegionReadable | RegionWritable))
+               == (RegionReadable | RegionWritable)
+            && (flags & RegionDevicePrivate) == 0;
+    }
+
+    static bool ProcessorOwner(long owner)
+    {
+        if (owner < 0 || (owner >> 24) != 0 || (owner & 255) > 15)
+        {
+            return false;
+        }
+        long frame = (owner >> 16) & 255;
+        long slot = (owner >> 8) & 255;
+        return frame <= 30 && slot > 0 && slot < 255;
+    }
+
+    static bool PhysicalLocation(long location)
+    {
+        return location > 0 && location < 31 * 256
+            && (location & 255) > 0 && (location & 255) < 255;
+    }
+
+    static bool SectionsOverlap(long firstCount, long firstOffset,
+                                long firstStride, long secondCount,
+                                long secondOffset, long secondStride)
+    {
+        return firstCount > 0 && secondCount > 0
+            && firstOffset < secondOffset + secondCount * secondStride
+            && secondOffset < firstOffset + firstCount * firstStride;
+    }
+
+    static bool ContainedInRam(long table, long at, long bytes)
+    {
+        long count = Sys.Peek(table + TableRegionCount);
+        long entry = table + Sys.Peek(table + TableRegionsAt);
+        long i = 0;
+
+        while (i < count)
+        {
+            long baseAt = Sys.Peek(entry);
+            long size = Sys.Peek(entry + RegionSize);
+
+            if (OrdinaryRam(entry) && at >= baseAt
+                && at - baseAt <= size && bytes <= size - (at - baseAt))
+            {
+                return true;
+            }
+            entry = entry + RegionStride;
+            i = i + 1;
+        }
+        return false;
+    }
+
+    /// The exact sealed CSYSv7 table, or zero. Every section this allocator
+    /// walks is validated before its count becomes a loop bound, and the
+    /// reservation directory is validated as allocation authority.
+    static long SysTable()
+    {
+        // The table is immutable after its signature is published. Validate
+        // it on the bootstrap processor once: a remote RCP2 processor's own
+        // CR50/51 correctly seal its kind-2 capsule rather than the bootstrap
+        // processor's sole kind-1 allocation.
+        if (_systemTableChecked)
+        {
+            Sys.Fence();
+            return _systemTable;
+        }
+
+        long table = Sys.FirmwareTable();
+        long available = Sys.FirmwareTableBytes();
+
+        // Do not interpret the compatible prefix of CSYSv5/v6.  The table is
+        // useful only when the sealed extent and its own ST_SIZE agree on a
+        // complete, current v7 header inside the physical address space.
+        if (table <= 0 || (table & 7) != 0 || available < SysHeaderBytes
+            || table > PhysicalLast || available - 1 > PhysicalLast - table
+            || Sys.PeekWord(table) != SysSignature
+            || Sys.PeekWord(table + 4) != SysVersion
+            || Sys.Peek(table + 8) != available)
+        {
+            _systemTableReject = 1;
+            return 0;
+        }
+
+        long serviceOffset = 64;
+        while (serviceOffset <= 136)
+        {
+            long service = Sys.Peek(table + serviceOffset);
+            if (service <= 0 || (service & 7) != 0
+                || !PhysicalRange(service, 8))
+            {
+                _systemTableReject = 2;
+                return 0;
+            }
+            serviceOffset = serviceOffset + 8;
+        }
+
+        long cpuCount = Sys.Peek(table + TableCpuCount);
+        long cpuOffset = Sys.Peek(table + TableCpusAt);
+        long regionCount = Sys.Peek(table + TableRegionCount);
+        long regionOffset = Sys.Peek(table + TableRegionsAt);
+        long deviceCount = Sys.Peek(table + TableDeviceCount);
+        long deviceOffset = Sys.Peek(table + TableDevicesAt);
+        long frameCount = Sys.Peek(table + TableFrameCount);
+        long frameOffset = Sys.Peek(table + TableFramesAt);
+        long reservationCount = Sys.Peek(table + TableReservationCount);
+        long reservationOffset = Sys.Peek(table + TableReservationsAt);
+        if (cpuCount < 1 || regionCount < 1 || frameCount < 1
+            || frameCount > 31 || reservationCount < 1
+            || Sys.Peek(table + TableFrameStride) != FrameStride
+            || Sys.Peek(table + TableReservationStride) != ReservationStride
+            || !TableRange(available, cpuCount, cpuOffset, CpuStride)
+            || !TableRange(available, regionCount, regionOffset, RegionStride)
+            || !TableRange(available, deviceCount, deviceOffset, DeviceStride)
+            || !TableRange(available, frameCount, frameOffset, FrameStride)
+            || !TableRange(available, reservationCount, reservationOffset,
+                           ReservationStride)
+            || SectionsOverlap(cpuCount, cpuOffset, CpuStride,
+                               regionCount, regionOffset, RegionStride)
+            || SectionsOverlap(cpuCount, cpuOffset, CpuStride,
+                               deviceCount, deviceOffset, DeviceStride)
+            || SectionsOverlap(cpuCount, cpuOffset, CpuStride,
+                               frameCount, frameOffset, FrameStride)
+            || SectionsOverlap(cpuCount, cpuOffset, CpuStride,
+                               reservationCount, reservationOffset,
+                               ReservationStride)
+            || SectionsOverlap(regionCount, regionOffset, RegionStride,
+                               deviceCount, deviceOffset, DeviceStride)
+            || SectionsOverlap(regionCount, regionOffset, RegionStride,
+                               frameCount, frameOffset, FrameStride)
+            || SectionsOverlap(regionCount, regionOffset, RegionStride,
+                               reservationCount, reservationOffset,
+                               ReservationStride)
+            || SectionsOverlap(deviceCount, deviceOffset, DeviceStride,
+                               frameCount, frameOffset, FrameStride)
+            || SectionsOverlap(deviceCount, deviceOffset, DeviceStride,
+                               reservationCount, reservationOffset,
+                               ReservationStride)
+            || SectionsOverlap(frameCount, frameOffset, FrameStride,
+                               reservationCount, reservationOffset,
+                               ReservationStride))
+        {
+            _systemTableReject = 3;
+            return 0;
+        }
+
+        long frames = 0;
+        long operationalFrames = 0;
+        long frameRow = table + frameOffset;
+        long i = 0;
+        while (i < frameCount)
+        {
+            long id = Sys.Peek(frameRow);
+            long bit = id >= 0 && id <= 30 ? 1 << id : 0;
+            long flags = Sys.Peek(frameRow + 16);
+            long slots = Sys.Peek(frameRow + 24);
+            long generation = Sys.Peek(frameRow + 40);
+            long peers = Sys.Peek(frameRow + 48);
+            if (bit == 0 || (frames & bit) != 0
+                || Sys.Peek(frameRow + 8) != (id << 41) + 0x30000
+                || flags != 1 && flags != 3
+                || slots < 0 || slots > 254
+                || (flags & 2) != 0 && slots == 0
+                || generation < 0 || generation > 0xFFFF_FFFF
+                || peers < 0 || Sys.Peek(frameRow + 56) != 0)
+            {
+                _systemTableReject = 4;
+                return 0;
+            }
+            frames = frames | bit;
+            if ((flags & 2) != 0) operationalFrames = operationalFrames | bit;
+            frameRow = frameRow + FrameStride;
+            i = i + 1;
+        }
+        if ((operationalFrames & 1) == 0
+            || Sys.Peek(table + 144) != 0x30000
+            || Sys.Peek(table + 152) != 0x1FE00000000)
+        {
+            _systemTableReject = 5;
+            return 0;
+        }
+
+        long cpu = table + cpuOffset;
+        i = 0;
+        long previousCpuId = -1;
+        long previousSelfEnd = 0;
+        while (i < cpuCount)
+        {
+            long id = Sys.Peek(cpu + CpuIdAt);
+            long self = Sys.Peek(cpu + CpuSelfAt);
+            long frame = (id >> 16) & 255;
+            long cfc = Sys.Peek(cpu + CpuCfcAt);
+            if (!ProcessorOwner(id)
+                || (operationalFrames & (1 << frame)) == 0
+                || Sys.Peek(cpu + CpuPortAt) != (id & 255)
+                || self <= 0 || (self & 7) != 0
+                || !PhysicalRange(self, CpuSelfBytes)
+                || Sys.Peek(cpu + CpuMachineAt) != 0x434F
+                || (cfc & 0xFFFF) != 0 || !PhysicalRange(cfc, 0x10000)
+                || (cfc >> 33) != (id >> 8))
+            {
+                _systemTableReject = 6;
+                return 0;
+            }
+            if (i > 0 && (id <= previousCpuId || self < previousSelfEnd))
+            {
+                _systemTableReject = 7;
+                return 0;
+            }
+            previousCpuId = id;
+            previousSelfEnd = self + CpuSelfBytes;
+            cpu = cpu + CpuStride;
+            i = i + 1;
+        }
+
+        long region = table + regionOffset;
+        i = 0;
+        long previousRegionAt = -1;
+        long previousRegionEnd = 0;
+        while (i < regionCount)
+        {
+            long at = Sys.Peek(region);
+            long bytes = Sys.Peek(region + RegionSize);
+            long kind = Sys.Peek(region + RegionKind);
+            long latency = Sys.Peek(region + RegionLatency);
+            long location = Sys.Peek(region + RegionLocation);
+            long flags = Sys.Peek(region + RegionFlags);
+            long frame = location >> 8;
+            bool dual = (flags & RegionDualPorted) != 0;
+            if (!PhysicalRange(at, bytes) || !PhysicalLocation(location)
+                || (at >> 33) != location
+                || kind < 0 || kind > RegionDualRam
+                || latency < 0 || latency > 0xFFFF_FFFF
+                || (operationalFrames & (1 << frame)) == 0
+                || flags < 0 || flags > RegionKnownFlags
+                || ((kind == RegionDualRam) != dual))
+            {
+                _systemTableReject = 8;
+                return 0;
+            }
+
+            if (i > 0 && (at <= previousRegionAt || at < previousRegionEnd))
+            {
+                _systemTableReject = 9;
+                return 0;
+            }
+            previousRegionAt = at;
+            previousRegionEnd = at + bytes;
+            region = region + RegionStride;
+            i = i + 1;
+        }
+
+        long bootLocal = Sys.Peek(table + TableBootLocal);
+        long bootSystem = Sys.Peek(table + TableBootSystem);
+        long bootBytes = Sys.Peek(table + TableBootBytes);
+        if (bootLocal != BootstrapLocal || bootBytes != BootstrapBytes
+            || (bootSystem & (BootstrapBytes - 1)) != 0
+            || !PhysicalRange(bootLocal, bootBytes)
+            || !PhysicalRange(bootSystem, bootBytes)
+            || !ContainedInRam(table, bootSystem, bootBytes))
+        {
+            _systemTableReject = 10;
+            return 0;
+        }
+
+        long localReservations = 0;
+        long localReservationAt = 0;
+        long localReservationBytes = 0;
+        long memoryIndex = 0;
+        long memory = table + regionOffset;
+        long previousReservationAt = -1;
+        long previousReservationEnd = 0;
+        long previousReservationOwner = -1;
+        i = 0;
+        while (i < reservationCount)
+        {
+            long entry = table + reservationOffset + i * ReservationStride;
+            long at = Sys.Peek(entry);
+            long bytes = Sys.Peek(entry + 8);
+            long kind = Sys.Peek(entry + 16);
+            long owner = Sys.Peek(entry + 24);
+            if (at <= 0 || !PhysicalRange(at, bytes)
+                || (kind != 1 && kind != 2) || !ProcessorOwner(owner)
+                || (operationalFrames & (1 << ((owner >> 16) & 255))) == 0)
+            {
+                _systemTableReject = 11;
+                return 0;
+            }
+            if (i > 0 && (at <= previousReservationAt
+                          || at < previousReservationEnd
+                          || owner <= previousReservationOwner))
+            {
+                _systemTableReject = 12;
+                return 0;
+            }
+
+            bool contained = false;
+            while (memoryIndex < regionCount)
+            {
+                long memoryAt = Sys.Peek(memory);
+                long memoryBytes = Sys.Peek(memory + RegionSize);
+                if (at < memoryAt)
+                {
+                    _systemTableReject = 13;
+                    return 0;
+                }
+                if (at - memoryAt <= memoryBytes
+                    && bytes <= memoryBytes - (at - memoryAt))
+                {
+                    contained = OrdinaryRam(memory);
+                    break;
+                }
+                if (at < memoryAt + memoryBytes)
+                {
+                    _systemTableReject = 20;
+                    return 0;
+                }
+                memoryIndex = memoryIndex + 1;
+                memory = memory + RegionStride;
+            }
+            if (!contained)
+            {
+                _systemTableReject = 14;
+                return 0;
+            }
+
+            if (kind == 1)
+            {
+                localReservations = localReservations + 1;
+                if (localReservations != 1)
+                {
+                    _systemTableReject = 15;
+                    return 0;
+                }
+                localReservationAt = at;
+                localReservationBytes = bytes;
+                if (((owner >> 16) & 255) != 0
+                    || owner != Sys.Peek(table + cpuOffset + CpuIdAt)
+                    || at != Sys.BootStackBase()
+                    || bytes != Sys.BootStackBytes()
+                    || at > table || table - at > bytes
+                    || available > bytes - (table - at))
+                {
+                    _systemTableReject = 21;
+                    return 0;
+                }
+            }
+            else if (((owner >> 16) & 255) == 0
+                     || bytes != RemoteReservationBytes
+                     || (at & (RemoteReservationBytes - 1)) != 0
+                     || (at >> 33) != (owner >> 8))
+            {
+                _systemTableReject = 16;
+                return 0;
+            }
+            previousReservationAt = at;
+            previousReservationEnd = at + bytes;
+            previousReservationOwner = owner;
+            i = i + 1;
+        }
+        if (localReservations != 1)
+        {
+            _systemTableReject = 17;
+            return 0;
+        }
+
+        cpu = table + cpuOffset;
+        i = 0;
+        long reservationIndex = 0;
+        long reservation = table + reservationOffset;
+        while (i < cpuCount)
+        {
+            long id = Sys.Peek(cpu + CpuIdAt);
+            long self = Sys.Peek(cpu + CpuSelfAt);
+            bool local = ((id >> 16) & 255) == 0;
+            if (local && (self < localReservationAt
+                || self - localReservationAt > localReservationBytes
+                || CpuSelfBytes > localReservationBytes
+                                  - (self - localReservationAt)))
+            {
+                _systemTableReject = 18;
+                return 0;
+            }
+            if (!local)
+            {
+                while (reservationIndex < reservationCount
+                       && Sys.Peek(reservation + 24) < id)
+                {
+                    reservationIndex = reservationIndex + 1;
+                    reservation = reservation + ReservationStride;
+                }
+                if (reservationIndex >= reservationCount
+                    || Sys.Peek(reservation + 16) != 2
+                    || Sys.Peek(reservation + 24) != id
+                    || self != Sys.Peek(reservation) + RemoteSelfOffset)
+                {
+                    _systemTableReject = 19;
+                    return 0;
+                }
+            }
+            cpu = cpu + CpuStride;
+            i = i + 1;
+        }
+        _systemTable = table;
+        Sys.Fence();
+        _systemTableChecked = true;
+        Sys.Fence();
+        return _systemTable;
+    }
+
+    /// How much room this program was given, from the kernel running it.
+    ///
+    /// The call number is written here rather than taken from the operating
+    /// system's own header on purpose: this library is compiled into the
+    /// KERNEL as well, and a kernel cannot depend on the header that describes
+    /// how to call it. The number is part of the boundary between a program and
+    /// the system, and both sides having it written down is what that means.
+    const long AskRegion = 24;
+
+    static long MyRegion()
+    {
+        long top = Sys.Syscall(AskRegion, 0, 0, 0);
+        return top > 0 ? top : 0;
+    }
+
+    /// The lower of two ceilings, ignoring one that is not there. Zero only
+    /// when neither is, which is a program with no memory to hand out.
+    static long Nearer(long a, long b)
+    {
+        if (a == 0)
+        {
+            return b;
+        }
+
+        if (b == 0)
+        {
+            return a;
+        }
+        return a < b ? a : b;
+    }
+
+    static long PhysicalRegionEnd(long table, long at)
+    {
+        long count = Sys.Peek(table + TableRegionCount);
+        long entry = table + Sys.Peek(table + TableRegionsAt);
+        long end = 0;
+        long i = 0;
+
+        while (i < count)
+        {
+            long baseAt = Sys.Peek(entry);
+            long size = Sys.Peek(entry + RegionSize);
+
+            if (OrdinaryRam(entry) && at >= baseAt && at - baseAt < size)
+            {
+                long candidate = baseAt + size;
+                if (end == 0 || candidate < end)
+                {
+                    end = candidate;
+                }
+            }
+
+            entry = entry + RegionStride;
+            i = i + 1;
+        }
+        return end;
+    }
+
+    /// The end of the ordinary-RAM region containing an address, from the
+    /// validated system table. The bootstrap local alias is translated through
+    /// the table's exact mapping and never extends past its canonical RAM row.
+    static long RegionEnd(long at)
+    {
+        long table = SysTable();
+        if (table == 0)
+        {
+            return 0;
+        }
+
+        long local = Sys.Peek(table + TableBootLocal);
+        long system = Sys.Peek(table + TableBootSystem);
+        long bytes = Sys.Peek(table + TableBootBytes);
+        if (at >= local && at - local < bytes)
+        {
+            long physical = system + (at - local);
+            long physicalEnd = PhysicalRegionEnd(table, physical);
+            if (physicalEnd == 0)
+            {
+                return 0;
+            }
+            long mapEnd = system + bytes;
+            if (physicalEnd > mapEnd)
+            {
+                physicalEnd = mapEnd;
+            }
+            return local + (physicalEnd - system);
+        }
+        long end = PhysicalRegionEnd(table, at);
+        if (end == 0 && at > 0)
+        {
+            // SP names the first byte above the stack. If firmware placed the
+            // boot stack at the very top of a RAM row, at is deliberately one
+            // past the region rather than an address contained by it.
+            long exclusive = PhysicalRegionEnd(table, at - 1);
+            if (exclusive == at)
+            {
+                return at;
+            }
+        }
+        return end;
+    }
+
+    /// The contiguous allocatable suffix beginning at `at`. Reservation rows
+    /// stay canonical, so a standalone program executing through the bootstrap
+    /// alias is compared in the mapped system interval and translated back.
+    static long HeapEnd(long at)
+    {
+        long table = SysTable();
+        if (table == 0)
+        {
+            return 0;
+        }
+
+        long local = Sys.Peek(table + TableBootLocal);
+        long system = Sys.Peek(table + TableBootSystem);
+        long mapBytes = Sys.Peek(table + TableBootBytes);
+        long physical = at;
+        long physicalEnd = 0;
+        bool alias = at >= local && at - local < mapBytes;
+
+        if (alias)
+        {
+            physical = system + (at - local);
+            physicalEnd = PhysicalRegionEnd(table, physical);
+            if (physicalEnd == 0)
+            {
+                return 0;
+            }
+            long mapEnd = system + mapBytes;
+            if (physicalEnd > mapEnd)
+            {
+                physicalEnd = mapEnd;
+            }
+        }
+        else
+        {
+            physicalEnd = PhysicalRegionEnd(table, physical);
+            if (physicalEnd == 0)
+            {
+                return 0;
+            }
+        }
+
+        long reservationCount = Sys.Peek(table + TableReservationCount);
+        long entry = table + Sys.Peek(table + TableReservationsAt);
+        long i = 0;
+        while (i < reservationCount)
+        {
+            long reservedAt = Sys.Peek(entry);
+            long reservedBytes = Sys.Peek(entry + 8);
+            long reservedEnd = reservedAt + reservedBytes;
+            if (physical >= reservedAt && physical < reservedEnd)
+            {
+                return 0;
+            }
+            if (reservedAt > physical && reservedAt < physicalEnd)
+            {
+                physicalEnd = reservedAt;
+            }
+            entry = entry + ReservationStride;
+            i = i + 1;
+        }
+        return !alias ? physicalEnd : local + (physicalEnd - system);
+    }
+
+    /// Starts allocating blocks in one memory run and links it into the set
+    /// the collector and coalescer can walk.  `raw` is memory no object owns;
+    /// its first RunBytes become the record and the first block follows it.
+    static void BeginRun(long raw, long limit, long chunk)
+    {
+        Sys.Poke(raw + RunNext, _runs);
+        Sys.Poke(raw + RunEnd, raw + RunBytes);
+        Sys.Poke(raw + RunLimit, limit);
+        Sys.Poke(raw + RunChunk, chunk);
+        _runs = raw;
+        _base = raw + RunBytes;
+        _bump = _base;
+        _limit = limit;
+
+        // Most words inspected by a conservative collector are integers,
+        // code pointers, device addresses, or null. Reject everything outside
+        // the heap's broad address envelope before walking the run list. The
+        // exact RunEnd checks below remain authoritative inside that envelope.
+        if (_runFloor == 0 || _base < _runFloor)
+        {
+            _runFloor = _base;
+        }
+        if (limit > _runCeiling)
+        {
+            _runCeiling = limit;
+        }
+    }
+
+    /// The run containing a block or object address, or zero.  Runs are few
+    /// compared with blocks; walking this list is paid only by free and GC,
+    /// never by the bump-allocation fast path.
+    /// The run most frees hit is the run the last one hit; remember it and
+    /// the walk below is for the exceptions. Written under the heap lock.
+    static long _runMemo;
+
+    static long RunOf(long at)
+    {
+        if (at < _runFloor || at >= _runCeiling)
+        {
+            return 0;
+        }
+
+        long memo = _runMemo;
+
+        if (memo != 0 && at >= memo + RunBytes
+            && at < Sys.Peek(memo + RunEnd))
+        {
+            return memo;
+        }
+
+        long run = _runs;
+
+        while (run != 0)
+        {
+            long first = run + RunBytes;
+            long end = Sys.Peek(run + RunEnd);
+
+            if (at >= first && at < end)
+            {
+                _runMemo = run;
+                return run;
+            }
+            run = Sys.Peek(run + RunNext);
+        }
+        return 0;
+    }
+
+    // ---- reading and writing a block ----------------------------------------
+
+    static long SizeOfBlock(long block)
+    {
+        return Sys.Peek(block) & SizeMask;
+    }
+
+    static bool IsFree(long block)
+    {
+        return (Sys.Peek(block) & FlagFree) != 0;
+    }
+
+    /// Writes a block's size and flags at BOTH ENDS, so it can be found from
+    /// either side.
+    static void Stamp(long block, long size, long flags)
+    {
+        Sys.Poke(block, size | flags);
+        Sys.Poke(block + size - FooterBytes, size | flags);
+    }
+
+    // ---- the free list ------------------------------------------------------
+
+    static void Link(long block)
+    {
+        Sys.Poke(block + 8, _free);
+        Sys.Poke(block + HeaderBytes, 0);
+
+        if (_free != 0)
+        {
+            Sys.Poke(_free + HeaderBytes, block);
+        }
+
+        _free = block;
+    }
+
+    static void Unlink(long block)
+    {
+        long next = Sys.Peek(block + 8);
+        long prev = Sys.Peek(block + HeaderBytes);
+
+        if (prev == 0)
+        {
+            _free = next;
+        }
+        else
+        {
+            Sys.Poke(prev + 8, next);
+        }
+
+        if (next != 0)
+        {
+            Sys.Poke(next + HeaderBytes, prev);
+        }
+    }
+
+    // ---- handing memory out -------------------------------------------------
+
+    /// Allocates zeroed storage with the machine's natural alignment.
+    public static long Alloc(long bytes)
+    {
+        return Allocate(bytes, 8, true);
+    }
+
+    /// Attempts an allocation without throwing. Zero is the only failure
+    /// value; a zero-byte request still receives a distinct minimum block.
+    public static long TryAlloc(long bytes)
+    {
+        return Allocate(bytes, 8, false);
+    }
+
+    /// Allocates zeroed storage whose returned address is a multiple of
+    /// `alignment`. Alignment must be a power of two and at least eight.
+    public static long AllocAligned(long bytes, long alignment)
+    {
+        return Allocate(bytes, alignment, true);
+    }
+
+    public static long TryAllocAligned(long bytes, long alignment)
+    {
+        return Allocate(bytes, alignment, false);
+    }
+
+    /// Transfers a fresh, exclusively owned span into this heap as one zeroed
+    /// allocation. The span remains heap-owned until the address space ends;
+    /// it is not passed to the normal run shrinker. Used for permanent CPU
+    /// stacks whose backing must be selected by the kernel's NUMA allocator,
+    /// while their contents must remain visible to the ordinary collector.
+    /// On refusal ownership remains with the caller. Never pass an alias of
+    /// existing heap storage, or release/unmap the span after success.
+    public static long AdoptAllocation(long raw, long bytes)
+    {
+        if (raw <= 0 || (raw & 7) != 0 || bytes < RunBytes + Smallest
+            || raw > long.MaxValue - bytes) return 0;
+        if (!_ready) Start();
+        Take();
+        if (_runs == 0)
+        {
+            Give();
+            return 0;
+        }
+        long run = _runs;
+        while (run != 0)
+        {
+            if (raw < Sys.Peek(run + RunLimit) && run < raw + bytes)
+            {
+                Give();
+                return 0;
+            }
+            run = Sys.Peek(run + RunNext);
+        }
+        long size = (bytes - RunBytes) & SizeMask;
+        long block = raw + RunBytes;
+        long at = block + HeaderBytes;
+        long payload = size - Overhead;
+        Stamp(block, size, 0);
+        Sys.MemorySet(at, 0, payload);
+        Sys.Poke(raw + RunNext, Sys.Peek(_runs + RunNext));
+        Sys.Poke(raw + RunEnd, block + size);
+        Sys.Poke(raw + RunLimit, raw + bytes);
+        Sys.Poke(raw + RunChunk, 0);
+        // _runs continues to identify the active bump run. Inserting behind
+        // it preserves TakeBump/More's cursor and end-marker relationship.
+        Sys.Poke(_runs + RunNext, raw);
+        if (_runFloor == 0 || block < _runFloor) _runFloor = block;
+        if (raw + bytes > _runCeiling) _runCeiling = raw + bytes;
+        Chunks = Chunks + 1;
+        Sys.AtomicAdd(_countsAt + CountLive, 1);
+        Sys.AtomicAdd(_countsAt + CountAllocations, 1);
+        long oldBytes = Sys.AtomicAdd(_countsAt + CountLiveBytes, payload);
+        RaisePeak(oldBytes + payload);
+        Give();
+        return at;
+    }
+
+    static bool ValidAlignment(long alignment)
+    {
+        // A gigabyte is already far beyond any realistic object alignment on
+        // this machine and bounds the align-up arithmetic below.
+        return alignment >= 8 && alignment <= (1L << 30)
+               && (alignment & (alignment - 1)) == 0;
+    }
+
+    static long NeedFor(long bytes)
+    {
+        if (bytes < 0 || bytes > long.MaxValue - Overhead - 7)
+        {
+            return 0;
+        }
+
+        long need = (bytes + Overhead + 7) & SizeMask;
+        return need < Smallest ? Smallest : need;
+    }
+
+    static long Allocate(long bytes, long alignment, bool failHard)
+    {
+        if (!_ready)
+        {
+            Start();
+        }
+
+        if (!_heapBoundsValid)
+        {
+            return AllocationFailed(failHard);
+        }
+
+        long need = NeedFor(bytes);
+
+        if (need == 0 || !ValidAlignment(alignment))
+        {
+            return AllocationFailed(failHard);
+        }
+
+        // No table, no bound, no heap. Refusing here is the whole difference
+        // between a program that stops and one that writes over memory that is
+        // not there.
+        if (_limit == 0 && _supervisor)
+        {
+            if (!failHard)
+            {
+                return 0;
+            }
+            Sys.Print("heap: this program needs the system table and did not boot\n");
+            Sys.Exit(70);
+        }
+
+        // This processor's own cache first: no lock, no atomic, and the memory
+        // is warm because this processor is what last touched it.
+        long block = TakeCached(need, alignment);
+
+        if (block == 0)
+        {
+            Take();
+
+            // The class stacks first: for the sizes programs actually churn,
+            // this is the whole allocation -- one pop, no walk.
+            if (alignment == 8)
+            {
+                block = PopClass(need);
+            }
+
+            if (block == 0)
+            {
+                block = TakeFree(need, alignment);
+            }
+
+            if (block == 0)
+            {
+                block = TakeBump(need, alignment);
+            }
+            Give();
+        }
+
+        // A page request is normally cheaper than tracing the whole heap. The
+        // collector is a system-pressure mechanism: TakeRun first asks for
+        // another page, and only a genuine machine-wide shortage recruits
+        // registered heaps through the kernel reclaim rendezvous. Do not run a
+        // stop-the-world collection merely because this one process crossed an
+        // arbitrary chunk count; a large live allocation would pay repeatedly
+        // for collections which cannot free any of its intentionally live data.
+        // Ask OUTSIDE THE HEAP LOCK so the kernel may call this very process's
+        // reclaim entry while TakeRun waits.
+        long growth = need;
+
+        if (alignment > 8 && growth <= long.MaxValue - alignment - Smallest)
+        {
+            growth = growth + alignment + Smallest;
+        }
+
+        // More serializes the growers, but it deliberately releases its gate
+        // before this allocator retakes the heap lock. Another processor can
+        // consume the just-supplied run in that interval. A successful More
+        // means allocation should be retried, not that exactly one following
+        // attempt is guaranteed to win. Keep asking until this caller obtains
+        // a block or the grower reports genuine machine-wide exhaustion.
+        bool canGrow = growth > 0;
+
+        while (block == 0 && canGrow)
+        {
+            canGrow = More(growth);
+
+            if (canGrow)
+            {
+                Take();
+                block = TakeFree(need, alignment);
+
+                if (block == 0)
+                {
+                    block = TakeBump(need, alignment);
+                }
+                Give();
+            }
+        }
+
+        // A refused growth request has already allowed system-wide reclaim.
+        // The final collection must still enter through the kernel rendezvous:
+        // this heap is shared by every thread in the process, and Collect()
+        // is safe only after the kernel has stopped those siblings and made
+        // their saved registers, stacks, and private caches enumerable.  A
+        // worker calling Collect directly could miss a root held by a running
+        // parent and free that parent's live object.
+        if (block == 0 && !_supervisor)
+        {
+            RequestCollection();
+
+            Take();
+            block = TakeFree(need, alignment);
+
+            if (block == 0)
+            {
+                block = TakeBump(need, alignment);
+            }
+            Give();
+        }
+
+        if (block == 0)
+        {
+            return AllocationFailed(failHard);
+        }
+
+        // Freshly handed out memory reads as zero. A field read before it is
+        // assigned would otherwise pick up whatever the last owner left, which
+        // is a bug that appears only under load and only sometimes.
+        long at = block + HeaderBytes;
+        long end = block + SizeOfBlock(block) - FooterBytes;
+        // MSet is the architected block-memory operation. Besides avoiding a
+        // scalar instruction and translation loop for every eight bytes, it
+        // gives the native/JIT memory path one bounded zero operation to route
+        // through the local CSC when the allocation is local.
+        Sys.MemorySet(at, 0, end - at);
+
+        long payload = SizeOfBlock(block) - Overhead;
+        Sys.AtomicAdd(_countsAt + CountLive, 1);
+        Sys.AtomicAdd(_countsAt + CountAllocations, 1);
+        long oldBytes = Sys.AtomicAdd(_countsAt + CountLiveBytes, payload);
+        RaisePeak(oldBytes + payload);
+        return at;
+    }
+
+    static long AllocationFailed(bool failHard)
+    {
+        if (!failHard)
+        {
+            return 0;
+        }
+
+        // NOTHING TO THROW IS ITSELF THE ANSWER. Throwing null after startup
+        // failed traps at address zero and hides the real shortage.
+        if (Sys.Word(_oom) == 0)
+        {
+            Sys.Print("heap: no memory to run in -- the arena is empty\n");
+            Sys.Print("heap: base ");
+            Sys.PrintInt(_base);
+            Sys.Print(" bump ");
+            Sys.PrintInt(_bump);
+            Sys.Print(" limit ");
+            Sys.PrintInt(_limit);
+            Sys.Print(" static ");
+            Sys.PrintInt(_staticBottom);
+            Sys.Print("..");
+            Sys.PrintInt(_staticTop);
+            Sys.Print(" stack ");
+            Sys.PrintInt(Sys.Stack());
+            Sys.Print("..");
+            Sys.PrintInt(_stackTop);
+            Sys.Print(" table ");
+            Sys.PrintInt(_systemTable);
+            Sys.Print(" reject ");
+            Sys.PrintInt(_systemTableReject);
+            Sys.Print(" raw ");
+            Sys.PrintInt(Sys.FirmwareTable());
+            Sys.Print("+");
+            Sys.PrintInt(Sys.FirmwareTableBytes());
+            Sys.Print(" boot ");
+            Sys.PrintInt(Sys.BootStackBase());
+            Sys.Print("+");
+            Sys.PrintInt(Sys.BootStackBytes());
+            Sys.Print("\n");
+            Sys.Exit(70);
+        }
+
+        // An exception object alone says only that allocation failed. The
+        // kernel has no enclosing process to report which heap ran dry, so
+        // leave allocation topology in the console log without allocating a
+        // diagnostic string of its own.
+        if (_supervisor)
+        {
+            Sys.Print("heap: kernel allocation failed; base ");
+            Sys.PrintInt(_base);
+            Sys.Print(" bump ");
+            Sys.PrintInt(_bump);
+            Sys.Print(" limit ");
+            Sys.PrintInt(_limit);
+            Sys.Print(" free ");
+            Sys.PrintInt(_free);
+            Sys.Print(" chunks ");
+            Sys.PrintInt(Chunks);
+            Sys.Print(" grower ");
+            Sys.PrintInt(Grower);
+            Sys.Print("\n");
+        }
+
+        throw _oom;
+        return 0;
+    }
+
+    static void RaisePeak(long value)
+    {
+        long at = _countsAt + CountPeakBytes;
+        long seen = Sys.Peek(at);
+
+        while (value > seen)
+        {
+            long was = Sys.Cas(at, seen, value);
+
+            if (was == seen)
+            {
+                return;
+            }
+            seen = was;
+        }
+    }
+
+    // ---- what a processor keeps to itself -----------------------------------
+
+    /// Takes a block of at least the size wanted out of this runner's own
+    /// cache, or 0. Touches nothing shared, so it needs no lock: this memory
+    /// belongs to the processor or user thread asking.
+    /// This caller's own cache block: the processor's for the kernel, the
+    /// running thread's for everybody else. Zero when there is none, which is
+    /// answered by falling back to the shared heap.
+    /// ASKED OF THE PROCESSOR, NOT OF A STATIC, and that distinction is the
+    /// whole bug this had.
+    ///
+    /// It used to be a flag the kernel set on itself. That cannot work: the
+    /// kernel and every program share this library, so they share its statics
+    /// too -- the kernel turning the flag on turned it on for everybody, and
+    /// every program went on reaching for the per-processor block in kernel
+    /// memory exactly as before. The flag looked like a fix and was a way of
+    /// not noticing.
+    ///
+    /// What it produced was a page fault at one FIXED address, the same one in
+    /// every program -- the shell, the getty, anything that allocated -- which
+    /// is the signature of a constant source rather than of anything to do with
+    /// whichever program happened to die. A per-process bug has a per-process
+    /// address.
+    ///
+    /// Mode cannot leak. The processor knows which mode it is in, no static is
+    /// consulted, and there is nothing for a shared library to get wrong.
+    static long Cache()
+    {
+        // The kernel explicitly opts into CR56's stable per-CPU cache. Every
+        // outer-ring allocation temporarily stays on the shared locked paths
+        // while the CR17 cache handoff is audited under migrating workloads.
+        return _supervisor ? (_perProcessor ? Sys.Self() : 0) : 0;
+    }
+
+    /// The block size a class holds, largest first refused. The ladder is
+    /// the byte sizes NeedFor actually produces for small objects.
+    static long ClassSize(long k)
+    {
+        if (k == 0)
+        {
+            return 48;
+        }
+
+        if (k == 1)
+        {
+            return 64;
+        }
+
+        if (k == 2)
+        {
+            return 96;
+        }
+
+        if (k == 3)
+        {
+            return 128;
+        }
+
+        if (k == 4)
+        {
+            return 192;
+        }
+
+        if (k == 5)
+        {
+            return 256;
+        }
+
+        if (k == 6)
+        {
+            return 384;
+        }
+
+        if (k == 7)
+        {
+            return 512;
+        }
+
+        if (k == 8)
+        {
+            return 1024;
+        }
+
+        if (k == 9)
+        {
+            return 2048;
+        }
+
+        if (k == 10)
+        {
+            return 3072;
+        }
+        return 4096;
+    }
+
+    /// Which class serves a need, or -1 for one too large to class.
+    static long ClassOf(long need)
+    {
+        if (need > 4096)
+        {
+            return -1;
+        }
+
+        if (need <= 48)
+        {
+            return 0;
+        }
+
+        if (need <= 64)
+        {
+            return 1;
+        }
+
+        if (need <= 96)
+        {
+            return 2;
+        }
+
+        if (need <= 128)
+        {
+            return 3;
+        }
+
+        if (need <= 192)
+        {
+            return 4;
+        }
+
+        if (need <= 256)
+        {
+            return 5;
+        }
+
+        if (need <= 384)
+        {
+            return 6;
+        }
+
+        if (need <= 512)
+        {
+            return 7;
+        }
+
+        if (need <= 1024)
+        {
+            return 8;
+        }
+
+        if (need <= 2048)
+        {
+            return 9;
+        }
+
+        if (need <= 3072)
+        {
+            return 10;
+        }
+        return 11;
+    }
+
+    /// Carves the class head words out of the heap itself, once, under the
+    /// heap lock. Lazy because at Start the heap may not have a run yet.
+    static bool EnsureClasses()
+    {
+        if (_classAt != 0)
+        {
+            return true;
+        }
+
+        long block = TakeBump(NeedFor(Classes * 8), 8);
+
+        if (block == 0)
+        {
+            return false;
+        }
+
+        long head = block + HeaderBytes;
+        long k = 0;
+
+        while (k < Classes)
+        {
+            Sys.Poke(head + k * 8, 0);
+            k = k + 1;
+        }
+
+        _classAt = head;
+        return true;
+    }
+
+    /// Pops a class block that satisfies need, or 0. Caller holds the lock.
+    static long PopClass(long need)
+    {
+        if (_classAt == 0)
+        {
+            return 0;
+        }
+
+        long k = ClassOf(need);
+
+        if (k < 0)
+        {
+            return 0;
+        }
+
+        // The exact class first, then anything larger: a 96-byte block
+        // serves a 64-byte need at the cost of the difference, which is
+        // less than a walk of the general list.
+        while (k < Classes)
+        {
+            long block = Sys.Peek(_classAt + k * 8);
+
+            if (block != 0)
+            {
+                Sys.Poke(_classAt + k * 8, Sys.Peek(block + 8));
+                Stamp(block, SizeOfBlock(block), 0);
+                return block;
+            }
+            k = k + 1;
+        }
+        return 0;
+    }
+
+    /// Keeps an exact-class-sized freed block for O(1) reuse. Caller holds
+    /// the lock. False means the block is not a class size.
+    static bool KeepClassed(long block)
+    {
+        long size = SizeOfBlock(block);
+        long k = ClassOf(size);
+
+        if (k < 0 || size != ClassSize(k) || !EnsureClasses())
+        {
+            return false;
+        }
+
+        Stamp(block, size, FlagCached);
+        Sys.Poke(block + 8, Sys.Peek(_classAt + k * 8));
+        Sys.Poke(_classAt + k * 8, block);
+        return true;
+    }
+
+    /// Hands every classed block back to the general list where it can
+    /// merge. Called with the heap held, before collection or a room count,
+    /// for the same reason processor caches drain: a block on a class list
+    /// is free but on no list the sweep can see.
+    static void DrainClasses()
+    {
+        if (_classAt == 0)
+        {
+            return;
+        }
+
+        long k = 0;
+
+        while (k < Classes)
+        {
+            long block = Sys.Peek(_classAt + k * 8);
+
+            Sys.Poke(_classAt + k * 8, 0);
+
+            while (block != 0)
+            {
+                long next = Sys.Peek(block + 8);
+
+                Stamp(block, SizeOfBlock(block), 0);
+                Merge(block);
+                block = next;
+            }
+            k = k + 1;
+        }
+    }
+
+    static long TakeCached(long need, long alignment)
+    {
+        long self = Cache();
+
+        if (self == 0)
+        {
+            return 0;
+        }
+
+        long prev = 0;
+        long block = Sys.Peek(self + CacheHeadAt);
+
+        while (block != 0)
+        {
+            long next = Sys.Peek(block + 8);
+
+            if (SizeOfBlock(block) >= need
+                && ((block + HeaderBytes) & (alignment - 1)) == 0)
+            {
+                if (prev == 0)
+                {
+                    Sys.Poke(self + CacheHeadAt, next);
+                }
+                else
+                {
+                    Sys.Poke(prev + 8, next);
+                }
+
+                Sys.Poke(self + CacheCountAt, Sys.Peek(self + CacheCountAt) - 1);
+                Stamp(block, SizeOfBlock(block), 0);
+                return block;
+            }
+
+            prev = block;
+            block = next;
+        }
+        return 0;
+    }
+
+    /// Keeps a freed block for this processor, or says it is full. A cache that
+    /// grew without limit would be one processor hoarding the whole heap.
+    static bool KeepCached(long block)
+    {
+        long self = Cache();
+
+        if (self == 0 || Sys.Peek(self + CacheCountAt) >= CacheLimit)
+        {
+            return false;
+        }
+
+        // Not FlagFree: a cached neighbour is not in the shared free list and
+        // Merge must not try to Unlink it while draining another thread's
+        // cache.  The cache and mark-scan phases are mutually exclusive, so
+        // FlagCached safely shares the scan bit.
+        Stamp(block, SizeOfBlock(block), FlagCached);
+        Sys.Poke(block + 8, Sys.Peek(self + CacheHeadAt));
+        Sys.Poke(self + CacheHeadAt, block);
+        Sys.Poke(self + CacheCountAt, Sys.Peek(self + CacheCountAt) + 1);
+        return true;
+    }
+
+    /// Hands a processor's cache back to the shared heap, where the blocks can
+    /// merge with their neighbours again. Called before collecting, because a
+    /// block sitting in a cache is free and is on no list the sweep can see.
+    static void DrainCache(long self)
+    {
+        if (self == 0)
+        {
+            return;
+        }
+
+        long block = Sys.Peek(self + CacheHeadAt);
+
+        Sys.Poke(self + CacheHeadAt, 0);
+        Sys.Poke(self + CacheCountAt, 0);
+
+        while (block != 0)
+        {
+            long next = Sys.Peek(block + 8);
+
+            Merge(block);
+            block = next;
+        }
+    }
+
+    // First fit, splitting anything much larger than asked for. First fit
+    // rather than best fit because best fit walks the whole list every time to
+    // avoid a fragmentation that coalescing already deals with.
+    static long TakeFree(long need, long alignment)
+    {
+        long block = _free;
+
+        while (block != 0)
+        {
+            long size = SizeOfBlock(block);
+            long payload = block + HeaderBytes;
+            long aligned = (payload + alignment - 1) & -alignment;
+            long chosen = aligned - HeaderBytes;
+            long prefix = chosen - block;
+
+            if (prefix != 0 && prefix < Smallest)
+            {
+                chosen = chosen + alignment;
+                prefix = chosen - block;
+            }
+
+            if (prefix >= 0 && prefix <= size && size - prefix >= need)
+            {
+                Unlink(block);
+                long available = size - prefix;
+
+                if (prefix != 0)
+                {
+                    Stamp(block, prefix, FlagFree);
+                    Link(block);
+                }
+
+                if (available - need >= Smallest)
+                {
+                    Split(chosen, available, need);
+                }
+                else
+                {
+                    need = available;
+                }
+
+                Stamp(chosen, need, 0);
+                return chosen;
+            }
+
+            block = Sys.Peek(block + 8);
+        }
+        return 0;
+    }
+
+    // The tail of an over-large block becomes a block of its own, on the free
+    // list. Without this a heap that once handed out something large could
+    // never hand out anything small again.
+    static void Split(long block, long size, long need)
+    {
+        long rest = block + need;
+
+        Stamp(rest, size - need, FlagFree);
+        Link(rest);
+    }
+
+    /// How much to ask the kernel for when the ground runs out.
+    ///
+    /// More than is needed, because asking costs a system call, page allocation
+    /// and page-table work. Start with one page so a short-lived program stays
+    /// small, then double successful requests up to 64 KiB. A large live heap
+    /// therefore amortises growth instead of making one kernel round trip per
+    /// allocation, while a program which needs only a page never reserves 64.
+    ///
+    /// A page is four kilobytes because that is what the unit protecting memory
+    /// works in, and it cannot be made smaller for free: a page table has to
+    /// fit in a page, so a kilobyte page gives a hundred and twenty-eight
+    /// entries -- seven index bits -- and this machine's addresses reach to the
+    /// backplane's SRAM at forty-eight bits. Four levels of seven bits plus ten
+    /// is thirty-eight, which does not reach it; six levels do, at fifty per
+    /// cent more memory reads on every miss. On a processor this slow that is
+    /// the wrong trade for saving three kilobytes per program.
+    const long AskFor = 4096;
+    const long AskMost = 65536;
+    static long _nextAsk = AskFor;
+
+    static void AdvanceAsk()
+    {
+        if (_nextAsk < AskMost)
+        {
+            _nextAsk = _nextAsk + _nextAsk;
+
+            if (_nextAsk > AskMost)
+            {
+                _nextAsk = AskMost;
+            }
+        }
+    }
+
+
+    /// The system call that asks for more. Written down here as a number
+    /// because this file is part of the standard library and the one that names
+    /// the calls is built on top of it -- see Call.TakeRun in os/lib/user.cor,
+    /// which is where it is actually documented.
+    const long TakeRunCall = 36;
+
+    /// The call that returns a complete borrowed chunk.
+    const long ReturnRunCall = 37;
+
+    /// The call that asks for the chunk we are already in to reach further.
+    /// See Call.GrowRun in os/lib/user.cor.
+    const long GrowRunCall = 38;
+
+    /// Internal cooperative-reclaim ABI.  This lives below os/lib/user.cor,
+    /// so the number is repeated here exactly like TakeRunCall and GrowRunCall.
+    const long ReclaimCall = 69;
+    const long ReclaimRegister = 0;
+    const long ReclaimReport = 1;
+    const long ReclaimSiblingCount = 2;
+    const long ReclaimSiblingValue = 3;
+    const long ReclaimRequest = 4;
+    const long ReclaimOwnerRoot = 5;
+    const long SavedRegisterWords = 30;       // Ps.FrameWords, including appended r12
+
+    /// Default maximum time one allocation-pressure request may recruit other
+    /// heaps.  Zero means one complete pass without timed repeats.  Programs
+    /// may change this before their
+    /// heap starts, or call Configure after it has started.
+    public static long AllocationTimeout = 1000;
+
+    public static void Configure(long timeoutMillis)
+    {
+        AllocationTimeout = timeoutMillis < 0 ? 0 : timeoutMillis;
+
+        if (_ready && !_supervisor)
+        {
+            Sys.Syscall(ReclaimCall, ReclaimRegister,
+                        Sys.AddressOf(Heap.ReclaimEntry), AllocationTimeout);
+        }
+    }
+
+    /// Where the kernel's most recent chunk starts, or zero before there has
+    /// been one. Not the same as _base: at startup the heap is sitting in the
+    /// arena the program was loaded with, which is nobody's chunk and cannot
+    /// be grown.
+    static long _chunk;
+
+    /// WHERE MORE MEMORY COMES FROM WHEN THIS HEAP IS THE KERNEL'S OWN.
+    ///
+    /// A program asks the kernel through a system call. The kernel cannot: it
+    /// IS the thing on the other end, and a kernel trapping into itself would
+    /// be a kernel deadlocking on its own lock. So it writes the address of a
+    /// routine here instead and this calls that.
+    ///
+    ///   (bytes, 0)   -> the address of a fresh run, or zero
+    ///   (bytes, at)  -> non-zero if the run at `at` was made that much longer
+    ///
+    /// Zero in a program, and zero in a kernel early in startup -- before there
+    /// is a memory manager to ask, which is exactly when the kernel is running
+    /// on the modest arena it was given to bootstrap with.
+    public static long Grower;
+
+    /// WHERE A COMPLETELY FREE KERNEL RUN GOES BACK. User heaps return their
+    /// chunks through ReturnRun; the kernel cannot make a system call to
+    /// itself, so its bootstrap owner installs this direct counterpart beside
+    /// Grower. The arguments are the CPU-visible start and byte count.
+    public static long Shrinker;
+
+    static long TakeBump(long need, long alignment)
+    {
+        long payload = _bump + HeaderBytes;
+        long aligned = (payload + alignment - 1) & -alignment;
+        long block = aligned - HeaderBytes;
+        long prefix = block - _bump;
+
+        if (prefix != 0 && prefix < Smallest)
+        {
+            block = block + alignment;
+            prefix = block - _bump;
+        }
+
+        if (block < _bump || block > long.MaxValue - need
+            || block + need > _limit)
+        {
+            // More may enter the kernel and the kernel may re-enter Reclaim.
+            // The caller therefore performs More only after dropping the heap
+            // lock; this locked primitive reports local exhaustion and stops.
+            return 0;
+        }
+
+        if (prefix != 0)
+        {
+            Stamp(_bump, prefix, FlagFree);
+            Link(_bump);
+        }
+
+        _bump = _bump + need;
+
+        if (prefix != 0)
+        {
+            _bump = block + need;
+        }
+
+        Stamp(block, need, 0);
+        Sys.Poke(_runs + RunEnd, _bump);
+        return block;
+    }
+
+    /// Gets another chunk from the kernel and allocates out of it from here on.
+    ///
+    /// WHAT IS LEFT OF THE OLD CHUNK IS NOT LOST -- it stays on the free list
+    /// as far as anything already in it is concerned, and Free still returns
+    /// blocks to it. What is abandoned is only the untouched tail, which is by
+    /// definition smaller than the request that could not be met.
+    static bool More(long need)
+    {
+        // Only one allocator thread asks for a run at a time. The heap lock
+        // cannot be used here because the kernel may reclaim this same heap
+        // while satisfying TakeRun, so growth has a separate gate. The gate
+        // must still identify its owner: servicing that request may allocate
+        // again on the same processor and therefore re-enter More.
+        long me = _supervisor ? Sys.CpuId() + 1 : 1;
+
+        if (_supervisor && Sys.Peek(_moreAt) == me)
+        {
+            _moreDepth = _moreDepth + 1;
+        }
+        else
+        {
+            while (Sys.Cas(_moreAt, 0, me) != 0)
+            {
+                Sys.Pause();
+            }
+            _moreDepth = 0;
+        }
+
+        // A thread which waited may find that the preceding grower already
+        // supplied what it needs. Avoid taking a redundant run.
+        Take();
+        bool supplied = HasRoom(need);
+        Give();
+
+        if (supplied)
+        {
+            EndMore();
+            return true;
+        }
+
+        // A fresh run needs its in-band record as well as the allocation which
+        // forced us here.  Growing the current run may ask for a few bytes more
+        // than strictly necessary; the kernel rounds to pages in either case.
+        long fresh = need + RunBytes;
+        long want = fresh > _nextAsk ? fresh : _nextAsk;
+
+        // THE KERNEL'S OWN HEAP takes memory straight out of the machine's
+        // pool, because it is the thing a program's system call would have
+        // reached. Same two answers in the same order -- longer where it is if
+        // the memory after it is free, a fresh run otherwise.
+        if (_supervisor)
+        {
+            if (Grower == 0)
+            {
+                EndMore();
+                return false;
+            }
+
+            long mine = Sys.Call(Grower, want, 0, 0);
+
+            // A large amortised window is an optimisation, not the amount the
+            // allocation semantically requires. If pressure cannot supply the
+            // window, retry the minimum useful run before declaring failure.
+            if (mine == 0 && want > fresh && want > AskFor)
+            {
+                want = fresh > AskFor ? fresh : AskFor;
+                _nextAsk = AskFor;
+                mine = Sys.Call(Grower, want, 0, 0);
+            }
+
+            if (mine == 0)
+            {
+                EndMore();
+                return false;
+            }
+
+            Take();
+            Chunks = Chunks + 1;
+            // Keep each later kernel page run independently reclaimable. The
+            // former in-place extension made one short-lived boot string pin
+            // every page ever appended to the bootstrap arena.
+            _chunk = mine;
+            BeginRun(mine, mine + want, mine);
+            AdvanceAsk();
+            Give();
+            EndMore();
+            return true;
+        }
+
+        // TAKE A SEPARATE RECLAIMABLE RUN.
+        //
+        // Extending one chunk is attractive until memory has to be returned:
+        // one live object anywhere in that ever-growing span pins every page
+        // in it. Separate bounded runs let a sweep return any run which has
+        // become wholly dead. A run may span several physical pages; Grow
+        // remains part of the system ABI for custom allocators whose layout
+        // makes extending the better trade.
+
+        // The kernel adds its private chunk header before rounding. Ask for a
+        // growth window less that header so each request consumes exactly the
+        // geometrically selected number of whole system pages.
+        long ask = fresh > want - 16 ? fresh : want - 16;
+        long got = Sys.Syscall(TakeRunCall, ask, 0, 0);
+
+        if (got == 0 && want > fresh && want > AskFor)
+        {
+            want = fresh > AskFor ? fresh : AskFor;
+            ask = fresh > want - 16 ? fresh : want - 16;
+            _nextAsk = AskFor;
+            got = Sys.Syscall(TakeRunCall, ask, 0, 0);
+        }
+
+        if (got == 0)
+        {
+            EndMore();
+            return false;
+        }
+
+        // _base MOVES TOO, and that is not bookkeeping -- it is what keeps the
+        // bump path inside this run.  The older bounds remain in their in-band
+        // records, so free and collection can still coalesce and sweep them.
+        Take();
+        Chunks = Chunks + 1;
+        _chunk = got;
+        BeginRun(got, got + ask, got);
+        AdvanceAsk();
+        Give();
+        EndMore();
+        return true;
+    }
+
+    static void EndMore()
+    {
+        if (_moreDepth > 0)
+        {
+            _moreDepth = _moreDepth - 1;
+            return;
+        }
+
+        Sys.Fence();
+        Sys.AtomicSwap(_moreAt, 0);
+    }
+
+    /// Whether a retry can succeed without obtaining another run. Caller
+    /// holds the heap lock. An alignment request deliberately overstates need,
+    /// so this conservative answer may grow once unnecessarily but never lies.
+    static bool HasRoom(long need)
+    {
+        if (_bump <= long.MaxValue - need && _bump + need <= _limit)
+        {
+            return true;
+        }
+
+        // THE CLASS STACKS ARE DELIBERATELY NOT COUNTED HERE. Every
+        // allocation that may take a classed block -- natural alignment,
+        // class-sized -- already tried PopClass before anyone asks about
+        // room, so a classed block can never satisfy the request that got
+        // this far. Counting them anyway told More there was room an
+        // aligned request could not reach; More believed it, skipped a
+        // growth the kernel would have granted, and a satisfiable
+        // allocation failed -- the audit's concrete case was
+        // AllocAligned(19, 16) beside one 128-byte classed block.
+        long block = _free;
+
+        while (block != 0)
+        {
+            if (SizeOfBlock(block) >= need)
+            {
+                return true;
+            }
+            block = Sys.Peek(block + 8);
+        }
+        return false;
+    }
+
+    // ---- giving it back -----------------------------------------------------
+
+    /// Gives a block back, and puts it together with whichever neighbours are
+    /// also free.
+    ///
+    /// The caller says what it is giving back and the heap believes it: there
+    /// is no way to check, and a check that could be wrong is worse than none
+    /// because it would be trusted.
+    public static void Free(long at)
+    {
+        if (at == 0)
+        {
+            return;
+        }
+
+        if (!_ready)
+        {
+            Start();
+        }
+
+        Take();
+        long block = ValidAllocated(at);
+
+        if (block == 0)
+        {
+            Sys.AtomicAdd(_countsAt + CountInvalid, 1);
+            Give();
+            return;
+        }
+
+        long payload = SizeOfBlock(block) - Overhead;
+        // ATOMIC even under the heap lock: the allocation side counts from
+        // its lockless cache path, so a plain read-modify-write here loses
+        // updates against it -- smpheap check 5 caught exactly that.
+        Sys.AtomicAdd(_countsAt + CountLive, -1);
+        Sys.AtomicAdd(_countsAt + CountFreed, 1);
+        Sys.AtomicAdd(_countsAt + CountLiveBytes, -payload);
+
+        // An exact class size goes on its class stack: the next allocation
+        // of the same shape is one pop instead of a first-fit walk, and the
+        // free itself skips the merge. This is the common case for every
+        // string and node a program churns.
+        if (KeepClassed(block))
+        {
+            Give();
+            return;
+        }
+
+        // This processor keeps it, if it has room. Nothing shared is touched,
+        // so no lock is taken and no other processor is disturbed -- and the
+        // next allocation on this processor gets memory already in its cache.
+        if (KeepCached(block))
+        {
+            Give();
+            return;
+        }
+
+        // Validation, accounting and publication remain one critical section.
+        // No second caller can turn the block free between validation and
+        // Merge, so the former unlock/relock and rollback path bought nothing.
+        Merge(block);
+        Give();
+
+        // Free publishes reusable memory and returns immediately. Returning a
+        // page-sized run is a kernel rendezvous, and doing that here made a
+        // batch of large frees pay one system call per object. The kernel's
+        // bounded idle reclaim and explicit memory-pressure reclaim already
+        // call Reclaim, which returns every wholly free borrowed run. Keeping
+        // release out of this latency-sensitive path is both faster and more
+        // predictable without pinning memory under pressure.
+    }
+
+    /// Returns the header for an exact, live allocation address. Caller holds
+    /// the heap lock. Zero means foreign, interior, malformed, or already free.
+    static long ValidAllocated(long at)
+    {
+        if ((at & 7) != 0 || at < HeaderBytes)
+        {
+            return 0;
+        }
+
+        long block = at - HeaderBytes;
+        long run = RunOf(block);
+
+        if (run == 0 || block < run + RunBytes)
+        {
+            return 0;
+        }
+
+        long end = Sys.Peek(run + RunEnd);
+        long word = Sys.Peek(block);
+        long size = word & SizeMask;
+
+        if (size < Smallest || block > long.MaxValue - size
+            || block + size > end
+            || (word & (FlagFree | FlagCached)) != 0)
+        {
+            return 0;
+        }
+
+        if (Sys.Peek(block + size - FooterBytes) != word)
+        {
+            return 0;
+        }
+        return block;
+    }
+
+    /// Changes an allocation's usable size while preserving the old prefix.
+    /// Null acts like Alloc; a zero size frees and returns null.
+    public static long Resize(long at, long bytes)
+    {
+        return ResizeInternal(at, bytes, true);
+    }
+
+    /// C-style resize: failure returns zero and leaves the old allocation live.
+    public static long TryResize(long at, long bytes)
+    {
+        return ResizeInternal(at, bytes, false);
+    }
+
+    static long ResizeInternal(long at, long bytes, bool failHard)
+    {
+        if (at == 0)
+        {
+            return Allocate(bytes, 8, failHard);
+        }
+
+        if (bytes == 0)
+        {
+            Free(at);
+            return 0;
+        }
+
+        long need = NeedFor(bytes);
+
+        if (need == 0)
+        {
+            return AllocationFailed(failHard);
+        }
+
+        Take();
+        long block = ValidAllocated(at);
+
+        if (block == 0)
+        {
+            Give();
+            return 0;
+        }
+
+        long oldSize = SizeOfBlock(block);
+        long oldPayload = oldSize - Overhead;
+
+        if (need <= oldSize)
+        {
+            long rest = oldSize - need;
+
+            if (rest >= Smallest)
+            {
+                Stamp(block, need, 0);
+                Stamp(block + need, rest, FlagFree);
+                Merge(block + need);
+                Sys.AtomicAdd(_countsAt + CountLiveBytes, need - oldSize);
+            }
+            Give();
+            return at;
+        }
+
+        long run = RunOf(block);
+        long end = Sys.Peek(run + RunEnd);
+        long next = block + oldSize;
+
+        if (next < end && IsFree(next)
+            && oldSize <= long.MaxValue - SizeOfBlock(next)
+            && oldSize + SizeOfBlock(next) >= need)
+        {
+            long total = oldSize + SizeOfBlock(next);
+            Unlink(next);
+
+            if (total - need >= Smallest)
+            {
+                Stamp(block, need, 0);
+                Stamp(block + need, total - need, FlagFree);
+                Link(block + need);
+                total = need;
+            }
+            else
+            {
+                Stamp(block, total, 0);
+            }
+
+            long added = total - oldSize;
+            long was = Sys.AtomicAdd(_countsAt + CountLiveBytes, added);
+            RaisePeak(was + added);
+            Give();
+
+            // New bytes have the same zero-on-allocation promise as Alloc.
+            long p = at + oldPayload;
+
+            while (p < block + total - FooterBytes)
+            {
+                Sys.Poke(p, 0);
+                p = p + 8;
+            }
+            return at;
+        }
+        Give();
+
+        long replacement = Allocate(bytes, 8, failHard);
+
+        if (replacement == 0)
+        {
+            return 0;
+        }
+
+        long copy = oldPayload < bytes ? oldPayload : bytes;
+        Sys.MemoryCopy(replacement, at, copy);
+        Free(at);
+        return replacement;
+    }
+
+    /// Puts a block back on the shared free list, joined to whichever
+    /// neighbours are also free. The caller holds the lock.
+    static long Merge(long block)
+    {
+        long run = RunOf(block);
+
+        if (run == 0)
+        {
+            return 0;
+        }
+
+        long first = run + RunBytes;
+        long end = Sys.Peek(run + RunEnd);
+        long size = SizeOfBlock(block);
+
+        // Forward: the block after this one starts where this one ends.
+        long next = block + size;
+
+        if (next < end && IsFree(next))
+        {
+            Unlink(next);
+            size = size + SizeOfBlock(next);
+        }
+
+        // Backward: the only way to find the block before this one is to read
+        // its footer, which is the word immediately below this header. That is
+        // what the footer is for and the only thing it is for.
+        if (block > first)
+        {
+            long back = Sys.Peek(block - FooterBytes);
+
+            if ((back & FlagFree) != 0)
+            {
+                long prev = block - (back & SizeMask);
+
+                Unlink(prev);
+                size = size + SizeOfBlock(prev);
+                block = prev;
+            }
+        }
+
+        Stamp(block, size, FlagFree);
+        Link(block);
+        return run;
+    }
+
+    // ---- collecting ---------------------------------------------------------
+    //
+    // Conservative mark and sweep. It does not know what is a pointer and what
+    // is a number, so it treats anything that COULD be a pointer into the heap
+    // as one: if a word lands on a block whose header and footer agree about
+    // its size, that block is kept.
+    //
+    // Being wrong that way keeps something that was already dead, which costs a
+    // little memory. Being wrong the other way frees something still in use,
+    // which costs everything -- so every uncertainty here is resolved towards
+    // keeping. That is also why nothing MOVES: a conservative collector cannot
+    // update a word it is only guessing is a pointer, so a block that is kept
+    // is kept exactly where it is.
+
+    /// Whether an address handed back by Alloc could really have been.
+    ///
+    /// The header and footer agreeing is a strong test: two words, far apart,
+    /// both saying the same size, on an eight-byte boundary, inside the heap.
+    /// A number that passes by accident costs one retained block.
+    static long BlockForPointer(long at)
+    {
+        long run = RunOf(at);
+
+        // One-past the final payload in a run is also one-past the run's used
+        // extent, so the ordinary containment test correctly rejects it.
+        // Collection is more conservative than Free: locate the byte below
+        // that boundary, then let the block walk below prove whether `at` is
+        // exactly a real payload end. No allocator mutation path accepts it.
+        if (run == 0 && at > 0)
+        {
+            run = RunOf(at - 1);
+        }
+
+        if (run == 0)
+        {
+            return 0;
+        }
+
+        long first = run + RunBytes;
+        long end = Sys.Peek(run + RunEnd);
+
+        // Exact payload starts are overwhelmingly common and constant time.
+        if ((at & 7) == 0 && at >= first + HeaderBytes)
+        {
+            long exact = at - HeaderBytes;
+            long word = Sys.Peek(exact);
+            long size = word & SizeMask;
+
+            if (exact >= first && size >= Smallest
+                && exact <= long.MaxValue - size && exact + size <= end
+                && Sys.Peek(exact + size - FooterBytes) == word)
+            {
+                return exact;
+            }
+        }
+
+        // Conservative collectors must also honor interior pointers. Walk only
+        // the one run already known to contain the candidate.
+        long block = first;
+
+        while (block < end)
+        {
+            long word = Sys.Peek(block);
+            long size = word & SizeMask;
+
+            if (size < Smallest || block > long.MaxValue - size
+                || block + size > end
+                || Sys.Peek(block + size - FooterBytes) != word)
+            {
+                return 0;
+            }
+
+            // A descending stack publishes its TOP, which is the C/C#
+            // one-past pointer for the allocated payload. Firmware keeps
+            // exactly that value in each processor block. It is a real root,
+            // just as an interior stack pointer is; refusing the equality
+            // made bootstrap collection free every live interrupt stack.
+            // Conservatively retaining an accidental equal end costs one
+            // block, while freeing a real stack loses the machine.
+            if (at >= block + HeaderBytes
+                && at <= block + size - FooterBytes)
+            {
+                return block;
+            }
+            block = block + size;
+        }
+        return 0;
+    }
+
+    static void MarkAt(long at)
+    {
+        long block = BlockForPointer(at);
+
+        if (block == 0)
+        {
+            return;
+        }
+
+        long word = Sys.Peek(block);
+
+        // A live object is never on the free list, so a word pointing at a free
+        // block is a number that happens to look like a pointer.
+        if ((word & (FlagFree | FlagCached)) != 0
+            || (word & FlagMark) != 0)
+        {
+            return;
+        }
+
+        Stamp(block, word & SizeMask, (word & FlagMask) | FlagMark);
+
+        if (_collecting)
+        {
+            if (_markWorkAt != 0 && _markTail < _markWorkCount)
+            {
+                Sys.Poke(_markWorkAt + _markTail * 8, block);
+                _markTail = _markTail + 1;
+            }
+            else
+            {
+                _markOverflow = true;
+            }
+        }
+    }
+
+    /// Marks everything reachable from a range of memory.
+    static void ScanRange(long from, long to)
+    {
+        long p = from;
+
+        while (p < to)
+        {
+            long candidate = Sys.Peek(p);
+
+            MarkAt(candidate);
+            p = p + 8;
+        }
+    }
+
+    /// Runs a collection: everything reachable from the stack and the registers
+    /// is kept, and everything else goes back on the free list.
+    public static void Collect()
+    {
+        if (!_ready || !_heapBoundsValid || _stackTop == 0)
+        {
+            return;
+        }
+
+        Take();
+        _markHead = 0;
+        _markTail = 0;
+        _markOverflow = _markWorkAt == 0;
+        _collecting = true;
+
+        // Every stopped runner's cache goes back first. A block sitting in one is
+        // free and is on no list the sweep can see, so leaving them there would
+        // have the sweep put them on the free list a SECOND time -- the same
+        // block handed to two callers, which is the exact failure this whole
+        // arrangement exists to prevent.
+        //
+        // Doing this to another runner's cache while it is running is a race,
+        // which is why collecting requires everything else to be stopped. That
+        // is the kernel's to arrange; here there is nothing else running.
+        DrainAll();
+
+        // The registers, on the stack where they can be looked at. A pointer
+        // held only in a register is still a pointer.
+        Sys.Spill();
+        ScanRange(Sys.Stack(), _stackTop);
+        Sys.Unspill();
+
+        // A user-kernel-started collection owns a stop-the-world rendezvous for
+        // the complete address space. Every sibling's stack and saved
+        // registers are roots just as this thread's are. During the special
+        // single-CPU kernel bootstrap collection, firmware's processor blocks
+        // are roots instead: drivers deliberately publish per-CPU heap buffers
+        // there rather than keeping a second static pointer to each.
+        if (_supervisor)
+        {
+            ScanProcessorRoots();
+        }
+        else
+        {
+            ScanStoppedThreadRoots();
+        }
+
+        // Statics too: a program's globals are roots exactly as its stack is.
+        // A scheduled process gets exact data-section bounds recorded by the
+        // image loader. Firmware and stand-alone programs have no active
+        // callback and retain the compiler's exact bounds captured at Start.
+        long staticBottom = _supervisor ? 0
+                            : Sys.Syscall(ReclaimCall, ReclaimOwnerRoot, 0, 0);
+        long staticTop = _supervisor ? 0
+                         : Sys.Syscall(ReclaimCall, ReclaimOwnerRoot, 1, 0);
+
+        if (staticBottom > 0 && staticTop >= staticBottom)
+        {
+            ScanRange(staticBottom, staticTop);
+        }
+        else
+        {
+            ScanRange(_staticBottom, _staticTop);
+        }
+
+        // Shared-library statics are not beside the executable image. They
+        // live in a separate per-process virtual window selected by the
+        // library-base register. Heap's own _oom object and library facilities
+        // such as Passwd.Name are roots there; omitting the window made a periodic
+        // collection free objects which remained live through a library
+        // static. The library ABI reserves one complete 8K virtual window per
+        // process, and the kernel maps all of it whenever LibBase is nonzero.
+        long libraryStatics = Sys.LibBase();
+
+        if (libraryStatics > 0 && libraryStatics < (1L << 48))
+        {
+            ScanRange(libraryStatics, libraryStatics + LibraryStaticBytes);
+        }
+
+        // Then everything those reach, and everything THOSE reach. The bounded
+        // work block makes the normal path linear in live heap size. It was
+        // reserved at allocator startup, so this still allocates nothing here.
+        while (_markHead < _markTail)
+        {
+            long block = Sys.Peek(_markWorkAt + _markHead * 8);
+            _markHead = _markHead + 1;
+
+            // The work block's old entries are collector metadata, not roots.
+            if (block + HeaderBytes != _markWorkAt)
+            {
+                long size = SizeOfBlock(block);
+                ScanRange(block + HeaderBytes, block + size - FooterBytes);
+            }
+        }
+
+        // An unusually broad live graph can exceed the fixed queue. Complete
+        // it with the old allocation-free repeated scan; correctness never
+        // depends on the fast path being large enough.
+        bool again = _markOverflow;
+
+        while (again)
+        {
+            again = false;
+            long run = _runs;
+
+            while (run != 0)
+            {
+                long block = run + RunBytes;
+                long end = Sys.Peek(run + RunEnd);
+
+                while (block < end)
+                {
+                    long word = Sys.Peek(block);
+                    long size = word & SizeMask;
+
+                    if (size < Smallest || block + size > end)
+                    {
+                        // Broken allocator metadata cannot be walked safely.
+                        // Stop at this run rather than turning one bad size
+                        // into an unbounded scan through somebody else's RAM.
+                        block = end;
+                    }
+                    else
+                    {
+                        if ((word & FlagMark) != 0 && (word & FlagScan) == 0)
+                        {
+                            Stamp(block, size, (word & FlagMask) | FlagScan);
+                            ScanRange(block + HeaderBytes, block + size - FooterBytes);
+                            again = true;
+                        }
+
+                        block = block + size;
+                    }
+                }
+                run = Sys.Peek(run + RunNext);
+            }
+        }
+
+        _collecting = false;
+        Sweep();
+        Collections = Collections + 1;
+        Give();
+    }
+
+    /// Collects this process and returns completely unused borrowed runs to
+    /// the kernel.  Its answer counts system memory, not objects merely made
+    /// reusable inside this heap.  `wanted` is a minimum goal rather than a
+    /// cap: once a full run is known dead, giving it back is the cheap win.
+    public static long Reclaim(long wanted, long tries)
+    {
+        if (!_ready)
+        {
+            Start();
+        }
+
+        // Tries is a zero-based pressure-attempt index.  The one negative
+        // value is deliberately reserved for the kernel's bounded idle tick;
+        // no real collection attempt is numbered -1.
+        if (wanted < 0 || tries < -1 || (tries == -1 && wanted != 0)
+            || wanted > long.MaxValue / AskFor)
+        {
+            return -22;                     // EINVAL
+        }
+
+        if (_supervisor)
+        {
+            // The kernel has several simultaneously active CPU stacks and a
+            // large static-data image. This collector is deliberately a
+            // stopped single-process collector and cannot prove kernel objects
+            // dead. Kernel allocations have explicit lifetimes; pretending to
+            // collect here frees live scheduler and device tables.
+            return -38;                 // ENOSYS: no user kernel to return to
+        }
+
+        long target = wanted > 0 ? wanted * AskFor : 0;
+
+        // The cheap answer first: runs already known to be wholly free need no
+        // trace at all. A positive hint stops when it is met.
+        Take();
+        DrainAll();
+        UseHomeRun();
+        Give();
+        long returned = ReleaseWholeRuns(target, 0);
+
+        // A timer tick is deliberately bounded maintenance.  Draining caches
+        // and returning runs already known empty is cheap and needs no graph
+        // walk; a full conservative trace is indivisible without write
+        // barriers and could hold an idle shell for longer than a person will
+        // wait after typing.  Positive pressure and explicit collection still
+        // take the complete mark/sweep path below.
+        if (wanted == 0 && tries == -1)
+        {
+            return returned;
+        }
+
+        if (target > 0 && returned >= target)
+        {
+            return returned;
+        }
+
+        // The cached pages were insufficient. Trace once, turning unreachable
+        // objects into free runs, then satisfy the remainder from those.
+        Collect();
+        Take();
+        UseHomeRun();
+        Give();
+        returned = returned
+                   + ReleaseWholeRuns(target == 0 ? 0 : target - returned, 0);
+        return returned;
+    }
+
+    /// One collection at the end of single-processor kernel bootstrap.
+    ///
+    /// This is deliberately NOT the general kernel reclaim operation. It is
+    /// valid only before secondary processors enter the kernel, while the
+    /// caller's stack is the only active kernel stack and every other root is
+    /// in the kernel static range. Once the machine is released, the ordinary
+    /// supervisor Reclaim refusal above remains the safety boundary.
+    public static long ReclaimBootstrap()
+    {
+        if (!_supervisor || Shrinker == 0)
+        {
+            return -38;                         // ENOSYS
+        }
+
+        // THE BOOT-STACK CONTROL REGISTERS ARE THE BOUNDS. RegionEnd(stack)
+        // used to substitute the end of the stack's complete RAM bank. On an
+        // X card that made this one bootstrap collection inspect almost 128
+        // MiB, asking RunOf about every word, and a healthy boot appeared to
+        // hang for roughly a minute immediately after its library report.
+        //
+        // Firmware preserves the exact allocation in CtlBootStackBase/Bytes
+        // for this purpose. It may be named through a processor-local alias,
+        // so the physical-memory region table is not an equivalent source.
+        // Prove that the current descending stack lies in the published span
+        // before allowing the collector to release anything.
+        long stack = Sys.Stack();
+        long stackBase = Sys.BootStackBase();
+        long stackBytes = Sys.BootStackBytes();
+        long stackTop = stackBase + stackBytes;
+
+        if (stackBase <= 0 || stackBytes <= 0 || stackTop < stackBase
+            || stack < stackBase || stack > stackTop)
+        {
+            return -14;                         // EFAULT
+        }
+        _stackTop = stackTop;
+
+        // Reserve one queue entry for every allocation which exists now, plus
+        // room for the queue block itself and a few conservative roots. This
+        // allocation happens only after KernelMore has been installed, so it
+        // lives in an independently returnable run rather than permanently
+        // enlarging the bootstrap arena.
+        long priorWork = _markWorkAt;
+        _markWorkAt = 0;
+        _markWorkCount = 0;
+        if (priorWork != 0)
+        {
+            Free(priorWork);
+        }
+
+        long count = InUse + 16;
+
+        if (count > 0 && count <= long.MaxValue / 8)
+        {
+            _markWorkAt = Alloc(count * 8);
+            _markWorkCount = _markWorkAt == 0 ? 0 : count;
+        }
+
+        Collect();
+
+        // Collector metadata is temporary too. Remove its static root before
+        // freeing it, then let the normal whole-run return below give its pages
+        // back together with the dead boot-report objects it helped find.
+        long work = _markWorkAt;
+        _markWorkAt = 0;
+        _markWorkCount = 0;
+        if (work != 0)
+        {
+            Free(work);
+        }
+        Take();
+        DrainAll();
+        UseHomeRun();
+        Give();
+        return ReleaseWholeRuns(0, 0);
+    }
+
+    /// Returns whole borrowed runs without holding the heap lock over the
+    /// system call. `keep` is the number of completely free runs retained as a
+    /// local page cache; current reclaim callers pass zero.
+    static long ReleaseWholeRuns(long target, long keep)
+    {
+        long returned = 0;
+
+        while (target == 0 || returned < target)
+        {
+            Take();
+            UseHomeRun();
+
+            long wholeCount = 0;
+            long scan = _runs;
+
+            while (scan != 0)
+            {
+                if (WholeBorrowed(scan) && !IsCurrentRun(scan))
+                {
+                    wholeCount = wholeCount + 1;
+                }
+                scan = Sys.Peek(scan + RunNext);
+            }
+
+            if (wholeCount <= keep)
+            {
+                Give();
+                return returned;
+            }
+
+            long prev = 0;
+            long run = _runs;
+
+            while (run != 0
+                   && (!WholeBorrowed(run) || IsCurrentRun(run)))
+            {
+                prev = run;
+                run = Sys.Peek(run + RunNext);
+            }
+
+            if (run == 0)
+            {
+                Give();
+                return returned;
+            }
+
+            long next = Sys.Peek(run + RunNext);
+            long first = run + RunBytes;
+            long end = Sys.Peek(run + RunEnd);
+            long limit = Sys.Peek(run + RunLimit);
+            long chunk = Sys.Peek(run + RunChunk);
+            bool listed = first < end;
+
+            if (listed)
+            {
+                Unlink(first);
+            }
+
+            if (prev == 0)
+            {
+                _runs = next;
+            }
+            else
+            {
+                Sys.Poke(prev + RunNext, next);
+            }
+
+            // The memo may name the run being destroyed; RunOf must never
+            // answer with a corpse.
+            if (_runMemo == run)
+            {
+                _runMemo = 0;
+            }
+            Give();
+
+            // Returning destroys `run` on success. User heaps ask their
+            // kernel; the kernel heap calls its memory owner directly.
+            // No heap metadata is touched while either path is in progress.
+            long n = _supervisor
+                   ? Sys.Call(Shrinker, chunk, limit - run, 0)
+                   : Sys.Syscall(ReturnRunCall, chunk, 0, 0);
+
+            if (n > 0)
+            {
+                returned = returned + n;
+                Take();
+                Chunks = Chunks - 1;
+                Give();
+                continue;
+            }
+
+            // Failure leaves the mapping valid. Reattach it at the head; run
+            // order is not semantically significant, and this restoration is
+            // independent of changes another allocator thread made meanwhile.
+            Take();
+            Sys.Poke(run + RunNext, _runs);
+            _runs = run;
+
+            if (listed)
+            {
+                Link(first);
+            }
+            Give();
+            return returned;
+        }
+        return returned;
+    }
+
+    /// True when a borrowed run is either wholly untouched or represented by
+    /// exactly one free block. Caller holds the heap lock.
+    static bool WholeBorrowed(long run)
+    {
+        if (run == 0 || Sys.Peek(run + RunChunk) == 0)
+        {
+            return false;
+        }
+
+        long first = run + RunBytes;
+        long end = Sys.Peek(run + RunEnd);
+
+        if (first == end)
+        {
+            return true;
+        }
+
+        if (first < end && IsFree(first))
+        {
+            long size = SizeOfBlock(first);
+
+            if (size >= Smallest && first <= long.MaxValue - size
+                && first + size == end)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Whether this run still supplies the allocator's bump bounds.  A
+    /// demand-backed process has no non-borrowed home arena, so one borrowed
+    /// run must remain mapped as its working run even when it is empty.  The
+    /// old release path detached that run and left _base/_bump/_limit naming an
+    /// unmapped page; the next small allocation then passed HasRoom and wrote
+    /// through those stale bounds.
+    static bool IsCurrentRun(long run)
+    {
+        return run != 0 && _base == run + RunBytes
+               && _limit == Sys.Peek(run + RunLimit);
+    }
+
+    /// Makes the non-borrowed initial arena current and moves its record to the
+    /// head of the run list. Caller holds the heap lock.
+    static void UseHomeRun()
+    {
+        long prev = 0;
+        long run = _runs;
+
+        while (run != 0 && Sys.Peek(run + RunChunk) != 0)
+        {
+            prev = run;
+            run = Sys.Peek(run + RunNext);
+        }
+
+        if (run == 0)
+        {
+            // Demand-backed heaps intentionally have no home run.  Keep the
+            // existing working run when it is still linked; otherwise choose a
+            // live run now (or publish an honestly empty bump allocator).  This
+            // also repairs heaps produced by the former detach-current bug.
+            run = _runs;
+
+            while (run != 0 && !IsCurrentRun(run))
+            {
+                run = Sys.Peek(run + RunNext);
+            }
+
+            if (run != 0)
+            {
+                return;
+            }
+
+            run = _runs;
+
+            if (run == 0)
+            {
+                _base = 0;
+                _bump = 0;
+                _limit = 0;
+                _chunk = 0;
+                return;
+            }
+
+            _base = run + RunBytes;
+            _bump = Sys.Peek(run + RunEnd);
+            _limit = Sys.Peek(run + RunLimit);
+            _chunk = Sys.Peek(run + RunChunk);
+            return;
+        }
+
+        if (prev != 0)
+        {
+            Sys.Poke(prev + RunNext, Sys.Peek(run + RunNext));
+            Sys.Poke(run + RunNext, _runs);
+            _runs = run;
+        }
+
+        _base = run + RunBytes;
+        _bump = Sys.Peek(run + RunEnd);
+        _limit = Sys.Peek(run + RunLimit);
+        _chunk = 0;
+    }
+
+    /// Entered only by the kernel at a safe user boundary.  Reporting the
+    /// result also restores the interrupted process context, so this call does
+    /// not return through an ordinary link register.
+    public static void ReclaimEntry(long wanted, long tries)
+    {
+        long result = Reclaim(wanted, tries);
+        Sys.Syscall(ReclaimCall, ReclaimReport, result, 0);
+        Sys.Exit(70);                    // an old kernel returned unexpectedly
+    }
+
+    /// Requests a complete kernel-coordinated collection when running as a
+    /// user process. Firmware and compiler tests have no process scheduler and
+    /// therefore use the direct single-runner collector.
+    public static void RequestCollection()
+    {
+        if (!_supervisor)
+        {
+            // A timer batch may already own the one system reclaim rendezvous.
+            // EAGAIN is a transient collision, not a completed collection:
+            // wait for that bounded maintenance to retire and then make the
+            // explicit request true.  Other errors are final and preserve the
+            // historical void API.
+            long answer = Sys.Syscall(ReclaimCall, ReclaimRequest, 0, 0);
+
+            while (answer == -11)               // EAGAIN
+            {
+                Sys.Pause();
+                answer = Sys.Syscall(ReclaimCall, ReclaimRequest, 0, 0);
+            }
+        }
+        else
+        {
+            Collect();
+        }
+    }
+
+    /// Drains every cache this caller can reach.
+    ///
+    /// TWO SHAPES, because the caches are in two different places. The kernel's
+    /// are one per processor and the system table says where they all are, so
+    /// it drains the lot. A program's are one per THREAD, at the top of each
+    /// thread's own stack, and a thread knows where its own is and has no way
+    /// to find anybody else's.
+    ///
+    /// That is not a hole so much as the existing bargain restated: collecting
+    /// already requires everything else in the program to be stopped -- see
+    /// Collect -- because draining a cache another runner is using is a race
+    /// whatever the cache is attached to. A single-threaded program, which is
+    /// nearly all of them, has nothing else to stop and nothing else to drain.
+    static void DrainAll()
+    {
+        // The class stacks are process-wide and the collector is already
+        // stop-the-world under the heap lock: back to the general list so
+        // the sweep sees one truth.
+        DrainClasses();
+
+        if (!_supervisor)
+        {
+            DrainCache(Sys.Mine());
+
+            long siblingCount = Sys.Syscall(ReclaimCall, ReclaimSiblingCount, 0, 0);
+            long siblingIndex = 0;
+
+            while (siblingIndex < siblingCount)
+            {
+                long cache = Sys.Syscall(ReclaimCall, ReclaimSiblingValue, siblingIndex, 2);
+
+                if (cache > 0)
+                {
+                    DrainCache(cache);
+                }
+                siblingIndex = siblingIndex + 1;
+            }
+            return;
+        }
+
+        long table = SysTable();
+
+        if (table == 0)
+        {
+            DrainCache(Sys.Self());
+            return;
+        }
+
+        long count = Sys.Peek(table + TableCpuCount);
+        long entry = table + Sys.Peek(table + TableCpusAt);
+        long i = 0;
+
+        while (i < count)
+        {
+            DrainCache(Sys.Peek(entry + CpuSelfAt));
+            // Processor records are 64 bytes. RegionStride is 48 and using it
+            // here read the following CPU's unit mask (for example 0x377f) as
+            // a self pointer on the second iteration.
+            entry = entry + CpuStride;
+            i = i + 1;
+        }
+    }
+
+    /// Marks kernel heap pointers published in firmware's per-processor
+    /// software blocks. Numeric IDs and counters are harmless conservative
+    /// candidates; command blocks, interrupt tables, and driver scratch
+    /// pointers are real roots which must survive bootstrap collection.
+    static void ScanProcessorRoots()
+    {
+        long table = SysTable();
+
+        if (table == 0)
+        {
+            return;
+        }
+
+        long count = Sys.Peek(table + TableCpuCount);
+        long entry = table + Sys.Peek(table + TableCpusAt);
+        long i = 0;
+
+        while (i < count)
+        {
+            long self = Sys.Peek(entry + i * CpuStride + CpuSelfAt);
+
+            if (self != 0)
+            {
+                ScanRange(self, self + CpuSelfBytes);
+            }
+            i = i + 1;
+        }
+    }
+
+    /// Marks roots belonging to the other threads stopped by the kernel for
+    /// this callback.  The stacks are directly readable because all threads
+    /// share one address space; register values are copied through the
+    /// internal reclaim call because their frames live in kernel memory.
+    static void ScanStoppedThreadRoots()
+    {
+        long count = Sys.Syscall(ReclaimCall, ReclaimSiblingCount, 0, 0);
+        long sibling = 0;
+
+        while (sibling < count)
+        {
+            long bottom = Sys.Syscall(ReclaimCall, ReclaimSiblingValue, sibling, 0);
+            long top = Sys.Syscall(ReclaimCall, ReclaimSiblingValue, sibling, 1);
+
+            if (bottom > 0 && top >= bottom)
+            {
+                ScanRange(bottom, top);
+            }
+
+            long word = 0;
+
+            while (word < SavedRegisterWords)
+            {
+                MarkAt(Sys.Syscall(ReclaimCall, ReclaimSiblingValue,
+                                   sibling, word + 3));
+                word = word + 1;
+            }
+            sibling = sibling + 1;
+        }
+    }
+
+    /// Rebuilds the free list from what survived, joining every run of dead
+    /// blocks into one. Sweeping this way coalesces perfectly and for free:
+    /// walking in address order is exactly what merging neighbours needs.
+    static void Sweep()
+    {
+        _free = 0;
+        long live = 0;
+        long liveBytes = 0;
+        long run = _runs;
+
+        while (run != 0)
+        {
+            long block = run + RunBytes;
+            long end = Sys.Peek(run + RunEnd);
+            long runStart = 0;
+            long runSize = 0;
+
+            while (block < end)
+            {
+                long word = Sys.Peek(block);
+                long size = word & SizeMask;
+
+                if (size < Smallest || block + size > end)
+                {
+                    block = end;
+                }
+                else
+                {
+                    bool dead = (word & FlagMark) == 0;
+
+                    if (dead)
+                    {
+                        if (runSize == 0)
+                        {
+                            runStart = block;
+                        }
+                        runSize = runSize + size;
+                    }
+                    else
+                    {
+                        if (runSize != 0)
+                        {
+                            Stamp(runStart, runSize, FlagFree);
+                            Link(runStart);
+                            runSize = 0;
+                        }
+
+                        // Kept: clear the marks so the next collection starts
+                        // clean.
+                        Stamp(block, size, word & FlagFree);
+                        live = live + 1;
+                        liveBytes = liveBytes + size - Overhead;
+                    }
+
+                    block = block + size;
+                }
+            }
+
+            if (runSize != 0)
+            {
+                Stamp(runStart, runSize, FlagFree);
+                Link(runStart);
+            }
+            run = Sys.Peek(run + RunNext);
+        }
+
+        Sys.Poke(_countsAt + CountLive, live);
+        Sys.Poke(_countsAt + CountLiveBytes, liveBytes);
+    }
+
+    /// One process's shared-library static block. This is the library ABI's
+    /// DataStep and deliberately includes unused slots: scanning a zeroed word
+    /// is cheap, while guessing which installed libraries a program imported
+    /// would require loader metadata the allocator does not own.
+    const long LibraryStaticBytes = 8192;
+
+    // ---- what a program can ask ---------------------------------------------
+
+    /// How many bytes a block holds, header and footer included.
+    public static long SizeOf(long at)
+    {
+        if (at == 0)
+        {
+            return 0;
+        }
+
+        if (!_ready)
+        {
+            Start();
+        }
+
+        Take();
+        long block = ValidAllocated(at);
+        long size = block == 0 ? 0 : SizeOfBlock(block);
+        Give();
+        return size;
+    }
+
+    /// Bytes available to the caller, excluding allocator metadata.
+    public static long UsableSize(long at)
+    {
+        long size = SizeOf(at);
+        return size < Overhead ? 0 : size - Overhead;
+    }
+
+    /// What is left to hand out, not counting anything on the free list.
+    public static long Untouched()
+    {
+        if (!_ready)
+        {
+            Start();
+        }
+        Take();
+        long n = _limit - _bump;
+        Give();
+        return n;
+    }
+
+    /// How much the free list holds, and in how many pieces. A large number of
+    /// small pieces is what fragmentation looks like from here, and it is the
+    /// number coalescing exists to keep down.
+    public static long FreeBytes()
+    {
+        if (!_ready)
+        {
+            Start();
+        }
+
+        Take();
+        long total = 0;
+        long block = _free;
+
+        while (block != 0)
+        {
+            total = total + SizeOfBlock(block);
+            block = Sys.Peek(block + 8);
+        }
+        Give();
+        return total;
+    }
+
+    public static long FreeBlocks()
+    {
+        if (!_ready)
+        {
+            Start();
+        }
+
+        Take();
+        long n = 0;
+        long block = _free;
+
+        while (block != 0)
+        {
+            n = n + 1;
+            block = Sys.Peek(block + 8);
+        }
+        Give();
+        return n;
+    }
+
+    /// Checks every run and free-list link without changing the heap. Zero is
+    /// healthy; a negative value identifies the first class of corruption.
+    public static long Validate()
+    {
+        if (!_ready)
+        {
+            Start();
+        }
+
+        Take();
+
+        // Detect a cycle before any unbounded run walk.
+        long slow = _runs;
+        long fast = _runs;
+
+        while (fast != 0 && Sys.Peek(fast + RunNext) != 0)
+        {
+            slow = Sys.Peek(slow + RunNext);
+            fast = Sys.Peek(Sys.Peek(fast + RunNext) + RunNext);
+
+            if (slow == fast)
+            {
+                Give();
+                return -1;
+            }
+        }
+
+        long blocks = 0;
+        long run = _runs;
+
+        while (run != 0)
+        {
+            long first = run + RunBytes;
+            long end = Sys.Peek(run + RunEnd);
+            long limit = Sys.Peek(run + RunLimit);
+
+            if (end < first || end > limit)
+            {
+                Give();
+                return -2;
+            }
+
+            long block = first;
+
+            while (block < end)
+            {
+                long word = Sys.Peek(block);
+                long size = word & SizeMask;
+
+                if (size < Smallest || block > long.MaxValue - size
+                    || block + size > end
+                    || Sys.Peek(block + size - FooterBytes) != word)
+                {
+                    Give();
+                    return -3;
+                }
+
+                blocks = blocks + 1;
+                block = block + size;
+            }
+            run = Sys.Peek(run + RunNext);
+        }
+
+        long prev = 0;
+        long free = _free;
+        long seen = 0;
+
+        while (free != 0)
+        {
+            seen = seen + 1;
+
+            if (seen > blocks || RunOf(free) == 0 || !IsFree(free))
+            {
+                Give();
+                return -4;
+            }
+
+            if (Sys.Peek(free + HeaderBytes) != prev)
+            {
+                Give();
+                return -5;
+            }
+
+            prev = free;
+            free = Sys.Peek(free + 8);
+        }
+
+        Give();
+        return 0;
+    }
+}
+
+/// What a program is given when the heap has nothing left.
+///
+/// One of these is made when the heap starts, not when it is needed: the one
+/// moment a program cannot allocate an object is the moment it has run out of
+/// memory to allocate it in.
+class OutOfMemory
+{
+}
+
+/// The allocator ABI visible to programs.  Keeping this small and named means
+/// a later allocator can replace Heap without changing either applications or
+/// the kernel's cooperative-reclaim contract.
+static class Allocator
+{
+    /// Borrowed kernel runs currently retained by this allocator. Exposed
+    /// through a method-backed property so a shared-library consumer reads the
+    /// library's state rather than emitting a second executable-local static.
+    public static long ChunkCount()
+    {
+        return Heap.Chunks;
+    }
+
+    public static long CollectionCount()
+    {
+        return Heap.Collections;
+    }
+
+    public static long Alloc(long bytes)
+    {
+        return Heap.Alloc(bytes);
+    }
+
+    public static long TryAlloc(long bytes)
+    {
+        return Heap.TryAlloc(bytes);
+    }
+
+    public static long AllocAligned(long bytes, long alignment)
+    {
+        return Heap.AllocAligned(bytes, alignment);
+    }
+
+    public static long TryAllocAligned(long bytes, long alignment)
+    {
+        return Heap.TryAllocAligned(bytes, alignment);
+    }
+
+    public static long AllocZeroed(long count, long bytes)
+    {
+        if (count < 0 || bytes < 0
+            || (count != 0 && bytes > long.MaxValue / count))
+        {
+            return 0;
+        }
+        return Heap.TryAlloc(count * bytes);
+    }
+
+    public static long Resize(long at, long bytes)
+    {
+        return Heap.Resize(at, bytes);
+    }
+
+    public static long TryResize(long at, long bytes)
+    {
+        return Heap.TryResize(at, bytes);
+    }
+
+    public static void Free(long at)
+    {
+        Heap.Free(at);
+    }
+
+    public static long UsableSize(long at)
+    {
+        return Heap.UsableSize(at);
+    }
+
+    public static void Collect()
+    {
+        Heap.RequestCollection();
+    }
+
+    public static long Validate()
+    {
+        return Heap.Validate();
+    }
+
+    // Familiar allocator spellings for C-family ports.
+    public static long Malloc(long bytes) { return Heap.TryAlloc(bytes); }
+    public static long Calloc(long count, long bytes)
+    {
+        return AllocZeroed(count, bytes);
+    }
+    public static long Realloc(long at, long bytes)
+    {
+        return Heap.TryResize(at, bytes);
+    }
+    public static long AlignedAlloc(long alignment, long bytes)
+    {
+        if (alignment <= 0 || bytes < 0 || bytes % alignment != 0)
+        {
+            return 0;
+        }
+        return Heap.TryAllocAligned(bytes, alignment);
+    }
+    /// The hint is in system pages and tries is its zero-based pressure-attempt
+    /// index.  (0, -1) is the reserved bounded-maintenance request.  The answer
+    /// is exact bytes returned to the system pool, zero for none, or errno.
+    public static long Reclaim(long pages, long tries)
+    {
+        return Heap.Reclaim(pages, tries);
+    }
+
+    /// Milliseconds allowed for repeated system pressure sweeps. Zero requests
+    /// one complete pass with no timed repeats.
+    public static void Configure(long timeoutMillis)
+    {
+        Heap.Configure(timeoutMillis);
+    }
+}

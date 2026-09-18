@@ -1,0 +1,124 @@
+// test: collections
+// expect-exit: 0
+// expect-output:
+// sort 1,1,3,4,5
+// desc 5,4,3,1,1
+// words Apple,fig,pear
+// people al:25 bo:30 cy:30
+// removeall 5 1,3,5,7,9
+// probe True True 2 4 5,7,9
+// range 3,5,7 True
+// binary 1 -3
+// asort 1,2,4,9 3 1
+// arev 9,4,2,1
+// acopy 0,9,4,2,1,0
+// afill 0,0,7,7
+// comparer -1 1 True
+// dict False True 1 -1 True 2
+//
+// The collection surface a program reaches past Add and the indexer: sorting
+// a List and an array with and without a comparison, searching one that is
+// sorted, removing by predicate in one pass, the range and capacity members,
+// Array's copy and fill, and the Dictionary members that answer in one lookup
+// what ContainsKey and the indexer answer in two.
+
+class Person
+{
+    public string Name;
+    public int Age;
+
+    public Person(string name, int age)
+    {
+        Name = name;
+        Age = age;
+    }
+
+    public string ToString() { return Name + ":" + Age; }
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        List<int> nums = new List<int>();
+        nums.Add(5);
+        nums.Add(1);
+        nums.Add(4);
+        nums.Add(1);
+        nums.Add(3);
+        nums.Sort();
+        Line("sort " + String.Join(",", nums));
+
+        nums.Sort((a, b) => b - a);
+        Line("desc " + String.Join(",", nums));
+
+        List<string> words = new List<string>();
+        words.Add("pear");
+        words.Add("Apple");
+        words.Add("fig");
+        words.Sort();
+        Line("words " + String.Join(",", words));
+
+        // STABLE: the two thirty-year-olds keep the order they were added in,
+        // which is what a merge sort promises and a quicksort does not.
+        List<Person> people = new List<Person>();
+        people.Add(new Person("bo", 30));
+        people.Add(new Person("al", 25));
+        people.Add(new Person("cy", 30));
+        people.Sort((a, b) => a.Age - b.Age);
+        Line("people " + String.Join(" ", people));
+
+        List<int> odd = new List<int>();
+        for (int i = 0; i < 10; i++)
+        {
+            odd.Add(i);
+        }
+        int removed = odd.RemoveAll(x => x % 2 == 0);
+        Line("removeall " + removed + " " + String.Join(",", odd));
+        Line("probe " + odd.Exists(x => x == 7) + " " + odd.TrueForAll(x => x % 2 == 1)
+             + " " + odd.FindLastIndex(x => x < 6) + " " + odd.LastIndexOf(9)
+             + " " + String.Join(",", odd.FindAll(x => x > 4)));
+        Line("range " + String.Join(",", odd.GetRange(1, 3)) + " " + (odd.Capacity >= odd.Count));
+
+        List<int> sorted = new List<int>();
+        sorted.Add(10);
+        sorted.Add(20);
+        sorted.Add(30);
+        Line("binary " + sorted.BinarySearch(20) + " " + sorted.BinarySearch(25));
+
+        int[] arr = new int[] { 4, 2, 9, 1 };
+        Array.Sort(arr);
+        Line("asort " + String.Join(",", arr) + " " + Array.BinarySearch(arr, 9)
+             + " " + Array.LastIndexOf(arr, 2));
+        Array.Reverse(arr);
+        Line("arev " + String.Join(",", arr));
+
+        int[] into = new int[6];
+        Array.Copy(arr, 0, into, 1, 4);
+        Line("acopy " + String.Join(",", into));
+
+        int[] filled = new int[4];
+        Array.Fill(filled, 7);
+        Array.Clear(filled, 0, 2);
+        Line("afill " + String.Join(",", filled));
+
+        Line("comparer " + Comparer<int>.Default.Compare(3, 5) + " "
+             + Comparer<string>.Default.Compare("b", "a") + " "
+             + EqualityComparer<string>.Default.Equals("ab", "ab"));
+
+        Dictionary<string, int> table = new Dictionary<string, int>(64);
+        table["a"] = 1;
+        bool again = table.TryAdd("a", 9);
+        bool fresh = table.TryAdd("b", 2);
+        Line("dict " + again + " " + fresh + " " + table["a"] + " "
+             + table.GetValueOrDefault("zz", 0 - 1) + " " + table.ContainsValue(2)
+             + " " + table.Count);
+        return 0;
+    }
+}

@@ -1,0 +1,43 @@
+static class Program
+{
+    static long ReadWord(byte[] bytes)
+    {
+        return ((long)bytes[0] & 255) | (((long)bytes[1] & 255) << 8)
+            | (((long)bytes[2] & 255) << 16) | (((long)bytes[3] & 255) << 24);
+    }
+    static long Work(int count, byte[] bytes)
+    {
+        uint state = 12345; long checksum = 0;
+        for (int i = 0; i < count; i++)
+        {
+            state = unchecked(state * 1664525u + 1013904223u);
+            bytes[0] = (byte)state; bytes[1] = (byte)(state >> 8);
+            bytes[2] = (byte)(state >> 16); bytes[3] = (byte)(state >> 24);
+            checksum += ReadWord(bytes);
+        }
+        return checksum;
+    }
+    static long Reference(int count)
+    {
+        uint state = 12345; long checksum = 0;
+        for (int i = 0; i < count; i++)
+        {
+            state = unchecked(state * 1664525u + 1013904223u);
+            checksum += (long)state;
+        }
+        return checksum;
+    }
+    static int Main()
+    {
+        string[] args = Environment.GetCommandLineArgs();
+        int count = args.Length > 1 ? int.Parse(args[1]) : 1000000;
+        if (count < 1 || count > 10000000) return 2;
+        byte[] bytes = new byte[4];
+        long start = Stopwatch.GetTimestamp();
+        long result = Work(count, bytes), elapsed = Stopwatch.GetTimestamp() - start;
+        bool valid = result == Reference(count);
+        Console.WriteLine("byte-packing,iterations=" + count + ",ticks=" + elapsed
+            + ",frequency=" + Stopwatch.Frequency + ",checksum=" + result + ",valid=" + valid);
+        return valid ? 0 : 1;
+    }
+}

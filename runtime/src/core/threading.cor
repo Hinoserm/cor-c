@@ -1,0 +1,2418 @@
+// Tasks, awaiters, cancellation and the scheduler that runs them.
+//
+//   corc compile program.cor -o program        (linked by default; see
+//                                               compiler/Driver.cs)
+//
+// This is the library half of `async` and `await` (docs/software/
+// X86-BACKEND.md, "Async"). The compiler lowers an async method into a state
+// machine -- a class implementing Action -- and calls, BY NAME, exactly these:
+//
+//   new Task() / new Task<T>()            an incomplete task
+//   task.GetAwaiter()                     IsCompleted, GetResult(),
+//                                         OnCompleted(Action)
+//   Task.SetResultCore()                  complete, and post continuations
+//   Task<T>.SetResultCore(T value)
+//   Task.SetExceptionCore(Exception e)
+//   AsyncRuntime.Unhandled(Exception e)   escaped an `async void` method
+//   AsyncRuntime.RunMain(Task t)          `async Task Main` returned t
+//
+// Renaming any of those breaks every async program without breaking this
+// file's compilation, so do not.
+//
+// THE NAMES AND BEHAVIOUR ARE .NET'S. Where this differs:
+//   - There is no AggregateException. A faulted task stores the ONE exception
+//     that faulted it, and Wait(), Result and await all rethrow that object.
+//     WhenAll reports the first faulted task's exception, in array order.
+//   - Awaiters and awaitables are classes, not structs: a struct here is a
+//     heap block copied at every boundary, which buys nothing.
+//   - There is one scheduler, a single-threaded event loop, and it runs only
+//     inside Scheduler.RunUntil (Wait, Result, RunMain). Nothing runs "in the
+//     background" while the program is doing something else.
+//
+// THREAD SAFETY IS BUILT IN FROM THE START. Every state transition on a task,
+// a cancellation source and the run queue goes through Sys.Cas / a spin lock
+// on a word inside the object, so a thread pool can later provide the same
+// Scheduler.Post over several threads without a change here or in compiled
+// code. See Atom for the one layout assumption that makes that possible.
+//
+// ---- atomics on a word inside an object -------------------------------------
+
+/// Where the words that atomic operations work on live, and a spin lock.
+///
+/// THE LAYOUT ASSUMPTION, in one place. On x86 an object is an 8-byte header
+/// (vtable, sync word) followed by its fields in declaration order, each
+/// aligned to its size, base-class fields first (X86-BACKEND.md, "Object
+/// layout"; Binder.LayOut). So a class whose FIRST two declared instance
+/// fields are `int` -- and whose base declares none -- has them at +8 and
+/// +12. Task, CancellationTokenSource, AtomicCell and WhenAllState are
+/// written that way, and CheckLayout below proves it on first use of the
+/// scheduler rather than trusting this comment.
+///
+/// `int`, not `long`: the 486 atomics are 32-bit (Select.SelectAtomic refuses
+/// a 64-bit one), and a 32-bit CAS on the low half of a long would leave the
+/// high half unguarded.
+///
+/// The address is taken afresh on every operation (Sys.Word(o) + offset) and
+/// never stored, so a future moving collector that updates references keeps
+/// this correct as long as it does not move an object in the middle of one
+/// instruction.
+static class Atom
+{
+    public const long FirstWord = 8;
+    public const long SecondWord = 12;
+
+    public static long At(object o, long offset)
+    {
+        return Sys.Word(o) + offset;
+    }
+
+    /// Takes the spin lock at `at` (0 free, 1 held). Uncontended on one
+    /// thread, which is the only case today; Pause is what a waiter does on a
+    /// multiprocessor.
+    public static void Enter(long at)
+    {
+        while (Sys.Cas(at, 0, 1) != 0)
+        {
+            Sys.Pause();
+        }
+    }
+
+    public static void Exit(long at)
+    {
+        Sys.AtomicSwap(at, 0);
+    }
+
+    static bool _checked;
+
+    /// Proves the offsets above against the compiler's actual layout, once.
+    /// A drift here would otherwise corrupt a neighbouring field silently.
+    public static void CheckLayout()
+    {
+        if (_checked)
+        {
+            return;
+        }
+
+        AtomicCell cell = new AtomicCell();
+        cell.Value = 0x5A17;
+        cell.Lock = 0x3C0D;
+
+        if (Sys.PeekWord(At(cell, FirstWord)) != 0x5A17 || Sys.PeekWord(At(cell, SecondWord)) != 0x3C0D)
+        {
+            throw new InvalidOperationException("threading: object layout is not the one lib/threading.cor assumes");
+        }
+
+        Task t = new Task();
+
+        if (!t.LayoutIsAsAssumed())
+        {
+            throw new InvalidOperationException("threading: Task layout is not the one lib/threading.cor assumes");
+        }
+        _checked = true;
+    }
+}
+
+/// A word that can be changed atomically, and a lock beside it. Used where a
+/// static would otherwise need an address (a static field has none the
+/// language can take).
+class AtomicCell
+{
+    // LAYOUT: Value at Atom.FirstWord, Lock at Atom.SecondWord. Keep first.
+    public int Value;
+    public int Lock;
+
+    public int Read()
+    {
+        return Value;
+    }
+
+    /// Answers what was there; the swap happened when that equals `expect`.
+    public int CompareExchange(int expect, int value)
+    {
+        return (int)Sys.Cas(Atom.At(this, Atom.FirstWord), expect, value);
+    }
+
+    /// Adds and answers the NEW value (xadd hands back the old one).
+    public int Add(int delta)
+    {
+        return (int)Sys.AtomicAdd(Atom.At(this, Atom.FirstWord), delta) + delta;
+    }
+
+    public void Enter()
+    {
+        Atom.Enter(Atom.At(this, Atom.SecondWord));
+    }
+
+    public void Exit()
+    {
+        Atom.Exit(Atom.At(this, Atom.SecondWord));
+    }
+}
+
+// ---- Task --------------------------------------------------------------------
+
+enum TaskStatus
+{
+    Created,
+    WaitingForActivation,
+    WaitingToRun,
+    Running,
+    WaitingForChildrenToComplete,
+    RanToCompletion,
+    Canceled,
+    Faulted,
+}
+
+/// A piece of work that finishes later, and what it finished with.
+///
+/// States, in the word at Atom.FirstWord:
+///   0  incomplete
+///   1  claimed: one completer has won and is filling in the outcome
+///   2  ran to completion
+///   3  faulted (Exception holds why)
+///   4  canceled
+///
+/// Completing is two steps so that the outcome (a result, an exception) is
+/// written BEFORE anyone can observe a final state: CAS 0 -> 1 decides who
+/// completes, the outcome is stored, and then, under the continuation lock,
+/// the state becomes final and the continuation list is taken. A registration
+/// holds the same lock, so it either sees a final state (and posts at once) or
+/// is in the list the completer takes. Nothing is lost and nothing runs twice.
+class Task
+{
+    // LAYOUT: these two must stay the first instance fields (see Atom).
+    int _state;
+    int _lock;
+
+    Exception? _exception;
+    Action? _first;
+    List<Action>? _more;
+
+    const int Incomplete = 0;
+    const int Claimed = 1;
+    const int RanToCompletion = 2;
+    const int Faulted = 3;
+    const int Canceled = 4;
+
+    /// An incomplete task. What the compiler calls for every async method.
+    public Task()
+    {
+        _state = Incomplete;
+        _lock = 0;
+    }
+
+    /// Whether the fields above are where Atom says: written through the
+    /// field, read through the address.
+    public bool LayoutIsAsAssumed()
+    {
+        _state = 0x2B;
+        _lock = 0x4D;
+
+        bool ok = Sys.PeekWord(Atom.At(this, Atom.FirstWord)) == 0x2B
+               && Sys.PeekWord(Atom.At(this, Atom.SecondWord)) == 0x4D;
+
+        _state = Incomplete;
+        _lock = 0;
+        return ok;
+    }
+
+    // ---- what a task is -----------------------------------------------------
+
+    public bool IsCompleted => _state >= RanToCompletion;
+    public bool IsCompletedSuccessfully => _state == RanToCompletion;
+    public bool IsFaulted => _state == Faulted;
+    public bool IsCanceled => _state == Canceled;
+
+    /// Why the task faulted, or null. Null for a canceled task, as in .NET.
+    public Exception? Exception
+    {
+        get
+        {
+            if (_state == Faulted)
+            {
+                return _exception;
+            }
+            return null;
+        }
+    }
+
+    public TaskStatus Status
+    {
+        get
+        {
+            int s = _state;
+
+            if (s == RanToCompletion)
+            {
+                return TaskStatus.RanToCompletion;
+            }
+            if (s == Faulted)
+            {
+                return TaskStatus.Faulted;
+            }
+            if (s == Canceled)
+            {
+                return TaskStatus.Canceled;
+            }
+            return TaskStatus.WaitingForActivation;
+        }
+    }
+
+    public TaskAwaiter GetAwaiter()
+    {
+        return new TaskAwaiter(this);
+    }
+
+    public ConfiguredTaskAwaitable ConfigureAwait(bool continueOnCapturedContext)
+    {
+        return new ConfiguredTaskAwaitable(this);
+    }
+
+    /// Runs the scheduler until this task is complete, then rethrows what
+    /// faulted or canceled it. Throws InvalidOperationException when nothing
+    /// left can complete it (see Scheduler.RunUntil).
+    public void Wait()
+    {
+        Scheduler.RunUntil(this);
+        ThrowIfNotSuccessful();
+    }
+
+    /// Rethrows the ORIGINAL exception of a faulted task; a canceled one
+    /// rethrows the OperationCanceledException that canceled it, or a fresh
+    /// TaskCanceledException when there was none.
+    public void ThrowIfNotSuccessful()
+    {
+        int s = _state;
+
+        if (s == RanToCompletion)
+        {
+            return;
+        }
+
+        Exception? e = _exception;
+
+        if (s == Faulted && e != null)
+        {
+            throw e;
+        }
+        if (s == Canceled)
+        {
+            if (e != null)
+            {
+                throw e;
+            }
+            throw new TaskCanceledException(this);
+        }
+        throw new InvalidOperationException("the task has not completed");
+    }
+
+    /// Runs `continuation` with this task once it completes -- posted, never
+    /// inline, even when it is already complete.
+    public Task ContinueWith(Action<Task> continuation)
+    {
+        Task next = new Task();
+        AddContinuation(new ContinueWithAction(this, continuation, next));
+        return next;
+    }
+
+    // ---- completion: the compiler's contract ------------------------------
+
+    public void SetResultCore()
+    {
+        if (!TrySetResult())
+        {
+            throw TaskErrors.AlreadyCompleted();
+        }
+    }
+
+    /// An OperationCanceledException CANCELS the task rather than faulting
+    /// it, which is what .NET does when one escapes an async method.
+    public void SetExceptionCore(Exception e)
+    {
+        if (!TrySetException(e))
+        {
+            throw TaskErrors.AlreadyCompleted();
+        }
+    }
+
+    public bool TrySetResult()
+    {
+        if (!TryClaim())
+        {
+            return false;
+        }
+        Finish(RanToCompletion);
+        return true;
+    }
+
+    public bool TrySetException(Exception e)
+    {
+        if (!TryClaim())
+        {
+            return false;
+        }
+
+        _exception = e;
+
+        if (e is OperationCanceledException)
+        {
+            Finish(Canceled);
+        }
+        else
+        {
+            Finish(Faulted);
+        }
+        return true;
+    }
+
+    /// Canceled with no exception of its own; awaiting it throws a new
+    /// TaskCanceledException.
+    public bool TrySetCanceled()
+    {
+        if (!TryClaim())
+        {
+            return false;
+        }
+        Finish(Canceled);
+        return true;
+    }
+
+    public bool TrySetCanceled(OperationCanceledException e)
+    {
+        if (!TryClaim())
+        {
+            return false;
+        }
+        _exception = e;
+        Finish(Canceled);
+        return true;
+    }
+
+    /// Step one of completing: exactly one caller ever gets true.
+    public bool TryClaim()
+    {
+        return Sys.Cas(Atom.At(this, Atom.FirstWord), Incomplete, Claimed) == Incomplete;
+    }
+
+    /// Step two for a caller that claimed and stored a result.
+    public void FinishSuccess()
+    {
+        Finish(RanToCompletion);
+    }
+
+    /// Step two for a caller that claimed: faults with `e`, whatever it is.
+    public void FaultClaimed(Exception e)
+    {
+        _exception = e;
+        Finish(Faulted);
+    }
+
+    /// Step two, for the caller that claimed: the outcome is already stored.
+    void Finish(int finalState)
+    {
+        long lockAt = Atom.At(this, Atom.SecondWord);
+
+        Atom.Enter(lockAt);
+
+        Sys.AtomicSwap(Atom.At(this, Atom.FirstWord), finalState);
+
+        Action? first = _first;
+        List<Action>? more = _more;
+
+        _first = null;
+        _more = null;
+
+        Atom.Exit(lockAt);
+
+        if (first != null)
+        {
+            Scheduler.Post(first);
+        }
+        if (more != null)
+        {
+            for (int i = 0; i < more.Count; i++)
+            {
+                Scheduler.Post(more[i]);
+            }
+        }
+    }
+
+    /// Registers a continuation. Posted at once when the task is already
+    /// complete; otherwise kept, in registration order, until it is.
+    public void AddContinuation(Action continuation)
+    {
+        long lockAt = Atom.At(this, Atom.SecondWord);
+
+        Atom.Enter(lockAt);
+
+        if (_state >= RanToCompletion)
+        {
+            Atom.Exit(lockAt);
+            Scheduler.Post(continuation);
+            return;
+        }
+
+        if (_first == null)
+        {
+            _first = continuation;
+        }
+        else
+        {
+            List<Action>? more = _more;
+
+            if (more == null)
+            {
+                more = new List<Action>();
+                _more = more;
+            }
+            more.Add(continuation);
+        }
+
+        Atom.Exit(lockAt);
+    }
+
+    // ---- the statics ----------------------------------------------------------
+
+    static Task? _completed;
+
+    /// One already-completed task, shared.
+    public static Task CompletedTask
+    {
+        get
+        {
+            Task? done = _completed;
+
+            if (done == null)
+            {
+                done = new Task();
+                done.TrySetResult();
+                _completed = done;
+            }
+            return done;
+        }
+    }
+
+    public static Task FromException(Exception exception)
+    {
+        Task t = new Task();
+        t.TrySetException(exception);
+        return t;
+    }
+
+    public static Task FromCanceled(CancellationToken cancellationToken)
+    {
+        Task t = new Task();
+        t.TrySetCanceled(new TaskCanceledException());
+        return t;
+    }
+
+    /// A task that completes after `milliseconds`. Zero is already complete;
+    /// -1 never completes (Timeout.Infinite).
+    public static Task Delay(int milliseconds)
+    {
+        return DelayCore(milliseconds, CancellationToken.None);
+    }
+
+    public static Task Delay(int milliseconds, CancellationToken cancellationToken)
+    {
+        return DelayCore(milliseconds, cancellationToken);
+    }
+
+    static Task DelayCore(int milliseconds, CancellationToken token)
+    {
+        if (milliseconds < -1)
+        {
+            throw new ArgumentOutOfRangeException("milliseconds", "The value needs to be either -1 (signifying an infinite timeout), 0, or a positive integer.");
+        }
+        if (token.IsCancellationRequested)
+        {
+            Task canceled = new Task();
+            canceled.TrySetCanceled(new TaskCanceledException());
+            return canceled;
+        }
+        if (milliseconds == 0)
+        {
+            return CompletedTask;
+        }
+
+        Task t = new Task();
+        DelayCompletion done = new DelayCompletion(t);
+
+        if (milliseconds > 0)
+        {
+            done.Timer = Scheduler.AddTimer(milliseconds, done);
+        }
+        if (token.CanBeCanceled)
+        {
+            done.Registration = token.Register(new DelayCancellation(done));
+        }
+        return t;
+    }
+
+    /// An awaitable that completes by posting: whatever awaits it goes to the
+    /// back of the run queue.
+    public static YieldAwaitable Yield()
+    {
+        return new YieldAwaitable();
+    }
+
+    /// Queues `action` on the scheduler; the task completes when it has run.
+    public static Task Run(Action action)
+    {
+        Task t = new Task();
+        Scheduler.Post(new RunAction(action, t));
+        return t;
+    }
+
+    /// Queues `function` and completes with the task IT returns (unwrapped).
+    public static Task Run(Func<Task> function)
+    {
+        Task t = new Task();
+        Scheduler.Post(new RunTaskFunction(function, t));
+        return t;
+    }
+
+    public static Task WhenAll(params Task[] tasks)
+    {
+        int n = tasks.Length;
+
+        if (n == 0)
+        {
+            return CompletedTask;
+        }
+
+        Task all = new Task();
+        WhenAllState state = new WhenAllState(tasks, all);
+
+        for (int i = 0; i < n; i++)
+        {
+            Task one = tasks[i];
+
+            if (one == null)
+            {
+                throw new ArgumentException("The tasks argument included a null value.");
+            }
+            one.AddContinuation(state);
+        }
+        return all;
+    }
+
+    public static Task WhenAll(List<Task> tasks)
+    {
+        return WhenAll(tasks.ToArray());
+    }
+
+    /// Completes with the first of `tasks` to complete (which may itself have
+    /// faulted: WhenAny never faults).
+    public static Task<Task> WhenAny(params Task[] tasks)
+    {
+        if (tasks.Length == 0)
+        {
+            throw new ArgumentException("The tasks argument contains no tasks.");
+        }
+
+        Task<Task> any = new Task<Task>();
+
+        for (int i = 0; i < tasks.Length; i++)
+        {
+            Task one = tasks[i];
+
+            if (one == null)
+            {
+                throw new ArgumentException("The tasks argument included a null value.");
+            }
+            one.AddContinuation(new WhenAnyPart(one, any));
+        }
+        return any;
+    }
+
+    public static Task<Task> WhenAny(List<Task> tasks)
+    {
+        return WhenAny(tasks.ToArray());
+    }
+
+    // ---- the .NET generic factories ---------------------------------------
+
+    public static Task<T> FromResult<T>(T result)
+    {
+        Task<T> t = new Task<T>();
+        t.TrySetResult(result);
+        return t;
+    }
+
+    public static Task<T> Run<T>(Func<T> function)
+    {
+        Task<T> t = new Task<T>();
+        Scheduler.Post(new RunFunction<T>(function, t));
+        return t;
+    }
+
+    public static Task<T> Run<T>(Func<Task<T>> function)
+    {
+        Task<T> t = new Task<T>();
+        Scheduler.Post(new RunTaskFunction<T>(function, t));
+        return t;
+    }
+
+    public static Task<T> FromException<T>(Exception exception)
+    {
+        Task<T> t = new Task<T>();
+        t.TrySetException(exception);
+        return t;
+    }
+}
+
+/// A task that completes with a value.
+class Task<T> : Task
+{
+    T _result;
+
+    public Task() : base()
+    {
+    }
+
+    /// The value; runs the scheduler until there is one (as Wait does), and
+    /// rethrows what faulted the task.
+    public T Result
+    {
+        get
+        {
+            if (!IsCompleted)
+            {
+                Scheduler.RunUntil(this);
+            }
+            ThrowIfNotSuccessful();
+            return _result;
+        }
+    }
+
+    /// Hides Task.GetAwaiter, as .NET's does: `await` on a Task<T> gets this
+    /// one by the static type, and its GetResult answers the value.
+    public TaskAwaiter<T> GetAwaiter()
+    {
+        return new TaskAwaiter<T>(this);
+    }
+
+    public ConfiguredTaskAwaitable<T> ConfigureAwait(bool continueOnCapturedContext)
+    {
+        return new ConfiguredTaskAwaitable<T>(this);
+    }
+
+    /// The compiler's contract for `return value;` in an async Task<T>.
+    public void SetResultCore(T value)
+    {
+        if (!TrySetResult(value))
+        {
+            throw TaskErrors.AlreadyCompleted();
+        }
+    }
+
+    /// The result is written between the claim and the final state, so no
+    /// reader that sees the task complete can see it without its value.
+    public bool TrySetResult(T value)
+    {
+        if (!TryClaim())
+        {
+            return false;
+        }
+        _result = value;
+        FinishSuccess();
+        return true;
+    }
+
+    /// The value of a task already known to have completed successfully.
+    public T ResultWhenDone()
+    {
+        return _result;
+    }
+}
+
+/// STAND-IN for Task.FromResult<T> and Task.Run<T> until the binder bug in
+/// the note at the top is fixed. `TaskOf<int>.FromResult(5)`.
+static class TaskOf<T>
+{
+    public static Task<T> FromResult(T result)
+    {
+        Task<T> t = new Task<T>();
+        t.TrySetResult(result);
+        return t;
+    }
+
+    public static Task<T> Run(Func<T> function)
+    {
+        Task<T> t = new Task<T>();
+        Scheduler.Post(new RunFunction<T>(function, t));
+        return t;
+    }
+
+    public static Task<T> Run(Func<Task<T>> function)
+    {
+        Task<T> t = new Task<T>();
+        Scheduler.Post(new RunTaskFunction<T>(function, t));
+        return t;
+    }
+
+    public static Task<T> FromException(Exception exception)
+    {
+        Task<T> t = new Task<T>();
+        t.TrySetException(exception);
+        return t;
+    }
+}
+
+/// Messages shared by Task and TaskCompletionSource. Not on Task itself:
+/// inside TaskCompletionSource the name Task is also its property.
+static class TaskErrors
+{
+    public static InvalidOperationException AlreadyCompleted()
+    {
+        return new InvalidOperationException("An attempt was made to transition a task to a final state when it had already completed.");
+    }
+}
+
+// ---- awaiters -----------------------------------------------------------------
+
+class TaskAwaiter
+{
+    Task _task;
+
+    public TaskAwaiter(Task task)
+    {
+        _task = task;
+    }
+
+    public bool IsCompleted => _task.IsCompleted;
+
+    public void GetResult()
+    {
+        _task.ThrowIfNotSuccessful();
+    }
+
+    public void OnCompleted(Action continuation)
+    {
+        _task.AddContinuation(continuation);
+    }
+
+    public void UnsafeOnCompleted(Action continuation)
+    {
+        _task.AddContinuation(continuation);
+    }
+}
+
+class TaskAwaiter<T>
+{
+    Task<T> _task;
+
+    public TaskAwaiter(Task<T> task)
+    {
+        _task = task;
+    }
+
+    public bool IsCompleted => _task.IsCompleted;
+
+    public T GetResult()
+    {
+        _task.ThrowIfNotSuccessful();
+        return _task.ResultWhenDone();
+    }
+
+    public void OnCompleted(Action continuation)
+    {
+        _task.AddContinuation(continuation);
+    }
+
+    public void UnsafeOnCompleted(Action continuation)
+    {
+        _task.AddContinuation(continuation);
+    }
+}
+
+/// `task.ConfigureAwait(false)`. There is no synchronisation context to
+/// leave, so this awaits exactly as the task itself does.
+class ConfiguredTaskAwaitable
+{
+    Task _task;
+
+    public ConfiguredTaskAwaitable(Task task)
+    {
+        _task = task;
+    }
+
+    public TaskAwaiter GetAwaiter()
+    {
+        return new TaskAwaiter(_task);
+    }
+}
+
+class ConfiguredTaskAwaitable<T>
+{
+    Task<T> _task;
+
+    public ConfiguredTaskAwaitable(Task<T> task)
+    {
+        _task = task;
+    }
+
+    public TaskAwaiter<T> GetAwaiter()
+    {
+        return new TaskAwaiter<T>(_task);
+    }
+}
+
+/// What Task.Yield() returns. .NET nests the awaiter as
+/// YieldAwaitable.YieldAwaiter; nested types are hoisted here, so it is
+/// YieldAwaiter.
+class YieldAwaitable
+{
+    public YieldAwaiter GetAwaiter()
+    {
+        return new YieldAwaiter();
+    }
+}
+
+class YieldAwaiter
+{
+    /// Never complete, so an await always suspends and requeues.
+    public bool IsCompleted => false;
+
+    public void GetResult()
+    {
+    }
+
+    public void OnCompleted(Action continuation)
+    {
+        Scheduler.Post(continuation);
+    }
+
+    public void UnsafeOnCompleted(Action continuation)
+    {
+        Scheduler.Post(continuation);
+    }
+}
+
+// ---- the continuations the statics above use ----------------------------------
+
+class ContinueWithAction : Action
+{
+    Task _antecedent;
+    Action<Task> _body;
+    Task _next;
+
+    public ContinueWithAction(Task antecedent, Action<Task> body, Task next)
+    {
+        _antecedent = antecedent;
+        _body = body;
+        _next = next;
+    }
+
+    public void Invoke()
+    {
+        try
+        {
+            _body.Invoke(_antecedent);
+        }
+        catch (Exception e)
+        {
+            _next.TrySetException(e);
+            return;
+        }
+        _next.TrySetResult();
+    }
+}
+
+class RunAction : Action
+{
+    Action _body;
+    Task _task;
+
+    public RunAction(Action body, Task task)
+    {
+        _body = body;
+        _task = task;
+    }
+
+    public void Invoke()
+    {
+        try
+        {
+            _body.Invoke();
+        }
+        catch (Exception e)
+        {
+            _task.TrySetException(e);
+            return;
+        }
+        _task.TrySetResult();
+    }
+}
+
+class RunFunction<T> : Action
+{
+    Func<T> _body;
+    Task<T> _task;
+
+    public RunFunction(Func<T> body, Task<T> task)
+    {
+        _body = body;
+        _task = task;
+    }
+
+    public void Invoke()
+    {
+        T value;
+
+        try
+        {
+            value = _body.Invoke();
+        }
+        catch (Exception e)
+        {
+            _task.TrySetException(e);
+            return;
+        }
+        _task.TrySetResult(value);
+    }
+}
+
+class RunTaskFunction : Action
+{
+    Func<Task> _body;
+    Task _task;
+
+    public RunTaskFunction(Func<Task> body, Task task)
+    {
+        _body = body;
+        _task = task;
+    }
+
+    public void Invoke()
+    {
+        Task? inner;
+
+        try
+        {
+            inner = _body.Invoke();
+        }
+        catch (Exception e)
+        {
+            _task.TrySetException(e);
+            return;
+        }
+
+        if (inner == null)
+        {
+            // .NET: a Func<Task> that returns null cancels the proxy.
+            _task.TrySetCanceled();
+            return;
+        }
+        inner.AddContinuation(new Propagate(inner, _task));
+    }
+}
+
+class RunTaskFunction<T> : Action
+{
+    Func<Task<T>> _body;
+    Task<T> _task;
+
+    public RunTaskFunction(Func<Task<T>> body, Task<T> task)
+    {
+        _body = body;
+        _task = task;
+    }
+
+    public void Invoke()
+    {
+        Task<T>? inner;
+
+        try
+        {
+            inner = _body.Invoke();
+        }
+        catch (Exception e)
+        {
+            _task.TrySetException(e);
+            return;
+        }
+
+        if (inner == null)
+        {
+            _task.TrySetCanceled();
+            return;
+        }
+        inner.AddContinuation(new PropagateResult<T>(inner, _task));
+    }
+}
+
+/// Copies the outcome of one Task<T> onto another, value included.
+class PropagateResult<T> : Action
+{
+    Task<T> _from;
+    Task<T> _to;
+
+    public PropagateResult(Task<T> from, Task<T> to)
+    {
+        _from = from;
+        _to = to;
+    }
+
+    public void Invoke()
+    {
+        Task<T> from = _from;
+
+        if (from.IsCompletedSuccessfully)
+        {
+            _to.TrySetResult(from.ResultWhenDone());
+            return;
+        }
+
+        try
+        {
+            from.ThrowIfNotSuccessful();
+        }
+        catch (OperationCanceledException c)
+        {
+            _to.TrySetCanceled(c);
+            return;
+        }
+        catch (Exception e)
+        {
+            _to.TrySetException(e);
+        }
+    }
+}
+
+/// Copies the outcome of one task onto another.
+class Propagate : Action
+{
+    Task _from;
+    Task _to;
+
+    public Propagate(Task from, Task to)
+    {
+        _from = from;
+        _to = to;
+    }
+
+    public void Invoke()
+    {
+        Task from = _from;
+
+        if (from.IsCompletedSuccessfully)
+        {
+            _to.TrySetResult();
+            return;
+        }
+
+        try
+        {
+            from.ThrowIfNotSuccessful();
+        }
+        catch (OperationCanceledException c)
+        {
+            _to.TrySetCanceled(c);
+            return;
+        }
+        catch (Exception e)
+        {
+            _to.TrySetException(e);
+        }
+    }
+}
+
+/// One object shared by every task in a WhenAll: a countdown, and the result
+/// task. Registered as the continuation of each.
+class WhenAllState : Action
+{
+    // LAYOUT: Remaining must stay the first instance field (see Atom).
+    int _remaining;
+    Task[] _tasks;
+    Task _all;
+
+    public WhenAllState(Task[] tasks, Task all)
+    {
+        _remaining = tasks.Length;
+        _tasks = tasks;
+        _all = all;
+    }
+
+    public void Invoke()
+    {
+        // xadd answers the OLD count: the last task sees 1.
+        long before = Sys.AtomicAdd(Atom.At(this, Atom.FirstWord), -1);
+
+        if (before != 1)
+        {
+            return;
+        }
+
+        Task[] tasks = _tasks;
+        Exception? canceled = null;
+        bool anyCanceled = false;
+
+        for (int i = 0; i < tasks.Length; i++)
+        {
+            Task one = tasks[i];
+
+            if (one.IsFaulted)
+            {
+                Exception? e = one.Exception;
+
+                if (e != null)
+                {
+                    _all.TrySetException(e);
+                    return;
+                }
+            }
+            if (one.IsCanceled && !anyCanceled)
+            {
+                anyCanceled = true;
+                try
+                {
+                    one.ThrowIfNotSuccessful();
+                }
+                catch (Exception e)
+                {
+                    canceled = e;
+                }
+            }
+        }
+
+        if (anyCanceled)
+        {
+            if (canceled is OperationCanceledException oce)
+            {
+                _all.TrySetCanceled(oce);
+            }
+            else
+            {
+                _all.TrySetCanceled();
+            }
+            return;
+        }
+        _all.TrySetResult();
+    }
+}
+
+class WhenAnyPart : Action
+{
+    Task _one;
+    Task<Task> _any;
+
+    public WhenAnyPart(Task one, Task<Task> any)
+    {
+        _one = one;
+        _any = any;
+    }
+
+    public void Invoke()
+    {
+        _any.TrySetResult(_one);
+    }
+}
+
+class DelayCompletion : Action
+{
+    Task _task;
+    public TimerEntry? Timer;
+    public CancellationTokenRegistration? Registration;
+
+    public DelayCompletion(Task task)
+    {
+        _task = task;
+    }
+
+    /// The timer fired.
+    public void Invoke()
+    {
+        if (_task.TrySetResult())
+        {
+            CancellationTokenRegistration? r = Registration;
+
+            if (r != null)
+            {
+                r.Dispose();
+            }
+        }
+    }
+
+    public void Cancel()
+    {
+        if (_task.TrySetCanceled(new TaskCanceledException()))
+        {
+            TimerEntry? timer = Timer;
+
+            if (timer != null)
+            {
+                timer.Cancel();
+            }
+        }
+    }
+}
+
+class DelayCancellation : Action
+{
+    DelayCompletion _delay;
+
+    public DelayCancellation(DelayCompletion delay)
+    {
+        _delay = delay;
+    }
+
+    public void Invoke()
+    {
+        _delay.Cancel();
+    }
+}
+
+// ---- TaskCompletionSource ------------------------------------------------------
+
+/// A task whose completion is in the caller's hands.
+class TaskCompletionSource<T>
+{
+    Task<T> _task;
+
+    public TaskCompletionSource()
+    {
+        _task = new Task<T>();
+    }
+
+    public Task<T> Task => _task;
+
+    public void SetResult(T result)
+    {
+        if (!_task.TrySetResult(result))
+        {
+            throw TaskErrors.AlreadyCompleted();
+        }
+    }
+
+    public bool TrySetResult(T result)
+    {
+        return _task.TrySetResult(result);
+    }
+
+    public void SetException(Exception exception)
+    {
+        if (!TrySetException(exception))
+        {
+            throw TaskErrors.AlreadyCompleted();
+        }
+    }
+
+    /// Faults the task, whatever the exception is -- unlike an async method,
+    /// .NET's TaskCompletionSource does not turn an
+    /// OperationCanceledException into cancellation.
+    public bool TrySetException(Exception exception)
+    {
+        if (!_task.TryClaim())
+        {
+            return false;
+        }
+        _task.FaultClaimed(exception);
+        return true;
+    }
+
+    public void SetCanceled()
+    {
+        if (!TrySetCanceled())
+        {
+            throw TaskErrors.AlreadyCompleted();
+        }
+    }
+
+    public bool TrySetCanceled()
+    {
+        return _task.TrySetCanceled();
+    }
+
+    public bool TrySetCanceled(CancellationToken cancellationToken)
+    {
+        return _task.TrySetCanceled(new TaskCanceledException());
+    }
+}
+
+/// The non-generic TaskCompletionSource of .NET 5.
+class TaskCompletionSource
+{
+    Task _task;
+
+    public TaskCompletionSource()
+    {
+        _task = new Task();
+    }
+
+    public Task Task => _task;
+
+    public void SetResult()
+    {
+        if (!_task.TrySetResult())
+        {
+            throw TaskErrors.AlreadyCompleted();
+        }
+    }
+
+    public bool TrySetResult()
+    {
+        return _task.TrySetResult();
+    }
+
+    public void SetException(Exception exception)
+    {
+        if (!TrySetException(exception))
+        {
+            throw TaskErrors.AlreadyCompleted();
+        }
+    }
+
+    public bool TrySetException(Exception exception)
+    {
+        if (!_task.TryClaim())
+        {
+            return false;
+        }
+        _task.FaultClaimed(exception);
+        return true;
+    }
+
+    public void SetCanceled()
+    {
+        if (!TrySetCanceled())
+        {
+            throw TaskErrors.AlreadyCompleted();
+        }
+    }
+
+    public bool TrySetCanceled()
+    {
+        return _task.TrySetCanceled();
+    }
+}
+
+// ---- cancellation ------------------------------------------------------------
+
+/// The operation was canceled. C#'s, with the token that canceled it.
+class OperationCanceledException : SystemException
+{
+    CancellationToken _token;
+
+    public OperationCanceledException() : base("The operation was canceled.")
+    {
+    }
+
+    public OperationCanceledException(string message) : base(message)
+    {
+    }
+
+    public OperationCanceledException(CancellationToken token) : base("The operation was canceled.")
+    {
+        _token = token;
+    }
+
+    public OperationCanceledException(string message, CancellationToken token) : base(message)
+    {
+        _token = token;
+    }
+
+    public CancellationToken CancellationToken => _token;
+}
+
+/// A task was canceled.
+class TaskCanceledException : OperationCanceledException
+{
+    Task? _task;
+
+    public TaskCanceledException() : base("A task was canceled.")
+    {
+    }
+
+    public TaskCanceledException(string message) : base(message)
+    {
+    }
+
+    public TaskCanceledException(Task task) : base("A task was canceled.")
+    {
+        _task = task;
+    }
+
+    /// The canceled task, when this was raised by awaiting one.
+    public Task? Task => _task;
+}
+
+/// Timeout.Infinite, which Task.Delay accepts.
+static class Timeout
+{
+    public const int Infinite = -1;
+}
+
+/// A request to cancel, and everything that asked to hear about it.
+///
+/// Cancel runs the registered callbacks SYNCHRONOUSLY, most recent first,
+/// as .NET does; the first exception any of them throws is rethrown after
+/// all have run (.NET wraps them in an AggregateException instead).
+class CancellationTokenSource : IDisposable
+{
+    // LAYOUT: these two must stay the first instance fields (see Atom).
+    int _canceled;
+    int _lock;
+
+    List<Action>? _callbacks;
+    TimerEntry? _timer;
+
+    public CancellationTokenSource()
+    {
+        _canceled = 0;
+        _lock = 0;
+    }
+
+    /// Cancels itself after `millisecondsDelay`, once the scheduler runs.
+    public CancellationTokenSource(int millisecondsDelay) : this()
+    {
+        CancelAfter(millisecondsDelay);
+    }
+
+    public bool IsCancellationRequested => _canceled != 0;
+
+    public CancellationToken Token => new CancellationToken(this);
+
+    public void Cancel()
+    {
+        if (Sys.Cas(Atom.At(this, Atom.FirstWord), 0, 1) != 0)
+        {
+            return;
+        }
+
+        TimerEntry? timer = _timer;
+
+        if (timer != null)
+        {
+            timer.Cancel();
+        }
+
+        long lockAt = Atom.At(this, Atom.SecondWord);
+
+        Atom.Enter(lockAt);
+
+        List<Action>? callbacks = _callbacks;
+
+        _callbacks = null;
+
+        Atom.Exit(lockAt);
+
+        if (callbacks == null)
+        {
+            return;
+        }
+
+        Exception? first = null;
+
+        for (int i = callbacks.Count - 1; i >= 0; i--)
+        {
+            try
+            {
+                callbacks[i].Invoke();
+            }
+            catch (Exception e)
+            {
+                if (first == null)
+                {
+                    first = e;
+                }
+            }
+        }
+
+        if (first != null)
+        {
+            throw first;
+        }
+    }
+
+    public void CancelAfter(int millisecondsDelay)
+    {
+        if (millisecondsDelay < -1)
+        {
+            throw new ArgumentOutOfRangeException("millisecondsDelay");
+        }
+        if (IsCancellationRequested || millisecondsDelay == -1)
+        {
+            return;
+        }
+
+        TimerEntry? old = _timer;
+
+        if (old != null)
+        {
+            old.Cancel();
+        }
+        _timer = Scheduler.AddTimer(millisecondsDelay, new CancelAction(this));
+    }
+
+    public void Dispose()
+    {
+        TimerEntry? timer = _timer;
+
+        if (timer != null)
+        {
+            timer.Cancel();
+        }
+    }
+
+    /// Adds `callback`; runs it at once (on this thread) when already
+    /// canceled, which is .NET's rule.
+    public CancellationTokenRegistration Register(Action callback)
+    {
+        long lockAt = Atom.At(this, Atom.SecondWord);
+
+        Atom.Enter(lockAt);
+
+        if (_canceled != 0)
+        {
+            Atom.Exit(lockAt);
+            callback.Invoke();
+            return new CancellationTokenRegistration(null, callback);
+        }
+
+        List<Action>? callbacks = _callbacks;
+
+        if (callbacks == null)
+        {
+            callbacks = new List<Action>();
+            _callbacks = callbacks;
+        }
+        callbacks.Add(callback);
+
+        Atom.Exit(lockAt);
+        return new CancellationTokenRegistration(this, callback);
+    }
+
+    public void Unregister(Action callback)
+    {
+        long lockAt = Atom.At(this, Atom.SecondWord);
+
+        Atom.Enter(lockAt);
+
+        List<Action>? callbacks = _callbacks;
+
+        if (callbacks != null)
+        {
+            callbacks.Remove(callback);
+        }
+
+        Atom.Exit(lockAt);
+    }
+
+    static CancellationTokenSource? _canceledSource;
+
+    /// One source that is already canceled, behind `new CancellationToken(true)`.
+    public static CancellationTokenSource AlreadyCanceled
+    {
+        get
+        {
+            CancellationTokenSource? s = _canceledSource;
+
+            if (s == null)
+            {
+                s = new CancellationTokenSource();
+                s.Cancel();
+                _canceledSource = s;
+            }
+            return s;
+        }
+    }
+
+    public static CancellationTokenSource CreateLinkedTokenSource(CancellationToken first, CancellationToken second)
+    {
+        CancellationTokenSource linked = new CancellationTokenSource();
+        CancelAction cancel = new CancelAction(linked);
+
+        first.Register(cancel);
+        second.Register(cancel);
+        return linked;
+    }
+}
+
+class CancelAction : Action
+{
+    CancellationTokenSource _source;
+
+    public CancelAction(CancellationTokenSource source)
+    {
+        _source = source;
+    }
+
+    public void Invoke()
+    {
+        _source.Cancel();
+    }
+}
+
+/// A way to observe one CancellationTokenSource. A struct, as in .NET, so
+/// `default` and CancellationToken.None are a token nothing can cancel.
+struct CancellationToken
+{
+    CancellationTokenSource? _source;
+
+    public CancellationToken(CancellationTokenSource source)
+    {
+        _source = source;
+    }
+
+    /// `new CancellationToken(true)` is already canceled.
+    public CancellationToken(bool canceled)
+    {
+        if (canceled)
+        {
+            _source = CancellationTokenSource.AlreadyCanceled;
+        }
+        else
+        {
+            _source = null;
+        }
+    }
+
+    public static CancellationToken None => new CancellationToken(false);
+
+    public bool CanBeCanceled => _source != null;
+
+    public bool IsCancellationRequested
+    {
+        get
+        {
+            CancellationTokenSource? s = _source;
+
+            if (s == null)
+            {
+                return false;
+            }
+            return s.IsCancellationRequested;
+        }
+    }
+
+    public void ThrowIfCancellationRequested()
+    {
+        if (IsCancellationRequested)
+        {
+            throw new OperationCanceledException(this);
+        }
+    }
+
+    public CancellationTokenRegistration Register(Action callback)
+    {
+        CancellationTokenSource? s = _source;
+
+        if (s == null)
+        {
+            return new CancellationTokenRegistration(null, callback);
+        }
+        return s.Register(callback);
+    }
+}
+
+/// What Register hands back; Dispose removes the callback. A class here
+/// (a struct in .NET) so that "no registration" is simply null.
+class CancellationTokenRegistration : IDisposable
+{
+    CancellationTokenSource? _source;
+    Action _callback;
+
+    public CancellationTokenRegistration(CancellationTokenSource? source, Action callback)
+    {
+        _source = source;
+        _callback = callback;
+    }
+
+    public void Dispose()
+    {
+        CancellationTokenSource? s = _source;
+
+        if (s != null)
+        {
+            s.Unregister(_callback);
+            _source = null;
+        }
+    }
+
+    public bool Unregister()
+    {
+        CancellationTokenSource? s = _source;
+
+        if (s == null)
+        {
+            return false;
+        }
+        s.Unregister(_callback);
+        _source = null;
+        return true;
+    }
+}
+
+// ---- the scheduler -----------------------------------------------------------
+
+/// One pending timer: a deadline on the monotonic clock and what to post.
+class TimerEntry
+{
+    public long Deadline;
+    public long Sequence;
+    public Action Callback;
+    public bool Canceled;
+
+    public TimerEntry(long deadline, long sequence, Action callback)
+    {
+        Deadline = deadline;
+        Sequence = sequence;
+        Callback = callback;
+    }
+
+    /// Stops it firing. The entry stays in the heap and is discarded when it
+    /// reaches the top.
+    public void Cancel()
+    {
+        Canceled = true;
+    }
+
+    /// Earlier deadline first; equal deadlines in the order they were added.
+    public bool Before(TimerEntry other)
+    {
+        if (Deadline != other.Deadline)
+        {
+            return Deadline < other.Deadline;
+        }
+        return Sequence < other.Sequence;
+    }
+}
+
+/// The body of a pool thread: one object, started once, never returns.
+class PoolWorker : Action
+{
+    public void Invoke()
+    {
+        Scheduler.WorkerLoop();
+    }
+}
+
+/// The single-threaded event loop: a run queue and a timer heap.
+///
+/// RUN QUEUE. A growable ring of Action, as Queue<T> is: posting stores one
+/// reference and moves a count, allocating only when the ring doubles. Taken
+/// under a spin lock (an AtomicCell), so a pool of threads can post and take
+/// without a change here.
+///
+/// TIMERS. A binary min-heap of TimerEntry ordered by (deadline, sequence),
+/// deadlines in nanoseconds of CLOCK_MONOTONIC. A timer that fires is POSTED
+/// like any other work; cancellation marks the entry and it is dropped when
+/// it reaches the top.
+///
+/// THE LOOP (RunUntil). While the awaited task is incomplete: run everything
+/// that was queued at the start of the round (so a task that keeps yielding
+/// cannot starve a timer), then post every timer that is due. When the queue
+/// is empty and no timer is due, sleep until the nearest deadline with
+/// clock_nanosleep(TIMER_ABSTIME). When the queue is empty and there are no
+/// timers, nothing left can complete the task: that is a deadlock, and it is
+/// reported rather than hung on. (When descriptor readiness arrives, a
+/// pending wait on a descriptor will count as something that can.)
+///
+/// An exception escaping a posted item is unhandled, as it is on a .NET
+/// thread-pool thread: the compiler's continuations catch everything
+/// themselves, so only user work items can do this.
+static partial class Scheduler
+{
+    // Made on first use, not at start-up: a static initialiser runs before
+    // Main, and on bare metal Main is what says where the heap is.
+    static Action?[] _ring = null!;
+    static int _head;
+    static int _count;
+    static AtomicCell? _gate;
+
+    static TimerEntry?[] _timers = null!;
+    static int _timerCount;
+    static long _timerSequence;
+
+    static AtomicCell Gate()
+    {
+        AtomicCell? g = _gate;
+
+        if (g == null)
+        {
+            Atom.CheckLayout();
+            _ring = new Action?[16];
+            _timers = new TimerEntry?[8];
+            g = new AtomicCell();
+            _gate = g;
+        }
+        return g;
+    }
+
+    // ---- the thread pool ----------------------------------------------------
+    //
+    // Off by default: with no workers this is the single-threaded event loop it
+    // has always been, and every program's ordering is what it was. UseThreads
+    // starts workers that pull from the SAME run queue -- the one behind the
+    // spin lock above -- so nothing else in this file changes: Task.Run posts,
+    // a completion posts its continuations, and whoever is free runs them.
+    //
+    // WAKING. A counter beside the queue, bumped on every Post and futex-woken;
+    // an idle worker reads it, re-checks the queue, and sleeps on that exact
+    // value, so a Post that lands between the two cannot be missed.
+
+    static int _workers;
+    static AtomicCell? _signal;
+
+    static AtomicCell SignalCell()
+    {
+        AtomicCell? s = _signal;
+
+        if (s == null)
+        {
+            Atom.CheckLayout();
+            s = new AtomicCell();
+            _signal = s;
+        }
+        return s;
+    }
+
+    /// How many pool threads are running; 0 is the single-threaded loop.
+    public static int WorkerCount => _workers;
+
+
+    /// Makes room for `capacity` queued items without further allocation.
+    public static void Reserve(int capacity)
+    {
+        AtomicCell gate = Gate();
+
+        gate.Enter();
+
+        while (_ring.Length < capacity)
+        {
+            Grow();
+        }
+
+        gate.Exit();
+    }
+
+    static void WakeOneWorker()
+    {
+        AtomicCell signal = SignalCell();
+        long at = Atom.At(signal, Atom.FirstWord);
+
+        Sys.AtomicAdd(at, 1);
+        Native.Wake(at, 1);
+    }
+
+    /// A worker: run whatever is queued, and sleep on the signal word when
+    /// there is nothing. It never returns; the process ends through
+    /// exit_group(2), which takes every thread with it.
+    public static void WorkerLoop()
+    {
+        AtomicCell signal = SignalCell();
+        long at = Atom.At(signal, Atom.FirstWord);
+
+        while (true)
+        {
+            Action? work = Take();
+
+            if (work != null)
+            {
+                // RunOne, like the event loop: the handler chain is this
+                // thread's own, so a work item that throws is caught here and
+                // reported rather than taking the process with it.
+                RunOne(work);
+                continue;
+            }
+
+            long seen = Sys.PeekWord(at);
+
+            // Re-read the queue after reading the counter: a Post in between
+            // bumps the counter, and then the futex wait returns at once.
+            if (_count > 0)
+            {
+                continue;
+            }
+            Native.Wait(at, seen);
+        }
+    }
+
+    /// Queues `work` to run on the scheduler, after everything already queued.
+    public static void Post(Action work)
+    {
+        if (work == null)
+        {
+            throw new ArgumentNullException("work");
+        }
+
+        AtomicCell gate = Gate();
+
+        gate.Enter();
+
+        if (_count == _ring.Length)
+        {
+            Grow();
+        }
+
+        int at = _head + _count;
+
+        if (at >= _ring.Length)
+        {
+            at = at - _ring.Length;
+        }
+        _ring[at] = work;
+        _count = _count + 1;
+
+        gate.Exit();
+
+        if (_workers > 0)
+        {
+            WakeOneWorker();
+        }
+    }
+
+    /// How many items are waiting to run.
+    public static int Pending => _count;
+
+    static Action? Take()
+    {
+        AtomicCell gate = Gate();
+
+        gate.Enter();
+
+        if (_count == 0)
+        {
+            gate.Exit();
+            return null;
+        }
+
+        Action? work = _ring[_head];
+
+        // Cleared, so the ring does not keep finished work alive.
+        _ring[_head] = null;
+        _head = _head + 1;
+        if (_head == _ring.Length)
+        {
+            _head = 0;
+        }
+        _count = _count - 1;
+
+        gate.Exit();
+        return work;
+    }
+
+    /// Doubles the ring, straightening it so the head is at zero. Called with
+    /// the gate held.
+    static void Grow()
+    {
+        Action?[] old = _ring;
+        Action?[] bigger = new Action?[old.Length * 2];
+
+        for (int i = 0; i < _count; i++)
+        {
+            int at = _head + i;
+
+            if (at >= old.Length)
+            {
+                at = at - old.Length;
+            }
+            bigger[i] = old[at];
+        }
+
+        _ring = bigger;
+        _head = 0;
+    }
+
+    static void RunOne(Action work)
+    {
+        try
+        {
+            work.Invoke();
+        }
+        catch (Exception e)
+        {
+            AsyncRuntime.Unhandled(e);
+        }
+    }
+
+    /// Runs queued work and timers until `task` completes. Throws
+    /// InvalidOperationException when nothing left could complete it.
+    public static void RunUntil(Task task)
+    {
+        Gate();
+
+        if (_workers > 0)
+        {
+            RunUntilWithWorkers(task);
+            return;
+        }
+
+        while (!task.IsCompleted)
+        {
+            // One round: only what was queued when it began.
+            int round = _count;
+
+            while (round > 0 && !task.IsCompleted)
+            {
+                Action? work = Take();
+
+                if (work == null)
+                {
+                    break;
+                }
+                RunOne(work);
+                round = round - 1;
+            }
+
+            if (task.IsCompleted)
+            {
+                return;
+            }
+
+            DropCanceledTimers();
+
+            if (_timerCount > 0)
+            {
+                long now = Clock.Now();
+
+                PostDueTimers(now);
+
+                if (_count == 0)
+                {
+                    DropCanceledTimers();
+
+                    TimerEntry? next = _timers[0];
+
+                    if (_timerCount > 0 && next != null && next.Deadline > now)
+                    {
+                        Clock.SleepUntil(next.Deadline);
+                    }
+                }
+                continue;
+            }
+
+            if (_count == 0)
+            {
+                throw new InvalidOperationException("deadlock: nothing can complete this task");
+            }
+        }
+    }
+
+    /// Waiting for a task while workers run the queue. The queue is theirs --
+    /// this thread taking an item could block on something only a worker can
+    /// finish -- but the timers stay here, because the timer heap is driven by
+    /// whoever sleeps on the clock and that is still this thread.
+    ///
+    /// It polls rather than sleeping on the task's own word: a futex wait on
+    /// the state word would make every completion pay for a wake. The interval
+    /// is short enough not to show up beside the work and long enough not to
+    /// spin a processor.
+    static void RunUntilWithWorkers(Task task)
+    {
+        const long PollNanos = 200000;
+
+        while (!task.IsCompleted)
+        {
+            DropCanceledTimers();
+
+            long now = Clock.Now();
+
+            if (_timerCount > 0)
+            {
+                PostDueTimers(now);
+            }
+
+            if (task.IsCompleted)
+            {
+                return;
+            }
+
+            long until = now + PollNanos;
+            TimerEntry? next = _timers[0];
+
+            if (_timerCount > 0 && next != null && next.Deadline > now && next.Deadline < until)
+            {
+                until = next.Deadline;
+            }
+            Clock.SleepUntil(until);
+        }
+    }
+
+    /// Runs everything queued, and every timer, until there is nothing left
+    /// at all. For programs that post work without a task to wait on.
+    public static void RunUntilIdle()
+    {
+        Gate();
+
+        while (true)
+        {
+            Action? work = Take();
+
+            if (work != null)
+            {
+                RunOne(work);
+                continue;
+            }
+
+            DropCanceledTimers();
+
+            if (_timerCount == 0)
+            {
+                return;
+            }
+
+            long now = Clock.Now();
+
+            PostDueTimers(now);
+
+            TimerEntry? next = _timers[0];
+
+            if (_count == 0 && _timerCount > 0 && next != null && next.Deadline > now)
+            {
+                Clock.SleepUntil(next.Deadline);
+            }
+        }
+    }
+
+    // ---- timers ---------------------------------------------------------------
+
+    /// Posts `callback` after `milliseconds` (from now).
+    public static TimerEntry AddTimer(int milliseconds, Action callback)
+    {
+        long deadline = Clock.Now() + (long)milliseconds * 1000000;
+        return AddTimerAt(deadline, callback);
+    }
+
+    /// Posts `callback` once CLOCK_MONOTONIC reaches `deadline` (nanoseconds).
+    public static TimerEntry AddTimerAt(long deadline, Action callback)
+    {
+        Gate();
+        AtomicCell gate = Gate();
+
+        gate.Enter();
+
+        _timerSequence = _timerSequence + 1;
+
+        TimerEntry entry = new TimerEntry(deadline, _timerSequence, callback);
+
+        if (_timerCount == _timers.Length)
+        {
+            TimerEntry?[] bigger = new TimerEntry?[_timers.Length * 2];
+
+            for (int i = 0; i < _timerCount; i++)
+            {
+                bigger[i] = _timers[i];
+            }
+            _timers = bigger;
+        }
+
+        int at = _timerCount;
+
+        _timerCount = _timerCount + 1;
+        _timers[at] = entry;
+        SiftUp(at);
+
+        gate.Exit();
+        return entry;
+    }
+
+    /// How many timers are in the heap, canceled ones included.
+    public static int TimerCount => _timerCount;
+
+    static void DropCanceledTimers()
+    {
+        AtomicCell gate = Gate();
+
+        gate.Enter();
+
+        while (_timerCount > 0)
+        {
+            TimerEntry? top = _timers[0];
+
+            if (top != null && !top.Canceled)
+            {
+                break;
+            }
+            RemoveTop();
+        }
+
+        gate.Exit();
+    }
+
+    static void PostDueTimers(long now)
+    {
+        while (true)
+        {
+            AtomicCell gate = Gate();
+
+            gate.Enter();
+
+            TimerEntry? top = null;
+
+            if (_timerCount > 0)
+            {
+                top = _timers[0];
+            }
+
+            if (top == null || top.Deadline > now)
+            {
+                gate.Exit();
+                return;
+            }
+
+            RemoveTop();
+            gate.Exit();
+
+            if (!top.Canceled)
+            {
+                Post(top.Callback);
+            }
+        }
+    }
+
+    /// Called with the gate held and _timerCount > 0.
+    static void RemoveTop()
+    {
+        int last = _timerCount - 1;
+
+        _timers[0] = _timers[last];
+        _timers[last] = null;
+        _timerCount = last;
+
+        if (last > 0)
+        {
+            SiftDown(0);
+        }
+    }
+
+    static void SiftUp(int at)
+    {
+        TimerEntry? moving = _timers[at];
+
+        if (moving == null)
+        {
+            return;
+        }
+
+        while (at > 0)
+        {
+            int parent = (at - 1) >> 1;
+            TimerEntry? above = _timers[parent];
+
+            if (above == null || !moving.Before(above))
+            {
+                break;
+            }
+            _timers[at] = above;
+            at = parent;
+        }
+        _timers[at] = moving;
+    }
+
+    static void SiftDown(int at)
+    {
+        TimerEntry? moving = _timers[at];
+
+        if (moving == null)
+        {
+            return;
+        }
+
+        while (true)
+        {
+            int child = at * 2 + 1;
+
+            if (child >= _timerCount)
+            {
+                break;
+            }
+
+            TimerEntry? pick = _timers[child];
+            int right = child + 1;
+
+            if (right < _timerCount)
+            {
+                TimerEntry? other = _timers[right];
+
+                if (other != null && pick != null && other.Before(pick))
+                {
+                    child = right;
+                    pick = other;
+                }
+            }
+
+            if (pick == null || !pick.Before(moving))
+            {
+                break;
+            }
+            _timers[at] = pick;
+            at = child;
+        }
+        _timers[at] = moving;
+    }
+}
+
+
+/// .NET's ThreadPool, as a facade over the scheduler. Work queued here runs
+/// on the event loop today and on pool threads when there are some.
+static class ThreadPool
+{
+    public static bool QueueUserWorkItem(Action callBack)
+    {
+        Scheduler.Post(callBack);
+        return true;
+    }
+
+    public static bool UnsafeQueueUserWorkItem(Action callBack)
+    {
+        Scheduler.Post(callBack);
+        return true;
+    }
+}
+
+// ---- real threads ------------------------------------------------------------
+//
+// WHEN THIS FILE BECOMES A SHARED OBJECT. Nothing below reaches into another
+// module's data or depends on an address the linker folded: every caller enters
+// through a function (Thread.Start, Thread.CurrentId, Scheduler.UseThreads,
+// Scheduler.Post), the scheduler's and the registry's state are statics of this
+// module and of no other, and the one code address taken -- Sys.AddressOf of
+// the thread entry -- is taken at run time and handed to run-time-generated
+// code, so a position-independent load is free to put it anywhere. What is NOT
+// The state that used to be on the other side of the boundary -- the exception
+// handler chain's head and the stack a thread stands on, one word of the
+// executable's .bss each -- is now a block per thread (lib/rt/runtime.cor,
+// class Tls), reached through GS, so a thread other than the first can throw,
+// catch and allocate, and the collector sees every thread's stack.
+
+
+
+// ---- the things threads wait on ----------------------------------------------
+
+
+
+
+// ---- what the compiler calls around async methods ----------------------------
+
+static class AsyncRuntime
+{
+    /// An exception escaped an `async void` method (or a posted work item).
+    /// Printed to standard error and the process ends with 134, as
+    /// Runtime.Unhandled does for a synchronous throw.
+    public static void Unhandled(Exception e)
+    {
+        string text = "Unhandled exception. " + e.ToString() + "\n";
+
+        Runtime.WriteBytes(2, Runtime.BytesOf(text), text.Length);
+        Runtime.Exit(134);
+    }
+
+    /// `async Task Main` returned `task`: run until it completes, and end the
+    /// program as an uncaught exception would if it faulted or was canceled.
+    /// For `async Task<int> Main` the compiler reads the result itself.
+    public static void RunMain(Task task)
+    {
+        try
+        {
+            Scheduler.RunUntil(task);
+            task.ThrowIfNotSuccessful();
+        }
+        catch (Exception e)
+        {
+            Unhandled(e);
+        }
+    }
+}

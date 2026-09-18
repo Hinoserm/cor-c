@@ -1,0 +1,85 @@
+// test: number_format
+// expect-exit: 0
+// expect-output:
+// int BEEF 0000beef 00048879 48,879 48879
+// neg FFFFFFFF -1,234.00 -0007
+// long 1,234,567 12D687 FFFFFFFFFFFFFFFF
+// narrow C8 FFFE EE6B2800
+// bin 101 11111111
+// hex True 255 -1
+// narrowparse True 255 False True -32768
+// range False True -2147483648
+// real 1.250 1.25E+000 1 1.25
+// general 0.5 100 -3.75 0 1E+20 0.0001 1E-07
+// readreal True 250 False
+// math 7 -1 5 3 -2 2.35
+// log 1.000000 3.000000 1.414214 3.000000
+//
+// Numbers as text and text as numbers: the standard numeric format strings on
+// every integral type, hexadecimal parsing through NumberStyles, the narrow
+// types' own Parse and TryParse, and a real number that can finally be
+// printed rather than scaled to a long first.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        int n = 48879;
+        Line("int " + n.ToString("X") + " " + n.ToString("x8") + " " + n.ToString("D8")
+             + " " + n.ToString("N0") + " " + n.ToString("G"));
+        Line("neg " + (-1).ToString("X") + " " + (0 - 1234).ToString("N2")
+             + " " + (0 - 7).ToString("D4"));
+
+        long wide = 1234567;
+        Line("long " + wide.ToString("N0") + " " + wide.ToString("X") + " " + ((long)(0 - 1)).ToString("X"));
+
+        byte small = 200;
+        short mid = 0 - 2;
+        Line("narrow " + small.ToString("X2") + " " + mid.ToString("X") + " " + ((uint)4000000000).ToString("X"));
+
+        Line("bin " + 5.ToString("b") + " " + 255.ToString("b"));
+
+        long parsed = 0;
+        bool ok = Int64.TryParse("ff", NumberStyles.HexNumber, CultureInfo.InvariantCulture, out parsed);
+        Line("hex " + ok + " " + parsed + " " + Int32.Parse("FFFFFFFF", NumberStyles.HexNumber));
+
+        byte b = 0;
+        bool fits = Byte.TryParse("255", out b);
+        byte over = 0;
+        bool spills = Byte.TryParse("256", out over);
+        short sixteen = 0;
+        bool signed = Int16.TryParse("-32768", out sixteen);
+        Line("narrowparse " + fits + " " + b + " " + spills + " " + signed + " " + sixteen);
+
+        int tooBig = 0;
+        Line("range " + Int32.TryParse("2147483648", out tooBig) + " "
+             + Int32.TryParse("-2147483648", out tooBig) + " " + tooBig);
+
+        double d = 1.25;
+        Line("real " + d.ToString("F3") + " " + d.ToString("E2") + " " + d.ToString("F0")
+             + " " + String.FromDouble(d));
+        Line("general " + String.FromDouble(0.5) + " " + String.FromDouble(100.0)
+             + " " + String.FromDouble(0.0 - 3.75) + " " + String.FromDouble(0.0)
+             + " " + String.FromDouble(1.0e20) + " " + String.FromDouble(0.0001)
+             + " " + String.FromDouble(1.0e-7));
+
+        double read = 0.0;
+        bool number = Double.TryParse("2.5e2", out read);
+        double rubbish = 0.0;
+        Line("readreal " + number + " " + String.FromDouble(read) + " "
+             + Double.TryParse("zz", out rubbish));
+
+        Line("math " + Math.Abs(0 - 7) + " " + Math.Sign(0 - 3) + " " + Math.Clamp(9, 0, 5)
+             + " " + String.FromDouble(Math.Ceiling(2.1)) + " " + String.FromDouble(Math.Truncate(0.0 - 2.7))
+             + " " + String.FromDouble(Math.Round(2.3456, 2)));
+        Line("log " + Math.Log(Math.E).ToString("F6") + " " + Math.Log10(1000.0).ToString("F6")
+             + " " + Math.Pow(2.0, 0.5).ToString("F6") + " " + Math.Log2(8.0).ToString("F6"));
+        return 0;
+    }
+}

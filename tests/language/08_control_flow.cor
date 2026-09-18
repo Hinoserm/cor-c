@@ -1,0 +1,130 @@
+// test: control_flow
+// expect-exit: 0
+// expect-output:
+// if neg zero pos
+// while 55
+// do 1
+// for 120 5
+// nested 2 6
+// continue 25
+// break 7
+// early 3
+//
+// if/else chains, while, do-while (runs its body once even when the
+// condition is false from the start), for with two loop variables, break out
+// of a nested loop via a flag, continue, and an early return from inside a
+// loop.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static string Classify(int n)
+    {
+        if (n < 0)
+        {
+            return "neg";
+        }
+        else if (n == 0)
+        {
+            return "zero";
+        }
+        else
+        {
+            return "pos";
+        }
+    }
+
+    static int FirstOver(int[] xs, int limit)
+    {
+        for (int i = 0; i < xs.Length; i++)
+        {
+            if (xs[i] > limit)
+            {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    static int Main()
+    {
+        Line("if " + Classify(-5) + " " + Classify(0) + " " + Classify(7));
+
+        int sum = 0;
+        int i = 1;
+        while (i <= 10)
+        {
+            sum = sum + i;
+            i++;
+        }
+        Line("while " + sum);
+
+        int count = 0;
+        do
+        {
+            count++;
+        } while (count < 0);
+        Line("do " + count);
+
+        int product = 1;
+        for (int k = 1; k <= 5; k++)
+        {
+            product *= k;
+        }
+        int iterations = 0;
+        for (int lo = 0, hi = 10; lo < hi; lo++, hi--)
+        {
+            iterations++;
+        }
+        Line("for " + product + " " + iterations);
+
+        int foundI = 0;
+        int foundJ = 0;
+        bool found = false;
+        for (int a = 1; a <= 6 && !found; a++)
+        {
+            for (int b = 1; b <= 6; b++)
+            {
+                if (a * b == 12)
+                {
+                    foundI = a;
+                    foundJ = b;
+                    found = true;
+                    break;
+                }
+            }
+        }
+        Line("nested " + foundI + " " + foundJ);
+
+        int odd = 0;
+        for (int n = 0; n < 10; n++)
+        {
+            if (n % 2 == 0)
+            {
+                continue;
+            }
+            odd += n;
+        }
+        Line("continue " + odd);
+
+        int steps = 0;
+        while (true)
+        {
+            steps++;
+            if (steps == 7)
+            {
+                break;
+            }
+        }
+        Line("break " + steps);
+
+        int[] xs = new int[] { 1, 5, 9, 20, 30 };
+        Line("early " + FirstOver(xs, 10));
+        return 0;
+    }
+}

@@ -1,0 +1,114 @@
+// test: checked_overflow
+// expect-exit: 0
+// expect-output:
+// unchecked -2147483648
+// int-add caught
+// int-mul caught
+// int-sub caught
+// int-ok 2147395600
+// long-add caught
+// long-mul caught
+// long-ok 1000000000000
+// sum 55
+//
+// checked arithmetic throws on overflow and is otherwise the same
+// expression; unchecked wraps. The default is unchecked. The exception is
+// caught by its base type because its exact type is the runtime's choice.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static string IntAdd(int a, int b)
+    {
+        try
+        {
+            int r = checked(a + b);
+            return "" + r;
+        }
+        catch (Exception e)
+        {
+            return "caught";
+        }
+    }
+
+    static string IntMul(int a, int b)
+    {
+        try
+        {
+            int r = checked(a * b);
+            return "" + r;
+        }
+        catch (Exception e)
+        {
+            return "caught";
+        }
+    }
+
+    static string IntSub(int a, int b)
+    {
+        try
+        {
+            int r = checked(a - b);
+            return "" + r;
+        }
+        catch (Exception e)
+        {
+            return "caught";
+        }
+    }
+
+    static string LongAdd(long a, long b)
+    {
+        try
+        {
+            long r = checked(a + b);
+            return "" + r;
+        }
+        catch (Exception e)
+        {
+            return "caught";
+        }
+    }
+
+    static string LongMul(long a, long b)
+    {
+        try
+        {
+            long r = checked(a * b);
+            return "" + r;
+        }
+        catch (Exception e)
+        {
+            return "caught";
+        }
+    }
+
+    static int Main()
+    {
+        int top = int.MaxValue;
+        int one = 1;
+        Line("unchecked " + unchecked(top + one));
+
+        Line("int-add " + IntAdd(top, 1));
+        Line("int-mul " + IntMul(65536, 65536));
+        Line("int-sub " + IntSub(int.MinValue, 1));
+        Line("int-ok " + IntMul(46340, 46340));
+
+        Line("long-add " + LongAdd(long.MaxValue, 1));
+        Line("long-mul " + LongMul(3000000000L, 4000000000L));
+        Line("long-ok " + LongMul(1000000L, 1000000L));
+
+        int sum = 0;
+        for (int i = 1; i <= 10; i++)
+        {
+            sum = checked(sum + i);
+        }
+        Line("sum " + sum);
+        return 0;
+    }
+}

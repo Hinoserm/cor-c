@@ -1,0 +1,32 @@
+// test: System.Text.Encoding -- Unicode, UTF32 and the char conversions
+// expect-exit: 0
+// expect-output:
+// 61-00-E9-00-3D-D8-00-DE-7A-00
+// 00-E9
+// 61-00-00-00-E9-00-00-00-00-F6-01-00-7A-00-00-00 count=16
+// True
+// 3 hi
+// 2 A?
+//
+// "Unicode" means UTF-16 in .NET, which is a historical accident rather than
+// a description, and UTF32 is the one where the nth character really is at
+// the nth position. A string on this machine is UTF-8, so all three of these
+// do real work. Values from the same program run on .NET.
+
+class Program
+{
+    static int Main()
+    {
+        string s = "aé😀z";
+
+        Console.WriteLine(BitConverter.ToString(Encoding.Unicode.GetBytes(s)));
+        Console.WriteLine(BitConverter.ToString(Encoding.BigEndianUnicode.GetBytes("é")));
+        Console.WriteLine(BitConverter.ToString(Encoding.UTF32.GetBytes(s)) + " count=" + Encoding.UTF32.GetByteCount(s));
+        Console.WriteLine(String.Compare(Encoding.UTF32.GetString(Encoding.UTF32.GetBytes(s)), s) == 0);
+        Console.WriteLine(Encoding.UTF8.GetCharCount(Encoding.UTF8.GetBytes("abc"))
+            + " " + String.FromChars(Encoding.UTF8.GetChars(Encoding.UTF8.GetBytes("hi"))));
+        Console.WriteLine(Encoding.ASCII.GetCharCount(new byte[] { 65, 66 })
+            + " " + String.FromChars(Encoding.ASCII.GetChars(new byte[] { 65, 200 })));
+        return 0;
+    }
+}

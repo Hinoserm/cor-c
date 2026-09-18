@@ -1,0 +1,49 @@
+// test: params_defaults
+// expect-exit: 0
+// expect-output:
+// params 7 10 15 65
+// defaults 2 4 7
+// named 4 13
+// wrap (x) [x]
+//
+// params arrays, optional parameters with defaults, and named arguments
+// that skip or reorder parameters.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Sum(int start, params int[] values)
+    {
+        int total = start;
+        foreach (int v in values)
+        {
+            total = total + v;
+        }
+        return total;
+    }
+
+    static long Step(long from, long by = 1, long times = 1)
+    {
+        return from + by * times;
+    }
+
+    static string Wrap(string text, string open = "(", string close = ")")
+    {
+        return open + text + close;
+    }
+
+    static int Main()
+    {
+        int[] explicitArray = new int[] { 10, 20, 30 };
+        Line("params " + Sum(7) + " " + Sum(7, 3) + " " + Sum(1, 2, 4, 8) + " " + Sum(5, explicitArray));
+        Line("defaults " + Step(1) + " " + Step(1, 3) + " " + Step(1, 3, 2));
+        Line("named " + Step(from: 1, times: 3) + " " + Step(times: 4, by: 3, from: 1));
+        Line("wrap " + Wrap("x") + " " + Wrap("x", close: "]", open: "["));
+        return 0;
+    }
+}

@@ -1,0 +1,43 @@
+// test: no_array_is_no_list
+// expect-exit: 0
+// expect-output:
+// True 0 2
+// none 2 empty
+//
+// NO ARRAY IS NO LIST. A null `string[]?` becoming an `IReadOnlyList<string>?`
+// is null, not a helper object holding nothing. Wrapped regardless,
+// `names != null` was true of it and the first `.Count` read the length of an
+// array that was not there -- which is where the compiler stopped when it was
+// given its own source to compile.
+
+using System;
+using System.Collections.Generic;
+
+sealed class Shape { public string[]? TupleNames; }
+
+class P
+{
+    static string Say(IReadOnlyList<string>? names)
+    {
+        return names == null ? "none" : names.Count == 0 ? "empty" : "" + names.Count;
+    }
+
+    static int Main()
+    {
+        Shape bare = new Shape();
+        Shape named = new Shape { TupleNames = new string[] { "At", "Label" } };
+        IReadOnlyList<string>? given = null;
+        IReadOnlyList<string>? from = given ?? bare.TupleNames;
+        IReadOnlyList<string>? other = given ?? named.TupleNames;
+        int count = 0;
+
+        for (int i = 0; from != null && i < from.Count; i++)
+        {
+            count++;
+        }
+
+        Console.WriteLine((from == null) + " " + count + " " + (other == null ? -1 : other.Count));
+        Console.WriteLine(Say(bare.TupleNames) + " " + Say(named.TupleNames) + " " + Say(new string[0]));
+        return 0;
+    }
+}

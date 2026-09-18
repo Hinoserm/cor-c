@@ -1,0 +1,61 @@
+// test: how a child ended, as a shell reports it
+// expect-exit: 0
+// expect-output:
+// exited true code 5
+// signalled true signal 9
+// shell says 5
+// shell says 137
+//
+// os/bin/sh.cor prints a job's ending and sets $? from this, and os/lib/
+// shell.cor's Wait is these four calls over an int[1]. The status is ONE
+// MACHINE WORD with the code in one byte and the signal in another, and a
+// program that reads the whole word as the exit code reports a killed job as
+// having exited with nine.
+
+class Program
+{
+    static int Main()
+    {
+        // 5 << 8 is what the kernel packs an exit(5) into.
+        int exited = 5 << 8;
+
+        Console.Write("exited ");
+        Console.Write(WaitStatus.Exited(exited) ? "true" : "false");
+        Console.Write(" code ");
+        Console.WriteLine(WaitStatus.Code(exited));
+
+        // A kill by signal 9 is the signal in the low seven bits.
+        int killed = 9;
+
+        Console.Write("signalled ");
+        Console.Write(WaitStatus.Signalled(killed) ? "true" : "false");
+        Console.Write(" signal ");
+        Console.WriteLine(WaitStatus.Signal(killed));
+
+        // And what a shell puts in $?: the code, or 128 plus the signal.
+        Console.Write("shell says ");
+        Console.WriteLine(WaitStatus.Result(exited));
+        Console.Write("shell says ");
+        Console.WriteLine(WaitStatus.Result(killed));
+
+        // The same thing end to end, through a real child, so that the
+        // packing above is the kernel's and not this test's idea of it.
+        int pid = Os.Fork();
+
+        if (pid == 0)
+        {
+            string[] argv = new string[3];
+
+            argv[0] = "/bin/sh";
+            argv[1] = "-c";
+            argv[2] = "exit 5";
+            Os.Exec("/bin/sh", argv);
+            Os.Exit(127);
+        }
+
+        int[] status = new int[1];
+
+        Os.Waitpid(pid, status, 0);
+        return WaitStatus.Result(status[0]) == 5 ? 0 : 1;
+    }
+}

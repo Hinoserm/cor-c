@@ -1,0 +1,91 @@
+// test: generics_dict
+// expect-exit: 0
+// expect-output:
+// ages 2 31 True False
+// try True 25 False
+// remove True 1
+// names two
+// longs 100 25 9801
+// sum 60 6 60
+// grow 1000 1998
+// init 2 100
+//
+// Dictionary<K,V> over string, int and long keys (long keys use both words
+// so hashing must too): indexer set and get, overwrite, ContainsKey,
+// TryGetValue with `out`, Remove, foreach over KeyValuePair, foreach with
+// deconstruction, growth past the initial table, and a collection
+// initialiser.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        Dictionary<string, int> ages = new Dictionary<string, int>();
+        ages["bob"] = 30;
+        ages["amy"] = 25;
+        ages["bob"] = 31;
+        Line("ages " + ages.Count + " " + ages["bob"] + " " + ages.ContainsKey("amy") + " " + ages.ContainsKey("zed"));
+
+        int amy = 0;
+        bool hasAmy = ages.TryGetValue("amy", out amy);
+        int zed = 0;
+        bool hasZed = ages.TryGetValue("zed", out zed);
+        Line("try " + hasAmy + " " + amy + " " + hasZed);
+
+        bool removed = ages.Remove("amy");
+        Line("remove " + removed + " " + ages.Count);
+
+        Dictionary<int, string> names = new Dictionary<int, string>();
+        names[1] = "one";
+        names[2] = "two";
+        Line("names " + names[2]);
+
+        Dictionary<long, long> squares = new Dictionary<long, long>();
+        for (long i = 0; i < 100; i++)
+        {
+            squares[i << 32] = i * i;
+        }
+        long five = 5L << 32;
+        long ninetyNine = 99L << 32;
+        Line("longs " + squares.Count + " " + squares[five] + " " + squares[ninetyNine]);
+
+        Dictionary<int, int> small = new Dictionary<int, int>();
+        small[1] = 10;
+        small[2] = 20;
+        small[3] = 30;
+        int values = 0;
+        int keys = 0;
+        foreach (KeyValuePair<int, int> entry in small)
+        {
+            values += entry.Value;
+            keys += entry.Key;
+        }
+        int again = 0;
+        foreach ((int k, int v) in small)
+        {
+            again += v;
+        }
+        Line("sum " + values + " " + keys + " " + again);
+
+        Dictionary<int, int> many = new Dictionary<int, int>();
+        for (int i = 0; i < 1000; i++)
+        {
+            many[i] = i * 2;
+        }
+        Line("grow " + many.Count + " " + many[999]);
+
+        Dictionary<string, int> sizes = new Dictionary<string, int>
+        {
+            { "small", 1 },
+            { "large", 100 },
+        };
+        Line("init " + sizes.Count + " " + sizes["large"]);
+        return 0;
+    }
+}

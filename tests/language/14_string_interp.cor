@@ -1,0 +1,56 @@
+// test: string_interp
+// expect-exit: 0
+// expect-output:
+// hello world, n is 42!
+// 42 + 42 = 84
+// braces {like this}
+// n is big
+// count: one 1
+// world42
+// outer inner 42 end
+// flag True big 4294967296
+//
+// Interpolated strings: holes with variables, expressions, a conditional,
+// escaped braces, a call evaluated exactly once, adjacent holes, nesting,
+// and holes holding a bool and a long.
+
+static class Name
+{
+    public static long Calls;
+
+    public static string Of(long n)
+    {
+        Calls = Calls + 1;
+        return n == 1 ? "one" : "many";
+    }
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        long n = 42;
+        string who = "world";
+
+        Line($"hello {who}, n is {n}!");
+        Line($"{n} + {n} = {n + n}");
+        Line($"braces {{like this}}");
+        Line($"n is {(n > 10 ? "big" : "small")}");
+
+        Name.Calls = 0;
+        Line($"count: {Name.Of(1)} {Name.Calls}");
+        Line($"{who}{n}");
+        Line($"outer {$"inner {n}"} end");
+
+        bool flag = true;
+        long big = 1L << 32;
+        Line($"flag {flag} big {big}");
+        return 0;
+    }
+}

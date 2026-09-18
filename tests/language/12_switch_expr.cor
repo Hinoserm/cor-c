@@ -1,0 +1,118 @@
+// test: switch_expr
+// expect-exit: 0
+// expect-output:
+// area 9 12 7 -1
+// guard 1012 3 2
+// const 20 99
+// sign 1 -1 0
+// rel A B F
+// or low high
+//
+// switch expressions: type patterns with bindings, `when` guards, constant
+// arms, relational patterns, `or` patterns and the discard arm.
+
+class Shape
+{
+    public long Sides;
+}
+
+class Square : Shape
+{
+    public long Side;
+}
+
+class Circle : Shape
+{
+    public long Radius;
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static long Area(Shape? s)
+    {
+        return s switch
+        {
+            Square q => q.Side * q.Side,
+            Circle c => 3 * c.Radius * c.Radius,
+            Shape p => p.Sides,
+            _ => -1,
+        };
+    }
+
+    static long Describe(Shape s)
+    {
+        return s switch
+        {
+            Square n when n.Side > 10 => 1000 + n.Side,
+            Square n => n.Side,
+            Circle n when n.Radius > 10 => 2000 + n.Radius,
+            Circle n => n.Radius,
+            _ => 0,
+        };
+    }
+
+    static long Name(long n)
+    {
+        return n switch { 1 => 10, 2 => 20, _ => 99 };
+    }
+
+    static long Sign(long n)
+    {
+        return n switch
+        {
+            long v when v > 0 => 1,
+            long v when v < 0 => -1,
+            _ => 0,
+        };
+    }
+
+    static string Grade(int n)
+    {
+        return n switch
+        {
+            >= 90 => "A",
+            >= 80 => "B",
+            _ => "F",
+        };
+    }
+
+    static string Band(int n)
+    {
+        return n switch
+        {
+            1 or 2 or 3 => "low",
+            _ => "high",
+        };
+    }
+
+    static int Main()
+    {
+        Square q = new Square();
+        q.Sides = 4;
+        q.Side = 3;
+        Circle c = new Circle();
+        c.Radius = 2;
+        Shape plain = new Shape();
+        plain.Sides = 7;
+
+        Line("area " + Area(q) + " " + Area(c) + " " + Area(plain) + " " + Area(null));
+
+        long first = Describe(q);
+        q.Side = 12;
+        long second = Describe(q);
+        q.Side = 3;
+        Line("guard " + second + " " + first + " " + Describe(c));
+
+        Line("const " + Name(2) + " " + Name(9));
+        Line("sign " + Sign(5) + " " + Sign(-5) + " " + Sign(0));
+        Line("rel " + Grade(95) + " " + Grade(85) + " " + Grade(10));
+        Line("or " + Band(2) + " " + Band(7));
+        return 0;
+    }
+}

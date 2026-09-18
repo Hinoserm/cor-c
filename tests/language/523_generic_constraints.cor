@@ -1,0 +1,143 @@
+// test: generic_constraints
+// expect-exit: 0
+// expect-output:
+// interface on a method 7
+// interface on a class 5
+// base class 2
+// two constraints circle 3
+// class constraint []
+// struct constraint 4
+// several parameters ab
+// through a base interface 9
+//
+// `where T : ...` IS ORDINARY C# AND DID NOT PARSE. The constraint reader
+// asked for a TYPE, so `where T : class`, `: struct`, `: new()`, `: notnull`
+// and `: unmanaged` -- which say what KIND of argument is allowed rather than
+// name one -- stopped it at the keyword. They are read and dropped: this
+// compiler makes a copy of a generic per type argument, so what a constraint
+// rules out is ruled out by that copy failing to compile.
+//
+// A CONSTRAINT THAT NAMES A TYPE has to do more than parse. A generic class is
+// compiled twice over -- once per type argument, and once as the SHARED copy
+// every word-shaped argument uses -- and in the shared copy T was a bare
+// machine word, so `x.Area()` was answered with "'object' has no member
+// 'Area'". A generic class with an interface constraint could not be written.
+//
+// The shared copy stands a constrained parameter on its constraint, which
+// makes that call an interface dispatch on a word -- right for every type
+// argument the constraint admits -- while the copy keeps the name a consumer
+// asks for.
+interface IShape
+{
+    int Area();
+}
+
+interface INamed : IShape
+{
+    string Called();
+}
+
+class Circle : IShape
+{
+    public int Side;
+
+    public Circle(int side) { Side = side; }
+
+    public int Area() { return Side * Side; }
+}
+
+class Square : INamed
+{
+    public int Area() { return 9; }
+
+    public string Called() { return "square"; }
+}
+
+class Animal
+{
+    public virtual int Legs() { return 2; }
+}
+
+class Dog : Animal
+{
+    public override int Legs() { return 4; }
+}
+
+class Bag<T> where T : IShape
+{
+    private List<T> _items = new List<T>();
+
+    public void Add(T one) { _items.Add(one); }
+
+    public int Total()
+    {
+        int total = 0;
+
+        for (int i = 0; i < _items.Count; i++) { total = total + _items[i].Area(); }
+        return total;
+    }
+}
+
+class Pen<T> where T : Animal
+{
+    public T Kept;
+
+    public Pen(T kept) { Kept = kept; }
+
+    public int Legs() { return Kept.Legs(); }
+}
+
+class Both<T> where T : class, IShape
+{
+    public int Of(T one) { return one.Area(); }
+}
+
+class Pair<K, V> where K : class where V : struct
+{
+    public K? Key;
+    public V Value;
+}
+
+class Through<T> where T : INamed
+{
+    public int Of(T one) { return one.Area(); }
+}
+
+static class Program
+{
+    static int Measure<T>(T one) where T : IShape
+    {
+        return one.Area();
+    }
+
+    static string Two<A, B>(A a, B b) where A : class where B : class
+    {
+        return "" + a + b;
+    }
+
+    static int Count<T>(T one) where T : struct
+    {
+        return 4;
+    }
+
+    static void Main()
+    {
+        Console.WriteLine("interface on a method " + (Measure(new Square()) - Measure(new Circle(1)) - 1));
+
+        Bag<Circle> bag = new Bag<Circle>();
+
+        bag.Add(new Circle(1));
+        bag.Add(new Circle(2));
+        Console.WriteLine("interface on a class " + bag.Total());
+
+        Console.WriteLine("base class " + new Pen<Animal>(new Animal()).Legs());
+        Console.WriteLine("two constraints circle " + new Both<Circle>().Of(new Circle(3)) / 3);
+
+        Pair<string, int> pair = new Pair<string, int>();
+
+        Console.WriteLine("class constraint [" + pair.Key + "]");
+        Console.WriteLine("struct constraint " + Count(1));
+        Console.WriteLine("several parameters " + Two("a", "b"));
+        Console.WriteLine("through a base interface " + new Through<Square>().Of(new Square()));
+    }
+}

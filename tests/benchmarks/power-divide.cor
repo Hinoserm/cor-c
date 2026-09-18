@@ -1,0 +1,57 @@
+static class Program
+{
+    static int[] _narrow = new int[] { 2, -8, 1024 };
+    static long[] _wide = new long[] { 2, -8, 1099511627776 };
+    static uint Next(ref uint state) { state = unchecked(state * 1664525u + 1013904223u); return state; }
+    static long NarrowWork(int count)
+    {
+        uint state = 12345; long sum = 0;
+        for (int i = 0; i < count; i++)
+        {
+            int n = unchecked((int)Next(ref state));
+            sum += (long)(n / 2) + n % 2;
+            sum += (long)(n / -8) + n % -8;
+            sum += (long)(n / 1024) + n % 1024;
+        }
+        return sum;
+    }
+    static long WideWork(int count)
+    {
+        uint state = 12345; long sum = 0;
+        for (int i = 0; i < count; i++)
+        {
+            long n = ((long)(int)Next(ref state) << 32) | Next(ref state);
+            sum = unchecked(sum + n / 2 + n % 2);
+            sum = unchecked(sum + n / -8 + n % -8);
+            sum = unchecked(sum + n / 1099511627776 + n % 1099511627776);
+        }
+        return sum;
+    }
+    static long Reference(int count, bool wide)
+    {
+        uint state = 12345; long sum = 0;
+        for (int i = 0; i < count; i++)
+        {
+            int first = unchecked((int)Next(ref state));
+            long n = wide ? ((long)first << 32) | Next(ref state) : first;
+            for (int d = 0; d < 3; d++)
+                sum = unchecked(sum + (wide ? n / _wide[d] + n % _wide[d]
+                    : (long)(first / _narrow[d]) + first % _narrow[d]));
+        }
+        return sum;
+    }
+    static int Main()
+    {
+        string[] args = Environment.GetCommandLineArgs();
+        int count = args.Length > 1 ? int.Parse(args[1]) : 200000;
+        bool wide = args.Length > 2 && args[2] == "wide";
+        if (count < 1 || count > 1000000) return 2;
+        long start = Stopwatch.GetTimestamp();
+        long value = wide ? WideWork(count) : NarrowWork(count);
+        long elapsed = Stopwatch.GetTimestamp() - start;
+        bool valid = value == Reference(count, wide);
+        Console.WriteLine("signed-power-divide,wide=" + wide + ",iterations=" + count + ",ticks=" + elapsed
+            + ",frequency=" + Stopwatch.Frequency + ",checksum=" + value + ",valid=" + valid);
+        return valid ? 0 : 1;
+    }
+}

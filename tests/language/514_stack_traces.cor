@@ -1,0 +1,128 @@
+// test: stack_traces
+// expect-exit: 0
+// expect-output:
+// caught deep
+// frame Program.Third
+// frame Program.Second
+// frame Program.First
+// line yes
+// file yes
+// env Program.Where
+// none
+//
+// WHERE A FAULT HAPPENED, and what called what to get there. .NET prints an
+// unhandled exception as its type, its message and then its frames, and that
+// is worth more on this machine than on one with a debugger, because this one
+// has no debugger.
+//
+// Two things make it possible. Every prologue is `push ebp; mov ebp, esp`, so
+// the saved frame pointers are a list of callers with each return address
+// beside them; and the code generator writes a table saying what each stretch
+// of the image is -- name, source file, and which line each byte belongs to.
+// Walking one and looking addresses up in the other is the whole of it.
+//
+// The helpers below recurse so that the optimiser leaves them standing: an
+// inlined frame is not a frame, here or in .NET, and a test that asserts one
+// is really asserting that nothing was inlined.
+static class Program
+{
+    static int Sink;
+
+    static void Line(string text)
+    {
+        Sys.Print(text);
+        Sys.PrintLine();
+    }
+
+    static void Third(int n)
+    {
+        if (n > 0) { Third(n - 1); Sink = Sink + n; return; }
+        throw new InvalidOperationException("deep");
+    }
+
+    static void Second(int n)
+    {
+        if (n > 0) { Second(n - 1); Sink = Sink + n; return; }
+        Third(1);
+    }
+
+    static void First(int n)
+    {
+        if (n > 0) { First(n - 1); Sink = Sink + n; return; }
+        Second(1);
+    }
+
+    static void Where(int n)
+    {
+        if (n > 0) { Where(n - 1); Sink = Sink + n; return; }
+        string trace = Environment.StackTrace;
+        Line("env " + Named(trace, 0));
+    }
+
+    /// The method named by one line of a trace: what lies between the "   at "
+    /// and the " in " that introduces the source file.
+    static string Named(string trace, int which)
+    {
+        int at = 0;
+        int seen = 0;
+        string last = "";
+
+        while (at < trace.Length)
+        {
+            int end = String.IndexOf(trace, '\n', at);
+            if (end < 0) { end = trace.Length; }
+
+            string row = String.Substring(trace, at, end - at);
+            at = end + 1;
+
+            if (row.Length < 6) { continue; }
+
+            string name = String.Substring(row, 6, row.Length - 6);
+            int space = String.IndexOf(name, ' ', 0);
+            if (space >= 0) { name = String.Substring(name, 0, space); }
+
+            // A run of the same name is one frame as far as this is
+            // concerned: the helpers recurse, so each appears twice.
+            if (name == last) { continue; }
+            last = name;
+
+            if (seen == which) { return name; }
+            seen = seen + 1;
+        }
+        return "";
+    }
+
+    /// Whether any row of the trace carries a line number, and any a file.
+    static bool Has(string trace, string mark)
+    {
+        return String.IndexOf(trace, mark) >= 0;
+    }
+
+    static void Main()
+    {
+        string trace = "";
+
+        try
+        {
+            First(1);
+        }
+        catch (InvalidOperationException e)
+        {
+            Line("caught " + e.Message);
+            trace = e.StackTrace;
+        }
+
+        Line("frame " + Named(trace, 0));
+        Line("frame " + Named(trace, 1));
+        Line("frame " + Named(trace, 2));
+        Line(Has(trace, ":line ") ? "line yes" : "line no");
+        Line(Has(trace, "514_stack_traces.cor") ? "file yes" : "file no");
+
+        Where(1);
+
+        // An exception that was made and never thrown has no trace, which is
+        // what .NET answers as well.
+        Exception fresh = new Exception("unthrown");
+        Line(fresh.StackTrace.Length == 0 ? "none" : "some");
+    }
+}

@@ -1,0 +1,114 @@
+// test: switch_expression_patterns
+// expect-exit: 0
+// expect-output:
+// int small 4
+// int big 40
+// string text hi
+// dog rex
+// cat other
+// null nothing
+// double other
+// long 7
+// bool True
+// enum Green
+// struct 3
+// first arm wins string
+// no arm dog other
+// bound once 5
+//
+// A TYPE PATTERN IN A SWITCH EXPRESSION IS A TEST, and over an `object`
+// subject it was not one at all: `object` is not IsReference -- it is the
+// machine word, which may HOLD a reference -- so the checker decided every arm
+// of a switch over an object always matched, and the first one won whatever
+// was handed in. `o switch { string s => ..., Dog d => ... }` answered the
+// string arm for a Dog and then faulted joining the null it had bound.
+//
+// A VALUE TYPE against an object is a BOX TEST, which is the same test `o is
+// int n` already made and the same unboxing: the arm has to ask whether the
+// box is an int's and take the value out if it is. Without that the arm bound
+// the BOX'S ADDRESS, and `int n => "n " + n` printed a pointer.
+//
+// The two share one routine now, because `is` and an arm have to mean the same
+// thing by the same pattern.
+enum Colour { Red, Green = 5, Blue }
+
+struct Point
+{
+    public int X;
+    public Point(int x) { X = x; }
+}
+
+class Animal { }
+
+class Dog : Animal
+{
+    public string Name = "rex";
+}
+
+class Cat : Animal { }
+
+static class Program
+{
+    static string Describe(object? o) => o switch
+    {
+        int n when n > 10 => "int big " + n,
+        int n => "int small " + n,
+        string s => "string text " + s,
+        Dog d => "dog " + d.Name,
+        long l => "long " + l,
+        bool b => "bool " + b,
+        Colour c => "enum " + c,
+        Point p => "struct " + p.X,
+        null => "null nothing",
+        _ => "other",
+    };
+
+    static void Main()
+    {
+        Console.WriteLine(Describe(4));
+        Console.WriteLine(Describe(40));
+        Console.WriteLine(Describe("hi"));
+        Console.WriteLine(Describe(new Dog()));
+        Console.WriteLine("cat " + Describe(new Cat()));
+
+        object? nothing = null;
+
+        Console.WriteLine(Describe(nothing));
+        Console.WriteLine("double " + Describe(1.5));
+        Console.WriteLine(Describe(7L));
+        Console.WriteLine(Describe(true));
+        Console.WriteLine(Describe(Colour.Green));
+        Console.WriteLine(Describe(new Point(3)));
+
+        // A DERIVED CLASS BEFORE ITS BASE still reaches the derived arm, and
+        // the arms are tried in the order they were written.
+        object thing = "s";
+
+        Console.WriteLine("first arm wins " + (thing switch
+        {
+            string s => "string",
+            object any => "object",
+        }));
+
+        // An arm whose type nothing matches falls through to the discard.
+        object dog = new Dog();
+
+        Console.WriteLine("no arm dog " + (dog switch { Cat c => "cat", _ => "other" }));
+
+        // THE SUBJECT IS EVALUATED ONCE, however many arms test it.
+        int calls = 0;
+
+        Console.WriteLine("bound once " + (Counted(ref calls) switch
+        {
+            string s => "?",
+            int n => "" + (n + calls),
+            _ => "?",
+        }));
+    }
+
+    static object Counted(ref int calls)
+    {
+        calls = calls + 1;
+        return 4;
+    }
+}

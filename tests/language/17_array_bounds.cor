@@ -1,0 +1,22 @@
+// test: array_bounds
+// expect-exit: nonzero
+//
+// Indexing past the end of an array is a runtime failure: the program must
+// stop with a non-zero exit code and must NOT print "after". Output is not
+// compared for this test, only the exit status; the index is a variable so
+// the compiler cannot reject it statically.
+
+static class Program
+{
+    static int Main()
+    {
+        int[] a = new int[4];
+        int i = 4;
+        Sys.Print("before");
+        Sys.PrintLine();
+        Sys.PrintInt(a[i]);
+        Sys.Print("after");
+        Sys.PrintLine();
+        return 0;
+    }
+}

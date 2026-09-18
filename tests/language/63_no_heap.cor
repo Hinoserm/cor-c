@@ -1,0 +1,33 @@
+// test: no_heap
+// expect-exit: 0
+// expect-output:
+// sum 4950
+// text 12345
+//
+// Short-lived objects whose references never leave the function that made
+// them go on the stack, not the heap: escape analysis decides it after
+// inlining. This program allocates in a loop and formats numbers, and it
+// must still run; whether the collector is linked is checked by the
+// runner's companion check in run.sh (no_heap programs link no m_Gc symbol).
+
+static class Program
+{
+    static int Main()
+    {
+        long sum = 0;
+        for (int i = 0; i < 100; i++)
+        {
+            int[] pair = new int[2];
+            pair[0] = i;
+            pair[1] = 1;
+            sum = sum + pair[0] * pair[1];
+        }
+        Sys.Print("sum ");
+        Sys.PrintInt(sum);
+        Sys.PrintLine();
+        Sys.Print("text ");
+        Sys.PrintInt(12345);
+        Sys.PrintLine();
+        return 0;
+    }
+}

@@ -1,0 +1,219 @@
+// test: async_exceptions
+// expect-exit: 0
+// expect-output:
+// caught after 1
+// throw before 2
+// call returned True
+// caught before boom 2
+// local caught local
+// local 11
+// fin try
+// fin body
+// fin finally
+// fin 1
+// fin try
+// fin finally
+// fin caught 4
+// catch await c5CfF
+// finally awaiting
+// finally resumed
+// finally caught 6
+// rethrown 7
+//
+// Exceptions in async methods. One thrown after an await is stored in the
+// task and rethrown where the caller awaits it. One thrown before the
+// first await is ALSO stored: the call returns a completed (faulted) task
+// and nothing is thrown until the await. A try/catch around an await in
+// the same method catches after resuming; a finally runs on the normal and
+// the throwing path after a resumption; awaits inside catch and finally
+// blocks (C# 6), including a finally that awaits while an exception is on
+// its way out, and a bare `throw;` after an await inside a catch.
+
+class Boom : Exception
+{
+    public int Code;
+
+    public Boom(int c) : base("boom " + c)
+    {
+        Code = c;
+    }
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static async Task<int> ThrowAfter(int c)
+    {
+        await Task.Yield();
+        if (c > 0)
+        {
+            throw new Boom(c);
+        }
+        return c;
+    }
+
+    static async Task ThrowBefore(int c)
+    {
+        Line("throw before " + c);
+        if (c > 0)
+        {
+            throw new Boom(c);
+        }
+        await Task.Yield();
+    }
+
+    static async Task<int> Local()
+    {
+        int r = 0;
+        try
+        {
+            await Task.Yield();
+            r = 1;
+            throw new InvalidOperationException("local");
+        }
+        catch (InvalidOperationException e)
+        {
+            r = r + 10;
+            Line("local caught " + e.Message);
+        }
+        return r;
+    }
+
+    static async Task<int> Fin(bool fail)
+    {
+        try
+        {
+            Line("fin try");
+            await Task.Yield();
+            if (fail)
+            {
+                throw new Boom(4);
+            }
+            Line("fin body");
+            return 1;
+        }
+        finally
+        {
+            Line("fin finally");
+        }
+    }
+
+    static async Task<string> CatchAwait()
+    {
+        string log = "";
+        try
+        {
+            await Task.Yield();
+            throw new Boom(5);
+        }
+        catch (Boom b)
+        {
+            log = log + "c" + b.Code;
+            await Task.Yield();
+            log = log + "C";
+        }
+        finally
+        {
+            log = log + "f";
+            await Task.Yield();
+            log = log + "F";
+        }
+        return log;
+    }
+
+    static async Task FinallyAwait()
+    {
+        try
+        {
+            await Task.Yield();
+            throw new Boom(6);
+        }
+        finally
+        {
+            Line("finally awaiting");
+            await Task.Yield();
+            Line("finally resumed");
+        }
+    }
+
+    static async Task Rethrow()
+    {
+        try
+        {
+            await ThrowAfter(7);
+        }
+        catch (Boom b)
+        {
+            await Task.Yield();
+            throw;
+        }
+    }
+
+    static async Task Main()
+    {
+        try
+        {
+            int v = await ThrowAfter(1);
+            Line("not reached " + v);
+        }
+        catch (Boom b)
+        {
+            Line("caught after " + b.Code);
+        }
+
+        Task t = ThrowBefore(2);
+        Line("call returned " + t.GetAwaiter().IsCompleted);
+        try
+        {
+            await t;
+            Line("not reached");
+        }
+        catch (Boom b)
+        {
+            Line("caught before " + b.Message);
+        }
+
+        int local = await Local();
+        Line("local " + local);
+
+        int fin = await Fin(false);
+        Line("fin " + fin);
+        try
+        {
+            await Fin(true);
+            Line("not reached");
+        }
+        catch (Boom b)
+        {
+            Line("fin caught " + b.Code);
+        }
+
+        string log = await CatchAwait();
+        Line("catch await " + log);
+
+        try
+        {
+            await FinallyAwait();
+            Line("not reached");
+        }
+        catch (Boom b)
+        {
+            Line("finally caught " + b.Code);
+        }
+
+        try
+        {
+            await Rethrow();
+            Line("not reached");
+        }
+        catch (Boom b)
+        {
+            Line("rethrown " + b.Code);
+        }
+    }
+}

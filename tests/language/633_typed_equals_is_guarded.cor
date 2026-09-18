@@ -1,0 +1,30 @@
+// test: typed_equals_is_guarded
+// expect-exit: 0
+// expect-output:
+// 3 True False True
+// 2 2 True False
+//
+// A CLASS THAT WROTE ONLY `Equals(T)` IS STILL A KEY. A table asks through the
+// slot every object answers Equals at, and what comes through that slot is any
+// object at all: the typed method is reached by way of a guard that asks
+// whether the other IS a T first. Without it a LocalSym in a set beside a
+// FieldSym was compared with it by reading the FieldSym as a LocalSym.
+
+using System;
+using System.Collections.Generic;
+abstract record Sym;
+sealed record LocalSym(int Slot, string Name) : Sym
+{
+    public bool Boxed { get; set; }
+    public bool Equals(LocalSym? other) => other is not null && Slot == other.Slot && Name == other.Name;
+    public override int GetHashCode() => HashCode.Combine(Slot, Name);
+}
+sealed record FieldSym(string Field) : Sym;
+class P { static int Main() {
+    HashSet<Sym> seen = new();
+    LocalSym a = new LocalSym(3, "x");
+    seen.Add(new FieldSym("f")); seen.Add(a); seen.Add(new FieldSym("g"));
+    Console.WriteLine(seen.Count + " " + seen.Contains(new LocalSym(3, "x" + "")) + " " + seen.Contains(new LocalSym(4, "x")) + " " + seen.Contains(a));
+    Dictionary<Sym, int> d = new(); d[a] = 1; d[new LocalSym(3, "x")] = 2; d[new FieldSym("f")] = 3;
+    Console.WriteLine(d.Count + " " + d[a] + " " + a.Equals(new LocalSym(3, "x")) + " " + a.Equals((object)new FieldSym("q")));
+    return 0; } }

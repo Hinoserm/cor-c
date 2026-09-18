@@ -1,0 +1,51 @@
+// test: out_var
+// expect-exit: 0
+// expect-output:
+// outvar 123 False 0
+// pair 4 7
+// scope 18
+//
+// `out var` and `out int x` declarations at the call site: the variable is
+// declared by the argument, is in scope after the call, and holds the
+// callee's value (or the default when the callee reports failure).
+
+static class Div
+{
+    public static void Split(long n, out long tens, out long units)
+    {
+        tens = n / 10;
+        units = n % 10;
+    }
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        int parsed = 0;
+        if (Int32.TryParse("123", out int v))
+        {
+            parsed = v;
+        }
+        bool bad = Int64.TryParse("bad", out long l);
+        Line("outvar " + parsed + " " + bad + " " + l);
+
+        Div.Split(47, out long tens, out var units);
+        Line("pair " + tens + " " + units);
+
+        long total = 0;
+        for (int i = 0; i < 3; i++)
+        {
+            Div.Split(30 + i, out long t, out long u);
+            total += t * u + t;
+        }
+        Line("scope " + total);
+        return 0;
+    }
+}

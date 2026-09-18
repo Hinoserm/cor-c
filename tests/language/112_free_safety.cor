@@ -1,0 +1,104 @@
+// test: free safety
+// expect-exit: 0
+// expect-output:
+// frees 2
+// sum 499500
+// collected True
+// alive 1000
+//
+// Free is called from a proof, and a proof that was wrong must cost memory
+// and nothing else. Zero, a null reference, an interior pointer, an address
+// that is in no chunk at all, a block already freed and an address that is
+// not eight-aligned are all handed to it here; exactly two of the calls -- the
+// two real blocks -- may take effect, and afterwards the heap must still
+// allocate, collect and hand back everything a live list holds.
+
+class Cell
+{
+    public long Value;
+    public Cell Next;
+}
+
+static class Program
+{
+    // The garbage below is stored here, and read again at the end, so that
+    // neither escape analysis nor dead-store elimination can make the
+    // allocation disappear: it must be a real allocation for the collector to
+    // have anything to collect.
+    static long[] _sink;
+
+    static int Main()
+    {
+        long good = Runtime.Alloc(64);
+        long other = Runtime.Alloc(128);
+
+        Runtime.Free(0);                    // null
+        Runtime.Free(4);                    // below any chunk
+        Runtime.Free(0x7FFF0000);           // in no chunk
+        Runtime.Free(good + 8);             // interior
+        Runtime.Free(good + 3);             // misaligned
+        Runtime.Free(other);                // the real thing
+        Runtime.Free(other);                // and again: already free
+        Runtime.Free(good);                 // the real thing
+
+        Sys.Print("frees ");
+        Sys.PrintInt(Gc.Frees);
+        Sys.PrintLine();
+
+        // A live list the collector must keep, and a great deal of garbage
+        // around it so that a collection certainly happens.
+        Cell head = null;
+        long sum = 0;
+
+        for (int i = 0; i < 1000; i++)
+        {
+            Cell c = new Cell();
+            c.Value = i;
+            c.Next = head;
+            head = c;
+            sum = sum + i;
+
+            for (int j = 0; j < 40; j++)
+            {
+                long[] garbage = new long[512];
+                garbage[0] = j;
+                _sink = garbage;
+            }
+        }
+
+        Sys.Print("sum ");
+        Sys.PrintInt(sum);
+        Sys.PrintLine();
+        Sys.Print("collected ");
+
+        if (Gc.Collections > 0)
+        {
+            Sys.Print("True");
+        }
+        else
+        {
+            Sys.Print("False");
+        }
+        Sys.PrintLine();
+
+        long alive = 0;
+        long check = 0;
+        Cell walk = head;
+
+        while (walk != null)
+        {
+            alive = alive + 1;
+            check = check + walk.Value;
+            walk = walk.Next;
+        }
+
+        if (check != sum || _sink[0] != 39)
+        {
+            alive = 0 - alive;
+        }
+        Sys.Print("alive ");
+        Sys.PrintInt(alive);
+        Sys.PrintLine();
+        return 0;
+    }
+}

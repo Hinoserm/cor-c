@@ -1,0 +1,120 @@
+// test: the_compiler_compiles
+// expect-exit: 0
+// expect-output:
+// lifted -5 4294967291 none 7
+// cast 5 True
+// same 7 1 True False
+// pattern group other
+// record Image { Bytes = System.Byte[], Base = 4 }
+// conditional 8 none t
+// capture 3
+//
+// WHAT THE CODE GENERATOR NEEDED to lay down this compiler's own source.
+//
+// A LIFTED CONVERSION. `long? folded = n;` for an `int? n` converts what is IN
+// the cell and leaves an empty one empty. A cell is an ADDRESS here, so
+// without it the address was sign-extended from four bytes to eight and then
+// read through as though it were the cell. And a switch expression is the type
+// its CONTEXT wants when every arm can be that: converting the whole
+// expression rather than each arm is not the same operation when the arms
+// differ in width or sign, and `2 => (uint)v` in a method returning long came
+// out sign-extended.
+//
+// REFERENCE EQUALITY IS A COMPARER, as .NET spells it: an
+// `IEqualityComparer<object>` usable as one of anything, which is what `in T`
+// is for. It was a stub returning null.
+//
+// A NAME THAT IS A TYPE, COMPARED, IS A TYPE TEST: the parser cannot tell
+// `is not (A or B)` -- a group of alternatives -- from a group of constants.
+// An array joined to a string says what it is, as object.ToString does. `?.`
+// reads a property as readily as a field. And a pattern's binding that a
+// lambda captured lives in a heap cell like any other captured local.
+
+sealed record Image(byte[] Bytes, int Base);
+
+abstract class Sym { }
+sealed class GroupSym : Sym { }
+sealed class CapturedGroupSym : Sym { }
+sealed class OtherSym : Sym { }
+
+sealed class Inner { public int N = 5; public int Doubled => N * 2; public string? Text { get; set; } }
+sealed class Outer { public Inner? In; }
+
+sealed class Node { public int N; }
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static long? Folded(int op, long v)
+        => op switch
+        {
+            1 => (int)v,
+            2 => (uint)v,
+            3 => (short)v,
+            _ => null,
+        };
+
+    static string Told(Sym s)
+        => s is not (GroupSym or CapturedGroupSym) ? "other" : "group";
+
+    static int Captured(string? canon)
+    {
+        List<string> names = new List<string>();
+
+        names.Add("a");
+        names.Add("b");
+
+        // The binding is read nowhere but inside the lambda, so nothing else
+        // would have made the cell it lives in.
+        if (canon is string spelt)
+        {
+            return names.Count(n => n != spelt) + 2;
+        }
+        return 0;
+    }
+
+    static int Main()
+    {
+        long? a = Folded(1, -5);
+        long? b = Folded(2, -5);
+        long? c = Folded(9, -5);
+        int? small = 7;
+        long? wide = small;
+
+        Line("lifted " + (a ?? 0) + " " + (b ?? 0) + " " + (c is null ? "none" : c.Value.ToString())
+             + " " + (wide ?? 0));
+
+        int? five = (int?)5;
+
+        Line("cast " + (five ?? 0) + " " + five.HasValue);
+
+        Node one = new Node { N = 1 };
+        Node two = new Node { N = 1 };
+        Dictionary<Node, int> byRef = new(ReferenceEqualityComparer.Instance);
+        HashSet<Node> seen = new(ReferenceEqualityComparer.Instance);
+
+        byRef[one] = 7;
+        seen.Add(one);
+        Line("same " + byRef[one] + " " + seen.Count + " " + seen.Contains(one) + " " + seen.Contains(two));
+
+        Line("pattern " + Told(new CapturedGroupSym()) + " " + Told(new OtherSym()));
+
+        byte[] bytes = { 1, 2 };
+
+        Line("record " + new Image(bytes, 4));
+
+        Outer has = new Outer { In = new Inner { N = 4, Text = "t" } };
+        Outer none = new Outer();
+
+        Line("conditional " + (has.In?.Doubled ?? -1) + " "
+             + (none.In?.Doubled is null ? "none" : "some") + " " + (has.In?.Text ?? "-"));
+
+        Line("capture " + Captured("a"));
+        return 0;
+    }
+}

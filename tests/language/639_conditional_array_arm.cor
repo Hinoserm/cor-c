@@ -1,0 +1,60 @@
+// test: conditional_array_arm
+// expect-exit: 0
+// expect-output:
+// 14
+// 10
+// 3
+//
+// AN ARRAY ARM OF A CONDITIONAL WHOSE WHOLE IS AN INTERFACE. `enumerate ? list
+// : Enumerable.Empty<T>()` is an IEnumerable<T>, and walking it calls
+// GetEnumerator through the interface. An array has no such slot: it is handed
+// over inside the same helper it gets anywhere else an array becomes an
+// interface. Without that the call went through a null slot -- which is where
+// the compiler, compiled by itself, stopped.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+class P
+{
+    static int Sum(IEnumerable<int> e)
+    {
+        int s = 0;
+
+        foreach (int x in e)
+        {
+            s += x;
+        }
+
+        return s;
+    }
+
+    static int Main(string[] args)
+    {
+        List<int> l = new List<int>();
+        l.Add(4);
+        int[] a = new int[] { 1, 2 };
+        bool f = args.Length == 0;
+        int s = 0;
+
+        foreach (int x in f ? l : Enumerable.Empty<int>())
+        {
+            s += x;
+        }
+
+        foreach (int x in f ? Enumerable.Empty<int>() : l)
+        {
+            s += 100;
+        }
+
+        IEnumerable<int> q = a;
+        s += Sum(q) + Sum(a) + Sum(l);
+        Console.WriteLine(s);
+
+        IEnumerable<int> c = f ? a : l;
+        Console.WriteLine(Sum(c) + Sum(f ? l : a) + Sum(f ? a : q));
+        Console.WriteLine(Sum(!f ? l : a));
+        return 0;
+    }
+}

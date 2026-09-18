@@ -1,0 +1,63 @@
+// test: type_vs_method
+// expect-exit: 0
+// expect-output:
+// 96
+// 1
+// 97
+// 5
+//
+// A simple name in `X.Y` that is both a type and a method of the enclosing
+// class names the TYPE: a method group is a value only where it is invoked or
+// converted to a delegate, so `Gauge.Room()` calls the static class's Room
+// while `Gauge("x")` still calls the method. lib/sys/linux.cor had to name a
+// class StatBuf and forward through a method called Stat before this worked.
+
+static class Gauge
+{
+    public static long Room()
+    {
+        return 96;
+    }
+
+    public static long Twice(long n)
+    {
+        return n + n;
+    }
+}
+
+static class Probe
+{
+    public static long Gauge(string path)
+    {
+        return path.Length;
+    }
+
+    public static long Both()
+    {
+        return Gauge.Room() + Gauge("x");
+    }
+
+    public static long Nested()
+    {
+        long half = Gauge("ab");
+        return Gauge.Twice(half) + Gauge("z");
+    }
+}
+
+static class Program
+{
+    static void Line(long v)
+    {
+        Sys.PrintInt(v);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        Line(Gauge.Room());
+        Line(Probe.Gauge("y"));
+        Line(Probe.Both());
+        Line(Probe.Nested());
+        return 0;
+    }
+}

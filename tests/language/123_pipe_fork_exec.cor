@@ -1,0 +1,98 @@
+// test: pipe, fork, execve, waitpid
+// expect-exit: 0
+// expect-output:
+// forked ok
+// child said hello-from-exec
+// exit code 0
+// status exited yes
+// false exit 1
+//
+// A pipe, a fork, the child replacing itself with /bin/echo, and the parent
+// reading what came out and collecting the exit status. This is the first
+// test in which two processes exist at once, and it is the shape every shell
+// is built out of.
+//
+// /bin/echo and /bin/false are POSIX-required paths, so the test does not
+// need a PATH search -- which it could not do without an environment it is
+// not promised.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Os.Line(s);
+    }
+
+    static int Main()
+    {
+        int[] pair = new int[2];
+
+        if (Os.Pipe(pair) < 0)
+        {
+            Line("pipe failed");
+            return 1;
+        }
+
+        int read = pair[0];
+        int write = pair[1];
+        int pid = Os.Fork();
+
+        if (pid < 0)
+        {
+            Line($"fork failed {pid}");
+            return 1;
+        }
+
+        if (pid == 0)
+        {
+            // The child. Its standard output becomes the pipe, both original
+            // descriptors are closed -- the read end especially, or the
+            // parent's read would never see an end-of-file because this
+            // process would still be holding one open -- and then it is gone.
+            Os.Dup2(write, Fd.Out);
+            Os.Close(read);
+            Os.Close(write);
+
+            string[] argv = new string[] { "echo", "hello-from-exec" };
+
+            Os.Exec("/bin/echo", argv);
+
+            // Only reached when exec failed, and then the exit code has to be
+            // something the parent will not mistake for the program's own.
+            Os.Exit(127);
+        }
+
+        Line("forked ok");
+
+        // The parent must let go of the write end for the same reason.
+        Os.Close(write);
+
+        FileReader from = new FileReader(read);
+        string? said = from.ReadLine();
+
+        from.Close();
+        Line($"child said {said}");
+
+        int[] status = new int[1];
+        int got = Os.Waitpid(pid, status, 0);
+
+        if (got != pid)
+        {
+            Line($"waitpid {got}");
+            return 1;
+        }
+        Line($"exit code {WaitStatus.Code(status[0])}");
+        Line(WaitStatus.Exited(status[0]) ? "status exited yes" : "status exited no");
+
+        // And a program that fails, to prove the code is really the child's.
+        int second = Os.Fork();
+
+        if (second == 0)
+        {
+            Os.Exec("/bin/false", new string[] { "false" });
+            Os.Exit(127);
+        }
+        Line($"false exit {Os.Wait(second)}");
+        return 0;
+    }
+}

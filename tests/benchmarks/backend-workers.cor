@@ -1,0 +1,60 @@
+// Native integration workload: the actual backend through COR-C# pool tasks.
+using Corsac.Lang.Ir;
+using Corsac.Lang.X86;
+using Corsac.Lang.Elf;
+
+static class Program
+{
+    static Module Make()
+    {
+        Module module = new("worker-parity");
+        for (int n = 0; n < 96; n++)
+        {
+            Function function = new("worker_" + n, IrType.I32);
+            module.Functions.Add(function);
+            VReg parameter = function.NewReg(IrType.I32);
+            function.Params.Add(parameter);
+            Builder builder = new(function, function.NewBlock("entry"));
+            VReg value = builder.Const(n + 1, IrType.I32);
+            for (int i = 0; i < 64; i++)
+            {
+                value = builder.Binary(Opcode.Add, value, parameter);
+                value = builder.Binary(Opcode.Xor, value, i + 3);
+            }
+            if (n > 0)
+            {
+                VReg called = builder.Call("worker_" + (n - 1), IrType.I32,
+                    new RegOperand(parameter))!;
+                value = builder.Binary(Opcode.Add, value, called);
+            }
+            builder.Ret(new RegOperand(value));
+        }
+        return module;
+    }
+
+    static byte[] Build(int workers, bool pic)
+    {
+        X86Backend backend = new() { Workers = workers, PositionIndependent = pic };
+        List<string> errors = new();
+        ObjectFile obj = backend.Generate(Make(), errors);
+        if (errors.Count != 0) throw new InvalidOperationException(errors[0]);
+        return ElfWriter.WriteObject(obj);
+    }
+
+    static int Main()
+    {
+        Target.Current = Target.X86;
+        Scheduler.UseThreads(4);
+        foreach (bool pic in new[] { false, true })
+        {
+            byte[] serial = Build(1, pic);
+            byte[] parallel = Build(4, pic);
+            if (serial.Length != parallel.Length) return 1;
+            for (int i = 0; i < serial.Length; i++)
+                if (serial[i] != parallel[i]) return 2;
+            Gc.Collect();
+        }
+        Sys.Print("native backend serial/parallel parity passed\n");
+        return 0;
+    }
+}

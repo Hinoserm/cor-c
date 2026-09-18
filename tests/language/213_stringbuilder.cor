@@ -1,0 +1,78 @@
+// test: stringbuilder
+// expect-exit: 0
+// expect-output:
+// built [hello 42!!!] 11
+// insert [hello, 42!!!] h,
+// write [Hello, 42!!!]
+// remove [42!!!]
+// replace [42???]
+// length [42?] 3
+// chain [x1True]
+// widths 200/-3/4000000000
+// part [cde] 8
+// words [1 two 1]
+// grow 200 True
+//
+// StringBuilder past Append and ToString: the Append overloads for every
+// primitive width, a character repeated, part of a string, the indexer that
+// reads and writes text already built, Insert, Remove, Replace, the Length
+// that can be assigned to, and a Clear that answers the builder so calls
+// chain.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        StringBuilder b = new StringBuilder();
+        b.Append("hello").Append(' ').Append(42).Append('!', 3);
+        Line("built [" + b.ToString() + "] " + b.Length);
+
+        b.Insert(5, ",");
+        Line("insert [" + b.ToString() + "] " + b[0] + b[5]);
+
+        b[0] = 'H';
+        Line("write [" + b.ToString() + "]");
+
+        b.Remove(0, 7);
+        Line("remove [" + b.ToString() + "]");
+
+        b.Replace('!', '?');
+        Line("replace [" + b.ToString() + "]");
+
+        b.Length = 3;
+        Line("length [" + b.ToString() + "] " + b.Length);
+
+        Line("chain [" + b.Clear().Append("x").Append(1L).Append(true).ToString() + "]");
+
+        StringBuilder n = new StringBuilder();
+        byte eight = 200;
+        short sixteen = 0 - 3;
+        uint unsigned = 4000000000;
+        n.Append(eight).Append('/').Append(sixteen).Append('/').Append(unsigned);
+        Line("widths " + n.ToString());
+
+        StringBuilder part = new StringBuilder();
+        part.Append("abcdefgh", 2, 3).AppendLine();
+        part.Append("tail");
+        Line("part [" + part.ToString(0, 3) + "] " + part.Length);
+
+        StringBuilder words = new StringBuilder();
+        words.Append("one two one");
+        words.Replace("one", "1");
+        Line("words [" + words.ToString() + "]");
+
+        StringBuilder big = new StringBuilder(4);
+        for (int i = 0; i < 100; i++)
+        {
+            big.Append("ab");
+        }
+        Line("grow " + big.Length + " " + (big.Capacity >= big.Length));
+        return 0;
+    }
+}

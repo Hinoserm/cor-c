@@ -1,0 +1,33 @@
+// test: optimizer_division
+// expect-exit: 0
+// expect-output:
+// optimizer constant division passed
+static class Program
+{
+    static int[] _signed = new int[] { int.MinValue, int.MinValue + 1, -31, -30, -29, -16, -15, -14, -11, -10, -9, -6, -5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5, 9, 10, 11, 29, 30, 31, int.MaxValue };
+    static uint[] _unsigned = new uint[] { 0, 1, 2, 3, 4, 5, 9, 10, 11, 2147483647, 2147483648, 4294967294, 4294967295 };
+    static int[] _divisors = new int[] { 3, 5, 10 };
+    static int Main()
+    {
+        foreach (int n in _signed)
+        {
+            if (n / 3 != n / _divisors[0] || n % 3 != n % _divisors[0]) return 1;
+            if (n / 5 != n / _divisors[1] || n % 5 != n % _divisors[1]) return 2;
+            if (n / 10 != n / _divisors[2] || n % 10 != n % _divisors[2]) return 3;
+        }
+        foreach (uint n in _unsigned)
+        {
+            if (n / 3u != n / (uint)_divisors[0] || n % 3u != n % (uint)_divisors[0]) return 4;
+            if (n / 5u != n / (uint)_divisors[1] || n % 5u != n % (uint)_divisors[1]) return 5;
+            if (n / 10u != n / (uint)_divisors[2] || n % 10u != n % (uint)_divisors[2]) return 6;
+            long wide = n;
+            if (wide / 10 != n / 10u || wide % 10 != n % 10u) return 7;
+        }
+        int min = _signed[0];
+        if (min / 3 != -715827882 || min % 3 != -2) return 8;
+        if (min / 5 != -429496729 || min % 5 != -3) return 9;
+        if (min / 10 != -214748364 || min % 10 != -8) return 10;
+        Console.WriteLine("optimizer constant division passed");
+        return 0;
+    }
+}

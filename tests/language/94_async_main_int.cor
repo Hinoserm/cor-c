@@ -1,0 +1,38 @@
+// test: async_main_int
+// expect-exit: 7
+// expect-output:
+// start
+// computed 6
+// returning 7
+//
+// `static async Task<int> Main`: the runtime runs the scheduler until the
+// task Main returned completes -- through yields and a timer -- and the
+// task's result becomes the process exit code.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static async Task<int> Compute(int x)
+    {
+        await Task.Yield();
+        return x;
+    }
+
+    static async Task<int> Main()
+    {
+        Line("start");
+        int a = await Compute(2);
+        await Task.Delay(10);
+        int b = await Compute(4);
+        int sum = a + b;
+        Line("computed " + sum);
+        int code = sum + 1;
+        Line("returning " + code);
+        return code;
+    }
+}

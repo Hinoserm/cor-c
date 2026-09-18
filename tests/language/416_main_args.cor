@@ -1,0 +1,26 @@
+// test: main_args
+// expect-exit: 3
+// expect-output:
+// 0
+// none
+//
+// `static int Main(string[] args)`: the entry hands Main the words the
+// program was started with, less the program's own name -- exactly what C#
+// promises and what .NET's Environment.GetCommandLineArgs gives less its
+// first element. Before this, the stub called Main with nothing at all and
+// the program read whatever the register happened to hold as an array.
+// The test runs with no arguments, so the array is empty and not null; the
+// exit code is the array's length plus three, so a null array would show as
+// a crash rather than a zero.
+
+using System;
+
+class Program
+{
+    static int Main(string[] args)
+    {
+        Console.WriteLine(args.Length);
+        Console.WriteLine(args.Length == 0 ? "none" : args[0]);
+        return args.Length + 3;
+    }
+}

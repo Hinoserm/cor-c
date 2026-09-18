@@ -1,0 +1,22 @@
+// test: a preferred growth quantum does not waste usable heap-cap headroom
+// expect-exit: 0
+// expect-output:
+// chunk quantum passed
+static class Program
+{
+    static int Main()
+    {
+        long before = HeapChunks.HeapBytes;
+        HeapChunks.SetLimit(before + 524288);
+        long chunk = HeapChunks.Take(262144);
+        if (chunk == 0) return 1;
+        if (HeapChunks.Limit(chunk) - HeapChunks.First(chunk) < 262144) return 2;
+        if (HeapChunks.HeapBytes > before + 524288) return 3;
+        if ((HeapChunks.Limit(chunk) - chunk) % 4096 != 0) return 4;
+        HeapChunks.Release(chunk);
+        if (HeapChunks.HeapBytes != before) return 5;
+        HeapChunks.SetLimit(0);
+        Sys.Print("chunk quantum passed\n");
+        return 0;
+    }
+}

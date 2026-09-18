@@ -1,0 +1,226 @@
+// System -- a date without a time, a time without a date, and a way to measure
+// an interval.
+//
+// std.cor has DateTime and TimeSpan, which answer "when" and "how long". The
+// two types here are the pair .NET added because half the world's data is one
+// or the other and not both: a birthday has no hour, an opening time has no
+// day. Storing either in a DateTime means inventing the missing half and then
+// remembering to ignore it.
+//
+// Both are built on DateTime's arithmetic rather than repeating it: a DateOnly
+// IS a day number, a TimeOnly IS a tick of the day, and every calendar rule
+// stays in the one place that has it.
+
+/// A DAY, counted from 0001-01-01 -- .NET's DayNumber, and the same epoch as
+/// DateTime's ticks, so the two convert by multiplication.
+struct DateOnly {
+    private int day;
+
+    public DateOnly(int year, int month, int day1) {
+        day = (int)DateParts.DaysFrom(year, month, day1);
+    }
+
+    public static DateOnly FromDayNumber(int dayNumber) {
+        DateOnly made = new DateOnly(1, 1, 1);
+        made.day = dayNumber;
+        return made;
+    }
+
+    public static DateOnly FromDateTime(DateTime when) {
+        return FromDayNumber((int)(when.Ticks / 864000000000));
+    }
+
+    public static DateOnly MinValue => new DateOnly(1, 1, 1);
+    public static DateOnly MaxValue => new DateOnly(9999, 12, 31);
+
+    public int DayNumber => day;
+
+    public int Year => DateParts.YearOf(day);
+    public int Month => DateParts.MonthOf(day);
+    public int Day => DateParts.DayOf(day);
+
+    public DayOfWeek DayOfWeek => (DayOfWeek)((day + 1) % 7);
+    public int DayOfYear => day - (int)DateParts.DaysFrom(Year, 1, 1) + 1;
+
+    public DateOnly AddDays(int count) { return FromDayNumber(day + count); }
+
+    /// THROUGH DateTime, so that the clamping rule -- the 31st of January plus
+    /// a month is the 28th -- is stated once and cannot drift.
+    public DateOnly AddMonths(int count) {
+        return FromDateTime(ToDateTime(TimeOnly.MinValue).AddMonths(count));
+    }
+
+    public DateOnly AddYears(int count) { return AddMonths(count * 12); }
+
+    /// Midnight of this day, or this day at that time.
+    public DateTime ToDateTime() { return new DateTime((long)day * 864000000000); }
+
+    public DateTime ToDateTime(TimeOnly time) {
+        return new DateTime((long)day * 864000000000 + time.Ticks);
+    }
+
+    public int CompareTo(DateOnly other) {
+        if (day < other.DayNumber) { return -1; }
+        if (day > other.DayNumber) { return 1; }
+        return 0;
+    }
+
+    public bool Equals(DateOnly other) { return day == other.DayNumber; }
+
+    /// THE INVARIANT SHORT DATE, "MM/dd/yyyy", which is what .NET prints for a
+    /// DateOnly nobody gave a format to.
+    public string ToString() { return ToString("MM/dd/yyyy"); }
+
+    /// DateTime's picture, over midnight of this day -- so yyyy, MM, dd and the
+    /// rest mean exactly what they mean there.
+    public string ToString(string format) { return ToDateTime().ToString(format); }
+}
+
+/// A TIME OF DAY, in ticks from midnight, and never as much as a whole day:
+/// adding hours WRAPS rather than overflowing, which is .NET's rule and the
+/// only one that makes sense for a clock face.
+struct TimeOnly {
+    private long ticks;
+
+    public TimeOnly(int hour, int minute) {
+        ticks = ((long)hour * 3600 + (long)minute * 60) * 10000000;
+    }
+
+    public TimeOnly(int hour, int minute, int second) {
+        ticks = ((long)hour * 3600 + (long)minute * 60 + (long)second) * 10000000;
+    }
+
+    public TimeOnly(int hour, int minute, int second, int millisecond) {
+        ticks = ((long)hour * 3600 + (long)minute * 60 + (long)second) * 10000000
+              + (long)millisecond * 10000;
+    }
+
+    public TimeOnly(long inTicks) { ticks = inTicks; }
+
+    public static TimeOnly FromTimeSpan(TimeSpan span) { return new TimeOnly(span.Ticks); }
+    public static TimeOnly FromDateTime(DateTime when) {
+        return new TimeOnly(when.Ticks % 864000000000);
+    }
+
+    public static TimeOnly MinValue => new TimeOnly(0);
+
+    /// The LAST TICK of the day, not the first of the next: a time of day is
+    /// the half-open interval [00:00:00, 24:00:00).
+    public static TimeOnly MaxValue => new TimeOnly(863999999999);
+
+    public long Ticks => ticks;
+
+    public int Hour => (int)(ticks / 36000000000 % 24);
+    public int Minute => (int)(ticks / 600000000 % 60);
+    public int Second => (int)(ticks / 10000000 % 60);
+    public int Millisecond => (int)(ticks / 10000 % 1000);
+
+    public TimeSpan ToTimeSpan() { return new TimeSpan(ticks); }
+
+    public TimeOnly Add(TimeSpan span) { return new TimeOnly(Wrap(ticks + span.Ticks)); }
+    public TimeOnly AddTicks(long count) { return new TimeOnly(Wrap(ticks + count)); }
+    public TimeOnly AddHours(double count) { return AddTicks((long)(count * 36000000000.0)); }
+    public TimeOnly AddMinutes(double count) { return AddTicks((long)(count * 600000000.0)); }
+
+    /// HALF-OPEN, and wrapping: a range whose end is before its start is the
+    /// one that crosses midnight, which is what "22:00 to 02:00" means to
+    /// everyone who is not a computer. .NET's IsBetween says exactly this.
+    public bool IsBetween(TimeOnly start, TimeOnly end) {
+        if (start.Ticks <= end.Ticks) {
+            return ticks >= start.Ticks && ticks < end.Ticks;
+        }
+        return ticks >= start.Ticks || ticks < end.Ticks;
+    }
+
+    public int CompareTo(TimeOnly other) {
+        if (ticks < other.Ticks) { return -1; }
+        if (ticks > other.Ticks) { return 1; }
+        return 0;
+    }
+
+    public bool Equals(TimeOnly other) { return ticks == other.Ticks; }
+
+    /// "HH:mm", which is the invariant short time and what .NET prints for a
+    /// TimeOnly with no format -- the seconds are left out on purpose.
+    public string ToString() { return ToString("HH:mm"); }
+
+    public string ToString(string format) {
+        return new DateTime(ticks).ToString(format);
+    }
+
+    private static long Wrap(long value) {
+        long inDay = value % 864000000000;
+        if (inDay < 0) { inDay = inDay + 864000000000; }
+        return inDay;
+    }
+}
+
+/// System.Diagnostics.Stopwatch: how long something took, on the clock that
+/// only goes forwards.
+///
+/// THE MONOTONIC CLOCK, not the calendar one, which is the whole point of the
+/// class -- a measurement must not change because the machine's idea of the
+/// date was corrected halfway through. Its unit here is the nanosecond, so
+/// Frequency is a thousand million and IsHighResolution is true, both of which
+/// are also what .NET reports on Linux.
+class Stopwatch {
+    private long started;       // timestamp of the last Start, when running
+    private long accumulated;   // nanoseconds from every earlier run
+    private bool running;
+
+    public static long Frequency => 1000000000;
+    public static bool IsHighResolution => true;
+
+    /// The raw clock, in Frequency units, for code that measures without an
+    /// object to hold.
+    public static long GetTimestamp() { return Clock.Now(); }
+
+    public static Stopwatch StartNew() {
+        Stopwatch made = new Stopwatch();
+        made.Start();
+        return made;
+    }
+
+    public bool IsRunning => running;
+
+    /// STARTING A RUNNING STOPWATCH DOES NOTHING, which is .NET's behaviour --
+    /// it does not restart, and it does not throw.
+    public void Start() {
+        if (running) { return; }
+        started = Clock.Now();
+        running = true;
+    }
+
+    public void Stop() {
+        if (!running) { return; }
+        accumulated = accumulated + (Clock.Now() - started);
+        running = false;
+    }
+
+    public void Reset() {
+        accumulated = 0;
+        running = false;
+    }
+
+    public void Restart() {
+        accumulated = 0;
+        started = Clock.Now();
+        running = true;
+    }
+
+    private long Nanoseconds {
+        get {
+            if (!running) { return accumulated; }
+            return accumulated + (Clock.Now() - started);
+        }
+    }
+
+    /// IN FREQUENCY UNITS, not in TimeSpan ticks: .NET's ElapsedTicks counts
+    /// what GetTimestamp counts, and Elapsed.Ticks is the other one. Confusing
+    /// them is out by a factor of a hundred, so both are spelt out here.
+    public long ElapsedTicks => Nanoseconds;
+
+    public long ElapsedMilliseconds => Nanoseconds / 1000000;
+
+    public TimeSpan Elapsed => new TimeSpan(Nanoseconds / 100);
+}

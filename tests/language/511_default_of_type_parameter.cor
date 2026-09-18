@@ -1,0 +1,68 @@
+// test: default_of_type_parameter
+// expect-exit: 0
+// expect-output:
+// got True one
+// missed False
+// number True 5
+// missing False 0
+// forgiven 2
+// node b
+//
+// `default(T)` ON AN UNCONSTRAINED T IS A T, which is what lets every
+// TryGetValue in the class library say "nothing was there": C# leaves the
+// annotation oblivious and .NET spells the outside of it with
+// [MaybeNullWhen(false)]. Substitution replaced the T with whatever it was
+// bound to, and the checker -- meeting `default(string)` -- said the zero of a
+// reference type is null and refused the assignment, in a library file whose
+// author wrote nothing of the kind. So the expression remembers what it was
+// written as.
+//
+// The last two lines are the null-forgiving '!' where it was not being
+// exercised: on the result of a call, and twice over on a chain of them.
+static class Program
+{
+    static void Line(string text)
+    {
+        Sys.Print(text);
+        Sys.PrintLine();
+    }
+
+    static bool TryFirst<T>(T[] items, out T value)
+    {
+        value = default(T);
+        if (items.Length == 0) { return false; }
+        value = items[0];
+        return true;
+    }
+
+    static string? Maybe(string s) { return s; }
+
+    static void Main()
+    {
+        string[] words = new string[1];
+        words[0] = "one";
+        string got = "";
+        Line("got " + TryFirst(words, out got) + " " + got);
+
+        string[] none = new string[0];
+        string missed = "";
+        Line("missed " + TryFirst(none, out missed));
+
+        int[] numbers = new int[1];
+        numbers[0] = 5;
+        int number = 0;
+        Line("number " + TryFirst(numbers, out number) + " " + number);
+
+        int[] empty = new int[0];
+        int missing = 9;
+        Line("missing " + TryFirst(empty, out missing) + " " + missing);
+
+        Line("forgiven " + Maybe("hi")!.Length);
+
+        LinkedList<string> list = new LinkedList<string>();
+        list.AddLast("a");
+        list.AddLast("b");
+        list.AddLast("c");
+        Line("node " + list.Find("c")!.Previous!.Value);
+    }
+}

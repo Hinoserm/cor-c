@@ -1,0 +1,65 @@
+// test: the exception hierarchy is .NET's, not flat
+// expect-exit: 0
+// expect-output:
+// missing file caught as IOException
+// missing directory caught as IOException
+// end of stream caught as IOException
+// too long caught as IOException
+// argument null caught as ArgumentException
+// out of range caught as ArgumentException
+// overflow caught as ArithmeticException
+// disposed caught as InvalidOperationException
+// invalid data is not an IOException
+// every one of them is a SystemException
+//
+// WHAT THIS IS FOR: `catch (IOException)` around an open has to catch a
+// missing file, and `catch (ArgumentException)` has to catch a null argument.
+// A tree whose every branch hangs off Exception compiles and catches nothing,
+// and the program only finds out at the moment it needed the catch.
+
+class Program
+{
+    static int Main()
+    {
+        try { throw new FileNotFoundException("gone"); }
+        catch (IOException) { Console.WriteLine("missing file caught as IOException"); }
+
+        try { throw new DirectoryNotFoundException("gone"); }
+        catch (IOException) { Console.WriteLine("missing directory caught as IOException"); }
+
+        try { throw new EndOfStreamException(); }
+        catch (IOException) { Console.WriteLine("end of stream caught as IOException"); }
+
+        try { throw new PathTooLongException(); }
+        catch (IOException) { Console.WriteLine("too long caught as IOException"); }
+
+        try { throw new ArgumentNullException("value"); }
+        catch (ArgumentException) { Console.WriteLine("argument null caught as ArgumentException"); }
+
+        try { throw new ArgumentOutOfRangeException("index"); }
+        catch (ArgumentException) { Console.WriteLine("out of range caught as ArgumentException"); }
+
+        try { throw new OverflowException("too big"); }
+        catch (ArithmeticException) { Console.WriteLine("overflow caught as ArithmeticException"); }
+
+        try { throw new ObjectDisposedException("reader"); }
+        catch (InvalidOperationException) { Console.WriteLine("disposed caught as InvalidOperationException"); }
+
+        // System.IO.InvalidDataException is the one that is NOT an IOException,
+        // because nothing went wrong with the device.
+        bool asIo = false;
+        try { throw new InvalidDataException(); }
+        catch (Exception e) { asIo = e is IOException; }
+        Console.WriteLine(asIo ? "invalid data is an IOException" : "invalid data is not an IOException");
+
+        bool all = true;
+        try { throw new FormatException("x"); } catch (Exception e) { all = all && e is SystemException; }
+        try { throw new KeyNotFoundException(); } catch (Exception e) { all = all && e is SystemException; }
+        try { throw new NotSupportedException(); } catch (Exception e) { all = all && e is SystemException; }
+        try { throw new InvalidCastException("x"); } catch (Exception e) { all = all && e is SystemException; }
+        try { throw new DivideByZeroException(); } catch (Exception e) { all = all && e is SystemException; }
+        try { throw new TimeoutException(); } catch (Exception e) { all = all && e is SystemException; }
+        Console.WriteLine(all ? "every one of them is a SystemException" : "one of them is not a SystemException");
+        return 0;
+    }
+}

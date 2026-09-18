@@ -1,0 +1,757 @@
+// The Linux half of the scheduler: what needs a kernel.
+//
+// lib/threading.cor is the scheduler and the tasks, and it makes no system
+// call at all: it asks for the time, for a sleep until a deadline, for a
+// wait and a wake on a word, and for a thread -- through the names Clock,
+// Native and Thread. This file is those names on Linux: clock_gettime and
+// nanosleep, futexes, clone(2) with a stack of its own, and the pool of
+// worker threads Scheduler.UseThreads starts. lib/sys/baremetal.cor answers
+// the same names with the PIT and no threads, which is how the same
+// scheduler runs in the bootloader and the kernel.
+
+static partial class Scheduler
+{
+    /// Runs posted work on `count` threads from now on. Zero leaves the
+    /// single-threaded event loop alone, which is the default.
+    ///
+    /// Call it once, before the work starts. Pool work may allocate and may
+    /// throw: each worker has a block of its own, and an exception that escapes
+    /// a work item is reported exactly as one on the event loop is.
+    public static void UseThreads(int count)
+    {
+        if (count < 0)
+        {
+            throw new ArgumentOutOfRangeException("count");
+        }
+        if (count == 0)
+        {
+            return;
+        }
+        if (_workers > 0)
+        {
+            throw new InvalidOperationException("the scheduler already has worker threads");
+        }
+
+        Gate();
+        SignalCell();
+
+        // Grown once, here, so that a Post from a worker does not have to
+        // allocate with the queue's lock held.
+        Reserve(1024);
+
+        _workers = count;
+
+        for (int i = 0; i < count; i++)
+        {
+            Thread.Start(new PoolWorker());
+        }
+    }
+}
+
+/// The monotonic clock and sleeping, through Linux i386 system calls.
+///
+/// (These belong to lib/sys/linux.cor in spirit -- they are the only Linux
+/// facts in this file -- and move there when a second target needs its own.)
+static class Clock
+{
+    const long ClockGettime = 265;      // (clockid, struct timespec *)
+    const long ClockNanosleep = 267;    // (clockid, flags, request, remain)
+    const long Nanosleep = 162;         // (request, remain)
+    const long Monotonic = 1;           // CLOCK_MONOTONIC
+    const long AbsoluteTime = 1;        // TIMER_ABSTIME
+    const long NoSys = -38;             // -ENOSYS
+    const long NanosPerSecond = 1000000000;
+
+    /// Nanoseconds on CLOCK_MONOTONIC. The i386 timespec is two 32-bit
+    /// words, seconds then nanoseconds; neither is negative for this clock.
+    public static long Now()
+    {
+        // Thread-local syscall storage is available before any allocation.
+        // Clock reads do not retain it or dispatch managed signal handlers.
+        long at = Sys.ThreadBlock() + Tls.Scratch;
+        Sys.PokeWord(at, 0);
+        Sys.PokeWord(at + 4, 0);
+
+        Sys.Syscall(ClockGettime, Monotonic, at, 0);
+
+        long seconds = Sys.PeekWord(at);
+        long nanos = Sys.PeekWord(at + 4);
+
+        return seconds * NanosPerSecond + nanos;
+    }
+
+    /// Milliseconds on the same clock, for programs that measure.
+    public static long NowMilliseconds()
+    {
+        return Now() / 1000000;
+    }
+
+    /// Returns once CLOCK_MONOTONIC has reached `deadline`, or early on a
+    /// signal (the caller re-checks the clock anyway).
+    public static void SleepUntil(long deadline)
+    {
+        // The kernel consumes this timespec during the syscall. Signal
+        // callbacks run only afterwards; the fallback rewrites it after Now.
+        long at = Sys.ThreadBlock() + Tls.Scratch;
+
+        Sys.PokeWord(at, deadline / NanosPerSecond);
+        Sys.PokeWord(at + 4, deadline % NanosPerSecond);
+
+        // Asleep is stopped, as far as a collection is concerned: see the note
+        // on Native.Wait.
+        Runtime.BeginBlocking();
+
+        long result = Platform.Result(Sys.Syscall(ClockNanosleep, Monotonic, AbsoluteTime, at, 0, 0, 0));
+
+        Runtime.EndBlocking();
+
+        if (result == 0 - Err.Intr || PosixSignalRegistration.Pending)
+        {
+            // A signal ended the sleep, or came just before it: the program's handlers run now, at
+            // the same quiet moment Os.Poll and Os.Sleep give them.
+            PosixSignalRegistration.Deliver();
+        }
+
+        if (result != NoSys)
+        {
+            return;
+        }
+
+        // A kernel without clock_nanosleep: sleep for the remaining interval.
+        long left = deadline - Now();
+
+        if (left <= 0)
+        {
+            return;
+        }
+
+        Sys.PokeWord(at, left / NanosPerSecond);
+        Sys.PokeWord(at + 4, left % NanosPerSecond);
+        Runtime.BeginBlocking();
+        Sys.Syscall(Nanosleep, at, 0, 0);
+        Runtime.EndBlocking();
+    }
+}
+
+/// The Linux facts a thread needs: clone(2), futex(2), gettid(2), and pages to
+/// put a stack in.
+///
+/// WHY A HAND-ASSEMBLED TRAMPOLINE. clone(2) on i386 returns TWICE, once in
+/// each thread, and the child comes back with the stack pointer the call was
+/// given and nothing else changed -- same EBP, same return address, same
+/// everything. Code compiled from this language addresses its locals through
+/// EBP, so a child that simply "returned" from the function holding the system
+/// call would run that function's epilogue against the PARENT's frame and
+/// return onto the parent's stack: two threads on one stack. Every libc solves
+/// this in assembler, and so does this: sixty bytes written into an executable
+/// page, called through Sys.Call5, which after the call puts the child on its
+/// own stack with a zero frame pointer and jumps to a real function.
+static class Native
+{
+    const long Mmap2 = 192;             // (addr, len, prot, flags, fd, pgoff)
+    const long Clone = 120;             // (flags, stack, ptid, tls, ctid)
+    const long Futex = 240;             // (uaddr, op, val, timeout, uaddr2, val3)
+    const long GetTid = 224;            // () -> the caller's thread id
+    const long Exit = 1;                // (status): THIS thread only
+
+    const long ProtReadWrite = 3;
+    const long ProtReadWriteExec = 7;
+    const long MapPrivateAnonymous = 0x22;
+
+    const long FutexWait = 128;         // FUTEX_WAIT | FUTEX_PRIVATE_FLAG
+    const long FutexWake = 129;         // FUTEX_WAKE | FUTEX_PRIVATE_FLAG
+
+    /// CLONE_VM | FS | FILES | SIGHAND | THREAD | SYSVSEM: one address space,
+    /// one file table, one signal disposition, one thread group -- a thread in
+    /// the sense every other language means.
+    public const long ThreadFlags = 0x100 | 0x200 | 0x400 | 0x800 | 0x10000 | 0x40000;
+
+    /// Pages that can be read, written and executed, or 0.
+    static long MapExecutable(long bytes)
+    {
+        long got = Sys.Syscall(Mmap2, 0, bytes, ProtReadWriteExec, MapPrivateAnonymous, 0 - 1, 0);
+
+        if (Platform.Result(got) < 0)
+        {
+            return 0;
+        }
+        return got;
+    }
+
+    /// Pages for a thread stack, or 0. A fixed size, not MAP_GROWSDOWN: the
+    /// guard page a growing stack needs is the unmapped page below this one.
+    public static long MapStack(long bytes)
+    {
+        long got = Sys.Syscall(Mmap2, 0, bytes, ProtReadWrite, MapPrivateAnonymous, 0 - 1, 0);
+
+        if (Platform.Result(got) < 0)
+        {
+            return 0;
+        }
+        return got;
+    }
+
+    static long _trampoline;
+
+    static long Byte(long at, long value)
+    {
+        Sys.PokeByte(at, value);
+        return at + 1;
+    }
+
+    static long Immediate(long at, long value)
+    {
+        Sys.PokeByte(at, value & 0xFF);
+        Sys.PokeByte(at + 1, (value >> 8) & 0xFF);
+        Sys.PokeByte(at + 2, (value >> 16) & 0xFF);
+        Sys.PokeByte(at + 3, (value >> 24) & 0xFF);
+        return at + 4;
+    }
+
+    /// The trampoline, written once. Called as
+    ///
+    ///     tramp(flags, childStackTop, parameters)
+    ///
+    /// where `parameters` addresses two words, the entry point and the argument
+    /// to give it. Three arguments and not four, because Sys.Call is the only
+    /// indirect call the x86 backend has and it takes three.
+    ///
+    /// The parent answers the new thread id (or -errno); the child ends up on
+    /// the new stack with a zero frame pointer, calls entry(argument), and ends
+    /// itself with exit(2) when that returns.
+    static long Trampoline()
+    {
+        long code = _trampoline;
+
+        if (code != 0)
+        {
+            return code;
+        }
+
+        code = MapExecutable(4096);
+
+        if (code == 0)
+        {
+            throw new InvalidOperationException("threading: no executable page for the thread trampoline");
+        }
+
+        long at = code;
+
+        at = Byte(at, 0x53);                                                                  // push ebx (callee-saved)
+        at = Byte(at, 0x8B); at = Byte(at, 0x54); at = Byte(at, 0x24); at = Byte(at, 0x10);   // mov edx,[esp+16]  parameters
+        at = Byte(at, 0x8B); at = Byte(at, 0x4C); at = Byte(at, 0x24); at = Byte(at, 0x0C);   // mov ecx,[esp+12]  childStackTop
+        at = Byte(at, 0x8B); at = Byte(at, 0x02);                                             // mov eax,[edx]     entry
+        at = Byte(at, 0x89); at = Byte(at, 0x41); at = Byte(at, 0xFC);                        // mov [ecx-4],eax
+        at = Byte(at, 0x8B); at = Byte(at, 0x42); at = Byte(at, 0x04);                        // mov eax,[edx+4]   argument
+        at = Byte(at, 0x89); at = Byte(at, 0x41); at = Byte(at, 0xF8);                        // mov [ecx-8],eax
+        at = Byte(at, 0x83); at = Byte(at, 0xE9); at = Byte(at, 0x08);                        // sub ecx,8
+        at = Byte(at, 0x8B); at = Byte(at, 0x5C); at = Byte(at, 0x24); at = Byte(at, 0x08);   // mov ebx,[esp+8]   flags
+        at = Byte(at, 0xB8); at = Immediate(at, Clone);                                       // mov eax,120
+        at = Byte(at, 0xCD); at = Byte(at, 0x80);                                             // int 0x80
+        at = Byte(at, 0x85); at = Byte(at, 0xC0);                                             // test eax,eax
+        at = Byte(at, 0x75); at = Byte(at, 0x15);                                             // jnz parent (+21)
+
+        // The child, on its own stack: [esp] is the argument, [esp+4] the entry.
+        at = Byte(at, 0x31); at = Byte(at, 0xED);                                             // xor ebp,ebp
+        at = Byte(at, 0x58);                                                                  // pop eax  (argument)
+        at = Byte(at, 0x5A);                                                                  // pop edx  (entry)
+        at = Byte(at, 0x50);                                                                  // push eax
+        at = Byte(at, 0xFF); at = Byte(at, 0xD2);                                             // call edx
+        at = Byte(at, 0x83); at = Byte(at, 0xC4); at = Byte(at, 0x04);                        // add esp,4
+        at = Byte(at, 0x31); at = Byte(at, 0xDB);                                             // xor ebx,ebx
+        at = Byte(at, 0xB8); at = Immediate(at, Exit);                                        // mov eax,1
+        at = Byte(at, 0xCD); at = Byte(at, 0x80);                                             // int 0x80
+        at = Byte(at, 0xEB); at = Byte(at, 0xFE);                                             // jmp $ (never reached)
+
+        // parent:
+        at = Byte(at, 0x5B);                                                                  // pop ebx
+        at = Byte(at, 0xC3);                                                                  // ret
+
+        _trampoline = code;
+        return code;
+    }
+
+    /// The two words the trampoline reads, in the same page as the code and so
+    /// out of the collector's way entirely. One pair for the whole process:
+    /// only the parent reads them, and only before the clone, so a lock around
+    /// a launch is all they need.
+    const long ParameterOffset = 64;
+
+    static AtomicCell? _launching;
+
+    static AtomicCell LaunchLock()
+    {
+        AtomicCell? l = _launching;
+
+        if (l == null)
+        {
+            Atom.CheckLayout();
+            l = new AtomicCell();
+            _launching = l;
+        }
+        return l;
+    }
+
+    /// Starts a thread that runs `entry(argument)` on a stack of its own.
+    /// Answers the new thread id, or a negative errno.
+    public static long Spawn(long entry, long argument, long stackTop)
+    {
+        long code = Trampoline();
+        AtomicCell gate = LaunchLock();
+
+        gate.Enter();
+
+        long parameters = code + ParameterOffset;
+
+        Sys.PokeWord(parameters, entry);
+        Sys.PokeWord(parameters + 4, argument);
+
+        long id = Platform.Result(Sys.Call(code, ThreadFlags, stackTop, parameters));
+
+        gate.Exit();
+        return id;
+    }
+
+    public static long CurrentThreadId()
+    {
+        return Sys.Syscall(GetTid, 0, 0, 0);
+    }
+
+    /// Sleeps until the word at `at` stops being `expect`, or until someone
+    /// wakes it. A spurious return is normal: every caller re-reads the word.
+    ///
+    /// A thread asleep here is a thread that will not allocate until somebody
+    /// wakes it, and the collector stops the world by waiting for every other
+    /// thread to say it has stopped: without the pair around the call, a
+    /// collection while any worker was idle would wait for that worker and the
+    /// worker would wait for the work that the collection is in the way of.
+    public static void Wait(long at, long expect)
+    {
+        Runtime.BeginBlocking();
+        Sys.Syscall(Futex, at, FutexWait, expect, 0, 0, 0);
+        Runtime.EndBlocking();
+    }
+
+    /// Wakes up to `count` waiters on the word at `at`.
+    public static void Wake(long at, long count)
+    {
+        Sys.Syscall(Futex, at, FutexWake, count, 0, 0, 0);
+    }
+
+    public const long WakeAll = 0x7FFFFFFF;
+}
+
+/// A thread of execution, started with a body to run.
+///
+/// A thread body may allocate, throw and catch like any other code: the
+/// handler chain and the allocation buffer are words of the block this class
+/// gives every thread it starts (lib/rt/runtime.cor, class Tls), and the
+/// collector is told where the thread's stack is before the thread runs.
+///
+/// THE ONE THING TO KNOW. A collection stops every thread, and a thread stops
+/// when it allocates, when it waits on a lock or a futex, or when it sleeps.
+/// A thread in a long computation that does none of those DELAYS every other
+/// thread's collection until it does one. See the note above GcLock in
+/// lib/rt/gc.cor for why, and for what fixes it.
+class Thread
+{
+    // LAYOUT: these two must stay the first instance fields (see Atom). _done
+    // is what Join waits on, and it is a futex word, so it must have an
+    // address -- hence a field of an object rather than a static.
+    int _done;
+    int _lock;
+
+    Action _body;
+    long _id;
+    long _stack;
+    long _stackBytes;
+    long _block;
+    int _slot;
+
+    /// Big enough for the deepest call a thread body here makes, and cheap:
+    /// anonymous pages cost nothing until they are touched.
+    const long StackBytes = 1048576;
+
+    Thread(Action body, int slot)
+    {
+        _done = 0;
+        _lock = 0;
+        _body = body;
+        _slot = slot;
+    }
+
+    /// The thread id the kernel gave it, or 0 before it has been started.
+    public long Id => _id;
+
+    public bool IsAlive => _done == 0;
+
+    /// This thread's kernel thread id (gettid(2)), which is the process id on
+    /// the first thread.
+    public static long CurrentId => Native.CurrentThreadId();
+
+    // ---- the registry -------------------------------------------------------
+    //
+    // A started thread is handed nothing but a machine word, and a word cannot
+    // be an object reference this language can hand back: the child is given
+    // its slot in this table instead, which is also what keeps a running
+    // thread's object -- and its body -- reachable for the collector.
+
+    static Thread?[] _all = new Thread?[64];
+    static int _slots;
+    static AtomicCell? _registry;
+
+    static AtomicCell Registry()
+    {
+        AtomicCell? r = _registry;
+
+        if (r == null)
+        {
+            Atom.CheckLayout();
+            r = new AtomicCell();
+            _registry = r;
+        }
+        return r;
+    }
+
+    static int Register(Thread t)
+    {
+        AtomicCell gate = Registry();
+
+        gate.Enter();
+
+        if (_slots == _all.Length)
+        {
+            Thread?[] bigger = new Thread?[_all.Length * 2];
+
+            for (int i = 0; i < _slots; i++)
+            {
+                bigger[i] = _all[i];
+            }
+            _all = bigger;
+        }
+
+        int slot = _slots;
+
+        _all[slot] = t;
+        _slots = _slots + 1;
+
+        gate.Exit();
+        return slot;
+    }
+
+    // ---- starting and joining -----------------------------------------------
+
+    /// Runs `body` on a new thread and answers the thread, already running.
+    public static Thread Start(Action body)
+    {
+        if (body == null)
+        {
+            throw new ArgumentNullException("body");
+        }
+
+        Atom.CheckLayout();
+
+        Thread t = new Thread(body, 0);
+
+        t._slot = Register(t);
+        t.Launch();
+        return t;
+    }
+
+    void Launch()
+    {
+        long stack = Native.MapStack(StackBytes);
+
+        if (stack == 0)
+        {
+            throw new InvalidOperationException("threading: no memory for a thread stack");
+        }
+
+        _stack = stack;
+        _stackBytes = StackBytes;
+
+        // The top, sixteen-byte aligned, because the first thing the child does
+        // is push and call.
+        long top = (stack + StackBytes) & (0 - 16);
+
+        // THE BLOCK GOES AT THE BOTTOM OF THE SAME MAPPING. The child needs it
+        // before it may allocate, so it cannot be allocated by the child; it is
+        // filled in here, by the parent, while the child does not exist yet.
+        // The stack grows down towards it from a megabyte above, so only a
+        // stack that has already overrun by a megabyte can reach it.
+        _block = stack;
+
+        // Registered by the PARENT, and BEFORE the clone: a collection in the
+        // window between the two must not sweep an object the child has
+        // already made, and must not wait for a thread that does not exist
+        // yet. It is registered stopped, with an empty stack, and the child
+        // says it is running once its block is its own (see Begin).
+        Runtime.RegisterThread(_block, top);
+
+        long id = Native.Spawn(Sys.AddressOf(Thread.ChildEntry), _slot, top);
+
+        if (id < 0)
+        {
+            Runtime.ForgetThread(_block);
+            throw new InvalidOperationException("threading: clone failed");
+        }
+        _id = id;
+    }
+
+    /// Where a new thread begins, on its own stack with no frame above it. It
+    /// takes a slot rather than a reference because a machine word is all
+    /// clone(2) can carry.
+    static void ChildEntry(long slot)
+    {
+        Thread? t = _all[(int)slot];
+
+        if (t != null)
+        {
+            t.Begin();
+        }
+    }
+
+    /// The first thing a new thread does. Until SetThreadBlock returns, GS
+    /// still names the PARENT's block -- clone(2) leaves the thread-local
+    /// descriptors alone unless it is asked to set them -- so nothing above
+    /// that line may allocate or enter a `try`; a field read and a call are
+    /// all it is.
+    void Begin()
+    {
+        Platform.SetThreadBlock(_block);
+        Sys.PokeWord(_block + Tls.ThreadId, Native.CurrentThreadId());
+
+        // Running, from here on: until this the collector was told this thread
+        // was stopped with nothing on its stack, which it was.
+        Runtime.EndBlocking();
+        Body();
+    }
+
+    /// An exception that escapes a thread body ends the program, which is what
+    /// .NET does with one that escapes a thread's start routine.
+    void Body()
+    {
+        try
+        {
+            _body.Invoke();
+        }
+        catch (Exception e)
+        {
+            AsyncRuntime.Unhandled(e);
+        }
+
+        // The stack under this thread stops being a stack the collector may
+        // read before the thread stops standing on it.
+        Runtime.EndThread();
+        Finish();
+    }
+
+    /// Marks the thread finished and wakes everyone in Join. The stack is NOT
+    /// returned to the kernel: the thread is still standing on it until the
+    /// exit(2) in the trampoline retires. One mapping per thread leaks, which
+    /// is what a pool of long-lived workers wants anyway.
+    void Finish()
+    {
+        long at = Atom.At(this, Atom.FirstWord);
+
+        Sys.AtomicSwap(at, 1);
+        Native.Wake(at, Native.WakeAll);
+    }
+
+    /// Waits for the thread to finish running its body.
+    public void Join()
+    {
+        long at = Atom.At(this, Atom.FirstWord);
+
+        while (Sys.PeekWord(at) == 0)
+        {
+            Native.Wait(at, 0);
+        }
+    }
+
+    /// Stops this thread for `milliseconds`, leaving the processor to others.
+    public static void Sleep(int milliseconds)
+    {
+        if (milliseconds <= 0)
+        {
+            return;
+        }
+        Clock.SleepUntil(Clock.Now() + (long)milliseconds * 1000000);
+    }
+}
+
+/// Mutual exclusion, one word, three states: 0 free, 1 held with nobody
+/// waiting, 2 held with somebody waiting. An uncontended lock and unlock is a
+/// single atomic instruction each and never enters the kernel; only the state
+/// that says "somebody is asleep" makes Unlock pay for a futex wake. (This is
+/// Drepper's futex mutex, "Futexes Are Tricky", section 6.)
+class Mutex
+{
+    // LAYOUT: first instance field, at Atom.FirstWord (see Atom).
+    int _state;
+    int _pad;
+
+    const int Free = 0;
+    const int Held = 1;
+    const int Contended = 2;
+
+    public Mutex()
+    {
+        _state = Free;
+        _pad = 0;
+        Atom.CheckLayout();
+    }
+
+    /// Whether the lock is held by somebody, at the moment of asking.
+    public bool IsHeld => _state != Free;
+
+    public void Lock()
+    {
+        long at = Atom.At(this, Atom.FirstWord);
+        long seen = Sys.Cas(at, Free, Held);
+
+        if (seen == Free)
+        {
+            return;
+        }
+
+        // Taking it now means there may be a waiter -- this one -- so it goes
+        // to Contended and stays there until an Unlock finds it free again.
+        while (seen != Free)
+        {
+            seen = Sys.AtomicSwap(at, Contended);
+
+            if (seen == Free)
+            {
+                return;
+            }
+            Native.Wait(at, Contended);
+            seen = Sys.Cas(at, Free, Contended);
+        }
+    }
+
+    /// Takes the lock if it is free, without waiting.
+    public bool TryLock()
+    {
+        return Sys.Cas(Atom.At(this, Atom.FirstWord), Free, Held) == Free;
+    }
+
+    public void Unlock()
+    {
+        long at = Atom.At(this, Atom.FirstWord);
+
+        if (Sys.AtomicSwap(at, Free) == Contended)
+        {
+            Native.Wake(at, 1);
+        }
+    }
+}
+
+/// A count of permits, taken and given back. Wait blocks while the count is
+/// zero; Release adds one and wakes one waiter.
+class Semaphore
+{
+    // LAYOUT: first instance field, at Atom.FirstWord (see Atom).
+    int _count;
+    int _pad;
+
+    public Semaphore(int initialCount)
+    {
+        if (initialCount < 0)
+        {
+            throw new ArgumentOutOfRangeException("initialCount");
+        }
+        _count = initialCount;
+        _pad = 0;
+        Atom.CheckLayout();
+    }
+
+    public int Count => _count;
+
+    public void Wait()
+    {
+        long at = Atom.At(this, Atom.FirstWord);
+
+        while (true)
+        {
+            int seen = (int)Sys.PeekWord(at);
+
+            if (seen > 0)
+            {
+                if (Sys.Cas(at, seen, seen - 1) == seen)
+                {
+                    return;
+                }
+                continue;
+            }
+            Native.Wait(at, 0);
+        }
+    }
+
+    /// Takes a permit if there is one, without waiting.
+    public bool TryWait()
+    {
+        long at = Atom.At(this, Atom.FirstWord);
+        int seen = (int)Sys.PeekWord(at);
+
+        if (seen <= 0)
+        {
+            return false;
+        }
+        return Sys.Cas(at, seen, seen - 1) == seen;
+    }
+
+    public void Release()
+    {
+        Release(1);
+    }
+
+    public void Release(int count)
+    {
+        long at = Atom.At(this, Atom.FirstWord);
+
+        Sys.AtomicAdd(at, count);
+        Native.Wake(at, count);
+    }
+}
+
+/// Set or not set; everyone waiting goes through when it is set, and stays
+/// through until somebody resets it.
+class ManualResetEvent
+{
+    // LAYOUT: first instance field, at Atom.FirstWord (see Atom).
+    int _signalled;
+    int _pad;
+
+    public ManualResetEvent(bool initialState)
+    {
+        _signalled = initialState ? 1 : 0;
+        _pad = 0;
+        Atom.CheckLayout();
+    }
+
+    public bool IsSet => _signalled != 0;
+
+    public void Set()
+    {
+        long at = Atom.At(this, Atom.FirstWord);
+
+        Sys.AtomicSwap(at, 1);
+        Native.Wake(at, Native.WakeAll);
+    }
+
+    public void Reset()
+    {
+        Sys.AtomicSwap(Atom.At(this, Atom.FirstWord), 0);
+    }
+
+    public void WaitOne()
+    {
+        long at = Atom.At(this, Atom.FirstWord);
+
+        while (Sys.PeekWord(at) == 0)
+        {
+            Native.Wait(at, 0);
+        }
+    }
+}

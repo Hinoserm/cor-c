@@ -1,0 +1,101 @@
+// test: properties
+// expect-exit: 0
+// expect-output:
+// temp 212 200
+// set 0
+// compound 10 11
+// auto x
+// init 4
+// indexer 7 8
+// static 3
+//
+// Properties: get/set bodies that compute, an expression-bodied getter, an
+// auto-property, an init-only property set from an object initialiser,
+// compound assignment and ++ on a property, an indexer with get and set,
+// and a static property.
+
+class Temp
+{
+    long _c;
+
+    public long Celsius
+    {
+        get { return _c; }
+        set { _c = value; }
+    }
+
+    public long Fahrenheit
+    {
+        get { return _c * 9 / 5 + 32; }
+        set { _c = (value - 32) * 5 / 9; }
+    }
+
+    public long Doubled => _c * 2;
+
+    public string Label { get; set; }
+
+    public static int Count { get; set; }
+
+    public Temp()
+    {
+        Label = "";
+        Count = Count + 1;
+    }
+}
+
+class Config
+{
+    public long Size { get; init; }
+}
+
+class Grid
+{
+    long[] cells = new long[9];
+
+    public long this[int i]
+    {
+        get { return cells[i]; }
+        set { cells[i] = value; }
+    }
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        Temp t = new Temp();
+        t.Celsius = 100;
+        Line("temp " + t.Fahrenheit + " " + t.Doubled);
+
+        t.Fahrenheit = 32;
+        Line("set " + t.Celsius);
+
+        t.Celsius += 10;
+        long first = t.Celsius;
+        t.Celsius++;
+        Line("compound " + first + " " + t.Celsius);
+
+        t.Label = "x";
+        Line("auto " + t.Label);
+
+        Config c = new Config { Size = 4 };
+        Line("init " + c.Size);
+
+        Grid g = new Grid();
+        g[4] = 7;
+        long before = g[4];
+        g[4] += 1;
+        Line("indexer " + before + " " + g[4]);
+
+        Temp t2 = new Temp();
+        Temp t3 = new Temp();
+        Line("static " + Temp.Count);
+        return 0;
+    }
+}

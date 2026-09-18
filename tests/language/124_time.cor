@@ -1,0 +1,78 @@
+// test: clocks and sleeping
+// expect-exit: 0
+// expect-output:
+// monotonic ok
+// resolution ok
+// slept enough yes
+// slept sane yes
+// realtime ok
+// gettimeofday agrees yes
+//
+// clock_gettime(CLOCK_MONOTONIC) across a nanosleep. NO ABSOLUTE TIME IS
+// PRINTED and no exact duration is checked: the test asserts only what a
+// clock promises -- that it moves forward, and that a sleep of fifty
+// milliseconds takes at least forty and not more than several seconds even on
+// a loaded machine.
+
+static class Program
+{
+    const long Millisecond = 1000000;
+
+    static void Line(string s)
+    {
+        Os.Line(s);
+    }
+
+    static int Main()
+    {
+        byte[] t = TimeSpec.Room();
+
+        if (Os.ClockGetTime(ClockId.Monotonic, t) < 0)
+        {
+            Line("monotonic unavailable");
+            return 1;
+        }
+        Line(Os.Nanos(ClockId.Monotonic) > 0 ? "monotonic ok" : "monotonic zero");
+
+        // A clock that claims a resolution coarser than a second is not one
+        // anything can measure a sleep with.
+        byte[] res = TimeSpec.Room();
+
+        if (Os.ClockGetRes(ClockId.Monotonic, res) < 0)
+        {
+            Line("resolution unavailable");
+            return 1;
+        }
+        Line(TimeSpec.Seconds(res) == 0 ? "resolution ok" : "resolution coarse");
+
+        long before = Os.Nanos(ClockId.Monotonic);
+
+        Os.Sleep(50 * Millisecond);
+
+        long after = Os.Nanos(ClockId.Monotonic);
+        long took = after - before;
+
+        // Forty rather than fifty: the sleep is a lower bound the kernel
+        // rounds to its own tick, and a timer tick is not a millisecond.
+        Line(took >= 40 * Millisecond ? "slept enough yes" : $"slept enough no {took}");
+        Line(took < 10000 * Millisecond ? "slept sane yes" : $"slept sane no {took}");
+
+        // The wall clock is a different clock and is allowed to jump, so the
+        // only thing asserted about it is that it is set at all: anything
+        // after 2020 means the machine knows what year it is.
+        long seconds = Os.Time();
+
+        Line(seconds > 1577836800 ? "realtime ok" : $"realtime unset {seconds}");
+
+        // And that the two ways of asking for it agree to within a minute.
+        long micros = Os.Micros();
+        long drift = micros / 1000000 - seconds;
+
+        if (drift < 0)
+        {
+            drift = 0 - drift;
+        }
+        Line(drift <= 60 ? "gettimeofday agrees yes" : $"gettimeofday agrees no {drift}");
+        return 0;
+    }
+}

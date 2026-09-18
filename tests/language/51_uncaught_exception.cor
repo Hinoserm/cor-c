@@ -1,0 +1,38 @@
+// test: uncaught_exception
+// expect-exit: nonzero
+//
+// An exception nobody catches must end the program with a non-zero exit
+// code, after running the finally blocks on the way out. Output is not
+// compared -- what the runtime prints for an unhandled exception is its
+// own business -- but "after" must never be reached.
+
+class Failure : Exception
+{
+    public Failure() : base("unhandled failure")
+    {
+    }
+}
+
+static class Program
+{
+    static void Nested()
+    {
+        throw new Failure();
+    }
+
+    static int Main()
+    {
+        try
+        {
+            Nested();
+        }
+        finally
+        {
+            Sys.Print("finally ran");
+            Sys.PrintLine();
+        }
+        Sys.Print("after");
+        Sys.PrintLine();
+        return 0;
+    }
+}

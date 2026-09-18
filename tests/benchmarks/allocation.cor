@@ -1,0 +1,153 @@
+// Linux allocation baseline. Every timed result is checked outside timing.
+class Cell { public long Value; }
+class NarrowCell { public byte A; public sbyte B; public ushort C; public short D; public byte Zero; }
+class BufferOwner { public byte[] Buffer; }
+static class Program
+{
+    static byte[][] _retained = new byte[256][];
+    static long BufferWork(int count, bool escape)
+    {
+        long sum = 0;
+        for (int i = 0; i < count; i++)
+        {
+            byte[] bytes = new byte[64];
+            bytes[0] = (byte)(i & 255);
+            bytes[63] = (byte)((i + 17) & 255);
+            if (escape) _retained[i & 255] = bytes;
+            sum += bytes[0] + bytes[63] + bytes[31];
+        }
+        return sum;
+    }
+    static long ObjectWork(int count)
+    {
+        long sum = 0;
+        for (int i = 0; i < count; i++)
+        {
+            Cell cell = new Cell(); cell.Value = i & 255;
+            sum += cell.Value;
+        }
+        return sum;
+    }
+    static long Expected(int count, bool buffers)
+    {
+        long sum = 0;
+        for (int i = 0; i < count; i++)
+            sum += buffers ? (i & 255) + ((i + 17) & 255) : i & 255;
+        return sum;
+    }
+    static long BranchObjectWork(int count)
+    {
+        long sum = 0;
+        for (int i = 0; i < count; i++)
+        {
+            Cell cell = new Cell();
+            cell.Value = i & 255;
+            if ((i & 1) != 0) cell.Value += 17;
+            sum += cell.Value;
+        }
+        return sum;
+    }
+    static bool Sample(string name, int count, int kind)
+    {
+        long collections = Gc.Collections;
+        long markCalls = Gc.MarkCalls, walkSteps = Gc.WalkSteps;
+        long probes = Gc.ProbeSteps, sweeps = Gc.SweepVisits, rescans = Gc.RescanPasses;
+        long start = Stopwatch.GetTimestamp();
+        long result = kind == 8 ? MediumClearWork(count)
+            : kind == 7 ? SmallClearWork(count) : kind >= 5 ? OwnedBufferWork(count, kind == 6)
+            : kind == 4 ? NarrowObjectWork(count) : kind == 3 ? BranchObjectWork(count)
+            : kind == 2 ? ObjectWork(count) : BufferWork(count, kind == 1);
+        long end = Stopwatch.GetTimestamp();
+        long collected = Gc.Collections - collections;
+        long marked = Gc.MarkCalls - markCalls, walked = Gc.WalkSteps - walkSteps;
+        long liveBytes = Gc.LiveBytes, liveBlocks = Gc.LiveBlocks;
+        long probed = Gc.ProbeSteps - probes, swept = Gc.SweepVisits - sweeps, rescanned = Gc.RescanPasses - rescans;
+        long expected = kind >= 5 ? Expected(count, false)
+            : kind == 4 ? NarrowExpected(count) : kind == 3 ? Expected(count, false) + 17L * (count / 2)
+            : Expected(count, kind != 2);
+        bool okay = result == expected;
+        Console.WriteLine(name + ",iterations=" + count + ",ticks=" + (end - start)
+            + ",frequency=" + Stopwatch.Frequency + ",collections=" + collected
+            + ",mark-words=" + marked + ",interior-steps=" + walked
+            + ",last-gc-live-bytes=" + liveBytes + ",last-gc-live-blocks=" + liveBlocks
+            + ",probe-steps=" + probed + ",sweep-visits=" + swept + ",rescan-passes=" + rescanned
+            + ",checksum=" + result + ",valid=" + okay);
+        return okay;
+    }
+    static long NarrowObjectWork(int count)
+    {
+        long sum = 0;
+        for (int i = 0; i < count; i++)
+        {
+            NarrowCell cell = new NarrowCell();
+            cell.A = unchecked((byte)i); cell.B = unchecked((sbyte)i);
+            cell.C = unchecked((ushort)i); cell.D = unchecked((short)i);
+            sum += cell.A + cell.B + cell.C + cell.D + cell.Zero;
+        }
+        return sum;
+    }
+    static long OwnedBufferWork(int count, bool escape)
+    {
+        long sum = 0;
+        for (int i = 0; i < count; i++)
+        {
+            BufferOwner owner = new BufferOwner();
+            owner.Buffer = new byte[64];
+            owner.Buffer[0] = (byte)(i & 255);
+            if (escape) _retained[i & 255] = owner.Buffer;
+            sum += owner.Buffer[0] + owner.Buffer[31];
+        }
+        return sum;
+    }
+    static long SmallClearWork(int count)
+    {
+        long sum = 0;
+        for (int i = 0; i < count; i++)
+        {
+            byte[] bytes = new byte[8];
+            int at = i & 7;
+            bytes[at] = (byte)(i & 255);
+            sum += bytes[at] + bytes[(i + 3) & 7];
+        }
+        return sum;
+    }
+    static long MediumClearWork(int count)
+    {
+        long sum = 0;
+        for (int i = 0; i < count; i++)
+        {
+            byte[] bytes = new byte[512];
+            int at = i & 511;
+            bytes[at] = (byte)(i & 255);
+            sum += bytes[at] + bytes[(i + 3) & 511];
+        }
+        return sum;
+    }
+    static long NarrowExpected(int count)
+    {
+        long sum = 0;
+        for (int i = 0; i < count; i++)
+        {
+            int low8 = i & 255, low16 = i & 65535;
+            sum += low8 + (low8 < 128 ? low8 : low8 - 256)
+                + low16 + (low16 < 32768 ? low16 : low16 - 65536);
+        }
+        return sum;
+    }
+    static int Main()
+    {
+        string[] args = Environment.GetCommandLineArgs();
+        int count = args.Length > 1 ? int.Parse(args[1]) : 200000;
+        if (count <= 0 || count > 10000000) return 2;
+        bool okay = Sample("small-buffer-local", count, 0);
+        okay = Sample("small-buffer-retained", count, 1) && okay;
+        okay = Sample("small-object-local", count, 2) && okay;
+        okay = Sample("small-object-branch", count, 3) && okay;
+        okay = Sample("small-object-narrow", count, 4) && okay;
+        okay = Sample("owned-buffer-local", count, 5) && okay;
+        okay = Sample("owned-buffer-retained", count, 6) && okay;
+        okay = Sample("small-stack-clear", count, 7) && okay;
+        okay = Sample("medium-stack-clear", count, 8) && okay;
+        return okay ? 0 : 1;
+    }
+}

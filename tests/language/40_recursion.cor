@@ -1,0 +1,131 @@
+// test: recursion
+// expect-exit: 0
+// expect-output:
+// fib 6765 12586269025
+// ack 9 61
+// gcd 21
+// fact 2432902008176640000
+// mutual True True
+// deep 50005000
+// pow 4611686018427387904
+// hanoi 1023
+//
+// Recursion: naive fib, fib returning a long, Ackermann, gcd, factorial in
+// 64 bits, mutual recursion, ten thousand frames deep, and two more that
+// carry a long through every frame.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Fib(int n)
+    {
+        if (n < 2)
+        {
+            return n;
+        }
+        return Fib(n - 1) + Fib(n - 2);
+    }
+
+    static long FibL(int n, long a, long b)
+    {
+        if (n == 0)
+        {
+            return a;
+        }
+        return FibL(n - 1, b, a + b);
+    }
+
+    static int Ack(int m, int n)
+    {
+        if (m == 0)
+        {
+            return n + 1;
+        }
+        if (n == 0)
+        {
+            return Ack(m - 1, 1);
+        }
+        return Ack(m - 1, Ack(m, n - 1));
+    }
+
+    static int Gcd(int a, int b)
+    {
+        if (b == 0)
+        {
+            return a;
+        }
+        return Gcd(b, a % b);
+    }
+
+    static long Fact(long n)
+    {
+        if (n <= 1)
+        {
+            return 1;
+        }
+        return n * Fact(n - 1);
+    }
+
+    static bool IsEven(int n)
+    {
+        if (n == 0)
+        {
+            return true;
+        }
+        return IsOdd(n - 1);
+    }
+
+    static bool IsOdd(int n)
+    {
+        if (n == 0)
+        {
+            return false;
+        }
+        return IsEven(n - 1);
+    }
+
+    static long SumTo(int n)
+    {
+        if (n == 0)
+        {
+            return 0;
+        }
+        return n + SumTo(n - 1);
+    }
+
+    static long Pow(long b, int e)
+    {
+        if (e == 0)
+        {
+            return 1;
+        }
+        return b * Pow(b, e - 1);
+    }
+
+    static long Hanoi(int n)
+    {
+        if (n == 0)
+        {
+            return 0;
+        }
+        return Hanoi(n - 1) * 2 + 1;
+    }
+
+    static int Main()
+    {
+        Line("fib " + Fib(20) + " " + FibL(50, 0, 1));
+        Line("ack " + Ack(2, 3) + " " + Ack(3, 3));
+        Line("gcd " + Gcd(1071, 462));
+        Line("fact " + Fact(20));
+        Line("mutual " + IsEven(10) + " " + IsOdd(7));
+        Line("deep " + SumTo(10000));
+        Line("pow " + Pow(2, 62));
+        Line("hanoi " + Hanoi(10));
+        return 0;
+    }
+}

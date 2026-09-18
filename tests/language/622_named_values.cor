@@ -1,0 +1,119 @@
+// test: named_values
+// expect-exit: 0
+// expect-output:
+// forms known base index
+// stub __object_equals __object_equals_2
+// fields 4
+// address 134512640
+// slot def at 9 no other
+// pairs 1:1:10 2:2:20
+//
+// A NAME FOR A VALUE, wherever one is written.
+//
+// A local `const` is one, and `r is Bx or Bp` over two of them is a constant
+// pattern -- the copy a specialisation makes had been dropping the word
+// `const`, so the names read as types nobody declared. A local const may be a
+// STRING too, and one may be built out of another.
+//
+// A const of the class a DEFAULT ARGUMENT was written in is reached from every
+// call site, in whatever namespace: C# evaluates a default where it is
+// declared, and the names in it are written out in full the first time a call
+// leaves the argument out.
+//
+// Enum.GetValues<T>() finds its enum through the ordinary type lookup, so a
+// namespace does not hide it. And a property pattern over a value type asks
+// about its members and nothing about null, because a struct is always there.
+
+namespace Corsac.Test;
+
+enum Fmt { None, R, R4, M }
+
+enum Role { None = 0, Def = 1, Use = 2 }
+
+struct Occurrence
+{
+    public Role Role;
+    public bool InMem;
+    public int Operand;
+    public int Instr;
+}
+
+sealed class Block { public int Id; }
+sealed class Instr { public int Op; }
+
+public static partial class Linker
+{
+    public const uint DefaultLoadAddress = 0x08048000;
+}
+
+public static partial class Linker
+{
+    public static uint Link(uint loadAddress = DefaultLoadAddress) => loadAddress;
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static string Forms(int a, int b)
+    {
+        const int Bx = 3, Bp = 5, Si = 6, Di = 7;
+
+        string said = a is not (Bx or Bp or Si or Di) ? "odd " : "known ";
+
+        said += a is Bx or Bp ? "base " : "notbase ";
+        said += b is Si or Di ? "index" : "notindex";
+        return said;
+    }
+
+    static string Stub()
+    {
+        const string name = "__object_equals";
+        const string also = name + "_2";
+
+        return name + " " + also;
+    }
+
+    static string Slot(Occurrence? def, Occurrence plain)
+    {
+        string said = def is { Role: Role.Def, InMem: false, Operand: 0 } d
+                    ? "def at " + d.Instr
+                    : "no";
+
+        said += " " + (def is null ? "null" : "no");
+        said += " " + (plain is { Role: Role.Use, Operand: 1 } ? "use1" : "other");
+        return said;
+    }
+
+    static int Main()
+    {
+        Line("forms " + Forms(3, 6));
+        Line("stub " + Stub());
+        Line("fields " + Enum.GetValues<Fmt>().Length);
+        Line("address " + Linker.Link());
+
+        Occurrence one = new Occurrence { Role = Role.Def, InMem = false, Operand = 0, Instr = 9 };
+
+        Line("slot " + Slot(one, one));
+
+        Dictionary<long, (Block Where, Instr What)> found = new();
+
+        found[2] = (new Block { Id = 2 }, new Instr { Op = 20 });
+        found[1] = (new Block { Id = 1 }, new Instr { Op = 10 });
+
+        string pairs = "";
+
+        // A foreach that takes apart what a generic method handed back: the
+        // element's type is only known through the sequence's own arguments.
+        foreach ((long index, (Block where, Instr what)) in found.OrderBy(p => p.Key).ToList())
+        {
+            pairs += index + ":" + where.Id + ":" + what.Op + " ";
+        }
+        Line("pairs " + pairs.TrimEnd());
+        return 0;
+    }
+}

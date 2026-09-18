@@ -1,0 +1,60 @@
+// test: param_shadows_field
+// expect-exit: 0
+// expect-output:
+// read 2
+// assigned 5
+// out 4
+// field 9
+//
+// A PARAMETER ASSIGNED TO IS THE PARAMETER, not a field of the same name.
+// Binding an assignment knew about locals, fields and captures and not about
+// parameters, so `ticks = ...` inside `static bool TryInner(string text, out
+// long ticks)` bound to the instance field `ticks` -- in a static method,
+// where there is nothing to reach it through. The lowering built the field's
+// address off a `this` that does not exist, and the optimiser then fell over a
+// register nothing had defined: an ArgumentNullException out of the compiler
+// rather than a diagnostic. Reading the name was always right; only the
+// assignment side had the gap.
+struct Moment
+{
+    long ticks;
+
+    public Moment(long t) { ticks = t; }
+
+    public long Ticks { get { return ticks; } }
+
+    public static long Read(long ticks) { return ticks + 1; }
+
+    public static long Assigned(long ticks) { ticks = 5; return ticks; }
+
+    public static bool TryInner(string text, out long ticks)
+    {
+        ticks = (long)text.Length;
+        return true;
+    }
+
+    public void Bump(long ticks) { this.ticks = ticks; }
+}
+
+static class Program
+{
+    static void Line(string text)
+    {
+        Sys.Print(text);
+        Sys.PrintLine();
+    }
+
+    static void Main()
+    {
+        Line("read " + Moment.Read(1));
+        Line("assigned " + Moment.Assigned(2));
+
+        long got = 0;
+        Moment.TryInner("abcd", out got);
+        Line("out " + got);
+
+        Moment m = new Moment(0);
+        m.Bump(9);
+        Line("field " + m.Ticks);
+    }
+}

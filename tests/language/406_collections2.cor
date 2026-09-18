@@ -1,0 +1,62 @@
+// test: lib/collections.cor -- PriorityQueue, BitArray, the read-only views
+// expect-exit: 0
+// expect-output:
+// count=4 peek=a
+// order: a b c d
+// ed=y then=x
+// len=10 b1=True b2=False b9=True any=True all=False
+// and=True not=False allafter=False
+// bytes len=16 b0=True b15=True
+// ro=3 idx=2 has3=True indexof2=1
+// rod=2 a=1 hasc=False
+//
+// The BitArray line is the one worth reading twice: And, Or, Xor and Not
+// CHANGE the array they are called on and return it, which is .NET's contract
+// and not what the names suggest. Taken from the same program run there.
+
+class Program
+{
+    static int Main()
+    {
+        PriorityQueue<string, int> pq = new PriorityQueue<string, int>();
+        pq.Enqueue("c", 3);
+        pq.Enqueue("a", 1);
+        pq.Enqueue("d", 4);
+        pq.Enqueue("b", 2);
+        Console.WriteLine($"count={pq.Count} peek={pq.Peek()}");
+
+        Console.Write("order:");
+        while (pq.Count > 0) { Console.Write(" " + pq.Dequeue()); }
+        Console.WriteLine();
+
+        pq.Enqueue("x", 5);
+        Console.WriteLine("ed=" + pq.EnqueueDequeue("y", 1) + " then=" + pq.Dequeue());
+
+        BitArray ba = new BitArray(10);
+        ba[1] = true;
+        ba.Set(9, true);
+        Console.WriteLine($"len={ba.Length} b1={ba[1]} b2={ba[2]} b9={ba.Get(9)} any={ba.HasAnySet()} all={ba.HasAllSet()}");
+
+        BitArray other = new BitArray(10, true);
+        Console.WriteLine("and=" + ba.And(other)[9] + " not=" + ba.Not()[1] + " allafter=" + ba.HasAllSet());
+
+        BitArray fromBytes = new BitArray(new byte[] { 0x01, 0x80 });
+        Console.WriteLine($"bytes len={fromBytes.Length} b0={fromBytes[0]} b15={fromBytes[15]}");
+
+        List<int> list = new List<int>();
+        list.Add(1);
+        list.Add(2);
+        list.Add(3);
+
+        ReadOnlyCollection<int> ro = new ReadOnlyCollection<int>(list);
+        Console.WriteLine($"ro={ro.Count} idx={ro[1]} has3={ro.Contains(3)} indexof2={ro.IndexOf(2)}");
+
+        Dictionary<string, int> d = new Dictionary<string, int>();
+        d["a"] = 1;
+        d["b"] = 2;
+
+        ReadOnlyDictionary<string, int> rod = new ReadOnlyDictionary<string, int>(d);
+        Console.WriteLine($"rod={rod.Count} a={rod["a"]} hasc={rod.ContainsKey("c")}");
+        return 0;
+    }
+}

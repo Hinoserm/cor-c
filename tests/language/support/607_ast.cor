@@ -1,0 +1,20 @@
+// The other Block, in another namespace. See 607_namespaces.cor.
+
+namespace App.Ast;
+
+public class Block
+{
+    public string Text;
+
+    public Block(string text)
+    {
+        Text = text;
+    }
+
+    public string Say() => "ast " + Text;
+}
+
+public static class Sayer
+{
+    public static string Say(string what) => "said " + what;
+}

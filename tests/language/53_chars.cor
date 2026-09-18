@@ -1,0 +1,53 @@
+// test: chars
+// expect-exit: 0
+// expect-output:
+// code 97 A
+// class True False True False
+// count 3
+// build abc
+// cmp True True
+//
+// char: its integer value, arithmetic on it, the Char predicates, counting
+// digits in a string by indexing, building a string a character at a time,
+// and comparisons between chars.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        char a = 'a';
+        Sys.Print("code " + (int)a + " ");
+        Sys.PrintChar(Char.ToUpper(a));
+        Sys.PrintLine();
+
+        Line("class " + Char.IsDigit('5') + " " + Char.IsLetter('5') + " " + Char.IsUpper('A') + " " + Char.IsWhiteSpace('x'));
+
+        string mixed = "a1b22";
+        int digits = 0;
+        for (int i = 0; i < mixed.Length; i++)
+        {
+            if (Char.IsDigit(mixed[i]))
+            {
+                digits++;
+            }
+        }
+        Line("count " + digits);
+
+        StringBuilder sb = new StringBuilder();
+        for (char c = 'a'; c <= 'c'; c++)
+        {
+            sb.Append(c);
+        }
+        Line("build " + sb.ToString());
+
+        char b = 'b';
+        Line("cmp " + (a < b) + " " + (b == 'b'));
+        return 0;
+    }
+}

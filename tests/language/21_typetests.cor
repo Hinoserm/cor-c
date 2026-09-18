@@ -1,0 +1,103 @@
+// test: typetests
+// expect-exit: 0
+// expect-output:
+// is True True True
+// describe leaf mid base thing
+// as True False
+// pattern 5
+// null False True False
+// not True
+//
+// `is` and `as`: through a chain of base classes, against an interface,
+// with a declaration pattern that binds a name, and on a null reference.
+
+class Base
+{
+}
+
+class Mid : Base
+{
+    public int V;
+
+    public Mid(int v)
+    {
+        V = v;
+    }
+}
+
+class Leaf : Mid
+{
+    public Leaf() : base(1)
+    {
+    }
+}
+
+interface IThing
+{
+}
+
+class Other : IThing
+{
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static string Describe(object o)
+    {
+        if (o is Leaf)
+        {
+            return "leaf";
+        }
+        if (o is Mid m)
+        {
+            return "mid";
+        }
+        if (o is Base)
+        {
+            return "base";
+        }
+        if (o is IThing)
+        {
+            return "thing";
+        }
+        return "?";
+    }
+
+    static int Main()
+    {
+        Base b = new Leaf();
+        Line("is " + (b is Base) + " " + (b is Mid) + " " + (b is Leaf));
+
+        object[] things = new object[] { new Leaf(), new Mid(2), new Base(), new Other() };
+        string described = "";
+        foreach (object o in things)
+        {
+            described = described + Describe(o) + " ";
+        }
+        Line("describe " + String.Trim(described));
+
+        object asObject = b;
+        Mid? m = b as Mid;
+        Other? other = asObject as Other;
+        Line("as " + (m != null) + " " + (other != null));
+
+        object five = new Mid(5);
+        int got = 0;
+        if (five is Mid found && found.V > 0)
+        {
+            got = found.V;
+        }
+        Line("pattern " + got);
+
+        Base? nothing = null;
+        Line("null " + (nothing is Base) + " " + (nothing is null) + " " + (nothing is not null));
+        Line("not " + !(asObject is Other));
+        return 0;
+    }
+}

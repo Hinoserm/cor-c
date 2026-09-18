@@ -1,0 +1,51 @@
+// test: unrelated free size classes do not disable thread-local allocation buffers
+// expect-exit: 0
+// expect-output:
+// size-class buffer passed
+static class Program
+{
+    static int Main()
+    {
+        long left = Runtime.Alloc(32);
+        long reusable = Runtime.Alloc(32);
+        long right = Runtime.Alloc(32);
+        Sys.Poke(left, 111);
+        Sys.Poke(right, 222);
+        Sys.Poke(reusable, 333);
+        Runtime.Free(reusable);
+        long thread = Sys.ThreadBlock();
+        long cursor = Sys.Peek(thread + Tls.AllocPtr);
+        long large = Runtime.Alloc(4096);
+        if (large != cursor + 8) return 1;
+        for (int i = 0; i < 4096; i += 4)
+            if (Sys.Peek(large + i) != 0) return 2;
+        long again = Runtime.Alloc(32);
+        if (again != reusable) return 3;
+        for (int i = 0; i < 32; i += 4)
+            if (Sys.Peek(again + i) != 0) return 4;
+        if (Sys.Peek(left) != 111 || Sys.Peek(right) != 222) return 5;
+        long treeHole = Runtime.Alloc(280);
+        long treeGuard = Runtime.Alloc(32);
+        Runtime.Free(treeHole);
+        long treeReuse = Runtime.Alloc(280);
+        if (treeReuse != treeHole || !Gc.CheckFreeIndex()) return 7;
+        Runtime.Free(treeReuse);
+        Runtime.Free(treeGuard);
+        Runtime.Free(again);
+        Runtime.Free(large);
+        Runtime.Free(right);
+        Runtime.Free(left);
+        long marker = Runtime.Alloc(100);
+        long unused = Sys.Peek(thread + Tls.AllocLimit) - Sys.Peek(thread + Tls.AllocPtr);
+        long charged = Gc.Since;
+        GcLock.Enter();
+        Gc.Retire(thread);
+        GcLock.Exit();
+        long expected = charged > unused ? charged - unused : 0;
+        if (Gc.Since != expected) return 6;
+        Runtime.Free(marker);
+        Gc.Collect();
+        Sys.Print("size-class buffer passed\n");
+        return 0;
+    }
+}

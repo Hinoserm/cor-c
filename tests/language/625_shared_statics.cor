@@ -1,0 +1,55 @@
+// test: shared statics
+// expect-exit: 0
+// expect-output:
+// first touch ran the initialiser
+// once True
+// program 21
+// library keeps its own 3
+//
+// A TYPE'S STATIC INITIALISER RUNS ONCE, whichever image asks first.
+//
+// The guard is a word beside the type's statics and the initialiser is a
+// function, and both belong to the image that DECLARES the type. A program
+// that touches a library type reads the library's word and calls the
+// library's initialiser, so the "once" in C#'s rule is once per process and
+// not once per image -- which is only true because the program drops its own
+// copy of both and reaches the library's through the GOT.
+static class Counted
+{
+    public static int Runs = Start();
+    public static int Value = 21;
+
+    static int Start()
+    {
+        Console.WriteLine("first touch ran the initialiser");
+        return 1;
+    }
+}
+
+static class Program
+{
+    static void Touch()
+    {
+        if (Counted.Value != 21)
+        {
+            Console.WriteLine("wrong");
+        }
+    }
+
+    static void Main()
+    {
+        Touch();
+        Touch();
+        Touch();
+        Console.WriteLine("once " + (Counted.Runs == 1));
+        Console.WriteLine("program " + Counted.Value);
+
+        // A LIBRARY TYPE'S STATIC, TOUCHED FROM HERE. Console keeps the
+        // writer it opened in a static of its own, in a third image again,
+        // and answers with the same one every time -- which it can only do
+        // if this program reads Console's static and not a copy of it.
+        TextWriter first = Console.Out;
+        TextWriter again = Console.Out;
+        Console.WriteLine("library keeps its own " + (ReferenceEquals(first, again) ? "abc".Length : 0));
+    }
+}

@@ -1,0 +1,20 @@
+// test: static method groups in delegate fields locals assignments and returns
+// expect-exit: 0
+// expect-output:
+// 8 12 16 20
+static class Program
+{
+    static Func<int, int> _field = Twice;
+    static int Twice(int value) => value * 2;
+    static long Twice(long value) => value * 3;
+    static Func<int, int> Factory() => Twice;
+    static int Main()
+    {
+        Func<int, int> local = Twice;
+        Func<int, int> assigned = value => value;
+        assigned = Twice;
+        Func<int, int> returned = Factory();
+        Console.WriteLine(_field(4) + " " + local(6) + " " + assigned(8) + " " + returned(10));
+        return 0;
+    }
+}

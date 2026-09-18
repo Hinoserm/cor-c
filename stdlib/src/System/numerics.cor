@@ -1,0 +1,561 @@
+// System.Numerics.BigInteger -- an integer with no width.
+//
+// SIGN AND MAGNITUDE, the magnitude in 32-bit limbs with the LEAST significant
+// first, because that is the order arithmetic carries in. Zero has sign 0 and
+// no limbs, and no other value has a leading zero limb -- one canonical form,
+// so comparison never has to think about padding.
+//
+// WHAT IS MISSING AND WHY: .NET spells arithmetic on this type with operators
+// (a + b, a / b, (long)a) and the compiler does not yet bind `operator`, so
+// only the static methods .NET also documents are here -- BigInteger.Add,
+// Multiply, Divide, Pow and the rest. The day operators land, the operators
+// are three lines each over these.
+
+struct BigInteger {
+    private int sign;       // -1, 0 or 1
+    private uint[] limbs;   // least significant first; no leading zeros
+
+    public BigInteger(int value) {
+        sign = value < 0 ? -1 : (value > 0 ? 1 : 0);
+
+        long wide = value < 0 ? -(long)value : (long)value;
+
+        limbs = wide == 0 ? new uint[0] : new uint[1];
+        if (wide != 0) { limbs[0] = (uint)wide; }
+    }
+
+    public BigInteger(long value) {
+        sign = value < 0 ? -1 : (value > 0 ? 1 : 0);
+
+        // NEGATING long.MinValue OVERFLOWS, so the magnitude is taken from the
+        // two's complement bits rather than by negating the number.
+        ulong wide = value < 0 ? (ulong)(0 - (value + 1)) + 1 : (ulong)value;
+
+        limbs = Make(wide);
+    }
+
+    public static BigInteger Zero => new BigInteger(0);
+    public static BigInteger One => new BigInteger(1);
+    public static BigInteger MinusOne => new BigInteger(-1);
+
+    public int Sign => sign;
+    public bool IsZero => sign == 0;
+    public bool IsOne => sign == 1 && limbs.Length == 1 && limbs[0] == 1;
+    public bool IsEven => sign == 0 || (limbs[0] & 1) == 0;
+
+    /// Not .NET members: the parts, so that one BigInteger can read another's
+    /// state. Privacy is per instance here rather than per type, which is the
+    /// one thing that stops these being private.
+    public int SignPart => sign;
+    public uint[] Limbs => limbs;
+
+    // ---- the arithmetic ---------------------------------------------------
+
+    public static BigInteger Add(BigInteger left, BigInteger right) {
+        if (left.SignPart == 0) { return right; }
+        if (right.SignPart == 0) { return left; }
+
+        if (left.SignPart == right.SignPart) {
+            return Of(left.SignPart, AddMag(left.Limbs, right.Limbs));
+        }
+
+        int order = CompareMag(left.Limbs, right.Limbs);
+
+        if (order == 0) { return Zero; }
+        if (order > 0) {
+            return Of(left.SignPart, SubMag(left.Limbs, right.Limbs));
+        }
+        return Of(right.SignPart, SubMag(right.Limbs, left.Limbs));
+    }
+
+    public static BigInteger Subtract(BigInteger left, BigInteger right) {
+        return Add(left, Negate(right));
+    }
+
+    public static BigInteger Negate(BigInteger value) {
+        return Of(0 - value.SignPart, value.Limbs);
+    }
+
+    public static BigInteger Abs(BigInteger value) {
+        return Of(value.SignPart < 0 ? 1 : value.SignPart, value.Limbs);
+    }
+
+    public static BigInteger Multiply(BigInteger left, BigInteger right) {
+        if (left.SignPart == 0 || right.SignPart == 0) { return Zero; }
+        return Of(left.SignPart * right.SignPart, MulMag(left.Limbs, right.Limbs));
+    }
+
+    /// TRUNCATED TOWARDS ZERO, and the remainder takes the sign of the
+    /// DIVIDEND -- C#'s rule for `/` and `%` on the built-in integers, which
+    /// BigInteger follows so that a calculation does not change answer when a
+    /// number outgrows a long.
+    public static BigInteger Divide(BigInteger dividend, BigInteger divisor) {
+        BigInteger rest = Zero;
+
+        return DivRem(dividend, divisor, out rest);
+    }
+
+    public static BigInteger Remainder(BigInteger dividend, BigInteger divisor) {
+        BigInteger rest = Zero;
+
+        DivRem(dividend, divisor, out rest);
+        return rest;
+    }
+
+    public static BigInteger DivRem(BigInteger dividend, BigInteger divisor, out BigInteger remainder) {
+        if (divisor.SignPart == 0) { throw new DivideByZeroException(); }
+
+        uint[] quotient = new uint[0];
+        uint[] rest = new uint[0];
+
+        DivModMag(dividend.Limbs, divisor.Limbs, out quotient, out rest);
+
+        remainder = Of(dividend.SignPart, rest);
+        return Of(dividend.SignPart * divisor.SignPart, quotient);
+    }
+
+    /// A NEGATIVE EXPONENT THROWS, which is .NET's behaviour: the result would
+    /// not be an integer and BigInteger has nowhere to put it.
+    public static BigInteger Pow(BigInteger value, int exponent) {
+        if (exponent < 0) { throw new ArgumentOutOfRangeException("exponent"); }
+
+        BigInteger result = One;
+        BigInteger factor = value;
+        int left = exponent;
+
+        while (left > 0) {
+            if ((left & 1) == 1) { result = Multiply(result, factor); }
+            factor = Multiply(factor, factor);
+            left = left >> 1;
+        }
+        return result;
+    }
+
+    /// Exponentiation with everything kept small by reducing as it goes, which
+    /// is the only way a cryptographic exponent finishes this century.
+    public static BigInteger ModPow(BigInteger value, BigInteger exponent, BigInteger modulus) {
+        if (exponent.SignPart < 0) { throw new ArgumentOutOfRangeException("exponent"); }
+        if (modulus.SignPart == 0) { throw new DivideByZeroException(); }
+
+        BigInteger result = One;
+        BigInteger factor = Remainder(value, modulus);
+        BigInteger left = exponent;
+        BigInteger two = new BigInteger(2);
+
+        while (left.SignPart > 0) {
+            BigInteger bit = Zero;
+            BigInteger half = DivRem(left, two, out bit);
+
+            if (!bit.IsZero) { result = Remainder(Multiply(result, factor), modulus); }
+            factor = Remainder(Multiply(factor, factor), modulus);
+            left = half;
+        }
+        return result;
+    }
+
+    /// NON-NEGATIVE ALWAYS, and gcd(0, 0) is 0 -- .NET's contract.
+    public static BigInteger GreatestCommonDivisor(BigInteger left, BigInteger right) {
+        BigInteger a = Abs(left);
+        BigInteger b = Abs(right);
+
+        while (!b.IsZero) {
+            BigInteger rest = Remainder(a, b);
+
+            a = b;
+            b = rest;
+        }
+        return a;
+    }
+
+    public static int Compare(BigInteger left, BigInteger right) {
+        if (left.SignPart != right.SignPart) { return left.SignPart < right.SignPart ? -1 : 1; }
+        if (left.SignPart == 0) { return 0; }
+
+        int order = CompareMag(left.Limbs, right.Limbs);
+
+        return left.SignPart > 0 ? order : 0 - order;
+    }
+
+    public int CompareTo(BigInteger other) { return Compare(this, other); }
+    public bool Equals(BigInteger other) { return Compare(this, other) == 0; }
+
+    public int GetHashCode() {
+        long h = sign;
+
+        for (int i = 0; i < limbs.Length; i++) { h = h * 31 + limbs[i]; }
+        return (int)(h ^ (h >> 32));
+    }
+
+    // ---- text -------------------------------------------------------------
+
+    /// BASE TEN, with a leading '-' for a negative number, which is what .NET
+    /// prints. Nine digits come out at a time because 10^9 is the largest power
+    /// of ten a 32-bit limb divides by without a wider intermediate.
+    public string ToString() {
+        if (sign == 0) { return "0"; }
+
+        uint[] left = limbs;
+        List<string> groups = new List<string>();
+
+        while (left.Length > 0) {
+            uint part = 0;
+            uint[] next = DivModSmall(left, 1000000000, out part);
+
+            groups.Add(String.FromInt((long)part));
+            left = next;
+        }
+
+        StringBuilder made = new StringBuilder();
+
+        if (sign < 0) { made.Append('-'); }
+        made.Append(groups[groups.Count - 1]);
+
+        for (int i = groups.Count - 2; i >= 0; i--) {
+            made.Append(String.PadLeft(groups[i], 9, '0'));
+        }
+        return made.ToString();
+    }
+
+    public static BigInteger Parse(string text) {
+        BigInteger made = Zero;
+
+        if (!TryParse(text, out made)) {
+            throw new FormatException("The value could not be parsed.");
+        }
+        return made;
+    }
+
+    public static bool TryParse(string text, out BigInteger value) {
+        value = Zero;
+        if (text == null || text.Length == 0) { return false; }
+
+        int at = 0;
+        int mark = 1;
+
+        if (Sys.GetByte(text, 0) == (int)'-') { mark = -1; at = 1; }
+        else if (Sys.GetByte(text, 0) == (int)'+') { at = 1; }
+
+        if (at >= text.Length) { return false; }
+
+        uint[] magnitude = new uint[0];
+
+        while (at < text.Length) {
+            int c = Sys.GetByte(text, at);
+
+            if (c < (int)'0' || c > (int)'9') { return false; }
+
+            magnitude = MulSmall(magnitude, 10, (uint)(c - (int)'0'));
+            at = at + 1;
+        }
+
+        value = Of(mark, magnitude);
+        return true;
+    }
+
+    // ---- the magnitude, in limbs ------------------------------------------
+
+    private static uint[] Make(ulong value) {
+        if (value == 0) { return new uint[0]; }
+        if (value <= 4294967295) {
+            uint[] one = new uint[1];
+
+            one[0] = (uint)value;
+            return one;
+        }
+
+        uint[] two = new uint[2];
+
+        two[0] = (uint)(value & 4294967295);
+        two[1] = (uint)(value >> 32);
+        return two;
+    }
+
+    // A value from a sign and a magnitude, with the sign forced to zero when
+    // the magnitude is -- the canonical form the rest of the file relies on.
+    private static BigInteger Of(int mark, uint[] magnitude) {
+        uint[] tidy = Trim(magnitude);
+        BigInteger made = new BigInteger(0);
+
+        made.sign = tidy.Length == 0 ? 0 : mark;
+        made.limbs = tidy;
+        return made;
+    }
+
+    private static uint[] Trim(uint[] magnitude) {
+        int length = magnitude.Length;
+
+        while (length > 0 && magnitude[length - 1] == 0) { length = length - 1; }
+        if (length == magnitude.Length) { return magnitude; }
+
+        uint[] shorter = new uint[length];
+
+        for (int i = 0; i < length; i++) { shorter[i] = magnitude[i]; }
+        return shorter;
+    }
+
+    private static int CompareMag(uint[] a, uint[] b) {
+        if (a.Length != b.Length) { return a.Length < b.Length ? -1 : 1; }
+
+        for (int i = a.Length - 1; i >= 0; i--) {
+            if (a[i] != b[i]) { return a[i] < b[i] ? -1 : 1; }
+        }
+        return 0;
+    }
+
+    private static uint[] AddMag(uint[] a, uint[] b) {
+        int length = a.Length > b.Length ? a.Length : b.Length;
+        uint[] made = new uint[length + 1];
+        ulong carry = 0;
+
+        for (int i = 0; i < length; i++) {
+            ulong sum = carry;
+
+            if (i < a.Length) { sum = sum + a[i]; }
+            if (i < b.Length) { sum = sum + b[i]; }
+
+            made[i] = (uint)(sum & 4294967295);
+            carry = sum >> 32;
+        }
+        made[length] = (uint)carry;
+        return Trim(made);
+    }
+
+    // a MINUS b, where a is known to be the larger.
+    private static uint[] SubMag(uint[] a, uint[] b) {
+        uint[] made = new uint[a.Length];
+        long borrow = 0;
+
+        for (int i = 0; i < a.Length; i++) {
+            long difference = (long)a[i] - borrow - (i < b.Length ? (long)b[i] : 0);
+
+            if (difference < 0) {
+                difference = difference + 4294967296;
+                borrow = 1;
+            } else {
+                borrow = 0;
+            }
+            made[i] = (uint)difference;
+        }
+        return Trim(made);
+    }
+
+    // SCHOOLBOOK, which is what .NET uses below a few hundred limbs too: the
+    // cleverer algorithms only pay off on numbers far larger than anything on
+    // this machine will hold.
+    private static uint[] MulMag(uint[] a, uint[] b) {
+        if (a.Length == 0 || b.Length == 0) { return new uint[0]; }
+
+        uint[] made = new uint[a.Length + b.Length];
+
+        for (int i = 0; i < a.Length; i++) {
+            ulong carry = 0;
+            ulong one = a[i];
+
+            for (int j = 0; j < b.Length; j++) {
+                ulong sum = made[i + j] + one * b[j] + carry;
+
+                made[i + j] = (uint)(sum & 4294967295);
+                carry = sum >> 32;
+            }
+            made[i + b.Length] = (uint)carry;
+        }
+        return Trim(made);
+    }
+
+    // magnitude * small + add, in place of a loop of additions: what parsing a
+    // decimal digit at a time needs.
+    private static uint[] MulSmall(uint[] magnitude, uint factor, uint add) {
+        uint[] made = new uint[magnitude.Length + 1];
+        ulong carry = add;
+
+        for (int i = 0; i < magnitude.Length; i++) {
+            ulong sum = (ulong)magnitude[i] * factor + carry;
+
+            made[i] = (uint)(sum & 4294967295);
+            carry = sum >> 32;
+        }
+        made[magnitude.Length] = (uint)carry;
+        return Trim(made);
+    }
+
+    private static uint[] DivModSmall(uint[] magnitude, uint divisor, out uint remainder) {
+        uint[] made = new uint[magnitude.Length];
+        ulong rest = 0;
+
+        for (int i = magnitude.Length - 1; i >= 0; i--) {
+            ulong value = (rest << 32) | magnitude[i];
+
+            made[i] = (uint)(value / divisor);
+            rest = value % divisor;
+        }
+        remainder = (uint)rest;
+        return Trim(made);
+    }
+
+    /// LONG DIVISION ONE BIT AT A TIME: shift the next bit of the dividend into
+    /// a running remainder and subtract the divisor when it fits. It is the
+    /// slow algorithm -- a bit per iteration rather than a limb -- and it is
+    /// the one that is obviously right, which matters more here than speed on
+    /// numbers this machine will never be given.
+    private static void DivModMag(uint[] dividend, uint[] divisor, out uint[] quotient, out uint[] remainder) {
+        if (CompareMag(dividend, divisor) < 0) {
+            quotient = new uint[0];
+            remainder = dividend;
+            return;
+        }
+
+        if (divisor.Length == 1) {
+            uint small = 0;
+            uint[] whole = DivModSmall(dividend, divisor[0], out small);
+            uint[] rest = new uint[1];
+
+            rest[0] = small;
+            quotient = whole;
+            remainder = Trim(rest);
+            return;
+        }
+
+        uint[] made = new uint[dividend.Length];
+        uint[] running = new uint[0];
+
+        for (int i = dividend.Length * 32 - 1; i >= 0; i--) {
+            running = ShiftLeftOne(running);
+
+            if (((dividend[i / 32] >> (i % 32)) & 1) == 1) {
+                running = SetBitZero(running);
+            }
+
+            if (CompareMag(running, divisor) >= 0) {
+                running = SubMag(running, divisor);
+                made[i / 32] = made[i / 32] | ((uint)1 << (i % 32));
+            }
+        }
+        quotient = Trim(made);
+        remainder = Trim(running);
+    }
+
+    private static uint[] ShiftLeftOne(uint[] magnitude) {
+        uint[] made = new uint[magnitude.Length + 1];
+        uint carry = 0;
+
+        for (int i = 0; i < magnitude.Length; i++) {
+            made[i] = (magnitude[i] << 1) | carry;
+            carry = magnitude[i] >> 31;
+        }
+        made[magnitude.Length] = carry;
+        return Trim(made);
+    }
+
+    private static uint[] SetBitZero(uint[] magnitude) {
+        if (magnitude.Length == 0) {
+            uint[] one = new uint[1];
+
+            one[0] = 1;
+            return one;
+        }
+        magnitude[0] = magnitude[0] | 1;
+        return magnitude;
+    }
+}
+
+/// System.Numerics.BitOperations -- what one machine word says about its bits.
+///
+/// .NET has these as intrinsics that become one instruction on a processor
+/// which has one; a 486 has BSF and BSR and nothing else, so the counts are
+/// written out. What matters to a caller is the answer, and the answers are
+/// .NET's exactly: a count of set bits, and the number of zeroes at either
+/// end of a word -- 32 or 64 for a zero word, which is what .NET returns.
+static class BitOperations {
+    public static int PopCount(uint value) {
+        uint v = value;
+        int n = 0;
+
+        while (v != 0) {
+            v = v & (v - 1);
+            n = n + 1;
+        }
+        return n;
+    }
+
+    public static int PopCount(ulong value) {
+        ulong v = value;
+        int n = 0;
+
+        while (v != 0) {
+            v = v & (v - 1);
+            n = n + 1;
+        }
+        return n;
+    }
+
+    public static int TrailingZeroCount(uint value) {
+        if (value == 0) { return 32; }
+
+        int n = 0;
+        uint v = value;
+
+        while ((v & 1) == 0) {
+            v = v >> 1;
+            n = n + 1;
+        }
+        return n;
+    }
+
+    public static int TrailingZeroCount(int value) { return TrailingZeroCount((uint)value); }
+
+    public static int TrailingZeroCount(ulong value) {
+        if (value == 0) { return 64; }
+
+        int n = 0;
+        ulong v = value;
+
+        while ((v & 1) == 0) {
+            v = v >> 1;
+            n = n + 1;
+        }
+        return n;
+    }
+
+    public static int TrailingZeroCount(long value) { return TrailingZeroCount((ulong)value); }
+
+    public static int LeadingZeroCount(uint value) {
+        if (value == 0) { return 32; }
+
+        int n = 0;
+        uint v = value;
+
+        while ((v & 0x80000000) == 0) {
+            v = v << 1;
+            n = n + 1;
+        }
+        return n;
+    }
+
+    public static int LeadingZeroCount(ulong value) {
+        if (value == 0) { return 64; }
+
+        int n = 0;
+        ulong v = value;
+
+        while ((v & 0x8000000000000000) == 0) {
+            v = v << 1;
+            n = n + 1;
+        }
+        return n;
+    }
+
+    /// The position of the highest set bit, which is what .NET's Log2 answers;
+    /// undefined for zero in .NET and zero here, as its implementation gives.
+    public static int Log2(uint value) { return value == 0 ? 0 : 31 - LeadingZeroCount(value); }
+
+    public static int Log2(ulong value) { return value == 0 ? 0 : 63 - LeadingZeroCount(value); }
+
+    public static bool IsPow2(uint value) { return value != 0 && (value & (value - 1)) == 0; }
+
+    public static bool IsPow2(ulong value) { return value != 0 && (value & (value - 1)) == 0; }
+
+    public static uint RoundUpToPowerOf2(uint value) {
+        if (value <= 1) { return 1; }
+        return (uint)1 << (32 - LeadingZeroCount(value - 1));
+    }
+}

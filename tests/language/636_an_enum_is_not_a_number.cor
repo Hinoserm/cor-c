@@ -1,0 +1,24 @@
+// test: an_enum_is_not_a_number
+// expect-exit: 0
+// expect-output:
+// f() : I64 Sub 1 7
+// I32 102
+// Void
+//
+// AN ENUM HANDED TO AN OVERLOADED METHOD IS AN OBJECT BEFORE IT IS A NUMBER.
+// C# has no implicit conversion from an enum, so `sb.Append(op)` is
+// Append(object) and says the member's name; taken as Append(int) it said 1,
+// and the compiler's own listings named every type and opcode by number once
+// it was compiled by itself.
+
+using System;
+using System.Text;
+enum IrType : byte { Void, I32, I64 }
+enum Op { Add, Sub }
+class P { static int Code(int n) { return n + 100; } static int Main() {
+  StringBuilder sb = new();
+  sb.Append("f() : ").Append(IrType.I64).Append(' ').Append(Op.Sub).Append(' ').Append((int)Op.Sub).Append(' ').Append(7);
+  Console.WriteLine(sb.ToString());
+  Console.WriteLine(IrType.I32 + " " + Code((int)IrType.I64));
+  Console.WriteLine(IrType.Void);
+  return 0; } }

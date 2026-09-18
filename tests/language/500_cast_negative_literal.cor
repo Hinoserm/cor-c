@@ -1,0 +1,36 @@
+// test: cast_negative_literal
+// expect-exit: 0
+// expect-output:
+// -2
+// -2
+// -300
+// 3
+// 65534
+//
+// A CAST OF A NEGATIVE LITERAL. `(short)-2` used to read as the name `short`
+// minus two -- "'Int16' and 'int' are not both numbers" -- because the parser
+// only took a parenthesised type as a cast when an operand token followed, and
+// '-' is not one. C# settles this by asking whether the parenthesised sequence
+// could have been an expression at all: `short` could not, so it is a cast.
+// An ordinary name still subtracts, which the last line checks.
+static class Program
+{
+    static void Line(string text)
+    {
+        Sys.Print(text);
+        Sys.PrintLine();
+    }
+
+    static string Show(short value) { return "" + value; }
+
+    static void Main()
+    {
+        short a = (short)-2;
+        Line("" + a);
+        Line(Show((short)-2));
+        Line("" + (int)-300);
+        int b = 5;
+        Line("" + ((b)-2));
+        Line("" + (int)(ushort)-2);
+    }
+}

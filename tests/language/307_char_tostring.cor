@@ -1,0 +1,34 @@
+// test: char_tostring
+// expect-exit: 0
+// expect-output:
+// a
+// Z
+// a
+// [a]
+// ab
+// 97
+//
+// char.ToString() answers the CHARACTER, not its number. char is an integer
+// type in this compiler, so the rewrite that turns `x.ToString()` on a value
+// with no vtable into String.FromInt claimed it and printed 97 for 'a'.
+// Concatenation and interpolation already went the other way, which made the
+// disagreement between `c.ToString()` and `"" + c` the visible symptom.
+
+class Program {
+    static int Main() {
+        char c = 'a';
+        char u = 'Z';
+
+        Console.WriteLine(c.ToString());
+        Console.WriteLine(u.ToString());
+        Console.WriteLine("" + c);
+        Console.WriteLine($"[{c}]");
+        Console.WriteLine(c.ToString() + "b");
+
+        // A NUMBER STILL PRINTS AS A NUMBER: the char arm must not have taken
+        // the integers with it.
+        int n = (int)c;
+        Console.WriteLine(n.ToString());
+        return 0;
+    }
+}

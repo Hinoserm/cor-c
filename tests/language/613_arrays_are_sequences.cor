@@ -1,0 +1,75 @@
+// test: arrays_are_sequences
+// expect-exit: 0
+// expect-output:
+// any True False
+// count 3 6
+// select 1 2 3
+// walk 6
+// clone 3 9 1
+// equal True False
+// enumerator a b c
+//
+// `T[]` implements IEnumerable<T>, IReadOnlyCollection<T> and
+// IReadOnlyList<T>, which .NET says of every array and nothing in a program
+// has to write down. So the operators declared over a sequence reach an array,
+// and an array walks through the same enumerator interface a list does.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Total(IEnumerable<int> sequence)
+    {
+        int n = 0;
+
+        foreach (int each in sequence)
+        {
+            n = n + each;
+        }
+        return n;
+    }
+
+    static int Main()
+    {
+        int[] numbers = new int[] { 1, 2, 3 };
+
+        Line("any " + numbers.Any(n => n == 2) + " " + numbers.Any(n => n == 9));
+        Line("count " + numbers.Count() + " " + numbers.Sum());
+
+        List<int> doubled = numbers.Select(n => n);
+        string shown = "";
+
+        foreach (int n in doubled)
+        {
+            shown = shown + " " + n;
+        }
+
+        Line("select" + shown);
+
+        // Through the interface, which is where the enumerator is needed.
+        Line("walk " + Total(numbers));
+
+        int[] copy = numbers.Clone();
+
+        copy[1] = 9;
+        Line("clone " + copy.Length + " " + copy[1] + " " + numbers[0]);
+        Line("equal " + numbers.SequenceEqual(new int[] { 1, 2, 3 })
+             + " " + numbers.SequenceEqual(copy));
+
+        string[] names = new string[] { "a", "b", "c" };
+        IEnumerable<string> walked = names;
+        string joined = "";
+
+        foreach (string each in walked)
+        {
+            joined = joined + " " + each;
+        }
+
+        Line("enumerator" + joined);
+        return 0;
+    }
+}

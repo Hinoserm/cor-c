@@ -1,0 +1,71 @@
+// test: statics
+// expect-exit: 0
+// expect-output:
+// fields 5 10 11
+// const 42 1099511627776
+// counter 3
+// list 2
+// instance 8
+//
+// Static state: static field initialisers that depend on each other in
+// declaration order, a static constructor that runs before the first use,
+// const and static readonly, a static counter, a static field holding an
+// object built by its initialiser, and an instance field initialiser.
+
+static class Config
+{
+    public static int A = 5;
+    public static int B = A * 2;
+    public static int C;
+    public const int K = 42;
+    public static readonly long Big = 1L << 40;
+    public static List<int> Items = new List<int>();
+
+    static Config()
+    {
+        C = B + 1;
+    }
+}
+
+class Counter
+{
+    static int _n;
+
+    public static int Next()
+    {
+        _n = _n + 1;
+        return _n;
+    }
+}
+
+class Widget
+{
+    public int Size = 8;
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        Line("fields " + Config.A + " " + Config.B + " " + Config.C);
+        Line("const " + Config.K + " " + Config.Big);
+
+        Counter.Next();
+        Counter.Next();
+        Line("counter " + Counter.Next());
+
+        Config.Items.Add(1);
+        Config.Items.Add(2);
+        Line("list " + Config.Items.Count);
+
+        Widget w = new Widget();
+        Line("instance " + w.Size);
+        return 0;
+    }
+}

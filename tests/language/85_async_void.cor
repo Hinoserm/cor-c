@@ -1,0 +1,61 @@
+// test: async_void
+// expect-exit: 134
+// expect-output:
+// main start
+// quiet start
+// fire start 1
+// main after call
+// quiet end
+// fire resumed 1
+//
+// async void. The call returns at the method's first suspension like any
+// async call, and a try around the call catches nothing, because an
+// exception escaping an async void method has no task to be stored in: it
+// is unhandled (AsyncRuntime.Unhandled), which ends the process the way
+// any unhandled exception does -- a message on stderr (not compared) and
+// exit code 134. A well-behaved async void method runs to its end first.
+// The exception is thrown only after an await: one thrown before the first
+// await would, in .NET without a synchronization context, be raised on
+// the thread pool at an unspecified moment. Main is parked on a long
+// delay so nothing it does could run after the crash.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static async void Quiet()
+    {
+        Line("quiet start");
+        await Task.Yield();
+        Line("quiet end");
+    }
+
+    static async void Fire(int n)
+    {
+        Line("fire start " + n);
+        await Task.Yield();
+        Line("fire resumed " + n);
+        throw new InvalidOperationException("async void failure");
+    }
+
+    static async Task Main()
+    {
+        Line("main start");
+        Quiet();
+        try
+        {
+            Fire(1);
+        }
+        catch (Exception e)
+        {
+            Line("wrongly caught " + e.Message);
+        }
+        Line("main after call");
+        await Task.Delay(3000);
+        Line("not reached");
+    }
+}

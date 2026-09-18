@@ -1,0 +1,17 @@
+// test: hello
+// expect-exit: 0
+// expect-output:
+// Hello, world!
+//
+// The smallest program that can prove it ran: one line of output and a zero
+// exit code. If this fails nothing else in the suite is worth reading.
+
+static class Program
+{
+    static int Main()
+    {
+        Sys.Print("Hello, world!");
+        Sys.PrintLine();
+        return 0;
+    }
+}

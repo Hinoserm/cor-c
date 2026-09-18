@@ -1,0 +1,74 @@
+// test: shifts
+// expect-exit: 0
+// expect-output:
+// int 1024 -2147483648 -4 -1
+// uint 1 251658240
+// var 96 6
+// long 4294967296 1099511627776 -9223372036854775808
+// long2 128 -4294967296 -1
+// wide 305419896 19088743 2541551405711093504
+// ulong 1 2147483648 4611686018427387904
+// var64 34359738368 -137438953472 4294967294
+//
+// Shifts. Right shift of a negative signed value is arithmetic; of an
+// unsigned value it is logical. 64-bit shifts on a 32-bit target cross the
+// register pair, so counts below, at and above 32 are all exercised, with
+// constant and with variable counts.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static string U(ulong v)
+    {
+        string tail = String.FromInt((long)(v % 10));
+        if (v < 10)
+        {
+            return tail;
+        }
+        return U(v / 10) + tail;
+    }
+
+    static int Main()
+    {
+        int one = 1;
+        int m16 = -16;
+        int m1 = -1;
+        Line("int " + (one << 10) + " " + (one << 31) + " " + (m16 >> 2) + " " + (m1 >> 31));
+
+        uint high = 0x80000000u;
+        uint nib = 0xF0000000u;
+        Line("uint " + U(high >> 31) + " " + U(nib >> 4));
+
+        int n = 5;
+        int three = 3;
+        int v192 = 192;
+        Line("var " + (three << n) + " " + (v192 >> n));
+
+        long l1 = 1;
+        Line("long " + (l1 << 32) + " " + (l1 << 40) + " " + (l1 << 63));
+
+        long l40 = l1 << 40;
+        long lm1 = -1;
+        long lm32 = lm1 << 32;
+        Line("long2 " + (l40 >> 33) + " " + lm32 + " " + (lm32 >> 32));
+
+        long wide = 0x123456789ABCDEF0L;
+        Line("wide " + (wide >> 32) + " " + (wide >> 36) + " " + (wide << 4));
+
+        ulong top = 0x8000000000000000UL;
+        Line("ulong " + U(top >> 63) + " " + U(top >> 32) + " " + U(top >> 1));
+
+        int c35 = 35;
+        int c3 = 3;
+        int c1 = 1;
+        long neg40 = -l40;
+        long maxInt = 0x7fffffffL;
+        Line("var64 " + (l1 << c35) + " " + (neg40 >> c3) + " " + (maxInt << c1));
+        return 0;
+    }
+}

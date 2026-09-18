@@ -1,0 +1,48 @@
+// test: gc churn
+// expect-exit: 0
+// expect-output:
+// checksum 25493856
+// collected True
+// under cap True
+//
+// Two hundred megabytes of short-lived arrays allocated in a loop with the
+// heap capped at 32 MB. Without a collector this runs out of memory; with
+// one the heap stays under the cap, the values written to each array read
+// back correctly, and at least one collection happened.
+
+static class Program
+{
+    static byte[][] _holder;
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        Gc.SetLimit(33554432);
+
+        long sum = 0;
+
+        // Keep the holder in a persistent root and read it back. A merely
+        // local holder can itself be scalar-replaced, correctly allowing
+        // all child buffers onto the stack and testing no collection at all.
+        // The expected collection and heap-cap assertions stay unchanged.
+        _holder = new byte[1][];
+
+        for (int i = 0; i < 200000; i++)
+        {
+            byte[] block = new byte[1000];
+            _holder[0] = block;
+            int at = i % 1000;
+            block[at] = (byte)(i & 255);
+            sum = sum + _holder[0][at];
+        }
+
+        Line("checksum " + sum);
+        Line("collected " + (Gc.Collections > 0));
+        Line("under cap " + (Gc.HeapBytes <= 33554432));
+        return 0;
+    }
+}

@@ -1,0 +1,49 @@
+// test: string_sequences
+// expect-exit: 0
+// expect-output:
+// name yes no
+// count 2
+// letters a,b,c
+// starts True False
+// bytes True
+//
+// A STRING IS A SEQUENCE OF CHARACTERS and a ReadOnlySpan of them, which is
+// what .NET says: string implements IEnumerable<char>, and it declares an
+// implicit conversion to ReadOnlySpan<char>. Both are how ordinary C# reads a
+// string -- `text.All(char.IsLetterOrDigit)` and
+// `text.AsSpan(0, 2).SequenceEqual(op)` are lines in this compiler's own lexer
+// and assembler -- and neither compiled here until the conversions existed.
+//
+// The span half also needs a receiver whose type is only known through a
+// generic method: `bytes.AsSpan()` is a Span<byte> before any Span$byte has
+// been written, so the members found on it are the template's.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static bool Name(string text)
+        => text.Length > 0 && (char.IsLetter(text[0]) || text[0] == '_')
+        && text.All(c => char.IsLetterOrDigit(c) || c == '_');
+
+    static bool Starts(string text, string op)
+        => text.Length >= op.Length && text.AsSpan(0, op.Length).SequenceEqual(op);
+
+    static int Main()
+    {
+        Line("name " + (Name("a_b9") ? "yes" : "no") + " " + (Name("9ab") ? "yes" : "no"));
+        Line("count " + "hello".Count(c => c == 'l'));
+        Line("letters " + string.Join(",", "abc".Select(c => c.ToString())));
+        Line("starts " + Starts("abcd", "ab") + " " + Starts("abcd", "bc"));
+
+        ulong[] a = { 1, 2, 3 };
+        ulong[] b = { 1, 2, 3 };
+
+        Line("bytes " + a.AsSpan().SequenceEqual(b));
+        return 0;
+    }
+}

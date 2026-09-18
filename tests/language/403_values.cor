@@ -1,0 +1,72 @@
+// test: lib/values.cor -- Guid, Version, Lazy, Tuple
+// expect-exit: 0
+// expect-output:
+// 33221100-5544-7766-8899-aabbccddeeff N=33221100554477668899aabbccddeeff B={33221100-5544-7766-8899-aabbccddeeff} P=(33221100-5544-7766-8899-aabbccddeeff)
+// X={0x33221100,0x5544,0x7766,{0x88,0x99,0xaa,0xbb,0xcc,0xdd,0xee,0xff}}
+// roundtrip=True empty=00000000-0000-0000-0000-000000000000 tryparse=False
+// v4=True variant=True unique=True
+// 1.2 1.2.3.4 b=-1 cmp=-1 eq=False 3=1.2.3
+// cmp2=1 parse=False
+// created=False v=42 v2=42 calls=1 created2=True
+// (1, a) (1, 2, 3) item2=a
+//
+// The Guid text is what .NET prints for the bytes 00 11 22 .. ff, which is not
+// their order: the first three fields are numbers stored little end first. The
+// Version line is the other thing worth pinning down -- a field nobody gave is
+// -1 and sorts BELOW a given zero, so 1.2 is less than 1.2.0.
+
+class Counter
+{
+    public int Calls;
+}
+
+class Answer : Func<int>
+{
+    private Counter count;
+
+    public Answer(Counter into) { count = into; }
+
+    public int Invoke()
+    {
+        count.Calls = count.Calls + 1;
+        return 42;
+    }
+}
+
+class Program
+{
+    static int Main()
+    {
+        byte[] bytes = new byte[16];
+        for (int i = 0; i < 16; i++) { bytes[i] = (byte)(i * 0x11); }
+
+        Guid g = new Guid(bytes);
+        Console.WriteLine(g.ToString() + " N=" + g.ToString("N") + " B=" + g.ToString("B") + " P=" + g.ToString("P"));
+        Console.WriteLine("X=" + g.ToString("X"));
+
+        Guid p = Guid.Parse(g.ToString());
+        Guid bad = Guid.Empty;
+        Console.WriteLine($"roundtrip={p.Equals(g)} empty={Guid.Empty.ToString()} tryparse={Guid.TryParse("nope", out bad)}");
+
+        Guid fresh = Guid.NewGuid();
+        byte[] made = fresh.ToByteArray();
+        Console.WriteLine($"v4={(made[7] & 0xF0) == 0x40} variant={(made[8] & 0xC0) == 0x80} unique={!fresh.Equals(Guid.NewGuid())}");
+
+        Version v = new Version(1, 2);
+        Version w = new Version("1.2.3.4");
+        Console.WriteLine($"{v.ToString()} {w.ToString()} b={v.Build} cmp={v.CompareTo(w)} eq={v.Equals(new Version(1, 2, 0))} 3={w.ToString(3)}");
+
+        Version? parsed = null;
+        Console.WriteLine($"cmp2={new Version(1, 10).CompareTo(new Version(1, 9))} parse={Version.TryParse("x.y", out parsed)}");
+
+        Counter calls = new Counter();
+        Lazy<int> lazy = new Lazy<int>(new Answer(calls));
+        bool before = lazy.IsValueCreated;
+        Console.WriteLine($"created={before} v={lazy.Value} v2={lazy.Value} calls={calls.Calls} created2={lazy.IsValueCreated}");
+
+        Tuple<int, string> t = Tuple.Create(1, "a");
+        Tuple<int, int, int> t3 = Tuple.Create(1, 2, 3);
+        Console.WriteLine($"{t.ToString()} {t3.ToString()} item2={t.Item2}");
+        return 0;
+    }
+}

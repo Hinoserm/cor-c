@@ -1,0 +1,106 @@
+// test: async_delay
+// expect-exit: 0
+// expect-output:
+// slow sleeping
+// fast sleeping
+// mid sleeping
+// all started
+// fast woke
+// mid woke
+// slow woke
+// sum 6
+// tie1 sleeping
+// tie2 sleeping
+// tie1 woke
+// tie2 woke
+// ties 12
+// longer sleeping
+// later sleeping
+// later woke
+// longer woke
+// deadline 5
+// w1 sleeping
+// w2 sleeping
+// w3 sleeping
+// w2 woke
+// w3 woke
+// w1 woke
+// whenall 60
+// p sleeping
+// q sleeping
+// q woke
+// winner q True
+// any 2
+// p woke
+// late 1
+//
+// Task.Delay: timers fire in deadline order whatever order they were
+// started in; two equal delays started one after the other wake in that
+// order; a short delay started later wakes before a long one started
+// earlier. Task.WhenAll completes only after its last task, and
+// Task.WhenAny completes with the first task to finish, leaving the other
+// running. Durations differ by at least 40 ms so no result depends on how
+// long the surrounding code takes.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static async Task<int> Sleeper(string name, int ms, int value)
+    {
+        Line(name + " sleeping");
+        await Task.Delay(ms);
+        Line(name + " woke");
+        return value;
+    }
+
+    static async Task Main()
+    {
+        Task<int> slow = Sleeper("slow", 300, 3);
+        Task<int> fast = Sleeper("fast", 50, 1);
+        Task<int> mid = Sleeper("mid", 150, 2);
+        Line("all started");
+        int sum = 0;
+        sum = sum + await slow;
+        sum = sum + await fast;
+        sum = sum + await mid;
+        Line("sum " + sum);
+
+        Task<int> tie1 = Sleeper("tie1", 100, 5);
+        Task<int> tie2 = Sleeper("tie2", 100, 7);
+        int ties = await tie2;
+        ties = ties + await tie1;
+        Line("ties " + ties);
+
+        Task<int> longer = Sleeper("longer", 250, 2);
+        await Task.Delay(20);
+        Task<int> later = Sleeper("later", 50, 3);
+        int deadline = await longer;
+        deadline = deadline + await later;
+        Line("deadline " + deadline);
+
+        Task<int> a = Sleeper("w1", 160, 10);
+        Task<int> b = Sleeper("w2", 40, 20);
+        Task<int> c = Sleeper("w3", 100, 30);
+        Task all = Task.WhenAll(a, b, c);
+        await all;
+        int total = await a;
+        total = total + await b;
+        total = total + await c;
+        Line("whenall " + total);
+
+        Task<int> p = Sleeper("p", 250, 1);
+        Task<int> q = Sleeper("q", 60, 2);
+        Task qAsTask = q;
+        Task winner = await Task.WhenAny(p, q);
+        Line("winner q " + (winner == qAsTask));
+        int got = await q;
+        Line("any " + got);
+        int late = await p;
+        Line("late " + late);
+    }
+}

@@ -1,0 +1,117 @@
+// System.Text.RegularExpressions: the surface grep and sed are written
+// against, and the parts of .NET's pattern language they translate into.
+//
+// expect: ok
+
+class Program
+{
+    static int _bad;
+
+    static void Same(string what, string got, string want)
+    {
+        if (got != want)
+        {
+            Console.WriteLine(what + ": got [" + got + "] wanted [" + want + "]");
+            _bad = _bad + 1;
+        }
+    }
+
+    static void True(string what, bool got)
+    {
+        Same(what, got ? "yes" : "no", "yes");
+    }
+
+    static void False(string what, bool got)
+    {
+        Same(what, got ? "yes" : "no", "no");
+    }
+
+    static int Main()
+    {
+        // ---- literals, dot, anchors ----------------------------------------
+        Regex abc = new Regex("abc");
+        True("literal", abc.IsMatch("xxabcxx"));
+        False("literal miss", abc.IsMatch("abd"));
+        True("dot", new Regex("a.c").IsMatch("a-c"));
+        False("dot no newline", new Regex("a.c").IsMatch("a\nc"));
+        True("singleline dot", new Regex("a.c", RegexOptions.Singleline).IsMatch("a\nc"));
+        True("caret", new Regex("^ab").IsMatch("abc"));
+        False("caret miss", new Regex("^bc").IsMatch("abc"));
+        True("dollar", new Regex("bc$").IsMatch("abc"));
+        True("multiline caret", new Regex("^b", RegexOptions.Multiline).IsMatch("a\nb"));
+        False("plain caret over newline", new Regex("^b").IsMatch("a\nb"));
+
+        // ---- repetition ----------------------------------------------------
+        Same("star greedy", new Regex("a.*c").Match("abcxc").Value, "abcxc");
+        Same("star lazy", new Regex("a.*?c").Match("abcxc").Value, "abc");
+        True("plus", new Regex("ab+c").IsMatch("abbbc"));
+        False("plus needs one", new Regex("ab+c").IsMatch("ac"));
+        True("question", new Regex("ab?c").IsMatch("ac"));
+        True("counted", new Regex("^a{2,3}$").IsMatch("aaa"));
+        False("counted over", new Regex("^a{2,3}$").IsMatch("aaaa"));
+        True("counted exact", new Regex("^a{3}$").IsMatch("aaa"));
+        True("group repeat", new Regex("^(ab)+$").IsMatch("ababab"));
+        True("empty body loop stops", new Regex("^(a?)*$").IsMatch("aaa"));
+
+        // ---- classes and shorthands ----------------------------------------
+        True("class", new Regex("[a-c]x").IsMatch("bx"));
+        False("class negated", new Regex("[^a-c]x").IsMatch("bx"));
+        True("class bracket first", new Regex("[]a]").IsMatch("]"));
+        True("digits", new Regex("^\\d+$").IsMatch("90210"));
+        False("digits miss", new Regex("^\\d+$").IsMatch("90a"));
+        True("word", new Regex("^\\w+$").IsMatch("a_9"));
+        True("space", new Regex("a\\s+b").IsMatch("a \t b"));
+        True("class with shorthand", new Regex("^[\\d-]+$").IsMatch("12-34"));
+        True("posix name", new Regex("^[[:digit:]]+$").IsMatch("42"));
+
+        // ---- alternation, groups, back-references ---------------------------
+        True("alternation", new Regex("^(cat|dog)$").IsMatch("dog"));
+        Same("group value", new Regex("(a+)(b+)").Match("xaabbby").Groups[2].Value, "bbb");
+        Same("named group", new Regex("(?<tail>b+)").Match("abbb").Groups.ByName("tail").Value, "bbb");
+        True("non-capturing", new Regex("^(?:ab)+$").IsMatch("abab"));
+        True("backreference", new Regex("^(ab)\\1$").IsMatch("abab"));
+        False("backreference miss", new Regex("^(ab)\\1$").IsMatch("abcd"));
+        True("lookahead", new Regex("^a(?=b)").IsMatch("ab"));
+        False("negative lookahead", new Regex("^a(?!b)").IsMatch("ab"));
+        True("word boundary", new Regex("\\bcat\\b").IsMatch("a cat here"));
+        False("word boundary miss", new Regex("\\bcat\\b").IsMatch("concatenate"));
+
+        // ---- case --------------------------------------------------------
+        True("ignore case", new Regex("abc", RegexOptions.IgnoreCase).IsMatch("ABC"));
+        True("ignore case class", new Regex("[a-c]+", RegexOptions.IgnoreCase).IsMatch("BAC"));
+
+        // ---- Match's shape ---------------------------------------------------
+        Match one = new Regex("b+").Match("aabbbcc");
+        True("match success", one.Success);
+        Same("match index", String.FromInt(one.Index), "2");
+        Same("match length", String.FromInt(one.Length), "3");
+        Same("match value", one.Value, "bbb");
+        False("no match", new Regex("zz").Match("aabb").Success);
+        Same("next match", new Regex("a").Match("aba").NextMatch().Index.ToString(), "2");
+
+        // ---- Matches, Replace, Split -------------------------------------
+        MatchCollection all = new Regex("\\d+").Matches("a1bb22ccc333");
+        Same("matches count", String.FromInt(all.Count), "3");
+        Same("matches last", all[2].Value, "333");
+        Same("replace", new Regex("o").Replace("foo boo", "0"), "f00 b00");
+        Same("replace once", new Regex("o").Replace("foo", "0", 1), "f0o");
+        Same("replace group", new Regex("(a)(b)").Replace("ab", "$2$1"), "ba");
+        Same("replace whole", new Regex("b+").Replace("abbc", "[$&]"), "a[bb]c");
+        Same("replace dollar", new Regex("b").Replace("ab", "$$"), "a$");
+        Same("split", String.Join("|", new Regex("\\s*,\\s*").Split("a , b,c")), "a|b|c");
+        Same("static ismatch", Regex.IsMatch("hello", "^h.*o$") ? "yes" : "no", "yes");
+        Same("static replace", Regex.Replace("a-b", "-", "+"), "a+b");
+        Same("escape", Regex.Escape("a.b*c"), "a\\.b\\*c");
+        True("escaped pattern is literal", new Regex(Regex.Escape("a.b")).IsMatch("a.b"));
+        False("escaped pattern not a dot", new Regex(Regex.Escape("a.b")).IsMatch("axb"));
+
+        // ---- the empty match, which every substitution has to survive -------
+        Same("empty match replace", new Regex("x*").Replace("ab", "-"), "-a-b-");
+
+        if (_bad == 0)
+        {
+            Console.WriteLine("ok");
+        }
+        return _bad == 0 ? 0 : 1;
+    }
+}

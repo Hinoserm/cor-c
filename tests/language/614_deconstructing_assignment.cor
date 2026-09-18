@@ -1,0 +1,92 @@
+// test: deconstructing_assignment
+// expect-exit: 0
+// expect-output:
+// swap 2 1
+// elements x y
+// pair k 3
+// once 1
+// group 2 4
+// bits 4 4 24 True
+// unsigned 16 8 4294967295
+//
+// `(a, b) = (b, a)` assigns to places that already exist rather than
+// declaring, which C# calls a deconstructing assignment and allows for any
+// assignable expression -- an element of a list as readily as a local. The
+// right side is read ONCE, before anything is written.
+//
+// With it: a method group infers what a generic method's result is, the
+// unsigned Math pair, and a hex literal takes the first type that can hold it.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int _reads;
+
+    static (int, int) Pair()
+    {
+        _reads = _reads + 1;
+        return (7, 8);
+    }
+
+    static int Twice(string s)
+    {
+        return s.Length * 2;
+    }
+
+    static int Main()
+    {
+        int a = 1;
+        int b = 2;
+
+        (a, b) = (b, a);
+        Line("swap " + a + " " + b);
+
+        List<string> keys = new List<string> { "y", "x" };
+
+        (keys[0], keys[1]) = (keys[1], keys[0]);
+        Line("elements " + keys[0] + " " + keys[1]);
+
+        Dictionary<string, int> map = new Dictionary<string, int>();
+
+        map["k"] = 3;
+
+        string key = "";
+        int value = 0;
+
+        foreach (KeyValuePair<string, int> each in map)
+        {
+            (key, value) = each;
+        }
+
+        Line("pair " + key + " " + value);
+
+        int x = 0;
+        int y = 0;
+
+        (x, y) = Pair();
+        Line("once " + _reads);
+
+        List<string> names = new List<string> { "a", "bb" };
+        List<int> lengths = names.Select(Twice);
+
+        Line("group " + lengths[0] + " " + lengths[1]);
+
+        ulong word = 0xF0;
+
+        Line("bits " + BitOperations.PopCount(word)
+             + " " + BitOperations.TrailingZeroCount(word)
+             + " " + BitOperations.LeadingZeroCount((uint)0xF0)
+             + " " + ((0x8000000000000000 & word) == 0));
+
+        uint low = 8;
+        uint high = 16;
+
+        Line("unsigned " + Math.Max(low, high) + " " + Math.Min(low, high) + " " + 0xFFFFFFFF);
+        return 0;
+    }
+}

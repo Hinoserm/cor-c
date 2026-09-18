@@ -1,0 +1,53 @@
+// test: gettype
+// expect-exit: 0
+// expect-output:
+// string string
+// object Leaf
+// interface Leaf
+// array int[]
+// same True
+//
+// GetType() on every reference: a string, a user class held as object, one
+// held as an interface, and an array. The name comes from the descriptor
+// the object's first word points at, so it is the run-time type, not the
+// static one -- and two objects of one class answer with the same Type.
+
+interface IThing
+{
+    int Id();
+}
+
+class Leaf : IThing
+{
+    public int Id()
+    {
+        return 1;
+    }
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        string text = "hello";
+        Line("string " + text.GetType().Name);
+
+        object held = new Leaf();
+        Line("object " + held.GetType().Name);
+
+        IThing thing = new Leaf();
+        Line("interface " + thing.GetType().Name);
+
+        int[] numbers = new int[3];
+        Line("array " + numbers.GetType().Name);
+
+        Line("same " + (held.GetType() == thing.GetType()));
+        return 0;
+    }
+}

@@ -1,0 +1,280 @@
+// test: tar
+// expect-exit: 0
+// expect-output:
+// gnu 53 gnu d/ 0 493 1000 1700000000
+// gnu 50 gnu d/link 0 511 1000 1700000000 -> hello.txt
+// gnu 48 gnu d/nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn 5 420 1000 1700000000
+// gnu 48 gnu d/hello.txt 3 420 1000 1700000000
+// gnu data hi
+// v7 round trip 3 True
+// ustar round trip 4 True
+// gnu round trip 4 True
+// pax round trip 4 True
+// ustar prefix True
+// v7 too long caught
+// ustar link too long caught
+// pax attributes True
+// numbers 8589934592 2097152 True
+// copyData True
+//
+// System.Formats.Tar: TarReader, TarWriter and the four entry formats.
+//
+// THE FIRST FIXTURE IS A REAL ARCHIVE, made by GNU tar 1.35 with
+// --format=gnu and compressed with gzip, so reading it exercises both
+// libraries and proves the reader against something other than our own
+// writer. It has the two things a 100-byte name field cannot hold -- a
+// long path, through GNU's 'L' record -- and a symbolic link.
+//
+// The rest writes each format and reads it back, and checks that the two
+// formats with nowhere to put an over-long name say so instead of
+// quietly storing a truncated one.
+
+using System;
+using System.IO;
+using System.Text;
+
+class Program
+{
+    // tar --format=gnu --owner=1000 --group=1000 --mtime=@1700000000 -czf - d
+    static byte[] GnuTarGz = new byte[] {
+        31, 139, 8, 0, 0, 0, 0, 0, 0, 3, 237, 214,
+        221, 10, 130, 48, 20, 7, 240, 93, 247, 20, 123, 2,
+        55, 221, 206, 118, 219, 3, 248, 18, 193, 36, 37, 115,
+        97, 6, 61, 126, 51, 16, 50, 48, 233, 98, 138, 245,
+        255, 221, 76, 152, 224, 153, 231, 131, 57, 193, 162, 147,
+        129, 37, 234, 215, 212, 146, 124, 93, 7, 44, 213, 148,
+        105, 107, 165, 14, 207, 50, 77, 73, 25, 198, 41, 126,
+        104, 140, 221, 174, 221, 161, 229, 156, 149, 85, 227, 175,
+        69, 123, 158, 122, 111, 110, 127, 163, 156, 168, 171, 230,
+        20, 247, 27, 207, 252, 91, 251, 69, 254, 117, 70, 150,
+        241, 172, 44, 234, 218, 39, 221, 189, 139, 24, 220, 159,
+        231, 63, 17, 137, 216, 231, 190, 57, 230, 241, 202, 160,
+        79, 176, 209, 122, 200, 247, 251, 26, 138, 65, 141, 106,
+        33, 244, 191, 145, 154, 241, 60, 82, 60, 35, 67, 254,
+        91, 239, 63, 150, 217, 220, 254, 70, 57, 209, 172, 100,
+        237, 147, 67, 111, 137, 252, 191, 244, 255, 196, 252, 167,
+        241, 252, 87, 134, 76, 152, 255, 114, 137, 31, 240, 231,
+        243, 223, 21, 197, 101, 183, 118, 16, 176, 26, 39, 226,
+        95, 178, 230, 251, 95, 189, 221, 255, 148, 10, 87, 2,
+        244, 255, 2, 202, 10, 221, 15, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 240, 75, 30, 144, 172, 9,
+        252, 0, 40, 0, 0,
+    };
+
+    static string Repeat(string one, int times)
+    {
+        StringBuilder made = new StringBuilder();
+        for (int i = 0; i < times; i++) { made.Append(one); }
+        return made.ToString();
+    }
+
+    static string Describe(string what, TarEntry entry)
+    {
+        string line = what + " " + (int)entry.EntryType + " " + Name(entry.Format)
+            + " " + entry.Name + " " + entry.Length + " " + entry.Mode
+            + " " + entry.Uid + " " + entry.ModificationTime.ToUnixTimeSeconds();
+        if (entry.LinkName.Length != 0) line = line + " -> " + entry.LinkName;
+        return line;
+    }
+
+    static string Name(TarEntryFormat format)
+    {
+        return format == TarEntryFormat.V7 ? "v7"
+             : format == TarEntryFormat.Ustar ? "ustar"
+             : format == TarEntryFormat.Gnu ? "gnu" : "pax";
+    }
+
+    static string Text(Stream? from)
+    {
+        if (from == null) return "";
+        StringBuilder made = new StringBuilder();
+        byte[] one = new byte[1];
+        while (from.Read(one, 0, 1) == 1)
+        {
+            if (one[0] == 10) break;
+            made.Append((char)one[0]);
+        }
+        return made.ToString();
+    }
+
+    /// Writes a small tree in `format` and reads it straight back, saying
+    /// how many entries came out and whether every field survived.
+    static bool RoundTrip(TarEntryFormat format, string longName, out int count)
+    {
+        MemoryStream archive = new MemoryStream();
+        TarWriter writer = new TarWriter(archive, format, true);
+
+        TarEntry directory = writer.Make(TarEntryType.Directory, "tree");
+        directory.Mode = 493;
+        directory.Uid = 7;
+        directory.Gid = 9;
+        directory.ModificationTime = DateTimeOffset.FromUnixTimeSeconds(1700000000);
+        writer.WriteEntry(directory);
+
+        byte[] body = Encoding.ASCII.GetBytes("the contents of the file\n");
+        TarEntry file = writer.Make(TarEntryType.RegularFile, "tree/file");
+        file.Mode = 420;
+        file.Uid = 7;
+        file.Gid = 9;
+        file.ModificationTime = DateTimeOffset.FromUnixTimeSeconds(1700000001);
+        file.DataStream = new MemoryStream(body);
+        writer.WriteEntry(file);
+
+        TarEntry link = writer.Make(TarEntryType.SymbolicLink, "tree/link");
+        link.Mode = 511;
+        link.LinkName = "file";
+        writer.WriteEntry(link);
+
+        if (longName.Length != 0)
+        {
+            TarEntry deep = writer.Make(TarEntryType.RegularFile, longName);
+            deep.Mode = 420;
+            deep.DataStream = new MemoryStream(body);
+            writer.WriteEntry(deep);
+        }
+        writer.Dispose();
+
+        MemoryStream source = new MemoryStream(archive.ToArray());
+        TarReader reader = new TarReader(source, true);
+        bool ok = true;
+        count = 0;
+        while (true)
+        {
+            TarEntry? back = reader.GetNextEntry();
+            if (back == null) break;
+            count = count + 1;
+            if (count == 1)
+            {
+                ok = ok && back.EntryType == TarEntryType.Directory
+                        && back.Name == "tree/" && back.Mode == 493
+                        && back.Uid == 7 && back.Gid == 9
+                        && back.ModificationTime.ToUnixTimeSeconds() == 1700000000;
+            }
+            else if (count == 2)
+            {
+                ok = ok && back.Name == "tree/file" && back.Length == body.Length
+                        && Text(back.DataStream) == "the contents of the file";
+            }
+            else if (count == 3)
+            {
+                ok = ok && back.EntryType == TarEntryType.SymbolicLink
+                        && back.LinkName == "file";
+            }
+            else if (count == 4)
+            {
+                ok = ok && back.Name == longName && back.Length == body.Length;
+            }
+        }
+        reader.Dispose();
+        return ok;
+    }
+
+    static int Main()
+    {
+        // ---- a real GNU archive -------------------------------------------
+        MemoryStream compressed = new MemoryStream(GnuTarGz);
+        GZipStream plain = new GZipStream(compressed, CompressionMode.Decompress, true);
+        TarReader gnu = new TarReader(plain, true);
+        string data = "";
+        while (true)
+        {
+            TarEntry? entry = gnu.GetNextEntry();
+            if (entry == null) break;
+            Console.WriteLine(Describe("gnu", entry));
+            if (entry.Name == "d/hello.txt") data = Text(entry.DataStream);
+        }
+        gnu.Dispose();
+        Console.WriteLine("gnu data " + data);
+
+        // ---- each format, written and read back ----------------------------
+        string longName = "tree/" + Repeat("a-rather-long-component/", 6) + "leaf";
+        int count;
+        Console.WriteLine("v7 round trip " + (RoundTrip(TarEntryFormat.V7, "", out count) ? count : -1)
+            + " " + RoundTrip(TarEntryFormat.V7, "", out count));
+        Console.WriteLine("ustar round trip " + (RoundTrip(TarEntryFormat.Ustar, longName, out count) ? count : -1)
+            + " " + RoundTrip(TarEntryFormat.Ustar, longName, out count));
+        Console.WriteLine("gnu round trip " + (RoundTrip(TarEntryFormat.Gnu, longName, out count) ? count : -1)
+            + " " + RoundTrip(TarEntryFormat.Gnu, longName, out count));
+        Console.WriteLine("pax round trip " + (RoundTrip(TarEntryFormat.Pax, longName, out count) ? count : -1)
+            + " " + RoundTrip(TarEntryFormat.Pax, longName, out count));
+
+        // A ustar name over 100 bytes is stored split at a slash, and the
+        // prefix field is what makes that a ustar archive rather than a GNU
+        // one: the record before it is the entry itself, not an 'L'.
+        MemoryStream split = new MemoryStream();
+        TarWriter splitter = new TarWriter(split, TarEntryFormat.Ustar, true);
+        TarEntry wide = splitter.Make(TarEntryType.RegularFile, longName);
+        splitter.WriteEntry(wide);
+        splitter.Dispose();
+        byte[] first = split.ToArray();
+        Console.WriteLine("ustar prefix " + (first[156] == 48 && first[345] != 0));
+
+        // ---- what the older formats cannot hold ----------------------------
+        try
+        {
+            MemoryStream refused = new MemoryStream();
+            TarWriter old = new TarWriter(refused, TarEntryFormat.V7, true);
+            old.WriteEntry(old.Make(TarEntryType.RegularFile, longName));
+            old.Dispose();
+            Console.WriteLine("v7 too long NOT caught");
+        }
+        catch (ArgumentException)
+        {
+            Console.WriteLine("v7 too long caught");
+        }
+
+        try
+        {
+            MemoryStream refused = new MemoryStream();
+            TarWriter old = new TarWriter(refused, TarEntryFormat.Ustar, true);
+            TarEntry link = old.Make(TarEntryType.SymbolicLink, "short");
+            link.LinkName = Repeat("x", 120);
+            old.WriteEntry(link);
+            old.Dispose();
+            Console.WriteLine("ustar link too long NOT caught");
+        }
+        catch (ArgumentException)
+        {
+            Console.WriteLine("ustar link too long caught");
+        }
+
+        // ---- PAX carries what it is given ----------------------------------
+        MemoryStream extended = new MemoryStream();
+        TarWriter pax = new TarWriter(extended, TarEntryFormat.Pax, true);
+        PaxTarEntry note = new PaxTarEntry(TarEntryType.RegularFile, "noted");
+        note.ExtendedAttributes["comment"] = "written by the language test";
+        pax.WriteEntry(note);
+        pax.Dispose();
+        TarReader reading = new TarReader(new MemoryStream(extended.ToArray()), true);
+        TarEntry? read = reading.GetNextEntry();
+        PaxTarEntry? readPax = read as PaxTarEntry;
+        Console.WriteLine("pax attributes "
+            + (readPax != null && readPax.ExtendedAttributes.ContainsKey("comment")
+               && readPax.ExtendedAttributes["comment"] == "written by the language test"));
+        reading.Dispose();
+
+        // ---- a number too big for its octal field --------------------------
+        byte[] block = new byte[512];
+        TarHeaderFields.PutNumber(block, 124, 12, 8589934592L);
+        long big = TarHeaderFields.Number(block, 124, 12);
+        TarHeaderFields.PutNumber(block, 108, 8, 2097152);
+        long uid = TarHeaderFields.Number(block, 108, 8);
+        Console.WriteLine("numbers " + big + " " + uid
+            + " " + ((block[124] & 128) != 0 && (block[108] & 128) != 0));
+
+        // ---- copyData keeps the bytes after the reader has moved on --------
+        MemoryStream held = new MemoryStream(GnuTarGz);
+        GZipStream heldPlain = new GZipStream(held, CompressionMode.Decompress, true);
+        TarReader keeping = new TarReader(heldPlain, true);
+        Stream? kept = null;
+        while (true)
+        {
+            TarEntry? entry = keeping.GetNextEntry(true);
+            if (entry == null) break;
+            if (entry.Name == "d/hello.txt") kept = entry.DataStream;
+        }
+        keeping.Dispose();
+        Console.WriteLine("copyData " + (kept != null && Text(kept) == "hi"));
+        return 0;
+    }
+}

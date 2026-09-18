@@ -1,0 +1,83 @@
+// test: stress_sieve
+// expect-exit: 0
+// expect-output:
+// primes 1229 9973 5736396
+// small 25
+// trial 1229
+//
+// A sieve of Eratosthenes to 10000, checked against trial division. A
+// performance sanity check as much as a correctness one: this does a few
+// hundred thousand array operations and must finish well inside the
+// runner's timeout.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static bool IsPrime(int n)
+    {
+        if (n < 2)
+        {
+            return false;
+        }
+        for (int d = 2; d * d <= n; d++)
+        {
+            if (n % d == 0)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static int Main()
+    {
+        int limit = 10000;
+        bool[] composite = new bool[limit + 1];
+        for (int i = 2; i * i <= limit; i++)
+        {
+            if (!composite[i])
+            {
+                for (int j = i * i; j <= limit; j += i)
+                {
+                    composite[j] = true;
+                }
+            }
+        }
+
+        int count = 0;
+        int last = 0;
+        long sum = 0;
+        int small = 0;
+        for (int i = 2; i <= limit; i++)
+        {
+            if (!composite[i])
+            {
+                count++;
+                last = i;
+                sum += i;
+                if (i <= 100)
+                {
+                    small++;
+                }
+            }
+        }
+        Line("primes " + count + " " + last + " " + sum);
+        Line("small " + small);
+
+        int trial = 0;
+        for (int i = 0; i <= limit; i++)
+        {
+            if (IsPrime(i))
+            {
+                trial++;
+            }
+        }
+        Line("trial " + trial);
+        return 0;
+    }
+}

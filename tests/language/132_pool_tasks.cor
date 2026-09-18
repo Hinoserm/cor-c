@@ -1,0 +1,77 @@
+// test: pool_tasks
+// expect-exit: 0
+// expect-output:
+// workers 4
+// sum 328350
+//
+// The thread pool: Scheduler.UseThreads(4) puts four real threads behind the
+// same run queue, a hundred Task.Run items are handed to it, and WhenAll waits
+// while the main thread drives the timers. Only the sum is printed -- which
+// worker ran which item is not something a test can pin down -- and it is the
+// sum of i*i for i in 0..99, which the work has to actually do.
+//
+// The work allocates nothing and throws nothing on purpose: see the note on
+// Thread in lib/threading.cor for why neither is safe off the first thread yet.
+
+class Square : Func<int>
+{
+    int _n;
+
+    public Square(int n)
+    {
+        _n = n;
+    }
+
+    public int Invoke()
+    {
+        // Done the long way so the constant folder cannot do it at compile
+        // time and so a worker has something to be busy with.
+        int total = 0;
+
+        for (int i = 0; i < _n; i++)
+        {
+            total = total + _n;
+        }
+        return total;
+    }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        int workers = 4;
+        int count = 100;
+
+        Scheduler.UseThreads(workers);
+
+        Sys.Print("workers ");
+        Sys.PrintInt(Scheduler.WorkerCount);
+        Sys.PrintLine();
+
+        Task<int>[] work = new Task<int>[count];
+        Task[] all = new Task[count];
+
+        for (int i = 0; i < count; i++)
+        {
+            Task<int> one = Task.Run<int>(new Square(i));
+
+            work[i] = one;
+            all[i] = one;
+        }
+
+        Task.WhenAll(all).Wait();
+
+        int sum = 0;
+
+        for (int i = 0; i < count; i++)
+        {
+            sum = sum + work[i].Result;
+        }
+
+        Sys.Print("sum ");
+        Sys.PrintInt(sum);
+        Sys.PrintLine();
+        return 0;
+    }
+}

@@ -1,0 +1,43 @@
+// test: lib/time.cor -- DateOnly, TimeOnly, Stopwatch
+// expect-exit: 0
+// expect-output:
+// 02/29/2024 num=738944 dow=4 doy=60
+// 2024-03-01 2025-02-28 2025-02-28
+// 0001-01-01 9999-12-31 fromdt=2020-05-06
+// 13:45 ticks=495302500000 h=13 ms=250 long=13:45:30.250
+// 01:45:30 12:45:30 between=True
+// 00:00:00.000 23:59:59 dt=2024-02-29 13:45:30
+// stopwatch ran
+//
+// Every value was read off the same program on .NET, except the day of the
+// week, which is printed as its number here because an enum has no name at
+// runtime. Thursday is 4.
+
+class Program
+{
+    static int Main()
+    {
+        DateOnly d = new DateOnly(2024, 2, 29);
+        Console.WriteLine($"{d.ToString()} num={d.DayNumber} dow={(int)d.DayOfWeek} doy={d.DayOfYear}");
+        Console.WriteLine(d.AddDays(1).ToString("yyyy-MM-dd") + " " + d.AddMonths(12).ToString("yyyy-MM-dd") + " " + d.AddYears(1).ToString("yyyy-MM-dd"));
+        Console.WriteLine(DateOnly.MinValue.ToString("yyyy-MM-dd") + " " + DateOnly.MaxValue.ToString("yyyy-MM-dd")
+            + " fromdt=" + DateOnly.FromDateTime(new DateTime(2020, 5, 6, 7, 8, 9)).ToString("yyyy-MM-dd"));
+
+        TimeOnly t = new TimeOnly(13, 45, 30, 250);
+        Console.WriteLine($"{t.ToString()} ticks={t.Ticks} h={t.Hour} ms={t.Millisecond} long={t.ToString("HH:mm:ss.fff")}");
+        Console.WriteLine(t.AddHours(12).ToString("HH:mm:ss") + " " + t.AddMinutes(-60).ToString("HH:mm:ss")
+            + " between=" + t.IsBetween(new TimeOnly(12, 0), new TimeOnly(14, 0)));
+        Console.WriteLine(TimeOnly.MinValue.ToString("HH:mm:ss.fff") + " " + TimeOnly.MaxValue.ToString("HH:mm:ss")
+            + " dt=" + d.ToDateTime(t).ToString("yyyy-MM-dd HH:mm:ss"));
+
+        Stopwatch watch = Stopwatch.StartNew();
+        long sum = 0;
+        for (int i = 0; i < 200000; i++) { sum = sum + i; }
+        watch.Stop();
+
+        bool sane = !watch.IsRunning && watch.ElapsedTicks > 0 && watch.Elapsed.Ticks == watch.ElapsedTicks / 100
+            && watch.ElapsedMilliseconds < 10000 && sum > 0;
+        Console.WriteLine(sane ? "stopwatch ran" : "stopwatch wrong");
+        return 0;
+    }
+}

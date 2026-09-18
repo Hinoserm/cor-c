@@ -1,0 +1,43 @@
+// test: unsigned carry identities and native carry materialization
+// expect-exit: 0
+// expect-output:
+// carry 324
+static class Program
+{
+    static long Carry64(long a, long b)
+    {
+        long sum = a + b;
+        return (((a & b) | ((a | b) & ~sum)) >> 63) & 1;
+    }
+    static uint Carry32(uint a, uint b)
+    {
+        uint sum = a + b;
+        return (((a & b) | ((a | b) & ~sum)) >> 31) & 1;
+    }
+    static bool Direct64(ulong a, ulong b) { ulong sum = a + b; return sum < a; }
+    static bool Direct32(uint a, uint b) { uint sum = a + b; return sum < b; }
+    static long Reference64(ulong a, ulong b)
+    {
+        ulong low = (a & 4294967295UL) + (b & 4294967295UL);
+        ulong high = (a >> 32) + (b >> 32) + (low >> 32);
+        return (long)(high >> 32);
+    }
+    static int Main()
+    {
+        long[] values = new long[] { 0, 1, -1, 2147483647, -2147483648,
+            4294967295, 4294967296, long.MinValue, long.MaxValue };
+        int checks = 0;
+        for (int i = 0; i < values.Length; i++)
+        for (int j = 0; j < values.Length; j++)
+        {
+            long a = values[i], b = values[j];
+            long wide = Reference64((ulong)a, (ulong)b);
+            uint narrow = (uint)(((ulong)(uint)a + (ulong)(uint)b) >> 32);
+            if (Carry64(a, b) != wide || Direct64((ulong)a, (ulong)b) != (wide != 0)
+                || Carry32((uint)a, (uint)b) != narrow || Direct32((uint)a, (uint)b) != (narrow != 0)) return 1;
+            checks += 4;
+        }
+        Console.WriteLine("carry " + checks);
+        return 0;
+    }
+}

@@ -1,0 +1,671 @@
+// System.IO -- the streams and readers that need no operating system.
+//
+// io.cor has the ones that touch a descriptor: FileStream, StreamReader,
+// StreamWriter, File, Directory. These are the pure ones, and they are the
+// half of System.IO that a program uses to talk to ITSELF: text in a string,
+// numbers in a byte array, a buffer in front of something slow.
+
+/// Reading past the end of what a BinaryReader was given. .NET makes this a
+/// subclass of IOException, and a caller distinguishes it from a real failure
+/// of the device precisely because it is its own type.
+class EndOfStreamException : IOException
+{
+    public EndOfStreamException() : base("Unable to read beyond the end of the stream.")
+    {
+    }
+
+    public EndOfStreamException(string message) : base(message)
+    {
+    }
+}
+
+/// The bytes were readable and did not mean what the format says they should.
+/// NOT under IOException, though it lives in System.IO: nothing went wrong
+/// with the device, and .NET puts it under SystemException for that reason.
+class InvalidDataException : SystemException
+{
+    public InvalidDataException() : base("Found invalid data while decoding.")
+    {
+    }
+
+    public InvalidDataException(string message) : base(message)
+    {
+    }
+}
+
+// ---- text in a string -----------------------------------------------------
+
+/// A TextWriter that keeps what is written to it. This is how a program calls
+/// something that formats to a TextWriter and gets the text back instead of a
+/// file -- .NET's own ToString-by-writer pattern.
+class StringWriter : TextWriter
+{
+    StringBuilder _text;
+
+    public StringWriter()
+    {
+        _text = new StringBuilder();
+    }
+
+    public StringWriter(StringBuilder into)
+    {
+        _text = into;
+    }
+
+    /// THE BUILDER ITSELF, not a copy: .NET hands back the live one, so a
+    /// caller may go on appending to it directly.
+    public StringBuilder GetStringBuilder()
+    {
+        return _text;
+    }
+
+    public override void Write(char value)
+    {
+        _text.Append(value);
+    }
+
+    /// The whole string at once, rather than the base class's loop over its
+    /// characters: appending to a StringBuilder is what this writer does, and
+    /// it can do it in one.
+    public override void Write(string value)
+    {
+        _text.Append(value);
+    }
+
+    public override string ToString()
+    {
+        return _text.ToString();
+    }
+}
+
+/// A TextReader over a string, so that something written to read a file reads
+/// a literal in a test without one.
+class StringReader : TextReader
+{
+    string _text;
+    int _at;
+
+    public StringReader(string s)
+    {
+        if (s == null)
+        {
+            throw new ArgumentNullException("s");
+        }
+        _text = s;
+        _at = 0;
+    }
+
+    public override int Read()
+    {
+        if (_at >= _text.Length)
+        {
+            return -1;
+        }
+        int c = Sys.GetByte(_text, _at);
+        _at = _at + 1;
+        return c;
+    }
+
+    public override int Peek()
+    {
+        return _at >= _text.Length ? -1 : Sys.GetByte(_text, _at);
+    }
+
+    /// The rest of the string, which the base class would assemble a character
+    /// at a time. There is nothing to assemble: it is already a string.
+    public override string ReadToEnd()
+    {
+        string rest = String.Substring(_text, _at, _text.Length - _at);
+        _at = _text.Length;
+        return rest;
+    }
+}
+
+// ---- a buffer in front of a stream ----------------------------------------
+
+/// Reads and writes in blocks whatever it is given, so that a caller reading a
+/// byte at a time costs one system call per buffer rather than per byte.
+///
+/// Read and write share no buffer: .NET's does the same, and flushing the
+/// write side before a read is what keeps a read-write stream coherent.
+class BufferedStream : Stream
+{
+    Stream _inner;
+    byte[] _buffer;
+    int _at;          // next byte of the read buffer
+    int _end;         // how much of the read buffer is filled
+    int _pending;     // how much of the buffer holds unwritten bytes
+
+    public BufferedStream(Stream stream) : this(stream, 4096)
+    {
+    }
+
+    public BufferedStream(Stream stream, int bufferSize)
+    {
+        if (stream == null)
+        {
+            throw new ArgumentNullException("stream");
+        }
+        if (bufferSize <= 0)
+        {
+            throw new ArgumentOutOfRangeException("bufferSize");
+        }
+        _inner = stream;
+        _buffer = new byte[bufferSize];
+    }
+
+    public Stream UnderlyingStream
+    {
+        get { return _inner; }
+    }
+
+    public int BufferSize
+    {
+        get { return _buffer.Length; }
+    }
+
+    public override bool CanRead
+    {
+        get { return _inner.CanRead; }
+    }
+
+    public override bool CanWrite
+    {
+        get { return _inner.CanWrite; }
+    }
+
+    public override bool CanSeek
+    {
+        get { return _inner.CanSeek; }
+    }
+
+    public override long Length
+    {
+        get { return _inner.Length; }
+    }
+
+    public override long Position
+    {
+        get { return _inner.Position - (_end - _at) + _pending; }
+        set { Seek(value, SeekOrigin.Begin); }
+    }
+
+    public override int Read(byte[] buffer, int offset, int count)
+    {
+        Drain();
+
+        if (count <= 0)
+        {
+            return 0;
+        }
+
+        // A READ LARGER THAN THE BUFFER GOES STRAIGHT THROUGH, because copying
+        // it twice buys nothing: buffering is for readers that ask for little.
+        if (_at >= _end && count >= _buffer.Length)
+        {
+            return _inner.Read(buffer, offset, count);
+        }
+
+        if (_at >= _end)
+        {
+            _end = _inner.Read(_buffer, 0, _buffer.Length);
+            _at = 0;
+            if (_end <= 0)
+            {
+                _end = 0;
+                return 0;
+            }
+        }
+
+        int take = _end - _at;
+        if (take > count)
+        {
+            take = count;
+        }
+        for (int i = 0; i < take; i++)
+        {
+            buffer[offset + i] = _buffer[_at + i];
+        }
+        _at = _at + take;
+        return take;
+    }
+
+    public override void Write(byte[] buffer, int offset, int count)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            if (_pending == _buffer.Length)
+            {
+                Drain();
+            }
+            _buffer[_pending] = buffer[offset + i];
+            _pending = _pending + 1;
+        }
+    }
+
+    public override int ReadByte()
+    {
+        Drain();
+        if (_at >= _end)
+        {
+            _end = _inner.Read(_buffer, 0, _buffer.Length);
+            _at = 0;
+            if (_end <= 0)
+            {
+                _end = 0;
+                return -1;
+            }
+        }
+        int c = _buffer[_at] & 255;
+        _at = _at + 1;
+        return c;
+    }
+
+    public override void WriteByte(byte value)
+    {
+        if (_pending == _buffer.Length)
+        {
+            Drain();
+        }
+        _buffer[_pending] = value;
+        _pending = _pending + 1;
+    }
+
+    public override long Seek(long offset, SeekOrigin origin)
+    {
+        Drain();
+        _at = 0;
+        _end = 0;
+        return _inner.Seek(offset, origin);
+    }
+
+    public override void Flush()
+    {
+        Drain();
+        _inner.Flush();
+    }
+
+    public override void Dispose()
+    {
+        Drain();
+        _inner.Dispose();
+    }
+
+    // Everything waiting to be written goes out; the read buffer is untouched
+    // because the two never hold bytes at the same time.
+    void Drain()
+    {
+        if (_pending > 0)
+        {
+            _inner.Write(_buffer, 0, _pending);
+            _pending = 0;
+            _at = 0;
+            _end = 0;
+        }
+    }
+}
+
+// ---- numbers in a stream --------------------------------------------------
+//
+// LITTLE-ENDIAN, and a string is a length and then its UTF-8 bytes, the length
+// written seven bits at a time with the top bit saying "another byte follows".
+// That is .NET's format exactly: a file written by BinaryWriter here is read by
+// BinaryReader there and the other way round, which is the only reason to have
+// a byte format at all.
+
+class BinaryWriter : IDisposable
+{
+    Stream _stream;
+
+    public BinaryWriter(Stream output)
+    {
+        if (output == null)
+        {
+            throw new ArgumentNullException("output");
+        }
+        _stream = output;
+    }
+
+    public Stream BaseStream
+    {
+        get { return _stream; }
+    }
+
+    public void Write(bool value)
+    {
+        _stream.WriteByte((byte)(value ? 1 : 0));
+    }
+
+    public void Write(byte value)
+    {
+        _stream.WriteByte(value);
+    }
+
+    public void Write(sbyte value)
+    {
+        _stream.WriteByte((byte)value);
+    }
+
+    public void Write(short value)
+    {
+        Fixed((long)value, 2);
+    }
+
+    public void Write(ushort value)
+    {
+        Fixed((long)value, 2);
+    }
+
+    public void Write(int value)
+    {
+        Fixed((long)value, 4);
+    }
+
+    public void Write(uint value)
+    {
+        Fixed((long)value, 4);
+    }
+
+    public void Write(long value)
+    {
+        Fixed(value, 8);
+    }
+
+    public void Write(ulong value)
+    {
+        Fixed((long)value, 8);
+    }
+
+    public void Write(double value)
+    {
+        Fixed(BitConverter.DoubleToInt64Bits(value), 8);
+    }
+
+    public void Write(char value)
+    {
+        WriteRune((int)value);
+    }
+
+    public void Write(byte[] buffer)
+    {
+        _stream.Write(buffer, 0, buffer.Length);
+    }
+
+    public void Write(byte[] buffer, int index, int count)
+    {
+        _stream.Write(buffer, index, count);
+    }
+
+    public void Write(string value)
+    {
+        if (value == null)
+        {
+            throw new ArgumentNullException("value");
+        }
+
+        // The COUNT OF BYTES, not of characters, which is what .NET writes and
+        // is free here: a string already is its UTF-8 bytes.
+        Write7BitEncodedInt(value.Length);
+        for (int i = 0; i < value.Length; i++)
+        {
+            _stream.WriteByte((byte)Sys.GetByte(value, i));
+        }
+    }
+
+    public void Write7BitEncodedInt(int value)
+    {
+        uint left = (uint)value;
+        while (left >= 128)
+        {
+            _stream.WriteByte((byte)(left | 128));
+            left = left >> 7;
+        }
+        _stream.WriteByte((byte)left);
+    }
+
+    public void Flush()
+    {
+        _stream.Flush();
+    }
+
+    public void Close()
+    {
+        Dispose();
+    }
+
+    public void Dispose()
+    {
+        _stream.Flush();
+        _stream.Dispose();
+    }
+
+    void Fixed(long value, int width)
+    {
+        for (int i = 0; i < width; i++)
+        {
+            _stream.WriteByte((byte)((value >> (i * 8)) & 255));
+        }
+    }
+
+    // One character as UTF-8. A char is sixteen bits, so three bytes is the
+    // most it can take.
+    void WriteRune(int c)
+    {
+        if (c < 0x80)
+        {
+            _stream.WriteByte((byte)c);
+        }
+        else if (c < 0x800)
+        {
+            _stream.WriteByte((byte)(0xC0 | (c >> 6)));
+            _stream.WriteByte((byte)(0x80 | (c & 0x3F)));
+        }
+        else
+        {
+            _stream.WriteByte((byte)(0xE0 | (c >> 12)));
+            _stream.WriteByte((byte)(0x80 | ((c >> 6) & 0x3F)));
+            _stream.WriteByte((byte)(0x80 | (c & 0x3F)));
+        }
+    }
+}
+
+class BinaryReader : IDisposable
+{
+    Stream _stream;
+
+    public BinaryReader(Stream input)
+    {
+        if (input == null)
+        {
+            throw new ArgumentNullException("input");
+        }
+        _stream = input;
+    }
+
+    public Stream BaseStream
+    {
+        get { return _stream; }
+    }
+
+    public bool ReadBoolean()
+    {
+        return One() != 0;
+    }
+
+    public byte ReadByte()
+    {
+        return (byte)One();
+    }
+
+    public sbyte ReadSByte()
+    {
+        return (sbyte)One();
+    }
+
+    public short ReadInt16()
+    {
+        return (short)Fixed(2);
+    }
+
+    public ushort ReadUInt16()
+    {
+        return (ushort)Fixed(2);
+    }
+
+    public int ReadInt32()
+    {
+        return (int)Fixed(4);
+    }
+
+    public uint ReadUInt32()
+    {
+        return (uint)Fixed(4);
+    }
+
+    public long ReadInt64()
+    {
+        return Fixed(8);
+    }
+
+    public ulong ReadUInt64()
+    {
+        return (ulong)Fixed(8);
+    }
+
+    public double ReadDouble()
+    {
+        return BitConverter.Int64BitsToDouble(Fixed(8));
+    }
+
+    public char ReadChar()
+    {
+        int lead = One();
+
+        if (lead < 0x80)
+        {
+            return (char)lead;
+        }
+        if ((lead & 0xE0) == 0xC0)
+        {
+            return (char)(((lead & 0x1F) << 6) | (One() & 0x3F));
+        }
+        if ((lead & 0xF0) == 0xE0)
+        {
+            int b = One();
+            int c = One();
+            return (char)(((lead & 0x0F) << 12) | ((b & 0x3F) << 6) | (c & 0x3F));
+        }
+        throw new InvalidDataException("The stream does not hold valid UTF-8.");
+    }
+
+    /// FEWER BYTES THAN ASKED FOR IS NOT AN ERROR here, which is .NET's rule
+    /// for this overload -- it returns how many it got. ReadBytes is the one
+    /// that returns a short array, and only at the end of the stream.
+    public int Read(byte[] buffer, int index, int count)
+    {
+        return _stream.Read(buffer, index, count);
+    }
+
+    public byte[] ReadBytes(int count)
+    {
+        byte[] all = new byte[count];
+        int got = 0;
+
+        while (got < count)
+        {
+            int n = _stream.Read(all, got, count - got);
+            if (n <= 0)
+            {
+                break;
+            }
+            got = got + n;
+        }
+
+        if (got == count)
+        {
+            return all;
+        }
+
+        byte[] shorter = new byte[got];
+        for (int i = 0; i < got; i++)
+        {
+            shorter[i] = all[i];
+        }
+        return shorter;
+    }
+
+    public string ReadString()
+    {
+        int length = Read7BitEncodedInt();
+        if (length < 0)
+        {
+            throw new InvalidDataException("The string length is negative.");
+        }
+
+        string made = Sys.NewBytes(length);
+        for (int i = 0; i < length; i++)
+        {
+            Sys.SetByte(made, i, One());
+        }
+        return made;
+    }
+
+    public int Read7BitEncodedInt()
+    {
+        int made = 0;
+        int shift = 0;
+
+        while (shift < 35)
+        {
+            int b = One();
+            made = made | ((b & 127) << shift);
+            if ((b & 128) == 0)
+            {
+                return made;
+            }
+            shift = shift + 7;
+        }
+        throw new FormatException("Too many bytes in what should have been a 7-bit encoded integer.");
+    }
+
+    public void Close()
+    {
+        Dispose();
+    }
+
+    public void Dispose()
+    {
+        _stream.Dispose();
+    }
+
+    // THE END OF THE STREAM IS AN EXCEPTION for every typed read, because a
+    // half-read number has no value to return. Read and ReadBytes are the two
+    // that are allowed to come up short.
+    int One()
+    {
+        int c = _stream.ReadByte();
+        if (c < 0)
+        {
+            throw new EndOfStreamException();
+        }
+        return c;
+    }
+
+    long Fixed(int width)
+    {
+        long value = 0;
+        for (int i = 0; i < width; i++)
+        {
+            value = value | ((long)One() << (i * 8));
+        }
+
+        // SIGN-EXTEND the narrow widths so that ReadInt16 of 0xFFFF is -1; the
+        // unsigned readers cast back and lose nothing.
+        if (width < 8)
+        {
+            int spare = 64 - width * 8;
+            value = (value << spare) >> spare;
+        }
+        return value;
+    }
+}

@@ -1,0 +1,46 @@
+// test: alloc free dynamic
+// expect-exit: 0
+// expect-output:
+// checksum 25493856
+// collected 0
+// under cap True
+//
+// An allocation whose size is only known at run time -- `new byte[n]` with
+// n computed -- cannot become a frame slot, but its lifetime is just as
+// provable: the block never leaves the loop body. The compiler owns it and
+// frees it, freeing the previous one before making the next, so the heap
+// stays flat however many times round the loop it goes. The proof is that
+// two hundred thousand blocks fit under a four megabyte cap with the
+// collector never once running.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        Gc.SetLimit(4194304);
+
+        long sum = 0;
+
+        for (int i = 0; i < 200000; i++)
+        {
+            // The length is the loop counter's, so no constant reaches the
+            // allocator and nothing can be promoted to the frame.
+            int n = 1000 + (i % 7);
+            byte[] block = new byte[n];
+            int at = i % 1000;
+            block[at] = (byte)(i & 255);
+            sum = sum + block[at];
+        }
+
+        Line("checksum " + sum);
+        Line("collected " + Gc.Collections);
+        Line("under cap " + (Gc.HeapBytes <= 4194304));
+        return 0;
+    }
+}

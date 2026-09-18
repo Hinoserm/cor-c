@@ -1,0 +1,50 @@
+// test: boxed floating equality and hash contract
+// expect-exit: 0
+// expect-output:
+// nan bits 9221120237041090561 9221120237041090562
+// nan equals True True self True
+// zero True one True different False infinity True float nan True mixed False
+// boxed float equality passed
+//
+// Distinct NaN payloads and signed zeroes compare and hash equally;
+// dictionary lookups must agree with direct boxed equality.
+static class Program
+{
+    static int Main()
+    {
+        object nanA = BitConverter.Int64BitsToDouble(0x7ff8000000000001L);
+        object nanB = BitConverter.Int64BitsToDouble(0x7ff8000000000002L);
+        object zero = 0.0;
+        object negativeZero = BitConverter.Int64BitsToDouble(long.MinValue);
+        object one = 1.0;
+        object anotherOne = 1.0;
+        object two = 2.0;
+        object positiveInfinity = BitConverter.Int64BitsToDouble(0x7ff0000000000000L);
+        object anotherInfinity = BitConverter.Int64BitsToDouble(0x7ff0000000000000L);
+        object floatNanA = (float)BitConverter.Int64BitsToDouble(0x7ff8000000000001L);
+        object floatNanB = (float)BitConverter.Int64BitsToDouble(0x7ff8000000000002L);
+        Sys.Print("nan bits " + BitConverter.DoubleToInt64Bits((double)nanA) + " "
+            + BitConverter.DoubleToInt64Bits((double)nanB) + "\n");
+        Sys.Print("nan equals " + nanA.Equals(nanB) + " " + nanB.Equals(nanA)
+            + " self " + nanA.Equals(nanA) + "\n");
+        Sys.Print("zero " + zero.Equals(negativeZero) + " one " + one.Equals(anotherOne)
+            + " different " + one.Equals(two) + " infinity " + positiveInfinity.Equals(anotherInfinity)
+            + " float nan " + floatNanA.Equals(floatNanB) + " mixed " + floatNanA.Equals(nanA) + "\n");
+        if (!nanA.Equals(nanB) || !nanB.Equals(nanA)) return 1;
+        if (!zero.Equals(negativeZero) || !negativeZero.Equals(zero)) return 2;
+        if (!one.Equals(anotherOne) || one.Equals(two)) return 3;
+        if (!positiveInfinity.Equals(anotherInfinity) || positiveInfinity.Equals(one)) return 4;
+        if (nanA.Equals(one) || one.Equals(nanA) || nanA.Equals(null)) return 5;
+        if (!floatNanA.Equals(floatNanB) || floatNanA.Equals(nanA)) return 6;
+        if (nanA.GetHashCode() != nanB.GetHashCode()) return 7;
+        if (zero.GetHashCode() != negativeZero.GetHashCode()) return 8;
+        if (floatNanA.GetHashCode() != floatNanB.GetHashCode()) return 9;
+        Dictionary<object, int> keys = new Dictionary<object, int>();
+        keys[nanA] = 11;
+        keys[zero] = 22;
+        keys[floatNanA] = 33;
+        if (keys[nanB] != 11 || keys[negativeZero] != 22 || keys[floatNanB] != 33) return 10;
+        Sys.Print("boxed float equality passed\n");
+        return 0;
+    }
+}

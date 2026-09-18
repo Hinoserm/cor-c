@@ -1,0 +1,1808 @@
+// System.Text.RegularExpressions, as .NET spells it: Regex, Match, Group,
+// Capture and the collections, over a backtracking engine.
+//
+// .NET SYNTAX, not POSIX. A program that wants BRE or ERE -- grep and sed
+// do, because that is what their users type -- translates its pattern into
+// this syntax first, exactly as a C# port of those programs would. What is
+// understood here is what .NET understands:
+//
+//   .  *  +  ?  {n} {n,} {n,m}   and the lazy forms *? +? ?? {n,m}?
+//   |                            alternation
+//   ( )  (?: )  (?<name> )       groups, capturing or not
+//   (?= )  (?! )                 lookahead, positive and negative
+//   [abc] [^abc] [a-z] [\d\s]    classes
+//   \d \D \w \W \s \S            the shorthands, inside a class and out
+//   \b \B \A \z \Z  ^ $          the boundaries
+//   \1 .. \9                     back-references
+//   \n \t \r \f \v \a \e \0      \xHH \uHHHH and \c to mean c itself
+//
+//   RegexOptions.IgnoreCase, .Multiline, .Singleline
+//
+// THE ENGINE is a backtracking virtual machine over a compiled program, the
+// shape Thompson's construction takes when the branches are tried in order
+// rather than in parallel: Split tries its first target and, if the rest of
+// the program cannot be satisfied from there, its second. That is what makes
+// a greedy star give ground and what makes back-references possible at all,
+// neither of which a pure automaton can do.
+//
+// Two things keep the recursion shallow enough for a program with an eight
+// megabyte stack. A repetition whose body is ONE character -- `.*`, `[a-z]+`,
+// `x{2,5}` -- is one instruction that counts its matches in a loop and then
+// tries the continuation from the longest, so `.*` on a four kilobyte line
+// costs one frame rather than four thousand. And a repetition whose body can
+// match nothing carries a Mark/Progress pair, so `(a?)*` stops rather than
+// looping for ever having consumed nothing.
+
+enum RegexOptions
+{
+    None = 0,
+    IgnoreCase = 1,
+    Multiline = 2,
+    ExplicitCapture = 4,
+    Compiled = 8,
+    Singleline = 16,
+    IgnorePatternWhitespace = 32,
+    RightToLeft = 64,
+    ECMAScript = 256,
+    CultureInvariant = 512
+}
+
+/// Thrown for a pattern that is not a pattern.
+class RegexParseException : ArgumentException
+{
+    public RegexParseException(string message) : base(message) { }
+}
+
+// ---- character classes ------------------------------------------------------
+
+/// One [...] set: the ranges it names, the shorthands it names, and whether
+/// the whole thing is inverted.
+class RegexCharClass
+{
+    public bool Negate;
+    public List<int> Lo = new List<int>();
+    public List<int> Hi = new List<int>();
+    /// 'd' 'w' 's' for the shorthand, and 'D' 'W' 'S' for its complement.
+    public List<int> Kinds = new List<int>();
+
+    public void AddRange(int lo, int hi)
+    {
+        Lo.Add(lo);
+        Hi.Add(hi);
+    }
+
+    public void AddChar(int c)
+    {
+        AddRange(c, c);
+    }
+
+    public void AddKind(int kind)
+    {
+        Kinds.Add(kind);
+    }
+
+    public bool Matches(char c, bool ignoreCase)
+    {
+        bool found = Holds(c);
+        if (!found && ignoreCase)
+        {
+            char other = Char.IsUpper(c) ? Char.ToLower(c) : Char.ToUpper(c);
+            if (other != c)
+            {
+                found = Holds(other);
+            }
+        }
+        return Negate ? !found : found;
+    }
+
+    bool Holds(char c)
+    {
+        int value = (int)c;
+        for (int i = 0; i < Lo.Count; i = i + 1)
+        {
+            if (value >= Lo[i] && value <= Hi[i])
+            {
+                return true;
+            }
+        }
+        for (int i = 0; i < Kinds.Count; i = i + 1)
+        {
+            if (Shorthand(Kinds[i], c))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Whether `c` belongs to one of \d \D \w \W \s \S.
+    public static bool Shorthand(int kind, char c)
+    {
+        if (kind == 'd') { return c >= '0' && c <= '9'; }
+        if (kind == 'D') { return !(c >= '0' && c <= '9'); }
+        if (kind == 'w') { return IsWord(c); }
+        if (kind == 'W') { return !IsWord(c); }
+        if (kind == 's') { return IsSpace(c); }
+        if (kind == 'S') { return !IsSpace(c); }
+        return false;
+    }
+
+    public static bool IsWord(char c)
+    {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+            || (c >= '0' && c <= '9') || c == '_';
+    }
+
+    public static bool IsSpace(char c)
+    {
+        return c == ' ' || c == '\t' || c == '\n' || c == '\r'
+            || c == '\f' || c == (char)11;
+    }
+}
+
+// ---- the parsed pattern -----------------------------------------------------
+
+/// One node of the parse tree. Kinds are spelled out in RegexNodeKind.
+class RegexNode
+{
+    public int Kind;
+    public char Ch;
+    public RegexCharClass? Set;
+    public List<RegexNode> Kids = new List<RegexNode>();
+    public int Min;
+    public int Max;
+    public bool Greedy = true;
+    /// The capture number for a group, -1 for a plain one; the group number
+    /// for a back-reference; 1 for a negative lookahead.
+    public int Number = -1;
+
+    public RegexNode(int kind)
+    {
+        Kind = kind;
+    }
+}
+
+static class RegexNodeKind
+{
+    public const int Empty = 0;
+    public const int Char = 1;
+    public const int Any = 2;
+    public const int Class = 3;
+    public const int Concat = 4;
+    public const int Alternate = 5;
+    public const int Repeat = 6;
+    public const int Group = 7;
+    public const int Bol = 8;
+    public const int Eol = 9;
+    public const int BeginText = 10;
+    public const int EndText = 11;
+    public const int EndTextNewline = 12;
+    public const int WordBoundary = 13;
+    public const int NotWordBoundary = 14;
+    public const int Backreference = 15;
+    public const int Lookahead = 16;
+}
+
+// ---- the compiled program ---------------------------------------------------
+
+static class RegexOp
+{
+    public const int Char = 0;
+    public const int Any = 1;
+    public const int Class = 2;
+    public const int Split = 3;
+    public const int Jump = 4;
+    public const int Save = 5;
+    public const int Match = 6;
+    public const int Bol = 7;
+    public const int Eol = 8;
+    public const int BeginText = 9;
+    public const int EndText = 10;
+    public const int EndTextNewline = 11;
+    public const int WordBoundary = 12;
+    public const int Backreference = 13;
+    public const int RepeatAtom = 14;
+    public const int Mark = 15;
+    public const int Progress = 16;
+    public const int Lookahead = 17;
+    public const int LookaheadEnd = 18;
+}
+
+class RegexInstruction
+{
+    public int Op;
+    public int A;
+    public int B;
+    public char Ch;
+    public bool Greedy = true;
+    /// For RepeatAtom: the one-character thing being repeated.
+    public int AtomOp;
+    public int AtomA;
+    public char AtomCh;
+
+    public RegexInstruction(int op)
+    {
+        Op = op;
+    }
+}
+
+// ---- what a match answers ---------------------------------------------------
+
+/// .NET's Capture: a piece of the input, by where it is and what it says.
+class Capture
+{
+    public int Index;
+    public int Length;
+    public string Value = "";
+
+    public string ToString()
+    {
+        return Value;
+    }
+}
+
+/// One capturing group's result.
+class Group : Capture
+{
+    public bool Success;
+    public string Name = "";
+}
+
+/// Every group of one match, by number and by name.
+class GroupCollection
+{
+    Group[] _groups;
+    Dictionary<string, int>? _names;
+
+    public GroupCollection(Group[] groups, Dictionary<string, int>? names)
+    {
+        _groups = groups;
+        _names = names;
+    }
+
+    public int Count => _groups.Length;
+
+    public Group this[int number]
+    {
+        get
+        {
+            if (number < 0 || number >= _groups.Length)
+            {
+                Group missing = new Group();
+                missing.Name = String.FromInt(number);
+                return missing;
+            }
+            return _groups[number];
+        }
+    }
+
+    /// The group of that name.
+    ///
+    /// .NET SPELLS THIS `Groups[name]`, and it cannot here: the binder picks
+    /// an indexer by how many arguments it was given rather than by their
+    /// types, so a class may declare only one. See the note in the report;
+    /// when overloaded indexers bind, this becomes `this[string name]` and
+    /// every call site reads as C# again.
+    public Group ByName(string name)
+    {
+        Dictionary<string, int>? names = _names;
+        int number = 0;
+        if (names != null && names.TryGetValue(name, out number))
+        {
+            return this[number];
+        }
+        if (Int32.TryParse(name, out number))
+        {
+            return this[number];
+        }
+        Group missing = new Group();
+        missing.Name = name;
+        return missing;
+    }
+}
+
+/// One match: what group zero found, and every group inside it.
+class Match : Group
+{
+    public GroupCollection Groups;
+    Regex? _regex;
+    string _text = "";
+    int _next;
+
+    public Match(Regex? regex, string text, Group[] groups,
+                 Dictionary<string, int>? names, int next)
+    {
+        _regex = regex;
+        _text = text;
+        _next = next;
+        Groups = new GroupCollection(groups, names);
+        if (groups.Length > 0)
+        {
+            Success = groups[0].Success;
+            Index = groups[0].Index;
+            Length = groups[0].Length;
+            Value = groups[0].Value;
+        }
+    }
+
+    /// The next match after this one, as .NET's does.
+    public Match NextMatch()
+    {
+        Regex? regex = _regex;
+        if (regex == null || !Success)
+        {
+            return Regex.NoMatch();
+        }
+        return regex.Match(_text, _next);
+    }
+
+    public static Match Empty => Regex.NoMatch();
+}
+
+/// Every match in one input.
+class MatchCollection : IReadOnlyList<Match>
+{
+    List<Match> _matches;
+
+    public MatchCollection(List<Match> matches)
+    {
+        _matches = matches;
+    }
+
+    public int Count => _matches.Count;
+
+    public Match this[int index]
+    {
+        get { return _matches[index]; }
+    }
+
+    public IEnumerator<Match> GetEnumerator()
+    {
+        return new ListEnumerator<Match>(_matches);
+    }
+}
+
+// ---- the parser -------------------------------------------------------------
+
+/// Turns the pattern text into a tree. Held apart from Regex because it has
+/// state of its own -- where it is, and how many groups it has opened.
+class RegexParser
+{
+    string _pattern;
+    int _at;
+    int _groups = 1;
+    RegexOptions _options;
+    public Dictionary<string, int> Names = new Dictionary<string, int>();
+
+    public RegexParser(string pattern, RegexOptions options)
+    {
+        _pattern = pattern;
+        _options = options;
+    }
+
+    public int GroupCount => _groups;
+
+    public RegexNode Parse()
+    {
+        RegexNode node = Alternation();
+        if (_at < _pattern.Length)
+        {
+            throw new RegexParseException("unexpected '" + _pattern[_at]
+                + "' at position " + _at + " in the pattern");
+        }
+        return node;
+    }
+
+    RegexNode Alternation()
+    {
+        RegexNode first = Sequence();
+        if (_at >= _pattern.Length || _pattern[_at] != '|')
+        {
+            return first;
+        }
+        RegexNode any = new RegexNode(RegexNodeKind.Alternate);
+        any.Kids.Add(first);
+        while (_at < _pattern.Length && _pattern[_at] == '|')
+        {
+            _at = _at + 1;
+            any.Kids.Add(Sequence());
+        }
+        return any;
+    }
+
+    RegexNode Sequence()
+    {
+        RegexNode all = new RegexNode(RegexNodeKind.Concat);
+        while (_at < _pattern.Length && _pattern[_at] != '|' && _pattern[_at] != ')')
+        {
+            RegexNode piece = Quantified();
+            all.Kids.Add(piece);
+        }
+        if (all.Kids.Count == 1)
+        {
+            return all.Kids[0];
+        }
+        return all;
+    }
+
+    RegexNode Quantified()
+    {
+        RegexNode atom = Atom();
+        while (_at < _pattern.Length)
+        {
+            char c = _pattern[_at];
+            int min = 0;
+            int max = -1;
+            if (c == '*') { _at = _at + 1; }
+            else if (c == '+') { _at = _at + 1; min = 1; }
+            else if (c == '?') { _at = _at + 1; max = 1; }
+            else if (c == '{' && Counted(out min, out max)) { }
+            else { break; }
+
+            RegexNode repeat = new RegexNode(RegexNodeKind.Repeat);
+            repeat.Min = min;
+            repeat.Max = max;
+            repeat.Kids.Add(atom);
+            if (_at < _pattern.Length && _pattern[_at] == '?')
+            {
+                repeat.Greedy = false;
+                _at = _at + 1;
+            }
+            else if (_at < _pattern.Length && _pattern[_at] == '+')
+            {
+                // A possessive quantifier; treated as greedy, which is what
+                // it means when nothing after it can give ground anyway.
+                _at = _at + 1;
+            }
+            atom = repeat;
+        }
+        return atom;
+    }
+
+    /// `{n}`, `{n,}` or `{n,m}` at the cursor. A brace that is not one of
+    /// those is a literal brace, which is .NET's rule too.
+    bool Counted(out int min, out int max)
+    {
+        min = 0;
+        max = -1;
+        int save = _at;
+        int i = _at + 1;
+        int first = 0;
+        int digits = 0;
+        while (i < _pattern.Length && Char.IsDigit(_pattern[i]))
+        {
+            first = first * 10 + (_pattern[i] - '0');
+            digits = digits + 1;
+            i = i + 1;
+        }
+        if (digits == 0)
+        {
+            _at = save;
+            return false;
+        }
+        if (i < _pattern.Length && _pattern[i] == '}')
+        {
+            min = first;
+            max = first;
+            _at = i + 1;
+            return true;
+        }
+        if (i >= _pattern.Length || _pattern[i] != ',')
+        {
+            _at = save;
+            return false;
+        }
+        i = i + 1;
+        int second = 0;
+        int more = 0;
+        while (i < _pattern.Length && Char.IsDigit(_pattern[i]))
+        {
+            second = second * 10 + (_pattern[i] - '0');
+            more = more + 1;
+            i = i + 1;
+        }
+        if (i >= _pattern.Length || _pattern[i] != '}')
+        {
+            _at = save;
+            return false;
+        }
+        min = first;
+        max = more == 0 ? -1 : second;
+        _at = i + 1;
+        return true;
+    }
+
+    RegexNode Atom()
+    {
+        char c = _pattern[_at];
+
+        if (c == '(')
+        {
+            return OpenGroup();
+        }
+        if (c == '[')
+        {
+            RegexNode set = new RegexNode(RegexNodeKind.Class);
+            set.Set = ParseClass();
+            return set;
+        }
+        if (c == '.')
+        {
+            _at = _at + 1;
+            return new RegexNode(RegexNodeKind.Any);
+        }
+        if (c == '^')
+        {
+            _at = _at + 1;
+            return new RegexNode(RegexNodeKind.Bol);
+        }
+        if (c == '$')
+        {
+            _at = _at + 1;
+            return new RegexNode(RegexNodeKind.Eol);
+        }
+        if (c == '\\')
+        {
+            return Escape();
+        }
+        if (c == '*' || c == '+' || c == '?')
+        {
+            throw new RegexParseException("nothing to repeat at position " + _at);
+        }
+        _at = _at + 1;
+        RegexNode literal = new RegexNode(RegexNodeKind.Char);
+        literal.Ch = c;
+        return literal;
+    }
+
+    RegexNode OpenGroup()
+    {
+        _at = _at + 1;                                  // past '('
+        int number = -1;
+        string name = "";
+        bool look = false;
+        bool negate = false;
+
+        if (_at < _pattern.Length && _pattern[_at] == '?')
+        {
+            _at = _at + 1;
+            if (_at >= _pattern.Length)
+            {
+                throw new RegexParseException("unterminated group");
+            }
+            char kind = _pattern[_at];
+            if (kind == ':')
+            {
+                _at = _at + 1;
+            }
+            else if (kind == '=' || kind == '!')
+            {
+                look = true;
+                negate = kind == '!';
+                _at = _at + 1;
+            }
+            else if (kind == '<' || kind == '\'')
+            {
+                char close = kind == '<' ? '>' : '\'';
+                if (kind == '<' && _at + 1 < _pattern.Length
+                    && (_pattern[_at + 1] == '=' || _pattern[_at + 1] == '!'))
+                {
+                    throw new RegexParseException("lookbehind is not supported");
+                }
+                _at = _at + 1;
+                StringBuilder made = new StringBuilder();
+                while (_at < _pattern.Length && _pattern[_at] != close)
+                {
+                    made.Append(_pattern[_at]);
+                    _at = _at + 1;
+                }
+                if (_at >= _pattern.Length)
+                {
+                    throw new RegexParseException("unterminated group name");
+                }
+                _at = _at + 1;
+                name = made.ToString();
+                number = _groups;
+                _groups = _groups + 1;
+                Names[name] = number;
+            }
+            else if (kind == '#')
+            {
+                while (_at < _pattern.Length && _pattern[_at] != ')')
+                {
+                    _at = _at + 1;
+                }
+                if (_at < _pattern.Length)
+                {
+                    _at = _at + 1;
+                }
+                return new RegexNode(RegexNodeKind.Empty);
+            }
+            else
+            {
+                throw new RegexParseException("unsupported group '(?" + kind + "'");
+            }
+        }
+        else if ((_options & RegexOptions.ExplicitCapture) == RegexOptions.None)
+        {
+            number = _groups;
+            _groups = _groups + 1;
+        }
+
+        RegexNode body = Alternation();
+        if (_at >= _pattern.Length || _pattern[_at] != ')')
+        {
+            throw new RegexParseException("unterminated group");
+        }
+        _at = _at + 1;
+
+        RegexNode group = new RegexNode(look ? RegexNodeKind.Lookahead
+                                             : RegexNodeKind.Group);
+        group.Number = look ? (negate ? 1 : 0) : number;
+        group.Kids.Add(body);
+        return group;
+    }
+
+    RegexNode Escape()
+    {
+        _at = _at + 1;                                  // past '\'
+        if (_at >= _pattern.Length)
+        {
+            throw new RegexParseException("the pattern ends in a backslash");
+        }
+        char c = _pattern[_at];
+
+        if (c == 'd' || c == 'D' || c == 'w' || c == 'W' || c == 's' || c == 'S')
+        {
+            _at = _at + 1;
+            RegexNode set = new RegexNode(RegexNodeKind.Class);
+            RegexCharClass held = new RegexCharClass();
+            held.AddKind((int)c);
+            set.Set = held;
+            return set;
+        }
+        if (c == 'b') { _at = _at + 1; return new RegexNode(RegexNodeKind.WordBoundary); }
+        if (c == 'B') { _at = _at + 1; return new RegexNode(RegexNodeKind.NotWordBoundary); }
+        if (c == 'A') { _at = _at + 1; return new RegexNode(RegexNodeKind.BeginText); }
+        if (c == 'z') { _at = _at + 1; return new RegexNode(RegexNodeKind.EndText); }
+        if (c == 'Z') { _at = _at + 1; return new RegexNode(RegexNodeKind.EndTextNewline); }
+
+        if (c >= '1' && c <= '9')
+        {
+            int number = 0;
+            while (_at < _pattern.Length && Char.IsDigit(_pattern[_at])
+                   && number * 10 + (_pattern[_at] - '0') < _groups)
+            {
+                number = number * 10 + (_pattern[_at] - '0');
+                _at = _at + 1;
+            }
+            if (number > 0)
+            {
+                RegexNode back = new RegexNode(RegexNodeKind.Backreference);
+                back.Number = number;
+                return back;
+            }
+        }
+        if (c == 'k' && _at + 1 < _pattern.Length
+            && (_pattern[_at + 1] == '<' || _pattern[_at + 1] == '\''))
+        {
+            char close = _pattern[_at + 1] == '<' ? '>' : '\'';
+            _at = _at + 2;
+            StringBuilder made = new StringBuilder();
+            while (_at < _pattern.Length && _pattern[_at] != close)
+            {
+                made.Append(_pattern[_at]);
+                _at = _at + 1;
+            }
+            if (_at >= _pattern.Length)
+            {
+                throw new RegexParseException("unterminated \\k name");
+            }
+            _at = _at + 1;
+            RegexNode back = new RegexNode(RegexNodeKind.Backreference);
+            int number = 0;
+            Names.TryGetValue(made.ToString(), out number);
+            back.Number = number;
+            return back;
+        }
+
+        RegexNode literal = new RegexNode(RegexNodeKind.Char);
+        literal.Ch = SimpleEscape();
+        return literal;
+    }
+
+    /// The escapes that stand for one character, the cursor on the letter.
+    char SimpleEscape()
+    {
+        char c = _pattern[_at];
+        _at = _at + 1;
+        if (c == 'n') { return '\n'; }
+        if (c == 't') { return '\t'; }
+        if (c == 'r') { return '\r'; }
+        if (c == 'f') { return '\f'; }
+        if (c == 'v') { return (char)11; }
+        if (c == 'a') { return (char)7; }
+        if (c == 'e') { return (char)27; }
+        if (c == '0') { return (char)0; }
+        if (c == 'x' || c == 'u')
+        {
+            int digits = c == 'x' ? 2 : 4;
+            int value = 0;
+            int had = 0;
+            while (had < digits && _at < _pattern.Length
+                   && Uri.IsHexDigit(_pattern[_at]))
+            {
+                value = value * 16 + HexOf(_pattern[_at]);
+                _at = _at + 1;
+                had = had + 1;
+            }
+            if (had == 0)
+            {
+                throw new RegexParseException("\\" + c + " wants hexadecimal digits");
+            }
+            return (char)value;
+        }
+        if (c == 'c' && _at < _pattern.Length)
+        {
+            char letter = Char.ToUpper(_pattern[_at]);
+            _at = _at + 1;
+            return (char)(letter - 'A' + 1);
+        }
+        return c;
+    }
+
+    static int HexOf(char c)
+    {
+        if (c >= '0' && c <= '9') { return c - '0'; }
+        if (c >= 'a' && c <= 'f') { return c - 'a' + 10; }
+        return c - 'A' + 10;
+    }
+
+    RegexCharClass ParseClass()
+    {
+        _at = _at + 1;                                  // past '['
+        RegexCharClass set = new RegexCharClass();
+        if (_at < _pattern.Length && _pattern[_at] == '^')
+        {
+            set.Negate = true;
+            _at = _at + 1;
+        }
+        bool first = true;
+        while (_at < _pattern.Length && (first || _pattern[_at] != ']'))
+        {
+            first = false;
+            int lo = -1;
+            if (_pattern[_at] == '\\')
+            {
+                _at = _at + 1;
+                if (_at >= _pattern.Length)
+                {
+                    throw new RegexParseException("the class ends in a backslash");
+                }
+                char e = _pattern[_at];
+                if (e == 'd' || e == 'D' || e == 'w' || e == 'W'
+                    || e == 's' || e == 'S')
+                {
+                    set.AddKind((int)e);
+                    _at = _at + 1;
+                    continue;
+                }
+                if (e == 'b')
+                {
+                    // \b inside a class is a backspace, as it is in .NET.
+                    _at = _at + 1;
+                    lo = 8;
+                }
+                else
+                {
+                    lo = (int)SimpleEscape();
+                }
+            }
+            else if (_pattern[_at] == '[' && _at + 1 < _pattern.Length
+                     && _pattern[_at + 1] == ':')
+            {
+                // [:alpha:] and its family, which POSIX patterns translated
+                // into .NET syntax still carry.
+                int close = String.IndexOf(_pattern, ":]", _at);
+                if (close < 0)
+                {
+                    throw new RegexParseException("unterminated character class name");
+                }
+                Named(set, _pattern.Substring(_at + 2, close - _at - 2));
+                _at = close + 2;
+                continue;
+            }
+            else
+            {
+                lo = (int)_pattern[_at];
+                _at = _at + 1;
+            }
+
+            if (_at + 1 < _pattern.Length && _pattern[_at] == '-'
+                && _pattern[_at + 1] != ']')
+            {
+                _at = _at + 1;
+                int hi;
+                if (_pattern[_at] == '\\')
+                {
+                    _at = _at + 1;
+                    hi = (int)SimpleEscape();
+                }
+                else
+                {
+                    hi = (int)_pattern[_at];
+                    _at = _at + 1;
+                }
+                set.AddRange(lo, hi);
+            }
+            else
+            {
+                set.AddChar(lo);
+            }
+        }
+        if (_at >= _pattern.Length)
+        {
+            throw new RegexParseException("unterminated [ ] class");
+        }
+        _at = _at + 1;                                  // past ']'
+        return set;
+    }
+
+    static void Named(RegexCharClass set, string name)
+    {
+        if (name == "alpha") { set.AddRange('a', 'z'); set.AddRange('A', 'Z'); }
+        else if (name == "digit") { set.AddRange('0', '9'); }
+        else if (name == "alnum") { set.AddRange('a', 'z'); set.AddRange('A', 'Z'); set.AddRange('0', '9'); }
+        else if (name == "upper") { set.AddRange('A', 'Z'); }
+        else if (name == "lower") { set.AddRange('a', 'z'); }
+        else if (name == "space") { set.AddKind((int)'s'); }
+        else if (name == "blank") { set.AddChar(' '); set.AddChar('\t'); }
+        else if (name == "punct")
+        {
+            set.AddRange(33, 47);
+            set.AddRange(58, 64);
+            set.AddRange(91, 96);
+            set.AddRange(123, 126);
+        }
+        else if (name == "print") { set.AddRange(32, 126); }
+        else if (name == "graph") { set.AddRange(33, 126); }
+        else if (name == "cntrl") { set.AddRange(0, 31); set.AddChar(127); }
+        else if (name == "xdigit")
+        {
+            set.AddRange('0', '9');
+            set.AddRange('a', 'f');
+            set.AddRange('A', 'F');
+        }
+        else
+        {
+            throw new RegexParseException("unknown character class name [:" + name + ":]");
+        }
+    }
+}
+
+// ---- the engine -------------------------------------------------------------
+
+/// The backtracking machine: one instance per search, because it carries the
+/// input, the capture slots and the loop marks.
+class RegexRunner
+{
+    RegexInstruction[] _program;
+    RegexCharClass[] _classes;
+    string _text = "";
+    int[] _saves;
+    int[] _marks;
+    bool _ignoreCase;
+    bool _multiline;
+
+    public RegexRunner(RegexInstruction[] program, RegexCharClass[] classes,
+                       int slots, int marks, bool ignoreCase, bool multiline)
+    {
+        _program = program;
+        _classes = classes;
+        _saves = new int[slots];
+        _marks = new int[marks > 0 ? marks : 1];
+        _ignoreCase = ignoreCase;
+        _multiline = multiline;
+    }
+
+    public int[] Saves => _saves;
+
+    /// Tries the program at exactly `start`.
+    public bool TryAt(string text, int start)
+    {
+        _text = text;
+        for (int i = 0; i < _saves.Length; i = i + 1)
+        {
+            _saves[i] = -1;
+        }
+        return Run(0, start);
+    }
+
+    bool Run(int pc, int pos)
+    {
+        while (true)
+        {
+            RegexInstruction i = _program[pc];
+            int op = i.Op;
+
+            if (op == RegexOp.Char)
+            {
+                if (pos >= _text.Length || !Same(_text[pos], i.Ch))
+                {
+                    return false;
+                }
+                pos = pos + 1;
+                pc = pc + 1;
+                continue;
+            }
+            if (op == RegexOp.Any)
+            {
+                if (pos >= _text.Length)
+                {
+                    return false;
+                }
+                if (i.A == 0 && _text[pos] == '\n')
+                {
+                    return false;
+                }
+                pos = pos + 1;
+                pc = pc + 1;
+                continue;
+            }
+            if (op == RegexOp.Class)
+            {
+                if (pos >= _text.Length
+                    || !_classes[i.A].Matches(_text[pos], _ignoreCase))
+                {
+                    return false;
+                }
+                pos = pos + 1;
+                pc = pc + 1;
+                continue;
+            }
+            if (op == RegexOp.Split)
+            {
+                if (Run(i.A, pos))
+                {
+                    return true;
+                }
+                pc = i.B;
+                continue;
+            }
+            if (op == RegexOp.Jump)
+            {
+                pc = i.A;
+                continue;
+            }
+            if (op == RegexOp.Save)
+            {
+                int old = _saves[i.A];
+                _saves[i.A] = pos;
+                if (Run(pc + 1, pos))
+                {
+                    return true;
+                }
+                _saves[i.A] = old;
+                return false;
+            }
+            if (op == RegexOp.Match)
+            {
+                _saves[1] = pos;
+                return true;
+            }
+            if (op == RegexOp.Bol)
+            {
+                if (pos != 0 && !(_multiline && _text[pos - 1] == '\n'))
+                {
+                    return false;
+                }
+                pc = pc + 1;
+                continue;
+            }
+            if (op == RegexOp.Eol)
+            {
+                bool here = pos == _text.Length
+                         || (_multiline && _text[pos] == '\n')
+                         || (!_multiline && pos == _text.Length - 1
+                             && _text[pos] == '\n');
+                if (!here)
+                {
+                    return false;
+                }
+                pc = pc + 1;
+                continue;
+            }
+            if (op == RegexOp.BeginText)
+            {
+                if (pos != 0)
+                {
+                    return false;
+                }
+                pc = pc + 1;
+                continue;
+            }
+            if (op == RegexOp.EndText)
+            {
+                if (pos != _text.Length)
+                {
+                    return false;
+                }
+                pc = pc + 1;
+                continue;
+            }
+            if (op == RegexOp.EndTextNewline)
+            {
+                if (pos != _text.Length
+                    && !(pos == _text.Length - 1 && _text[pos] == '\n'))
+                {
+                    return false;
+                }
+                pc = pc + 1;
+                continue;
+            }
+            if (op == RegexOp.WordBoundary)
+            {
+                bool before = pos > 0 && RegexCharClass.IsWord(_text[pos - 1]);
+                bool after = pos < _text.Length && RegexCharClass.IsWord(_text[pos]);
+                bool boundary = before != after;
+                if (boundary == (i.A != 0))
+                {
+                    return false;
+                }
+                pc = pc + 1;
+                continue;
+            }
+            if (op == RegexOp.Backreference)
+            {
+                int from = _saves[2 * i.A];
+                int to = _saves[2 * i.A + 1];
+                if (from < 0 || to < from)
+                {
+                    return false;
+                }
+                int length = to - from;
+                if (pos + length > _text.Length)
+                {
+                    return false;
+                }
+                for (int k = 0; k < length; k = k + 1)
+                {
+                    if (!Same(_text[pos + k], _text[from + k]))
+                    {
+                        return false;
+                    }
+                }
+                pos = pos + length;
+                pc = pc + 1;
+                continue;
+            }
+            if (op == RegexOp.RepeatAtom)
+            {
+                int count = 0;
+                while ((i.B < 0 || count < i.B) && AtomAt(i, pos + count))
+                {
+                    count = count + 1;
+                }
+                if (count < i.A)
+                {
+                    return false;
+                }
+                if (i.Greedy)
+                {
+                    for (int n = count; n >= i.A; n = n - 1)
+                    {
+                        if (Run(pc + 1, pos + n))
+                        {
+                            return true;
+                        }
+                    }
+                }
+                else
+                {
+                    for (int n = i.A; n <= count; n = n + 1)
+                    {
+                        if (Run(pc + 1, pos + n))
+                        {
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            }
+            if (op == RegexOp.Mark)
+            {
+                _marks[i.A] = pos;
+                pc = pc + 1;
+                continue;
+            }
+            if (op == RegexOp.Progress)
+            {
+                if (_marks[i.A] == pos)
+                {
+                    return false;
+                }
+                pc = pc + 1;
+                continue;
+            }
+            if (op == RegexOp.Lookahead)
+            {
+                bool seen = Run(i.A, pos);
+                if (seen == (i.B != 0))
+                {
+                    return false;
+                }
+                pc = pc + 1;
+                continue;
+            }
+            if (op == RegexOp.LookaheadEnd)
+            {
+                return true;
+            }
+            return false;
+        }
+    }
+
+    /// Whether the one-character thing a RepeatAtom repeats is at `pos`.
+    bool AtomAt(RegexInstruction i, int pos)
+    {
+        if (pos >= _text.Length)
+        {
+            return false;
+        }
+        if (i.AtomOp == RegexOp.Char)
+        {
+            return Same(_text[pos], i.AtomCh);
+        }
+        if (i.AtomOp == RegexOp.Any)
+        {
+            return i.AtomA != 0 || _text[pos] != '\n';
+        }
+        return _classes[i.AtomA].Matches(_text[pos], _ignoreCase);
+    }
+
+    bool Same(char a, char b)
+    {
+        if (a == b)
+        {
+            return true;
+        }
+        return _ignoreCase && Char.ToLower(a) == Char.ToLower(b);
+    }
+}
+
+// ---- Regex ------------------------------------------------------------------
+
+/// System.Text.RegularExpressions.Regex.
+class Regex
+{
+    string _pattern;
+    RegexOptions _options;
+    RegexInstruction[] _program;
+    RegexCharClass[] _classes;
+    Dictionary<string, int> _names;
+    int _groups;
+    int _marks;
+    bool _ignoreCase;
+    bool _multiline;
+    bool _singleline;
+
+    List<RegexInstruction> _building = new List<RegexInstruction>();
+    List<RegexCharClass> _sets = new List<RegexCharClass>();
+
+    public Regex(string pattern) : this(pattern, RegexOptions.None)
+    {
+    }
+
+    public Regex(string pattern, RegexOptions options)
+    {
+        _pattern = pattern;
+        _options = options;
+        _ignoreCase = (options & RegexOptions.IgnoreCase) != RegexOptions.None;
+        _multiline = (options & RegexOptions.Multiline) != RegexOptions.None;
+        _singleline = (options & RegexOptions.Singleline) != RegexOptions.None;
+
+        RegexParser parser = new RegexParser(pattern, options);
+        RegexNode tree = parser.Parse();
+        _names = parser.Names;
+        _groups = parser.GroupCount;
+
+        Emit(RegexOp.Save).A = 0;
+        Compile(tree);
+        Emit(RegexOp.Save).A = 1;
+        Emit(RegexOp.Match);
+
+        _program = _building.ToArray();
+        _classes = _sets.ToArray();
+        _building = new List<RegexInstruction>();
+    }
+
+    public string ToString()
+    {
+        return _pattern;
+    }
+
+    public RegexOptions Options => _options;
+
+    public int GetGroupNumbers()
+    {
+        return _groups;
+    }
+
+    public string[] GetGroupNames()
+    {
+        string[] names = new string[_groups];
+        for (int i = 0; i < _groups; i = i + 1)
+        {
+            names[i] = String.FromInt(i);
+        }
+        List<string> keys = _names.Keys;
+        for (int i = 0; i < keys.Count; i = i + 1)
+        {
+            names[_names[keys[i]]] = keys[i];
+        }
+        return names;
+    }
+
+    // ---- compiling ----------------------------------------------------------
+
+    RegexInstruction Emit(int op)
+    {
+        RegexInstruction made = new RegexInstruction(op);
+        _building.Add(made);
+        return made;
+    }
+
+    int Here => _building.Count;
+
+    void Compile(RegexNode node)
+    {
+        int kind = node.Kind;
+
+        if (kind == RegexNodeKind.Empty)
+        {
+            return;
+        }
+        if (kind == RegexNodeKind.Char)
+        {
+            Emit(RegexOp.Char).Ch = node.Ch;
+            return;
+        }
+        if (kind == RegexNodeKind.Any)
+        {
+            Emit(RegexOp.Any).A = _singleline ? 1 : 0;
+            return;
+        }
+        if (kind == RegexNodeKind.Class)
+        {
+            RegexCharClass set = node.Set!;
+            _sets.Add(set);
+            Emit(RegexOp.Class).A = _sets.Count - 1;
+            return;
+        }
+        if (kind == RegexNodeKind.Concat)
+        {
+            for (int i = 0; i < node.Kids.Count; i = i + 1)
+            {
+                Compile(node.Kids[i]);
+            }
+            return;
+        }
+        if (kind == RegexNodeKind.Alternate)
+        {
+            List<RegexInstruction> ends = new List<RegexInstruction>();
+            for (int i = 0; i < node.Kids.Count - 1; i = i + 1)
+            {
+                RegexInstruction split = Emit(RegexOp.Split);
+                split.A = Here;
+                Compile(node.Kids[i]);
+                RegexInstruction jump = Emit(RegexOp.Jump);
+                ends.Add(jump);
+                split.B = Here;
+            }
+            Compile(node.Kids[node.Kids.Count - 1]);
+            for (int i = 0; i < ends.Count; i = i + 1)
+            {
+                ends[i].A = Here;
+            }
+            return;
+        }
+        if (kind == RegexNodeKind.Group)
+        {
+            if (node.Number < 0)
+            {
+                Compile(node.Kids[0]);
+                return;
+            }
+            Emit(RegexOp.Save).A = 2 * node.Number;
+            Compile(node.Kids[0]);
+            Emit(RegexOp.Save).A = 2 * node.Number + 1;
+            return;
+        }
+        if (kind == RegexNodeKind.Lookahead)
+        {
+            RegexInstruction look = Emit(RegexOp.Lookahead);
+            RegexInstruction over = Emit(RegexOp.Jump);
+            look.A = Here;
+            look.B = node.Number;
+            Compile(node.Kids[0]);
+            Emit(RegexOp.LookaheadEnd);
+            over.A = Here;
+            return;
+        }
+        if (kind == RegexNodeKind.Backreference)
+        {
+            Emit(RegexOp.Backreference).A = node.Number;
+            return;
+        }
+        if (kind == RegexNodeKind.Bol) { Emit(RegexOp.Bol); return; }
+        if (kind == RegexNodeKind.Eol) { Emit(RegexOp.Eol); return; }
+        if (kind == RegexNodeKind.BeginText) { Emit(RegexOp.BeginText); return; }
+        if (kind == RegexNodeKind.EndText) { Emit(RegexOp.EndText); return; }
+        if (kind == RegexNodeKind.EndTextNewline) { Emit(RegexOp.EndTextNewline); return; }
+        if (kind == RegexNodeKind.WordBoundary) { Emit(RegexOp.WordBoundary).A = 0; return; }
+        if (kind == RegexNodeKind.NotWordBoundary) { Emit(RegexOp.WordBoundary).A = 1; return; }
+        if (kind == RegexNodeKind.Repeat)
+        {
+            CompileRepeat(node);
+            return;
+        }
+        throw new RegexParseException("the pattern uses something not understood here");
+    }
+
+    void CompileRepeat(RegexNode node)
+    {
+        RegexNode body = node.Kids[0];
+
+        // ONE INSTRUCTION FOR A ONE-CHARACTER BODY. This is what keeps `.*`
+        // on a long line from being one stack frame per character.
+        if (body.Kind == RegexNodeKind.Char || body.Kind == RegexNodeKind.Any
+            || body.Kind == RegexNodeKind.Class)
+        {
+            RegexInstruction repeat = Emit(RegexOp.RepeatAtom);
+            repeat.A = node.Min;
+            repeat.B = node.Max;
+            repeat.Greedy = node.Greedy;
+            if (body.Kind == RegexNodeKind.Char)
+            {
+                repeat.AtomOp = RegexOp.Char;
+                repeat.AtomCh = body.Ch;
+            }
+            else if (body.Kind == RegexNodeKind.Any)
+            {
+                repeat.AtomOp = RegexOp.Any;
+                repeat.AtomA = _singleline ? 1 : 0;
+            }
+            else
+            {
+                repeat.AtomOp = RegexOp.Class;
+                _sets.Add(body.Set!);
+                repeat.AtomA = _sets.Count - 1;
+            }
+            return;
+        }
+
+        int min = node.Min;
+        int max = node.Max;
+        if (min > 255 || max > 255)
+        {
+            throw new RegexParseException("a repetition count above 255 is not supported");
+        }
+        for (int i = 0; i < min; i = i + 1)
+        {
+            Compile(body);
+        }
+        if (max < 0)
+        {
+            // An unbounded loop, with a Mark/Progress pair so that a body
+            // which can match nothing cannot spin for ever.
+            int mark = _marks;
+            _marks = _marks + 1;
+            int top = Here;
+            RegexInstruction split = Emit(RegexOp.Split);
+            int inside = Here;
+            Emit(RegexOp.Mark).A = mark;
+            Compile(body);
+            Emit(RegexOp.Progress).A = mark;
+            Emit(RegexOp.Jump).A = top;
+            int after = Here;
+            split.A = node.Greedy ? inside : after;
+            split.B = node.Greedy ? after : inside;
+            return;
+        }
+        List<RegexInstruction> splits = new List<RegexInstruction>();
+        for (int i = min; i < max; i = i + 1)
+        {
+            RegexInstruction split = Emit(RegexOp.Split);
+            splits.Add(split);
+            int inside = Here;
+            Compile(body);
+            if (node.Greedy)
+            {
+                split.A = inside;
+            }
+            else
+            {
+                split.B = inside;
+            }
+        }
+        for (int i = 0; i < splits.Count; i = i + 1)
+        {
+            if (node.Greedy)
+            {
+                splits[i].B = Here;
+            }
+            else
+            {
+                splits[i].A = Here;
+            }
+        }
+    }
+
+    // ---- searching ----------------------------------------------------------
+
+    RegexRunner NewRunner()
+    {
+        return new RegexRunner(_program, _classes, 2 * _groups, _marks,
+                               _ignoreCase, _multiline);
+    }
+
+    public bool IsMatch(string input)
+    {
+        return IsMatch(input, 0);
+    }
+
+    public bool IsMatch(string input, int startat)
+    {
+        RegexRunner runner = NewRunner();
+        for (int at = startat; at <= input.Length; at = at + 1)
+        {
+            if (runner.TryAt(input, at))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public Match Match(string input)
+    {
+        return Match(input, 0);
+    }
+
+    public Match Match(string input, int startat)
+    {
+        RegexRunner runner = NewRunner();
+        for (int at = startat; at <= input.Length; at = at + 1)
+        {
+            if (runner.TryAt(input, at))
+            {
+                return Made(input, runner.Saves);
+            }
+        }
+        return NoMatch();
+    }
+
+    public MatchCollection Matches(string input)
+    {
+        return Matches(input, 0);
+    }
+
+    public MatchCollection Matches(string input, int startat)
+    {
+        List<Match> all = new List<Match>();
+        int at = startat;
+        while (at <= input.Length)
+        {
+            Match one = Match(input, at);
+            if (!one.Success)
+            {
+                break;
+            }
+            all.Add(one);
+            at = one.Length == 0 ? one.Index + 1 : one.Index + one.Length;
+        }
+        return new MatchCollection(all);
+    }
+
+    Match Made(string input, int[] saves)
+    {
+        Group[] groups = new Group[_groups];
+        for (int g = 0; g < _groups; g = g + 1)
+        {
+            Group one = new Group();
+            one.Name = String.FromInt(g);
+            int from = saves[2 * g];
+            int to = saves[2 * g + 1];
+            if (from >= 0 && to >= from)
+            {
+                one.Success = true;
+                one.Index = from;
+                one.Length = to - from;
+                one.Value = input.Substring(from, to - from);
+            }
+            groups[g] = one;
+        }
+        List<string> keys = _names.Keys;
+        for (int i = 0; i < keys.Count; i = i + 1)
+        {
+            groups[_names[keys[i]]].Name = keys[i];
+        }
+        int next = groups[0].Length == 0 ? groups[0].Index + 1
+                 : groups[0].Index + groups[0].Length;
+        return new Match(this, input, groups, _names, next);
+    }
+
+    /// The failed match every one of these answers with.
+    public static Match NoMatch()
+    {
+        Group[] none = new Group[1];
+        none[0] = new Group();
+        return new Match(null, "", none, null, 0);
+    }
+
+    // ---- replacing ----------------------------------------------------------
+
+    public string Replace(string input, string replacement)
+    {
+        return Replace(input, replacement, -1);
+    }
+
+    public string Replace(string input, string replacement, int count)
+    {
+        StringBuilder made = new StringBuilder();
+        int at = 0;
+        int done = 0;
+        while (at <= input.Length && (count < 0 || done < count))
+        {
+            Match one = Match(input, at);
+            if (!one.Success)
+            {
+                break;
+            }
+            made.Append(input.Substring(at, one.Index - at));
+            made.Append(Substitution(replacement, one, input));
+            done = done + 1;
+            if (one.Length == 0)
+            {
+                if (one.Index < input.Length)
+                {
+                    made.Append(input[one.Index]);
+                }
+                at = one.Index + 1;
+            }
+            else
+            {
+                at = one.Index + one.Length;
+            }
+        }
+        if (at <= input.Length)
+        {
+            made.Append(input.Substring(at, input.Length - at));
+        }
+        return made.ToString();
+    }
+
+    /// $1, ${name}, $&, $`, $', $_ and $$, as .NET reads a replacement.
+    string Substitution(string replacement, Match one, string input)
+    {
+        StringBuilder made = new StringBuilder();
+        int i = 0;
+        while (i < replacement.Length)
+        {
+            char c = replacement[i];
+            if (c != '$' || i + 1 >= replacement.Length)
+            {
+                made.Append(c);
+                i = i + 1;
+                continue;
+            }
+            char next = replacement[i + 1];
+            if (next == '$')
+            {
+                made.Append('$');
+                i = i + 2;
+                continue;
+            }
+            if (next == '&')
+            {
+                made.Append(one.Value);
+                i = i + 2;
+                continue;
+            }
+            if (next == '`')
+            {
+                made.Append(input.Substring(0, one.Index));
+                i = i + 2;
+                continue;
+            }
+            if (next == '\'')
+            {
+                int after = one.Index + one.Length;
+                made.Append(input.Substring(after, input.Length - after));
+                i = i + 2;
+                continue;
+            }
+            if (next == '_')
+            {
+                made.Append(input);
+                i = i + 2;
+                continue;
+            }
+            if (next == '{')
+            {
+                int close = String.IndexOf(replacement, '}', i + 2);
+                if (close > 0)
+                {
+                    made.Append(one.Groups.ByName(replacement.Substring(i + 2, close - i - 2)).Value);
+                    i = close + 1;
+                    continue;
+                }
+            }
+            if (Char.IsDigit(next))
+            {
+                int number = 0;
+                int j = i + 1;
+                while (j < replacement.Length && Char.IsDigit(replacement[j])
+                       && number * 10 + (replacement[j] - '0') < one.Groups.Count)
+                {
+                    number = number * 10 + (replacement[j] - '0');
+                    j = j + 1;
+                }
+                if (j > i + 1)
+                {
+                    made.Append(one.Groups[number].Value);
+                    i = j;
+                    continue;
+                }
+            }
+            made.Append(c);
+            i = i + 1;
+        }
+        return made.ToString();
+    }
+
+    // ---- splitting ----------------------------------------------------------
+
+    public string[] Split(string input)
+    {
+        List<string> pieces = new List<string>();
+        int at = 0;
+        int from = 0;
+        while (at <= input.Length)
+        {
+            Match one = Match(input, at);
+            if (!one.Success)
+            {
+                break;
+            }
+            if (one.Length == 0 && one.Index == from)
+            {
+                at = one.Index + 1;
+                if (at > input.Length)
+                {
+                    break;
+                }
+                continue;
+            }
+            pieces.Add(input.Substring(from, one.Index - from));
+            // .NET puts every captured group between the pieces.
+            for (int g = 1; g < one.Groups.Count; g = g + 1)
+            {
+                if (one.Groups[g].Success)
+                {
+                    pieces.Add(one.Groups[g].Value);
+                }
+            }
+            from = one.Index + one.Length;
+            at = one.Length == 0 ? one.Index + 1 : from;
+        }
+        pieces.Add(input.Substring(from, input.Length - from));
+        return pieces.ToArray();
+    }
+
+    // ---- the static shorthands ----------------------------------------------
+
+    public static bool IsMatch(string input, string pattern)
+    {
+        return new Regex(pattern).IsMatch(input);
+    }
+
+    public static bool IsMatch(string input, string pattern, RegexOptions options)
+    {
+        return new Regex(pattern, options).IsMatch(input);
+    }
+
+    public static Match Match(string input, string pattern)
+    {
+        return new Regex(pattern).Match(input);
+    }
+
+    public static Match Match(string input, string pattern, RegexOptions options)
+    {
+        return new Regex(pattern, options).Match(input);
+    }
+
+    public static MatchCollection Matches(string input, string pattern)
+    {
+        return new Regex(pattern).Matches(input);
+    }
+
+    public static MatchCollection Matches(string input, string pattern, RegexOptions options)
+    {
+        return new Regex(pattern, options).Matches(input);
+    }
+
+    public static string Replace(string input, string pattern, string replacement)
+    {
+        return new Regex(pattern).Replace(input, replacement);
+    }
+
+    public static string Replace(string input, string pattern, string replacement,
+                                 RegexOptions options)
+    {
+        return new Regex(pattern, options).Replace(input, replacement);
+    }
+
+    public static string[] Split(string input, string pattern)
+    {
+        return new Regex(pattern).Split(input);
+    }
+
+    public static string[] Split(string input, string pattern, RegexOptions options)
+    {
+        return new Regex(pattern, options).Split(input);
+    }
+
+    /// Every character the pattern language would read as itself, backslashed.
+    public static string Escape(string text)
+    {
+        StringBuilder made = new StringBuilder();
+        for (int i = 0; i < text.Length; i = i + 1)
+        {
+            char c = text[i];
+            if (c == '\\' || c == '*' || c == '+' || c == '?' || c == '|'
+                || c == '{' || c == '[' || c == '(' || c == ')' || c == '^'
+                || c == '$' || c == '.' || c == '#' || c == ' ')
+            {
+                made.Append('\\');
+                made.Append(c);
+            }
+            else if (c == '\t') { made.Append("\\t"); }
+            else if (c == '\n') { made.Append("\\n"); }
+            else if (c == '\r') { made.Append("\\r"); }
+            else if (c == '\f') { made.Append("\\f"); }
+            else if (c == (char)11) { made.Append("\\v"); }
+            else { made.Append(c); }
+        }
+        return made.ToString();
+    }
+
+    /// The inverse: every \c read as c, and the usual letters as themselves.
+    public static string Unescape(string text)
+    {
+        StringBuilder made = new StringBuilder();
+        int i = 0;
+        while (i < text.Length)
+        {
+            char c = text[i];
+            if (c != '\\' || i + 1 >= text.Length)
+            {
+                made.Append(c);
+                i = i + 1;
+                continue;
+            }
+            char e = text[i + 1];
+            i = i + 2;
+            if (e == 'n') { made.Append('\n'); }
+            else if (e == 't') { made.Append('\t'); }
+            else if (e == 'r') { made.Append('\r'); }
+            else if (e == 'f') { made.Append('\f'); }
+            else if (e == 'v') { made.Append((char)11); }
+            else if (e == 'a') { made.Append((char)7); }
+            else if (e == 'e') { made.Append((char)27); }
+            else if (e == '0') { made.Append((char)0); }
+            else { made.Append(e); }
+        }
+        return made.ToString();
+    }
+}

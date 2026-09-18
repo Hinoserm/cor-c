@@ -1,0 +1,98 @@
+// test: async_suspend
+// expect-exit: 0
+// expect-output:
+// outer before
+// inner before
+// main between
+// inner after
+// outer after
+// main end
+// a before
+// main got a
+// b before
+// main got b
+// a after
+// b after
+// main awaited a
+// main awaited b
+// x0
+// y0
+// x1
+// y1
+// x2
+// y end
+// x end
+// main after y
+// main after x
+//
+// Suspension order. An async method runs synchronously up to its first
+// await of an incomplete task (Task.Yield), then returns to its caller,
+// which carries on; the rest of the method runs later from the run queue.
+// Covers a suspension two calls deep (the outer method resumes only after
+// the inner one finished), two methods started before either resumes, and
+// two loops yielding in turn. Continuations are posted to a FIFO queue, so
+// resumptions happen in the order the awaits were reached.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static async Task Inner()
+    {
+        Line("inner before");
+        await Task.Yield();
+        Line("inner after");
+    }
+
+    static async Task Outer()
+    {
+        Line("outer before");
+        await Inner();
+        Line("outer after");
+    }
+
+    static async Task Worker(string name)
+    {
+        Line(name + " before");
+        await Task.Yield();
+        Line(name + " after");
+    }
+
+    static async Task Steps(string name, int n)
+    {
+        for (int i = 0; i < n; i++)
+        {
+            Line(name + i);
+            await Task.Yield();
+        }
+        Line(name + " end");
+    }
+
+    static async Task Main()
+    {
+        Task o = Outer();
+        Line("main between");
+        await o;
+        Line("main end");
+
+        Task a = Worker("a");
+        Line("main got a");
+        Task b = Worker("b");
+        Line("main got b");
+        await a;
+        Line("main awaited a");
+        await b;
+        Line("main awaited b");
+
+        Task x = Steps("x", 3);
+        Task y = Steps("y", 2);
+        await y;
+        Line("main after y");
+        await x;
+        Line("main after x");
+    }
+}

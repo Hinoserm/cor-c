@@ -1,0 +1,37 @@
+// test: empty lists avoid backing allocation and preserve capacity semantics
+// expect-exit: 0
+// expect-output:
+// lazy list storage passed
+static class Program
+{
+    static int Main()
+    {
+        Gc.Collect();
+        long before = Gc.LiveBytes;
+        List<int>[] lists = new List<int>[10000];
+        for (int i = 0; i < lists.Length; i++) lists[i] = new List<int>();
+        Gc.Collect();
+        if (Gc.LiveBytes > before + 800000) return 1;
+        for (int i = 0; i < lists.Length; i++)
+            if (lists[i].Count != 0 || lists[i].Capacity != 0) return 2;
+        List<int> list = lists[0];
+        list.Add(42);
+        list.Insert(0, 7);
+        list.Capacity = 2;
+        if (list.Capacity != 2 || list[0] != 7 || list[1] != 42) return 3;
+        list.RemoveAt(0);
+        list.Capacity = 1;
+        if (list[0] != 42 || list.Capacity != 1) return 4;
+        list.Clear();
+        list.Capacity = 0;
+        if (list.Capacity != 0 || list.Count != 0) return 5;
+        list.Add(13);
+        if (list[0] != 13) return 6;
+        bool caught = false;
+        try { list.Capacity = 0; }
+        catch (ArgumentOutOfRangeException) { caught = true; }
+        if (!caught) return 7;
+        Sys.Print("lazy list storage passed\n");
+        return 0;
+    }
+}

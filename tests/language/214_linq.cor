@@ -1,0 +1,96 @@
+// test: linq
+// expect-exit: 0
+// expect-output:
+// agg 14 1 5 3 5 True 2.8
+// order 1,1,3,4,5 | 5,1,4,1,3
+// while 3,1 | 4,1,5
+// fold 14 5
+// sets 3,4,5 | 3,1,4,5,9 | 1
+// cat 3,1,4,1,5,1,9 3,1,4,1,5,7 0,3,1,4,1,5
+// by c1 b2 a3 | c1 b2 a3
+// select 1 3 2.00
+// one a 4 1
+// chunk 3 3,1
+// convert 3 3 4
+//
+// LINQ to objects past Where and Select: the aggregates, the element
+// operators that differ in what they do when nothing matches, ordering by a
+// computed key, the set operations, folding, and the conversions. Each
+// answers a List rather than a lazy sequence -- `yield return` does not exist
+// here yet -- and means what the same name means in C#.
+
+class Part
+{
+    public string Name;
+    public int Size;
+
+    public Part(string name, int size)
+    {
+        Name = name;
+        Size = size;
+    }
+
+    public string ToString() { return Name + Size; }
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        List<int> n = new List<int>();
+        n.Add(3);
+        n.Add(1);
+        n.Add(4);
+        n.Add(1);
+        n.Add(5);
+
+        Line("agg " + n.Sum() + " " + n.Min() + " " + n.Max() + " "
+             + n.First() + " " + n.Last() + " " + n.Contains(4) + " "
+             + n.Average().ToString("F1"));
+
+        Line("order " + String.Join(",", n.Order()) + " | "
+             + String.Join(",", Enumerable.Reverse<int>(n)));
+
+        Line("while " + String.Join(",", n.TakeWhile(x => x < 4)) + " | "
+             + String.Join(",", n.SkipWhile(x => x < 4)));
+
+        Line("fold " + n.Aggregate(0, (total, x) => total + x) + " "
+             + n.Aggregate((a, b) => a > b ? a : b));
+
+        List<int> m = new List<int>();
+        m.Add(1);
+        m.Add(9);
+        Line("sets " + String.Join(",", n.Except(m)) + " | " + String.Join(",", n.Union(m))
+             + " | " + String.Join(",", n.Intersect(m)));
+
+        Line("cat " + String.Join(",", n.Concat(m)) + " " + String.Join(",", n.Append(7))
+             + " " + String.Join(",", n.Prepend(0)));
+
+        List<Part> parts = new List<Part>();
+        parts.Add(new Part("b", 2));
+        parts.Add(new Part("a", 3));
+        parts.Add(new Part("c", 1));
+        Line("by " + String.Join(" ", parts.OrderBy(p => p.Size)) + " | "
+             + String.Join(" ", parts.OrderByDescending(p => p.Name)));
+
+        Line("select " + parts.Min(p => (long)p.Size) + " " + parts.Max(p => (long)p.Size)
+             + " " + parts.Average(p => (long)p.Size).ToString("F2"));
+
+        Line("one " + parts.Single(p => p.Size == 3).Name + " " + n.ElementAt(2)
+             + " " + n.Last(x => x < 4));
+
+        List<List<int>> pieces = n.Chunk(2);
+        List<int> head = pieces[0];
+        Line("chunk " + pieces.Count + " " + String.Join(",", head));
+
+        Dictionary<string, int> table = parts.ToDictionary(p => p.Name, p => p.Size);
+        Line("convert " + table.Count + " " + table["a"] + " " + n.ToHashSet().Count);
+        return 0;
+    }
+}

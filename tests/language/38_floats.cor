@@ -1,0 +1,71 @@
+// test: floats
+// expect-exit: 0
+// expect-output:
+// arith 3750 3375 750 1500 -1500
+// cast 3 -3 1000000000000000 7000 1099511627776 -5000
+// cmp True False True True True
+// float 2000 100
+// loop 22500
+// mixed 3 3500 4500
+// big 9007199254740992 -2
+//
+// double and float: the four operations and negation, conversion to and
+// from int and long with truncation toward zero, comparisons, float
+// promoted to double, accumulation in a loop, mixing with integers, and a
+// long that only just fits in a double. There is no floating formatter, so
+// values are printed as (long)(x * 1000). Every value is a multiple of a
+// power of two so no result depends on rounding.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static long K(double x)
+    {
+        return (long)(x * 1000.0);
+    }
+
+    static int Main()
+    {
+        double a = 1.5;
+        double b = 2.25;
+        Line("arith " + K(a + b) + " " + K(a * b) + " " + K(b - a) + " " + K(b / a) + " " + K(-a));
+
+        double d1 = 3.75;
+        double d2 = -3.75;
+        double big = 1000000000000000.0;
+        int seven = 7;
+        long l40 = 1L << 40;
+        int m5 = -5;
+        Line("cast " + (int)d1 + " " + (int)d2 + " " + (long)big + " " + K((double)seven) + " " + (long)(double)l40 + " " + K((double)m5));
+
+        double onePointFive = 1.5;
+        Line("cmp " + (a < b) + " " + (b < a) + " " + (a == onePointFive) + " " + (a != b) + " " + (a <= onePointFive));
+
+        float f = 0.5f;
+        float four = 4.0f;
+        float tenth = 0.1f;
+        Line("float " + K(f * four) + " " + K((double)tenth));
+
+        double acc = 0.0;
+        for (int i = 0; i < 10; i++)
+        {
+            acc = acc + i * 0.5;
+        }
+        Line("loop " + K(acc));
+
+        int x = 3;
+        int two = 2;
+        Line("mixed " + (seven / two) + " " + K(seven / 2.0) + " " + K(x * 1.5));
+
+        long exact = 9007199254740992L;
+        double asDouble = (double)exact;
+        double mtwoPointFive = -2.5;
+        Line("big " + (long)asDouble + " " + (long)mtwoPointFive);
+        return 0;
+    }
+}

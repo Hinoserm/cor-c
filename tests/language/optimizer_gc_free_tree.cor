@@ -1,0 +1,76 @@
+// test: balanced large free-bin search, deletion, splitting, merging and sweep rebuilding
+// expect-exit: 0
+// expect-output:
+// free tree passed
+static class Program
+{
+    static void Check(int stage)
+    {
+        if (Gc.CheckFreeIndex()) return;
+        Sys.Print("free index failed stage=" + stage + " kind=" + Gc.FreeIndexErrorKind
+            + " block=" + Gc.FreeIndexErrorBlock + "\n");
+        throw new InvalidOperationException("free index invariant");
+    }
+    static int Main()
+    {
+        const int count = 512;
+        Gc.SetLimit(134217728);
+        long[] blocks = new long[count];
+        long[] guards = new long[count];
+        long large = Runtime.Alloc(60000);
+        long largeGuard = Runtime.Alloc(64);
+        for (int i = 0; i < count; i++)
+        {
+            blocks[i] = Runtime.Alloc(40000 + (i % 7) * 8);
+            // Stay below the dedicated-mapping threshold so this exercises
+            // free-bin trees rather than immediate whole-chunk unmapping.
+            guards[i] = Runtime.Alloc(64);
+            Sys.Poke(guards[i], i + 1);
+        }
+        Check(1);
+        Runtime.Free(large);
+        for (int i = 0; i < count; i++)
+        {
+            int index = (i * 73) & (count - 1);
+            Runtime.Free(blocks[index]);
+            blocks[index] = 0;
+            if ((i & 31) == 31) Check(1000 + i);
+        }
+        long probes = Gc.ProbeSteps;
+        large = Runtime.Alloc(50000);
+        if (Gc.ProbeSteps == probes || Gc.ProbeSteps - probes > 128)
+        { Sys.Print("excessive free-index probes: " + (Gc.ProbeSteps - probes) + "\n"); return 1; }
+        for (int i = 0; i < 50000; i += 4)
+            if (Sys.Peek(large + i) != 0) return 2;
+        Check(2);
+        for (int i = 0; i < count; i++)
+        {
+            blocks[i] = Runtime.Alloc(40000);
+            if (Sys.Peek(blocks[i]) != 0 || Sys.Peek(blocks[i] + 39996) != 0) return 3;
+            Sys.Poke(blocks[i], i + 1);
+            if ((i & 31) == 31) Check(2000 + i);
+        }
+        Gc.Collect();
+        Check(3);
+        for (int i = 0; i < count; i++)
+        {
+            if (Sys.Peek(guards[i]) != i + 1 || Sys.Peek(blocks[i]) != i + 1) return 4;
+            Runtime.Free(guards[i]);
+            guards[i] = 0;
+        }
+        Check(4);
+        for (int i = 0; i < count; i++)
+        {
+            int index = (i * 173) & (count - 1);
+            Runtime.Free(blocks[index]);
+            blocks[index] = 0;
+            if ((i & 31) == 31) Check(3000 + i);
+        }
+        Runtime.Free(large);
+        Runtime.Free(largeGuard);
+        Gc.Collect();
+        Check(5);
+        Sys.Print("free tree passed\n");
+        return 0;
+    }
+}

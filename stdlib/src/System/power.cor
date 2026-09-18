@@ -1,0 +1,38 @@
+// Turning the machine off and starting it again. .NET has no API for
+// this (a .NET program shells out to shutdown(8)); here it is one class
+// over reboot(2), for poweroff, reboot and halt to share. It is the
+// caller's job to have synced the discs, and SystemPower does that too.
+static class SystemPower
+{
+    const long Restart = 0x01234567;
+    const long PowerOffCommand = 0x4321FEDC;
+    const long HaltCommand = 0xCDEF0123;
+
+    /// Every dirty block to the disc first.
+    public static void Sync()
+    {
+        Os.Sync();
+    }
+
+    /// Does not return when it works; throws when the kernel refuses
+    /// (not the superuser, or a kernel with no power control).
+    public static void PowerOff()
+    {
+        Fail(Os.Reboot(PowerOffCommand), "power off");
+    }
+
+    public static void Reboot()
+    {
+        Fail(Os.Reboot(Restart), "reboot");
+    }
+
+    public static void Halt()
+    {
+        Fail(Os.Reboot(HaltCommand), "halt");
+    }
+
+    static void Fail(long r, string what)
+    {
+        throw new IOException("cannot " + what + ": errno " + (-r));
+    }
+}

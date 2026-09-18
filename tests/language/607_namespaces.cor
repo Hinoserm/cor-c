@@ -1,0 +1,99 @@
+// test: namespaces
+// sources: tests/lang/support/607_ir.cor tests/lang/support/607_ast.cor tests/lang/support/607_helper.cor
+// expect-exit: 0
+// expect-output:
+// aliased ir 3
+// qualified ast hello
+// own ir 7
+// list 2 ir 1 ir 2
+// operand 5
+// nested Step inner
+// helper ast from a partial
+// path said through the namespace
+//
+// A namespace puts a path on the types inside it, so `App.Ir.Block` and
+// `App.Ast.Block` are two types. A name is resolved outwards from where it was
+// written -- the types it sits inside, then namespace by namespace -- and at
+// each step the using directives written there get their turn: an alias first,
+// then the namespaces imported, of which exactly one may have the name.
+//
+// A using directive belongs to the FILE it was written in. This file's alias
+// says Block means the IR's; the other two files say nothing of the kind.
+
+namespace App.Opt;
+
+using App.Ir;
+using Block = App.Ir.Block;
+
+public class Pass
+{
+    public class Step
+    {
+        public string Name = "inner";
+    }
+
+    // The alias reaches here, and so does the import: Operand is named
+    // without its namespace because `using App.Ir;` brought it in.
+    public Block Made => new Block(7);
+
+    public Operand Slot => new Operand(5);
+
+    public Step Inside => new Step();
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        Block b = new Block(3);
+
+        Line("aliased " + b.Say());
+
+        // The other one, named in full.
+        App.Ast.Block a = new App.Ast.Block("hello");
+
+        Line("qualified " + a.Say());
+
+        Pass p = new Pass();
+
+        Line("own " + p.Made.Say());
+
+        // A generic over a type whose simple name is shared: the element is
+        // the one this file means by Block.
+        List<Block> blocks = new();
+
+        blocks.Add(new Block(1));
+        blocks.Add(new Block(2));
+
+        // Both the outer argument and the annotations retained inside the
+        // specialised inner List must still resolve this file's alias when
+        // copied into standard-library template bodies.
+        List<List<Block>> nested = new() { blocks };
+        if (nested[0][1].Say() != "ir 2") return 1;
+        List<(Block Node, int Weight)> named = new() { (b, 9) };
+        if (named[0].Node.Say() != "ir 3" || named[0].Weight != 9) return 2;
+
+        string joined = "";
+
+        foreach (Block each in blocks)
+        {
+            joined = joined + " " + each.Say();
+        }
+
+        Line("list " + blocks.Count + joined);
+        Line("operand " + p.Slot.Slot);
+        Line("nested " + p.Inside.GetType().Name + " " + p.Inside.Name);
+        Line("helper " + Helper.Describe());
+
+        // A STATIC MEMBER THROUGH ITS FULL PATH, which is the same question
+        // asked of an expression rather than of a type.
+        Line("path " + App.Ast.Sayer.Say("through the namespace"));
+        return 0;
+    }
+}

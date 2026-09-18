@@ -1,0 +1,83 @@
+// test: threads_basic
+// expect-exit: 0
+// expect-output:
+// started 4
+// count 400000
+// joined
+//
+// Real OS threads: Thread.Start clones a thread with its own stack, four of
+// them add to one counter with AtomicAdd, and Join waits for each to finish.
+// The count is the only thing printed, because the order the threads run in is
+// not something a test can pin down.
+//
+// Thread bodies here do arithmetic and atomics only: allocating or throwing on
+// a thread other than the first is not safe yet (see the note on Thread in
+// lib/threading.cor).
+
+class Counter
+{
+    // LAYOUT: first instance field, at Atom.FirstWord -- what AtomicAdd works on.
+    public int Value;
+    public int Pad;
+}
+
+class Bump : Action
+{
+    Counter _counter;
+    int _times;
+
+    public Bump(Counter counter, int times)
+    {
+        _counter = counter;
+        _times = times;
+    }
+
+    public void Invoke()
+    {
+        long at = Atom.At(_counter, Atom.FirstWord);
+
+        for (int i = 0; i < _times; i++)
+        {
+            Sys.AtomicAdd(at, 1);
+        }
+    }
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        Counter counter = new Counter();
+        int threads = 4;
+        int each = 100000;
+
+        Thread[] all = new Thread[threads];
+
+        for (int i = 0; i < threads; i++)
+        {
+            all[i] = Thread.Start(new Bump(counter, each));
+        }
+
+        Sys.Print("started ");
+        Sys.PrintInt(threads);
+        Sys.PrintLine();
+
+        for (int i = 0; i < threads; i++)
+        {
+            all[i].Join();
+        }
+
+        Sys.Print("count ");
+        Sys.PrintInt(counter.Value);
+        Sys.PrintLine();
+
+        Line("joined");
+        return 0;
+    }
+}

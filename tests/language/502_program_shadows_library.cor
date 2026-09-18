@@ -1,0 +1,45 @@
+// test: program_shadows_library
+// expect-exit: 0
+// expect-output:
+// mine 2
+// mine top
+// lib 1
+//
+// A PROGRAM'S OWN TYPE SHADOWS THE CLASS LIBRARY'S. The library declares
+// Stack<T> and List<T>; a program is entitled to declare a Stack of its own,
+// and every unqualified mention of the name is then the program's. This used
+// to be "'Stack`1' is declared more than once" and refused the program
+// outright. A library type the program does NOT redeclare is untouched.
+class Stack<T>
+{
+    private T[] _items = new T[8];
+    private int _count;
+
+    public int Depth { get { return _count; } }
+
+    public void Push(T item) { _items[_count] = item; _count = _count + 1; }
+
+    public T Top() { return _items[_count - 1]; }
+}
+
+static class Program
+{
+    static void Line(string text)
+    {
+        Sys.Print(text);
+        Sys.PrintLine();
+    }
+
+    static void Main()
+    {
+        Stack<string> mine = new Stack<string>();
+        mine.Push("bottom");
+        mine.Push("top");
+        Line("mine " + mine.Depth);
+        Line("mine " + mine.Top());
+
+        List<int> theirs = new List<int>();
+        theirs.Add(7);
+        Line("lib " + theirs.Count);
+    }
+}

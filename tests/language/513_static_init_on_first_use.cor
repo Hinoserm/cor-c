@@ -1,0 +1,113 @@
+// test: static_init_on_first_use
+// expect-exit: 0
+// expect-output:
+// start []
+// table 3 [T]
+// number 7 [TN]
+// again 7 [TN]
+// instance [TNI]
+// heap 24
+// knot A=1 B=2 [TNI]
+// struct 5 [TNIS]
+// delegate 7 [TNIS]
+//
+// A TYPE'S STATIC INITIALISERS RUN THE FIRST TIME ANYTHING TOUCHES IT, once,
+// which is C#'s rule. They used to run in source order from the entry stub,
+// and in a freestanding image that is before there is a heap: a
+// `static byte[] table = new byte[24];` in any file the kernel linked brought
+// the kernel down at entry. Nothing here allocates until Main has started.
+//
+// Covers the three things that touch a type -- a static field, a static
+// method, an instance -- and the two ways in that those three cannot see: a
+// STRUCT, which comes into being without a `new`, and a DELEGATE over a static
+// method, whose call has no name to hang a trigger on. Also that each runs
+// once and no sooner, and the knot two
+// types make when each initialiser reads the other: the flag is set before the
+// body runs, so the second one to be entered sees the first half-built rather
+// than calling it for ever. That is C#'s answer too.
+static class Log
+{
+    public static string Text = "";
+
+    public static void Add(string mark) { Text = Text + mark; }
+}
+
+static class Table
+{
+    public static int[] Rows = Build();
+
+    static int[] Build() { Log.Add("T"); return new int[3]; }
+}
+
+static class Number
+{
+    public static int Value = Seven();
+
+    public static int Read() { return Value; }
+
+    static int Seven() { Log.Add("N"); return 7; }
+}
+
+class Thing
+{
+    public static string Name = Named();
+
+    static string Named() { Log.Add("I"); return "thing"; }
+}
+
+static class Heap
+{
+    public static byte[] Scratch = new byte[24];
+}
+
+// Each reads the other's. Whichever is entered second sees the first still
+// being built, and gets what it had at that moment -- not a loop.
+static class Knot1
+{
+    public static int A = 1 + Knot2.B - Knot2.B;
+}
+
+static class Knot2
+{
+    public static int B = 2;
+}
+
+struct Counted
+{
+    public static int Seed = Five();
+
+    public int Read() { return Seed; }
+
+    static int Five() { Log.Add("S"); return 5; }
+}
+
+static class Program
+{
+    static int Through(Func<int> read) { return read(); }
+
+    static void Line(string text)
+    {
+        Sys.Print(text);
+        Sys.PrintLine();
+    }
+
+    static void Main()
+    {
+        Line("start [" + Log.Text + "]");
+
+        Line("table " + Table.Rows.Length + " [" + Log.Text + "]");
+        Line("number " + Number.Read() + " [" + Log.Text + "]");
+        Line("again " + Number.Value + " [" + Log.Text + "]");
+
+        Thing made = new Thing();
+        Line("instance [" + Log.Text + "]");
+
+        Line("heap " + Heap.Scratch.Length);
+        Line("knot A=" + Knot1.A + " B=" + Knot2.B + " [" + Log.Text + "]");
+
+        Counted counted = default(Counted);
+        Line("struct " + counted.Read() + " [" + Log.Text + "]");
+
+        Line("delegate " + Through(Number.Read) + " [" + Log.Text + "]");
+    }
+}

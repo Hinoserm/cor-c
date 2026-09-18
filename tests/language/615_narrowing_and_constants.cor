@@ -1,0 +1,88 @@
+// test: narrowing_and_constants
+// expect-exit: 0
+// expect-output:
+// conditional Template
+// captured 7 3
+// tuple True 1 2 False
+// nullable none
+//
+// What a NULL-CONDITIONAL proves: `d?.Template is null` being false means d
+// was not null, which is the only thing it could mean, and C# reads it that
+// way. What a LAMBDA proves: nothing about the enclosing method's locals, so
+// reading one inside must not lose what was proved outside -- capture is by
+// value here and a lambda cannot make an outer variable null.
+//
+// With it: a local captured by a lambda that no statement declares -- an `out
+// var` -- gets a cell like any other, and a nullable tuple answers .Value and
+// .HasValue, which is how C#'s Nullable<ValueTuple<…>> is opened.
+
+class Decl
+{
+    public string? Template;
+}
+
+class Holder
+{
+    public Decl? Written;
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Length(string s)
+    {
+        return s.Length;
+    }
+
+    static (int A, int B)? Find(bool yes)
+    {
+        return yes ? (1, 2) : null;
+    }
+
+    static int Main()
+    {
+        Holder h = new Holder();
+
+        h.Written = new Decl();
+        h.Written.Template = "Template";
+
+        // The false branch of `is null` proves the receiver, not the member.
+        if (h.Written?.Template is null)
+        {
+            Line("conditional none");
+        }
+        else
+        {
+            Line("conditional " + h.Written.Template);
+        }
+
+        Queue<string> queue = new Queue<string>();
+
+        queue.Enqueue("abcdefg");
+
+        List<string> seen = new List<string>();
+        int total = 0;
+
+        while (queue.TryDequeue(out string? item))
+        {
+            // The lambda captures `item`, which no statement declared; what
+            // the while proved about it holds after the lambda as well.
+            seen.RemoveAll(s => s == item);
+            total = total + Length(item);
+        }
+
+        Line("captured " + total + " " + (seen.Count + 3));
+
+        (int A, int B)? some = Find(true);
+        (int A, int B)? none = Find(false);
+
+        Line("tuple " + some.HasValue + " " + some.Value.A + " " + some.Value.B + " " + none.HasValue);
+        Line("nullable " + (none.HasValue ? "some" : "none"));
+        return 0;
+    }
+}

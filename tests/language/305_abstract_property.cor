@@ -1,0 +1,196 @@
+// test: abstract property
+// expect-exit: 0
+// expect-output:
+// d yes
+// b yes
+// d2 yes
+// int d 7
+// int b 7
+// str d hello
+// str b hello
+// obj d same
+// obj b same
+// set d 42
+// set b 99
+// virt d derived
+// virt b derived
+// virt base base
+// gen d 5
+// gen b 5
+// iface d 3
+// iface i 3
+// two d 1 2
+// two b 1 2
+//
+// An abstract property is a pair of ACCESSORS and not storage. It parses
+// exactly like an auto property -- `bool Exists { get; }`, no bodies -- and
+// was being laid out as a field on the abstract class, so every read of it
+// returned a never-assigned field rather than running the override's body.
+// Nor did the invented get_/set_ methods carry the property's own
+// virtual/override/abstract modifiers, so an override took a vtable slot of
+// its own instead of the base's and a call through the base type missed it.
+//
+// Here: abstract getters of bool, int, string and object; an abstract
+// setter; a virtual property overridden; an abstract property on a generic
+// class; one that implements an interface; and two on one type, each read
+// through the derived type AND through the base type.
+
+abstract class Base
+{
+    protected string _p;
+    protected Base(string p) { _p = p; }
+    public abstract bool Exists { get; }
+    public abstract void Delete();
+}
+
+class Derived : Base
+{
+    public Derived(string p) : base(p) { }
+    public override bool Exists { get { return _p.Length > 0; } }
+    public override void Delete() { }
+}
+
+abstract class Base2 { public abstract bool Exists { get; } }
+class Derived2 : Base2 { public override bool Exists { get { return true; } } }
+
+abstract class IntBase { public abstract int Value { get; } }
+class IntDerived : IntBase { public override int Value { get { return 7; } } }
+
+abstract class StrBase { public abstract string Text { get; } }
+class StrDerived : StrBase { public override string Text { get { return "hello"; } } }
+
+class Payload { public int N; }
+
+abstract class ObjBase { public abstract object Item { get; } }
+
+class ObjDerived : ObjBase
+{
+    private Payload _payload;
+    public ObjDerived(Payload p) { _payload = p; }
+    public override object Item { get { return _payload; } }
+}
+
+abstract class SetBase
+{
+    public abstract int Slot { get; set; }
+}
+
+class SetDerived : SetBase
+{
+    private int _slot;
+    public override int Slot
+    {
+        get { return _slot; }
+        set { _slot = value; }
+    }
+}
+
+class VirtBase
+{
+    public virtual string Name { get { return "base"; } }
+}
+
+class VirtDerived : VirtBase
+{
+    public override string Name { get { return "derived"; } }
+}
+
+abstract class GenBase<T>
+{
+    public abstract T First { get; }
+}
+
+class GenDerived<T> : GenBase<T>
+{
+    private T _v;
+    public GenDerived(T v) { _v = v; }
+    public override T First { get { return _v; } }
+}
+
+interface ICounted
+{
+    int Count { get; }
+}
+
+abstract class CountedBase : ICounted
+{
+    public abstract int Count { get; }
+}
+
+class CountedDerived : CountedBase
+{
+    public override int Count { get { return 3; } }
+}
+
+abstract class TwoBase
+{
+    public abstract int A { get; }
+    public abstract int B { get; }
+}
+
+class TwoDerived : TwoBase
+{
+    public override int A { get { return 1; } }
+    public override int B { get { return 2; } }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Derived d = new Derived("x");
+        Console.WriteLine(d.Exists ? "d yes" : "d no");
+        Base b = d;
+        Console.WriteLine(b.Exists ? "b yes" : "b no");
+        Derived2 d2 = new Derived2();
+        Console.WriteLine(d2.Exists ? "d2 yes" : "d2 no");
+
+        IntDerived i = new IntDerived();
+        IntBase ib = i;
+        Console.WriteLine("int d " + i.Value.ToString());
+        Console.WriteLine("int b " + ib.Value.ToString());
+
+        StrDerived s = new StrDerived();
+        StrBase sb = s;
+        Console.WriteLine("str d " + s.Text);
+        Console.WriteLine("str b " + sb.Text);
+
+        Payload payload = new Payload();
+        payload.N = 11;
+        ObjDerived o = new ObjDerived(payload);
+        ObjBase ob = o;
+        Console.WriteLine("obj d " + (o.Item == payload ? "same" : "other"));
+        Console.WriteLine("obj b " + (ob.Item == payload ? "same" : "other"));
+
+        SetDerived sd = new SetDerived();
+        sd.Slot = 42;
+        Console.WriteLine("set d " + sd.Slot.ToString());
+        SetBase sbb = sd;
+        sbb.Slot = 99;
+        Console.WriteLine("set b " + sbb.Slot.ToString());
+
+        VirtDerived vd = new VirtDerived();
+        VirtBase vb = vd;
+        Console.WriteLine("virt d " + vd.Name);
+        Console.WriteLine("virt b " + vb.Name);
+        Console.WriteLine("virt base " + new VirtBase().Name);
+
+        GenDerived<int> gd = new GenDerived<int>(5);
+        GenBase<int> gb = gd;
+        Console.WriteLine("gen d " + gd.First.ToString());
+        Console.WriteLine("gen b " + gb.First.ToString());
+
+        CountedDerived cd = new CountedDerived();
+        ICounted ic = cd;
+        Console.WriteLine("iface d " + cd.Count.ToString());
+        Console.WriteLine("iface i " + ic.Count.ToString());
+
+        TwoDerived td = new TwoDerived();
+        TwoBase tb = td;
+        Console.WriteLine("two d " + td.A.ToString() + " " + td.B.ToString());
+        Console.WriteLine("two b " + tb.A.ToString() + " " + tb.B.ToString());
+
+        d.Delete();
+        return 0;
+    }
+}

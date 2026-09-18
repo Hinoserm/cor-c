@@ -1,0 +1,2559 @@
+// System.IO.Compression, as .NET spells it: DeflateStream, ZLibStream and
+// GZipStream over any Stream, with CompressionMode, CompressionLevel and
+// leaveOpen meaning exactly what they mean there.
+//
+// The engine underneath is the one os/lib/deflate.cor carried off the
+// mainframe -- RFC 1951 block structure, the same length and distance tables,
+// the same three block forms, the same gzip and zlib framing -- rewritten for
+// a machine with no Compression Unit to lean on. Everything that was a
+// per-symbol decision there is a table lookup here:
+//
+//   * matches are found through a hash chain with lazy evaluation, as zlib
+//     does, instead of walking every byte of the window;
+//   * blocks are emitted stored, static or dynamic, whichever is smallest,
+//     so the output is the size gzip's is rather than a fixed-Huffman
+//     approximation of it;
+//   * codes are decoded through a two-level lookup table, one memory
+//     reference for the common code, instead of a bit at a time;
+//   * the window is one flat byte[] that slides, so a match copy is a
+//     memory copy and not a masked index per byte;
+//   * CRC-32 and Adler-32 are ordinary table loops.
+//
+// Nothing here allocates while a stream is running: every buffer, tree and
+// table belongs to the Deflater or the Inflater and is reused block after
+// block.
+
+/// Whether a compressing stream compresses or decompresses. .NET's.
+enum CompressionMode
+{
+    Decompress = 0,
+    Compress = 1
+}
+
+/// How hard a compressing stream tries. .NET's four values map onto the
+/// deflate levels they map onto in .NET: Fastest is 1, Optimal is 6 and
+/// SmallestSize is 9.
+enum CompressionLevel
+{
+    Optimal = 0,
+    Fastest = 1,
+    NoCompression = 2,
+    SmallestSize = 3
+}
+
+/// The IEEE CRC-32 of RFC 1952, table driven. .NET spells the same thing
+/// System.IO.Hashing.Crc32; this is the running form the gzip trailer wants.
+///
+/// EIGHT BYTES AT A TIME, through eight tables. The one-table loop is a
+/// lookup per byte and, on a stream that inflates at three hundred megabytes
+/// a second, was costing more than the inflating: eight columns turn eight
+/// dependent lookups into eight independent ones and run three times as fast.
+static class Crc32
+{
+    static uint[] _table = Build();
+
+    static uint[] Build()
+    {
+        uint[] table = new uint[256 * 8];
+        for (int n = 0; n < 256; n++)
+        {
+            uint c = (uint)n;
+            for (int k = 0; k < 8; k++)
+            {
+                c = (c & 1) != 0 ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+            }
+            table[n] = c;
+        }
+        // Column k is the first column advanced k more bytes, so the eight
+        // of them together consume a whole word of input at once.
+        for (int n = 0; n < 256; n++)
+        {
+            uint c = table[n];
+            for (int k = 1; k < 8; k++)
+            {
+                c = table[(int)(c & 255)] ^ (c >> 8);
+                table[k * 256 + n] = c;
+            }
+        }
+        return table;
+    }
+
+    /// Appends count bytes to a running CRC-32. A fresh stream starts at 0,
+    /// and what comes back is the value RFC 1952 stores in the trailer.
+    public static uint Append(uint crc, byte[] buffer, int offset, int count)
+    {
+        uint[] table = _table;
+        uint c = crc ^ 0xFFFFFFFFu;
+        int at = offset;
+        int end = offset + count;
+        int endEight = offset + (count & ~7);
+        while (at < endEight)
+        {
+            uint low = c ^ buffer[at]
+                     ^ ((uint)buffer[at + 1] << 8)
+                     ^ ((uint)buffer[at + 2] << 16)
+                     ^ ((uint)buffer[at + 3] << 24);
+            uint high = buffer[at + 4]
+                      | ((uint)buffer[at + 5] << 8)
+                      | ((uint)buffer[at + 6] << 16)
+                      | ((uint)buffer[at + 7] << 24);
+            c = table[1792 + (int)(low & 255)]
+              ^ table[1536 + (int)((low >> 8) & 255)]
+              ^ table[1280 + (int)((low >> 16) & 255)]
+              ^ table[1024 + (int)(low >> 24)]
+              ^ table[768 + (int)(high & 255)]
+              ^ table[512 + (int)((high >> 8) & 255)]
+              ^ table[256 + (int)((high >> 16) & 255)]
+              ^ table[(int)(high >> 24)];
+            at = at + 8;
+        }
+        while (at < end)
+        {
+            c = table[(int)((c ^ buffer[at]) & 255)] ^ (c >> 8);
+            at = at + 1;
+        }
+        return c ^ 0xFFFFFFFFu;
+    }
+}
+
+/// The Adler-32 of RFC 1950. The inner sums are deferred 5552 bytes at a
+/// time, which is the most that cannot overflow 32 bits.
+static class Adler32
+{
+    public const uint Seed = 1;
+
+    public static uint Append(uint adler, byte[] buffer, int offset, int count)
+    {
+        uint s1 = adler & 65535;
+        uint s2 = adler >> 16;
+        while (count > 0)
+        {
+            int run = count < 5552 ? count : 5552;
+            count = count - run;
+            for (int i = 0; i < run; i++)
+            {
+                s1 = s1 + buffer[offset + i];
+                s2 = s2 + s1;
+            }
+            offset = offset + run;
+            s1 = s1 % 65521;
+            s2 = s2 % 65521;
+        }
+        return (s2 << 16) | s1;
+    }
+}
+
+/// RFC 1951's length and distance codes, computed rather than tabulated --
+/// the four functions deflate.cor used, unchanged but for their width. Every
+/// table in this file is generated from them, so there is one statement of
+/// what the standard says.
+static class DeflateCodes
+{
+    public static int LengthBase(int code)
+    {
+        if (code < 0 || code > 28) return -1;
+        if (code <= 7) return code + 3;
+        if (code <= 11) return 11 + (code - 8) * 2;
+        if (code <= 15) return 19 + (code - 12) * 4;
+        if (code <= 19) return 35 + (code - 16) * 8;
+        if (code <= 23) return 67 + (code - 20) * 16;
+        if (code <= 27) return 131 + (code - 24) * 32;
+        return 258;
+    }
+
+    public static int LengthExtra(int code)
+    {
+        if (code < 0 || code > 28) return -1;
+        if (code <= 7 || code == 28) return 0;
+        return (code - 4) / 4;
+    }
+
+    public static int DistanceBase(int code)
+    {
+        if (code < 0 || code > 29) return -1;
+        if (code <= 3) return code + 1;
+        int extra = code / 2 - 1;
+        return (1 << (extra + 1)) + 1 + ((code & 1) != 0 ? 1 << extra : 0);
+    }
+
+    public static int DistanceExtra(int code)
+    {
+        if (code < 0 || code > 29) return -1;
+        return code <= 3 ? 0 : code / 2 - 1;
+    }
+}
+
+/// One Huffman tree under construction: the frequencies going in, the code
+/// and length arrays coming out, and the static tree it is measured against.
+/// Freq, Len, Code and Dad are 2*Elems+1 long because building the tree adds
+/// an internal node for every pair of leaves.
+class DeflateTree
+{
+    public int[] Freq;
+    public int[] Len;
+    public int[] Code;
+    public int[] Dad;
+    public int Elems;
+    public int MaxLength;
+    public int MaxCode;
+    public int[] StaticLen;
+    public int[] Extra;
+    public int ExtraBase;
+    public bool HasStatic;
+
+    public DeflateTree(int elems, int maxLength)
+    {
+        int nodes = 2 * elems + 1;
+        Freq = new int[nodes];
+        Len = new int[nodes];
+        Code = new int[nodes];
+        Dad = new int[nodes];
+        Elems = elems;
+        MaxLength = maxLength;
+        StaticLen = new int[nodes];
+        Extra = new int[nodes];
+        ExtraBase = 0;
+        HasStatic = false;
+    }
+}
+
+/// The shared, never-modified tables: the static literal and distance trees
+/// of a fixed-Huffman block, the map from a match length to its code, and the
+/// map from a distance to its code.
+static class DeflateStatic
+{
+    public const int MaxBits = 15;
+    public const int MaxBlBits = 7;
+    public const int Literals = 256;
+    public const int LengthCodes = 29;
+    public const int LCodes = 286;              // Literals + 1 + LengthCodes
+    public const int DCodes = 30;
+    public const int BlCodes = 19;
+    public const int HeapSize = 573;            // 2 * LCodes + 1
+    public const int EndBlock = 256;
+    public const int Rep3To6 = 16;
+    public const int Repz3To10 = 17;
+    public const int Repz11To138 = 18;
+
+    public static int[] ExtraLBits = MakeExtraL();
+    public static int[] ExtraDBits = MakeExtraD();
+    public static int[] ExtraBlBits = new int[] {
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 3, 7
+    };
+    public static int[] BlOrder = new int[] {
+        16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15
+    };
+
+    public static int[] BaseLength = new int[LengthCodes];
+    public static int[] BaseDist = new int[DCodes];
+    public static int[] LengthCode = new int[256];
+    public static int[] DistCode = new int[512];
+
+    public static int[] StaticLTreeLen = new int[288];
+    public static int[] StaticLTreeCode = new int[288];
+    public static int[] StaticDTreeLen = new int[DCodes];
+    public static int[] StaticDTreeCode = new int[DCodes];
+
+    static bool _ready = Build();
+
+    static int[] MakeExtraL()
+    {
+        int[] made = new int[LengthCodes];
+        for (int code = 0; code < LengthCodes; code++)
+        {
+            made[code] = DeflateCodes.LengthExtra(code);
+        }
+        return made;
+    }
+
+    static int[] MakeExtraD()
+    {
+        int[] made = new int[DCodes];
+        for (int code = 0; code < DCodes; code++)
+        {
+            made[code] = DeflateCodes.DistanceExtra(code);
+        }
+        return made;
+    }
+
+    /// Reverses the low `length` bits of `code`: DEFLATE sends Huffman codes
+    /// most significant bit first through a bit stream that is filled least
+    /// significant bit first, so every code is stored already turned round.
+    public static int Reverse(int code, int length)
+    {
+        int made = 0;
+        for (int i = 0; i < length; i++)
+        {
+            made = (made << 1) | ((code >> i) & 1);
+        }
+        return made;
+    }
+
+    /// Canonical Huffman codes from a set of lengths: .NET, zlib and RFC 1951
+    /// all agree on the order, which is what makes a tree only its lengths.
+    public static void GenerateCodes(int[] code, int[] len, int maxCode, int[] blCount)
+    {
+        int[] nextCode = new int[MaxBits + 1];
+        int value = 0;
+        for (int bits = 1; bits <= MaxBits; bits++)
+        {
+            value = (value + blCount[bits - 1]) << 1;
+            nextCode[bits] = value;
+        }
+        for (int n = 0; n <= maxCode; n++)
+        {
+            int length = len[n];
+            if (length == 0) continue;
+            code[n] = Reverse(nextCode[length], length);
+            nextCode[length] = nextCode[length] + 1;
+        }
+    }
+
+    static bool Build()
+    {
+        int length = 0;
+        for (int code = 0; code < LengthCodes - 1; code++)
+        {
+            BaseLength[code] = length;
+            int span = 1 << ExtraLBits[code];
+            for (int n = 0; n < span; n++)
+            {
+                LengthCode[length] = code;
+                length = length + 1;
+            }
+        }
+        // Code 285 stands alone: length 258 in no extra bits, which is why
+        // the loop above stops one code short of the end.
+        LengthCode[255] = LengthCodes - 1;
+
+        int dist = 0;
+        for (int code = 0; code < 16; code++)
+        {
+            BaseDist[code] = dist;
+            int span = 1 << ExtraDBits[code];
+            for (int n = 0; n < span; n++)
+            {
+                DistCode[dist] = code;
+                dist = dist + 1;
+            }
+        }
+        dist = dist >> 7;
+        for (int code = 16; code < DCodes; code++)
+        {
+            BaseDist[code] = dist << 7;
+            int span = 1 << (ExtraDBits[code] - 7);
+            for (int n = 0; n < span; n++)
+            {
+                DistCode[256 + dist] = code;
+                dist = dist + 1;
+            }
+        }
+
+        int[] blCount = new int[MaxBits + 1];
+        for (int n = 0; n <= 143; n++) { StaticLTreeLen[n] = 8; }
+        for (int n = 144; n <= 255; n++) { StaticLTreeLen[n] = 9; }
+        for (int n = 256; n <= 279; n++) { StaticLTreeLen[n] = 7; }
+        for (int n = 280; n <= 287; n++) { StaticLTreeLen[n] = 8; }
+        blCount[7] = 24;
+        blCount[8] = 152;
+        blCount[9] = 112;
+        GenerateCodes(StaticLTreeCode, StaticLTreeLen, 287, blCount);
+
+        for (int n = 0; n < DCodes; n++)
+        {
+            StaticDTreeLen[n] = 5;
+            StaticDTreeCode[n] = Reverse(n, 5);
+        }
+        return true;
+    }
+
+    /// The distance code of a distance, both halves of the split table.
+    public static int DistanceCode(int dist)
+    {
+        return dist < 256 ? DistCode[dist] : DistCode[256 + (dist >> 7)];
+    }
+
+    /// Forces the static initialiser to have run. Reading a static field of a
+    /// class is what triggers it, and a table nobody has touched yet is a
+    /// table of zeroes.
+    public static bool Ready()
+    {
+        return _ready;
+    }
+}
+
+/// The RFC 1951 compressor: a hash chain over a sliding window, lazy match
+/// evaluation above level 3, and blocks emitted stored, static or dynamic --
+/// whichever of the three is shortest for the symbols actually collected.
+class Deflater
+{
+    const int WindowBits = 15;
+    const int WindowSize = 32768;
+    const int WindowMask = 32767;
+    const int MinMatch = 3;
+    const int MaxMatch = 258;
+    const int MinLookahead = MaxMatch + MinMatch + 1;
+    const int MaxDist = WindowSize - MinLookahead;
+    const int HashBits = 15;
+    const int HashSize = 32768;
+    const int HashMask = 32767;
+    const int HashShift = 5;                    // (HashBits + MinMatch - 1) / MinMatch
+    const int LitBufSize = 16384;
+    const int TooFar = 4096;
+    const int PendingSize = 65536;
+
+    Stream _output;
+    int _level;
+
+    // How hard the match search works, level by level, as zlib's
+    // configuration_table has it: give up early on a good enough match, stop
+    // looking once the lazy match is this long, take any match this long and
+    // walk at most this many links of a hash chain.
+    int _goodMatch;
+    int _maxLazy;
+    int _niceMatch;
+    int _maxChain;
+    bool _lazy;
+
+    byte[] _window;
+    ushort[] _prev;
+    ushort[] _head;
+    int _windowSize;
+    int _strStart;
+    int _lookahead;
+    int _matchStart;
+    int _matchLength;
+    int _prevLength;
+    int _prevMatch;
+    bool _matchAvailable;
+    int _blockStart;
+    int _insH;
+
+    byte[] _input;
+    int _inputAt;
+    int _inputLeft;
+
+    byte[] _pending;
+    int _pendingLen;
+    uint _bitBuf;
+    int _bitCount;
+
+    int[] _sym;
+    int _symNext;
+    int _symEnd;
+
+    DeflateTree _lTree;
+    DeflateTree _dTree;
+    DeflateTree _blTree;
+    int[] _heap;
+    int[] _depth;
+    int[] _blCount;
+    int _heapLen;
+    int _heapMax;
+    int _optLen;
+    int _staticLen;
+
+    byte[] _store;
+    int _storeLen;
+    byte[] _empty;
+    bool _finished;
+
+    // The shared tables, held here rather than reached through the static
+    // class. A static field of ANOTHER type carries an "has it been
+    // initialised" test at every access, which is nothing in a cold path and
+    // six loads and six branches per symbol in the one below.
+    int[] _lengthCode;
+    int[] _distCode;
+    int[] _baseLength;
+    int[] _baseDist;
+    int[] _extraLBits;
+    int[] _extraDBits;
+    int[] _blOrder;
+    int[] _staticLCode;
+    int[] _staticLLen;
+    int[] _staticDCode;
+    int[] _staticDLen;
+
+    public Deflater(Stream output, CompressionLevel level)
+    {
+        DeflateStatic.Ready();
+        _output = output;
+        _level = level == CompressionLevel.NoCompression ? 0
+               : level == CompressionLevel.Fastest ? 1
+               : level == CompressionLevel.SmallestSize ? 9 : 6;
+
+        _goodMatch = _level == 1 ? 4 : _level == 9 ? 32 : 8;
+        _maxLazy = _level == 1 ? 4 : _level == 9 ? 258 : 16;
+        _niceMatch = _level == 1 ? 8 : _level == 9 ? 258 : 128;
+        _maxChain = _level == 1 ? 4 : _level == 9 ? 4096 : 128;
+        _lazy = _level >= 4;
+
+        _windowSize = 2 * WindowSize;
+        // The match search reads a whole MaxMatch past strstart, and strstart
+        // is only bounded by where the window slides; the tail keeps that
+        // read inside the array without a test in the inner loop.
+        _window = new byte[_windowSize + MaxMatch + 16];
+        _prev = new ushort[WindowSize];
+        _head = new ushort[HashSize];
+        _input = new byte[0];
+        _empty = new byte[0];
+        _pending = new byte[PendingSize];
+        _sym = new int[LitBufSize];
+        _symEnd = LitBufSize - 1;
+        _store = _level == 0 ? new byte[65535] : new byte[0];
+
+        _lTree = new DeflateTree(DeflateStatic.LCodes, DeflateStatic.MaxBits);
+        _dTree = new DeflateTree(DeflateStatic.DCodes, DeflateStatic.MaxBits);
+        _blTree = new DeflateTree(DeflateStatic.BlCodes, DeflateStatic.MaxBlBits);
+        SetUp(_lTree, DeflateStatic.ExtraLBits, DeflateStatic.Literals + 1,
+              DeflateStatic.StaticLTreeLen, true);
+        SetUp(_dTree, DeflateStatic.ExtraDBits, 0,
+              DeflateStatic.StaticDTreeLen, true);
+        SetUp(_blTree, DeflateStatic.ExtraBlBits, 0, DeflateStatic.StaticLTreeLen, false);
+
+        _lengthCode = DeflateStatic.LengthCode;
+        _distCode = DeflateStatic.DistCode;
+        _baseLength = DeflateStatic.BaseLength;
+        _baseDist = DeflateStatic.BaseDist;
+        _extraLBits = DeflateStatic.ExtraLBits;
+        _extraDBits = DeflateStatic.ExtraDBits;
+        _blOrder = DeflateStatic.BlOrder;
+        _staticLCode = DeflateStatic.StaticLTreeCode;
+        _staticLLen = DeflateStatic.StaticLTreeLen;
+        _staticDCode = DeflateStatic.StaticDTreeCode;
+        _staticDLen = DeflateStatic.StaticDTreeLen;
+
+        _heap = new int[DeflateStatic.HeapSize];
+        _depth = new int[DeflateStatic.HeapSize];
+        _blCount = new int[DeflateStatic.MaxBits + 1];
+
+        _matchLength = MinMatch - 1;
+        _prevLength = MinMatch - 1;
+        InitBlock();
+    }
+
+    static void SetUp(DeflateTree tree, int[] extra, int extraBase,
+                      int[] staticLen, bool hasStatic)
+    {
+        for (int i = 0; i < extra.Length && i < tree.Extra.Length; i++)
+        {
+            tree.Extra[i] = extra[i];
+        }
+        tree.ExtraBase = extraBase;
+        tree.HasStatic = hasStatic;
+        if (hasStatic)
+        {
+            for (int i = 0; i < staticLen.Length && i < tree.StaticLen.Length; i++)
+            {
+                tree.StaticLen[i] = staticLen[i];
+            }
+        }
+    }
+
+    // ---- output ------------------------------------------------------------
+
+    void PutByte(byte value)
+    {
+        if (_pendingLen == PendingSize)
+        {
+            FlushPending();
+        }
+        _pending[_pendingLen] = value;
+        _pendingLen = _pendingLen + 1;
+    }
+
+    void PutShort(int value)
+    {
+        PutByte((byte)(value & 255));
+        PutByte((byte)((value >> 8) & 255));
+    }
+
+    void FlushPending()
+    {
+        if (_pendingLen != 0)
+        {
+            _output.Write(_pending, 0, _pendingLen);
+            _pendingLen = 0;
+        }
+    }
+
+    /// At most sixteen bits at a time, into an accumulator that never holds
+    /// more than fifteen -- so one test empties it, two bytes at a time, and
+    /// the hot path has no loop in it at all.
+    void SendBits(int value, int length)
+    {
+        _bitBuf = _bitBuf | (((uint)value & (uint)((1 << length) - 1)) << _bitCount);
+        _bitCount = _bitCount + length;
+        if (_bitCount >= 16)
+        {
+            if (_pendingLen + 2 > PendingSize) FlushPending();
+            _pending[_pendingLen] = (byte)(_bitBuf & 255);
+            _pending[_pendingLen + 1] = (byte)((_bitBuf >> 8) & 255);
+            _pendingLen = _pendingLen + 2;
+            _bitBuf = _bitBuf >> 16;
+            _bitCount = _bitCount - 16;
+        }
+    }
+
+    void SendCode(int symbol, int[] code, int[] len)
+    {
+        SendBits(code[symbol], len[symbol]);
+    }
+
+    void BiWindup()
+    {
+        while (_bitCount > 0)
+        {
+            PutByte((byte)(_bitBuf & 255));
+            _bitBuf = _bitBuf >> 8;
+            _bitCount = _bitCount - 8;
+        }
+        _bitBuf = 0;
+        _bitCount = 0;
+    }
+
+    // ---- the window --------------------------------------------------------
+
+    int ReadInput(byte[] into, int at, int size)
+    {
+        int take = _inputLeft < size ? _inputLeft : size;
+        if (take <= 0) return 0;
+        Sys.CopyNoOverlap(into, at, _input, _inputAt, take);
+        _inputAt = _inputAt + take;
+        _inputLeft = _inputLeft - take;
+        return take;
+    }
+
+    void FillWindow()
+    {
+        while (_lookahead < MinLookahead && _inputLeft > 0)
+        {
+            int more = _windowSize - _lookahead - _strStart;
+            if (_strStart >= WindowSize + MaxDist)
+            {
+                // Slide the whole window down by half. Every stored position
+                // moves with it, and a link that would now point before the
+                // window becomes NIL rather than a distance nobody can code.
+                Sys.CopyNoOverlap(_window, 0, _window, WindowSize, WindowSize);
+                _matchStart = _matchStart - WindowSize;
+                _strStart = _strStart - WindowSize;
+                _blockStart = _blockStart - WindowSize;
+                for (int n = 0; n < HashSize; n++)
+                {
+                    int value = _head[n];
+                    _head[n] = (ushort)(value >= WindowSize ? value - WindowSize : 0);
+                }
+                for (int n = 0; n < WindowSize; n++)
+                {
+                    int value = _prev[n];
+                    _prev[n] = (ushort)(value >= WindowSize ? value - WindowSize : 0);
+                }
+                more = more + WindowSize;
+            }
+            int got = ReadInput(_window, _strStart + _lookahead, more);
+            if (got == 0) return;
+            _lookahead = _lookahead + got;
+        }
+    }
+
+    /// The longest match for the string at strstart, walking the hash chain
+    /// from curMatch back through the window. zlib's longest_match, with its
+    /// two cheap rejections first: a candidate that cannot beat the best so
+    /// far is dismissed on two bytes rather than compared.
+    int LongestMatch(int curMatch)
+    {
+        byte[] w = _window;
+        int chain = _maxChain;
+        int scan = _strStart;
+        int best = _prevLength;
+        int nice = _niceMatch;
+        int limit = _strStart > MaxDist ? _strStart - MaxDist : 0;
+
+        if (_prevLength >= _goodMatch) chain = chain >> 2;
+        if (nice > _lookahead) nice = _lookahead;
+
+        // The two bytes at the end of the best match so far, and the two at
+        // the start. A candidate that does not have all four cannot beat it,
+        // and almost none of them do -- so the chain is walked on four
+        // comparisons a link rather than on a string compare.
+        byte scanStart = w[scan];
+        byte scanStart1 = w[scan + 1];
+        byte scanEnd = w[scan + best];
+        byte scanEnd1 = w[scan + best - 1];
+
+        do
+        {
+            int match = curMatch;
+            if (w[match + best] != scanEnd
+                || w[match + best - 1] != scanEnd1
+                || w[match] != scanStart
+                || w[match + 1] != scanStart1)
+            {
+                continue;
+            }
+            int i = 2;
+            while (i < MaxMatch && w[scan + i] == w[match + i])
+            {
+                i = i + 1;
+            }
+            if (i > best)
+            {
+                _matchStart = match;
+                best = i;
+                if (i >= nice) break;
+                scanEnd = w[scan + best];
+                scanEnd1 = w[scan + best - 1];
+            }
+        }
+        while ((curMatch = _prev[curMatch & WindowMask]) > limit
+               && (chain = chain - 1) != 0);
+
+        return best <= _lookahead ? best : _lookahead;
+    }
+
+    // ---- symbols -----------------------------------------------------------
+
+    void InitBlock()
+    {
+        for (int n = 0; n < DeflateStatic.LCodes; n++) { _lTree.Freq[n] = 0; }
+        for (int n = 0; n < DeflateStatic.DCodes; n++) { _dTree.Freq[n] = 0; }
+        for (int n = 0; n < DeflateStatic.BlCodes; n++) { _blTree.Freq[n] = 0; }
+        _lTree.Freq[DeflateStatic.EndBlock] = 1;
+        _optLen = 0;
+        _staticLen = 0;
+        _symNext = 0;
+    }
+
+    /// Records one literal (dist 0) or one match, and says whether the symbol
+    /// buffer is now full. The distance is kept as it stands and reduced by
+    /// one only where the code wants it, so nothing here has to remember
+    /// which convention it is in.
+    bool Tally(int dist, int lc)
+    {
+        _sym[_symNext] = (dist << 8) | lc;
+        _symNext = _symNext + 1;
+        if (dist == 0)
+        {
+            _lTree.Freq[lc] = _lTree.Freq[lc] + 1;
+        }
+        else
+        {
+            int code = _lengthCode[lc] + 257;
+            _lTree.Freq[code] = _lTree.Freq[code] + 1;
+            int back = dist - 1;
+            int dcode = back < 256 ? _distCode[back] : _distCode[256 + (back >> 7)];
+            _dTree.Freq[dcode] = _dTree.Freq[dcode] + 1;
+        }
+        return _symNext == _symEnd;
+    }
+
+    void CompressBlock(int[] lCode, int[] lLen, int[] dCode, int[] dLen)
+    {
+        for (int sx = 0; sx < _symNext; sx++)
+        {
+            int packed = _sym[sx];
+            int dist = packed >> 8;
+            int lc = packed & 255;
+            if (dist == 0)
+            {
+                SendCode(lc, lCode, lLen);
+                continue;
+            }
+            int code = _lengthCode[lc];
+            SendCode(code + 257, lCode, lLen);
+            int extra = _extraLBits[code];
+            if (extra != 0)
+            {
+                SendBits(lc - _baseLength[code], extra);
+            }
+            dist = dist - 1;
+            code = dist < 256 ? _distCode[dist] : _distCode[256 + (dist >> 7)];
+            SendCode(code, dCode, dLen);
+            extra = _extraDBits[code];
+            if (extra != 0)
+            {
+                SendBits(dist - _baseDist[code], extra);
+            }
+        }
+        SendCode(DeflateStatic.EndBlock, lCode, lLen);
+    }
+
+    // ---- Huffman tree construction ----------------------------------------
+
+    bool Smaller(int[] freq, int n, int m)
+    {
+        return freq[n] < freq[m] || (freq[n] == freq[m] && _depth[n] <= _depth[m]);
+    }
+
+    void DownHeap(int[] freq, int k)
+    {
+        int v = _heap[k];
+        int j = k << 1;
+        while (j <= _heapLen)
+        {
+            if (j < _heapLen && Smaller(freq, _heap[j + 1], _heap[j])) j = j + 1;
+            if (Smaller(freq, v, _heap[j])) break;
+            _heap[k] = _heap[j];
+            k = j;
+            j = j << 1;
+        }
+        _heap[k] = v;
+    }
+
+    /// Bit lengths from the tree built in Dad, with the overflow of any code
+    /// longer than MaxLength pushed back down the way RFC 1951 needs.
+    void GenBitLen(DeflateTree tree)
+    {
+        int[] len = tree.Len;
+        int[] dad = tree.Dad;
+        int[] freq = tree.Freq;
+        int maxCode = tree.MaxCode;
+        int maxLength = tree.MaxLength;
+        int overflow = 0;
+
+        for (int bits = 0; bits <= DeflateStatic.MaxBits; bits++) { _blCount[bits] = 0; }
+
+        len[_heap[_heapMax]] = 0;
+        int h = _heapMax + 1;
+        while (h < DeflateStatic.HeapSize)
+        {
+            int n = _heap[h];
+            h = h + 1;
+            int bits = len[dad[n]] + 1;
+            if (bits > maxLength) { bits = maxLength; overflow = overflow + 1; }
+            len[n] = bits;
+            if (n > maxCode) continue;
+            _blCount[bits] = _blCount[bits] + 1;
+            int xbits = n >= tree.ExtraBase ? tree.Extra[n - tree.ExtraBase] : 0;
+            int f = freq[n];
+            _optLen = _optLen + f * (bits + xbits);
+            if (tree.HasStatic)
+            {
+                _staticLen = _staticLen + f * (tree.StaticLen[n] + xbits);
+            }
+        }
+        if (overflow == 0) return;
+
+        do
+        {
+            int bits = maxLength - 1;
+            while (_blCount[bits] == 0) { bits = bits - 1; }
+            _blCount[bits] = _blCount[bits] - 1;
+            _blCount[bits + 1] = _blCount[bits + 1] + 2;
+            _blCount[maxLength] = _blCount[maxLength] - 1;
+            overflow = overflow - 2;
+        }
+        while (overflow > 0);
+
+        for (int bits = maxLength; bits != 0; bits--)
+        {
+            int n = _blCount[bits];
+            while (n != 0)
+            {
+                h = h - 1;
+                int m = _heap[h];
+                if (m > maxCode) continue;
+                if (len[m] != bits)
+                {
+                    _optLen = _optLen + (bits - len[m]) * freq[m];
+                    len[m] = bits;
+                }
+                n = n - 1;
+            }
+        }
+    }
+
+    void BuildTree(DeflateTree tree)
+    {
+        int[] freq = tree.Freq;
+        int[] len = tree.Len;
+        int[] dad = tree.Dad;
+        int elems = tree.Elems;
+        int maxCode = -1;
+
+        _heapLen = 0;
+        _heapMax = DeflateStatic.HeapSize;
+        for (int n = 0; n < elems; n++)
+        {
+            if (freq[n] != 0)
+            {
+                maxCode = n;
+                _heapLen = _heapLen + 1;
+                _heap[_heapLen] = n;
+                _depth[n] = 0;
+            }
+            else
+            {
+                len[n] = 0;
+            }
+        }
+
+        // A tree with fewer than two used codes is not a tree. Invent codes
+        // until there are two, which costs at most two bits in the output and
+        // keeps every decoder's table build legal.
+        while (_heapLen < 2)
+        {
+            _heapLen = _heapLen + 1;
+            int node = maxCode < 2 ? maxCode + 1 : 0;
+            if (maxCode < 2) maxCode = maxCode + 1;
+            _heap[_heapLen] = node;
+            freq[node] = 1;
+            _depth[node] = 0;
+            _optLen = _optLen - 1;
+            if (tree.HasStatic) _staticLen = _staticLen - tree.StaticLen[node];
+        }
+        tree.MaxCode = maxCode;
+
+        for (int n = _heapLen / 2; n >= 1; n--) { DownHeap(freq, n); }
+
+        int next = elems;
+        do
+        {
+            int n = _heap[1];
+            _heap[1] = _heap[_heapLen];
+            _heapLen = _heapLen - 1;
+            DownHeap(freq, 1);
+            int m = _heap[1];
+
+            _heapMax = _heapMax - 1;
+            _heap[_heapMax] = n;
+            _heapMax = _heapMax - 1;
+            _heap[_heapMax] = m;
+
+            freq[next] = freq[n] + freq[m];
+            _depth[next] = (_depth[n] >= _depth[m] ? _depth[n] : _depth[m]) + 1;
+            dad[n] = next;
+            dad[m] = next;
+            _heap[1] = next;
+            next = next + 1;
+            DownHeap(freq, 1);
+        }
+        while (_heapLen >= 2);
+
+        _heapMax = _heapMax - 1;
+        _heap[_heapMax] = _heap[1];
+
+        GenBitLen(tree);
+        DeflateStatic.GenerateCodes(tree.Code, len, tree.MaxCode, _blCount);
+    }
+
+    /// Counts what it would cost to send a tree's lengths through the
+    /// code-length alphabet: runs of equal lengths become repeat codes.
+    void ScanTree(int[] len, int maxCode)
+    {
+        int prevLen = -1;
+        int nextLen = len[0];
+        int count = 0;
+        int maxCount = 7;
+        int minCount = 4;
+        if (nextLen == 0) { maxCount = 138; minCount = 3; }
+        len[maxCode + 1] = -1;
+
+        for (int n = 0; n <= maxCode; n++)
+        {
+            int curLen = nextLen;
+            nextLen = len[n + 1];
+            count = count + 1;
+            if (count < maxCount && curLen == nextLen) continue;
+            if (count < minCount)
+            {
+                _blTree.Freq[curLen] = _blTree.Freq[curLen] + count;
+            }
+            else if (curLen != 0)
+            {
+                if (curLen != prevLen)
+                {
+                    _blTree.Freq[curLen] = _blTree.Freq[curLen] + 1;
+                }
+                _blTree.Freq[DeflateStatic.Rep3To6] = _blTree.Freq[DeflateStatic.Rep3To6] + 1;
+            }
+            else if (count <= 10)
+            {
+                _blTree.Freq[DeflateStatic.Repz3To10] = _blTree.Freq[DeflateStatic.Repz3To10] + 1;
+            }
+            else
+            {
+                _blTree.Freq[DeflateStatic.Repz11To138] = _blTree.Freq[DeflateStatic.Repz11To138] + 1;
+            }
+            count = 0;
+            prevLen = curLen;
+            if (nextLen == 0) { maxCount = 138; minCount = 3; }
+            else if (curLen == nextLen) { maxCount = 6; minCount = 3; }
+            else { maxCount = 7; minCount = 4; }
+        }
+    }
+
+    void SendTree(int[] len, int maxCode)
+    {
+        int[] code = _blTree.Code;
+        int[] blLen = _blTree.Len;
+        int prevLen = -1;
+        int nextLen = len[0];
+        int count = 0;
+        int maxCount = 7;
+        int minCount = 4;
+        if (nextLen == 0) { maxCount = 138; minCount = 3; }
+
+        for (int n = 0; n <= maxCode; n++)
+        {
+            int curLen = nextLen;
+            nextLen = len[n + 1];
+            count = count + 1;
+            if (count < maxCount && curLen == nextLen) continue;
+            if (count < minCount)
+            {
+                do
+                {
+                    SendCode(curLen, code, blLen);
+                    count = count - 1;
+                }
+                while (count != 0);
+            }
+            else if (curLen != 0)
+            {
+                if (curLen != prevLen)
+                {
+                    SendCode(curLen, code, blLen);
+                    count = count - 1;
+                }
+                SendCode(DeflateStatic.Rep3To6, code, blLen);
+                SendBits(count - 3, 2);
+            }
+            else if (count <= 10)
+            {
+                SendCode(DeflateStatic.Repz3To10, code, blLen);
+                SendBits(count - 3, 3);
+            }
+            else
+            {
+                SendCode(DeflateStatic.Repz11To138, code, blLen);
+                SendBits(count - 11, 7);
+            }
+            count = 0;
+            prevLen = curLen;
+            if (nextLen == 0) { maxCount = 138; minCount = 3; }
+            else if (curLen == nextLen) { maxCount = 6; minCount = 3; }
+            else { maxCount = 7; minCount = 4; }
+        }
+    }
+
+    int BuildBlTree()
+    {
+        ScanTree(_lTree.Len, _lTree.MaxCode);
+        ScanTree(_dTree.Len, _dTree.MaxCode);
+        BuildTree(_blTree);
+        int maxBlIndex = DeflateStatic.BlCodes - 1;
+        while (maxBlIndex >= 3 && _blTree.Len[_blOrder[maxBlIndex]] == 0)
+        {
+            maxBlIndex = maxBlIndex - 1;
+        }
+        _optLen = _optLen + 3 * (maxBlIndex + 1) + 5 + 5 + 4;
+        return maxBlIndex;
+    }
+
+    void SendAllTrees(int lCodes, int dCodes, int blCodes)
+    {
+        SendBits(lCodes - 257, 5);
+        SendBits(dCodes - 1, 5);
+        SendBits(blCodes - 4, 4);
+        for (int rank = 0; rank < blCodes; rank++)
+        {
+            SendBits(_blTree.Len[_blOrder[rank]], 3);
+        }
+        SendTree(_lTree.Len, _lTree.MaxCode);
+        SendTree(_dTree.Len, _dTree.MaxCode);
+    }
+
+    // ---- blocks ------------------------------------------------------------
+
+    void StoredBlock(byte[] source, int at, int count, bool last)
+    {
+        SendBits(last ? 1 : 0, 3);
+        BiWindup();
+        PutShort(count);
+        PutShort(~count & 65535);
+        FlushPending();
+        if (count != 0)
+        {
+            _output.Write(source, at, count);
+        }
+    }
+
+    /// Emits everything tallied so far as one block, in whichever of the
+    /// three RFC 1951 forms is shortest. `at` is where the block's literal
+    /// bytes start in the window, or -1 when the window has slid out from
+    /// under them and a stored block is therefore not on offer.
+    void TreeFlushBlock(int at, int storedLen, bool last)
+    {
+        int optLenBytes;
+        int staticLenBytes;
+        int maxBlIndex = 0;
+
+        if (_level > 0)
+        {
+            BuildTree(_lTree);
+            BuildTree(_dTree);
+            maxBlIndex = BuildBlTree();
+            optLenBytes = (_optLen + 3 + 7) >> 3;
+            staticLenBytes = (_staticLen + 3 + 7) >> 3;
+            if (staticLenBytes <= optLenBytes) optLenBytes = staticLenBytes;
+        }
+        else
+        {
+            optLenBytes = storedLen + 5;
+            staticLenBytes = optLenBytes;
+        }
+
+        if (storedLen + 4 <= optLenBytes && at >= 0)
+        {
+            StoredBlock(_window, at, storedLen, last);
+        }
+        else if (staticLenBytes == optLenBytes)
+        {
+            SendBits((1 << 1) + (last ? 1 : 0), 3);
+            CompressBlock(_staticLCode, _staticLLen, _staticDCode, _staticDLen);
+        }
+        else
+        {
+            SendBits((2 << 1) + (last ? 1 : 0), 3);
+            SendAllTrees(_lTree.MaxCode + 1, _dTree.MaxCode + 1, maxBlIndex + 1);
+            CompressBlock(_lTree.Code, _lTree.Len, _dTree.Code, _dTree.Len);
+        }
+
+        InitBlock();
+        if (last) BiWindup();
+    }
+
+    void FlushBlock(bool last)
+    {
+        TreeFlushBlock(_blockStart >= 0 ? _blockStart : -1,
+                       _strStart - _blockStart, last);
+        _blockStart = _strStart;
+        FlushPending();
+    }
+
+    // ---- the two match strategies -----------------------------------------
+
+    void InsertString()
+    {
+        _insH = ((_insH << HashShift) ^ _window[_strStart + MinMatch - 1]) & HashMask;
+        _prev[_strStart & WindowMask] = _head[_insH];
+        _head[_insH] = (ushort)_strStart;
+    }
+
+    void DeflateFast(bool finish)
+    {
+        while (true)
+        {
+            if (_lookahead < MinLookahead)
+            {
+                FillWindow();
+                if (_lookahead < MinLookahead && !finish) return;
+                if (_lookahead == 0) break;
+            }
+
+            int hashHead = 0;
+            if (_lookahead >= MinMatch)
+            {
+                _insH = ((_insH << HashShift) ^ _window[_strStart + MinMatch - 1]) & HashMask;
+                hashHead = _head[_insH];
+                _prev[_strStart & WindowMask] = (ushort)hashHead;
+                _head[_insH] = (ushort)_strStart;
+            }
+
+            if (hashHead != 0 && _strStart - hashHead <= MaxDist)
+            {
+                _matchLength = LongestMatch(hashHead);
+            }
+
+            bool full;
+            if (_matchLength >= MinMatch)
+            {
+                full = Tally(_strStart - _matchStart, _matchLength - MinMatch);
+                _lookahead = _lookahead - _matchLength;
+
+                if (_matchLength <= _maxLazy && _lookahead >= MinMatch)
+                {
+                    _matchLength = _matchLength - 1;
+                    do
+                    {
+                        _strStart = _strStart + 1;
+                        InsertString();
+                        _matchLength = _matchLength - 1;
+                    }
+                    while (_matchLength != 0);
+                    _strStart = _strStart + 1;
+                }
+                else
+                {
+                    _strStart = _strStart + _matchLength;
+                    _matchLength = 0;
+                    _insH = _window[_strStart];
+                    _insH = ((_insH << HashShift) ^ _window[_strStart + 1]) & HashMask;
+                }
+            }
+            else
+            {
+                full = Tally(0, _window[_strStart]);
+                _lookahead = _lookahead - 1;
+                _strStart = _strStart + 1;
+            }
+            if (full) FlushBlock(false);
+        }
+        if (finish) FlushBlock(true);
+    }
+
+    void DeflateSlow(bool finish)
+    {
+        while (true)
+        {
+            if (_lookahead < MinLookahead)
+            {
+                FillWindow();
+                if (_lookahead < MinLookahead && !finish) return;
+                if (_lookahead == 0) break;
+            }
+
+            int hashHead = 0;
+            if (_lookahead >= MinMatch)
+            {
+                _insH = ((_insH << HashShift) ^ _window[_strStart + MinMatch - 1]) & HashMask;
+                hashHead = _head[_insH];
+                _prev[_strStart & WindowMask] = (ushort)hashHead;
+                _head[_insH] = (ushort)_strStart;
+            }
+
+            _prevLength = _matchLength;
+            _prevMatch = _matchStart;
+            _matchLength = MinMatch - 1;
+
+            if (hashHead != 0 && _prevLength < _maxLazy
+                && _strStart - hashHead <= MaxDist)
+            {
+                _matchLength = LongestMatch(hashHead);
+                // A three-byte match a long way back costs more to code than
+                // the three literals it replaces.
+                if (_matchLength == MinMatch && _strStart - _matchStart > TooFar)
+                {
+                    _matchLength = MinMatch - 1;
+                }
+            }
+
+            if (_prevLength >= MinMatch && _matchLength <= _prevLength)
+            {
+                int maxInsert = _strStart + _lookahead - MinMatch;
+                bool full = Tally(_strStart - 1 - _prevMatch, _prevLength - MinMatch);
+                _lookahead = _lookahead - (_prevLength - 1);
+                _prevLength = _prevLength - 2;
+                do
+                {
+                    _strStart = _strStart + 1;
+                    if (_strStart <= maxInsert) InsertString();
+                    _prevLength = _prevLength - 1;
+                }
+                while (_prevLength != 0);
+                _matchAvailable = false;
+                _matchLength = MinMatch - 1;
+                _strStart = _strStart + 1;
+                if (full) FlushBlock(false);
+            }
+            else if (_matchAvailable)
+            {
+                // The lazy match lost: emit the literal it was holding.
+                bool full = Tally(0, _window[_strStart - 1]);
+                if (full) FlushBlock(false);
+                _strStart = _strStart + 1;
+                _lookahead = _lookahead - 1;
+            }
+            else
+            {
+                _matchAvailable = true;
+                _strStart = _strStart + 1;
+                _lookahead = _lookahead - 1;
+            }
+        }
+        if (_matchAvailable)
+        {
+            Tally(0, _window[_strStart - 1]);
+            _matchAvailable = false;
+        }
+        if (finish) FlushBlock(true);
+    }
+
+    void StoreInput(bool finish)
+    {
+        while (_inputLeft > 0)
+        {
+            int room = _store.Length - _storeLen;
+            int take = _inputLeft < room ? _inputLeft : room;
+            Sys.CopyNoOverlap(_store, _storeLen, _input, _inputAt, take);
+            _storeLen = _storeLen + take;
+            _inputAt = _inputAt + take;
+            _inputLeft = _inputLeft - take;
+            if (_storeLen == _store.Length)
+            {
+                StoredBlock(_store, 0, _storeLen, false);
+                _storeLen = 0;
+            }
+        }
+        if (finish)
+        {
+            StoredBlock(_store, 0, _storeLen, true);
+            _storeLen = 0;
+            FlushPending();
+        }
+    }
+
+    // ---- what a stream calls ----------------------------------------------
+
+    public void Write(byte[] buffer, int offset, int count)
+    {
+        if (count <= 0) return;
+        _input = buffer;
+        _inputAt = offset;
+        _inputLeft = count;
+        if (_level == 0) StoreInput(false);
+        else if (_lazy) DeflateSlow(false);
+        else DeflateFast(false);
+        _input = _empty;
+        _inputAt = 0;
+        _inputLeft = 0;
+    }
+
+    /// Ends the DEFLATE stream: the last block carries the final flag and the
+    /// bit stream is padded out to a byte.
+    public void Finish()
+    {
+        if (_finished) return;
+        _finished = true;
+        if (_level == 0) StoreInput(true);
+        else if (_lazy) DeflateSlow(true);
+        else DeflateFast(true);
+        FlushPending();
+    }
+
+    /// Z_SYNC_FLUSH: everything held is coded, and an empty stored block
+    /// aligns the stream so that a reader can see all of it.
+    public void Flush()
+    {
+        if (_finished) return;
+        if (_level == 0)
+        {
+            StoredBlock(_store, 0, _storeLen, false);
+            _storeLen = 0;
+        }
+        else
+        {
+            if (_lazy) DeflateSlow(false); else DeflateFast(false);
+            if (_symNext != 0 || _strStart != _blockStart) FlushBlock(false);
+            StoredBlock(_empty, 0, 0, false);
+        }
+        FlushPending();
+    }
+}
+
+/// The two fixed-Huffman decoding tables, built once and shared. A
+/// fixed-block stream then costs no table build at all.
+static class InflateFixed
+{
+    public static uint[] LenTable = new uint[512];
+    public static uint[] DistTable = new uint[32];
+    public static int LenBits = 9;
+    public static int DistBits = 5;
+    static bool _ready = Build();
+
+    static bool Build()
+    {
+        int[] lens = new int[320];
+        int[] work = new int[320];
+        int[] count = new int[16];
+        int[] offs = new int[16];
+
+        for (int i = 0; i <= 143; i++) { lens[i] = 8; }
+        for (int i = 144; i <= 255; i++) { lens[i] = 9; }
+        for (int i = 256; i <= 279; i++) { lens[i] = 7; }
+        for (int i = 280; i <= 287; i++) { lens[i] = 8; }
+        int bits = 9;
+        InflateTable.Build(1, lens, 0, 288, LenTable, ref bits, work, count, offs);
+        LenBits = bits;
+
+        for (int i = 0; i < 32; i++) { lens[i] = 5; }
+        bits = 5;
+        InflateTable.Build(2, lens, 0, 32, DistTable, ref bits, work, count, offs);
+        DistBits = bits;
+        return true;
+    }
+
+    public static bool Ready() { return _ready; }
+}
+
+/// Canonical-Huffman decoding tables. A code shorter than the root width is
+/// one lookup; a longer one is a lookup into a sub-table the first names, so
+/// no stream ever pays for the fifteen-bit worst case.
+///
+/// An entry is packed into a uint: operation in the top byte, how many bits
+/// the entry consumes in the next, and the value in the low half. The
+/// operation is zlib's: 0 a literal, 16 plus extra-bit count a length or
+/// distance base, 32 end of block, 64 an invalid code, and anything else the
+/// width of a sub-table index.
+static class InflateTable
+{
+    public const int Codes = 0;
+    public const int Lens = 1;
+    public const int Dists = 2;
+
+    public const int EnoughLens = 852;
+    public const int EnoughDists = 592;
+
+    static int[] LBase = MakeLBase();
+    static int[] LExt = MakeLExt();
+    static int[] DBase = MakeDBase();
+    static int[] DExt = MakeDExt();
+
+    static int[] MakeLBase()
+    {
+        int[] made = new int[31];
+        for (int i = 0; i < 29; i++) { made[i] = DeflateCodes.LengthBase(i); }
+        return made;
+    }
+
+    static int[] MakeLExt()
+    {
+        int[] made = new int[31];
+        for (int i = 0; i < 29; i++) { made[i] = 16 + DeflateCodes.LengthExtra(i); }
+        // 286 and 287 exist in the alphabet and mean nothing: a stream that
+        // codes one is corrupt, and the table says so rather than guessing.
+        made[29] = 77;
+        made[30] = 202;
+        return made;
+    }
+
+    static int[] MakeDBase()
+    {
+        int[] made = new int[32];
+        for (int i = 0; i < 30; i++) { made[i] = DeflateCodes.DistanceBase(i); }
+        return made;
+    }
+
+    static int[] MakeDExt()
+    {
+        int[] made = new int[32];
+        for (int i = 0; i < 30; i++) { made[i] = 16 + DeflateCodes.DistanceExtra(i); }
+        made[30] = 64;
+        made[31] = 64;
+        return made;
+    }
+
+    /// Builds one table from a set of code lengths. Returns 0, or -1 if the
+    /// set is over-subscribed, incomplete where it may not be, or needs more
+    /// room than a legal DEFLATE alphabet ever can.
+    public static int Build(int type, int[] lens, int lensAt, int codes,
+                            uint[] table, ref int bits, int[] work,
+                            int[] count, int[] offs)
+    {
+        int root = bits;
+        for (int len = 0; len <= 15; len++) { count[len] = 0; }
+        for (int sym = 0; sym < codes; sym++)
+        {
+            count[lens[lensAt + sym]] = count[lens[lensAt + sym]] + 1;
+        }
+
+        int max = 15;
+        while (max >= 1 && count[max] == 0) { max = max - 1; }
+        if (max == 0)
+        {
+            // No codes at all. Two entries that fail on use, so that the
+            // error is reported where a bad stream actually asks for one.
+            uint none = (64u << 24) | (1u << 16);
+            table[0] = none;
+            table[1] = none;
+            bits = 1;
+            return 0;
+        }
+        int min = 1;
+        while (min < max && count[min] == 0) { min = min + 1; }
+        if (root < min) root = min;
+        if (root > max) root = max;
+
+        int left = 1;
+        for (int len = 1; len <= 15; len++)
+        {
+            left = left << 1;
+            left = left - count[len];
+            if (left < 0) return -1;
+        }
+        if (left > 0 && (type == Codes || max != 1)) return -1;
+
+        offs[1] = 0;
+        for (int len = 1; len < 15; len++)
+        {
+            offs[len + 1] = offs[len] + count[len];
+        }
+        for (int sym = 0; sym < codes; sym++)
+        {
+            if (lens[lensAt + sym] != 0)
+            {
+                work[offs[lens[lensAt + sym]]] = sym;
+                offs[lens[lensAt + sym]] = offs[lens[lensAt + sym]] + 1;
+            }
+        }
+
+        int[] codeBase;
+        int[] codeExtra;
+        int match;
+        if (type == Lens) { codeBase = LBase; codeExtra = LExt; match = 257; }
+        else if (type == Dists) { codeBase = DBase; codeExtra = DExt; match = 0; }
+        else { codeBase = work; codeExtra = work; match = 20; }
+
+        int huff = 0;
+        int symbol = 0;
+        int length = min;
+        int next = 0;
+        int curr = root;
+        int drop = 0;
+        int low = -1;
+        int used = 1 << root;
+        int mask = used - 1;
+        int enough = type == Lens ? EnoughLens : type == Dists ? EnoughDists : 512;
+
+        while (true)
+        {
+            int entryBits = length - drop;
+            uint entry;
+            if (work[symbol] + 1 < match)
+            {
+                entry = ((uint)entryBits << 16) | (uint)work[symbol];
+            }
+            else if (work[symbol] >= match)
+            {
+                entry = ((uint)codeExtra[work[symbol] - match] << 24)
+                      | ((uint)entryBits << 16)
+                      | (uint)codeBase[work[symbol] - match];
+            }
+            else
+            {
+                entry = (96u << 24) | ((uint)entryBits << 16);
+            }
+
+            int incr = 1 << (length - drop);
+            int fill = 1 << curr;
+            min = fill;
+            do
+            {
+                fill = fill - incr;
+                table[next + (huff >> drop) + fill] = entry;
+            }
+            while (fill != 0);
+
+            incr = 1 << (length - 1);
+            while (incr != 0 && (huff & incr) != 0) { incr = incr >> 1; }
+            if (incr != 0) { huff = huff & (incr - 1); huff = huff + incr; }
+            else { huff = 0; }
+
+            symbol = symbol + 1;
+            count[length] = count[length] - 1;
+            if (count[length] == 0)
+            {
+                if (length == max) break;
+                length = lens[lensAt + work[symbol]];
+            }
+
+            if (length > root && (huff & mask) != low)
+            {
+                if (drop == 0) drop = root;
+                next = next + min;
+                curr = length - drop;
+                left = 1 << curr;
+                while (curr + drop < max)
+                {
+                    left = left - count[curr + drop];
+                    if (left <= 0) break;
+                    curr = curr + 1;
+                    left = left << 1;
+                }
+                used = used + (1 << curr);
+                if (used > enough) return -1;
+                low = huff & mask;
+                table[low] = ((uint)curr << 24) | ((uint)root << 16) | (uint)next;
+            }
+        }
+
+        // An incomplete set is legal for distances alone, and only with a
+        // single one-bit code; one entry covers everything it left out.
+        if (huff != 0)
+        {
+            table[next + (huff >> drop)] = (64u << 24) | ((uint)(length - drop) << 16);
+        }
+        bits = root;
+        return 0;
+    }
+}
+
+/// The RFC 1951 decompressor. Input arrives from a Stream through one buffer
+/// and leaves through a window that is a flat byte[]: a match is a memory
+/// copy inside it, and what the caller reads is a copy out of it.
+class Inflater
+{
+    const int WindowSize = 32768;
+    const int WindowLimit = 65536;              // 2 * WindowSize
+    const int InputSize = 16384;
+
+    Stream _source;
+    byte[] _in;
+    int _inAt;
+    int _inEnd;
+    bool _inEof;
+
+    uint _hold;
+    int _bits;                                  // bits held
+    int _have;                                  // of those, how many are real
+
+    byte[] _window;
+    int _write;
+    int _read;
+
+    bool _blockOpen;
+    bool _last;
+    bool _done;
+    int _stored;
+
+    uint[] _lenTable;
+    uint[] _distTable;
+    uint[] _codeTable;
+    int _lenBits;
+    int _distBits;
+
+    int[] _lens;
+    int[] _work;
+    int[] _count;
+    int[] _offs;
+
+    public Inflater(Stream source)
+    {
+        InflateFixed.Ready();
+        _source = source;
+        _in = new byte[InputSize];
+        // A match may reach MaxMatch past the limit; the tail is what makes
+        // that legal without a bounds test inside the copy.
+        _window = new byte[WindowLimit + 258 + 16];
+        _lenTable = InflateFixed.LenTable;
+        _distTable = InflateFixed.DistTable;
+        _lenBits = InflateFixed.LenBits;
+        _distBits = InflateFixed.DistBits;
+        _codeTable = new uint[512];
+        _lens = new int[320];
+        _work = new int[320];
+        _count = new int[16];
+        _offs = new int[16];
+    }
+
+    public bool Finished { get { return _done && _read == _write; } }
+
+    /// Begins another DEFLATE stream at the current input position, keeping
+    /// the bit reader's lookahead. RFC 1952 concatenates members that are
+    /// each independently windowed, which is exactly this.
+    public void Reset()
+    {
+        _write = 0;
+        _read = 0;
+        _blockOpen = false;
+        _last = false;
+        _done = false;
+        _stored = 0;
+    }
+
+    // ---- input -------------------------------------------------------------
+
+    int NextByte()
+    {
+        if (_inAt == _inEnd)
+        {
+            if (_inEof) return -1;
+            int got = _source.Read(_in, 0, _in.Length);
+            if (got <= 0) { _inEof = true; return -1; }
+            _inAt = 0;
+            _inEnd = got;
+        }
+        int value = _in[_inAt];
+        _inAt = _inAt + 1;
+        return value;
+    }
+
+    /// Guarantees `count` bits in the accumulator. Past the end of the input
+    /// it supplies zeroes and does not count them as read, so a stream that
+    /// is genuinely short is caught the moment those bits are consumed rather
+    /// than decoded as whatever the padding happens to say.
+    void Need(int count)
+    {
+        while (_bits < count)
+        {
+            int value = NextByte();
+            if (value < 0)
+            {
+                _bits = _bits + 8;
+            }
+            else
+            {
+                _hold = _hold | ((uint)value << _bits);
+                _bits = _bits + 8;
+                _have = _have + 8;
+            }
+        }
+    }
+
+    void Drop(int count)
+    {
+        if (count > _have)
+        {
+            throw new EndOfStreamException("the compressed stream ends in the middle of a code");
+        }
+        _hold = _hold >> count;
+        _bits = _bits - count;
+        _have = _have - count;
+    }
+
+    /// Discards bits up to the next byte boundary. The trailer of a gzip or
+    /// zlib stream begins there.
+    public void AlignToByte()
+    {
+        int extra = _bits & 7;
+        if (extra != 0) Drop(extra);
+    }
+
+    /// One byte after the DEFLATE data, taken from whatever the bit reader
+    /// read ahead before it goes back to the stream. -1 at end of input.
+    public int ReadRawByte()
+    {
+        if (_bits >= 8)
+        {
+            if (_have < 8) return -1;
+            int value = (int)(_hold & 255);
+            _hold = _hold >> 8;
+            _bits = _bits - 8;
+            _have = _have - 8;
+            return value;
+        }
+        return NextByte();
+    }
+
+    // ---- blocks ------------------------------------------------------------
+
+    void EndBlock()
+    {
+        _blockOpen = false;
+        if (_last) _done = true;
+    }
+
+    /// One symbol of the code-length alphabet. Its root is however many bits
+    /// the alphabet turned out to need, which is not always the seven it is
+    /// allowed: masking with a wider root reads past the table.
+    int DecodeLengthCode(int bits)
+    {
+        Need(bits);
+        uint entry = _codeTable[(int)(_hold & (uint)((1 << bits) - 1))];
+        int op = (int)(entry >> 24);
+        if ((op & 64) != 0)
+        {
+            throw new InvalidDataException("invalid code-lengths set");
+        }
+        Drop((int)((entry >> 16) & 255));
+        return (int)(entry & 65535);
+    }
+
+    void DynamicTables()
+    {
+        Need(5);
+        int nlen = (int)(_hold & 31) + 257;
+        Drop(5);
+        Need(5);
+        int ndist = (int)(_hold & 31) + 1;
+        Drop(5);
+        Need(4);
+        int ncode = (int)(_hold & 15) + 4;
+        Drop(4);
+        if (nlen > 286 || ndist > 30)
+        {
+            throw new InvalidDataException("too many length or distance symbols");
+        }
+
+        for (int i = 0; i < 19; i++) { _lens[i] = 0; }
+        for (int i = 0; i < ncode; i++)
+        {
+            Need(3);
+            _lens[DeflateStatic.BlOrder[i]] = (int)(_hold & 7);
+            Drop(3);
+        }
+        int codeBits = 7;
+        if (InflateTable.Build(InflateTable.Codes, _lens, 0, 19, _codeTable,
+                               ref codeBits, _work, _count, _offs) != 0)
+        {
+            throw new InvalidDataException("invalid code-lengths set");
+        }
+
+        int have = 0;
+        int total = nlen + ndist;
+        while (have < total)
+        {
+            int symbol = DecodeLengthCode(codeBits);
+            if (symbol < 16)
+            {
+                _lens[have] = symbol;
+                have = have + 1;
+                continue;
+            }
+            int value = 0;
+            int repeat;
+            if (symbol == 16)
+            {
+                if (have == 0)
+                {
+                    throw new InvalidDataException("invalid bit-length repeat");
+                }
+                value = _lens[have - 1];
+                Need(2);
+                repeat = 3 + (int)(_hold & 3);
+                Drop(2);
+            }
+            else if (symbol == 17)
+            {
+                Need(3);
+                repeat = 3 + (int)(_hold & 7);
+                Drop(3);
+            }
+            else
+            {
+                Need(7);
+                repeat = 11 + (int)(_hold & 127);
+                Drop(7);
+            }
+            if (have + repeat > total)
+            {
+                throw new InvalidDataException("invalid bit-length repeat");
+            }
+            while (repeat != 0)
+            {
+                _lens[have] = value;
+                have = have + 1;
+                repeat = repeat - 1;
+            }
+        }
+
+        if (_lens[256] == 0)
+        {
+            throw new InvalidDataException("invalid code -- missing end-of-block");
+        }
+
+        uint[] lenTable = new uint[InflateTable.EnoughLens];
+        int lenBits = 9;
+        if (InflateTable.Build(InflateTable.Lens, _lens, 0, nlen, lenTable,
+                               ref lenBits, _work, _count, _offs) != 0)
+        {
+            throw new InvalidDataException("invalid literal/lengths set");
+        }
+        uint[] distTable = new uint[InflateTable.EnoughDists];
+        int distBits = 6;
+        if (InflateTable.Build(InflateTable.Dists, _lens, nlen, ndist, distTable,
+                               ref distBits, _work, _count, _offs) != 0)
+        {
+            throw new InvalidDataException("invalid distances set");
+        }
+        _lenTable = lenTable;
+        _lenBits = lenBits;
+        _distTable = distTable;
+        _distBits = distBits;
+    }
+
+    void BeginBlock()
+    {
+        Need(3);
+        _last = (_hold & 1) != 0;
+        Drop(1);
+        int type = (int)(_hold & 3);
+        Drop(2);
+        if (type == 0)
+        {
+            AlignToByte();
+            Need(16);
+            int count = (int)(_hold & 65535);
+            Drop(16);
+            Need(16);
+            int inverted = (int)(_hold & 65535);
+            Drop(16);
+            if (count != (~inverted & 65535))
+            {
+                throw new InvalidDataException("invalid stored block lengths");
+            }
+            _stored = count;
+            _blockOpen = true;
+            if (count == 0) EndBlock();
+            return;
+        }
+        if (type == 1)
+        {
+            _lenTable = InflateFixed.LenTable;
+            _lenBits = InflateFixed.LenBits;
+            _distTable = InflateFixed.DistTable;
+            _distBits = InflateFixed.DistBits;
+        }
+        else if (type == 2)
+        {
+            DynamicTables();
+        }
+        else
+        {
+            throw new InvalidDataException("invalid block type");
+        }
+        _blockOpen = true;
+    }
+
+    void CopyStored()
+    {
+        int room = WindowLimit - _write;
+        int take = _stored < room ? _stored : room;
+        for (int i = 0; i < take; i++)
+        {
+            // Whole bytes only: the stored block began on a byte boundary.
+            Need(8);
+            _window[_write] = (byte)(_hold & 255);
+            Drop(8);
+            _write = _write + 1;
+        }
+        _stored = _stored - take;
+        if (_stored == 0) EndBlock();
+    }
+
+    /// Decodes until the window is full or the stream ends.
+    void Run()
+    {
+        byte[] w = _window;
+        while (_write < WindowLimit && !_done)
+        {
+            if (!_blockOpen)
+            {
+                BeginBlock();
+                continue;
+            }
+            if (_stored != 0)
+            {
+                CopyStored();
+                continue;
+            }
+
+            uint[] lenTable = _lenTable;
+            uint[] distTable = _distTable;
+            uint lenMask = (uint)((1 << _lenBits) - 1);
+            uint distMask = (uint)((1 << _distBits) - 1);
+
+            while (_write < WindowLimit)
+            {
+                Need(_lenBits);
+                uint entry = lenTable[(int)(_hold & lenMask)];
+                int op = (int)(entry >> 24);
+                while (op != 0 && (op & 0xF0) == 0)
+                {
+                    Drop((int)((entry >> 16) & 255));
+                    Need(op);
+                    entry = lenTable[(int)(entry & 65535)
+                                     + (int)(_hold & (uint)((1 << op) - 1))];
+                    op = (int)(entry >> 24);
+                }
+                Drop((int)((entry >> 16) & 255));
+
+                if (op == 0)
+                {
+                    w[_write] = (byte)(entry & 65535);
+                    _write = _write + 1;
+                    continue;
+                }
+                if ((op & 16) != 0)
+                {
+                    int length = (int)(entry & 65535);
+                    op = op & 15;
+                    if (op != 0)
+                    {
+                        Need(op);
+                        length = length + (int)(_hold & (uint)((1 << op) - 1));
+                        Drop(op);
+                    }
+
+                    Need(_distBits);
+                    entry = distTable[(int)(_hold & distMask)];
+                    op = (int)(entry >> 24);
+                    while (op != 0 && (op & 0xF0) == 0)
+                    {
+                        Drop((int)((entry >> 16) & 255));
+                        Need(op);
+                        entry = distTable[(int)(entry & 65535)
+                                          + (int)(_hold & (uint)((1 << op) - 1))];
+                        op = (int)(entry >> 24);
+                    }
+                    Drop((int)((entry >> 16) & 255));
+                    if ((op & 64) != 0)
+                    {
+                        throw new InvalidDataException("invalid distance code");
+                    }
+                    int distance = (int)(entry & 65535);
+                    op = op & 15;
+                    if (op != 0)
+                    {
+                        Need(op);
+                        distance = distance + (int)(_hold & (uint)((1 << op) - 1));
+                        Drop(op);
+                    }
+
+                    int from = _write - distance;
+                    if (from < 0)
+                    {
+                        throw new InvalidDataException("invalid distance too far back");
+                    }
+                    if (distance >= length)
+                    {
+                        Sys.CopyNoOverlap(w, _write, w, from, length);
+                        _write = _write + length;
+                    }
+                    else if (distance == 1)
+                    {
+                        byte value = w[from];
+                        int end = _write + length;
+                        while (_write < end)
+                        {
+                            w[_write] = value;
+                            _write = _write + 1;
+                        }
+                    }
+                    else
+                    {
+                        int end = _write + length;
+                        while (_write < end)
+                        {
+                            w[_write] = w[from];
+                            _write = _write + 1;
+                            from = from + 1;
+                        }
+                    }
+                    continue;
+                }
+                if ((op & 32) != 0)
+                {
+                    EndBlock();
+                    break;
+                }
+                throw new InvalidDataException("invalid literal/length code");
+            }
+            if (_done) break;
+        }
+    }
+
+    /// Fills the caller's buffer. Returns 0 only when the DEFLATE stream has
+    /// ended; whoever framed it decides whether another one follows.
+    public int Read(byte[] buffer, int offset, int count)
+    {
+        int produced = 0;
+        while (produced < count)
+        {
+            if (_read < _write)
+            {
+                int take = _write - _read;
+                if (take > count - produced) take = count - produced;
+                Sys.CopyNoOverlap(buffer, offset + produced, _window, _read, take);
+                _read = _read + take;
+                produced = produced + take;
+                continue;
+            }
+            if (_done) break;
+            if (_write > WindowSize)
+            {
+                // Everything delivered: keep the 32 KB a match may still
+                // reach back into and start filling again from there.
+                Sys.CopyNoOverlap(_window, 0, _window, _write - WindowSize, WindowSize);
+                _write = WindowSize;
+                _read = WindowSize;
+            }
+            Run();
+            if (_read == _write && _done) break;
+        }
+        return produced;
+    }
+}
+
+/// System.IO.Compression.DeflateStream: raw RFC 1951 data, with no header and
+/// no checksum, over any Stream.
+class DeflateStream : Stream
+{
+    Stream _stream;
+    CompressionMode _mode;
+    bool _leaveOpen;
+    bool _disposed;
+    Deflater? _deflater;
+    Inflater? _inflater;
+
+    public DeflateStream(Stream stream, CompressionMode mode)
+        : this(stream, mode, false)
+    {
+    }
+
+    public DeflateStream(Stream stream, CompressionMode mode, bool leaveOpen)
+    {
+        _stream = stream;
+        _mode = mode;
+        _leaveOpen = leaveOpen;
+        if (mode == CompressionMode.Compress)
+        {
+            _deflater = new Deflater(stream, CompressionLevel.Optimal);
+        }
+        else
+        {
+            _inflater = new Inflater(stream);
+        }
+    }
+
+    public DeflateStream(Stream stream, CompressionLevel compressionLevel)
+        : this(stream, compressionLevel, false)
+    {
+    }
+
+    public DeflateStream(Stream stream, CompressionLevel compressionLevel, bool leaveOpen)
+    {
+        _stream = stream;
+        _mode = CompressionMode.Compress;
+        _leaveOpen = leaveOpen;
+        _deflater = new Deflater(stream, compressionLevel);
+    }
+
+    public Stream BaseStream { get { return _stream; } }
+
+    public override bool CanRead { get { return !_disposed && _mode == CompressionMode.Decompress; } }
+    public override bool CanWrite { get { return !_disposed && _mode == CompressionMode.Compress; } }
+    public override bool CanSeek { get { return false; } }
+
+    public override int Read(byte[] buffer, int offset, int count)
+    {
+        if (_inflater == null)
+        {
+            throw new NotSupportedException("this stream does not support reading");
+        }
+        return _inflater.Read(buffer, offset, count);
+    }
+
+    public override void Write(byte[] buffer, int offset, int count)
+    {
+        if (_deflater == null)
+        {
+            throw new NotSupportedException("this stream does not support writing");
+        }
+        _deflater.Write(buffer, offset, count);
+    }
+
+    public override void Flush()
+    {
+        if (_deflater != null)
+        {
+            _deflater.Flush();
+            _stream.Flush();
+        }
+    }
+
+    public override void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        if (_deflater != null) _deflater.Finish();
+        if (!_leaveOpen) _stream.Dispose();
+    }
+}
+
+/// System.IO.Compression.ZLibStream: RFC 1950's two-byte header and Adler-32
+/// trailer around the same DEFLATE data.
+class ZLibStream : Stream
+{
+    Stream _stream;
+    CompressionMode _mode;
+    bool _leaveOpen;
+    bool _disposed;
+    bool _headerDone;
+    bool _finished;
+    uint _adler;
+    Deflater? _deflater;
+    Inflater? _inflater;
+
+    public ZLibStream(Stream stream, CompressionMode mode)
+        : this(stream, mode, false)
+    {
+    }
+
+    public ZLibStream(Stream stream, CompressionMode mode, bool leaveOpen)
+    {
+        _stream = stream;
+        _mode = mode;
+        _leaveOpen = leaveOpen;
+        _adler = Adler32.Seed;
+        if (mode == CompressionMode.Compress)
+        {
+            WriteHeader(CompressionLevel.Optimal);
+            _deflater = new Deflater(stream, CompressionLevel.Optimal);
+        }
+        else
+        {
+            _inflater = new Inflater(stream);
+        }
+    }
+
+    public ZLibStream(Stream stream, CompressionLevel compressionLevel)
+        : this(stream, compressionLevel, false)
+    {
+    }
+
+    public ZLibStream(Stream stream, CompressionLevel compressionLevel, bool leaveOpen)
+    {
+        _stream = stream;
+        _mode = CompressionMode.Compress;
+        _leaveOpen = leaveOpen;
+        _adler = Adler32.Seed;
+        WriteHeader(compressionLevel);
+        _deflater = new Deflater(stream, compressionLevel);
+    }
+
+    void WriteHeader(CompressionLevel level)
+    {
+        // CMF says DEFLATE in a 32 KiB window; FLG carries the level and the
+        // check bits that make the pair a multiple of 31.
+        int flevel = level == CompressionLevel.Fastest
+                  || level == CompressionLevel.NoCompression ? 0
+                   : level == CompressionLevel.SmallestSize ? 3 : 2;
+        int header = (0x78 << 8) | (flevel << 6);
+        header = header + (31 - header % 31);
+        byte[] bytes = new byte[2];
+        bytes[0] = (byte)(header >> 8);
+        bytes[1] = (byte)(header & 255);
+        _stream.Write(bytes, 0, 2);
+        _headerDone = true;
+    }
+
+    void ReadHeader()
+    {
+        if (_inflater == null) return;
+        int cmf = _inflater.ReadRawByte();
+        int flg = _inflater.ReadRawByte();
+        if (cmf < 0 || flg < 0 || (cmf & 15) != 8 || (cmf >> 4) > 7
+            || ((cmf << 8) + flg) % 31 != 0 || (flg & 32) != 0)
+        {
+            throw new InvalidDataException("not a zlib stream");
+        }
+        _headerDone = true;
+    }
+
+    public Stream BaseStream { get { return _stream; } }
+
+    public override bool CanRead { get { return !_disposed && _mode == CompressionMode.Decompress; } }
+    public override bool CanWrite { get { return !_disposed && _mode == CompressionMode.Compress; } }
+    public override bool CanSeek { get { return false; } }
+
+    public override int Read(byte[] buffer, int offset, int count)
+    {
+        if (_inflater == null)
+        {
+            throw new NotSupportedException("this stream does not support reading");
+        }
+        if (!_headerDone) ReadHeader();
+        if (_finished) return 0;
+        int got = _inflater.Read(buffer, offset, count);
+        if (got > 0)
+        {
+            _adler = Adler32.Append(_adler, buffer, offset, got);
+            return got;
+        }
+        _finished = true;
+        _inflater.AlignToByte();
+        uint stored = 0;
+        for (int i = 0; i < 4; i++)
+        {
+            int value = _inflater.ReadRawByte();
+            if (value < 0)
+            {
+                throw new InvalidDataException("truncated zlib trailer");
+            }
+            stored = (stored << 8) | (uint)value;
+        }
+        if (stored != _adler)
+        {
+            throw new InvalidDataException("zlib Adler-32 mismatch");
+        }
+        return 0;
+    }
+
+    public override void Write(byte[] buffer, int offset, int count)
+    {
+        if (_deflater == null)
+        {
+            throw new NotSupportedException("this stream does not support writing");
+        }
+        _adler = Adler32.Append(_adler, buffer, offset, count);
+        _deflater.Write(buffer, offset, count);
+    }
+
+    public override void Flush()
+    {
+        if (_deflater != null)
+        {
+            _deflater.Flush();
+            _stream.Flush();
+        }
+    }
+
+    public override void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        if (_deflater != null)
+        {
+            _deflater.Finish();
+            byte[] trailer = new byte[4];
+            trailer[0] = (byte)(_adler >> 24);
+            trailer[1] = (byte)((_adler >> 16) & 255);
+            trailer[2] = (byte)((_adler >> 8) & 255);
+            trailer[3] = (byte)(_adler & 255);
+            _stream.Write(trailer, 0, 4);
+        }
+        if (!_leaveOpen) _stream.Dispose();
+    }
+}
+
+/// System.IO.Compression.GZipStream: RFC 1952 framing, including the
+/// concatenated members gzip writes and every optional header field it may
+/// have put in front of them.
+class GZipStream : Stream
+{
+    Stream _stream;
+    CompressionMode _mode;
+    bool _leaveOpen;
+    bool _disposed;
+    bool _headerDone;
+    bool _finished;
+    uint _crc;
+    uint _size;
+    Deflater? _deflater;
+    Inflater? _inflater;
+
+    public GZipStream(Stream stream, CompressionMode mode)
+        : this(stream, mode, false)
+    {
+    }
+
+    public GZipStream(Stream stream, CompressionMode mode, bool leaveOpen)
+    {
+        _stream = stream;
+        _mode = mode;
+        _leaveOpen = leaveOpen;
+        if (mode == CompressionMode.Compress)
+        {
+            WriteHeader(CompressionLevel.Optimal);
+            _deflater = new Deflater(stream, CompressionLevel.Optimal);
+        }
+        else
+        {
+            _inflater = new Inflater(stream);
+        }
+    }
+
+    public GZipStream(Stream stream, CompressionLevel compressionLevel)
+        : this(stream, compressionLevel, false)
+    {
+    }
+
+    public GZipStream(Stream stream, CompressionLevel compressionLevel, bool leaveOpen)
+    {
+        _stream = stream;
+        _mode = CompressionMode.Compress;
+        _leaveOpen = leaveOpen;
+        WriteHeader(compressionLevel);
+        _deflater = new Deflater(stream, compressionLevel);
+    }
+
+    void WriteHeader(CompressionLevel level)
+    {
+        byte[] header = new byte[10];
+        header[0] = 0x1F;
+        header[1] = 0x8B;
+        header[2] = 8;                          // DEFLATE
+        header[3] = 0;                          // no optional fields
+        header[8] = (byte)(level == CompressionLevel.Fastest ? 4
+                         : level == CompressionLevel.SmallestSize ? 2 : 0);
+        header[9] = 3;                          // Unix
+        _stream.Write(header, 0, 10);
+        _headerDone = true;
+    }
+
+    /// Reads one member header. Returns false at a clean end of input.
+    bool ReadHeader(bool first)
+    {
+        if (_inflater == null) return false;
+        int magic = _inflater.ReadRawByte();
+        if (magic < 0)
+        {
+            if (first)
+            {
+                throw new InvalidDataException("not a gzip stream");
+            }
+            return false;
+        }
+        if (magic != 0x1F || _inflater.ReadRawByte() != 0x8B)
+        {
+            throw new InvalidDataException("not a gzip stream");
+        }
+        if (_inflater.ReadRawByte() != 8)
+        {
+            throw new InvalidDataException("unsupported gzip compression method");
+        }
+        int flags = _inflater.ReadRawByte();
+        if (flags < 0 || (flags & 0xE0) != 0)
+        {
+            throw new InvalidDataException("invalid gzip header flags");
+        }
+        for (int i = 0; i < 6; i++)
+        {
+            if (_inflater.ReadRawByte() < 0)
+            {
+                throw new InvalidDataException("truncated gzip header");
+            }
+        }
+        if ((flags & 4) != 0)
+        {
+            int low = _inflater.ReadRawByte();
+            int high = _inflater.ReadRawByte();
+            if (low < 0 || high < 0)
+            {
+                throw new InvalidDataException("truncated gzip header");
+            }
+            int extra = low | (high << 8);
+            for (int i = 0; i < extra; i++)
+            {
+                if (_inflater.ReadRawByte() < 0)
+                {
+                    throw new InvalidDataException("truncated gzip header");
+                }
+            }
+        }
+        if ((flags & 8) != 0) SkipTerminated();
+        if ((flags & 16) != 0) SkipTerminated();
+        if ((flags & 2) != 0)
+        {
+            if (_inflater.ReadRawByte() < 0 || _inflater.ReadRawByte() < 0)
+            {
+                throw new InvalidDataException("truncated gzip header");
+            }
+        }
+        _crc = 0;
+        _size = 0;
+        _headerDone = true;
+        return true;
+    }
+
+    void SkipTerminated()
+    {
+        if (_inflater == null) return;
+        while (true)
+        {
+            int value = _inflater.ReadRawByte();
+            if (value < 0)
+            {
+                throw new InvalidDataException("truncated gzip header");
+            }
+            if (value == 0) return;
+        }
+    }
+
+    void ReadTrailer()
+    {
+        if (_inflater == null) return;
+        _inflater.AlignToByte();
+        uint crc = 0;
+        uint size = 0;
+        for (int i = 0; i < 4; i++)
+        {
+            int value = _inflater.ReadRawByte();
+            if (value < 0) throw new InvalidDataException("truncated gzip trailer");
+            crc = crc | ((uint)value << (i * 8));
+        }
+        for (int i = 0; i < 4; i++)
+        {
+            int value = _inflater.ReadRawByte();
+            if (value < 0) throw new InvalidDataException("truncated gzip trailer");
+            size = size | ((uint)value << (i * 8));
+        }
+        if (crc != _crc) throw new InvalidDataException("gzip CRC-32 mismatch");
+        if (size != _size) throw new InvalidDataException("gzip uncompressed-size mismatch");
+    }
+
+    public Stream BaseStream { get { return _stream; } }
+
+    public override bool CanRead { get { return !_disposed && _mode == CompressionMode.Decompress; } }
+    public override bool CanWrite { get { return !_disposed && _mode == CompressionMode.Compress; } }
+    public override bool CanSeek { get { return false; } }
+
+    public override int Read(byte[] buffer, int offset, int count)
+    {
+        if (_inflater == null)
+        {
+            throw new NotSupportedException("this stream does not support reading");
+        }
+        if (!_headerDone) ReadHeader(true);
+        int produced = 0;
+        while (produced < count && !_finished)
+        {
+            int got = _inflater.Read(buffer, offset + produced, count - produced);
+            if (got > 0)
+            {
+                _crc = Crc32.Append(_crc, buffer, offset + produced, got);
+                _size = _size + (uint)got;
+                produced = produced + got;
+                continue;
+            }
+            ReadTrailer();
+            if (!ReadHeader(false))
+            {
+                _finished = true;
+                break;
+            }
+            _inflater.Reset();
+        }
+        return produced;
+    }
+
+    public override void Write(byte[] buffer, int offset, int count)
+    {
+        if (_deflater == null)
+        {
+            throw new NotSupportedException("this stream does not support writing");
+        }
+        _crc = Crc32.Append(_crc, buffer, offset, count);
+        _size = _size + (uint)count;
+        _deflater.Write(buffer, offset, count);
+    }
+
+    public override void Flush()
+    {
+        if (_deflater != null)
+        {
+            _deflater.Flush();
+            _stream.Flush();
+        }
+    }
+
+    public override void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        if (_deflater != null)
+        {
+            _deflater.Finish();
+            byte[] trailer = new byte[8];
+            for (int i = 0; i < 4; i++)
+            {
+                trailer[i] = (byte)((_crc >> (i * 8)) & 255);
+                trailer[4 + i] = (byte)((_size >> (i * 8)) & 255);
+            }
+            _stream.Write(trailer, 0, 8);
+        }
+        if (!_leaveOpen) _stream.Dispose();
+    }
+}

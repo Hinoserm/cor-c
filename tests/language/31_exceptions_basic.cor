@@ -1,0 +1,123 @@
+// test: exceptions_basic
+// expect-exit: 0
+// expect-output:
+// caught 3 boom 3
+// deep 42
+// order worse
+// base 99
+// message bad
+// outer
+// after
+//
+// Exceptions: throw and catch by type, Message, an exception thrown through
+// several frames, catch clauses tried in order with the derived type first,
+// a derived exception caught by a base-typed clause, the library's
+// exception types, and an exception passing through an inner try whose
+// clauses do not match.
+
+class Boom : Exception
+{
+    public int Code;
+
+    public Boom(int c) : base("boom " + c)
+    {
+        Code = c;
+    }
+}
+
+class Worse : Boom
+{
+    public Worse() : base(99)
+    {
+    }
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Deep(int n)
+    {
+        if (n == 0)
+        {
+            throw new Boom(42);
+        }
+        return Deep(n - 1) + 1;
+    }
+
+    static int Main()
+    {
+        try
+        {
+            throw new Boom(3);
+        }
+        catch (Boom b)
+        {
+            Line("caught " + b.Code + " " + b.Message);
+        }
+
+        try
+        {
+            Deep(5);
+            Line("deep not thrown");
+        }
+        catch (Boom b)
+        {
+            Line("deep " + b.Code);
+        }
+
+        try
+        {
+            throw new Worse();
+        }
+        catch (Worse w)
+        {
+            Line("order worse");
+        }
+        catch (Boom b)
+        {
+            Line("order boom");
+        }
+
+        try
+        {
+            throw new Worse();
+        }
+        catch (Boom b)
+        {
+            Line("base " + b.Code);
+        }
+
+        try
+        {
+            throw new InvalidOperationException("bad");
+        }
+        catch (Exception e)
+        {
+            Line("message " + e.Message);
+        }
+
+        try
+        {
+            try
+            {
+                throw new InvalidOperationException("inner");
+            }
+            catch (Boom b)
+            {
+                Line("wrong handler");
+            }
+        }
+        catch (Exception e)
+        {
+            Line("outer");
+        }
+
+        Line("after");
+        return 0;
+    }
+}

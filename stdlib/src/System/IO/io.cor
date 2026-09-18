@@ -1,0 +1,2116 @@
+// System.IO, as .NET spells it: Stream and the streams over descriptors
+// and memory, the text readers and writers, Directory. One-to-one with
+// .NET's names and behaviour where .NET has them; the platform's Os calls
+// underneath (lib/sys/linux.cor), so a program written for .NET compiles
+// here unchanged.
+
+enum FileMode
+{
+    CreateNew = 1,
+    Create = 2,
+    Open = 3,
+    OpenOrCreate = 4,
+    Truncate = 5,
+    Append = 6
+}
+
+enum FileAccess
+{
+    Read = 1,
+    Write = 2,
+    ReadWrite = 3
+}
+
+enum SeekOrigin
+{
+    Begin = 0,
+    Current = 1,
+    End = 2
+}
+
+/// The .NET Stream: what every source and sink of bytes looks like.
+/// ReadAsync/WriteAsync complete synchronously here -- the scheduler is
+/// single-threaded and the descriptors block -- which is legal for a
+/// Stream and what .NET's base class does for a stream that does not
+/// override them.
+abstract class Stream : IDisposable
+{
+    public abstract bool CanRead { get; }
+    public abstract bool CanWrite { get; }
+    public abstract bool CanSeek { get; }
+    public abstract int Read(byte[] buffer, int offset, int count);
+    public abstract void Write(byte[] buffer, int offset, int count);
+
+    public virtual long Length
+    {
+        get { throw new NotSupportedException("this stream has no length"); }
+    }
+
+    public virtual long Position
+    {
+        get { throw new NotSupportedException("this stream has no position"); }
+        set { throw new NotSupportedException("this stream has no position"); }
+    }
+
+    public virtual long Seek(long offset, SeekOrigin origin)
+    {
+        throw new NotSupportedException("this stream cannot seek");
+    }
+
+    public virtual void Flush()
+    {
+    }
+
+    public virtual int ReadByte()
+    {
+        byte[] one = new byte[1];
+        return Read(one, 0, 1) == 1 ? one[0] & 255 : -1;
+    }
+
+    public virtual void WriteByte(byte value)
+    {
+        byte[] one = new byte[1];
+        one[0] = value;
+        Write(one, 0, 1);
+    }
+
+    public int Read(byte[] buffer)
+    {
+        return Read(buffer, 0, buffer.Length);
+    }
+
+    public void Write(byte[] buffer)
+    {
+        Write(buffer, 0, buffer.Length);
+    }
+
+    public virtual Task<int> ReadAsync(byte[] buffer, int offset, int count)
+    {
+        return Task.FromResult(Read(buffer, offset, count));
+    }
+
+    public virtual Task WriteAsync(byte[] buffer, int offset, int count)
+    {
+        Write(buffer, offset, count);
+        return Task.CompletedTask;
+    }
+
+    public void CopyTo(Stream destination)
+    {
+        byte[] chunk = new byte[8192];
+        while (true)
+        {
+            int n = Read(chunk, 0, chunk.Length);
+            if (n <= 0)
+            {
+                return;
+            }
+            destination.Write(chunk, 0, n);
+        }
+    }
+
+    public virtual void Close()
+    {
+        Dispose();
+    }
+
+    public virtual void Dispose()
+    {
+    }
+}
+
+/// A stream over a descriptor: a file opened by path, or a handle the
+/// program already holds (standard input, a pipe end).
+class FileStream : Stream
+{
+    int _fd;
+    bool _canRead;
+    bool _canWrite;
+    bool _owns;
+    string _name;
+
+    public FileStream(string path, FileMode mode) : this(path, mode, mode == FileMode.Open ? FileAccess.Read : FileAccess.ReadWrite)
+    {
+    }
+
+    public FileStream(string path, FileMode mode, FileAccess access)
+    {
+        _name = path;
+        int flags = access == FileAccess.Read ? O.Read : access == FileAccess.Write ? O.Write : O.ReadWrite;
+        if (mode == FileMode.CreateNew)
+        {
+            flags = flags | O.Create | O.Exclusive;
+        }
+        else if (mode == FileMode.Create)
+        {
+            flags = flags | O.Create | O.Truncate;
+        }
+        else if (mode == FileMode.OpenOrCreate)
+        {
+            flags = flags | O.Create;
+        }
+        else if (mode == FileMode.Truncate)
+        {
+            flags = flags | O.Truncate;
+        }
+        else if (mode == FileMode.Append)
+        {
+            flags = flags | O.Create | O.Append;
+        }
+        // O_LARGEFILE ALWAYS, as .NET does on Linux: without it a 32-bit
+        // kernel refuses to open anything 2 GiB or larger at all.
+        _fd = Os.Open(path, flags | O.LargeFile, 420);
+        if (_fd < 0)
+        {
+            throw Interop.GetExceptionForIoErrno(_fd, path);
+        }
+        _canRead = access != FileAccess.Write;
+        _canWrite = access != FileAccess.Read;
+        _owns = true;
+    }
+
+    /// Over a descriptor the program already has. Closing the stream closes
+    /// it too unless `ownsHandle` says otherwise.
+    public FileStream(int handle, FileAccess access, bool ownsHandle)
+    {
+        _fd = handle;
+        _name = "fd " + handle;
+        _canRead = access != FileAccess.Write;
+        _canWrite = access != FileAccess.Read;
+        _owns = ownsHandle;
+    }
+
+    public int Handle
+    {
+        get { return _fd; }
+    }
+
+    public string Name
+    {
+        get { return _name; }
+    }
+
+    public override bool CanRead { get { return _canRead; } }
+    public override bool CanWrite { get { return _canWrite; } }
+    /// Whether the descriptor takes lseek: a file or a block device does,
+    /// a pipe, a terminal or a socket does not.
+    public override bool CanSeek
+    {
+        get { return _fd >= 0 && Os.Lseek(_fd, 0, 1) >= 0; }
+    }
+
+    public override int Read(byte[] buffer, int offset, int count)
+    {
+        while (true)
+        {
+            int n = Os.Read(_fd, buffer, offset, count);
+            if (n == -Err.Intr)
+            {
+                continue;
+            }
+            if (n < 0)
+            {
+                throw Interop.GetExceptionForIoErrno(n, _name);
+            }
+            return n;
+        }
+    }
+
+    public override void Write(byte[] buffer, int offset, int count)
+    {
+        int done = 0;
+        while (done < count)
+        {
+            int n = Os.Write(_fd, buffer, offset + done, count - done);
+            if (n == -Err.Intr)
+            {
+                continue;
+            }
+            if (n < 0)
+            {
+                throw Interop.GetExceptionForIoErrno(n, _name);
+            }
+            done = done + n;
+        }
+    }
+
+    public override long Length
+    {
+        get { return Os.SizeOf(_fd); }
+    }
+
+    public override long Position
+    {
+        get { return Os.Lseek(_fd, 0, (int)SeekOrigin.Current); }
+        set { Os.Lseek(_fd, value, (int)SeekOrigin.Begin); }
+    }
+
+    public override long Seek(long offset, SeekOrigin origin)
+    {
+        long at = Os.Lseek(_fd, offset, (int)origin);
+        if (at < 0)
+        {
+            throw Interop.GetExceptionForIoErrno((int)at, _name);
+        }
+        return at;
+    }
+
+    public override void Dispose()
+    {
+        if (_owns && _fd >= 0)
+        {
+            Os.Close(_fd);
+        }
+        _fd = -1;
+    }
+}
+
+/// A stream over a growable byte array.
+class MemoryStream : Stream
+{
+    byte[] _bytes;
+    int _length;
+    int _position;
+
+    public MemoryStream()
+    {
+        _bytes = new byte[256];
+    }
+
+    public MemoryStream(byte[] buffer)
+    {
+        _bytes = buffer;
+        _length = buffer.Length;
+    }
+
+    public override bool CanRead { get { return true; } }
+    public override bool CanWrite { get { return true; } }
+    public override bool CanSeek { get { return true; } }
+
+    public override long Length { get { return _length; } }
+
+    public override long Position
+    {
+        get { return _position; }
+        set { _position = (int)value; }
+    }
+
+    public override long Seek(long offset, SeekOrigin origin)
+    {
+        long at = origin == SeekOrigin.Begin ? offset : origin == SeekOrigin.Current ? _position + offset : _length + offset;
+        _position = (int)at;
+        return at;
+    }
+
+    public override int Read(byte[] buffer, int offset, int count)
+    {
+        int n = _length - _position;
+        if (n > count)
+        {
+            n = count;
+        }
+        if (n <= 0)
+        {
+            return 0;
+        }
+        Array.Copy(_bytes, _position, buffer, offset, n);
+        _position = _position + n;
+        return n;
+    }
+
+    public override void Write(byte[] buffer, int offset, int count)
+    {
+        if (_position + count > _bytes.Length)
+        {
+            int size = _bytes.Length * 2;
+            while (size < _position + count)
+            {
+                size = size * 2;
+            }
+            byte[] bigger = new byte[size];
+            Array.Copy(_bytes, 0, bigger, 0, _length);
+            _bytes = bigger;
+        }
+        Array.Copy(buffer, offset, _bytes, _position, count);
+        _position = _position + count;
+        if (_position > _length)
+        {
+            _length = _position;
+        }
+    }
+
+    public byte[] ToArray()
+    {
+        byte[] copy = new byte[_length];
+        Array.Copy(_bytes, 0, copy, 0, _length);
+        return copy;
+    }
+
+    public byte[] GetBuffer()
+    {
+        return _bytes;
+    }
+}
+
+/// .NET's TextWriter: characters out. UTF-8 here, as .NET's default is.
+abstract class TextWriter : IDisposable
+{
+    public abstract void Write(char value);
+
+    public virtual void Write(object? value)
+    {
+        if (value != null) Write(value.ToString());
+    }
+
+    public virtual void Write(string value)
+    {
+        for (int i = 0; i < value.Length; i++)
+        {
+            Write((char)Sys.GetByte(value, i));
+        }
+    }
+
+    public virtual void Write(long value)
+    {
+        Write(String.FromInt(value));
+    }
+
+    public virtual void WriteLine()
+    {
+        Write('\n');
+    }
+
+    public virtual void WriteLine(string value)
+    {
+        Write(value);
+        WriteLine();
+    }
+
+    public virtual void WriteLine(long value)
+    {
+        Write(value);
+        WriteLine();
+    }
+
+    public virtual void Flush()
+    {
+    }
+
+    public virtual void Dispose()
+    {
+        Flush();
+    }
+}
+
+abstract class TextReader : IDisposable
+{
+    public abstract int Read();
+
+    public virtual int Peek()
+    {
+        return -1;
+    }
+
+    public virtual string? ReadLine()
+    {
+        StringBuilder line = new StringBuilder();
+        int c = Read();
+        if (c < 0)
+        {
+            return null;
+        }
+        while (c >= 0 && c != 10)
+        {
+            if (c != 13)
+            {
+                line.Append((char)c);
+            }
+            c = Read();
+        }
+        return line.ToString();
+    }
+
+    public virtual string ReadToEnd()
+    {
+        StringBuilder all = new StringBuilder();
+        int c = Read();
+        while (c >= 0)
+        {
+            all.Append((char)c);
+            c = Read();
+        }
+        return all.ToString();
+    }
+
+    public virtual void Dispose()
+    {
+    }
+}
+
+class StreamWriter : TextWriter
+{
+    Stream _stream;
+    byte[] _buffer;
+    int _used;
+    public bool AutoFlush;
+
+    public StreamWriter(Stream stream)
+    {
+        _stream = stream;
+        _buffer = new byte[4096];
+    }
+
+    public StreamWriter(string path, bool append) : this(new FileStream(path, append ? FileMode.Append : FileMode.Create, FileAccess.Write))
+    {
+    }
+
+    public StreamWriter(string path) : this(new FileStream(path, FileMode.Create, FileAccess.Write))
+    {
+    }
+
+    public Stream BaseStream
+    {
+        get { return _stream; }
+    }
+
+    public override void Write(char value)
+    {
+        if (_used == _buffer.Length)
+        {
+            Flush();
+        }
+        _buffer[_used] = (byte)value;
+        _used = _used + 1;
+        if (AutoFlush && value == '\n')
+        {
+            Flush();
+        }
+    }
+
+    public override void Flush()
+    {
+        if (_used > 0)
+        {
+            _stream.Write(_buffer, 0, _used);
+            _used = 0;
+        }
+        _stream.Flush();
+    }
+
+    public override void Dispose()
+    {
+        Flush();
+        _stream.Dispose();
+    }
+}
+
+class StreamReader : TextReader
+{
+    Stream _stream;
+    byte[] _buffer;
+    int _at;
+    int _end;
+
+    public StreamReader(Stream stream)
+    {
+        _stream = stream;
+        _buffer = new byte[4096];
+    }
+
+    public StreamReader(string path) : this(new FileStream(path, FileMode.Open, FileAccess.Read))
+    {
+    }
+
+    public Stream BaseStream
+    {
+        get { return _stream; }
+    }
+
+    bool Fill()
+    {
+        if (_at < _end)
+        {
+            return true;
+        }
+        _end = _stream.Read(_buffer, 0, _buffer.Length);
+        _at = 0;
+        return _end > 0;
+    }
+
+    public override int Read()
+    {
+        if (!Fill())
+        {
+            return -1;
+        }
+        int c = _buffer[_at] & 255;
+        _at = _at + 1;
+        return c;
+    }
+
+    public override int Peek()
+    {
+        return Fill() ? _buffer[_at] & 255 : -1;
+    }
+
+    public bool EndOfStream
+    {
+        get { return !Fill(); }
+    }
+
+    public override void Dispose()
+    {
+        _stream.Dispose();
+    }
+}
+
+/// .NET's Directory, the parts a program reaches for first.
+/// System.IO.Enumeration.FileSystemName -- .NET's own matcher for the search
+/// pattern GetFiles and GetDirectories take. `*` stands for any run of
+/// characters, `?` for exactly one, and everything else for itself.
+static class FileSystemName
+{
+    public static bool MatchesSimpleExpression(string expression, string name)
+    {
+        return Matches(expression, 0, name, 0);
+    }
+
+    private static bool Matches(string pattern, int p, string name, int n)
+    {
+        while (p < pattern.Length)
+        {
+            char c = pattern[p];
+
+            if (c == '*')
+            {
+                // The shortest match first, then longer ones: `*` may stand
+                // for nothing at all.
+                for (int at = n; at <= name.Length; at++)
+                {
+                    if (Matches(pattern, p + 1, name, at)) { return true; }
+                }
+                return false;
+            }
+
+            if (n >= name.Length) { return false; }
+            if (c != '?' && c != name[n]) { return false; }
+
+            p = p + 1;
+            n = n + 1;
+        }
+
+        return n == name.Length;
+    }
+}
+
+
+partial static class Directory
+{
+    public static bool Exists(string path)
+    {
+        long mode = Os.ModeOf(path);
+        return mode >= 0 && (mode & 0xF000) == 0x4000;
+    }
+
+    /// EVERY MISSING COMPONENT, which is what .NET's own CreateDirectory
+    /// does and what a caller writing Combine(a, b, c) expects: a path whose
+    /// parent does not exist yet is created, not refused.
+    public static void CreateDirectory(string path)
+    {
+        if (path.Length == 0 || Exists(path))
+        {
+            return;
+        }
+        string? parent = Path.GetDirectoryName(path);
+        if (parent != null && parent.Length != 0 && parent != path && !Exists(parent))
+        {
+            CreateDirectory(parent);
+        }
+        int r = Os.Mkdir(path, 511);
+        if (r < 0 && r != -Err.Exist)
+        {
+            throw Interop.GetExceptionForIoErrno(r, path, true);
+        }
+    }
+
+    /// THE ONES WHOSE NAME MATCHES, which is .NET's second parameter: `*` for
+    /// any run of characters and `?` for one, matched against the name alone.
+    public static string[] GetFiles(string path, string searchPattern)
+    {
+        List<string> kept = new List<string>();
+
+        foreach (string full in GetFiles(path))
+        {
+            if (FileSystemName.MatchesSimpleExpression(searchPattern, Path.GetFileName(full)))
+            {
+                kept.Add(full);
+            }
+        }
+        return kept.ToArray();
+    }
+
+    public static string[] GetDirectories(string path, string searchPattern)
+    {
+        List<string> kept = new List<string>();
+
+        foreach (string full in GetDirectories(path))
+        {
+            if (FileSystemName.MatchesSimpleExpression(searchPattern, Path.GetFileName(full)))
+            {
+                kept.Add(full);
+            }
+        }
+        return kept.ToArray();
+    }
+
+    public static string[] GetFiles(string path)
+    {
+        string[]? names = Os.ListDir(path);
+        if (names == null)
+        {
+            throw Interop.GetExceptionForIoErrno((int)Os.ModeOf(path) < 0 ? 2 : 13, path, true);
+        }
+        List<string> files = new List<string>();
+        for (int i = 0; i < names.Length; i++)
+        {
+            string full = Path.Combine(path, names[i]);
+            long mode = Os.ModeOf(full);
+            if (mode >= 0 && (mode & 0xF000) == 0x8000)
+            {
+                files.Add(full);
+            }
+        }
+        return files.ToArray();
+    }
+
+    public static string GetCurrentDirectory()
+    {
+        string? cwd = Os.Getcwd();
+        return cwd == null ? "/" : cwd;
+    }
+}
+
+/// THE REST OF System.IO.Path: the part that needs a filing system.
+///
+/// Combine and GetDirectoryName are string work and live in the standard
+/// library with the rest of Path, where a freestanding image can have them.
+/// GetFullPath cannot: it asks where the program is, and a machine with no
+/// operating system has no answer.
+static partial class Path
+{
+    /// The absolute path this one names, with `.` and `..` resolved. .NET
+    /// promises nothing about the file existing; this is a question about the
+    /// TEXT, answered against the current directory.
+    public static string GetFullPath(string path)
+    {
+        if (path == null) { throw new ArgumentNullException("path"); }
+        if (path.Length == 0) { throw new ArgumentException("The path is empty.", "path"); }
+
+        return Normalise(IsPathRooted(path) ? path : Combine(WorkingDirectory(), path));
+    }
+
+    /// The same, against a base path of the caller's choosing rather than the
+    /// current directory.
+    public static string GetFullPath(string path, string basePath)
+    {
+        if (path == null) { throw new ArgumentNullException("path"); }
+        if (basePath == null) { throw new ArgumentNullException("basePath"); }
+        if (!IsPathRooted(basePath))
+        {
+            throw new ArgumentException("The base path must be absolute.", "basePath");
+        }
+
+        return Normalise(IsPathRooted(path) ? path : Combine(basePath, path));
+    }
+
+    /// getcwd(2), asked directly rather than through Directory: this file sits
+    /// below the one that has Directory in the library the machine links, and a
+    /// path is string work that must not need a filing-system class above it.
+    private static string WorkingDirectory()
+    {
+        string? cwd = Os.Getcwd();
+
+        return cwd == null ? "/" : cwd;
+    }
+
+    /// `.` removed, `..` applied, and runs of separators collapsed. A `..`
+    /// above the root stays at the root, which is what the kernel does with
+    /// the same path.
+    private static string Normalise(string path)
+    {
+        List<string> parts = new List<string>();
+        int at = 0;
+
+        while (at < path.Length)
+        {
+            int end = at;
+
+            while (end < path.Length && path[end] != '/') { end = end + 1; }
+
+            string part = path.Substring(at, end - at);
+
+            at = end + 1;
+            if (part.Length == 0 || part == ".") { continue; }
+            if (part == "..")
+            {
+                if (parts.Count > 0) { parts.RemoveAt(parts.Count - 1); }
+                continue;
+            }
+            parts.Add(part);
+        }
+
+        if (parts.Count == 0) { return "/"; }
+
+        StringBuilder made = new StringBuilder();
+
+        for (int i = 0; i < parts.Count; i++)
+        {
+            made.Append('/');
+            made.Append(parts[i]);
+        }
+        return made.ToString();
+    }
+}
+
+/// System.IO.UnixFileMode -- the permission bits, named the way .NET 7 names
+/// them. A [Flags] enum whose values are the octal ones the kernel uses, so
+/// that the enum and the number a chmod takes are the same bits.
+[Flags]
+enum UnixFileMode
+{
+    None = 0,
+    OtherExecute = 1,
+    OtherWrite = 2,
+    OtherRead = 4,
+    GroupExecute = 8,
+    GroupWrite = 16,
+    GroupRead = 32,
+    UserExecute = 64,
+    UserWrite = 128,
+    UserRead = 256,
+    StickyBit = 512,
+    SetGroup = 1024,
+    SetUser = 2048,
+}
+
+/// System.IO.File: whole-file reads and writes, as .NET spells them. A
+/// missing file is a FileNotFoundException, not a null.
+partial static class File
+{
+    public static bool Exists(string path)
+    {
+        return Os.Exists(path) && !Directory.Exists(path);
+    }
+
+    public static byte[] ReadAllBytes(string path)
+    {
+        FileStream f = new FileStream(path, FileMode.Open, FileAccess.Read);
+        long size = f.Length;
+        byte[] all = new byte[(int)size];
+        int done = 0;
+        while (done < all.Length)
+        {
+            int n = f.Read(all, done, all.Length - done);
+            if (n <= 0)
+            {
+                break;
+            }
+            done = done + n;
+        }
+        f.Dispose();
+        if (done < all.Length)
+        {
+            byte[] shorter = new byte[done];
+            Array.Copy(all, 0, shorter, 0, done);
+            return shorter;
+        }
+        return all;
+    }
+
+    public static string ReadAllText(string path)
+    {
+        StreamReader r = new StreamReader(path);
+        string all = r.ReadToEnd();
+        r.Dispose();
+        return all;
+    }
+
+    /// Every line, with the newlines removed; a trailing newline does not
+    /// make an extra empty line.
+    public static string[] ReadAllLines(string path)
+    {
+        StreamReader r = new StreamReader(path);
+        List<string> lines = new List<string>();
+        while (true)
+        {
+            string? line = r.ReadLine();
+            if (line == null)
+            {
+                break;
+            }
+            lines.Add(line);
+        }
+        r.Dispose();
+        return lines.ToArray();
+    }
+
+    public static void WriteAllBytes(string path, byte[] bytes)
+    {
+        FileStream f = new FileStream(path, FileMode.Create, FileAccess.Write);
+        f.Write(bytes, 0, bytes.Length);
+        f.Dispose();
+    }
+
+    public static void WriteAllText(string path, string text)
+    {
+        StreamWriter w = new StreamWriter(path, false);
+        w.Write(text);
+        w.Dispose();
+    }
+
+    public static void AppendAllText(string path, string text)
+    {
+        StreamWriter w = new StreamWriter(path, true);
+        w.Write(text);
+        w.Dispose();
+    }
+
+    public static void Delete(string path)
+    {
+        int r = Os.Unlink(path);
+        if (r < 0 && r != -Err.NoEnt)
+        {
+            throw Interop.GetExceptionForIoErrno(r, path);
+        }
+    }
+
+    public static void Move(string from, string to)
+    {
+        int r = Os.Rename(from, to);
+        if (r < 0)
+        {
+            throw Interop.GetExceptionForIoErrno(r, from);
+        }
+    }
+
+    public static void SetUnixFileMode(string path, UnixFileMode mode)
+    {
+        int r = Os.Chmod(path, (int)mode);
+        if (r < 0)
+        {
+            throw Interop.GetExceptionForIoErrno(r, path);
+        }
+    }
+
+    /// The permission bits, as .NET's UnixFileMode has them.
+    public static UnixFileMode GetUnixFileMode(string path)
+    {
+        long mode = Os.ModeOf(path);
+        if (mode < 0)
+        {
+            throw Interop.GetExceptionForIoErrno((int)mode, path);
+        }
+        return (UnixFileMode)(int)(mode & 0xFFF);
+    }
+}
+
+// ---- the file system as objects: FileSystemInfo, FileInfo, DirectoryInfo ---
+
+enum FileAttributes
+{
+    ReadOnly = 1,
+    Hidden = 2,
+    System = 4,
+    Directory = 16,
+    Archive = 32,
+    Device = 64,
+    Normal = 128,
+    ReparsePoint = 1024
+}
+
+/// THE SAME CLOCK, through DateTimeOffset. It is here and not in lib/std.cor
+/// beside the rest of the type for the reason DateTime's UtcNow is here:
+/// reading a clock is a call on the platform, and a freestanding build has
+/// no platform to call. This machine keeps no zone, so the local reading and
+/// the UTC one are the same instant and the offset is zero either way.
+partial struct DateTimeOffset
+{
+    public static DateTimeOffset UtcNow => new DateTimeOffset(DateTime.UtcNow, TimeSpan.Zero);
+    public static DateTimeOffset Now => new DateTimeOffset(DateTime.UtcNow, TimeSpan.Zero);
+}
+
+/// What .NET calls a moment on this platform's clock: the wall clock, as
+/// gettimeofday reports it, and the monotonic clock for Environment.
+partial struct DateTime
+{
+    public static DateTime UtcNow
+    {
+        get { return new DateTime(UnixEpoch.Ticks + Os.Micros() * 10); }
+    }
+
+    /// Local time is UTC here: the machine keeps no zone.
+    public static DateTime Now
+    {
+        get { return UtcNow; }
+    }
+
+    public static DateTime Today
+    {
+        get { return UtcNow.Date; }
+    }
+
+    public static DateTime FromUnixTimeSeconds(long seconds)
+    {
+        return new DateTime(UnixEpoch.Ticks + seconds * 10000000);
+    }
+
+    /// The same instant with the nanoseconds stat(2) also reports, rounded to
+    /// the hundred this clock counts in. WITHOUT THEM two files written in the
+    /// same second are written at the same time, and `cp -u` copies nothing.
+    public static DateTime FromUnixTime(long seconds, long nsec)
+    {
+        return new DateTime(UnixEpoch.Ticks + seconds * 10000000 + nsec / 100);
+    }
+
+}
+
+/// A file or directory by its name, with what stat says about it, as .NET
+/// has it. The extra members beyond .NET's -- OwnerId, GroupId, LinkCount,
+/// Inode, IsSymbolicLink, IsDirectoryEntry -- are the few things a Unix
+/// utility needs that .NET's own class leaves to P/Invoke.
+abstract class FileSystemInfo
+{
+    protected string _path;
+    protected byte[]? _stat;
+    protected bool _exists;
+    protected bool _fresh;
+
+    protected FileSystemInfo(string path)
+    {
+        _path = path;
+    }
+
+    public void Refresh()
+    {
+        byte[] into = Stat.Room();
+        _exists = Os.Lstat(_path, into) >= 0;
+        _stat = _exists ? into : null;
+        _fresh = true;
+    }
+
+    protected byte[]? Data()
+    {
+        if (!_fresh)
+        {
+            Refresh();
+        }
+        return _stat;
+    }
+
+    /// stat, following a link, for the members that want the target.
+    protected byte[]? Target()
+    {
+        byte[]? own = Data();
+        if (own == null || !Stat.IsLinkMode(Stat.Mode(own)))
+        {
+            return own;
+        }
+        byte[] into = Stat.Room();
+        return Os.Stat(_path, into) >= 0 ? into : null;
+    }
+
+    public string FullName
+    {
+        get
+        {
+            if (_path.Length > 0 && _path[0] == '/')
+            {
+                return _path;
+            }
+            string cwd = Directory.GetCurrentDirectory();
+            return _path == "." ? cwd : Path.Combine(cwd, _path);
+        }
+    }
+
+    public string Name
+    {
+        get { return Path.GetFileName(_path); }
+    }
+
+    public string Extension
+    {
+        get { return Path.GetExtension(_path); }
+    }
+
+    public abstract bool Exists { get; }
+
+    public FileAttributes Attributes
+    {
+        get
+        {
+            byte[]? d = Data();
+            if (d == null)
+            {
+                return (FileAttributes)(-1);
+            }
+            long mode = Stat.Mode(d);
+            int a = 0;
+            if (Stat.IsDirMode(mode)) { a = a | (int)FileAttributes.Directory; }
+            if (Stat.IsLinkMode(mode)) { a = a | (int)FileAttributes.ReparsePoint; }
+            if (Stat.IsCharMode(mode) || Stat.IsBlockMode(mode)) { a = a | (int)FileAttributes.Device; }
+            if ((mode & 0x80) == 0) { a = a | (int)FileAttributes.ReadOnly; }
+            if (Name.Length > 0 && Name[0] == '.') { a = a | (int)FileAttributes.Hidden; }
+            if (a == 0) { a = (int)FileAttributes.Normal; }
+            return (FileAttributes)a;
+        }
+    }
+
+    public UnixFileMode UnixFileMode
+    {
+        get
+        {
+            byte[]? d = Data();
+            return d == null ? UnixFileMode.None : (UnixFileMode)(int)(Stat.Mode(d) & 0xFFF);
+        }
+        set
+        {
+            int r = Os.Chmod(_path, (int)value);
+            if (r < 0)
+            {
+                throw Interop.GetExceptionForIoErrno(r, _path);
+            }
+            _fresh = false;
+        }
+    }
+
+    public DateTime LastWriteTimeUtc
+    {
+        get
+        {
+            byte[]? d = Data();
+            return d == null ? DateTime.FromUnixTimeSeconds(0) : DateTime.FromUnixTime(Stat.Mtime(d), Stat.MtimeNsec(d));
+        }
+        set
+        {
+            File.SetLastWriteTimeUtc(_path, value);
+            _fresh = false;
+        }
+    }
+
+    public DateTime LastWriteTime
+    {
+        get { return LastWriteTimeUtc; }
+        set { LastWriteTimeUtc = value; }
+    }
+
+    public DateTime LastAccessTimeUtc
+    {
+        get
+        {
+            byte[]? d = Data();
+            return d == null ? DateTime.FromUnixTimeSeconds(0) : DateTime.FromUnixTime(Stat.Atime(d), Stat.AtimeNsec(d));
+        }
+        set
+        {
+            File.SetLastAccessTimeUtc(_path, value);
+            _fresh = false;
+        }
+    }
+
+    public DateTime LastAccessTime
+    {
+        get { return LastAccessTimeUtc; }
+        set { LastAccessTimeUtc = value; }
+    }
+
+    /// Unix has no creation time; .NET reports the status change time.
+    public DateTime CreationTimeUtc
+    {
+        get
+        {
+            byte[]? d = Data();
+            return d == null ? DateTime.FromUnixTimeSeconds(0) : DateTime.FromUnixTime(Stat.Ctime(d), Stat.CtimeNsec(d));
+        }
+    }
+
+    public DateTime CreationTime
+    {
+        get { return CreationTimeUtc; }
+    }
+
+    /// Where a symbolic link points, or null when this is not one.
+    public string? LinkTarget
+    {
+        get { return Os.Readlink(_path); }
+    }
+
+    public bool IsSymbolicLink
+    {
+        get
+        {
+            byte[]? d = Data();
+            return d != null && Stat.IsLinkMode(Stat.Mode(d));
+        }
+    }
+
+    public long OwnerId
+    {
+        get { byte[]? d = Data(); return d == null ? -1 : Stat.Uid(d); }
+    }
+
+    public long GroupId
+    {
+        get { byte[]? d = Data(); return d == null ? -1 : Stat.Gid(d); }
+    }
+
+    public long LinkCount
+    {
+        get { byte[]? d = Data(); return d == null ? 0 : Stat.Links(d); }
+    }
+
+    public long Inode
+    {
+        get { byte[]? d = Data(); return d == null ? 0 : Stat.Ino(d); }
+    }
+
+    /// The device the entry lives on, which is how `du -x`, `rm
+    /// --one-file-system` and `find -xdev` recognise a mount point.
+    public long DeviceId
+    {
+        get { byte[]? d = Data(); return d == null ? -1 : Stat.Device(d); }
+    }
+
+    /// The device a character or block special file NAMES, as opposed to the
+    /// one it lives on. `ls -l` prints its major and minor numbers where a
+    /// file has a length, and nothing else on the system has them.
+    public long DeviceNumber
+    {
+        get { byte[]? d = Data(); return d == null ? 0 : Stat.Rdev(d); }
+    }
+
+    /// The kinds Unix has that .NET's FileAttributes cannot tell apart.
+    /// `ls -l` needs every one of them for the first column.
+    public bool IsCharacterDevice
+    {
+        get { byte[]? d = Data(); return d != null && Stat.IsCharMode(Stat.Mode(d)); }
+    }
+
+    public bool IsBlockDevice
+    {
+        get { byte[]? d = Data(); return d != null && Stat.IsBlockMode(Stat.Mode(d)); }
+    }
+
+    public bool IsFifo
+    {
+        get { byte[]? d = Data(); return d != null && Stat.IsFifoMode(Stat.Mode(d)); }
+    }
+
+    public bool IsSocket
+    {
+        get { byte[]? d = Data(); return d != null && Stat.IsSocketMode(Stat.Mode(d)); }
+    }
+
+    /// The whole mode word, type bits and all, as stat(2) reports it for the
+    /// entry itself. UnixFileMode is the permission part of this.
+    public int UnixStatusMode
+    {
+        get { byte[]? d = Data(); return d == null ? 0 : (int)Stat.Mode(d); }
+    }
+
+    /// The size stat(2) reports for THE ENTRY ITSELF: a directory's own size
+    /// and a symbolic link's target length, neither of which FileInfo.Length
+    /// can answer because it follows the link.
+    public long UnixLength
+    {
+        get { byte[]? d = Data(); return d == null ? 0 : Stat.Size(d); }
+    }
+
+    /// 512-byte blocks in use, which is what ls -s and du count.
+    public long Blocks
+    {
+        get { byte[]? d = Data(); return d == null ? 0 : Stat.Blocks(d); }
+    }
+
+    public abstract void Delete();
+
+    public override string ToString()
+    {
+        return _path;
+    }
+}
+
+class FileInfo : FileSystemInfo
+{
+    public FileInfo(string path) : base(path)
+    {
+    }
+
+    public override bool Exists
+    {
+        get
+        {
+            byte[]? d = Target();
+            return d != null && !Stat.IsDirMode(Stat.Mode(d));
+        }
+    }
+
+    public long Length
+    {
+        get
+        {
+            byte[]? d = Target();
+            if (d == null)
+            {
+                throw new FileNotFoundException(_path);
+            }
+            return Stat.Size(d);
+        }
+    }
+
+    public string? DirectoryName
+    {
+        get { return Path.GetDirectoryName(FullName); }
+    }
+
+    public DirectoryInfo Directory
+    {
+        get
+        {
+            string? dir = DirectoryName;
+            return new DirectoryInfo(dir == null ? "/" : dir);
+        }
+    }
+
+    public bool IsReadOnly
+    {
+        get { return (UnixFileMode & 0x80) == 0; }
+    }
+
+    public FileStream Open(FileMode mode, FileAccess access)
+    {
+        return new FileStream(_path, mode, access);
+    }
+
+    public FileStream OpenRead()
+    {
+        return new FileStream(_path, FileMode.Open, FileAccess.Read);
+    }
+
+    public FileStream OpenWrite()
+    {
+        return new FileStream(_path, FileMode.OpenOrCreate, FileAccess.Write);
+    }
+
+    public FileStream Create()
+    {
+        return new FileStream(_path, FileMode.Create, FileAccess.Write);
+    }
+
+    public StreamReader OpenText()
+    {
+        return new StreamReader(_path);
+    }
+
+    public StreamWriter CreateText()
+    {
+        return new StreamWriter(_path, false);
+    }
+
+    public StreamWriter AppendText()
+    {
+        return new StreamWriter(_path, true);
+    }
+
+    public FileInfo CopyTo(string destination, bool overwrite)
+    {
+        File.Copy(_path, destination, overwrite);
+        return new FileInfo(destination);
+    }
+
+    public void MoveTo(string destination)
+    {
+        File.Move(_path, destination);
+        _path = destination;
+        _fresh = false;
+    }
+
+    public override void Delete()
+    {
+        File.Delete(_path);
+        _fresh = false;
+    }
+}
+
+class DirectoryInfo : FileSystemInfo
+{
+    public DirectoryInfo(string path) : base(path)
+    {
+    }
+
+    public override bool Exists
+    {
+        get
+        {
+            byte[]? d = Target();
+            return d != null && Stat.IsDirMode(Stat.Mode(d));
+        }
+    }
+
+    public DirectoryInfo? Parent
+    {
+        get
+        {
+            string full = FullName;
+            if (full == "/")
+            {
+                return null;
+            }
+            string? up = Path.GetDirectoryName(full);
+            return new DirectoryInfo(up == null || up.Length == 0 ? "/" : up);
+        }
+    }
+
+    public DirectoryInfo Root
+    {
+        get { return new DirectoryInfo("/"); }
+    }
+
+    public void Create()
+    {
+        Directory.CreateDirectory(_path);
+        _fresh = false;
+    }
+
+    public DirectoryInfo CreateSubdirectory(string name)
+    {
+        string child = Path.Combine(_path, name);
+        Directory.CreateDirectory(child);
+        return new DirectoryInfo(child);
+    }
+
+    /// The entries by name, in directory order, "." and ".." left out.
+    string[] Names()
+    {
+        string[]? names = Os.ListDir(_path);
+        if (names == null)
+        {
+            throw Interop.GetExceptionForIoErrno(Os.ModeOf(_path) < 0 ? 2 : 13, _path, true);
+        }
+        List<string> kept = new List<string>();
+        for (int i = 0; i < names.Length; i++)
+        {
+            if (names[i] != "." && names[i] != "..")
+            {
+                kept.Add(names[i]);
+            }
+        }
+        return kept.ToArray();
+    }
+
+    public FileSystemInfo[] GetFileSystemInfos()
+    {
+        string[] names = Names();
+        FileSystemInfo[] all = new FileSystemInfo[names.Length];
+        for (int i = 0; i < names.Length; i++)
+        {
+            string child = Path.Combine(_path, names[i]);
+            all[i] = Directory.Exists(child) && Os.Readlink(child) == null
+                ? new DirectoryInfo(child)
+                : new FileInfo(child);
+        }
+        return all;
+    }
+
+    public FileInfo[] GetFiles()
+    {
+        string[] names = Names();
+        List<FileInfo> files = new List<FileInfo>();
+        for (int i = 0; i < names.Length; i++)
+        {
+            string child = Path.Combine(_path, names[i]);
+            if (!Directory.Exists(child))
+            {
+                files.Add(new FileInfo(child));
+            }
+        }
+        return files.ToArray();
+    }
+
+    public DirectoryInfo[] GetDirectories()
+    {
+        string[] names = Names();
+        List<DirectoryInfo> dirs = new List<DirectoryInfo>();
+        for (int i = 0; i < names.Length; i++)
+        {
+            string child = Path.Combine(_path, names[i]);
+            if (Directory.Exists(child))
+            {
+                dirs.Add(new DirectoryInfo(child));
+            }
+        }
+        return dirs.ToArray();
+    }
+
+    public FileSystemInfo[] EnumerateFileSystemInfos()
+    {
+        return GetFileSystemInfos();
+    }
+
+    public FileInfo[] EnumerateFiles()
+    {
+        return GetFiles();
+    }
+
+    public DirectoryInfo[] EnumerateDirectories()
+    {
+        return GetDirectories();
+    }
+
+    public void MoveTo(string destination)
+    {
+        Directory.Move(_path, destination);
+        _path = destination;
+        _fresh = false;
+    }
+
+    public override void Delete()
+    {
+        Directory.Delete(_path, false);
+        _fresh = false;
+    }
+
+    public void Delete(bool recursive)
+    {
+        Directory.Delete(_path, recursive);
+        _fresh = false;
+    }
+}
+
+/// The rest of System.IO.File and System.IO.Directory: times, links,
+/// copies, moves, listings.
+static class FileSystem
+{
+    /// A link's target as a path somebody else can open: unchanged when it is
+    /// absolute, and otherwise in the directory the link itself is in.
+    public static string Beside(string link, string target)
+    {
+        if (target.Length > 0 && target[0] == '/')
+        {
+            return target;
+        }
+        string? directory = Path.GetDirectoryName(link);
+        if (directory == null || directory.Length == 0)
+        {
+            return target;
+        }
+        return Path.Combine(directory, target);
+    }
+
+    public static bool IsDirectoryNoFollow(string path)
+    {
+        byte[] into = Stat.Room();
+        return Os.Lstat(path, into) >= 0 && Stat.IsDirMode(Stat.Mode(into));
+    }
+}
+
+partial static class File
+{
+    public static FileStream Create(string path)
+    {
+        return new FileStream(path, FileMode.Create, FileAccess.ReadWrite);
+    }
+
+    public static FileStream Open(string path, FileMode mode)
+    {
+        return new FileStream(path, mode);
+    }
+
+    public static FileStream Open(string path, FileMode mode, FileAccess access)
+    {
+        return new FileStream(path, mode, access);
+    }
+
+    public static FileStream OpenRead(string path)
+    {
+        return new FileStream(path, FileMode.Open, FileAccess.Read);
+    }
+
+    public static FileStream OpenWrite(string path)
+    {
+        return new FileStream(path, FileMode.OpenOrCreate, FileAccess.Write);
+    }
+
+    public static StreamReader OpenText(string path)
+    {
+        return new StreamReader(path);
+    }
+
+    public static StreamWriter CreateText(string path)
+    {
+        return new StreamWriter(path, false);
+    }
+
+    public static StreamWriter AppendText(string path)
+    {
+        return new StreamWriter(path, true);
+    }
+
+    public static void Copy(string source, string destination, bool overwrite)
+    {
+        if (!overwrite && Os.Exists(destination))
+        {
+            throw Interop.GetExceptionForIoErrno(17, destination);
+        }
+        FileStream from = new FileStream(source, FileMode.Open, FileAccess.Read);
+        FileStream to = new FileStream(destination, FileMode.Create, FileAccess.Write);
+        from.CopyTo(to);
+        to.Dispose();
+        from.Dispose();
+        Os.Chmod(destination, (int)GetUnixFileMode(source));
+    }
+
+    public static void Copy(string source, string destination)
+    {
+        Copy(source, destination, false);
+    }
+
+    public static FileAttributes GetAttributes(string path)
+    {
+        FileInfo f = new FileInfo(path);
+        if (!Os.Exists(path))
+        {
+            throw Interop.GetExceptionForIoErrno(2, path);
+        }
+        return f.Attributes;
+    }
+
+    public static DateTime GetLastWriteTimeUtc(string path)
+    {
+        return new FileInfo(path).LastWriteTimeUtc;
+    }
+
+    public static DateTime GetLastWriteTime(string path)
+    {
+        return GetLastWriteTimeUtc(path);
+    }
+
+    public static DateTime GetLastAccessTimeUtc(string path)
+    {
+        return new FileInfo(path).LastAccessTimeUtc;
+    }
+
+    public static DateTime GetLastAccessTime(string path)
+    {
+        return GetLastAccessTimeUtc(path);
+    }
+
+    public static DateTime GetCreationTimeUtc(string path)
+    {
+        return new FileInfo(path).CreationTimeUtc;
+    }
+
+    public static DateTime GetCreationTime(string path)
+    {
+        return GetCreationTimeUtc(path);
+    }
+
+    static void SetTimes(string path, long atime, long mtime)
+    {
+        int r = Os.Utimensat(path, atime, 0, mtime, 0, true);
+        if (r < 0)
+        {
+            throw Interop.GetExceptionForIoErrno(r, path);
+        }
+    }
+
+    public static void SetLastWriteTimeUtc(string path, DateTime when)
+    {
+        SetTimes(path, -1, new DateTimeOffset(when, TimeSpan.Zero).ToUnixTimeSeconds());
+    }
+
+    public static void SetLastWriteTime(string path, DateTime when)
+    {
+        SetLastWriteTimeUtc(path, when);
+    }
+
+    public static void SetLastAccessTimeUtc(string path, DateTime when)
+    {
+        SetTimes(path, new DateTimeOffset(when, TimeSpan.Zero).ToUnixTimeSeconds(), -1);
+    }
+
+    public static void SetLastAccessTime(string path, DateTime when)
+    {
+        SetLastAccessTimeUtc(path, when);
+    }
+
+    /// THE LINK ITSELF when `followLinks` is false. .NET has no spelling for
+    /// this and `touch -h` is exactly it: the times of the symbolic link,
+    /// not of whatever it points at.
+    public static void SetLastWriteTimeUtc(string path, DateTime when, bool followLinks)
+    {
+        int r = Os.Utimensat(path, -1, 0,
+                             new DateTimeOffset(when, TimeSpan.Zero).ToUnixTimeSeconds(), 0, followLinks);
+        if (r < 0)
+        {
+            throw Interop.GetExceptionForIoErrno(r, path);
+        }
+    }
+
+    public static void SetLastAccessTimeUtc(string path, DateTime when, bool followLinks)
+    {
+        int r = Os.Utimensat(path, new DateTimeOffset(when, TimeSpan.Zero).ToUnixTimeSeconds(),
+                             0, -1, 0, followLinks);
+        if (r < 0)
+        {
+            throw Interop.GetExceptionForIoErrno(r, path);
+        }
+    }
+
+    /// A HARD LINK: a second directory entry for a file that already exists.
+    /// .NET has no call for this -- there is no Windows-and-Unix answer to
+    /// it -- and `ln` without -s is exactly this system call.
+    public static void CreateHardLink(string path, string pathToTarget)
+    {
+        int r = Os.Link(pathToTarget, path);
+        if (r < 0)
+        {
+            throw Interop.GetExceptionForIoErrno(r, path);
+        }
+    }
+
+    /// A symbolic link at `path` pointing at `target`, as .NET 6 has it.
+    public static FileSystemInfo CreateSymbolicLink(string path, string target)
+    {
+        int r = Os.Symlink(target, path);
+        if (r < 0)
+        {
+            throw Interop.GetExceptionForIoErrno(r, path);
+        }
+        return new FileInfo(path);
+    }
+
+    /// What a link points at, or null when `path` is not a link.
+    ///
+    /// A RELATIVE TARGET IS RELATIVE TO THE LINK, not to the current
+    /// directory: `ls -l /etc/x -> y` means /etc/y wherever the program
+    /// asking happens to be standing. Each hop is joined to the directory of
+    /// the link it came out of, which is what readlink(2)'s caller has to do
+    /// and what .NET does for you.
+    public static FileSystemInfo? ResolveLinkTarget(string path, bool returnFinalTarget)
+    {
+        string? target = Os.Readlink(path);
+        if (target == null)
+        {
+            return null;
+        }
+        target = FileSystem.Beside(path, target);
+        if (returnFinalTarget)
+        {
+            int hops = 0;
+            while (hops < 40)
+            {
+                string? next = Os.Readlink(target);
+                if (next == null)
+                {
+                    break;
+                }
+                target = FileSystem.Beside(target, next);
+                hops++;
+            }
+        }
+        return new FileInfo(target);
+    }
+}
+
+partial static class Directory
+{
+    public static string[] GetDirectories(string path)
+    {
+        DirectoryInfo[] dirs = new DirectoryInfo(path).GetDirectories();
+        string[] names = new string[dirs.Length];
+        for (int i = 0; i < dirs.Length; i++)
+        {
+            names[i] = dirs[i].ToString();
+        }
+        return names;
+    }
+
+    public static string[] GetFileSystemEntries(string path)
+    {
+        FileSystemInfo[] all = new DirectoryInfo(path).GetFileSystemInfos();
+        string[] names = new string[all.Length];
+        for (int i = 0; i < all.Length; i++)
+        {
+            names[i] = all[i].ToString();
+        }
+        return names;
+    }
+
+    public static string[] EnumerateFileSystemEntries(string path)
+    {
+        return GetFileSystemEntries(path);
+    }
+
+    public static string[] EnumerateFiles(string path)
+    {
+        return GetFiles(path);
+    }
+
+    public static string[] EnumerateDirectories(string path)
+    {
+        return GetDirectories(path);
+    }
+
+    public static DirectoryInfo? GetParent(string path)
+    {
+        return new DirectoryInfo(path).Parent;
+    }
+
+    public static DirectoryInfo CreateDirectoryInfo(string path)
+    {
+        CreateDirectory(path);
+        return new DirectoryInfo(path);
+    }
+
+    public static void SetCurrentDirectory(string path)
+    {
+        Environment.CurrentDirectory = path;
+    }
+
+    public static void Move(string source, string destination)
+    {
+        int r = Os.Rename(source, destination);
+        if (r < 0)
+        {
+            throw Interop.GetExceptionForIoErrno(r, source);
+        }
+    }
+
+    public static void Delete(string path)
+    {
+        Delete(path, false);
+    }
+
+    public static void Delete(string path, bool recursive)
+    {
+        if (recursive)
+        {
+            string[]? names = Os.ListDir(path);
+            if (names != null)
+            {
+                for (int i = 0; i < names.Length; i++)
+                {
+                    if (names[i] == "." || names[i] == "..")
+                    {
+                        continue;
+                    }
+                    string child = Path.Combine(path, names[i]);
+                    if (FileSystem.IsDirectoryNoFollow(child))
+                    {
+                        Delete(child, true);
+                    }
+                    else
+                    {
+                        File.Delete(child);
+                    }
+                }
+            }
+        }
+        int r = Os.Rmdir(path);
+        if (r < 0)
+        {
+            throw Interop.GetExceptionForIoErrno(r, path, true);
+        }
+    }
+
+    public static DateTime GetLastWriteTimeUtc(string path)
+    {
+        return new DirectoryInfo(path).LastWriteTimeUtc;
+    }
+
+    public static DateTime GetLastWriteTime(string path)
+    {
+        return GetLastWriteTimeUtc(path);
+    }
+}
+
+/// Block devices: what .NET has no API for and a partition editor or a
+/// mkfs cannot do without. Size asks the device how big it is; a file's
+/// size is its length as usual.
+static class BlockDevice
+{
+    /// The device's size in bytes, or a regular file's length.
+    public static long Size(FileStream device)
+    {
+        long size = Os.SizeOf(device.Handle);
+        if (size < 0)
+        {
+            throw new IOException("cannot find the size of the device");
+        }
+        return size;
+    }
+
+    /// Asks the kernel to read the partition table again (BLKRRPART).
+    /// Throws with the reason when it will not: a partition mounted or
+    /// open, not a whole device, not the superuser.
+    public static void RereadPartitionTable(FileStream device)
+    {
+        long r = Os.Ioctl(device.Handle, 0x125F, 0);
+        if (r < 0)
+        {
+            string why = r == -16 ? "a partition is mounted or open"
+                       : r == -Err.Inval ? "the device is not a whole device"
+                       : r == -Err.Perm || r == -Err.Access ? "only the superuser may reload it"
+                       : "errno " + (-r);
+            throw new IOException(why);
+        }
+    }
+}
+
+/// System.IO.DriveType, as .NET names the kinds.
+enum DriveType
+{
+    Unknown = 0,
+    NoRootDirectory = 1,
+    Removable = 2,
+    Fixed = 3,
+    Network = 4,
+    CDRom = 5,
+    Ram = 6
+}
+
+/// System.IO.DriveInfo: one mounted filing system, how big it is and how much
+/// of it is left.
+///
+/// .NET's own implementation on Linux is exactly this -- the mount table for
+/// the list, statfs(2) for the numbers -- and the members here are its
+/// members. The one addition is DeviceName, which .NET has nowhere to put and
+/// `df` cannot print its first column without: the thing mounted, as opposed
+/// to the place it is mounted on.
+class DriveInfo
+{
+    string _mount;
+    string _device = "";
+    string _format = "";
+    string _options = "";
+    byte[]? _stat;
+    bool _asked;
+
+    public DriveInfo(string driveName)
+    {
+        _mount = driveName;
+        Locate();
+    }
+
+    DriveInfo(string mount, string device, string format, string options)
+    {
+        _mount = mount;
+        _device = device;
+        _format = format;
+        _options = options;
+    }
+
+    /// Where it is mounted, which is what .NET calls a drive's name on Unix.
+    public string Name
+    {
+        get { return _mount; }
+    }
+
+    public DirectoryInfo RootDirectory
+    {
+        get { return new DirectoryInfo(_mount); }
+    }
+
+    /// What is mounted there: a device, or whatever a filing system with no
+    /// device calls itself. NOT .NET's -- see the note above the class.
+    public string DeviceName
+    {
+        get { return _device; }
+    }
+
+    /// The options it was mounted with, as the mount table spells them.
+    public string MountOptions
+    {
+        get { return _options; }
+    }
+
+    /// The filing system's name: "ext2", "minix", "tmpfs".
+    public string DriveFormat
+    {
+        get { return _format; }
+    }
+
+    public string VolumeLabel
+    {
+        get { return _mount; }
+    }
+
+    /// The kind, as far as the filing system's name says: what is in memory is
+    /// Ram, what comes over a network is Network, a read-only optical image is
+    /// CDRom, and everything else is a disc.
+    public DriveType DriveType
+    {
+        get
+        {
+            if (_format == "tmpfs" || _format == "ramfs" || _format == "devtmpfs")
+            {
+                return DriveType.Ram;
+            }
+            if (_format == "nfs" || _format == "nfs4" || _format == "cifs"
+                || _format == "smbfs" || _format == "9p")
+            {
+                return DriveType.Network;
+            }
+            if (_format == "iso9660" || _format == "udf")
+            {
+                return DriveType.CDRom;
+            }
+            if (_format.Length == 0)
+            {
+                return DriveType.Unknown;
+            }
+            return DriveType.Fixed;
+        }
+    }
+
+    /// Whether the numbers below can be had at all: a filing system whose
+    /// mount point cannot be reached -- a stale network mount, a device that
+    /// has gone -- is not ready.
+    public bool IsReady
+    {
+        get { return Data() != null; }
+    }
+
+    public long TotalSize
+    {
+        get { return Counted(StatFs.BlocksAt); }
+    }
+
+    /// What is free to whoever is asking, which is what df's "available"
+    /// column means: the superuser's reserve is not available to anybody else.
+    public long AvailableFreeSpace
+    {
+        get { return Counted(StatFs.AvailableAt); }
+    }
+
+    /// What is free altogether, the reserved blocks included.
+    public long TotalFreeSpace
+    {
+        get { return Counted(StatFs.FreeAt); }
+    }
+
+    /// The inodes the filing system has and has left, which df -i prints and
+    /// .NET has no member for.
+    public long TotalFileNodes
+    {
+        get
+        {
+            byte[]? d = Data();
+            return d == null ? 0 : StatFs.Files(d);
+        }
+    }
+
+    public long FreeFileNodes
+    {
+        get
+        {
+            byte[]? d = Data();
+            return d == null ? 0 : StatFs.FilesFree(d);
+        }
+    }
+
+    public long BlockSize
+    {
+        get
+        {
+            byte[]? d = Data();
+            return d == null ? 0 : StatFs.BlockSize(d);
+        }
+    }
+
+    long Counted(int field)
+    {
+        byte[]? d = Data();
+        if (d == null) { return 0; }
+        long unit = StatFs.FragmentSize(d);
+        if (unit <= 0) { unit = StatFs.BlockSize(d); }
+        return Raw.I64(d, field) * unit;
+    }
+
+    byte[]? Data()
+    {
+        if (!_asked)
+        {
+            _asked = true;
+            byte[] into = StatFs.Room();
+            _stat = Os.Statfs(_mount, into) >= 0 ? into : null;
+        }
+        return _stat;
+    }
+
+    /// The device and filing system for a mount point somebody named, out of
+    /// the mount table; a name that is not a mount point keeps the empty
+    /// strings and answers whatever statfs says about the tree it is in.
+    void Locate()
+    {
+        DriveInfo[] all = GetDrives();
+        for (int i = 0; i < all.Length; i++)
+        {
+            if (all[i].Name == _mount)
+            {
+                _device = all[i].DeviceName;
+                _format = all[i].DriveFormat;
+                _options = all[i].MountOptions;
+                return;
+            }
+        }
+    }
+
+    /// Every mounted filing system, in the order the kernel mounted them,
+    /// which is the order /proc/mounts is in.
+    public static DriveInfo[] GetDrives()
+    {
+        List<DriveInfo> drives = new List<DriveInfo>();
+        string[] lines;
+        try { lines = File.ReadAllLines("/proc/mounts"); }
+        catch (Exception) { return drives.ToArray(); }
+
+        for (int i = 0; i < lines.Length; i++)
+        {
+            string[] fields = lines[i].Split(' ');
+            if (fields.Length < 3) { continue; }
+            drives.Add(new DriveInfo(Unescape(fields[1]), Unescape(fields[0]),
+                                     fields[2],
+                                     fields.Length > 3 ? fields[3] : ""));
+        }
+        return drives.ToArray();
+    }
+
+    /// The mount table escapes the characters that would break its own
+    /// columns -- a space in a mount point is \040 -- and a program reading it
+    /// has to put them back.
+    static string Unescape(string text)
+    {
+        if (text.IndexOf('\\') < 0) { return text; }
+
+        StringBuilder made = new StringBuilder();
+        int at = 0;
+        while (at < text.Length)
+        {
+            if (text[at] == '\\' && at + 3 < text.Length
+                && text[at + 1] >= '0' && text[at + 1] <= '7'
+                && text[at + 2] >= '0' && text[at + 2] <= '7'
+                && text[at + 3] >= '0' && text[at + 3] <= '7')
+            {
+                int value = (text[at + 1] - '0') * 64 + (text[at + 2] - '0') * 8
+                          + (text[at + 3] - '0');
+                made.Append((char)value);
+                at = at + 4;
+                continue;
+            }
+            made.Append(text[at]);
+            at++;
+        }
+        return made.ToString();
+    }
+}

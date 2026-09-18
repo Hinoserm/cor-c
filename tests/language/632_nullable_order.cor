@@ -1,0 +1,32 @@
+// test: nullable_order
+// expect-exit: 0
+// expect-output:
+// True False False
+// True True False
+// True False False
+// True False True False False
+//
+// `<`, `>`, `<=`, `>=` ARE LIFTED over a Nullable<T> as `==` is: false unless
+// both sides have a value, and then the comparison of the values. Left to the
+// ordinary path they compared the CELL -- `int? n = 5; n > 3` was false -- and
+// `t.Decl?.TypeParams.Count > 0`, which is how the compiler tells a generic
+// template from a type, called every template an ordinary class.
+
+using System;
+using System.Collections.Generic;
+sealed class Decl { public List<string> TypeParams { get; } = new(); }
+sealed class Sym { public Decl? Decl; }
+class P {
+  static bool IsTemplate(Sym t) => t.Decl?.TypeParams.Count > 0;
+  static bool Few(Sym t) => t.Decl?.TypeParams.Count < 2;
+  static bool AtLeast(Sym t) => t.Decl?.TypeParams.Count >= 1;
+  static int Main() {
+    Sym with = new Sym { Decl = new Decl() }; with.Decl.TypeParams.Add("T");
+    Sym plain = new Sym { Decl = new Decl() };
+    Sym none = new Sym();
+    Console.WriteLine(IsTemplate(with) + " " + IsTemplate(plain) + " " + IsTemplate(none));
+    Console.WriteLine(Few(with) + " " + Few(plain) + " " + Few(none));
+    Console.WriteLine(AtLeast(with) + " " + AtLeast(plain) + " " + AtLeast(none));
+    int? n = 5; int? e = null;
+    Console.WriteLine((n > 3) + " " + (e > 3) + " " + (n <= 5) + " " + (e <= 5) + " " + (n > e));
+    return 0; } }

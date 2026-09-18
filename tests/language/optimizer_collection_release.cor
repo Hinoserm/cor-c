@@ -1,0 +1,69 @@
+// test: cleared and removed collection entries stop retaining their payloads
+// expect-exit: 0
+// expect-output:
+// collection references released
+static class Program
+{
+    static List<byte[]> list = new();
+    static Queue<byte[]> queue = new();
+    static Stack<byte[]> stack = new();
+    static Dictionary<byte[], byte[]> map = new();
+    static HashSet<byte[]> set = new();
+    static void Fill()
+    {
+        for (int i = 0; i < 128; i++)
+        {
+            list.Add(new byte[8192]);
+            queue.Enqueue(new byte[8192]);
+            stack.Push(new byte[8192]);
+            map.Add(new byte[8192], new byte[8192]);
+            set.Add(new byte[8192]);
+        }
+    }
+    static void Empty()
+    {
+        list.RemoveAt(0);
+        list.RemoveRange(0, 16);
+        list.RemoveAll(value => value.Length == 8192);
+        queue.Dequeue();
+        queue.Clear();
+        stack.Pop();
+        stack.Clear();
+        List<byte[]> keys = map.Keys;
+        foreach (byte[] key in keys) map.Remove(key);
+        keys.Clear();
+        map.Clear();
+        byte[][] values = set.ToArray();
+        for (int i = 0; i < values.Length; i++)
+        {
+            set.Remove(values[i]);
+            values[i] = null!;
+        }
+        set.Clear();
+    }
+    static int Main()
+    {
+        Gc.Collect();
+        long before = Gc.LiveBytes;
+        Fill();
+        Gc.Collect();
+        if (Gc.LiveBytes < before + 6000000) return 1;
+        // Collection enumeration can materialize temporary snapshots. Run
+        // removal on a joined thread so stale conservative stack slots from
+        // inlined snapshot helpers cannot keep those snapshots rooted.
+        Thread cleanup = new Thread(Empty);
+        cleanup.Start();
+        cleanup.Join();
+        Gc.Collect();
+        // Allow incidental conservative roots; not megabytes of removed data.
+        if (Gc.LiveBytes > before + 524288)
+        {
+            Sys.Print("retained bytes=" + Gc.LiveBytes + " baseline=" + before + "\n");
+            return 2;
+        }
+        if (list.Count + queue.Count + stack.Count + map.Count + set.Count != 0) return 3;
+        if (!Gc.CheckFreeIndex()) return 4;
+        Sys.Print("collection references released\n");
+        return 0;
+    }
+}

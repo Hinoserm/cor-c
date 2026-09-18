@@ -1,0 +1,141 @@
+// test: generics_user
+// expect-exit: 0
+// expect-output:
+// box 42 9000000000 s 7
+// pair 8589934592 -1 -1 8589934592
+// mixed 3 400
+// stack 38654705664 9 top
+// method 5 2 3 3
+//
+// User-written generics: a class with one type parameter over int, long,
+// string and a nested generic; a pair with two parameters instantiated over
+// (long, long) -- both fields are register pairs -- and over (int, long);
+// a generic stack that grows; and generic methods with inferred arguments.
+
+class Box<T>
+{
+    T value;
+
+    public Box(T v)
+    {
+        value = v;
+    }
+
+    public T Get()
+    {
+        return value;
+    }
+
+    public void Set(T v)
+    {
+        value = v;
+    }
+}
+
+class Pair<A, B>
+{
+    public A First;
+    public B Second;
+
+    public Pair(A a, B b)
+    {
+        First = a;
+        Second = b;
+    }
+
+    public Pair<B, A> Swap()
+    {
+        return new Pair<B, A>(Second, First);
+    }
+}
+
+class Stack<T>
+{
+    T[] items = new T[4];
+    int n;
+
+    public int Count => n;
+
+    public void Push(T x)
+    {
+        if (n == items.Length)
+        {
+            T[] bigger = new T[items.Length * 2];
+            for (int i = 0; i < n; i++)
+            {
+                bigger[i] = items[i];
+            }
+            items = bigger;
+        }
+        items[n] = x;
+        n = n + 1;
+    }
+
+    public T Pop()
+    {
+        n = n - 1;
+        return items[n];
+    }
+}
+
+static class Util
+{
+    public static T First<T>(T[] values)
+    {
+        return values[0];
+    }
+
+    public static int Size<T>(List<T> values)
+    {
+        return values.Count;
+    }
+
+    public static Pair<T, T> Twice<T>(T x)
+    {
+        return new Pair<T, T>(x, x);
+    }
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        Box<int> bi = new Box<int>(42);
+        Box<long> bl = new Box<long>(9000000000L);
+        Box<string> bs = new Box<string>("s");
+        Box<Box<int>> bb = new Box<Box<int>>(new Box<int>(7));
+        Line("box " + bi.Get() + " " + bl.Get() + " " + bs.Get() + " " + bb.Get().Get());
+
+        Pair<long, long> p = new Pair<long, long>(1L << 33, -1);
+        Pair<long, long> s = p.Swap();
+        Line("pair " + p.First + " " + p.Second + " " + s.First + " " + s.Second);
+
+        Pair<int, long> m = new Pair<int, long>(3, 400);
+        Line("mixed " + m.First + " " + m.Second);
+
+        Stack<long> st = new Stack<long>();
+        for (long i = 0; i < 10; i++)
+        {
+            st.Push(i << 32);
+        }
+        long top = st.Pop();
+        Stack<string> names = new Stack<string>();
+        names.Push("a");
+        names.Push("top");
+        Line("stack " + top + " " + st.Count + " " + names.Pop());
+
+        int[] arr = new int[] { 5, 6 };
+        List<string> two = new List<string>();
+        two.Add("x");
+        two.Add("y");
+        Pair<int, int> tw = Util.Twice(3);
+        Line("method " + Util.First(arr) + " " + Util.Size(two) + " " + tw.First + " " + tw.Second);
+        return 0;
+    }
+}

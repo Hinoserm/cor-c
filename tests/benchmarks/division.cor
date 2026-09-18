@@ -1,0 +1,67 @@
+// Constant divisors versus a mutable-data reference outside the timed region.
+static class Program
+{
+    static uint[] _divisors = new uint[] { 3, 5, 10 };
+    static int[] _signedDivisors = new int[] { 3, 5, 10 };
+    static long SignedWork(int count, uint seed)
+    {
+        long sum = 0; uint state = seed;
+        for (int i = 0; i < count; i++)
+        {
+            state = unchecked(state * 1664525u + 1013904223u);
+            int value = unchecked((int)state);
+            sum += (long)(value / 3) + value % 3;
+            sum += (long)(value / 5) + value % 5;
+            sum += (long)(value / 10) + value % 10;
+        }
+        return sum;
+    }
+    static long SignedReference(int count, uint seed)
+    {
+        long sum = 0; uint state = seed;
+        for (int i = 0; i < count; i++)
+        {
+            state = unchecked(state * 1664525u + 1013904223u);
+            int value = unchecked((int)state);
+            for (int d = 0; d < 3; d++) sum += (long)(value / _signedDivisors[d]) + value % _signedDivisors[d];
+        }
+        return sum;
+    }
+    static long Work(int count, uint seed)
+    {
+        long sum = 0; uint value = seed;
+        for (int i = 0; i < count; i++)
+        {
+            value = unchecked(value * 1664525u + 1013904223u);
+            sum += (long)(value / 3u) + value % 3u;
+            sum += (long)(value / 5u) + value % 5u;
+            sum += (long)(value / 10u) + value % 10u;
+        }
+        return sum;
+    }
+    static long Reference(int count, uint seed)
+    {
+        long sum = 0; uint value = seed;
+        for (int i = 0; i < count; i++)
+        {
+            value = unchecked(value * 1664525u + 1013904223u);
+            for (int d = 0; d < 3; d++) sum += (long)(value / _divisors[d]) + value % _divisors[d];
+        }
+        return sum;
+    }
+    static int Main()
+    {
+        string[] args = Environment.GetCommandLineArgs();
+        int count = args.Length > 1 ? int.Parse(args[1]) : 1000000;
+        uint seed = args.Length > 2 ? uint.Parse(args[2]) : 4294967295u;
+        bool signed = args.Length > 3 && args[3] == "signed";
+        if (count < 1 || count > 10000000) return 2;
+        long start = Stopwatch.GetTimestamp();
+        long result = signed ? SignedWork(count, seed) : Work(count, seed);
+        long elapsed = Stopwatch.GetTimestamp() - start;
+        bool valid = result == (signed ? SignedReference(count, seed) : Reference(count, seed));
+        Console.WriteLine("constant-divide,signed=" + signed + ",iterations=" + count + ",ticks=" + elapsed
+            + ",frequency=" + Stopwatch.Frequency + ",checksum=" + result + ",valid=" + valid);
+        return valid ? 0 : 1;
+    }
+}

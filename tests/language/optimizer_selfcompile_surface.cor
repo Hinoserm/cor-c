@@ -1,0 +1,63 @@
+// test: compiler workload target typing and standard library surface
+// expect-exit: 0
+// expect-output:
+// targets
+// scopes
+// numeric
+// linq
+// writer
+// selfcompile surface passed
+class Cell
+{
+    public int Value;
+    public Cell(int value) { Value = value; }
+}
+class Holder
+{
+    public Cell Cell;
+    public Holder(Cell cell) { Cell = cell; }
+}
+static class Program
+{
+    static int Read(Cell value) => value.Value;
+    static int Main()
+    {
+        Sys.Print("targets\n");
+        Dictionary<int, Cell> map = new();
+        map[0] = new(4);
+        if (Read(new(5)) != 5 || map[0].Value != 4) return 1;
+        Holder nested = new(new(8));
+        if (nested.Cell.Value != 8 || "a,b".Split(new[] { ',' }).Length != 2) return 10;
+        Cell selected = true ? new(6) : new(7);
+        object mixed = 1 switch { 0 => new Cell(1), 1 => "yes", _ => new Cell(2) };
+        if (selected.Value != 6 || mixed.ToString() != "yes") return 2;
+        Sys.Print("scopes\n");
+        Stack<int> stack = new(); stack.Push(3);
+        int sum = 0;
+        while (stack.TryPop(out int item)) sum += item;
+        foreach (int item in new int[] { 4 }) sum += item;
+        if (sum != 7) return 3;
+        Sys.Print("numeric\n");
+        if (long.MinValue.CompareTo(long.MaxValue) >= 0 || ulong.MaxValue.CompareTo(0UL) <= 0) return 4;
+        Sys.Print("linq\n");
+        List<Cell> cells = new() { new Cell(2), new Cell(3) };
+        int total = cells.Sum(c => c.Value);
+        if (total != 5) return 5;
+        Dictionary<string, Cell> named = cells.ToDictionary(c => c.Value.ToString(), StringComparer.OrdinalIgnoreCase);
+        if (named["2"].Value != 2) return 6;
+        bool duplicate = false;
+        try { new string[] { "a", "A" }.ToDictionary(x => x, StringComparer.OrdinalIgnoreCase); }
+        catch (ArgumentException) { duplicate = true; }
+        if (!duplicate) return 7;
+        bool overflow = false;
+        try { new int[] { int.MaxValue, 1 }.Sum(x => x); }
+        catch (OverflowException) { overflow = true; }
+        if (!overflow) return 8;
+        Sys.Print("writer\n");
+        StringWriter writer = new();
+        writer.Write((object)new StringBuilder().Append("okay"));
+        if (writer.ToString() != "okay") return 9;
+        Sys.Print("selfcompile surface passed\n");
+        return 0;
+    }
+}

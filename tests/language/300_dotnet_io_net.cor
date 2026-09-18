@@ -1,0 +1,74 @@
+// test: the .NET class library shape: FileStream, File, Environment, RandomNumberGenerator, TcpListener/TcpClient
+// expect-exit: 0
+// expect-output:
+// file ok
+// lines ok
+// env ok
+// random ok
+// socket ok
+// dns ok
+//
+// A program written the way a .NET program is written: System.IO,
+// System.Environment, System.Security.Cryptography and System.Net.Sockets
+// by their .NET names, no system calls of its own.
+
+class Program
+{
+    static int Main()
+    {
+        string path = "/tmp/cor-300-" + Environment.ProcessId + ".txt";
+
+        FileStream f = new FileStream(path, FileMode.Create, FileAccess.Write);
+        byte[] hello = new byte[5];
+        hello[0] = (byte)'h'; hello[1] = (byte)'e'; hello[2] = (byte)'l'; hello[3] = (byte)'l'; hello[4] = (byte)'o';
+        f.Write(hello, 0, 5);
+        f.Dispose();
+        byte[] back = File.ReadAllBytes(path);
+        Console.WriteLine(back.Length == 5 && back[4] == (byte)'o' && File.ReadAllText(path) == "hello" ? "file ok" : "file bad");
+
+        File.WriteAllText(path, "one\ntwo\nthree\n");
+        File.AppendAllText(path, "four");
+        string[] lines = File.ReadAllLines(path);
+        Console.WriteLine(lines.Length == 4 && lines[1] == "two" && lines[3] == "four" ? "lines ok" : "lines bad " + lines.Length);
+        File.Delete(path);
+
+        string? home = Environment.GetEnvironmentVariable("PATH");
+        string[] args = Environment.GetCommandLineArgs();
+        Console.WriteLine(home != null && args.Length >= 1 && args[0].Length > 0 && Environment.CurrentDirectory.Length > 0 ? "env ok" : "env bad");
+
+        byte[] a = RandomNumberGenerator.GetBytes(32);
+        byte[] b = RandomNumberGenerator.GetBytes(32);
+        bool same = true;
+        for (int i = 0; i < 32; i++)
+        {
+            if (a[i] != b[i])
+            {
+                same = false;
+            }
+        }
+        int small = RandomNumberGenerator.GetInt32(10);
+        Console.WriteLine(!same && small >= 0 && small < 10 ? "random ok" : "random bad");
+
+        TcpListener listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        IPEndPoint bound = listener.LocalEndpoint;
+        TcpClient client = new TcpClient();
+        client.Connect(IPAddress.Loopback, bound.Port);
+        TcpClient server = listener.AcceptTcpClient();
+        NetworkStream toServer = client.GetStream();
+        toServer.Write(hello, 0, 5);
+        toServer.Flush();
+        NetworkStream fromClient = server.GetStream();
+        byte[] room = new byte[16];
+        bool ready = server.Client.Poll(1000000, SelectMode.SelectRead);
+        int n = fromClient.Read(room, 0, 16);
+        Console.WriteLine(ready && n == 5 && room[0] == (byte)'h' ? "socket ok" : "socket bad " + n);
+        client.Close();
+        server.Close();
+        listener.Stop();
+
+        IPAddress[] found = Dns.GetHostAddresses("localhost");
+        Console.WriteLine(found.Length >= 1 && found[0].ToString() == "127.0.0.1" && IPAddress.Parse("10.1.2.3").GetAddressBytes()[3] == 3 ? "dns ok" : "dns bad");
+        return 0;
+    }
+}

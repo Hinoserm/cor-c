@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Corsac</RootNamespace>
+    <AssemblyName>corc</AssemblyName>
+    <StartupObject>Corsac.Program</StartupObject>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The old CORSAC code generator, kept for reference while the
+         retargetable backend is written against the same binder. -->
+    <Compile Remove="Lang/Legacy/**" />
+    <Compile Remove="tests/**" />
+  </ItemGroup>
+
+</Project>

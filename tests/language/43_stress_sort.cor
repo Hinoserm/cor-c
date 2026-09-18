@@ -1,0 +1,121 @@
+// test: stress_sort
+// expect-exit: 0
+// expect-output:
+// data 32606 58065 50109660
+// sorted 20 99900 51523 True
+// same True
+// weighted 292636991
+//
+// Sorts a thousand pseudo-random values two ways -- insertion sort and a
+// recursive quicksort -- and checks both agree. The generator is a linear
+// congruential one in long arithmetic so the multiply must be done in 64
+// bits; the weighted checksum runs through a long as well.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static void Insertion(int[] a)
+    {
+        for (int i = 1; i < a.Length; i++)
+        {
+            int v = a[i];
+            int j = i - 1;
+            while (j >= 0 && a[j] > v)
+            {
+                a[j + 1] = a[j];
+                j--;
+            }
+            a[j + 1] = v;
+        }
+    }
+
+    static void Quick(int[] a, int lo, int hi)
+    {
+        if (lo >= hi)
+        {
+            return;
+        }
+        int pivot = a[(lo + hi) / 2];
+        int i = lo;
+        int j = hi;
+        while (i <= j)
+        {
+            while (a[i] < pivot)
+            {
+                i++;
+            }
+            while (a[j] > pivot)
+            {
+                j--;
+            }
+            if (i <= j)
+            {
+                int t = a[i];
+                a[i] = a[j];
+                a[j] = t;
+                i++;
+                j--;
+            }
+        }
+        Quick(a, lo, j);
+        Quick(a, i, hi);
+    }
+
+    static int Main()
+    {
+        int n = 1000;
+        int[] data = new int[n];
+        long seed = 12345;
+        long sum = 0;
+        for (int i = 0; i < n; i++)
+        {
+            seed = (seed * 1103515245L + 12345L) & 0x7fffffffL;
+            data[i] = (int)(seed % 100000);
+            sum += data[i];
+        }
+        Line("data " + data[0] + " " + data[n - 1] + " " + sum);
+
+        int[] a = new int[n];
+        int[] b = new int[n];
+        for (int i = 0; i < n; i++)
+        {
+            a[i] = data[i];
+            b[i] = data[i];
+        }
+        Insertion(a);
+        Quick(b, 0, n - 1);
+
+        bool ordered = true;
+        for (int i = 1; i < n; i++)
+        {
+            if (a[i - 1] > a[i])
+            {
+                ordered = false;
+            }
+        }
+        Line("sorted " + a[0] + " " + a[n - 1] + " " + a[500] + " " + ordered);
+
+        bool same = true;
+        for (int i = 0; i < n; i++)
+        {
+            if (a[i] != b[i])
+            {
+                same = false;
+            }
+        }
+        Line("same " + same);
+
+        long weighted = 0;
+        for (int i = 0; i < n; i++)
+        {
+            weighted = (weighted + (long)i * a[i]) % 1000000007L;
+        }
+        Line("weighted " + weighted);
+        return 0;
+    }
+}

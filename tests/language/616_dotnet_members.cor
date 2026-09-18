@@ -1,0 +1,91 @@
+// test: dotnet_members
+// expect-exit: 0
+// expect-output:
+// unix 1000000000 1000000000
+// files 2 one.txt two.txt
+// dirs 1 sub
+// overlaps True False
+// subset True
+// default 7 0
+// span True False
+//
+// Members .NET has and this library did not, added at .NET's own signatures:
+// DateTimeOffset.UtcNow, Directory.GetFiles with a search pattern (and the
+// FileSystemName matcher behind it), HashSet's Overlaps/IsSubsetOf/SetEquals,
+// CollectionExtensions.GetValueOrDefault over any read-only dictionary, and
+// Span's SequenceEqual against a Span.
+//
+// With them, ToUnixTimeSeconds is DateTimeOffset's alone: .NET puts it
+// nowhere else, because a DateTime carries no offset to count from.
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        DateTime when = new DateTime(1000000000L * 10000000 + 621355968000000000L);
+
+        Line("unix " + new DateTimeOffset(when, TimeSpan.Zero).ToUnixTimeSeconds()
+             + " " + DateTimeOffset.FromUnixTimeSeconds(1000000000).ToUnixTimeSeconds());
+
+        string root = "/tmp/corsac-616";
+
+        if (Directory.Exists(root))
+        {
+            Directory.Delete(root, true);
+        }
+
+        Directory.CreateDirectory(root);
+        Directory.CreateDirectory(root + "/sub");
+        File.WriteAllText(root + "/one.txt", "1");
+        File.WriteAllText(root + "/two.txt", "2");
+        File.WriteAllText(root + "/three.dat", "3");
+
+        string[] text = Directory.GetFiles(root, "*.txt");
+        List<string> names = new List<string>();
+
+        foreach (string full in text)
+        {
+            names.Add(Path.GetFileName(full));
+        }
+
+        List<string> sorted = names.OrderBy(n => n, StringComparer.Ordinal);
+
+        Line("files " + sorted.Count + " " + sorted[0] + " " + sorted[1]);
+
+        string[] under = Directory.GetDirectories(root, "s*");
+
+        Line("dirs " + under.Length + " " + Path.GetFileName(under[0]));
+        Directory.Delete(root, true);
+
+        HashSet<string> left = new HashSet<string>();
+        HashSet<string> right = new HashSet<string>();
+        HashSet<string> apart = new HashSet<string>();
+
+        left.Add("a");
+        left.Add("b");
+        right.Add("b");
+        apart.Add("z");
+
+        Line("overlaps " + left.Overlaps(right) + " " + left.Overlaps(apart));
+        Line("subset " + right.IsSubsetOf(left));
+
+        SortedDictionary<string, int> map = new SortedDictionary<string, int>();
+
+        map["k"] = 7;
+        Line("default " + map.GetValueOrDefault("k") + " " + map.GetValueOrDefault("none"));
+
+        ulong[] bits = new ulong[] { 1, 2 };
+        ulong[] same = new ulong[] { 1, 2 };
+        ulong[] other = new ulong[] { 1, 3 };
+
+        Line("span " + bits.AsSpan().SequenceEqual(same.AsSpan())
+             + " " + bits.AsSpan().SequenceEqual(other.AsSpan()));
+        return 0;
+    }
+}
