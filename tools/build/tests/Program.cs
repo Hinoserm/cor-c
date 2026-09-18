@@ -114,7 +114,7 @@ public static class Program
             await CheckAsync("successful file tasks skip until an input or output changes", async () =>
             {
                 BuildManifest manifest = Load("""
-                  <Target Name="all"><Script Interpreter="sh" Inputs="input" Outputs="output"><Body>cp input output; echo ran &gt;&gt; runs</Body></Script></Target>
+                  <Target Name="all"><Script Interpreter="sh" Inputs="input" Outputs="output"><Body>cp input output; echo "$(printf ran)" &gt;&gt; runs</Body></Script></Target>
                   """);
                 string input = Path.Combine(manifest.Root, "input");
                 File.WriteAllText(input, "one");

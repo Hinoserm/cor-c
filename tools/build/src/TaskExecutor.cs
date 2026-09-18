@@ -98,6 +98,7 @@ public sealed class TaskExecutor
             Console.WriteLine("up-to-date /" + target.Path);
             return;
         }
+        incremental?.Invalidate();
         string executable;
         string? temporary = null;
         if (task.Name == "Compile")

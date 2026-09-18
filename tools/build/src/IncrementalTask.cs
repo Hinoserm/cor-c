@@ -60,7 +60,12 @@ public sealed class IncrementalTask
         string[] sources = inputs.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
         if (sources.Intersect(outputs, StringComparer.Ordinal).Any())
             throw new BuildException("Incremental inputs and outputs must be different files");
-        string identity = manifest.File + "\n" + target.Path + "\n" + manifest.Expand(task.ToString(SaveOptions.DisableFormatting));
+        XElement expanded = new(task);
+        foreach (XElement element in expanded.DescendantsAndSelf())
+            foreach (XAttribute attribute in element.Attributes()) attribute.Value = manifest.Expand(attribute.Value);
+        // Script bodies are literal script text; $(...) there may be shell
+        // substitution rather than an orchestration property.
+        string identity = manifest.File + "\n" + target.Path + "\n" + expanded.ToString(SaveOptions.DisableFormatting);
         string key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity)));
         return new IncrementalTask(sources, outputs, Path.Combine(manifest.Root, "build", "state", key + ".stamp"));
     }
@@ -82,6 +87,11 @@ public sealed class IncrementalTask
         string temporary = stamp + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try { File.WriteAllText(temporary, state); File.Move(temporary, stamp, overwrite: true); }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
+    }
+
+    public void Invalidate()
+    {
+        if (File.Exists(stamp)) File.Delete(stamp);
     }
 
     private static string Snapshot(IEnumerable<string> paths, bool required)
