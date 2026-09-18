@@ -36,6 +36,7 @@ public static class IrInfo
         switch (i.Op)
         {
             case Opcode.Load:
+            case Opcode.ArrayLength:
                 // A load through a register may fault on a bad address, and
                 // the program is entitled to that fault; one from a static
                 // or a frame slot addresses memory the program owns.

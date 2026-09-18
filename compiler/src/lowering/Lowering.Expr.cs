@@ -643,7 +643,7 @@ public sealed partial class Lowering
         if (m.Name == "Length" && (target.IsArray || target.Prim == Prim.String))
         {
             VReg seq = Eval(m.Target);
-            return _e.Load(IrType.I32, seq, _t.ArrayCountOffset);
+            return target.IsArray ? _e.Unary(Opcode.ArrayLength, R(seq), IrType.I32) : _e.Load(IrType.I32, seq, _t.ArrayCountOffset);
         }
 
         if (m.Name == "Name" && target.Prim == Prim.Type)
@@ -869,7 +869,7 @@ public sealed partial class Lowering
         VReg array = AllocateDynamic(at, total);
         string desc = SequenceDescriptor(element.ToString(), stride, isString: false);
         _e.Store(R(array), new SymOperand(desc, _t.DescriptorBytes), 0, _t.WordSize);
-        _e.Store(R(array), R(count), _t.ArrayCountOffset, 4);
+        _e.Emit(Opcode.InitArrayLength, null, R(array), R(count));
 
         // AN ARRAY OF STRUCTS HOLDS VALUES, each zero until written: `arr[1].X
         // = 5` on a fresh array is legal C#. With structs as blocks that means

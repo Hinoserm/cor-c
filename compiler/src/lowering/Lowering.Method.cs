@@ -823,15 +823,15 @@ public sealed partial class Lowering
             return new MemPlace(new RegOperand(addr), 0, stored);
         }
 
-        BoundsCheck(basis, index, at);
+        BoundsCheck(basis, index, at, sequence.IsArray);
         VReg scaled2 = stride == 1 ? index : _e.Binary(Opcode.Mul, index, stride);
         VReg addr2 = _e.Binary(Opcode.Add, basis, WordOf(scaled2));
         return new MemPlace(new RegOperand(addr2), _t.ArrayHeaderBytes, stored);
     }
 
-    private void BoundsCheck(VReg array, VReg index, Node at)
+    private void BoundsCheck(VReg array, VReg index, Node at, bool managedArray)
     {
-        VReg count = _e.Load(IrType.I32, array, _t.ArrayCountOffset);
+        VReg count = managedArray ? _e.Unary(Opcode.ArrayLength, R(array), IrType.I32) : _e.Load(IrType.I32, array, _t.ArrayCountOffset);
         VReg ok = _e.Binary(Opcode.LtU, index, count);
         Block good = _f.NewBlock("inbounds");
         _e.Branch(ok, good, BoundsFail());

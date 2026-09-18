@@ -70,6 +70,8 @@ public sealed class Pipeline
         p.Passes.Add(new ConstantFold());
         p.Passes.Add(new Narrowing());
         p.Passes.Add(new ConstantAndCopyPropagation());
+        p.Passes.Add(new ArrayLengthFacts());
+        p.Passes.Add(new FrameAddressFold());
         p.Passes.Add(new LocalCopies());
         p.Passes.Add(new WideProductSharing());
         p.Passes.Add(new IntegerReassociate());
@@ -85,7 +87,6 @@ public sealed class Pipeline
         {
             p.Passes.Add(new BitFactSimplify());
             p.Passes.Add(new EdgePredicateSimplify());
-            p.Passes.Add(new FrameAddressFold());
             p.Passes.Add(new StoreBackElimination());
             p.Passes.Add(new LoadReuse());
             p.Passes.Add(new DeadCodeElimination());

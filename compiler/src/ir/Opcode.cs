@@ -121,4 +121,8 @@ public enum Opcode : byte
     Trap,
     /// <summary>Spin-loop hint.</summary>
     Pause,
+    /// <summary>Read the immutable length of a managed array. Retains null-fault behavior.</summary>
+    ArrayLength,
+    /// <summary>Initialize a newly allocated managed array's immutable length.</summary>
+    InitArrayLength,
 }

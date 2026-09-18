@@ -377,7 +377,7 @@ public sealed partial class Lowering
         VReg seq = Eval(fe.Sequence);
         VReg index = _f.NewReg(IrType.I32, "i");
         _e.CopyTo(index, new ImmOperand(0, IrType.I32));
-        VReg count = _e.Load(IrType.I32, seq, _t.ArrayCountOffset);
+        VReg count = sequenceType.IsArray ? _e.Unary(Opcode.ArrayLength, R(seq), IrType.I32) : _e.Load(IrType.I32, seq, _t.ArrayCountOffset);
 
         Block top = _f.NewBlock("foreach");
         Block body = _f.NewBlock("febody");

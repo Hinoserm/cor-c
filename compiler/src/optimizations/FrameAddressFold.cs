@@ -16,7 +16,6 @@ public sealed class FrameAddressFold : IPass
     {
         if (function.Async is not null || IrTypes.Word != IrType.I32) return;
         Cfg cfg = new(function);
-        if (cfg.Roots.Count != 1) return;
         Defs defs = new(cfg);
         Address? Resolve(Operand operand, Block useBlock, int useIndex, int depth)
         {

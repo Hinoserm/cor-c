@@ -22,6 +22,7 @@ public static partial class Program
     {
         _verbose = args.Contains("-v");
         Target.Current = Target.X86;
+        Try("managed array lengths: construction, dominance, and faults", ArrayLengthConstructionFacts);
         if (args.Contains("--frame-address-only"))
         {
             Try("frame addresses: bounds and captured pointer definitions", FrameAddressBoundaries);

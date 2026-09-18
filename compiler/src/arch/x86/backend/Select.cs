@@ -580,6 +580,12 @@ internal sealed partial class Selector
             case Opcode.Load:
                 SelectLoad(i);
                 break;
+            case Opcode.ArrayLength:
+                Mov(Lo(i.Dest!), Address(i.Operands[0], Target.Current.ArrayCountOffset));
+                break;
+            case Opcode.InitArrayLength:
+                Mov(Address(i.Operands[0], Target.Current.ArrayCountOffset), RM(i.Operands[1]));
+                break;
             case Opcode.Store:
                 SelectStore(i);
                 break;

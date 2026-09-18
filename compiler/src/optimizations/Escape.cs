@@ -245,11 +245,13 @@ public sealed class Escape : IModulePass
                             break;
 
                         case Opcode.Load:
+                        case Opcode.ArrayLength:
                             // Reading the object, or reading through a field
                             // address. The loaded value is not the pointer.
                             break;
 
                         case Opcode.Store:
+                        case Opcode.InitArrayLength:
                             // Writing INTO the object is fine; writing the
                             // pointer itself somewhere is the escape.
                             if (i.Operands[1] is RegOperand v && flow.Derived.Contains(v.Reg)
