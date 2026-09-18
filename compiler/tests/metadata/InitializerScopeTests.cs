@@ -14,10 +14,12 @@ public static class InitializerScopeTests
         File.WriteAllText(constants, "namespace One { public static class Numbers { public const int Value = 17; } } "
             + "namespace Two { public static class Numbers { public const int Value = 25; } }");
         SourceIndexBuilder.Write(index, new[] { a, b, constants }, "Initializers");
+        string[] runtime = RuntimeDeclarations.Sources();
         foreach (string source in new[] { a, b })
         {
             using IndexedDeclarations declarations = new(index, "Initializers", new[] { source });
-            var front = Frontend.Compile(new[] { source }, "initializer", true, declarations: declarations)
+            var front = Frontend.Compile(new[] { source }.Concat(runtime).ToArray(), "initializer", true,
+                libraryPaths: runtime, elsewherePaths: runtime, declarations: declarations)
                 ?? throw new Exception("Partial initializer scope failed");
             TypeDecl split = front.Unit.Types.Single(type => type.Name == "SplitInit");
             MethodDecl own = split.Members.OfType<MethodDecl>().Single(method => method.Name == "FieldInit$" + (source == a ? "A" : "B"));
