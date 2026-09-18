@@ -1,10 +1,11 @@
 # Declaration index
 
 The compiler-owned declaration index is separate from ELF native objects. It is
-an immutable project-generation artifact used before body compilation. The first
-implementation supplies storage, lookup and source declaration generation.
-Demand-loaded binder integration is a subsequent stage, not implied by a
-successful storage or source-index test.
+an immutable project-generation artifact used before body compilation. Storage,
+source declaration generation and demand-driven binding are implemented for
+indexed units, including scoped extension discovery. Automatic project-wide
+coordination, complete C# lookup and default-library demand loading remain
+separate requirements; a passing indexed-unit fixture does not establish them.
 
 ## Storage version 3
 
@@ -47,6 +48,12 @@ offset directory is streamed through a temporary file. The sort chunk budget
 defaults to 1 MiB; a single record exceeding it fails explicitly. Merge-head,
 serialization and stream buffers are additional bounded memory, not included
 in that chunk budget. Input producers must also bound their own working sets.
+
+Parsed headers release their serialized declaration leases immediately. The
+unit retains discovered keys and required syntax, while the catalog can evict
+source records between lookups. The metadata test imports 100 families through
+a 4 KiB record cache. Syntax, symbols and bound bodies are not included in that
+cache accounting, so this is not a whole-process memory limit.
 
 Only a complete flushed index replaces the previous generation. A failure leaves
 the previous index intact and removes only the current invocation's temporary
