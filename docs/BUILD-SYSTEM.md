@@ -202,10 +202,12 @@ contract, including tool identity, inputs, outputs, properties and environment.
 ## Compilation and .csproj compatibility
 
 Compile references a component name or a .csproj path, configuration, and
-toolchain. The dotnet provider invokes Microsoft MSBuild; it does not reinterpret
-projects. The active/native provider must use an MSBuild-compatible evaluator
-and compile the resulting project graph with COR-C#. There is no implicit
-fallback to dotnet when native evaluation or compilation is unavailable.
+toolchain. The operational evaluator is owned by COR-C# and implements standard
+.csproj semantics directly. Neither evaluation nor normal compilation invokes
+MSBuild. MSBuild is allowed only to bootstrap the build system; the existing
+host dotnet adapter is transitional bootstrap machinery, not an acceptable
+normal project provider. Unsupported active features fail explicitly rather
+than falling back to MSBuild or the host compiler.
 
 Initial native acceptance requires SDK-style console/library projects with:
 

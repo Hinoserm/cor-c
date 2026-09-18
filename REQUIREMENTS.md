@@ -91,6 +91,10 @@ work belong in [TODO.md](TODO.md).
   existing outputs. Compare inputs against outputs or recorded successful input
   state, not literal source/output timestamp inequality. Standard .csproj
   evaluation and incremental semantics remain authoritative for those projects.
+- MSBuild may be used only to bootstrap the build system. The operational build
+  utility and compiler must evaluate and build standard .csproj files themselves,
+  without an MSBuild installation or process dependency. There is no fallback
+  to MSBuild for unsupported evaluation or compilation features.
 - [BUILD-SYSTEM.md](docs/BUILD-SYSTEM.md) defines orchestration
   semantics and the compatibility contract.
 
