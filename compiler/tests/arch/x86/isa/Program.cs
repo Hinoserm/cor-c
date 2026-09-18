@@ -39,7 +39,8 @@ public static class Program
             foreach (string mnemonic in mmx.Concat(now))
             {
                 cases.Add(mnemonic + " mm0, mm7");
-                cases.Add(mnemonic + " mm5, qword ptr [ebx+ecx*4+16]");
+                string width = mnemonic is "punpcklbw" or "punpcklwd" or "punpckldq" ? "dword" : "qword";
+                cases.Add(mnemonic + " mm5, " + width + " ptr [ebx+ecx*4+16]");
             }
             foreach (string mnemonic in "psllw pslld psllq psraw psrad psrlw psrld psrlq".Split(' ')) cases.Add(mnemonic + " mm3, 255");
             foreach (int bits in new[] { 16, 32 })

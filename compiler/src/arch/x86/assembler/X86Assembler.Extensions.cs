@@ -106,7 +106,7 @@ public sealed partial class X86Assembler
             Emit(0x0f, mn[4] switch { 'w' => (byte)0x71, 'd' => (byte)0x72, _ => (byte)0x73 });
             EmitRM(mn[2] == 'l' ? 6 : mn[3] == 'a' ? 4 : 2, dest); Emit((byte)count); return true;
         }
-        MmxSource(src, 8, mn); Prefixes(0, MemOf(src));
+        MmxSource(src, mn is "punpcklbw" or "punpcklwd" or "punpckldq" ? 4 : 8, mn); Prefixes(0, MemOf(src));
         Emit(0x0f, now ? (byte)0x0f : opcode); EmitRM(dest.Reg, src);
         if (now) Emit(suffix);
         return true;
