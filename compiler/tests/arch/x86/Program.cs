@@ -414,9 +414,9 @@ internal static class Program
         int count = (int)W(8);
         Check(count > 0 && 16 + count * 16 <= b.Length, "the entry count fits the section");
         Check(s.Relocs.Count == count, "every entry's return address is a relocation");
-        Check(obj.Symbols.Any(y => y.Name == X86Backend.StackMapStart && y.Offset == 0)
-            && obj.Symbols.Any(y => y.Name == X86Backend.StackMapEnd && y.Offset == b.Length),
-            "the start and end symbols bracket the table");
+        Check(obj.Symbols.Any(y => y.Name == X86Backend.StackMapStart && y.Offset == 0 && !y.Global)
+            && obj.Symbols.Any(y => y.Name == X86Backend.StackMapEnd && y.Offset == b.Length && !y.Global),
+            "object-local start and end symbols bracket the table");
 
         Dictionary<string, (uint Regs, int Map, uint Frame)> byFunction = new(StringComparer.Ordinal);
         bool bitmapsInRange = true;

@@ -802,11 +802,15 @@ C-alike with a library bolted on; the collector is part of the toolchain.
   is brought to a known state.
 
 **The stack map table, as emitted today.** Its own section,
-`.corsac.stackmaps`, read-only data bracketed by the linker-visible
-symbols `__corsac_stackmaps` and `__corsac_stackmaps_end`. It is
-allocated read-only data like any other, so it merges into `.rodata` in
-the final image and the two symbols are how the runtime finds it; nothing
-executes it and a program without a collector pays only its bytes.
+`.corsac.stackmaps`, read-only data bracketed by the object-local symbols
+`__corsac_stackmaps` and `__corsac_stackmaps_end`. Each object owns one complete
+table, including its own relative bitmap offsets. The boundaries are not global
+definitions: independently compiled objects must not collide or bind to each
+other's table. The allocated bytes merge into `.rodata` in the final image.
+The current conservative collector does not consume these tables. A future
+image-wide precise collector must enumerate every table through a linker-built
+directory or explicit registration; choosing one object's table is incorrect.
+Nothing executes this data, and a program without a collector pays only its bytes.
 
     header, 16 bytes
       +0   magic 'CSM1' (0x314d5343)

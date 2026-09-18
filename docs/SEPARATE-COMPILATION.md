@@ -163,6 +163,13 @@ the runtime, not independently allocated by every object. Library exception/TLS
 references resolve to that owner. Minimal hosted --nostdlib programs which do
 not initialize the thread block must not read GS as if a runtime initialized it.
 
+Stack-map and frame-table boundaries are object-local. Their internal offsets
+remain relative to their owning table after linking. The final managed-image
+plan must enumerate every retained table for runtime registration; a future
+precise collector cannot use only the entry unit's table. That directory and
+cross-unit frame registration remain part of managed acceptance, not a reason
+to disable stack-map emission for ordinary machine-object linking.
+
 References have three explicit resolution policies: static-required,
 managed-load-deferred, and runtime-generic. A plain undefined native relocation
 is static-required. Deferred references carry assembly/type/member identity and

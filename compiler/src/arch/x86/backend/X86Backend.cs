@@ -547,8 +547,12 @@ public sealed class X86Backend : IBackend
             }
         }
 
-        obj.Symbols.Add(new Symbol { Name = StackMapStart, Section = s, Offset = 0, Size = s.Bytes.Count });
-        obj.Symbols.Add(new Symbol { Name = StackMapEnd, Section = s, Offset = s.Bytes.Count, Size = 0 });
+        // Each independently compiled object owns a complete table. These
+        // boundaries must not collide or bind another object's table. A future
+        // image-wide precise collector needs a directory of tables, not one
+        // arbitrarily selected global definition.
+        obj.Symbols.Add(new Symbol { Name = StackMapStart, Section = s, Offset = 0, Size = s.Bytes.Count, Global = false });
+        obj.Symbols.Add(new Symbol { Name = StackMapEnd, Section = s, Offset = s.Bytes.Count, Size = 0, Global = false });
         defined.Add(StackMapStart);
         defined.Add(StackMapEnd);
     }

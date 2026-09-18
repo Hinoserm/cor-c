@@ -169,6 +169,9 @@ tasks below track that work; moving files alone does not reduce the working set.
 - [ ] Extend the existing object writer/linker; do not build a second linker.
 - [ ] Link independently compiled units without duplicate runtime/type identities
   or silently accepting conflicting definitions.
+- [ ] Publish an image-wide directory or registration sequence for all retained
+  per-object frame/stack-map tables. Object-local boundaries avoid duplicate
+  symbols but do not alone implement runtime discovery across managed units.
 - [ ] Cache unit artifacts with dependency-aware invalidation. Declaration and
   layout changes must invalidate affected consumers; unrelated implementation
   changes should not force recompiling the entire project.
