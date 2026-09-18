@@ -1,39 +1,10 @@
 #nullable enable
 using System.Text;
-using System.Threading.Tasks;
 using Corsac.Lang.Ir;
 
 namespace Corsac.Lang.Opt;
 
 using Block = Corsac.Lang.Ir.Block;
-
-/// <summary>
-/// One transformation of one function. Passes are target-independent and
-/// stateless between functions; anything they need (a CFG, liveness, the
-/// definition table) they build on entry, because the previous pass may
-/// have changed everything.
-/// </summary>
-public interface IPass
-{
-    string Name { get; }
-    void Run(Function f);
-}
-
-/// <summary>
-/// A transformation that needs the whole module: inlining, and later
-/// whole-program analyses such as devirtualisation. Run before the
-/// per-function rounds, because they clean up what a module pass leaves.
-/// </summary>
-public interface IModulePass
-{
-    string Name { get; }
-    void Run(Module m);
-}
-
-public interface IParallelModulePass : IModulePass
-{
-    int Workers { get; set; }
-}
 
 /// <summary>
 /// The list of passes the driver runs between lowering and the backend.
