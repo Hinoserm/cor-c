@@ -28,6 +28,7 @@ internal sealed class ClosedFunctionCalls
     {
         calls = Calls.GetValueOrDefault(function.Name) ?? new();
         return _module.Entry is not null && !function.FromLibrary && function.Async is null
+            && !(_module.PreserveExports && function.Exported)
             && !_addressed.Contains(function.Name) && Inline.Inlineable(function, _addressed)
             && calls.Count != 0 && calls.All(c => c.Operands.Count == function.Params.Count);
     }

@@ -36,6 +36,7 @@ public sealed class DeadStatics : IModulePass
 
         foreach (DataItem d in m.Data)
         {
+            if (m.PreserveExports && d.Exported) read.Add(d.Name);
             foreach (DataReloc r in d.Relocs)
             {
                 read.Add(r.Symbol);

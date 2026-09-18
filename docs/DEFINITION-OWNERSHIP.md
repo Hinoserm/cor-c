@@ -57,6 +57,12 @@ the type owner. An explicit static constructor becomes a hidden ordinary helper
 in its original unit; the initialization wrapper calls it after field initializers.
 This preserves one initialization protocol without importing that method body.
 
+An independent object is open to references from other units even if it owns
+`Main`. It publishes owned static storage and keeps exported methods, signatures
+and stores live. Source-local reachability does not prove that an exported field
+has no reader or that a method has no external caller. Whole-program pruning is
+a final-link decision, not a per-unit assumption.
+
 Async specialization identities, closure ownership, full partial-type acceptance, fully
 lazy generic method loading, and general IR import/regeneration remain work in
 progress. Uncertified duplicate helpers are rejected rather than silently merged.

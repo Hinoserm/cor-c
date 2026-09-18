@@ -12,6 +12,8 @@ public sealed class Module
 
     /// <summary>The function the program starts in, or null for a library.</summary>
     public string? Entry { get; set; }
+    /// <summary>Other compilation units may call exported definitions, even when this unit owns Main.</summary>
+    public bool PreserveExports { get; set; }
 
     /// <summary>
     /// Whether any allocation survives escape analysis and so needs the heap

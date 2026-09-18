@@ -717,7 +717,7 @@ public sealed class Escape : IModulePass
 
     private bool AnyAllocationReachable(Module m, Dictionary<string, Function> byName)
     {
-        if (m.Entry is null || !byName.TryGetValue(m.Entry, out Function? entry))
+        if (m.PreserveExports || m.Entry is null || !byName.TryGetValue(m.Entry, out Function? entry))
         {
             return true;        // a library: its consumers decide
         }

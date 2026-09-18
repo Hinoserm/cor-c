@@ -606,7 +606,7 @@ public sealed class Inline : IParallelModulePass
                 {
                     continue;
                 }
-                if (m.Entry is null)
+                if (m.Entry is null || (m.PreserveExports && f.Exported))
                 {
                     continue;       // a library: everything is an export
                 }

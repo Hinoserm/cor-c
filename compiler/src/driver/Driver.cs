@@ -435,7 +435,7 @@ public static class Driver
         // shadowing a library one be kept.
         List<string> libraryMark = library ? new List<string>(files) : classLibrary;
         Corsac.Lang.Lower.Lowering.SharedObject = shared;
-        Corsac.Lang.Lower.Lowering.PartOfALibrary = references.Count > 0 || args.Contains("--decl-index");
+        Corsac.Lang.Lower.Lowering.PartOfALibrary = references.Count > 0 || args.Contains("--decl-index") || args.Contains("--obj");
         Corsac.Lang.Lower.Lowering.Dynamic = !library && sharedLibs.Count > 0;
 #if !NET
         // Native task workers serve parsing, optimization and code generation.

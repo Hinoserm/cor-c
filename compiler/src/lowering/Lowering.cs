@@ -113,7 +113,7 @@ public sealed partial class Lowering
         _b = bound;
         _file = file;
         _library = library;
-        _m = new Module(file);
+        _m = new Module(file) { PreserveExports = library || PartOfALibrary };
     }
 
     /// <summary>
@@ -291,7 +291,7 @@ public sealed partial class Lowering
         }
 
         // Roots: a library publishes everything; a program starts at Main.
-        if (_library || entry is null)
+        if (_library || PartOfALibrary || entry is null)
         {
             foreach (TypeSymbol t in _b.Types.Values)
             {
@@ -303,10 +303,12 @@ public sealed partial class Lowering
                 {
                     continue;
                 }
-                foreach (MethodSymbol m in t.Methods.Where(m => _library || m.Static))
+                foreach (MethodSymbol m in t.Methods.Where(m => _library || PartOfALibrary || m.Static))
                 {
                     Require(m);
                 }
+                if ((_library || PartOfALibrary) && t.Decl?.Elsewhere != true)
+                    foreach (FieldSymbol field in t.Fields.Where(field => field.Static)) _statics.Add(field);
 
                 // A TYPE'S IDENTITY IS ITS DESCRIPTOR'S ADDRESS, and the
                 // image that declares the type owns it -- whether or not
@@ -315,7 +317,7 @@ public sealed partial class Lowering
                 // descriptor anywhere: the runtime declares IOException and
                 // never throws one, and every library above declares it
                 // `--ref` and may not emit a second.
-                if (_library && t.Decl is { Canon: null, Specialised: false } && t.Decl.TypeParams.Count == 0)
+                if ((_library || PartOfALibrary) && t.Decl is { Canon: null, Specialised: false } && t.Decl.TypeParams.Count == 0)
                 {
                     if (t.Kind == TypeKind.Interface)
                     {
