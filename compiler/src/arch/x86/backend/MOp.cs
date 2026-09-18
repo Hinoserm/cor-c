@@ -71,6 +71,7 @@ public enum MOp : byte
     MmxShlW, MmxShlD, MmxShrW, MmxShrD, MmxSarW, MmxSarD,
     MmxLoadD, MmxDuplicateLowWords, MmxWidenUnsignedWords, ThreeDNowIntToFloat, ThreeDNowShortToFloat,
     MmxSaveToTwo, ThreeDNowAddFromTwo, ThreeDNowSubFromTwo, ThreeDNowMulFromTwo, ThreeDNowFloatToInt,
+    MmxMultiplyAddW,
 
     // ---- the thread block ----------------------------------------------------
     //

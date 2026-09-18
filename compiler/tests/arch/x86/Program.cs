@@ -87,6 +87,7 @@ internal static class Program
         PackedConversionFrames(m);
         PackedFloatArithmeticFrames(m);
         SaturatingFloatCasts(m);
+        PackedDotFrames(m);
         ByteSwaps(m);
         Exit(m);
         UDiv64(m);
@@ -129,6 +130,7 @@ internal static class Program
         Check(FunctionAsm(asm, "packed_conversions").Contains("pi2fw") == (packed && Target.X86.X86Profile.ThreeDNowExtended), "signed word conversion uses plus extension only when enabled");
         foreach (string mnemonic in new[] { "pfadd", "pfsubr", "pfmul", "pf2id" })
             Check(FunctionAsm(asm, "packed_float_math").Contains(mnemonic) == (packed && Target.X86.X86Profile.ThreeDNow), mnemonic + " selected only with proven floating range");
+        Check(FunctionAsm(asm, "packed_dot").Contains("pmaddwd") == packed, "signed word dot products use PMADDWD");
         File.WriteAllText(Path.Combine(outDir, "tests.asm"), asm);
         Console.WriteLine(asm);
 
@@ -1133,6 +1135,36 @@ internal static class Program
         b.Ret(R(okay));
     }
 
+    private static void PackedDotFrames(Module m)
+    {
+        (Function function, Builder b) = New(m, "packed_dot", IrType.I32);
+        FrameSlot left = function.NewSlot(32, 8), right = function.NewSlot(32, 8), destination = function.NewSlot(32, 8);
+        int[] aValues = [-32768, -32768, 32767, -32768, -1, 1, 0, 0, 1, 2, 3, 4, 32767, 32767, -2, 7];
+        int[] bValues = [-32768, -32768, -32768, 32767, 1, -1, 32767, -32768, 2, 3, 4, 5, 32767, 32767, 7, -2];
+        for (int lane = 0; lane < 16; lane++)
+        {
+            b.Store(new SlotOperand(left), I(aValues[lane]), lane * 2, 2);
+            b.Store(new SlotOperand(right), I(bValues[lane]), lane * 2, 2);
+        }
+        for (int lane = 0; lane < 16; lane += 2)
+        {
+            VReg a = b.Load(IrType.I32, new SlotOperand(left), lane * 2, 2, true);
+            VReg c = b.Load(IrType.I32, new SlotOperand(right), lane * 2, 2, true);
+            VReg ac = b.Binary(Opcode.Mul, a, c);
+            VReg d = b.Load(IrType.I32, new SlotOperand(left), lane * 2 + 2, 2, true);
+            VReg e = b.Load(IrType.I32, new SlotOperand(right), lane * 2 + 2, 2, true);
+            VReg de = b.Binary(Opcode.Mul, d, e);
+            b.Store(new SlotOperand(destination), R(b.Binary(Opcode.Add, ac, de)), lane * 2, 4);
+        }
+        VReg okay = b.Const(1, IrType.I32);
+        for (int lane = 0; lane < 16; lane += 2)
+        {
+            int expected = unchecked(aValues[lane] * bValues[lane] + aValues[lane + 1] * bValues[lane + 1]);
+            okay = b.Binary(Opcode.And, okay, b.Binary(Opcode.Eq, b.Load(IrType.I32, new SlotOperand(destination), lane * 2, 4), expected));
+        }
+        b.Ret(R(okay));
+    }
+
     private static void SmallFills(Module m)
     {
         (Function f, Builder b) = New(m, "small_fills", IrType.I32);
@@ -1422,6 +1454,7 @@ internal static class Program
         Expect(b.Call("packed_conversions", IrType.I32)!, I(1));
         Expect(b.Call("packed_float_math", IrType.I32)!, I(1));
         Expect(b.Call("saturating_float_casts", IrType.I32)!, I(1));
+        Expect(b.Call("packed_dot", IrType.I32)!, I(1));
         Expect(b.Call("bswap32", IrType.I32, I(0x11223344))!, I(0x44332211));
         Expect(b.Call("bswap32", IrType.I32, I(unchecked((int)0x80000001)))!, I(0x01000080));
         Expect(b.Call("bswap64_inplace", IrType.I64, I(0x0123456789abcdefL, IrType.I64))!,

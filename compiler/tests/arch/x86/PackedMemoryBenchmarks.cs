@@ -20,7 +20,7 @@ public static class PackedMemoryBenchmarks
         Console.WriteLine("operation,bytes,mmx,selected_packed,iterations,text_bytes,median_ms,ns_per_operation");
         List<string> rows = ["operation,bytes,mmx,selected_packed,iterations,text_bytes,median_ms,ns_per_operation"];
         foreach (string operation in new[] { "copy", "zero", "add8", "add16", "add32", "sub8", "sub16", "sub32", "and32", "or32", "xor32", "mul16", "mulhigh16",
-            "shl16", "shl32", "shr16", "shr32", "sar16", "sar32" }.Where(operation => filter is null || operation.StartsWith(filter, StringComparison.Ordinal)))
+            "shl16", "shl32", "shr16", "shr32", "sar16", "sar32", "dot16" }.Where(operation => filter is null || operation.StartsWith(filter, StringComparison.Ordinal)))
         foreach (int length in new[] { 32, 64, 128 })
         foreach (bool packed in new[] { false, true })
         {
@@ -38,6 +38,20 @@ public static class PackedMemoryBenchmarks
             if (operation is "copy" or "zero")
                 b.Emit(operation == "copy" ? Opcode.MemCopy : Opcode.MemSet, null,
                     new SlotOperand(destination), operation == "copy" ? new SlotOperand(source) : I(0), I(length));
+            else if (operation == "dot16")
+            {
+                for (int offset = 0; offset < length; offset += 4)
+                {
+                    VReg a = b.Load(IrType.I32, new SlotOperand(source), offset, 2, true);
+                    VReg c = b.Load(IrType.I32, new SlotOperand(right), offset, 2, true);
+                    VReg ac = b.Binary(Opcode.Mul, a, c);
+                    VReg d = b.Load(IrType.I32, new SlotOperand(source), offset + 2, 2, true);
+                    VReg e = b.Load(IrType.I32, new SlotOperand(right), offset + 2, 2, true);
+                    VReg de = b.Binary(Opcode.Mul, d, e);
+                    b.Store(new SlotOperand(destination), R(b.Binary(Opcode.Add, ac, de)), offset, 4);
+                }
+                expected = 0x006914ac;
+            }
             else
             {
                 int width = operation.EndsWith("8") ? 1 : operation.EndsWith("16") ? 2 : 4;
