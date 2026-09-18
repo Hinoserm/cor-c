@@ -7,12 +7,14 @@ not an invitation to select an arbitrary implementation.
 
 ## Certification
 
-The compiler explicitly marks generic specializations and structural sequence
-descriptors as eligible. Before optimization, it computes a SHA-256 structural
+The compiler explicitly marks generic specializations, tuple descriptors and
+structural sequence adapters/descriptors as eligible. Before optimization, it computes a SHA-256 structural
 identity over their IR or data. This includes parameter and register types,
 control flow, instructions, field widths, relocation targets, and contents of
 referenced private constants. Source locations and private symbol serial numbers
-are excluded. Global references retain their names. Graph traversal is bounded.
+are excluded as diagnostic fields. Runtime-observable constants, including an
+explicit exception throw-site string, remain part of semantic identity. Global
+references retain their names. Graph traversal is bounded.
 
 After code generation, `.corsac.coalesce` records both that semantic identity
 and a separate integrity hash of the emitted definition and referenced local

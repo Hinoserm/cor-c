@@ -52,8 +52,9 @@ by six little-endian uint32 values: version 3, pointer size 4, baseline CPU 486,
 calling convention 1 (i386 cdecl with x87 floating returns), and TLS/platform
 model (0 hosted Linux GS, 1 bare-metal static block, 2 bare-metal GS), and required
 metadata flags. Flag 1 requires `.corsac.layout`; all other bits are rejected.
-Compiler-produced objects set flag 1. Version 1 objects must be rebuilt, so an
-older linker cannot silently ignore new managed layout requirements. corlink
+Compiler-produced objects set flag 1. Version 1 and 2 objects must be rebuilt;
+version 3 registers an image-wide unit metadata directory rather than a single
+unit's frame table. An older linker cannot silently ignore this contract. corlink
 rejects incompatible models and unknown contracts before LTO or output creation.
 Native assembly/C objects may omit this managed-compiler contract; omission is
 not permission to invent managed type identity. Assembly/type metadata remains

@@ -27,6 +27,13 @@ from the matching table. It must never interpret another unit's line offset
 relative to the runtime's own table. The directory makes stack maps discoverable
 but does not by itself implement a precise collector or reflection metadata.
 
+The compiler passes `Runtime.Capture` the throwing function's frame pointer and
+an immutable source-site string. Walking that frame alone would start at its
+caller and omit the throw site. The explicit source site preserves the leaf
+through inlining without requiring an extra machine frame. Caller return
+addresses are looked up one byte before the return location, so a call at a
+line/function boundary belongs to the instruction that actually called.
+
 Acceptance includes flat/static/shared linker structure, malformed metadata,
 stale ABI rejection, repeated-link input preservation, and executable exception
 traces crossing an indexed unit boundary. The latter checks exact source lines

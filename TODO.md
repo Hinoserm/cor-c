@@ -19,11 +19,11 @@ required gates rather than assuming a missing log is proof of completion.
 
 ## Priority and purpose
 
-The current priority is the CORSAC86 build-system migration on its isolated
-`build-system-migration` branch: command-line configuration, Python-free kernel
-generation and production images. The compiler/linker interface, separate
-compilation and LTO work below remains open, not superseded. Self-hosting runs
-are paused; keep pushing documented implementation checkpoints.
+The current priority is again the compiler/linker interface, managed separate
+compilation, bounded declaration loading and LTO. The isolated CORSAC86 build
+migration has its own branch and acceptance record; do not modify the active
+kernel developer's workspace. Self-hosting runs remain paused; keep pushing
+documented implementation checkpoints.
 
 Separate compilation must make self-hosting practical on small 486-class
 systems as well as use modern multicore hosts effectively. The implementation
@@ -116,6 +116,22 @@ tasks below track that work; moving files alone does not reduce the working set.
   passed through the new runner after this milestone.
 
 ## Demand-loaded declarations, not a whole-project metadata graph
+
+- [x] Add a linker-created image directory for every unit's frame/stack-map
+  tables, with reserved-name/bounds validation and ABI version 3 rejection of
+  stale objects. Fix cross-unit line-table lookup and preserve the throwing
+  source site when runtime helpers are inlined. Executable exact-line checks
+  passed with and without LTO; caller object bytes matched at one/two workers.
+- [x] Certify compiler-created tuple/array-adapter descriptors for shared
+  ownership while retaining rejection of ordinary duplicate strong symbols.
+  The first real managed-runtime boundary caught these missing certificates;
+  the corrected multi-unit executable links and runs.
+- [x] Implement static auto-property initialization using the same owned,
+  source-scoped helper path as fields. The multi-unit runtime fixture verifies
+  two partial files' aliases, static properties, instance initialization and
+  exactly one static-constructor invocation. Evidence for these focused gates:
+  build/logs/20260918-162754-47be25bf8c4e4740bd269e8a828af0e1/.
+  These checks do not certify full interface/generic/async separate compilation.
 
 - [x] Verify the new indexed IR archive and persistent backend milestone:
   payload/metadata integrity, complete function/data round trips, bounded
