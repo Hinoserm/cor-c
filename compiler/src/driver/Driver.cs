@@ -654,7 +654,11 @@ public static class Driver
             {
                 return 1;
             }
-            Linker.FlatImage image = Linker.LinkFlat(new[] { (name, flatObj) }, entry, loadBase ?? 0x10000);
+            new TargetContract(Lowering.TlsGs ? 2u : 1u).Attach(flatObj);
+            link[0] = (name, flatObj);
+            TargetContract.Validate(link);
+            Corsac.Lang.Lto.LinkTimeOptimizer.Run(link, !args.Contains("--no-lto") && !args.Contains("--no-opt"));
+            Linker.FlatImage image = Linker.LinkFlat(link, entry, loadBase ?? 0x10000);
             File.WriteAllBytes(output, image.Bytes);
             Console.Error.WriteLine(
                 $"{output}: flat image at 0x{image.Base:x}, {image.Bytes.Length} bytes "

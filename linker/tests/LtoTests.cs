@@ -100,6 +100,8 @@ public static class LtoTests
         new TargetContract(0).Attach(hosted);
         new TargetContract(1).Attach(bare);
         Reject(() => TargetContract.Validate(new[] { ("hosted", hosted), ("bare", bare) }));
+        Reject(() => Linker.Link(new[] { ("hosted", hosted), ("bare", bare) }, "_start"));
+        Reject(() => Linker.LinkFlat(new[] { ("hosted", hosted), ("bare", bare) }, "_start", 0x10000));
         ObjectFile bare2 = Function(43);
         new TargetContract(1).Attach(bare2);
         TargetContract.Validate(new[] { ("bare", bare), ("bare2", bare2) });
