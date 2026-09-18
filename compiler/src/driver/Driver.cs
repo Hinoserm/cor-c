@@ -134,7 +134,10 @@ public static class Driver
               --asm-entry <sym>  an assembled object owns _start: name the
                                  COR-C# entry stub <sym>, and leave clearing
                                  .bss and setting the stack to that object
-              --cpu <name>       the processor to assume (486, 586, ...)
+              --cpu <name>       ISA profile: 486 (default), pentium, pentium-mmx, k6, k6-2, k6-3, k6-3+
+              --tune <name>      optimization preferences without enabling additional instructions
+              --disable-mmx     exclude MMX and its dependent 3DNow! instruction families
+              --disable-3dnow   exclude 3DNow! while retaining MMX
               --tag <text>       name and version the image carries in a
                                  .corsac.tag note, for the bootloader's menu
               --flat             write a flat binary rather than an ELF file:
@@ -199,7 +202,7 @@ public static class Driver
         {
             if (args[i].StartsWith('-'))
             {
-                if (args[i] is "-o" or "--target")
+                if (args[i] is "-o" or "--target" or "--cpu" or "--tune" or "--fpu")
                 {
                     i++;
                 }
@@ -225,7 +228,7 @@ public static class Driver
         int bits = targetName == "x86-32" ? 32 : 16;
         bool asObject = args.Contains("--obj");
         string output = Value(args, "-o") ?? Path.ChangeExtension(files[0], asObject ? ".o" : ".bin");
-        Corsac.Asm.X86Assembler.Result result = Corsac.Asm.X86Assembler.AssembleFile(files[0], bits, asObject);
+        Corsac.Asm.X86Assembler.Result result = Corsac.Asm.X86Assembler.AssembleFile(files[0], bits, asObject, X86Cpu.Parse(args));
         if (asObject)
         {
             File.WriteAllBytes(output, ElfWriter.WriteObject(result.Object!));
@@ -289,7 +292,7 @@ public static class Driver
             if (args[i].StartsWith('-'))
             {
                 if (args[i] is "-o" or "--target" or "--entry" or "--link-shared" or "--base" or "--tag"
-                    or "--load" or "--paddr" or "--cpu" or "--with" or "--asm-entry"
+                    or "--load" or "--paddr" or "--cpu" or "--tune" or "--fpu" or "--with" or "--asm-entry"
                     or "--ref" or "--libdir" or "--runpath" or "--trace-opt" or "--batch-without"
                     or "-D" or "--define" or "--jobs" or "--decl-index" or "--assembly" or "--dependency-file" or "--main-type")
                 {
@@ -313,15 +316,11 @@ public static class Driver
         }
         Target.Current = target;
 
-        // Recorded, not acted on: see Target.Cpu.
-        if (Value(args, "--cpu") is { } cpu)
-        {
-            if (cpu is not ("386" or "486" or "586" or "pentium" or "686"))
-            {
-                return Fail($"--cpu '{cpu}': this compiler knows 386, 486, 586/pentium and 686");
-            }
-            target.Cpu = cpu == "pentium" ? "586" : cpu;
-        }
+        X86Cpu profile = X86Cpu.Parse(args);
+        if (profile.Fpu == "none") return Fail("Software floating-point lowering is not yet complete; --fpu=none native compilation is not available yet");
+        if (profile.Name == "386") return Fail("The 386 backend instruction/runtime audit is not yet complete");
+        target.Cpu = profile.Name;
+        target.X86Profile = profile;
 
         // Bare metal: no operating system under the program, and therefore a
         // different platform library, no thread scheduler, and an entry stub

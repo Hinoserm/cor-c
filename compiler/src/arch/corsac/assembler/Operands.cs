@@ -8,6 +8,7 @@ internal enum OperandKind
     Register,
     Segment,
     Control,
+    Mmx,
     Memory,
     Immediate,
     FarPointer,
@@ -84,7 +85,10 @@ internal static class Operands
     /// <summary>True when the text names a register of any kind.</summary>
     public static bool IsRegisterName(string name)
         => Find(Reg8, name) >= 0 || Find(Reg16, name) >= 0 || Find(Reg32, name) >= 0
-           || Find(SegReg, name) >= 0 || ControlNumber(name) >= 0;
+           || Find(SegReg, name) >= 0 || ControlNumber(name) >= 0 || MmxNumber(name) >= 0;
+
+    private static int MmxNumber(string name)
+        => name.Length == 3 && name.StartsWith("mm") && name[2] >= '0' && name[2] <= '7' ? name[2] - '0' : -1;
 
     private static int ControlNumber(string name)
         => name switch { "cr0" => 0, "cr1" => 1, "cr2" => 2, "cr3" => 3, "cr4" => 4, _ => -1 };
@@ -105,7 +109,7 @@ internal static class Operands
         while (true)
         {
             string lower = Lower(FirstWord(rest));
-            int size = lower switch { "byte" => 1, "word" => 2, "dword" => 4, _ => 0 };
+            int size = lower switch { "byte" => 1, "word" => 2, "dword" => 4, "qword" => 8, _ => 0 };
             if (size == 0)
             {
                 break;
@@ -135,6 +139,14 @@ internal static class Operands
         }
 
         string name = Lower(rest);
+
+        int mm = MmxNumber(name);
+        if (mm >= 0)
+        {
+            if (op.SizeGiven && op.Size != 8) throw new AsmException(file, line, "MMX registers are 64 bits");
+            op.Kind = OperandKind.Mmx; op.Reg = mm; op.Size = 8;
+            return op;
+        }
 
         int r = Find(Reg8, name);
         if (r >= 0)

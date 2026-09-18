@@ -212,6 +212,19 @@ internal sealed class Selector
 
     private void Fstp(VReg d) => EmitW(MOp.Fstp, FWidth(d.Type), FHome(d));
 
+    private static MMem Displaced(MMem source, int delta) => new(source.Base, source.Disp + delta)
+    { Index = source.Index, Scale = source.Scale, Symbol = source.Symbol, Reloc = source.Reloc, Label = source.Label, IsSpill = source.IsSpill };
+
+    // Copy bits, not numbers: this also preserves signaling-NaN payloads and
+    // avoids touching x87 state for ordinary same-width floating-point moves.
+    private void CopyFloatBits(MMem destination, MMem source, int bytes)
+    {
+        MReg low = Temp(); Mov(low, source);
+        if (bytes == 4) { Mov(destination, low); return; }
+        MReg high = Temp(); Mov(high, Displaced(source, 4));
+        Mov(destination, low); Mov(Displaced(destination, 4), high);
+    }
+
     /// <summary>The memory an address operand plus displacement names.</summary>
     private MMem Address(Operand addr, long offset)
     {
@@ -659,8 +672,7 @@ internal sealed class Selector
                 {
                     break;
                 }
-                Fld(src);
-                Fstp(d);
+                CopyFloatBits(FHome(d), FHome(src), FWidth(d.Type));
                 break;
         }
     }
@@ -1587,6 +1599,7 @@ internal sealed class Selector
         MMem m = Address(i.Operands[0], i.Offset);
         if (d.Type.IsFloat())
         {
+            if (i.Size == FWidth(d.Type)) { CopyFloatBits(FHome(d), m, i.Size); return; }
             EmitW(MOp.Fld, i.Size, m);
             Fstp(d);
             return;
@@ -1608,7 +1621,7 @@ internal sealed class Selector
                     Error("8-byte load into a 32-bit register");
                     return;
                 }
-                MMem m4 = new(m.Base, m.Disp + 4) { Symbol = m.Symbol };
+                MMem m4 = Displaced(m, 4);
                 // Load the half that is not the base register last, so the
                 // address survives until both halves are read.
                 if (m.Base is not null && m.Base.Id == lo.Id)
@@ -1647,6 +1660,7 @@ internal sealed class Selector
         Operand v = i.Operands[1];
         if (v.Type.IsFloat())
         {
+            if (i.Size == FWidth(v.Type)) { CopyFloatBits(m, FHome(v), i.Size); return; }
             Fld(v);
             EmitW(MOp.Fstp, i.Size, m);
             return;
@@ -1675,7 +1689,7 @@ internal sealed class Selector
             {
                 (MOperand lo, MOperand hi) = PairRM(v);
                 Mov(m, lo);
-                Mov(new MMem(m.Base, m.Disp + 4) { Symbol = m.Symbol }, hi);
+                Mov(Displaced(m, 4), hi);
                 break;
             }
             default:

@@ -28,7 +28,7 @@ namespace Corsac.Asm;
 /// benefit is that a boot sector's byte count is a fact rather than a fixpoint.
 /// Write <c>jmp short</c> where the two bytes matter.
 /// </summary>
-public sealed class X86Assembler : ISymbols
+public sealed partial class X86Assembler : ISymbols
 {
     /// <summary>The result: a flat binary and the entry address <c>.entry</c> named.</summary>
     public sealed class Result
@@ -47,12 +47,12 @@ public sealed class X86Assembler : ISymbols
     }
 
     /// <summary>Assembles <paramref name="source"/>, read from <paramref name="path"/>.</summary>
-    public static Result Assemble(string source, string path, string? baseDir = null, int bits = 16, bool asObject = false)
-        => new X86Assembler(bits, asObject).Run(source, path, baseDir);
+    public static Result Assemble(string source, string path, string? baseDir = null, int bits = 16, bool asObject = false, Corsac.Lang.X86.X86Cpu? cpu = null)
+        => new X86Assembler(bits, asObject, cpu).Run(source, path, baseDir);
 
-    public static Result AssembleFile(string path, int bits = 16, bool asObject = false)
+    public static Result AssembleFile(string path, int bits = 16, bool asObject = false, Corsac.Lang.X86.X86Cpu? cpu = null)
         => Assemble(File.ReadAllText(path), Path.GetFileName(path),
-                    Path.GetDirectoryName(Path.GetFullPath(path)), bits, asObject);
+                    Path.GetDirectoryName(Path.GetFullPath(path)), bits, asObject, cpu);
 
     // ---- state -------------------------------------------------------------
 
@@ -114,8 +114,11 @@ public sealed class X86Assembler : ISymbols
     private string _file = "<source>";
     private int _line;
 
-    private X86Assembler(int bits, bool asObject)
+    private readonly Corsac.Lang.X86.X86Cpu _cpu;
+
+    private X86Assembler(int bits, bool asObject, Corsac.Lang.X86.X86Cpu? cpu)
     {
+        _cpu = cpu ?? Corsac.Lang.X86.X86Cpu.Parse(Array.Empty<string>());
         _defaultBits = bits;
         _object = asObject;
         _sec = new Sec { Name = ".text", Kind = SectionKind.Code };
@@ -1092,7 +1095,7 @@ public sealed class X86Assembler : ISymbols
 
     private void EmitRM(int reg, Operand rm)
     {
-        if (rm.Kind is OperandKind.Register or OperandKind.Segment or OperandKind.Control)
+        if (rm.Kind is OperandKind.Register or OperandKind.Segment or OperandKind.Control or OperandKind.Mmx)
         {
             Emit((byte)(0xC0 | ((reg & 7) << 3) | (rm.Reg & 7)));
             return;
@@ -1308,7 +1311,9 @@ public sealed class X86Assembler : ISymbols
     };
 
     private static bool IsMnemonic(string word)
-        => Mnemonics.Contains(word) || (word.StartsWith('j') && word.Length > 1 && ConditionCode(word[1..]) >= 0);
+        => Mnemonics.Contains(word) || MmxOpcodes.ContainsKey(word) || ThreeDNowOpcodes.ContainsKey(word)
+            || word is "cpuid" or "rdtsc" or "rdmsr" or "wrmsr" or "rsm" or "cmpxchg8b" or "prefetch" or "prefetchw" or "emms" or "femms" or "movd" or "movq"
+            || (word.StartsWith('j') && word.Length > 1 && ConditionCode(word[1..]) >= 0);
 
     private void Instruction(string mn, string rest)
     {
@@ -1333,6 +1338,8 @@ public sealed class X86Assembler : ISymbols
         }
 
         string[] a = Split(rest);
+
+        if (ExtendedInstruction(mn, a)) return;
 
         switch (mn)
         {

@@ -12,6 +12,7 @@ and this index rather than creating a directory per topic.
 | [SEPARATE-COMPILATION.md](SEPARATE-COMPILATION.md) | Managed metadata, compiler/linker/runtime ownership, LTO and bare-metal builds |
 | [DECLARATION-INDEX.md](DECLARATION-INDEX.md) | Bounded declaration storage, source fragments, fingerprints and lookup |
 | [X86-BACKEND.md](X86-BACKEND.md) | x86 code generation, ABI and runtime mechanisms |
+| [X86-CPU-PROFILES.md](X86-CPU-PROFILES.md) | CPU/FPU selection, instruction coverage and remaining acceptance |
 | [DOTNET-LIBRARY.md](DOTNET-LIBRARY.md) | Standard-library surface and compatibility status |
 | [SELFHOST.md](SELFHOST.md) | Native self-compilation workflow and historical findings |
 | [LANGUAGE-TESTS.md](LANGUAGE-TESTS.md) | Test format, running tests and coverage guide |

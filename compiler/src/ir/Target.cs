@@ -19,11 +19,10 @@ public sealed class Target
     public required string Name { get; init; }
 
     /// <summary>
-    /// The processor within the family, from `--cpu`. Recorded rather than
-    /// acted on: everything the backend emits today runs on a 486, and the
-    /// first instruction that does not will ask this before emitting it.
+    /// The processor within the family, from `--cpu`.
     /// </summary>
     public string Cpu { get; set; } = "486";
+    public global::Corsac.Lang.X86.X86Cpu X86Profile { get; set; } = global::Corsac.Lang.X86.X86Cpu.Parse(Array.Empty<string>());
 
     /// <summary>Bytes in a machine word: the size of a reference or pointer.</summary>
     public required int WordSize { get; init; }
