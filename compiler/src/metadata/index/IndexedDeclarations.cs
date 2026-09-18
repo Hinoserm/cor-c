@@ -53,7 +53,12 @@ public sealed class IndexedDeclarations : IDisposable
         // type reference to trigger ordinary declaration discovery. Load only
         // their headers, not the implementation bodies or entire library files.
         foreach (string name in new[] { "Runtime", "String", "Boolean", "Byte", "SByte", "Int16", "UInt16",
-            "Int32", "UInt32", "Int64", "UInt64", "Single", "Double", "Char" }) Require(name);
+            "Int32", "UInt32", "Int64", "UInt64", "Single", "Double", "Char" })
+        {
+            queries.Add("B:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + name);
+            string? key = catalog.BindingKey(assembly, name);
+            if (key is not null && !loaded.Contains(key)) Include(key);
+        }
         // A partial declaration cannot be bound from just the locally owned
         // fragment. Demand its family before entering body binding.
         foreach (TypeDecl type in unit.Types.Where(type => type.Mods.HasFlag(Mods.Partial)))
