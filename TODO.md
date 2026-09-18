@@ -106,11 +106,18 @@ tasks below track that work; moving files alone does not reduce the working set.
 
 ## Demand-loaded declarations, not a whole-project metadata graph
 
-- [ ] Verify the new indexed IR archive and persistent backend milestone:
+- [x] Verify the new indexed IR archive and persistent backend milestone:
   payload/metadata integrity, complete function/data round trips, bounded
   imports, cross-object argument inlining and constant propagation, native
   execution, disabled/budget-limited modes, and stripped final IR notes.
   Private dependency-closure imports and memory-aware concurrent backends remain.
+  All nine default groups passed at f6f9107, including executable IR inlining and
+  smaller native text; logs: build/logs/20260918-144752-19120d49a7614350894efb744e8a63d8/.
+- [ ] Verify actual CORSAC stage2/kernel split linking and a 486/ISA boot.
+  The new `test/corsac-boot` target snapshots the OS's committed source, builds
+  fresh static login/shell utilities, and retains exact symbols/provenance and
+  serial/QEMU diagnostics. It does not modify another developer's checkout or
+  saved image. This fixture is a boot gate, not full OS regression acceptance.
 
 - [x] Verify the new disk-backed declaration-index storage milestone: bounded
   external sorting, exact/prefix lookup, partial fragments, deterministic output,

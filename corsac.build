@@ -96,6 +96,11 @@
         <Environment Name="CORC" Value="$(Compiler)" /><Environment Name="CORLINK" Value="$(Linker)" />
       </Test>
     </Target>
+    <Target Name="corsac-boot" DependsOnTargets="/compiler" Description="Boot an actual CORSAC source snapshot with separately linked stage2 and kernel">
+      <Script Interpreter="bash" File="tests/integration/corsac-boot.sh" Workers="auto" Timeout="00:20:00">
+        <Environment Name="CORC" Value="$(Compiler)" /><Environment Name="CORLINK" Value="$(Linker)" />
+      </Script>
+    </Target>
     <Target Name="language" DependsOnTargets="/compiler">
       <Test Name="language" Executable="bash" Timeout="01:00:00">
         <Argument Value="tests/language/run.sh" />

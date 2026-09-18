@@ -1,0 +1,3 @@
+timeout 1
+default init
+init /boot/kernel console=ttyS0,115200n8 getty=ttyS0 root=/dev/hda1 ro init=/bin/init
