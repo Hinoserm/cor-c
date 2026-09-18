@@ -125,6 +125,11 @@ tasks below track that work; moving files alone does not reduce the working set.
   at e101c50; logs: build/logs/20260918-131514-7bedac7ab133481eaf5806dde23ea7d2/.
 - [ ] Verify compact project-wide interface reservations and managed layout/
   method ABI consistency contracts before extending generic and partial ownership.
+  All eight groups passed at ab60933; logs:
+  build/logs/20260918-133528-fce8e9d4d33c4dfe93bb8eab32ac8019/.
+- [ ] Verify indexed template-body imports, ordinary-body omission, namespaced
+  specialization identities and consumer-owned generic method code. Multi-unit
+  specialization ownership/deduplication and partial ownership still remain.
 - [ ] Do not retain a full declaration footprint for every class in every file.
 - [ ] Maintain a compact disk-backed index from qualified type names to the
   locations of their declaration records. Access to the index itself must be

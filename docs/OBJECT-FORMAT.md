@@ -42,12 +42,15 @@ ordinary object and independent-unit compatibility are not yet guaranteed.
 
 ## Separate-compilation extension work
 
-### Native ABI contract, version 1
+### Native ABI contract, version 2
 
-.corsac.abi is a 24-byte non-loadable section: four magic bytes CABI followed
-by five little-endian uint32 values: version 1, pointer size 4, baseline CPU 486,
+.corsac.abi is a 28-byte non-loadable section: four magic bytes CABI followed
+by six little-endian uint32 values: version 2, pointer size 4, baseline CPU 486,
 calling convention 1 (i386 cdecl with x87 floating returns), and TLS/platform
-model (0 hosted Linux GS, 1 bare-metal static block, 2 bare-metal GS). corlink
+model (0 hosted Linux GS, 1 bare-metal static block, 2 bare-metal GS), and required
+metadata flags. Flag 1 requires `.corsac.layout`; all other bits are rejected.
+Compiler-produced objects set flag 1. Version 1 objects must be rebuilt, so an
+older linker cannot silently ignore new managed layout requirements. corlink
 rejects incompatible models and unknown contracts before LTO or output creation.
 Native assembly/C objects may omit this managed-compiler contract; omission is
 not permission to invent managed type identity. Assembly/type metadata remains

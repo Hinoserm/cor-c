@@ -22,6 +22,7 @@ public sealed class Monomorphiser
     private readonly Dictionary<string, TypeDecl> _made = new(StringComparer.Ordinal);
     private readonly List<CompileError> _errors = new();
     private readonly string _file;
+    private readonly Action<string>? _requireDeclaration;
     private readonly Queue<Job> _pending = new();
 
     /// <summary>One specialisation waiting to be made.</summary>
@@ -82,9 +83,10 @@ public sealed class Monomorphiser
 
     public IReadOnlyList<CompileError> Errors => _errors;
 
-    public Monomorphiser(string file)
+    public Monomorphiser(string file, Action<string>? requireDeclaration = null)
     {
         _file = file;
+        _requireDeclaration = requireDeclaration;
     }
 
     /// <summary>
@@ -122,9 +124,10 @@ public sealed class Monomorphiser
     public static CompilationUnit Expand(CompilationUnit unit, string file, out IReadOnlyList<CompileError> errors)
         => Expand(unit, file, false, out errors);
 
-    public static CompilationUnit Expand(CompilationUnit unit, string file, bool library, out IReadOnlyList<CompileError> errors)
+    public static CompilationUnit Expand(CompilationUnit unit, string file, bool library, out IReadOnlyList<CompileError> errors,
+        Action<string>? requireDeclaration = null)
     {
-        Monomorphiser m = new(file) { _library = library };
+        Monomorphiser m = new(file, requireDeclaration) { _library = library };
         CompilationUnit result = m.Run(unit);
         errors = m._errors;
         return result;
@@ -190,11 +193,6 @@ public sealed class Monomorphiser
         // Corsac is Corsac.Lang.TypeRef, and taking it as written mangled
         // `List<Lang.TypeRef>` and `List<Corsac.Lang.TypeRef>` into two names
         // for one type -- which then would not convert to each other.
-        if (_paths.Contains(name))
-        {
-            return name;
-        }
-
         // OUTWARDS FROM WHERE IT WAS WRITTEN, and then from the namespace it
         // was written in -- the same walk the checker makes, and it has to be
         // the same or a type argument is mangled under one name and looked for
@@ -312,7 +310,7 @@ public sealed class Monomorphiser
         // and Func`3; the backtick is the only part not worth copying.
         foreach (TypeDecl t in unit.Types.Where(t => t.TypeParams.Count > 0))
         {
-            _generic[Arity(t.Name, t.TypeParams.Count)] = t;
+            _generic[Arity(TemplatePath(t), t.TypeParams.Count)] = t;
         }
 
         // WHICH NAMES ARE A MACHINE WORD, gathered before anything is
@@ -358,7 +356,7 @@ public sealed class Monomorphiser
             _made[t.Name] = t;
         }
 
-        if (_generic.Count == 0)
+        if (_generic.Count == 0 && _requireDeclaration is null)
         {
             return unit;
         }
@@ -372,7 +370,7 @@ public sealed class Monomorphiser
         // library the one copy that was going to exist somewhere anyway.
         if (_library)
         {
-            foreach (TypeDecl t in unit.Types.Where(t => t.TypeParams.Count > 0 && !t.External))
+            foreach (TypeDecl t in unit.Types.Where(t => t.TypeParams.Count > 0 && !t.External && !t.Elsewhere))
             {
                 Canonicalise(t);
             }
@@ -446,11 +444,15 @@ public sealed class Monomorphiser
             made.External = job.External;
             made.Canon = job.Canon;
             made.Specialised = true;
+            // Specializations have globally unique generated names. Keep the
+            // original namespace/using scope for checking their bodies, but
+            // do not prefix the generated key with the namespace a second time.
+            made.Outer = null;
 
             // WHAT IT WAS MADE FROM, so the checker can find its way back:
             // `List$Node` is `List` applied to `Node`, and a generic method
             // declared over `List<T>` works out that T is Node by asking.
-            made.Template = job.Template.Name;
+            made.Template = TemplatePath(job.Template);
             made.TemplateArgs.AddRange(job.Args);
 
             if (job.External)
@@ -478,7 +480,7 @@ public sealed class Monomorphiser
             .Select(p => new TypeRef { Name = CanonName, Line = template.Line, Col = template.Col })
             .ToList();
 
-        string name = MangledName(template.Name, canonArgs);
+        string name = MangledName(TemplatePath(template), canonArgs);
 
         if (_claimed.Add(name))
         {
@@ -527,7 +529,7 @@ public sealed class Monomorphiser
 
     /// <summary>The name a specialisation gets. Readable on purpose: it appears in diagnostics.</summary>
     internal static string MangledName(string baseName, List<TypeRef> args)
-        => baseName + "$" + string.Join("$", args.Select(a => a.ToString()
+        => baseName.Replace(".", "$") + "$" + string.Join("$", args.Select(a => a.ToString()
             .Replace("<", "_").Replace(">", "").Replace(", ", "_")
             // A NESTED ARGUMENT KEEPS ITS OUTER, spelled with the separator
             // this name already uses: the dot is how a nested type is KEYED,
@@ -537,6 +539,47 @@ public sealed class Monomorphiser
 
     /// <summary>How a generic template is keyed: its name and how many type parameters it takes.</summary>
     private static string Arity(string name, int count) => name + "`" + count;
+
+    private static string TemplatePath(TypeDecl type)
+        => type.Outer is null ? type.Name : type.Outer + "." + type.Name;
+
+    private string? GenericPath(string name, int arity, Node location)
+    {
+        bool Candidate(string candidate)
+        {
+            string key = Arity(candidate, arity);
+            if (_generic.ContainsKey(key)) return true;
+            _requireDeclaration?.Invoke(key);
+            return false;
+        }
+        string? Imports(string scope)
+        {
+            if (_usings is null) return null;
+            foreach (var alias in _usings.Aliases)
+                if (alias.In == scope && alias.Alias == name && Candidate(alias.Target)) return alias.Target;
+            string? found = null;
+            foreach (var import in _usings.Imports)
+            {
+                if (import.In != scope) continue;
+                string candidate = import.Namespace + "." + name;
+                if (!Candidate(candidate)) continue;
+                if (found is not null && found != candidate)
+                    throw new CompileError(_file, location.Line, location.Col, "ambiguous generic type '" + name + "': " + found + " or " + candidate);
+                found = candidate;
+            }
+            return found;
+        }
+        foreach (string from in new[] { _scope, _inNamespace })
+            for (string scope = from; scope.Length > 0; )
+            {
+                string candidate = scope + "." + name;
+                if (Candidate(candidate)) return candidate;
+                if (Imports(scope) is { } imported) return imported;
+                int dot = scope.LastIndexOf('.'); scope = dot < 0 ? "" : scope[..dot];
+            }
+        if (Candidate(name)) return name;
+        return Imports("");
+    }
 
     /// <summary>
     /// What the canonical copy of a template is called.
@@ -562,6 +605,9 @@ public sealed class Monomorphiser
         // Assembler.Section.
         args = args.Select(Qualify).ToList();
 
+        string writtenName = name;
+        name = GenericPath(name, args.Count, at) ?? Path(name);
+
         if (!_generic.TryGetValue(Arity(name, args.Count), out TypeDecl? template))
         {
             // NAMED, BUT NOT AT THIS ARITY. Worth telling apart from a name
@@ -578,7 +624,7 @@ public sealed class Monomorphiser
                 _errors.Add(new CompileError(_file, at.Line, at.Col,
                     $"'{name}' takes {had} type argument(s), not {args.Count}"));
             }
-            return name;
+            return writtenName;
         }
 
         string mangled = MangledName(name, args);
@@ -940,7 +986,7 @@ public sealed class Monomorphiser
             // emitted beside List would make the collections library depend
             // on the file system's.
             Elsewhere = d.Elsewhere && d.TypeParams.Count == 0,
-            SignatureOnly = d.SignatureOnly,
+            SignatureOnly = d.SignatureOnly && d.TypeParams.Count == 0,
             LibSlot = d.LibSlot,
 
             // WHAT IT WAS MADE FROM SURVIVES BEING COPIED AGAIN.

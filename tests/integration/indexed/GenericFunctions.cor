@@ -1,0 +1,6 @@
+namespace GenericLib;
+public static class Functions
+{
+    public static T Identity<T>(T value) { return value; }
+    public static int Unused() { int value = 99; return value; }
+}

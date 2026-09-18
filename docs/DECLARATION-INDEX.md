@@ -116,9 +116,12 @@ mutated AST state; this is bounded by the unit and demanded declarations but
 still has avoidable repeated parsing work.
 
 Imported signatures carry an explicit SignatureOnly marker. Their placeholder
-bodies are neither checked as implementation nor emitted. The initial path
-rejects indexed generic implementation imports explicitly; generic body fetching,
-cross-file partial ownership, extension discovery and stable dispatch/layout
+bodies are neither checked as implementation nor emitted. Generic imports now
+fetch the recorded source generation using a template-only parser mode: generic
+type and method implementations are retained, ordinary method bodies are skipped.
+Demand discovery also runs during specialization, and namespaced templates have
+distinct generated identities. Cross-file partial ownership, duplicate-safe
+generic ownership, extension discovery and complete dispatch/layout
 contracts remain subsequent stages. Default library-source loading is unchanged
 until library indexes and implicit runtime dependencies are integrated. This
 path is not yet a complete project compiler.

@@ -58,6 +58,15 @@ public static class SourceIndexTests
         CompilationUnit declarations = Parser.ParseText(large, declarationsOnly: true);
         Require(declarations.Types.Single().Members.OfType<MethodDecl>().Single().Body!.Statements.Count == 0,
             "declaration parser retained a large implementation AST");
+        CompilationUnit templates = Parser.ParseText("class Methods { static int Ordinary() { return 3; } static T Generic<T>(T value) { return value; } } class Box<T> { T Read(T value) { return value; } }",
+            declarationsOnly: true, includeTemplateBodies: true);
+        TypeDecl methods = templates.Types.Single(type => type.Name == "Methods");
+        Require(methods.Members.OfType<MethodDecl>().Single(method => method.Name == "Ordinary").Body!.Statements.Count == 0,
+            "template import retained an ordinary body");
+        Require(methods.Members.OfType<MethodDecl>().Single(method => method.Name == "Generic").Body!.Statements.Count == 1,
+            "generic method implementation omitted");
+        Require(templates.Types.Single(type => type.Name == "Box").Members.OfType<MethodDecl>().Single().Body!.Statements.Count == 1,
+            "generic type implementation omitted");
         Console.WriteLine("  source declarations: scopes, partials, nested arity, lazy bodies, fingerprints and body omission passed");
     }
 

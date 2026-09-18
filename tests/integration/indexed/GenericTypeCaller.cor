@@ -1,0 +1,5 @@
+using GenericLib;
+static class Program
+{
+    static int Main() => Box<int>.Echo(42);
+}

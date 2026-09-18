@@ -1,0 +1,5 @@
+namespace GenericLib;
+public static class Box<T>
+{
+    public static T Echo(T value) => value;
+}

@@ -126,7 +126,7 @@ public static class Frontend
         MergePartialTypes(unit);
 
         IReadOnlyList<CompileError> generic;
-        unit = Monomorphiser.Expand(unit, name, library, out generic);
+        unit = Monomorphiser.Expand(unit, name, library, out generic, declarations is null ? null : declarations.Require);
 
         if (Report(generic))
         {
@@ -157,7 +157,7 @@ public static class Frontend
             // until the replacement binding returns doubles graph pressure.
             bound.ReleaseForRebind();
 
-            unit = Monomorphiser.Expand(unit, name, library, out generic);
+            unit = Monomorphiser.Expand(unit, name, library, out generic, declarations is null ? null : declarations.Require);
 
             if (Report(generic))
             {

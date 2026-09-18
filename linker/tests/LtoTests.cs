@@ -120,6 +120,9 @@ public static class LtoTests
         Reject(() => Linker.LinkFlat(new[] { ("a", layoutA), ("mismatch", mismatch) }, "_start", 0x10000));
         layoutB.Section(ManagedLayoutContract.SectionName).Bytes[4] = 99;
         Reject(() => ManagedLayoutContract.Validate(new[] { ("b", layoutB) }));
+        ObjectFile missingLayout = Caller();
+        new TargetContract(0, requiresManagedLayouts: true).Attach(missingLayout);
+        Reject(() => TargetContract.Validate(new[] { ("missing", missingLayout) }));
         Console.WriteLine("  LTO metadata, scope, rejection, static/flat/physical-link checks passed");
     }
 }

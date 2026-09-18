@@ -438,7 +438,7 @@ public sealed partial class Lowering
 
     /// <summary>Whether a method lives in another image and is an import here.</summary>
     private static bool IsExternal(MethodSymbol m)
-        => m.Owner.Decl?.External == true && !(m.Owner.Decl?.Specialised == true);
+        => m.Owner.Decl?.External == true && !(m.Owner.Decl?.Specialised == true || m.Decl?.LocalCopy == true);
 
     private void Require(MethodSymbol call)
     {
@@ -463,7 +463,7 @@ public sealed partial class Lowering
         && (m.Owner.Name.StartsWith("ArrayView$", StringComparison.Ordinal)
             || m.Owner.Name.StartsWith("ArrayEnumerator$", StringComparison.Ordinal))
         || m.Decl?.Body != null && m.Decl.File != "<prelude>"
-        && !IsExternal(m) && m.Owner.Decl?.Elsewhere != true && m.Owner.Decl?.Canon is null
+        && !IsExternal(m) && (m.Owner.Decl?.Elsewhere != true || m.Decl?.LocalCopy == true) && m.Owner.Decl?.Canon is null
         && m.Owner.Decl?.TypeParams.Count is null or 0
         && m.Decl?.TypeParams.Count is null or 0;
 

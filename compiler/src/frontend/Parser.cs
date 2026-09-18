@@ -18,6 +18,10 @@ public sealed class Parser
     private readonly List<Token> _t;
     private readonly string _file;
     private readonly bool _declarationsOnly;
+    private readonly bool _includeTemplateBodies;
+    private int _templateDepth;
+    private bool _templateMethod;
+    private bool SkipImplementation => _declarationsOnly && !(_includeTemplateBodies && (_templateDepth > 0 || _templateMethod));
     /// <summary>Source ranges omitted by declaration-only parsing; end is exclusive.</summary>
     public List<(int From, int To, bool Block)> OmittedBodies { get; } = new();
     private int _i;
@@ -51,16 +55,17 @@ public sealed class Parser
     /// read that turns out not to be a type can put them back.
     private readonly List<(int At, Token Was)> _splits = new();
 
-    public Parser(List<Token> tokens, string file = "<source>", bool declarationsOnly = false)
+    public Parser(List<Token> tokens, string file = "<source>", bool declarationsOnly = false, bool includeTemplateBodies = false)
     {
         _t = tokens;
         _file = file;
         _declarationsOnly = declarationsOnly;
+        _includeTemplateBodies = includeTemplateBodies;
     }
 
     public static CompilationUnit ParseText(string source, string file = "<source>",
-                                            IReadOnlyCollection<string>? symbols = null, bool declarationsOnly = false)
-        => new Parser(Lexer.Tokenize(source, file, 1, 1, symbols), file, declarationsOnly).ParseUnit();
+                                            IReadOnlyCollection<string>? symbols = null, bool declarationsOnly = false, bool includeTemplateBodies = false)
+        => new Parser(Lexer.Tokenize(source, file, 1, 1, symbols), file, declarationsOnly, includeTemplateBodies).ParseUnit();
 
     // ---- token helpers --------------------------------------------------
 
@@ -1090,6 +1095,13 @@ public sealed class Parser
 
     private TypeDecl ParseTypeDecl()
     {
+        int saved = _templateDepth;
+        try { return ParseTypeDeclCore(); }
+        finally { _templateDepth = saved; }
+    }
+
+    private TypeDecl ParseTypeDeclCore()
+    {
         Token start = Cur;
         Mods mods = ParseMods();
 
@@ -1150,6 +1162,7 @@ public sealed class Parser
         _typePath = outer.Length == 0 ? name : outer + "." + name;
 
         ParseTypeParams(decl.TypeParams);
+        if (decl.TypeParams.Count > 0) _templateDepth++;
 
         // THE POSITIONAL PARAMETERS, which are the whole point of a record: a
         // list of things it holds, written once, becoming both a constructor
@@ -2002,6 +2015,14 @@ public sealed class Parser
 
     private MethodDecl FinishMethod(MethodDecl m, CtorInit? init = null)
     {
+        bool saved = _templateMethod;
+        _templateMethod = m.TypeParams.Count > 0;
+        try { return FinishMethodCore(m, init); }
+        finally { _templateMethod = saved; }
+    }
+
+    private MethodDecl FinishMethodCore(MethodDecl m, CtorInit? init)
+    {
         Block? body = null;
 
         if (At(Tok.LBrace))
@@ -2634,7 +2655,7 @@ public sealed class Parser
         Token at = Expect(Tok.LBrace, "'{'");
         Block block = new() { Line = at.Line, Col = at.Col };
 
-        if (_declarationsOnly)
+        if (SkipImplementation)
         {
             int depth = 1;
             while (depth > 0)
@@ -2659,7 +2680,7 @@ public sealed class Parser
 
     private Expr ReadBodyExpression()
     {
-        if (!_declarationsOnly) return ParseExpr();
+        if (!SkipImplementation) return ParseExpr();
         Token start = Cur;
         Stack<Tok> close = new();
         while (!At(Tok.Semi) || close.Count != 0)

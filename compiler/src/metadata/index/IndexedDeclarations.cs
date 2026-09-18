@@ -40,7 +40,13 @@ public sealed class IndexedDeclarations : IDisposable
                 CompilationUnit header = Parser.ParseText(source.Text, source.Path, declarationsOnly: true);
                 TypeDecl root = header.Types.OrderBy(type => type.SourceFrom).First();
                 if (root.TypeParams.Count != 0 || root.Members.OfType<MethodDecl>().Any(method => method.TypeParams.Count != 0))
-                    throw new InvalidDataException("Indexed generic implementation import is not implemented yet: " + source.Key);
+                {
+                    // Templates need implementations for specialization. Keep
+                    // unrelated ordinary bodies out of this imported tree.
+                    CompilationUnit templates = Parser.ParseText(source.ReadSource(), source.Path,
+                        source.ConditionalSymbols, declarationsOnly: true, includeTemplateBodies: true);
+                    root = templates.Types.Single(type => type.SourceFrom == source.From && type.SourceTo == source.To);
+                }
                 // Nested declarations have separate index records. Import the
                 // requested declaration only, retaining its own lexical scope.
                 root.Namespace = source.Namespace;

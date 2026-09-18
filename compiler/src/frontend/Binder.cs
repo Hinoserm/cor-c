@@ -1545,7 +1545,6 @@ public sealed partial class Binder
 
     private void CheckBodyItem(TypeDecl declaration, TypeSymbol symbol, int ordinal)
     {
-        if (declaration.SignatureOnly) return;
         _bodyOrdinal = ordinal;
         _closures = 0;
         _in = declaration.File;
@@ -2743,7 +2742,7 @@ public sealed partial class Binder
         {
             _member = md;
 
-            if (md.Body is null)
+            if (md.Body is null || (d.SignatureOnly && !md.LocalCopy))
             {
                 continue;
             }

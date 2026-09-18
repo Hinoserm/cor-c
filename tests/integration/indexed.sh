@@ -23,4 +23,13 @@ if "$corlink" "$work/Caller.o" "$work/different.o" -o "$work/incompatible" 2> "$
 fi
 grep -q 'managed layout.*conflicts' "$work/incompatible.log"
 test ! -e "$work/incompatible"
+"$corc" index --assembly Generics tests/integration/indexed/GenericFunctions.cor tests/integration/indexed/GenericType.cor -o "$work/generics.idx"
+for source in GenericCaller GenericTypeCaller; do
+    "$corc" compile --nostdlib --decl-index "$work/generics.idx" --assembly Generics \
+        "tests/integration/indexed/$source.cor" --obj -o "$work/$source.o" 2> "$work/$source.compile.log"
+    "$corlink" "$work/$source.o" -o "$work/$source" 2> "$work/$source.link.log"
+    status=0
+    "$work/$source" || status=$?
+    test "$status" = 42
+done
 printf 'PASS indexed namespace/alias/qualified consumers and separate linking: %s\n' "$work"
