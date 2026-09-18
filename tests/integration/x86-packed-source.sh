@@ -21,7 +21,8 @@ for profile in 486 pentium pentium-mmx excluded k6-2 k6-3+; do
             if grep -Eq '^[[:space:]]+(paddd|emms|femms)[[:space:]]*' "$work/$profile.asm"; then
                 echo "Unexpected packed instructions for $profile" >&2; exit 1
             fi ;;
-        *) grep -q 'paddd mm' "$work/$profile.asm" ;;
+        *) grep -q 'paddd mm' "$work/$profile.asm"
+           grep -q 'pcmpgtd mm' "$work/$profile.asm" ;;
     esac
     case "$profile" in
         pentium) qemu-i386 -cpu pentium "$work/$profile" ;;

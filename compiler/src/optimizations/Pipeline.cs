@@ -83,6 +83,7 @@ public sealed class Pipeline
         p.Passes.Add(new Peephole());
         p.Passes.Add(new ConstantFold());
         p.Passes.Add(new DeadCodeElimination());
+        p.Passes.Add(new BooleanMaskDiamonds());
         if (experimentalBatch)
         {
             p.Passes.Add(new BitFactSimplify());
