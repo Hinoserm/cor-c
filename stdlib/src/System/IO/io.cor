@@ -116,6 +116,11 @@ abstract class Stream : IDisposable
 
     public virtual void Dispose()
     {
+        Dispose(true);
+    }
+
+    protected virtual void Dispose(bool disposing)
+    {
     }
 }
 

@@ -86,7 +86,9 @@ tasks below track that work; moving files alone does not reduce the working set.
   fixtures passed focused acceptance after implementing missing constructor
   method-group conversion and TextReader/TextWriter.Close. At 21a8209 the
   default ten groups passed (build/logs/20260918-173351-09b8f91cc97f456a8da6adb3526566b4).
-  Full language acceptance and later extension/streaming changes are separate.
+  The full language suite then passed 274/274, including new lifecycle and
+  exception-dispatch fixtures (build/compatibility-language-final.log). Later
+  extension/streaming changes have their own acceptance below.
 
 - [ ] Complete interface contract matching: reject incompatible return/ref
   signatures, compare generic method parameters by position rather than spelling,
@@ -122,10 +124,17 @@ tasks below track that work; moving files alone does not reduce the working set.
   Imported syntax and the bound unit remain separate memory costs, not included
   in the declaration cache accounting.
 
-- [ ] Verify indexed extension-method discovery and namespace-scoped candidate
+- [x] Verify indexed extension-method discovery and namespace-scoped candidate
   lookup (CDIX v3), including rejection of candidates in unimported namespaces.
-- [ ] Verify non-copying LTO archive views and their allocation bound. Native ELF
-  input objects are still resident; this is not complete streamed object I/O.
+  Metadata checks and indexed, IR-LTO and managed-unit integrations passed at
+  f185352 using an isolated host toolchain (build/milestone2-*.log).
+- [x] Verify non-copying LTO archive views and their allocation bound. The linker
+  suite passed 118/118, including a 4 MiB payload whose summary-open allocation
+  stays below 1 MiB. A measured host link saved 8,760 KiB peak RSS with identical
+  output; see docs/BENCHMARKS.md. Native ELF input objects are still resident;
+  this is not complete streamed object I/O.
+- [ ] Verify the subsequent symbol-file split and standard protected
+  Stream.Dispose(bool) override path in the latest combined source.
 - [ ] After the project path works, reorganize the compiler toward one top-level
   class/type per matching source file, following ordinary C# conventions.
 - [ ] Preserve useful partial-class subdivisions. Physical file boundaries must

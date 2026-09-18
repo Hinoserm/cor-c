@@ -1,0 +1,38 @@
+// test: Stream disposal reaches a standard protected Dispose(bool) override
+// expect-exit: 0
+// expect-output:
+// stream disposal ok
+sealed class ProbeStream : Stream
+{
+    public bool Cleaned;
+    public override bool CanRead => false;
+    public override bool CanWrite => false;
+    public override bool CanSeek => false;
+    public override long Length => 0;
+    public override long Position { get { return 0; } set { } }
+    public override void Flush() { }
+    public override int Read(byte[] buffer, int offset, int count) { return 0; }
+    public override void Write(byte[] buffer, int offset, int count) { }
+    public override long Seek(long offset, SeekOrigin origin) { return 0; }
+    public override void SetLength(long length) { }
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) Cleaned = true;
+        base.Dispose(disposing);
+    }
+}
+static class Program
+{
+    static int Main()
+    {
+        ProbeStream first = new ProbeStream();
+        Stream stream = first;
+        stream.Dispose();
+        if (!first.Cleaned) return 1;
+        ProbeStream second = new ProbeStream();
+        second.Close();
+        if (!second.Cleaned) return 2;
+        Console.WriteLine("stream disposal ok");
+        return 0;
+    }
+}

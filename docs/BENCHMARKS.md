@@ -282,3 +282,26 @@ and zero-initialization check passed. Code grew from 8,385 to 15,153 bytes;
 that trade-off needs wider-workload validation and profitability refinement.
 Artifacts: build/perf-specialize/. X25519 vectors also passed at 1.229 s for
 2,000 reusable-workspace operations. Milestone-wide suites remain pending.
+
+### LTO summary views: host linker memory, 2026-09-18
+
+A single before/after host run linked the same managed caller/provider objects
+with `--no-lto`, isolating archive validation and summary loading from backend
+optimization changes. The 13,913,116-byte provider object includes runtime code
+and indexed IR. The earlier linker copied the complete IR payload while opening
+its index; the new linker reads a non-owning section view and hashes the directory
+through an 8 KiB buffer.
+
+| Measurement | Earlier reader | Section-view reader |
+| --- | ---: | ---: |
+| Peak process RSS | 135,224 KiB | 126,464 KiB |
+| Wall time | 0.34 s | 0.35 s |
+| Executable size | 2,304,740 bytes | 2,304,740 bytes |
+
+Peak RSS fell by 8,760 KiB (about 6.5%). The timing difference is not evidence
+of a speed change. Both outputs have SHA-256
+`9bf42c486c1d8bdb3aa8ffc2fb2fa472f8f76d64919a7dca473711eb08de0a82`.
+Evidence: `build/link-memory-before.txt`, `build/link-memory-after.txt`, and
+`build/managed-units.KbqcPg/`. The readers correspond to the 21a8209 and f185352
+source checkpoints. This is a small host-link workload, not compiler
+self-compilation, a whole-toolchain memory ceiling, or a native 486 measurement.
