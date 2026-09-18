@@ -39,6 +39,17 @@ public sealed class DeclarationCatalog : IDisposable
     public DeclarationLease? Acquire(string assembly, string metadataName)
         => AcquireKey("T:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + metadataName);
 
+    public IReadOnlyList<string> ExtensionKeys(string assembly, string space, string method)
+    {
+        lock (gate)
+        {
+            if (disposed) throw new ObjectDisposedException(nameof(DeclarationCatalog));
+            return index.Find("E:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + space + "\n" + method)
+                .Select(record => DeclarationIndex.Utf8.GetString(record.Payload))
+                .Distinct(StringComparer.Ordinal).ToArray();
+        }
+    }
+
     public string? BindingKey(string assembly, string bindingName)
     {
         lock (gate)

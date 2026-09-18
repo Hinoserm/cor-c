@@ -451,6 +451,7 @@ public sealed partial class Binder
     private readonly List<(TypeDecl Decl, TypeSymbol Symbol)> _bodyWork = new();
     private readonly string _file;
     private readonly Action<string>? _requireDeclaration;
+    private readonly Action<string, string>? _requireExtensions;
     private readonly IReadOnlyDictionary<(string Name, int Arity), int>? _indexedInterfaces;
 
     private TypeSymbol? _thisType;
@@ -736,10 +737,12 @@ public sealed partial class Binder
     public int StaticBytes => _staticNext;
 
     public Binder(string file = "<source>", Action<string>? requireDeclaration = null,
-        IReadOnlyDictionary<(string Name, int Arity), int>? indexedInterfaces = null)
+        IReadOnlyDictionary<(string Name, int Arity), int>? indexedInterfaces = null,
+        Action<string, string>? requireExtensions = null)
     {
         _file = file;
         _requireDeclaration = requireDeclaration;
+        _requireExtensions = requireExtensions;
         _indexedInterfaces = indexedInterfaces;
     }
 
@@ -753,9 +756,10 @@ public sealed partial class Binder
     /// the count decides.
     /// </summary>
     public static BindResult Bind(CompilationUnit unit, string file = "<source>", Action<string>? requireDeclaration = null,
-        IReadOnlyDictionary<(string Name, int Arity), int>? indexedInterfaces = null)
+        IReadOnlyDictionary<(string Name, int Arity), int>? indexedInterfaces = null,
+        Action<string, string>? requireExtensions = null)
     {
-        Binder b = new(file, requireDeclaration, indexedInterfaces);
+        Binder b = new(file, requireDeclaration, indexedInterfaces, requireExtensions);
         b.Run(unit);
         b._r = b._r.CopyForBodyChecking();
         b.CheckBodyWork();
@@ -4258,11 +4262,16 @@ public sealed partial class Binder
 
     private List<MethodSymbol> Extension(Type target, string name)
     {
-        List<MethodSymbol> found = new();
-
-        foreach (TypeSymbol holder in _r.Types.Values)
+        TypeDecl? written = (_scope ?? _thisType)?.Decl;
+        string within = _member?.Scope != null ? _member.Namespace : written?.Namespace ?? "";
+        FileScope? file = _member?.Scope ?? written?.Scope;
+        List<MethodSymbol> InNamespaces(IEnumerable<string> spaces)
         {
-            foreach (MethodSymbol m in holder.FindMethods(name))
+            HashSet<string> namespaces = spaces.ToHashSet(StringComparer.Ordinal);
+            foreach (string space in namespaces) _requireExtensions?.Invoke(space, name);
+            List<MethodSymbol> found = new();
+            foreach (TypeSymbol holder in _r.Types.Values.Where(type => namespaces.Contains(type.Decl?.Namespace ?? "")))
+            foreach (MethodSymbol m in holder.Methods.Where(method => method.Name == name))
             {
                 if (m.Static && m.Params.Count > 0 && m.Decl?.Params.FirstOrDefault()?.IsThis == true
                     && (Convertible(target, m.Params[0].Type)
@@ -4272,8 +4281,17 @@ public sealed partial class Binder
                     found.Add(m);
                 }
             }
+            return found;
         }
-        return found;
+        for (string? scope = within; scope is not null; scope = scope.Length == 0 ? null : Enclosing(scope) ?? "")
+        {
+            List<MethodSymbol> local = InNamespaces(new[] { scope });
+            if (local.Count > 0) return local;
+            List<MethodSymbol> imported = InNamespaces(file?.Imports.Where(import => import.In == scope)
+                .Select(import => import.Namespace) ?? Enumerable.Empty<string>());
+            if (imported.Count > 0) return imported;
+        }
+        return new List<MethodSymbol>();
     }
 
     /// <summary>

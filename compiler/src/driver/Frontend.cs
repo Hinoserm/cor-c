@@ -144,7 +144,8 @@ public static class Frontend
 #if COR_SELFHOST_BENCHMARK
         Program.BenchmarkStage("bind-initial");
 #endif
-        BindResult bound = Binder.Bind(unit, name, declarations is null ? null : declarations.Require, declarations?.Interfaces);
+        BindResult bound = Binder.Bind(unit, name, declarations is null ? null : declarations.Require, declarations?.Interfaces,
+            declarations is null ? null : declarations.RequireExtensions);
 
         // The checker's first pass discovers which generic methods were called
         // with which type arguments; each becomes a copy, and the whole thing
@@ -175,7 +176,8 @@ public static class Frontend
 #if COR_SELFHOST_BENCHMARK
             Program.BenchmarkStage("bind-" + round);
 #endif
-            bound = Binder.Bind(unit, name, declarations is null ? null : declarations.Require, declarations?.Interfaces);
+            bound = Binder.Bind(unit, name, declarations is null ? null : declarations.Require, declarations?.Interfaces,
+                declarations is null ? null : declarations.RequireExtensions);
         }
 
         // WARNINGS ARE ERRORS. Every warning the binder raises is a statement

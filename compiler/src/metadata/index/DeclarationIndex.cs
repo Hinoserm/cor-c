@@ -22,7 +22,7 @@ public sealed class DeclarationIndex : IDisposable
         reader = new BinaryReader(stream, Utf8, leaveOpen: true);
         try
         {
-            if (stream.Length < HeaderSize || reader.ReadUInt32() != 0x58494443 || reader.ReadUInt32() != 2)
+            if (stream.Length < HeaderSize || reader.ReadUInt32() != 0x58494443 || reader.ReadUInt32() != 3)
                 throw new InvalidDataException("Unsupported declaration index");
             Count = reader.ReadInt64();
             table = reader.ReadInt64();

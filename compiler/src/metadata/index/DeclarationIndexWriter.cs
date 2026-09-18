@@ -83,7 +83,7 @@ public static class DeclarationIndexWriter
                 directory.Flush(); offsets.Position = 0; offsets.CopyTo(stream);
                 long length = stream.Position;
                 stream.Position = 0;
-                writer.Write(0x58494443u); writer.Write(2u);
+                writer.Write(0x58494443u); writer.Write(3u);
                 writer.Write(count); writer.Write(table); writer.Write(length);
                 writer.Flush(); stream.Flush(flushToDisk: true);
             }

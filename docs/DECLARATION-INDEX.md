@@ -6,10 +6,19 @@ implementation supplies storage, lookup and source declaration generation.
 Demand-loaded binder integration is a subsequent stage, not implied by a
 successful storage or source-index test.
 
-## Storage version 2
+## Storage version 3
+
+Version 3 requires extension discovery records. Keys of the form
+`E:<assembly>\n<namespace>\n<method>` point to declaring type-family keys.
+The binder consults the current namespace and its scoped imports, loading
+candidate declaring types before overload resolution. Older indexes must be
+regenerated: silently accepting them would hide otherwise valid extensions.
+Full `using static`, global-using and overload/accessibility coverage remain
+separate completion requirements. A `using` directive does not unconditionally
+include every declaration in its namespace.
 
 All integers are little-endian. The 32-byte header contains uint32 magic CDIX,
-uint32 version 2, int64 record count, int64 offset-directory position and int64
+uint32 version 3, int64 record count, int64 offset-directory position and int64
 total file length. The directory consists of one int64 offset per record and
 ends exactly at EOF. Readers binary-search directory entries on disk rather
 than reading the directory into an in-memory collection.

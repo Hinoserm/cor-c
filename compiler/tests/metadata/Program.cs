@@ -30,6 +30,7 @@ public static class Program
             IrCodecTests.Run();
             InterfaceDispatchTests.Run(work);
             RethrowTests.Run();
+            ExtensionLookupTests.Run(work);
             InitializerScopeTests.Run(work);
             ClosureOwnershipTests.Run(work);
             StructuralOwnershipTests.Run(work);

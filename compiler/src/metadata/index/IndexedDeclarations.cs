@@ -33,6 +33,12 @@ public sealed class IndexedDeclarations : IDisposable
         loaded.Add(key);
     }
 
+    public void RequireExtensions(string space, string method)
+    {
+        foreach (string key in catalog.ExtensionKeys(assembly, space, method))
+            if (!loaded.Contains(key)) throw new DeclarationDemand(key);
+    }
+
     public void AddHeaders(CompilationUnit unit)
     {
         // A partial declaration cannot be bound from just the locally owned
