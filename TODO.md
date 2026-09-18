@@ -155,8 +155,17 @@ tasks below track that work; moving files alone does not reduce the working set.
   through its caller. General IR importing/inlining remains outstanding.
 - [x] Expose flat output and virtual/physical base controls in corlink; unit
   checks cover flat entry, BSS alignment padding and physical kernel entry.
-- [ ] Verify native ABI contract rejection, static-initializer preservation,
-  and all current compiler/linker suites after the complete LTO milestone.
+- [x] Verify native ABI contract rejection, static-initializer preservation,
+  and the compiler/linker unit suites after the initial LTO milestone.
+  At b6def5e, build-runner, optimizer, assembler, x86 backend and linker suites,
+  separate-link smoke and extended LTO integration all passed. Logs:
+  build/logs/20260918-122219-c31c0674fb0245f7860c57d18e45e842/.
+- [x] Link compiler-produced bare-metal caller/callee objects with an assembly
+  startup object as flat output and biased physical/virtual ELF. Verify the
+  convenience flat path retains --with inputs and rejects mixed ABI contracts.
+  This verifies image layout/linkage, not booting CORSAC on hardware or a VM.
+- [ ] Run and classify the post-extraction language suite at this milestone;
+  distinguish compiler regressions from OS-only fixtures and moved paths.
 - [ ] Extend the existing object writer/linker; do not build a second linker.
 - [ ] Link independently compiled units without duplicate runtime/type identities
   or silently accepting conflicting definitions.
@@ -167,6 +176,9 @@ tasks below track that work; moving files alone does not reduce the working set.
   link that succeeds despite incompatible unit assumptions is not acceptance.
 - [ ] Implement compact summaries for whole-program decisions and selective body
   loading for cross-unit optimization, following the general ThinLTO approach.
+- [ ] Implement bounded object/summary I/O: the current first LTO pass receives
+  already materialized ObjectFile inputs. A bounded metadata design alone does
+  not establish a low-memory linker implementation.
 - [ ] Do not reconstruct the complete project AST or IR during linking/LTO. Keep
   optimization working sets bounded, including when running without parallelism.
 

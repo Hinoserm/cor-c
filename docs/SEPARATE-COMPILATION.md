@@ -42,6 +42,40 @@ An ELF object can be linked today without this entire managed sequence. That
 does not imply independent managed type-layout or generic compilation works.
 The implementation checklist distinguishes the stages.
 
+### Declaration indexing and cycles
+
+Project evaluation publishes one immutable declaration-index generation before
+body workers start. Index construction visits every participating source file,
+but does not bind or retain its method bodies. A source scanner records body
+spans and lexical scopes while parsing declarations. It merges partial-type
+headers by canonical identity, checks conflicting declarations, and publishes
+the generation only after that merge completes. A project source change during
+construction invalidates the generation; workers never combine generations.
+
+The on-disk index has sorted lookup tables for fully qualified types, namespace
+members, nested types, member names/arities, and extension-method candidates.
+Lookup reads bounded pages rather than deserializing every declaration. A hash
+index alone cannot implement namespace/member candidate enumeration. Each hit
+names the owning artifact and declaration offset/length; the body location is
+a separate record. Cache keys include generation and full identity. An evicted
+declaration can be reloaded without changing its identity or numbering.
+
+Mutually referring classes therefore do not require a source-file build order:
+both headers exist before either body is bound. Layout computation tracks
+unseen/in-progress/complete states by identity. A reference to an in-progress
+reference type is legal; recursive by-value layout or an inheritance cycle is
+a language error. Layout and generic-constraint traversal load only required
+declarations and keep a diagnostic dependency path. Partial method/type bodies
+stay in their source units; merging headers does not merge every syntax tree.
+
+A worker pins its required declaration records and body IR while compiling.
+The scheduler accounts for pinned bytes, cache bytes and backend scratch space.
+It reduces concurrency before exceeding the configured memory budget; if one
+unit cannot fit, it reports that unit and measured requirement rather than
+silently loading the whole project. One-worker execution uses the same index
+and ownership rules. The initial implementation may still have a minimum unit
+size; streaming an arbitrarily large method is a separate capability.
+
 ## Artifact division
 
 The exchange container is ELF32 ET_REL on x86. Native code and relocations
@@ -175,6 +209,52 @@ function bodies load individually through .corsac.ir; no whole-project AST is
 reconstructed. ABI-visible signatures cannot change without rewriting every
 caller and proving there is no unknown external caller.
 
+### Backend request and publication boundary
+
+General IR LTO is a staged extension, not a linker dependency on the frontend.
+The build utility supplies a compatible compiler-backend provider to corlink.
+The linker first produces an immutable, versioned link plan containing:
+
+- Target/runtime ABI and compiler-IR version fingerprints.
+- Input artifact content hashes and symbol-resolution decisions.
+- Canonical type/dispatch assignments and generic-specialization owners.
+- Retention roots and explicit closed-world assumptions.
+- For each output unit, selected imported function identities, artifact hashes,
+  IR byte ranges and required declaration/layout fingerprints.
+- Per-unit import/code-growth limits and the global resident-memory limit.
+
+The backend consumes the plan through a dedicated compiler mode, not by
+reparsing project sources. It loads only selected IR and its declaration
+dependencies, optimizes, emits a replacement ET_REL object and reports actual
+imports, effects, dependencies and peak working set. One long-lived provider
+can process bounded units with internal workers; corlink does not spawn a full
+frontend process per source file. The current summary-only pass requires no
+backend provider and remains usable by the independent linker alone.
+
+Plans use artifact-relative identities and content hashes, never live process
+pointers. A replacement object must match its original unit identity and ABI,
+preserve exported signatures, and satisfy the plan's type/generic ownership.
+It is published to a temporary content-addressed artifact, validated, then
+atomically committed. The final image is published only after every required
+replacement succeeds. A missing optional IR body leaves native fallback code;
+a malformed present body, stale required fingerprint or failed requested
+backend run is an error, not silent success with partially optimized output.
+
+Thin-link choices are sorted by stable identity, with explicit cost limits and
+stable tie-breaking. Input path order and worker completion order cannot choose
+different generic owners or optimization candidates. Bare-metal entry placement
+is an explicit layout constraint and is not overridden by sorting candidates.
+Incremental cache keys include the plan, compiler/backend version, optimization
+settings and fingerprints of every imported body. An exported declaration or
+layout change invalidates consumers; a body-only change invalidates that unit
+and its LTO importers, not unrelated declaration users.
+
+The declarations and general IR sections above are architectural contracts,
+not a claim of an implemented binary ABI. Their first implementation must freeze
+record tags/widths and add reader/writer round-trip and corruption tests before
+publishing artifacts. Only the `.corsac.abi` and `.corsac.lto` version-1 wire
+encodings in OBJECT-FORMAT.md are currently accepted by the new linker path.
+
 ## Bare-metal bootloader and kernel
 
 Bare-metal compilation selects the existing no-OS runtime and x86 ISA explicitly.
@@ -190,6 +270,21 @@ The external linker accepts --flat --base for stage-two flat images, and
 The flat entry must be the first byte; input order and the entry stub placement
 are explicit. BSS has memory size but no file payload, and the loader/startup
 stub receives the zero-fill range. Alignment and address overflow are checked.
+
+The build graph keeps three distinct artifacts: the existing real-mode stage-one
+binary; stage-two objects plus their startup object linked as flat output; and
+kernel objects plus startup/vector objects linked as ELF. Neither a flat binary
+nor the stage-one sector is an ET_REL input. Image packaging consumes the final
+artifacts and does not compile or relink them implicitly. Startup owns the CPU
+mode transition, stack setup, BSS clearing and any required paging/GS setup.
+The managed entry name must match the assembly call, and startup objects must
+appear before managed code when a flat image requires entry at byte zero.
+
+The current ELF `--paddr` contract emits a physical entry address and biased
+segment load addresses. A higher-half kernel's entry stub must establish the
+mapping before using linked high addresses. Merely assigning `--paddr` does
+not make an ordinary compiled function safe to execute with paging disabled.
+Layout checks cannot replace testing that actual startup sequence.
 
 Stage-one 16-bit boot sectors remain assembled with the existing x86-16 path;
 ELF32 LTO does not silently consume real-mode code. Mixed code-generation modes
