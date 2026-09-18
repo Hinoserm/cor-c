@@ -14,19 +14,22 @@ public sealed class SourceDeclaration
     public required byte[] SourceHash { get; init; }
     public required byte[] DeclarationHash { get; init; }
     public required FileScope Scope { get; init; }
+    public IReadOnlyList<string> ConditionalSymbols { get; init; } = Array.Empty<string>();
     public int From { get; init; }
     public int To { get; init; }
     public int Line { get; init; }
     public int Column { get; init; }
 
-    public string ReadImplementation()
+    public string ReadSource()
     {
         string text = File.ReadAllText(Path);
         if (!SHA256.HashData(Encoding.UTF8.GetBytes(text)).SequenceEqual(SourceHash))
             throw new InvalidDataException("Declaration source generation is stale: " + Path);
         if (From < 0 || To < From || To > text.Length) throw new InvalidDataException("Invalid implementation source span");
-        return text[From..To];
+        return text;
     }
+
+    public string ReadImplementation() => ReadSource()[From..To];
 
     public DeclarationRecord Encode()
     {
@@ -37,7 +40,7 @@ public sealed class SourceDeclaration
             byte[] bytes = DeclarationIndex.Utf8.GetBytes(value);
             writer.Write(bytes.Length); writer.Write(bytes);
         }
-        writer.Write(0x43454443u); writer.Write(1u); // CDEC
+        writer.Write(0x43454443u); writer.Write(2u); // CDEC
         String(Path); String(Text); String(Namespace); String(Outer);
         writer.Write(From); writer.Write(To); writer.Write(Line); writer.Write(Column);
         if (SourceHash.Length != 32 || DeclarationHash.Length != 32) throw new InvalidDataException("Invalid declaration fingerprint");
@@ -46,6 +49,8 @@ public sealed class SourceDeclaration
         foreach (var import in Scope.Imports) { String(import.In); String(import.Namespace); }
         writer.Write(Scope.Aliases.Count);
         foreach (var alias in Scope.Aliases) { String(alias.In); String(alias.Alias); String(alias.Target); }
+        writer.Write(ConditionalSymbols.Count);
+        foreach (string symbol in ConditionalSymbols) String(symbol);
         return new DeclarationRecord(Key, stream.ToArray());
     }
 
@@ -62,7 +67,7 @@ public sealed class SourceDeclaration
         string String() => DeclarationIndex.Utf8.GetString(DeclarationIndex.ReadBytes(reader, Count()));
         try
         {
-            if (reader.ReadUInt32() != 0x43454443 || reader.ReadUInt32() != 1)
+            if (reader.ReadUInt32() != 0x43454443 || reader.ReadUInt32() != 2)
                 throw new InvalidDataException("Unsupported source declaration");
             string path = String(), text = String(), ns = String(), outer = String();
             int from = reader.ReadInt32(), to = reader.ReadInt32(), line = reader.ReadInt32(), column = reader.ReadInt32();
@@ -73,10 +78,13 @@ public sealed class SourceDeclaration
             for (int i = 0; i < count; i++) scope.Imports.Add((String(), String()));
             count = Count();
             for (int i = 0; i < count; i++) scope.Aliases.Add((String(), String(), String()));
+            count = Count();
+            List<string> symbols = new();
+            for (int i = 0; i < count; i++) symbols.Add(String());
             if (stream.Position != stream.Length) throw new InvalidDataException("Trailing source declaration data");
             return new SourceDeclaration { Key = record.Key, Path = path, Text = text, Namespace = ns, Outer = outer,
                 From = from, To = to, Line = line, Column = column, Scope = scope,
-                SourceHash = sourceHash, DeclarationHash = declarationHash };
+                SourceHash = sourceHash, DeclarationHash = declarationHash, ConditionalSymbols = symbols.AsReadOnly() };
         }
         catch (EndOfStreamException error) { throw new InvalidDataException("Truncated source declaration", error); }
     }

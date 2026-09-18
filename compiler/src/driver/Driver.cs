@@ -46,6 +46,7 @@ public static class Driver
             return Fail(e.Message);
         }
         catch (InvalidDataException e) { return Fail(e.Message); }
+        catch (IOException e) { return Fail(e.Message); }
         catch (ArgumentException e) { return Fail(e.Message); }
         catch (CompileError e) { Console.Error.WriteLine(e.ToString()); return 1; }
         catch (LinkException e)

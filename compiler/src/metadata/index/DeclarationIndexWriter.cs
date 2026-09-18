@@ -83,7 +83,7 @@ public static class DeclarationIndexWriter
                 directory.Flush(); offsets.Position = 0; offsets.CopyTo(stream);
                 long length = stream.Position;
                 stream.Position = 0;
-                writer.Write(0x58494443u); writer.Write(1u);
+                writer.Write(0x58494443u); writer.Write(2u);
                 writer.Write(count); writer.Write(table); writer.Write(length);
                 writer.Flush(); stream.Flush(flushToDisk: true);
             }
@@ -113,6 +113,7 @@ public static class DeclarationIndexWriter
     {
         byte[] key = DeclarationIndex.Utf8.GetBytes(record.Key);
         writer.Write(key.Length); writer.Write(record.Payload.Length);
+        writer.Write(System.Security.Cryptography.SHA256.HashData(key));
         writer.Write(DeclarationIndex.Digest(key, record.Payload));
         writer.Write(key); writer.Write(record.Payload);
     }
@@ -127,10 +128,12 @@ public static class DeclarationIndexWriter
             if (reader.BaseStream.Position == reader.BaseStream.Length) return null;
             int key = reader.ReadInt32(), length = reader.ReadInt32();
             DeclarationIndex.CheckLengths(key, length);
+            byte[] keyDigest = DeclarationIndex.ReadBytes(reader, 32);
             byte[] digest = DeclarationIndex.ReadBytes(reader, 32);
             byte[] name = DeclarationIndex.ReadBytes(reader, key);
             byte[] payload = DeclarationIndex.ReadBytes(reader, length);
-            if (!DeclarationIndex.Digest(name, payload).SequenceEqual(digest)) throw new InvalidDataException("Corrupt declaration sort run");
+            if (!System.Security.Cryptography.SHA256.HashData(name).SequenceEqual(keyDigest)
+                || !DeclarationIndex.Digest(name, payload).SequenceEqual(digest)) throw new InvalidDataException("Corrupt declaration sort run");
             return new DeclarationRecord(DeclarationIndex.Utf8.GetString(name), payload);
         }
         try

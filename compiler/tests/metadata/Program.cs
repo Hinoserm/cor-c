@@ -22,6 +22,7 @@ public static class Program
         try
         {
             SourceIndexTests.Run(work);
+            DeclarationCatalogTests.Run(work);
             string path = Path.Combine(work, "declarations.idx");
             DeclarationRecord[] records = Enumerable.Range(0, 1000).Select(i =>
                 new DeclarationRecord("Namespace.Type" + i.ToString("D4"), BitConverter.GetBytes(i))).ToArray();
@@ -61,7 +62,11 @@ public static class Program
             Invalid(() => { using DeclarationIndex ignored = new(path); });
             DeclarationIndexWriter.Write(path, new[] { new DeclarationRecord("Value", new byte[] { 42 }) });
             damaged = File.ReadAllBytes(path);
-            damaged[32 + 40 + 5] ^= 1; File.WriteAllBytes(path, damaged);
+            damaged[32 + 72 + 5] ^= 1; File.WriteAllBytes(path, damaged);
+            Invalid(() => { using DeclarationIndex index = new(path); _ = index.Find("Value").ToArray(); });
+            DeclarationIndexWriter.Write(path, new[] { new DeclarationRecord("Value", new byte[] { 42 }) });
+            damaged = File.ReadAllBytes(path);
+            damaged[32 + 72] ^= 1; File.WriteAllBytes(path, damaged);
             Invalid(() => { using DeclarationIndex index = new(path); _ = index.Find("Value").ToArray(); });
             DeclarationIndexWriter.Write(path, Array.Empty<DeclarationRecord>());
             using (DeclarationIndex index = new(path)) Check(index.Count == 0 && !index.WithPrefix("").Any(), "empty index");

@@ -6,19 +6,22 @@ implementation supplies storage, lookup and source declaration generation.
 Demand-loaded binder integration is a subsequent stage, not implied by a
 successful storage or source-index test.
 
-## Storage version 1
+## Storage version 2
 
 All integers are little-endian. The 32-byte header contains uint32 magic CDIX,
-uint32 version 1, int64 record count, int64 offset-directory position and int64
+uint32 version 2, int64 record count, int64 offset-directory position and int64
 total file length. The directory consists of one int64 offset per record and
 ends exactly at EOF. Readers binary-search directory entries on disk rather
 than reading the directory into an in-memory collection.
 
 Each record contains int32 UTF-8 key length, int32 payload length, a 32-byte
-SHA-256 digest of key bytes followed by payload bytes, then the key and payload.
+SHA-256 digest of the key alone, a 32-byte digest of key bytes followed by
+payload bytes, then the key and payload. The separate key digest validates
+binary-search decisions without reading unrelated declaration payloads.
 Keys use strict UTF-8 without NUL, up to 4096 bytes. Payloads are at most 1 MiB.
 Record boundaries must exactly match adjacent offsets. Unknown versions, bad
 lengths and invalid directory ranges fail; payload reads verify their digest.
+Version 1 indexes are rejected and must be regenerated.
 
 Records sort by ordinal key, then payload bytes. Equal keys retain every
 fragment: partial declarations must be merged semantically, not silently dropped
@@ -69,12 +72,13 @@ cover declaration tokens and lexical scope but exclude omitted bodies and source
 positions. A body-only change therefore invalidates implementation users without
 changing an otherwise identical declaration fingerprint.
 
-The CDEC payload starts with uint32 magic CDEC and version 1. Four int32-length
+The CDEC payload starts with uint32 magic CDEC and version 2. Four int32-length
 strict UTF-8 strings follow: source path, declaration spelling, namespace and
 outer type path. Next are four int32 fields (source start, end, line, column),
 32-byte source and declaration SHA-256 fingerprints, an int32 import count with
 pairs of scope/namespace strings, and an int32 alias count with triples of
-scope/alias/target strings. Lengths and source spans are validated; trailing data
+scope/alias/target strings, then an int32 count and strings for command-line
+conditional-compilation symbols. Lengths and source spans are validated; trailing data
 is rejected. The payload key is supplied by its containing index record.
 
 Implementation fetching verifies the source fingerprint before returning the
@@ -83,3 +87,20 @@ new body with old declarations. Generation publication verifies source hashes
 again after indexing, one file at a time, before replacing the old index.
 Source parsing still tokenizes one complete file; this milestone does not claim
 streaming arbitrarily large files or complete managed separate compilation.
+
+## Shared declaration cache
+
+DeclarationCatalog loads an exact type key, including all its partial fragments,
+through disposable leases. Lookup of one type does not enumerate its namespace.
+Workers requesting the same key share its decoded entry. Unpinned least-recently
+used entries can be evicted; a live lease prevents eviction. Accounting is
+conservative (four times encoded bytes plus record overhead), with one bounded
+reader record as transient workspace. Exhausting the budget with pinned entries
+is a diagnostic, not silent growth. Worker scheduling must release completed
+units or increase an explicit budget to make progress.
+
+The cache does not choose language lookup candidates or replace the binder's
+scope/accessibility checks. Its callers must supply the resolved assembly and
+metadata name; scoped lookup integration remains a separate milestone. Source
+implementation consumers must use recorded command-line symbols and the full
+source's file-local defines, not compile a detached fragment with new defaults.

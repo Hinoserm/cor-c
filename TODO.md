@@ -115,6 +115,8 @@ tasks below track that work; moving files alone does not reduce the working set.
 - [ ] Verify source-index generation: declaration-only parsing, lexical scopes,
   partial/nested generic identities, body-independent declaration fingerprints
   and stale-source rejection. Integrate indexed lookup into the binder next.
+  Source-generation checks passed at 348be5d; expanded key-checksum and bounded
+  cache/pinning checks are added for the next metadata milestone.
 - [ ] Do not retain a full declaration footprint for every class in every file.
 - [ ] Maintain a compact disk-backed index from qualified type names to the
   locations of their declaration records. Access to the index itself must be

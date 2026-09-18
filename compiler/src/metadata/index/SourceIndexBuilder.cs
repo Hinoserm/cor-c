@@ -11,11 +11,15 @@ public static class SourceIndexBuilder
     {
         AssemblyName name = new(identity);
         if (string.IsNullOrWhiteSpace(name.Name)) throw new ArgumentException("Assembly identity needs a name");
-        name.Name = name.Name.ToLowerInvariant();
-        name.Version ??= new Version(0, 0, 0, 0);
-        name.CultureName ??= "";
-        if (name.GetPublicKeyToken() is null) name.SetPublicKeyToken(Array.Empty<byte>());
-        return name.FullName;
+        Version version = name.Version ?? new Version(0, 0, 0, 0);
+        AssemblyName canonical = new()
+        {
+            Name = name.Name.ToLowerInvariant(),
+            Version = new Version(version.Major, version.Minor, Math.Max(0, version.Build), Math.Max(0, version.Revision)),
+            CultureName = (name.CultureName ?? "").ToLowerInvariant(),
+        };
+        canonical.SetPublicKeyToken(name.GetPublicKeyToken() ?? Array.Empty<byte>());
+        return canonical.FullName;
     }
 
     public static void Write(string output, IEnumerable<string> paths, string assembly,
@@ -92,6 +96,7 @@ public static class SourceIndexBuilder
                         Namespace = type.Namespace, Outer = type.Outer ?? "", Scope = scope,
                         From = type.SourceFrom, To = type.SourceTo, Line = type.Line, Column = type.Col,
                         SourceHash = hash, DeclarationHash = SHA256.HashData(canonical.ToArray()),
+                        ConditionalSymbols = (symbols ?? Array.Empty<string>()).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray(),
                     }.Encode();
                 }
             }

@@ -7,6 +7,7 @@ public static class SourceIndexTests
 {
     public static void Run(string work)
     {
+        Require(SourceIndexBuilder.AssemblyIdentity("Example, Version=1.0") == SourceIndexBuilder.AssemblyIdentity("EXAMPLE, Version=1.0.0.0"), "assembly identity normalization");
         string first = Path.Combine(work, "First.cs"), second = Path.Combine(work, "Second.cs");
         string source = """"
             #define INCLUDED

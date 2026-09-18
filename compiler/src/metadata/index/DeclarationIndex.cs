@@ -22,7 +22,7 @@ public sealed class DeclarationIndex : IDisposable
         reader = new BinaryReader(stream, Utf8, leaveOpen: true);
         try
         {
-            if (stream.Length < HeaderSize || reader.ReadUInt32() != 0x58494443 || reader.ReadUInt32() != 1)
+            if (stream.Length < HeaderSize || reader.ReadUInt32() != 0x58494443 || reader.ReadUInt32() != 2)
                 throw new InvalidDataException("Unsupported declaration index");
             Count = reader.ReadInt64();
             table = reader.ReadInt64();
@@ -71,14 +71,16 @@ public sealed class DeclarationIndex : IDisposable
         stream.Position = checked(table + number * 8);
         long start = reader.ReadInt64();
         long end = number + 1 == Count ? table : reader.ReadInt64();
-        if (start < HeaderSize || end < start || end > table || end - start < 40)
+        if (start < HeaderSize || end < start || end > table || end - start < 72)
             throw new InvalidDataException("Invalid declaration record span");
         stream.Position = start;
         int keyLength = reader.ReadInt32(), size = reader.ReadInt32();
         CheckLengths(keyLength, size);
-        if (40L + keyLength + size != end - start) throw new InvalidDataException("Declaration record length mismatch");
+        if (72L + keyLength + size != end - start) throw new InvalidDataException("Declaration record length mismatch");
+        byte[] keyDigest = ReadBytes(reader, 32);
         byte[] digest = ReadBytes(reader, 32);
         byte[] keyBytes = ReadBytes(reader, keyLength);
+        if (!SHA256.HashData(keyBytes).SequenceEqual(keyDigest)) throw new InvalidDataException("Declaration key checksum mismatch");
         string key = Utf8.GetString(keyBytes);
         if (key.IndexOf('\0') >= 0) throw new InvalidDataException("NUL in declaration key");
         if (!payload) return new DeclarationRecord(key, Array.Empty<byte>());
