@@ -18,7 +18,28 @@ may not exist in a fresh clone; keep the corresponding fixtures and rerun the
 required gates rather than assuming a missing log is proof of completion.
 
 ## Priority and purpose
-Real separate project compilation is the current compiler priority. It must
+The current sequence is build utility design/implementation, the repository's
+corsac.build and source/project reorganization, then separate compilation and
+self-hosting memory work. Keep pushing documented implementation checkpoints.
+
+## Build utility and executable separation
+
+- [x] Specify XML orchestration, nested scope, ordered/parallel execution,
+  process/script/test behavior and MSBuild compatibility in BUILD-SYSTEM.md.
+- [ ] Implement manifest discovery, strict validation, nested target resolution,
+  graph planning, task execution, cancellation, bounded parallelism and reports.
+- [ ] Supply cor-c's corsac.build and component directory defaults.
+- [ ] Build the compiler and linker as independent executables. Preserve and
+  document ELF relocatable objects as their intermediate exchange format.
+- [ ] Restore project paths, split source types, and verify the reorganized repo.
+- [ ] Implement native MSBuild-compatible project evaluation and compilation;
+  a host dotnet adapter alone does not satisfy this requirement.
+- [ ] Implement verified bootstrap and atomic native toolchain activation.
+- [ ] Implement source locks/fetching, artifact references, installation/image
+  tasks, profiles, imports and whole-build memory/resource budgeting.
+- [ ] Verify the build utility itself compiles and runs natively under COR-C#.
+
+Real separate project compilation must
 make self-hosting practical on small 486-class systems as well as exploit
 modern multicore hosts. Splitting source files without reducing the resident
 working set is not sufficient. These are requirements, not completion claims.

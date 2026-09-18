@@ -70,6 +70,18 @@ work belong in [TODO.md](TODO.md).
 
 ## Project and separate compilation
 
+- The installed `build` utility reads `corsac.build`, an XML orchestration
+  manifest with nested targets, dependencies, ordered steps, executable/script
+  tasks, test reporting, bootstrap, source acquisition, staging and image builds.
+- Standard .csproj files remain authoritative for C# component builds under
+  both Microsoft .NET and COR-C#. No duplicate source/dependency inventories or
+  required .sln files are introduced. Unsupported active build features fail
+  explicitly; native builds never silently switch to the host compiler.
+- `build bootstrap` prepares and verifies a native toolchain; subsequent
+  `build` uses that toolchain. CPU and memory budgets cover the whole build.
+- [BUILD-SYSTEM.md](docs/development/BUILD-SYSTEM.md) defines orchestration
+  semantics and the compatibility contract.
+
 - Projects must support multiple source files compiled as bounded independent
   units and linked through the existing linker.
 - The compiler must not retain every source body, syntax tree, bound graph, and
