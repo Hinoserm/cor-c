@@ -13,7 +13,7 @@ public static class DeclarationCatalogTests
         {
             for (int i = 0; i < 100; i++)
                 yield return new SourceDeclaration { Key = "T:" + assembly + "\nNs.T" + i,
-                    Path = "source.cs", Text = "class T" + i + " {}", Namespace = "Ns", Outer = "",
+                    Path = Path.Combine(work, "source.cs"), Text = "class T" + i + " {}", Namespace = "Ns", Outer = "",
                     From = 0, To = 10, Line = 1, Column = 1, SourceHash = new byte[32], DeclarationHash = new byte[32], Scope = new FileScope() }.Encode();
         }
         DeclarationIndexWriter.Write(path, Records());
@@ -55,6 +55,8 @@ public static class DeclarationCatalogTests
             CompilationUnit headers = new() { Line = 1, Col = 1 };
             declarations.AddHeaders(headers);
             Require(headers.Types.Count == 100, "bounded unit discovery lost headers");
+            Require(headers.Types.All(type => type.File == "source.cs" && type.SourcePath == Path.Combine(work, "source.cs")),
+                "imported diagnostic paths must match direct source while preserving absolute ownership identity");
             Require(declarations.ResidentDeclarationBytes <= 4096, "unit discovery pinned the entire catalog");
         }
         Console.WriteLine("  declaration cache: lazy loads, sharing, bounded eviction, pin exhaustion and recovery passed");
