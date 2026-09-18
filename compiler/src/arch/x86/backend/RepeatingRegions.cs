@@ -1,7 +1,8 @@
 using Corsac.Lang.Ir;
-using Block = Corsac.Lang.Ir.Block;
 
 namespace Corsac.Lang.X86;
+
+using Block = Corsac.Lang.Ir.Block;
 
 /// <summary>Bounded dominance proof for blocks that execute on every loop backedge.</summary>
 internal static class RepeatingRegions
