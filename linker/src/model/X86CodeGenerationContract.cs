@@ -4,7 +4,7 @@ using Corsac.Lang.Elf;
 namespace Corsac.Lang.Ir;
 
 /// <summary>Instruction permissions used to regenerate a unit, independent of its calling ABI.</summary>
-public sealed record X86CodeGenerationContract(string Cpu, string Tune, string Fpu, bool Mmx, bool ThreeDNow, bool Extended)
+public sealed record X86CodeGenerationContract(string Cpu, string Tune, string Fpu, bool Mmx, bool ThreeDNow, bool Extended, bool AutomaticPacked = true)
 {
     public const string SectionName = ".corsac.cpu";
     private static readonly HashSet<string> Models = new(StringComparer.Ordinal)
@@ -23,8 +23,8 @@ public sealed record X86CodeGenerationContract(string Cpu, string Tune, string F
         Validate();
         if (obj.Sections.Any(section => section.Name == SectionName)) throw new ElfFormatException("duplicate x86 code-generation contract");
         Section section = new(SectionName, SectionKind.Note);
-        section.Bytes.AddRange(Encoding.ASCII.GetBytes(string.Join('\n', "CCPU1", Cpu, Tune, Fpu,
-            Mmx ? "1" : "0", ThreeDNow ? "1" : "0", Extended ? "1" : "0")));
+        section.Bytes.AddRange(Encoding.ASCII.GetBytes(string.Join('\n', "CCPU2", Cpu, Tune, Fpu,
+            Mmx ? "1" : "0", ThreeDNow ? "1" : "0", Extended ? "1" : "0", AutomaticPacked ? "1" : "0")));
         obj.Sections.Add(section);
     }
 
@@ -35,9 +35,9 @@ public sealed record X86CodeGenerationContract(string Cpu, string Tune, string F
         if (sections.Length != 1 || sections[0].Bytes.Count > 128 || sections[0].Relocs.Count != 0)
             throw new ElfFormatException("invalid x86 code-generation contract section");
         string[] fields = Encoding.ASCII.GetString(sections[0].Bytes.ToArray()).Split('\n');
-        if (fields.Length != 7 || fields[0] != "CCPU1" || fields.Skip(4).Any(field => field is not ("0" or "1")))
+        if (fields.Length != 8 || fields[0] != "CCPU2" || fields.Skip(4).Any(field => field is not ("0" or "1")))
             throw new ElfFormatException("unsupported x86 code-generation contract");
-        var contract = new X86CodeGenerationContract(fields[1], fields[2], fields[3], fields[4] == "1", fields[5] == "1", fields[6] == "1");
+        var contract = new X86CodeGenerationContract(fields[1], fields[2], fields[3], fields[4] == "1", fields[5] == "1", fields[6] == "1", fields[7] == "1");
         contract.Validate(); return contract;
     }
 

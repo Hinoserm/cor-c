@@ -15,7 +15,7 @@ internal sealed partial class Selector
         return address is SlotOperand slot ? slot.Slot : null;
     }
 
-    private static bool PackedMemorySize(long bytes) => Target.Current.X86Profile.Mmx && bytes >= 32 && bytes <= 128;
+    private bool PackedMemorySize(long bytes) => _automaticPacked && Target.Current.X86Profile.Mmx && bytes >= 32 && bytes <= 128;
 
     private void EndMmx() => Emit(Target.Current.X86Profile.ThreeDNow ? MOp.Femms : MOp.Emms);
 

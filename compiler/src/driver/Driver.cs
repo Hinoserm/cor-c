@@ -553,6 +553,7 @@ public static class Driver
 
         X86Backend x86Backend = new()
         {
+            AutomaticPacked = !freestanding,
             PositionIndependent = shared || args.Contains("--pic"),
             Workers = workers,
             EmitLinkSummary = !args.Contains("--no-lto") && !args.Contains("--no-opt"),

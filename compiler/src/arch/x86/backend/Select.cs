@@ -31,6 +31,7 @@ internal sealed partial class Selector
     private int _rangeVisits;
     private MBlock _cur = null!;
     private int _splits;
+    private readonly bool _automaticPacked;
 
     private static readonly MReg Eax = MReg.Of(Gpr.Eax);
     private static readonly MReg Ecx = MReg.Of(Gpr.Ecx);
@@ -41,11 +42,12 @@ internal sealed partial class Selector
     private static readonly MReg Esp = MReg.Of(Gpr.Esp);
     private static readonly MReg Ebp = MReg.Of(Gpr.Ebp);
 
-    private Selector(Function f, List<string> errors)
+    private Selector(Function f, List<string> errors, bool automaticPacked)
     {
         _f = f;
         _m = new MFunction(f);
         _errors = errors;
+        _automaticPacked = automaticPacked;
         foreach (VReg parameter in f.Params) _definitions[parameter] = null;
         foreach (Instr instruction in f.Blocks.SelectMany(b => b.Instrs))
             if (instruction.Dest is { } dest)
@@ -57,9 +59,9 @@ internal sealed partial class Selector
             }
     }
 
-    public static MFunction Run(Function f, List<string> errors)
+    public static MFunction Run(Function f, List<string> errors, bool automaticPacked = true)
     {
-        Selector s = new(f, errors);
+        Selector s = new(f, errors, automaticPacked);
         s.Select();
         return s._m;
     }

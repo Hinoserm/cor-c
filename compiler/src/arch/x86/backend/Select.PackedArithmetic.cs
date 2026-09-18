@@ -7,7 +7,7 @@ internal sealed partial class Selector
     private bool TryPackedArithmetic(List<Instr> instructions, int start, out int consumed)
     {
         consumed = 0;
-        if (!Target.Current.X86Profile.Mmx || start + 7 >= instructions.Count) return false;
+        if (!_automaticPacked || !Target.Current.X86Profile.Mmx || start + 7 >= instructions.Count) return false;
         Instr firstLoad = instructions[start], firstOp = instructions[start + 2], firstStore = instructions[start + 3];
         int width = firstLoad.Size;
         MOp? packed = (firstOp.Op, width) switch

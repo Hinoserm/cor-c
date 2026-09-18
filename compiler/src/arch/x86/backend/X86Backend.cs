@@ -34,6 +34,8 @@ public sealed class X86Backend : IBackend
     /// <summary>Bounded task workers for selection/allocation; emission stays ordered.</summary>
     public int Workers { get; set; } = 1;
     public bool EmitLinkSummary { get; set; }
+    /// <summary>Hosted ABI owns x87/MMX state; freestanding kernel code must not borrow it implicitly.</summary>
+    public bool AutomaticPacked { get; set; } = true;
     public Func<int, Function>? FunctionLoader { get; set; }
     public Func<int, long>? FunctionLoadBytes { get; set; }
     public long FunctionMemoryBudget { get; set; } = 64L * 1024 * 1024;
@@ -105,7 +107,7 @@ public sealed class X86Backend : IBackend
     {
         if (Workers < 1 || Workers > 64) throw new ArgumentOutOfRangeException(nameof(Workers));
         ObjectFile obj = new();
-        Target.X86Profile.Contract.Attach(obj);
+        (Target.X86Profile.Contract with { AutomaticPacked = AutomaticPacked }).Attach(obj);
         OptimizationSummary summary = new();
         Section text = new(".text", SectionKind.Code) { Align = Math.Max(4, FunctionAlign) };
         Section rodata = new(".rodata", SectionKind.ReadOnlyData);
@@ -454,7 +456,7 @@ public sealed class X86Backend : IBackend
     private static MFunction? Compile(Function f, List<string> errors, Func<string, bool>? isPrivate = null, Func<string, bool>? isDefined = null, Func<string, bool>? isImported = null)
     {
         int before = errors.Count;
-        MFunction m = Selector.Run(f, errors);
+        MFunction m = Selector.Run(f, errors, AutomaticPacked);
         if (errors.Count > before)
         {
             return null;

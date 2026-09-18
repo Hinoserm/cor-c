@@ -63,6 +63,7 @@ public sealed class UnitBackend : IUnitBackend
         }
         X86Backend backend = new()
         {
+            AutomaticPacked = cpu?.AutomaticPacked ?? false,
             StackMaps = unit.StackMaps, EmitLinkSummary = true, Workers = Math.Max(1, Math.Min(64, Environment.ProcessorCount)),
             FunctionLoader = Load, FunctionLoadBytes = Cost, FunctionMemoryBudget = 64L * 1024 * 1024 - unit.AccountedBytes,
         };

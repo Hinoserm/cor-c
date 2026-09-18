@@ -12,6 +12,7 @@ public static class ProjectCommand
         string? path = null, output = null, framework = null;
         string configuration = "Release";
         int workers = Environment.ProcessorCount;
+        List<string> profileArguments = new();
         for (int i = 0; i < arguments.Length; i++)
         {
             string Value() => ++i < arguments.Length ? arguments[i] : throw new ArgumentException("Missing project option value");
@@ -21,7 +22,13 @@ public static class ProjectCommand
                 case "--configuration": configuration = Value(); break;
                 case "--framework": framework = Value(); break;
                 case "--jobs": workers = int.Parse(Value()); break;
+                case "--cpu": case "--tune": case "--fpu":
+                    profileArguments.Add(arguments[i]); profileArguments.Add(Value()); break;
+                case "--enable-mmx": case "--disable-mmx": case "--enable-3dnow": case "--disable-3dnow":
+                    profileArguments.Add(arguments[i]); break;
                 default:
+                    if (arguments[i].StartsWith("--cpu=") || arguments[i].StartsWith("--tune=") || arguments[i].StartsWith("--fpu="))
+                    { profileArguments.Add(arguments[i]); break; }
                     if (arguments[i].StartsWith('-') || path is not null) throw new ArgumentException("Unexpected project argument: " + arguments[i]);
                     path = arguments[i]; break;
             }
@@ -29,6 +36,13 @@ public static class ProjectCommand
         if (path is null || workers < 1) throw new ArgumentException("project needs a .csproj path and a positive worker count");
         IReadOnlyList<EvaluatedProject> graph = ProjectGraph.Evaluate(path, configuration, framework);
         EvaluatedProject project = graph[^1];
+        // Ordinary MSBuild properties are ignored by .NET but select the native
+        // target here. Command-line selections override project defaults.
+        List<string> defaults = new();
+        foreach (var property in new[] { ("CorCCpu", "--cpu="), ("CorCTune", "--tune="), ("CorCFpu", "--fpu=") })
+            if (project.Properties.TryGetValue(property.Item1, out string? value) && value.Length != 0) defaults.Add(property.Item2 + value);
+        defaults.AddRange(profileArguments);
+        string[] cpuArguments = global::Corsac.Lang.X86.X86Cpu.Parse(defaults).Contract.Arguments();
         if (project.OutputType is not ("Exe" or "WinExe")) throw new InvalidDataException("Standalone native library packaging is not yet implemented");
         string directory = Path.GetDirectoryName(project.Path)!;
         string work = Path.Combine(directory, "obj", "cor-c", configuration, project.Framework);
@@ -69,10 +83,12 @@ public static class ProjectCommand
         using DeclarationCatalog catalog = new(index);
         string interfaces = string.Join("\n", catalog.Interfaces(project.AssemblyName).OrderBy(pair => pair.Key.Name, StringComparer.Ordinal)
             .ThenBy(pair => pair.Key.Arity).Select(pair => pair.Key.Name + ":" + pair.Key.Arity + ":" + pair.Value));
-        string settings = toolchain + "\n" + libraryState + "\n" + interfaces + "\n" + string.Join("\n", graph.Select(node => node.Evaluation));
+        string settings = toolchain + "\n" + libraryState + "\n" + interfaces + "\n" + string.Join("\n", graph.Select(node => node.Evaluation))
+            + "\n" + string.Join("\n", cpuArguments);
         string runtime = Path.Combine(work, "runtime.o");
         List<string> runtimeArgs = new() { "compile", "--nostdlib", "--lib", "--obj", "--jobs", workers.ToString(), "--decl-index", index, "--assembly", project.AssemblyName };
         runtimeArgs.AddRange(libraries);
+        runtimeArgs.AddRange(cpuArguments);
         if (!Compile(runtimeArgs, runtime, ProjectState.Digest(settings), index)) return 1;
         List<string> objects = new() { runtime };
         int changed = 0;
@@ -85,6 +101,7 @@ public static class ProjectCommand
                 + "\n" + owner.WarningsAsErrors + "\n" + entries[0].Type);
             List<string> args = new() { "compile", "--nostdlib", "--obj", "--jobs", workers.ToString(), "--decl-index", index,
                 "--assembly", project.AssemblyName, source };
+            args.AddRange(cpuArguments);
             if (source != entries[0].Path) args.Add("--lib");
             else { args.Add("--main-type"); args.Add(entries[0].Type); }
             if (!owner.WarningsAsErrors) args.Add("-Wno-error");
