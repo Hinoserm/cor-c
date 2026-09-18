@@ -106,6 +106,10 @@ tasks below track that work; moving files alone does not reduce the working set.
 
 ## Demand-loaded declarations, not a whole-project metadata graph
 
+- [ ] Verify the new disk-backed declaration-index storage milestone: bounded
+  external sorting, exact/prefix lookup, partial fragments, deterministic output,
+  corruption rejection and atomic publication. Source indexing and demand-loaded
+  binder integration remain distinct work; storage alone does not complete them.
 - [ ] Do not retain a full declaration footprint for every class in every file.
 - [ ] Maintain a compact disk-backed index from qualified type names to the
   locations of their declaration records. Access to the index itself must be

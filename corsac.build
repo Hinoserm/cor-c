@@ -35,7 +35,13 @@
   </Target>
 
   <Target Name="test" Steps="unit;smoke;lto">
-    <Target Name="unit" Steps="build-tool;optimizer;assembler;x86;linker">
+    <Target Name="unit" Steps="build-tool;optimizer;assembler;x86;linker;metadata">
+      <Target Name="metadata">
+        <Test Name="metadata" Executable="dotnet" Timeout="00:03:00">
+          <Argument Value="run" /><Argument Value="--project" /><Argument Value="compiler/tests/metadata/MetadataTests.csproj" />
+          <Argument Value="-c" /><Argument Value="$(Configuration)" />
+        </Test>
+      </Target>
       <Target Name="build-tool">
         <Test Name="build-runner" Executable="dotnet" Timeout="00:03:00">
           <Argument Value="run" /><Argument Value="--project" /><Argument Value="tools/build/tests/BuildTests.csproj" />
