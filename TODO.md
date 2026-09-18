@@ -56,6 +56,14 @@ working set is not sufficient. These are requirements, not completion claims.
 [TODO] Preserve useful partial-class subdivisions. Physical file boundaries must
   not change partial-type semantics or force unrelated bodies into memory.
 [TODO] Update all build/source inventories and preserve native self-hosting.
+[DONE] Repository ownership now separates `compiler/` from `linker/`; object
+  format and linking sources and their focused tests live under `linker/`.
+[DONE] Target-specific compiler support now lives below `compiler/src/arch/`,
+  with focused target tests below `compiler/tests/arch/`. A repository-wide
+  `architectures/` directory is not part of the layout.
+[DONE] The first one-type-per-file source split is complete for the IR object
+  model and the call-boundary optimizer helpers and passes. Larger frontend,
+  IR, and backend groups remain to be split without changing behavior.
 
 2. Demand-loaded declarations, not a whole-project metadata graph
 ---------------------------------------------------------------

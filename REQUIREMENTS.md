@@ -44,8 +44,12 @@ work belong in [TODO.md](TODO.md).
 - The repository must remain buildable without undeclared reads from the
   CORSAC/OS source tree.
 - Top-level ownership is:
-  - `compiler/`: the compiler, assembler, disassembler, object writers, linker,
-    and project tooling.
+  - `compiler/`: the compiler executable, project tooling, frontend, lowering,
+    IR, optimization, metadata, and target-specific compiler support. Target
+    code belongs below `compiler/src/arch/`; focused target tests belong below
+    `compiler/tests/arch/`.
+  - `linker/`: object-format support, relocations, static/dynamic linking, and
+    focused linker tests.
   - `runtime/`: managed execution support plus architecture and platform
     adapters.
   - `stdlib/`: public C#/.NET library APIs and portable implementations.
@@ -55,6 +59,8 @@ work belong in [TODO.md](TODO.md).
 - Every maintained directory must contain a README explaining its purpose and
   ownership boundary.
 - Compiler implementation files belong under `compiler/src/`.
+- A repository-wide `architectures/` directory is forbidden. Architecture code
+  belongs under the subsystem that owns it, using the short `arch` name.
 - Source should normally use one top-level type per correspondingly named file.
   Purposeful partial-class subdivisions may remain where they make a large
   compiler stage easier to maintain.
