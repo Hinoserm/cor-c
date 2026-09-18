@@ -29,6 +29,9 @@ work belong in [TODO.md](TODO.md).
 - Compiler instruction selection, assembler validation, runtime dependencies
   and LTO must agree on CPU/FPU requirements. Architecture-specific optimization
   must preserve C#/.NET semantics, calling conventions and x87/MMX state.
+- Include affected Pentium-family errata in acceptance. The assembler must
+  reject invalid LOCK/register CMPXCHG8B forms; this is not a substitute for
+  the operating system's F00F IDT/page-fault mitigation against arbitrary code.
 - Use QEMU software emulation for instruction correctness, and host benchmarks
   only for instructions the host supports. Host/emulator timings do not certify
   K6-family performance.

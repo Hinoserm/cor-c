@@ -34,6 +34,8 @@ Immediate sequence: finish the isolated CORSAC86 production-build migration
 - [ ] Run encoding/correctness tests on Linux/QEMU and host-supported benchmarks.
   The initial CPU/MMX assembler prototype is saved separately while OS build
   migration is active; it is not complete or accepted.
+- [ ] Validate LOCK operand restrictions. A separate kernel task owns F00F
+  mitigation; do not duplicate its implementation here.
 
 The requested completion order is: (1) automatic per-file standard .csproj
 pipeline, (2) demand-loaded default libraries, (3) complete lookup/generic
