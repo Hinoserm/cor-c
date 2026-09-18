@@ -8,6 +8,7 @@ public static class IrArchiveTests
 {
     public static void Run()
     {
+        ByteListReadStreamTests.Run();
         void Check(bool value, string message) { if (!value) throw new Exception(message); }
         void Reject(Action action)
         { try { action(); } catch (ElfFormatException) { return; } throw new Exception("Invalid IR archive accepted"); }
@@ -24,6 +25,17 @@ public static class IrArchiveTests
         IrArchive archive = IrArchive.Read(roundTrip)!;
         Check(archive.Entries.Count == 1 && archive.Entries["F:function"].Calls.Single() == "other", "IR summary round trip");
         Check(archive.ReadBody("F:function").SequenceEqual(new byte[] { 1, 2, 3 }), "IR body round trip");
+        roundTrip.Section(IrArchive.SectionName).Bytes[^1] ^= 1;
+        Reject(() => archive.ReadBody("F:function"));
+        // Opening summaries must not clone the full, potentially huge payload.
+        ObjectFile largeArchive = new();
+        IrArchive.Attach(largeArchive, new[] { new IrArchiveRecord("F:large", false, 0,
+            Array.Empty<string>(), new byte[4 * 1024 * 1024]) });
+        long allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+        IrArchive largeView = IrArchive.Read(largeArchive)!;
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+        Check(allocated < 1024 * 1024 && largeView.Entries.Count == 1,
+            "Opening IR summaries copied payload bytes: " + allocated);
         source.Section(".text").Bytes[0] = 0x90;
         Reject(() => IrArchive.Read(source));
         source = Make("function", true, Array.Empty<string>()); source.Section(IrArchive.SectionName).Bytes[4] = 99;

@@ -11,18 +11,20 @@ public sealed class IrArchive
     public const string SectionName = ".corsac.ir";
     public const int MaximumBytes = 128 * 1024 * 1024;
     private static readonly UTF8Encoding Utf8 = new(false, true);
-    private readonly byte[] bytes;
+    private readonly IReadOnlyList<byte> bytes;
     public IReadOnlyDictionary<string, IrArchiveEntry> Entries { get; }
 
-    private IrArchive(byte[] bytes, Dictionary<string, IrArchiveEntry> entries)
+    private IrArchive(IReadOnlyList<byte> bytes, Dictionary<string, IrArchiveEntry> entries)
     { this.bytes = bytes; Entries = entries; }
 
     public byte[] ReadBody(string key)
     {
         if (!Entries.TryGetValue(key, out IrArchiveEntry? entry)) throw new ElfFormatException("Missing IR record: " + key);
-        ReadOnlySpan<byte> body = bytes.AsSpan(entry.Offset, entry.Length);
+        if (entry.Offset > bytes.Count - entry.Length) throw new ElfFormatException("IR archive changed after validation");
+        byte[] body = new byte[entry.Length];
+        for (int i = 0; i < body.Length; i++) body[i] = bytes[entry.Offset + i];
         if (!SHA256.HashData(body).SequenceEqual(entry.Hash)) throw new ElfFormatException("IR payload integrity mismatch: " + key);
-        return body.ToArray();
+        return body;
     }
 
     public static void Attach(ObjectFile obj, IReadOnlyList<IrArchiveRecord> records)
@@ -65,8 +67,8 @@ public sealed class IrArchive
         Section[] sections = obj.Sections.Where(section => section.Name == SectionName).ToArray();
         if (sections.Length == 0) return null;
         if (sections.Length != 1 || sections[0].Bytes.Count > MaximumBytes) throw new ElfFormatException("Invalid IR archive count/size");
-        byte[] bytes = sections[0].Bytes.ToArray();
-        using MemoryStream stream = new(bytes, writable: false);
+        IReadOnlyList<byte> bytes = sections[0].Bytes;
+        using ByteListReadStream stream = new(bytes);
         using BinaryReader reader = new(stream, Utf8);
         try
         {
@@ -74,9 +76,9 @@ public sealed class IrArchive
             int count = reader.ReadInt32(), directoryBytes = reader.ReadInt32(), total = reader.ReadInt32();
             byte[] native = reader.ReadBytes(32);
             byte[] directoryHash = reader.ReadBytes(32);
-            if (count < 0 || count > 100000 || total != bytes.Length || directoryBytes < 0 || directoryBytes > bytes.Length - 84
+            if (count < 0 || count > 100000 || total != bytes.Count || directoryBytes < 0 || directoryBytes > bytes.Count - 84
                 || !NativeHash(obj).SequenceEqual(native)) throw new ElfFormatException("IR archive header/native integrity mismatch");
-            if (!SHA256.HashData(bytes.AsSpan(84, directoryBytes)).SequenceEqual(directoryHash))
+            if (!HashDirectory(stream, directoryBytes).SequenceEqual(directoryHash))
                 throw new ElfFormatException("IR directory integrity mismatch");
             int bodyStart = 84 + directoryBytes, next = bodyStart;
             Dictionary<string, IrArchiveEntry> entries = new(StringComparer.Ordinal);
@@ -96,12 +98,12 @@ public sealed class IrArchive
                 long decodeBytes = reader.ReadInt64();
                 if (decodeBytes < 0) throw new ElfFormatException("Invalid IR decode estimate");
                 int offset = reader.ReadInt32(), length = reader.ReadInt32(); byte[] hash = reader.ReadBytes(32);
-                if (offset != next - bodyStart || length < 0 || length > bytes.Length - next || hash.Length != 32
+                if (offset != next - bodyStart || length < 0 || length > bytes.Count - next || hash.Length != 32
                     || stream.Position > bodyStart || !entries.TryAdd(key, new(key, flags != 0, instructions, calls, next, length, hash, references, decodeBytes)))
                     throw new ElfFormatException("Invalid IR body directory");
                 next += length;
             }
-            if (stream.Position != bodyStart || next != bytes.Length) throw new ElfFormatException("Unclaimed IR directory/payload bytes");
+            if (stream.Position != bodyStart || next != bytes.Count) throw new ElfFormatException("Unclaimed IR directory/payload bytes");
             return new(bytes, entries);
         }
         catch (EndOfStreamException) { throw new ElfFormatException("Truncated IR archive"); }
@@ -116,6 +118,24 @@ public sealed class IrArchive
         // Standard ELF serialization canonicalizes relocation addends and
         // local/global symbol order, so object round trips preserve the digest.
         return SHA256.HashData(ElfWriter.WriteObject(native));
+    }
+
+    private static byte[] HashDirectory(Stream source, int length)
+    {
+        long start = source.Position;
+        using SHA256 hash = SHA256.Create();
+        using CryptoStream sink = new(Stream.Null, hash, CryptoStreamMode.Write);
+        byte[] buffer = new byte[Math.Min(8192, length)];
+        while (length > 0)
+        {
+            int count = source.Read(buffer, 0, Math.Min(buffer.Length, length));
+            if (count == 0) throw new ElfFormatException("Truncated IR directory");
+            sink.Write(buffer, 0, count);
+            length -= count;
+        }
+        sink.FlushFinalBlock();
+        source.Position = start;
+        return hash.Hash!;
     }
 
     private static void WriteName(BinaryWriter writer, string name)
