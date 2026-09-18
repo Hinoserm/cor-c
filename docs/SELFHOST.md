@@ -4,7 +4,14 @@ Where the self-hosting work stands, how to pick it up, and what it found.
 
 ## Current benchmark workflow
 
-Use `bash tests/perf/selfcompile.sh` after building the .NET bootstrap, or
+The post-extraction attempt at source snapshot 3e37787 stopped during bootstrap
+binding on missing Path.Combine(params string[]) support. Eight calls with five
+or six path segments were rejected. That failed .NET-hosted bootstrap pass took
+4.50 seconds with a 308800 KiB peak RSS; these are not native self-compilation
+results. Logs remain under build/selfcompile.HzVP0J. The API repair and its
+standard-behavior fixture are tracked in TODO.md.
+
+Use `bash tests/benchmarks/selfcompile.sh` after building the .NET bootstrap, or
 set `CORC` to a preserved bootstrap executable. `SELF_REVISION` selects a
 committed source snapshot (default HEAD); `SELF_PROFILE` is `default`, `size`,
 `batch` or `batch-size`. Every run creates a fresh `build/selfcompile.*`

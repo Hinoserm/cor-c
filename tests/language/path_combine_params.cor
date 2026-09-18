@@ -1,0 +1,27 @@
+// test: standard Path.Combine params overload and Unix path semantics
+// expect-exit: 0
+// expect-output:
+// paths passed
+using System;
+using System.IO;
+
+static class Program
+{
+    static int Main()
+    {
+        if (Path.Combine("a", "b", "c", "d", "e", "f") != "a/b/c/d/e/f") return 1;
+        if (Path.Combine(new string[] { "a", "", "/root", "child", "" }) != "/root/child") return 2;
+        if (Path.Combine() != "" || Path.Combine(new string[0]) != "") return 3;
+        if (Path.Combine(new string[] { "", "", "" }) != "") return 4;
+        if (Path.Combine(new string[] { "a/", "", "b" }) != "a/b") return 5;
+        if (Path.Combine(new string[] { "a\\", "b" }) != "a\\/b") return 6;
+        if (Path.Combine(path1: "a", path2: "b", path3: "c", path4: "d") != "a/b/c/d") return 7;
+        int rejected = 0;
+        try { Path.Combine((string[])null!); } catch (ArgumentNullException) { rejected++; }
+        try { Path.Combine(new string[] { null!, "/root" }); } catch (ArgumentNullException) { rejected++; }
+        try { Path.Combine((string)null!, "/root"); } catch (ArgumentNullException) { rejected++; }
+        if (rejected != 3) return 8;
+        Console.WriteLine("paths passed");
+        return 0;
+    }
+}

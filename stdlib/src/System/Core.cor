@@ -980,12 +980,14 @@ static partial class Path {
     /// Joins two paths. A SECOND PATH THAT IS ABSOLUTE WINS OUTRIGHT, which is
     /// the rule .NET uses and the one that makes `Combine(baseDir, userPath)`
     /// safe to write: a caller passing an absolute path meant it.
-    public static string Combine(string a, string b) {
-        if (b.Length > 0 && b[0] == '/') { return b; }
-        if (a.Length == 0) { return b; }
-        if (b.Length == 0) { return a; }
-        if (a[a.Length - 1] == '/') { return a + b; }
-        return a + "/" + b;
+    public static string Combine(string path1, string path2) {
+        if (path1 == null) { throw new ArgumentNullException("path1"); }
+        if (path2 == null) { throw new ArgumentNullException("path2"); }
+        if (path2.Length > 0 && path2[0] == '/') { return path2; }
+        if (path1.Length == 0) { return path2; }
+        if (path2.Length == 0) { return path1; }
+        if (path1[path1.Length - 1] == '/') { return path1 + path2; }
+        return path1 + "/" + path2;
     }
 
     /// Everything before the last separator, or null when there is none.
@@ -1038,12 +1040,53 @@ static partial class Path {
 
     public static char VolumeSeparatorChar = ':';
 
-    public static string Combine(string a, string b, string c) {
-        return Combine(Combine(a, b), c);
+    public static string Combine(string path1, string path2, string path3) {
+        return Combine(Combine(path1, path2), path3);
     }
 
-    public static string Combine(string a, string b, string c, string d) {
-        return Combine(Combine(Combine(a, b), c), d);
+    public static string Combine(string path1, string path2, string path3, string path4) {
+        return Combine(Combine(Combine(path1, path2), path3), path4);
+    }
+
+    /// Combines any number of path parts, validating every part even when a
+    /// later absolute path discards it. Allocate only the final string.
+    public static string Combine(params string[] paths) {
+        if (paths == null) { throw new ArgumentNullException("paths"); }
+        int start = 0;
+        for (int i = 0; i < paths.Length; i++) {
+            string part = paths[i];
+            if (part == null) { throw new ArgumentNullException("paths"); }
+            if (part.Length != 0 && part[0] == '/') { start = i; }
+        }
+        int length = 0;
+        int pieces = 0;
+        string last = "";
+        for (int i = start; i < paths.Length; i++) {
+            string part = paths[i];
+            if (part.Length == 0) { continue; }
+            checked {
+                if (last.Length != 0 && last[last.Length - 1] != '/') { length++; }
+                length += part.Length;
+            }
+            pieces++;
+            last = part;
+        }
+        if (pieces < 2) { return last; }
+        string result = Sys.NewBytes(length);
+        int at = 0;
+        last = "";
+        for (int i = start; i < paths.Length; i++) {
+            string part = paths[i];
+            if (part.Length == 0) { continue; }
+            if (last.Length != 0 && last[last.Length - 1] != '/') {
+                Sys.SetByte(result, at, 47);
+                at++;
+            }
+            Sys.CopyNoOverlap(result, at, part, 0, part.Length);
+            at += part.Length;
+            last = part;
+        }
+        return result;
     }
 
     /// LIKE Combine, EXCEPT THAT A ROOTED SECOND PART DOES NOT WIN. Combine

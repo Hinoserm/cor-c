@@ -58,6 +58,9 @@ tasks below track that work; moving files alone does not reduce the working set.
 
 ## Compatibility defects
 
+- [ ] Verify the standard Path.Combine params overload and fixed-overload null
+  validation. This repairs the first post-extraction native bootstrap failure
+  (five/six path segments); the implementation avoids intermediate join strings.
 - [ ] Audit and repair compatibility gaps as they are found, record them as
   open defects, and add standard-behavior regression coverage. A feature
   with a known compatibility failure must not be marked complete merely
