@@ -1164,6 +1164,7 @@ public sealed partial class Binder
                     Name = d.Name, IsCtor = true, Mods = Mods.Public,
                     Body = new Block { Line = d.Line, Col = d.Col },
                     Line = d.Line, Col = d.Col, File = d.File,
+                    OwnedImplementation = !d.Elsewhere,
                 });
             }
         }
@@ -1670,7 +1671,19 @@ public sealed partial class Binder
 
         if (cctor?.Body is { } cctorBody)
         {
-            body.AddRange(cctorBody.Statements);
+            // Keep the source body with its source unit. The type owner runs
+            // the shared initialization protocol and calls this ordinary
+            // hidden helper, rather than importing the whole constructor body.
+            d.Members.Remove(cctor);
+            d.Members.Add(new MethodDecl
+            {
+                Name = "StaticConstructorBody$", Mods = Mods.Static | Mods.Private,
+                Returns = new TypeRef { Name = "void" }, Body = cctorBody,
+                File = cctor.File, Line = cctor.Line, Col = cctor.Col,
+                Scope = cctor.Scope, Namespace = cctor.Namespace,
+                OwnedImplementation = cctor.OwnedImplementation,
+            });
+            body.Add(new ExprStmt { Expr = new CallExpr { Target = new NameExpr { Name = "StaticConstructorBody$" } } });
         }
 
         if (body.Count == 0)
@@ -1749,7 +1762,7 @@ public sealed partial class Binder
             return;
         }
 
-        List<MethodDecl> ctors = d.Members.OfType<MethodDecl>().Where(c => c.IsCtor).ToList();
+        List<MethodDecl> ctors = d.Members.OfType<MethodDecl>().Where(c => c.IsCtor && !c.Mods.HasFlag(Mods.Static)).ToList();
 
         // A TYPE WITH NO CONSTRUCTOR STILL NEEDS ONE, or its initialisers have
         // nowhere to go -- and most of the types that use this shape are plain
@@ -1761,6 +1774,7 @@ public sealed partial class Binder
                 Name = d.Name, IsCtor = true, Mods = Mods.Public,
                 Body = new Block { Line = d.Line, Col = d.Col },
                 Line = d.Line, Col = d.Col, File = d.File,
+                OwnedImplementation = !d.Elsewhere,
             };
 
             d.Members.Add(made);
@@ -2120,6 +2134,7 @@ public sealed partial class Binder
                             Body = getBody, Line = p.Line, Col = p.Col,
                             TemplateIndex = p.TemplateIndex,
                             VtableSlotHint = p.VtableSlotHint,
+                            OwnedImplementation = p.OwnedImplementation, File = p.File, Scope = p.Scope, Namespace = p.Namespace,
                         };
 
                         MethodSymbol gs = new()
@@ -2149,6 +2164,7 @@ public sealed partial class Binder
                             Body = setBody, Line = p.Line, Col = p.Col,
                             TemplateIndex = p.TemplateIndex,
                             VtableSlotHint = p.VtableSlotHint,
+                            OwnedImplementation = p.OwnedImplementation, File = p.File, Scope = p.Scope, Namespace = p.Namespace,
                         };
                         // The indices, and THEN the value -- `set_Item(i, v)`,
                         // which is the order C# uses and the order the use site
@@ -2742,7 +2758,7 @@ public sealed partial class Binder
         {
             _member = md;
 
-            if (md.Body is null || (d.SignatureOnly && !md.LocalCopy))
+            if (md.Body is null || (!md.LocalCopy && (md.OwnedImplementation == false || d.SignatureOnly)))
             {
                 continue;
             }

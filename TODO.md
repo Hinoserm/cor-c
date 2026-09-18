@@ -112,7 +112,7 @@ tasks below track that work; moving files alone does not reduce the working set.
   binder integration remain distinct work; storage alone does not complete them.
   Passed metadata suite at 4cc0529. Logs:
   build/logs/20260918-125148-75ea0294c16d4917a12fc849dfac1859/.
-- [ ] Verify source-index generation: declaration-only parsing, lexical scopes,
+- [x] Verify source-index generation: declaration-only parsing, lexical scopes,
   partial/nested generic identities, body-independent declaration fingerprints
   and stale-source rejection. Integrate indexed lookup into the binder next.
   Source-generation checks passed at 348be5d; expanded key-checksum and bounded
@@ -123,18 +123,26 @@ tasks below track that work; moving files alone does not reduce the working set.
   compilation complete. Default library loading is still eager.
   Initial namespace/alias/qualified integration and all eight test groups passed
   at e101c50; logs: build/logs/20260918-131514-7bedac7ab133481eaf5806dde23ea7d2/.
-- [ ] Verify compact project-wide interface reservations and managed layout/
+- [x] Verify compact project-wide interface reservations and managed layout/
   method ABI consistency contracts before extending generic and partial ownership.
   All eight groups passed at ab60933; logs:
   build/logs/20260918-133528-fce8e9d4d33c4dfe93bb8eab32ac8019/.
-- [ ] Verify indexed template-body imports, ordinary-body omission, namespaced
+- [x] Verify indexed template-body imports, ordinary-body omission, namespaced
   specialization identities and consumer-owned generic method code. Multi-unit
   specialization ownership/deduplication and partial ownership still remain.
   Initial template integration passed all eight groups at 7551fcb.
-- [ ] Verify compiler-certified shared definitions across independent consumers,
+- [x] Verify compiler-certified shared definitions across independent consumers,
   including different optimization choices, integrity rejection, stable ownership
   and stack-map preservation. The first implementation retains duplicate local
   bytes; physical removal and async/closure/partial ownership remain separate work.
+  All eight groups passed at 6c6a9e6; logs:
+  build/logs/20260918-142230-00afa03655fd49db97daffb50d82e3b0/.
+- [ ] Verify indexed partial-member ownership and cyclic references. Canonical
+  fragment order owns the descriptor/static storage; each source unit owns its
+  methods and accessors. Static-constructor helpers stay with their source unit
+  while the shared initialization wrapper stays with the type owner. Expand
+  runtime/static-initialization and scoped-initializer acceptance beyond the
+  initial static-field/accessor fixture before declaring partial support complete.
 - [ ] Do not retain a full declaration footprint for every class in every file.
 - [ ] Maintain a compact disk-backed index from qualified type names to the
   locations of their declaration records. Access to the index itself must be

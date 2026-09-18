@@ -1,0 +1,5 @@
+public static class CycleA
+{
+    public static int First() => CycleB.Second();
+    public static int Base() => 42;
+}

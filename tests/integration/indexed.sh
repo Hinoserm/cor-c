@@ -42,4 +42,19 @@ done
 status=0
 "$work/shared-generic" || status=$?
 test "$status" = 42
+for family in Partial Cycle; do
+    "$corc" index --assembly "$family" "tests/integration/indexed/${family}B.cor" \
+        "tests/integration/indexed/${family}A.cor" -o "$work/$family.idx"
+    for part in A B; do
+        "$corc" compile --nostdlib --lib --decl-index "$work/$family.idx" --assembly "$family" \
+            "tests/integration/indexed/$family$part.cor" --obj -o "$work/$family$part.o" 2> "$work/$family$part.compile.log"
+    done
+    "$corc" compile --nostdlib --decl-index "$work/$family.idx" --assembly "$family" \
+        "tests/integration/indexed/${family}Caller.cor" --obj -o "$work/${family}Caller.o" 2> "$work/${family}Caller.compile.log"
+    "$corlink" "$work/${family}Caller.o" "$work/${family}B.o" "$work/${family}A.o" \
+        -o "$work/$family" 2> "$work/$family.link.log"
+    status=0
+    "$work/$family" || status=$?
+    test "$status" = 42
+done
 printf 'PASS indexed namespace/alias/qualified consumers and separate linking: %s\n' "$work"

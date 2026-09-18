@@ -976,6 +976,7 @@ public sealed class Monomorphiser
         TypeDecl made = new()
         {
             Kind = d.Kind, Name = name, Mods = d.Mods, Line = d.Line, Col = d.Col, File = d.File,
+            SourcePath = d.SourcePath,
             FromLibrary = d.FromLibrary,
             External = d.External && d.TypeParams.Count == 0,
 
@@ -1044,6 +1045,7 @@ public sealed class Monomorphiser
             MemberDecl copy = RewriteMember(d.Members[i], map, name);
 
             copy.Scope = d.Members[i].Scope;
+            copy.OwnedImplementation = d.TypeParams.Count != 0 ? true : d.Members[i].OwnedImplementation;
             copy.Namespace = d.Members[i].Namespace;
             copy.TemplateIndex = i;
 

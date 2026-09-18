@@ -1,0 +1,5 @@
+public static partial class PartialValue
+{
+    public static int Value;
+    public static int First() => Second();
+}

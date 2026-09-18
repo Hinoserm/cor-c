@@ -5,7 +5,9 @@ public sealed class TypeDecl : Node
 {
     public required TypeKind Kind { get; init; }
     public required string Name { get; init; }
-    public Mods Mods { get; init; }
+    public Mods Mods { get; set; }
+    /// <summary>Canonical source identity, separate from diagnostic spelling.</summary>
+    public string? SourcePath { get; set; }
 
     /// <summary>
     /// Its field initialisers are already in its constructors. A declaration

@@ -25,6 +25,7 @@ public static class Program
             DeclarationCatalogTests.Run(work);
             InterfacePlanTests.Run(work);
             DefinitionSemanticsTests.Run();
+            PartialOwnershipTests.Run(work);
             string path = Path.Combine(work, "declarations.idx");
             DeclarationRecord[] records = Enumerable.Range(0, 1000).Select(i =>
                 new DeclarationRecord("Namespace.Type" + i.ToString("D4"), BitConverter.GetBytes(i))).ToArray();

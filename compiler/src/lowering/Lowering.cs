@@ -273,7 +273,7 @@ public sealed partial class Lowering
         {
             foreach (MethodSymbol m in t.Methods)
             {
-                if (m.Name == "Main" && m.Static && !IsExternal(m))
+                if (m.Name == "Main" && m.Static && Emits(m))
                 {
                     entry = m;
                 }
@@ -297,7 +297,8 @@ public sealed partial class Lowering
             {
                 // Another shared object's; and, when this is one library of
                 // several, an instantiation is reached rather than rooted.
-                if (t.Decl?.Elsewhere == true || (PartOfALibrary && t.Decl?.Specialised == true))
+                if ((t.Decl?.Elsewhere == true && !t.Methods.Any(method => method.Decl?.OwnedImplementation == true))
+                    || (PartOfALibrary && t.Decl?.Specialised == true))
                 {
                     continue;
                 }
@@ -464,7 +465,7 @@ public sealed partial class Lowering
         && (m.Owner.Name.StartsWith("ArrayView$", StringComparison.Ordinal)
             || m.Owner.Name.StartsWith("ArrayEnumerator$", StringComparison.Ordinal))
         || m.Decl?.Body != null && m.Decl.File != "<prelude>"
-        && !IsExternal(m) && (m.Owner.Decl?.Elsewhere != true || m.Decl?.LocalCopy == true) && m.Owner.Decl?.Canon is null
+        && !IsExternal(m) && (m.Decl?.LocalCopy == true || (m.Decl?.OwnedImplementation ?? m.Owner.Decl?.Elsewhere != true)) && m.Owner.Decl?.Canon is null
         && m.Owner.Decl?.TypeParams.Count is null or 0
         && m.Decl?.TypeParams.Count is null or 0;
 

@@ -48,7 +48,16 @@ Coalescing remains required when optional LTO transformations are disabled.
 
 ## Remaining scope
 
-Async specialization identities, closure ownership, partial-type members, fully
+Indexed partial declarations are merged in canonical source-path order for
+layout, independently of which source file owns the bodies being compiled.
+The first fragment owns the descriptor and static storage. Member ownership is
+explicit: methods and property accessors remain in their original source unit.
+Synthesized default constructors and static-initialization wrappers belong to
+the type owner. An explicit static constructor becomes a hidden ordinary helper
+in its original unit; the initialization wrapper calls it after field initializers.
+This preserves one initialization protocol without importing that method body.
+
+Async specialization identities, closure ownership, full partial-type acceptance, fully
 lazy generic method loading, and general IR import/regeneration remain work in
 progress. Uncertified duplicate helpers are rejected rather than silently merged.
 No whole-project memory bound or complete generic/runtime acceptance is claimed.

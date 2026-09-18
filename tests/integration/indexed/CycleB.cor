@@ -1,0 +1,4 @@
+public static class CycleB
+{
+    public static int Second() => CycleA.Base();
+}

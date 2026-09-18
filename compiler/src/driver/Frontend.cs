@@ -96,11 +96,13 @@ public static class Frontend
                 foreach (TypeDecl decl in one.Types)
                 {
                     decl.File = file;
+                    decl.SourcePath = sourceIndex == 1 ? null : Path.GetFullPath(paths[sourceIndex - 2]);
                     decl.FromLibrary = isLibrary;
                     decl.Elsewhere = isElsewhere;
                     foreach (MemberDecl member in decl.Members)
                     {
                         member.File = file;
+                        if (declarations is not null && !isElsewhere) member.OwnedImplementation = true;
                     }
                 }
 
@@ -123,6 +125,12 @@ public static class Frontend
         Program.BenchmarkStage("merge-expand");
 #endif
         declarations?.AddHeaders(unit);
+        if (declarations is not null)
+            unit.Types.Sort((left, right) =>
+            {
+                int path = StringComparer.Ordinal.Compare(left.SourcePath, right.SourcePath);
+                return path != 0 ? path : left.SourceFrom.CompareTo(right.SourceFrom);
+            });
         MergePartialTypes(unit);
 
         IReadOnlyList<CompileError> generic;
@@ -456,6 +464,8 @@ public static class Frontend
             }
 
             into.Members.AddRange(part.Members);
+            into.Mods |= part.Mods;
+            into.SignatureOnly &= part.SignatureOnly;
         }
 
         unit.Types.Clear();

@@ -33,6 +33,8 @@ public abstract class MemberDecl : Node
     /// this was found.
     /// </summary>
     public bool LocalCopy { get; set; }
+    /// <summary>Indexed unit ownership; null retains the enclosing type's legacy ownership.</summary>
+    public bool? OwnedImplementation { get; set; }
 
     /// <summary>
     /// Settable because a specialised copy is RENAMED: one generic method

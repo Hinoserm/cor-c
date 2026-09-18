@@ -32,6 +32,7 @@ public sealed partial class Binder
         type.Members.Add(new MethodDecl
         {
             Name = "StaticInitBody$", Mods = Mods.Static | Mods.Private,
+            OwnedImplementation = !type.Elsewhere,
             Returns = new TypeRef { Name = "void" }, Body = body,
             File = type.File, Line = type.Line, Col = type.Col,
         });
@@ -74,6 +75,7 @@ public sealed partial class Binder
         type.Members.Add(new MethodDecl
         {
             Name = "StaticInit$", Mods = Mods.Static | Mods.Public,
+            OwnedImplementation = !type.Elsewhere,
             Returns = new TypeRef { Name = "void" }, Body = wrapper,
             File = type.File, Line = type.Line, Col = type.Col,
         });
