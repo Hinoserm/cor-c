@@ -40,7 +40,7 @@ public static class Frontend
         Program.BenchmarkStage("read-sources");
 #endif
         CompilationUnit unit = new() { Line = 1, Col = 1 };
-        List<(string Name, string Text, bool FromLibrary, bool Elsewhere)> sources = new() { ("<prelude>", Prelude.Source, true, false) };
+        List<(string Name, string? Path, bool FromLibrary, bool Elsewhere)> sources = new() { ("<prelude>", null, true, false) };
 
         // WHICH SOURCES ARE THE CLASS LIBRARY. Told by the driver, which is
         // the only part that knows what it links by default; matched on the
@@ -73,7 +73,7 @@ public static class Frontend
             {
                 throw new FileNotFoundException($"no such file: {path}");
             }
-            sources.Add((Path.GetFileName(path), File.ReadAllText(path),
+            sources.Add((Path.GetFileName(path), path,
                 fromLibrary.Contains(Path.GetFullPath(path)),
                 elsewhere.Contains(Path.GetFullPath(path))));
         }
@@ -85,7 +85,7 @@ public static class Frontend
         {
             CompilationUnit[] parsed = ParseSources(sources, symbols, workers);
             int sourceIndex = 0;
-            foreach ((string file, string text, bool isLibrary, bool isElsewhere) in sources)
+            foreach ((string file, string? path, bool isLibrary, bool isElsewhere) in sources)
             {
                 CompilationUnit one = parsed[sourceIndex++];
                 unit.Usings.AddRange(one.Usings);
@@ -218,14 +218,14 @@ public static class Frontend
     public static bool WarningsAreErrors { get; set; } = true;
 
     private static CompilationUnit[] ParseSources(
-        List<(string Name, string Text, bool FromLibrary, bool Elsewhere)> sources,
+        List<(string Name, string? Path, bool FromLibrary, bool Elsewhere)> sources,
         IReadOnlyCollection<string>? symbols, int workers)
     {
         CompilationUnit[] parsed = new CompilationUnit[sources.Count];
         if (workers <= 1)
         {
             for (int i = 0; i < sources.Count; i++)
-                parsed[i] = Parser.ParseText(sources[i].Text, sources[i].Name, symbols);
+                parsed[i] = ParseSource(sources[i].Name, sources[i].Path, symbols);
             return parsed;
         }
         CompileError?[] failures = new CompileError?[sources.Count];
@@ -238,7 +238,7 @@ public static class Frontend
             {
                 for (int i = lane; i < sources.Count; i += active)
                 {
-                    try { parsed[i] = Parser.ParseText(sources[i].Text, sources[i].Name, symbols); }
+                    try { parsed[i] = ParseSource(sources[i].Name, sources[i].Path, symbols); }
                     catch (CompileError error) { failures[i] = error; }
                 }
             });
@@ -248,6 +248,15 @@ public static class Frontend
         for (int i = 0; i < failures.Length; i++)
             if (failures[i] is CompileError error) throw error;
         return parsed;
+    }
+
+    private static CompilationUnit ParseSource(string name, string? path, IReadOnlyCollection<string>? symbols)
+    {
+        // Source text belongs to the active parser, not the project. Retain
+        // paths in the queue so completed files release their text before the
+        // next file is read. At most one source buffer per worker is live.
+        string text = path is null ? Prelude.Source : File.ReadAllText(path);
+        return Parser.ParseText(text, name, symbols);
     }
 
     private static bool Report(IReadOnlyList<CompileError> errors)

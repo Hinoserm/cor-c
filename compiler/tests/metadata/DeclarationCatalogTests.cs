@@ -49,6 +49,14 @@ public static class DeclarationCatalogTests
         bool useAfterDispose = false;
         try { _ = disposed.Records; } catch (ObjectDisposedException) { useAfterDispose = true; }
         Require(useAfterDispose, "disposed lease remained usable");
+        using (IndexedDeclarations declarations = new(path, "Catalog", Array.Empty<string>(), 4096))
+        {
+            for (int i = 0; i < 100; i++) declarations.Include("T:" + assembly + "\nNs.T" + i);
+            CompilationUnit headers = new() { Line = 1, Col = 1 };
+            declarations.AddHeaders(headers);
+            Require(headers.Types.Count == 100, "bounded unit discovery lost headers");
+            Require(declarations.ResidentDeclarationBytes <= 4096, "unit discovery pinned the entire catalog");
+        }
         Console.WriteLine("  declaration cache: lazy loads, sharing, bounded eviction, pin exhaustion and recovery passed");
     }
 

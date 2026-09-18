@@ -1,18 +1,20 @@
 namespace Corsac.Lang.Metadata;
 
-/// <summary>One compilation unit's pinned declaration dependencies.</summary>
+/// <summary>One compilation unit's discovered declaration dependencies.</summary>
 public sealed class IndexedDeclarations : IDisposable
 {
     private readonly DeclarationCatalog catalog;
     private readonly string assembly;
     private readonly HashSet<string> owned;
-    private readonly Dictionary<string, DeclarationLease> loaded = new(StringComparer.Ordinal);
+    private readonly HashSet<string> loaded = new(StringComparer.Ordinal);
     public long PayloadLoads => catalog.PayloadLoads;
+    public long ResidentDeclarationBytes => catalog.ResidentBytes;
     public IReadOnlyDictionary<(string Name, int Arity), int> Interfaces { get; }
 
-    public IndexedDeclarations(string path, string assembly, IEnumerable<string> ownedFiles)
+    public IndexedDeclarations(string path, string assembly, IEnumerable<string> ownedFiles,
+        long declarationBudgetBytes = 2 * 1024 * 1024)
     {
-        catalog = new DeclarationCatalog(path);
+        catalog = new DeclarationCatalog(path, declarationBudgetBytes);
         this.assembly = assembly;
         Interfaces = catalog.Interfaces(assembly);
         owned = ownedFiles.Select(Path.GetFullPath).ToHashSet(StringComparer.Ordinal);
@@ -21,14 +23,14 @@ public sealed class IndexedDeclarations : IDisposable
     public void Require(string bindingName)
     {
         string? key = catalog.BindingKey(assembly, bindingName);
-        if (key is not null && !loaded.ContainsKey(key)) throw new DeclarationDemand(key);
+        if (key is not null && !loaded.Contains(key)) throw new DeclarationDemand(key);
     }
 
     public void Include(string key)
     {
-        if (loaded.ContainsKey(key)) throw new InvalidDataException("Declaration discovery made no progress: " + key);
-        DeclarationLease lease = catalog.AcquireKey(key) ?? throw new InvalidDataException("Missing requested declaration: " + key);
-        loaded.Add(key, lease);
+        if (loaded.Contains(key)) throw new InvalidDataException("Declaration discovery made no progress: " + key);
+        using DeclarationLease lease = catalog.AcquireKey(key) ?? throw new InvalidDataException("Missing requested declaration: " + key);
+        loaded.Add(key);
     }
 
     public void AddHeaders(CompilationUnit unit)
@@ -37,7 +39,12 @@ public sealed class IndexedDeclarations : IDisposable
         // fragment. Demand its family before entering body binding.
         foreach (TypeDecl type in unit.Types.Where(type => type.Mods.HasFlag(Mods.Partial)))
             Require(Binder.TypeKey(type));
-        foreach (DeclarationLease lease in loaded.Values)
+        foreach (string key in loaded)
+        {
+            // Parsed headers own their syntax. Keeping their serialized source
+            // records pinned as well prevents eviction without helping binding.
+            using DeclarationLease lease = catalog.AcquireKey(key)
+                ?? throw new InvalidDataException("Missing discovered declaration: " + key);
             foreach (SourceDeclaration source in lease.Records)
             {
                 if (owned.Contains(source.Path)) { _ = source.ReadSource(); continue; }
@@ -69,11 +76,11 @@ public sealed class IndexedDeclarations : IDisposable
                 }
                 unit.Types.Add(root);
             }
+        }
     }
 
     public void Dispose()
     {
-        foreach (DeclarationLease lease in loaded.Values) lease.Dispose();
         loaded.Clear(); catalog.Dispose();
     }
 }

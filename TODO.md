@@ -110,6 +110,10 @@ tasks below track that work; moving files alone does not reduce the working set.
   units, and a separate final link step using the existing ELF linker.
 - [ ] Compile and release bounded units rather than retaining every source body,
   syntax tree, bound graph, and intermediate representation at once.
+  Current checkpoint queues paths instead of all source texts and releases
+  declaration-record pins once headers are parsed; verification is pending.
+  Imported syntax and the bound unit remain separate memory costs, not included
+  in the declaration cache accounting.
 - [ ] After the project path works, reorganize the compiler toward one top-level
   class/type per matching source file, following ordinary C# conventions.
 - [ ] Preserve useful partial-class subdivisions. Physical file boundaries must
