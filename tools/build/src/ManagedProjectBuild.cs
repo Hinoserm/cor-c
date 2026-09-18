@@ -78,7 +78,11 @@ public static class ManagedProjectBuild
             else Console.WriteLine("current managed " + project.Path);
             outputs.Add(project.Path, dll);
             foreach (string dependency in outputs.Values.Where(file => file != dll))
-                File.Copy(dependency, Path.Combine(output, Path.GetFileName(dependency)), true);
+            {
+                string destination = Path.Combine(output, Path.GetFileName(dependency));
+                if (!File.Exists(destination) || !SHA256.HashData(File.ReadAllBytes(destination)).AsSpan()
+                    .SequenceEqual(SHA256.HashData(File.ReadAllBytes(dependency)))) File.Copy(dependency, destination, true);
+            }
             if (project.OutputType != "Library")
             {
                 if (!OperatingSystem.IsWindows())
@@ -107,11 +111,11 @@ public static class ManagedProjectBuild
 
     private static async Task<FileStream> Lock(string path, CancellationToken cancel)
     {
-        while (true)
+        for (int attempt = 0; ; attempt++)
         {
             cancel.ThrowIfCancellationRequested();
             try { return new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
-            catch (IOException) { await Task.Delay(100, cancel); }
+            catch (IOException) when (attempt < 6000) { await Task.Delay(100, cancel); }
         }
     }
 }
