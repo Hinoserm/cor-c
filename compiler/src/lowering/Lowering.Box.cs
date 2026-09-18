@@ -226,7 +226,7 @@ public sealed partial class Lowering
     private string BoxToString(Type of, string name)
     {
         string label = "__box_tostring_" + Safe(name);
-        Function f = new(label, IrTypes.Word);
+        Function f = new(label, IrTypes.Word) { Coalescible = true };
         VReg self = f.NewReg(IrTypes.Word, "this");
         f.Params.Add(self);
         Builder e = new(f, f.NewBlock("entry"));
@@ -275,7 +275,7 @@ public sealed partial class Lowering
     private string BoxEquals(Type of, string name)
     {
         string label = "__box_equals_" + Safe(name);
-        Function f = new(label, IrType.I32);
+        Function f = new(label, IrType.I32) { Coalescible = true };
         VReg self = f.NewReg(IrTypes.Word, "this");
         VReg other = f.NewReg(IrTypes.Word, "other");
         f.Params.Add(self);

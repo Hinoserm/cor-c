@@ -28,7 +28,7 @@ public sealed partial class Lowering
         if (!_hasObjectHash)
         {
             _hasObjectHash = true;
-            Function f = new(name, IrType.I32);
+            Function f = new(name, IrType.I32) { Coalescible = true };
             VReg self = f.NewReg(IrTypes.Word, "this");
 
             f.Params.Add(self);
@@ -60,7 +60,7 @@ public sealed partial class Lowering
         }
 
         _hasKeyEquals = true;
-        Function f = new(name, IrType.I32);
+        Function f = new(name, IrType.I32) { Coalescible = true };
         VReg a = f.NewReg(IrTypes.Word, "a");
         VReg b = f.NewReg(IrTypes.Word, "b");
 
@@ -143,7 +143,7 @@ public sealed partial class Lowering
         }
 
         _hasKeyHash = true;
-        Function f = new(name, IrType.I32);
+        Function f = new(name, IrType.I32) { Coalescible = true };
         VReg a = f.NewReg(IrTypes.Word, "a");
 
         f.Params.Add(a);
@@ -246,7 +246,7 @@ public sealed partial class Lowering
 
         Require(typed);
 
-        Function f = new(label, IrType.I32);
+        Function f = new(label, IrType.I32) { Coalescible = true };
         VReg self = f.NewReg(IrTypes.Word, "this");
         VReg other = f.NewReg(IrTypes.Word, "other");
 
@@ -294,7 +294,7 @@ public sealed partial class Lowering
             return label;
         }
 
-        Function f = new(label, IrType.I32);
+        Function f = new(label, IrType.I32) { Coalescible = true };
         VReg self = f.NewReg(IrTypes.Word, "this");
         VReg other = f.NewReg(IrTypes.Word, "other");
 
@@ -370,7 +370,7 @@ public sealed partial class Lowering
             return label;
         }
 
-        Function f = new(label, IrType.I32);
+        Function f = new(label, IrType.I32) { Coalescible = true };
         VReg self = f.NewReg(IrTypes.Word, "this");
 
         f.Params.Add(self);
@@ -443,7 +443,7 @@ public sealed partial class Lowering
         if (!_hasObjectCompare)
         {
             _hasObjectCompare = true;
-            Function f = new(name, IrType.I32);
+            Function f = new(name, IrType.I32) { Coalescible = true };
             VReg a = f.NewReg(IrTypes.Word, "this");
             VReg b = f.NewReg(IrTypes.Word, "other");
 
@@ -491,7 +491,7 @@ public sealed partial class Lowering
         }
 
         _hasKeyCompare = true;
-        Function f = new(name, IrType.I32);
+        Function f = new(name, IrType.I32) { Coalescible = true };
         VReg a = f.NewReg(IrTypes.Word, "a");
         VReg b = f.NewReg(IrTypes.Word, "b");
 
@@ -562,7 +562,7 @@ public sealed partial class Lowering
             return label;
         }
 
-        Function f = new(label, IrType.I32);
+        Function f = new(label, IrType.I32) { Coalescible = true };
         VReg self = f.NewReg(IrTypes.Word, "this");
         VReg other = f.NewReg(IrTypes.Word, "other");
 
@@ -628,7 +628,7 @@ public sealed partial class Lowering
     private string BoxHash(Type of, string name)
     {
         string label = "__box_hash_" + Safe(name);
-        Function f = new(label, IrType.I32);
+        Function f = new(label, IrType.I32) { Coalescible = true };
         VReg self = f.NewReg(IrTypes.Word, "this");
 
         f.Params.Add(self);

@@ -295,6 +295,7 @@ public sealed partial class Lowering
         {
             foreach (TypeSymbol t in _b.Types.Values)
             {
+                if (t.Decl?.File == "<prelude>") continue;
                 // Another shared object's; and, when this is one library of
                 // several, an instantiation is reached rather than rooted.
                 if ((t.Decl?.Elsewhere == true && !t.Methods.Any(method => method.Decl?.OwnedImplementation == true))
@@ -1288,7 +1289,7 @@ public sealed partial class Lowering
         if (!_hasObjectEquals)
         {
             _hasObjectEquals = true;
-            Function f = new(name, IrType.I32);
+            Function f = new(name, IrType.I32) { Coalescible = true };
             VReg a = f.NewReg(IrTypes.Word, "this");
             VReg b = f.NewReg(IrTypes.Word, "other");
             f.Params.Add(a);
@@ -1307,7 +1308,7 @@ public sealed partial class Lowering
         if (!_hasObjectToString)
         {
             _hasObjectToString = true;
-            Function f = new(name, IrTypes.Word);
+            Function f = new(name, IrTypes.Word) { Coalescible = true };
             VReg self = f.NewReg(IrTypes.Word, "this");
             f.Params.Add(self);
             Builder e = new(f, f.NewBlock("entry"));
@@ -1332,7 +1333,7 @@ public sealed partial class Lowering
         TypeSymbol view = m.Owner;
         Type of = view.Fields[0].Type.Element ?? Type.I32;
 
-        Function f = new(Label(m), IrTypes.Of(m.Returns));
+        Function f = new(Label(m), IrTypes.Of(m.Returns)) { Coalescible = true };
         VReg self = f.NewReg(IrTypes.Word, "this");
         f.Params.Add(self);
         foreach (ParamSymbol p in m.Params)
