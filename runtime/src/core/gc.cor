@@ -2093,8 +2093,8 @@ static class GcRoots
     // before the heap is up, and a heap block would also be a block the
     // collector has to keep alive forever.
 
-    const long ExtraMax = 32;
-    const long ExtraBytes = 256;
+    const long ExtraMax = 128;
+    const long ExtraBytes = ExtraMax * 8;
 
     static long _extra;
     static long _extraCount;
