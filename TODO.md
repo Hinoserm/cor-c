@@ -36,7 +36,9 @@ per-file process scheduling work is paused separately.
   - [x] Preserve x87 state boundaries and prohibit implicit packed-register use
     in freestanding code without hosted state ownership.
   - [x] Execute ordinary array source with the complete statically linked runtime
-    for 486, Pentium, Pentium-MMX, excluded MMX, K6-2 and K6-plus profiles.
+    for 486, Pentium, Pentium-MMX, excluded MMX and all five K6 profiles.
+  - [x] Use word transfers with exact tails for runtime-sized x86 memory copies;
+    verify zero lengths, byte alignments, guards and argument permutations.
   - [ ] Broaden patterns beyond current bounded frame regions, complete missing
     saturation/comparison/packing/reduction families, and validate source-level
     uptake. Do not substitute approximate reciprocal instructions for exact

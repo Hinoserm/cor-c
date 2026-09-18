@@ -1645,8 +1645,20 @@ static class Runtime
         // Aligned equal words can be skipped on every target. A differing
         // word still goes through the unsigned-byte comparison below, so the
         // answer does not depend on target endianness. Never read past count.
-        if (((a | b) & 3) == 0)
+        if (((a ^ b) & 3) == 0)
         {
+            // Matching misalignment needs at most three byte comparisons
+            // before both addresses become safe for aligned word loads.
+            while (i < count && ((a + i) & 3) != 0)
+            {
+                long x = Sys.PeekByte(a + i);
+                long y = Sys.PeekByte(b + i);
+                if (x != y)
+                {
+                    return x < y ? -1 : 1;
+                }
+                i = i + 1;
+            }
             while (count - i >= 4)
             {
                 if (Sys.PeekWord(a + i) != Sys.PeekWord(b + i))

@@ -70,8 +70,10 @@ instruction is already selected automatically.
   shift counts/sign extension, dot products, signed zero, and saturating casts.
   These native-host checks do not prove an entire executable is 386-safe.
 - `sh tests/integration/x86-packed-source.sh` compiles ordinary array source,
-  verifies packed instruction selection/exclusion, and executes six CPU
-  profiles with a statically compiled runtime. Static linking avoids an
+  verifies packed instruction selection/exclusion, and executes nine CPU
+  profiles with a statically compiled runtime, including all five K6 profiles.
+  It also checks runtime byte comparison across every source/destination byte
+  alignment, tails, equality and unsigned differing-byte order. Static linking avoids an
   unrelated host glibc loader that requires CMOV on this development machine.
 
 Run the focused instruction and backend milestones from the repository root:
