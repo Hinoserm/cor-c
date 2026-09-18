@@ -31,8 +31,17 @@ public sealed class BuildManifest
         { DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null });
         XElement root = XDocument.Load(reader, LoadOptions.SetLineInfo).Root
             ?? throw new BuildException("Empty build manifest");
-        Check(root, "Build", "FormatVersion", "DefaultTargets");
+        Check(root, "Build", "FormatVersion", "DefaultTargets", "StrictProperties");
         if ((string?)root.Attribute("FormatVersion") != "1") Fail(root, "FormatVersion must be 1");
+        string strict = (string?)root.Attribute("StrictProperties") ?? "false";
+        if (strict is not ("true" or "false")) Fail(root, "StrictProperties must be true or false");
+        if (strict == "true")
+        {
+            HashSet<string> declared = root.Elements("PropertyGroup").Elements().Select(p => p.Name.LocalName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            declared.Add("Configuration");
+            foreach (string name in options.Properties.Keys)
+                if (!declared.Contains(name)) Fail(root, "Unknown build property " + name);
+        }
         result.Properties["Configuration"] = "Release";
         foreach (var pair in options.Properties) result.Properties[pair.Key] = pair.Value;
         result.Properties["WorkspaceDirectory"] = result.Root;

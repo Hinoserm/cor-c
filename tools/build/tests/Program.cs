@@ -26,6 +26,13 @@ public static class Program
             Require(BuildOptions.Parse([]).Jobs == Environment.ProcessorCount);
             Require(BuildOptions.Parse(["--jobs", "1"]).Jobs == 1);
         });
+        Check("strict manifests reject misspelled command-line properties", () =>
+        {
+            string path = Path.Combine(Work, "strict.build");
+            File.WriteAllText(path, "<Build FormatVersion='1' StrictProperties='true'><PropertyGroup><Smp>1</Smp></PropertyGroup><Target Name='all' AllowEmpty='true'/></Build>");
+            Require(BuildManifest.Load(path, BuildOptions.Parse(["smp=0"])).Properties["Smp"] == "0");
+            ExpectError(() => BuildManifest.Load(path, BuildOptions.Parse(["smpp=0"])), "Unknown build property");
+        });
         Check("incremental timestamp state tracks inputs outputs and commands", () =>
         {
             BuildManifest manifest = Load("<Target Name='all'><Exec Executable='tool' Inputs='input' Outputs='output'/></Target>");
