@@ -106,6 +106,11 @@ work belong in [TODO.md](TODO.md).
 - Standard lookup must work for the current namespace, enclosing and nested
   types, fully qualified names, aliases, global usings, `using static`, and
   extension-method candidates.
+- Default Linux compilation must resolve library declarations and implementation
+  bodies on demand from actual references and their dependencies. Import scopes
+  guide name lookup; a `using` directive neither loads a complete namespace nor
+  excludes valid qualified references. Removing dead code after eagerly parsing
+  all library sources does not meet the memory requirement.
 - Indexed candidate lookup must support ambiguity, overload, accessibility,
   and extension-method resolution without depending on load order.
 - Transitive declarations must load on demand, including base types,
@@ -171,6 +176,7 @@ work belong in [TODO.md](TODO.md).
   interfaces.
 - OS-and-architecture-specific conventions belong below the combined platform
   boundary rather than leaking into generic architecture code.
+- Runtime/platform adapters must preserve applicable POSIX/Linux ABI behavior.
 - CORSAC/OS kernel, bootloader, scheduler, driver, and hardware product code
   remain in the CORSAC/OS repository. Only reusable runtime mechanisms and the
   CORSAC user-process adapter belong here.
@@ -199,6 +205,8 @@ work belong in [TODO.md](TODO.md).
 - Concurrency must not multiply the full compiler working set per worker.
 - Avoid heap allocation for small temporary buffers where stack or reusable
   per-owner/per-thread storage is safe.
+- Allocation and garbage collection remain top performance priorities alongside
+  reducing the compiler's live working set.
 - Static storage may be used only when sharing, lifetime, reentrancy, and secret
   erasure remain correct.
 - Allocation and GC changes must preserve object identity, zero initialization,
@@ -210,6 +218,9 @@ work belong in [TODO.md](TODO.md).
 
 - The default target is 486 plus x87. Generated code must not silently use
   Pentium, MMX, SSE, or later instructions.
+- Audit emitted instructions rather than relying on the command-line target
+  name. Evaluate size-oriented output before more complex transformations and
+  balance inlining against code size instead of applying either universally.
 - Size is a first-class performance concern on the 486. Decisions must account
   for instruction fetch, code footprint, calls, spills, and memory traffic.
 - Intended optimizations must not be removed merely to make self-hosting pass;
@@ -271,3 +282,26 @@ work belong in [TODO.md](TODO.md).
   local build artifacts, or unrelated CORSAC/OS source history.
 - Public documentation must distinguish working, experimental, incomplete, and
   unverified features accurately.
+
+## Development workflow and evidence
+
+- Task priority changes do not supersede requirements for internal parallelism,
+  memory reduction, optimizations, compatibility, self-hosting or benchmarks.
+  The current task sequence belongs in TODO.md.
+- Audit source and exact generated artifacts before repeatedly executing a
+  failing workload. Add enough instrumentation to diagnose a focused run.
+- Use compiler self-compilation as a primary workload. Benchmark cohesive
+  changes often enough to attribute regressions; do not defer measurement until
+  an untraceably large batch accumulates.
+- Record immutable source/artifact identities, options, phase boundaries,
+  allocation/GC counters, correctness results and final command status.
+- Push coherent checkpoints promptly, before testing when requested, then push
+  corrections with clear verification limits. Preserve unrelated user changes.
+- Keep TODO.md synchronized with implementation status. Do not repeat completed
+  work without a reason, and do not promote old passing evidence to a current
+  all-tests-pass claim.
+- Tests under tests/language are executable specifications subject to the
+  C#/.NET standard. Preserve valid expected behavior when repairing code.
+- Retain non-superseded tasks and evidence from predecessor TODO files and
+  optimization ledgers. Reformatting and repository extraction do not imply
+  completion or cancellation of those requirements.
