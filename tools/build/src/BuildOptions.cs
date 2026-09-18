@@ -42,6 +42,16 @@ public sealed class BuildOptions
                 case "--help": case "-h": result.Help = true; break;
                 default:
                     if (args[i].StartsWith('-')) throw new BuildException("Unsupported option " + args[i]);
+                    int separator = args[i].IndexOf('=');
+                    if (separator >= 0)
+                    {
+                        string name = args[i][..separator];
+                        if (name.Length == 0 || !(char.IsLetter(name[0]) || name[0] == '_')
+                            || name.Any(c => !char.IsLetterOrDigit(c) && c != '_'))
+                            throw new BuildException("Invalid property name: " + name);
+                        result.Properties[name] = args[i][(separator + 1)..];
+                        break;
+                    }
                     if (result.Target is not null) throw new BuildException("Specify one target path");
                     result.Target = args[i];
                     break;

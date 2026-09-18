@@ -12,6 +12,15 @@ public static class Program
     public static async Task<int> Main()
     {
         Directory.CreateDirectory(Work);
+        Check("bare properties compose with targets without splitting values", () =>
+        {
+            BuildOptions options = BuildOptions.Parse(["disk=output file.bin", "arch=486", "configure", "smp=0", "label=a=b"]);
+            Require(options.Target == "configure" && options.Properties["disk"] == "output file.bin"
+                && options.Properties["arch"] == "486" && options.Properties["Smp"] == "0" && options.Properties["label"] == "a=b");
+            Require(BuildOptions.Parse(["disk=output.bin"]).Target is null);
+            ExpectError(() => BuildOptions.Parse(["=oops"]), "Invalid property");
+            ExpectError(() => BuildOptions.Parse(["one", "two"]), "one target");
+        });
         Check("default worker budget uses available logical CPUs", () =>
         {
             Require(BuildOptions.Parse([]).Jobs == Environment.ProcessorCount);

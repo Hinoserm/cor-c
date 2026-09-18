@@ -9,7 +9,7 @@ public static class Program
             BuildOptions options = BuildOptions.Parse(args);
             if (options.Help)
             {
-                Console.WriteLine("build [target/path] [--file corsac.build] [--list] [--plan] [--jobs N]\n"
+                Console.WriteLine("build [target/path] [Name=Value ...] [--file corsac.build] [--list] [--plan] [--jobs N]\n"
                     + "      [--configuration Release] [--toolchain dotnet] [--property Name=Value]\n"
                     + "Default jobs: available logical CPUs; --jobs lowers the global worker budget.");
                 return 0;
