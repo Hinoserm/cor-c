@@ -133,8 +133,12 @@ tasks below track that work; moving files alone does not reduce the working set.
   stays below 1 MiB. A measured host link saved 8,760 KiB peak RSS with identical
   output; see docs/BENCHMARKS.md. Native ELF input objects are still resident;
   this is not complete streamed object I/O.
-- [ ] Verify the subsequent symbol-file split and standard protected
-  Stream.Dispose(bool) override path in the latest combined source.
+- [x] Verify the subsequent symbol-file split and standard protected
+  Stream.Dispose(bool) override path. At 9d5179d all ten default groups passed;
+  the disposal override, namespace fixture and four LINQ fixtures also passed.
+  Evidence: build/logs/20260918-174943-54378661ac3147a2bb18222cbcb3fcf8/ and
+  build/milestone3-language-focused.log. IR summary-open allocation measured
+  5,728 bytes for a 4 MiB payload in the linker unit test.
 - [ ] After the project path works, reorganize the compiler toward one top-level
   class/type per matching source file, following ordinary C# conventions.
 - [ ] Preserve useful partial-class subdivisions. Physical file boundaries must
