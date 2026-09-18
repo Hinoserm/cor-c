@@ -113,7 +113,7 @@ expected_output() {
 }
 
 first=1
-for source in "$root"/tests/language/6[2-9][0-9]_shared_*.cor; do
+for source in "$root"/tests/language/6[2-9][0-9]_shared_*.cor "$root/tests/language/514_stack_traces.cor"; do
     [ -e "$source" ] || continue
     name="$(basename "$source" .cor)"
     if [ -n "$filter" ] && [[ "$name" != *"$filter"* ]]; then
