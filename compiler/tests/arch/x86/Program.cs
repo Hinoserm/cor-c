@@ -56,6 +56,7 @@ internal static class Program
 
     private static int Main(string[] args)
     {
+        if (args.Contains("--benchmark-packed")) return PackedMemoryBenchmarks.Run();
         Target.Current = Target.X86;
         Target.X86.X86Profile = X86Cpu.Parse(args);
         PruneArithmetic();
@@ -79,6 +80,7 @@ internal static class Program
         Convert(m);
         Bytes(m);
         SmallFills(m);
+        PackedFrames(m);
         ByteSwaps(m);
         Exit(m);
         UDiv64(m);
@@ -107,6 +109,8 @@ internal static class Program
         bool usesBswap = Target.X86.X86Profile.Name != "386";
         Check(FunctionAsm(asm, "bswap32").Contains("bswap ") == usesBswap, "byte-swap instruction respects CPU profile");
         Check(FunctionAsm(asm, "bswap64_inplace").Contains("bswap ") == usesBswap, "wide byte-swap instruction respects CPU profile");
+        Check(FunctionAsm(asm, "packed_frames").Contains("movq ") == Target.X86.X86Profile.Mmx, "packed frame operations respect MMX exclusion");
+        Check(FunctionAsm(asm, "packed_frames").Contains("femms") == Target.X86.X86Profile.ThreeDNow, "packed frame exit respects 3DNow selection");
         File.WriteAllText(Path.Combine(outDir, "tests.asm"), asm);
         Console.WriteLine(asm);
 
@@ -884,6 +888,36 @@ internal static class Program
         wb.Ret(R(wide.Params[0]));
     }
 
+    private static void PackedFrames(Module m)
+    {
+        (Function function, Builder b) = New(m, "packed_frames", IrType.I32);
+        VReg okay = b.Const(1, IrType.I32);
+        FrameSlot source = function.NewSlot(144, 8, "source"), destination = function.NewSlot(144, 8, "destination");
+        foreach (int length in new[] { 0, 1, 31, 32, 33, 63, 64, 65, 127, 128, 129 })
+        {
+            for (int offset = 0; offset < 144; offset++)
+            {
+                b.Store(new SlotOperand(source), I((offset * 37 + 19) & 255), offset, 1);
+                b.Store(new SlotOperand(destination), I(0xa5), offset, 1);
+            }
+            b.Emit(Opcode.MemCopy, null, new SlotOperand(destination), new SlotOperand(source), I(length));
+            for (int offset = 0; offset < 144; offset++)
+            {
+                VReg actual = b.Load(IrType.I32, new SlotOperand(destination), offset, 1, false);
+                okay = b.Binary(Opcode.And, okay, b.Binary(Opcode.Eq, actual, offset < length ? (offset * 37 + 19) & 255 : 0xa5));
+            }
+            b.Emit(Opcode.MemSet, null, new SlotOperand(destination), I(0), I(length));
+            for (int offset = 0; offset < 144; offset++)
+            {
+                VReg actual = b.Load(IrType.I32, new SlotOperand(destination), offset, 1, false);
+                okay = b.Binary(Opcode.And, okay, b.Binary(Opcode.Eq, actual, offset < length ? 0 : 0xa5));
+            }
+            VReg real = b.Unary(Opcode.IToF, I(7), IrType.F64);
+            okay = b.Binary(Opcode.And, okay, b.Binary(Opcode.Eq, b.Unary(Opcode.FToI, R(real), IrType.I32), 7));
+        }
+        b.Ret(R(okay));
+    }
+
     private static void SmallFills(Module m)
     {
         (Function f, Builder b) = New(m, "small_fills", IrType.I32);
@@ -1166,6 +1200,7 @@ internal static class Program
 
         Expect(b.Call("add", IrType.I32, I(2), I(3))!, I(5));
         Expect(b.Call("small_fills", IrType.I32)!, I(1));
+        Expect(b.Call("packed_frames", IrType.I32)!, I(1));
         Expect(b.Call("bswap32", IrType.I32, I(0x11223344))!, I(0x44332211));
         Expect(b.Call("bswap32", IrType.I32, I(unchecked((int)0x80000001)))!, I(0x01000080));
         Expect(b.Call("bswap64_inplace", IrType.I64, I(0x0123456789abcdefL, IrType.I64))!,

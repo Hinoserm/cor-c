@@ -17,7 +17,7 @@ using Block = Corsac.Lang.Ir.Block;
 /// never enter a virtual register at all: each lives in a frame slot and
 /// every operation is fld / op / fstp, as the design says.
 /// </summary>
-internal sealed class Selector
+internal sealed partial class Selector
 {
     private readonly Function _f;
     private readonly MFunction _m;
@@ -1700,6 +1700,7 @@ internal sealed class Selector
 
     private bool SelectFrameSet(Instr i)
     {
+        if (SelectMmxFrameZero(i)) return true;
         if (i.Operands[2] is not ImmOperand count || count.Value < 0 || count.Value > 32
             || i.Operands[1] is not ImmOperand fill) return false;
         if (count.Value == 0) return true;
@@ -1733,6 +1734,7 @@ internal sealed class Selector
 
     private void SelectMemCopy(Instr i)
     {
+        if (SelectMmxFrameCopy(i)) return;
         Mov(Edi, RM(i.Operands[0]));
         Mov(Esi, RM(i.Operands[1]));
         if (i.Operands[2] is ImmOperand n)

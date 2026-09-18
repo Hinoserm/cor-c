@@ -36,6 +36,7 @@ public sealed class TargetContract
         string owner = "";
         foreach (var input in inputs)
         {
+            _ = X86CodeGenerationContract.Read(input.Object);
             Section[] contracts = input.Object.Sections.Where(s => s.Name == SectionName).ToArray();
             if (contracts.Length == 0) continue; // Neutral native/assembly objects.
             if (contracts.Length != 1) throw new ElfFormatException(input.Name + ": duplicate target contract");

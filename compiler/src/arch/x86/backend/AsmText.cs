@@ -105,6 +105,12 @@ internal static class AsmText
             case MOp.RepMovsb:
                 yield return "rep movsb";
                 yield break;
+            case MOp.MmxLoad:
+                yield return "movq mm0, " + Op(i.Operands[0], 8, true); yield break;
+            case MOp.MmxStore:
+                yield return "movq " + Op(i.Operands[0], 8, true) + ", mm0"; yield break;
+            case MOp.MmxZero:
+                yield return "pxor mm0, mm0"; yield break;
             case MOp.RepMovsd:
                 yield return "rep movsd";
                 yield break;

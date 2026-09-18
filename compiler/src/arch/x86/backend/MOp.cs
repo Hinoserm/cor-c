@@ -63,6 +63,8 @@ public enum MOp : byte
     LoadSegments,
     /// <summary>Position-independent code: the address of the GOT into the operand register.</summary>
     GotPc,
+    // Closed MM0 regions; no MMX value is live across an IR instruction or call.
+    MmxLoad, MmxStore, MmxZero, Emms, Femms,
 
     // ---- the thread block ----------------------------------------------------
     //

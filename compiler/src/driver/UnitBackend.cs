@@ -14,6 +14,11 @@ public sealed class UnitBackend : IUnitBackend
     public ObjectFile Recompile(ObjectFile original, IReadOnlyList<IrImport> imports, IReadOnlySet<string>? retained = null)
     {
         Target.Current = Target.X86;
+        // Each invocation must restore its own permissions; a previous unit may
+        // have selected a newer CPU or explicitly disabled an extension.
+        X86CodeGenerationContract? cpu = X86CodeGenerationContract.Read(original);
+        Target.X86.X86Profile = X86Cpu.Parse(cpu?.Arguments() ?? Array.Empty<string>());
+        Target.X86.Cpu = Target.X86.X86Profile.Name;
         IrArchive archive = IrArchive.Read(original) ?? throw new InvalidDataException("Backend input has no IR archive");
         var visibility = original.Symbols.Where(symbol => symbol.IsDefined && symbol.IsFunction)
             .ToDictionary(symbol => symbol.Name, symbol => symbol.Global, StringComparer.Ordinal);

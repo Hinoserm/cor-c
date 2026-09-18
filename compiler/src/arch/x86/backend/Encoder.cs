@@ -560,6 +560,21 @@ internal sealed class Encoder
             case MOp.RepMovsb:
                 B(0xF3, 0xA4);
                 break;
+            case MOp.MmxLoad:
+            case MOp.MmxStore:
+                if (!Target.Current.X86Profile.Mmx || i.Operands.Count != 1 || i.Operands[0] is not MMem)
+                    throw new InvalidOperationException("MMX memory move requires an enabled MMX profile and memory");
+                B(0x0f, i.Op == MOp.MmxLoad ? (byte)0x6f : (byte)0x7f); ModRM(0, i.Operands[0]);
+                break;
+            case MOp.MmxZero:
+                if (!Target.Current.X86Profile.Mmx) throw new InvalidOperationException("MMX is disabled");
+                B(0x0f, 0xef, 0xc0); break;
+            case MOp.Emms:
+                if (!Target.Current.X86Profile.Mmx) throw new InvalidOperationException("MMX is disabled");
+                B(0x0f, 0x77); break;
+            case MOp.Femms:
+                if (!Target.Current.X86Profile.ThreeDNow) throw new InvalidOperationException("3DNow is disabled");
+                B(0x0f, 0x0e); break;
             case MOp.RepMovsd:
                 B(0xF3, 0xA5);
                 break;

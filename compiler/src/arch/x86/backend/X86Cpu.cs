@@ -10,6 +10,7 @@ public sealed class X86Cpu
     public bool Mmx { get; }
     public bool ThreeDNow { get; }
     public bool ThreeDNowExtended { get; }
+    public global::Corsac.Lang.Ir.X86CodeGenerationContract Contract => new(Name, Tune, Fpu, Mmx, ThreeDNow, ThreeDNowExtended);
 
     private X86Cpu(string name, string tune, string fpu, bool pentium, bool mmx, bool now, bool extended)
     {

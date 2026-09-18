@@ -105,6 +105,7 @@ public sealed class X86Backend : IBackend
     {
         if (Workers < 1 || Workers > 64) throw new ArgumentOutOfRangeException(nameof(Workers));
         ObjectFile obj = new();
+        Target.X86Profile.Contract.Attach(obj);
         OptimizationSummary summary = new();
         Section text = new(".text", SectionKind.Code) { Align = Math.Max(4, FunctionAlign) };
         Section rodata = new(".rodata", SectionKind.ReadOnlyData);

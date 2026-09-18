@@ -9,5 +9,21 @@
       <Argument Value="--cpu=386" />
       <Argument Value="--fpu=387" />
     </Test>
+    <Test Name="backend-mmx" Executable="dotnet">
+      <Argument Value="bin/managed/Release/net10.0/x86tests.dll" />
+      <Argument Value="--cpu=pentium-mmx" />
+    </Test>
+    <Test Name="backend-mmx-excluded" Executable="dotnet">
+      <Argument Value="bin/managed/Release/net10.0/x86tests.dll" />
+      <Argument Value="--cpu=pentium-mmx" />
+      <Argument Value="--disable-mmx" />
+    </Test>
+  </Target>
+  <Target Name="benchmark">
+    <Compile Project="x86tests.csproj" Toolchain="managed" />
+    <Exec Executable="dotnet">
+      <Argument Value="bin/managed/Release/net10.0/x86tests.dll" />
+      <Argument Value="--benchmark-packed" />
+    </Exec>
   </Target>
 </Build>

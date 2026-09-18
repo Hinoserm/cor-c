@@ -123,6 +123,18 @@ public static class LtoTests
         ObjectFile missingLayout = Caller();
         new TargetContract(0, requiresManagedLayouts: true).Attach(missingLayout);
         Reject(() => TargetContract.Validate(new[] { ("missing", missingLayout) }));
+        ObjectFile cpuA = Function(1), cpuB = Function(2);
+        var profile = new X86CodeGenerationContract("k6-3+", "k6-3+", "x87", true, true, true);
+        profile.Attach(cpuA); profile.Attach(cpuB);
+        Require(X86CodeGenerationContract.Read(ElfReader.ReadObject(ElfWriter.WriteObject(cpuA))) == profile,
+            "CPU permissions did not survive object serialization");
+        X86CodeGenerationContract.ValidateRegeneration(cpuA, cpuB);
+        ObjectFile excluded = Function(3);
+        new X86CodeGenerationContract("k6-3+", "486", "x87", false, false, false).Attach(excluded);
+        Reject(() => X86CodeGenerationContract.ValidateRegeneration(cpuA, excluded));
+        Reject(() => new X86CodeGenerationContract("486", "486", "none", true, false, false).Attach(Function(4)));
+        cpuB.Section(X86CodeGenerationContract.SectionName).Bytes[4] = (byte)'9';
+        Reject(() => TargetContract.Validate(new[] { ("invalid-cpu", cpuB) }));
         Console.WriteLine("  LTO metadata, scope, rejection, static/flat/physical-link checks passed");
     }
 }

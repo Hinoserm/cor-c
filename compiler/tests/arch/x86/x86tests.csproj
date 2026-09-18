@@ -19,6 +19,7 @@
 
   <ItemGroup>
     <Compile Include="Program.cs" />
+    <Compile Include="PackedMemoryBenchmarks.cs" />
     <Compile Include="../../../src/ir/*.cs" />
     <Compile Include="../../../src/optimizations/LinkSummary.cs" />
     <Compile Include="../../../src/arch/x86/backend/*.cs" />

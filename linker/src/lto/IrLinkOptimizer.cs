@@ -53,6 +53,7 @@ public static class IrLinkOptimizer
                 ObjectFile original = inputs[plan.Index].Object;
                 IrImport[] imports = plan.Imports.Select(import => new IrImport(import.Symbol, import.Archive.ReadBody(import.Body.Key), import.Body.DecodeBytes)).ToArray();
                 ObjectFile replacement = service.Recompile(original, imports, plan.Retained);
+                X86CodeGenerationContract.ValidateRegeneration(original, replacement);
                 TargetContract.Validate(new[] { ("original", original), ("regenerated", replacement) });
                 ManagedLayoutContract.Validate(new[] { ("original", original), ("regenerated", replacement) });
                 IrArchive originalArchive = archives[original];
