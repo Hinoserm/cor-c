@@ -592,12 +592,16 @@ internal sealed class Encoder
                 if (!Target.Current.X86Profile.Mmx) throw new InvalidOperationException("MMX is disabled");
                 B(0x0f, 0xef, 0xc0); break;
             case MOp.MmxAddB: case MOp.MmxAddW: case MOp.MmxAddD:
+            case MOp.MmxEqualB: case MOp.MmxEqualW: case MOp.MmxEqualD:
+            case MOp.MmxGreaterB: case MOp.MmxGreaterW: case MOp.MmxGreaterD:
             case MOp.MmxSubB: case MOp.MmxSubW: case MOp.MmxSubD:
             case MOp.MmxAnd: case MOp.MmxOr: case MOp.MmxXor: case MOp.MmxMulW: case MOp.MmxMulHighW: case MOp.MmxMultiplyAddW:
                 if (!Target.Current.X86Profile.Mmx || i.Operands.Count != 1 || i.Operands[0] is not MMem)
                     throw new InvalidOperationException("Packed arithmetic requires an MMX profile and memory");
                 B(0x0f, i.Op switch {
                     MOp.MmxAddB => (byte)0xfc, MOp.MmxAddW => (byte)0xfd, MOp.MmxAddD => (byte)0xfe,
+                    MOp.MmxEqualB => (byte)0x74, MOp.MmxEqualW => (byte)0x75, MOp.MmxEqualD => (byte)0x76,
+                    MOp.MmxGreaterB => (byte)0x64, MOp.MmxGreaterW => (byte)0x65, MOp.MmxGreaterD => (byte)0x66,
                     MOp.MmxSubB => (byte)0xf8, MOp.MmxSubW => (byte)0xf9, MOp.MmxSubD => (byte)0xfa,
                     MOp.MmxAnd => (byte)0xdb, MOp.MmxOr => (byte)0xeb, MOp.MmxXor => (byte)0xef,
                     MOp.MmxMulHighW => (byte)0xe5, MOp.MmxMultiplyAddW => (byte)0xf5, _ => (byte)0xd5 });

@@ -84,6 +84,7 @@ internal static class Program
         PackedFrames(m);
         PackedArithmeticFrames(m);
         PackedInPlaceFrames(m);
+        PackedComparisonFrames(m);
         PackedRoundingFrames(m);
         PackedShiftFrames(m);
         PackedConversionFrames(m);
@@ -126,6 +127,10 @@ internal static class Program
         Check(FunctionAsm(asm, "packed_inplace_left").Contains("paddd") == packed, "exact left in-place arithmetic is packed");
         Check(FunctionAsm(asm, "packed_inplace_right").Contains("paddd") == packed, "exact right in-place arithmetic is packed");
         Check(!FunctionAsm(asm, "packed_inplace_shifted").Contains("paddd"), "shifted alias dependency stays scalar");
+        Check(FunctionAsm(asm, "packed_compare_signed").Contains("pcmpeqb") == packed, "byte equality masks are packed");
+        Check(FunctionAsm(asm, "packed_compare_signed").Contains("pcmpgtw") == packed, "signed word comparison masks are packed");
+        Check(!FunctionAsm(asm, "packed_compare_unsigned").Contains("pcmpgtb"), "unsigned bytes do not use signed packed comparison");
+        Check(!FunctionAsm(asm, "packed_compare_mixed").Contains("pcmpeqb"), "mixed extension equality remains scalar");
         Check(FunctionAsm(asm, "packed_rounding").Contains("pmulhw") == packed, "signed high-word products are packed automatically");
         Check(FunctionAsm(asm, "packed_rounding").Contains("pavgusb") == (packed && Target.X86.X86Profile.ThreeDNow), "rounded byte averages use 3DNow when enabled");
         Check(FunctionAsm(asm, "packed_rounding").Contains("pmulhrw") == (packed && Target.X86.X86Profile.ThreeDNow), "rounded signed high-word products use 3DNow when enabled");
@@ -1021,6 +1026,45 @@ internal static class Program
         }
     }
 
+    private static void PackedComparisonFrames(Module m)
+    {
+        foreach (string mode in new[] { "signed", "unsigned", "mixed" })
+        {
+            (Function function, Builder b) = New(m, "packed_compare_" + mode, IrType.I32);
+            FrameSlot left = function.NewSlot(40, 8), right = function.NewSlot(40, 8), destination = function.NewSlot(40, 8);
+            VReg okay = b.Const(1, IrType.I32);
+            int[] values = [int.MinValue, int.MaxValue, -1, 0, 1, 127, 128, 255, 32767, 32768, 65535];
+            foreach (Opcode operation in new[] { Opcode.Eq, Opcode.GtS })
+            foreach (int width in new[] { 1, 2, 4 })
+            {
+                bool signedA = mode != "unsigned", signedB = mode == "signed";
+                int Extend(int value, bool signed) => width == 1 ? signed ? (sbyte)value : (byte)value
+                    : width == 2 ? signed ? (short)value : (ushort)value : value;
+                int Mask(int value) => width == 1 ? (byte)value : width == 2 ? (ushort)value : value;
+                for (int i = 0; i < 40 / width; i++)
+                {
+                    b.Store(new SlotOperand(left), I(values[i % values.Length]), i * width, width);
+                    b.Store(new SlotOperand(right), I(values[(i % 3 == 0 ? i : i + 1) % values.Length]), i * width, width);
+                    b.Store(new SlotOperand(destination), I(0x55), i * width, width);
+                }
+                for (int i = 0; i < 32 / width; i++)
+                {
+                    VReg a = b.Load(IrType.I32, new SlotOperand(left), i * width, width, signedA);
+                    VReg c = b.Load(IrType.I32, new SlotOperand(right), i * width, width, signedB);
+                    b.Store(new SlotOperand(destination), R(b.Unary(Opcode.Neg, b.Binary(operation, a, c))), i * width, width);
+                }
+                for (int i = 0; i < 40 / width; i++)
+                {
+                    int a = Extend(values[i % values.Length], signedA), c = Extend(values[(i % 3 == 0 ? i : i + 1) % values.Length], signedB);
+                    int expected = i >= 32 / width ? 0x55 : Mask((operation == Opcode.Eq ? a == c : a > c) ? -1 : 0);
+                    VReg actual = b.Load(IrType.I32, new SlotOperand(destination), i * width, width, false);
+                    okay = b.Binary(Opcode.And, okay, b.Binary(Opcode.Eq, actual, expected));
+                }
+            }
+            b.Ret(R(okay));
+        }
+    }
+
     private static void PackedRoundingFrames(Module m)
     {
         (Function function, Builder b) = New(m, "packed_rounding", IrType.I32);
@@ -1517,6 +1561,9 @@ internal static class Program
         Expect(b.Call("packed_inplace_left", IrType.I32)!, I(1));
         Expect(b.Call("packed_inplace_right", IrType.I32)!, I(1));
         Expect(b.Call("packed_inplace_shifted", IrType.I32)!, I(1));
+        Expect(b.Call("packed_compare_signed", IrType.I32)!, I(1));
+        Expect(b.Call("packed_compare_unsigned", IrType.I32)!, I(1));
+        Expect(b.Call("packed_compare_mixed", IrType.I32)!, I(1));
         Expect(b.Call("packed_rounding", IrType.I32)!, I(1));
         Expect(b.Call("packed_shifts", IrType.I32)!, I(1));
         Expect(b.Call("packed_conversions", IrType.I32)!, I(1));

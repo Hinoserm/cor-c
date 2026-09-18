@@ -136,10 +136,14 @@ internal static class AsmText
                     MOp.MmxShrD => "psrld", MOp.MmxSarW => "psraw", _ => "psrad" };
                 yield return shift + " mm0, " + Op(i.Operands[0], 4, false); yield break;
             case MOp.MmxAddB: case MOp.MmxAddW: case MOp.MmxAddD:
+            case MOp.MmxEqualB: case MOp.MmxEqualW: case MOp.MmxEqualD:
+            case MOp.MmxGreaterB: case MOp.MmxGreaterW: case MOp.MmxGreaterD:
             case MOp.MmxSubB: case MOp.MmxSubW: case MOp.MmxSubD:
             case MOp.MmxAnd: case MOp.MmxOr: case MOp.MmxXor: case MOp.MmxMulW: case MOp.MmxMulHighW: case MOp.MmxMultiplyAddW:
             case MOp.ThreeDNowAverageB: case MOp.ThreeDNowMulRoundW:
                 string packed = i.Op switch { MOp.MmxAddB => "paddb", MOp.MmxAddW => "paddw", MOp.MmxAddD => "paddd",
+                    MOp.MmxEqualB => "pcmpeqb", MOp.MmxEqualW => "pcmpeqw", MOp.MmxEqualD => "pcmpeqd",
+                    MOp.MmxGreaterB => "pcmpgtb", MOp.MmxGreaterW => "pcmpgtw", MOp.MmxGreaterD => "pcmpgtd",
                     MOp.MmxSubB => "psubb", MOp.MmxSubW => "psubw", MOp.MmxSubD => "psubd",
                     MOp.MmxAnd => "pand", MOp.MmxOr => "por", MOp.MmxXor => "pxor", MOp.MmxMulHighW => "pmulhw",
                     MOp.ThreeDNowAverageB => "pavgusb", MOp.ThreeDNowMulRoundW => "pmulhrw", MOp.MmxMultiplyAddW => "pmaddwd", _ => "pmullw" };
