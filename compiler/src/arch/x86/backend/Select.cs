@@ -1777,6 +1777,15 @@ internal sealed partial class Selector
             return;
         }
         Mov(Ecx, RM(i.Operands[2]));
+        // Runtime-sized copies (including heap reallocation) should move whole
+        // words rather than dispatching every byte separately on legacy x86.
+        // Retain the original count across REP, which consumes ECX.
+        MReg remainder = Temp();
+        Mov(remainder, Ecx);
+        Emit(MOp.Shr, Ecx, Imm(2));
+        Emit(MOp.RepMovsd);
+        Mov(Ecx, remainder);
+        Emit(MOp.And, Ecx, Imm(3));
         Emit(MOp.RepMovsb);
     }
 

@@ -100,6 +100,7 @@ internal static class Program
         Remat(m);
         SpilledBool(m);
         CopyPerms(m);
+        DynamicCopyBoundaries(m);
         ByteWord(m);
         Mmap6(m);
         Ports(m);
@@ -1446,6 +1447,36 @@ internal static class Program
     /// ECX cannot clobber one another. Each copies n bytes and returns the
     /// last byte copied plus n.
     /// </summary>
+    private static void DynamicCopyBoundaries(Module m)
+    {
+        (Function helper, Builder h) = New(m, "dynamic_copy", IrType.Void, IrType.I32, IrType.I32, IrType.I32);
+        h.Emit(Opcode.MemCopy, null, R(helper.Params[0]), R(helper.Params[1]), R(helper.Params[2])); h.Ret();
+        (Function f, Builder b) = New(m, "dynamic_copy_boundaries", IrType.I32);
+        FrameSlot source = f.NewSlot(40, 4), destination = f.NewSlot(40, 4);
+        VReg okay = b.Const(1, IrType.I32);
+        for (int shift = 0; shift < 4; shift++)
+        foreach (int count in new[] { 0, 1, 2, 3, 4, 7, 8, 15, 16, 31, 32, 33 })
+        {
+            for (int i = 0; i < 40; i++)
+            {
+                b.Store(new SlotOperand(source), I((i * 37 + 128) & 255), i, 1);
+                b.Store(new SlotOperand(destination), I(0x55), i, 1);
+            }
+            int destinationOffset = 3 - shift;
+            VReg dst = b.Binary(Opcode.Add, b.SlotAddress(destination), destinationOffset);
+            VReg src = b.Binary(Opcode.Add, b.SlotAddress(source), shift);
+            b.Call("dynamic_copy", IrType.Void, R(dst), R(src), I(count));
+            for (int i = 0; i < 40; i++)
+            {
+                int expected = i >= destinationOffset && i < destinationOffset + count
+                    ? ((i - destinationOffset + shift) * 37 + 128) & 255 : 0x55;
+                VReg value = b.Load(IrType.I32, new SlotOperand(destination), i, 1, false);
+                okay = b.Binary(Opcode.And, okay, b.Binary(Opcode.Eq, value, expected));
+            }
+        }
+        b.Ret(R(okay));
+    }
+
     private static void CopyPerms(Module m)
     {
         int[][] perms = { new[] { 0, 1, 2 }, new[] { 0, 2, 1 }, new[] { 1, 0, 2 }, new[] { 1, 2, 0 }, new[] { 2, 0, 1 }, new[] { 2, 1, 0 } };
@@ -1558,6 +1589,7 @@ internal static class Program
         Expect(b.Call("small_fills", IrType.I32)!, I(1));
         Expect(b.Call("packed_frames", IrType.I32)!, I(1));
         Expect(b.Call("packed_arithmetic", IrType.I32)!, I(1));
+        Expect(b.Call("dynamic_copy_boundaries", IrType.I32)!, I(1));
         Expect(b.Call("packed_inplace_left", IrType.I32)!, I(1));
         Expect(b.Call("packed_inplace_right", IrType.I32)!, I(1));
         Expect(b.Call("packed_inplace_shifted", IrType.I32)!, I(1));
