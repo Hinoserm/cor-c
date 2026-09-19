@@ -203,13 +203,36 @@ static class Platform
     }
 
     /// Nobody else can change the word, so a wait would never end: the
-    /// collector here is the only thread there is.
+    /// collector here is the only thread there is -- until a kernel with
+    /// several processors installs WaitHook, which is called once per turn
+    /// of a stopped thread's wait and is where that processor answers what
+    /// it must answer with interrupts off (a TLB flush another processor
+    /// is waiting on).
+    public static long WaitHook;
+
     public static void Wait(long at, long value)
     {
+        if (WaitHook != 0)
+        {
+            Sys.Call(WaitHook, at, value, 0);
+        }
     }
 
     public static void Wake(long at, long count)
     {
+    }
+
+    /// Asks every thread still running to stop for a collection: nothing
+    /// on one thread, and on a kernel an interrupt to every other processor
+    /// that is running managed code (StopHook, installed by the kernel).
+    public static long StopHook;
+
+    public static void PromptStop()
+    {
+        if (StopHook != 0)
+        {
+            Sys.Call(StopHook, 0, 0, 0);
+        }
     }
 
     /// The one thread never has to stop for another, but the shape is the
