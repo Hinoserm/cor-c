@@ -41,14 +41,12 @@
 //              9 Focus      a = 1 gained, 0 lost
 //             10 Close      the system asks the window to close
 //   ioctls   0x47550001 width, 0x47550002 height, 0x47550003 format
-//            0x47550010 create window (argument: x | y << 16, returns handle;
-//                       then 0x47550011 size w | h << 16 on that handle),
-//            0x47550012 show, 0x47550013 hide, 0x47550014 raise,
-//            0x47550015 move x | y << 16, 0x47550016 destroy, 0x47550017 focus,
-//            0x47550018 set title (argument: address of a NUL-terminated string)
-//            Window operations take the handle in the high 16 bits of the request's
-//            argument where noted, or apply to the last window created by this
-//            descriptor when zero.
+//            0x47550010 create window at x | y << 16, returns the handle and
+//                       selects it; 0x47550020 select a window by handle; then
+//                       on the selected window: 0x47550011 size w | h << 16,
+//                       0x47550012 show, 0x47550013 hide, 0x47550014 raise,
+//                       0x47550015 move x | y << 16, 0x47550016 destroy,
+//                       0x47550017 focus. Selection is per process.
 
 using System.Drawing;
 
@@ -211,21 +209,29 @@ public class Seat : IDrawingTarget
     public void MovePointer(int x, int y) { Word(9); Word(x); Word(y); }
 
     // --- windows ---------------------------------------------------------
+    //
+    // A window operation selects the handle first, then acts on it: the i386
+    // call convention carries 32-bit arguments, so a handle cannot ride in the
+    // high half of the argument as a 64-bit ABI would allow.
+
+    void Select(int handle) { Os.Ioctl(_fd, 0x47550020, handle); }
 
     public int CreateWindow(int x, int y, int w, int h)
     {
         Flush();
         int handle = (int)Os.Ioctl(_fd, 0x47550010, (x & 0xFFFF) | (y << 16));
         if (handle <= 0) throw new IOException("cannot create a window");
-        Os.Ioctl(_fd, 0x47550011, (long)handle << 32 | (long)((w & 0xFFFF) | (h << 16)));
+        Select(handle);
+        Os.Ioctl(_fd, 0x47550011, (w & 0xFFFF) | (h << 16));
         return handle;
     }
-    public void ShowWindow(int handle) { Flush(); Os.Ioctl(_fd, 0x47550012, (long)handle << 32); }
-    public void HideWindow(int handle) { Flush(); Os.Ioctl(_fd, 0x47550013, (long)handle << 32); }
-    public void RaiseWindow(int handle) { Flush(); Os.Ioctl(_fd, 0x47550014, (long)handle << 32); }
-    public void MoveWindow(int handle, int x, int y) { Flush(); Os.Ioctl(_fd, 0x47550015, (long)handle << 32 | (long)((x & 0xFFFF) | (y << 16))); }
-    public void DestroyWindow(int handle) { Flush(); Os.Ioctl(_fd, 0x47550016, (long)handle << 32); _window = 0; }
-    public void FocusWindow(int handle) { Flush(); Os.Ioctl(_fd, 0x47550017, (long)handle << 32); }
+    public void ShowWindow(int handle) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550012, 0); }
+    public void HideWindow(int handle) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550013, 0); }
+    public void RaiseWindow(int handle) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550014, 0); }
+    public void MoveWindow(int handle, int x, int y) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550015, (x & 0xFFFF) | (y << 16)); }
+    public void ResizeWindow(int handle, int w, int h) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550011, (w & 0xFFFF) | (h << 16)); }
+    public void DestroyWindow(int handle) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550016, 0); _window = 0; }
+    public void FocusWindow(int handle) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550017, 0); }
 
     // --- events ----------------------------------------------------------
 
