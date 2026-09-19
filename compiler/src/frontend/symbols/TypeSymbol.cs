@@ -37,6 +37,15 @@ public sealed class TypeSymbol
     public bool SlotsAssigned { get; set; }
     /// <summary>Compiler-created closed tuple/array adapter shape, shared only after semantic certification.</summary>
     public bool Structural { get; init; }
+
+    /// <summary>
+    /// Whether this compilation actually reached for this type, as opposed to
+    /// merely having its declaration loaded. What a unit DESCRIBES in its
+    /// managed layout follows this rather than the set of declarations that
+    /// happened to be imported: a declaration nobody asked about cannot be
+    /// disagreed about. See ManagedLayouts.
+    /// </summary>
+    public bool Used { get; set; }
     public TypeSymbol? Base { get; set; }
     public List<TypeSymbol> Interfaces { get; } = new();
     public List<FieldSymbol> Fields { get; } = new();

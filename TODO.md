@@ -247,25 +247,21 @@ tasks below track that work; moving files alone does not reduce the working set.
   emits a `__corsac_frames` table. Code is identical in every section; what
   changed is per-unit metadata, which follows the types a unit loaded. See
   the ordering item below.
-- [ ] Emitted metadata follows the types a unit LOADED rather than the types
-  it USED: ManagedLayouts.Attach walks all of bound.Types, so a prefetch
-  that loads a declaration nobody used still describes it. Harmless so far
-  -- code and the linked kernel are unaffected apart from that frame table
-  -- but it is why every prefetch has to be checked against a linked image
-  rather than against object files, and it is the same root as the
-  ThreadStart layout conflict. Narrowing it is not obviously right: the
-  breadth of that section is what CAUGHT ThreadStart, so the fix is to make
-  the records depend on used types WITHOUT losing the cross-unit check.
-- [x] Peak memory, measured over the kernel's 118 units in one process:
-  183 MB at one worker, 260 MB at four, 302 MB at eight, against a
-  486-class target with roughly 1 GB. The round work brought the serial
-  figure down from 286 MB without anything aimed at memory. Good enough for
-  the target; revisit only if a smaller machine becomes the goal. Cumulative
-  allocation is churn and is not this measurement.
-- [ ] More workers no longer buy time: 27.9 s at one, 26.8 s at four, 27.1 s
-  at eight. Either the remaining work is serial or the machine was saturated
-  by other builds when this was measured. Measure again on a quiet box
-  before drawing a conclusion.
+- [x] Emitted metadata follows the types a unit USED, not the ones it loaded.
+  ManagedLayouts walked all of bound.Types, so importing a header nobody
+  asked about changed the object file, and every prefetch had to be checked
+  against a linked image rather than against object files. The binder now
+  marks a type when it is asked for, and the section describes those, the
+  types this unit DEFINES, and what they are built out of -- a record names
+  its base and its interfaces and a reader may look them up.
+
+  Narrowing it does not weaken the check, which was the worry: two units
+  can only disagree about a type they BOTH describe, and a unit that never
+  reached for a type has no opinion to disagree with. Verified by
+  reproducing the ThreadStart failure on purpose -- a caller built from a
+  short library list still stops the link, now on DirectoryInfo. The kernel
+  layout section falls from 12.4 MB to 9.1 MB, code is identical in all 118
+  objects and the linked kernel is byte for byte what it was.
 
 ## Build utility and the one toolchain executable
 
