@@ -27,6 +27,29 @@ required gates rather than assuming a missing log is proof of completion.
 
 ## Priority and purpose
 
+### CPU work: resume in this order
+
+1. [ ] Finish kernel CPU/context acceptance in the isolated CORSAC86 branch:
+   first-use register isolation, fork/thread inheritance, signal restoration,
+   preemption and SMP migration on 486, Pentium, Pentium-MMX and 3DNow-capable
+   TCG CPUs. Verify feature logging, conservative HWCAP and common CPU policy.
+   Keep real Cyrix CCR7/EMMI enablement and legacy-hardware performance as
+   separate, explicitly unverified gates; do not block emulator work on hardware.
+2. [ ] Implement baseline-compatible runtime/stdlib multiversion dispatch:
+   choose implementations once after CPU and OS-state checks; retain 486+x87
+   fallbacks and explicit ISA exclusions. Test forced supported/fallback paths,
+   real library operations and generated-code boundaries; benchmark useful wins.
+3. [ ] Implement Cyrix 6x86MX/MII compiler and assembler profiles, instruction
+   encodings, object/LTO feature contracts and profitable source optimizations.
+   Gate EMMI on verified OS enablement and handle revision-sensitive PAVEB and
+   the distinct Cyrix/AMD rounded-multiply semantics. Add encoding and boundary
+   tests; distinguish emulated/model coverage from actual Cyrix execution.
+
+The existing Pentium/MMX/K6/3DNow implementation is retained. Broader packed
+patterns, saturation/packing/reduction coverage and real-library profitability
+remain unfinished, not superseded by the Cyrix work. FDIV, full 386+387 and
+software floating point stay deferred.
+
 - [ ] Add baseline-compatible runtime/library multiversion dispatch: resolve
   CPU/OS-safe implementations during initialization, preserving 486 fallbacks
   without repeated hot-path detection. Kernel capability enablement and state
