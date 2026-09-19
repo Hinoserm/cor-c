@@ -171,9 +171,16 @@ public class Seat : IDrawingTarget
 
     // --- batches ---------------------------------------------------------
 
+    /// Room for one whole op. AN OP IS NEVER SPLIT ACROSS TWO WRITES: the
+    /// seat reads each write on its own, and the tail of an op at the head
+    /// of the next write is parsed as opcodes, which throws the rest away.
+    void Room(int words)
+    {
+        if (_used + words * 4 > _batch.Length) { Flush(); Renew(); }
+    }
+
     void Word(int v)
     {
-        if (_used + 4 > _batch.Length) { Flush(); Renew(); }
         _batch[_used] = (byte)v; _batch[_used + 1] = (byte)(v >> 8);
         _batch[_used + 2] = (byte)(v >> 16); _batch[_used + 3] = (byte)(v >> 24);
         _used += 4;
@@ -214,21 +221,21 @@ public class Seat : IDrawingTarget
         _window = window;
         _named = true;
         _clipOn = false;
-        Word(12); Word(window);
+        Room(2); Word(12); Word(window);
     }
 
-    public void Fill(int x, int y, int w, int h, Color colour) { Word(1); Word(x); Word(y); Word(w); Word(h); Word(Rgb(colour)); }
-    public void Copy(int sx, int sy, int dx, int dy, int w, int h) { Word(2); Word(sx); Word(sy); Word(dx); Word(dy); Word(w); Word(h); }
-    public void Line(int x0, int y0, int x1, int y1, Color colour) { Word(3); Word(x0); Word(y0); Word(x1); Word(y1); Word(Rgb(colour)); }
+    public void Fill(int x, int y, int w, int h, Color colour) { Room(6); Word(1); Word(x); Word(y); Word(w); Word(h); Word(Rgb(colour)); }
+    public void Copy(int sx, int sy, int dx, int dy, int w, int h) { Room(7); Word(2); Word(sx); Word(sy); Word(dx); Word(dy); Word(w); Word(h); }
+    public void Line(int x0, int y0, int x1, int y1, Color colour) { Room(6); Word(3); Word(x0); Word(y0); Word(x1); Word(y1); Word(Rgb(colour)); }
     public void Glyph(int id, int x, int y, Color fg, Color bg, bool transparent)
-    { Word(5); Word(id); Word(x); Word(y); Word(Rgb(fg)); Word(Rgb(bg)); Word(transparent ? 1 : 0); }
+    { Room(7); Word(5); Word(id); Word(x); Word(y); Word(Rgb(fg)); Word(Rgb(bg)); Word(transparent ? 1 : 0); }
     public void Clip(int x, int y, int w, int h)
     {
         _clipOn = true; _clipX = x; _clipY = y; _clipW = w; _clipH = h;
-        Word(6); Word(x); Word(y); Word(w); Word(h);
+        Room(5); Word(6); Word(x); Word(y); Word(w); Word(h);
     }
-    public void ShowPointer(bool on) { Word(10); Word(on ? 1 : 0); }
-    public void MovePointer(int x, int y) { Word(9); Word(x); Word(y); }
+    public void ShowPointer(bool on) { Room(2); Word(10); Word(on ? 1 : 0); }
+    public void MovePointer(int x, int y) { Room(3); Word(9); Word(x); Word(y); }
 
     // --- windows ---------------------------------------------------------
     //
