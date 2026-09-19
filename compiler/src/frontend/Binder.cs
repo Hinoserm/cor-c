@@ -21,6 +21,7 @@ public sealed partial class Binder
     private readonly string _file;
     private readonly Action<string>? _requireDeclaration;
     private readonly Action<string, string>? _requireExtensions;
+    private readonly Metadata.DeclarationBatch _declarationBatch = new();
     private readonly IReadOnlyDictionary<(string Name, int Arity), int>? _indexedInterfaces;
     private readonly IReadOnlySet<(string Name, int Arity)>? _libraryInterfaces;
 
@@ -871,7 +872,8 @@ public sealed partial class Binder
 
         foreach (TypeRef naming in unit.TupleNamings)
         {
-            Resolve(naming, null);
+            try { Resolve(naming, null); }
+            catch (Metadata.DeclarationDemand demand) { _declarationBatch.Add(demand); }
         }
 
         _quiet--;
@@ -898,6 +900,11 @@ public sealed partial class Binder
             _in = d.File;
             DeclareMembers(d, sym);
         }
+
+        // Missing signatures must never reach layout or body checking. Gather
+        // independent requests from this phase and retry the whole transaction
+        // once, rather than rereading every source for each missing type.
+        _declarationBatch.ThrowIfAny();
 
         // Every owner, base and enum is now known. Resolve constants before
         // checking bodies or emitting headers, without changing declaration
@@ -1482,6 +1489,12 @@ public sealed partial class Binder
         {
             DeclareMembersIn(d, sym);
         }
+        catch (Metadata.DeclarationDemand demand)
+        {
+            _declarationBatch.Add(demand);
+            _member = null;
+            _signature = null;
+        }
         finally
         {
             _scope = wasScope;
@@ -1616,7 +1629,8 @@ public sealed partial class Binder
         foreach (MemberDecl m in d.Members)
         {
             _member = m;
-
+            try
+            {
             switch (m)
             {
                 case FieldDecl f:
@@ -1895,6 +1909,9 @@ public sealed partial class Binder
                     break;
                 }
             }
+            }
+            catch (Metadata.DeclarationDemand demand) { _declarationBatch.Add(demand); }
+            finally { _signature = null; }
         }
 
         _member = null;

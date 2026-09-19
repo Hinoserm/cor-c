@@ -28,7 +28,8 @@ public static class Frontend
         {
             if (declarations is not null) declarations.Passes++;
             try { return CompileCore(paths, name, library, libraryPaths, symbols, elsewherePaths, workers, declarations); }
-            catch (DeclarationDemand demand) when (declarations is not null) { declarations.Include(demand.Key); }
+            catch (DeclarationDemand demand) when (declarations is not null)
+            { foreach (string key in demand.Keys) declarations.Include(key); }
         }
     }
 

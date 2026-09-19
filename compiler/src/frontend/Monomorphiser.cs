@@ -398,10 +398,13 @@ public sealed class Monomorphiser
 
         // Concrete declarations pass through, with their bodies rewritten so
         // any generic reference inside them names a specialisation.
+        Metadata.DeclarationBatch required = new();
         foreach (TypeDecl t in unit.Types.Where(t => t.TypeParams.Count == 0))
         {
-            output.Types.Add(RewriteDecl(t, new Dictionary<string, TypeRef>(StringComparer.Ordinal), t.Name));
+            try { output.Types.Add(RewriteDecl(t, new Dictionary<string, TypeRef>(StringComparer.Ordinal), t.Name)); }
+            catch (Metadata.DeclarationDemand demand) { required.Add(demand); }
         }
+        required.ThrowIfAny();
 
         // AND THE TEMPLATES SURVIVE, unrewritten and uncompiled.
         //
