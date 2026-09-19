@@ -91,6 +91,16 @@ public static class NativeAotBuild
             Path.GetDirectoryName(project.Path)!, new Dictionary<string, string>(), TimeSpan.FromMinutes(5), cancel);
         if (linked.ExitCode != 0 || linked.TimedOut) throw new IOException("Native host link failed; logs: " + linked.LogPrefix);
         File.Move(temporary, output, overwrite: true);
+        // The names this tool used to install under. A native executable is
+        // a real program, so a symbolic link carries the typed name through
+        // to it and the toolchain reads that name as its first argument.
+        foreach (string alias in ManagedProjectBuild.Aliases(
+            project.Properties.TryGetValue("ToolAliases", out string? declared) ? declared : ""))
+        {
+            string aliasPath = Path.Combine(Path.GetDirectoryName(output)!, alias.Split('=')[0]);
+            if (File.Exists(aliasPath) || Directory.Exists(aliasPath)) File.Delete(aliasPath);
+            File.CreateSymbolicLink(aliasPath, project.AssemblyName);
+        }
         File.WriteAllText(state, signature + "\n" + Identity(output));
     }
 

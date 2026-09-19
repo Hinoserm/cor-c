@@ -7,6 +7,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>Corsac</RootNamespace>
     <AssemblyName>corc</AssemblyName>
+    <!-- The programs this one replaced, still reachable by their old names. -->
+    <ToolAliases>corlink=link;build=build</ToolAliases>
     <StartupObject>Corsac.Program</StartupObject>
     <InvariantGlobalization>true</InvariantGlobalization>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>

@@ -3,7 +3,7 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 os="${CORSAC_ROOT:-$root/../corsac86-integration}"
 corc="${CORC:-$root/compiler/bin/managed/Release/net10.0/corc}"
-corlink="${CORLINK:-$root/linker/bin/managed/Release/net10.0/corlink}"
+corlink() { "${CORLINK:-$corc}" link "$@"; }
 export CORC="$corc"
 jobs="${CORSAC_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN)}"
 mkdir -p "$root/build"
@@ -17,7 +17,7 @@ mkdir -p "$work/source" "$work/root/boot" "$work/root/bin" "$work/root/etc" "$wo
 git -C "$os" archive "$revision" | tar -x -C "$work/source"
 snapshot="$work/source"
 printf 'CORSAC commit: %s\nprofile: x86-486-isa\n' "$revision" > "$work/provenance.txt"
-sha256sum "$corc" "$(dirname "$corc")/corc.dll" "$(dirname corlink)/corlink.dll" >> "$work/provenance.txt"
+sha256sum "$corc" "$(dirname "$corc")/corc.dll" "$(dirname "$corc")/corlink.dll" >> "$work/provenance.txt"
 bash "$snapshot/tools/kconfig" --root "$snapshot/os/kernel" --out "$work/config" x86-486-isa > "$work/config.log"
 sources=()
 while IFS= read -r line; do

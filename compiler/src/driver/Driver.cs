@@ -15,9 +15,49 @@ namespace Corsac;
 /// </summary>
 public static class Driver
 {
+    /// <summary>
+    /// The command a name stands for, when the toolchain is reached under one
+    /// of the names it used to install. `corlink a.o -o x` and `build test`
+    /// were how these were typed for a long time and appear in scripts,
+    /// notes and muscle memory; a link named after the old program keeps
+    /// them working, and the name is simply read as the first argument.
+    /// </summary>
+    private static string? CommandForName(string name) => name switch
+    {
+        "corlink" or "corlink.exe" => "link",
+        "build" or "build.exe" or "corbuild" => "build",
+        "corasm" => "asm",
+        _ => null,
+    };
+
+    /// <summary>
+    /// The name this run was typed as, which is not the same as the file it
+    /// ended up executing: the runtime resolves its own path through the
+    /// symbolic link, so it reports corc whatever name was used. Linux keeps
+    /// the word the shell actually passed, and that is the one that decides.
+    /// </summary>
+    private static string InvokedAs()
+    {
+        try
+        {
+            if (File.Exists("/proc/self/cmdline"))
+            {
+                string line = File.ReadAllText("/proc/self/cmdline");
+                int end = line.IndexOf('\0');
+                string first = end < 0 ? line : line[..end];
+                if (first.Length != 0) return first;
+            }
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+        return Environment.GetCommandLineArgs().FirstOrDefault() ?? "";
+    }
+
     public static int Run(string[] args)
     {
         Binder.LibrarySource = IsLibrarySource;
+        string called = Path.GetFileName(InvokedAs());
+        if (CommandForName(called) is string implied) args = [implied, ..args];
         if (args.Length == 0)
         {
             return Usage();
@@ -32,6 +72,7 @@ public static class Driver
             {
                 "compile" or "cc" => Compile(rest),
                 "compile-project" => ProjectCompile.Run(rest),
+                "link" when rest.Length == 1 && rest[0] is "--help" or "-h" => LinkUsage(),
                 "link" => ObjectLinkCommand.Run(Response(rest), new UnitBackend()),
                 "index" => IndexCommand.Run(Response(rest)),
                 "library-sources" => LibrarySources(rest),
@@ -69,6 +110,13 @@ public static class Driver
             }
             return 1;
         }
+    }
+
+    private static int LinkUsage()
+    {
+        Console.WriteLine("corc link <file.o> ... -o <output> [--entry symbol] [--flat] "
+            + "[--base address] [--paddr address] [--shared] [--cpu name] [--no-lto]");
+        return 0;
     }
 
     private static int Usage()
