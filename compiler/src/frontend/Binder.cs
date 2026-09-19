@@ -34,6 +34,9 @@ public sealed partial class Binder
     /// <summary>Where the library region ends: the first slot a library class's own virtuals were given.</summary>
     private int _librarySlots;
 
+    /// <summary>Slots kept above the library's interface region for the library's class virtuals; see the numbering.</summary>
+    private const int LibraryClassReserve = 128;
+
     private TypeSymbol? _thisType;
     private MethodSymbol? _method;
     private readonly List<LocalScope> _scopes = new();
@@ -1063,16 +1066,15 @@ public sealed partial class Binder
 
         if (local.Count > 0)
         {
-            // The library's classes are numbered now, from the library
-            // region, exactly as their own build numbered them; the project's
-            // interfaces then start above the highest slot any of them took.
-            int top = _interfaceSlots - 1;
-            foreach (TypeSymbol t in _r.Types.Values.Where(t => t.Kind == TypeKind.Class && !IsTemplate(t) && IsLibraryType(t)))
-            {
-                LayOut(t);
-                foreach (MethodSymbol m in t.Methods) top = Math.Max(top, m.VtableSlot);
-            }
-            _interfaceSlots = top + 1;
+            // The project's interfaces start a fixed distance above the
+            // library's interface region: room for the library's classes,
+            // whose virtuals are numbered from that region. A FIXED distance,
+            // not the highest slot of the library classes this unit happens
+            // to have loaded, because every unit of a program must give the
+            // same interface the same number, and units load different
+            // classes. The cost is empty entries in the tables of the
+            // project's own classes, per type and not per object.
+            _interfaceSlots = _librarySlots + LibraryClassReserve;
             Number(local);
             Assign(false);
         }
