@@ -1079,6 +1079,18 @@ public sealed partial class Binder
 
         Number(families);
         Assign(true);
+        // The table this unit numbered over, for diffing the two sides of a
+        // link that stops with a layout conflict: a family present on one
+        // side only moves every slot after it. Set CORC_DUMP_FAMILIES.
+        if (Environment.GetEnvironmentVariable("CORC_DUMP_FAMILIES") is not null)
+        {
+            Console.Error.WriteLine("families library=" + families.Count + " project=" + local.Count
+                + " slots=" + _interfaceSlots);
+            foreach (((string template, int arity), int methods) in families)
+                Console.Error.WriteLine("  lib " + template + "`" + arity + " methods=" + methods);
+            foreach (((string template, int arity), int methods) in local)
+                Console.Error.WriteLine("  project " + template + "`" + arity + " methods=" + methods);
+        }
         _librarySlots = _interfaceSlots;
 
         if (local.Count > 0)

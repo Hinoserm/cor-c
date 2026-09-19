@@ -204,22 +204,18 @@ tasks below track that work; moving files alone does not reduce the working set.
   project a fixed share decided when it starts. Measured over a full disk
   build: sixteen compilers holding one worker each, then six sharing sixteen,
   then one holding all sixteen.
-- [ ] Make a type's vtable layout the same whether or not the unit compiled
-  with a declaration index. `tests/integration/managed-units.sh` fails on this
-  and has since before the speed work: a unit built with the whole library
-  inline gives `BufferedStream.get_CanRead` slot 57, and one built from `--ref`
-  declarations plus an index gives it slot 45, because each numbers the
-  interface region over the interfaces it happens to have materialised rather
-  than over a table the whole build agrees on. `ThreadStart.Invoke` lands at
-  slot 56 in one and 44 in the other for the same reason: the families
-  themselves are numbered over the set a unit materialised.
-
-  Fixing the size of the reserved regions is not enough and was tried and
-  reverted: it changes the ABI for every class and leaves the family
-  numbering, which is the actual disagreement, untouched. The family table
-  has to be derived from the library DECLARATIONS -- the sources both sides
-  share -- rather than from the types a unit happened to load. That is the
-  managed separate compilation work, not a regression.
+- [x] `tests/integration/managed-units.sh` failed at link with a layout
+  conflict on `ThreadStart` (slot 56 in the library unit, 44 in the caller).
+  Not a numbering fault: the two sides were given different library sources.
+  The library unit compiled the default set, which gained Drawing and Forms;
+  the caller's `--ref` list in `tests/integration/managed-runtime.sources`
+  had not, so it declared eight fewer interface families and every slot after
+  them moved by twelve. Interface slots ARE numbered over the declarations
+  (see Binder), which is exactly why the lists must be the same. The list is
+  brought up to date and `RuntimeSourceListTests` pins it to
+  `Driver.DefaultLibraries` so it cannot drift again. `CORC_DUMP_FAMILIES`
+  prints the family table a unit numbered, which is how the difference was
+  found; diff it between the two sides of a conflicting link.
 - [ ] Reduce the remaining rounds. A trivial source now takes the floor of two;
   the largest kernel sources take four, and what they still discover late is
   named only from a body or from a specialised template.

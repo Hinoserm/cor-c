@@ -893,7 +893,7 @@ public static class Driver
         return root;
     }
 
-    internal static List<string> DefaultLibraries(Target target, bool freestanding = false)
+    public static List<string> DefaultLibraries(Target target, bool freestanding = false)
     {
         string? root = LibraryRoot();
         if (root is null)
