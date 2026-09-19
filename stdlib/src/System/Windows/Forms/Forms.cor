@@ -1556,11 +1556,11 @@ public static class Application
             {
                 // The seat sends the wheel to the window under the pointer;
                 // inside it, the control with the focus gets it, or the form.
-                // The wire already says positive for the wheel rolled away
-                // from the hand, as Windows does; negating it here scrolled
-                // everything backwards.
+                // The wire says negative for the wheel rolled away from the
+                // hand (PS/2's convention, and QEMU's and 86Box's); Windows
+                // says positive, and this is Windows' API.
                 Control target = (_focus != null && _focus.FindForm() == f) ? _focus : f!;
-                target.RaiseMouseWheel(new MouseEventArgs(MouseButtons.None, 0, 0, 0, Seat.LowSigned(m.A) * 120));
+                target.RaiseMouseWheel(new MouseEventArgs(MouseButtons.None, 0, 0, 0, -Seat.LowSigned(m.A) * 120));
                 break;
             }
             case 5:
