@@ -1433,8 +1433,6 @@ public sealed class Parser
         made.SourceTo = delegateDecl.SourceTo;
         made.File = _file;
         made.Scope = _fileScope;
-        made.Line = delegateDecl.Line;
-        made.Col = delegateDecl.Col;
         return made;
     }
 
