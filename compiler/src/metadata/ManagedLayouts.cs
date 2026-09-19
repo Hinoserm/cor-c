@@ -9,9 +9,36 @@ public static class ManagedLayouts
 {
     public static void Attach(ObjectFile obj, BindResult bound)
     {
+        // WHAT THIS UNIT HAS AN OPINION ABOUT. Every type the binder
+        // materialised used to be described here, which made the section
+        // depend on which declarations happened to be loaded rather than on
+        // which were used: importing a header nobody asked about changed the
+        // object file. Two units can only disagree about a type they both
+        // describe, and a unit that never reached for a type has nothing to
+        // disagree with, so the records follow use.
+        //
+        // A type this unit DEFINES is always described -- that is the side of
+        // the check that publishes the layout -- and so is everything a
+        // described type is built out of, because its own record names its
+        // base and its interfaces and a reader is entitled to look them up.
+        HashSet<TypeSymbol> described = new(ReferenceEqualityComparer.Instance);
+        Queue<TypeSymbol> pending = new();
+        foreach (TypeSymbol type in bound.Types.Values.Distinct())
+            if (type.Used || type.Decl is { Elsewhere: false })
+                pending.Enqueue(type);
+        while (pending.Count != 0)
+        {
+            TypeSymbol type = pending.Dequeue();
+            if (!described.Add(type)) continue;
+            if (type.Base is TypeSymbol basis) pending.Enqueue(basis);
+            foreach (TypeSymbol face in type.Interfaces) pending.Enqueue(face);
+        }
+
         IEnumerable<ManagedTypeLayout> Records()
         {
-            foreach (TypeSymbol type in bound.Types.Values.Distinct().Where(type => type.Decl is { Specialised: false, LocalOnly: false, TypeParams.Count: 0 }))
+            foreach (TypeSymbol type in bound.Types.Values.Distinct()
+                .Where(type => described.Contains(type))
+                .Where(type => type.Decl is { Specialised: false, LocalOnly: false, TypeParams.Count: 0 }))
             {
                 using MemoryStream stream = new();
                 using BinaryWriter writer = new(stream, Encoding.UTF8, leaveOpen: true);

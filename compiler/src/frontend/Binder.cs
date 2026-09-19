@@ -194,7 +194,13 @@ public sealed partial class Binder
 
     private bool TypeCandidate(string key, out TypeSymbol? symbol)
     {
-        if (_r.Types.TryGetValue(key, out symbol)) return true;
+        if (_r.Types.TryGetValue(key, out symbol))
+        {
+            // ASKED FOR, not merely present. This is what tells the managed
+            // layout which types this unit has an opinion about.
+            symbol.Used = true;
+            return true;
+        }
         // A MISSING DECLARATION IS RECORDED, NOT RAISED. Unwinding here threw
         // the whole unit away for one name, and a single dispatcher naming a
         // dozen kernel types therefore cost a dozen rebuilds. Checking carries
