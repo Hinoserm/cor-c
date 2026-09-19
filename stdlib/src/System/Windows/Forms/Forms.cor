@@ -1610,7 +1610,18 @@ public static class Application
     public static Form? ActiveForm { get { return _active; } }
     internal static Control? Captured;
 
-    internal static void Register(Form f) { if (!_forms.Contains(f)) _forms.Add(f); _active = f; f.RaiseActivated(); }
+    internal static void Register(Form f) { if (!_forms.Contains(f)) _forms.Add(f); CancelDrag(f); _active = f; f.RaiseActivated(); }
+
+    /// A drag ends when activation moves away from the window being
+    /// dragged: a dialog that opens mid-drag would otherwise be the thing
+    /// dragged, since the pointer's moves keep coming and the drag would
+    /// still be live. The outline, if one was up, comes off.
+    static void CancelDrag(Form? nowActive)
+    {
+        if (_dragging == null || _dragging == nowActive) return;
+        if (_resizeEdges != 0) { Seat.Current.ClearBand(); Seat.Current.SetCursor(Cursors.Arrow); }
+        _dragging = null; _dragPending = false; _resizeEdges = 0; _sinceDrag = 0;
+    }
     internal static void Unregister(Form f) { _forms.Remove(f); if (_active == f) _active = _forms.Count > 0 ? _forms[_forms.Count - 1] : null; if (_focus != null && _focus.FindForm() == f) _focus = null; }
     internal static void NeedsPaint(Control c) { _paintPending = true; }
     /// x, y: where in the window the press was. The drag keeps that point
@@ -1853,8 +1864,8 @@ public static class Application
                 break;
             }
             case 9:
-                if (m.A != 0) { _active = f; f!.RaiseActivated(); }
-                else { if (_active == f) _active = null; f!.RaiseDeactivate(); }
+                if (m.A != 0) { CancelDrag(f); _active = f; f!.RaiseActivated(); }
+                else { if (_dragging == f) CancelDrag(null); if (_active == f) _active = null; f!.RaiseDeactivate(); }
                 break;
             case 11:
                 Shell.RaiseWindowsChanged();
