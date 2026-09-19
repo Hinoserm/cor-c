@@ -210,8 +210,15 @@ tasks below track that work; moving files alone does not reduce the working set.
   inline gives `BufferedStream.get_CanRead` slot 57, and one built from `--ref`
   declarations plus an index gives it slot 45, because each numbers the
   interface region over the interfaces it happens to have materialised rather
-  than over a table the whole build agrees on. The interface slots themselves
-  agree; it is where the class region starts that does not. This is the
+  than over a table the whole build agrees on. `ThreadStart.Invoke` lands at
+  slot 56 in one and 44 in the other for the same reason: the families
+  themselves are numbered over the set a unit materialised.
+
+  Fixing the size of the reserved regions is not enough and was tried and
+  reverted: it changes the ABI for every class and leaves the family
+  numbering, which is the actual disagreement, untouched. The family table
+  has to be derived from the library DECLARATIONS -- the sources both sides
+  share -- rather than from the types a unit happened to load. That is the
   managed separate compilation work, not a regression.
 - [ ] Reduce the remaining rounds. A trivial source now takes the floor of two;
   the largest kernel sources take four, and what they still discover late is
