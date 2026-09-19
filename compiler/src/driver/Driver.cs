@@ -455,7 +455,7 @@ public static class Driver
         // another shared object that already has it, and a program's own type
         // shadowing a library one be kept.
         List<string> libraryMark = library ? new List<string>(files) : classLibrary;
-        Corsac.Lang.Lower.Lowering.SharedObject = shared;
+        Corsac.Lang.Lower.Lowering.SharedObject = shared && !args.Contains("--no-shared-init");
         Corsac.Lang.Lower.Lowering.PartOfALibrary = references.Count > 0 || args.Contains("--decl-index") || args.Contains("--obj");
         Corsac.Lang.Lower.Lowering.Dynamic = !library && sharedLibs.Count > 0;
 #if !NET
@@ -647,7 +647,7 @@ public static class Driver
             return 0;
         }
 
-        if (shared)
+        if (shared && !args.Contains("--obj"))
         {
             // DT_SONAME is the name the loader will look for, so it is the
             // name the file is being given here and not the path it sits at.

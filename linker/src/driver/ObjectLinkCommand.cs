@@ -16,6 +16,7 @@ public static class ObjectLinkCommand
         uint? baseAddress = null;
         uint? physicalAddress = null;
         bool flat = false;
+        bool shared = false;
         bool lto = true;
         string? backendPath = null;
         int importBytes = 1024 * 1024;
@@ -62,6 +63,7 @@ public static class ObjectLinkCommand
                 }
             }
             else if (arg == "--flat") flat = true;
+            else if (arg == "--shared") shared = true;
             else if (arg == "--no-lto") lto = false;
             else if (arg == "--lto") lto = true;
             else if (arg.StartsWith("-", StringComparison.Ordinal))
@@ -71,7 +73,7 @@ public static class ObjectLinkCommand
         if (output is null || paths.Count == 0)
             return Fail("usage: corlink <file.o> ... -o <output> [--entry symbol] [--flat] [--base address] [--paddr address] [--no-lto]");
         if (flat && physicalAddress is not null) return Fail("--paddr is for ELF output; use --base for flat images");
-        if (sharedLibraries.Count > 0 && (flat || physicalAddress is not null || baseAddress is not null))
+        if ((shared || sharedLibraries.Count > 0) && (flat || physicalAddress is not null || baseAddress is not null))
             return Fail("shared libraries cannot be combined with flat or fixed-address output");
         string destination = Path.GetFullPath(output);
         List<(string, ObjectFile)> inputs = new();
@@ -109,12 +111,13 @@ public static class ObjectLinkCommand
             image = linked.Bytes;
             Console.Error.WriteLine($"flat: entry=0x{linked.Entry:x} base=0x{linked.Base:x} bss={linked.BssSize} memory={linked.MemorySize}");
         }
-        else if (sharedLibraries.Count > 0)
+        else if (shared || sharedLibraries.Count > 0)
         {
             HashSet<string> defined = new(inputs.SelectMany(x => x.Item2.Symbols).Where(s => s.IsDefined).Select(s => s.Name), StringComparer.Ordinal);
             HashSet<string> unresolved = new(inputs.SelectMany(x => x.Item2.Symbols).Where(s => !s.IsDefined && !defined.Contains(s.Name)).Select(s => s.Name), StringComparer.Ordinal);
             List<string> needed = sharedLibraries.Distinct(StringComparer.Ordinal).Where(path => ElfReader.ExportsOf(File.ReadAllBytes(path)).Any(unresolved.Contains)).ToList();
-            image = Linker.Link(inputs, entry, needed, runpath);
+            image = shared ? Linker.LinkShared(inputs, Path.GetFileName(output), needed, runpath)
+                : Linker.Link(inputs, entry, needed, runpath);
         }
         else image = Linker.Link(inputs, entry, baseAddress ?? Linker.DefaultLoadAddress, physicalAddress);
         File.WriteAllBytes(output, image);
