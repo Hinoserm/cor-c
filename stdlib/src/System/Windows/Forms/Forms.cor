@@ -1275,7 +1275,11 @@ public static class Application
                 int[] fds = new int[_watchFds.Count];
                 for (int i = 0; i < fds.Length; i++) fds[i] = _watchFds[i];
                 int which = seat.WaitAny(fds, fds.Length, wait);
-                if (which >= 0 && which < _watchHandlers.Count) { _watchHandlers[which](fds[which]); continue; }
+                // A descriptor that is always ready -- a shell pouring out
+                // a listing -- must not stop the clock: a timer that is due
+                // fires between two reads, or a terminal that paints on a
+                // timer while output flows never paints until it stops.
+                if (which >= 0 && which < _watchHandlers.Count) { _watchHandlers[which](fds[which]); if (wait == 0) FireTimers(); continue; }
                 if (!seat.Poll(0)) { FireTimers(); continue; }
             }
             else if (wait >= 0)
