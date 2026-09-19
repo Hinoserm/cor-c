@@ -17,6 +17,7 @@ public static class Driver
 {
     public static int Run(string[] args)
     {
+        Binder.LibrarySource = IsLibrarySource;
         if (args.Length == 0)
         {
             return Usage();
@@ -788,6 +789,24 @@ public static class Driver
     /// repository the compiler
     /// was built in.
     /// </summary>
+    /// <summary>
+    /// Whether a source file is one of the compiler's own libraries (stdlib,
+    /// runtime): the set whose interface and virtual slot numbering is an
+    /// ABI shared by every image. Asked by the index builder and the binder.
+    /// </summary>
+    internal static bool IsLibrarySource(string path)
+    {
+        string? root = LibraryRoot();
+        if (root is null) return false;
+        string full = Path.GetFullPath(path);
+        foreach (string part in new[] { "stdlib", "runtime" })
+        {
+            string prefix = Path.GetFullPath(Path.Combine(root, part)) + Path.DirectorySeparatorChar;
+            if (full.StartsWith(prefix, StringComparison.Ordinal)) return true;
+        }
+        return false;
+    }
+
     private static string? LibraryRoot()
     {
         string? root = Environment.GetEnvironmentVariable("CORC_LIB");

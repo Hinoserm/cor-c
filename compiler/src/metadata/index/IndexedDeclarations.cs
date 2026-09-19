@@ -13,6 +13,7 @@ public sealed class IndexedDeclarations : IDisposable
     public long PayloadLoads => catalog.PayloadLoads;
     public long ResidentDeclarationBytes => catalog.ResidentBytes;
     public IReadOnlyDictionary<(string Name, int Arity), int> Interfaces { get; }
+    public IReadOnlySet<(string Name, int Arity)> LibraryInterfaces { get; }
 
     public IndexedDeclarations(string path, string assembly, IEnumerable<string> ownedFiles,
         long declarationBudgetBytes = 2 * 1024 * 1024)
@@ -20,6 +21,7 @@ public sealed class IndexedDeclarations : IDisposable
         catalog = new DeclarationCatalog(path, declarationBudgetBytes);
         this.assembly = assembly;
         Interfaces = catalog.Interfaces(assembly);
+        LibraryInterfaces = catalog.LibraryInterfaces(assembly);
         // Interface slots are reserved over the project's compact family
         // table, even for declarations this unit never demand-loads. Adding
         // an earlier family can move every later slot: it is an ABI input.

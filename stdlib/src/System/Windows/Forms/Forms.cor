@@ -259,22 +259,29 @@ public class Seat : IDrawingTarget
         return true;
     }
 
-    /// Is a message waiting? Asked of the seat directly: the descriptor's
-    /// own readiness cannot be trusted for a character device. A timeout is
-    /// spent in short sleeps between asks, which the seat's own wait will
-    /// replace once the kernel answers poll for it.
+    /// Is a message waiting? poll(2) on the seat: the kernel answers for
+    /// the device and sleeps the caller until something arrives or the
+    /// time is up. Nothing here spins or naps in steps.
     public bool Poll(int timeoutMs)
     {
         Flush();
-        int waited = 0;
-        while (true)
-        {
-            if (Os.Ioctl(_fd, 0x47550004, 0) > 0) return true;
-            if (waited >= timeoutMs) return false;
-            int step = timeoutMs - waited < 20 ? timeoutMs - waited : 20;
-            System.Threading.Thread.Sleep(step);
-            waited += step;
-        }
+        return Os.Poll(_fd, 1, timeoutMs) > 0;
+    }
+
+    /// Wait for the seat or any of `others`, whichever first. Returns the
+    /// index into `others` that became readable, or -1 for the seat (or
+    /// the timeout; the caller asks the seat, which is cheap).
+    public int WaitAny(int[] others, int count, int timeoutMs)
+    {
+        Flush();
+        int[] fds = new int[count + 1];
+        bool[] ready = new bool[count + 1];
+        fds[0] = _fd;
+        for (int i = 0; i < count; i++) fds[i + 1] = others[i];
+        int n = Os.PollMany(fds, count + 1, 1, timeoutMs, ready);
+        if (n <= 0) return -1;
+        for (int i = 0; i < count; i++) if (ready[i + 1]) return i;
+        return -1;
     }
 
     int Int(int at) { return _event[at] | (_event[at + 1] << 8) | (_event[at + 2] << 16) | (_event[at + 3] << 24); }
@@ -833,15 +840,15 @@ public static class Application
             if (Idle != null) Idle(null!, EventArgs.Empty);
             if (_watchFds.Count > 0)
             {
-                // Several descriptors: wait on the seat with a short timeout and
-                // give the watchers a turn. The timeout is the price of not
-                // having a multi-descriptor wait yet; it is not a poll of the
-                // seat, which still sleeps in the kernel.
-                bool any = false;
-                for (int i = 0; i < _watchFds.Count; i++)
-                    if (Os.Poll(_watchFds[i], 1, 0) > 0) { _watchHandlers[i](_watchFds[i]); any = true; }
-                if (any) continue;
-                if (!seat.Poll(20)) continue;
+                // Several descriptors: one wait on all of them in the
+                // kernel. A watcher that is ready gets its turn; then the
+                // seat is asked whether it has anything before blocking in
+                // Next, so a burst on the descriptor cannot starve painting.
+                int[] fds = new int[_watchFds.Count];
+                for (int i = 0; i < fds.Length; i++) fds[i] = _watchFds[i];
+                int which = seat.WaitAny(fds, fds.Length, -1);
+                if (which >= 0 && which < _watchHandlers.Count) { _watchHandlers[which](fds[which]); continue; }
+                if (!seat.Poll(0)) continue;
             }
             Message m;
             if (!seat.Next(out m)) break;

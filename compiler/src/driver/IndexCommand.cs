@@ -29,7 +29,7 @@ public static class IndexCommand
         }
         if (output is null || assembly is null || paths.Count == 0)
             throw new ArgumentException("index requires --assembly <identity>, source files and -o <index>");
-        SourceIndexBuilder.Write(output, paths, assembly, symbols);
+        SourceIndexBuilder.Write(output, paths, assembly, symbols, librarySource: Driver.IsLibrarySource);
         using DeclarationIndex index = new(output);
         Console.Error.WriteLine(output + ": " + index.Count + " index records; implementation bodies omitted");
         return 0;

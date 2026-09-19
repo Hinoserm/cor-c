@@ -24,7 +24,8 @@ public static class SourceIndexBuilder
 
     public static void Write(string output, IEnumerable<string> paths, string assembly,
         IReadOnlyCollection<string>? symbols = null, int memoryBytes = 1024 * 1024,
-        IReadOnlyDictionary<string, IReadOnlyCollection<string>>? fileSymbols = null)
+        IReadOnlyDictionary<string, IReadOnlyCollection<string>>? fileSymbols = null,
+        Func<string, bool>? librarySource = null)
     {
         string identity = AssemblyIdentity(assembly);
         string[] files = paths.Select(System.IO.Path.GetFullPath).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
@@ -107,7 +108,7 @@ public static class SourceIndexBuilder
                         .Select(method => method.Name).Distinct(StringComparer.Ordinal))
                         yield return new DeclarationRecord("E:" + identity + "\n" + type.Namespace + "\n" + method,
                             Encoding.UTF8.GetBytes(key));
-                    if (type.Kind == TypeKind.Interface) yield return InterfaceFamilies.Record(key, type);
+                    if (type.Kind == TypeKind.Interface) yield return InterfaceFamilies.Record(key, type, librarySource?.Invoke(path) ?? true);
                 }
             }
             // Validate the complete generation before the atomic publication.

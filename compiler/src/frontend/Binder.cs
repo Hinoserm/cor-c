@@ -22,6 +22,17 @@ public sealed partial class Binder
     private readonly Action<string>? _requireDeclaration;
     private readonly Action<string, string>? _requireExtensions;
     private readonly IReadOnlyDictionary<(string Name, int Arity), int>? _indexedInterfaces;
+    private readonly IReadOnlySet<(string Name, int Arity)>? _libraryInterfaces;
+
+    /// <summary>
+    /// Whether a source file belongs to the compiler's own libraries. Set by
+    /// the driver; when unset every declaration counts as library, which is
+    /// the numbering every image used before projects could add interfaces.
+    /// </summary>
+    public static Func<string, bool>? LibrarySource { get; set; }
+
+    /// <summary>Where the library region ends: the first slot a library class's own virtuals were given.</summary>
+    private int _librarySlots;
 
     private TypeSymbol? _thisType;
     private MethodSymbol? _method;
@@ -307,12 +318,26 @@ public sealed partial class Binder
 
     public Binder(string file = "<source>", Action<string>? requireDeclaration = null,
         IReadOnlyDictionary<(string Name, int Arity), int>? indexedInterfaces = null,
-        Action<string, string>? requireExtensions = null)
+        Action<string, string>? requireExtensions = null,
+        IReadOnlySet<(string Name, int Arity)>? libraryInterfaces = null)
     {
         _file = file;
         _requireDeclaration = requireDeclaration;
         _requireExtensions = requireExtensions;
         _indexedInterfaces = indexedInterfaces;
+        _libraryInterfaces = libraryInterfaces;
+    }
+
+    /// <summary>
+    /// A type declared in the compiler's own library sources, or specialised
+    /// from a template that was. Its slots are ABI: numbered the way the
+    /// library's own build numbered them, whatever this compilation adds.
+    /// </summary>
+    private static bool IsLibraryType(TypeSymbol t)
+    {
+        string? path = t.Decl?.SourcePath;
+        if (path is null || LibrarySource is null) return true;
+        return LibrarySource(path);
     }
 
     /// <summary>
@@ -326,9 +351,10 @@ public sealed partial class Binder
     /// </summary>
     public static BindResult Bind(CompilationUnit unit, string file = "<source>", Action<string>? requireDeclaration = null,
         IReadOnlyDictionary<(string Name, int Arity), int>? indexedInterfaces = null,
-        Action<string, string>? requireExtensions = null)
+        Action<string, string>? requireExtensions = null,
+        IReadOnlySet<(string Name, int Arity)>? libraryInterfaces = null)
     {
-        Binder b = new(file, requireDeclaration, indexedInterfaces, requireExtensions);
+        Binder b = new(file, requireDeclaration, indexedInterfaces, requireExtensions, libraryInterfaces);
         b.Run(unit);
         b._r = b._r.CopyForBodyChecking();
         b.CheckBodyWork();
@@ -968,45 +994,87 @@ public sealed partial class Binder
         // with; reading it back out of `IReadOnlyList$ImageFile$Section` by
         // counting separators makes that a template of arity two, gives it
         // slots of its own, and every slot after it in the program moves.
-        SortedDictionary<(string, int), int> families = new();
+        // IN TWO TIERS. The library's interfaces (stdlib, runtime) are the ABI
+        // every image shares, and they come first, in an order that depends on
+        // the library sources alone. A PROJECT's own interfaces come after the
+        // library's CLASSES as well, because a library class's virtuals are
+        // numbered straight after the library's interface region, and a
+        // program that declared `ICells` -- sorting before IComparable -- used
+        // to push every stdlib slot after it along by five: its Form was built
+        // with SetBounds in a slot the library called by another number, and
+        // the library's constructor jumped to nought.
+        SortedDictionary<(string, int), int> families = new(), local = new();
+        bool IsLibraryFamily((string, int) family, bool declaredHere)
+            => _libraryInterfaces is null ? true : _libraryInterfaces.Contains(family) && !declaredHere;
         if (_indexedInterfaces is not null)
-            foreach (var family in _indexedInterfaces) families[family.Key] = family.Value;
+            foreach (var family in _indexedInterfaces)
+                (IsLibraryFamily(family.Key, false) ? families : local)[family.Key] = family.Value;
         foreach (TypeSymbol t in _r.Types.Values.Where(t => t.Kind == TypeKind.Interface))
         {
             (string, int) family = Family(t);
-            families[family] = Math.Max(families.GetValueOrDefault(family), t.Methods.Count);
+            bool library = IsLibraryType(t) || (_libraryInterfaces?.Contains(family) ?? true);
+            SortedDictionary<(string, int), int> into = library ? families : local;
+            if (library) local.Remove(family);
+            into[family] = Math.Max(into.GetValueOrDefault(family), t.Methods.Count);
         }
 
-        foreach (((string template, int arity) family, int methods) in families)
+        void Number(SortedDictionary<(string, int), int> table)
         {
-            for (int i = 0; i < methods; i++)
+            foreach (((string template, int arity) family, int methods) in table)
             {
-                if (!shared.ContainsKey((family.template, family.arity, i)))
+                for (int i = 0; i < methods; i++)
                 {
-                    shared[(family.template, family.arity, i)] = _interfaceSlots++;
+                    if (!shared.ContainsKey((family.template, family.arity, i)))
+                    {
+                        shared[(family.template, family.arity, i)] = _interfaceSlots++;
+                    }
                 }
             }
         }
 
-        foreach (TypeSymbol t in _r.Types.Values.Where(t => t.Kind == TypeKind.Interface && !IsTemplate(t)))
+        void Assign(bool library)
         {
-            (string template, int arity) = Family(t);
-
-            for (int i = 0; i < t.Methods.Count; i++)
+            foreach (TypeSymbol t in _r.Types.Values.Where(t => t.Kind == TypeKind.Interface && !IsTemplate(t)))
             {
-                if (t.Methods[i].VtableSlot >= 0)
-                {
-                    continue;
-                }
+                (string template, int arity) = Family(t);
+                if ((IsLibraryType(t) || (_libraryInterfaces?.Contains((template, arity)) ?? true)) != library) continue;
 
-                if (!shared.TryGetValue((template, arity, i), out int slot))
+                for (int i = 0; i < t.Methods.Count; i++)
                 {
-                    slot = _interfaceSlots++;
-                    shared[(template, arity, i)] = slot;
-                }
+                    if (t.Methods[i].VtableSlot >= 0)
+                    {
+                        continue;
+                    }
 
-                t.Methods[i].VtableSlot = slot;
+                    if (!shared.TryGetValue((template, arity, i), out int slot))
+                    {
+                        slot = _interfaceSlots++;
+                        shared[(template, arity, i)] = slot;
+                    }
+
+                    t.Methods[i].VtableSlot = slot;
+                }
             }
+        }
+
+        Number(families);
+        Assign(true);
+        _librarySlots = _interfaceSlots;
+
+        if (local.Count > 0)
+        {
+            // The library's classes are numbered now, from the library
+            // region, exactly as their own build numbered them; the project's
+            // interfaces then start above the highest slot any of them took.
+            int top = _interfaceSlots - 1;
+            foreach (TypeSymbol t in _r.Types.Values.Where(t => t.Kind == TypeKind.Class && !IsTemplate(t) && IsLibraryType(t)))
+            {
+                LayOut(t);
+                foreach (MethodSymbol m in t.Methods) top = Math.Max(top, m.VtableSlot);
+            }
+            _interfaceSlots = top + 1;
+            Number(local);
+            Assign(false);
         }
 
         // ONE BIT PER TYPE, in an ancestor mask that is as many words wide as
@@ -2018,8 +2086,10 @@ public sealed partial class Binder
     {
         if (sym.SlotsAssigned) return;
         sym.SlotsAssigned = true;
-        // A class's own virtual methods are numbered above the interface region.
-        int slot = _interfaceSlots;
+        // A class's own virtual methods are numbered above the interface
+        // region -- the LIBRARY's region for a library class, so that it gets
+        // the numbers its own build gave it whatever this compilation adds.
+        int slot = IsLibraryType(sym) ? _librarySlots : _interfaceSlots;
 
         for (TypeSymbol? t = sym.Base; t != null; t = t.Base)
         {

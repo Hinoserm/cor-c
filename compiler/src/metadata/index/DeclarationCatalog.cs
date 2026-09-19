@@ -29,6 +29,15 @@ public sealed class DeclarationCatalog : IDisposable
         }
     }
 
+    public IReadOnlySet<(string Name, int Arity)> LibraryInterfaces(string assembly)
+    {
+        lock (gate)
+        {
+            if (disposed) throw new ObjectDisposedException(nameof(DeclarationCatalog));
+            return InterfaceFamilies.ReadLibrary(index, assembly);
+        }
+    }
+
     public DeclarationCatalog(string path, long budgetBytes = 2 * 1024 * 1024)
     {
         if (budgetBytes < 4096) throw new ArgumentOutOfRangeException(nameof(budgetBytes));
