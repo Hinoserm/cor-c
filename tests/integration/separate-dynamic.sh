@@ -6,7 +6,13 @@ corc=${CORC:-$root/compiler/bin/managed/Release/net10.0/corc}
 corlink=${CORLINK:-$root/linker/bin/managed/Release/net10.0/corlink}
 mkdir -p build
 work=$(mktemp -d "$root/build/separate-dynamic.XXXXXX")
-"$corc" compile --nostdlib --shared tests/integration/ir-lto/Compute.cor -o "$work/libCompute.so"
+"$corc" compile --nostdlib --shared --obj tests/integration/ir-lto/Compute.cor -o "$work/compute.o"
+"$corc" compile --nostdlib --shared --obj --no-shared-init tests/integration/ir-lto/SharedData.cor -o "$work/shared-data.o"
+"$corlink" "$work/compute.o" "$work/shared-data.o" --shared -o "$work/libCompute.so"
+readelf -h "$work/compute.o" > "$work/object.header"
+grep -q 'REL (Relocatable file)' "$work/object.header"
+readelf -d "$work/libCompute.so" > "$work/library.dynamic"
+grep -q 'Library soname: \[libCompute.so\]' "$work/library.dynamic"
 "$corc" compile --nostdlib --obj tests/integration/ir-lto/Caller.cor \
     --ref tests/integration/ir-lto/Compute.cor --link-shared "$work/libCompute.so" -o "$work/caller.o"
 for mode in lto native; do
