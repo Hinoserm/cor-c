@@ -216,6 +216,16 @@ tasks below track that work; moving files alone does not reduce the working set.
   `Driver.DefaultLibraries` so it cannot drift again. `CORC_DUMP_FAMILIES`
   prints the family table a unit numbered, which is how the difference was
   found; diff it between the two sides of a conflicting link.
+- [ ] Compilation output must not depend on WHICH declarations a unit loaded,
+  only on which it uses. Prefetching the types named in imported template
+  bodies cut the kernel's rounds sharply -- nineteen units bound in a single
+  pass, the average from 4.3 to 2.8, 40.6 s to 36.5 s and peak RSS 264 MB to
+  227 MB -- but changed 116 of the kernel's 118 object files, because slots
+  and metadata are numbered over the types a unit materialised. That is the
+  same hazard that made an indexed and a non-indexed compilation disagree
+  about ThreadStart. Until numbering is derived from the declarations rather
+  than from what was loaded, no prefetch can be turned on, and this one is
+  reverted. Fixing it unlocks the rounds work below.
 - [ ] Reduce the remaining rounds. A trivial source now takes the floor of two;
   the largest kernel sources take four, and what they still discover late is
   named only from a body or from a specialised template.
