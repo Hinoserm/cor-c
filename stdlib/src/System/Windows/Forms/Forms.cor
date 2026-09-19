@@ -268,6 +268,8 @@ public class Seat : IDrawingTarget
     public void DesktopWindow(int handle) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550018, 0); }
     /// This window stays above every ordinary one (a bar).
     public void TopMostWindow(int handle) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550019, 0); }
+    /// This window is not listed on a taskbar.
+    public void NoTaskbarWindow(int handle) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550024, 0); }
 
     /// The window's title, as the seat lists it (a taskbar reads it).
     public void SetTitle(int handle, string title)
@@ -449,6 +451,7 @@ public class SeatWindowInfo
     public bool IsDesktop { get { return (Flags & 1) != 0; } }
     public bool IsTopMost { get { return (Flags & 2) != 0; } }
     public bool IsFocused { get { return (Flags & 4) != 0; } }
+    public bool OnTaskbar { get { return (Flags & 9) == 0; } }      // neither the desktop nor a window that opted out
 }
 
 /// Fires Tick on the message loop every Interval milliseconds while Enabled.
@@ -727,6 +730,8 @@ public class Form : Control
     public bool IsDesktop;
     /// Above every ordinary window, like a taskbar. Set before Show.
     public bool TopMost;
+    /// Listed on the taskbar. A bar, a menu or a tool window says no. Set before Show.
+    public bool ShowInTaskbar = true;
     public bool HasFrame { get { return _border != FormBorderStyle.None; } }
 
     public override Rectangle ClientRectangle
@@ -784,6 +789,7 @@ public class Form : Control
         seat.SetTitle(_handle, Text);
         if (IsDesktop) seat.DesktopWindow(_handle);
         if (TopMost) seat.TopMostWindow(_handle);
+        if (!ShowInTaskbar) seat.NoTaskbarWindow(_handle);
         _shown = true;
         Application.Register(this);
         OnLoad(EventArgs.Empty);
@@ -1106,6 +1112,7 @@ public class ContextMenu : Form
         FormBorderStyle = FormBorderStyle.None;
         StartPosition = FormStartPosition.Manual;
         TopMost = true;
+        ShowInTaskbar = false;
         BackColor = SystemColors.Control;
     }
 
