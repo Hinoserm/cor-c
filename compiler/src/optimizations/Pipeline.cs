@@ -137,7 +137,13 @@ public sealed class Pipeline
 #if COR_SELFHOST_BENCHMARK
             Corsac.Program.BenchmarkStage("opt-module-begin " + p.Name);
 #endif
-            p.Run(m);
+            if (Accounting)
+            {
+                long t0 = System.Diagnostics.Stopwatch.GetTimestamp(), b0 = GC.GetTotalAllocatedBytes();
+                p.Run(m);
+                Account("module:" + p.Name, System.Diagnostics.Stopwatch.GetTimestamp() - t0, GC.GetTotalAllocatedBytes() - b0);
+            }
+            else p.Run(m);
 #if COR_SELFHOST_BENCHMARK
             Corsac.Program.BenchmarkStage("opt-module-end " + p.Name);
 #endif
@@ -182,6 +188,33 @@ public sealed class Pipeline
         FunctionWorkers.Run(module, Workers, (function, index) => Run(function));
     }
 
+    /// <summary>
+    /// What each pass cost over the whole process, by name, kept only when
+    /// CORC_REPORT_PASSES is set. Allocation per pass is the number that
+    /// matters: the collector's pauses are what stop eight workers from
+    /// being eight times one, and a pass that allocates a gigabyte to reach
+    /// its answer is where those pauses come from.
+    /// </summary>
+    public static readonly bool Accounting = Environment.GetEnvironmentVariable("CORC_REPORT_PASSES") is not null;
+    private static readonly Dictionary<string, (long Ticks, long Bytes, long Runs)> accounts = new(StringComparer.Ordinal);
+    private static readonly object accountGate = new();
+    public static void Account(string name, long ticks, long bytes)
+    {
+        lock (accountGate)
+        {
+            accounts.TryGetValue(name, out var was);
+            accounts[name] = (was.Ticks + ticks, was.Bytes + bytes, was.Runs + 1);
+        }
+    }
+    public static void ReportAccounts()
+    {
+        if (!Accounting) return;
+        lock (accountGate)
+            foreach (var (name, cost) in accounts.OrderByDescending(pair => pair.Value.Bytes))
+                Console.Error.WriteLine("pass " + name + " " + (cost.Ticks * 1000 / System.Diagnostics.Stopwatch.Frequency) + "ms "
+                    + (cost.Bytes >> 20) + "MiB runs=" + cost.Runs);
+    }
+
     public void Run(Function f)
     {
         if (Verify)
@@ -192,7 +225,13 @@ public sealed class Pipeline
         {
             foreach (IPass p in Passes)
             {
-                p.Run(f);
+                if (Accounting)
+                {
+                    long t0 = System.Diagnostics.Stopwatch.GetTimestamp(), b0 = GC.GetAllocatedBytesForCurrentThread();
+                    p.Run(f);
+                    Account(p.Name, System.Diagnostics.Stopwatch.GetTimestamp() - t0, GC.GetAllocatedBytesForCurrentThread() - b0);
+                }
+                else p.Run(f);
                 if (Verify)
                 {
                     Verifier.Check(f, $"after {p.Name}");
