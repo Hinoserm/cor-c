@@ -474,7 +474,9 @@ public static class Driver
             : new IndexedDeclarations(declarationIndex, Value(args, "--assembly")!, files);
         (CompilationUnit unit, BindResult bound)? front =
             Frontend.Compile(files, name, library, libraryMark, symbols, references, workers, declarations);
-        if (declarations is not null) Console.Error.WriteLine("indexed declaration payloads loaded=" + declarations.PayloadLoads);
+        if (declarations is not null) Console.Error.WriteLine("indexed declaration payloads loaded=" + declarations.PayloadLoads
+            + " passes=" + declarations.Passes + " token-cache hits=" + declarations.Tokens.Hits
+            + " misses=" + declarations.Tokens.Misses + " bytes=" + declarations.Tokens.ResidentBytes);
         if (front is null)
         {
             return 1;

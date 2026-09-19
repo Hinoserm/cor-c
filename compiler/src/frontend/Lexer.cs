@@ -12,6 +12,39 @@ namespace Corsac.Lang;
 /// </summary>
 public sealed class Lexer
 {
+    private static readonly string[] CharacterText = CreateCharacterText();
+    private static string[] CreateCharacterText()
+    {
+        string[] result = new string[128];
+        for (int i = 0; i < result.Length; i++) result[i] = ((char)i).ToString();
+        return result;
+    }
+    private static readonly (string text, Tok kind)[] ThreePunctuation =
+        {
+            ("<<=", Tok.ShlEq), (">>=", Tok.ShrEq),
+
+            // `??=`, which has to be matched before `??` or the `=` would
+            // be read as a second, separate assignment.
+            ("??=", Tok.QuestionQuestionEq),
+        };
+
+    private static readonly (string text, Tok kind)[] TwoPunctuation =
+        {
+            ("=>", Tok.FatArrow), ("->", Tok.Arrow),
+            ("==", Tok.Eq), ("!=", Tok.NotEq), ("<=", Tok.LtEq), (">=", Tok.GtEq),
+            ("&&", Tok.AndAnd), ("||", Tok.OrOr),
+            ("++", Tok.PlusPlus), ("--", Tok.MinusMinus),
+            ("+=", Tok.PlusEq), ("-=", Tok.MinusEq), ("*=", Tok.StarEq),
+            ("/=", Tok.SlashEq), ("%=", Tok.PercentEq),
+            ("&=", Tok.AmpEq), ("|=", Tok.PipeEq), ("^=", Tok.CaretEq),
+            ("<<", Tok.Shl), (">>", Tok.Shr),
+            ("??", Tok.QuestionQuestion), ("?.", Tok.QuestionDot),
+
+            // `..`, which is a range and not two member accesses.
+            ("..", Tok.DotDot),
+        };
+
+
     private static readonly Dictionary<string, Tok> Keywords = new(StringComparer.Ordinal)
     {
         ["namespace"] = Tok.KwNamespace, ["using"] = Tok.KwUsing,
@@ -112,7 +145,7 @@ public sealed class Lexer
                                        IReadOnlyCollection<string>? symbols = null)
     {
         Lexer lexer = new(source, file, line, col, symbols);
-        List<Token> tokens = new();
+        List<Token> tokens = new(Math.Min(4096, source.Length / 4 + 1));
 
         while (true)
         {
@@ -1206,16 +1239,7 @@ public sealed class Lexer
         char n2 = Peek(2);
 
         // Longest match first, so >>= does not lex as >> then =.
-        (string text, Tok kind)[] three =
-        {
-            ("<<=", Tok.ShlEq), (">>=", Tok.ShrEq),
-
-            // `??=`, which has to be matched before `??` or the `=` would
-            // be read as a second, separate assignment.
-            ("??=", Tok.QuestionQuestionEq),
-        };
-
-        foreach ((string text, Tok kind) in three)
+        foreach ((string text, Tok kind) in ThreePunctuation)
         {
             if (c == text[0] && n == text[1] && n2 == text[2])
             {
@@ -1226,23 +1250,7 @@ public sealed class Lexer
             }
         }
 
-        (string text, Tok kind)[] two =
-        {
-            ("=>", Tok.FatArrow), ("->", Tok.Arrow),
-            ("==", Tok.Eq), ("!=", Tok.NotEq), ("<=", Tok.LtEq), (">=", Tok.GtEq),
-            ("&&", Tok.AndAnd), ("||", Tok.OrOr),
-            ("++", Tok.PlusPlus), ("--", Tok.MinusMinus),
-            ("+=", Tok.PlusEq), ("-=", Tok.MinusEq), ("*=", Tok.StarEq),
-            ("/=", Tok.SlashEq), ("%=", Tok.PercentEq),
-            ("&=", Tok.AmpEq), ("|=", Tok.PipeEq), ("^=", Tok.CaretEq),
-            ("<<", Tok.Shl), (">>", Tok.Shr),
-            ("??", Tok.QuestionQuestion), ("?.", Tok.QuestionDot),
-
-            // `..`, which is a range and not two member accesses.
-            ("..", Tok.DotDot),
-        };
-
-        foreach ((string text, Tok kind) in two)
+        foreach ((string text, Tok kind) in TwoPunctuation)
         {
             if (c == text[0] && n == text[1])
             {
@@ -1274,6 +1282,6 @@ public sealed class Lexer
         }
 
         Advance();
-        return new Token(single, c.ToString(), line, col, start);
+        return new Token(single, CharacterText[c], line, col, start);
     }
 }

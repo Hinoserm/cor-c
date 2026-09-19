@@ -26,8 +26,10 @@ public static class Frontend
     {
         while (true)
         {
+            if (declarations is not null) declarations.Passes++;
             try { return CompileCore(paths, name, library, libraryPaths, symbols, elsewherePaths, workers, declarations); }
-            catch (DeclarationDemand demand) when (declarations is not null) { declarations.Include(demand.Key); }
+            catch (DeclarationDemand demand) when (declarations is not null)
+            { foreach (string key in demand.Keys) declarations.Include(key); }
         }
     }
 
@@ -83,7 +85,7 @@ public static class Frontend
 #endif
         try
         {
-            CompilationUnit[] parsed = ParseSources(sources, symbols, workers);
+            CompilationUnit[] parsed = ParseSources(sources, symbols, workers, declarations?.Tokens);
             int sourceIndex = 0;
             foreach ((string file, string? path, bool isLibrary, bool isElsewhere) in sources)
             {
@@ -221,13 +223,13 @@ public static class Frontend
 
     private static CompilationUnit[] ParseSources(
         List<(string Name, string? Path, bool FromLibrary, bool Elsewhere)> sources,
-        IReadOnlyCollection<string>? symbols, int workers)
+        IReadOnlyCollection<string>? symbols, int workers, SyntaxTokenCache? tokens = null)
     {
         CompilationUnit[] parsed = new CompilationUnit[sources.Count];
         if (workers <= 1)
         {
             for (int i = 0; i < sources.Count; i++)
-                parsed[i] = ParseSource(sources[i].Name, sources[i].Path, symbols);
+                parsed[i] = ParseSource(sources[i].Name, sources[i].Path, symbols, tokens);
             return parsed;
         }
         CompileError?[] failures = new CompileError?[sources.Count];
@@ -240,7 +242,7 @@ public static class Frontend
             {
                 for (int i = lane; i < sources.Count; i += active)
                 {
-                    try { parsed[i] = ParseSource(sources[i].Name, sources[i].Path, symbols); }
+                    try { parsed[i] = ParseSource(sources[i].Name, sources[i].Path, symbols, tokens); }
                     catch (CompileError error) { failures[i] = error; }
                 }
             });
@@ -252,13 +254,13 @@ public static class Frontend
         return parsed;
     }
 
-    private static CompilationUnit ParseSource(string name, string? path, IReadOnlyCollection<string>? symbols)
+    private static CompilationUnit ParseSource(string name, string? path, IReadOnlyCollection<string>? symbols, SyntaxTokenCache? tokens = null)
     {
         // Source text belongs to the active parser, not the project. Retain
         // paths in the queue so completed files release their text before the
         // next file is read. At most one source buffer per worker is live.
         string text = path is null ? Prelude.Source : File.ReadAllText(path);
-        return Parser.ParseText(text, name, symbols);
+        return tokens is null ? Parser.ParseText(text, name, symbols) : tokens.Parse(text, name, symbols);
     }
 
     private static bool Report(IReadOnlyList<CompileError> errors)
