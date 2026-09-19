@@ -234,11 +234,28 @@ tasks below track that work; moving files alone does not reduce the working set.
   Errno, UserMode and UserPointer. Kernel rounds: 23 units in a single
   pass, 51 in two, average 2.8 to 2.3, and 13848 header lexes against
   16227. The linked kernel is byte for byte what it was.
-- [ ] Reduce the last rounds. Two units still take four and five passes, and
-  what they discover late is named only from a SPECIALISED template -- a
-  body that does not exist until the monomorphiser writes it, so no walk of
-  the sources can see it. Prefetching after specialisation is the remaining
-  idea.
+- [x] Follow the left of a member access as a possible type name, in owned
+  code and in every imported declaration. A type is named there without
+  standing in a type position -- `const long Cpu = CpuKind.I486` is why the
+  binder wants CpuKind, and an initializer like that travels with the
+  declaration -- so no walk of type positions could see it. Kernel rounds:
+  72 of 118 units in a single pass against 23, none above three, peak RSS
+  253 MB to 190 MB and the serial compile 36.5 s to 29.6 s. Receipts got 8%
+  SMALLER: fewer rounds record fewer queries.
+
+  The linked kernel grew by 24 bytes of frame metadata -- one more unit
+  emits a `__corsac_frames` table. Code is identical in every section; what
+  changed is per-unit metadata, which follows the types a unit loaded. See
+  the ordering item below.
+- [ ] Emitted metadata follows the types a unit LOADED rather than the types
+  it USED: ManagedLayouts.Attach walks all of bound.Types, so a prefetch
+  that loads a declaration nobody used still describes it. Harmless so far
+  -- code and the linked kernel are unaffected apart from that frame table
+  -- but it is why every prefetch has to be checked against a linked image
+  rather than against object files, and it is the same root as the
+  ThreadStart layout conflict. Narrowing it is not obviously right: the
+  breadth of that section is what CAUGHT ThreadStart, so the fix is to make
+  the records depend on used types WITHOUT losing the cross-unit check.
 - [ ] Peak memory is 100-160 MB for one source and about 190 MB for a whole
   project in one process, against a 486-class target with roughly 1 GB. Bring
   that down; cumulative allocation is churn and is not the same measurement.

@@ -212,6 +212,10 @@ public sealed class IndexedDeclarations : IDisposable
             {
                 string? key = Speculate(reference.Name, reference.Args.Count);
                 if (key is not null) Load(key);
+            }, qualifier =>
+            {
+                string? key = Speculate(qualifier, 0);
+                if (key is not null) Load(key);
             });
         }
         // THE WHOLE CHAIN IN ONE PASS. A header's own signatures name more
@@ -302,14 +306,21 @@ public sealed class IndexedDeclarations : IDisposable
                 // declarations the binder would have demanded, only sooner:
                 // the kernel's receipts come out the same size and its linked
                 // image byte for byte identical. See BodyTypeNames.
-                if (implementations.Contains(key))
+                // EVERY imported declaration, not only the ones whose bodies
+                // came with them. A signature-only slice still carries its
+                // constant and field initializers, and those name types in
+                // places no signature does: Config's `const long Cpu =
+                // CpuKind.I486` is the whole reason the binder wants CpuKind,
+                // and reading it back a round later cost a round.
+                BodyTypeNames.Walk(root, reference =>
                 {
-                    BodyTypeNames.Walk(root, reference =>
-                    {
-                        string? next = Speculate(reference.Name, reference.Args.Count);
-                        if (next is not null && Load(next)) pending.Enqueue(next);
-                    });
-                }
+                    string? next = Speculate(reference.Name, reference.Args.Count);
+                    if (next is not null && Load(next)) pending.Enqueue(next);
+                }, qualifier =>
+                {
+                    string? next = Speculate(qualifier, 0);
+                    if (next is not null && Load(next)) pending.Enqueue(next);
+                });
             }
         }
     }
