@@ -28,8 +28,18 @@ namespace Corsac.Lang.Metadata;
 /// </summary>
 public static class BodyTypeNames
 {
-    /// <summary>Hands every type reference under a declaration to <paramref name="found"/>.</summary>
-    public static void Walk(TypeDecl declaration, Action<TypeRef> found)
+    /// <summary>
+    /// Hands every type reference under a declaration to <paramref name="found"/>,
+    /// and the left of every member access to <paramref name="qualifier"/>.
+    ///
+    /// A qualifier is where a type is named WITHOUT being in a type position:
+    /// `Config.Cpu = CpuKind.I486` names CpuKind nowhere the parser calls a
+    /// type, and a const initializer like that is part of the declaration the
+    /// index hands over, so the binder needs CpuKind to evaluate it. These
+    /// are guesses -- the left of a member access is usually a variable -- so
+    /// the caller must treat a hit as speculative and a miss as ordinary.
+    /// </summary>
+    public static void Walk(TypeDecl declaration, Action<TypeRef> found, Action<string>? qualifier = null)
     {
         void Type(TypeRef? reference)
         {
@@ -80,7 +90,10 @@ public static class BodyTypeNames
                     foreach (Param parameter in e.Params) { Type(parameter.Type); Expression(parameter.Default); }
                     Expression(e.Body); Statement(e.BlockBody);
                     return;
-                case MemberExpr e: Expression(e.Target); Types(e.TypeArgs); return;
+                case MemberExpr e:
+                    if (qualifier is not null && e.Target is NameExpr name && name.TypeArgs.Count == 0) qualifier(name.Name);
+                    Expression(e.Target); Types(e.TypeArgs);
+                    return;
                 case NameExpr e: Types(e.TypeArgs); return;
                 case NewExpr e:
                     Type(e.Type);
