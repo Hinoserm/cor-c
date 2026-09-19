@@ -256,9 +256,16 @@ tasks below track that work; moving files alone does not reduce the working set.
   ThreadStart layout conflict. Narrowing it is not obviously right: the
   breadth of that section is what CAUGHT ThreadStart, so the fix is to make
   the records depend on used types WITHOUT losing the cross-unit check.
-- [ ] Peak memory is 100-160 MB for one source and about 190 MB for a whole
-  project in one process, against a 486-class target with roughly 1 GB. Bring
-  that down; cumulative allocation is churn and is not the same measurement.
+- [x] Peak memory, measured over the kernel's 118 units in one process:
+  183 MB at one worker, 260 MB at four, 302 MB at eight, against a
+  486-class target with roughly 1 GB. The round work brought the serial
+  figure down from 286 MB without anything aimed at memory. Good enough for
+  the target; revisit only if a smaller machine becomes the goal. Cumulative
+  allocation is churn and is not this measurement.
+- [ ] More workers no longer buy time: 27.9 s at one, 26.8 s at four, 27.1 s
+  at eight. Either the remaining work is serial or the machine was saturated
+  by other builds when this was measured. Measure again on a quiet box
+  before drawing a conclusion.
 
 ## Build utility and the one toolchain executable
 
