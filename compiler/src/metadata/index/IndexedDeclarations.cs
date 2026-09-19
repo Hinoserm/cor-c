@@ -11,6 +11,8 @@ public sealed class IndexedDeclarations : IDisposable
     private readonly HashSet<string> queries = new(StringComparer.Ordinal);
     private readonly HashSet<string> resolvedExtensions = new(StringComparer.Ordinal);
     public long PayloadLoads => catalog.PayloadLoads;
+    public SyntaxTokenCache Tokens { get; } = new();
+    public int Passes { get; set; }
     public long ResidentDeclarationBytes => catalog.ResidentBytes;
     public IReadOnlyDictionary<(string Name, int Arity), int> Interfaces { get; }
     public IReadOnlySet<(string Name, int Arity)> LibraryInterfaces { get; }
@@ -82,7 +84,7 @@ public sealed class IndexedDeclarations : IDisposable
                 // sites embed it in executable string data, so different paths
                 // would make identical generic instantiations disagree at link.
                 string displayFile = Path.GetFileName(source.Path);
-                CompilationUnit header = Parser.ParseText(source.Text, displayFile, declarationsOnly: true);
+                CompilationUnit header = Tokens.Parse(source.Text, displayFile, declarationsOnly: true);
                 // A slice can parse to more than one declaration: a delegate's
                 // text also yields the multicast class synthesised beside it.
                 // The record names which one it is for.
@@ -95,7 +97,7 @@ public sealed class IndexedDeclarations : IDisposable
                     implementations.Add(key);
                     // Templates need implementations for specialization. Keep
                     // unrelated ordinary bodies out of this imported tree.
-                    CompilationUnit templates = Parser.ParseText(source.ReadSource(), displayFile,
+                    CompilationUnit templates = Tokens.Parse(source.ReadSource(), displayFile,
                         source.ConditionalSymbols, declarationsOnly: true, includeTemplateBodies: true);
                     root = templates.Types.Single(type => type.SourceFrom == source.From && type.SourceTo == source.To);
                 }
@@ -122,7 +124,7 @@ public sealed class IndexedDeclarations : IDisposable
 
     public void Dispose()
     {
-        loaded.Clear(); catalog.Dispose();
+        loaded.Clear(); Tokens.Clear(); catalog.Dispose();
     }
 
     public void WriteDependencies(string path) => UnitDependencies.Write(path, catalog, loaded, implementations, queries);

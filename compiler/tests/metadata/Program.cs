@@ -21,6 +21,7 @@ public static class Program
         }
         try
         {
+            SyntaxTokenCacheTests.Run();
             SourceIndexTests.Run(work);
             DeclarationCatalogTests.Run(work);
             InterfacePlanTests.Run(work);
