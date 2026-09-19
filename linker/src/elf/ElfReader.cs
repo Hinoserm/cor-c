@@ -96,6 +96,77 @@ public static class ElfReader
     /// <summary>Names the dynamic loader must resolve from other images.</summary>
     public static List<string> ImportsOf(byte[] bytes) => DynamicNames(bytes, defined: false);
 
+    /// <summary>
+    /// What a linked shared object says about itself, for prebinding: its
+    /// soname, the libraries it needs, its checksum tag, the lowest address
+    /// it was laid out at, and every symbol it exports with its address.
+    /// </summary>
+    public sealed record SharedImageInfo(string? Soname, List<string> Needed, uint Checksum, uint LowAddress, Dictionary<string, uint> Exports);
+
+    public static SharedImageInfo ReadSharedImage(byte[] bytes)
+    {
+        ArgumentNullException.ThrowIfNull(bytes);
+        ReadOnlySpan<byte> f = bytes;
+        if (f.Length < Elf.HeaderSize || !f[..4].SequenceEqual(Elf.Magic) || f[4] != Elf.Class32 || f[5] != Elf.Data2Lsb)
+        {
+            throw new ElfFormatException("not a 32-bit little-endian ELF file");
+        }
+        Dictionary<string, uint> exports = new(StringComparer.Ordinal);
+        List<string> needed = new();
+        string? soname = null;
+        uint checksum = 0, low = uint.MaxValue;
+
+        uint phoff = BinaryPrimitives.ReadUInt32LittleEndian(f[28..]);
+        ushort phnum = BinaryPrimitives.ReadUInt16LittleEndian(f[44..]);
+        for (int i = 0; i < phnum; i++)
+        {
+            int at = (int)phoff + i * 32;
+            if (at + 32 > f.Length) break;
+            if (BinaryPrimitives.ReadUInt32LittleEndian(f[at..]) != Elf.PtLoad) continue;
+            uint vaddr = BinaryPrimitives.ReadUInt32LittleEndian(f[(at + 8)..]);
+            if (vaddr < low) low = vaddr;
+        }
+        if (low == uint.MaxValue) low = 0;
+
+        uint shoff = BinaryPrimitives.ReadUInt32LittleEndian(f[32..]);
+        ushort shnum = BinaryPrimitives.ReadUInt16LittleEndian(f[48..]);
+        SectionHeader? dynsym = null, dynamic = null;
+        for (int i = 0; i < shnum && shoff != 0; i++)
+        {
+            int at = (int)shoff + i * Elf.SectionHeaderSize;
+            if (at + Elf.SectionHeaderSize > f.Length) break;
+            SectionHeader h = SectionHeader.Read(f[at..]);
+            if (h.Type == Elf.ShtDynSym) dynsym = h;
+            if (h.Type == Elf.ShtDynamic) dynamic = h;
+        }
+        if (dynsym is not null && dynsym.Value.Link != 0)
+        {
+            SectionHeader str = SectionHeader.Read(f[((int)shoff + (int)dynsym.Value.Link * Elf.SectionHeaderSize)..]);
+            ReadOnlySpan<byte> table = f.Slice((int)str.Offset, (int)str.Size);
+            for (uint at = dynsym.Value.Offset; at + Elf.SymbolSize <= dynsym.Value.Offset + dynsym.Value.Size; at += (uint)Elf.SymbolSize)
+            {
+                SymbolEntry e = SymbolEntry.Read(f[(int)at..]);
+                if (e.Shndx == Elf.ShnUndef || e.Name == 0) continue;
+                exports.TryAdd(StringTable.Read(table, e.Name, ".dynsym"), e.Value);
+            }
+        }
+        if (dynamic is not null && dynamic.Value.Link != 0)
+        {
+            SectionHeader str = SectionHeader.Read(f[((int)shoff + (int)dynamic.Value.Link * Elf.SectionHeaderSize)..]);
+            ReadOnlySpan<byte> table = f.Slice((int)str.Offset, (int)str.Size);
+            for (uint at = dynamic.Value.Offset; at + 8 <= dynamic.Value.Offset + dynamic.Value.Size; at += 8)
+            {
+                int tag = BinaryPrimitives.ReadInt32LittleEndian(f[(int)at..]);
+                uint value = BinaryPrimitives.ReadUInt32LittleEndian(f[((int)at + 4)..]);
+                if (tag == Elf.DtNull) break;
+                if (tag == Elf.DtNeeded) needed.Add(StringTable.Read(table, value, ".dynstr"));
+                else if (tag == Elf.DtSoName) soname = StringTable.Read(table, value, ".dynstr");
+                else if (tag == Elf.DtCorsacChecksum) checksum = value;
+            }
+        }
+        return new SharedImageInfo(soname, needed, checksum, low, exports);
+    }
+
     private static List<string> DynamicNames(byte[] bytes, bool defined)
     {
         ArgumentNullException.ThrowIfNull(bytes);
