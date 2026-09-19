@@ -220,6 +220,7 @@ public class Control
     public event MouseEventHandler? MouseDown;
     public event MouseEventHandler? MouseUp;
     public event MouseEventHandler? MouseMove;
+    public event MouseEventHandler? MouseWheel;
     public event KeyPressEventHandler? KeyPress;
     public event KeyEventHandler? KeyDown;
     public event EventHandler? GotFocus;
@@ -424,6 +425,9 @@ public class Control
     protected virtual void OnMouseDown(MouseEventArgs e) { if (MouseDown != null) MouseDown(this, e); }
     protected virtual void OnMouseUp(MouseEventArgs e) { if (MouseUp != null) MouseUp(this, e); }
     protected virtual void OnMouseMove(MouseEventArgs e) { if (MouseMove != null) MouseMove(this, e); }
+    /// The wheel. Delta is in Windows' units: 120 per notch, positive for
+    /// the wheel rolled away from the hand, which scrolls up.
+    protected virtual void OnMouseWheel(MouseEventArgs e) { if (MouseWheel != null) MouseWheel(this, e); }
     protected virtual void OnKeyPress(KeyPressEventArgs e) { if (KeyPress != null) KeyPress(this, e); }
     protected virtual void OnKeyDown(KeyEventArgs e) { if (KeyDown != null) KeyDown(this, e); }
     protected virtual void OnGotFocus(EventArgs e) { if (GotFocus != null) GotFocus(this, e); Invalidate(); }
@@ -439,6 +443,7 @@ public class Control
         if (Enabled && e.Button == MouseButtons.Left && e.X >= 0 && e.Y >= 0 && e.X < Width && e.Y < Height) OnClick(EventArgs.Empty);
     }
     internal void RaiseMouseMove(MouseEventArgs e) { OnMouseMove(e); }
+    internal void RaiseMouseWheel(MouseEventArgs e) { OnMouseWheel(e); }
     internal void RaiseKeyPress(KeyPressEventArgs e) { OnKeyPress(e); }
     internal void RaiseKeyDown(KeyEventArgs e) { OnKeyDown(e); }
     internal void RaiseGotFocus() { OnGotFocus(EventArgs.Empty); }
@@ -823,6 +828,210 @@ public class Button : Control
         base.OnMouseMove(e);
     }
     protected override void OnKeyPress(KeyPressEventArgs e) { if (e.KeyChar == ' ' || e.KeyChar == '\r') { PerformClick(); e.Handled = true; } base.OnKeyPress(e); }
+}
+
+public enum ScrollOrientation { HorizontalScroll = 0, VerticalScroll = 1 }
+
+public enum ScrollEventType
+{
+    SmallDecrement = 0, SmallIncrement = 1, LargeDecrement = 2, LargeIncrement = 3,
+    ThumbPosition = 4, ThumbTrack = 5, First = 6, Last = 7, EndScroll = 8,
+}
+
+public class ScrollEventArgs : EventArgs
+{
+    public ScrollEventType Type;
+    public int NewValue;
+    public int OldValue;
+    public ScrollOrientation ScrollOrientation;
+    public ScrollEventArgs(ScrollEventType type, int oldValue, int newValue, ScrollOrientation orientation)
+    { Type = type; OldValue = oldValue; NewValue = newValue; ScrollOrientation = orientation; }
+    public ScrollEventArgs(ScrollEventType type, int newValue) { Type = type; NewValue = newValue; OldValue = -1; }
+}
+
+public delegate void ScrollEventHandler(object? sender, ScrollEventArgs e);
+
+/// A scroll bar, as Windows draws it: an arrow button at each end, a track
+/// between, and a raised thumb whose length says how much of the whole is
+/// in view. The .NET contract: Value runs from Minimum to
+/// Maximum - LargeChange + 1, so a bar over N lines showing R of them has
+/// Maximum = N - 1 and LargeChange = R; Scroll fires for what the user
+/// does, with the kind of move, and ValueChanged for any change at all.
+public abstract class ScrollBar : Control
+{
+    int _min, _max = 100, _value, _small = 1, _large = 10;
+    int _grab = -1;                  // where along the thumb the drag took hold, or -1
+    public event ScrollEventHandler? Scroll;
+    public event EventHandler? ValueChanged;
+
+    protected ScrollBar() { TabStop = false; }
+    protected abstract bool Vertical { get; }
+    ScrollOrientation Orientation { get { return Vertical ? ScrollOrientation.VerticalScroll : ScrollOrientation.HorizontalScroll; } }
+
+    public int Minimum
+    {
+        get { return _min; }
+        set { if (value > _max) _max = value; _min = value; Clamp(); Invalidate(); }
+    }
+    public int Maximum
+    {
+        get { return _max; }
+        set { if (value < _min) _min = value; _max = value; Clamp(); Invalidate(); }
+    }
+    public int SmallChange { get { return _small; } set { if (value < 0) throw new ArgumentOutOfRangeException("SmallChange"); _small = value; } }
+    public int LargeChange
+    {
+        get { return _large > _max - _min + 1 ? _max - _min + 1 : _large; }
+        set { if (value < 0) throw new ArgumentOutOfRangeException("LargeChange"); _large = value; Clamp(); Invalidate(); }
+    }
+    public int Value
+    {
+        get { return _value; }
+        set
+        {
+            if (value < _min || value > _max) throw new ArgumentOutOfRangeException("Value");
+            SetValue(value);
+        }
+    }
+    protected virtual void OnValueChanged(EventArgs e) { if (ValueChanged != null) ValueChanged(this, e); }
+    protected virtual void OnScroll(ScrollEventArgs e) { if (Scroll != null) Scroll(this, e); }
+
+    /// The largest Value the thumb can reach, as .NET defines it.
+    int Last_ { get { int top = _max - LargeChange + 1; return top < _min ? _min : top; } }
+    void Clamp() { if (_value > Last_) _value = Last_; if (_value < _min) _value = _min; }
+    void SetValue(int v)
+    {
+        int was = _value; _value = v; Clamp();
+        if (_value != was) { Invalidate(); OnValueChanged(EventArgs.Empty); }
+    }
+    /// A move by the user: Scroll says what kind, then ValueChanged says it changed.
+    void UserScroll(ScrollEventType type, int v)
+    {
+        int was = _value;
+        if (v > Last_) v = Last_;
+        if (v < _min) v = _min;
+        ScrollEventArgs e = new ScrollEventArgs(type, was, v, Orientation);
+        OnScroll(e);
+        SetValue(e.NewValue);
+    }
+
+    // The geometry along the bar's length: buttons as long as the bar is
+    // thick, the thumb sized to the part in view and never shorter than a
+    // button.
+    int Length { get { return Vertical ? Height : Width; } }
+    int Thickness { get { return Vertical ? Width : Height; } }
+    int ButtonL { get { return Thickness < Length / 2 ? Thickness : Length / 2; } }
+    int TrackL { get { return Length - 2 * ButtonL; } }
+    int Range { get { return _max - _min + 1; } }
+    bool Scrollable { get { return Enabled && Range > 0 && LargeChange < Range; } }
+    int ThumbL
+    {
+        get
+        {
+            if (!Scrollable) return TrackL;
+            int l = (int)((long)TrackL * LargeChange / Range);
+            return l < ButtonL ? (ButtonL < TrackL ? ButtonL : TrackL) : l;
+        }
+    }
+    int ThumbAt
+    {
+        get
+        {
+            int room = TrackL - ThumbL, span = Last_ - _min;
+            if (room <= 0 || span <= 0) return ButtonL;
+            return ButtonL + (int)((long)room * (_value - _min) / span);
+        }
+    }
+    int ValueAt(int along)
+    {
+        int room = TrackL - ThumbL, span = Last_ - _min;
+        if (room <= 0 || span <= 0) return _min;
+        return _min + (int)(((long)(along - ButtonL) * span + room / 2) / room);
+    }
+    void Box(int along, int length, out int x, out int y, out int w, out int h)
+    {
+        if (Vertical) { x = 0; y = along; w = Width; h = length; }
+        else { x = along; y = 0; w = length; h = Height; }
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        Graphics g = e.Graphics;
+        int x, y, w, h;
+        g.FillRectangle(new SolidBrush(SystemColors.ScrollBar), 0, 0, Width, Height);
+        Box(0, ButtonL, out x, out y, out w, out h); Arrow(g, x, y, w, h, true);
+        Box(Length - ButtonL, ButtonL, out x, out y, out w, out h); Arrow(g, x, y, w, h, false);
+        if (Scrollable)
+        {
+            Box(ThumbAt, ThumbL, out x, out y, out w, out h);
+            g.FillRectangle(new SolidBrush(SystemColors.Control), x, y, w, h);
+            ControlPaint.DrawBorder3D(g, x, y, w, h, Border3DStyle.Raised);
+        }
+        base.OnPaint(e);
+    }
+
+    void Arrow(Graphics g, int x, int y, int w, int h, bool first)
+    {
+        g.FillRectangle(new SolidBrush(SystemColors.Control), x, y, w, h);
+        ControlPaint.DrawBorder3D(g, x, y, w, h, Border3DStyle.Raised);
+        Pen ink = new Pen(Scrollable ? SystemColors.ControlText : SystemColors.GrayText);
+        int cx = x + w / 2, cy = y + h / 2;
+        // A triangle of four widening lines, pointing to the bar's start or end.
+        for (int i = 0; i < 4; i++)
+        {
+            if (Vertical) { int row = first ? cy - 2 + i : cy + 2 - i; g.DrawLine(ink, cx - i, row, cx + i, row); }
+            else { int col = first ? cx - 2 + i : cx + 2 - i; g.DrawLine(ink, col, cy - i, col, cy + i); }
+        }
+    }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        if (e.Button == MouseButtons.Left && Scrollable)
+        {
+            int along = Vertical ? e.Y : e.X, bl = ButtonL;
+            if (along < bl) UserScroll(ScrollEventType.SmallDecrement, _value - _small);
+            else if (along >= Length - bl) UserScroll(ScrollEventType.SmallIncrement, _value + _small);
+            else if (along < ThumbAt) UserScroll(ScrollEventType.LargeDecrement, _value - LargeChange);
+            else if (along >= ThumbAt + ThumbL) UserScroll(ScrollEventType.LargeIncrement, _value + LargeChange);
+            else _grab = along - ThumbAt;
+        }
+        base.OnMouseDown(e);
+    }
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        if (_grab >= 0) UserScroll(ScrollEventType.ThumbTrack, ValueAt((Vertical ? e.Y : e.X) - _grab));
+        base.OnMouseMove(e);
+    }
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        if (_grab >= 0)
+        {
+            _grab = -1;
+            UserScroll(ScrollEventType.ThumbPosition, _value);
+            OnScroll(new ScrollEventArgs(ScrollEventType.EndScroll, _value, _value, Orientation));
+        }
+        base.OnMouseUp(e);
+    }
+    protected override void OnMouseWheel(MouseEventArgs e)
+    {
+        int notches = e.Delta / 120;
+        if (notches != 0) UserScroll(notches > 0 ? ScrollEventType.SmallDecrement : ScrollEventType.SmallIncrement, _value - notches * _small * 3);
+        base.OnMouseWheel(e);
+    }
+}
+
+public class VScrollBar : ScrollBar
+{
+    internal override string ClassName { get { return "VScrollBar"; } }
+    protected override bool Vertical { get { return true; } }
+    public VScrollBar() { Width = 16; Height = 100; }
+}
+
+public class HScrollBar : ScrollBar
+{
+    internal override string ClassName { get { return "HScrollBar"; } }
+    protected override bool Vertical { get { return false; } }
+    public HScrollBar() { Width = 100; Height = 16; }
 }
 
 public class TextBox : Control
@@ -1336,6 +1545,16 @@ public static class Application
             case 4:
                 if (_active != f) { _active = f; f!.RaiseActivated(); }
                 f!.WindowMouse(4, m.A, Seat.LowSigned(m.B), Seat.HighSigned(m.B)); break;
+            case 6:
+            {
+                // The seat sends the wheel to the window under the pointer;
+                // inside it, the control with the focus gets it, or the form.
+                // The wire says positive for the wheel rolled toward the
+                // hand; Windows says the opposite, and this is Windows' API.
+                Control target = (_focus != null && _focus.FindForm() == f) ? _focus : f!;
+                target.RaiseMouseWheel(new MouseEventArgs(MouseButtons.None, 0, 0, 0, -Seat.LowSigned(m.A) * 120));
+                break;
+            }
             case 5:
                 SettleDrag();
                 // A press on an edge that never moved still put an outline
