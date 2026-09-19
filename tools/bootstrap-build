@@ -3,7 +3,16 @@
 set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 tool="$root/tools/build/bin/managed/Release/net10.0/build"
-if [ ! -f "$tool" ] || [ "$(head -c 2 "$tool")" = '#!' ]; then
+packages="${NUGET_PACKAGES:-$(dotnet nuget locals global-packages --list | sed 's/^global-packages: //')}"
+have_packs=0
+for pack in "$packages"/runtime.linux-x64.microsoft.dotnet.ilcompiler/10.*/tools/ilc; do
+    if [ -f "$pack" ]; then
+        version=${pack%/tools/ilc}
+        version=${version##*/}
+        if [ -f "$packages/microsoft.netcore.app.runtime.nativeaot.linux-x64/$version/runtimes/linux-x64/native/libbootstrapper.o" ]; then have_packs=1; break; fi
+    fi
+done
+if [ ! -f "$tool" ] || [ "$(head -c 2 "$tool")" = '#!' ] || [ "$have_packs" = 0 ]; then
     seed="$root/tools/build/bin/native-seed"
     dotnet publish "$root/tools/build/build.csproj" -c Release -r linux-x64 \
         -p:PublishAot=true -o "$seed" --nologo -v quiet >&2

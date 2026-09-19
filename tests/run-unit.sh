@@ -8,7 +8,7 @@ projects=(
     "$root/compiler/tests/arch/x86/x86tests.csproj"
 )
 for project in "${projects[@]}"; do
-    "${CORC:-$root/compiler/bin/Release/net10.0/corc}" project "$project" --configuration Release
+    "${CORC:-$root/compiler/bin/managed/Release/net10.0/corc}" project "$project" --configuration Release
     directory="$(dirname "$project")"
     name="$(basename "$project" .csproj)"
     "$directory/bin/cor-c/Release/net10.0/$name"

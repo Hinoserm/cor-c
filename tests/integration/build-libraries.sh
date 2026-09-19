@@ -22,7 +22,7 @@
 # tests/language/run.sh's CORC_LIBS with them.
 #
 # Environment:
-#   CORC   the compiler (default: compiler/bin/Release/net10.0/corc)
+#   CORC   the compiler (default: compiler/bin/managed/Release/net10.0/corc)
 #   OUT    where the .so files go (default: build/lib)
 
 set -u
@@ -30,7 +30,7 @@ set -u
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
 out="${OUT:-$root/build/lib}"
-corc="${CORC:-$root/compiler/bin/Release/net10.0/corc}"
+corc="${CORC:-$root/compiler/bin/managed/Release/net10.0/corc}"
 jobs="${CORSAC_BUILD_JOBS:-1}"
 force=0
 verbose=0

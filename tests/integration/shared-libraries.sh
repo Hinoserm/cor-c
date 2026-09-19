@@ -20,7 +20,7 @@ set -u
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
-corc="${CORC:-$root/compiler/bin/Release/net10.0/corc}"
+corc="${CORC:-$root/compiler/bin/managed/Release/net10.0/corc}"
 libdir="${OUT:-$root/build/lib}"
 filter="${1:-}"
 mkdir -p "$root/build"

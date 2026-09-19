@@ -1,8 +1,7 @@
 <Build FormatVersion="1" DefaultTargets="test">
   <Target Name="test">
     <Compile Project="IsaTests.csproj" Toolchain="managed" />
-    <Test Name="cpu-encodings" Executable="dotnet">
-      <Argument Value="bin/managed/Release/net10.0/IsaTests.dll" />
+    <Test Name="cpu-encodings" Executable="bin/managed/Release/net10.0/IsaTests">
     </Test>
   </Target>
 </Build>

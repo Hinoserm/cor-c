@@ -42,8 +42,8 @@ falling back to MSBuild.
 With a current compiler seed available:
 
 ```sh
-compiler/bin/Release/net10.0/corc project tests/integration/project/Basic.csproj
-compiler/bin/Release/net10.0/corc compile examples/hello/Program.cor -o hello
+compiler/bin/managed/Release/net10.0/corc project tests/integration/project/Basic.csproj
+compiler/bin/managed/Release/net10.0/corc compile examples/hello/Program.cor -o hello
 ./hello
 ```
 

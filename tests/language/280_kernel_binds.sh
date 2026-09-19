@@ -17,7 +17,7 @@ while IFS= read -r line; do
     case "$line" in ''|'#'*) continue ;; esac
     sources+=("$line")
 done < "$work/config/sources.list"
-read -r -a compiler <<< "${CORC:-$root/compiler/bin/Release/net10.0/corc}"
+read -r -a compiler <<< "${CORC:-$root/compiler/bin/managed/Release/net10.0/corc}"
 "${compiler[@]}" compile "${sources[@]}" --freestanding --obj --cpu 486 \
     --asm-entry corc_start --tls-gs --stats -o "$work/kernel.o" \
     > "$work/compile.log" 2>&1

@@ -1,8 +1,7 @@
 <Build FormatVersion="1" DefaultTargets="test">
   <Target Name="test">
     <Compile Project="ElfTests.csproj" Toolchain="managed" />
-    <Test Name="linker-contracts" Executable="dotnet">
-      <Argument Value="bin/managed/Release/net10.0/ElfTests.dll" />
+    <Test Name="linker-contracts" Executable="bin/managed/Release/net10.0/ElfTests">
     </Test>
   </Target>
 </Build>

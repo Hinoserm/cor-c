@@ -2,6 +2,11 @@
 
 ## Status and scope
 
+- [x] Default host compiler, linker and build utility to Native AOT via owned
+  project evaluation, direct ILC and native linking; preserve explicit JIT exclusion.
+- [x] Validate native build utility (26 checks) and subprocess IR-LTO acceptance.
+- [ ] Complete full CORSAC86 native-tool image/boot and no-change rebuild acceptance.
+
 Unchecked items are outstanding, partial, or unverified. Checked items record
 completion only for the stated scope and source snapshot. Standing rules belong
 in [REQUIREMENTS.md](REQUIREMENTS.md).

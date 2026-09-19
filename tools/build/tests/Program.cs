@@ -17,7 +17,7 @@ public static class Program
             Require(NativeAotBuild.Enabled(new Dictionary<string, string>()));
             Require(NativeAotBuild.Enabled(new Dictionary<string, string> { ["PublishAot"] = "True" }));
             Require(!NativeAotBuild.Enabled(new Dictionary<string, string> { ["PublishAot"] = "false" }));
-            ExpectError(() => NativeAotBuild.Enabled(new Dictionary<string, string> { ["PublishAot"] = "maybe" }), "must be true or false");
+            ExpectInvalidData(() => NativeAotBuild.Enabled(new Dictionary<string, string> { ["PublishAot"] = "maybe" }));
         });
         Check("managed tools enable tiered JIT and PGO by default", () =>
         {
@@ -31,7 +31,7 @@ public static class Program
             { ["TieredCompilation"] = "false", ["TieredPGO"] = "false", ["TieredCompilationQuickJitForLoops"] = "True" });
             Require(!(bool)settings["System.Runtime.TieredCompilation"] && !(bool)settings["System.Runtime.TieredPGO"]
                 && (bool)settings["System.Runtime.TieredCompilation.QuickJitForLoops"]);
-            ExpectError(() => ManagedRuntimeConfiguration.Create(new Dictionary<string, string> { ["TieredPGO"] = "maybe" }), "must be true or false");
+            ExpectInvalidData(() => ManagedRuntimeConfiguration.Create(new Dictionary<string, string> { ["TieredPGO"] = "maybe" }));
         });
         Check("owned managed evaluator retains standard SDK compiler settings", () =>
         {
@@ -261,6 +261,12 @@ public static class Program
         return BuildManifest.Load(path, BuildOptions.Parse(options));
     }
     private static void Require(bool condition) { if (!condition) throw new Exception("assertion failed"); }
+    private static void ExpectInvalidData(Action action)
+    {
+        try { action(); }
+        catch (InvalidDataException error) when (error.Message.Contains("must be true or false", StringComparison.Ordinal)) { return; }
+        throw new Exception("Expected invalid boolean property to be rejected");
+    }
     private static void ExpectError(Action action, string text)
     {
         try { action(); }

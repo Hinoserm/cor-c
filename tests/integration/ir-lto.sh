@@ -2,8 +2,8 @@
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 cd "$root"
-corc=${CORC:-$root/compiler/bin/Release/net10.0/corc}
-corlink=${CORLINK:-$root/linker/bin/Release/net10.0/corlink}
+corc=${CORC:-$root/compiler/bin/managed/Release/net10.0/corc}
+corlink=${CORLINK:-$root/linker/bin/managed/Release/net10.0/corlink}
 cpu=${CPU:-486}
 export CORC="$corc"
 mkdir -p "$root/build"

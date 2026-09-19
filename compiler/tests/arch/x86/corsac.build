@@ -1,45 +1,36 @@
 <Build FormatVersion="1" DefaultTargets="test">
   <Target Name="test">
     <Compile Project="x86tests.csproj" Toolchain="managed" />
-    <Test Name="backend-default-486" Executable="dotnet">
-      <Argument Value="bin/managed/Release/net10.0/x86tests.dll" />
+    <Test Name="backend-default-486" Executable="bin/managed/Release/net10.0/x86tests">
     </Test>
-    <Test Name="backend-386-selection" Executable="dotnet">
-      <Argument Value="bin/managed/Release/net10.0/x86tests.dll" />
+    <Test Name="backend-386-selection" Executable="bin/managed/Release/net10.0/x86tests">
       <Argument Value="--cpu=386" />
       <Argument Value="--fpu=387" />
     </Test>
-    <Test Name="backend-mmx" Executable="dotnet">
-      <Argument Value="bin/managed/Release/net10.0/x86tests.dll" />
+    <Test Name="backend-mmx" Executable="bin/managed/Release/net10.0/x86tests">
       <Argument Value="--cpu=pentium-mmx" />
     </Test>
-    <Test Name="backend-pentium-tcg" Executable="dotnet">
-      <Argument Value="bin/managed/Release/net10.0/x86tests.dll" />
+    <Test Name="backend-pentium-tcg" Executable="bin/managed/Release/net10.0/x86tests">
       <Argument Value="--cpu=pentium" />
       <Argument Value="--qemu-cpu=pentium" />
     </Test>
-    <Test Name="backend-pentium-mmx-tcg" Executable="dotnet">
-      <Argument Value="bin/managed/Release/net10.0/x86tests.dll" />
+    <Test Name="backend-pentium-mmx-tcg" Executable="bin/managed/Release/net10.0/x86tests">
       <Argument Value="--cpu=pentium-mmx" />
       <Argument Value="--qemu-cpu=pentium,+mmx" />
     </Test>
-    <Test Name="backend-mmx-excluded" Executable="dotnet">
-      <Argument Value="bin/managed/Release/net10.0/x86tests.dll" />
+    <Test Name="backend-mmx-excluded" Executable="bin/managed/Release/net10.0/x86tests">
       <Argument Value="--cpu=pentium-mmx" />
       <Argument Value="--disable-mmx" />
     </Test>
-    <Test Name="backend-k6-plus-tcg" Executable="dotnet">
-      <Argument Value="bin/managed/Release/net10.0/x86tests.dll" />
+    <Test Name="backend-k6-plus-tcg" Executable="bin/managed/Release/net10.0/x86tests">
       <Argument Value="--cpu=k6-3+" />
       <Argument Value="--qemu-cpu=athlon" />
     </Test>
-    <Test Name="backend-k6-base-tcg" Executable="dotnet">
-      <Argument Value="bin/managed/Release/net10.0/x86tests.dll" />
+    <Test Name="backend-k6-base-tcg" Executable="bin/managed/Release/net10.0/x86tests">
       <Argument Value="--cpu=k6-2" />
       <Argument Value="--qemu-cpu=athlon" />
     </Test>
-    <Test Name="backend-kernel-state-ownership" Executable="dotnet">
-      <Argument Value="bin/managed/Release/net10.0/x86tests.dll" />
+    <Test Name="backend-kernel-state-ownership" Executable="bin/managed/Release/net10.0/x86tests">
       <Argument Value="--cpu=k6-3+" />
       <Argument Value="--kernel-abi" />
     </Test>
@@ -52,8 +43,7 @@
   </Target>
   <Target Name="benchmark">
     <Compile Project="x86tests.csproj" Toolchain="managed" />
-    <Exec Executable="dotnet">
-      <Argument Value="bin/managed/Release/net10.0/x86tests.dll" />
+    <Exec Executable="bin/managed/Release/net10.0/x86tests">
       <Argument Value="--benchmark-packed" />
     </Exec>
   </Target>

@@ -15,7 +15,7 @@ set -u
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
-corc="$root/compiler/bin/Release/net10.0/corc"
+corc="$root/compiler/bin/managed/Release/net10.0/corc"
 work="${WORK:-$(mktemp -d)}"
 
 failures=0

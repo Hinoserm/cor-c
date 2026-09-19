@@ -2,6 +2,15 @@
 
 CORSAC/C# is the proper product name. COR-C# is the accepted short name.
 
+## Host executable deployment
+
+The host compiler, linker, build utility and CORSAC86 build helpers default to
+Native AOT executable deployment. An explicit standard `PublishAot=false`
+project setting may select JIT for diagnostics. Normal component/project builds
+must not acquire an MSBuild dependency; SDK/MSBuild use is limited to bootstrapping
+the build utility. Host AOT deployment does not substitute for COR-C# self-hosting
+and must not change the default generated 486+x87 ISA.
+
 This document defines the required end state of the compiler, runtime, standard
 library, linker, project system, and self-hosting toolchain. It does not track
 implementation progress. Current status, completed checkpoints, and outstanding

@@ -20,7 +20,7 @@ set -u
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
-corc="$root/compiler/bin/Release/net10.0/corc"
+corc="$root/compiler/bin/managed/Release/net10.0/corc"
 work="${WORK:-$(mktemp -d)}"
 libs="lib/std.cor lib/rt/runtime.cor lib/rt/gc.cor lib/threading.cor lib/threading-linux.cor lib/sys/linux.cor lib/io.cor lib/console.cor lib/environment.cor lib/net.cor lib/security.cor lib/signals.cor lib/process.cor"
 
