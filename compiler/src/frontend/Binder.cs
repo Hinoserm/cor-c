@@ -2694,7 +2694,7 @@ public sealed partial class Binder
                 if (d.Init is not null)
                 {
                     Type initialState = _r.TypeOf(d.Init);
-                    if (!initialState.Nullable && initialState.Prim != Prim.NullLiteral && !initialState.IsError)
+                    if (type.IsReference && !initialState.Nullable && initialState.Prim != Prim.NullLiteral && !initialState.IsError)
                     {
                         _notNull.Add(made);
                         _notNullPaths.Add(d.Name);
