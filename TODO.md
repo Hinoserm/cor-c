@@ -94,7 +94,7 @@ deferred by request; do not resume them without a new request.
 ### Runtime build follow-up
 
 - [x] Compile runtime/shared-library sources as independent PIC objects and
-  link them with `corlink --shared`, preserving one image initializer and
+  link them with `corc link --shared`, preserving one image initializer and
   strict dependency checks. The OS integration logs eight concurrent runtime
   compiler processes; all 14 libraries build successfully.
 - [x] Verify separate shared linking, SONAME, initializer ownership, absence
@@ -184,7 +184,43 @@ Separate compilation must make self-hosting practical on small 486-class
 systems as well as use modern multicore hosts effectively. The implementation
 tasks below track that work; moving files alone does not reduce the working set.
 
-## Build utility and executable separation
+## Compilation speed
+
+- [x] Stop discovering indexed declarations one at a time. Raising on the first
+  name a unit could not find threw the whole compilation away and reparsed and
+  rebound everything, once per name: an empty kernel source cost eighteen
+  rounds, `devfs.cor` fifty-four and `procfs.cor` seventy-five. An imported
+  header now pulls in what its own signatures name, and the binder, the
+  extension lookup and the generic rewriter record what they cannot find and
+  raise it together. Over five kernel sources: 210 rounds and 24589 MiB
+  allocated became 18 rounds and 2435 MiB, with byte-identical objects and a
+  byte-identical kernel.
+- [x] Compile a project in one process. `corc compile-project` shares the index,
+  the lexed headers and the resolved-name memo across a project's sources,
+  still writing one object and one receipt each and skipping those already
+  current. It also removes the second process per source that existed only to
+  ask whether that source was stale.
+- [x] Share one worker budget across the whole build rather than giving each
+  project a fixed share decided when it starts. Measured over a full disk
+  build: sixteen compilers holding one worker each, then six sharing sixteen,
+  then one holding all sixteen.
+- [ ] Make a type's vtable layout the same whether or not the unit compiled
+  with a declaration index. `tests/integration/managed-units.sh` fails on this
+  and has since before the speed work: a unit built with the whole library
+  inline gives `BufferedStream.get_CanRead` slot 57, and one built from `--ref`
+  declarations plus an index gives it slot 45, because each numbers the
+  interface region over the interfaces it happens to have materialised rather
+  than over a table the whole build agrees on. The interface slots themselves
+  agree; it is where the class region starts that does not. This is the
+  managed separate compilation work, not a regression.
+- [ ] Reduce the remaining rounds. A trivial source now takes the floor of two;
+  the largest kernel sources take four, and what they still discover late is
+  named only from a body or from a specialised template.
+- [ ] Peak memory is 100-160 MB for one source and about 190 MB for a whole
+  project in one process, against a 486-class target with roughly 1 GB. Bring
+  that down; cumulative allocation is churn and is not the same measurement.
+
+## Build utility and the one toolchain executable
 
 - [x] Accept bare `Name=Value` arguments beside nested target names, preserving
   spaces and additional equals signs. Strict manifests reject undeclared
@@ -221,9 +257,16 @@ tasks below track that work; moving files alone does not reduce the working set.
   compiler/linker/build DLL and library output timestamps and sizes. Logs:
   build/logs/20260918-123831-662d268f3da84087a98a35a51cc09216/ and
   build/logs/20260918-123920-d04b01be073e444ca862d78bd425b22c/.
-- [x] Build compiler and linker as independent .NET-hosted executables and
-  document ELF relocatable objects. Compiler -> `.o` -> corlink -> Linux program
-  passed; this does not establish managed file-by-file compilation.
+- [x] Build the compiler and the linker and document ELF relocatable objects.
+  Compiler -> `.o` -> link -> Linux program passed; this does not establish
+  managed file-by-file compilation.
+- [x] Make the toolchain one executable. The build utility and the linker are
+  library projects of `corc`, reached as `corc build` and `corc link`, so the
+  build graph, the compiler and the linker share one process and one pool of
+  threads instead of passing a worker budget between processes. Assembling one
+  file moved from `corc build` to `corc asm`; `corlink` and `build` remain as
+  links. A full CORSAC86 disk image built this way with a byte-identical
+  kernel. The linker project still must not reference the compiler.
 - [ ] Restore project paths, split source types, and verify the reorganized repo.
 - [ ] Implement native MSBuild-compatible project evaluation and compilation;
   a host dotnet adapter alone does not satisfy this requirement.
@@ -237,7 +280,7 @@ tasks below track that work; moving files alone does not reduce the working set.
 - [ ] Implement verified bootstrap and atomic native toolchain activation.
 - [ ] Implement source locks/fetching, artifact references, installation/image
   tasks, profiles, imports and whole-build memory/resource budgeting.
-- [ ] Verify the build utility itself compiles and runs natively under COR-C#.
+- [ ] Verify the toolchain itself compiles and runs natively under COR-C#.
 
 ## Compatibility defects
 
@@ -482,7 +525,7 @@ tasks below track that work; moving files alone does not reduce the working set.
   first cross-object LTO pass. Separate caller/callee objects linked with LTO
   on/off both return 42; a state-changing callee remains a call and returns 43
   through its caller. General IR importing/inlining remains outstanding.
-- [x] Expose flat output and virtual/physical base controls in corlink; unit
+- [x] Expose flat output and virtual/physical base controls in the linker; unit
   checks cover flat entry, BSS alignment padding and physical kernel entry.
 - [x] Verify native ABI contract rejection, static-initializer preservation,
   and the compiler/linker unit suites after the initial LTO milestone.

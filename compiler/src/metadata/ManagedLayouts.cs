@@ -46,6 +46,15 @@ public static class ManagedLayouts
                     foreach (ParamSymbol parameter in method.Params)
                     { TypeName(parameter.Type); writer.Write(parameter.ByRef); writer.Write(parameter.ReadOnly); }
                 }
+                if (Environment.GetEnvironmentVariable("CORC_DUMP_LAYOUT") is string want && want == type.Key)
+                {
+                    Console.Error.WriteLine("layout " + type.Key + " kind=" + (int)type.Kind + " size=" + type.InstanceSize
+                        + " depth=" + type.Depth + " base=" + (type.Base?.Key ?? "")
+                        + " interfaces=[" + string.Join(",", type.Interfaces.OrderBy(f => f.Key, StringComparer.Ordinal).Select(f => f.Key)) + "]"
+                        + " impls=[" + string.Join(",", type.InterfaceImplementations.OrderBy(pair => pair.Key).Select(pair => pair.Key + "=>" + Lowering.Label(pair.Value))) + "]");
+                    foreach (MethodSymbol method in type.Methods.Where(m => m.VtableSlot >= 0).OrderBy(m => m.VtableSlot))
+                        Console.Error.WriteLine("  slot " + method.VtableSlot + " " + method.Name + "/" + method.Params.Count);
+                }
                 yield return new ManagedTypeLayout("type:" + type.Key, SHA256.HashData(stream.ToArray()));
                 foreach (FieldSymbol field in type.Fields.Where(field => field.Static))
                 {
