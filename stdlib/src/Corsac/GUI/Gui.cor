@@ -80,6 +80,11 @@ public class Seat : IDrawingTarget
     /// A shape this program defined becomes one of the standard ones, for
     /// every program on the seat: what a system does once with real cursor
     /// art, so that nothing else has to know where the art came from.
+    /// Ask the seat to say what it composes and where presses land. It
+    /// writes to the kernel console, which is where a picture problem has
+    /// to be looked at from.
+    public void Trace(bool on) { Os.Ioctl(_fd, 0x47550029, on ? 1 : 0); }
+
     public void BindCursor(int shape, int id) { Os.Ioctl(_fd, 0x47550028, (shape & 0xFF) | ((id & 0xFF) << 8)); }
 
     /// How many windows the seat is showing, everybody's included.
