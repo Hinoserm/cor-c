@@ -75,8 +75,10 @@ public static class ObjectLinkCommand
         if (output is null || paths.Count == 0)
             return Fail("usage: corlink <file.o> ... -o <output> [--entry symbol] [--flat] [--base address] [--paddr address] [--no-lto]");
         if (flat && physicalAddress is not null) return Fail("--paddr is for ELF output; use --base for flat images");
-        if ((shared || sharedLibraries.Count > 0) && (flat || physicalAddress is not null || baseAddress is not null))
-            return Fail("shared libraries cannot be combined with flat or fixed-address output");
+        if ((shared || sharedLibraries.Count > 0) && (flat || physicalAddress is not null))
+            return Fail("shared libraries cannot be combined with flat output or a physical address");
+        if (!shared && sharedLibraries.Count > 0 && baseAddress is not null)
+            return Fail("a dynamically linked executable is laid out at the default address");
         string destination = Path.GetFullPath(output);
         List<(string, ObjectFile)> inputs = new();
         HashSet<string> seen = new(StringComparer.Ordinal);
@@ -118,7 +120,7 @@ public static class ObjectLinkCommand
             HashSet<string> defined = new(inputs.SelectMany(x => x.Item2.Symbols).Where(s => s.IsDefined).Select(s => s.Name), StringComparer.Ordinal);
             HashSet<string> unresolved = new(inputs.SelectMany(x => x.Item2.Symbols).Where(s => !s.IsDefined && !defined.Contains(s.Name)).Select(s => s.Name), StringComparer.Ordinal);
             List<string> needed = sharedLibraries.Distinct(StringComparer.Ordinal).Where(path => ElfReader.ExportsOf(File.ReadAllBytes(path)).Any(unresolved.Contains)).ToList();
-            image = shared ? Linker.LinkShared(inputs, Path.GetFileName(output), needed, runpath)
+            image = shared ? Linker.LinkShared(inputs, Path.GetFileName(output), needed, runpath, baseAddress ?? 0)
                 : Linker.Link(inputs, entry, needed, runpath);
         }
         else image = Linker.Link(inputs, entry, baseAddress ?? Linker.DefaultLoadAddress, physicalAddress);

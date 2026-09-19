@@ -50,7 +50,7 @@ public static partial class Linker
     /// a library may call back into its consumer; everything the objects
     /// define and export appears in .dynsym.
     /// </summary>
-    public static byte[] LinkShared(IEnumerable<(string Name, ObjectFile Object)> objects, string soname, IEnumerable<string>? needed = null, string? runPath = null)
+    public static byte[] LinkShared(IEnumerable<(string Name, ObjectFile Object)> objects, string soname, IEnumerable<string>? needed = null, string? runPath = null, uint loadAddress = 0)
     {
         ArgumentNullException.ThrowIfNull(objects);
         ArgumentNullException.ThrowIfNull(soname);
@@ -75,8 +75,14 @@ public static partial class Linker
             dyn.RunPath = runPath ?? (where.Count == 0 ? null : string.Join(':', where));
         }
         // A shared object is ET_DYN and loads wherever the kernel puts it,
-        // so every address in it is an offset from zero.
-        return LinkDynamic(objects, dyn, null, 0);
+        // so every address in it is an offset from zero -- unless it was
+        // given a PREFERRED address. Then its addresses are laid out from
+        // there, and a loader that finds that range free maps it with no
+        // bias at all: nothing to relocate, and its pages stay the file
+        // cache's, shared by every process. A loader that cannot relocates
+        // it as before, by the difference. What Windows does with a base
+        // address and prelink did on Linux.
+        return LinkDynamic(objects, dyn, null, loadAddress);
     }
 
     /// <summary>
