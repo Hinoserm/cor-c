@@ -292,6 +292,15 @@ public class Graphics : IDisposable
         }
     }
     public void DrawString(string s, Font font, Brush brush, Point p) { DrawString(s, font, brush, p.X, p.Y); }
+
+    /// Part of what this surface already shows, moved: what a scrolling
+    /// terminal does with the rows that only moved, one copy on the card
+    /// instead of drawing every cell of them again. CORSAC-only; .NET's
+    /// Graphics has no such thing because its windows are not retained.
+    public void CopyArea(int sx, int sy, int dx, int dy, int w, int h)
+    {
+        _target.Copy(sx + _originX, sy + _originY, dx + _originX, dy + _originY, w, h);
+    }
     public void DrawString(string s, Font font, Brush brush, float x, float y) { DrawString(s, font, brush, (int)x, (int)y); }
 
     /// Opaque text: background painted with the glyph, which on the
