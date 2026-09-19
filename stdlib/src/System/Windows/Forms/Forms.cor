@@ -520,6 +520,7 @@ public class Form : Control
     public new void Show()
     {
         if (_shown) return;
+        Invalidate();
         Seat seat = Seat.Current;
         if (StartPosition == FormStartPosition.CenterScreen)
             base.SetBounds((seat.Width - Width) / 2, (seat.Height - Height) / 2, Width, Height);
@@ -576,9 +577,15 @@ public class Form : Control
     protected virtual void OnFormClosing(FormClosingEventArgs e) { if (FormClosing != null) FormClosing(this, e); }
     protected virtual void OnFormClosed(EventArgs e) { if (FormClosed != null) FormClosed(this, e); }
     protected virtual void OnActivated(EventArgs e) { if (Activated != null) Activated(this, e); }
-    internal void RaiseActivated() { _frameDirty = true; OnActivated(EventArgs.Empty); Invalidate(); }
+    // Gaining or losing the focus changes the caption and nothing else, so
+    // only the frame is asked for. Invalidating the form invalidated its
+    // whole client area, and a terminal repainting its black background and
+    // every cell on each focus change is the flash that came of it.
+    internal void RaiseActivated() { FrameChanged(); OnActivated(EventArgs.Empty); }
     protected virtual void OnDeactivate(EventArgs e) { if (Deactivate != null) Deactivate(this, e); }
-    internal void RaiseDeactivate() { _frameDirty = true; OnDeactivate(EventArgs.Empty); Invalidate(); }
+    internal void RaiseDeactivate() { FrameChanged(); OnDeactivate(EventArgs.Empty); }
+
+    void FrameChanged() { _frameDirty = true; Application.NeedsPaint(this); }
 
     // The caption changes colour when the window gains or loses the focus,
     // and its text when Text is set; an ordinary repaint of the client tree
@@ -586,7 +593,7 @@ public class Form : Control
     bool _frameDirty;
 
     /// The title, kept by the seat too once the window exists.
-    public override string Text { get { return base.Text; } set { base.Text = value; if (_handle != 0) Seat.Current.SetTitle(_handle, value); _frameDirty = true; Invalidate(); } }
+    public override string Text { get { return base.Text; } set { base.Text = value; if (_handle != 0) Seat.Current.SetTitle(_handle, value); FrameChanged(); } }
 
     /// Paint the whole window: the frame, then the client tree.
     internal void PaintWindow(Rectangle clip, bool force)
@@ -602,7 +609,18 @@ public class Form : Control
             bool active = Application.ActiveForm == this;
             Color face = SystemColors.Control;
             int w = Width, h = Height;
-            g.FillRectangle(new SolidBrush(face), 0, 0, w, h);
+            // THE FRAME ONLY, never over the client. Filling the whole window
+            // here washed the program's own painting away and left it grey
+            // until something forced a full repaint -- on every focus change,
+            // which is the flash that was in the terminal, and an empty
+            // window until it was dragged.
+            Point frameCo = ClientOffset();
+            int clientW = ClientRectangle.Width, clientH = ClientRectangle.Height;
+            SolidBrush faceBrush = new SolidBrush(face);
+            g.FillRectangle(faceBrush, 0, 0, w, frameCo.Y);                                  // caption and the top border
+            g.FillRectangle(faceBrush, 0, frameCo.Y + clientH, w, h - frameCo.Y - clientH);  // the bottom border
+            g.FillRectangle(faceBrush, 0, frameCo.Y, frameCo.X, clientH);                    // the left border
+            g.FillRectangle(faceBrush, frameCo.X + clientW, frameCo.Y, w - frameCo.X - clientW, clientH);
             ControlPaint.DrawBorder3D(g, 0, 0, w, h, Border3DStyle.Raised);
             // The caption: one colour, blue when active and grey when not, the
             // title in white, bold by being drawn twice, and the close button
@@ -638,11 +656,11 @@ public class Form : Control
     void FrameMouse(int kind, int button, int x, int y, Point co)
     {
         bool over = CloseBox().Contains(x, y);
-        if (kind == 4 && button == 1 && over) { _closeDown = true; _closeHot = true; _frameDirty = true; Invalidate(); return; }
-        if (kind == 3 && _closeDown) { if (over != _closeHot) { _closeHot = over; _frameDirty = true; Invalidate(); } return; }
+        if (kind == 4 && button == 1 && over) { _closeDown = true; _closeHot = true; FrameChanged(); return; }
+        if (kind == 3 && _closeDown) { if (over != _closeHot) { _closeHot = over; FrameChanged(); } return; }
         if (kind == 5 && _closeDown)
         {
-            _closeDown = false; _frameDirty = true; Invalidate();
+            _closeDown = false; FrameChanged();
             if (over) Close();
             return;
         }
@@ -654,6 +672,9 @@ public class Form : Control
     internal void WindowMouse(int kind, int button, int x, int y)
     {
         Point co = ClientOffset();
+        // A control holding the button gets everything until it comes up,
+        // even where the pointer has left the window altogether.
+        if (kind != 4 && Application.Captured != null) { ClientMouse(kind, button, x, y, co); return; }
         if (HasFrame && kind == 4 && button == 1)
         {
             int edges = ResizeEdges(x, y);
@@ -669,6 +690,12 @@ public class Form : Control
         }
         if (_closeDown) { FrameMouse(kind, button, x, y, co); if (kind != 5) return; }
         if (kind == 3 && HasFrame && Application.Captured == null) Seat.Current.SetCursor(Cursors.Arrow);
+        ClientMouse(kind, button, x, y, co);
+    }
+
+    /// The press, move or release, in the client's own coordinates.
+    void ClientMouse(int kind, int button, int x, int y, Point co)
+    {
         int cx = x - co.X, cy = y - co.Y;
         Control target = HitTest(cx, cy);
         // While a button is held the control that took the press gets every
@@ -732,6 +759,18 @@ public class Button : Control
     }
     protected override void OnMouseDown(MouseEventArgs e) { _down = true; Invalidate(); base.OnMouseDown(e); }
     protected override void OnMouseUp(MouseEventArgs e) { _down = false; Invalidate(); base.OnMouseUp(e); }
+
+    /// Held and dragged off the button: it pops out and stays out until the
+    /// pointer comes back, so a release outside is plainly not a click.
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        if (Application.Captured == this)
+        {
+            bool over = e.X >= 0 && e.Y >= 0 && e.X < Width && e.Y < Height;
+            if (over != _down) { _down = over; Invalidate(); }
+        }
+        base.OnMouseMove(e);
+    }
     protected override void OnKeyPress(KeyPressEventArgs e) { if (e.KeyChar == ' ' || e.KeyChar == '\r') { PerformClick(); e.Handled = true; } base.OnKeyPress(e); }
 }
 
@@ -1237,14 +1276,18 @@ public static class Application
             }
             case 4:
                 if (_active != f) { _active = f; f!.RaiseActivated(); }
-                f!.WindowMouse(4, m.A, m.B & 0xFFFF, (m.B >> 16) & 0xFFFF); break;
+                f!.WindowMouse(4, m.A, Seat.LowSigned(m.B), Seat.HighSigned(m.B)); break;
             case 5:
                 SettleDrag();
                 // A press on an edge that never moved still put an outline
                 // on the screen: it goes when the button does, either way.
                 if (_resizeEdges != 0) { Seat.Current.ClearBand(); }
                 _dragging = null; _resizeEdges = 0;
-                f!.WindowMouse(5, m.A, m.B & 0xFFFF, (m.B >> 16) & 0xFFFF); break;
+                // Signed: a release left of or above the window it was pressed
+                // in reports negative coordinates, and reading them unsigned
+                // put it out in the frame, where the control holding the
+                // button never saw the release and stayed pressed in.
+                f!.WindowMouse(5, m.A, Seat.LowSigned(m.B), Seat.HighSigned(m.B)); break;
             case 8:
             {
                 int x = m.A & 0xFFFF, y = (m.A >> 16) & 0xFFFF, w = m.B & 0xFFFF, h = (m.B >> 16) & 0xFFFF;
