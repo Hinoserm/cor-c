@@ -108,7 +108,7 @@ public static class ManagedProjectBuild
                 WriteChanged(Path.Combine(output, project.AssemblyName + ".runtimeconfig.json"), JsonSerializer.Serialize(new
                 {
                     runtimeOptions = new { tfm = project.Framework, framework = new { name = "Microsoft.NETCore.App", version },
-                        configProperties = new Dictionary<string, object> { ["System.Globalization.Invariant"] = Property("InvariantGlobalization") == "true" } }
+                        configProperties = ManagedRuntimeConfiguration.Create(project.Properties) }
                 }));
             }
         }

@@ -12,6 +12,20 @@ public static class Program
     public static async Task<int> Main()
     {
         Directory.CreateDirectory(Work);
+        Check("managed tools enable tiered JIT and PGO by default", () =>
+        {
+            var settings = ManagedRuntimeConfiguration.Create(new Dictionary<string, string>());
+            Require((bool)settings["System.Runtime.TieredCompilation"] && (bool)settings["System.Runtime.TieredPGO"]);
+            Require(!settings.ContainsKey("System.Runtime.TieredCompilation.QuickJitForLoops"));
+        });
+        Check("standard SDK JIT settings and explicit exclusions survive", () =>
+        {
+            var settings = ManagedRuntimeConfiguration.Create(new Dictionary<string, string>
+            { ["TieredCompilation"] = "false", ["TieredPGO"] = "false", ["TieredCompilationQuickJitForLoops"] = "True" });
+            Require(!(bool)settings["System.Runtime.TieredCompilation"] && !(bool)settings["System.Runtime.TieredPGO"]
+                && (bool)settings["System.Runtime.TieredCompilation.QuickJitForLoops"]);
+            ExpectError(() => ManagedRuntimeConfiguration.Create(new Dictionary<string, string> { ["TieredPGO"] = "maybe" }), "must be true or false");
+        });
         Check("owned managed evaluator retains standard SDK compiler settings", () =>
         {
             string project = Path.Combine(Work, "Managed.csproj");
