@@ -62,6 +62,7 @@ internal static class Program
         PruneArithmetic();
         RepeatingMemoryRegions();
         DeferredFunctions();
+        PicExceptionEntry();
         string outDir = Path.Combine(Path.GetTempPath(), "corsac-x86tests");
         Directory.CreateDirectory(outDir);
 
@@ -1661,6 +1662,18 @@ internal static class Program
         }
         b.Call("exit", IrType.Void, I(42));
         b.Unreachable();
+    }
+
+    private static void PicExceptionEntry()
+    {
+        Module module = new("pic-exception-entry");
+        Landing(module);
+        module.Data.Add(new DataItem("counter", new byte[4]) { Zero = true });
+        List<string> errors = new();
+        ObjectFile image = new X86Backend { PositionIndependent = true }.Generate(module, errors);
+        Check(errors.Count == 0, "PIC exception fixture compiles");
+        Check(image.Section(".text").Relocs.Count(r => r.Kind == RelocKind.GotPc) == 2,
+            "PIC GOT is reconstructed at both function and exception entry");
     }
 
     /// <summary>A try/catch shape: record in a frame slot, LabelAddr, Unwind, and a landing pad.</summary>
