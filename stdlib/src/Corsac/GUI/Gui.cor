@@ -46,6 +46,21 @@ public class Seat : IDrawingTarget
         Width = (int)Os.Ioctl(_fd, 0x47550001, 0);
         Height = (int)Os.Ioctl(_fd, 0x47550002, 0);
         Format = (int)Os.Ioctl(_fd, 0x47550003, 0);
+        // A seat device that exists but has no screen answers every question
+        // with an error: the kernel says why on the console. Finding out here
+        // is what lets a program say so and stop, rather than failing at its
+        // first window and being started again for ever.
+        if (Width <= 0 || Height <= 0) throw new IOException("seat " + path + " has no screen");
+    }
+
+    /// Whether a seat can be used, without throwing to find out.
+    public static bool Usable(string path)
+    {
+        int fd = Os.Open(path, 2, 0);
+        if (fd < 0) return false;
+        bool ok = Os.Ioctl(fd, 0x47550001, 0) > 0;
+        Os.Close(fd);
+        return ok;
     }
 
     public int Fd { get { return _fd; } }
