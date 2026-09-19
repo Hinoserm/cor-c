@@ -6172,7 +6172,8 @@ public sealed partial class Binder
 
             if (!made.Equals(element))
             {
-                return Type.ArrayOf(made, t.ArrayRank);
+                Type rebuilt = Type.ArrayOf(made, 1);
+                return t.Nullable ? rebuilt.AsNullable() : rebuilt;
             }
         }
 

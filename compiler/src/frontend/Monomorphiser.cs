@@ -178,6 +178,7 @@ public sealed class Monomorphiser
             ArrayRank = r.ArrayRank,
             Nullable = r.Nullable,
             ElementNullable = r.ElementNullable,
+            InnerNullable = r.InnerNullable,
             PointerDepth = r.PointerDepth,
             TupleNames = r.TupleNames,
             UseArgs = useArgs,
@@ -746,6 +747,11 @@ public sealed class Monomorphiser
                 ElementNullable = arrayFromUse
                                 ? bound.Nullable || bound.ElementNullable
                                 : r.ElementNullable || bound.ElementNullable,
+                // The bound's marks sit inside; the use's marks sit above
+                // them, shifted by the bound's rank, and the bound's own
+                // '?' becomes a mark where its brackets end.
+                InnerNullable = bound.InnerNullable | (r.InnerNullable << bound.ArrayRank)
+                    | (bound.ArrayRank > 0 && r.ArrayRank > 0 && bound.Nullable ? 1 << (bound.ArrayRank - 1) : 0),
                 PointerDepth = r.PointerDepth + bound.PointerDepth,
                 Args = bound.Args.ToList(),
                 UseArgs = bound.UseArgs,
@@ -768,7 +774,7 @@ public sealed class Monomorphiser
             TypeRef tuple = new()
             {
                 Name = r.Name, ArrayRank = r.ArrayRank, Nullable = r.Nullable,
-                ElementNullable = r.ElementNullable,
+                ElementNullable = r.ElementNullable, InnerNullable = r.InnerNullable,
                 PointerDepth = r.PointerDepth,
                 TupleNames = r.TupleNames is null ? null : new List<string>(r.TupleNames),
                 Line = r.Line, Col = r.Col,
@@ -857,6 +863,7 @@ public sealed class Monomorphiser
             UseArgs = args.Count > 0 && name != r.Name ? args.Select(Qualify).ToList()
                 : r.UseArgs?.Select(a => Sub(a, map)).ToList(),
             ElementNullable = r.ElementNullable,
+            InnerNullable = r.InnerNullable,
             PointerDepth = r.PointerDepth,
             Line = r.Line, Col = r.Col,
         };
