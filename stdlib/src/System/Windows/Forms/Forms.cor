@@ -264,6 +264,11 @@ public class Seat : IDrawingTarget
     public void ResizeWindow(int handle, int w, int h) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550011, (w & 0xFFFF) | (h << 16)); }
     public void DestroyWindow(int handle) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550016, 0); _window = 0; _named = false; }
     public void FocusWindow(int handle) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550017, 0); }
+    /// This window is the desktop: the surface under everything, never raised.
+    public void DesktopWindow(int handle) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550018, 0); }
+    static int Signed16(int v) { int n = v & 0xFFFF; return n >= 0x8000 ? n - 0x10000 : n; }
+    public static int LowSigned(int packed) { return Signed16(packed); }
+    public static int HighSigned(int packed) { return Signed16(packed >> 16); }
 
     // --- events ----------------------------------------------------------
 
@@ -554,6 +559,9 @@ public class Form : Control
     public FormBorderStyle FormBorderStyle { get { return _border; } set { _border = value; Invalidate(); } }
     public FormWindowState WindowState { get { return _state; } set { _state = value; if (value == FormWindowState.Maximized) SetBounds(0, 0, Seat.Current.Width, Seat.Current.Height); } }
     public bool IsClosed { get { return _closed; } }
+    /// The desktop is a surface of its own kind: it sits under every other
+    /// window and a click on it never raises it. Set before Show.
+    public bool IsDesktop;
     public bool HasFrame { get { return _border != FormBorderStyle.None; } }
 
     public override Rectangle ClientRectangle
@@ -589,6 +597,7 @@ public class Form : Control
             base.SetBounds(at.X, at.Y, Width, Height);
         }
         _handle = seat.CreateWindow(Left, Top, Width, Height);
+        if (IsDesktop) seat.DesktopWindow(_handle);
         _shown = true;
         Application.Register(this);
         OnLoad(EventArgs.Empty);
@@ -922,6 +931,11 @@ public static class Application
     internal static void Register(Form f) { if (!_forms.Contains(f)) _forms.Add(f); _active = f; f.RaiseActivated(); }
     internal static void Unregister(Form f) { _forms.Remove(f); if (_active == f) _active = _forms.Count > 0 ? _forms[_forms.Count - 1] : null; if (_focus != null && _focus.FindForm() == f) _focus = null; }
     internal static void NeedsPaint(Control c) { _paintPending = true; }
+    /// x, y: where in the window the press was. The drag keeps that point
+    /// under the pointer using the pointer's SCREEN position from each Move,
+    /// never a delta against the window's last known place: moves queued
+    /// before the window moved were against the old place, and applying
+    /// their deltas again sent the window off the screen.
     internal static void BeginDrag(Form f, int x, int y) { _dragging = f; _dragX = x; _dragY = y; }
 
     internal static void SetFocus(Control? c)
@@ -1027,8 +1041,12 @@ public static class Application
                 break;
             }
             case 3:
-                if (_dragging != null) { _dragging.SetBounds(_dragging.Left + (m.A - _dragX), _dragging.Top + (m.B - _dragY), _dragging.Width, _dragging.Height); break; }
-                f!.WindowMouse(3, 0, m.A, m.B); break;
+            {
+                int wx = Seat.LowSigned(m.A), wy = Seat.HighSigned(m.A);
+                int sx = Seat.LowSigned(m.B), sy = Seat.HighSigned(m.B);
+                if (_dragging != null) { _dragging.SetBounds(sx - _dragX, sy - _dragY, _dragging.Width, _dragging.Height); break; }
+                f!.WindowMouse(3, 0, wx, wy); break;
+            }
             case 4:
                 if (_active != f) { _active = f; f!.RaiseActivated(); }
                 f!.WindowMouse(4, m.A, m.B & 0xFFFF, (m.B >> 16) & 0xFFFF); break;
