@@ -580,8 +580,11 @@ public class Form : Control
         Seat seat = Seat.Current;
         if (StartPosition == FormStartPosition.CenterScreen)
             base.SetBounds((seat.Width - Width) / 2, (seat.Height - Height) / 2, Width, Height);
-        else if (StartPosition == FormStartPosition.WindowsDefaultLocation)
+        else if (StartPosition == FormStartPosition.WindowsDefaultLocation && _state != FormWindowState.Maximized)
         {
+            // A maximized form has its place already: the whole screen. The
+            // cascade once moved the desktop a step down and right, and put
+            // its bar below the bottom edge.
             Point at = Application.NextCascade(Width, Height, seat.Width, seat.Height);
             base.SetBounds(at.X, at.Y, Width, Height);
         }
