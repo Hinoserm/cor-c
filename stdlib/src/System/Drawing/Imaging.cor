@@ -200,6 +200,12 @@ public class IconFile
         int mask = pixels + stride * height;
         bool hasMask = mask + maskStride * height <= b.Length;
 
+        // The mask decides transparency for everything but a 32-bit image,
+        // which carries its own alpha -- except when that alpha is entirely
+        // zero, which some old files do, and then the mask is all there is.
+        // Decided ONCE: asked per pixel, this scanned the whole image for
+        // every pixel of it, and a 48-pixel icon took five million steps.
+        bool useMask = hasMask && (depth != 32 || !AnyAlpha(b, pixels, stride, width, height));
         Bitmap made = new Bitmap(width, height);
         for (int y = 0; y < height; y++)
         {
@@ -229,11 +235,7 @@ public class IconFile
                     bl = b[entry] & 255; g = b[entry + 1] & 255; r = b[entry + 2] & 255;
                 }
 
-                // The mask decides transparency for everything but a
-                // 32-bit image, which carries its own alpha -- except when
-                // that alpha is entirely zero, which some old files do, and
-                // then the mask is all there is.
-                if (hasMask && (depth != 32 || !AnyAlpha(b, pixels, stride, width, height)))
+                if (useMask)
                 {
                     int bit = ((b[maskRow + (x >> 3)] & 255) >> (7 - (x & 7))) & 1;
                     a = bit == 1 ? 0 : 255;
