@@ -27,6 +27,23 @@ required gates rather than assuming a missing log is proof of completion.
 
 ## Priority and purpose
 
+### Immediate priority: kernel compilation latency
+
+- [x] Expose live compilation filenames, active workers and ready/remaining counts.
+- [x] Profile a small real kernel unit; identify repeated lexical parsing and
+  per-punctuation table allocations as substantial sources of allocation/GC work.
+- [ ] Finish acceptance of the static punctuation, bounded token-cache and
+  copy-on-write parser-token batch: equivalent objects, frontend regressions,
+  representative kernel units and a full kernel rebuild.
+- [ ] Reproduce body-only versus declaration-changing kernel edits and report
+  precisely which source units rebuild and why.
+- [ ] If performance is still inadequate after that batch, implement a single
+  project-scoped compiler session with threaded file jobs, shared bounded
+  immutable caches and isolated mutable worker state. Preserve per-file objects,
+  incremental invalidation and standalone compiler/linker commands.
+
+CPU/runtime/Cyrix work below is deferred behind this latency work.
+
 ### CPU work: resume in this order
 
 1. [ ] Finish kernel CPU/context acceptance in the isolated CORSAC86 branch:
