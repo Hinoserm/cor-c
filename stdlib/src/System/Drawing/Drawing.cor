@@ -293,6 +293,12 @@ public class Graphics : IDisposable
     /// Opaque text: background painted with the glyph, which on the
     /// hardware is one operation and on a 486 is the difference between a
     /// terminal that keeps up and one that does not.
+    /// A glyph the program defined itself (Seat.DefineGlyph): an icon, a logo.
+    public void DrawGlyph(int id, int x, int y, Color foreground, Color background, bool transparent)
+    {
+        _target.Glyph(id, x + _originX, y + _originY, foreground, background, transparent);
+    }
+
     public void DrawStringOpaque(string s, Font font, Color foreground, Color background, int x, int y)
     {
         int cx = x + _originX, cy = y + _originY;

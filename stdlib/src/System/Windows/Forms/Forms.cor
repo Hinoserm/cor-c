@@ -268,6 +268,55 @@ public class Seat : IDrawingTarget
     public void DesktopWindow(int handle) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550018, 0); }
     /// This window stays above every ordinary one (a bar).
     public void TopMostWindow(int handle) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550019, 0); }
+
+    /// The window's title, as the seat lists it (a taskbar reads it).
+    public void SetTitle(int handle, string title)
+    {
+        byte[] bytes = new byte[64];
+        for (int i = 0; i < title.Length && i < 63; i++) bytes[i] = (byte)title[i];
+        Flush(); Select(handle); Os.Ioctl(_fd, 0x4755001B, (int)Os.AddressOf(bytes));
+    }
+
+    /// Ask for a WindowsChanged message whenever the seat's list or focus changes.
+    public void WatchWindows() { Os.Ioctl(_fd, 0x4755001D, 0); }
+
+    /// Every shown window on the seat, bottom to top, whoever owns it.
+    public SeatWindowInfo[] Windows()
+    {
+        byte[] records = new byte[80 * 64];
+        int n = (int)Os.Ioctl(_fd, 0x4755001C, (int)Os.AddressOf(records));
+        if (n < 0) n = 0;
+        if (n > 64) n = 64;
+        SeatWindowInfo[] result = new SeatWindowInfo[n];
+        for (int i = 0; i < n; i++)
+        {
+            int at = i * 80;
+            SeatWindowInfo w = new SeatWindowInfo();
+            w.Handle = records[at] | (records[at + 1] << 8) | (records[at + 2] << 16) | (records[at + 3] << 24);
+            w.Owner = records[at + 4] | (records[at + 5] << 8) | (records[at + 6] << 16) | (records[at + 7] << 24);
+            w.Flags = records[at + 8] | (records[at + 9] << 8);
+            string title = "";
+            for (int k = 0; k < 64 && records[at + 16 + k] != 0; k++) title = title + (char)records[at + 16 + k];
+            w.Title = title;
+            result[i] = w;
+        }
+        return result;
+    }
+
+    /// Raise and focus any window, whoever owns it (a taskbar button).
+    public void Activate(int handle) { Flush(); Os.Ioctl(_fd, 0x4755001E, handle); }
+    /// Ask any window's owner to close it.
+    public void CloseWindow(int handle) { Flush(); Os.Ioctl(_fd, 0x4755001F, handle); }
+
+    /// A glyph of the program's own, ids from 256: rows of packed bits, the
+    /// most significant first, (width+7)/8 bytes per row.
+    public void DefineGlyph(int id, int width, int height, byte[] bits)
+    {
+        int padded = (bits.Length + 3) & ~3;
+        Room(5 + padded / 4);
+        Word(4); Word(id); Word(width); Word(height); Word(bits.Length);
+        for (int i = 0; i < padded; i++) _batch[_used++] = i < bits.Length ? bits[i] : (byte)0;
+    }
     /// Rows at the bottom of the screen a bar owns: windows keep out of them.
     public void ReserveBottom(int rows) { Os.Ioctl(_fd, 0x4755001A, rows); }
     /// The screen height minus what a bar has reserved: where windows go.
@@ -363,6 +412,32 @@ public static class Bevel
         g.DrawRectangle(darker, x, y, w, h);
         g.DrawRectangle(dark, x + 1, y + 1, w - 2, h - 2);
     }
+}
+
+/// One shown window on the seat, as Seat.Windows() reports it.
+public class SeatWindowInfo
+{
+    public int Handle;
+    public int Owner;
+    public int Flags;                        // 1 desktop, 2 top-most, 4 focused
+    public string Title = "";
+    public bool IsDesktop { get { return (Flags & 1) != 0; } }
+    public bool IsTopMost { get { return (Flags & 2) != 0; } }
+    public bool IsFocused { get { return (Flags & 4) != 0; } }
+}
+
+/// Fires Tick on the message loop every Interval milliseconds while Enabled.
+public class Timer
+{
+    public int Interval = 100;
+    public event EventHandler? Tick;
+    long _due;
+    bool _enabled;
+    public bool Enabled { get { return _enabled; } set { if (value) Start(); else Stop(); } }
+    public void Start() { if (!_enabled) { _enabled = true; _due = Application.Now() + Interval; Application.AddTimer(this); } }
+    public void Stop() { if (_enabled) { _enabled = false; Application.RemoveTimer(this); } }
+    internal long Due { get { return _due; } }
+    internal void Fire() { _due = Application.Now() + Interval; if (Tick != null) Tick(this, EventArgs.Empty); }
 }
 
 public class ControlCollection
@@ -556,7 +631,7 @@ public class Control
     internal void RaiseMouseUp(MouseEventArgs e)
     {
         OnMouseUp(e);
-        if (Enabled && e.X >= 0 && e.Y >= 0 && e.X < Width && e.Y < Height) OnClick(EventArgs.Empty);
+        if (Enabled && e.Button == MouseButtons.Left && e.X >= 0 && e.Y >= 0 && e.X < Width && e.Y < Height) OnClick(EventArgs.Empty);
     }
     internal void RaiseMouseMove(MouseEventArgs e) { OnMouseMove(e); }
     internal void RaiseKeyPress(KeyPressEventArgs e) { OnKeyPress(e); }
@@ -593,6 +668,7 @@ public class Form : Control
     public event FormClosingEventHandler? FormClosing;
     public event EventHandler? FormClosed;
     public event EventHandler? Activated;
+    public event EventHandler? Deactivate;
 
     public Form() { Width = 320; Height = 240; BackColor = SystemColors.Control; }
 
@@ -643,6 +719,7 @@ public class Form : Control
             base.SetBounds(at.X, at.Y, Width, Height);
         }
         _handle = seat.CreateWindow(Left, Top, Width, Height);
+        seat.SetTitle(_handle, Text);
         if (IsDesktop) seat.DesktopWindow(_handle);
         if (TopMost) seat.TopMostWindow(_handle);
         _shown = true;
@@ -686,6 +763,11 @@ public class Form : Control
     protected virtual void OnFormClosed(EventArgs e) { if (FormClosed != null) FormClosed(this, e); }
     protected virtual void OnActivated(EventArgs e) { if (Activated != null) Activated(this, e); }
     internal void RaiseActivated() { OnActivated(EventArgs.Empty); Invalidate(); }
+    protected virtual void OnDeactivate(EventArgs e) { if (Deactivate != null) Deactivate(this, e); }
+    internal void RaiseDeactivate() { OnDeactivate(EventArgs.Empty); Invalidate(); }
+
+    /// The title, kept by the seat too once the window exists.
+    public override string Text { get { return base.Text; } set { base.Text = value; if (_handle != 0) Seat.Current.SetTitle(_handle, value); Invalidate(); } }
 
     /// Paint the whole window: the frame, then the client tree.
     internal void PaintWindow(Rectangle clip, bool force)
@@ -942,6 +1024,91 @@ public class TextBox : Control
     internal void FocusByClick() { _clickFocus = true; }
 }
 
+/// A popup list of commands at a screen position: a right-click menu, a
+/// start menu. Its own top-level window above everything; it goes away
+/// when a command is chosen, when Escape is pressed, or when a click
+/// anywhere else takes the focus from it.
+public class ContextMenu : Form
+{
+    List<string> _texts = new List<string>();
+    List<EventHandler?> _handlers = new List<EventHandler?>();
+    int _hot = -1;
+    public const int ItemHeight = 22;
+
+    public ContextMenu()
+    {
+        FormBorderStyle = FormBorderStyle.None;
+        StartPosition = FormStartPosition.Manual;
+        TopMost = true;
+        BackColor = SystemColors.Control;
+    }
+
+    public void Add(string text, EventHandler? onClick) { _texts.Add(text); _handlers.Add(onClick); }
+    /// A separator line.
+    public void AddSeparator() { _texts.Add("-"); _handlers.Add(null); }
+
+    public void Show(int screenX, int screenY)
+    {
+        int widest = 0;
+        for (int i = 0; i < _texts.Count; i++) if (_texts[i].Length > widest) widest = _texts[i].Length;
+        int w = widest * Font.GlyphWidth + 32, h = _texts.Count * ItemHeight + 6;
+        Seat seat = Seat.Current;
+        if (screenX + w > seat.Width) screenX = seat.Width - w;
+        if (screenY + h > seat.WorkAreaHeight()) screenY = screenY - h;
+        if (screenY < 0) screenY = 0;
+        SetBounds(screenX, screenY, w, h);
+        Show();
+    }
+
+    int ItemAt(int y) { int i = (y - 3) / ItemHeight; return i >= 0 && i < _texts.Count ? i : -1; }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        Graphics g = e.Graphics;
+        g.FillRectangle(new SolidBrush(BackColor), 0, 0, Width, Height);
+        Bevel.Raised(g, 0, 0, Width, Height);
+        for (int i = 0; i < _texts.Count; i++)
+        {
+            int y = 3 + i * ItemHeight;
+            if (_texts[i] == "-")
+            {
+                g.DrawLine(new Pen(SystemColors.ControlDark), 4, y + ItemHeight / 2, Width - 5, y + ItemHeight / 2);
+                g.DrawLine(new Pen(SystemColors.ControlLightLight), 4, y + ItemHeight / 2 + 1, Width - 5, y + ItemHeight / 2 + 1);
+                continue;
+            }
+            bool hot = i == _hot;
+            if (hot) g.FillRectangle(new SolidBrush(SystemColors.Highlight), 3, y, Width - 6, ItemHeight);
+            g.DrawString(_texts[i], Font, new SolidBrush(hot ? SystemColors.HighlightText : ForeColor), 16, y + (ItemHeight - Font.Height) / 2);
+        }
+        base.OnPaint(e);
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        int at = ItemAt(e.Y);
+        if (at != _hot) { _hot = at; Invalidate(); }
+        base.OnMouseMove(e);
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        int at = ItemAt(e.Y);
+        base.OnMouseUp(e);
+        if (at < 0 || _texts[at] == "-") return;
+        EventHandler? handler = _handlers[at];
+        Close();
+        if (handler != null) handler(this, EventArgs.Empty);
+    }
+
+    protected override void OnKeyPress(KeyPressEventArgs e)
+    {
+        if (e.KeyChar == (char)27) { e.Handled = true; Close(); return; }
+        base.OnKeyPress(e);
+    }
+
+    protected override void OnDeactivate(EventArgs e) { base.OnDeactivate(e); Close(); }
+}
+
 // ---------------------------------------------------------------------------
 // The application: the message loop and the things it owns.
 // ---------------------------------------------------------------------------
@@ -951,6 +1118,29 @@ public delegate void WatchHandler(int fd);
 public static class Application
 {
     static List<Form> _forms = new List<Form>();
+
+    /// The seat's window list or focus changed (after Seat.WatchWindows()).
+    public static event EventHandler? WindowsChanged;
+    public static void WatchWindows() { Seat.Current.WatchWindows(); }
+
+    static List<Timer> _timers = new List<Timer>();
+    internal static void AddTimer(Timer t) { if (!_timers.Contains(t)) _timers.Add(t); }
+    internal static void RemoveTimer(Timer t) { _timers.Remove(t); }
+    /// Milliseconds on a clock that only goes forward.
+    public static long Now() { return DateTime.UtcNow.Ticks / 10000; }
+    /// How long the loop may wait before a timer is due: -1 for ever.
+    static int TimerWait()
+    {
+        if (_timers.Count == 0) return -1;
+        long now = Now(), soonest = -1;
+        for (int i = 0; i < _timers.Count; i++) { long left = _timers[i].Due - now; if (left < 0) left = 0; if (soonest < 0 || left < soonest) soonest = left; }
+        return soonest > 1000000 ? 1000000 : (int)soonest;
+    }
+    static void FireTimers()
+    {
+        long now = Now();
+        for (int i = 0; i < _timers.Count; i++) if (_timers[i].Due <= now) _timers[i].Fire();
+    }
     /// Where the next window with no position of its own goes: down and
     /// right of the windows already on the seat, a caption's height per
     /// window, back to the corner when it would run off the screen. Asked of
@@ -1061,17 +1251,23 @@ public static class Application
             if (_dragPending && (!seat.Poll(0) || _sinceDrag >= 3)) SettleDrag();
             if (_paintPending) PaintNow();
             if (Idle != null) Idle(null!, EventArgs.Empty);
+            int wait = TimerWait();
             if (_watchFds.Count > 0)
             {
                 // Several descriptors: one wait on all of them in the
-                // kernel. A watcher that is ready gets its turn; then the
-                // seat is asked whether it has anything before blocking in
-                // Next, so a burst on the descriptor cannot starve painting.
+                // kernel, bounded by the next timer. A watcher that is
+                // ready gets its turn; then the seat is asked whether it
+                // has anything before blocking in Next, so a burst on the
+                // descriptor cannot starve painting.
                 int[] fds = new int[_watchFds.Count];
                 for (int i = 0; i < fds.Length; i++) fds[i] = _watchFds[i];
-                int which = seat.WaitAny(fds, fds.Length, -1);
+                int which = seat.WaitAny(fds, fds.Length, wait);
                 if (which >= 0 && which < _watchHandlers.Count) { _watchHandlers[which](fds[which]); continue; }
-                if (!seat.Poll(0)) continue;
+                if (!seat.Poll(0)) { FireTimers(); continue; }
+            }
+            else if (wait >= 0)
+            {
+                if (!seat.Poll(wait)) { FireTimers(); continue; }
             }
             Message m;
             if (!seat.Next(out m)) break;
@@ -1087,7 +1283,7 @@ public static class Application
     static void Dispatch(ref Message m)
     {
         Form? f = FormOf(m.Window);
-        if (f == null && m.Kind != 1) return;
+        if (f == null && m.Kind != 1 && m.Kind != 11) return;
         switch (m.Kind)
         {
             case 1:
@@ -1135,7 +1331,10 @@ public static class Application
             }
             case 9:
                 if (m.A != 0) { _active = f; f!.RaiseActivated(); }
-                else if (_active == f) { f!.Invalidate(); }
+                else { if (_active == f) _active = null; f!.RaiseDeactivate(); }
+                break;
+            case 11:
+                if (WindowsChanged != null) WindowsChanged(null!, EventArgs.Empty);
                 break;
             case 10:
                 f!.Close(); break;
