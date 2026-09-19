@@ -7,15 +7,50 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>Corsac</RootNamespace>
     <AssemblyName>corc</AssemblyName>
+    <!-- The programs this one replaced, still reachable by their old names. -->
+    <ToolAliases>corlink=link;build=build</ToolAliases>
     <StartupObject>Corsac.Program</StartupObject>
     <InvariantGlobalization>true</InvariantGlobalization>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+
+    <!--
+      HOW THE COMPILER COLLECTS ITS GARBAGE, which is worth saying out loud
+      because it is worth about a third of the wall clock.
+
+      The compiler allocates hard and keeps almost nothing: the kernel's 118
+      units churn 24 GiB and hold under 200 MB. With the default workstation
+      collector, eight worker threads doing that spend their time stopped for
+      each other. The same work cost 2.2 times the processor time at eight
+      workers as at one, and eight finished no sooner than four.
+
+      So: the server collector, which gives each heap its own thread, with
+      the background collector off (there is nothing long-lived for it to
+      find) and four heaps rather than one per core, which was pure waste on
+      a large machine. And a hard limit, which is the part that matters for
+      memory: without it the collector grows to 845 MB because nothing tells
+      it not to, and with it the same compile peaks at 326 MB, LESS than the
+      default collector used, because a limit makes it collect instead of
+      grow.
+
+      Kernel, eight workers: 12.0 s and 371 MB becomes 8.2 s and 326 MB.
+      Never slower than the default at any worker count. Every one of these
+      can be overridden by its DOTNET_ environment variable for a machine
+      that wants something else; a build that needs a bigger live heap than
+      256 MB should raise DOTNET_GCHeapHardLimit rather than remove it.
+    -->
+    <ServerGarbageCollection>true</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+    <GCHeapCount>4</GCHeapCount>
+    <GCHeapHardLimit>268435456</GCHeapHardLimit>
   </PropertyGroup>
+
+
 
   <ItemGroup>
     <Compile Include="src/**/*.cs" />
     <ProjectReference Include="../linker/linker.csproj" />
+    <ProjectReference Include="../tools/build/build.csproj" />
   </ItemGroup>
 
 </Project>

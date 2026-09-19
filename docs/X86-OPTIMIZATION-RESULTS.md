@@ -144,7 +144,7 @@ of an entire runtime or crypto workload. Raw data:
 [greater-than](../tests/benchmarks/results/x86-comparison-20260918.csv).
 
 ```sh
-tools/build/bin/managed/Release/net10.0/build --file compiler/tests/arch/x86/corsac.build benchmark
+compiler/bin/managed/Release/net10.0/corc build --file compiler/tests/arch/x86/corsac.build benchmark
 ```
 
 For actual OS crypto sources, the benchmark builder accepts `CPU`, `OUT`,

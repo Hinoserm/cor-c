@@ -15,6 +15,15 @@ public sealed class Block
     /// </summary>
     public bool IsLandingPad { get; set; }
 
+    /// <summary>
+    /// This block's position in its function, as the control-flow graph last
+    /// saw it. Owned by <see cref="Opt.Cfg"/>, which is a snapshot of one
+    /// function and numbers the blocks it was built from: a dense key lets
+    /// its maps be arrays rather than dictionaries hashed on the block's
+    /// reference. Meaningless before a graph has been built.
+    /// </summary>
+    public int Order;
+
     internal Block(string label) => Label = label;
 
     public Instr? Terminator => Instrs.Count > 0 && Instrs[^1].IsTerminator ? Instrs[^1] : null;

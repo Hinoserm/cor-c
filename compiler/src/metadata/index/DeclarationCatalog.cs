@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 namespace Corsac.Lang.Metadata;
 
 /// <summary>Bounded shared declaration cache; keys come from the language's name resolver.</summary>
@@ -38,11 +40,82 @@ public sealed class DeclarationCatalog : IDisposable
         }
     }
 
-    public DeclarationCatalog(string path, long budgetBytes = 2 * 1024 * 1024)
+    /// <summary>
+    /// The text of the file a declaration was cut from, read and checked once
+    /// for the whole project.
+    ///
+    /// A record carries the hash of its file, and reading one used to read
+    /// that whole file, encode it to UTF-8 again and hash it again -- per
+    /// declaration, per discovery pass, per source of the project. One
+    /// library file holding thirty generic types was read and hashed thirty
+    /// times to compile one unit, and again for each of the next hundred.
+    /// The files do not change while a project is being compiled, so the
+    /// reading and the checking happen once and every later caller is handed
+    /// the same string.
+    ///
+    /// Bounded like everything else here: the library text of a project is a
+    /// couple of megabytes, and a file evicted under pressure is simply read
+    /// again.
+    /// </summary>
+    public string ReadSource(SourceDeclaration source)
+    {
+        lock (sourceGate)
+        {
+            if (sources.TryGetValue(source.Path, out Source? held))
+            {
+                held.Used = ++sourceClock;
+                if (!held.Hash.AsSpan().SequenceEqual(source.SourceHash))
+                    throw new InvalidDataException("Declaration source generation is stale: " + source.Path);
+                source.Verify(held.Text);
+                return held.Text;
+            }
+        }
+        string text = File.ReadAllText(source.Path);
+        byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(text));
+        if (!hash.AsSpan().SequenceEqual(source.SourceHash))
+            throw new InvalidDataException("Declaration source generation is stale: " + source.Path);
+        source.Verify(text);
+        long size = 128L + source.Path.Length * 2L + text.Length * 2L + hash.Length;
+        lock (sourceGate)
+        {
+            if (!sources.ContainsKey(source.Path) && size <= sourceBudget)
+            {
+                while (sourceBytes + size > sourceBudget && sources.Count != 0)
+                {
+                    var oldest = sources.MinBy(pair => pair.Value.Used);
+                    sourceBytes -= oldest.Value.Bytes;
+                    sources.Remove(oldest.Key);
+                }
+                sources[source.Path] = new Source { Text = text, Hash = hash, Bytes = size, Used = ++sourceClock };
+                sourceBytes += size;
+            }
+        }
+        return text;
+    }
+
+    private sealed class Source
+    {
+        public required string Text;
+        public required byte[] Hash;
+        public required long Bytes;
+        public long Used;
+    }
+    private readonly Dictionary<string, Source> sources = new(StringComparer.Ordinal);
+    private readonly object sourceGate = new();
+    private long sourceBytes, sourceClock;
+    private readonly long sourceBudget;
+
+    /// <summary>What the verified source texts are holding right now.</summary>
+    public long ResidentSourceBytes { get { lock (sourceGate) return sourceBytes; } }
+
+    public DeclarationCatalog(string path, long budgetBytes = 2 * 1024 * 1024,
+        long sourceBudgetBytes = 16 * 1024 * 1024)
     {
         if (budgetBytes < 4096) throw new ArgumentOutOfRangeException(nameof(budgetBytes));
+        if (sourceBudgetBytes < 0) throw new ArgumentOutOfRangeException(nameof(sourceBudgetBytes));
         index = new DeclarationIndex(path);
         budget = budgetBytes;
+        sourceBudget = sourceBudgetBytes;
     }
 
     public DeclarationLease? Acquire(string assembly, string metadataName)
@@ -59,20 +132,41 @@ public sealed class DeclarationCatalog : IDisposable
         }
     }
 
+    /// <summary>
+    /// What a binding name resolves to, remembered for the life of the
+    /// catalog.
+    ///
+    /// The binder asks this for EVERY name it resolves, and the answer is a
+    /// binary search over the index file under the catalog's one lock. With
+    /// eight workers, seven of them sat in Monitor.Enter here in every stack
+    /// sample taken: the whole frontend was serialised on name lookups, and
+    /// eight workers finished the kernel no sooner than one. The index does
+    /// not change while a catalog is open, so an answer is an answer for
+    /// good; a hit takes a hash lookup under a lock nobody holds for long.
+    /// </summary>
+    private readonly Dictionary<string, string?> bindingKeys = new(StringComparer.Ordinal);
+    private readonly object bindingGate = new();
+
     public string? BindingKey(string assembly, string bindingName)
     {
+        string query = "B:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + bindingName;
+        lock (bindingGate)
+        {
+            if (bindingKeys.TryGetValue(query, out string? known)) return known;
+        }
+        string? result = null;
         lock (gate)
         {
             if (disposed) throw new ObjectDisposedException(nameof(DeclarationCatalog));
-            string? result = null;
-            foreach (DeclarationRecord record in index.Find("B:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + bindingName))
+            foreach (DeclarationRecord record in index.Find(query))
             {
                 string found = DeclarationIndex.Utf8.GetString(record.Payload);
                 if (result is not null && result != found) throw new InvalidDataException("Ambiguous indexed type identity: " + bindingName);
                 result = found;
             }
-            return result;
         }
+        lock (bindingGate) bindingKeys[query] = result;
+        return result;
     }
 
     public byte[] QueryFingerprint(string key)

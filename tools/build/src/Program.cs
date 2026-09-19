@@ -1,15 +1,20 @@
 namespace Corsac.Build;
 
-public static class Program
+/// <summary>
+/// `corc build`: runs a corsac.build manifest. One executable holds the
+/// build, the compiler and the linker, so a build no longer starts a process
+/// per source and no longer needs to hand a worker budget between processes.
+/// </summary>
+public static class BuildCommand
 {
-    public static async Task<int> Main(string[] args)
+    public static async Task<int> Run(string[] args)
     {
         try
         {
             BuildOptions options = BuildOptions.Parse(args);
             if (options.Help)
             {
-                Console.WriteLine("build [target/path] [Name=Value ...] [--file corsac.build] [--list] [--plan] [--jobs N]\n"
+                Console.WriteLine("corc build [target/path] [Name=Value ...] [--file corsac.build] [--list] [--plan] [--jobs N]\n"
                     + "      [--configuration Release] [--toolchain corc] [--property Name=Value]\n"
                     + "MSBuild is allowed only for the build-tool component within bootstrap.\n"
                     + "Default jobs: available logical CPUs; --jobs lowers the global worker budget.");
@@ -54,7 +59,7 @@ public static class Program
             }
             return 0;
         }
-        catch (OperationCanceledException) { Console.Error.WriteLine("build: cancelled"); return 130; }
-        catch (Exception error) { Console.Error.WriteLine("build: " + error.Message); return 1; }
+        catch (OperationCanceledException) { Console.Error.WriteLine("corc build: cancelled"); return 130; }
+        catch (Exception error) { Console.Error.WriteLine("corc build: " + error.Message); return 1; }
     }
 }

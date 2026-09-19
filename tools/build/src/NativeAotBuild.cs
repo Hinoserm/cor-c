@@ -61,6 +61,33 @@ public static class NativeAotBuild
             args.Add("--feature:" + value); args.Add("--runtimeknob:" + value);
         }
         args.Add("--runtimeknob:RUNTIME_IDENTIFIER=" + rid);
+        // THE SAME COLLECTOR SETTINGS THE MANAGED BUILD WRITES INTO
+        // runtimeconfig.json. A Native AOT image has no runtimeconfig.json
+        // beside it, so without this the shipped compiler -- the one every
+        // corsac86 build actually runs -- quietly keeps the defaults while
+        // the managed build gets the tuning, which is the sort of difference
+        // that goes unnoticed until someone measures the wrong binary.
+        // The image's knobs are named and written the way the environment
+        // names them -- gcServer, not System.GC.Server, and hexadecimal --
+        // which is not how runtimeconfig.json spells the same settings.
+        Dictionary<string, string> knobs = new(StringComparer.Ordinal)
+        {
+            ["System.GC.Server"] = "gcServer",
+            ["System.GC.Concurrent"] = "gcConcurrent",
+            ["System.GC.HeapCount"] = "GCHeapCount",
+            ["System.GC.HeapHardLimit"] = "GCHeapHardLimit",
+            ["System.GC.Gen0Size"] = "GCgen0size",
+        };
+        foreach (var pair in ManagedRuntimeConfiguration.Create(project.Properties))
+        {
+            if (!knobs.TryGetValue(pair.Key, out string? knob)) continue;
+            args.Add("--runtimeopt:" + knob + "=" + pair.Value switch
+            {
+                bool on => on ? "1" : "0",
+                long number => number.ToString("x"),
+                object other => other.ToString() ?? "",
+            });
+        }
         string[] shims = invariant
             ? ["System.Native", "System.IO.Compression.Native", "System.Net.Security.Native", "System.Security.Cryptography.Native.OpenSsl"]
             : ["System.Native", "System.IO.Compression.Native", "System.Net.Security.Native", "System.Security.Cryptography.Native.OpenSsl", "System.Globalization.Native"];
@@ -91,6 +118,16 @@ public static class NativeAotBuild
             Path.GetDirectoryName(project.Path)!, new Dictionary<string, string>(), TimeSpan.FromMinutes(5), cancel);
         if (linked.ExitCode != 0 || linked.TimedOut) throw new IOException("Native host link failed; logs: " + linked.LogPrefix);
         File.Move(temporary, output, overwrite: true);
+        // The names this tool used to install under. A native executable is
+        // a real program, so a symbolic link carries the typed name through
+        // to it and the toolchain reads that name as its first argument.
+        foreach (string alias in ManagedProjectBuild.Aliases(
+            project.Properties.TryGetValue("ToolAliases", out string? declared) ? declared : ""))
+        {
+            string aliasPath = Path.Combine(Path.GetDirectoryName(output)!, alias.Split('=')[0]);
+            if (File.Exists(aliasPath) || Directory.Exists(aliasPath)) File.Delete(aliasPath);
+            File.CreateSymbolicLink(aliasPath, project.AssemblyName);
+        }
         File.WriteAllText(state, signature + "\n" + Identity(output));
     }
 

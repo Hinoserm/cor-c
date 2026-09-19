@@ -23,10 +23,18 @@ public sealed class Cfg
 {
     public Function Function { get; }
 
-    private readonly Dictionary<Block, List<Block>> _preds = new(ReferenceEqualityComparer.Instance);
-    private readonly Dictionary<Block, List<Block>> _succs = new(ReferenceEqualityComparer.Instance);
-    private readonly HashSet<Block> _roots = new(ReferenceEqualityComparer.Instance);
-    private readonly Dictionary<Block, int> _index = new(ReferenceEqualityComparer.Instance);
+    // BY POSITION, NOT BY IDENTITY. These were dictionaries keyed on the
+    // block object, which means a hash of its reference: compiling one kernel
+    // source builds a hundred and ten thousand of these graphs, and profiling
+    // put an eighth of the whole compile in Dictionary.FindValue,
+    // Dictionary.TryInsert and ObjectHeader.GetHashCode -- the last because
+    // hashing a reference has to reach into the object's header word. A block
+    // already has a position in its function; the graph is a snapshot of that
+    // function, so the position is a dense key and the maps are arrays.
+    private readonly List<Block>[] _preds;
+    private readonly List<Block>[] _succs;
+    private readonly bool[] _root;
+    private readonly List<Block> _roots = new();
     private List<Block>? _rpo;
     private Dictionary<Block, HashSet<Block>>? _reach;
     private ulong[][]? _dom;
@@ -37,20 +45,24 @@ public sealed class Cfg
     public Cfg(Function f)
     {
         Function = f;
-        for (int k = 0; k < f.Blocks.Count; k++)
+        int count = f.Blocks.Count;
+        _preds = new List<Block>[count];
+        _succs = new List<Block>[count];
+        _root = new bool[count];
+        for (int k = 0; k < count; k++)
         {
             Block b = f.Blocks[k];
-            _index[b] = k;
-            _preds[b] = new List<Block>();
-            _succs[b] = new List<Block>();
+            b.Order = k;
+            _preds[k] = new List<Block>();
+            _succs[k] = new List<Block>();
         }
 
-        _roots.Add(f.Entry);
+        Root(f.Entry);
         foreach (Block b in f.Blocks)
         {
             if (b.IsLandingPad)
             {
-                _roots.Add(b);
+                Root(b);
             }
             foreach (Instr i in b.Instrs)
             {
@@ -58,7 +70,7 @@ public sealed class Cfg
                 {
                     foreach (Block t in i.Targets)
                     {
-                        _roots.Add(t);
+                        Root(t);
                     }
                 }
             }
@@ -67,20 +79,28 @@ public sealed class Cfg
                 // A Switch may list the same block many times; one edge is
                 // enough for every analysis here, and it keeps the
                 // predecessor count honest for "sole predecessor" checks.
-                if (!_succs[b].Contains(s))
+                if (!_succs[b.Order].Contains(s))
                 {
-                    _succs[b].Add(s);
-                    _preds[s].Add(b);
+                    _succs[b.Order].Add(s);
+                    _preds[s.Order].Add(b);
                 }
             }
         }
     }
 
-    public IReadOnlyList<Block> Preds(Block b) => _preds[b];
-    public IReadOnlyList<Block> Succs(Block b) => _succs[b];
+    /// <summary>Records a block control can reach other than by a branch.</summary>
+    private void Root(Block b)
+    {
+        if (_root[b.Order]) return;
+        _root[b.Order] = true;
+        _roots.Add(b);
+    }
+
+    public IReadOnlyList<Block> Preds(Block b) => _preds[b.Order];
+    public IReadOnlyList<Block> Succs(Block b) => _succs[b.Order];
 
     /// <summary>Whether control can enter the block by something other than a branch from a predecessor.</summary>
-    public bool IsRoot(Block b) => _roots.Contains(b);
+    public bool IsRoot(Block b) => _root[b.Order];
     public IReadOnlyCollection<Block> Roots => _roots;
 
     /// <summary>
@@ -123,7 +143,7 @@ public sealed class Cfg
         while (stack.Count > 0)
         {
             (Block b, int k) = stack.Pop();
-            IReadOnlyList<Block> succs = _succs[b];
+            IReadOnlyList<Block> succs = _succs[b.Order];
             if (k < succs.Count)
             {
                 stack.Push((b, k + 1));
@@ -162,13 +182,13 @@ public sealed class Cfg
         if (!_reach.TryGetValue(from, out HashSet<Block>? set))
         {
             set = new HashSet<Block>(ReferenceEqualityComparer.Instance);
-            Stack<Block> work = new(_succs[from]);
+            Stack<Block> work = new(_succs[from.Order]);
             while (work.Count > 0)
             {
                 Block b = work.Pop();
                 if (set.Add(b))
                 {
-                    foreach (Block s in _succs[b])
+                    foreach (Block s in _succs[b.Order])
                     {
                         work.Push(s);
                     }
@@ -198,7 +218,7 @@ public sealed class Cfg
             return false;
         }
         HashSet<Block> seen = new(ReferenceEqualityComparer.Instance) { from };
-        Stack<Block> work = new(_succs[from]);
+        Stack<Block> work = new(_succs[from.Order]);
         while (work.Count > 0)
         {
             Block b = work.Pop();
@@ -208,7 +228,7 @@ public sealed class Cfg
             }
             if (seen.Add(b))
             {
-                foreach (Block s in _succs[b])
+                foreach (Block s in _succs[b.Order])
                 {
                     work.Push(s);
                 }
@@ -229,8 +249,8 @@ public sealed class Cfg
     public bool Dominates(Block a, Block b)
     {
         _dom ??= ComputeDominators();
-        int ia = _index[a];
-        return (_dom[_index[b]][ia >> 6] & (1UL << (ia & 63))) != 0;
+        int ia = a.Order;
+        return (_dom[b.Order][ia >> 6] & (1UL << (ia & 63))) != 0;
     }
 
     private ulong[][] ComputeDominators()
@@ -249,7 +269,7 @@ public sealed class Cfg
         }
         foreach (Block root in _roots)
         {
-            int r = _index[root];
+            int r = root.Order;
             Array.Clear(dom[r]);
             dom[r][r >> 6] |= 1UL << (r & 63);
         }
@@ -266,11 +286,11 @@ public sealed class Cfg
                 {
                     continue;
                 }
-                int ib = _index[b];
+                int ib = b.Order;
                 Array.Copy(all, tmp, words);
-                foreach (Block p in _preds[b])
+                foreach (Block p in _preds[b.Order])
                 {
-                    ulong[] dp = dom[_index[p]];
+                    ulong[] dp = dom[p.Order];
                     for (int w = 0; w < words; w++)
                     {
                         tmp[w] &= dp[w];
@@ -362,12 +382,12 @@ public sealed class Cfg
             HashSet<Block> live = Reachable();
             foreach (Block join in Function.Blocks)
             {
-                if (_preds[join].Count < 2 || !live.Contains(join))
+                if (_preds[join.Order].Count < 2 || !live.Contains(join))
                 {
                     continue;
                 }
                 Block? stop = _idom![join];
-                foreach (Block p in _preds[join])
+                foreach (Block p in _preds[join.Order])
                 {
                     if (!live.Contains(p))
                     {
@@ -412,12 +432,12 @@ public sealed class Cfg
             Block? best = null;
             if (live.Contains(b) && !IsRoot(b))
             {
-                int ib = _index[b];
+                int ib = b.Order;
                 foreach (Block d in Function.Blocks)
                 {
-                    int id = _index[d];
+                    int id = d.Order;
                     if (id != ib && (_dom[ib][id >> 6] & (1UL << (id & 63))) != 0
-                        && (best is null || size[id] > size[_index[best]]))
+                        && (best is null || size[id] > size[best.Order]))
                     {
                         best = d;
                     }

@@ -9,6 +9,14 @@ namespace Corsac.Build;
 /// <summary>Standard SDK project evaluation is ours; Roslyn supplies managed code generation, never MSBuild.</summary>
 public static class ManagedProjectBuild
 {
+    /// <summary>
+    /// `name=command` pairs from ToolAliases, naming the old programs this
+    /// one executable replaced and the command each of them stands for.
+    /// </summary>
+    internal static IEnumerable<string> Aliases(string declared)
+        => declared.Split(new[] { ';', ',' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(entry => entry.Trim()).Where(entry => entry.Contains('='));
+
     public static async Task Run(string path, string configuration, CancellationToken cancel, ProcessRunner runner)
     {
         string host = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet";
@@ -91,7 +99,18 @@ public static class ManagedProjectBuild
             {
                 string destination = Path.Combine(output, Path.GetFileName(dependency));
                 if (!File.Exists(destination) || !SHA256.HashData(File.ReadAllBytes(destination)).AsSpan()
-                    .SequenceEqual(SHA256.HashData(File.ReadAllBytes(dependency)))) File.Copy(dependency, destination, true);
+                    .SequenceEqual(SHA256.HashData(File.ReadAllBytes(dependency))))
+                {
+                    // REPLACED, NOT WRITTEN OVER. The toolchain is one
+                    // executable now, so a build of it is very often running
+                    // from the files it is about to replace; writing into a
+                    // mapped image gives the running process torn metadata
+                    // rather than an error. Moving a freshly written file
+                    // over the name leaves that process on the old inode.
+                    string staged = destination + ".new";
+                    File.Copy(dependency, staged, true);
+                    File.Move(staged, destination, true);
+                }
             }
             if (project.OutputType != "Library")
             {
@@ -104,10 +123,28 @@ public static class ManagedProjectBuild
                     WriteChanged(launcher, "#!/bin/sh\nexec dotnet \"$(dirname \"$0\")/" + project.AssemblyName + ".dll\" \"$@\"\n");
                     File.SetUnixFileMode(launcher, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
                         | UnixFileMode.GroupRead | UnixFileMode.GroupExecute | UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+                    // THE NAMES THIS TOOL USED TO INSTALL UNDER. A managed
+                    // launcher is a shell script, so a symbolic link to it
+                    // would lose the name the caller typed; each alias gets
+                    // its own launcher naming the command it stands for.
+                    foreach (string alias in Aliases(Property("ToolAliases")))
+                    {
+                        string aliasPath = Path.Combine(output, alias.Split('=')[0]);
+                        WriteChanged(aliasPath, "#!/bin/sh\nexec dotnet \"$(dirname \"$0\")/" + project.AssemblyName
+                            + ".dll\" " + alias.Split('=')[1] + " \"$@\"\n");
+                        File.SetUnixFileMode(aliasPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+                            | UnixFileMode.GroupRead | UnixFileMode.GroupExecute | UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+                    }
                 }
                 string version = project.Framework[3..] + ".0";
                 JsonObject switches = new();
-                foreach (var pair in ManagedRuntimeConfiguration.Create(project.Properties)) switches[pair.Key] = (bool)pair.Value;
+                foreach (var pair in ManagedRuntimeConfiguration.Create(project.Properties))
+                    switches[pair.Key] = pair.Value switch
+                    {
+                        bool flag => JsonValue.Create(flag),
+                        long number => JsonValue.Create(number),
+                        _ => JsonValue.Create(pair.Value.ToString()),
+                    };
                 WriteChanged(Path.Combine(output, project.AssemblyName + ".runtimeconfig.json"), new JsonObject {
                     ["runtimeOptions"] = new JsonObject { ["tfm"] = project.Framework,
                         ["framework"] = new JsonObject { ["name"] = "Microsoft.NETCore.App", ["version"] = version },

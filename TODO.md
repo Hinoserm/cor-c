@@ -94,7 +94,7 @@ deferred by request; do not resume them without a new request.
 ### Runtime build follow-up
 
 - [x] Compile runtime/shared-library sources as independent PIC objects and
-  link them with `corlink --shared`, preserving one image initializer and
+  link them with `corc link --shared`, preserving one image initializer and
   strict dependency checks. The OS integration logs eight concurrent runtime
   compiler processes; all 14 libraries build successfully.
 - [x] Verify separate shared linking, SONAME, initializer ownership, absence
@@ -184,7 +184,86 @@ Separate compilation must make self-hosting practical on small 486-class
 systems as well as use modern multicore hosts effectively. The implementation
 tasks below track that work; moving files alone does not reduce the working set.
 
-## Build utility and executable separation
+## Compilation speed
+
+- [x] Stop discovering indexed declarations one at a time. Raising on the first
+  name a unit could not find threw the whole compilation away and reparsed and
+  rebound everything, once per name: an empty kernel source cost eighteen
+  rounds, `devfs.cor` fifty-four and `procfs.cor` seventy-five. An imported
+  header now pulls in what its own signatures name, and the binder, the
+  extension lookup and the generic rewriter record what they cannot find and
+  raise it together. Over five kernel sources: 210 rounds and 24589 MiB
+  allocated became 18 rounds and 2435 MiB, with byte-identical objects and a
+  byte-identical kernel.
+- [x] Compile a project in one process. `corc compile-project` shares the index,
+  the lexed headers and the resolved-name memo across a project's sources,
+  still writing one object and one receipt each and skipping those already
+  current. It also removes the second process per source that existed only to
+  ask whether that source was stale.
+- [x] Share one worker budget across the whole build rather than giving each
+  project a fixed share decided when it starts. Measured over a full disk
+  build: sixteen compilers holding one worker each, then six sharing sixteen,
+  then one holding all sixteen.
+- [x] `tests/integration/managed-units.sh` failed at link with a layout
+  conflict on `ThreadStart` (slot 56 in the library unit, 44 in the caller).
+  Not a numbering fault: the two sides were given different library sources.
+  The library unit compiled the default set, which gained Drawing and Forms;
+  the caller's `--ref` list in `tests/integration/managed-runtime.sources`
+  had not, so it declared eight fewer interface families and every slot after
+  them moved by twelve. Interface slots ARE numbered over the declarations
+  (see Binder), which is exactly why the lists must be the same. The list is
+  brought up to date and `RuntimeSourceListTests` pins it to
+  `Driver.DefaultLibraries` so it cannot drift again. `CORC_DUMP_FAMILIES`
+  prints the family table a unit numbered, which is how the difference was
+  found; diff it between the two sides of a conflicting link.
+- [x] Follow the types an imported template body names, so they are loaded in
+  the pass that imported the body rather than costing a round each. The
+  kernel's rounds fall from an average of 4.3 to 2.8 and nineteen of its
+  units now bind in a single pass.
+
+  The objects are not byte-identical and that is not a regression: the only
+  section that moves is `.corsac.layout`, which describes more types. Code
+  and data are identical in every unit, the receipts come out the same size
+  -- the same declarations are loaded, only sooner -- and the LINKED kernel
+  is byte for byte what it was. Judge a change like this on the linked
+  image, not on the object files.
+- [x] Read the names out of the unit's OWN bodies before binding, as is done
+  for imported template bodies. Its sources are fully parsed, so nobody had
+  to wait: a source naming Pipe and UserFile spent a round on those, and
+  only once they bound could the expressions through them reach Arch,
+  Errno, UserMode and UserPointer. Kernel rounds: 23 units in a single
+  pass, 51 in two, average 2.8 to 2.3, and 13848 header lexes against
+  16227. The linked kernel is byte for byte what it was.
+- [x] Follow the left of a member access as a possible type name, in owned
+  code and in every imported declaration. A type is named there without
+  standing in a type position -- `const long Cpu = CpuKind.I486` is why the
+  binder wants CpuKind, and an initializer like that travels with the
+  declaration -- so no walk of type positions could see it. Kernel rounds:
+  72 of 118 units in a single pass against 23, none above three, peak RSS
+  253 MB to 190 MB and the serial compile 36.5 s to 29.6 s. Receipts got 8%
+  SMALLER: fewer rounds record fewer queries.
+
+  The linked kernel grew by 24 bytes of frame metadata -- one more unit
+  emits a `__corsac_frames` table. Code is identical in every section; what
+  changed is per-unit metadata, which follows the types a unit loaded. See
+  the ordering item below.
+- [x] Emitted metadata follows the types a unit USED, not the ones it loaded.
+  ManagedLayouts walked all of bound.Types, so importing a header nobody
+  asked about changed the object file, and every prefetch had to be checked
+  against a linked image rather than against object files. The binder now
+  marks a type when it is asked for, and the section describes those, the
+  types this unit DEFINES, and what they are built out of -- a record names
+  its base and its interfaces and a reader may look them up.
+
+  Narrowing it does not weaken the check, which was the worry: two units
+  can only disagree about a type they BOTH describe, and a unit that never
+  reached for a type has no opinion to disagree with. Verified by
+  reproducing the ThreadStart failure on purpose -- a caller built from a
+  short library list still stops the link, now on DirectoryInfo. The kernel
+  layout section falls from 12.4 MB to 9.1 MB, code is identical in all 118
+  objects and the linked kernel is byte for byte what it was.
+
+## Build utility and the one toolchain executable
 
 - [x] Accept bare `Name=Value` arguments beside nested target names, preserving
   spaces and additional equals signs. Strict manifests reject undeclared
@@ -221,9 +300,16 @@ tasks below track that work; moving files alone does not reduce the working set.
   compiler/linker/build DLL and library output timestamps and sizes. Logs:
   build/logs/20260918-123831-662d268f3da84087a98a35a51cc09216/ and
   build/logs/20260918-123920-d04b01be073e444ca862d78bd425b22c/.
-- [x] Build compiler and linker as independent .NET-hosted executables and
-  document ELF relocatable objects. Compiler -> `.o` -> corlink -> Linux program
-  passed; this does not establish managed file-by-file compilation.
+- [x] Build the compiler and the linker and document ELF relocatable objects.
+  Compiler -> `.o` -> link -> Linux program passed; this does not establish
+  managed file-by-file compilation.
+- [x] Make the toolchain one executable. The build utility and the linker are
+  library projects of `corc`, reached as `corc build` and `corc link`, so the
+  build graph, the compiler and the linker share one process and one pool of
+  threads instead of passing a worker budget between processes. Assembling one
+  file moved from `corc build` to `corc asm`; `corlink` and `build` remain as
+  links. A full CORSAC86 disk image built this way with a byte-identical
+  kernel. The linker project still must not reference the compiler.
 - [ ] Restore project paths, split source types, and verify the reorganized repo.
 - [ ] Implement native MSBuild-compatible project evaluation and compilation;
   a host dotnet adapter alone does not satisfy this requirement.
@@ -237,7 +323,7 @@ tasks below track that work; moving files alone does not reduce the working set.
 - [ ] Implement verified bootstrap and atomic native toolchain activation.
 - [ ] Implement source locks/fetching, artifact references, installation/image
   tasks, profiles, imports and whole-build memory/resource budgeting.
-- [ ] Verify the build utility itself compiles and runs natively under COR-C#.
+- [ ] Verify the toolchain itself compiles and runs natively under COR-C#.
 
 ## Compatibility defects
 
@@ -482,7 +568,7 @@ tasks below track that work; moving files alone does not reduce the working set.
   first cross-object LTO pass. Separate caller/callee objects linked with LTO
   on/off both return 42; a state-changing callee remains a call and returns 43
   through its caller. General IR importing/inlining remains outstanding.
-- [x] Expose flat output and virtual/physical base controls in corlink; unit
+- [x] Expose flat output and virtual/physical base controls in the linker; unit
   checks cover flat entry, BSS alignment padding and physical kernel entry.
 - [x] Verify native ABI contract rejection, static-initializer preservation,
   and the compiler/linker unit suites after the initial LTO milestone.

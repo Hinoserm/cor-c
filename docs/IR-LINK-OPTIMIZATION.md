@@ -12,7 +12,8 @@ The `corc backend` worker uses a bounded binary request protocol on standard
 input/output. One persistent process handles selected units sequentially; code
 generation and function cleanup inside that worker use the machine's available
 logical processors (up to the current compiler worker limit). An installed
-`corlink` finds `corc` beside itself, from `CORC`, or through `--lto-backend`.
+Linking and compiling are commands of one executable, so the link step
+reaches the compiler backend directly; `--lto-backend` still names another.
 The `corc link` convenience command supplies the same backend in-process.
 
 ## Container
