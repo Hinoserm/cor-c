@@ -49,6 +49,7 @@
 //                       0x47550015 move x | y << 16, 0x47550016 destroy,
 //                       0x47550017 focus. Selection is per process.
 
+using System;
 using System.Drawing;
 using Corsac.GUI;
 
@@ -309,11 +310,34 @@ public class Control
 
     /// Paint this control and its children into the form's window, clipped
     /// to what is stale. The background first, then Paint, then children.
+    // A line per control painted, when CORSAC_GUI_TRACE is set in the
+    // environment. A window that comes up blank on one machine and right on
+    // another is not a thing to reason about from the outside.
+    static int _trace = -1;
+    internal static bool Tracing
+    {
+        get
+        {
+            if (_trace < 0) _trace = (Environment.GetEnvironmentVariable("CORSAC_GUI_TRACE") ?? "") == "" ? 0 : 1;
+            return _trace == 1;
+        }
+    }
+
     internal void PaintTree(Seat seat, Point origin, Rectangle clip, bool force)
     {
-        if (!_visible) return;
+        if (!_visible)
+        {
+            if (Tracing) Console.WriteLine("paint: " + ClassName + " \"" + Text + "\" skipped: not visible");
+            return;
+        }
         Rectangle mine = new Rectangle(origin.X, origin.Y, _width, _height);
         Rectangle area = Rectangle.Intersect(mine, clip);
+        if (Tracing)
+            Console.WriteLine("paint: " + ClassName + " \"" + Text + "\" at " + origin.X + "," + origin.Y
+                              + " size " + _width + "x" + _height
+                              + " clip " + clip.X + "," + clip.Y + " " + clip.Width + "x" + clip.Height
+                              + (area.IsEmpty ? " -- NOTHING LEFT AFTER THE CLIP" : "")
+                              + (force ? " forced" : (_anyInvalid ? " invalid" : " clean")));
         if (area.IsEmpty) return;
         bool paintMe = force || _anyInvalid;
         if (paintMe)
