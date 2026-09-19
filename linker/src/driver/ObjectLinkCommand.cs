@@ -120,8 +120,8 @@ public static class ObjectLinkCommand
             HashSet<string> defined = new(inputs.SelectMany(x => x.Item2.Symbols).Where(s => s.IsDefined).Select(s => s.Name), StringComparer.Ordinal);
             HashSet<string> unresolved = new(inputs.SelectMany(x => x.Item2.Symbols).Where(s => !s.IsDefined && !defined.Contains(s.Name)).Select(s => s.Name), StringComparer.Ordinal);
             List<string> needed = sharedLibraries.Distinct(StringComparer.Ordinal).Where(path => ElfReader.ExportsOf(File.ReadAllBytes(path)).Any(unresolved.Contains)).ToList();
-            image = shared ? Linker.LinkShared(inputs, Path.GetFileName(output), needed, runpath, baseAddress ?? 0)
-                : Linker.Link(inputs, entry, needed, runpath);
+            image = shared ? Linker.LinkShared(inputs, Path.GetFileName(output), needed, runpath, baseAddress ?? 0, sharedLibraries)
+                : Linker.Link(inputs, entry, needed, runpath, libraries: sharedLibraries);
         }
         else image = Linker.Link(inputs, entry, baseAddress ?? Linker.DefaultLoadAddress, physicalAddress);
         if (noUndefined && (shared || sharedLibraries.Count > 0))
