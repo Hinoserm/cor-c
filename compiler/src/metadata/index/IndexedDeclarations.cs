@@ -181,9 +181,20 @@ public sealed class IndexedDeclarations : IDisposable
             if (key is not null && !loaded.Contains(key)) Include(key);
         }
         // A partial declaration cannot be bound from just the locally owned
-        // fragment. Demand its family before entering body binding.
+        // fragment. Demand its family before entering body binding -- ALL of
+        // them, in one demand. Asking for them one at a time threw on the
+        // first missing one, and the frontend answers a demand by discarding
+        // the unit and parsing, merging, monomorphising and binding it again:
+        // a unit whose headers named Path, DateTime, DateTimeOffset,
+        // Scheduler, Directory and File paid a whole extra round for each,
+        // discovering exactly one name per round. They are all known here.
+        DeclarationBatch partials = new();
         foreach (TypeDecl type in unit.Types.Where(type => type.Mods.HasFlag(Mods.Partial)))
-            Require(Binder.TypeKey(type));
+        {
+            try { Require(Binder.TypeKey(type)); }
+            catch (DeclarationDemand demand) { partials.Add(demand); }
+        }
+        partials.ThrowIfAny();
         // THE WHOLE CHAIN IN ONE PASS. A header's own signatures name more
         // types -- List names IEnumerable, which names IEnumerator, and so on
         // -- and discovering them one at a time meant the frontend threw the
@@ -193,6 +204,15 @@ public sealed class IndexedDeclarations : IDisposable
         // and the binder still demands anything this does not foresee.
         Queue<string> pending = new(loaded);
         HashSet<string> visited = new(StringComparer.Ordinal);
+        // ONE FILE IS PARSED ONCE FOR ITS TEMPLATE BODIES, however many of
+        // its declarations this unit imports. A template's body is not in
+        // the index slice, so it is taken from the file, and the file is
+        // parsed WHOLE -- so importing ten generic types out of
+        // Collections.cor parsed Collections.cor ten times and threw nine of
+        // the results away. The declarations taken out of one parse are
+        // disjoint (each is picked by its own source span), and the map dies
+        // with this call, so nothing is shared between discovery passes.
+        Dictionary<(string Path, string Symbols), CompilationUnit> templateFiles = new();
         while (pending.Count != 0)
         {
             string key = pending.Dequeue();
@@ -203,7 +223,7 @@ public sealed class IndexedDeclarations : IDisposable
                 ?? throw new InvalidDataException("Missing discovered declaration: " + key);
             foreach (SourceDeclaration source in lease.Records)
             {
-                if (owned.Contains(source.Path)) { _ = source.ReadSource(); continue; }
+                if (owned.Contains(source.Path)) { _ = catalog.ReadSource(source); continue; }
                 // Match the direct frontend's diagnostic file spelling. Throw
                 // sites embed it in executable string data, so different paths
                 // would make identical generic instantiations disagree at link.
@@ -221,8 +241,13 @@ public sealed class IndexedDeclarations : IDisposable
                     implementations.Add(key);
                     // Templates need implementations for specialization. Keep
                     // unrelated ordinary bodies out of this imported tree.
-                    CompilationUnit templates = Tokens.Parse(source.ReadSource(), displayFile,
-                        source.ConditionalSymbols, declarationsOnly: true, includeTemplateBodies: true);
+                    var templateKey = (source.Path, string.Join("\n", source.ConditionalSymbols));
+                    if (!templateFiles.TryGetValue(templateKey, out CompilationUnit? templates))
+                    {
+                        templates = Tokens.Parse(catalog.ReadSource(source), displayFile,
+                            source.ConditionalSymbols, declarationsOnly: true, includeTemplateBodies: true);
+                        templateFiles[templateKey] = templates;
+                    }
                     root = templates.Types.Single(type => type.SourceFrom == source.From && type.SourceTo == source.To);
                 }
                 // Nested declarations have separate index records. Import the
