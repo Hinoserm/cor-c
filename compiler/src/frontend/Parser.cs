@@ -15,7 +15,7 @@ namespace Corsac.Lang;
 /// </summary>
 public sealed class Parser
 {
-    private readonly List<Token> _t;
+    private readonly ParserTokens _t;
     private readonly string _file;
     private readonly bool _declarationsOnly;
     private readonly bool _includeTemplateBodies;
@@ -56,6 +56,12 @@ public sealed class Parser
     private readonly List<(int At, Token Was)> _splits = new();
 
     public Parser(List<Token> tokens, string file = "<source>", bool declarationsOnly = false, bool includeTemplateBodies = false)
+        : this(new ParserTokens(tokens), file, declarationsOnly, includeTemplateBodies) { }
+
+    public Parser(Token[] tokens, string file = "<source>", bool declarationsOnly = false, bool includeTemplateBodies = false)
+        : this(new ParserTokens(tokens), file, declarationsOnly, includeTemplateBodies) { }
+
+    private Parser(ParserTokens tokens, string file, bool declarationsOnly, bool includeTemplateBodies)
     {
         _t = tokens;
         _file = file;

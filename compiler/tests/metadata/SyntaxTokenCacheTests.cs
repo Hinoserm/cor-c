@@ -28,6 +28,12 @@ public static class SyntaxTokenCacheTests
         SyntaxTokenCache disabled = new(0);
         disabled.Parse(nested, "nested.cor"); disabled.Parse(nested, "nested.cor");
         Require(disabled.ResidentBytes == 0 && disabled.Hits == 0, "zero budget retained tokens");
+        Parallel.For(0, 32, i =>
+        {
+            CompilationUnit parsed = cache.Parse(nested, "nested.cor");
+            Require(parsed.Types.Count == 2, "concurrent parser corrupted shared token snapshot");
+            parsed.Types.Clear();
+        });
         cache.Clear(); Require(cache.ResidentBytes == 0, "session disposal retained source tokens");
         Console.WriteLine("syntax token cache: mutation isolation, generics, symbols, source changes, punctuation and bounded eviction passed");
     }

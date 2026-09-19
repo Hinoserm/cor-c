@@ -12,6 +12,13 @@ namespace Corsac.Lang;
 /// </summary>
 public sealed class Lexer
 {
+    private static readonly string[] CharacterText = CreateCharacterText();
+    private static string[] CreateCharacterText()
+    {
+        string[] result = new string[128];
+        for (int i = 0; i < result.Length; i++) result[i] = ((char)i).ToString();
+        return result;
+    }
     private static readonly (string text, Tok kind)[] ThreePunctuation =
         {
             ("<<=", Tok.ShlEq), (">>=", Tok.ShrEq),
@@ -138,7 +145,7 @@ public sealed class Lexer
                                        IReadOnlyCollection<string>? symbols = null)
     {
         Lexer lexer = new(source, file, line, col, symbols);
-        List<Token> tokens = new();
+        List<Token> tokens = new(Math.Min(4096, source.Length / 4 + 1));
 
         while (true)
         {
@@ -1275,6 +1282,6 @@ public sealed class Lexer
         }
 
         Advance();
-        return new Token(single, c.ToString(), line, col, start);
+        return new Token(single, CharacterText[c], line, col, start);
     }
 }
