@@ -846,17 +846,11 @@ public class Form : Control
             int w = Width, h = Height;
             g.FillRectangle(new SolidBrush(face), 0, 0, w, h);
             Bevel.Raised(g, 0, 0, w, h);
-            // The caption: a gradient from the left, the title in white, bold
-            // by being drawn twice, and the close button at the right.
+            // The caption: one colour, blue when active and grey when not, the
+            // title in white, bold by being drawn twice, and the close button
+            // at the right.
             int cx = BorderWidth, cy = BorderWidth, cw = w - 2 * BorderWidth, ch = CaptionHeight - 2;
-            Color from = active ? SystemColors.ActiveCaption : SystemColors.InactiveCaption;
-            Color to = active ? SystemColors.GradientActiveCaption : SystemColors.GradientInactiveCaption;
-            const int Bands = 16;
-            for (int i = 0; i < Bands; i++)
-            {
-                int x0 = cx + cw * i / Bands, x1 = cx + cw * (i + 1) / Bands;
-                g.FillRectangle(new SolidBrush(ColorBlend.Mix(from, to, i * 256 / Bands)), x0, cy, x1 - x0, ch);
-            }
+            g.FillRectangle(new SolidBrush(active ? SystemColors.ActiveCaption : SystemColors.InactiveCaption), cx, cy, cw, ch);
             Color title = active ? SystemColors.ActiveCaptionText : SystemColors.InactiveCaptionText;
             g.DrawString(Text, Font, new SolidBrush(title), cx + 6, cy + 2);
             g.DrawString(Text, Font, new SolidBrush(title), cx + 7, cy + 2);
