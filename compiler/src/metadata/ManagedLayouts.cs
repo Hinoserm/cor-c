@@ -9,9 +9,36 @@ public static class ManagedLayouts
 {
     public static void Attach(ObjectFile obj, BindResult bound)
     {
+        // WHAT THIS UNIT HAS AN OPINION ABOUT. Every type the binder
+        // materialised used to be described here, which made the section
+        // depend on which declarations happened to be loaded rather than on
+        // which were used: importing a header nobody asked about changed the
+        // object file. Two units can only disagree about a type they both
+        // describe, and a unit that never reached for a type has nothing to
+        // disagree with, so the records follow use.
+        //
+        // A type this unit DEFINES is always described -- that is the side of
+        // the check that publishes the layout -- and so is everything a
+        // described type is built out of, because its own record names its
+        // base and its interfaces and a reader is entitled to look them up.
+        HashSet<TypeSymbol> described = new(ReferenceEqualityComparer.Instance);
+        Queue<TypeSymbol> pending = new();
+        foreach (TypeSymbol type in bound.Types.Values.Distinct())
+            if (type.Used || type.Decl is { Elsewhere: false })
+                pending.Enqueue(type);
+        while (pending.Count != 0)
+        {
+            TypeSymbol type = pending.Dequeue();
+            if (!described.Add(type)) continue;
+            if (type.Base is TypeSymbol basis) pending.Enqueue(basis);
+            foreach (TypeSymbol face in type.Interfaces) pending.Enqueue(face);
+        }
+
         IEnumerable<ManagedTypeLayout> Records()
         {
-            foreach (TypeSymbol type in bound.Types.Values.Distinct().Where(type => type.Decl is { Specialised: false, LocalOnly: false, TypeParams.Count: 0 }))
+            foreach (TypeSymbol type in bound.Types.Values.Distinct()
+                .Where(type => described.Contains(type))
+                .Where(type => type.Decl is { Specialised: false, LocalOnly: false, TypeParams.Count: 0 }))
             {
                 using MemoryStream stream = new();
                 using BinaryWriter writer = new(stream, Encoding.UTF8, leaveOpen: true);
@@ -45,6 +72,15 @@ public static class ManagedLayouts
                     writer.Write(method.Params.Count);
                     foreach (ParamSymbol parameter in method.Params)
                     { TypeName(parameter.Type); writer.Write(parameter.ByRef); writer.Write(parameter.ReadOnly); }
+                }
+                if (Environment.GetEnvironmentVariable("CORC_DUMP_LAYOUT") is string want && want == type.Key)
+                {
+                    Console.Error.WriteLine("layout " + type.Key + " kind=" + (int)type.Kind + " size=" + type.InstanceSize
+                        + " depth=" + type.Depth + " base=" + (type.Base?.Key ?? "")
+                        + " interfaces=[" + string.Join(",", type.Interfaces.OrderBy(f => f.Key, StringComparer.Ordinal).Select(f => f.Key)) + "]"
+                        + " impls=[" + string.Join(",", type.InterfaceImplementations.OrderBy(pair => pair.Key).Select(pair => pair.Key + "=>" + Lowering.Label(pair.Value))) + "]");
+                    foreach (MethodSymbol method in type.Methods.Where(m => m.VtableSlot >= 0).OrderBy(m => m.VtableSlot))
+                        Console.Error.WriteLine("  slot " + method.VtableSlot + " " + method.Name + "/" + method.Params.Count);
                 }
                 yield return new ManagedTypeLayout("type:" + type.Key, SHA256.HashData(stream.ToArray()));
                 foreach (FieldSymbol field in type.Fields.Where(field => field.Static))

@@ -4,12 +4,22 @@ CORSAC/C# is the proper product name. COR-C# is the accepted short name.
 
 ## Host executable deployment
 
-The host compiler, linker, build utility and CORSAC86 build helpers default to
-Native AOT executable deployment. An explicit standard `PublishAot=false`
-project setting may select JIT for diagnostics. Normal component/project builds
-must not acquire an MSBuild dependency; SDK/MSBuild use is limited to bootstrapping
-the build utility. Host AOT deployment does not substitute for COR-C# self-hosting
-and must not change the default generated 486+x87 ISA.
+The toolchain is one executable, `corc`, whose commands are `build`, `compile`,
+`compile-project`, `link`, `index` and `asm`. The linker and the build utility
+are library projects it references rather than programs of their own, so that a
+build holds the build graph, the compiler and the linker in one process and
+schedules their work against one pool of threads. The names those programs used
+to install under remain available as links to it.
+
+The separation that must hold is between the PROJECTS, not the binaries: the
+linker owns the relocatable object model and must not reference the compiler.
+
+`corc` and the CORSAC86 build helpers default to Native AOT executable
+deployment. An explicit standard `PublishAot=false` project setting may select
+JIT for diagnostics. Normal component/project builds must not acquire an MSBuild
+dependency; SDK/MSBuild use is limited to bootstrapping the toolchain. Host AOT
+deployment does not substitute for COR-C# self-hosting and must not change the
+default generated 486+x87 ISA.
 
 This document defines the required end state of the compiler, runtime, standard
 library, linker, project system, and self-hosting toolchain. It does not track
@@ -108,7 +118,7 @@ work belong in [TODO.md](TODO.md).
 - The repository must remain buildable without undeclared reads from the
   CORSAC/OS source tree.
 - Top-level ownership is:
-  - `compiler/`: the compiler executable, project tooling, frontend, lowering,
+  - `compiler/`: the toolchain executable, project tooling, frontend, lowering,
     IR, optimization, metadata, and target-specific compiler support. Target
     code belongs below `compiler/src/arch/`; focused target tests belong below
     `compiler/tests/arch/`.

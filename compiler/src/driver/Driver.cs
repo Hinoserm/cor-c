@@ -15,9 +15,49 @@ namespace Corsac;
 /// </summary>
 public static class Driver
 {
+    /// <summary>
+    /// The command a name stands for, when the toolchain is reached under one
+    /// of the names it used to install. `corlink a.o -o x` and `build test`
+    /// were how these were typed for a long time and appear in scripts,
+    /// notes and muscle memory; a link named after the old program keeps
+    /// them working, and the name is simply read as the first argument.
+    /// </summary>
+    private static string? CommandForName(string name) => name switch
+    {
+        "corlink" or "corlink.exe" => "link",
+        "build" or "build.exe" or "corbuild" => "build",
+        "corasm" => "asm",
+        _ => null,
+    };
+
+    /// <summary>
+    /// The name this run was typed as, which is not the same as the file it
+    /// ended up executing: the runtime resolves its own path through the
+    /// symbolic link, so it reports corc whatever name was used. Linux keeps
+    /// the word the shell actually passed, and that is the one that decides.
+    /// </summary>
+    private static string InvokedAs()
+    {
+        try
+        {
+            if (File.Exists("/proc/self/cmdline"))
+            {
+                string line = File.ReadAllText("/proc/self/cmdline");
+                int end = line.IndexOf('\0');
+                string first = end < 0 ? line : line[..end];
+                if (first.Length != 0) return first;
+            }
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+        return Environment.GetCommandLineArgs().FirstOrDefault() ?? "";
+    }
+
     public static int Run(string[] args)
     {
         Binder.LibrarySource = IsLibrarySource;
+        string called = Path.GetFileName(InvokedAs());
+        if (CommandForName(called) is string implied) args = [implied, ..args];
         if (args.Length == 0)
         {
             return Usage();
@@ -31,13 +71,19 @@ public static class Driver
             return command switch
             {
                 "compile" or "cc" => Compile(rest),
+                "compile-project" => ProjectCompile.Run(rest),
+                "link" when rest.Length == 1 && rest[0] is "--help" or "-h" => LinkUsage(),
                 "link" => ObjectLinkCommand.Run(Response(rest), new UnitBackend()),
                 "index" => IndexCommand.Run(Response(rest)),
                 "library-sources" => LibrarySources(rest),
                 "dependencies-current" => DependenciesCurrent(rest),
                 "project" => Projects.ProjectCommand.Run(rest),
                 "backend" when rest.Length == 0 => BackendCommand.Run(),
-                "build" or "asm" => Build(rest),
+                // `corc build` runs a build manifest; assembling one file is
+                // `corc asm`, which is what that command was always called
+                // when anyone wrote it down.
+                "build" => Corsac.Build.BuildCommand.Run(rest).GetAwaiter().GetResult(),
+                "asm" => Build(rest),
                 "help" or "--help" or "-h" => Usage(),
                 _ => Fail($"unknown command '{command}'"),
             };
@@ -66,6 +112,13 @@ public static class Driver
         }
     }
 
+    private static int LinkUsage()
+    {
+        Console.WriteLine("corc link <file.o> ... -o <output> [--entry symbol] [--flat] "
+            + "[--base address] [--paddr address] [--shared] [--cpu name] [--no-lto]");
+        return 0;
+    }
+
     private static int Usage()
     {
         Console.WriteLine("""
@@ -78,8 +131,10 @@ public static class Driver
               corc link @objects.list -o <output> [--entry <symbol>]
               corc index --assembly <identity> <sources...> -o <declarations.idx>
               corc project <file.csproj> [--configuration Release] [--framework net10.0] [--jobs N] [-o output]
-              corc build --target x86-16 <file.asm> -o <output.bin>
-              corc build --target x86-32 <file.asm> --obj -o <output.o>
+              corc compile-project --units <units.tsv> --decl-index <idx> --assembly <identity>
+              corc build [target/path] [Name=Value ...] [--file corsac.build] [--jobs N]
+              corc asm --target x86-16 <file.asm> -o <output.bin>
+              corc asm --target x86-32 <file.asm> --obj -o <output.o>
 
             options:
               --target <name>    x86 (default) or corsac
@@ -164,7 +219,7 @@ public static class Driver
         return UnitDependencies.IsCurrent(args[0], args[1]) ? 0 : 1;
     }
 
-    private static int Fail(string message)
+    internal static int Fail(string message)
     {
         Console.Error.WriteLine($"corc: {message}");
         return 2;
@@ -185,7 +240,7 @@ public static class Driver
         return uint.TryParse(digits, System.Globalization.NumberStyles.HexNumber, null, out uint fallback) ? fallback : null;
     }
 
-    private static string? Value(string[] args, string name)
+    internal static string? Value(string[] args, string name)
     {
         int at = Array.IndexOf(args, name);
         return at >= 0 && at + 1 < args.Length ? args[at + 1] : null;
@@ -259,7 +314,7 @@ public static class Driver
     /// lines starting with # skipped, paths taken relative to the file that
     /// names them. A kernel is a hundred sources and a command line is not.
     /// </summary>
-    private static string[] Response(string[] args)
+    internal static string[] Response(string[] args)
     {
         if (!args.Any(a => a.StartsWith('@')))
         {
@@ -292,7 +347,10 @@ public static class Driver
         return out_.ToArray();
     }
 
-    private static int Compile(string[] argv)
+    /// <summary>The project session in force, when sources are compiled together.</summary>
+    internal static Corsac.Lang.Metadata.DeclarationSession? Session { get; set; }
+
+    internal static int Compile(string[] argv)
     {
         string[] args = Response(argv);
         int workers = 1;
@@ -471,12 +529,19 @@ public static class Driver
         if (Value(args, "--dependency-file") is not null && (declarationIndex is null || !args.Contains("--obj")))
             return Fail("--dependency-file requires indexed object compilation");
         using IndexedDeclarations? declarations = declarationIndex is null ? null
+            : Session is not null ? new IndexedDeclarations(Session, files)
             : new IndexedDeclarations(declarationIndex, Value(args, "--assembly")!, files);
         (CompilationUnit unit, BindResult bound)? front =
             Frontend.Compile(files, name, library, libraryMark, symbols, references, workers, declarations);
         if (declarations is not null) Console.Error.WriteLine("indexed declaration payloads loaded=" + declarations.PayloadLoads
             + " passes=" + declarations.Passes + " token-cache hits=" + declarations.Tokens.Hits
-            + " misses=" + declarations.Tokens.Misses + " bytes=" + declarations.Tokens.ResidentBytes);
+            + " misses=" + declarations.Tokens.Misses + " bytes=" + declarations.Tokens.ResidentBytes
+            // ALLOCATED BYTES ARE THE STOPWATCH HERE. A machine with other
+            // builds on it cannot be timed: wall clock moves with whatever
+            // else is running. What the compiler allocates does not, so a
+            // change that removes repeated work shows up as a smaller number
+            // whoever else is using the processors.
+            + " allocated=" + GC.GetTotalAllocatedBytes());
         if (front is null)
         {
             return 1;
@@ -796,20 +861,55 @@ public static class Driver
     /// runtime): the set whose interface and virtual slot numbering is an
     /// ABI shared by every image. Asked by the index builder and the binder.
     /// </summary>
+    /// <summary>
+    /// Answered once per path. The binder asks this of every type it lays
+    /// out, and answering it walked up the directory tree looking for the
+    /// library root, with a File.Exists at each level: compiling the kernel
+    /// made 221,000 lstat calls, 183,000 of which found nothing, which is
+    /// what looking for a file that is not there costs. Neither the root nor
+    /// a path's answer changes while the compiler runs.
+    /// </summary>
+    private static readonly Dictionary<string, bool> librarySources = new(StringComparer.Ordinal);
+    private static readonly object librarySourceGate = new();
+
     internal static bool IsLibrarySource(string path)
     {
-        string? root = LibraryRoot();
-        if (root is null) return false;
-        string full = Path.GetFullPath(path);
-        foreach (string part in new[] { "stdlib", "runtime" })
+        lock (librarySourceGate)
         {
-            string prefix = Path.GetFullPath(Path.Combine(root, part)) + Path.DirectorySeparatorChar;
-            if (full.StartsWith(prefix, StringComparison.Ordinal)) return true;
+            if (librarySources.TryGetValue(path, out bool known)) return known;
         }
-        return false;
+        bool answer = false;
+        string? root = LibraryRoot();
+        if (root is not null)
+        {
+            string full = Path.GetFullPath(path);
+            foreach (string part in new[] { "stdlib", "runtime" })
+            {
+                string prefix = Path.GetFullPath(Path.Combine(root, part)) + Path.DirectorySeparatorChar;
+                if (full.StartsWith(prefix, StringComparison.Ordinal)) { answer = true; break; }
+            }
+        }
+        lock (librarySourceGate) librarySources[path] = answer;
+        return answer;
     }
 
+    private static string? libraryRoot;
+    private static bool libraryRootKnown;
+    private static readonly object libraryRootGate = new();
+
+    /// <summary>Where the compiler's own library sources live, found once.</summary>
     private static string? LibraryRoot()
+    {
+        lock (libraryRootGate)
+        {
+            if (libraryRootKnown) return libraryRoot;
+            libraryRoot = FindLibraryRoot();
+            libraryRootKnown = true;
+            return libraryRoot;
+        }
+    }
+
+    private static string? FindLibraryRoot()
     {
         string? root = Environment.GetEnvironmentVariable("CORC_LIB");
         if (root is null)
@@ -828,7 +928,7 @@ public static class Driver
         return root;
     }
 
-    internal static List<string> DefaultLibraries(Target target, bool freestanding = false)
+    public static List<string> DefaultLibraries(Target target, bool freestanding = false)
     {
         string? root = LibraryRoot();
         if (root is null)

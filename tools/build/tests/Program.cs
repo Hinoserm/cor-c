@@ -201,14 +201,14 @@ public static class Program
                 string input = Path.Combine(manifest.Root, "input");
                 File.WriteAllText(input, "one");
                 File.SetLastWriteTimeUtc(input, DateTime.UtcNow.AddMinutes(-2));
-                Require(await Corsac.Build.Program.Main(["--file", manifest.File]) == 0);
-                Require(await Corsac.Build.Program.Main(["--file", manifest.File]) == 0);
+                Require(await Corsac.Build.BuildCommand.Run(["--file", manifest.File]) == 0);
+                Require(await Corsac.Build.BuildCommand.Run(["--file", manifest.File]) == 0);
                 Require(File.ReadAllLines(Path.Combine(manifest.Root, "runs")).Length == 1);
                 File.WriteAllText(input, "changed");
-                Require(await Corsac.Build.Program.Main(["--file", manifest.File]) == 0);
+                Require(await Corsac.Build.BuildCommand.Run(["--file", manifest.File]) == 0);
                 Require(File.ReadAllLines(Path.Combine(manifest.Root, "runs")).Length == 2);
                 File.Delete(Path.Combine(manifest.Root, "output"));
-                Require(await Corsac.Build.Program.Main(["--file", manifest.File]) == 0);
+                Require(await Corsac.Build.BuildCommand.Run(["--file", manifest.File]) == 0);
                 Require(File.ReadAllLines(Path.Combine(manifest.Root, "runs")).Length == 3);
             });
             await CheckAsync("literal arguments without shell expansion", async () =>
@@ -227,7 +227,7 @@ public static class Program
                     <Finally><Script Interpreter="sh"><Body>touch cleaned</Body></Script></Finally>
                   </Target>
                   """);
-                int status = await Corsac.Build.Program.Main(["--file", manifest.File]);
+                int status = await Corsac.Build.BuildCommand.Run(["--file", manifest.File]);
                 Require(status != 0 && File.Exists(Path.Combine(manifest.Root, "cleaned")) && !File.Exists(Path.Combine(manifest.Root, "later")));
             });
             await CheckAsync("validation occurs before side effects", async () =>
@@ -235,7 +235,7 @@ public static class Program
                 BuildManifest manifest = Load("""
                   <Target Name="all"><Script Interpreter="sh"><Body>touch touched</Body></Script><Unknown/></Target>
                   """);
-                Require(await Corsac.Build.Program.Main(["--file", manifest.File]) != 0);
+                Require(await Corsac.Build.BuildCommand.Run(["--file", manifest.File]) != 0);
                 Require(!File.Exists(Path.Combine(manifest.Root, "touched")));
             });
             await CheckAsync("timeout is reported and process is stopped", async () =>
@@ -243,7 +243,7 @@ public static class Program
                 BuildManifest manifest = Load("""
                   <Target Name="all"><Test Name="timeout" Executable="sleep" Timeout="00:00:00.15"><Argument Value="10"/></Test></Target>
                   """);
-                Require(await Corsac.Build.Program.Main(["--file", manifest.File]) != 0);
+                Require(await Corsac.Build.BuildCommand.Run(["--file", manifest.File]) != 0);
                 string report = Directory.GetFiles(Path.Combine(manifest.Root, "build"), "tests.xml", SearchOption.AllDirectories).Single();
                 Require(XDocument.Load(report).Descendants("failure").Single().Attribute("type")!.Value == "timed-out");
             });
@@ -255,7 +255,7 @@ public static class Program
                     <Target Name="bad"><Test Executable="false"/></Target>
                   </Target>
                   """);
-                Require(await Corsac.Build.Program.Main(["--file", manifest.File, "--jobs", Math.Min(2, Environment.ProcessorCount).ToString()]) != 0);
+                Require(await Corsac.Build.BuildCommand.Run(["--file", manifest.File, "--jobs", Math.Min(2, Environment.ProcessorCount).ToString()]) != 0);
                 string report = Directory.GetFiles(Path.Combine(manifest.Root, "build"), "tests.xml", SearchOption.AllDirectories).Single();
                 XElement suite = XDocument.Load(report).Root!;
                 Require((string?)suite.Attribute("tests") == "2" && (string?)suite.Attribute("failures") == "1");

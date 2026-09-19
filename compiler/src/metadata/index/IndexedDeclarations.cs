@@ -4,6 +4,7 @@ namespace Corsac.Lang.Metadata;
 public sealed class IndexedDeclarations : IDisposable
 {
     private readonly DeclarationCatalog catalog;
+    private readonly DeclarationSession? session;
     private readonly string assembly;
     private readonly HashSet<string> owned;
     private readonly HashSet<string> loaded = new(StringComparer.Ordinal);
@@ -11,7 +12,7 @@ public sealed class IndexedDeclarations : IDisposable
     private readonly HashSet<string> queries = new(StringComparer.Ordinal);
     private readonly HashSet<string> resolvedExtensions = new(StringComparer.Ordinal);
     public long PayloadLoads => catalog.PayloadLoads;
-    public SyntaxTokenCache Tokens { get; } = new();
+    public SyntaxTokenCache Tokens { get; }
     public int Passes { get; set; }
     public long ResidentDeclarationBytes => catalog.ResidentBytes;
     public IReadOnlyDictionary<(string Name, int Arity), int> Interfaces { get; }
@@ -21,12 +22,30 @@ public sealed class IndexedDeclarations : IDisposable
         long declarationBudgetBytes = 2 * 1024 * 1024)
     {
         catalog = new DeclarationCatalog(path, declarationBudgetBytes);
+        Tokens = new SyntaxTokenCache();
         this.assembly = assembly;
         Interfaces = catalog.Interfaces(assembly);
         LibraryInterfaces = catalog.LibraryInterfaces(assembly);
         // Interface slots are reserved over the project's compact family
         // table, even for declarations this unit never demand-loads. Adding
         // an earlier family can move every later slot: it is an ABI input.
+        queries.Add("I:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n");
+        owned = ownedFiles.Select(Path.GetFullPath).ToHashSet(StringComparer.Ordinal);
+    }
+
+    /// <summary>
+    /// One source of a project being compiled in a session: the index, the
+    /// lexed headers and the resolved names come from the session, and only
+    /// what THIS source required is recorded for its receipt.
+    /// </summary>
+    public IndexedDeclarations(DeclarationSession session, IEnumerable<string> ownedFiles)
+    {
+        this.session = session;
+        catalog = session.Catalog;
+        Tokens = session.Tokens;
+        assembly = session.Assembly;
+        Interfaces = session.Interfaces;
+        LibraryInterfaces = session.LibraryInterfaces;
         queries.Add("I:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n");
         owned = ownedFiles.Select(Path.GetFullPath).ToHashSet(StringComparer.Ordinal);
     }
@@ -80,7 +99,8 @@ public sealed class IndexedDeclarations : IDisposable
         // A type parameter is a name with no declaration anywhere; they are
         // numerous and every one of them would otherwise be a failed lookup.
         if (arity == 0 && name.Length <= 2 && char.IsUpper(name[0])) return null;
-        if (speculated.TryGetValue((name, arity), out string? memo)) return memo;
+        if (session is not null) { if (session.Speculated((name, arity), out string? shared)) return shared; }
+        else if (speculated.TryGetValue((name, arity), out string? memo)) return memo;
         string simple = arity > 0 ? name + "`" + arity : name;
         string? key;
         try
@@ -95,7 +115,8 @@ public sealed class IndexedDeclarations : IDisposable
             }
         }
         catch (InvalidDataException) { key = null; }
-        speculated[(name, arity)] = key;
+        if (session is not null) session.Speculate((name, arity), key);
+        else speculated[(name, arity)] = key;
         return key;
     }
 
@@ -160,9 +181,43 @@ public sealed class IndexedDeclarations : IDisposable
             if (key is not null && !loaded.Contains(key)) Include(key);
         }
         // A partial declaration cannot be bound from just the locally owned
-        // fragment. Demand its family before entering body binding.
+        // fragment. Demand its family before entering body binding -- ALL of
+        // them, in one demand. Asking for them one at a time threw on the
+        // first missing one, and the frontend answers a demand by discarding
+        // the unit and parsing, merging, monomorphising and binding it again:
+        // a unit whose headers named Path, DateTime, DateTimeOffset,
+        // Scheduler, Directory and File paid a whole extra round for each,
+        // discovering exactly one name per round. They are all known here.
+        DeclarationBatch partials = new();
         foreach (TypeDecl type in unit.Types.Where(type => type.Mods.HasFlag(Mods.Partial)))
-            Require(Binder.TypeKey(type));
+        {
+            try { Require(Binder.TypeKey(type)); }
+            catch (DeclarationDemand demand) { partials.Add(demand); }
+        }
+        partials.ThrowIfAny();
+        // AND WHAT THIS UNIT'S OWN CODE NAMES. Its sources are fully parsed,
+        // bodies and all, so the types it uses are knowable before binding
+        // begins -- and until now nobody looked. The binder met them one
+        // layer at a time instead: a kernel source naming Pipe and UserFile
+        // spent a round on those, and only once they were bound could the
+        // expressions through them resolve far enough to name Arch, Errno,
+        // UserMode and UserPointer, which cost another. Reading the names
+        // straight out of the tree finds the whole set at once.
+        //
+        // A prefetch like the one over imported bodies, and safe for the same
+        // reason: these are names the binder was going to demand.
+        foreach (TypeDecl type in unit.Types.Where(type => !type.Elsewhere))
+        {
+            BodyTypeNames.Walk(type, reference =>
+            {
+                string? key = Speculate(reference.Name, reference.Args.Count);
+                if (key is not null) Load(key);
+            }, qualifier =>
+            {
+                string? key = Speculate(qualifier, 0);
+                if (key is not null) Load(key);
+            });
+        }
         // THE WHOLE CHAIN IN ONE PASS. A header's own signatures name more
         // types -- List names IEnumerable, which names IEnumerator, and so on
         // -- and discovering them one at a time meant the frontend threw the
@@ -172,6 +227,15 @@ public sealed class IndexedDeclarations : IDisposable
         // and the binder still demands anything this does not foresee.
         Queue<string> pending = new(loaded);
         HashSet<string> visited = new(StringComparer.Ordinal);
+        // ONE FILE IS PARSED ONCE FOR ITS TEMPLATE BODIES, however many of
+        // its declarations this unit imports. A template's body is not in
+        // the index slice, so it is taken from the file, and the file is
+        // parsed WHOLE -- so importing ten generic types out of
+        // Collections.cor parsed Collections.cor ten times and threw nine of
+        // the results away. The declarations taken out of one parse are
+        // disjoint (each is picked by its own source span), and the map dies
+        // with this call, so nothing is shared between discovery passes.
+        Dictionary<(string Path, string Symbols), CompilationUnit> templateFiles = new();
         while (pending.Count != 0)
         {
             string key = pending.Dequeue();
@@ -182,7 +246,7 @@ public sealed class IndexedDeclarations : IDisposable
                 ?? throw new InvalidDataException("Missing discovered declaration: " + key);
             foreach (SourceDeclaration source in lease.Records)
             {
-                if (owned.Contains(source.Path)) { _ = source.ReadSource(); continue; }
+                if (owned.Contains(source.Path)) { _ = catalog.ReadSource(source); continue; }
                 // Match the direct frontend's diagnostic file spelling. Throw
                 // sites embed it in executable string data, so different paths
                 // would make identical generic instantiations disagree at link.
@@ -200,8 +264,13 @@ public sealed class IndexedDeclarations : IDisposable
                     implementations.Add(key);
                     // Templates need implementations for specialization. Keep
                     // unrelated ordinary bodies out of this imported tree.
-                    CompilationUnit templates = Tokens.Parse(source.ReadSource(), displayFile,
-                        source.ConditionalSymbols, declarationsOnly: true, includeTemplateBodies: true);
+                    var templateKey = (source.Path, string.Join("\n", source.ConditionalSymbols));
+                    if (!templateFiles.TryGetValue(templateKey, out CompilationUnit? templates))
+                    {
+                        templates = Tokens.Parse(catalog.ReadSource(source), displayFile,
+                            source.ConditionalSymbols, declarationsOnly: true, includeTemplateBodies: true);
+                        templateFiles[templateKey] = templates;
+                    }
                     root = templates.Types.Single(type => type.SourceFrom == source.From && type.SourceTo == source.To);
                 }
                 // Nested declarations have separate index records. Import the
@@ -226,13 +295,42 @@ public sealed class IndexedDeclarations : IDisposable
                     string? next = Speculate(name, arity);
                     if (next is not null && Load(next)) pending.Enqueue(next);
                 }
+                // AND WHAT ITS BODIES NAME, when the bodies came too. A
+                // template is imported WITH its body, because a specialisation
+                // is compiled from it, and that body names types the signature
+                // never mentions: List's methods make a ListEnumerator and
+                // throw an ArgumentOutOfRangeException. Left to the binder,
+                // each of those cost a whole round -- and a round means the
+                // unit is thrown away and parsed, merged, monomorphised and
+                // bound again. Following them here loads the same
+                // declarations the binder would have demanded, only sooner:
+                // the kernel's receipts come out the same size and its linked
+                // image byte for byte identical. See BodyTypeNames.
+                // EVERY imported declaration, not only the ones whose bodies
+                // came with them. A signature-only slice still carries its
+                // constant and field initializers, and those name types in
+                // places no signature does: Config's `const long Cpu =
+                // CpuKind.I486` is the whole reason the binder wants CpuKind,
+                // and reading it back a round later cost a round.
+                BodyTypeNames.Walk(root, reference =>
+                {
+                    string? next = Speculate(reference.Name, reference.Args.Count);
+                    if (next is not null && Load(next)) pending.Enqueue(next);
+                }, qualifier =>
+                {
+                    string? next = Speculate(qualifier, 0);
+                    if (next is not null && Load(next)) pending.Enqueue(next);
+                });
             }
         }
     }
 
     public void Dispose()
     {
-        loaded.Clear(); Tokens.Clear(); catalog.Dispose();
+        loaded.Clear();
+        // A session owns its catalog and its lexed headers; the whole point is
+        // that the next source in the project finds them still there.
+        if (session is null) { Tokens.Clear(); catalog.Dispose(); }
     }
 
     public void WriteDependencies(string path) => UnitDependencies.Write(path, catalog, loaded, implementations, queries);

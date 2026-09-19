@@ -194,10 +194,26 @@ public sealed partial class Binder
 
     private bool TypeCandidate(string key, out TypeSymbol? symbol)
     {
-        if (_r.Types.TryGetValue(key, out symbol)) return true;
-        _requireDeclaration?.Invoke(key);
+        if (_r.Types.TryGetValue(key, out symbol))
+        {
+            // ASKED FOR, not merely present. This is what tells the managed
+            // layout which types this unit has an opinion about.
+            symbol.Used = true;
+            return true;
+        }
+        // A MISSING DECLARATION IS RECORDED, NOT RAISED. Unwinding here threw
+        // the whole unit away for one name, and a single dispatcher naming a
+        // dozen kernel types therefore cost a dozen rebuilds. Checking carries
+        // on with the name unresolved instead, which reports nonsense for the
+        // rest of this pass -- and that is fine, because the pass is discarded
+        // the moment anything was recorded. See DeclarationBatch.
+        try { _requireDeclaration?.Invoke(key); }
+        catch (Metadata.DeclarationDemand demand) { _declarationBatch.Add(demand); }
         return false;
     }
+
+    /// <summary>Whether this pass has already found declarations it must retry with.</summary>
+    private bool Demanded => _declarationBatch.Any;
 
     /// <summary>
     /// A dotted name as it was written, when an expression is nothing but one:
@@ -1069,6 +1085,18 @@ public sealed partial class Binder
 
         Number(families);
         Assign(true);
+        // The table this unit numbered over, for diffing the two sides of a
+        // link that stops with a layout conflict: a family present on one
+        // side only moves every slot after it. Set CORC_DUMP_FAMILIES.
+        if (Environment.GetEnvironmentVariable("CORC_DUMP_FAMILIES") is not null)
+        {
+            Console.Error.WriteLine("families library=" + families.Count + " project=" + local.Count
+                + " slots=" + _interfaceSlots);
+            foreach (((string template, int arity), int methods) in families)
+                Console.Error.WriteLine("  lib " + template + "`" + arity + " methods=" + methods);
+            foreach (((string template, int arity), int methods) in local)
+                Console.Error.WriteLine("  project " + template + "`" + arity + " methods=" + methods);
+        }
         _librarySlots = _interfaceSlots;
 
         if (local.Count > 0)
@@ -1190,9 +1218,23 @@ public sealed partial class Binder
         for (int ordinal = 0; ordinal < _bodyWork.Count; ordinal++)
         {
             var work = _bodyWork[ordinal];
-            CheckBodyItem(work.Decl, work.Symbol, ordinal);
+            // ONE MEMBER'S MISSING TYPE MUST NOT COST A WHOLE REBUILD. A body
+            // names types no signature mentioned -- devfs names Tty, Vga, Arch
+            // and a dozen more -- and demanding them one at a time threw the
+            // unit away once per name. Checking continues to the next member
+            // with the request recorded; what this pass then reports is
+            // discarded with the transaction, so only the requests survive.
+            try { CheckBodyItem(work.Decl, work.Symbol, ordinal); }
+            catch (Metadata.DeclarationDemand demand)
+            {
+                _declarationBatch.Add(demand);
+                _member = null;
+                _signature = null;
+                _quiet = 0;
+            }
         }
         _bodyWork.Clear();
+        _declarationBatch.ThrowIfAny();
     }
 
     private void CheckBodyItem(TypeDecl declaration, TypeSymbol symbol, int ordinal)
@@ -4008,7 +4050,11 @@ public sealed partial class Binder
         List<MethodSymbol> InNamespaces(IEnumerable<string> spaces)
         {
             HashSet<string> namespaces = spaces.ToHashSet(StringComparer.Ordinal);
-            foreach (string space in namespaces) _requireExtensions?.Invoke(space, name);
+            foreach (string space in namespaces)
+            {
+                try { _requireExtensions?.Invoke(space, name); }
+                catch (Metadata.DeclarationDemand demand) { _declarationBatch.Add(demand); }
+            }
             List<MethodSymbol> found = new();
             foreach (TypeSymbol holder in _r.Types.Values.Where(type => namespaces.Contains(type.Decl?.Namespace ?? "")))
             foreach (MethodSymbol m in holder.Methods.Where(method => method.Name == name))
@@ -9316,63 +9362,86 @@ public sealed partial class Binder
 
     private HashSet<string> OutPathsWhen(Expr expression, bool holds)
     {
+        (HashSet<string> whenTrue, HashSet<string> whenFalse) = OutPaths(expression);
+        return holds ? whenTrue : whenFalse;
+    }
+
+    /// <summary>
+    /// The `out` paths a condition proves assigned on each of its outcomes,
+    /// BOTH outcomes from ONE walk.
+    ///
+    /// Asking for one outcome at a time recursed into the left of every
+    /// `&amp;&amp;` and `||` twice -- once for true, once for false -- and a
+    /// condition written `a &amp;&amp; b &amp;&amp; c &amp;&amp; ...` nests to
+    /// the LEFT, so the left operand is the deep one. That doubled at every
+    /// level: two to the power of the chain's length. A two-hundred-line
+    /// kernel source with long guard chains allocated thirty-four gigabytes
+    /// binding, more than every other kernel source together, and ran alone
+    /// for the last third of a parallel build because nothing else was left.
+    ///
+    /// The sets returned are fresh; nothing handed back is shared with a
+    /// child's result, so a caller may take what it is given and change it.
+    /// </summary>
+    private (HashSet<string> WhenTrue, HashSet<string> WhenFalse) OutPaths(Expr expression)
+    {
+        HashSet<string> Empty() => new(StringComparer.Ordinal);
+
         if (expression is CallExpr call && _r.Calls.TryGetValue(call, out MethodSymbol? method)
-            && method.Returns.Prim == Prim.Bool && holds)
+            && method.Returns.Prim == Prim.Bool)
         {
-            HashSet<string> result = new(StringComparer.Ordinal);
+            HashSet<string> proved = Empty();
             foreach (Expr argument in call.Args)
             {
                 if (argument is RefArgExpr { IsOut: true } output
                     && Path(output.Target) is string path)
                 {
-                    result.Add(path);
+                    proved.Add(path);
                 }
             }
-            return result;
+            return (proved, Empty());
         }
 
         if (expression is UnaryExpr { Op: UnOp.Not } negated)
         {
-            return OutPathsWhen(negated.Operand, !holds);
+            (HashSet<string> whenTrue, HashSet<string> whenFalse) = OutPaths(negated.Operand);
+            return (whenFalse, whenTrue);
         }
 
         if (expression is BinaryExpr { Op: BinOp.AndAlso } andExpr)
         {
-            HashSet<string> leftTrue = OutPathsWhen(andExpr.Left, true);
-            HashSet<string> leftFalse = OutPathsWhen(andExpr.Left, false);
-            HashSet<string> right = OutPathsWhen(andExpr.Right, holds);
+            (HashSet<string> leftTrue, HashSet<string> leftFalse) = OutPaths(andExpr.Left);
+            (HashSet<string> rightTrue, HashSet<string> rightFalse) = OutPaths(andExpr.Right);
 
-            if (holds)
-            {
-                leftTrue.UnionWith(right);
-                return leftTrue;
-            }
+            // True is left-true and right-true.
+            HashSet<string> whenTrue = new(leftTrue, StringComparer.Ordinal);
+            whenTrue.UnionWith(rightTrue);
 
-            // false is either left-false, or left-true/right-false.
-            leftTrue.UnionWith(right);
-            leftFalse.IntersectWith(leftTrue);
-            return leftFalse;
+            // False is either left-false, or left-true/right-false.
+            HashSet<string> viaRight = new(leftTrue, StringComparer.Ordinal);
+            viaRight.UnionWith(rightFalse);
+            HashSet<string> whenFalse = new(leftFalse, StringComparer.Ordinal);
+            whenFalse.IntersectWith(viaRight);
+            return (whenTrue, whenFalse);
         }
 
         if (expression is BinaryExpr { Op: BinOp.OrElse } orExpr)
         {
-            HashSet<string> leftTrue = OutPathsWhen(orExpr.Left, true);
-            HashSet<string> leftFalse = OutPathsWhen(orExpr.Left, false);
-            HashSet<string> right = OutPathsWhen(orExpr.Right, holds);
+            (HashSet<string> leftTrue, HashSet<string> leftFalse) = OutPaths(orExpr.Left);
+            (HashSet<string> rightTrue, HashSet<string> rightFalse) = OutPaths(orExpr.Right);
 
-            if (!holds)
-            {
-                leftFalse.UnionWith(right);
-                return leftFalse;
-            }
+            // False is left-false and right-false.
+            HashSet<string> whenFalse = new(leftFalse, StringComparer.Ordinal);
+            whenFalse.UnionWith(rightFalse);
 
-            // true is either left-true, or left-false/right-true.
-            leftFalse.UnionWith(right);
-            leftTrue.IntersectWith(leftFalse);
-            return leftTrue;
+            // True is either left-true, or left-false/right-true.
+            HashSet<string> viaRight = new(leftFalse, StringComparer.Ordinal);
+            viaRight.UnionWith(rightTrue);
+            HashSet<string> whenTrue = new(leftTrue, StringComparer.Ordinal);
+            whenTrue.IntersectWith(viaRight);
+            return (whenTrue, whenFalse);
         }
 
-        return new HashSet<string>(StringComparer.Ordinal);
+        return (Empty(), Empty());
     }
 
     private void Forget(List<Sym> added)

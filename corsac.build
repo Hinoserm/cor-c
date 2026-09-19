@@ -2,7 +2,7 @@
   <PropertyGroup>
     <Configuration>Release</Configuration>
     <Compiler>$(WorkspaceDirectory)/compiler/bin/managed/$(Configuration)/net10.0/corc</Compiler>
-    <Linker>$(WorkspaceDirectory)/linker/bin/managed/$(Configuration)/net10.0/corlink</Linker>
+    <Linker>$(WorkspaceDirectory)/compiler/bin/managed/$(Configuration)/net10.0/corc</Linker>
   </PropertyGroup>
   <Components>
     <Project Name="compiler" Path="compiler/corc.csproj" />
@@ -13,8 +13,9 @@
   <Directory Path="linker" DefaultTargets="linker" />
   <Directory Path="tools/build" DefaultTargets="build-tool" />
 
-  <!-- The compiler's ProjectReference builds the linker dependency once. -->
-  <Target Name="all" DependsOnTargets="libraries;build-tool" />
+  <!-- corc is the only executable: its ProjectReferences build the linker
+       and the build utility with it. -->
+  <Target Name="all" DependsOnTargets="libraries" />
   <Target Name="compiler"><Compile Project="compiler" Toolchain="managed" /></Target>
   <Target Name="linker"><Compile Project="linker" Toolchain="managed" /></Target>
   <Target Name="build-tool"><Compile Project="build-tool" Toolchain="managed" /></Target>

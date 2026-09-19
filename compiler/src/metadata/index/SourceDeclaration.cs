@@ -20,16 +20,31 @@ public sealed class SourceDeclaration
     public int Line { get; init; }
     public int Column { get; init; }
 
+    /// <summary>
+    /// Reads the file this declaration was cut from and checks it is the one
+    /// the index was built against.
+    ///
+    /// Prefer <see cref="DeclarationCatalog.ReadSource"/>, which does this
+    /// once per file for a whole project. This is the unshared path: reading
+    /// and hashing a whole file to reach one declaration in it.
+    /// </summary>
     public string ReadSource()
     {
         string text = File.ReadAllText(Path);
         if (!SHA256.HashData(Encoding.UTF8.GetBytes(text)).SequenceEqual(SourceHash))
             throw new InvalidDataException("Declaration source generation is stale: " + Path);
-        if (From < 0 || To < From || To > text.Length) throw new InvalidDataException("Invalid implementation source span");
+        Verify(text);
         return text;
     }
 
+    /// <summary>This declaration's own text, cut out of its verified file.</summary>
     public string ReadImplementation() => ReadSource()[From..To];
+
+    /// <summary>Checks this declaration's span against already verified text.</summary>
+    public void Verify(string text)
+    {
+        if (From < 0 || To < From || To > text.Length) throw new InvalidDataException("Invalid implementation source span");
+    }
 
     public DeclarationRecord Encode()
     {

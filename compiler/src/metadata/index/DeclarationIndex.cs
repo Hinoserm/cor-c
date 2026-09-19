@@ -30,9 +30,26 @@ public sealed class DeclarationIndex : IDisposable
             if (Count < 0 || table < HeaderSize || table > length || length != stream.Length
                 || Count > (length - table) / 8 || Count * 8 != length - table)
                 throw new InvalidDataException("Invalid declaration index directory");
+
+            // THE DIRECTORY IS READ ONCE. Every record read used to seek to
+            // the directory for its start and the next one's, then seek back
+            // to the record -- three seeks and three reads for one record,
+            // and a binary search does that for every probe. Compiling the
+            // kernel made 1.1 million pread calls, which is most of the
+            // reading this compiler does. The directory is eight bytes a
+            // record and does not change while the file is open.
+            offsets = new long[Count + 1];
+            stream.Position = table;
+            byte[] raw = new byte[checked((int)(Count * 8))];
+            stream.ReadExactly(raw);
+            for (long i = 0; i < Count; i++) offsets[i] = BitConverter.ToInt64(raw, checked((int)(i * 8)));
+            offsets[Count] = table;
         }
         catch { reader.Dispose(); stream.Dispose(); throw; }
     }
+
+    /// <summary>Where each record starts, and where the last one ends.</summary>
+    private readonly long[] offsets = Array.Empty<long>();
 
     public IEnumerable<DeclarationRecord> Find(string key) => Range(key, false);
     public IEnumerable<DeclarationRecord> WithPrefix(string prefix) => Range(prefix, true);
@@ -68,9 +85,7 @@ public sealed class DeclarationIndex : IDisposable
 
     private DeclarationRecord Read(long number, bool payload)
     {
-        stream.Position = checked(table + number * 8);
-        long start = reader.ReadInt64();
-        long end = number + 1 == Count ? table : reader.ReadInt64();
+        long start = offsets[number], end = offsets[number + 1];
         if (start < HeaderSize || end < start || end > table || end - start < 72)
             throw new InvalidDataException("Invalid declaration record span");
         stream.Position = start;

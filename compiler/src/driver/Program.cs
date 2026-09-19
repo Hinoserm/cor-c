@@ -39,7 +39,14 @@ public static partial class Program
                 + " last-gc-live-bytes=" + liveBytes + " last-gc-live-blocks=" + liveBlocks);
         }
 #else
-        return Driver.Run(args);
+        // THE WHOLE RUN, NOT A PHASE OF IT. This machine is too busy to time a
+        // compiler, but what it allocates does not depend on what else is
+        // running. Reported at exit so it covers code generation and emission
+        // too: an earlier mid-way figure made a whole-compile total look like
+        // a regression against a frontend-only one.
+        if (Environment.GetEnvironmentVariable("CORC_REPORT_ALLOC") is null) return Driver.Run(args);
+        try { return Driver.Run(args); }
+        finally { Console.Error.WriteLine("run-allocated=" + GC.GetTotalAllocatedBytes()); }
 #endif
     }
 }

@@ -221,7 +221,8 @@ caller and proving there is no unknown external caller.
 ### Backend request and publication boundary
 
 General IR LTO is a staged extension, not a linker dependency on the frontend.
-The build utility supplies a compatible compiler-backend provider to corlink.
+The build utility and the linker are parts of one executable, so the link
+step uses the compiler backend in the same process.
 The linker first produces an immutable, versioned link plan containing:
 
 - Target/runtime ABI and compiler-IR version fingerprints.
@@ -236,7 +237,7 @@ The backend consumes the plan through a dedicated compiler mode, not by
 reparsing project sources. It loads only selected IR and its declaration
 dependencies, optimizes, emits a replacement ET_REL object and reports actual
 imports, effects, dependencies and peak working set. One long-lived provider
-can process bounded units with internal workers; corlink does not spawn a full
+can process bounded units with internal workers; linking does not start a full
 frontend process per source file. The current summary-only pass requires no
 backend provider and remains usable by the independent linker alone.
 
@@ -312,7 +313,7 @@ duplicate definitions, local symbol shadowing, missing summaries, non-call
 relocations, side effects, static initialization, default/off LTO parity,
 observable cross-object code changes, flat layout/BSS and physical ELF loading.
 Compiler-to-linker integration tests compile distinct sources to distinct
-objects and invoke corlink as a separate process. Baseline --ref source mode is
+objects and link them with `corc link`. Baseline --ref source mode is
 explicitly a transition, not bounded declaration loading.
 
 Managed acceptance additionally requires partial types, generics, inheritance,

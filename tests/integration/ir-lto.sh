@@ -3,7 +3,8 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 cd "$root"
 corc=${CORC:-$root/compiler/bin/managed/Release/net10.0/corc}
-corlink=${CORLINK:-$root/linker/bin/managed/Release/net10.0/corlink}
+# Linking is a command of the one toolchain executable.
+corlink() { "${CORLINK:-$corc}" link "$@"; }
 cpu=${CPU:-486}
 export CORC="$corc"
 mkdir -p "$root/build"
@@ -21,7 +22,7 @@ for mode in on off budget; do
         off) set -- --no-lto ;;
         budget) set -- --lto-import-bytes 1 ;;
     esac
-    "$corlink" --cpu="$cpu" "$@" "$work/caller.o" "$work/compute.o" -o "$work/$mode" 2> "$work/$mode.link.log"
+    corlink --cpu="$cpu" "$@" "$work/caller.o" "$work/compute.o" -o "$work/$mode" 2> "$work/$mode.link.log"
     status=0
     "$work/$mode" || status=$?
     test "$status" = 42
@@ -42,7 +43,7 @@ objcopy --dump-section ".text=$work/on.text" "$work/on"
 objcopy --dump-section ".text=$work/off.text" "$work/off"
 test "$(wc -c < "$work/on.text")" -lt "$(wc -c < "$work/off.text")"
 objcopy --remove-section .corsac.cpu "$work/caller.o" "$work/missing-cpu.o"
-if "$corlink" "$work/missing-cpu.o" "$work/compute.o" -o "$work/invalid" 2> "$work/missing-cpu.log"; then
+if corlink "$work/missing-cpu.o" "$work/compute.o" -o "$work/invalid" 2> "$work/missing-cpu.log"; then
     echo 'Linker accepted a removed required CPU contract' >&2; exit 1
 fi
 grep -q 'CPU/FPU code-generation contract is missing' "$work/missing-cpu.log"

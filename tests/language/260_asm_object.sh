@@ -102,7 +102,7 @@ static class Program
 }
 COR
 
-"$corc" build --target x86-32 "$work/parts.asm" --obj -o "$work/parts.o" 2>"$work/build.err"
+"$corc" asm --target x86-32 "$work/parts.asm" --obj -o "$work/parts.o" 2>"$work/build.err"
 check $? "corc build --obj assembles to an object"
 if [ -s "$work/build.err" ]
 then
