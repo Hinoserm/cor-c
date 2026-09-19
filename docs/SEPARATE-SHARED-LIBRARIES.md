@@ -24,3 +24,10 @@ Its shared process budget bounds concurrent source compilers. Libraries remain
 dependency-ordered; single-source libraries do not gain file-level concurrency.
 The focused regression is `tests/integration/separate-dynamic.sh`, which links
 two independently compiled PIC objects into a library and executes a consumer.
+
+To run the shared-runtime acceptance suite against these existing artifacts,
+set `CORC` to the compiler, `OUT` and `LD_LIBRARY_PATH` to the library directory,
+and `SKIP_LIBRARY_BUILD=1` before running
+`tests/integration/shared-libraries.sh`. The skip prevents the legacy monolithic
+library builder from replacing the artifacts under test. Use a private copy
+when another build may update the original directory.

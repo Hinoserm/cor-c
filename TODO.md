@@ -42,8 +42,13 @@ are explicitly deferred by request; do not resume them without a new request.
   threads, generics, exceptions, static state and stack traces.
   Evidence: `build/parallel-runtime-check.aHgbx0/acceptance.log` and
   `build/separate-dynamic.0O0zwz/`.
-- [ ] Complete the production OS boot and unchanged incremental-build check
-  with the newly separate runtime libraries.
+- [x] Complete the production ISA-486 boot and unchanged runtime-build check
+  with the newly separate runtime libraries. All 14 rebuilt libraries match
+  the runtime acceptance snapshot byte-for-byte. OS evidence:
+  `build/logs/20260919-005007-a5743806cc1a4a0fbde4a751e0adada5/tests.xml`;
+  unchanged library/object timestamps: `build/runtime-incremental.log`.
+  Host tests for imported-library invalidation and cache reuse passed:
+  `build/logs/20260919-010013-93c18008b3e540508f7d19c02d4ffdd5/tests.xml`.
 
 ### Deferred CPU functional blockers
 
