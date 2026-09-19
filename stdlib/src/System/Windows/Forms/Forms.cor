@@ -264,6 +264,14 @@ public class Control
         if (resized) OnResize(EventArgs.Empty);
     }
 
+    /// A new place and nothing else: no repaint. A top-level window that
+    /// moves does not change by a pixel -- the seat keeps its picture and
+    /// puts it up where it now is -- and repainting every control in it on
+    /// every move, which SetBounds does because a CHILD that moves needs
+    /// the parent to paint over where it was, is what made a drag crawl on
+    /// a machine Windows drags on comfortably.
+    internal void Place(int x, int y) { _x = x; _y = y; }
+
     /// The form this control lives on, which is the window the seat knows.
     public Form? FindForm()
     {
@@ -526,7 +534,8 @@ public class Form : Control
     public override void SetBounds(int x, int y, int w, int h)
     {
         bool moved = x != Left || y != Top, resized = w != Width || h != Height;
-        base.SetBounds(x, y, w, h);
+        if (resized) base.SetBounds(x, y, w, h);          // a new size is a new picture: repaint
+        else if (moved) Place(x, y);                     // a new place is the same picture: no repaint
         if (_handle != 0 && resized) Seat.Current.ResizeWindow(_handle, w, h);
         if (_handle != 0 && moved) Seat.Current.MoveWindow(_handle, x, y);
     }
