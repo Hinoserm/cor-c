@@ -52,13 +52,15 @@ public static class ProjectCompile
         List<string> common = new();
         for (int i = 0; i < args.Length; i++)
         {
-            if (args[i] is "--units" or "--jobs") { i++; continue; }
+            if (args[i] is "--units" or "--jobs" or "--worker-pool") { i++; continue; }
             common.Add(args[i]);
         }
 
         long declBudget = long.TryParse(Environment.GetEnvironmentVariable("CORC_DECL_BUDGET"), out long d) ? d : 32L * 1024 * 1024;
         long tokBudget = long.TryParse(Environment.GetEnvironmentVariable("CORC_TOKEN_BUDGET"), out long t) ? t : 256L * 1024 * 1024;
         using DeclarationSession session = new(index, assembly, declBudget, tokBudget);
+        using WorkerPool? pool = WorkerPool.Open(Driver.Value(args, "--worker-pool"));
+        int limit = pool is null ? workers : Math.Max(workers, pool.Size);
         Driver.Session = session;
         int failures = 0;
         object gate = new();
@@ -102,23 +104,41 @@ public static class ProjectCompile
             return code;
         }
 
+        // EVERY SOURCE TAKES A WORKER FROM THE SHARED BUDGET while it is
+        // compiled and gives it back after. That is the whole of the
+        // scheduling: the build runs several projects at once and none of
+        // them can know what share it should have, because the answer changes
+        // as the others finish. Asking per source means the kernel picks up
+        // the workers the one-file utilities free as they go, rather than
+        // being stuck with whatever was spare when it started.
+        //
+        // Without a budget -- a compiler run by hand -- the thread count is
+        // simply what was asked for.
+        int Gated(Unit unit)
+        {
+            if (pool is null) return One(unit);
+            while (!pool.TryTake()) Thread.Sleep(15);
+            try { return One(unit); }
+            finally { pool.Give(); }
+        }
+
         // THE ENTRY SOURCE IS COMPILED ALONE AND FIRST. It is the one unit of
         // a project that is not a library part, and the settings that say so
         // are process-wide; the rest share one set of settings and may run
         // together. See Lowering's static configuration.
         foreach (Unit unit in units.Where(unit => unit.Entry))
-            if (One(unit) != 0) failures++;
+            if (Gated(unit) != 0) failures++;
 
         Unit[] rest = units.Where(unit => !unit.Entry).ToArray();
-        if (workers <= 1 || rest.Length <= 1)
+        if (limit <= 1 || rest.Length <= 1)
         {
-            foreach (Unit unit in rest) if (One(unit) != 0) failures++;
+            foreach (Unit unit in rest) if (Gated(unit) != 0) failures++;
         }
         else
         {
-            Parallel.ForEach(rest, new ParallelOptions { MaxDegreeOfParallelism = workers }, unit =>
+            Parallel.ForEach(rest, new ParallelOptions { MaxDegreeOfParallelism = limit }, unit =>
             {
-                if (One(unit) != 0) Interlocked.Increment(ref failures);
+                if (Gated(unit) != 0) Interlocked.Increment(ref failures);
             });
         }
 
