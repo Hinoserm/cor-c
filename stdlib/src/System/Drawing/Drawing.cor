@@ -51,19 +51,35 @@ public struct Color
 /// The colours a Windows desktop is made of. Same names, same defaults.
 public static class SystemColors
 {
-    public static Color Control { get { return Color.FromArgb(192, 192, 192); } }
+    // A warm-neutral scheme drawn from the 256-colour cube and greys the
+    // seat shows: bevels in four greys, captions in a two-colour gradient.
+    public static Color Control { get { return Color.FromArgb(218, 218, 218); } }
     public static Color ControlText { get { return Color.Black; } }
-    public static Color ControlLight { get { return Color.White; } }
+    public static Color ControlLight { get { return Color.FromArgb(238, 238, 238); } }
+    public static Color ControlLightLight { get { return Color.White; } }
     public static Color ControlDark { get { return Color.FromArgb(128, 128, 128); } }
-    public static Color ControlDarkDark { get { return Color.Black; } }
+    public static Color ControlDarkDark { get { return Color.FromArgb(58, 58, 58); } }
     public static Color Window { get { return Color.White; } }
     public static Color WindowText { get { return Color.Black; } }
-    public static Color Desktop { get { return Color.FromArgb(0, 128, 128); } }
-    public static Color ActiveCaption { get { return Color.FromArgb(0, 0, 128); } }
+    public static Color Desktop { get { return Color.FromArgb(0, 95, 135); } }
+    public static Color ActiveCaption { get { return Color.FromArgb(0, 0, 95); } }
+    public static Color GradientActiveCaption { get { return Color.FromArgb(95, 135, 215); } }
     public static Color ActiveCaptionText { get { return Color.White; } }
     public static Color InactiveCaption { get { return Color.FromArgb(128, 128, 128); } }
-    public static Color Highlight { get { return Color.FromArgb(0, 0, 128); } }
+    public static Color GradientInactiveCaption { get { return Color.FromArgb(178, 178, 178); } }
+    public static Color InactiveCaptionText { get { return Color.FromArgb(218, 218, 218); } }
+    public static Color Highlight { get { return Color.FromArgb(0, 95, 175); } }
     public static Color HighlightText { get { return Color.White; } }
+    public static Color GrayText { get { return Color.FromArgb(128, 128, 128); } }
+}
+
+public static class ColorBlend
+{
+    /// `a` toward `b` by t in 0..256.
+    public static Color Mix(Color a, Color b, int t)
+    {
+        return Color.FromArgb(a.R + (b.R - a.R) * t / 256, a.G + (b.G - a.G) * t / 256, a.B + (b.B - a.B) * t / 256);
+    }
 }
 
 public struct Point

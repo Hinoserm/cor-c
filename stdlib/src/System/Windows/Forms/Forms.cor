@@ -330,6 +330,41 @@ public class Seat : IDrawingTarget
 // Controls
 // ---------------------------------------------------------------------------
 
+/// The three-dimensional edges every control wears: two pixels of light
+/// on the top and left, two of shade on the bottom and right, and the
+/// reverse for something pressed in or sunk. The same four greys
+/// everywhere, which is what makes a screen of controls read as one thing.
+public static class Bevel
+{
+    public static void Raised(Graphics g, int x, int y, int w, int h)
+    {
+        Pen light = new Pen(SystemColors.ControlLight), lighter = new Pen(SystemColors.ControlLightLight);
+        Pen dark = new Pen(SystemColors.ControlDark), darker = new Pen(SystemColors.ControlDarkDark);
+        g.DrawLine(light, x, y, x + w - 1, y); g.DrawLine(light, x, y, x, y + h - 1);
+        g.DrawLine(lighter, x + 1, y + 1, x + w - 2, y + 1); g.DrawLine(lighter, x + 1, y + 1, x + 1, y + h - 2);
+        g.DrawLine(darker, x, y + h - 1, x + w - 1, y + h - 1); g.DrawLine(darker, x + w - 1, y, x + w - 1, y + h - 1);
+        g.DrawLine(dark, x + 1, y + h - 2, x + w - 2, y + h - 2); g.DrawLine(dark, x + w - 2, y + 1, x + w - 2, y + h - 2);
+    }
+
+    public static void Sunken(Graphics g, int x, int y, int w, int h)
+    {
+        Pen light = new Pen(SystemColors.ControlLight), lighter = new Pen(SystemColors.ControlLightLight);
+        Pen dark = new Pen(SystemColors.ControlDark), darker = new Pen(SystemColors.ControlDarkDark);
+        g.DrawLine(dark, x, y, x + w - 1, y); g.DrawLine(dark, x, y, x, y + h - 1);
+        g.DrawLine(darker, x + 1, y + 1, x + w - 2, y + 1); g.DrawLine(darker, x + 1, y + 1, x + 1, y + h - 2);
+        g.DrawLine(lighter, x, y + h - 1, x + w - 1, y + h - 1); g.DrawLine(lighter, x + w - 1, y, x + w - 1, y + h - 1);
+        g.DrawLine(light, x + 1, y + h - 2, x + w - 2, y + h - 2); g.DrawLine(light, x + w - 2, y + 1, x + w - 2, y + h - 2);
+    }
+
+    /// A button held down: a thin dark rim all round, the face flat.
+    public static void Pressed(Graphics g, int x, int y, int w, int h)
+    {
+        Pen dark = new Pen(SystemColors.ControlDark), darker = new Pen(SystemColors.ControlDarkDark);
+        g.DrawRectangle(darker, x, y, w, h);
+        g.DrawRectangle(dark, x + 1, y + 1, w - 2, h - 2);
+    }
+}
+
 public class ControlCollection
 {
     List<Control> _items = new List<Control>();
@@ -551,8 +586,8 @@ public class Form : Control
     FormBorderStyle _border = FormBorderStyle.Sizable;
     FormWindowState _state = FormWindowState.Normal;
     public FormStartPosition StartPosition = FormStartPosition.WindowsDefaultLocation;
-    public const int CaptionHeight = 20;
-    public const int BorderWidth = 2;
+    public const int CaptionHeight = 22;      // the bar under the top border, title and close button
+    public const int BorderWidth = 4;         // two bevel pixels and two of face on every side
 
     public event EventHandler? Load;
     public event FormClosingEventHandler? FormClosing;
@@ -583,6 +618,9 @@ public class Form : Control
 
     /// Where the client area starts inside the window.
     public Point ClientOffset() { return HasFrame ? new Point(BorderWidth, CaptionHeight + BorderWidth) : new Point(0, 0); }
+
+    /// The close button, in window coordinates.
+    Rectangle CloseBox() { return new Rectangle(Width - BorderWidth - 18, BorderWidth + 2, 16, CaptionHeight - 6); }
 
     public override void SetBounds(int x, int y, int w, int h)
     {
@@ -657,26 +695,34 @@ public class Form : Control
         seat.Target(_handle);
         if (HasFrame && force)
         {
-            // WITHIN THE CLIP, like everything else. The frame's face fill
-            // once covered the whole window whatever the clip was, and the
-            // client tree then repainted only the clip: the rest of the
-            // client showed the face colour, a grey shape the size of
-            // whatever had just been uncovered.
+            // Within the clip, like everything else (see Compose in the seat).
             Graphics g = new Graphics(seat, 0, 0, Rectangle.Intersect(clip, new Rectangle(0, 0, Width, Height)));
             bool active = Application.ActiveForm == this;
             Color face = SystemColors.Control;
-            g.FillRectangle(new SolidBrush(face), 0, 0, Width, Height);
-            g.DrawLine(new Pen(SystemColors.ControlLight), 0, 0, Width - 1, 0);
-            g.DrawLine(new Pen(SystemColors.ControlLight), 0, 0, 0, Height - 1);
-            g.DrawLine(new Pen(SystemColors.ControlDarkDark), 0, Height - 1, Width - 1, Height - 1);
-            g.DrawLine(new Pen(SystemColors.ControlDarkDark), Width - 1, 0, Width - 1, Height - 1);
-            Color cap = active ? SystemColors.ActiveCaption : SystemColors.InactiveCaption;
-            g.FillRectangle(new SolidBrush(cap), BorderWidth, BorderWidth, Width - 2 * BorderWidth, CaptionHeight - BorderWidth);
-            g.DrawStringOpaque(Text, Font, active ? SystemColors.ActiveCaptionText : SystemColors.ControlLight, cap, BorderWidth + 4, BorderWidth + 1);
-            // The close box.
-            int bx = Width - BorderWidth - 18, by = BorderWidth + 1;
-            g.FillRectangle(new SolidBrush(face), bx, by, 16, 16);
-            g.DrawStringOpaque("x", Font, SystemColors.ControlText, face, bx + 4, by);
+            int w = Width, h = Height;
+            g.FillRectangle(new SolidBrush(face), 0, 0, w, h);
+            Bevel.Raised(g, 0, 0, w, h);
+            // The caption: a gradient from the left, the title in white, bold
+            // by being drawn twice, and the close button at the right.
+            int cx = BorderWidth, cy = BorderWidth, cw = w - 2 * BorderWidth, ch = CaptionHeight - 2;
+            Color from = active ? SystemColors.ActiveCaption : SystemColors.InactiveCaption;
+            Color to = active ? SystemColors.GradientActiveCaption : SystemColors.GradientInactiveCaption;
+            const int Bands = 16;
+            for (int i = 0; i < Bands; i++)
+            {
+                int x0 = cx + cw * i / Bands, x1 = cx + cw * (i + 1) / Bands;
+                g.FillRectangle(new SolidBrush(ColorBlend.Mix(from, to, i * 256 / Bands)), x0, cy, x1 - x0, ch);
+            }
+            Color title = active ? SystemColors.ActiveCaptionText : SystemColors.InactiveCaptionText;
+            g.DrawString(Text, Font, new SolidBrush(title), cx + 6, cy + 2);
+            g.DrawString(Text, Font, new SolidBrush(title), cx + 7, cy + 2);
+            Rectangle close = CloseBox();
+            g.FillRectangle(new SolidBrush(face), close.X, close.Y, close.Width, close.Height);
+            Bevel.Raised(g, close.X, close.Y, close.Width, close.Height);
+            Pen ink = new Pen(SystemColors.ControlText);
+            int lx = close.X + 4, ly = close.Y + 3, rx = close.X + close.Width - 6, ry = close.Y + close.Height - 5;
+            g.DrawLine(ink, lx, ly, rx, ry); g.DrawLine(ink, lx + 1, ly, rx + 1, ry);
+            g.DrawLine(ink, lx, ry, rx, ly); g.DrawLine(ink, lx + 1, ry, rx + 1, ly);
         }
         Point co = ClientOffset();
         Rectangle client = new Rectangle(co.X, co.Y, ClientRectangle.Width, ClientRectangle.Height);
@@ -689,7 +735,7 @@ public class Form : Control
         Point co = ClientOffset();
         if (HasFrame && y < co.Y)
         {
-            if (kind == 4 && button == 1 && x >= Width - BorderWidth - 18 && x < Width - BorderWidth - 2 && y >= BorderWidth && y < BorderWidth + 17) { Close(); return; }
+            if (kind == 4 && button == 1 && CloseBox().Contains(x, y)) { Close(); return; }
             if (kind == 4 && button == 1) { Application.BeginDrag(this, x, y); }
             return;
         }
@@ -743,15 +789,12 @@ public class Button : Control
     {
         Graphics g = e.Graphics;
         int w = Width, h = Height;
-        Color light = _down ? SystemColors.ControlDarkDark : SystemColors.ControlLight;
-        Color dark = _down ? SystemColors.ControlLight : SystemColors.ControlDarkDark;
         g.FillRectangle(new SolidBrush(BackColor), 0, 0, w, h);
-        g.DrawLine(new Pen(light), 0, 0, w - 1, 0); g.DrawLine(new Pen(light), 0, 0, 0, h - 1);
-        g.DrawLine(new Pen(dark), 0, h - 1, w - 1, h - 1); g.DrawLine(new Pen(dark), w - 1, 0, w - 1, h - 1);
-        g.DrawLine(new Pen(SystemColors.ControlDark), 1, h - 2, w - 2, h - 2); g.DrawLine(new Pen(SystemColors.ControlDark), w - 2, 1, w - 2, h - 2);
+        if (_down) Bevel.Pressed(g, 0, 0, w, h); else Bevel.Raised(g, 0, 0, w, h);
         SizeF s = g.MeasureString(Text, Font);
-        g.DrawString(Text, Font, new SolidBrush(Enabled ? ForeColor : SystemColors.ControlDark), (w - (int)s.Width) / 2 + (_down ? 1 : 0), (h - (int)s.Height) / 2 + (_down ? 1 : 0));
-        if (Focused) g.DrawRectangle(new Pen(SystemColors.ControlText), 3, 3, w - 6, h - 6);
+        int tx = (w - (int)s.Width) / 2 + (_down ? 1 : 0), ty = (h - (int)s.Height) / 2 + (_down ? 1 : 0);
+        g.DrawString(Text, Font, new SolidBrush(Enabled ? ForeColor : SystemColors.GrayText), tx, ty);
+        if (Focused) g.DrawRectangle(new Pen(SystemColors.ControlDark), 4, 4, w - 8, h - 8);
         base.OnPaint(e);
     }
     protected override void OnMouseDown(MouseEventArgs e) { _down = true; Invalidate(); base.OnMouseDown(e); }
@@ -790,23 +833,21 @@ public class TextBox : Control
         Graphics g = e.Graphics;
         int w = Width, h = Height;
         g.FillRectangle(new SolidBrush(BackColor), 0, 0, w, h);
-        g.DrawLine(new Pen(SystemColors.ControlDark), 0, 0, w - 1, 0); g.DrawLine(new Pen(SystemColors.ControlDark), 0, 0, 0, h - 1);
-        g.DrawLine(new Pen(SystemColors.ControlLight), 0, h - 1, w - 1, h - 1); g.DrawLine(new Pen(SystemColors.ControlLight), w - 1, 0, w - 1, h - 1);
+        Bevel.Sunken(g, 0, 0, w, h);
         string shown = Shown();
-        int top = (h - Font.Height) / 2;
+        int left = 4, top = (h - Font.Height) / 2;
         int from = SelectionStart, count = SelectionLength;
         if (count > 0 && Focused)
         {
-            // Three runs: before, the selection in highlight colours, after.
-            g.DrawString(shown.Substring(0, from), Font, new SolidBrush(ForeColor), 3, top);
-            g.DrawStringOpaque(shown.Substring(from, count), Font, SystemColors.HighlightText, SystemColors.Highlight, 3 + from * Font.GlyphWidth, top);
-            g.DrawString(shown.Substring(from + count), Font, new SolidBrush(ForeColor), 3 + (from + count) * Font.GlyphWidth, top);
+            g.DrawString(shown.Substring(0, from), Font, new SolidBrush(ForeColor), left, top);
+            g.DrawStringOpaque(shown.Substring(from, count), Font, SystemColors.HighlightText, SystemColors.Highlight, left + from * Font.GlyphWidth, top);
+            g.DrawString(shown.Substring(from + count), Font, new SolidBrush(ForeColor), left + (from + count) * Font.GlyphWidth, top);
         }
         else
         {
-            g.DrawString(shown, Font, new SolidBrush(ForeColor), 3, top);
+            g.DrawString(shown, Font, new SolidBrush(ForeColor), left, top);
         }
-        if (Focused) g.FillRectangle(new SolidBrush(ForeColor), 3 + _caret * Font.GlyphWidth, top, 1, Font.Height);
+        if (Focused) g.FillRectangle(new SolidBrush(ForeColor), left + _caret * Font.GlyphWidth, top, 1, Font.Height);
         base.OnPaint(e);
     }
 
@@ -867,7 +908,7 @@ public class TextBox : Control
 
     int ColumnAt(int x)
     {
-        int column = (x - 3 + Font.GlyphWidth / 2) / Font.GlyphWidth;
+        int column = (x - 4 + Font.GlyphWidth / 2) / Font.GlyphWidth;
         return Clamp(column);
     }
 
