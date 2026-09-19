@@ -113,7 +113,15 @@ public static class ProjectCompile
             }
             List<string> one = new() { unit.Source };
             one.AddRange(common);
-            if (!unit.Entry) one.Add("--lib");
+            // ONE INITIALISER PER LIBRARY. A shared object gets a function
+            // the loader calls before anything uses it -- __corsac_init,
+            // which hands the image's statics to the collector and its frame
+            // tables to the stack walker. Every unit would emit its own and
+            // the link would refuse the duplicates, so the entry unit alone
+            // emits it. Switching it off for all of them, as the parallel
+            // compile first did, left every library's statics unscanned: the
+            // collector freed live objects and the desktop died of it.
+            if (!unit.Entry) { one.Add("--lib"); one.Add("--no-shared-init"); }
             one.Add("--dependency-file"); one.Add(unit.Receipt);
             one.Add("-o"); one.Add(unit.Object);
             long before = GC.GetTotalAllocatedBytes();
