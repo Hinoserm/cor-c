@@ -507,6 +507,16 @@ public class Form : Control
     }
     public const int MinimumWidth = 120, MinimumHeight = 60;
 
+    /// The shape that says what those edges will move.
+    internal static int CursorFor(int edges)
+    {
+        if (edges == (1 | 4) || edges == (2 | 8)) return Cursors.SizeNWSE;
+        if (edges == (2 | 4) || edges == (1 | 8)) return Cursors.SizeNESW;
+        if ((edges & 3) != 0) return Cursors.SizeWE;
+        if ((edges & 12) != 0) return Cursors.SizeNS;
+        return Cursors.Arrow;
+    }
+
     public new void Show()
     {
         if (_shown) return;
@@ -566,12 +576,17 @@ public class Form : Control
     protected virtual void OnFormClosing(FormClosingEventArgs e) { if (FormClosing != null) FormClosing(this, e); }
     protected virtual void OnFormClosed(EventArgs e) { if (FormClosed != null) FormClosed(this, e); }
     protected virtual void OnActivated(EventArgs e) { if (Activated != null) Activated(this, e); }
-    internal void RaiseActivated() { OnActivated(EventArgs.Empty); Invalidate(); }
+    internal void RaiseActivated() { _frameDirty = true; OnActivated(EventArgs.Empty); Invalidate(); }
     protected virtual void OnDeactivate(EventArgs e) { if (Deactivate != null) Deactivate(this, e); }
-    internal void RaiseDeactivate() { OnDeactivate(EventArgs.Empty); Invalidate(); }
+    internal void RaiseDeactivate() { _frameDirty = true; OnDeactivate(EventArgs.Empty); Invalidate(); }
+
+    // The caption changes colour when the window gains or loses the focus,
+    // and its text when Text is set; an ordinary repaint of the client tree
+    // would not touch the frame, so those mark it and the next paint draws it.
+    bool _frameDirty;
 
     /// The title, kept by the seat too once the window exists.
-    public override string Text { get { return base.Text; } set { base.Text = value; if (_handle != 0) Seat.Current.SetTitle(_handle, value); Invalidate(); } }
+    public override string Text { get { return base.Text; } set { base.Text = value; if (_handle != 0) Seat.Current.SetTitle(_handle, value); _frameDirty = true; Invalidate(); } }
 
     /// Paint the whole window: the frame, then the client tree.
     internal void PaintWindow(Rectangle clip, bool force)
@@ -579,8 +594,9 @@ public class Form : Control
         if (_handle == 0) return;
         Seat seat = Seat.Current;
         seat.Target(_handle);
-        if (HasFrame && force)
+        if (HasFrame && (force || _frameDirty))
         {
+            _frameDirty = false;
             // Within the clip, like everything else (see Compose in the seat).
             Graphics g = new Graphics(seat, 0, 0, Rectangle.Intersect(clip, new Rectangle(0, 0, Width, Height)));
             bool active = Application.ActiveForm == this;
@@ -620,10 +636,14 @@ public class Form : Control
         }
         if (HasFrame && (y < co.Y || x < co.X || x >= co.X + ClientRectangle.Width || y >= co.Y + ClientRectangle.Height))
         {
+            // Over the frame with no button held: the pointer says what the
+            // edge under it would do, the way Windows does.
+            if (kind == 3 && Application.Captured == null) Seat.Current.SetCursor(CursorFor(ResizeEdges(x, y)));
             if (kind == 4 && button == 1 && CloseBox().Contains(x, y)) { Close(); return; }
             if (kind == 4 && button == 1 && y < co.Y) { Application.BeginDrag(this, x, y); }
             return;
         }
+        if (kind == 3 && HasFrame && Application.Captured == null) Seat.Current.SetCursor(Cursors.Arrow);
         int cx = x - co.X, cy = y - co.Y;
         Control target = HitTest(cx, cy);
         // While a button is held the control that took the press gets every
@@ -859,8 +879,12 @@ public class ToolStripItemCollection
     public ToolStripItemCollection(ContextMenuStrip owner) { _owner = owner; }
     public int Count { get { return _items.Count; } }
     public ToolStripItem this[int i] { get { return _items[i]; } }
-    public ToolStripMenuItem Add(string text) { ToolStripMenuItem item = new ToolStripMenuItem(text); Add(item); return item; }
-    public void Add(ToolStripItem item) { item.Owner = _owner; _items.Add(item); }
+    // One body, no overload: an earlier Add(string) that called Add(item)
+    // landed in the list twice, so every named item appeared twice on the
+    // menu. Both entry points go through the same private step now.
+    public ToolStripMenuItem Add(string text) { ToolStripMenuItem item = new ToolStripMenuItem(text); Append(item); return item; }
+    public void Add(ToolStripItem item) { Append(item); }
+    void Append(ToolStripItem item) { item.Owner = _owner; _items.Add(item); }
 }
 
 /// A popup list of commands at a screen position: a right-click menu, a
@@ -1012,6 +1036,12 @@ public static class Application
     {
         _dragging = f; _resizeEdges = edges; _resizeFrom = f.Bounds;
         _resizeSX = f.Left + x; _resizeSY = f.Top + y;
+        // The window itself does not move until the button comes up: every
+        // intermediate size would be a new surface, a full repaint and a
+        // composition, which is what made a resize crawl. The seat draws an
+        // outline instead, and the last one is the size that is applied.
+        Seat.Current.SetCursor(Form.CursorFor(edges));
+        Seat.Current.SetBand(f.Left, f.Top, f.Width, f.Height);
     }
 
     static void ResizeTo(int sx, int sy)
@@ -1026,6 +1056,7 @@ public static class Application
         if (w < Form.MinimumWidth) { if ((_resizeEdges & 1) != 0) x -= Form.MinimumWidth - w; w = Form.MinimumWidth; }
         if (h < Form.MinimumHeight) { if ((_resizeEdges & 4) != 0) y -= Form.MinimumHeight - h; h = Form.MinimumHeight; }
         _dragToX = x; _dragToY = y; _dragToW = w; _dragToH = h; _dragPending = true;
+        Seat.Current.SetBand(x, y, w, h);
     }
     static int _sinceDrag;                  // messages since the window last moved: bounded, or a busy tablet never lets it
 
@@ -1038,7 +1069,7 @@ public static class Application
         if (!_dragPending || _dragging == null) { _dragPending = false; return; }
         _dragPending = false;
         _sinceDrag = 0;
-        if (_resizeEdges != 0) _dragging.SetBounds(_dragToX, _dragToY, _dragToW, _dragToH);
+        if (_resizeEdges != 0) { Seat.Current.ClearBand(); Seat.Current.SetCursor(Cursors.Arrow); _dragging.SetBounds(_dragToX, _dragToY, _dragToW, _dragToH); }
         else _dragging.SetBounds(_dragToX, _dragToY, _dragging.Width, _dragging.Height);
     }
     static bool _paintPending;
@@ -1184,6 +1215,9 @@ public static class Application
                 f!.WindowMouse(4, m.A, m.B & 0xFFFF, (m.B >> 16) & 0xFFFF); break;
             case 5:
                 SettleDrag();
+                // A press on an edge that never moved still put an outline
+                // on the screen: it goes when the button does, either way.
+                if (_resizeEdges != 0) { Seat.Current.ClearBand(); }
                 _dragging = null; _resizeEdges = 0;
                 f!.WindowMouse(5, m.A, m.B & 0xFFFF, (m.B >> 16) & 0xFFFF); break;
             case 8:

@@ -196,6 +196,20 @@ public class Seat : IDrawingTarget
     // --- inspection: what is under a point of the screen, asked of the
     // window's owner through the seat (a spy tool) -------------------------
     public void WatchPointer() { Os.Ioctl(_fd, 0x47550020, 0); }
+
+    /// The pointer's shape while it is over one of this program's windows.
+    /// The seat puts the arrow back the moment the pointer leaves.
+    public void SetCursor(int cursor) { Os.Ioctl(_fd, 0x47550025, cursor); }
+
+    /// The drag outline the seat draws over everything: where a window is
+    /// heading while the button is held. A width of zero takes it away.
+    public void SetBand(int x, int y, int width, int height)
+    {
+        Flush();
+        Os.Ioctl(_fd, 0x47550027, (width & 0xFFFF) | (height << 16));
+        Os.Ioctl(_fd, 0x47550026, (x & 0xFFFF) | (y << 16));
+    }
+    public void ClearBand() { SetBand(0, 0, 0, 0); }
     /// Ask the owner of the window at a screen point what is there; the
     /// answer arrives as Application.Inspected. Returns the window handle, or -1.
     public int Inspect(int screenX, int screenY) { Flush(); return (int)Os.Ioctl(_fd, 0x47550021, (screenX & 0xFFFF) | (screenY << 16)); }
@@ -301,6 +315,12 @@ public class SeatWindowInfo
 
 /// The shell's events and powers: what a taskbar, a desktop or a spy tool
 /// uses, raised by the Forms message loop from the seat's messages.
+/// The shapes a pointer can take. The seat draws them; these are its names.
+public static class Cursors
+{
+    public const int Arrow = 0, SizeWE = 1, SizeNS = 2, SizeNWSE = 3, SizeNESW = 4;
+}
+
 public static class Shell
 {
     /// The seat's window list or focus changed (after WatchWindows()).
