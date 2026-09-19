@@ -23,6 +23,7 @@ public sealed class Monomorphiser
     private readonly List<CompileError> _errors = new();
     private readonly string _file;
     private readonly Action<string>? _requireDeclaration;
+    private readonly Metadata.DeclarationBatch _templateBatch = new();
     private readonly Queue<Job> _pending = new();
 
     /// <summary>One specialisation waiting to be made.</summary>
@@ -404,6 +405,7 @@ public sealed class Monomorphiser
             try { output.Types.Add(RewriteDecl(t, new Dictionary<string, TypeRef>(StringComparer.Ordinal), t.Name)); }
             catch (Metadata.DeclarationDemand demand) { required.Add(demand); }
         }
+        foreach (string key in _templateBatch.Keys) required.Add(new Metadata.DeclarationDemand(key));
         required.ThrowIfAny();
 
         // AND THE TEMPLATES SURVIVE, unrewritten and uncompiled.
@@ -552,7 +554,11 @@ public sealed class Monomorphiser
         {
             string key = Arity(candidate, arity);
             if (_generic.ContainsKey(key)) return true;
-            _requireDeclaration?.Invoke(key);
+            // Recorded rather than raised, for the reason Binder.TypeCandidate
+            // gives: one template's missing name must not abandon the rewrite
+            // of everything else and cost a whole extra round.
+            try { _requireDeclaration?.Invoke(key); }
+            catch (Metadata.DeclarationDemand demand) { _templateBatch.Add(demand); }
             return false;
         }
         string? Imports(string scope)

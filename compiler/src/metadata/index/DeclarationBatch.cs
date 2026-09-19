@@ -10,6 +10,7 @@ public sealed class DeclarationBatch
         foreach (string key in demand.Keys) keys.Add(key);
     }
     public bool Any => keys is not null && keys.Count != 0;
+    public IEnumerable<string> Keys => keys ?? Enumerable.Empty<string>();
     public void ThrowIfAny()
     {
         if (keys is not null && keys.Count != 0) throw new DeclarationDemand(keys);
