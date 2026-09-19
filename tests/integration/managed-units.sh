@@ -3,7 +3,8 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root"
 corc="${CORC:-$root/compiler/bin/managed/Release/net10.0/corc}"
-corlink="${CORLINK:-$root/linker/bin/managed/Release/net10.0/corlink}"
+# Linking is a command of the one toolchain executable.
+corlink() { "${CORLINK:-$corc}" link "$@"; }
 export CORC="$corc"
 mkdir -p build
 work="$(mktemp -d "$root/build/managed-units.XXXXXX")"
