@@ -45,6 +45,98 @@ public sealed class IndexedDeclarations : IDisposable
         loaded.Add(key);
     }
 
+    /// <summary>
+    /// Loads a declaration this unit has decided it needs, saying whether that
+    /// was new. Unlike <see cref="Include"/> this is not the frontend's retry
+    /// step and makes no claim about discovery progress: it is how the header
+    /// closure below pulls in a signature's own dependencies within one pass.
+    /// </summary>
+    private bool Load(string key)
+    {
+        if (loaded.Contains(key)) return false;
+        using DeclarationLease lease = catalog.AcquireKey(key) ?? throw new InvalidDataException("Missing requested declaration: " + key);
+        loaded.Add(key);
+        return true;
+    }
+
+    /// <summary>
+    /// The index key for a type name as a signature wrote it, or null when
+    /// nothing of that name is indexed. Speculative: an unknown or ambiguous
+    /// spelling is simply not prefetched, and the binder still demands what it
+    /// actually resolves.
+    /// </summary>
+    private readonly Dictionary<(string Name, int Arity), string?> speculated = new();
+
+    /// <summary>The names a signature can write that are never index entries.</summary>
+    private static readonly HashSet<string> Builtin = new(StringComparer.Ordinal)
+    {
+        "void", "bool", "byte", "sbyte", "short", "ushort", "int", "uint", "long", "ulong",
+        "float", "double", "decimal", "char", "string", "object", "nint", "nuint", "var", "dynamic",
+    };
+
+    private string? Speculate(string name, int arity)
+    {
+        if (name.Length == 0 || name[0] == '_' || Builtin.Contains(name)) return null;
+        // A type parameter is a name with no declaration anywhere; they are
+        // numerous and every one of them would otherwise be a failed lookup.
+        if (arity == 0 && name.Length <= 2 && char.IsUpper(name[0])) return null;
+        if (speculated.TryGetValue((name, arity), out string? memo)) return memo;
+        string simple = arity > 0 ? name + "`" + arity : name;
+        string? key;
+        try
+        {
+            key = catalog.BindingKey(assembly, simple);
+            if (key is null)
+            {
+                // Written qualified: `System.Collections.List<T>` is indexed under
+                // the name its declaration carries, not the path the use site took.
+                int cut = simple.LastIndexOf('.');
+                key = cut < 0 ? null : catalog.BindingKey(assembly, simple[(cut + 1)..]);
+            }
+        }
+        catch (InvalidDataException) { key = null; }
+        speculated[(name, arity)] = key;
+        return key;
+    }
+
+    /// <summary>
+    /// Every type name written in a declaration's SIGNATURES: bases, constraints,
+    /// field and property types, method returns and parameters. Bodies are not
+    /// walked, because an imported header is bound for its signatures only.
+    /// </summary>
+    private static IEnumerable<(string Name, int Arity)> SignatureNames(TypeDecl type)
+    {
+        List<(string, int)> found = new();
+        void Walk(TypeRef? reference)
+        {
+            if (reference is null) return;
+            found.Add((reference.Name, reference.Args.Count));
+            foreach (TypeRef argument in reference.Args) Walk(argument);
+            if (reference.UseArgs is not null) foreach (TypeRef argument in reference.UseArgs) Walk(argument);
+        }
+        foreach (TypeRef basis in type.Bases) Walk(basis);
+        foreach (TypeParam parameter in type.TypeParams)
+            foreach (TypeRef constraint in parameter.Constraints) Walk(constraint);
+        foreach (MemberDecl member in type.Members)
+        {
+            switch (member)
+            {
+                case FieldDecl field: Walk(field.Type); break;
+                case PropertyDecl property:
+                    Walk(property.Type);
+                    foreach (Param parameter in property.Params) Walk(parameter.Type);
+                    break;
+                case MethodDecl method:
+                    Walk(method.Returns);
+                    foreach (Param parameter in method.Params) Walk(parameter.Type);
+                    foreach (TypeParam parameter in method.TypeParams)
+                        foreach (TypeRef constraint in parameter.Constraints) Walk(constraint);
+                    break;
+            }
+        }
+        return found;
+    }
+
     public void RequireExtensions(string space, string method)
     {
         string query = space + "\n" + method;
@@ -71,8 +163,19 @@ public sealed class IndexedDeclarations : IDisposable
         // fragment. Demand its family before entering body binding.
         foreach (TypeDecl type in unit.Types.Where(type => type.Mods.HasFlag(Mods.Partial)))
             Require(Binder.TypeKey(type));
-        foreach (string key in loaded)
+        // THE WHOLE CHAIN IN ONE PASS. A header's own signatures name more
+        // types -- List names IEnumerable, which names IEnumerator, and so on
+        // -- and discovering them one at a time meant the frontend threw the
+        // unit away and reparsed and rebound EVERYTHING for each link. An
+        // empty kernel file cost eighteen of those rounds. The names are
+        // already in the header just parsed, so the closure is taken here,
+        // and the binder still demands anything this does not foresee.
+        Queue<string> pending = new(loaded);
+        HashSet<string> visited = new(StringComparer.Ordinal);
+        while (pending.Count != 0)
         {
+            string key = pending.Dequeue();
+            if (!visited.Add(key)) continue;
             // Parsed headers own their syntax. Keeping their serialized source
             // records pinned as well prevents eviction without helping binding.
             using DeclarationLease lease = catalog.AcquireKey(key)
@@ -118,6 +221,11 @@ public sealed class IndexedDeclarations : IDisposable
                     member.OwnedImplementation = false;
                 }
                 unit.Types.Add(root);
+                foreach ((string name, int arity) in SignatureNames(root))
+                {
+                    string? next = Speculate(name, arity);
+                    if (next is not null && Load(next)) pending.Enqueue(next);
+                }
             }
         }
     }

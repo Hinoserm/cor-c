@@ -29,7 +29,12 @@ public static class Frontend
             if (declarations is not null) declarations.Passes++;
             try { return CompileCore(paths, name, library, libraryPaths, symbols, elsewherePaths, workers, declarations); }
             catch (DeclarationDemand demand) when (declarations is not null)
-            { foreach (string key in demand.Keys) declarations.Include(key); }
+            {
+                if (Environment.GetEnvironmentVariable("CORC_TRACE_DEMAND") is not null)
+                    Console.Error.WriteLine("pass " + declarations.Passes + " demanded " + demand.Keys.Count + ": "
+                        + string.Join(", ", demand.Keys.Select(k => k.Split('\n').Last())));
+                foreach (string key in demand.Keys) declarations.Include(key);
+            }
         }
     }
 
