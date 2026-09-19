@@ -12,7 +12,7 @@ all other projects. Requires .NET 10, a host C linker and development libraries.
 Other publishing hosts currently fail explicitly; they can opt into JIT using
 the standard project property `PublishAot=false`. No silent fallback is used.
 
-CoreCLR JIT-compiles managed methods to host machine code. Tiered compilation
+For explicit JIT builds, CoreCLR compiles managed methods to host machine code. Tiered compilation
 and dynamic PGO are enabled for managed executable projects by the owned build
 utility. The repository's standard `Directory.Build.props` expresses the same
 policy for SDK bootstrap builds. Explicit project exclusions are respected.
@@ -34,10 +34,10 @@ real short-lived per-file compilation workloads, total build time and peak
 memory before making it the default. Changing a launcher filename does not
 remove JIT startup cost.
 
-## Native AOT experiment
+## SDK comparison recipe
 
-The compiler can also be published as a host-native executable. This is an
-optional SDK publishing experiment, not a new MSBuild dependency in ordinary
+The compiler can also be published outside the owned build path for comparison.
+This is an optional SDK publishing experiment, not a new MSBuild dependency in ordinary
 COR-C# project builds. It does not change generated programs' CPU baseline.
 Keep its output separate from the working managed tools:
 

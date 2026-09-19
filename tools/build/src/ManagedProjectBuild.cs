@@ -121,7 +121,10 @@ public static class ManagedProjectBuild
 
     private static void WriteChanged(string path, string text)
     {
-        if (!File.Exists(path) || File.ReadAllText(path) != text) File.WriteAllText(path, text);
+        if (File.Exists(path) && File.ReadAllText(path) == text) return;
+        string temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try { File.WriteAllText(temporary, text); File.Move(temporary, path, overwrite: true); }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
 
     private static async Task<FileStream> Lock(string path, CancellationToken cancel)
