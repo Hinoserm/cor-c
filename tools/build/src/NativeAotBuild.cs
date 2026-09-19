@@ -61,6 +61,33 @@ public static class NativeAotBuild
             args.Add("--feature:" + value); args.Add("--runtimeknob:" + value);
         }
         args.Add("--runtimeknob:RUNTIME_IDENTIFIER=" + rid);
+        // THE SAME COLLECTOR SETTINGS THE MANAGED BUILD WRITES INTO
+        // runtimeconfig.json. A Native AOT image has no runtimeconfig.json
+        // beside it, so without this the shipped compiler -- the one every
+        // corsac86 build actually runs -- quietly keeps the defaults while
+        // the managed build gets the tuning, which is the sort of difference
+        // that goes unnoticed until someone measures the wrong binary.
+        // The image's knobs are named and written the way the environment
+        // names them -- gcServer, not System.GC.Server, and hexadecimal --
+        // which is not how runtimeconfig.json spells the same settings.
+        Dictionary<string, string> knobs = new(StringComparer.Ordinal)
+        {
+            ["System.GC.Server"] = "gcServer",
+            ["System.GC.Concurrent"] = "gcConcurrent",
+            ["System.GC.HeapCount"] = "GCHeapCount",
+            ["System.GC.HeapHardLimit"] = "GCHeapHardLimit",
+            ["System.GC.Gen0Size"] = "GCgen0size",
+        };
+        foreach (var pair in ManagedRuntimeConfiguration.Create(project.Properties))
+        {
+            if (!knobs.TryGetValue(pair.Key, out string? knob)) continue;
+            args.Add("--runtimeopt:" + knob + "=" + pair.Value switch
+            {
+                bool on => on ? "1" : "0",
+                long number => number.ToString("x"),
+                object other => other.ToString() ?? "",
+            });
+        }
         string[] shims = invariant
             ? ["System.Native", "System.IO.Compression.Native", "System.Net.Security.Native", "System.Security.Cryptography.Native.OpenSsl"]
             : ["System.Native", "System.IO.Compression.Native", "System.Net.Security.Native", "System.Security.Cryptography.Native.OpenSsl", "System.Globalization.Native"];

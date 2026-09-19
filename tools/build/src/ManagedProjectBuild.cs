@@ -138,7 +138,13 @@ public static class ManagedProjectBuild
                 }
                 string version = project.Framework[3..] + ".0";
                 JsonObject switches = new();
-                foreach (var pair in ManagedRuntimeConfiguration.Create(project.Properties)) switches[pair.Key] = (bool)pair.Value;
+                foreach (var pair in ManagedRuntimeConfiguration.Create(project.Properties))
+                    switches[pair.Key] = pair.Value switch
+                    {
+                        bool flag => JsonValue.Create(flag),
+                        long number => JsonValue.Create(number),
+                        _ => JsonValue.Create(pair.Value.ToString()),
+                    };
                 WriteChanged(Path.Combine(output, project.AssemblyName + ".runtimeconfig.json"), new JsonObject {
                     ["runtimeOptions"] = new JsonObject { ["tfm"] = project.Framework,
                         ["framework"] = new JsonObject { ["name"] = "Microsoft.NETCore.App", ["version"] = version },
