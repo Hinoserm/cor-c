@@ -56,25 +56,48 @@ public static class ProjectCompile
             common.Add(args[i]);
         }
 
-        using DeclarationSession session = new(index, assembly);
+        long declBudget = long.TryParse(Environment.GetEnvironmentVariable("CORC_DECL_BUDGET"), out long d) ? d : 32L * 1024 * 1024;
+        long tokBudget = long.TryParse(Environment.GetEnvironmentVariable("CORC_TOKEN_BUDGET"), out long t) ? t : 256L * 1024 * 1024;
+        using DeclarationSession session = new(index, assembly, declBudget, tokBudget);
         Driver.Session = session;
         int failures = 0;
         object gate = new();
         int done = 0;
 
+        // WHAT IS ALREADY BUILT IS NOT BUILT AGAIN. The receipt each unit
+        // wrote says which declarations it read and what they were; if none
+        // of them has moved and the object is still there, the unit is
+        // current. Asking here rather than in the build tool saves a process
+        // per unit just to put the question.
+        int skipped = 0;
+        bool Current(Unit unit)
+        {
+            if (!File.Exists(unit.Object) || !File.Exists(unit.Receipt)) return false;
+            try { return UnitDependencies.IsCurrent(unit.Receipt, index); }
+            catch (IOException) { return false; }
+            catch (InvalidDataException) { return false; }
+        }
+
         int One(Unit unit)
         {
+            if (Current(unit))
+            {
+                lock (gate) { done++; skipped++; }
+                return 0;
+            }
             List<string> one = new() { unit.Source };
             one.AddRange(common);
             if (!unit.Entry) one.Add("--lib");
             one.Add("--dependency-file"); one.Add(unit.Receipt);
             one.Add("-o"); one.Add(unit.Object);
+            long before = GC.GetTotalAllocatedBytes();
             int code = Driver.Compile(one.ToArray());
+            long after = GC.GetTotalAllocatedBytes();
             lock (gate)
             {
                 done++;
                 Console.Error.WriteLine("unit " + done + "/" + units.Count + " " + Path.GetFileName(unit.Source)
-                    + (code == 0 ? "" : " FAILED"));
+                    + " unit-allocated=" + (after - before) + (code == 0 ? "" : " FAILED"));
             }
             return code;
         }
@@ -100,7 +123,7 @@ public static class ProjectCompile
         }
 
         Driver.Session = null;
-        Console.Error.WriteLine("project " + assembly + ": " + units.Count + " units, "
+        Console.Error.WriteLine("project " + assembly + ": " + units.Count + " units, " + skipped + " already current, "
             + session.Tokens.Hits + " header lexes reused, " + session.Catalog.PayloadLoads + " index payload loads, "
             + "allocated=" + GC.GetTotalAllocatedBytes());
         return failures == 0 ? 0 : 1;
