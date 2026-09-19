@@ -1537,7 +1537,25 @@ public sealed partial class Lowering
         // synthesised, stored back into the same place.
         if (_b.DelegateCompounds.TryGetValue(a, out CallExpr? delegateCall))
         {
+            // THE PLACE IS WORKED OUT ONCE AND USED FOR BOTH HALVES. The
+            // binder synthesised Combine(target, value) over the assignment's
+            // own target expression, so evaluating that call would evaluate
+            // the target a second time: `Items.Add("x").Click += h` called
+            // Add twice and put the item in the list twice. The current value
+            // is loaded from the place instead, which the receiver has
+            // already been evaluated for.
             Place? delegatePlace = PlaceOf(a.Target);
+            if (delegatePlace is not null
+                && _b.Calls.TryGetValue(delegateCall, out MethodSymbol? combine)
+                && combine.Static && combine.Params.Count == 2)
+            {
+                TouchType(combine.Owner);
+                VReg had = LoadPlace(delegatePlace);
+                VReg operand = EvalAs(a.Value, combine.Params[1].Type);
+                VReg made = CallMethod(combine, null, new List<Operand> { R(had), R(operand) })!;
+                StorePlace(delegatePlace, made);
+                return made;
+            }
             VReg combined = Eval(delegateCall);
             if (delegatePlace is not null) StorePlace(delegatePlace, combined);
             return combined;
