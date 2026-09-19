@@ -41,6 +41,29 @@ work belong in [TODO.md](TODO.md).
   only for instructions the host supports. Host/emulator timings do not certify
   K6-family performance.
 
+### Runtime CPU optimization
+
+- Baseline-built runtime and standard libraries must retain baseline-safe
+  startup and fallbacks while offering multiple implementations of selected
+  routines. Hardware support alone is insufficient: OS enablement and safe
+  preservation of the required register state must also be established.
+- Detect capabilities and resolve implementations during initialization,
+  normally once per process. Prefer existing dispatch pointers or operation
+  tables; do not add chains of feature tests or repeated CPUID/control-register
+  probes to hot paths. Keep dispatch overhead in performance measurements.
+- Instruction/call-site patching is permitted for measured hot spots with
+  validated encodings, instruction-fetch synchronization and safe publication.
+  It is not required where initialization-time pointer selection suffices.
+- Preserve genuinely dynamic ownership, concurrency and argument checks.
+  They are not CPU-detection overhead and cannot be removed merely to avoid
+  branches. Select capabilities safe on every CPU to which a thread can migrate.
+- CPU-specific variants and LTO must not cause unguarded optional instructions
+  to escape into a baseline path. Explicit feature exclusions must apply to
+  runtime selection as well as compile-time instruction selection.
+- Report detected capabilities separately from implementations actually
+  selected in diagnostic output. Do not equate instruction availability with
+  a measured speed improvement.
+
 ### C# language
 
 - Any departure from the applicable C# language specification is a product
