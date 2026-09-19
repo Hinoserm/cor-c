@@ -30,7 +30,22 @@ are explicitly deferred by request; do not resume them without a new request.
   flow, generic diagnostic identity, LTO array-length verification, dynamic
   object relocations, consumed contracts and crypto runtime fallback helpers.
 
-### Deferred functional blockers
+### Runtime build follow-up
+
+- [x] Compile runtime/shared-library sources as independent PIC objects and
+  link them with `corlink --shared`, preserving one image initializer and
+  strict dependency checks. The OS integration logs eight concurrent runtime
+  compiler processes; all 14 libraries build successfully.
+- [x] Verify separate shared linking, SONAME, initializer ownership, absence
+  of text relocations, and rejection of missing dependencies/flat shared output.
+  Shared runtime acceptance: 37 passed, zero failed, including GC roots,
+  threads, generics, exceptions, static state and stack traces.
+  Evidence: `build/parallel-runtime-check.aHgbx0/acceptance.log` and
+  `build/separate-dynamic.0O0zwz/`.
+- [ ] Complete the production OS boot and unchanged incremental-build check
+  with the newly separate runtime libraries.
+
+### Deferred CPU functional blockers
 
 1. [ ] Implement Pentium FDIV detection and corrected division, including
    forced-path regression tests on unaffected Linux/QEMU hosts.
