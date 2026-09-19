@@ -416,6 +416,7 @@ public sealed partial class Binder
 
     /// <summary>Closure classes built within the current body work item.</summary>
     private int _closures;
+    private readonly Dictionary<string, ClosureInfo> _groupClosures = new();
 
     /// Names the hidden locals a rewritten foreach needs, so nested loops do
     /// not share one.
@@ -3977,7 +3978,18 @@ public sealed partial class Binder
         // somebody else's body: `l.Where(p).Sum(q)` summed the whole of l.
         // A source-ordered work identity, not a process-wide increment, lets
         // future worker contexts name closures without scheduling dependence.
-        string name2 = $"Lambda${_closureOwner}${_closures++}";
+        string name2 = lam.GroupIdentity is string groupIdentity
+            ? $"Lambda$Group${(_thisType?.Key ?? "")}${groupIdentity}"
+            : $"Lambda${_closureOwner}${_closures++}";
+        // A method group already turned into a closure in this type is that
+        // closure again, when nothing but the plain `this` could be captured;
+        // a nested capture would need a different source for the same field.
+        if (lam.GroupIdentity is not null && _groupClosures.TryGetValue(name2, out ClosureInfo? sharedClosure)
+            && (_method is { Static: true } || (_capturedThisType is null && _thisType is not null)))
+        {
+            _r.Closures[lam] = sharedClosure;
+            return wanted;
+        }
         TypeDecl decl = new() { Name = name2, Kind = TypeKind.Class, LocalOnly = true, File = _in, Line = lam.Line, Col = lam.Col };
 
         // KEYED UNDER THE TYPE THE LAMBDA WAS WRITTEN IN, so that names inside
@@ -4103,6 +4115,7 @@ public sealed partial class Binder
         _r.Types[name2] = closure;
         _r.Methods[body] = run;
         _r.Closures[lam] = new ClosureInfo(closure, fields, run);
+        if (lam.GroupIdentity is not null) _groupClosures[name2] = _r.Closures[lam];
 
         // WHAT WAS PROVED ABOUT A CAPTURE GOES IN WITH IT.
         //
@@ -4496,6 +4509,13 @@ public sealed partial class Binder
 
         CallExpr call = new() { Target = source, Line = source.Line, Col = source.Col };
         LambdaExpr made = new() { Body = call, Line = source.Line, Col = source.Col };
+        // Which method the group means here is the one whose arity the
+        // delegate's Invoke has; its identity names the closure class, so a
+        // second conversion of the same method anywhere in the type is the
+        // same class and the two compare equal, as C# requires of delegates.
+        IReadOnlyList<MethodSymbol> candidates = sym is MethodGroupSym mg ? mg.Methods : ((CapturedMethodGroupSym)sym).Methods;
+        MethodSymbol? chosen = candidates.FirstOrDefault(m => m.Params.Count == invoke.Params.Count);
+        if (chosen is not null) made.GroupIdentity = ClosureIdentity.Of(chosen);
 
         for (int i = 0; i < invoke.Params.Count; i++)
         {

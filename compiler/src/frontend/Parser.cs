@@ -1413,7 +1413,7 @@ public sealed class Parser
         src.Append("        if (a == null || b == null) return a;\n");
         src.Append("        if (a is ").Append(m).Append(" ma)\n        {\n");
         src.Append("            int at = -1;\n");
-        src.Append("            for (int i = ma.Items.Length - 1; i >= 0; i--) { if ((object)ma.Items[i] == (object)b) { at = i; break; } }\n");
+        src.Append("            for (int i = ma.Items.Length - 1; i >= 0; i--) { if (Runtime.SameClosure(ma.Items[i], b)) { at = i; break; } }\n");
         src.Append("            if (at < 0) return a;\n");
         src.Append("            if (ma.Items.Length == 1) return null;\n");
         src.Append("            if (ma.Items.Length == 2) return ma.Items[1 - at];\n");
@@ -1421,7 +1421,7 @@ public sealed class Parser
         src.Append("            int k = 0;\n");
         src.Append("            for (int i = 0; i < ma.Items.Length; i++) { if (i != at) { rest[k] = ma.Items[i]; k++; } }\n");
         src.Append("            return new ").Append(m).Append("(rest);\n        }\n");
-        src.Append("        return (object)a == (object)b ? null : a;\n    }\n}\n");
+        src.Append("        return Runtime.SameClosure(a, b) ? null : a;\n    }\n}\n");
         Parser sub = new(Lexer.Tokenize(src.ToString(), _file), _file);
         CompilationUnit unit = sub.ParseUnit();
         return unit.Types.Count == 1 ? unit.Types[0] : null;

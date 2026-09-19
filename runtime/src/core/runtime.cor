@@ -112,6 +112,29 @@ static class Tls
 
 static class Runtime
 {
+    /// Delegate equality. Two closures are the same delegate when they are
+    /// the same class -- which, for a method group, means the same method,
+    /// because the compiler names those classes by the method -- and hold
+    /// the same captured words, which for an instance method is the target.
+    /// The object's size is the second word of its descriptor, and the
+    /// descriptor sits DescriptorBytes before the vtable the object points
+    /// at. 32-bit layout, like the collector.
+    public static bool SameClosure(object? a, object? b)
+    {
+        long pa = Sys.Word(a);
+        long pb = Sys.Word(b);
+        if (pa == pb) return true;
+        if (pa == 0 || pb == 0) return false;
+        long vt = Sys.Peek(pa);
+        if (vt != Sys.Peek(pb)) return false;
+        long size = Sys.Peek(vt - 48 + 4);
+        for (long at = 8; at + 4 <= size; at += 4)
+        {
+            if (Sys.Peek(pa + at) != Sys.Peek(pb + at)) return false;
+        }
+        return true;
+    }
+
     // State is a naturally aligned static word: 0 unclaimed, 1 completed,
     // 2 failed, otherwise the initializing thread's control-block address.
     // No allocation is allowed in this protocol. Current thread control
