@@ -1,0 +1,55 @@
+// test: nullable_jagged_array
+// expect-exit: 0
+// expect-output:
+// kept 3
+// first 7
+// none
+//
+// A reference annotation is a promise about what is read out, not a
+// different type, at every depth of an array: `byte[][]?` takes a
+// `byte[]?[]`, as C# allows, and a row read from it may be tested for
+// null. The compiler refused this as "cannot convert 'byte[]?[]' to
+// 'byte[][]?'" because only the top annotation, and one level of element,
+// were taken off before comparing.
+
+class Ring
+{
+    byte[]?[]? _rows;
+    int _count;
+
+    public void Keep(int lines) { _rows = new byte[]?[lines]; _count = 0; }
+
+    public void Add(byte[] row)
+    {
+        byte[]?[]? rows = _rows;
+        if (rows == null) return;
+        rows[_count] = row;
+        _count = _count + 1;
+    }
+
+    public byte[]? Row(int i)
+    {
+        byte[][]? rows = _rows;                 // the annotation inside is dropped: still the same array
+        if (rows == null || i < 0 || i >= _count) return null;
+        return rows[i];
+    }
+
+    public int Count() { return _count; }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Ring r = new Ring();
+        r.Keep(4);
+        byte[] a = new byte[1]; a[0] = 7;
+        r.Add(a); r.Add(new byte[2]); r.Add(new byte[3]);
+        Sys.Print("kept "); Sys.PrintInt(r.Count()); Sys.PrintLine();
+        byte[]? first = r.Row(0);
+        if (first != null) { Sys.Print("first "); Sys.PrintInt(first[0]); Sys.PrintLine(); }
+        byte[]? none = r.Row(9);
+        if (none == null) { Sys.Print("none"); Sys.PrintLine(); }
+        return 0;
+    }
+}

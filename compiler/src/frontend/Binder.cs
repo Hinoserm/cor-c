@@ -3499,6 +3499,10 @@ public sealed partial class Binder
         {
             Warning(at, $"{what}: '{from}' may be null but '{to}' may not");
         }
+        else if (WeakensPromise(from, to))
+        {
+            Warning(at, $"{what}: an element of '{from}' may be null but '{to}' says its elements may not");
+        }
 
         // A Nullable<T> WHERE A T IS WANTED is not a conversion the compiler
         // may make on its own -- it can fail, and C# makes you write .Value or
@@ -3594,6 +3598,39 @@ public sealed partial class Binder
                     : Convertible(pair.Second.Type, pair.First.Type))));
     }
 
+    /// <summary>
+    /// The same type once every reference and array annotation is taken
+    /// off, at every depth. A Nullable&lt;T&gt; value keeps its mark: `int?`
+    /// is a different thing from `int`, a cell, not a promise.
+    /// </summary>
+    private static bool SameUnannotated(Type a, Type b)
+    {
+        Type x = a.IsNullableValue ? a : a.AsNonNullable();
+        Type y = b.IsNullableValue ? b : b.AsNonNullable();
+        if (x.IsArray || y.IsArray)
+        {
+            return x.IsArray && y.IsArray && x.ArrayRank == y.ArrayRank
+                && x.PointerDepth == y.PointerDepth
+                && x.Element is { } xe && y.Element is { } ye && SameUnannotated(xe, ye);
+        }
+        return x.Equals(y);
+    }
+
+    /// <summary>
+    /// Whether a value read out of `from` may be null where `to` promises it
+    /// is not, at any depth of array: the warning that goes with an
+    /// annotation weakened by an identity conversion.
+    /// </summary>
+    private static bool WeakensPromise(Type from, Type to)
+    {
+        if (from.IsArray && to.IsArray && from.Element is { } fe && to.Element is { } te)
+        {
+            if (fe.Nullable && !te.Nullable && fe.IsReference) return true;
+            return WeakensPromise(fe, te);
+        }
+        return false;
+    }
+
     private bool Convertible(Type from, Type to)
     {
         // Anything is a machine word, which is the whole point of this type.
@@ -3616,19 +3653,17 @@ public sealed partial class Binder
             return true;
         }
 
-        // AN ARRAY OF THINGS IS AN ARRAY OF THINGS THAT MAY BE NULL.
-        //
-        // `Array.Empty<FrameSlot>()` fills a `FrameSlot?[]`, and C# says
-        // nothing about it: the two are the same array at run time, and
-        // everything read out of the target is treated as possibly null, which
-        // is true of an array whose elements are not. The other direction is
-        // the unsafe one and is not a conversion -- reading a `string` out of
-        // something a null may have been written into is exactly what the
-        // annotation exists to stop.
-        if (from.IsArray && to.IsArray
-            && from.Element is { Nullable: false } had && to.Element is { Nullable: true } want
-            && had.IsReference && want.IsReference
-            && had.Equals(want.AsNonNullable()))
+        // AN ARRAY OF THINGS IS AN ARRAY OF THINGS THAT MAY BE NULL, AT
+        // EVERY DEPTH. A reference annotation is a promise about what is
+        // read out, not a different type: `string?[]` and `string[]` are
+        // the same array at run time, and so are `byte[]?[]` and
+        // `byte[][]?`, which is what C# says too -- an identity conversion,
+        // with a warning where a promise is weakened. Comparing only the
+        // top annotation, and then only one level of element, refused
+        // `byte[][]? ring = new byte[]?[n];` with the memorable "cannot
+        // convert 'byte[]?[]' to 'byte[][]?'". The warning for the unsafe
+        // direction is CheckAssignable's, after the conversion is allowed.
+        if (from.IsArray && to.IsArray && SameUnannotated(from, to))
         {
             return true;
         }
