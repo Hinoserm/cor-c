@@ -577,6 +577,11 @@ public class Form : Control
         Seat seat = Seat.Current;
         if (StartPosition == FormStartPosition.CenterScreen)
             base.SetBounds((seat.Width - Width) / 2, (seat.Height - Height) / 2, Width, Height);
+        else if (StartPosition == FormStartPosition.WindowsDefaultLocation)
+        {
+            Point at = Application.NextCascade(Width, Height, seat.Width, seat.Height);
+            base.SetBounds(at.X, at.Y, Width, Height);
+        }
         _handle = seat.CreateWindow(Left, Top, Width, Height);
         _shown = true;
         Application.Register(this);
@@ -876,6 +881,22 @@ public delegate void WatchHandler(int fd);
 public static class Application
 {
     static List<Form> _forms = new List<Form>();
+    static int _cascade;
+
+    /// Where the next window with no position of its own goes: down and
+    /// right of the last, a caption's height at a time, back to the corner
+    /// when it would run off the screen. Two terminals opened one after the
+    /// other are then both visible, which is what Windows does and what a
+    /// person opening a second one expects.
+    internal static Point NextCascade(int width, int height, int screenWidth, int screenHeight)
+    {
+        const int Step = Form.CaptionHeight + Form.BorderWidth;
+        const int Margin = 24;
+        int x = Margin + _cascade * Step, y = Margin + _cascade * Step;
+        if (x + width > screenWidth || y + height > screenHeight) { _cascade = 0; x = Margin; y = Margin; }
+        _cascade++;
+        return new Point(x, y);
+    }
     static bool _running;
     static int _exitCode;
     static Control? _focus;
