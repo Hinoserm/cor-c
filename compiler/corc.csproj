@@ -29,21 +29,50 @@
       find) and four heaps rather than one per core, which was pure waste on
       a large machine. And a hard limit, which is the part that matters for
       memory: without it the collector grows to 845 MB because nothing tells
-      it not to, and with it the same compile peaks at 326 MB, LESS than the
-      default collector used, because a limit makes it collect instead of
-      grow.
+      it not to, and with it the same compile peaks well below that, because
+      a limit makes it collect instead of grow.
 
-      Kernel, eight workers: 12.0 s and 371 MB becomes 8.2 s and 326 MB.
+      768 MB, and not less, because the limit is a WALL and not a target: the
+      biggest single compile this repository does, the whole class library
+      inline as a fifteen megabyte object, already holds about 270 MB by
+      itself, and a cap of 256 MB left it nothing. It survived alone and
+      aborted inside the ELF writer when the test suite ran several
+      compilers at once, which is the worst way to find out. Three times the
+      largest known live set is the headroom; the sweep says the roomier cap
+      is FASTER anyway (6.6 s against 7.3 s over the kernel), because the
+      collector that is not fighting a wall runs less often.
+
+      Kernel, eight workers: 12.0 s and 371 MB becomes about 6.6 s.
       Never slower than the default at any worker count. Every one of these
       can be overridden by its DOTNET_ environment variable for a machine
       that wants something else; a build that needs a bigger live heap than
-      256 MB should raise DOTNET_GCHeapHardLimit rather than remove it.
+      this should raise DOTNET_GCHeapHardLimit rather than remove it.
     -->
     <ServerGarbageCollection>true</ServerGarbageCollection>
     <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
     <GCHeapCount>4</GCHeapCount>
-    <GCHeapHardLimit>268435456</GCHeapHardLimit>
+    <GCHeapHardLimit>805306368</GCHeapHardLimit>
   </PropertyGroup>
+
+  <!--
+    The same two numbers again, spelled the way the .NET SDK wants them. The
+    properties above are what THIS repository's build tool reads; the SDK
+    knows nothing of them and writes a runtimeconfig.json with the collector
+    but not the cap, so a compiler built with `dotnet build` ran with no
+    limit at all and nobody could tell from the outside. Both spellings are
+    kept so the two builds cannot drift apart again.
+  -->
+  <!--
+    Guarded so that only the SDK sees them: this repository's toolchain
+    rebuilds itself with the compiler it already has, and that compiler
+    evaluates this file BEFORE the new one exists. An item type the old
+    evaluator has never heard of would stop the bootstrap; a condition it
+    finds false is skipped before the type is looked at.
+  -->
+  <ItemGroup Condition="'$(MSBuildRuntimeType)' != ''">
+    <RuntimeHostConfigurationOption Include="System.GC.HeapCount" Value="$(GCHeapCount)" />
+    <RuntimeHostConfigurationOption Include="System.GC.HeapHardLimit" Value="$(GCHeapHardLimit)" />
+  </ItemGroup>
 
 
 
