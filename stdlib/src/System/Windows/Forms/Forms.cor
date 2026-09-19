@@ -266,6 +266,12 @@ public class Seat : IDrawingTarget
     public void FocusWindow(int handle) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550017, 0); }
     /// This window is the desktop: the surface under everything, never raised.
     public void DesktopWindow(int handle) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550018, 0); }
+    /// This window stays above every ordinary one (a bar).
+    public void TopMostWindow(int handle) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550019, 0); }
+    /// Rows at the bottom of the screen a bar owns: windows keep out of them.
+    public void ReserveBottom(int rows) { Os.Ioctl(_fd, 0x4755001A, rows); }
+    /// The screen height minus what a bar has reserved: where windows go.
+    public int WorkAreaHeight() { int h = (int)Os.Ioctl(_fd, 0x47550006, 0); return h <= 0 ? Height : h; }
     static int Signed16(int v) { int n = v & 0xFFFF; return n >= 0x8000 ? n - 0x10000 : n; }
     public static int LowSigned(int packed) { return Signed16(packed); }
     public static int HighSigned(int packed) { return Signed16(packed >> 16); }
@@ -562,6 +568,8 @@ public class Form : Control
     /// The desktop is a surface of its own kind: it sits under every other
     /// window and a click on it never raises it. Set before Show.
     public bool IsDesktop;
+    /// Above every ordinary window, like a taskbar. Set before Show.
+    public bool TopMost;
     public bool HasFrame { get { return _border != FormBorderStyle.None; } }
 
     public override Rectangle ClientRectangle
@@ -593,11 +601,12 @@ public class Form : Control
             // A maximized form has its place already: the whole screen. The
             // cascade once moved the desktop a step down and right, and put
             // its bar below the bottom edge.
-            Point at = Application.NextCascade(Width, Height, seat.Width, seat.Height);
+            Point at = Application.NextCascade(Width, Height, seat.Width, seat.WorkAreaHeight());
             base.SetBounds(at.X, at.Y, Width, Height);
         }
         _handle = seat.CreateWindow(Left, Top, Width, Height);
         if (IsDesktop) seat.DesktopWindow(_handle);
+        if (TopMost) seat.TopMostWindow(_handle);
         _shown = true;
         Application.Register(this);
         OnLoad(EventArgs.Empty);
@@ -925,6 +934,7 @@ public static class Application
     static int _dragX, _dragY;
     static bool _dragPending;
     static int _dragToX, _dragToY;
+    static int _sinceDrag;                  // messages since the window last moved: bounded, or a busy tablet never lets it
 
     /// The drag's latest position is applied once the queue is quiet, not
     /// once per Move: a tablet sends hundreds a second and each move is a
@@ -934,6 +944,7 @@ public static class Application
     {
         if (!_dragPending || _dragging == null) { _dragPending = false; return; }
         _dragPending = false;
+        _sinceDrag = 0;
         _dragging.SetBounds(_dragToX, _dragToY, _dragging.Width, _dragging.Height);
     }
     static bool _paintPending;
@@ -1006,7 +1017,7 @@ public static class Application
         Seat seat = Seat.Current;
         while (_running && _forms.Count > 0)
         {
-            if (_dragPending && !seat.Poll(0)) SettleDrag();
+            if (_dragPending && (!seat.Poll(0) || _sinceDrag >= 3)) SettleDrag();
             if (_paintPending) PaintNow();
             if (Idle != null) Idle(null!, EventArgs.Empty);
             if (_watchFds.Count > 0)
@@ -1064,7 +1075,7 @@ public static class Application
             {
                 int wx = Seat.LowSigned(m.A), wy = Seat.HighSigned(m.A);
                 int sx = Seat.LowSigned(m.B), sy = Seat.HighSigned(m.B);
-                if (_dragging != null) { _dragToX = sx - _dragX; _dragToY = sy - _dragY; _dragPending = true; break; }
+                if (_dragging != null) { _dragToX = sx - _dragX; _dragToY = sy - _dragY; _dragPending = true; _sinceDrag++; break; }
                 f!.WindowMouse(3, 0, wx, wy); break;
             }
             case 4:
