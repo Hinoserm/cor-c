@@ -171,9 +171,13 @@ public class Seat : IDrawingTarget
         Flush();
         // ONE WRITE: the seat reads the pixels out of the same batch as the
         // op that introduces them, so they cannot be a second write.
-        byte[] one = new byte[20 + bytes];
-        Put(one, 0, 7); Put(one, 4, id); Put(one, 8, width); Put(one, 12, height); Put(one, 16, bytes);
-        for (int i = 0; i < bytes; i++) one[20 + i] = argb[i];
+        // Five words, as the seat's DefineBitmap is declared: id, width,
+        // height, format (0: 0xAARRGGBB), then how many bytes follow. Sent
+        // with four, the seat read the byte count out of the first pixel,
+        // found it did not fit, and dropped the picture without a word.
+        byte[] one = new byte[24 + bytes];
+        Put(one, 0, 7); Put(one, 4, id); Put(one, 8, width); Put(one, 12, height); Put(one, 16, 0); Put(one, 20, bytes);
+        for (int i = 0; i < bytes; i++) one[24 + i] = argb[i];
         int at = 0;
         while (at < one.Length)
         {
