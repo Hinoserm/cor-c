@@ -80,12 +80,17 @@ public static class ProjectCompile
         // receipt stayed current and the old object was kept, build after
         // build. The stamp beside the receipt is the source's bytes and the
         // options it was compiled with; either changing means compiling.
-        string optionsText = string.Join('\t', common);
+        // The unit's own role is part of it: the entry unit of a library is
+        // compiled with the initialiser on and the rest with it off, and an
+        // object made the other way round is not current. "2" is the stamp's
+        // own version, so a stamp written before the role was included is
+        // never trusted.
+        string optionsText = "2\t" + string.Join('\t', common);
         string Stamp(Unit unit)
         {
             using SHA256 sha = SHA256.Create();
             byte[] source = File.ReadAllBytes(unit.Source);
-            byte[] options = Encoding.UTF8.GetBytes(optionsText);
+            byte[] options = Encoding.UTF8.GetBytes(optionsText + (unit.Entry ? "\tentry" : "\tlib"));
             sha.TransformBlock(source, 0, source.Length, null, 0);
             sha.TransformFinalBlock(options, 0, options.Length);
             return Convert.ToHexString(sha.Hash!);
@@ -113,7 +118,15 @@ public static class ProjectCompile
             }
             List<string> one = new() { unit.Source };
             one.AddRange(common);
-            if (!unit.Entry) one.Add("--lib");
+            // ONE INITIALISER PER LIBRARY. A shared object gets a function
+            // the loader calls before anything uses it -- __corsac_init,
+            // which hands the image's statics to the collector and its frame
+            // tables to the stack walker. Every unit would emit its own and
+            // the link would refuse the duplicates, so the entry unit alone
+            // emits it. Switching it off for all of them, as the parallel
+            // compile first did, left every library's statics unscanned: the
+            // collector freed live objects and the desktop died of it.
+            if (!unit.Entry) { one.Add("--lib"); one.Add("--no-shared-init"); }
             one.Add("--dependency-file"); one.Add(unit.Receipt);
             one.Add("-o"); one.Add(unit.Object);
             long before = GC.GetTotalAllocatedBytes();
@@ -180,7 +193,12 @@ public static class ProjectCompile
         // project. Sitting the other workers idle for the whole of kmain,
         // which is one of the three largest sources, cost nine tenths of a
         // second of a six second build.
-        bool dynamic = common.Contains("--dynamic") || common.Contains("--link-shared");
+        // A SHARED LIBRARY TOO: its entry unit is the one that emits the
+        // initialiser, and SharedObject is a static of the lowering, so it
+        // must be compiled alone before the units that switch it off run
+        // beside it -- or all of them see it on and the link refuses eight
+        // definitions of __corsac_init.
+        bool dynamic = common.Contains("--dynamic") || common.Contains("--link-shared") || common.Contains("--shared");
         if (dynamic)
             foreach (Unit unit in units.Where(unit => unit.Entry))
                 if (Gated(unit) != 0) failures++;

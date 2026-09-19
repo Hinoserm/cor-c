@@ -50,7 +50,7 @@ public static partial class Linker
     /// a library may call back into its consumer; everything the objects
     /// define and export appears in .dynsym.
     /// </summary>
-    public static byte[] LinkShared(IEnumerable<(string Name, ObjectFile Object)> objects, string soname, IEnumerable<string>? needed = null, string? runPath = null)
+    public static byte[] LinkShared(IEnumerable<(string Name, ObjectFile Object)> objects, string soname, IEnumerable<string>? needed = null, string? runPath = null, uint loadAddress = 0, IEnumerable<string>? libraries = null)
     {
         ArgumentNullException.ThrowIfNull(objects);
         ArgumentNullException.ThrowIfNull(soname);
@@ -75,8 +75,15 @@ public static partial class Linker
             dyn.RunPath = runPath ?? (where.Count == 0 ? null : string.Join(':', where));
         }
         // A shared object is ET_DYN and loads wherever the kernel puts it,
-        // so every address in it is an offset from zero.
-        return LinkDynamic(objects, dyn, null, 0);
+        // so every address in it is an offset from zero -- unless it was
+        // given a PREFERRED address. Then its addresses are laid out from
+        // there, and a loader that finds that range free maps it with no
+        // bias at all: nothing to relocate, and its pages stay the file
+        // cache's, shared by every process. A loader that cannot relocates
+        // it as before, by the difference. What Windows does with a base
+        // address and prelink did on Linux.
+        dyn.Libraries.AddRange(libraries ?? needed ?? Array.Empty<string>());
+        return LinkDynamic(objects, dyn, null, loadAddress);
     }
 
     /// <summary>
@@ -84,7 +91,7 @@ public static partial class Linker
     /// libraries whose names go in DT_NEEDED and whose symbols the loader
     /// supplies. The executable's own code stays non-PIC.
     /// </summary>
-    public static byte[] Link(IEnumerable<(string Name, ObjectFile Object)> objects, string entrySymbol, IEnumerable<string> sharedLibs, string? runPath = null, uint loadAddress = DefaultLoadAddress, ProgramInfo? program = null)
+    public static byte[] Link(IEnumerable<(string Name, ObjectFile Object)> objects, string entrySymbol, IEnumerable<string> sharedLibs, string? runPath = null, uint loadAddress = DefaultLoadAddress, ProgramInfo? program = null, IEnumerable<string>? libraries = null)
     {
         _program = program;
         ArgumentNullException.ThrowIfNull(sharedLibs);
@@ -104,6 +111,7 @@ public static partial class Linker
         // path, and a program that will not run without LD_LIBRARY_PATH set
         // by hand is not a program anyone can use.
         dyn.RunPath = runPath ?? (runPaths.Count == 0 ? null : string.Join(':', runPaths));
+        dyn.Libraries.AddRange(libraries ?? sharedLibs);
         return LinkDynamic(objects, dyn, entrySymbol, loadAddress);
     }
 
@@ -170,6 +178,7 @@ public static partial class Linker
         {
             throw new LinkException(errors);
         }
+        Prebind(dyn);
         Arrange(layout, dyn);
         AssignAddresses(layout);
         DefineLinkerSymbols(layout);
@@ -242,6 +251,16 @@ public static partial class Linker
 
         /// <summary>Set when a relocation lands in a section the loader will have to make writable.</summary>
         public bool TextRel { get; set; }
+
+        /// <summary>Every shared library on the command line, by path: the closure prebinding resolves against.</summary>
+        public List<string> Libraries { get; } = new();
+
+        /// <summary>Imported names resolved at link time to an address in a library at its preferred place.</summary>
+        public Dictionary<string, uint> Prebound { get; } = new(StringComparer.Ordinal);
+
+        /// <summary>The checksum of this image's exports, and, when every import was prebound, the sum of the closure's.</summary>
+        public uint Checksum { get; set; }
+        public uint? PreboundChecksum { get; set; }
 
         public bool Imports(string name) => SymbolIndex.TryGetValue(name, out int i) && Symbols[i].Definition is null;
     }
@@ -331,6 +350,77 @@ public static partial class Linker
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// BINDING AT LINK TIME WHAT THE LOADER WOULD BIND AT EVERY EXEC. Every
+    /// library this image needs, and every library those need, is read;
+    /// when all of them were laid out at preferred addresses, each import
+    /// is looked up in that closure in the loader's own order -- the
+    /// needed list, breadth first -- and its address remembered, to be
+    /// written into the GOT slot the loader would otherwise fill. The sum
+    /// of the closure's checksums goes into the image, so a loader can tell
+    /// that the libraries it mapped are the ones this was bound against
+    /// and skip the binding; a different library, or one it had to put
+    /// elsewhere, and it binds as it always did. Prelink did this for a
+    /// whole Linux system; Windows does it for every DLL.
+    /// </summary>
+    private static void Prebind(Dyn dyn)
+    {
+        if (dyn.Libraries.Count == 0) return;
+        Dictionary<string, ElfReader.SharedImageInfo> byName = new(StringComparer.Ordinal);
+        foreach (string path in dyn.Libraries)
+        {
+            ElfReader.SharedImageInfo info;
+            try { info = ElfReader.ReadSharedImage(File.ReadAllBytes(path)); }
+            catch (IOException) { return; }
+            catch (ElfFormatException) { return; }
+            byName.TryAdd(info.Soname ?? Path.GetFileName(path), info);
+            byName.TryAdd(Path.GetFileName(path), info);
+        }
+        List<ElfReader.SharedImageInfo> closure = new();
+        HashSet<string> seen = new(StringComparer.Ordinal);
+        Queue<string> pending = new(dyn.Needed);
+        while (pending.Count > 0)
+        {
+            string name = pending.Dequeue();
+            if (!seen.Add(name)) continue;
+            if (!byName.TryGetValue(name, out ElfReader.SharedImageInfo? info)) return;      // a library not given: nothing is certain
+            if (info.LowAddress == 0 || info.Checksum == 0) return;                          // not laid out at a preferred address
+            closure.Add(info);
+            foreach (string next in info.Needed) pending.Enqueue(next);
+        }
+        uint sum = 0;
+        foreach (ElfReader.SharedImageInfo info in closure) sum = unchecked(sum + info.Checksum);
+
+        bool complete = true;
+        foreach (DynSymbol s in dyn.Symbols)
+        {
+            if (s.Name.Length == 0 || s.Definition is not null) continue;
+            uint address = 0;
+            bool found = false;
+            foreach (ElfReader.SharedImageInfo info in closure)
+            {
+                if (info.Exports.TryGetValue(s.Name, out address)) { found = true; break; }
+            }
+            if (found) dyn.Prebound[s.Name] = address; else complete = false;
+        }
+        if (complete && closure.Count > 0) dyn.PreboundChecksum = sum;
+    }
+
+    /// <summary>FNV-1a over an image's exported names and addresses: what DT_CORSAC_CHECKSUM holds.</summary>
+    private static uint ExportChecksum(List<DynSymbol> symbols)
+    {
+        uint h = 2166136261;
+        void Mix(byte b) { h = unchecked((h ^ b) * 16777619); }
+        foreach (DynSymbol s in symbols)
+        {
+            if (s.Name.Length == 0 || s.Definition is null) continue;
+            foreach (byte b in System.Text.Encoding.UTF8.GetBytes(s.Name)) Mix(b);
+            uint a = s.Definition.Value.Address;
+            Mix((byte)a); Mix((byte)(a >> 8)); Mix((byte)(a >> 16)); Mix((byte)(a >> 24));
+        }
+        return h == 0 ? 1u : h;
     }
 
     private static void AddDynSymbol(Dyn dyn, string name, Definition? definition)
@@ -516,7 +606,12 @@ public static partial class Linker
         {
             case RelocKind.Abs32:
                 // An imported symbol's address is not known until load, and
-                // the loader adds it to whatever is in the word.
+                // the loader adds it to whatever is in the word. Left as the
+                // addend even when the import was prebound: the loader ADDS
+                // to this word, so a value written here would be counted
+                // twice the day it has to bind after all. Only GOT slots,
+                // which the loader SETS, are prebound; the few of these an
+                // image has are bound at every exec.
                 value = d is null ? r.Addend : d.Value.Address + r.Addend;
                 return true;
             case RelocKind.Rel32:
@@ -586,6 +681,7 @@ public static partial class Linker
             e.WriteTo(sym);
         }
         dyn.DynSym.Content = sym.ToArray();
+        dyn.Checksum = ExportChecksum(dyn.Symbols);
 
         dyn.Hash.Content = Hash(dyn);
 
@@ -604,10 +700,12 @@ public static partial class Linker
             // place a name local to an object can be found.
             if (!layout.Globals.TryGetValue(name, out Definition d) && !dyn.GotDefinition.TryGetValue(name, out d))
             {
-                got.U32(0);
+                // An import: the address prebinding found for it, or zero for the loader.
+                got.U32(dyn.Prebound.TryGetValue(name, out uint bound) ? bound : 0);
                 continue;
             }
-            got.U32(!dyn.Imports(name) && !dyn.PltEntry.ContainsKey(name) ? d.Address : 0);
+            got.U32(!dyn.Imports(name) && !dyn.PltEntry.ContainsKey(name) ? d.Address
+                  : dyn.Prebound.TryGetValue(name, out uint prebound) ? prebound : 0);
         }
         dyn.Got.Content = got.ToArray();
 
@@ -774,6 +872,8 @@ public static partial class Linker
         // Eager binding, and this object's own definitions win: see the
         // class comment for why both.
         d.Add((Elf.DtBindNow, 0));
+        if (dyn.Shared) d.Add((Elf.DtCorsacChecksum, dyn.Checksum));
+        if (dyn.PreboundChecksum is uint prebound) d.Add((Elf.DtCorsacPrebound, prebound));
         uint flags = Elf.DfBindNow | Elf.DfSymbolic | (dyn.TextRel ? Elf.DfTextRel : 0);
         d.Add((Elf.DtFlags, flags));
         d.Add((Elf.DtFlags1, Elf.Df1Now));

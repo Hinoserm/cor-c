@@ -812,15 +812,22 @@ image-wide precise collector must enumerate every table through a linker-built
 directory or explicit registration; choosing one object's table is incorrect.
 Nothing executes this data, and a program without a collector pays only its bytes.
 
-    header, 16 bytes
+    header, 20 bytes
       +0   magic 'CSM1' (0x314d5343)
-      +4   version, 1
+      +4   version, 2
       +8   entry count
       +12  entry stride, 16
+      +16  the BASE: the address of the first function in this object
+           that has a call site -- the table's one relocation
 
     entry, 16 bytes, one per call site, in code order per function
-      +0   the RETURN address of the call -- an absolute relocation
-           against the function plus the offset of the byte it returns to
+      +0   the RETURN address of the call, less the base. Version 1 held
+           the address whole, and in a shared object every entry was a
+           relocation applied at every exec (four thousand of the runtime
+           library's six and a half thousand) and its pages a private
+           copy per process; every function of an object is in its one
+           text section, so the distance is known when the table is
+           written, as the frame table has always done it
       +4   callee-saved registers holding references at that point, one
            bit per hardware register number (EBX 3, ESI 6, EDI 7). No
            other bit can be set: a value live across a call is never left
@@ -837,8 +844,9 @@ Nothing executes this data, and a program without a collector pays only its byte
 
 Entries are not sorted: the linker decides the addresses, so ordering is
 the runtime's to do once at startup if it wants a binary search rather
-than a scan. A return address is looked up by equality, and a frame whose
-return address is not in the table is a frame this compiler did not emit.
+than a scan. A return address is looked up by equality against base plus
+the entry's word, and a frame whose return address is not in the table
+is a frame this compiler did not emit.
 
 **The interim rule for what is a reference.** On x86 a reference and an
 `int` are both `IrType.I32`, so the IR does not distinguish them. Until it

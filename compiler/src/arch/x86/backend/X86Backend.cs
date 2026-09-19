@@ -124,7 +124,7 @@ public sealed class X86Backend : IBackend
         Encoder encoder = new(text);
         List<FrameTable.Entry> frames = new();
         FunctionSizes.Clear();
-        List<(string Function, int Return, Safepoint? Map, int FrameSize)> maps = new();
+        List<(string Function, int Return, int At, Safepoint? Map, int FrameSize)> maps = new();
 
         // GOTOFF is sound only for a name this object defines and does not
         // export: anything exported can be interposed at load time, and then
@@ -290,7 +290,7 @@ public sealed class X86Backend : IBackend
             {
                 foreach ((MInstr call, int ret) in encoder.CallSites)
                 {
-                    maps.Add((f.Name, ret, m.Safepoints.GetValueOrDefault(call), m.Frame.Size));
+                    maps.Add((f.Name, ret, start + ret, m.Safepoints.GetValueOrDefault(call), m.Frame.Size));
                 }
             }
 
@@ -493,9 +493,11 @@ public sealed class X86Backend : IBackend
     /// <summary>
     /// The stack-map table, as described in docs/X86-BACKEND.md.
     ///
-    ///   header, 16 bytes: magic 'CSM1', version, entry count, entry stride
+    ///   header, 20 bytes: magic 'CSM1', version 2, entry count, entry
+    ///     stride, then the BASE: the address of the first function that
+    ///     has a call site, the table's one relocation
     ///   entries, 16 bytes each, in code order within each function:
-    ///     +0  the return address of the call (an absolute relocation)
+    ///     +0  the return address of the call, MINUS THE BASE
     ///     +4  callee-saved registers holding references, bit per hardware number
     ///     +8  byte offset from the table's start to this entry's slot
     ///         bitmap, or zero when the frame holds no live reference
@@ -504,16 +506,24 @@ public sealed class X86Backend : IBackend
     ///   bitmaps, after the entries: a word of length in words, then that
     ///   many words, bit i of word k standing for [EBP - 4*(32k + i + 1)].
     ///
+    /// ONE RELOCATION, NOT ONE PER ENTRY. Version 1 stored each return
+    /// address whole, and in a shared object every entry was a relocation
+    /// the loader applied at every exec: four thousand of the runtime
+    /// library's six and a half thousand, and the pages holding them were
+    /// then a private copy in every process. Every function of this object
+    /// is in its one text section, so the distance from the first to any
+    /// call site is known here, and is what is written; a reader adds the
+    /// base, exactly as the frame table's reader does.
+    ///
     /// Entries are not sorted here: the linker decides the addresses, so
     /// ordering is the runtime's to do once at startup if it wants a binary
     /// search rather than a scan.
     /// </summary>
-    private static void EmitStackMaps(ObjectFile obj, List<(string Function, int Return, Safepoint? Map, int FrameSize)> maps, HashSet<string> defined, bool pic)
+    private static void EmitStackMaps(ObjectFile obj, List<(string Function, int Return, int At, Safepoint? Map, int FrameSize)> maps, HashSet<string> defined, bool pic)
     {
-        // Every entry holds a return address, so in a shared object every
-        // entry is a relocation, and a relocation in a read-only section is a
-        // page the loader has to write to and every process a private copy of
-        // it. Writable in that mode, as the frame table and the jump tables are.
+        // The base is a relocation, so in a shared object the page holding
+        // the header is written by the loader; writable in that mode, as the
+        // frame table and the jump tables are.
         Section s = new(pic ? ".data.rel.ro" + StackMapSection : StackMapSection,
             pic ? SectionKind.Data : SectionKind.ReadOnlyData) { Align = 4 };
         obj.Sections.Add(s);
@@ -527,15 +537,21 @@ public sealed class X86Backend : IBackend
         }
 
         Word(0x314d5343);       // 'CSM1'
-        Word(1);
+        Word(2);
         Word(maps.Count);
         Word(16);
+        // The base: the start of the first function that has a call site.
+        // Its section offset is that entry's offset less its return offset,
+        // which is what every later entry is measured from.
+        int baseAt = maps.Count > 0 ? maps[0].At - maps[0].Return : 0;
+        if (maps.Count > 0) s.Relocs.Add(new Relocation(s.Bytes.Count, maps[0].Function, 0, RelocKind.Abs32));
+        Word(0);
 
         // The bitmaps are sized first so an entry can name where its own one
         // will land: the pool starts right after the fixed-size entries.
         List<uint[]> pool = new();
         int[] at = new int[maps.Count];
-        int poolStart = 16 + maps.Count * 16;
+        int poolStart = 20 + maps.Count * 16;
         int poolWords = 0;
         for (int i = 0; i < maps.Count; i++)
         {
@@ -562,8 +578,7 @@ public sealed class X86Backend : IBackend
 
         for (int i = 0; i < maps.Count; i++)
         {
-            s.Relocs.Add(new Relocation(s.Bytes.Count, maps[i].Function, maps[i].Return, RelocKind.Abs32));
-            Word(0);
+            Word(maps[i].At - baseAt);
             Word(maps[i].Map?.Registers ?? 0);
             Word(at[i]);
             Word(maps[i].FrameSize);
