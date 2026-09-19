@@ -7,6 +7,8 @@ static class Program
     static int Main()
     {
         IAnswer? answer = Make()!;
+        int? number = 42;
+        if (!number.HasValue || number.Value != 42) return 2;
         return answer.Value() == 42 ? 0 : 1;
     }
 }
