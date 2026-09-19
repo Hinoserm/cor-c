@@ -859,7 +859,8 @@ public static class Driver
                 "System/time.cor", "System/values.cor", "System/numerics.cor",
                 "System/Text/RegularExpressions.cor", "System/console.cor", "System/environment.cor",
                 "System/Net/Net.cor", "System/Security/Cryptography/Cryptography.cor",
-                "System/signals.cor", "System/unix.cor", "System/process.cor", "System/power.cor" })
+                "System/signals.cor", "System/unix.cor", "System/process.cor", "System/power.cor",
+                "System/Drawing/Drawing.cor", "System/Windows/Forms/Forms.cor" })
             {
                 libs.Add(Path.Combine(root, "stdlib", "src", dotnet));
             }

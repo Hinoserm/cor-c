@@ -978,6 +978,13 @@ public sealed class Parser
                 case Tok.KwReadonly:  m |= Mods.Readonly;  break;
                 case Tok.KwConst:     m |= Mods.Const;     break;
                 case Tok.KwVolatile:  m |= Mods.Volatile;  break;
+                // `new` as a modifier hides an inherited member. It is only a
+                // modifier when what follows starts a member; `new Foo()` as
+                // an expression never reaches here at member position, but
+                // the check keeps a statement-level caller safe too.
+                case Tok.KwNew when StartsMember(_t[_i + 1].Kind) && _t[_i + 1].Kind != Tok.LParen:
+                    m |= Mods.New;
+                    break;
                 // CONTEXTUAL, matched by its text: see the lexer.
                 case Tok.Ident when Cur.Text == "async" && StartsMember(_t[_i + 1].Kind):
                     m |= Mods.Async;
@@ -1310,6 +1317,7 @@ public sealed class Parser
 
     private TypeDecl ParseDelegateDeclaration(Token start, Mods mods)
     {
+        int firstToken = _i;
         TypeRef returns = ParseTypeRef();
         string name = Expect(Tok.Ident, "a delegate name").Text;
         TypeDecl declaration = new()
@@ -1328,7 +1336,95 @@ public sealed class Parser
         ParseParams(invoke.Params); ParseConstraints(declaration.TypeParams);
         declaration.Members.Add(invoke);
         declaration.SourceTo = Expect(Tok.Semi, "';' after delegate declaration").Pos + 1;
+        if (declaration.TypeParams.Count == 0)
+        {
+            TypeDecl? multicast = Multicast(declaration, firstToken, _i - 1);
+            if (multicast is not null) _nested.Add(multicast);
+        }
         return declaration;
+    }
+
+    /// <summary>
+    /// The multicast form of a delegate, synthesised beside it: a class that
+    /// implements the delegate's interface by invoking a list of them in
+    /// order, with Combine and Remove for += and -=. Built from source text
+    /// and parsed, because the declaration's own tokens already spell the
+    /// return type and parameters and reassembling them is simpler and less
+    /// fragile than building the tree by hand.
+    /// </summary>
+    private TypeDecl? Multicast(TypeDecl delegateDecl, int firstToken, int semicolon)
+    {
+        System.Text.StringBuilder head = new();
+        for (int k = firstToken; k < semicolon; k++)
+        {
+            string text = _t[k].Text;
+            if (head.Length > 0 && text != "(" && text != ")" && text != "," && text != "?" && text != "[" && text != "]"
+                && head[^1] != '(' && head[^1] != '[') head.Append(' ');
+            head.Append(text);
+        }
+        string decl = head.ToString();
+        if (decl.Contains(" ref ") || decl.Contains(" out ") || decl.Contains("(ref ") || decl.Contains("(out ")) return null;
+        int open = decl.IndexOf('(');
+        int close = decl.LastIndexOf(')');
+        if (open < 0 || close < open) return null;
+        string before = decl[..open].Trim();
+        string name = delegateDecl.Name;
+        if (!before.EndsWith(name)) return null;
+        string returns = before[..^name.Length].Trim();
+        string parameters = decl[(open + 1)..close].Trim();
+        List<string> names = new();
+        if (parameters.Length > 0)
+        {
+            foreach (string piece in parameters.Split(','))
+            {
+                string p = piece.Trim();
+                int space = p.LastIndexOf(' ');
+                if (space < 0) return null;
+                names.Add(p[(space + 1)..]);
+            }
+        }
+        bool isVoid = returns == "void";
+        string args = string.Join(", ", names);
+        string m = name + "__Multicast";
+        System.Text.StringBuilder src = new();
+        if (!string.IsNullOrEmpty(_namespace)) src.Append("namespace ").Append(_namespace).Append(";\n");
+        src.Append("public sealed class ").Append(m).Append(" : ").Append(name).Append("\n{\n");
+        src.Append("    public ").Append(name).Append("[] Items;\n");
+        src.Append("    public ").Append(m).Append("(").Append(name).Append("[] items) { Items = items; }\n");
+        src.Append("    public ").Append(returns).Append(" Invoke(").Append(parameters).Append(")\n    {\n");
+        if (isVoid)
+            src.Append("        for (int i = 0; i < Items.Length; i++) Items[i].Invoke(").Append(args).Append(");\n");
+        else
+        {
+            src.Append("        ").Append(returns).Append(" last = default;\n");
+            src.Append("        for (int i = 0; i < Items.Length; i++) last = Items[i].Invoke(").Append(args).Append(");\n");
+            src.Append("        return last;\n");
+        }
+        src.Append("    }\n");
+        src.Append("    public static ").Append(name).Append("? Combine(").Append(name).Append("? a, ").Append(name).Append("? b)\n    {\n");
+        src.Append("        if (a == null) return b;\n        if (b == null) return a;\n");
+        src.Append("        ").Append(name).Append("[] x = a is ").Append(m).Append(" ma ? ma.Items : new ").Append(name).Append("[] { a };\n");
+        src.Append("        ").Append(name).Append("[] y = b is ").Append(m).Append(" mb ? mb.Items : new ").Append(name).Append("[] { b };\n");
+        src.Append("        ").Append(name).Append("[] all = new ").Append(name).Append("[x.Length + y.Length];\n");
+        src.Append("        for (int i = 0; i < x.Length; i++) all[i] = x[i];\n");
+        src.Append("        for (int i = 0; i < y.Length; i++) all[x.Length + i] = y[i];\n");
+        src.Append("        return new ").Append(m).Append("(all);\n    }\n");
+        src.Append("    public static ").Append(name).Append("? Remove(").Append(name).Append("? a, ").Append(name).Append("? b)\n    {\n");
+        src.Append("        if (a == null || b == null) return a;\n");
+        src.Append("        if (a is ").Append(m).Append(" ma)\n        {\n");
+        src.Append("            int at = -1;\n");
+        src.Append("            for (int i = ma.Items.Length - 1; i >= 0; i--) { if ((object)ma.Items[i] == (object)b) { at = i; break; } }\n");
+        src.Append("            if (at < 0) return a;\n");
+        src.Append("            if (ma.Items.Length == 1) return null;\n");
+        src.Append("            if (ma.Items.Length == 2) return ma.Items[1 - at];\n");
+        src.Append("            ").Append(name).Append("[] rest = new ").Append(name).Append("[ma.Items.Length - 1];\n");
+        src.Append("            int k = 0;\n");
+        src.Append("            for (int i = 0; i < ma.Items.Length; i++) { if (i != at) { rest[k] = ma.Items[i]; k++; } }\n");
+        src.Append("            return new ").Append(m).Append("(rest);\n        }\n");
+        src.Append("        return (object)a == (object)b ? null : a;\n    }\n}\n");
+        Parser sub = new(Lexer.Tokenize(src.ToString(), _file), _file);
+        CompilationUnit unit = sub.ParseUnit();
+        return unit.Types.Count == 1 ? unit.Types[0] : null;
     }
 
     /// Turns a record's positional parameters into members.
@@ -1614,6 +1710,11 @@ public sealed class Parser
     {
         Token start = Cur;
         Mods mods = ParseMods();
+        // `event T Name;` is a field of a delegate type whose compound
+        // assignments combine and remove handlers. The keyword is all the
+        // syntax there is; the binder and lowering give += and -= their
+        // meaning for any delegate-typed place.
+        bool isEvent = Take(Tok.KwEvent);
 
         // WHAT THE RESULT SAYS ABOUT NULL, read before anything else clears
         // the attribute list: `[return: NotNullIfNotNull(nameof(path))]` is
@@ -1781,7 +1882,7 @@ public sealed class Parser
 
             rest.Add(new FieldDecl
             {
-                Name = also.Text, Mods = mods, Type = type, Init = value,
+                Name = also.Text, Mods = mods, Type = type, Init = value, IsEvent = isEvent,
                 Line = also.Line, Col = also.Col,
             });
         }
@@ -1790,7 +1891,7 @@ public sealed class Parser
 
         FieldDecl first = new()
         {
-            Name = name, Mods = mods, Type = type, Init = init,
+            Name = name, Mods = mods, Type = type, Init = init, IsEvent = isEvent,
             Line = start.Line, Col = start.Col,
         };
 

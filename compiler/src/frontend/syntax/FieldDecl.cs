@@ -4,6 +4,8 @@ namespace Corsac.Lang;
 public sealed class FieldDecl : MemberDecl
 {
     public required TypeRef Type { get; init; }
+    /// <summary>Declared with the event keyword: a delegate-typed field whose += and -= combine and remove.</summary>
+    public bool IsEvent { get; init; }
 
     /// <summary>
     /// What it starts as, until the binder moves it.

@@ -620,6 +620,13 @@ public static partial class Linker
         // kernel maps the stack non-executable, and the two the dynamic
         // linker needs when there is one.
         int segmentCount = 1 + (hasRw ? 1 : 0) + 1;
+        // The CORSAC program note has a program header of its own, and the
+        // resources are a loadable segment; both are known before layout.
+        if (_program is not null)
+        {
+            segmentCount++;
+            if (_program.Resources is { Length: > 0 }) segmentCount++;
+        }
         if (layout.Dyn is not null)
         {
             segmentCount++;
@@ -712,10 +719,13 @@ public static partial class Linker
             off = Elf.AlignUp(off, n.Align);
             n.FileOffset = off;
             off = checked(off + n.Size);
-            // Notes are not loaded, but a reader that has only the program
-            // headers, which is every reader of a stripped file, finds them
-            // through PT_NOTE.
-            layout.Segments.Add(new ProgramHeader(Elf.PtNote, n.FileOffset, 0, n.Size, 0, Elf.PfR, n.Align));
+            // Only our own note gets a program header: a reader that has
+            // only the program headers, which is every reader of a stripped
+            // file, finds it through PT_NOTE. Input notes stay as they were.
+            if (n.Name == ".note.corsac")
+            {
+                layout.Segments.Add(new ProgramHeader(Elf.PtNote, n.FileOffset, 0, n.Size, 0, Elf.PfR, n.Align));
+            }
         }
         layout.FileEnd = off;
     }

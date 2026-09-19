@@ -109,6 +109,8 @@ public sealed partial class BindResult
     public Dictionary<Expr, Type> ExprType { get; } = new(ReferenceEqualityComparer.Instance);
     public Dictionary<Expr, Sym> Resolved { get; } = new(ReferenceEqualityComparer.Instance);
     public Dictionary<Expr, MethodSymbol> Calls { get; } = new(ReferenceEqualityComparer.Instance);
+    /// <summary>A delegate += or -=: the synthesised Combine or Remove call that replaces it, already bound.</summary>
+    public Dictionary<AssignExpr, CallExpr> DelegateCompounds { get; } = new(ReferenceEqualityComparer.Instance);
 
     /// <summary>
     /// Which constructor a `: this(...)` or `: base(...)` runs, chosen as any

@@ -22,12 +22,12 @@ public struct Color
     public byte B;
     public byte A;
 
-    public static Color FromArgb(int r, int g, int b) { Color c; c.A = 255; c.R = (byte)r; c.G = (byte)g; c.B = (byte)b; return c; }
-    public static Color FromArgb(int a, int r, int g, int b) { Color c; c.A = (byte)a; c.R = (byte)r; c.G = (byte)g; c.B = (byte)b; return c; }
+    public static Color FromArgb(int r, int g, int b) { Color c = new Color(); c.A = 255; c.R = (byte)r; c.G = (byte)g; c.B = (byte)b; return c; }
+    public static Color FromArgb(int a, int r, int g, int b) { Color c = new Color(); c.A = (byte)a; c.R = (byte)r; c.G = (byte)g; c.B = (byte)b; return c; }
     public int ToArgb() { return (A << 24) | (R << 16) | (G << 8) | B; }
     public bool IsEmpty { get { return A == 0 && R == 0 && G == 0 && B == 0; } }
 
-    public static Color Empty { get { Color c; c.A = 0; c.R = 0; c.G = 0; c.B = 0; return c; } }
+    public static Color Empty { get { Color c = new Color(); c.A = 0; c.R = 0; c.G = 0; c.B = 0; return c; } }
     public static Color Black { get { return FromArgb(0, 0, 0); } }
     public static Color White { get { return FromArgb(255, 255, 255); } }
     public static Color Red { get { return FromArgb(255, 0, 0); } }

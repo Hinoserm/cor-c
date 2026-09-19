@@ -1533,6 +1533,16 @@ public sealed partial class Lowering
         BinOp op = a.Op.Value;
         Type valueType = _b.TypeOf(a.Value);
 
+        // A delegate += or -= is the multicast Combine or Remove the binder
+        // synthesised, stored back into the same place.
+        if (_b.DelegateCompounds.TryGetValue(a, out CallExpr? delegateCall))
+        {
+            Place? delegatePlace = PlaceOf(a.Target);
+            VReg combined = Eval(delegateCall);
+            if (delegatePlace is not null) StorePlace(delegatePlace, combined);
+            return combined;
+        }
+
         if (_b.PropertySetters.TryGetValue(a.Target, out MethodSymbol? ps)
             || (a.Target is IndexExpr ix2 && _b.IndexSetters.ContainsKey(ix2)))
         {

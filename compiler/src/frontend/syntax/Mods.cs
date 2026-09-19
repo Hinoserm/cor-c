@@ -47,4 +47,7 @@ public enum Mods
     /// before binding so a legal C# partial type is not a duplicate type.
     /// </summary>
     Partial   = 1 << 16,
+
+    /// <summary>Hides an inherited member of the same name; accepted and otherwise ignored.</summary>
+    New       = 1 << 17,
 }

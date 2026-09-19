@@ -7758,6 +7758,36 @@ public sealed partial class Binder
                         ok = true;
                     }
 
+                    // A DELEGATE += OR -= IS COMBINE OR REMOVE on the multicast
+                    // class the parser synthesised beside the delegate. The call
+                    // is built here as ordinary syntax, bound like anything the
+                    // program could have written, and remembered for lowering,
+                    // which stores its result back into the same place.
+                    if (a.Op is BinOp.Add or BinOp.Sub && target.Symbol?.Decl is { IsDelegate: true } delegateDecl)
+                    {
+                        ok = true;
+                        Expr qualified = new NameExpr { Name = delegateDecl.Name + "__Multicast", Line = a.Line, Col = a.Col };
+                        if (!string.IsNullOrEmpty(delegateDecl.Namespace))
+                        {
+                            string[] parts = delegateDecl.Namespace.Split('.');
+                            Expr chain = new NameExpr { Name = parts[0], Line = a.Line, Col = a.Col };
+                            for (int i = 1; i < parts.Length; i++)
+                                chain = new MemberExpr { Target = chain, Name = parts[i], Line = a.Line, Col = a.Col };
+                            qualified = new MemberExpr { Target = chain, Name = delegateDecl.Name + "__Multicast", Line = a.Line, Col = a.Col };
+                        }
+                        CallExpr synthesised = new()
+                        {
+                            Target = new MemberExpr { Target = qualified, Name = a.Op is BinOp.Add ? "Combine" : "Remove", Line = a.Line, Col = a.Col },
+                            Line = a.Line, Col = a.Col,
+                        };
+                        synthesised.Args.Add(a.Target);
+                        synthesised.Args.Add(a.Value);
+                        synthesised.ArgNames.Add(null);
+                        synthesised.ArgNames.Add(null);
+                        CheckExpr(synthesised);
+                        _r.DelegateCompounds[a] = synthesised;
+                    }
+
                     if (!ok)
                     {
                         Error(a, $"cannot apply compound assignment to '{target}' and '{value}'");
@@ -11242,10 +11272,32 @@ public sealed partial class Binder
             return null;
         }
 
-        CallExpr call = Call(found.Owner.Name, name, b, b.Left, b.Right);
+        // The operator's owner by its full name, wherever it lives. Only
+        // types under System could be reached by the helper-call shape
+        // before, which is where every operator the compiler itself needed
+        // happened to be; a program's own struct is anywhere.
+        CallExpr call = new()
+        {
+            Target = new MemberExpr { Target = Qualified(found.Owner.Key, b), Name = name, Line = b.Line, Col = b.Col },
+            Line = b.Line, Col = b.Col,
+        };
+        call.Args.Add(b.Left);
+        call.Args.Add(b.Right);
 
         _r.Rewrites[b] = call;
         return CheckExpr(call);
+    }
+
+    /// <summary>A dotted type name as the member chain a program would write for it.</summary>
+    private static Expr Qualified(string dotted, Node at)
+    {
+        string[] parts = dotted.Split('.');
+        Expr chain = new NameExpr { Name = parts[0], Line = at.Line, Col = at.Col };
+        for (int i = 1; i < parts.Length; i++)
+        {
+            chain = new MemberExpr { Target = chain, Name = parts[i], Line = at.Line, Col = at.Col };
+        }
+        return chain;
     }
 
     /// <summary>The operator of that name on this type whose two parameters
