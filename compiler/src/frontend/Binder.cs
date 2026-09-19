@@ -1919,8 +1919,21 @@ public sealed partial class Binder
     /// <summary>Assigns field offsets and vtable slots.</summary>
     private void LayOut(TypeSymbol sym)
     {
-        if (sym.InstanceSize > 0 || sym.Kind == TypeKind.Enum)
+        if (sym.Kind == TypeKind.Enum)
         {
+            return;
+        }
+        // A class from a library arrives with its size known, but its virtual
+        // slots still have to be numbered here, the same way the library
+        // numbered them, or a class deriving from it lays its own overrides
+        // over the wrong entries and the library's calls land on nothing.
+        if (sym.InstanceSize > 0)
+        {
+            if (!sym.SlotsAssigned)
+            {
+                if (sym.Base != null) LayOut(sym.Base);
+                AssignSlots(sym);
+            }
             return;
         }
 
@@ -1991,6 +2004,20 @@ public sealed partial class Binder
             return;
         }
 
+        AssignSlots(sym);
+    }
+
+    /// <summary>
+    /// Numbers a class's virtual methods: interface region first, then the
+    /// base chain's slots, then this class's own, with an override taking the
+    /// slot of what it overrides. Deterministic from the declarations alone,
+    /// which is what lets a program agree with a library about a class the
+    /// library owns.
+    /// </summary>
+    private void AssignSlots(TypeSymbol sym)
+    {
+        if (sym.SlotsAssigned) return;
+        sym.SlotsAssigned = true;
         // A class's own virtual methods are numbered above the interface region.
         int slot = _interfaceSlots;
 

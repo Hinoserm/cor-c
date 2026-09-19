@@ -33,6 +33,8 @@ public sealed class TypeSymbol
 
     public required TypeKind Kind { get; init; }
     public TypeDecl? Decl { get; init; }
+    /// <summary>Virtual slots have been numbered, which for a class from a library is separate from knowing its size.</summary>
+    public bool SlotsAssigned { get; set; }
     /// <summary>Compiler-created closed tuple/array adapter shape, shared only after semantic certification.</summary>
     public bool Structural { get; init; }
     public TypeSymbol? Base { get; set; }
