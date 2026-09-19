@@ -21,7 +21,10 @@ required gates rather than assuming a missing log is proof of completion.
 
 The x86 instruction/profile work is paused. The three functional blockers below
 are explicitly deferred by request; do not resume them without a new request.
-The isolated CORSAC86 per-file process scheduling work is paused separately.
+Immediate priority: finish and verify CORSAC86 per-file process scheduling in
+the isolated `build-system-migration` branch. Kernel, bootloader and user
+programs must use one compiler process per source under the shared job budget,
+then link. Production boot and unchanged-build reuse are acceptance gates.
 
 ### Deferred functional blockers
 
