@@ -227,9 +227,18 @@ tasks below track that work; moving files alone does not reduce the working set.
   -- the same declarations are loaded, only sooner -- and the LINKED kernel
   is byte for byte what it was. Judge a change like this on the linked
   image, not on the object files.
-- [ ] Reduce the remaining rounds. A trivial source now takes the floor of two;
-  the largest kernel sources take four, and what they still discover late is
-  named only from a body or from a specialised template.
+- [x] Read the names out of the unit's OWN bodies before binding, as is done
+  for imported template bodies. Its sources are fully parsed, so nobody had
+  to wait: a source naming Pipe and UserFile spent a round on those, and
+  only once they bound could the expressions through them reach Arch,
+  Errno, UserMode and UserPointer. Kernel rounds: 23 units in a single
+  pass, 51 in two, average 2.8 to 2.3, and 13848 header lexes against
+  16227. The linked kernel is byte for byte what it was.
+- [ ] Reduce the last rounds. Two units still take four and five passes, and
+  what they discover late is named only from a SPECIALISED template -- a
+  body that does not exist until the monomorphiser writes it, so no walk of
+  the sources can see it. Prefetching after specialisation is the remaining
+  idea.
 - [ ] Peak memory is 100-160 MB for one source and about 190 MB for a whole
   project in one process, against a 486-class target with roughly 1 GB. Bring
   that down; cumulative allocation is churn and is not the same measurement.

@@ -195,6 +195,25 @@ public sealed class IndexedDeclarations : IDisposable
             catch (DeclarationDemand demand) { partials.Add(demand); }
         }
         partials.ThrowIfAny();
+        // AND WHAT THIS UNIT'S OWN CODE NAMES. Its sources are fully parsed,
+        // bodies and all, so the types it uses are knowable before binding
+        // begins -- and until now nobody looked. The binder met them one
+        // layer at a time instead: a kernel source naming Pipe and UserFile
+        // spent a round on those, and only once they were bound could the
+        // expressions through them resolve far enough to name Arch, Errno,
+        // UserMode and UserPointer, which cost another. Reading the names
+        // straight out of the tree finds the whole set at once.
+        //
+        // A prefetch like the one over imported bodies, and safe for the same
+        // reason: these are names the binder was going to demand.
+        foreach (TypeDecl type in unit.Types.Where(type => !type.Elsewhere))
+        {
+            BodyTypeNames.Walk(type, reference =>
+            {
+                string? key = Speculate(reference.Name, reference.Args.Count);
+                if (key is not null) Load(key);
+            });
+        }
         // THE WHOLE CHAIN IN ONE PASS. A header's own signatures name more
         // types -- List names IEnumerable, which names IEnumerator, and so on
         // -- and discovering them one at a time meant the frontend threw the
