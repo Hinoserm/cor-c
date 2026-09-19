@@ -1,0 +1,874 @@
+// System.Windows.Forms: the Windows programming model, as .NET spells it.
+//
+// A Form is a window. Controls are child windows. A program attaches handlers
+// to events and calls Application.Run once; the loop inside it blocks for the
+// next message and dispatches it, and nobody polls. See docs/software/GUI-KERNEL.md
+// in the OS repository, "The programming model".
+//
+// WHO OWNS WHAT, TODAY. The system owns top-level windows: a Form is a window
+// the seat created, with a handle, a position and a place in the z-order,
+// and the system decides which window a click lands in and sends paint
+// messages when overlap changes. Child controls are this library's: it
+// hit-tests within a form and paints them, which is also how Windows does
+// it for the controls that are not windows of their own. Nothing in the
+// contract below says which side owns what, so moving control routing into
+// the system later changes nothing a program sees.
+//
+// THE CONTRACT WITH THE SEAT, all integers and byte records, nothing of this
+// library's own on the wire (a C program can speak it):
+//
+//   writes   drawing batches, 32-bit little-endian words, opcode first:
+//              1 Fill x y w h colour
+//              2 Copy sx sy dx dy w h
+//              3 Line x0 y0 x1 y1 colour
+//              4 DefineGlyph id w h bytes, then the packed bits padded to 4
+//              5 Glyph id x y fg bg flags(1 = transparent)
+//              6 Clip x y w h
+//              7 DefineBitmap id w h format bytes, then the pixels padded to 4
+//              8 Blit id sx sy dx dy w h
+//              9 Pointer x y
+//             10 ShowPointer flag
+//             11 DefinePointer w h hotx hoty bytes, AND mask then XOR mask
+//             12 Window handle           -- everything after is relative to it
+//            Colours are 0x00RRGGBB.
+//   reads    16-byte events: kind, window, a, b
+//              1 Key        a = key code, b = modifiers
+//              3 Move       a = x, b = y, relative to the window
+//              4 Down       a = button (1 left 2 right 3 middle), b = x | y << 16
+//              5 Up         same
+//              6 Wheel      a = delta
+//              8 Paint      a = x | y << 16, b = w | h << 16, relative to the window
+//              9 Focus      a = 1 gained, 0 lost
+//             10 Close      the system asks the window to close
+//   ioctls   0x47550001 width, 0x47550002 height, 0x47550003 format
+//            0x47550010 create window (argument: x | y << 16, returns handle;
+//                       then 0x47550011 size w | h << 16 on that handle),
+//            0x47550012 show, 0x47550013 hide, 0x47550014 raise,
+//            0x47550015 move x | y << 16, 0x47550016 destroy, 0x47550017 focus,
+//            0x47550018 set title (argument: address of a NUL-terminated string)
+//            Window operations take the handle in the high 16 bits of the request's
+//            argument where noted, or apply to the last window created by this
+//            descriptor when zero.
+
+using System.Drawing;
+
+namespace System.Windows.Forms;
+
+public delegate void EventHandler(object sender, EventArgs e);
+public delegate void PaintEventHandler(object sender, PaintEventArgs e);
+public delegate void MouseEventHandler(object sender, MouseEventArgs e);
+public delegate void KeyPressEventHandler(object sender, KeyPressEventArgs e);
+public delegate void KeyEventHandler(object sender, KeyEventArgs e);
+public delegate void FormClosingEventHandler(object sender, FormClosingEventArgs e);
+
+public class EventArgs
+{
+    public static EventArgs Empty = new EventArgs();
+}
+
+public class PaintEventArgs : EventArgs
+{
+    public Graphics Graphics;
+    public Rectangle ClipRectangle;
+    public PaintEventArgs(Graphics g, Rectangle clip) { Graphics = g; ClipRectangle = clip; }
+}
+
+public enum MouseButtons { None = 0, Left = 0x100000, Right = 0x200000, Middle = 0x400000 }
+
+public class MouseEventArgs : EventArgs
+{
+    public MouseButtons Button;
+    public int Clicks;
+    public int X;
+    public int Y;
+    public int Delta;
+    public Point Location { get { return new Point(X, Y); } }
+    public MouseEventArgs(MouseButtons button, int clicks, int x, int y, int delta) { Button = button; Clicks = clicks; X = x; Y = y; Delta = delta; }
+}
+
+public class KeyPressEventArgs : EventArgs
+{
+    public char KeyChar;
+    public bool Handled;
+    public KeyPressEventArgs(char c) { KeyChar = c; }
+}
+
+/// The key codes a program sees. The values below 256 are characters; the
+/// named ones are the seat's codes for keys with no character, which are
+/// the kernel keyboard driver's and are stable.
+public enum Keys
+{
+    None = 0, Back = 8, Tab = 9, Enter = 13, Escape = 27, Space = 32,
+    Home = 0x101, End = 0x102, PageUp = 0x103, PageDown = 0x104, Insert = 0x105, Delete = 0x106,
+    Up = 0x107, Down = 0x108, Left = 0x109, Right = 0x10A,
+    F1 = 0x110, F2 = 0x111, F3 = 0x112, F4 = 0x113, F5 = 0x114, F6 = 0x115,
+    F7 = 0x116, F8 = 0x117, F9 = 0x118, F10 = 0x119, F11 = 0x11A, F12 = 0x11B,
+    Shift = 0x10000, Control = 0x20000, Alt = 0x40000,
+}
+
+public class KeyEventArgs : EventArgs
+{
+    public Keys KeyCode;
+    public int Modifiers;
+    public bool Handled;
+    public bool Shift { get { return (Modifiers & 1) != 0; } }
+    public bool Control { get { return (Modifiers & 2) != 0; } }
+    public bool Alt { get { return (Modifiers & 4) != 0; } }
+    public KeyEventArgs(Keys code, int modifiers) { KeyCode = code; Modifiers = modifiers; }
+}
+
+public class FormClosingEventArgs : EventArgs
+{
+    public bool Cancel;
+}
+
+/// A message, as WndProc sees one. The four words of the seat's event.
+public struct Message
+{
+    public int Kind;
+    public int Window;
+    public int A;
+    public int B;
+    public bool Handled;
+}
+
+// ---------------------------------------------------------------------------
+// The seat: the transport. One per process, opened on first use.
+// ---------------------------------------------------------------------------
+
+public class Seat : IDrawingTarget
+{
+    static Seat? _current;
+    public static Seat Current
+    {
+        get
+        {
+            if (_current == null) _current = new Seat(Environment.GetEnvironmentVariable("SEAT") ?? "/dev/seat0");
+            return _current;
+        }
+    }
+
+    int _fd;
+    byte[] _batch = new byte[16384];
+    int _used;
+    int _window;
+    public int Width;
+    public int Height;
+    public int Format;
+
+    public Seat(string path)
+    {
+        _fd = Os.Open(path, 2, 0);          // O_RDWR
+        if (_fd < 0) throw new IOException("cannot open seat " + path);
+        Width = (int)Os.Ioctl(_fd, 0x47550001, 0);
+        Height = (int)Os.Ioctl(_fd, 0x47550002, 0);
+        Format = (int)Os.Ioctl(_fd, 0x47550003, 0);
+    }
+
+    public int Fd { get { return _fd; } }
+
+    // --- batches ---------------------------------------------------------
+
+    void Word(int v)
+    {
+        if (_used + 4 > _batch.Length) Flush();
+        _batch[_used] = (byte)v; _batch[_used + 1] = (byte)(v >> 8);
+        _batch[_used + 2] = (byte)(v >> 16); _batch[_used + 3] = (byte)(v >> 24);
+        _used += 4;
+    }
+
+    static int Rgb(Color c) { return (c.R << 16) | (c.G << 8) | c.B; }
+
+    /// Send what is queued. Called when the buffer fills, on request, and
+    /// by the message loop before it waits, which is the rule that keeps a
+    /// program's last few draws from sitting unseen while it blocks.
+    public void Flush()
+    {
+        int at = 0;
+        while (at < _used)
+        {
+            int n = Os.Write(_fd, _batch, at, _used - at);
+            if (n <= 0) break;
+            at += n;
+        }
+        _used = 0;
+    }
+
+    public void Target(int window)
+    {
+        if (_window == window) return;
+        _window = window;
+        Word(12); Word(window);
+    }
+
+    public void Fill(int x, int y, int w, int h, Color colour) { Word(1); Word(x); Word(y); Word(w); Word(h); Word(Rgb(colour)); }
+    public void Copy(int sx, int sy, int dx, int dy, int w, int h) { Word(2); Word(sx); Word(sy); Word(dx); Word(dy); Word(w); Word(h); }
+    public void Line(int x0, int y0, int x1, int y1, Color colour) { Word(3); Word(x0); Word(y0); Word(x1); Word(y1); Word(Rgb(colour)); }
+    public void Glyph(int id, int x, int y, Color fg, Color bg, bool transparent)
+    { Word(5); Word(id); Word(x); Word(y); Word(Rgb(fg)); Word(Rgb(bg)); Word(transparent ? 1 : 0); }
+    public void Clip(int x, int y, int w, int h) { Word(6); Word(x); Word(y); Word(w); Word(h); }
+    public void ShowPointer(bool on) { Word(10); Word(on ? 1 : 0); }
+    public void MovePointer(int x, int y) { Word(9); Word(x); Word(y); }
+
+    // --- windows ---------------------------------------------------------
+
+    public int CreateWindow(int x, int y, int w, int h)
+    {
+        Flush();
+        int handle = (int)Os.Ioctl(_fd, 0x47550010, (x & 0xFFFF) | (y << 16));
+        if (handle <= 0) throw new IOException("cannot create a window");
+        Os.Ioctl(_fd, 0x47550011, (long)handle << 32 | (long)((w & 0xFFFF) | (h << 16)));
+        return handle;
+    }
+    public void ShowWindow(int handle) { Flush(); Os.Ioctl(_fd, 0x47550012, (long)handle << 32); }
+    public void HideWindow(int handle) { Flush(); Os.Ioctl(_fd, 0x47550013, (long)handle << 32); }
+    public void RaiseWindow(int handle) { Flush(); Os.Ioctl(_fd, 0x47550014, (long)handle << 32); }
+    public void MoveWindow(int handle, int x, int y) { Flush(); Os.Ioctl(_fd, 0x47550015, (long)handle << 32 | (long)((x & 0xFFFF) | (y << 16))); }
+    public void DestroyWindow(int handle) { Flush(); Os.Ioctl(_fd, 0x47550016, (long)handle << 32); _window = 0; }
+    public void FocusWindow(int handle) { Flush(); Os.Ioctl(_fd, 0x47550017, (long)handle << 32); }
+
+    // --- events ----------------------------------------------------------
+
+    byte[] _event = new byte[16];
+
+    /// Blocks until the seat has a message. Everything queued is flushed
+    /// first, because a program about to wait must not leave its own
+    /// drawing behind.
+    public bool Next(out Message m)
+    {
+        Flush();
+        m = new Message();
+        int got = 0;
+        while (got < 16)
+        {
+            int n = Os.Read(_fd, _event, got, 16 - got);
+            if (n <= 0) return false;
+            got += n;
+        }
+        m.Kind = Int(0); m.Window = Int(4); m.A = Int(8); m.B = Int(12);
+        return true;
+    }
+
+    /// Non-blocking: is a message waiting, or is any watched descriptor ready?
+    public bool Poll(int timeoutMs) { Flush(); return Os.Poll(_fd, 1, timeoutMs) > 0; }
+
+    int Int(int at) { return _event[at] | (_event[at + 1] << 8) | (_event[at + 2] << 16) | (_event[at + 3] << 24); }
+}
+
+// ---------------------------------------------------------------------------
+// Controls
+// ---------------------------------------------------------------------------
+
+public class ControlCollection
+{
+    List<Control> _items = new List<Control>();
+    Control _owner;
+    public ControlCollection(Control owner) { _owner = owner; }
+    public int Count { get { return _items.Count; } }
+    public Control this[int i] { get { return _items[i]; } }
+    public void Add(Control c) { c.Parent = _owner; _items.Add(c); c.Invalidate(); }
+    public void Remove(Control c) { _items.Remove(c); c.Parent = null; _owner.Invalidate(); }
+    public void AddRange(Control[] cs) { for (int i = 0; i < cs.Length; i++) Add(cs[i]); }
+}
+
+public class Control
+{
+    int _x, _y, _width = 100, _height = 23;
+    string _text = "";
+    Color _back = SystemColors.Control;
+    Color _fore = SystemColors.ControlText;
+    Font _font = SystemFonts.DefaultFont;
+    bool _visible = true;
+    bool _enabled = true;
+    Control? _parent;
+    ControlCollection? _controls;
+    Rectangle _invalid;
+    bool _anyInvalid;
+
+    public event EventHandler? Click;
+    public event PaintEventHandler? Paint;
+    public event MouseEventHandler? MouseDown;
+    public event MouseEventHandler? MouseUp;
+    public event MouseEventHandler? MouseMove;
+    public event KeyPressEventHandler? KeyPress;
+    public event KeyEventHandler? KeyDown;
+    public event EventHandler? GotFocus;
+    public event EventHandler? LostFocus;
+    public event EventHandler? TextChanged;
+
+    public Control? Parent { get { return _parent; } set { _parent = value; } }
+    public ControlCollection Controls { get { if (_controls == null) _controls = new ControlCollection(this); return _controls; } }
+    public string Name = "";
+    public object? Tag;
+    public bool TabStop = true;
+
+    public virtual string Text { get { return _text; } set { _text = value; OnTextChanged(EventArgs.Empty); Invalidate(); } }
+    public Color BackColor { get { return _back; } set { _back = value; Invalidate(); } }
+    public Color ForeColor { get { return _fore; } set { _fore = value; Invalidate(); } }
+    public Font Font { get { return _font; } set { _font = value; Invalidate(); } }
+    public bool Visible { get { return _visible; } set { _visible = value; if (_parent != null) _parent.Invalidate(Bounds); else Invalidate(); } }
+    public bool Enabled { get { return _enabled; } set { _enabled = value; Invalidate(); } }
+    public int Left { get { return _x; } set { SetBounds(value, _y, _width, _height); } }
+    public int Top { get { return _y; } set { SetBounds(_x, value, _width, _height); } }
+    public int Width { get { return _width; } set { SetBounds(_x, _y, value, _height); } }
+    public int Height { get { return _height; } set { SetBounds(_x, _y, _width, value); } }
+    public int Right { get { return _x + _width; } }
+    public int Bottom { get { return _y + _height; } }
+    public Point Location { get { return new Point(_x, _y); } set { SetBounds(value.X, value.Y, _width, _height); } }
+    public Size Size { get { return new Size(_width, _height); } set { SetBounds(_x, _y, value.Width, value.Height); } }
+    public Rectangle Bounds { get { return new Rectangle(_x, _y, _width, _height); } set { SetBounds(value.X, value.Y, value.Width, value.Height); } }
+    public virtual Rectangle ClientRectangle { get { return new Rectangle(0, 0, _width, _height); } }
+    public Size ClientSize { get { return new Size(ClientRectangle.Width, ClientRectangle.Height); } set { SetBounds(_x, _y, value.Width + (_width - ClientRectangle.Width), value.Height + (_height - ClientRectangle.Height)); } }
+    public bool Focused { get { return Application.FocusedControl == this; } }
+
+    public virtual void SetBounds(int x, int y, int w, int h)
+    {
+        Rectangle old = Bounds;
+        _x = x; _y = y; _width = w; _height = h;
+        if (_parent != null) { _parent.Invalidate(old); _parent.Invalidate(Bounds); }
+        Invalidate();
+    }
+
+    /// The form this control lives on, which is the window the seat knows.
+    public Form? FindForm()
+    {
+        Control? c = this;
+        while (c != null) { if (c is Form f) return f; c = c._parent; }
+        return null;
+    }
+
+    /// Where this control's origin is, in the form's client coordinates.
+    public Point ClientOrigin()
+    {
+        int x = 0, y = 0;
+        Control? c = this;
+        while (c != null && !(c is Form)) { x += c._x; y += c._y; c = c._parent; }
+        return new Point(x, y);
+    }
+
+    public Point PointToScreen(Point p) { Form? f = FindForm(); Point o = ClientOrigin(); return new Point(p.X + o.X + (f == null ? 0 : f.Left), p.Y + o.Y + (f == null ? 0 : f.Top)); }
+
+    public void Invalidate() { Invalidate(ClientRectangle); }
+    public void Invalidate(Rectangle r)
+    {
+        if (!_anyInvalid) { _invalid = r; _anyInvalid = true; }
+        else _invalid = Rectangle.Union(_invalid, r);
+        Application.NeedsPaint(this);
+    }
+    public void Refresh() { Invalidate(); Application.PaintNow(); }
+    public void Update() { Application.PaintNow(); }
+    public void Focus() { Application.SetFocus(this); }
+    public void PerformClick() { OnClick(EventArgs.Empty); }
+    public void Show() { Visible = true; }
+    public void Hide() { Visible = false; }
+
+    public Graphics CreateGraphics()
+    {
+        Form? f = FindForm(); Point o = ClientOrigin();
+        Seat seat = Seat.Current;
+        if (f != null) seat.Target(f.Handle);
+        Point co = f == null ? new Point(0, 0) : f.ClientOffset();
+        return new Graphics(seat, o.X + co.X, o.Y + co.Y, new Rectangle(o.X + co.X, o.Y + co.Y, _width, _height));
+    }
+
+    // --- painting --------------------------------------------------------
+
+    /// Paint this control and its children into the form's window, clipped
+    /// to what is stale. The background first, then Paint, then children.
+    internal void PaintTree(Seat seat, Point origin, Rectangle clip, bool force)
+    {
+        if (!_visible) return;
+        Rectangle mine = new Rectangle(origin.X, origin.Y, _width, _height);
+        Rectangle area = Rectangle.Intersect(mine, clip);
+        if (area.IsEmpty) return;
+        bool paintMe = force || _anyInvalid;
+        if (paintMe)
+        {
+            Rectangle local = force ? ClientRectangle : _invalid;
+            Rectangle localScreen = new Rectangle(local.X + origin.X, local.Y + origin.Y, local.Width, local.Height);
+            Rectangle c = Rectangle.Intersect(area, localScreen);
+            if (!c.IsEmpty)
+            {
+                Graphics g = new Graphics(seat, origin.X, origin.Y, c);
+                PaintEventArgs e = new PaintEventArgs(g, new Rectangle(c.X - origin.X, c.Y - origin.Y, c.Width, c.Height));
+                OnPaintBackground(e);
+                OnPaint(e);
+            }
+            _anyInvalid = false;
+        }
+        if (_controls != null)
+        {
+            for (int i = 0; i < _controls.Count; i++)
+            {
+                Control child = _controls[i];
+                child.PaintTree(seat, new Point(origin.X + child._x, origin.Y + child._y), area, paintMe || force);
+            }
+        }
+    }
+
+    internal bool HasInvalid()
+    {
+        if (_anyInvalid) return true;
+        if (_controls != null) for (int i = 0; i < _controls.Count; i++) if (_controls[i].HasInvalid()) return true;
+        return false;
+    }
+
+    protected virtual void OnPaintBackground(PaintEventArgs e) { e.Graphics.FillRectangle(new SolidBrush(_back), e.ClipRectangle); }
+    protected virtual void OnPaint(PaintEventArgs e) { if (Paint != null) Paint(this, e); }
+
+    // --- input -----------------------------------------------------------
+
+    /// The deepest visible control under a point given in this control's
+    /// coordinates. This is the hit test, and it is how a click finds its
+    /// handler without anybody polling.
+    internal Control HitTest(int x, int y)
+    {
+        if (_controls != null)
+        {
+            for (int i = _controls.Count - 1; i >= 0; i--)
+            {
+                Control c = _controls[i];
+                if (c._visible && c.Bounds.Contains(x, y)) return c.HitTest(x - c._x, y - c._y);
+            }
+        }
+        return this;
+    }
+
+    protected virtual void OnClick(EventArgs e) { if (Click != null) Click(this, e); }
+    protected virtual void OnMouseDown(MouseEventArgs e) { if (MouseDown != null) MouseDown(this, e); }
+    protected virtual void OnMouseUp(MouseEventArgs e) { if (MouseUp != null) MouseUp(this, e); }
+    protected virtual void OnMouseMove(MouseEventArgs e) { if (MouseMove != null) MouseMove(this, e); }
+    protected virtual void OnKeyPress(KeyPressEventArgs e) { if (KeyPress != null) KeyPress(this, e); }
+    protected virtual void OnKeyDown(KeyEventArgs e) { if (KeyDown != null) KeyDown(this, e); }
+    protected virtual void OnGotFocus(EventArgs e) { if (GotFocus != null) GotFocus(this, e); Invalidate(); }
+    protected virtual void OnLostFocus(EventArgs e) { if (LostFocus != null) LostFocus(this, e); Invalidate(); }
+    protected virtual void OnTextChanged(EventArgs e) { if (TextChanged != null) TextChanged(this, e); }
+
+    internal void RaiseMouseDown(MouseEventArgs e) { OnMouseDown(e); }
+    internal void RaiseMouseUp(MouseEventArgs e) { OnMouseUp(e); if (Enabled) OnClick(EventArgs.Empty); }
+    internal void RaiseMouseMove(MouseEventArgs e) { OnMouseMove(e); }
+    internal void RaiseKeyPress(KeyPressEventArgs e) { OnKeyPress(e); }
+    internal void RaiseKeyDown(KeyEventArgs e) { OnKeyDown(e); }
+    internal void RaiseGotFocus() { OnGotFocus(EventArgs.Empty); }
+    internal void RaiseLostFocus() { OnLostFocus(EventArgs.Empty); }
+
+    /// The window procedure. Everything above is what it does by default;
+    /// a program that wants the raw message overrides this.
+    protected virtual void WndProc(ref Message m) { }
+    internal void DispatchRaw(ref Message m) { WndProc(ref m); }
+}
+
+public enum FormBorderStyle { None = 0, FixedSingle = 1, Sizable = 4, FixedDialog = 3 }
+public enum FormWindowState { Normal = 0, Minimized = 1, Maximized = 2 }
+public enum FormStartPosition { Manual = 0, CenterScreen = 1, WindowsDefaultLocation = 2 }
+
+/// A top-level window the seat knows by handle. The frame, meaning the
+/// title bar and the border, is painted here for now; it is the seat's job
+/// once the window tree lives in the system, and the client area contract
+/// does not change when it moves.
+public class Form : Control
+{
+    int _handle;
+    bool _shown;
+    bool _closed;
+    FormBorderStyle _border = FormBorderStyle.Sizable;
+    FormWindowState _state = FormWindowState.Normal;
+    public FormStartPosition StartPosition = FormStartPosition.WindowsDefaultLocation;
+    public const int CaptionHeight = 20;
+    public const int BorderWidth = 2;
+
+    public event EventHandler? Load;
+    public event FormClosingEventHandler? FormClosing;
+    public event EventHandler? FormClosed;
+    public event EventHandler? Activated;
+
+    public Form() { Width = 320; Height = 240; BackColor = SystemColors.Control; }
+
+    public int Handle { get { return _handle; } }
+    public FormBorderStyle FormBorderStyle { get { return _border; } set { _border = value; Invalidate(); } }
+    public FormWindowState WindowState { get { return _state; } set { _state = value; if (value == FormWindowState.Maximized) SetBounds(0, 0, Seat.Current.Width, Seat.Current.Height); } }
+    public bool IsClosed { get { return _closed; } }
+    public bool HasFrame { get { return _border != FormBorderStyle.None; } }
+
+    public override Rectangle ClientRectangle
+    {
+        get
+        {
+            if (!HasFrame) return new Rectangle(0, 0, Width, Height);
+            return new Rectangle(0, 0, Width - 2 * BorderWidth, Height - CaptionHeight - 2 * BorderWidth);
+        }
+    }
+
+    /// Where the client area starts inside the window.
+    public Point ClientOffset() { return HasFrame ? new Point(BorderWidth, CaptionHeight + BorderWidth) : new Point(0, 0); }
+
+    public override void SetBounds(int x, int y, int w, int h)
+    {
+        base.SetBounds(x, y, w, h);
+        if (_handle != 0) { Seat.Current.MoveWindow(_handle, x, y); }
+    }
+
+    public new void Show()
+    {
+        if (_shown) return;
+        Seat seat = Seat.Current;
+        if (StartPosition == FormStartPosition.CenterScreen)
+            base.SetBounds((seat.Width - Width) / 2, (seat.Height - Height) / 2, Width, Height);
+        _handle = seat.CreateWindow(Left, Top, Width, Height);
+        _shown = true;
+        Application.Register(this);
+        OnLoad(EventArgs.Empty);
+        seat.ShowWindow(_handle);
+        Invalidate();
+        Application.SetFocus(FirstFocusable(this) ?? this);
+        seat.FocusWindow(_handle);
+    }
+
+    static Control? FirstFocusable(Control c)
+    {
+        for (int i = 0; i < c.Controls.Count; i++)
+        {
+            Control k = c.Controls[i];
+            if (k.Visible && k.Enabled && k.TabStop && !(k is Label) && !(k is Panel)) return k;
+            Control? deeper = FirstFocusable(k);
+            if (deeper != null) return deeper;
+        }
+        return null;
+    }
+
+    public void Close()
+    {
+        if (_closed) return;
+        FormClosingEventArgs e = new FormClosingEventArgs();
+        OnFormClosing(e);
+        if (e.Cancel) return;
+        _closed = true;
+        Application.Unregister(this);
+        if (_handle != 0) Seat.Current.DestroyWindow(_handle);
+        _handle = 0;
+        OnFormClosed(EventArgs.Empty);
+    }
+
+    public void Activate() { if (_handle != 0) { Seat.Current.RaiseWindow(_handle); Seat.Current.FocusWindow(_handle); } }
+
+    protected virtual void OnLoad(EventArgs e) { if (Load != null) Load(this, e); }
+    protected virtual void OnFormClosing(FormClosingEventArgs e) { if (FormClosing != null) FormClosing(this, e); }
+    protected virtual void OnFormClosed(EventArgs e) { if (FormClosed != null) FormClosed(this, e); }
+    protected virtual void OnActivated(EventArgs e) { if (Activated != null) Activated(this, e); }
+    internal void RaiseActivated() { OnActivated(EventArgs.Empty); Invalidate(); }
+
+    /// Paint the whole window: the frame, then the client tree.
+    internal void PaintWindow(Rectangle clip, bool force)
+    {
+        if (_handle == 0) return;
+        Seat seat = Seat.Current;
+        seat.Target(_handle);
+        if (HasFrame && (force || HasInvalid()))
+        {
+            Graphics g = new Graphics(seat, 0, 0, new Rectangle(0, 0, Width, Height));
+            bool active = Application.ActiveForm == this;
+            Color face = SystemColors.Control;
+            g.FillRectangle(new SolidBrush(face), 0, 0, Width, Height);
+            g.DrawLine(new Pen(SystemColors.ControlLight), 0, 0, Width - 1, 0);
+            g.DrawLine(new Pen(SystemColors.ControlLight), 0, 0, 0, Height - 1);
+            g.DrawLine(new Pen(SystemColors.ControlDarkDark), 0, Height - 1, Width - 1, Height - 1);
+            g.DrawLine(new Pen(SystemColors.ControlDarkDark), Width - 1, 0, Width - 1, Height - 1);
+            Color cap = active ? SystemColors.ActiveCaption : SystemColors.InactiveCaption;
+            g.FillRectangle(new SolidBrush(cap), BorderWidth, BorderWidth, Width - 2 * BorderWidth, CaptionHeight - BorderWidth);
+            g.DrawStringOpaque(Text, Font, active ? SystemColors.ActiveCaptionText : SystemColors.ControlLight, cap, BorderWidth + 4, BorderWidth + 1);
+            // The close box.
+            int bx = Width - BorderWidth - 18, by = BorderWidth + 1;
+            g.FillRectangle(new SolidBrush(face), bx, by, 16, 16);
+            g.DrawStringOpaque("x", Font, SystemColors.ControlText, face, bx + 4, by);
+        }
+        Point co = ClientOffset();
+        Rectangle client = new Rectangle(co.X, co.Y, ClientRectangle.Width, ClientRectangle.Height);
+        PaintTree(seat, co, force ? client : Rectangle.Intersect(client, new Rectangle(0, 0, Width, Height)), force);
+    }
+
+    /// A press in the window: the close box, the caption, or the client.
+    internal void WindowMouse(int kind, int button, int x, int y)
+    {
+        Point co = ClientOffset();
+        if (HasFrame && y < co.Y)
+        {
+            if (kind == 4 && button == 1 && x >= Width - BorderWidth - 18 && x < Width - BorderWidth - 2 && y >= BorderWidth && y < BorderWidth + 17) { Close(); return; }
+            if (kind == 4 && button == 1) { Application.BeginDrag(this, x, y); }
+            return;
+        }
+        int cx = x - co.X, cy = y - co.Y;
+        Control target = HitTest(cx, cy);
+        Point origin = target.ClientOrigin();
+        MouseButtons b = button == 1 ? MouseButtons.Left : button == 2 ? MouseButtons.Right : button == 3 ? MouseButtons.Middle : MouseButtons.None;
+        MouseEventArgs e = new MouseEventArgs(b, 1, cx - origin.X, cy - origin.Y, 0);
+        if (kind == 4) { if (target.TabStop && !(target is Label)) Application.SetFocus(target); target.RaiseMouseDown(e); Application.Captured = target; }
+        else if (kind == 5) { Control c = Application.Captured ?? target; Application.Captured = null; c.RaiseMouseUp(e); }
+        else { (Application.Captured ?? target).RaiseMouseMove(e); }
+    }
+}
+
+public class Label : Control
+{
+    public Label() { TabStop = false; BackColor = Color.Transparent; }
+    public bool AutoSize = true;
+    public override string Text { get { return base.Text; } set { base.Text = value; if (AutoSize) { SizeF s = SystemFonts.DefaultFont.Height > 0 ? new Graphics(Seat.Current, 0, 0, Rectangle.Empty).MeasureString(value, Font) : new SizeF(0, 0); Width = (int)s.Width; Height = (int)s.Height; } } }
+    protected override void OnPaintBackground(PaintEventArgs e)
+    {
+        if (BackColor == Color.Transparent) { Control? p = Parent; e.Graphics.FillRectangle(new SolidBrush(p == null ? SystemColors.Control : p.BackColor), e.ClipRectangle); }
+        else base.OnPaintBackground(e);
+    }
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        e.Graphics.DrawString(Text, Font, new SolidBrush(ForeColor), 0, 0);
+        base.OnPaint(e);
+    }
+}
+
+public class Panel : Control
+{
+    public Panel() { TabStop = false; }
+}
+
+public class Button : Control
+{
+    bool _down;
+    public Button() { Width = 75; Height = 23; }
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        Graphics g = e.Graphics;
+        int w = Width, h = Height;
+        Color light = _down ? SystemColors.ControlDarkDark : SystemColors.ControlLight;
+        Color dark = _down ? SystemColors.ControlLight : SystemColors.ControlDarkDark;
+        g.FillRectangle(new SolidBrush(BackColor), 0, 0, w, h);
+        g.DrawLine(new Pen(light), 0, 0, w - 1, 0); g.DrawLine(new Pen(light), 0, 0, 0, h - 1);
+        g.DrawLine(new Pen(dark), 0, h - 1, w - 1, h - 1); g.DrawLine(new Pen(dark), w - 1, 0, w - 1, h - 1);
+        g.DrawLine(new Pen(SystemColors.ControlDark), 1, h - 2, w - 2, h - 2); g.DrawLine(new Pen(SystemColors.ControlDark), w - 2, 1, w - 2, h - 2);
+        SizeF s = g.MeasureString(Text, Font);
+        g.DrawString(Text, Font, new SolidBrush(Enabled ? ForeColor : SystemColors.ControlDark), (w - (int)s.Width) / 2 + (_down ? 1 : 0), (h - (int)s.Height) / 2 + (_down ? 1 : 0));
+        if (Focused) g.DrawRectangle(new Pen(SystemColors.ControlText), 3, 3, w - 6, h - 6);
+        base.OnPaint(e);
+    }
+    protected override void OnMouseDown(MouseEventArgs e) { _down = true; Invalidate(); base.OnMouseDown(e); }
+    protected override void OnMouseUp(MouseEventArgs e) { _down = false; Invalidate(); base.OnMouseUp(e); }
+    protected override void OnKeyPress(KeyPressEventArgs e) { if (e.KeyChar == ' ' || e.KeyChar == '\r') { PerformClick(); e.Handled = true; } base.OnKeyPress(e); }
+}
+
+public class TextBox : Control
+{
+    int _caret;
+    public char PasswordChar = '\0';
+    public bool ReadOnly = false;
+    public bool UseSystemPasswordChar { get { return PasswordChar == '*'; } set { PasswordChar = value ? '*' : '\0'; } }
+    public TextBox() { BackColor = SystemColors.Window; ForeColor = SystemColors.WindowText; Width = 100; Height = 20; }
+    public int SelectionStart { get { return _caret; } set { _caret = value < 0 ? 0 : value > Text.Length ? Text.Length : value; Invalidate(); } }
+    public void SelectAll() { _caret = Text.Length; Invalidate(); }
+    string Shown() { if (PasswordChar == '\0') return Text; string s = ""; for (int i = 0; i < Text.Length; i++) s = s + PasswordChar; return s; }
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        Graphics g = e.Graphics;
+        int w = Width, h = Height;
+        g.FillRectangle(new SolidBrush(BackColor), 0, 0, w, h);
+        g.DrawLine(new Pen(SystemColors.ControlDark), 0, 0, w - 1, 0); g.DrawLine(new Pen(SystemColors.ControlDark), 0, 0, 0, h - 1);
+        g.DrawLine(new Pen(SystemColors.ControlLight), 0, h - 1, w - 1, h - 1); g.DrawLine(new Pen(SystemColors.ControlLight), w - 1, 0, w - 1, h - 1);
+        string shown = Shown();
+        g.DrawString(shown, Font, new SolidBrush(ForeColor), 3, (h - Font.Height) / 2);
+        if (Focused) g.FillRectangle(new SolidBrush(ForeColor), 3 + _caret * Font.GlyphWidth, (h - Font.Height) / 2, 1, Font.Height);
+        base.OnPaint(e);
+    }
+    protected override void OnKeyPress(KeyPressEventArgs e)
+    {
+        base.OnKeyPress(e);
+        if (e.Handled || ReadOnly) return;
+        char c = e.KeyChar;
+        if (c == '\b') { if (_caret > 0) { Text = Text.Substring(0, _caret - 1) + Text.Substring(_caret); _caret--; } e.Handled = true; }
+        else if (c >= ' ' && c < (char)127) { Text = Text.Substring(0, _caret) + c + Text.Substring(_caret); _caret++; e.Handled = true; }
+        Invalidate();
+    }
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        base.OnKeyDown(e);
+        if (e.KeyCode == Keys.Left && _caret > 0) _caret--;
+        else if (e.KeyCode == Keys.Right && _caret < Text.Length) _caret++;
+        else if (e.KeyCode == Keys.Home) _caret = 0;
+        else if (e.KeyCode == Keys.End) _caret = Text.Length;
+        else if (e.KeyCode == Keys.Delete && _caret < Text.Length) Text = Text.Substring(0, _caret) + Text.Substring(_caret + 1);
+        Invalidate();
+    }
+    protected override void OnTextChanged(EventArgs e) { if (_caret > Text.Length) _caret = Text.Length; base.OnTextChanged(e); }
+}
+
+// ---------------------------------------------------------------------------
+// The application: the message loop and the things it owns.
+// ---------------------------------------------------------------------------
+
+public delegate void WatchHandler(int fd);
+
+public static class Application
+{
+    static List<Form> _forms = new List<Form>();
+    static bool _running;
+    static int _exitCode;
+    static Control? _focus;
+    static Form? _active;
+    static Form? _dragging;
+    static int _dragX, _dragY;
+    static bool _paintPending;
+    static List<int> _watchFds = new List<int>();
+    static List<WatchHandler> _watchHandlers = new List<WatchHandler>();
+
+    public static event EventHandler? Idle;
+
+    public static Control? FocusedControl { get { return _focus; } }
+    public static Form? ActiveForm { get { return _active; } }
+    internal static Control? Captured;
+
+    internal static void Register(Form f) { if (!_forms.Contains(f)) _forms.Add(f); _active = f; f.RaiseActivated(); }
+    internal static void Unregister(Form f) { _forms.Remove(f); if (_active == f) _active = _forms.Count > 0 ? _forms[_forms.Count - 1] : null; if (_focus != null && _focus.FindForm() == f) _focus = null; }
+    internal static void NeedsPaint(Control c) { _paintPending = true; }
+    internal static void BeginDrag(Form f, int x, int y) { _dragging = f; _dragX = x; _dragY = y; }
+
+    internal static void SetFocus(Control? c)
+    {
+        if (_focus == c) return;
+        Control? old = _focus;
+        _focus = c;
+        if (old != null) old.RaiseLostFocus();
+        if (c != null) c.RaiseGotFocus();
+    }
+
+    /// Watch another descriptor from the message loop: a terminal watches its
+    /// pseudo-terminal. CORSAC-only, and the one thing here .NET does not have.
+    public static void Watch(int fd, WatchHandler handler) { _watchFds.Add(fd); _watchHandlers.Add(handler); }
+    public static void Unwatch(int fd) { int i = _watchFds.IndexOf(fd); if (i >= 0) { _watchFds.RemoveAt(i); _watchHandlers.RemoveAt(i); } }
+
+    static Form? FormOf(int handle) { for (int i = 0; i < _forms.Count; i++) if (_forms[i].Handle == handle) return _forms[i]; return null; }
+
+    internal static void PaintNow()
+    {
+        for (int i = 0; i < _forms.Count; i++) _forms[i].PaintWindow(new Rectangle(0, 0, _forms[i].Width, _forms[i].Height), false);
+        _paintPending = false;
+        Seat.Current.Flush();
+    }
+
+    public static void DoEvents()
+    {
+        while (Seat.Current.Poll(0))
+        {
+            Message m;
+            if (!Seat.Current.Next(out m)) break;
+            Dispatch(ref m);
+        }
+        if (_paintPending) PaintNow();
+    }
+
+    public static void Run(Form main)
+    {
+        main.Show();
+        Run();
+    }
+
+    /// The loop. Block for a message, dispatch it, paint what became stale,
+    /// repeat until the last form closes or Exit is called. Nothing here
+    /// polls: Next blocks in the kernel until there is a message.
+    public static void Run()
+    {
+        _running = true;
+        Seat seat = Seat.Current;
+        while (_running && _forms.Count > 0)
+        {
+            if (_paintPending) PaintNow();
+            if (Idle != null) Idle(null!, EventArgs.Empty);
+            if (_watchFds.Count > 0)
+            {
+                // Several descriptors: wait on the seat with a short timeout and
+                // give the watchers a turn. The timeout is the price of not
+                // having a multi-descriptor wait yet; it is not a poll of the
+                // seat, which still sleeps in the kernel.
+                bool any = false;
+                for (int i = 0; i < _watchFds.Count; i++)
+                    if (Os.Poll(_watchFds[i], 1, 0) > 0) { _watchHandlers[i](_watchFds[i]); any = true; }
+                if (any) continue;
+                if (!seat.Poll(20)) continue;
+            }
+            Message m;
+            if (!seat.Next(out m)) break;
+            Dispatch(ref m);
+        }
+        _running = false;
+    }
+
+    public static void Exit() { _running = false; }
+    public static void Exit(int code) { _exitCode = code; _running = false; }
+    public static int ExitCode { get { return _exitCode; } }
+
+    static void Dispatch(ref Message m)
+    {
+        Form? f = FormOf(m.Window);
+        if (f == null && m.Kind != 1) return;
+        switch (m.Kind)
+        {
+            case 1:
+            {
+                Control? target = _focus ?? _active;
+                if (target == null) return;
+                int key = m.A & 0x1FF;
+                int mods = m.B;
+                if (m.Kind == 1 && (m.A & 0x200) != 0) mods = mods | 4;
+                if (key < 256)
+                {
+                    KeyPressEventArgs e = new KeyPressEventArgs((char)key);
+                    target.RaiseKeyPress(e);
+                    if (!e.Handled && key == 9) { Form? tf = target.FindForm(); if (tf != null) SetFocus(NextFocusable(tf, target)); }
+                    if (!e.Handled && key == 27 && target.FindForm() != null && !(target is TextBox)) { }
+                }
+                else
+                {
+                    KeyEventArgs e = new KeyEventArgs((Keys)key, mods);
+                    target.RaiseKeyDown(e);
+                }
+                Message raw = m; target.DispatchRaw(ref raw);
+                break;
+            }
+            case 3:
+                if (_dragging != null) { _dragging.SetBounds(_dragging.Left + (m.A - _dragX), _dragging.Top + (m.B - _dragY), _dragging.Width, _dragging.Height); break; }
+                f!.WindowMouse(3, 0, m.A, m.B); break;
+            case 4:
+                if (_active != f) { _active = f; f!.RaiseActivated(); }
+                f!.WindowMouse(4, m.A, m.B & 0xFFFF, (m.B >> 16) & 0xFFFF); break;
+            case 5:
+                _dragging = null;
+                f!.WindowMouse(5, m.A, m.B & 0xFFFF, (m.B >> 16) & 0xFFFF); break;
+            case 8:
+            {
+                int x = m.A & 0xFFFF, y = (m.A >> 16) & 0xFFFF, w = m.B & 0xFFFF, h = (m.B >> 16) & 0xFFFF;
+                f!.PaintWindow(new Rectangle(x, y, w, h), true);
+                Seat.Current.Flush();
+                break;
+            }
+            case 9:
+                if (m.A != 0) { _active = f; f!.RaiseActivated(); }
+                else if (_active == f) { f!.Invalidate(); }
+                break;
+            case 10:
+                f!.Close(); break;
+        }
+    }
+
+    static Control NextFocusable(Form f, Control from)
+    {
+        List<Control> all = new List<Control>();
+        Collect(f, all);
+        int i = all.IndexOf(from);
+        for (int step = 1; step <= all.Count; step++)
+        {
+            Control c = all[(i + step + all.Count) % all.Count];
+            if (c.Visible && c.Enabled && c.TabStop && !(c is Label) && !(c is Panel) && !(c is Form)) return c;
+        }
+        return from;
+    }
+
+    static void Collect(Control c, List<Control> into)
+    {
+        for (int i = 0; i < c.Controls.Count; i++) { into.Add(c.Controls[i]); Collect(c.Controls[i], into); }
+    }
+}
