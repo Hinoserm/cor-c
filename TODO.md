@@ -19,8 +19,21 @@ required gates rather than assuming a missing log is proof of completion.
 
 ## Priority and purpose
 
-The x86 instruction/profile work is paused. The three functional blockers below
-are explicitly deferred by request; do not resume them without a new request.
+- [ ] Add baseline-compatible runtime/library multiversion dispatch: resolve
+  CPU/OS-safe implementations during initialization, preserving 486 fallbacks
+  without repeated hot-path detection. Kernel capability enablement and state
+  preservation are being completed first in the OS integration branch.
+- [ ] After runtime dispatch, add the Cyrix 6x86MX CPU profile, assembler
+  instructions and basic optimizations. EMMI requires verified OS enablement;
+  revision-sensitive instruction behavior must not be inferred from MMX alone.
+- [x] Separate-compilation receipts include the project-wide interface-slot
+  reservation table. Adding a family/member invalidates stale ABI users;
+  unrelated class changes do not. Metadata regression passed after a synced
+  OS build exposed stale IFormatProvider layouts.
+
+The earlier x86 expansion is paused except for the newly requested Cyrix and
+runtime-dispatch work above. The three functional blockers below are explicitly
+deferred by request; do not resume them without a new request.
 - [x] Integrate CORSAC86 per-file process scheduling in the isolated
   `build-system-migration` branch: kernel, bootloader and user programs use
   one compiler process per source under a shared job budget, then link.
