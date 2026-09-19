@@ -629,18 +629,25 @@ static class Gc
     {
         long tb = Sys.ThreadBlock();
         long need = (bytes + Overhead + 7) & SizeMask;
+        // Not to be stopped from outside between here and the bump
+        // (Tls.InAlloc): the limit read below is the promise the buffer is
+        // still this thread's, and an interrupting collector must not
+        // retire it before the pointer has moved past the object.
+        Sys.Poke(tb + Tls.InAlloc, 1);
         long block = Sys.Peek(tb + Tls.AllocPtr);
         long next = block + need;
 
         if (bytes < 0 || bytes > MaxRequest || next + Smallest > Sys.Peek(tb + Tls.AllocLimit)
             || HasReusableFree(need))
         {
+            Sys.Poke(tb + Tls.InAlloc, 0);
             return AllocSlow(bytes);
         }
 
         Sys.Poke(tb + Tls.AllocPtr, next);
         Sys.Poke(block, need);
         Sys.Poke(next - FooterBytes, need);
+        Sys.Poke(tb + Tls.InAlloc, 0);
         return block + HeaderBytes;
     }
 
@@ -2434,8 +2441,20 @@ static class GcThreads
             i = i + 1;
         }
 
+        // A thread that is neither allocating nor blocking never notices
+        // its buffer is gone: the platform is asked to prompt it -- on a
+        // kernel, an interrupt to every processor still running -- and
+        // asked again while any is still running, since one prompted in
+        // the middle of an allocation lets that one finish first.
+        long spins = 0;
+
         while (Running(self) > 0)
         {
+            if ((spins & 0xFF) == 0)
+            {
+                Platform.PromptStop();
+            }
+            spins = spins + 1;
             Sys.Pause();
         }
 

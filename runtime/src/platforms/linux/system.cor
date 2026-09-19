@@ -450,6 +450,12 @@ static class Platform
     // and FUTEX_WAKE with the private flag: no shared memory is involved, so
     // the kernel can skip the page lookup entirely.
 
+    /// Nothing: a thread here stops when it next allocates or blocks, and
+    /// there is no interrupt to send it. The kernel's platform has one.
+    public static void PromptStop()
+    {
+    }
+
     public static void Wait(long at, long value)
     {
         Sys.Syscall(Call.Futex, at, 128, value, 0, 0, 0);
