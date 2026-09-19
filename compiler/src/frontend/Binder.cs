@@ -195,9 +195,19 @@ public sealed partial class Binder
     private bool TypeCandidate(string key, out TypeSymbol? symbol)
     {
         if (_r.Types.TryGetValue(key, out symbol)) return true;
-        _requireDeclaration?.Invoke(key);
+        // A MISSING DECLARATION IS RECORDED, NOT RAISED. Unwinding here threw
+        // the whole unit away for one name, and a single dispatcher naming a
+        // dozen kernel types therefore cost a dozen rebuilds. Checking carries
+        // on with the name unresolved instead, which reports nonsense for the
+        // rest of this pass -- and that is fine, because the pass is discarded
+        // the moment anything was recorded. See DeclarationBatch.
+        try { _requireDeclaration?.Invoke(key); }
+        catch (Metadata.DeclarationDemand demand) { _declarationBatch.Add(demand); }
         return false;
     }
+
+    /// <summary>Whether this pass has already found declarations it must retry with.</summary>
+    private bool Demanded => _declarationBatch.Any;
 
     /// <summary>
     /// A dotted name as it was written, when an expression is nothing but one:
@@ -1190,9 +1200,23 @@ public sealed partial class Binder
         for (int ordinal = 0; ordinal < _bodyWork.Count; ordinal++)
         {
             var work = _bodyWork[ordinal];
-            CheckBodyItem(work.Decl, work.Symbol, ordinal);
+            // ONE MEMBER'S MISSING TYPE MUST NOT COST A WHOLE REBUILD. A body
+            // names types no signature mentioned -- devfs names Tty, Vga, Arch
+            // and a dozen more -- and demanding them one at a time threw the
+            // unit away once per name. Checking continues to the next member
+            // with the request recorded; what this pass then reports is
+            // discarded with the transaction, so only the requests survive.
+            try { CheckBodyItem(work.Decl, work.Symbol, ordinal); }
+            catch (Metadata.DeclarationDemand demand)
+            {
+                _declarationBatch.Add(demand);
+                _member = null;
+                _signature = null;
+                _quiet = 0;
+            }
         }
         _bodyWork.Clear();
+        _declarationBatch.ThrowIfAny();
     }
 
     private void CheckBodyItem(TypeDecl declaration, TypeSymbol symbol, int ordinal)
@@ -3963,7 +3987,11 @@ public sealed partial class Binder
         List<MethodSymbol> InNamespaces(IEnumerable<string> spaces)
         {
             HashSet<string> namespaces = spaces.ToHashSet(StringComparer.Ordinal);
-            foreach (string space in namespaces) _requireExtensions?.Invoke(space, name);
+            foreach (string space in namespaces)
+            {
+                try { _requireExtensions?.Invoke(space, name); }
+                catch (Metadata.DeclarationDemand demand) { _declarationBatch.Add(demand); }
+            }
             List<MethodSymbol> found = new();
             foreach (TypeSymbol holder in _r.Types.Values.Where(type => namespaces.Contains(type.Decl?.Namespace ?? "")))
             foreach (MethodSymbol m in holder.Methods.Where(method => method.Name == name))

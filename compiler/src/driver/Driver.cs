@@ -476,7 +476,13 @@ public static class Driver
             Frontend.Compile(files, name, library, libraryMark, symbols, references, workers, declarations);
         if (declarations is not null) Console.Error.WriteLine("indexed declaration payloads loaded=" + declarations.PayloadLoads
             + " passes=" + declarations.Passes + " token-cache hits=" + declarations.Tokens.Hits
-            + " misses=" + declarations.Tokens.Misses + " bytes=" + declarations.Tokens.ResidentBytes);
+            + " misses=" + declarations.Tokens.Misses + " bytes=" + declarations.Tokens.ResidentBytes
+            // ALLOCATED BYTES ARE THE STOPWATCH HERE. A machine with other
+            // builds on it cannot be timed: wall clock moves with whatever
+            // else is running. What the compiler allocates does not, so a
+            // change that removes repeated work shows up as a smaller number
+            // whoever else is using the processors.
+            + " allocated=" + GC.GetTotalAllocatedBytes());
         if (front is null)
         {
             return 1;
