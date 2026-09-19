@@ -489,12 +489,38 @@ internal static class Program
         uint W(int at) => (uint)(b[at] | (b[at + 1] << 8) | (b[at + 2] << 16) | (b[at + 3] << 24));
 
         Check(W(0) == 0x314d5343, "stack maps begin with the CSM1 magic");
-        Check(W(4) == 1, "stack maps are version 1");
+        Check(W(4) == 2, "stack maps are version 2");
         Check(W(12) == 16, "a stack-map entry is sixteen bytes");
 
         int count = (int)W(8);
-        Check(count > 0 && 16 + count * 16 <= b.Length, "the entry count fits the section");
-        Check(s.Relocs.Count == count, "every entry's return address is a relocation");
+        Check(count > 0 && 20 + count * 16 <= b.Length, "the entry count fits the section");
+
+        // ONE RELOCATION FOR THE WHOLE TABLE, in the header: the base is the
+        // start of the first function that has a call site, and every entry
+        // holds its return address measured from there. Version 1 relocated
+        // every entry, which in a shared object was a page the loader wrote
+        // and every process kept a private copy of.
+        Check(s.Relocs.Count == 1 && s.Relocs[0].Offset == 16, "the table's one relocation is its base");
+        string baseFunction = s.Relocs.Count == 1 ? s.Relocs[0].Symbol : "";
+
+        // Which function an entry belongs to is now a question about
+        // addresses rather than about relocations: the text offset of the
+        // call is the base function's offset plus what the entry stores.
+        Symbol? baseSymbol = obj.Symbols.Find(y => y.Name == baseFunction && y.Section is not null);
+        Check(baseSymbol is not null, "the base names a defined function");
+        List<Symbol> text = obj.Symbols
+            .Where(y => baseSymbol is not null && ReferenceEquals(y.Section, baseSymbol.Section) && y.Size > 0)
+            .OrderBy(y => y.Offset).ToList();
+        string Owner(int fromBase)
+        {
+            if (baseSymbol is null) return "";
+            long target = baseSymbol.Offset + fromBase;
+            for (int k = text.Count - 1; k >= 0; k--)
+            {
+                if (text[k].Offset <= target && target < text[k].Offset + text[k].Size) return text[k].Name;
+            }
+            return "";
+        }
         Check(obj.Symbols.Any(y => y.Name == X86Backend.StackMapStart && y.Offset == 0 && !y.Global)
             && obj.Symbols.Any(y => y.Name == X86Backend.StackMapEnd && y.Offset == b.Length && !y.Global),
             "object-local start and end symbols bracket the table");
@@ -503,7 +529,7 @@ internal static class Program
         bool bitmapsInRange = true;
         for (int i = 0; i < count; i++)
         {
-            int at = 16 + i * 16;
+            int at = 20 + i * 16;
             uint regs = W(at + 4);
             int map = (int)W(at + 8);
             if (map != 0 && (map + 4 > b.Length || map + 4 + (int)W(map) * 4 > b.Length))
@@ -512,7 +538,7 @@ internal static class Program
             }
             // Only EBX, ESI and EDI survive a call, so no other bit may be set.
             Check((regs & ~0b1100_1000u) == 0, "a stack map names only callee-saved registers");
-            string owner = s.Relocs[i].Symbol;
+            string owner = Owner((int)W(at));
             if (!byFunction.ContainsKey(owner) || regs != 0 || map != 0)
             {
                 byFunction[owner] = (regs, map, W(at + 12));
