@@ -124,7 +124,12 @@ public class Seat : IDrawingTarget
         while (at < _used)
         {
             int n = Os.Write(_fd, _batch, at, _used - at);
-            if (n <= 0) break;
+            // A batch the seat would not take is a bug in whoever built it,
+            // and a bug that shows up as a picture quietly not appearing is
+            // the worst kind: it stops the program here, with the kernel's
+            // console line saying which op and where.
+            if (n < 0) { _used = 0; throw new InvalidOperationException("the seat rejected a drawing batch (" + (-n) + ")"); }
+            if (n == 0) break;
             at += n;
         }
         _used = 0;
@@ -232,11 +237,18 @@ public class Seat : IDrawingTarget
         Os.Ioctl(_fd, 0x47550011, (w & 0xFFFF) | (h << 16));
         return handle;
     }
-    public void ShowWindow(int handle) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550012, 0); }
-    public void HideWindow(int handle) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550013, 0); }
-    public void RaiseWindow(int handle) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550014, 0); }
-    public void MoveWindow(int handle, int x, int y) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550015, (x & 0xFFFF) | (y << 16)); }
-    public void ResizeWindow(int handle, int w, int h) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550011, (w & 0xFFFF) | (h << 16)); }
+    /// What every window call goes through: the seat's answer, and an
+    /// exception if it was a refusal. The kernel says why on its console.
+    static void Must(long answer, string what)
+    {
+        if (answer < 0) throw new InvalidOperationException("the seat refused " + what + " (" + (-answer) + ")");
+    }
+
+    public void ShowWindow(int handle) { Flush(); Select(handle); Must(Os.Ioctl(_fd, 0x47550012, 0), "showing a window"); }
+    public void HideWindow(int handle) { Flush(); Select(handle); Must(Os.Ioctl(_fd, 0x47550013, 0), "hiding a window"); }
+    public void RaiseWindow(int handle) { Flush(); Select(handle); Must(Os.Ioctl(_fd, 0x47550014, 0), "raising a window"); }
+    public void MoveWindow(int handle, int x, int y) { Flush(); Select(handle); Must(Os.Ioctl(_fd, 0x47550015, (x & 0xFFFF) | (y << 16)), "moving a window"); }
+    public void ResizeWindow(int handle, int w, int h) { Flush(); Select(handle); Must(Os.Ioctl(_fd, 0x47550011, (w & 0xFFFF) | (h << 16)), "resizing a window"); }
     public void DestroyWindow(int handle) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550016, 0); _window = 0; _named = false; }
     public void FocusWindow(int handle) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550017, 0); }
     /// This window is the desktop: the surface under everything, never raised.
