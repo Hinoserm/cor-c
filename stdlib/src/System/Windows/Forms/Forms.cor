@@ -919,8 +919,8 @@ class MessageIcon : Control
                 int half = (y - 2) * (w / 2 - 2) / (h - 4);
                 g.FillRectangle(yellow, w / 2 - half, y, half * 2 + 1, 1);
             }
-            Pen ink = new Pen(Color.Black);
-            g.DrawLine(ink, w / 2, 2, 2, h - 3); g.DrawLine(ink, w / 2, 2, w - 3, h - 3); g.DrawLine(ink, 2, h - 3, w - 3, h - 3);
+            Pen edge = new Pen(Color.Black);
+            g.DrawLine(edge, w / 2, 2, 2, h - 3); g.DrawLine(edge, w / 2, 2, w - 3, h - 3); g.DrawLine(edge, 2, h - 3, w - 3, h - 3);
             g.FillRectangle(new SolidBrush(Color.Black), w / 2 - 1, 10, 3, 12);
             g.FillRectangle(new SolidBrush(Color.Black), w / 2 - 1, 24, 3, 3);
             return;
