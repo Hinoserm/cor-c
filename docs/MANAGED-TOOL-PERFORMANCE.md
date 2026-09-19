@@ -93,9 +93,23 @@ executables passed all nine allocation checks. An AOT-compiled `.csproj` smoke
 program ran successfully and its second project build reused every object.
 The AOT compiler publish completed without warnings after the cache identity fix.
 
-Next acceptance is routing a complete parallel kernel/userland build through
-native workers, including subprocess LTO and rebuild invalidation. Do not
-replace an active managed toolchain merely because this microbenchmark passes.
+## Default-path acceptance
+
+The owned AOT publisher built the compiler, linker, build utility and CORSAC86
+configuration/image helpers. Native build-tool checks (26), compiler metadata
+tests, subprocess IR-LTO, and OS configuration/image test suites passed.
+The migration checkout then built 112 kernel units, stage 2, all runtime/shared
+libraries and userland with 16 native compiler workers, plus default nano and
+iperf3. Its updated 32 MiB disk passed QEMU 486 boot, login, shell execution and
+reboot acceptance. Repeating the build launched no compiler workers and left
+the original disk hash unchanged; boot acceptance uses a private image copy.
+
+OS evidence is under `build/logs/20260919-020630-93c9fca5112d49f5ae39f08653aa8298`
+in the isolated migration checkout. Disk SHA-256:
+`b71296d33677a3cd3ed906551d53d78f32c1effae66b5592de162806a93ce322`.
+The checkout retained a pre-existing, unrelated Console.SetError parameter
+rename; it was neither reverted nor included in the AOT commits. This is
+host-tool integration acceptance, not full self-hosting or Cyrix silicon acceptance.
 
 Do not rebuild or replace tool assemblies underneath an active production
 build. Publish changes, finish the active invocation, then rebuild and validate

@@ -5,7 +5,10 @@
 - [x] Default host compiler, linker and build utility to Native AOT via owned
   project evaluation, direct ILC and native linking; preserve explicit JIT exclusion.
 - [x] Validate native build utility (26 checks) and subprocess IR-LTO acceptance.
-- [ ] Complete full CORSAC86 native-tool image/boot and no-change rebuild acceptance.
+- [x] Complete full CORSAC86 native-tool image/boot and no-change rebuild acceptance:
+  112 kernel units, stage 2, runtime/userland, default nano/iperf3 and a 32 MiB
+  disk built; QEMU 486 login/shell/reboot passed. Repeated build launched no
+  compiler workers and preserved the disk SHA-256 (migration branch acceptance).
 
 Unchecked items are outstanding, partial, or unverified. Checked items record
 completion only for the stated scope and source snapshot. Standing rules belong
