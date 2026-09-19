@@ -63,6 +63,29 @@ Competing builds on the host can distort elapsed times. This fixture does not
 alone establish the speedup of a complete parallel kernel/userland build.
 Native AOT is not yet the default worker selected by the build utility.
 
+### Initial Linux x64 measurements
+
+Measured with .NET 10.0.103 / runtime 10.0.3, Release, speed-oriented AOT,
+one compilation worker, three process launches per variant. Other builds were
+active on the host; elapsed times are exploratory, not whole-build acceptance.
+
+| Workload | JIT elapsed seconds | AOT elapsed seconds | JIT peak KiB | AOT peak KiB |
+| --- | --- | --- | --- | --- |
+| Small independent object | 0.75, 0.58, 0.68 | 0.03, 0.05, 0.04 | 51712–52992 | 23040–23296 |
+| Allocation program with libraries | 23.77, 18.24, 14.05 | 21.31, 18.13, 11.11 | 231384–232568 | 118436–123288 |
+
+The small worker's median improved from 0.68 to 0.04 seconds. Larger-program
+user CPU time ranged from 16.66–23.08 seconds with JIT and 11.41–19.21 with AOT;
+the changing host load prevents attributing a precise whole-build speedup.
+Both object files and both Linux executables were byte-identical. Both generated
+executables passed all nine allocation checks. An AOT-compiled `.csproj` smoke
+program ran successfully and its second project build reused every object.
+The AOT compiler publish completed without warnings after the cache identity fix.
+
+Next acceptance is routing a complete parallel kernel/userland build through
+native workers, including subprocess LTO and rebuild invalidation. Do not
+replace an active managed toolchain merely because this microbenchmark passes.
+
 Do not rebuild or replace tool assemblies underneath an active production
 build. Publish changes, finish the active invocation, then rebuild and validate
 the tool generation as a coherent set.

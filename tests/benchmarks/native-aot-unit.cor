@@ -1,0 +1,14 @@
+// Small independent source unit: measures a short-lived per-file worker.
+public static class IntegerMix
+{
+    public static uint Mix(uint value, int rounds)
+    {
+        for (int i = 0; i < rounds; i++)
+        {
+            value ^= value >> 13;
+            value *= 0x5bd1e995u;
+            value ^= value << 7;
+        }
+        return value;
+    }
+}

@@ -26,6 +26,22 @@ for round in 1 2 3; do
     done
 done
 cmp "$output/allocation-jit" "$output/allocation-aot"
+printf 'mode,round,seconds,user_seconds,system_seconds,peak_kib\n' > "$output/unit-timings.csv"
+for round in 1 2 3; do
+    modes='jit aot'
+    if [ "$round" = 2 ]; then modes='aot jit'; fi
+    for mode in $modes; do
+        command=("$native")
+        if [ "$mode" = jit ]; then command=(dotnet "$managed"); fi
+        /usr/bin/time -a -o "$output/unit-timings.csv" \
+            -f "$mode,$round,%e,%U,%S,%M" \
+            "${command[@]}" compile --nostdlib --lib --obj --jobs 1 \
+            tests/benchmarks/native-aot-unit.cor -o "$output/unit-$mode.o" \
+            > "$output/unit-$mode-$round.log" 2>&1
+    done
+done
+cmp "$output/unit-jit.o" "$output/unit-aot.o"
 "$output/allocation-jit" > "$output/result-jit.log"
 "$output/allocation-aot" > "$output/result-aot.log"
 cat "$output/timings.csv"
+cat "$output/unit-timings.csv"
