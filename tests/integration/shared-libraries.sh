@@ -21,6 +21,7 @@ set -u
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
 corc="${CORC:-$root/compiler/bin/Release/net10.0/corc}"
+libdir="${OUT:-$root/build/lib}"
 filter="${1:-}"
 mkdir -p "$root/build"
 work="$(mktemp -d "$root/build/shared.XXXXXX")"
@@ -33,7 +34,7 @@ failed_names=""
 ok() { passed=$((passed + 1)); printf 'PASS %s\n' "$1"; }
 bad() { failed=$((failed + 1)); failed_names="$failed_names $1"; printf 'FAIL %s (%s)\n' "$1" "$2"; }
 
-if ! bash "$root/tests/integration/build-libraries.sh" > "$work/libs.log" 2>&1; then
+if [ "${SKIP_LIBRARY_BUILD:-0}" != 1 ] && ! OUT="$libdir" bash "$root/tests/integration/build-libraries.sh" > "$work/libs.log" 2>&1; then
     sed 's/^/    /' "$work/libs.log"
     echo "the shared libraries did not build" >&2
     exit 2
@@ -98,8 +99,8 @@ check_image() {
 }
 
 if [ -z "$filter" ]; then
-    check_image "$root/build/lib/libcorsacrt.so" "libcorsacrt.so" lib
-    check_image "$root/build/lib/libSystem.IO.so" "libSystem.IO.so" lib
+    check_image "$libdir/libcorsacrt.so" "libcorsacrt.so" lib
+    check_image "$libdir/libSystem.IO.so" "libSystem.IO.so" lib
 fi
 
 # ---- the tests --------------------------------------------------------------
@@ -121,7 +122,7 @@ for source in "$root"/tests/language/6[2-9][0-9]_shared_*.cor "$root/tests/langu
     fi
 
     exe="$work/$name"
-    if ! "$corc" compile --dynamic "$source" -o "$exe" > "$work/$name.cc" 2>&1; then
+    if ! "$corc" compile --dynamic --libdir "$libdir" "$source" -o "$exe" > "$work/$name.cc" 2>&1; then
         sed 's/^/    /' "$work/$name.cc" | head -20
         bad "$name" "did not compile"
         continue
