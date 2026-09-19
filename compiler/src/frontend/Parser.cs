@@ -1422,9 +1422,20 @@ public sealed class Parser
         src.Append("            for (int i = 0; i < ma.Items.Length; i++) { if (i != at) { rest[k] = ma.Items[i]; k++; } }\n");
         src.Append("            return new ").Append(m).Append("(rest);\n        }\n");
         src.Append("        return Runtime.SameClosure(a, b) ? null : a;\n    }\n}\n");
-        Parser sub = new(Lexer.Tokenize(src.ToString(), _file), _file);
+        Parser sub = new(Lexer.Tokenize(src.ToString(), _file), _file, _declarationsOnly);
         CompilationUnit unit = sub.ParseUnit();
-        return unit.Types.Count == 1 ? unit.Types[0] : null;
+        if (unit.Types.Count != 1) return null;
+        TypeDecl made = unit.Types[0];
+        // The declaration index slices a file by each type's source span and
+        // re-parses the slice; this class has no text of its own, so it
+        // claims the delegate's span and is re-created by re-parsing that.
+        made.SourceFrom = delegateDecl.SourceFrom;
+        made.SourceTo = delegateDecl.SourceTo;
+        made.File = _file;
+        made.Scope = _fileScope;
+        made.Line = delegateDecl.Line;
+        made.Col = delegateDecl.Col;
+        return made;
     }
 
     /// Turns a record's positional parameters into members.

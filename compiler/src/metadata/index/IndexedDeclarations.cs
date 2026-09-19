@@ -81,7 +81,13 @@ public sealed class IndexedDeclarations : IDisposable
                 // would make identical generic instantiations disagree at link.
                 string displayFile = Path.GetFileName(source.Path);
                 CompilationUnit header = Parser.ParseText(source.Text, displayFile, declarationsOnly: true);
-                TypeDecl root = header.Types.OrderBy(type => type.SourceFrom).First();
+                // A slice can parse to more than one declaration: a delegate's
+                // text also yields the multicast class synthesised beside it.
+                // The record names which one it is for.
+                string wanted = source.Key[(source.Key.LastIndexOf('.') + 1)..];
+                if (wanted.Contains('\n')) wanted = wanted[(wanted.LastIndexOf('\n') + 1)..];
+                TypeDecl root = header.Types.FirstOrDefault(type => type.Name == wanted)
+                    ?? header.Types.OrderBy(type => type.SourceFrom).First();
                 if (root.TypeParams.Count != 0 || root.Members.OfType<MethodDecl>().Any(method => method.TypeParams.Count != 0))
                 {
                     implementations.Add(key);
