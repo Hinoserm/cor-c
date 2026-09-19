@@ -477,7 +477,13 @@ public class Control
     protected virtual void OnTextChanged(EventArgs e) { if (TextChanged != null) TextChanged(this, e); }
 
     internal void RaiseMouseDown(MouseEventArgs e) { OnMouseDown(e); }
-    internal void RaiseMouseUp(MouseEventArgs e) { OnMouseUp(e); if (Enabled) OnClick(EventArgs.Empty); }
+    /// A click is a press and a release on the same control: releasing
+    /// outside it, after a change of mind, is not one.
+    internal void RaiseMouseUp(MouseEventArgs e)
+    {
+        OnMouseUp(e);
+        if (Enabled && e.X >= 0 && e.Y >= 0 && e.X < Width && e.Y < Height) OnClick(EventArgs.Empty);
+    }
     internal void RaiseMouseMove(MouseEventArgs e) { OnMouseMove(e); }
     internal void RaiseKeyPress(KeyPressEventArgs e) { OnKeyPress(e); }
     internal void RaiseKeyDown(KeyEventArgs e) { OnKeyDown(e); }
@@ -630,7 +636,10 @@ public class Form : Control
         }
         int cx = x - co.X, cy = y - co.Y;
         Control target = HitTest(cx, cy);
-        Point origin = target.ClientOrigin();
+        // While a button is held the control that took the press gets every
+        // event, in ITS coordinates, wherever the pointer has gone since.
+        Control to = kind == 4 ? target : (Application.Captured ?? target);
+        Point origin = to.ClientOrigin();
         MouseButtons b = button == 1 ? MouseButtons.Left : button == 2 ? MouseButtons.Right : button == 3 ? MouseButtons.Middle : MouseButtons.None;
         MouseEventArgs e = new MouseEventArgs(b, 1, cx - origin.X, cy - origin.Y, 0);
         if (kind == 4)
@@ -640,8 +649,8 @@ public class Form : Control
             target.RaiseMouseDown(e);
             Application.Captured = target;
         }
-        else if (kind == 5) { Control c = Application.Captured ?? target; Application.Captured = null; c.RaiseMouseUp(e); }
-        else { (Application.Captured ?? target).RaiseMouseMove(e); }
+        else if (kind == 5) { Application.Captured = null; to.RaiseMouseUp(e); }
+        else { to.RaiseMouseMove(e); }
     }
 }
 
@@ -693,14 +702,30 @@ public class Button : Control
 
 public class TextBox : Control
 {
+    // The caret and the selection: `_caret` is where typing goes, `_anchor`
+    // is the other end of the selection, equal to the caret when nothing is
+    // selected. What a Windows text box does: a typed character replaces the
+    // selection, Shift with a movement key extends it, Tab into the box
+    // selects everything, a click puts the caret and a drag selects.
     int _caret;
+    int _anchor;
+    bool _dragging;
     public char PasswordChar = '\0';
     public bool ReadOnly = false;
     public bool UseSystemPasswordChar { get { return PasswordChar == '*'; } set { PasswordChar = value ? '*' : '\0'; } }
     public TextBox() { BackColor = SystemColors.Window; ForeColor = SystemColors.WindowText; Width = 100; Height = 20; }
-    public int SelectionStart { get { return _caret; } set { _caret = value < 0 ? 0 : value > Text.Length ? Text.Length : value; Invalidate(); } }
-    public void SelectAll() { _caret = Text.Length; Invalidate(); }
+    public int SelectionStart { get { return _caret < _anchor ? _caret : _anchor; } set { _caret = _anchor = Clamp(value); Invalidate(); } }
+    public int SelectionLength
+    {
+        get { return _caret < _anchor ? _anchor - _caret : _caret - _anchor; }
+        set { _caret = Clamp(SelectionStart + (value < 0 ? 0 : value)); Invalidate(); }
+    }
+    public string SelectedText { get { return Text.Substring(SelectionStart, SelectionLength); } }
+    public void SelectAll() { _anchor = 0; _caret = Text.Length; Invalidate(); }
+    public void Select(int start, int length) { _anchor = Clamp(start); _caret = Clamp(start + length); Invalidate(); }
+    int Clamp(int at) { return at < 0 ? 0 : at > Text.Length ? Text.Length : at; }
     string Shown() { if (PasswordChar == '\0') return Text; string s = ""; for (int i = 0; i < Text.Length; i++) s = s + PasswordChar; return s; }
+
     protected override void OnPaint(PaintEventArgs e)
     {
         Graphics g = e.Graphics;
@@ -709,50 +734,106 @@ public class TextBox : Control
         g.DrawLine(new Pen(SystemColors.ControlDark), 0, 0, w - 1, 0); g.DrawLine(new Pen(SystemColors.ControlDark), 0, 0, 0, h - 1);
         g.DrawLine(new Pen(SystemColors.ControlLight), 0, h - 1, w - 1, h - 1); g.DrawLine(new Pen(SystemColors.ControlLight), w - 1, 0, w - 1, h - 1);
         string shown = Shown();
-        g.DrawString(shown, Font, new SolidBrush(ForeColor), 3, (h - Font.Height) / 2);
-        if (Focused) g.FillRectangle(new SolidBrush(ForeColor), 3 + _caret * Font.GlyphWidth, (h - Font.Height) / 2, 1, Font.Height);
+        int top = (h - Font.Height) / 2;
+        int from = SelectionStart, count = SelectionLength;
+        if (count > 0 && Focused)
+        {
+            // Three runs: before, the selection in highlight colours, after.
+            g.DrawString(shown.Substring(0, from), Font, new SolidBrush(ForeColor), 3, top);
+            g.DrawStringOpaque(shown.Substring(from, count), Font, SystemColors.HighlightText, SystemColors.Highlight, 3 + from * Font.GlyphWidth, top);
+            g.DrawString(shown.Substring(from + count), Font, new SolidBrush(ForeColor), 3 + (from + count) * Font.GlyphWidth, top);
+        }
+        else
+        {
+            g.DrawString(shown, Font, new SolidBrush(ForeColor), 3, top);
+        }
+        if (Focused) g.FillRectangle(new SolidBrush(ForeColor), 3 + _caret * Font.GlyphWidth, top, 1, Font.Height);
         base.OnPaint(e);
     }
+
+    /// Remove the selection from the text, leaving the caret where it was.
+    /// True when there was one.
+    bool DeleteSelection()
+    {
+        int from = SelectionStart, count = SelectionLength;
+        if (count == 0) return false;
+        Text = Text.Substring(0, from) + Text.Substring(from + count);
+        _caret = _anchor = from;
+        return true;
+    }
+
     protected override void OnKeyPress(KeyPressEventArgs e)
     {
         base.OnKeyPress(e);
         if (e.Handled || ReadOnly) return;
         char c = e.KeyChar;
-        if (c == '\b') { if (_caret > 0) { Text = Text.Substring(0, _caret - 1) + Text.Substring(_caret); _caret--; } e.Handled = true; }
-        else if (c >= ' ' && c < (char)127) { Text = Text.Substring(0, _caret) + c + Text.Substring(_caret); _caret++; e.Handled = true; }
+        if (c == '\b')
+        {
+            if (!DeleteSelection() && _caret > 0) { Text = Text.Substring(0, _caret - 1) + Text.Substring(_caret); _caret--; _anchor = _caret; }
+            e.Handled = true;
+        }
+        else if (c == (char)1) { SelectAll(); e.Handled = true; }             // Ctrl+A
+        else if (c >= ' ' && c < (char)127)
+        {
+            DeleteSelection();
+            Text = Text.Substring(0, _caret) + c + Text.Substring(_caret); _caret++; _anchor = _caret;
+            e.Handled = true;
+        }
         Invalidate();
     }
+
     protected override void OnKeyDown(KeyEventArgs e)
     {
         base.OnKeyDown(e);
-        if (e.KeyCode == Keys.Left && _caret > 0) _caret--;
-        else if (e.KeyCode == Keys.Right && _caret < Text.Length) _caret++;
+        int was = _caret;
+        if (e.KeyCode == Keys.Left) { if (!e.Shift && SelectionLength > 0) _caret = SelectionStart; else if (_caret > 0) _caret--; }
+        else if (e.KeyCode == Keys.Right) { if (!e.Shift && SelectionLength > 0) _caret = SelectionStart + SelectionLength; else if (_caret < Text.Length) _caret++; }
         else if (e.KeyCode == Keys.Home) _caret = 0;
         else if (e.KeyCode == Keys.End) _caret = Text.Length;
-        else if (e.KeyCode == Keys.Delete && _caret < Text.Length) Text = Text.Substring(0, _caret) + Text.Substring(_caret + 1);
-        Invalidate();
+        else if (e.KeyCode == Keys.Delete)
+        {
+            if (!ReadOnly && !DeleteSelection() && _caret < Text.Length) Text = Text.Substring(0, _caret) + Text.Substring(_caret + 1);
+            Invalidate();
+            return;
+        }
+        else return;
+        if (!e.Shift) _anchor = _caret;              // a plain move collapses the selection
+        if (_caret != was || !e.Shift) Invalidate();
     }
-    protected override void OnTextChanged(EventArgs e) { if (_caret > Text.Length) _caret = Text.Length; base.OnTextChanged(e); }
+    protected override void OnTextChanged(EventArgs e) { _caret = Clamp(_caret); _anchor = Clamp(_anchor); base.OnTextChanged(e); }
+
+    int ColumnAt(int x)
+    {
+        int column = (x - 3 + Font.GlyphWidth / 2) / Font.GlyphWidth;
+        return Clamp(column);
+    }
 
     /// A click puts the caret where it landed, rounded to the nearest
-    /// character boundary, which is what a person expects of a text box.
+    /// character boundary; holding the button and moving selects.
     protected override void OnMouseDown(MouseEventArgs e)
     {
-        int column = (e.X - 3 + Font.GlyphWidth / 2) / Font.GlyphWidth;
-        if (column < 0) column = 0;
-        if (column > Text.Length) column = Text.Length;
-        _caret = column;
+        _caret = ColumnAt(e.X);
+        _anchor = _caret;
+        _dragging = true;
         Invalidate();
         base.OnMouseDown(e);
     }
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        if (_dragging) { int at = ColumnAt(e.X); if (at != _caret) { _caret = at; Invalidate(); } }
+        base.OnMouseMove(e);
+    }
+    protected override void OnMouseUp(MouseEventArgs e) { _dragging = false; base.OnMouseUp(e); }
 
-    /// Focus arriving by keyboard puts the caret at the end, ready to type on.
+    /// Focus arriving by keyboard selects everything, ready to be replaced
+    /// or typed after; focus by click leaves the caret where the click put it.
     protected override void OnGotFocus(EventArgs e)
     {
-        if (!_clickFocus) _caret = Text.Length;
+        if (!_clickFocus) { _anchor = 0; _caret = Text.Length; }
         _clickFocus = false;
         base.OnGotFocus(e);
     }
+    protected override void OnLostFocus(EventArgs e) { _dragging = false; base.OnLostFocus(e); }
     bool _clickFocus;
     internal void FocusByClick() { _clickFocus = true; }
 }
