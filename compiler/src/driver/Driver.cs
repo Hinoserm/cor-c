@@ -861,20 +861,55 @@ public static class Driver
     /// runtime): the set whose interface and virtual slot numbering is an
     /// ABI shared by every image. Asked by the index builder and the binder.
     /// </summary>
+    /// <summary>
+    /// Answered once per path. The binder asks this of every type it lays
+    /// out, and answering it walked up the directory tree looking for the
+    /// library root, with a File.Exists at each level: compiling the kernel
+    /// made 221,000 lstat calls, 183,000 of which found nothing, which is
+    /// what looking for a file that is not there costs. Neither the root nor
+    /// a path's answer changes while the compiler runs.
+    /// </summary>
+    private static readonly Dictionary<string, bool> librarySources = new(StringComparer.Ordinal);
+    private static readonly object librarySourceGate = new();
+
     internal static bool IsLibrarySource(string path)
     {
-        string? root = LibraryRoot();
-        if (root is null) return false;
-        string full = Path.GetFullPath(path);
-        foreach (string part in new[] { "stdlib", "runtime" })
+        lock (librarySourceGate)
         {
-            string prefix = Path.GetFullPath(Path.Combine(root, part)) + Path.DirectorySeparatorChar;
-            if (full.StartsWith(prefix, StringComparison.Ordinal)) return true;
+            if (librarySources.TryGetValue(path, out bool known)) return known;
         }
-        return false;
+        bool answer = false;
+        string? root = LibraryRoot();
+        if (root is not null)
+        {
+            string full = Path.GetFullPath(path);
+            foreach (string part in new[] { "stdlib", "runtime" })
+            {
+                string prefix = Path.GetFullPath(Path.Combine(root, part)) + Path.DirectorySeparatorChar;
+                if (full.StartsWith(prefix, StringComparison.Ordinal)) { answer = true; break; }
+            }
+        }
+        lock (librarySourceGate) librarySources[path] = answer;
+        return answer;
     }
 
+    private static string? libraryRoot;
+    private static bool libraryRootKnown;
+    private static readonly object libraryRootGate = new();
+
+    /// <summary>Where the compiler's own library sources live, found once.</summary>
     private static string? LibraryRoot()
+    {
+        lock (libraryRootGate)
+        {
+            if (libraryRootKnown) return libraryRoot;
+            libraryRoot = FindLibraryRoot();
+            libraryRootKnown = true;
+            return libraryRoot;
+        }
+    }
+
+    private static string? FindLibraryRoot()
     {
         string? root = Environment.GetEnvironmentVariable("CORC_LIB");
         if (root is null)
