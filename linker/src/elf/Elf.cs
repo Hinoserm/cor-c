@@ -98,6 +98,18 @@ internal static class Elf
     public const int DtInitArray = 25;
     public const int DtInitArraySz = 27;
     public const int DtSoName = 14;
+
+    /// <summary>
+    /// Two tags of this system's own, in the range ELF reserves for an
+    /// operating system. CHECKSUM is written into every shared object: a
+    /// hash of its exported names and their addresses. PREBOUND is written
+    /// into an image whose imports were all resolved at link time against
+    /// libraries laid out at preferred addresses: the sum of those
+    /// libraries' checksums. A loader that maps every library at its
+    /// preferred address and finds the sum unchanged has nothing to bind.
+    /// </summary>
+    public const int DtCorsacChecksum = 0x60000C01;
+    public const int DtCorsacPrebound = 0x60000C02;
     public const int DtRel = 17;
     public const int DtRelSz = 18;
     public const int DtRelEnt = 19;
