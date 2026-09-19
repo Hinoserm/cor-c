@@ -84,8 +84,9 @@ public static partial class Linker
     /// libraries whose names go in DT_NEEDED and whose symbols the loader
     /// supplies. The executable's own code stays non-PIC.
     /// </summary>
-    public static byte[] Link(IEnumerable<(string Name, ObjectFile Object)> objects, string entrySymbol, IEnumerable<string> sharedLibs, string? runPath = null, uint loadAddress = DefaultLoadAddress)
+    public static byte[] Link(IEnumerable<(string Name, ObjectFile Object)> objects, string entrySymbol, IEnumerable<string> sharedLibs, string? runPath = null, uint loadAddress = DefaultLoadAddress, ProgramInfo? program = null)
     {
+        _program = program;
         ArgumentNullException.ThrowIfNull(sharedLibs);
         ArgumentNullException.ThrowIfNull(entrySymbol);
         Dyn dyn = new() { Shared = false, Interpreter = Elf.DefaultInterpreter };

@@ -35,6 +35,23 @@ public static partial class Linker
     public const string SharedInitName = Elf.SharedInitName;
     public const uint DefaultLoadAddress = 0x08048000;
 
+    /// <summary>
+    /// What a CORSAC program carries beyond its code (docs/software/GUI-EXECUTABLE.md
+    /// in the OS repository): the subsystem, a resource segment and the icon
+    /// that represents it. Written as a PT_NOTE named CORSAC, type 1, and a
+    /// read-only PT_LOAD for the resources when there are any.
+    /// </summary>
+    public sealed class ProgramInfo
+    {
+        public const uint Console = 0, Graphical = 1, Service = 2;
+        public uint Subsystem { get; set; } = Console;
+        public uint InterfaceMajor { get; set; } = 1;
+        public uint InterfaceMinor { get; set; } = 0;
+        public uint Flags { get; set; }
+        public uint IconResource { get; set; }
+        public byte[]? Resources { get; set; }
+    }
+
     public static byte[] Link(IEnumerable<ObjectFile> objects, string entrySymbol, uint loadAddress = DefaultLoadAddress)
     {
         ArgumentNullException.ThrowIfNull(objects);
@@ -52,10 +69,11 @@ public static partial class Linker
     /// Link objects that have names -- file names, usually -- so an error
     /// can say which one it means.
     /// </summary>
-    public static byte[] Link(IEnumerable<(string Name, ObjectFile Object)> objects, string entrySymbol, uint loadAddress = DefaultLoadAddress, uint? physicalAddress = null)
+    public static byte[] Link(IEnumerable<(string Name, ObjectFile Object)> objects, string entrySymbol, uint loadAddress = DefaultLoadAddress, uint? physicalAddress = null, ProgramInfo? program = null)
     {
         ArgumentNullException.ThrowIfNull(objects);
         ArgumentNullException.ThrowIfNull(entrySymbol);
+        _program = program;
         if (loadAddress % Elf.PageSize != 0)
         {
             throw new ArgumentException($"load address 0x{loadAddress:x} is not page-aligned", nameof(loadAddress));
@@ -340,6 +358,24 @@ public static partial class Linker
         public uint Address => (Section?.Addr ?? 0) + Offset;
     }
 
+    [ThreadStatic] private static ProgramInfo? _program;
+
+    /// <summary>The CORSAC note's descriptor, 32 bytes, per GUI-EXECUTABLE.md.</summary>
+    private static byte[] CorsacNote(ProgramInfo info, uint resourcesAddr, uint resourcesSize)
+    {
+        byte[] name = System.Text.Encoding.ASCII.GetBytes("CORSAC\0");
+        byte[] desc = new byte[32];
+        void U32(int at, uint v) { desc[at] = (byte)v; desc[at + 1] = (byte)(v >> 8); desc[at + 2] = (byte)(v >> 16); desc[at + 3] = (byte)(v >> 24); }
+        U32(0, 1); U32(4, info.Subsystem); U32(8, info.InterfaceMajor); U32(12, info.InterfaceMinor);
+        U32(16, resourcesAddr); U32(20, resourcesSize); U32(24, info.Flags); U32(28, info.IconResource);
+        byte[] note = new byte[12 + 8 + 32];
+        void H(int at, uint v) { note[at] = (byte)v; note[at + 1] = (byte)(v >> 8); note[at + 2] = (byte)(v >> 16); note[at + 3] = (byte)(v >> 24); }
+        H(0, (uint)name.Length); H(4, (uint)desc.Length); H(8, 1);
+        Array.Copy(name, 0, note, 12, name.Length);
+        Array.Copy(desc, 0, note, 20, desc.Length);
+        return note;
+    }
+
     private sealed class Layout
     {
         public List<(Input Input, string Alias, Symbol Symbol)> MetadataBindings { get; } = new();
@@ -357,6 +393,8 @@ public static partial class Linker
         public OutputSection RelocatedConstants { get; } = new(".data.rel.ro", SectionKind.Data);
         public OutputSection Bss { get; } = new(".bss", SectionKind.Uninitialised);
         public List<OutputSection> Notes { get; } = new();
+        /// <summary>Loadable sections the linker made itself, outside the RX and RW runs: the resources.</summary>
+        public List<OutputSection> Extra { get; } = new();
 
         public Dictionary<string, Definition> Globals { get; } = new();
         /// <summary>Globals in definition order, so the output symbol table is deterministic.</summary>
@@ -399,6 +437,10 @@ public static partial class Linker
                 yield return s;
             }
             foreach (OutputSection s in Writable)
+            {
+                yield return s;
+            }
+            foreach (OutputSection s in Extra)
             {
                 yield return s;
             }
@@ -638,6 +680,30 @@ public static partial class Linker
             layout.Segments.Add(new ProgramHeader(Elf.PtLoad, rwOffset, rwAddr, fileEndOfRw - rwOffset, addr - rwAddr, Elf.PfR | Elf.PfW, Elf.PageSize));
         }
 
+        // A CORSAC program's resources: their own read-only, non-executable
+        // PT_LOAD, page aligned, so the running program reaches them by
+        // address and an external reader finds them through the note.
+        uint resourcesAddr = 0, resourcesSize = 0;
+        if (_program is { Resources: { Length: > 0 } resources })
+        {
+            off = Elf.AlignUp(off, Elf.PageSize);
+            uint addr = Elf.AlignUp(layout.LoadAddress + off, Elf.PageSize);
+            // Keep offset and address congruent modulo the page, as every
+            // loadable segment must be.
+            addr = checked(Elf.AlignUp(addr, Elf.PageSize) + off % Elf.PageSize);
+            OutputSection res = new(".corsac.resources", SectionKind.ReadOnlyData) { Content = resources, Size = (uint)resources.Length, Align = Elf.PageSize, Addr = addr, FileOffset = off };
+            layout.Extra.Add(res);
+            layout.Segments.Add(new ProgramHeader(Elf.PtLoad, off, addr, res.Size, res.Size, Elf.PfR, Elf.PageSize));
+            resourcesAddr = addr; resourcesSize = res.Size;
+            off = checked(off + res.Size);
+        }
+        if (_program is { } info)
+        {
+            byte[] bytes = CorsacNote(info, resourcesAddr, resourcesSize);
+            OutputSection note = new(".note.corsac", SectionKind.Note) { Content = bytes, Size = (uint)bytes.Length, Align = 4 };
+            layout.Notes.Add(note);
+        }
+
         layout.Segments.Add(new ProgramHeader(Elf.PtGnuStack, 0, 0, 0, 0, Elf.PfR | Elf.PfW, 16));
         AddDynamicSegments(layout);
 
@@ -646,6 +712,10 @@ public static partial class Linker
             off = Elf.AlignUp(off, n.Align);
             n.FileOffset = off;
             off = checked(off + n.Size);
+            // Notes are not loaded, but a reader that has only the program
+            // headers, which is every reader of a stripped file, finds them
+            // through PT_NOTE.
+            layout.Segments.Add(new ProgramHeader(Elf.PtNote, n.FileOffset, 0, n.Size, 0, Elf.PfR, n.Align));
         }
         layout.FileEnd = off;
     }

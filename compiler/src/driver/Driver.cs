@@ -309,7 +309,8 @@ public static class Driver
                 if (args[i] is "-o" or "--target" or "--entry" or "--link-shared" or "--base" or "--tag"
                     or "--load" or "--paddr" or "--cpu" or "--tune" or "--fpu" or "--with" or "--asm-entry"
                     or "--ref" or "--libdir" or "--runpath" or "--trace-opt" or "--batch-without"
-                    or "-D" or "--define" or "--jobs" or "--decl-index" or "--assembly" or "--dependency-file" or "--main-type")
+                    or "-D" or "--define" or "--jobs" or "--decl-index" or "--assembly" or "--dependency-file" or "--main-type"
+                    or "--subsystem" or "--resources" or "--icon-resource")
                 {
                     i++;
                 }
@@ -710,9 +711,36 @@ public static class Driver
             TargetContract.Validate(link);
             Corsac.Lang.Lto.LinkTimeOptimizer.Run(link, !args.Contains("--no-lto") && !args.Contains("--no-opt"));
         }
+        // What a CORSAC program carries beyond its code: --subsystem
+        // console|gui|service, --resources <segment file>, --icon-resource <id>.
+        // See docs/software/GUI-EXECUTABLE.md in the OS repository.
+        Linker.ProgramInfo? program = null;
+        if (Value(args, "--subsystem") is not null || Value(args, "--resources") is not null || Value(args, "--icon-resource") is not null)
+        {
+            program = new Linker.ProgramInfo();
+            string subsystemName = Value(args, "--subsystem") ?? "console";
+            program.Subsystem = subsystemName switch
+            {
+                "console" => Linker.ProgramInfo.Console,
+                "gui" => Linker.ProgramInfo.Graphical,
+                "service" => Linker.ProgramInfo.Service,
+                _ => uint.MaxValue
+            };
+            if (program.Subsystem == uint.MaxValue) return Fail($"unknown subsystem '{subsystemName}' (console, gui or service)");
+            if (Value(args, "--resources") is { } resourcesPath)
+            {
+                if (!File.Exists(resourcesPath)) return Fail($"resources file not found: {resourcesPath}");
+                program.Resources = File.ReadAllBytes(resourcesPath);
+            }
+            if (Value(args, "--icon-resource") is { } iconText)
+            {
+                if (!uint.TryParse(iconText, out uint icon)) return Fail($"invalid icon resource id '{iconText}'");
+                program.IconResource = icon;
+            }
+        }
         byte[] exe = sharedLibs.Count > 0
-            ? Linker.Link(new[] { (name, obj) }, entry, Needed(obj, sharedLibs, exports), Value(args, "--runpath"))
-            : Linker.Link(link, entry, loadBase ?? Linker.DefaultLoadAddress, physicalBase);
+            ? Linker.Link(new[] { (name, obj) }, entry, Needed(obj, sharedLibs, exports), Value(args, "--runpath"), program: program)
+            : Linker.Link(link, entry, loadBase ?? Linker.DefaultLoadAddress, physicalBase, program);
         File.WriteAllBytes(output, exe);
         if (!OperatingSystem.IsWindows())
         {
@@ -831,7 +859,8 @@ public static class Driver
                 "System/time.cor", "System/values.cor", "System/numerics.cor",
                 "System/Text/RegularExpressions.cor", "System/console.cor", "System/environment.cor",
                 "System/Net/Net.cor", "System/Security/Cryptography/Cryptography.cor",
-                "System/signals.cor", "System/unix.cor", "System/process.cor", "System/power.cor" })
+                "System/signals.cor", "System/unix.cor", "System/process.cor", "System/power.cor",
+                "System/Drawing/Drawing.cor", "System/Windows/Forms/Forms.cor" })
             {
                 libs.Add(Path.Combine(root, "stdlib", "src", dotnet));
             }

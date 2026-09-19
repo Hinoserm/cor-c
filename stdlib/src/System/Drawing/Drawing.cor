@@ -1,0 +1,304 @@
+// System.Drawing: the part of it Windows Forms paints with.
+//
+// Everything here is the .NET surface: Color, Point, Size, Rectangle, Pen,
+// Brush, Font, Graphics. Underneath, a Graphics does not touch pixels. It
+// appends operations to the seat's drawing batch (docs/software/GUI-KERNEL.md
+// in the OS repository, "What a seat descriptor carries"), and the kernel,
+// later the GUI kernel, executes them against the engine. Colours are
+// logical RGB all the way down; the target resolves them to its depth.
+//
+// Text is drawn as glyphs the seat already knows: the system font's 256
+// glyphs are defined by the kernel when the seat is opened, with ids equal
+// to their character codes. A Font is therefore a name and a size and,
+// today, always draws with that one bitmap face. Scalable faces arrive with
+// the glyph cache protocol and change nothing above this file.
+
+namespace System.Drawing;
+
+public struct Color
+{
+    public byte R;
+    public byte G;
+    public byte B;
+    public byte A;
+
+    public static Color FromArgb(int r, int g, int b) { Color c; c.A = 255; c.R = (byte)r; c.G = (byte)g; c.B = (byte)b; return c; }
+    public static Color FromArgb(int a, int r, int g, int b) { Color c; c.A = (byte)a; c.R = (byte)r; c.G = (byte)g; c.B = (byte)b; return c; }
+    public int ToArgb() { return (A << 24) | (R << 16) | (G << 8) | B; }
+    public bool IsEmpty { get { return A == 0 && R == 0 && G == 0 && B == 0; } }
+
+    public static Color Empty { get { Color c; c.A = 0; c.R = 0; c.G = 0; c.B = 0; return c; } }
+    public static Color Black { get { return FromArgb(0, 0, 0); } }
+    public static Color White { get { return FromArgb(255, 255, 255); } }
+    public static Color Red { get { return FromArgb(255, 0, 0); } }
+    public static Color Green { get { return FromArgb(0, 128, 0); } }
+    public static Color Blue { get { return FromArgb(0, 0, 255); } }
+    public static Color Navy { get { return FromArgb(0, 0, 128); } }
+    public static Color Gray { get { return FromArgb(128, 128, 128); } }
+    public static Color DarkGray { get { return FromArgb(169, 169, 169); } }
+    public static Color LightGray { get { return FromArgb(211, 211, 211); } }
+    public static Color Silver { get { return FromArgb(192, 192, 192); } }
+    public static Color Teal { get { return FromArgb(0, 128, 128); } }
+    public static Color Yellow { get { return FromArgb(255, 255, 0); } }
+    public static Color Transparent { get { return FromArgb(0, 255, 255, 255); } }
+
+    public static bool operator ==(Color a, Color b) { return a.ToArgb() == b.ToArgb(); }
+    public static bool operator !=(Color a, Color b) { return a.ToArgb() != b.ToArgb(); }
+    public override bool Equals(object? o) { return o is Color c && c == this; }
+    public override int GetHashCode() { return ToArgb(); }
+}
+
+/// The colours a Windows desktop is made of. Same names, same defaults.
+public static class SystemColors
+{
+    public static Color Control { get { return Color.FromArgb(192, 192, 192); } }
+    public static Color ControlText { get { return Color.Black; } }
+    public static Color ControlLight { get { return Color.White; } }
+    public static Color ControlDark { get { return Color.FromArgb(128, 128, 128); } }
+    public static Color ControlDarkDark { get { return Color.Black; } }
+    public static Color Window { get { return Color.White; } }
+    public static Color WindowText { get { return Color.Black; } }
+    public static Color Desktop { get { return Color.FromArgb(0, 128, 128); } }
+    public static Color ActiveCaption { get { return Color.FromArgb(0, 0, 128); } }
+    public static Color ActiveCaptionText { get { return Color.White; } }
+    public static Color InactiveCaption { get { return Color.FromArgb(128, 128, 128); } }
+    public static Color Highlight { get { return Color.FromArgb(0, 0, 128); } }
+    public static Color HighlightText { get { return Color.White; } }
+}
+
+public struct Point
+{
+    public int X;
+    public int Y;
+    public Point(int x, int y) { X = x; Y = y; }
+    public static Point Empty { get { return new Point(0, 0); } }
+    public bool IsEmpty { get { return X == 0 && Y == 0; } }
+    public void Offset(int dx, int dy) { X += dx; Y += dy; }
+    public static bool operator ==(Point a, Point b) { return a.X == b.X && a.Y == b.Y; }
+    public static bool operator !=(Point a, Point b) { return !(a == b); }
+    public override bool Equals(object? o) { return o is Point p && p == this; }
+    public override int GetHashCode() { return X ^ (Y << 16); }
+    public override string ToString() { return "{X=" + X + ",Y=" + Y + "}"; }
+}
+
+public struct Size
+{
+    public int Width;
+    public int Height;
+    public Size(int w, int h) { Width = w; Height = h; }
+    public static Size Empty { get { return new Size(0, 0); } }
+    public bool IsEmpty { get { return Width == 0 && Height == 0; } }
+    public static bool operator ==(Size a, Size b) { return a.Width == b.Width && a.Height == b.Height; }
+    public static bool operator !=(Size a, Size b) { return !(a == b); }
+    public override bool Equals(object? o) { return o is Size s && s == this; }
+    public override int GetHashCode() { return Width ^ (Height << 16); }
+    public override string ToString() { return "{Width=" + Width + ",Height=" + Height + "}"; }
+}
+
+public struct Rectangle
+{
+    public int X;
+    public int Y;
+    public int Width;
+    public int Height;
+    public Rectangle(int x, int y, int w, int h) { X = x; Y = y; Width = w; Height = h; }
+    public Rectangle(Point p, Size s) { X = p.X; Y = p.Y; Width = s.Width; Height = s.Height; }
+    public static Rectangle Empty { get { return new Rectangle(0, 0, 0, 0); } }
+    public int Left { get { return X; } }
+    public int Top { get { return Y; } }
+    public int Right { get { return X + Width; } }
+    public int Bottom { get { return Y + Height; } }
+    public bool IsEmpty { get { return Width <= 0 || Height <= 0; } }
+    public Point Location { get { return new Point(X, Y); } set { X = value.X; Y = value.Y; } }
+    public Size Size { get { return new Size(Width, Height); } set { Width = value.Width; Height = value.Height; } }
+    public bool Contains(int x, int y) { return x >= X && y >= Y && x < X + Width && y < Y + Height; }
+    public bool Contains(Point p) { return Contains(p.X, p.Y); }
+    public bool IntersectsWith(Rectangle r) { return r.X < Right && X < r.Right && r.Y < Bottom && Y < r.Bottom; }
+    public void Offset(int dx, int dy) { X += dx; Y += dy; }
+    public void Inflate(int dx, int dy) { X -= dx; Y -= dy; Width += 2 * dx; Height += 2 * dy; }
+    public static Rectangle Intersect(Rectangle a, Rectangle b)
+    {
+        int x0 = a.X > b.X ? a.X : b.X, y0 = a.Y > b.Y ? a.Y : b.Y;
+        int x1 = a.Right < b.Right ? a.Right : b.Right, y1 = a.Bottom < b.Bottom ? a.Bottom : b.Bottom;
+        if (x1 <= x0 || y1 <= y0) return Empty;
+        return new Rectangle(x0, y0, x1 - x0, y1 - y0);
+    }
+    public static Rectangle Union(Rectangle a, Rectangle b)
+    {
+        if (a.IsEmpty) return b;
+        if (b.IsEmpty) return a;
+        int x0 = a.X < b.X ? a.X : b.X, y0 = a.Y < b.Y ? a.Y : b.Y;
+        int x1 = a.Right > b.Right ? a.Right : b.Right, y1 = a.Bottom > b.Bottom ? a.Bottom : b.Bottom;
+        return new Rectangle(x0, y0, x1 - x0, y1 - y0);
+    }
+    public static bool operator ==(Rectangle a, Rectangle b) { return a.X == b.X && a.Y == b.Y && a.Width == b.Width && a.Height == b.Height; }
+    public static bool operator !=(Rectangle a, Rectangle b) { return !(a == b); }
+    public override bool Equals(object? o) { return o is Rectangle r && r == this; }
+    public override int GetHashCode() { return X ^ (Y << 8) ^ (Width << 16) ^ (Height << 24); }
+    public override string ToString() { return "{X=" + X + ",Y=" + Y + ",Width=" + Width + ",Height=" + Height + "}"; }
+}
+
+public class Pen : IDisposable
+{
+    public Color Color;
+    public float Width;
+    public Pen(Color color) { Color = color; Width = 1; }
+    public Pen(Color color, float width) { Color = color; Width = width; }
+    public void Dispose() { }
+}
+
+public abstract class Brush : IDisposable
+{
+    public void Dispose() { }
+}
+
+public class SolidBrush : Brush
+{
+    public Color Color;
+    public SolidBrush(Color color) { Color = color; }
+}
+
+public static class Brushes
+{
+    public static Brush Black { get { return new SolidBrush(Color.Black); } }
+    public static Brush White { get { return new SolidBrush(Color.White); } }
+}
+
+public static class Pens
+{
+    public static Pen Black { get { return new Pen(Color.Black); } }
+    public static Pen White { get { return new Pen(Color.White); } }
+}
+
+public enum FontStyle { Regular = 0, Bold = 1, Italic = 2, Underline = 4, Strikeout = 8 }
+
+/// One bitmap face for now, eight by sixteen, the system font the kernel
+/// captured from the firmware. Size and style are recorded so that a
+/// program's choices survive to the day scalable faces arrive.
+public class Font : IDisposable
+{
+    public string Name;
+    public float Size;
+    public FontStyle Style;
+    public Font(string name, float size) { Name = name; Size = size; Style = FontStyle.Regular; }
+    public Font(string name, float size, FontStyle style) { Name = name; Size = size; Style = style; }
+    public int Height { get { return 16; } }
+    public int GlyphWidth { get { return 8; } }
+    public void Dispose() { }
+}
+
+public static class SystemFonts
+{
+    public static Font DefaultFont { get { return new Font("System", 9); } }
+}
+
+public class SizeF
+{
+    public float Width;
+    public float Height;
+    public SizeF(float w, float h) { Width = w; Height = h; }
+}
+
+/// The batch a Graphics appends to. Owned by the seat connection in
+/// System.Windows.Forms; here is only what a Graphics needs of it.
+public interface IDrawingTarget
+{
+    void Fill(int x, int y, int w, int h, Color colour);
+    void Copy(int sx, int sy, int dx, int dy, int w, int h);
+    void Line(int x0, int y0, int x1, int y1, Color colour);
+    void Glyph(int id, int x, int y, Color foreground, Color background, bool transparent);
+    void Clip(int x, int y, int w, int h);
+}
+
+/// A drawing surface. Every call becomes an operation in the seat's batch,
+/// translated by the origin and clipped to the rectangle this Graphics was
+/// made for. The batch is flushed by the message loop, by an explicit Flush,
+/// or when the program is about to wait, never here.
+public class Graphics : IDisposable
+{
+    IDrawingTarget _target;
+    int _originX, _originY;
+    Rectangle _clip;
+
+    public Graphics(IDrawingTarget target, int originX, int originY, Rectangle clip)
+    {
+        _target = target; _originX = originX; _originY = originY; _clip = clip;
+        _target.Clip(clip.X, clip.Y, clip.Width, clip.Height);
+    }
+
+    public Rectangle ClipBounds { get { return new Rectangle(_clip.X - _originX, _clip.Y - _originY, _clip.Width, _clip.Height); } }
+
+    public void Clear(Color colour) { _target.Fill(_clip.X, _clip.Y, _clip.Width, _clip.Height, colour); }
+
+    public void FillRectangle(Brush brush, int x, int y, int w, int h)
+    {
+        SolidBrush? solid = brush as SolidBrush;
+        if (solid == null || w <= 0 || h <= 0) return;
+        _target.Fill(x + _originX, y + _originY, w, h, solid.Color);
+    }
+    public void FillRectangle(Brush brush, Rectangle r) { FillRectangle(brush, r.X, r.Y, r.Width, r.Height); }
+
+    public void DrawRectangle(Pen pen, int x, int y, int w, int h)
+    {
+        if (w <= 0 || h <= 0) return;
+        int t = (int)pen.Width; if (t < 1) t = 1;
+        _target.Fill(x + _originX, y + _originY, w, t, pen.Color);
+        _target.Fill(x + _originX, y + _originY + h - t, w, t, pen.Color);
+        _target.Fill(x + _originX, y + _originY, t, h, pen.Color);
+        _target.Fill(x + _originX + w - t, y + _originY, t, h, pen.Color);
+    }
+    public void DrawRectangle(Pen pen, Rectangle r) { DrawRectangle(pen, r.X, r.Y, r.Width, r.Height); }
+
+    public void DrawLine(Pen pen, int x0, int y0, int x1, int y1)
+    {
+        if (y0 == y1) { int l = x0 < x1 ? x0 : x1; _target.Fill(l + _originX, y0 + _originY, (x0 < x1 ? x1 - x0 : x0 - x1) + 1, 1, pen.Color); return; }
+        if (x0 == x1) { int t = y0 < y1 ? y0 : y1; _target.Fill(x0 + _originX, t + _originY, 1, (y0 < y1 ? y1 - y0 : y0 - y1) + 1, pen.Color); return; }
+        _target.Line(x0 + _originX, y0 + _originY, x1 + _originX, y1 + _originY, pen.Color);
+    }
+    public void DrawLine(Pen pen, Point a, Point b) { DrawLine(pen, a.X, a.Y, b.X, b.Y); }
+
+    public void DrawString(string s, Font font, Brush brush, int x, int y)
+    {
+        SolidBrush? solid = brush as SolidBrush;
+        if (solid == null) return;
+        int cx = x + _originX, cy = y + _originY;
+        for (int i = 0; i < s.Length; i++)
+        {
+            int c = (int)s[i];
+            if (c == '\n') { cx = x + _originX; cy += font.Height; continue; }
+            if (c > 255) c = '?';
+            _target.Glyph(c, cx, cy, solid.Color, Color.Transparent, true);
+            cx += font.GlyphWidth;
+        }
+    }
+    public void DrawString(string s, Font font, Brush brush, Point p) { DrawString(s, font, brush, p.X, p.Y); }
+    public void DrawString(string s, Font font, Brush brush, float x, float y) { DrawString(s, font, brush, (int)x, (int)y); }
+
+    /// Opaque text: background painted with the glyph, which on the
+    /// hardware is one operation and on a 486 is the difference between a
+    /// terminal that keeps up and one that does not.
+    public void DrawStringOpaque(string s, Font font, Color foreground, Color background, int x, int y)
+    {
+        int cx = x + _originX, cy = y + _originY;
+        for (int i = 0; i < s.Length; i++)
+        {
+            int c = (int)s[i]; if (c > 255) c = '?';
+            _target.Glyph(c, cx, cy, foreground, background, false);
+            cx += font.GlyphWidth;
+        }
+    }
+
+    public SizeF MeasureString(string s, Font font)
+    {
+        int longest = 0, lines = 1, run = 0;
+        for (int i = 0; i < s.Length; i++)
+        {
+            if (s[i] == '\n') { lines++; if (run > longest) longest = run; run = 0; }
+            else run++;
+        }
+        if (run > longest) longest = run;
+        return new SizeF(longest * font.GlyphWidth, lines * font.Height);
+    }
+
+    public void Dispose() { }
+}

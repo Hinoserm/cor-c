@@ -65,6 +65,7 @@ internal static class Elf
     public const uint PtLoad = 1;
     public const uint PtDynamic = 2;
     public const uint PtInterp = 3;
+    public const uint PtNote = 4;
     public const uint PtGnuStack = 0x6474e551;
 
     /// <summary>
