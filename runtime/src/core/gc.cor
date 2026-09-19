@@ -2450,7 +2450,7 @@ static class GcThreads
 
         while (Running(self) > 0)
         {
-            if ((spins & 0xFF) == 0)
+            if ((spins & 0xF) == 0)
             {
                 Platform.PromptStop();
             }
