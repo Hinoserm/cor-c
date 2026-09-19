@@ -12,6 +12,19 @@ public static class Program
     public static async Task<int> Main()
     {
         Directory.CreateDirectory(Work);
+        await CheckAsync("live progress preserves raw logs and handles chunk boundaries", async () =>
+        {
+            byte[] bytes = System.Text.Encoding.UTF8.GetBytes(new string('x', 8190) + "\n"
+                + "build-progress: ready=1/2 remaining=1 file=über.cor\r\n"
+                + "binary\0noise\n" + "build-progress: " + new string('x', 10000) + "\n"
+                + "build-progress: ready=2/2 remaining=0");
+            using MemoryStream input = new(bytes), log = new();
+            List<string> records = new();
+            await ProgressOutput.Copy(input, log, records.Add);
+            Require(log.ToArray().SequenceEqual(bytes));
+            Require(records.Count == 2 && records[0] == "ready=1/2 remaining=1 file=über.cor"
+                && records[1] == "ready=2/2 remaining=0");
+        });
         Check("native AOT is the default with an explicit managed exclusion", () =>
         {
             Require(NativeAotBuild.Enabled(new Dictionary<string, string>()));

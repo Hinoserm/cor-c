@@ -49,7 +49,8 @@ public sealed class ProcessRunner
             if (!interactive) process.StandardInput.Close();
             await using FileStream stdout = File.Create(prefix + ".out.log");
             await using FileStream stderr = File.Create(prefix + ".err.log");
-            Task outCopy = interactive ? Task.CompletedTask : process.StandardOutput.BaseStream.CopyToAsync(stdout);
+            Task outCopy = interactive ? Task.CompletedTask : ProgressOutput.Copy(process.StandardOutput.BaseStream, stdout,
+                line => Console.WriteLine("/" + label + ": " + line));
             Task errCopy = interactive ? Task.CompletedTask : process.StandardError.BaseStream.CopyToAsync(stderr);
             using CancellationTokenSource deadline = CancellationTokenSource.CreateLinkedTokenSource(cancel);
             deadline.CancelAfter(timeout);

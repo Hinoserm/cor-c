@@ -2,6 +2,13 @@
 
 ## Hosted managed components without MSBuild
 
+Subprocesses can emit `build-progress: ` records on stdout. The build runner
+prints those lines immediately, prefixed by the target name, while preserving
+the complete stdout log byte-for-byte. Other output stays in its log; oversized
+progress records are logged but not displayed. CORSAC image compilation emits
+the current source, active worker count and ready/remaining unit counts. Ready
+counts include valid cached objects, not just newly compiled files.
+
 `<Compile Project="..." Toolchain="managed" />` uses the same owned SDK-project
 evaluator as the native compiler, then invokes the installed SDK's C# compiler
 directly. It does not invoke MSBuild. This permits host build utilities to use
