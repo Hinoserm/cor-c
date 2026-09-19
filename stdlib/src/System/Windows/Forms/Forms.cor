@@ -267,9 +267,10 @@ public class Seat : IDrawingTarget
     /// This window is the desktop: the surface under everything, never raised.
     public void DesktopWindow(int handle) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550018, 0); }
     /// This window stays above every ordinary one (a bar).
-    public void TopMostWindow(int handle) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550019, 0); }
+    public void TopMostWindow(int handle, bool on) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550019, on ? 1 : 0); }
     /// This window is not listed on a taskbar.
-    public void NoTaskbarWindow(int handle) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550024, 0); }
+    /// Whether this window is listed on a taskbar; takes effect at once.
+    public void ListOnTaskbar(int handle, bool listed) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550024, listed ? 0 : 1); }
 
     /// The window's title, as the seat lists it (a taskbar reads it).
     public void SetTitle(int handle, string title)
@@ -729,13 +730,24 @@ public class Form : Control
     /// window and a click on it never raises it. Set before Show.
     public bool IsDesktop;
     /// Above every ordinary window, like a taskbar. Set before Show.
-    public bool TopMost;
+    bool _topMost;
+    public bool TopMost
+    {
+        get { return _topMost; }
+        set { _topMost = value; if (_handle != 0) Seat.Current.TopMostWindow(_handle, value); }
+    }
     /// Listed on the taskbar. TRUE, AND LEAVE IT: the taskbar is the
     /// system's, and every window a person opened belongs on it. The
     /// library's own transient windows (a menu) set this false; a program
     /// that does so hides itself from the person using it, which is nearly
-    /// always wrong. Set before Show.
-    public bool ShowInTaskbar = true;
+    /// always wrong. Live, like every property: flipped on a shown window,
+    /// the button appears or goes at once.
+    bool _showInTaskbar = true;
+    public bool ShowInTaskbar
+    {
+        get { return _showInTaskbar; }
+        set { _showInTaskbar = value; if (_handle != 0) Seat.Current.ListOnTaskbar(_handle, value); }
+    }
     public bool HasFrame { get { return _border != FormBorderStyle.None; } }
 
     public override Rectangle ClientRectangle
@@ -792,8 +804,8 @@ public class Form : Control
         _handle = seat.CreateWindow(Left, Top, Width, Height);
         seat.SetTitle(_handle, Text);
         if (IsDesktop) seat.DesktopWindow(_handle);
-        if (TopMost) seat.TopMostWindow(_handle);
-        if (!ShowInTaskbar) seat.NoTaskbarWindow(_handle);
+        if (TopMost) seat.TopMostWindow(_handle, true);
+        if (!ShowInTaskbar) seat.ListOnTaskbar(_handle, false);
         _shown = true;
         Application.Register(this);
         OnLoad(EventArgs.Empty);
