@@ -1,0 +1,530 @@
+// Pictures from files: Windows icons and cursors, and the two ways their
+// images are stored.
+//
+// An .ico and a .cur are the same container -- a directory of images, each
+// at its own size and colour depth, and the program picks the one that suits
+// the place it is drawing. That is the arrangement this system wants anyway:
+// a taskbar at 16 pixels and a desktop at 32 are different drawings, and a
+// screen with sixteen colours should be shown art somebody reduced rather
+// than art a quantiser mangled. The only difference between the two file
+// types is a number in the header and what two fields in each directory
+// entry mean: in an icon they are colour planes and bits per pixel, in a
+// cursor they are the hotspot.
+//
+// Each image is stored one of two ways. The old way is a device-independent
+// bitmap -- a header, maybe a palette, the colour rows bottom up, and then a
+// second one-bit image saying which pixels are see-through. The new way,
+// since Windows Vista, is a whole PNG file, which is how a 256-pixel icon
+// avoids being a quarter of a megabyte. Both end up here as the same thing:
+// 0xAARRGGBB pixels, top row first, which is what the seat takes.
+
+using System;
+using System.IO;
+using System.IO.Compression;
+using Corsac.GUI;
+
+namespace System.Drawing;
+
+/// A picture in memory: 0xAARRGGBB, top row first, no padding.
+public class Bitmap
+{
+    public int Width;
+    public int Height;
+    public byte[] Pixels;              // four bytes a pixel, blue first as the words are little-endian
+
+    public Bitmap(int width, int height)
+    {
+        Width = width; Height = height;
+        Pixels = new byte[width * height * 4];
+    }
+
+    public void SetPixel(int x, int y, int a, int r, int g, int b)
+    {
+        if (x < 0 || y < 0 || x >= Width || y >= Height) return;
+        int at = (y * Width + x) * 4;
+        Pixels[at] = (byte)b; Pixels[at + 1] = (byte)g; Pixels[at + 2] = (byte)r; Pixels[at + 3] = (byte)a;
+    }
+
+    public int AlphaAt(int x, int y) { return Pixels[(y * Width + x) * 4 + 3] & 255; }
+}
+
+/// One image inside an icon or cursor file, before it is decoded.
+public class IconEntry
+{
+    public int Width;                  // as the directory records it; 0 there means 256
+    public int Height;
+    public int Colours;                // palette size, 0 for more than 256
+    public int Depth;                  // bits per pixel, or 0 when the directory does not say
+    public int HotX;                   // cursors only
+    public int HotY;
+    public int Offset;
+    public int Length;
+}
+
+/// An .ico or .cur file: the directory, and the images on demand.
+public class IconFile
+{
+    public bool IsCursor;
+    public IconEntry[] Entries = new IconEntry[0];
+    byte[] _bytes = new byte[0];
+
+    static int U16(byte[] b, int at) { return (b[at] & 255) | ((b[at + 1] & 255) << 8); }
+    static int U32(byte[] b, int at) { return (b[at] & 255) | ((b[at + 1] & 255) << 8) | ((b[at + 2] & 255) << 16) | ((b[at + 3] & 255) << 24); }
+
+    public static IconFile? Load(string path)
+    {
+        byte[] bytes;
+        try { bytes = File.ReadAllBytes(path); }
+        catch (IOException) { return null; }
+        return Read(bytes);
+    }
+
+    /// Null when this is not an icon or cursor file at all. A truncated
+    /// directory is not read past: a file that lies about its count would
+    /// otherwise decide how much of whatever follows it we read.
+    public static IconFile? Read(byte[] bytes)
+    {
+        if (bytes.Length < 6) return null;
+        if (U16(bytes, 0) != 0) return null;                    // reserved, always zero
+        int kind = U16(bytes, 2);
+        if (kind != 1 && kind != 2) return null;                // 1 icon, 2 cursor
+        int count = U16(bytes, 4);
+        if (count <= 0 || 6 + count * 16 > bytes.Length) return null;
+
+        IconFile file = new IconFile();
+        file.IsCursor = kind == 2;
+        file._bytes = bytes;
+        file.Entries = new IconEntry[count];
+        for (int i = 0; i < count; i++)
+        {
+            int at = 6 + i * 16;
+            IconEntry e = new IconEntry();
+            e.Width = (bytes[at] & 255) == 0 ? 256 : bytes[at] & 255;
+            e.Height = (bytes[at + 1] & 255) == 0 ? 256 : bytes[at + 1] & 255;
+            e.Colours = bytes[at + 2] & 255;
+            if (file.IsCursor) { e.HotX = U16(bytes, at + 4); e.HotY = U16(bytes, at + 6); }
+            else { e.Depth = U16(bytes, at + 6); }
+            e.Offset = U32(bytes, at + 12);
+            e.Length = U32(bytes, at + 8);
+            if (e.Offset < 0 || e.Length < 0 || (long)e.Offset + e.Length > bytes.Length) return null;
+            file.Entries[i] = e;
+        }
+        return file;
+    }
+
+    /// How many colours an entry has, whatever the directory claims: the
+    /// directory's own depth field is often zero or wrong, and the image's
+    /// header is the truth. Answers bits per pixel, or 32 for a PNG.
+    public int DepthOf(int index)
+    {
+        IconEntry e = Entries[index];
+        if (e.Depth != 0) return e.Depth;
+        if (IsPng(e)) return 32;
+        if (e.Offset + 16 <= _bytes.Length) return U16(_bytes, e.Offset + 14);
+        return 0;
+    }
+
+    bool IsPng(IconEntry e)
+    {
+        if (e.Offset + 8 > _bytes.Length) return false;
+        return (_bytes[e.Offset] & 255) == 0x89 && _bytes[e.Offset + 1] == 'P'
+            && _bytes[e.Offset + 2] == 'N' && _bytes[e.Offset + 3] == 'G';
+    }
+
+    /// The image that best suits a wanted size and a screen of `colours`
+    /// colours (16, 256, or more for a true-colour screen).
+    ///
+    /// The richest depth the screen can actually show wins first -- showing
+    /// a 32-bit image on a sixteen-colour screen wastes the art somebody
+    /// drew for it -- and then the size: an exact match, else the nearest
+    /// larger, else the largest there is. Scaling down loses less than up.
+    public int Best(int size, int colours)
+    {
+        int best = -1, bestDepth = -1, bestSize = 0;
+        int ceiling = colours <= 16 ? 4 : colours <= 256 ? 8 : 32;
+        for (int pass = 0; pass < 2; pass++)
+        {
+            for (int i = 0; i < Entries.Length; i++)
+            {
+                int depth = DepthOf(i);
+                if (pass == 0 && depth > ceiling) continue;     // first ask for art made for this screen
+                int w = Entries[i].Width;
+                bool better;
+                if (best < 0) better = true;
+                else if (w == size && bestSize != size) better = true;
+                else if (bestSize == size && w != size) better = false;
+                else if (bestSize < size && w > bestSize) better = true;        // creeping up towards it
+                else if (bestSize > size && w >= size && w < bestSize) better = true;
+                else if (w == bestSize) better = depth > bestDepth;
+                else better = false;
+                if (better) { best = i; bestDepth = depth; bestSize = w; }
+            }
+            if (best >= 0) return best;
+        }
+        return best;
+    }
+
+    /// One image, decoded. Null when it is stored a way we cannot read.
+    public Bitmap? Decode(int index)
+    {
+        if (index < 0 || index >= Entries.Length) return null;
+        IconEntry e = Entries[index];
+        if (IsPng(e)) return Png.Read(_bytes, e.Offset, e.Length);
+        return Dib(e);
+    }
+
+    /// The old form: a bitmap info header, a palette, the colour rows bottom
+    /// up, and a one-bit mask of the same shape saying what is see-through.
+    /// The header's height counts both images, which is why it is doubled.
+    Bitmap? Dib(IconEntry e)
+    {
+        byte[] b = _bytes;
+        int at = e.Offset;
+        if (at + 40 > b.Length) return null;
+        int headerBytes = U32(b, at);
+        if (headerBytes < 40) return null;
+        int width = U32(b, at + 4);
+        int height = U32(b, at + 8) / 2;
+        int depth = U16(b, at + 14);
+        int compression = U32(b, at + 16);
+        if (width <= 0 || height <= 0 || width > 256 || height > 256) return null;
+        if (compression != 0) return null;                      // BI_RGB only: nothing else appears in icons
+
+        int palette = U32(b, at + 32);
+        if (palette == 0 && depth <= 8) palette = 1 << depth;
+        int colours = at + headerBytes;
+        int pixels = colours + palette * 4;
+        int stride = ((width * depth + 31) / 32) * 4;
+        int maskStride = ((width + 31) / 32) * 4;
+        if (pixels + stride * height > b.Length) return null;
+        int mask = pixels + stride * height;
+        bool hasMask = mask + maskStride * height <= b.Length;
+
+        Bitmap made = new Bitmap(width, height);
+        for (int y = 0; y < height; y++)
+        {
+            int row = pixels + (height - 1 - y) * stride;       // stored bottom row first
+            int maskRow = mask + (height - 1 - y) * maskStride;
+            for (int x = 0; x < width; x++)
+            {
+                int r = 0, g = 0, bl = 0, a = 255;
+                if (depth == 32)
+                {
+                    bl = b[row + x * 4] & 255; g = b[row + x * 4 + 1] & 255;
+                    r = b[row + x * 4 + 2] & 255; a = b[row + x * 4 + 3] & 255;
+                }
+                else if (depth == 24)
+                {
+                    bl = b[row + x * 3] & 255; g = b[row + x * 3 + 1] & 255; r = b[row + x * 3 + 2] & 255;
+                }
+                else
+                {
+                    int index;
+                    if (depth == 8) index = b[row + x] & 255;
+                    else if (depth == 4) index = ((b[row + (x >> 1)] & 255) >> ((x & 1) == 0 ? 4 : 0)) & 15;
+                    else if (depth == 1) index = ((b[row + (x >> 3)] & 255) >> (7 - (x & 7))) & 1;
+                    else return null;
+                    int entry = colours + index * 4;
+                    if (entry + 3 > b.Length) return null;
+                    bl = b[entry] & 255; g = b[entry + 1] & 255; r = b[entry + 2] & 255;
+                }
+
+                // The mask decides transparency for everything but a
+                // 32-bit image, which carries its own alpha -- except when
+                // that alpha is entirely zero, which some old files do, and
+                // then the mask is all there is.
+                if (hasMask && (depth != 32 || !AnyAlpha(b, pixels, stride, width, height)))
+                {
+                    int bit = ((b[maskRow + (x >> 3)] & 255) >> (7 - (x & 7))) & 1;
+                    a = bit == 1 ? 0 : 255;
+                }
+                made.SetPixel(x, y, a, r, g, bl);
+            }
+        }
+        return made;
+    }
+
+    static bool AnyAlpha(byte[] b, int pixels, int stride, int width, int height)
+    {
+        for (int y = 0; y < height; y++)
+            for (int x = 0; x < width; x++)
+                if ((b[pixels + y * stride + x * 4 + 3] & 255) != 0) return true;
+        return false;
+    }
+}
+
+/// The new form: a whole PNG file inside the icon.
+///
+/// Enough of the format to read what icon writers produce -- eight-bit
+/// greyscale, truecolour, palette and their alpha forms, one image, not
+/// interlaced. Sixteen-bit samples are taken down to eight; interlaced files
+/// are refused rather than half-read.
+static class Png
+{
+    static int U32(byte[] b, int at)
+    {
+        return ((b[at] & 255) << 24) | ((b[at + 1] & 255) << 16) | ((b[at + 2] & 255) << 8) | (b[at + 3] & 255);
+    }
+
+    public static Bitmap? Read(byte[] file, int offset, int length)
+    {
+        if (length < 8 || offset + length > file.Length) return null;
+        int at = offset + 8;                                    // past the signature
+        int end = offset + length;
+        int width = 0, height = 0, depth = 0, colour = 0, interlace = 0;
+        byte[] palette = new byte[0];
+        byte[] alpha = new byte[0];
+        byte[] data = new byte[0];
+        int dataUsed = 0;
+
+        while (at + 8 <= end)
+        {
+            int size = U32(file, at);
+            if (size < 0 || at + 12 + size > end) break;
+            int type = U32(file, at + 4);
+            int body = at + 8;
+            if (type == 0x49484452)                             // IHDR
+            {
+                if (size < 13) return null;
+                width = U32(file, body); height = U32(file, body + 4);
+                depth = file[body + 8] & 255; colour = file[body + 9] & 255;
+                interlace = file[body + 12] & 255;
+                if (width <= 0 || height <= 0 || width > 1024 || height > 1024) return null;
+                if (interlace != 0) return null;                // Adam7: not in icons, not worth the code
+                if (depth != 1 && depth != 2 && depth != 4 && depth != 8 && depth != 16) return null;
+            }
+            else if (type == 0x504C5445) { palette = Slice(file, body, size); }        // PLTE
+            else if (type == 0x74524E53) { alpha = Slice(file, body, size); }          // tRNS
+            else if (type == 0x49444154)                                              // IDAT
+            {
+                if (dataUsed + size > data.Length)
+                {
+                    byte[] bigger = new byte[(dataUsed + size) * 2 + 64];
+                    for (int i = 0; i < dataUsed; i++) bigger[i] = data[i];
+                    data = bigger;
+                }
+                for (int i = 0; i < size; i++) data[dataUsed + i] = file[body + i];
+                dataUsed += size;
+            }
+            else if (type == 0x49454E44) break;                                       // IEND
+            at = body + size + 4;                                                     // past the checksum
+        }
+        if (width == 0 || dataUsed == 0) return null;
+
+        int samples = colour == 0 ? 1 : colour == 2 ? 3 : colour == 3 ? 1 : colour == 4 ? 2 : colour == 6 ? 4 : 0;
+        if (samples == 0) return null;
+        int bitsPerPixel = samples * depth;
+        int stride = (width * bitsPerPixel + 7) / 8;
+
+        byte[] raw = Inflate(data, dataUsed, (stride + 1) * height);
+        if (raw.Length < (stride + 1) * height) return null;
+        Unfilter(raw, width, height, stride, (bitsPerPixel + 7) / 8);
+
+        Bitmap made = new Bitmap(width, height);
+        for (int y = 0; y < height; y++)
+        {
+            int row = y * (stride + 1) + 1;
+            for (int x = 0; x < width; x++)
+            {
+                int r = 0, g = 0, b = 0, a = 255;
+                if (colour == 3)
+                {
+                    int index = Sample(raw, row, x, depth);
+                    int entry = index * 3;
+                    if (entry + 2 < palette.Length) { r = palette[entry] & 255; g = palette[entry + 1] & 255; b = palette[entry + 2] & 255; }
+                    if (index < alpha.Length) a = alpha[index] & 255;
+                }
+                else if (colour == 0 || colour == 4)
+                {
+                    int step = depth == 16 ? 2 : 1;
+                    int grey = Eight(raw, row + x * samples * step, depth);
+                    r = grey; g = grey; b = grey;
+                    if (colour == 4) a = Eight(raw, row + (x * samples + 1) * step, depth);
+                }
+                else
+                {
+                    int step = depth == 16 ? 2 : 1;
+                    r = Eight(raw, row + (x * samples + 0) * step, depth);
+                    g = Eight(raw, row + (x * samples + 1) * step, depth);
+                    b = Eight(raw, row + (x * samples + 2) * step, depth);
+                    if (colour == 6) a = Eight(raw, row + (x * samples + 3) * step, depth);
+                }
+                made.SetPixel(x, y, a, r, g, b);
+            }
+        }
+        return made;
+    }
+
+    static byte[] Slice(byte[] from, int at, int count)
+    {
+        byte[] made = new byte[count];
+        for (int i = 0; i < count; i++) made[i] = from[at + i];
+        return made;
+    }
+
+    /// A sample of fewer than eight bits, by index along the row.
+    static int Sample(byte[] raw, int row, int x, int depth)
+    {
+        if (depth == 8) return raw[row + x] & 255;
+        if (depth == 16) return raw[row + x * 2] & 255;
+        int perByte = 8 / depth;
+        int b = raw[row + x / perByte] & 255;
+        int shift = 8 - depth * (x % perByte + 1);
+        return (b >> shift) & ((1 << depth) - 1);
+    }
+
+    /// One sample as eight bits, whatever it was stored as.
+    static int Eight(byte[] raw, int at, int depth)
+    {
+        if (at >= raw.Length) return 0;
+        if (depth == 16) return raw[at] & 255;                  // the high byte is close enough
+        if (depth == 8) return raw[at] & 255;
+        return raw[at] & 255;
+    }
+
+    static byte[] Inflate(byte[] data, int used, int expect)
+    {
+        byte[] exact = new byte[used];
+        for (int i = 0; i < used; i++) exact[i] = data[i];
+        MemoryStream from = new MemoryStream(exact);
+        ZLibStream unpack = new ZLibStream(from, CompressionMode.Decompress);
+        byte[] into = new byte[expect];
+        int at = 0;
+        while (at < expect)
+        {
+            int n = unpack.Read(into, at, expect - at);
+            if (n <= 0) break;
+            at += n;
+        }
+        return into;
+    }
+
+    /// PNG's row filters, undone in place. Each row begins with the filter
+    /// byte that was used for it, and refers to the row above, already
+    /// unfiltered by the time it is needed.
+    static void Unfilter(byte[] raw, int width, int height, int stride, int step)
+    {
+        for (int y = 0; y < height; y++)
+        {
+            int row = y * (stride + 1);
+            int filter = raw[row] & 255;
+            int above = row - (stride + 1) + 1;
+            for (int i = 0; i < stride; i++)
+            {
+                int value = raw[row + 1 + i] & 255;
+                int left = i >= step ? raw[row + 1 + i - step] & 255 : 0;
+                int up = y > 0 ? raw[above + i] & 255 : 0;
+                int upLeft = y > 0 && i >= step ? raw[above + i - step] & 255 : 0;
+                int put;
+                if (filter == 0) put = value;
+                else if (filter == 1) put = value + left;
+                else if (filter == 2) put = value + up;
+                else if (filter == 3) put = value + (left + up) / 2;
+                else if (filter == 4) put = value + Paeth(left, up, upLeft);
+                else put = value;
+                raw[row + 1 + i] = (byte)(put & 255);
+            }
+        }
+    }
+
+    /// The predictor that picks whichever of the three neighbours the
+    /// gradient says is closest; the reason PNG compresses photographs well.
+    static int Paeth(int a, int b, int c)
+    {
+        int p = a + b - c;
+        int pa = p > a ? p - a : a - p;
+        int pb = p > b ? p - b : b - p;
+        int pc = p > c ? p - c : c - p;
+        if (pa <= pb && pa <= pc) return a;
+        if (pb <= pc) return b;
+        return c;
+    }
+}
+
+/// An icon a program can draw: the file, plus what the seat has been told.
+///
+/// The seat keeps a picture once and draws it by number afterwards, so an
+/// icon defines itself the first time it is drawn at a given size and is a
+/// blit from then on. Which image inside the file is used depends on the
+/// size and on what the screen can show, which is the whole point of a file
+/// that holds several.
+public class Icon
+{
+    IconFile _file;
+    int[] _ids = new int[8];           // the seat's bitmap for each size we have drawn
+    int[] _sizes = new int[8];
+    int _known;
+
+    Icon(IconFile file) { _file = file; }
+
+    public static Icon? FromFile(string path)
+    {
+        IconFile? file = IconFile.Load(path);
+        return file == null ? null : new Icon(file);
+    }
+
+    public static Icon? FromBytes(byte[] bytes)
+    {
+        IconFile? file = IconFile.Read(bytes);
+        return file == null ? null : new Icon(file);
+    }
+
+    /// The seat's bitmap id for this icon at this size, defining it if this
+    /// is the first time. -1 when the file holds nothing we can decode.
+    public int Prepared(int size)
+    {
+        for (int i = 0; i < _known; i++) if (_sizes[i] == size) return _ids[i];
+        if (_known >= _ids.Length) return _ids[0];
+
+        Seat seat = Seat.Current;
+        int which = _file.Best(size, seat.Colours);
+        if (which < 0) return -1;
+        Bitmap? picture = _file.Decode(which);
+        if (picture == null) return -1;
+
+        int id = Seat.NextBitmapId();
+        seat.DefineBitmap(id, picture.Width, picture.Height, picture.Pixels);
+        _sizes[_known] = size; _ids[_known] = id; _known++;
+        _lastWidth = picture.Width; _lastHeight = picture.Height;
+        return id;
+    }
+
+    int _lastWidth, _lastHeight;
+    public int Width { get { return _lastWidth; } }
+    public int Height { get { return _lastHeight; } }
+}
+
+/// A pointer shape from a .cur file, given to the seat once and then
+/// selected by number. The seat reduces it to what the card's hardware
+/// cursor can show.
+public class CursorArt
+{
+    public int Shape = -1;             // what SetCursor takes, or -1 if it did not load
+    public int Width;
+    public int Height;
+
+    public static CursorArt? FromFile(string path)
+    {
+        IconFile? file = IconFile.Load(path);
+        if (file == null || file.Entries.Length == 0) return null;
+
+        // A cursor file's images are all the same drawing at different
+        // depths; the largest the hardware can hold wins.
+        int best = -1;
+        for (int i = 0; i < file.Entries.Length; i++)
+            if (file.Entries[i].Width <= 32 && file.Entries[i].Height <= 32)
+                if (best < 0 || file.Entries[i].Width > file.Entries[best].Width) best = i;
+        if (best < 0) return null;
+
+        Bitmap? picture = file.Decode(best);
+        if (picture == null) return null;
+
+        CursorArt made = new CursorArt();
+        int id = Seat.NextCursorId();
+        Seat.Current.DefineCursor(id, picture.Width, picture.Height,
+                                  file.Entries[best].HotX, file.Entries[best].HotY, picture.Pixels);
+        made.Shape = Cursors.Base + id;
+        made.Width = picture.Width; made.Height = picture.Height;
+        return made;
+    }
+}

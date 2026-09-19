@@ -50,6 +50,23 @@ public class Seat : IDrawingTarget
 
     public int Fd { get { return _fd; } }
 
+    /// How many colours this screen can show: what a picture with several
+    /// versions of itself chooses between.
+    public int Colours { get { return Format == 0 ? 256 : Format == 1 ? 16 : 65536; } }
+
+    // Ids for pictures and pointer shapes the seat keeps for us. Handing
+    // them out here rather than making every caller invent one is what
+    // stops two libraries from quietly using the same number.
+    static int _nextBitmap;
+    static int _nextCursor;
+    public static int NextBitmapId() { int id = _nextBitmap; _nextBitmap = (_nextBitmap + 1) % 256; return id; }
+    public static int NextCursorId() { int id = _nextCursor; _nextCursor = (_nextCursor + 1) % 32; return id; }
+
+    /// A shape this program defined becomes one of the standard ones, for
+    /// every program on the seat: what a system does once with real cursor
+    /// art, so that nothing else has to know where the art came from.
+    public void BindCursor(int shape, int id) { Os.Ioctl(_fd, 0x47550028, (shape & 0xFF) | ((id & 0xFF) << 8)); }
+
     /// How many windows the seat is showing, everybody's included.
     public int ShownWindows() { int n = (int)Os.Ioctl(_fd, 0x47550005, 0); return n < 0 ? 0 : n; }
 
@@ -61,6 +78,12 @@ public class Seat : IDrawingTarget
     void Room(int words)
     {
         if (_used + words * 4 > _batch.Length) { Flush(); Renew(); }
+    }
+
+    static void Put(byte[] into, int at, int v)
+    {
+        into[at] = (byte)v; into[at + 1] = (byte)(v >> 8);
+        into[at + 2] = (byte)(v >> 16); into[at + 3] = (byte)(v >> 24);
     }
 
     void Word(int v)
@@ -118,6 +141,53 @@ public class Seat : IDrawingTarget
         _clipOn = true; _clipX = x; _clipY = y; _clipW = w; _clipH = h;
         Room(5); Word(6); Word(x); Word(y); Word(w); Word(h);
     }
+    /// A picture the seat keeps, to be drawn afterwards by its id. The
+    /// colours are 0xAARRGGBB, which is what an image decodes to; the seat
+    /// turns them into the screen's own pixels once, here, and remembers
+    /// which of them are see-through.
+    public void DefineBitmap(int id, int width, int height, byte[] argb)
+    {
+        int bytes = width * height * 4;
+        Flush();
+        // ONE WRITE: the seat reads the pixels out of the same batch as the
+        // op that introduces them, so they cannot be a second write.
+        byte[] one = new byte[20 + bytes];
+        Put(one, 0, 7); Put(one, 4, id); Put(one, 8, width); Put(one, 12, height); Put(one, 16, bytes);
+        for (int i = 0; i < bytes; i++) one[20 + i] = argb[i];
+        int at = 0;
+        while (at < one.Length)
+        {
+            int n = Os.Write(_fd, one, at, one.Length - at);
+            if (n <= 0) break;
+            at += n;
+        }
+        Renew();
+    }
+
+    /// A pointer shape from a cursor file. The seat reduces it to what a
+    /// card's hardware cursor can show -- two colours and a hole -- and it
+    /// is then selected like any other shape, by SetCursor(CursorBase + id).
+    public void DefineCursor(int id, int width, int height, int hotX, int hotY, byte[] argb)
+    {
+        int bytes = width * height * 4;
+        Flush();
+        byte[] one = new byte[24 + bytes];
+        Put(one, 0, 11); Put(one, 4, id); Put(one, 8, width); Put(one, 12, height);
+        Put(one, 16, (hotX & 0xFFFF) | (hotY << 16)); Put(one, 20, bytes);
+        for (int i = 0; i < bytes; i++) one[24 + i] = argb[i];
+        int at = 0;
+        while (at < one.Length)
+        {
+            int n = Os.Write(_fd, one, at, one.Length - at);
+            if (n <= 0) break;
+            at += n;
+        }
+        Renew();
+    }
+
+    public void Blit(int id, int sx, int sy, int x, int y, int width, int height)
+    { Room(8); Word(8); Word(id); Word(sx); Word(sy); Word(x); Word(y); Word(width); Word(height); }
+
     public void ShowPointer(bool on) { Room(2); Word(10); Word(on ? 1 : 0); }
     public void MovePointer(int x, int y) { Room(3); Word(9); Word(x); Word(y); }
 
@@ -332,6 +402,11 @@ public class SeatWindowInfo
 public static class Cursors
 {
     public const int Arrow = 0, SizeWE = 1, SizeNS = 2, SizeNWSE = 3, SizeNESW = 4;
+    public const int IBeam = 5, Wait = 6, Help = 7, No = 8, Move = 9, Hand = 10, Cross = 11;
+
+    /// Shapes a program defined itself are numbered from here: the id it
+    /// gave DefineCursor, plus this.
+    public const int Base = 256;
 }
 
 public static class Shell
