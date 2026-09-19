@@ -223,6 +223,10 @@ public interface IDrawingTarget
     void Copy(int sx, int sy, int dx, int dy, int w, int h);
     void Line(int x0, int y0, int x1, int y1, Color colour);
     void Glyph(int id, int x, int y, Color foreground, Color background, bool transparent);
+
+    /// A rectangle of a picture the target is keeping, by the id it was
+    /// given: how an icon is drawn once it has been handed over.
+    void Blit(int id, int sx, int sy, int x, int y, int w, int h);
     void Clip(int x, int y, int w, int h);
 }
 
@@ -297,6 +301,12 @@ public class Graphics : IDisposable
     public void DrawGlyph(int id, int x, int y, Color foreground, Color background, bool transparent)
     {
         _target.Glyph(id, x + _originX, y + _originY, foreground, background, transparent);
+    }
+
+    /// A picture the seat is keeping for us, by the id it was given.
+    public void DrawBitmap(int id, int x, int y, int width, int height)
+    {
+        _target.Blit(id, 0, 0, x + _originX, y + _originY, width, height);
     }
 
     public void DrawStringOpaque(string s, Font font, Color foreground, Color background, int x, int y)

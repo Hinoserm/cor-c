@@ -931,6 +931,7 @@ public class TextBox : Control
 public class ToolStripItem
 {
     public string Text = "";
+    public Icon? Image;                // drawn in the gutter the text is already indented past
     public event EventHandler? Click;
     internal ContextMenuStrip? Owner;
     public ToolStripItem() { }
@@ -991,7 +992,7 @@ public class ContextMenuStrip : Form
     {
         int widest = 0;
         for (int i = 0; i < Items.Count; i++) if (Items[i].Text.Length > widest) widest = Items[i].Text.Length;
-        int w = widest * Font.GlyphWidth + 32, h = Items.Count * ItemHeight + 6;
+        int w = widest * Font.GlyphWidth + 42, h = Items.Count * ItemHeight + 6;
         Seat seat = Seat.Current;
         if (screenX + w > seat.Width) screenX = seat.Width - w;
         if (screenY + h > seat.WorkAreaHeight()) screenY = screenY - h;
@@ -1018,7 +1019,9 @@ public class ContextMenuStrip : Form
             }
             bool hot = i == _hot;
             if (hot) g.FillRectangle(new SolidBrush(SystemColors.Highlight), 3, y, Width - 6, ItemHeight);
-            g.DrawString(Items[i].Text, Font, new SolidBrush(hot ? SystemColors.HighlightText : ForeColor), 16, y + (ItemHeight - Font.Height) / 2);
+            Icon? picture = Items[i].Image;
+            if (picture != null) picture.Draw(g, 5, y + (ItemHeight - 16) / 2, 16);
+            g.DrawString(Items[i].Text, Font, new SolidBrush(hot ? SystemColors.HighlightText : ForeColor), 26, y + (ItemHeight - Font.Height) / 2);
         }
         base.OnPaint(e);
     }
