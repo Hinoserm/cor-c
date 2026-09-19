@@ -6,6 +6,7 @@
 // finally ran 3
 // rethrown mine
 // caught shared I/O
+// caught shared socket
 //
 // AN EXCEPTION CROSSES THE BOUNDARY IN BOTH DIRECTIONS. The handler chain is
 // a per-thread list whose head is in the runtime's thread block, so a program
@@ -93,6 +94,21 @@ static class Program
         catch (System.IO.IOException)
         {
             Console.WriteLine("caught shared I/O");
+        }
+        using (System.Net.Sockets.Socket socket = new System.Net.Sockets.Socket(
+            System.Net.Sockets.AddressFamily.InterNetwork,
+            System.Net.Sockets.SocketType.Dgram, System.Net.Sockets.ProtocolType.Udp))
+        {
+            try
+            {
+                socket.IOControl(-1, new byte[32], null);
+                Console.WriteLine("unexpected ioctl success");
+            }
+            catch (System.Net.Sockets.SocketException e)
+            {
+                if (e.NativeErrorCode <= 0) throw;
+                Console.WriteLine("caught shared socket");
+            }
         }
     }
 }
