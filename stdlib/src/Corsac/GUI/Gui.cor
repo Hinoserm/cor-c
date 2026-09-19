@@ -1,0 +1,323 @@
+// Corsac.GUI -- what the seat offers beyond Windows Forms: the seat itself
+// (the device, its windows, its events), the shell's view of every window,
+// and the desktop's own kind of surface. A program written to the Forms
+// surface never needs this namespace; the desktop, its taskbar, and tools
+// like spy do. Kept apart so a program ported from Windows meets nothing
+// here by accident.
+
+using System;
+using System.IO;
+using System.Drawing;
+using System.Windows.Forms;
+
+namespace Corsac.GUI;
+
+// ---------------------------------------------------------------------------
+// The seat: the transport. One per process, opened on first use.
+// ---------------------------------------------------------------------------
+
+public class Seat : IDrawingTarget
+{
+    static Seat? _current;
+    public static Seat Current
+    {
+        get
+        {
+            if (_current == null) _current = new Seat(Environment.GetEnvironmentVariable("SEAT") ?? "/dev/seat0");
+            return _current;
+        }
+    }
+
+    int _fd;
+    byte[] _batch = new byte[16384];
+    int _used;
+    int _window;                 // the window drawing goes to
+    bool _named;                 // whether this batch has said so yet
+    bool _clipOn;                // a clip is in force (batch-local in the seat, like the window)
+    int _clipX, _clipY, _clipW, _clipH;
+    public int Width;
+    public int Height;
+    public int Format;
+
+    public Seat(string path)
+    {
+        _fd = Os.Open(path, 2, 0);          // O_RDWR
+        if (_fd < 0) throw new IOException("cannot open seat " + path);
+        Width = (int)Os.Ioctl(_fd, 0x47550001, 0);
+        Height = (int)Os.Ioctl(_fd, 0x47550002, 0);
+        Format = (int)Os.Ioctl(_fd, 0x47550003, 0);
+    }
+
+    public int Fd { get { return _fd; } }
+
+    /// How many windows the seat is showing, everybody's included.
+    public int ShownWindows() { int n = (int)Os.Ioctl(_fd, 0x47550005, 0); return n < 0 ? 0 : n; }
+
+    // --- batches ---------------------------------------------------------
+
+    /// Room for one whole op. AN OP IS NEVER SPLIT ACROSS TWO WRITES: the
+    /// seat reads each write on its own, and the tail of an op at the head
+    /// of the next write is parsed as opcodes, which throws the rest away.
+    void Room(int words)
+    {
+        if (_used + words * 4 > _batch.Length) { Flush(); Renew(); }
+    }
+
+    void Word(int v)
+    {
+        _batch[_used] = (byte)v; _batch[_used + 1] = (byte)(v >> 8);
+        _batch[_used + 2] = (byte)(v >> 16); _batch[_used + 3] = (byte)(v >> 24);
+        _used += 4;
+    }
+
+    static int Rgb(Color c) { return (c.R << 16) | (c.G << 8) | c.B; }
+
+    /// Send what is queued. Called when the buffer fills, on request, and
+    /// by the message loop before it waits, which is the rule that keeps a
+    /// program's last few draws from sitting unseen while it blocks.
+    public void Flush()
+    {
+        int at = 0;
+        while (at < _used)
+        {
+            int n = Os.Write(_fd, _batch, at, _used - at);
+            if (n <= 0) break;
+            at += n;
+        }
+        _used = 0;
+        // The seat forgets the current window and clip at the end of every
+        // write, so the next batch has to name them again: Renew does, when
+        // a batch filled up mid-drawing; a new batch starts with Target.
+        _named = false;
+    }
+
+    /// After a flush in the middle of drawing: the same window and clip
+    /// again, or the rest of the drawing goes nowhere.
+    void Renew()
+    {
+        if (_window != 0) { _named = true; Word(12); Word(_window); }
+        if (_clipOn) { Word(6); Word(_clipX); Word(_clipY); Word(_clipW); Word(_clipH); }
+    }
+
+    public void Target(int window)
+    {
+        if (_window == window && _named) return;
+        _window = window;
+        _named = true;
+        _clipOn = false;
+        Room(2); Word(12); Word(window);
+    }
+
+    public void Fill(int x, int y, int w, int h, Color colour) { Room(6); Word(1); Word(x); Word(y); Word(w); Word(h); Word(Rgb(colour)); }
+    public void Copy(int sx, int sy, int dx, int dy, int w, int h) { Room(7); Word(2); Word(sx); Word(sy); Word(dx); Word(dy); Word(w); Word(h); }
+    public void Line(int x0, int y0, int x1, int y1, Color colour) { Room(6); Word(3); Word(x0); Word(y0); Word(x1); Word(y1); Word(Rgb(colour)); }
+    public void Glyph(int id, int x, int y, Color fg, Color bg, bool transparent)
+    { Room(7); Word(5); Word(id); Word(x); Word(y); Word(Rgb(fg)); Word(Rgb(bg)); Word(transparent ? 1 : 0); }
+    public void Clip(int x, int y, int w, int h)
+    {
+        _clipOn = true; _clipX = x; _clipY = y; _clipW = w; _clipH = h;
+        Room(5); Word(6); Word(x); Word(y); Word(w); Word(h);
+    }
+    public void ShowPointer(bool on) { Room(2); Word(10); Word(on ? 1 : 0); }
+    public void MovePointer(int x, int y) { Room(3); Word(9); Word(x); Word(y); }
+
+    // --- windows ---------------------------------------------------------
+    //
+    // A window operation selects the handle first, then acts on it: the i386
+    // call convention carries 32-bit arguments, so a handle cannot ride in the
+    // high half of the argument as a 64-bit ABI would allow.
+
+    void Select(int handle) { Os.Ioctl(_fd, 0x47550020, handle); }
+
+    public int CreateWindow(int x, int y, int w, int h)
+    {
+        Flush();
+        int handle = (int)Os.Ioctl(_fd, 0x47550010, (x & 0xFFFF) | (y << 16));
+        if (handle <= 0) throw new IOException("cannot create a window");
+        Select(handle);
+        Os.Ioctl(_fd, 0x47550011, (w & 0xFFFF) | (h << 16));
+        return handle;
+    }
+    public void ShowWindow(int handle) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550012, 0); }
+    public void HideWindow(int handle) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550013, 0); }
+    public void RaiseWindow(int handle) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550014, 0); }
+    public void MoveWindow(int handle, int x, int y) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550015, (x & 0xFFFF) | (y << 16)); }
+    public void ResizeWindow(int handle, int w, int h) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550011, (w & 0xFFFF) | (h << 16)); }
+    public void DestroyWindow(int handle) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550016, 0); _window = 0; _named = false; }
+    public void FocusWindow(int handle) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550017, 0); }
+    /// This window is the desktop: the surface under everything, never raised.
+    public void DesktopWindow(int handle) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550018, 0); }
+    /// This window stays above every ordinary one (a bar).
+    public void TopMostWindow(int handle, bool on) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550019, on ? 1 : 0); }
+    /// This window is not listed on a taskbar.
+    /// Whether this window is listed on a taskbar; takes effect at once.
+    public void ListOnTaskbar(int handle, bool listed) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550024, listed ? 0 : 1); }
+
+    /// The window's title, as the seat lists it (a taskbar reads it).
+    public void SetTitle(int handle, string title)
+    {
+        byte[] bytes = new byte[64];
+        for (int i = 0; i < title.Length && i < 63; i++) bytes[i] = (byte)title[i];
+        Flush(); Select(handle); Os.Ioctl(_fd, 0x4755001B, (int)Os.AddressOf(bytes));
+    }
+
+    /// Ask for a WindowsChanged message whenever the seat's list or focus changes.
+    public void WatchWindows() { Os.Ioctl(_fd, 0x4755001D, 0); }
+
+    /// Every shown window on the seat, bottom to top, whoever owns it.
+    public SeatWindowInfo[] Windows()
+    {
+        byte[] records = new byte[80 * 64];
+        int n = (int)Os.Ioctl(_fd, 0x4755001C, (int)Os.AddressOf(records));
+        if (n < 0) n = 0;
+        if (n > 64) n = 64;
+        SeatWindowInfo[] result = new SeatWindowInfo[n];
+        for (int i = 0; i < n; i++)
+        {
+            int at = i * 80;
+            SeatWindowInfo w = new SeatWindowInfo();
+            w.Handle = records[at] | (records[at + 1] << 8) | (records[at + 2] << 16) | (records[at + 3] << 24);
+            w.Owner = records[at + 4] | (records[at + 5] << 8) | (records[at + 6] << 16) | (records[at + 7] << 24);
+            w.Flags = records[at + 8] | (records[at + 9] << 8);
+            int xy = records[at + 12] | (records[at + 13] << 8) | (records[at + 14] << 16) | (records[at + 15] << 24);
+            int wh = records[at + 16] | (records[at + 17] << 8) | (records[at + 18] << 16) | (records[at + 19] << 24);
+            w.Bounds = new Rectangle(LowSigned(xy), HighSigned(xy), wh & 0xFFFF, (wh >> 16) & 0xFFFF);
+            string title = "";
+            for (int k = 0; k < 56 && records[at + 24 + k] != 0; k++) title = title + (char)records[at + 24 + k];
+            w.Title = title;
+            result[i] = w;
+        }
+        return result;
+    }
+
+    /// Raise and focus any window, whoever owns it (a taskbar button).
+    public void Activate(int handle) { Flush(); Os.Ioctl(_fd, 0x4755001E, handle); }
+
+    // --- inspection: what is under a point of the screen, asked of the
+    // window's owner through the seat (a spy tool) -------------------------
+    public void WatchPointer() { Os.Ioctl(_fd, 0x47550020, 0); }
+    /// Ask the owner of the window at a screen point what is there; the
+    /// answer arrives as Application.Inspected. Returns the window handle, or -1.
+    public int Inspect(int screenX, int screenY) { Flush(); return (int)Os.Ioctl(_fd, 0x47550021, (screenX & 0xFFFF) | (screenY << 16)); }
+    public void InspectReply(string text)
+    {
+        byte[] bytes = new byte[256];
+        for (int i = 0; i < text.Length && i < 255; i++) bytes[i] = (byte)text[i];
+        Os.Ioctl(_fd, 0x47550022, (int)Os.AddressOf(bytes));
+    }
+    public string InspectRead()
+    {
+        byte[] bytes = new byte[256];
+        int n = (int)Os.Ioctl(_fd, 0x47550023, (int)Os.AddressOf(bytes));
+        string text = "";
+        for (int i = 0; i < n && i < 255 && bytes[i] != 0; i++) text = text + (char)bytes[i];
+        return text;
+    }
+    /// Ask any window's owner to close it.
+    public void CloseWindow(int handle) { Flush(); Os.Ioctl(_fd, 0x4755001F, handle); }
+
+    /// A glyph of the program's own, ids from 256: rows of packed bits, the
+    /// most significant first, (width+7)/8 bytes per row.
+    public void DefineGlyph(int id, int width, int height, byte[] bits)
+    {
+        int padded = (bits.Length + 3) & ~3;
+        Room(5 + padded / 4);
+        Word(4); Word(id); Word(width); Word(height); Word(bits.Length);
+        for (int i = 0; i < padded; i++) _batch[_used++] = i < bits.Length ? bits[i] : (byte)0;
+    }
+    /// Rows at the bottom of the screen a bar owns: windows keep out of them.
+    public void ReserveBottom(int rows) { Os.Ioctl(_fd, 0x4755001A, rows); }
+    /// The screen height minus what a bar has reserved: where windows go.
+    public int WorkAreaHeight() { int h = (int)Os.Ioctl(_fd, 0x47550006, 0); return h <= 0 ? Height : h; }
+    static int Signed16(int v) { int n = v & 0xFFFF; return n >= 0x8000 ? n - 0x10000 : n; }
+    public static int LowSigned(int packed) { return Signed16(packed); }
+    public static int HighSigned(int packed) { return Signed16(packed >> 16); }
+
+    // --- events ----------------------------------------------------------
+
+    byte[] _event = new byte[16];
+
+    /// Blocks until the seat has a message. Everything queued is flushed
+    /// first, because a program about to wait must not leave its own
+    /// drawing behind.
+    public bool Next(out Message m)
+    {
+        Flush();
+        m = new Message();
+        int got = 0;
+        while (got < 16)
+        {
+            int n = Os.Read(_fd, _event, got, 16 - got);
+            if (n <= 0) return false;
+            got += n;
+        }
+        m.Kind = Int(0); m.Window = Int(4); m.A = Int(8); m.B = Int(12);
+        return true;
+    }
+
+    /// Is a message waiting? poll(2) on the seat: the kernel answers for
+    /// the device and sleeps the caller until something arrives or the
+    /// time is up. Nothing here spins or naps in steps.
+    public bool Poll(int timeoutMs)
+    {
+        Flush();
+        return Os.Poll(_fd, 1, timeoutMs) > 0;
+    }
+
+    /// Wait for the seat or any of `others`, whichever first. Returns the
+    /// index into `others` that became readable, or -1 for the seat (or
+    /// the timeout; the caller asks the seat, which is cheap).
+    public int WaitAny(int[] others, int count, int timeoutMs)
+    {
+        Flush();
+        int[] fds = new int[count + 1];
+        bool[] ready = new bool[count + 1];
+        fds[0] = _fd;
+        for (int i = 0; i < count; i++) fds[i + 1] = others[i];
+        int n = Os.PollMany(fds, count + 1, 1, timeoutMs, ready);
+        if (n <= 0) return -1;
+        for (int i = 0; i < count; i++) if (ready[i + 1]) return i;
+        return -1;
+    }
+
+    int Int(int at) { return _event[at] | (_event[at + 1] << 8) | (_event[at + 2] << 16) | (_event[at + 3] << 24); }
+}
+
+
+/// One shown window on the seat, as Seat.Windows() reports it.
+public class SeatWindowInfo
+{
+    public int Handle;
+    public int Owner;
+    public int Flags;                        // 1 desktop, 2 top-most, 4 focused
+    public Rectangle Bounds;                 // on the screen
+    public string Title = "";
+    public bool IsDesktop { get { return (Flags & 1) != 0; } }
+    public bool IsTopMost { get { return (Flags & 2) != 0; } }
+    public bool IsFocused { get { return (Flags & 4) != 0; } }
+    public bool OnTaskbar { get { return (Flags & 9) == 0; } }      // neither the desktop nor a window that opted out
+}
+
+
+/// The shell's events and powers: what a taskbar, a desktop or a spy tool
+/// uses, raised by the Forms message loop from the seat's messages.
+public static class Shell
+{
+    /// The seat's window list or focus changed (after WatchWindows()).
+    public static event EventHandler? WindowsChanged;
+    /// The pointer moved anywhere on the screen (after WatchPointer()).
+    public static event MouseEventHandler? PointerMoved;
+    /// An answer to Seat.Inspect is ready (Seat.InspectRead()).
+    public static event EventHandler? Inspected;
+
+    public static void WatchWindows() { Seat.Current.WatchWindows(); }
+    public static void WatchPointer() { Seat.Current.WatchPointer(); }
+
+    /// This form is the desktop: the surface under everything, never
+    /// raised. Before it is shown.
+    public static void MakeDesktop(Form f) { f.DesktopSurface = true; }
+
+    internal static void RaiseWindowsChanged() { if (WindowsChanged != null) WindowsChanged(null!, EventArgs.Empty); }
+    internal static void RaisePointerMoved(MouseEventArgs e) { if (PointerMoved != null) PointerMoved(null!, e); }
+    internal static void RaiseInspected() { if (Inspected != null) Inspected(null!, EventArgs.Empty); }
+}
