@@ -730,7 +730,11 @@ public class Form : Control
     public bool IsDesktop;
     /// Above every ordinary window, like a taskbar. Set before Show.
     public bool TopMost;
-    /// Listed on the taskbar. A bar, a menu or a tool window says no. Set before Show.
+    /// Listed on the taskbar. TRUE, AND LEAVE IT: the taskbar is the
+    /// system's, and every window a person opened belongs on it. The
+    /// library's own transient windows (a menu) set this false; a program
+    /// that does so hides itself from the person using it, which is nearly
+    /// always wrong. Set before Show.
     public bool ShowInTaskbar = true;
     public bool HasFrame { get { return _border != FormBorderStyle.None; } }
 
