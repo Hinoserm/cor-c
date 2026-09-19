@@ -547,12 +547,25 @@ public static class Driver
             return 1;
         }
 
+        // WHERE A UNIT'S TIME AND ALLOCATION GO, by phase, when asked. The
+        // frontend's own line covers what happened before this point.
+        bool phases = Environment.GetEnvironmentVariable("CORC_REPORT_PHASES") is not null;
+        System.Diagnostics.Stopwatch phaseClock = System.Diagnostics.Stopwatch.StartNew();
+        long phaseBytes = GC.GetAllocatedBytesForCurrentThread();
+        void Phase(string what)
+        {
+            if (!phases) return;
+            long now = GC.GetAllocatedBytesForCurrentThread();
+            Console.Error.WriteLine("phase " + what + " " + phaseClock.ElapsedMilliseconds + "ms " + ((now - phaseBytes) >> 20) + "MiB");
+            phaseClock.Restart(); phaseBytes = now;
+        }
         List<CompileError> errors = new();
         Dictionary<string, string> entries = new(StringComparer.Ordinal);
 #if COR_SELFHOST_BENCHMARK
         Program.BenchmarkStage("lower");
 #endif
         Module module = Lowering.Lower(front.Value.bound, front.Value.unit, name, library, errors, entries);
+        Phase("lower");
 
         if (errors.Count > 0)
         {
@@ -575,6 +588,7 @@ public static class Driver
             Program.BenchmarkStage("optimise");
 #endif
             Optimise(module, Value(args, "--trace-opt"), args.Contains("--experimental-ssa"), args.Contains("--opt-size"), args.Contains("--experimental-batch"), Value(args, "--batch-without"), workers);
+            Phase("optimise");
             if (args.Contains("--dump-opt"))
             {
                 Console.Write(module.Dump());
@@ -674,6 +688,8 @@ public static class Driver
         Program.BenchmarkStage("code-generation");
 #endif
         ObjectFile obj = backend.Generate(module, backendErrors);
+        Phase("codegen");
+        Corsac.Lang.Opt.Pipeline.ReportAccounts();
         new TargetContract(freestanding ? (Lowering.TlsGs ? 2u : 1u) : 0u, requiresManagedLayouts: true, requiresCodeGenerationContract: true).Attach(obj);
         ManagedLayouts.Attach(obj, front.Value.bound);
         DefinitionSemantics.Attach(obj, definitionSemantics);

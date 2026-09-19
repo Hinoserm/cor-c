@@ -25,8 +25,15 @@ public sealed class Defs
     private readonly Cfg? _cfg;
     public Cfg Cfg => _cfg ?? throw new InvalidOperationException("definition-only analysis has no control-flow snapshot");
 
-    private readonly Dictionary<VReg, int> _count = new();
-    private readonly Dictionary<VReg, (Block Block, int Index)> _site = new();
+    // BY REGISTER NUMBER, NOT BY IDENTITY. A function numbers its registers
+    // densely as it makes them and says how many there are, so the two maps
+    // here are arrays: as dictionaries keyed on the register object they
+    // hashed a reference for every lookup, and this analysis is built fifty
+    // thousand times compiling one source. A register from outside the
+    // function -- there should be none -- reads as never defined.
+    private readonly int[] _count;
+    private readonly Block?[] _siteBlock;
+    private readonly int[] _siteIndex;
 
     /// <summary>
     /// Whether the function is in SSA form: every register has one
@@ -42,23 +49,29 @@ public sealed class Defs
         Ssa = ssa;
         _cfg = buildCfg ? new Cfg(f) : null;
         Function = f;
+        int registers = f.RegCount;
+        _count = new int[registers];
+        _siteBlock = new Block?[registers];
+        _siteIndex = new int[registers];
         foreach (VReg p in Function.Params)
         {
-            _count[p] = 1;
+            if (p.Id < registers) _count[p.Id] = 1;
         }
         foreach (Block b in Function.Blocks)
         {
             for (int k = 0; k < b.Instrs.Count; k++)
             {
                 VReg? d = b.Instrs[k].Dest;
-                if (d is null)
+                if (d is null || d.Id >= registers)
                 {
                     continue;
                 }
-                _count[d] = _count.GetValueOrDefault(d) + 1;
-                _site[d] = (b, k);
+                _count[d.Id]++;
+                _siteBlock[d.Id] = b;
+                _siteIndex[d.Id] = k;
             }
         }
+    
     }
 
     public Defs(Cfg cfg, bool ssa = false) : this(cfg.Function, ssa, false)
@@ -66,16 +79,21 @@ public sealed class Defs
         _cfg = cfg;
     }
 
-    public int Count(VReg r) => _count.GetValueOrDefault(r);
+    public int Count(VReg r) => r.Id < _count.Length ? _count[r.Id] : 0;
+    private bool TrySite(VReg r, out (Block Block, int Index) site)
+    {
+        if (r.Id < _siteBlock.Length && _siteBlock[r.Id] is Block b) { site = (b, _siteIndex[r.Id]); return true; }
+        site = default; return false;
+    }
     public bool IsSingle(VReg r) => Count(r) == 1;
 
     /// <summary>Where a single-def register is defined, or null for a parameter or a multi-def register.</summary>
     public (Block Block, int Index)? Site(VReg r)
-        => IsSingle(r) && _site.TryGetValue(r, out (Block Block, int Index) s) ? s : null;
+        => IsSingle(r) && TrySite(r, out (Block Block, int Index) s) ? s : null;
 
     /// <summary>The one instruction defining a single-def register, or null for a parameter or a multi-def register.</summary>
     public Instr? Definition(VReg r)
-        => IsSingle(r) && _site.TryGetValue(r, out (Block Block, int Index) s) ? s.Block.Instrs[s.Index] : null;
+        => IsSingle(r) && TrySite(r, out (Block Block, int Index) s) ? s.Block.Instrs[s.Index] : null;
 
     /// <summary>
     /// Whether a read of <paramref name="r"/> made at (<paramref name="fromBlock"/>,
@@ -96,7 +114,7 @@ public sealed class Defs
         {
             return false;
         }
-        if (!_site.TryGetValue(r, out (Block Block, int Index) s))
+        if (!TrySite(r, out (Block Block, int Index) s))
         {
             return true;        // a parameter: defined once, on entry, never again
         }
