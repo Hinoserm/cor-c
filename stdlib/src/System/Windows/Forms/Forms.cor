@@ -150,7 +150,10 @@ public class Seat : IDrawingTarget
     int _fd;
     byte[] _batch = new byte[16384];
     int _used;
-    int _window;
+    int _window;                 // the window drawing goes to
+    bool _named;                 // whether this batch has said so yet
+    bool _clipOn;                // a clip is in force (batch-local in the seat, like the window)
+    int _clipX, _clipY, _clipW, _clipH;
     public int Width;
     public int Height;
     public int Format;
@@ -170,7 +173,7 @@ public class Seat : IDrawingTarget
 
     void Word(int v)
     {
-        if (_used + 4 > _batch.Length) Flush();
+        if (_used + 4 > _batch.Length) { Flush(); Renew(); }
         _batch[_used] = (byte)v; _batch[_used + 1] = (byte)(v >> 8);
         _batch[_used + 2] = (byte)(v >> 16); _batch[_used + 3] = (byte)(v >> 24);
         _used += 4;
@@ -191,15 +194,26 @@ public class Seat : IDrawingTarget
             at += n;
         }
         _used = 0;
-        // The seat forgets the current window at the end of every write, so
-        // the next batch has to name it again.
-        _window = 0;
+        // The seat forgets the current window and clip at the end of every
+        // write, so the next batch has to name them again: Renew does, when
+        // a batch filled up mid-drawing; a new batch starts with Target.
+        _named = false;
+    }
+
+    /// After a flush in the middle of drawing: the same window and clip
+    /// again, or the rest of the drawing goes nowhere.
+    void Renew()
+    {
+        if (_window != 0) { _named = true; Word(12); Word(_window); }
+        if (_clipOn) { Word(6); Word(_clipX); Word(_clipY); Word(_clipW); Word(_clipH); }
     }
 
     public void Target(int window)
     {
-        if (_window == window) return;
+        if (_window == window && _named) return;
         _window = window;
+        _named = true;
+        _clipOn = false;
         Word(12); Word(window);
     }
 
@@ -208,7 +222,11 @@ public class Seat : IDrawingTarget
     public void Line(int x0, int y0, int x1, int y1, Color colour) { Word(3); Word(x0); Word(y0); Word(x1); Word(y1); Word(Rgb(colour)); }
     public void Glyph(int id, int x, int y, Color fg, Color bg, bool transparent)
     { Word(5); Word(id); Word(x); Word(y); Word(Rgb(fg)); Word(Rgb(bg)); Word(transparent ? 1 : 0); }
-    public void Clip(int x, int y, int w, int h) { Word(6); Word(x); Word(y); Word(w); Word(h); }
+    public void Clip(int x, int y, int w, int h)
+    {
+        _clipOn = true; _clipX = x; _clipY = y; _clipW = w; _clipH = h;
+        Word(6); Word(x); Word(y); Word(w); Word(h);
+    }
     public void ShowPointer(bool on) { Word(10); Word(on ? 1 : 0); }
     public void MovePointer(int x, int y) { Word(9); Word(x); Word(y); }
 
@@ -234,7 +252,7 @@ public class Seat : IDrawingTarget
     public void RaiseWindow(int handle) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550014, 0); }
     public void MoveWindow(int handle, int x, int y) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550015, (x & 0xFFFF) | (y << 16)); }
     public void ResizeWindow(int handle, int w, int h) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550011, (w & 0xFFFF) | (h << 16)); }
-    public void DestroyWindow(int handle) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550016, 0); _window = 0; }
+    public void DestroyWindow(int handle) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550016, 0); _window = 0; _named = false; }
     public void FocusWindow(int handle) { Flush(); Select(handle); Os.Ioctl(_fd, 0x47550017, 0); }
 
     // --- events ----------------------------------------------------------
