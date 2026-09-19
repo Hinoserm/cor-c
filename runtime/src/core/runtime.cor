@@ -1860,6 +1860,60 @@ static class Runtime
         return (long)((x >> n) | (x << (64 - n)));
     }
 
+    // Legacy x86 has no AES instruction assistance. Returning false must not
+    // modify any caller storage: the crypto library then uses its software path.
+    public static bool TryAesEncryptBlock(long state, long roundKeys, int rounds) { return false; }
+    public static bool TryAesDecryptBlock(long state, long roundKeys, int rounds) { return false; }
+    public static bool TryAesKey128Next(long output, long previous, int roundConstant) { return false; }
+    public static bool TryAesKey256Next(long output, long earlier, long recent, int control) { return false; }
+
+    public static long ReverseBits(long value)
+    {
+        ulong source = (ulong)value, result = 0;
+        for (int bit = 0; bit < 64; bit++)
+        {
+            result = (result << 1) | (source & 1);
+            source >>= 1;
+        }
+        return (long)result;
+    }
+
+    public static long CarrylessMultiply(long left, long right, out long high)
+    {
+        ulong a = (ulong)left, b = (ulong)right, aHigh = 0, low = 0, upper = 0;
+        for (int bit = 0; bit < 64; bit++)
+        {
+            ulong mask = 0UL - (b & 1);
+            low ^= a & mask;
+            upper ^= aHigh & mask;
+            aHigh = (aHigh << 1) | (a >> 63);
+            a <<= 1;
+            b >>= 1;
+        }
+        high = (long)upper;
+        return (long)low;
+    }
+
+    public static long GaloisFieldMultiply(long left, long right)
+    {
+        int a = (int)left & 255, b = (int)right & 255, result = 0;
+        for (int bit = 0; bit < 8; bit++)
+        {
+            result ^= a & (0 - (b & 1));
+            a = ((a << 1) ^ (0x11b & (0 - (a >> 7)))) & 255;
+            b >>= 1;
+        }
+        return result;
+    }
+
+    public static long MultiplyAccumulate(long left, long right, long carry, out long high)
+    {
+        ulong product = (ulong)left * (ulong)right;
+        ulong sum = product + (ulong)carry;
+        high = (long)((ulong)MultiplyHighUnsigned(left, right) + (sum < product ? 1UL : 0UL));
+        return (long)sum;
+    }
+
     /// The high 64 bits of the 128-bit unsigned product, from four 32 x 32
     /// partial products. The middle two are summed with their carry kept,
     /// which is the whole difficulty of doing this without a wide register.

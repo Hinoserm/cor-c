@@ -1,0 +1,31 @@
+// expect-exit: 0
+using System;
+static class Program
+{
+    static int Main()
+    {
+        long high;
+        if (Sys.TryAesEncryptBlock(0, 0, 10) || Sys.TryAesDecryptBlock(0, 0, 14)
+            || Sys.TryAesKey128Next(0, 0, 1) || Sys.TryAesKey256Next(0, 0, 0, 1)) return 1;
+        if (Sys.ReverseBits(1) != long.MinValue || Sys.ReverseBits(-1) != -1) return 2;
+        if (Sys.GaloisFieldMultiply(0x57, 0x13) != 0xfe || Sys.GaloisFieldMultiply(0x80, 2) != 0x1b) return 3;
+        if (Sys.CarrylessMultiply(-1, -1, out high) != 0x5555555555555555L || high != 0x5555555555555555L) return 4;
+        if (Sys.CarrylessMultiply(long.MinValue, 2, out high) != 0 || high != 1) return 5;
+        if (Sys.MultiplyAccumulate(-1, -1, -1, out high) != 0 || high != -1) return 6;
+        if (Sys.MultiplyAccumulate(long.MinValue, 2, 7, out high) != 7 || high != 1) return 7;
+        for (int a = 0; a < 256; a++)
+        for (int b = 0; b < 256; b++)
+        {
+            int x = a, y = b, expected = 0;
+            while (y != 0)
+            {
+                if ((y & 1) != 0) expected ^= x;
+                x <<= 1;
+                if ((x & 256) != 0) x ^= 0x11b;
+                y >>= 1;
+            }
+            if (Sys.GaloisFieldMultiply(a, b) != expected) return 8;
+        }
+        return 0;
+    }
+}
