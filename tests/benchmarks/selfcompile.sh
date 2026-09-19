@@ -13,10 +13,12 @@ work="$(mktemp -d "$root/build/selfcompile.XXXXXX")"
 snapshot="$work/source"
 mkdir "$snapshot"
 printf 'selfcompile work: %s\n' "$work"
-git archive "$revision" compiler linker runtime stdlib tests/integration/managed-runtime.sources tests/benchmarks/selfcompile-smoke.cor | tar -x -C "$snapshot"
+git archive "$revision" compiler linker runtime stdlib tests/benchmarks/selfcompile-smoke.cor | tar -x -C "$snapshot"
 cd "$snapshot"
 export CORC_LIB="$snapshot"
-mapfile -t libraries < tests/integration/managed-runtime.sources
+# CORC_LIB points at the snapshot, so the bootstrap compiler names the
+# snapshot's own library sources.
+mapfile -t libraries < <("$bootstrap" library-sources)
 test "${#libraries[@]}" -gt 0
 mapfile -t sources < <(rg --files compiler/src linker/src -g '*.cs' -g '!linker/src/driver/Program.cs' -g '!**/tests/**' -g '!**/bin/**' -g '!**/obj/**' -g '!**/Legacy/**' | LC_ALL=C sort)
 test "${#sources[@]}" -gt 0

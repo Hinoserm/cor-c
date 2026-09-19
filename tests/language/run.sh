@@ -26,7 +26,9 @@ set -u
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
-libs="${CORC_LIBS:-$(tr '\n' ' ' < "$root/tests/integration/managed-runtime.sources")}"
+corc_for_libs="${CORC:-$root/compiler/bin/managed/Release/net10.0/corc}"
+# Asked of the compiler, not kept in a list that has to match it.
+libs="${CORC_LIBS:-$("$corc_for_libs" library-sources | tr '\n' ' ')}"
 timeout_s="${TIMEOUT:-10}"
 verbose=0
 filter=""
