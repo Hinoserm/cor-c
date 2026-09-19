@@ -1488,8 +1488,15 @@ public static class Application
                 // a listing -- must not stop the clock: a timer that is due
                 // fires between two reads, or a terminal that paints on a
                 // timer while output flows never paints until it stops.
-                if (which >= 0 && which < _watchHandlers.Count) { _watchHandlers[which](fds[which]); if (wait == 0) FireTimers(); continue; }
-                if (!seat.Poll(0)) { FireTimers(); continue; }
+                if (which >= 0 && which < _watchHandlers.Count)
+                {
+                    _watchHandlers[which](fds[which]);
+                    if (wait == 0) FireTimers();
+                    // Nor the seat: a window with output pouring into it is
+                    // still dragged, resized and closed. One message a read.
+                    if (!seat.Poll(0)) continue;
+                }
+                else if (!seat.Poll(0)) { FireTimers(); continue; }
             }
             else if (wait >= 0)
             {
