@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 #nullable enable
 using Corsac.Lang.Metadata;
 
@@ -72,11 +74,32 @@ public static class ProjectCompile
         // of them has moved and the object is still there, the unit is
         // current. Asking here rather than in the build tool saves a process
         // per unit just to put the question.
+        // AND THE UNIT'S OWN SOURCE. The receipt says what a unit READ; it
+        // does not say what the unit IS. A change inside a body -- the order
+        // of a list, a sign -- moves no declaration anybody read, so the
+        // receipt stayed current and the old object was kept, build after
+        // build. The stamp beside the receipt is the source's bytes and the
+        // options it was compiled with; either changing means compiling.
+        string optionsText = string.Join('\t', common);
+        string Stamp(Unit unit)
+        {
+            using SHA256 sha = SHA256.Create();
+            byte[] source = File.ReadAllBytes(unit.Source);
+            byte[] options = Encoding.UTF8.GetBytes(optionsText);
+            sha.TransformBlock(source, 0, source.Length, null, 0);
+            sha.TransformFinalBlock(options, 0, options.Length);
+            return Convert.ToHexString(sha.Hash!);
+        }
         int skipped = 0;
         bool Current(Unit unit)
         {
             if (!File.Exists(unit.Object) || !File.Exists(unit.Receipt)) return false;
-            try { return UnitDependencies.IsCurrent(unit.Receipt, index); }
+            try
+            {
+                string stampPath = unit.Receipt + ".stamp";
+                if (!File.Exists(stampPath) || File.ReadAllText(stampPath) != Stamp(unit)) return false;
+                return UnitDependencies.IsCurrent(unit.Receipt, index);
+            }
             catch (IOException) { return false; }
             catch (InvalidDataException) { return false; }
         }
@@ -96,6 +119,11 @@ public static class ProjectCompile
             long before = GC.GetTotalAllocatedBytes();
             int code = Driver.Compile(one.ToArray());
             long after = GC.GetTotalAllocatedBytes();
+            if (code == 0)
+            {
+                try { File.WriteAllText(unit.Receipt + ".stamp", Stamp(unit)); }
+                catch (IOException) { }
+            }
             lock (gate)
             {
                 done++;
