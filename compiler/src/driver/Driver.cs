@@ -31,6 +31,7 @@ public static class Driver
             return command switch
             {
                 "compile" or "cc" => Compile(rest),
+                "compile-project" => ProjectCompile.Run(rest),
                 "link" => ObjectLinkCommand.Run(Response(rest), new UnitBackend()),
                 "index" => IndexCommand.Run(Response(rest)),
                 "library-sources" => LibrarySources(rest),
@@ -164,7 +165,7 @@ public static class Driver
         return UnitDependencies.IsCurrent(args[0], args[1]) ? 0 : 1;
     }
 
-    private static int Fail(string message)
+    internal static int Fail(string message)
     {
         Console.Error.WriteLine($"corc: {message}");
         return 2;
@@ -185,7 +186,7 @@ public static class Driver
         return uint.TryParse(digits, System.Globalization.NumberStyles.HexNumber, null, out uint fallback) ? fallback : null;
     }
 
-    private static string? Value(string[] args, string name)
+    internal static string? Value(string[] args, string name)
     {
         int at = Array.IndexOf(args, name);
         return at >= 0 && at + 1 < args.Length ? args[at + 1] : null;
@@ -259,7 +260,7 @@ public static class Driver
     /// lines starting with # skipped, paths taken relative to the file that
     /// names them. A kernel is a hundred sources and a command line is not.
     /// </summary>
-    private static string[] Response(string[] args)
+    internal static string[] Response(string[] args)
     {
         if (!args.Any(a => a.StartsWith('@')))
         {
@@ -292,7 +293,10 @@ public static class Driver
         return out_.ToArray();
     }
 
-    private static int Compile(string[] argv)
+    /// <summary>The project session in force, when sources are compiled together.</summary>
+    internal static Corsac.Lang.Metadata.DeclarationSession? Session { get; set; }
+
+    internal static int Compile(string[] argv)
     {
         string[] args = Response(argv);
         int workers = 1;
@@ -471,6 +475,7 @@ public static class Driver
         if (Value(args, "--dependency-file") is not null && (declarationIndex is null || !args.Contains("--obj")))
             return Fail("--dependency-file requires indexed object compilation");
         using IndexedDeclarations? declarations = declarationIndex is null ? null
+            : Session is not null ? new IndexedDeclarations(Session, files)
             : new IndexedDeclarations(declarationIndex, Value(args, "--assembly")!, files);
         (CompilationUnit unit, BindResult bound)? front =
             Frontend.Compile(files, name, library, libraryMark, symbols, references, workers, declarations);

@@ -4,6 +4,7 @@ namespace Corsac.Lang.Metadata;
 public sealed class IndexedDeclarations : IDisposable
 {
     private readonly DeclarationCatalog catalog;
+    private readonly DeclarationSession? session;
     private readonly string assembly;
     private readonly HashSet<string> owned;
     private readonly HashSet<string> loaded = new(StringComparer.Ordinal);
@@ -11,7 +12,7 @@ public sealed class IndexedDeclarations : IDisposable
     private readonly HashSet<string> queries = new(StringComparer.Ordinal);
     private readonly HashSet<string> resolvedExtensions = new(StringComparer.Ordinal);
     public long PayloadLoads => catalog.PayloadLoads;
-    public SyntaxTokenCache Tokens { get; } = new();
+    public SyntaxTokenCache Tokens { get; }
     public int Passes { get; set; }
     public long ResidentDeclarationBytes => catalog.ResidentBytes;
     public IReadOnlyDictionary<(string Name, int Arity), int> Interfaces { get; }
@@ -21,12 +22,30 @@ public sealed class IndexedDeclarations : IDisposable
         long declarationBudgetBytes = 2 * 1024 * 1024)
     {
         catalog = new DeclarationCatalog(path, declarationBudgetBytes);
+        Tokens = new SyntaxTokenCache();
         this.assembly = assembly;
         Interfaces = catalog.Interfaces(assembly);
         LibraryInterfaces = catalog.LibraryInterfaces(assembly);
         // Interface slots are reserved over the project's compact family
         // table, even for declarations this unit never demand-loads. Adding
         // an earlier family can move every later slot: it is an ABI input.
+        queries.Add("I:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n");
+        owned = ownedFiles.Select(Path.GetFullPath).ToHashSet(StringComparer.Ordinal);
+    }
+
+    /// <summary>
+    /// One source of a project being compiled in a session: the index, the
+    /// lexed headers and the resolved names come from the session, and only
+    /// what THIS source required is recorded for its receipt.
+    /// </summary>
+    public IndexedDeclarations(DeclarationSession session, IEnumerable<string> ownedFiles)
+    {
+        this.session = session;
+        catalog = session.Catalog;
+        Tokens = session.Tokens;
+        assembly = session.Assembly;
+        Interfaces = session.Interfaces;
+        LibraryInterfaces = session.LibraryInterfaces;
         queries.Add("I:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n");
         owned = ownedFiles.Select(Path.GetFullPath).ToHashSet(StringComparer.Ordinal);
     }
@@ -80,7 +99,8 @@ public sealed class IndexedDeclarations : IDisposable
         // A type parameter is a name with no declaration anywhere; they are
         // numerous and every one of them would otherwise be a failed lookup.
         if (arity == 0 && name.Length <= 2 && char.IsUpper(name[0])) return null;
-        if (speculated.TryGetValue((name, arity), out string? memo)) return memo;
+        if (session is not null) { if (session.Speculated((name, arity), out string? shared)) return shared; }
+        else if (speculated.TryGetValue((name, arity), out string? memo)) return memo;
         string simple = arity > 0 ? name + "`" + arity : name;
         string? key;
         try
@@ -95,7 +115,8 @@ public sealed class IndexedDeclarations : IDisposable
             }
         }
         catch (InvalidDataException) { key = null; }
-        speculated[(name, arity)] = key;
+        if (session is not null) session.Speculate((name, arity), key);
+        else speculated[(name, arity)] = key;
         return key;
     }
 
@@ -232,7 +253,10 @@ public sealed class IndexedDeclarations : IDisposable
 
     public void Dispose()
     {
-        loaded.Clear(); Tokens.Clear(); catalog.Dispose();
+        loaded.Clear();
+        // A session owns its catalog and its lexed headers; the whole point is
+        // that the next source in the project finds them still there.
+        if (session is null) { Tokens.Clear(); catalog.Dispose(); }
     }
 
     public void WriteDependencies(string path) => UnitDependencies.Write(path, catalog, loaded, implementations, queries);
