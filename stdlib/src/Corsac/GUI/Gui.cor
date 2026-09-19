@@ -272,9 +272,22 @@ public class Seat : IDrawingTarget
     /// Is a message waiting? poll(2) on the seat: the kernel answers for
     /// the device and sleeps the caller until something arrives or the
     /// time is up. Nothing here spins or naps in steps.
+    /// The frame is finished: what has been drawn may go on the screen.
+    ///
+    /// The seat keeps drawing in the window's own surface and puts it up in
+    /// one piece when this arrives, so nothing is ever watched being drawn.
+    /// Waiting for events says the same thing, which is why Poll and WaitAny
+    /// send it too -- a program that only ever paints and waits needs no
+    /// call of its own.
+    public void Present()
+    {
+        Room(1); Word(13);                            // SeatOp.Present
+        Flush();
+    }
+
     public bool Poll(int timeoutMs)
     {
-        Flush();
+        Present();
         return Os.Poll(_fd, 1, timeoutMs) > 0;
     }
 
@@ -283,7 +296,7 @@ public class Seat : IDrawingTarget
     /// the timeout; the caller asks the seat, which is cheap).
     public int WaitAny(int[] others, int count, int timeoutMs)
     {
-        Flush();
+        Present();
         int[] fds = new int[count + 1];
         bool[] ready = new bool[count + 1];
         fds[0] = _fd;

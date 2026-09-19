@@ -483,7 +483,16 @@ public class Form : Control
     public Point ClientOffset() { return HasFrame ? new Point(BorderWidth, CaptionHeight + BorderWidth) : new Point(0, 0); }
 
     /// The close button, in window coordinates.
-    Rectangle CloseBox() { return new Rectangle(Width - BorderWidth - 18, BorderWidth + 2, 16, CaptionHeight - 6); }
+    /// Whether the caption carries the close box at all. A window that the
+    /// person is not meant to dismiss -- a login screen, say -- has none,
+    /// and there is then nothing to press and nothing to draw.
+    public bool ControlBox = true;
+
+    Rectangle CloseBox()
+    {
+        if (!ControlBox) return Rectangle.Empty;
+        return new Rectangle(Width - BorderWidth - 18, BorderWidth + 2, 16, CaptionHeight - 6);
+    }
 
     public override void SetBounds(int x, int y, int w, int h)
     {
@@ -631,6 +640,8 @@ public class Form : Control
             g.DrawString(Text, Font, new SolidBrush(title), cx + 6, cy + 2);
             g.DrawString(Text, Font, new SolidBrush(title), cx + 7, cy + 2);
             Rectangle close = CloseBox();
+            if (!close.IsEmpty)
+            {
             g.FillRectangle(new SolidBrush(face), close.X, close.Y, close.Width, close.Height);
             // Pressed in while the button is held over it, and the cross
             // moves a pixel with it: the button looks like what it is doing.
@@ -640,6 +651,7 @@ public class Form : Control
             int lx = close.X + 4 + press, ly = close.Y + 3 + press, rx = close.X + close.Width - 6 + press, ry = close.Y + close.Height - 5 + press;
             g.DrawLine(ink, lx, ly, rx, ry); g.DrawLine(ink, lx + 1, ly, rx + 1, ry);
             g.DrawLine(ink, lx, ry, rx, ly); g.DrawLine(ink, lx + 1, ry, rx + 1, ly);
+            }
         }
         Point co = ClientOffset();
         Rectangle client = new Rectangle(co.X, co.Y, ClientRectangle.Width, ClientRectangle.Height);
@@ -655,7 +667,8 @@ public class Form : Control
     /// on the screen behaves and how Windows behaves.
     void FrameMouse(int kind, int button, int x, int y, Point co)
     {
-        bool over = CloseBox().Contains(x, y);
+        Rectangle box = CloseBox();
+        bool over = !box.IsEmpty && box.Contains(x, y);
         if (kind == 4 && button == 1 && over) { _closeDown = true; _closeHot = true; FrameChanged(); return; }
         if (kind == 3 && _closeDown) { if (over != _closeHot) { _closeHot = over; FrameChanged(); } return; }
         if (kind == 5 && _closeDown)
@@ -1176,7 +1189,8 @@ public static class Application
     {
         for (int i = 0; i < _forms.Count; i++) _forms[i].PaintWindow(new Rectangle(0, 0, _forms[i].Width, _forms[i].Height), false);
         _paintPending = false;
-        Seat.Current.Flush();
+        // The frame is finished: the seat puts it up in one piece.
+        Seat.Current.Present();
     }
 
     public static void DoEvents()
@@ -1292,7 +1306,7 @@ public static class Application
             {
                 int x = m.A & 0xFFFF, y = (m.A >> 16) & 0xFFFF, w = m.B & 0xFFFF, h = (m.B >> 16) & 0xFFFF;
                 f!.PaintWindow(new Rectangle(x, y, w, h), true);
-                Seat.Current.Flush();
+                Seat.Current.Present();
                 break;
             }
             case 9:
