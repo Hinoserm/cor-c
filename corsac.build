@@ -1,8 +1,8 @@
 <Build FormatVersion="1" DefaultTargets="all">
   <PropertyGroup>
     <Configuration>Release</Configuration>
-    <Compiler>$(WorkspaceDirectory)/compiler/bin/$(Configuration)/net10.0/corc</Compiler>
-    <Linker>$(WorkspaceDirectory)/linker/bin/$(Configuration)/net10.0/corlink</Linker>
+    <Compiler>$(WorkspaceDirectory)/compiler/bin/managed/$(Configuration)/net10.0/corc</Compiler>
+    <Linker>$(WorkspaceDirectory)/linker/bin/managed/$(Configuration)/net10.0/corlink</Linker>
   </PropertyGroup>
   <Components>
     <Project Name="compiler" Path="compiler/corc.csproj" />
@@ -15,9 +15,9 @@
 
   <!-- The compiler's ProjectReference builds the linker dependency once. -->
   <Target Name="all" DependsOnTargets="libraries;build-tool" />
-  <Target Name="compiler"><Compile Project="compiler" /></Target>
-  <Target Name="linker"><Compile Project="linker" /></Target>
-  <Target Name="build-tool"><Compile Project="build-tool" /></Target>
+  <Target Name="compiler"><Compile Project="compiler" Toolchain="managed" /></Target>
+  <Target Name="linker"><Compile Project="linker" Toolchain="managed" /></Target>
+  <Target Name="build-tool"><Compile Project="build-tool" Toolchain="managed" /></Target>
   <Target Name="libraries" DependsOnTargets="compiler" Description="Build runtime and standard shared libraries">
     <Script Interpreter="bash" File="tests/integration/build-libraries.sh" Workers="auto">
       <Environment Name="CORC" Value="$(Compiler)" />

@@ -12,6 +12,13 @@ public static class Program
     public static async Task<int> Main()
     {
         Directory.CreateDirectory(Work);
+        Check("native AOT is the default with an explicit managed exclusion", () =>
+        {
+            Require(NativeAotBuild.Enabled(new Dictionary<string, string>()));
+            Require(NativeAotBuild.Enabled(new Dictionary<string, string> { ["PublishAot"] = "True" }));
+            Require(!NativeAotBuild.Enabled(new Dictionary<string, string> { ["PublishAot"] = "false" }));
+            ExpectError(() => NativeAotBuild.Enabled(new Dictionary<string, string> { ["PublishAot"] = "maybe" }), "must be true or false");
+        });
         Check("managed tools enable tiered JIT and PGO by default", () =>
         {
             var settings = ManagedRuntimeConfiguration.Create(new Dictionary<string, string>());

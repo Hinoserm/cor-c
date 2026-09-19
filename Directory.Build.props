@@ -3,5 +3,7 @@
     <TieredCompilation>true</TieredCompilation>
     <TieredPGO>true</TieredPGO>
     <Optimize Condition="'$(Configuration)' == 'Release'">true</Optimize>
+    <PublishAot Condition="'$(PublishAot)' == ''">true</PublishAot>
+    <IlcOptimizationPreference>Speed</IlcOptimizationPreference>
   </PropertyGroup>
 </Project>

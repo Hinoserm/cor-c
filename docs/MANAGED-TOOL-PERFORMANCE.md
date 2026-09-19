@@ -1,9 +1,16 @@
 # Managed tool execution and optimization
 
-The .NET-hosted compiler, linker and build utility are built as Release managed
-assemblies. Normal invocations execute the already-built assembly with
-`dotnet component.dll`; they do not use `dotnet run`. The portable executable
-name is currently a small launcher for that assembly.
+The compiler, linker and build utility are Release Native AOT executables by
+default on Linux x64 hosts. Roslyn produces intermediate managed assemblies;
+the owned build utility invokes ILC and the host linker directly, without
+MSBuild. Normal invocations execute native binaries, not `dotnet run` or
+`dotnet component.dll`. `bin/managed` denotes build provenance, not JIT execution.
+
+`bash tools/bootstrap-build` provisions the initial native build utility and
+matching AOT packs with the SDK, then uses the owned builder for updates and
+all other projects. Requires .NET 10, a host C linker and development libraries.
+Other publishing hosts currently fail explicitly; they can opt into JIT using
+the standard project property `PublishAot=false`. No silent fallback is used.
 
 CoreCLR JIT-compiles managed methods to host machine code. Tiered compilation
 and dynamic PGO are enabled for managed executable projects by the owned build
@@ -21,8 +28,8 @@ multiple GC workers can increase memory use and contention.
 
 An apphost executable is a native launcher but still uses CoreCLR and the JIT.
 ReadyToRun precompiles managed code to improve startup while retaining the JIT;
-Native AOT is a different deployment mode without runtime JIT. Neither is
-currently produced by the owned managed-project builder. Evaluate either with
+Native AOT is a different deployment mode without runtime JIT. It is now
+produced by the owned managed-project builder. Evaluate performance with
 real short-lived per-file compilation workloads, total build time and peak
 memory before making it the default. Changing a launcher filename does not
 remove JIT startup cost.
@@ -61,7 +68,11 @@ byte-identical generated executables and runs both allocation benchmarks.
 It records elapsed time, user/system CPU time and peak resident memory.
 Competing builds on the host can distort elapsed times. This fixture does not
 alone establish the speedup of a complete parallel kernel/userland build.
-Native AOT is not yet the default worker selected by the build utility.
+Native AOT is now the default worker selected by the build utility. Publishing
+uses content-aware receipts covering source-generated IL, references, AOT packs,
+compiler and native libraries. The executable is installed by atomic rename;
+active processes retain their old image. ILC threads share the build's worker
+budget. JIT exclusions retain a portable launcher and tiered-PGO settings.
 
 ### Initial Linux x64 measurements
 

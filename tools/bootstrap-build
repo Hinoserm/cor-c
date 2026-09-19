@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# MSBuild is used only for the initial build-tool seed and AOT pack provisioning.
+set -euo pipefail
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+tool="$root/tools/build/bin/managed/Release/net10.0/build"
+if [ ! -f "$tool" ] || [ "$(head -c 2 "$tool")" = '#!' ]; then
+    seed="$root/tools/build/bin/native-seed"
+    dotnet publish "$root/tools/build/build.csproj" -c Release -r linux-x64 \
+        -p:PublishAot=true -o "$seed" --nologo -v quiet >&2
+    "$seed/build" --file "$root/tools/build/host.build" >&2
+else
+    "$tool" --file "$root/tools/build/host.build" >&2
+fi
+exec "$tool" "$@"

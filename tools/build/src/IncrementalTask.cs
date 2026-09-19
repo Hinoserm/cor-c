@@ -105,6 +105,6 @@ public sealed class IncrementalTask
             records.Add(file.LastWriteTimeUtc.Ticks.ToString());
             records.Add(file.Length.ToString());
         }
-        return JsonSerializer.Serialize(records);
+        return new System.Text.Json.Nodes.JsonArray(records.Select(value => (System.Text.Json.Nodes.JsonNode?)System.Text.Json.Nodes.JsonValue.Create(value)).ToArray()).ToJsonString();
     }
 }

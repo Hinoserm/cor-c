@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.Json;
+using System.Text.Json.Nodes;
 using Corsac.Projects;
 
 namespace Corsac.Build;
@@ -95,7 +95,8 @@ public static class ManagedProjectBuild
             }
             if (project.OutputType != "Library")
             {
-                if (!OperatingSystem.IsWindows())
+                bool nativeAot = NativeAotBuild.Enabled(project.Properties);
+                if (!nativeAot && !OperatingSystem.IsWindows())
                 {
                     string launcher = Path.Combine(output, project.AssemblyName);
                     if (project.AssemblyName.Any(c => !char.IsLetterOrDigit(c) && c is not ('.' or '-' or '_')))
@@ -105,11 +106,15 @@ public static class ManagedProjectBuild
                         | UnixFileMode.GroupRead | UnixFileMode.GroupExecute | UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
                 }
                 string version = project.Framework[3..] + ".0";
-                WriteChanged(Path.Combine(output, project.AssemblyName + ".runtimeconfig.json"), JsonSerializer.Serialize(new
-                {
-                    runtimeOptions = new { tfm = project.Framework, framework = new { name = "Microsoft.NETCore.App", version },
-                        configProperties = ManagedRuntimeConfiguration.Create(project.Properties) }
-                }));
+                JsonObject switches = new();
+                foreach (var pair in ManagedRuntimeConfiguration.Create(project.Properties)) switches[pair.Key] = (bool)pair.Value;
+                WriteChanged(Path.Combine(output, project.AssemblyName + ".runtimeconfig.json"), new JsonObject {
+                    ["runtimeOptions"] = new JsonObject { ["tfm"] = project.Framework,
+                        ["framework"] = new JsonObject { ["name"] = "Microsoft.NETCore.App", ["version"] = version },
+                        ["configProperties"] = switches }
+                }.ToJsonString());
+                if (nativeAot) await NativeAotBuild.Run(project, dll, work,
+                    closure.Order(StringComparer.Ordinal).Select(reference => outputs[reference]), runner, cancel);
             }
         }
     }

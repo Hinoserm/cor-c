@@ -19,12 +19,16 @@ The design and current implementation limits are documented in
 [BUILD-SYSTEM.md](docs/BUILD-SYSTEM.md). Build the host runner with:
 
 ```sh
-dotnet build tools/build/build.csproj -c Release
-tools/build/bin/Release/net10.0/build --list
-tools/build/bin/Release/net10.0/build --plan
+bash tools/bootstrap-build --list
+bash tools/bootstrap-build --plan
+bash tools/bootstrap-build compiler
 ```
 
-The independent linker is `linker/bin/Release/net10.0/corlink`. The compiler
+Host executables use Native AOT by default on Linux x64, including the compiler,
+linker, and build utility. The `bin/managed` directory identifies their Roslyn
+build provenance; its executable files are native ELF binaries, not JIT launchers.
+Set the standard project property `PublishAot=false` for an explicit JIT build.
+The independent linker is `linker/bin/managed/Release/net10.0/corlink`. The compiler
 emits ELF relocatable `.o` files with `--obj`; see
 [OBJECT-FORMAT.md](docs/OBJECT-FORMAT.md). Native bootstrap activation
 is not implemented yet; the runner never silently substitutes the host compiler.
