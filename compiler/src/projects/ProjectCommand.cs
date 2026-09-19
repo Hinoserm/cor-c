@@ -7,6 +7,18 @@ namespace Corsac.Projects;
 /// <summary>One compiler process, bounded source units, indexed references and a separate link.</summary>
 public static class ProjectCommand
 {
+    // A native single-file image contains both compiler and linker assemblies.
+    // Hash that image instead of nonexistent embedded assembly paths.
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("SingleFile", "IL3000",
+        Justification = "Empty embedded assembly locations use the native process image.")]
+    private static string ToolIdentity(System.Reflection.Assembly assembly)
+    {
+        string path = assembly.Location;
+        if (path.Length == 0)
+            path = Environment.ProcessPath ?? throw new InvalidOperationException("Cannot locate the native compiler image");
+        return ProjectState.FileIdentity(path);
+    }
+
     public static int Run(string[] arguments)
     {
         string? path = null, output = null, framework = null;
@@ -77,8 +89,7 @@ public static class ProjectCommand
         SourceIndexBuilder.Write(index, owners.Keys, project.AssemblyName, fileSymbols: symbols);
         string[] libraries = Driver.DefaultLibraries(Target.X86).ToArray();
         if (libraries.Length == 0) throw new InvalidDataException("The native runtime sources were not found");
-        string compiler = typeof(Driver).Assembly.Location;
-        string toolchain = ProjectState.Digest(ProjectState.FileIdentity(compiler) + "\n" + ProjectState.FileIdentity(typeof(ObjectLinkCommand).Assembly.Location));
+        string toolchain = ProjectState.Digest(ToolIdentity(typeof(Driver).Assembly) + "\n" + ToolIdentity(typeof(ObjectLinkCommand).Assembly));
         string libraryState = ProjectState.Digest(string.Join("\n", libraries.Select(ProjectState.FileIdentity)));
         using DeclarationCatalog catalog = new(index);
         string interfaces = string.Join("\n", catalog.Interfaces(project.AssemblyName).OrderBy(pair => pair.Key.Name, StringComparer.Ordinal)
