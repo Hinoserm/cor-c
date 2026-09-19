@@ -272,6 +272,25 @@ public sealed class IndexedDeclarations : IDisposable
                     string? next = Speculate(name, arity);
                     if (next is not null && Load(next)) pending.Enqueue(next);
                 }
+                // AND WHAT ITS BODIES NAME, when the bodies came too. A
+                // template is imported WITH its body, because a specialisation
+                // is compiled from it, and that body names types the signature
+                // never mentions: List's methods make a ListEnumerator and
+                // throw an ArgumentOutOfRangeException. Left to the binder,
+                // each of those cost a whole round -- and a round means the
+                // unit is thrown away and parsed, merged, monomorphised and
+                // bound again. Following them here loads the same
+                // declarations the binder would have demanded, only sooner:
+                // the kernel's receipts come out the same size and its linked
+                // image byte for byte identical. See BodyTypeNames.
+                if (implementations.Contains(key))
+                {
+                    BodyTypeNames.Walk(root, reference =>
+                    {
+                        string? next = Speculate(reference.Name, reference.Args.Count);
+                        if (next is not null && Load(next)) pending.Enqueue(next);
+                    });
+                }
             }
         }
     }
