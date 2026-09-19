@@ -80,12 +80,17 @@ public static class ProjectCompile
         // receipt stayed current and the old object was kept, build after
         // build. The stamp beside the receipt is the source's bytes and the
         // options it was compiled with; either changing means compiling.
-        string optionsText = string.Join('\t', common);
+        // The unit's own role is part of it: the entry unit of a library is
+        // compiled with the initialiser on and the rest with it off, and an
+        // object made the other way round is not current. "2" is the stamp's
+        // own version, so a stamp written before the role was included is
+        // never trusted.
+        string optionsText = "2\t" + string.Join('\t', common);
         string Stamp(Unit unit)
         {
             using SHA256 sha = SHA256.Create();
             byte[] source = File.ReadAllBytes(unit.Source);
-            byte[] options = Encoding.UTF8.GetBytes(optionsText);
+            byte[] options = Encoding.UTF8.GetBytes(optionsText + (unit.Entry ? "\tentry" : "\tlib"));
             sha.TransformBlock(source, 0, source.Length, null, 0);
             sha.TransformFinalBlock(options, 0, options.Length);
             return Convert.ToHexString(sha.Hash!);
