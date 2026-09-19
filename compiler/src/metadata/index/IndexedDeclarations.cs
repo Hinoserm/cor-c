@@ -20,6 +20,10 @@ public sealed class IndexedDeclarations : IDisposable
         catalog = new DeclarationCatalog(path, declarationBudgetBytes);
         this.assembly = assembly;
         Interfaces = catalog.Interfaces(assembly);
+        // Interface slots are reserved over the project's compact family
+        // table, even for declarations this unit never demand-loads. Adding
+        // an earlier family can move every later slot: it is an ABI input.
+        queries.Add("I:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n");
         owned = ownedFiles.Select(Path.GetFullPath).ToHashSet(StringComparer.Ordinal);
     }
 

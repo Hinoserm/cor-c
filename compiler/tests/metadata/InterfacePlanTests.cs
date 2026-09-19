@@ -23,6 +23,21 @@ public static class InterfacePlanTests
         int firstSlot = first.Types["Owner"].FindMethods("Local").Single().VtableSlot;
         int secondSlot = second.Types["Owner"].FindMethods("Local").Single().VtableSlot;
         Require(firstSlot == secondSlot && firstSlot >= 7, "subset-dependent virtual slots");
+        string receipt = Path.Combine(work, "interface-plan.deps");
+        using (IndexedDeclarations unit = new(path, "Plan", new[] { source })) unit.WriteDependencies(receipt);
+        Require(UnitDependencies.IsCurrent(receipt, path), "new interface-plan receipt is stale");
+        string changed = Path.Combine(work, "interfaces-changed.idx");
+        File.WriteAllText(source, used + other + "class Unrelated { int Value() => 42; }");
+        SourceIndexBuilder.Write(changed, new[] { source }, "Plan");
+        Require(UnitDependencies.IsCurrent(receipt, changed), "unrelated class invalidated interface plan");
+        string added = Path.Combine(work, "interfaces-added.idx");
+        File.WriteAllText(source, used + other + "namespace A { interface IBefore { void Added(); } }");
+        SourceIndexBuilder.Write(added, new[] { source }, "Plan");
+        Require(!UnitDependencies.IsCurrent(receipt, added), "new interface family did not invalidate slot users");
+        string expanded = Path.Combine(work, "interfaces-expanded.idx");
+        File.WriteAllText(source, used.Replace("int Get();", "int Get(); int Extra();") + other);
+        SourceIndexBuilder.Write(expanded, new[] { source }, "Plan");
+        Require(!UnitDependencies.IsCurrent(receipt, expanded), "new interface member did not invalidate slot users");
         Console.WriteLine("  interface reservations: declaration-free planning and subset-independent slots passed");
     }
 

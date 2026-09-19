@@ -73,8 +73,12 @@ public sealed class DeclarationCatalog : IDisposable
             if (disposed) throw new ObjectDisposedException(nameof(DeclarationCatalog));
             using MemoryStream stream = new();
             using BinaryWriter writer = new(stream);
-            foreach (DeclarationRecord record in index.Find(key))
-            { writer.Write(record.Payload.Length); writer.Write(record.Payload); }
+            bool interfacePlan = key.StartsWith("I:", StringComparison.Ordinal) && key.EndsWith('\n');
+            foreach (DeclarationRecord record in interfacePlan ? index.WithPrefix(key) : index.Find(key))
+            {
+                if (interfacePlan) writer.Write(record.Key);
+                writer.Write(record.Payload.Length); writer.Write(record.Payload);
+            }
             return System.Security.Cryptography.SHA256.HashData(stream.ToArray());
         }
     }
