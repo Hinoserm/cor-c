@@ -5,6 +5,7 @@
 // caught theirs DivideByZeroException
 // finally ran 3
 // rethrown mine
+// caught shared I/O
 //
 // AN EXCEPTION CROSSES THE BOUNDARY IN BOTH DIRECTIONS. The handler chain is
 // a per-thread list whose head is in the runtime's thread block, so a program
@@ -78,6 +79,20 @@ static class Program
         {
             Console.WriteLine("finally ran " + _finally);
             Console.WriteLine("rethrown " + e.Message);
+        }
+
+        // A library throw crosses object/GOT boundaries, then the catch calls
+        // another shared library. The landing pad must not reuse the throwing
+        // frame's register contents as its own global lookup base.
+        try
+        {
+            using (System.IO.FileStream input = System.IO.File.OpenRead(
+                "/__corsac_missing_exception_fixture__/input"))
+                Console.WriteLine("unexpected file");
+        }
+        catch (System.IO.IOException)
+        {
+            Console.WriteLine("caught shared I/O");
         }
     }
 }

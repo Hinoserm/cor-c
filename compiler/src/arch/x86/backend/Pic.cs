@@ -82,6 +82,21 @@ internal static class Pic
         MBlock entry = m.Blocks[0];
         int at = entry.Instrs.Count > 0 && entry.Instrs[0].Op == MOp.Prologue ? 1 : 0;
         entry.Instrs.Insert(at, new MInstr(MOp.GotPc, got));
+
+        // Unwind restores ESP/EBP and passes the exception in EAX; other
+        // registers belong to the throwing frame. A landing pad is another
+        // entry, not a path dominated by the normal prologue. Reconstruct
+        // this object's GOT after preserving the incoming exception value.
+        foreach (MBlock block in m.Blocks)
+        {
+            if (block.Source?.IsLandingPad != true) continue;
+            int insert = block.Instrs.Count > 0
+                && block.Instrs[0].Op == MOp.Mov
+                && block.Instrs[0].Operands.Count == 2
+                && block.Instrs[0].Operands[1] is MReg source
+                && source.Id == (int)Gpr.Eax ? 1 : 0;
+            block.Instrs.Insert(insert, new MInstr(MOp.GotPc, got));
+        }
     }
 
     private static void RewriteInstr(
