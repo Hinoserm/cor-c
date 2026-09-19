@@ -527,12 +527,17 @@ public class Control
     public Size ClientSize { get { return new Size(ClientRectangle.Width, ClientRectangle.Height); } set { SetBounds(_x, _y, value.Width + (_width - ClientRectangle.Width), value.Height + (_height - ClientRectangle.Height)); } }
     public bool Focused { get { return Application.FocusedControl == this; } }
 
+    public event EventHandler? Resize;
+    protected virtual void OnResize(EventArgs e) { if (Resize != null) Resize(this, e); }
+
     public virtual void SetBounds(int x, int y, int w, int h)
     {
         Rectangle old = Bounds;
+        bool resized = w != _width || h != _height;
         _x = x; _y = y; _width = w; _height = h;
         if (_parent != null) { _parent.Invalidate(old); _parent.Invalidate(Bounds); }
         Invalidate();
+        if (resized) OnResize(EventArgs.Empty);
     }
 
     /// The form this control lives on, which is the window the seat knows.
@@ -741,9 +746,25 @@ public class Form : Control
 
     public override void SetBounds(int x, int y, int w, int h)
     {
+        bool moved = x != Left || y != Top, resized = w != Width || h != Height;
         base.SetBounds(x, y, w, h);
-        if (_handle != 0) { Seat.Current.MoveWindow(_handle, x, y); }
+        if (_handle != 0 && resized) Seat.Current.ResizeWindow(_handle, w, h);
+        if (_handle != 0 && moved) Seat.Current.MoveWindow(_handle, x, y);
     }
+
+    /// The edges a press on a sizable frame takes hold of: 1 left, 2 right,
+    /// 4 top, 8 bottom; a corner is two of them. The band is the border
+    /// plus a couple of pixels, which is what a hand finds.
+    int ResizeEdges(int x, int y)
+    {
+        if (FormBorderStyle != FormBorderStyle.Sizable) return 0;
+        const int Band = BorderWidth + 2;
+        int edges = 0;
+        if (x < Band) edges |= 1; else if (x >= Width - Band) edges |= 2;
+        if (y < Band) edges |= 4; else if (y >= Height - Band) edges |= 8;
+        return edges;
+    }
+    public const int MinimumWidth = 120, MinimumHeight = 60;
 
     public new void Show()
     {
@@ -856,10 +877,15 @@ public class Form : Control
     internal void WindowMouse(int kind, int button, int x, int y)
     {
         Point co = ClientOffset();
-        if (HasFrame && y < co.Y)
+        if (HasFrame && kind == 4 && button == 1)
+        {
+            int edges = ResizeEdges(x, y);
+            if (edges != 0) { Application.BeginResize(this, edges, x, y); return; }
+        }
+        if (HasFrame && (y < co.Y || x < co.X || x >= co.X + ClientRectangle.Width || y >= co.Y + ClientRectangle.Height))
         {
             if (kind == 4 && button == 1 && CloseBox().Contains(x, y)) { Close(); return; }
-            if (kind == 4 && button == 1) { Application.BeginDrag(this, x, y); }
+            if (kind == 4 && button == 1 && y < co.Y) { Application.BeginDrag(this, x, y); }
             return;
         }
         int cx = x - co.X, cy = y - co.Y;
@@ -1215,6 +1241,32 @@ public static class Application
     static int _dragX, _dragY;
     static bool _dragPending;
     static int _dragToX, _dragToY;
+    static int _resizeEdges;                // 0 while dragging; edges while resizing (see Form.ResizeEdges)
+    static Rectangle _resizeFrom;           // the window's bounds at the press
+    static int _resizeSX, _resizeSY;        // where on the screen the press was
+    static int _dragToW, _dragToH;
+
+    /// A press on a sizable edge: the bounds follow the pointer, applied
+    /// on release only, since every size is a new surface in the seat.
+    internal static void BeginResize(Form f, int edges, int x, int y)
+    {
+        _dragging = f; _resizeEdges = edges; _resizeFrom = f.Bounds;
+        _resizeSX = f.Left + x; _resizeSY = f.Top + y;
+    }
+
+    static void ResizeTo(int sx, int sy)
+    {
+        if (_dragging == null) return;
+        int dx = sx - _resizeSX, dy = sy - _resizeSY;
+        int x = _resizeFrom.X, y = _resizeFrom.Y, w = _resizeFrom.Width, h = _resizeFrom.Height;
+        if ((_resizeEdges & 1) != 0) { x += dx; w -= dx; }
+        if ((_resizeEdges & 2) != 0) { w += dx; }
+        if ((_resizeEdges & 4) != 0) { y += dy; h -= dy; }
+        if ((_resizeEdges & 8) != 0) { h += dy; }
+        if (w < Form.MinimumWidth) { if ((_resizeEdges & 1) != 0) x -= Form.MinimumWidth - w; w = Form.MinimumWidth; }
+        if (h < Form.MinimumHeight) { if ((_resizeEdges & 4) != 0) y -= Form.MinimumHeight - h; h = Form.MinimumHeight; }
+        _dragToX = x; _dragToY = y; _dragToW = w; _dragToH = h; _dragPending = true;
+    }
     static int _sinceDrag;                  // messages since the window last moved: bounded, or a busy tablet never lets it
 
     /// The drag's latest position is applied once the queue is quiet, not
@@ -1226,7 +1278,8 @@ public static class Application
         if (!_dragPending || _dragging == null) { _dragPending = false; return; }
         _dragPending = false;
         _sinceDrag = 0;
-        _dragging.SetBounds(_dragToX, _dragToY, _dragging.Width, _dragging.Height);
+        if (_resizeEdges != 0) _dragging.SetBounds(_dragToX, _dragToY, _dragToW, _dragToH);
+        else _dragging.SetBounds(_dragToX, _dragToY, _dragging.Width, _dragging.Height);
     }
     static bool _paintPending;
     static List<int> _watchFds = new List<int>();
@@ -1298,7 +1351,7 @@ public static class Application
         Seat seat = Seat.Current;
         while (_running && _forms.Count > 0)
         {
-            if (_dragPending && (!seat.Poll(0) || _sinceDrag >= 3)) SettleDrag();
+            if (_dragPending && _resizeEdges == 0 && (!seat.Poll(0) || _sinceDrag >= 3)) SettleDrag();
             if (_paintPending) PaintNow();
             if (Idle != null) Idle(null!, EventArgs.Empty);
             int wait = TimerWait();
@@ -1362,6 +1415,7 @@ public static class Application
             {
                 int wx = Seat.LowSigned(m.A), wy = Seat.HighSigned(m.A);
                 int sx = Seat.LowSigned(m.B), sy = Seat.HighSigned(m.B);
+                if (_dragging != null && _resizeEdges != 0) { ResizeTo(sx, sy); break; }     // applied on release
                 if (_dragging != null) { _dragToX = sx - _dragX; _dragToY = sy - _dragY; _dragPending = true; _sinceDrag++; break; }
                 f!.WindowMouse(3, 0, wx, wy); break;
             }
@@ -1370,7 +1424,7 @@ public static class Application
                 f!.WindowMouse(4, m.A, m.B & 0xFFFF, (m.B >> 16) & 0xFFFF); break;
             case 5:
                 SettleDrag();
-                _dragging = null;
+                _dragging = null; _resizeEdges = 0;
                 f!.WindowMouse(5, m.A, m.B & 0xFFFF, (m.B >> 16) & 0xFFFF); break;
             case 8:
             {
