@@ -132,20 +132,41 @@ public sealed class DeclarationCatalog : IDisposable
         }
     }
 
+    /// <summary>
+    /// What a binding name resolves to, remembered for the life of the
+    /// catalog.
+    ///
+    /// The binder asks this for EVERY name it resolves, and the answer is a
+    /// binary search over the index file under the catalog's one lock. With
+    /// eight workers, seven of them sat in Monitor.Enter here in every stack
+    /// sample taken: the whole frontend was serialised on name lookups, and
+    /// eight workers finished the kernel no sooner than one. The index does
+    /// not change while a catalog is open, so an answer is an answer for
+    /// good; a hit takes a hash lookup under a lock nobody holds for long.
+    /// </summary>
+    private readonly Dictionary<string, string?> bindingKeys = new(StringComparer.Ordinal);
+    private readonly object bindingGate = new();
+
     public string? BindingKey(string assembly, string bindingName)
     {
+        string query = "B:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + bindingName;
+        lock (bindingGate)
+        {
+            if (bindingKeys.TryGetValue(query, out string? known)) return known;
+        }
+        string? result = null;
         lock (gate)
         {
             if (disposed) throw new ObjectDisposedException(nameof(DeclarationCatalog));
-            string? result = null;
-            foreach (DeclarationRecord record in index.Find("B:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + bindingName))
+            foreach (DeclarationRecord record in index.Find(query))
             {
                 string found = DeclarationIndex.Utf8.GetString(record.Payload);
                 if (result is not null && result != found) throw new InvalidDataException("Ambiguous indexed type identity: " + bindingName);
                 result = found;
             }
-            return result;
         }
+        lock (bindingGate) bindingKeys[query] = result;
+        return result;
     }
 
     public byte[] QueryFingerprint(string key)

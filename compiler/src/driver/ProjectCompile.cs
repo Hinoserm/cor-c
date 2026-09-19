@@ -130,17 +130,41 @@ public static class ProjectCompile
         foreach (Unit unit in units.Where(unit => unit.Entry))
             if (Gated(unit) != 0) failures++;
 
-        Unit[] rest = units.Where(unit => !unit.Entry).ToArray();
-        if (limit <= 1 || rest.Length <= 1)
+        // THE REST RUN ON THEIR OWN THREADS, BIGGEST SOURCE FIRST. Parallel
+        // .ForEach leaned on the thread pool, which adds threads a few at a
+        // time as it decides they are wanted, so an eight-worker compile spent
+        // its first seconds with two or three of them and stack samples showed
+        // the rest not blocked but simply absent. And it handed out sources in
+        // list order, so the source that takes longest could be the last one
+        // started and then run alone: 116 of the kernel's 118 units were done
+        // at thirteen seconds and one ran on its own to nineteen. Threads made
+        // here are all present from the start, and taking the largest sources
+        // first is the usual answer to a long tail -- the small ones fill in
+        // behind whatever is still running.
+        Unit[] rest = units.Where(unit => !unit.Entry)
+            .OrderByDescending(unit => { try { return new FileInfo(unit.Source).Length; } catch (IOException) { return 0L; } })
+            .ThenBy(unit => unit.Source, StringComparer.Ordinal).ToArray();
+        int next = -1;
+        void Worker()
         {
-            foreach (Unit unit in rest) if (Gated(unit) != 0) failures++;
+            while (true)
+            {
+                int i = Interlocked.Increment(ref next);
+                if (i >= rest.Length) return;
+                if (Gated(rest[i]) != 0) Interlocked.Increment(ref failures);
+            }
         }
+        int threads = Math.Min(limit, rest.Length);
+        if (threads <= 1) Worker();
         else
         {
-            Parallel.ForEach(rest, new ParallelOptions { MaxDegreeOfParallelism = limit }, unit =>
+            Thread[] running = new Thread[threads];
+            for (int worker = 0; worker < threads; worker++)
             {
-                if (Gated(unit) != 0) Interlocked.Increment(ref failures);
-            });
+                running[worker] = new Thread(Worker, 16 * 1024 * 1024) { IsBackground = true, Name = "compile-" + worker };
+                running[worker].Start();
+            }
+            foreach (Thread thread in running) thread.Join();
         }
 
         Driver.Session = null;

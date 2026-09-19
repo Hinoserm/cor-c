@@ -9310,63 +9310,86 @@ public sealed partial class Binder
 
     private HashSet<string> OutPathsWhen(Expr expression, bool holds)
     {
+        (HashSet<string> whenTrue, HashSet<string> whenFalse) = OutPaths(expression);
+        return holds ? whenTrue : whenFalse;
+    }
+
+    /// <summary>
+    /// The `out` paths a condition proves assigned on each of its outcomes,
+    /// BOTH outcomes from ONE walk.
+    ///
+    /// Asking for one outcome at a time recursed into the left of every
+    /// `&amp;&amp;` and `||` twice -- once for true, once for false -- and a
+    /// condition written `a &amp;&amp; b &amp;&amp; c &amp;&amp; ...` nests to
+    /// the LEFT, so the left operand is the deep one. That doubled at every
+    /// level: two to the power of the chain's length. A two-hundred-line
+    /// kernel source with long guard chains allocated thirty-four gigabytes
+    /// binding, more than every other kernel source together, and ran alone
+    /// for the last third of a parallel build because nothing else was left.
+    ///
+    /// The sets returned are fresh; nothing handed back is shared with a
+    /// child's result, so a caller may take what it is given and change it.
+    /// </summary>
+    private (HashSet<string> WhenTrue, HashSet<string> WhenFalse) OutPaths(Expr expression)
+    {
+        HashSet<string> Empty() => new(StringComparer.Ordinal);
+
         if (expression is CallExpr call && _r.Calls.TryGetValue(call, out MethodSymbol? method)
-            && method.Returns.Prim == Prim.Bool && holds)
+            && method.Returns.Prim == Prim.Bool)
         {
-            HashSet<string> result = new(StringComparer.Ordinal);
+            HashSet<string> proved = Empty();
             foreach (Expr argument in call.Args)
             {
                 if (argument is RefArgExpr { IsOut: true } output
                     && Path(output.Target) is string path)
                 {
-                    result.Add(path);
+                    proved.Add(path);
                 }
             }
-            return result;
+            return (proved, Empty());
         }
 
         if (expression is UnaryExpr { Op: UnOp.Not } negated)
         {
-            return OutPathsWhen(negated.Operand, !holds);
+            (HashSet<string> whenTrue, HashSet<string> whenFalse) = OutPaths(negated.Operand);
+            return (whenFalse, whenTrue);
         }
 
         if (expression is BinaryExpr { Op: BinOp.AndAlso } andExpr)
         {
-            HashSet<string> leftTrue = OutPathsWhen(andExpr.Left, true);
-            HashSet<string> leftFalse = OutPathsWhen(andExpr.Left, false);
-            HashSet<string> right = OutPathsWhen(andExpr.Right, holds);
+            (HashSet<string> leftTrue, HashSet<string> leftFalse) = OutPaths(andExpr.Left);
+            (HashSet<string> rightTrue, HashSet<string> rightFalse) = OutPaths(andExpr.Right);
 
-            if (holds)
-            {
-                leftTrue.UnionWith(right);
-                return leftTrue;
-            }
+            // True is left-true and right-true.
+            HashSet<string> whenTrue = new(leftTrue, StringComparer.Ordinal);
+            whenTrue.UnionWith(rightTrue);
 
-            // false is either left-false, or left-true/right-false.
-            leftTrue.UnionWith(right);
-            leftFalse.IntersectWith(leftTrue);
-            return leftFalse;
+            // False is either left-false, or left-true/right-false.
+            HashSet<string> viaRight = new(leftTrue, StringComparer.Ordinal);
+            viaRight.UnionWith(rightFalse);
+            HashSet<string> whenFalse = new(leftFalse, StringComparer.Ordinal);
+            whenFalse.IntersectWith(viaRight);
+            return (whenTrue, whenFalse);
         }
 
         if (expression is BinaryExpr { Op: BinOp.OrElse } orExpr)
         {
-            HashSet<string> leftTrue = OutPathsWhen(orExpr.Left, true);
-            HashSet<string> leftFalse = OutPathsWhen(orExpr.Left, false);
-            HashSet<string> right = OutPathsWhen(orExpr.Right, holds);
+            (HashSet<string> leftTrue, HashSet<string> leftFalse) = OutPaths(orExpr.Left);
+            (HashSet<string> rightTrue, HashSet<string> rightFalse) = OutPaths(orExpr.Right);
 
-            if (!holds)
-            {
-                leftFalse.UnionWith(right);
-                return leftFalse;
-            }
+            // False is left-false and right-false.
+            HashSet<string> whenFalse = new(leftFalse, StringComparer.Ordinal);
+            whenFalse.UnionWith(rightFalse);
 
-            // true is either left-true, or left-false/right-true.
-            leftFalse.UnionWith(right);
-            leftTrue.IntersectWith(leftFalse);
-            return leftTrue;
+            // True is either left-true, or left-false/right-true.
+            HashSet<string> viaRight = new(leftFalse, StringComparer.Ordinal);
+            viaRight.UnionWith(rightTrue);
+            HashSet<string> whenTrue = new(leftTrue, StringComparer.Ordinal);
+            whenTrue.IntersectWith(viaRight);
+            return (whenTrue, whenFalse);
         }
 
-        return new HashSet<string>(StringComparer.Ordinal);
+        return (Empty(), Empty());
     }
 
     private void Forget(List<Sym> added)
