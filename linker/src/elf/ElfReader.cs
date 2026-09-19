@@ -91,7 +91,12 @@ public static class ElfReader
     /// moment earlier and section headers are the simpler road to the same
     /// table.
     /// </summary>
-    public static List<string> ExportsOf(byte[] bytes)
+    public static List<string> ExportsOf(byte[] bytes) => DynamicNames(bytes, defined: true);
+
+    /// <summary>Names the dynamic loader must resolve from other images.</summary>
+    public static List<string> ImportsOf(byte[] bytes) => DynamicNames(bytes, defined: false);
+
+    private static List<string> DynamicNames(byte[] bytes, bool defined)
     {
         ArgumentNullException.ThrowIfNull(bytes);
         ReadOnlySpan<byte> f = bytes;
@@ -134,7 +139,7 @@ public static class ElfReader
         for (uint at = dynsym.Value.Offset; at + Elf.SymbolSize <= dynsym.Value.Offset + dynsym.Value.Size; at += (uint)Elf.SymbolSize)
         {
             SymbolEntry e = SymbolEntry.Read(f[(int)at..]);
-            if (e.Shndx == Elf.ShnUndef || e.Name == 0)
+            if ((e.Shndx != Elf.ShnUndef) != defined || e.Name == 0)
             {
                 continue;
             }

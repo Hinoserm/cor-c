@@ -8,7 +8,7 @@ mkdir -p build
 work=$(mktemp -d "$root/build/separate-dynamic.XXXXXX")
 "$corc" compile --nostdlib --shared --obj tests/integration/ir-lto/Compute.cor -o "$work/compute.o"
 "$corc" compile --nostdlib --shared --obj --no-shared-init tests/integration/ir-lto/SharedData.cor -o "$work/shared-data.o"
-"$corlink" "$work/compute.o" "$work/shared-data.o" --shared -o "$work/libCompute.so"
+"$corlink" "$work/compute.o" "$work/shared-data.o" --shared --no-undefined -o "$work/libCompute.so"
 readelf -h "$work/compute.o" > "$work/object.header"
 grep -q 'REL (Relocatable file)' "$work/object.header"
 readelf -d "$work/libCompute.so" > "$work/library.dynamic"
@@ -25,6 +25,12 @@ fi
 test ! -e "$work/invalid.so"
 "$corc" compile --nostdlib --obj tests/integration/ir-lto/Caller.cor \
     --ref tests/integration/ir-lto/Compute.cor --link-shared "$work/libCompute.so" -o "$work/caller.o"
+if "$corlink" "$work/caller.o" --shared --no-undefined -o "$work/missing.so" > "$work/missing.log" 2>&1; then
+    echo 'FAIL unresolved shared-library dependency accepted' >&2
+    exit 1
+fi
+grep -q 'unresolved shared-library imports' "$work/missing.log"
+test ! -e "$work/missing.so"
 for mode in lto native; do
     if [ "$mode" = native ]; then set -- --no-lto; else set --; fi
     "$corlink" "$work/caller.o" --link-shared "$work/libCompute.so" --runpath "$work" "$@" -o "$work/$mode"

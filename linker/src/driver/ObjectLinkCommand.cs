@@ -17,6 +17,7 @@ public static class ObjectLinkCommand
         uint? physicalAddress = null;
         bool flat = false;
         bool shared = false;
+        bool noUndefined = false;
         bool lto = true;
         string? backendPath = null;
         int importBytes = 1024 * 1024;
@@ -64,6 +65,7 @@ public static class ObjectLinkCommand
             }
             else if (arg == "--flat") flat = true;
             else if (arg == "--shared") shared = true;
+            else if (arg == "--no-undefined") noUndefined = true;
             else if (arg == "--no-lto") lto = false;
             else if (arg == "--lto") lto = true;
             else if (arg.StartsWith("-", StringComparison.Ordinal))
@@ -120,6 +122,12 @@ public static class ObjectLinkCommand
                 : Linker.Link(inputs, entry, needed, runpath);
         }
         else image = Linker.Link(inputs, entry, baseAddress ?? Linker.DefaultLoadAddress, physicalAddress);
+        if (noUndefined && (shared || sharedLibraries.Count > 0))
+        {
+            HashSet<string> provided = new(sharedLibraries.SelectMany(path => ElfReader.ExportsOf(File.ReadAllBytes(path))), StringComparer.Ordinal);
+            string[] missing = ElfReader.ImportsOf(image).Where(name => !provided.Contains(name)).Order(StringComparer.Ordinal).ToArray();
+            if (missing.Length != 0) return Fail("unresolved shared-library imports: " + string.Join(", ", missing));
+        }
         File.WriteAllBytes(output, image);
         if (!OperatingSystem.IsWindows())
             File.SetUnixFileMode(output, File.GetUnixFileMode(output)

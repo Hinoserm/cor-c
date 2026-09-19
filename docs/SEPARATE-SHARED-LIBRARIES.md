@@ -15,6 +15,9 @@ Link the objects with `corlink --shared ... -o libName.so`. The output filename
 sets its SONAME. Needed shared libraries are selected from the offered
 `--link-shared` inputs. Shared output cannot use flat or fixed-address options.
 PIC objects currently retain machine code rather than regeneratable LTO IR.
+`--no-undefined` requires every dynamic import to be supplied by the offered
+libraries before the output is written. The OS library build enables this to
+reject missing dependencies and dependency cycles without external scripts.
 
 The CORSAC image builder uses this path for the runtime and class libraries.
 Its shared process budget bounds concurrent source compilers. Libraries remain
