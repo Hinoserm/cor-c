@@ -168,7 +168,12 @@ public static class ProjectCompile
         // project. Sitting the other workers idle for the whole of kmain,
         // which is one of the three largest sources, cost nine tenths of a
         // second of a six second build.
-        bool dynamic = common.Contains("--dynamic") || common.Contains("--link-shared");
+        // A SHARED LIBRARY TOO: its entry unit is the one that emits the
+        // initialiser, and SharedObject is a static of the lowering, so it
+        // must be compiled alone before the units that switch it off run
+        // beside it -- or all of them see it on and the link refuses eight
+        // definitions of __corsac_init.
+        bool dynamic = common.Contains("--dynamic") || common.Contains("--link-shared") || common.Contains("--shared");
         if (dynamic)
             foreach (Unit unit in units.Where(unit => unit.Entry))
                 if (Gated(unit) != 0) failures++;
