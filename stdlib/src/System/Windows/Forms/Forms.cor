@@ -169,6 +169,9 @@ public class Seat : IDrawingTarget
 
     public int Fd { get { return _fd; } }
 
+    /// How many windows the seat is showing, everybody's included.
+    public int ShownWindows() { int n = (int)Os.Ioctl(_fd, 0x47550005, 0); return n < 0 ? 0 : n; }
+
     // --- batches ---------------------------------------------------------
 
     /// Room for one whole op. AN OP IS NEVER SPLIT ACROSS TWO WRITES: the
@@ -881,20 +884,20 @@ public delegate void WatchHandler(int fd);
 public static class Application
 {
     static List<Form> _forms = new List<Form>();
-    static int _cascade;
-
     /// Where the next window with no position of its own goes: down and
-    /// right of the last, a caption's height at a time, back to the corner
-    /// when it would run off the screen. Two terminals opened one after the
-    /// other are then both visible, which is what Windows does and what a
-    /// person opening a second one expects.
+    /// right of the windows already on the seat, a caption's height per
+    /// window, back to the corner when it would run off the screen. Asked of
+    /// the SEAT, not counted here: two terminals are two processes, and a
+    /// count kept in each would put both in the same place. Two opened one
+    /// after the other are then both visible, which is what Windows does and
+    /// what a person opening a second one expects.
     internal static Point NextCascade(int width, int height, int screenWidth, int screenHeight)
     {
         const int Step = Form.CaptionHeight + Form.BorderWidth;
         const int Margin = 24;
-        int x = Margin + _cascade * Step, y = Margin + _cascade * Step;
-        if (x + width > screenWidth || y + height > screenHeight) { _cascade = 0; x = Margin; y = Margin; }
-        _cascade++;
+        int shown = Seat.Current.ShownWindows();
+        int x = Margin + shown * Step, y = Margin + shown * Step;
+        if (x + width > screenWidth || y + height > screenHeight) { x = Margin; y = Margin; }
         return new Point(x, y);
     }
     static bool _running;
