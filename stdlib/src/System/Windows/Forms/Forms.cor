@@ -648,7 +648,12 @@ public class Form : Control
         seat.Target(_handle);
         if (HasFrame && force)
         {
-            Graphics g = new Graphics(seat, 0, 0, new Rectangle(0, 0, Width, Height));
+            // WITHIN THE CLIP, like everything else. The frame's face fill
+            // once covered the whole window whatever the clip was, and the
+            // client tree then repainted only the clip: the rest of the
+            // client showed the face colour, a grey shape the size of
+            // whatever had just been uncovered.
+            Graphics g = new Graphics(seat, 0, 0, Rectangle.Intersect(clip, new Rectangle(0, 0, Width, Height)));
             bool active = Application.ActiveForm == this;
             Color face = SystemColors.Control;
             g.FillRectangle(new SolidBrush(face), 0, 0, Width, Height);
@@ -918,6 +923,19 @@ public static class Application
     static Form? _active;
     static Form? _dragging;
     static int _dragX, _dragY;
+    static bool _dragPending;
+    static int _dragToX, _dragToY;
+
+    /// The drag's latest position is applied once the queue is quiet, not
+    /// once per Move: a tablet sends hundreds a second and each move is a
+    /// window move and a repaint, so applying every one made the window
+    /// crawl behind the pointer.
+    static void SettleDrag()
+    {
+        if (!_dragPending || _dragging == null) { _dragPending = false; return; }
+        _dragPending = false;
+        _dragging.SetBounds(_dragToX, _dragToY, _dragging.Width, _dragging.Height);
+    }
     static bool _paintPending;
     static List<int> _watchFds = new List<int>();
     static List<WatchHandler> _watchHandlers = new List<WatchHandler>();
@@ -969,6 +987,7 @@ public static class Application
             if (!Seat.Current.Next(out m)) break;
             Dispatch(ref m);
         }
+        SettleDrag();
         if (_paintPending) PaintNow();
     }
 
@@ -987,6 +1006,7 @@ public static class Application
         Seat seat = Seat.Current;
         while (_running && _forms.Count > 0)
         {
+            if (_dragPending && !seat.Poll(0)) SettleDrag();
             if (_paintPending) PaintNow();
             if (Idle != null) Idle(null!, EventArgs.Empty);
             if (_watchFds.Count > 0)
@@ -1044,13 +1064,14 @@ public static class Application
             {
                 int wx = Seat.LowSigned(m.A), wy = Seat.HighSigned(m.A);
                 int sx = Seat.LowSigned(m.B), sy = Seat.HighSigned(m.B);
-                if (_dragging != null) { _dragging.SetBounds(sx - _dragX, sy - _dragY, _dragging.Width, _dragging.Height); break; }
+                if (_dragging != null) { _dragToX = sx - _dragX; _dragToY = sy - _dragY; _dragPending = true; break; }
                 f!.WindowMouse(3, 0, wx, wy); break;
             }
             case 4:
                 if (_active != f) { _active = f; f!.RaiseActivated(); }
                 f!.WindowMouse(4, m.A, m.B & 0xFFFF, (m.B >> 16) & 0xFFFF); break;
             case 5:
+                SettleDrag();
                 _dragging = null;
                 f!.WindowMouse(5, m.A, m.B & 0xFFFF, (m.B >> 16) & 0xFFFF); break;
             case 8:
