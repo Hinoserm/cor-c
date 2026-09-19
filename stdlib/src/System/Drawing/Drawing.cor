@@ -71,6 +71,7 @@ public static class SystemColors
     public static Color Highlight { get { return Color.FromArgb(0, 95, 175); } }
     public static Color HighlightText { get { return Color.White; } }
     public static Color GrayText { get { return Color.FromArgb(128, 128, 128); } }
+    public static Color ScrollBar { get { return Color.FromArgb(236, 236, 236); } }
 }
 
 public static class ColorBlend
