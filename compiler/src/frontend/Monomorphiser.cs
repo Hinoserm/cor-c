@@ -468,6 +468,12 @@ public sealed class Monomorphiser
             _made[job.Name] = made;
             output.Types.Add(made);
         }
+        // AND AGAIN AFTER THE SPECIALISATIONS. Rewriting the queue above names
+        // templates too -- EqualityComparer`1 reached only from a specialised
+        // body -- and anything recorded there is found after the earlier
+        // check has already run. Left unraised it becomes a name the binder
+        // reports as undeclared instead of one more round that loads it.
+        _templateBatch.ThrowIfAny();
         output.TupleNamings.AddRange(_tupleNamings);
         return output;
     }
