@@ -626,7 +626,13 @@ public class Form : Control
         Point origin = target.ClientOrigin();
         MouseButtons b = button == 1 ? MouseButtons.Left : button == 2 ? MouseButtons.Right : button == 3 ? MouseButtons.Middle : MouseButtons.None;
         MouseEventArgs e = new MouseEventArgs(b, 1, cx - origin.X, cy - origin.Y, 0);
-        if (kind == 4) { if (target.TabStop && !(target is Label)) Application.SetFocus(target); target.RaiseMouseDown(e); Application.Captured = target; }
+        if (kind == 4)
+        {
+            if (target is TextBox box) box.FocusByClick();
+            if (target.TabStop && !(target is Label)) Application.SetFocus(target);
+            target.RaiseMouseDown(e);
+            Application.Captured = target;
+        }
         else if (kind == 5) { Control c = Application.Captured ?? target; Application.Captured = null; c.RaiseMouseUp(e); }
         else { (Application.Captured ?? target).RaiseMouseMove(e); }
     }
@@ -720,6 +726,28 @@ public class TextBox : Control
         Invalidate();
     }
     protected override void OnTextChanged(EventArgs e) { if (_caret > Text.Length) _caret = Text.Length; base.OnTextChanged(e); }
+
+    /// A click puts the caret where it landed, rounded to the nearest
+    /// character boundary, which is what a person expects of a text box.
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        int column = (e.X - 3 + Font.GlyphWidth / 2) / Font.GlyphWidth;
+        if (column < 0) column = 0;
+        if (column > Text.Length) column = Text.Length;
+        _caret = column;
+        Invalidate();
+        base.OnMouseDown(e);
+    }
+
+    /// Focus arriving by keyboard puts the caret at the end, ready to type on.
+    protected override void OnGotFocus(EventArgs e)
+    {
+        if (!_clickFocus) _caret = Text.Length;
+        _clickFocus = false;
+        base.OnGotFocus(e);
+    }
+    bool _clickFocus;
+    internal void FocusByClick() { _clickFocus = true; }
 }
 
 // ---------------------------------------------------------------------------
