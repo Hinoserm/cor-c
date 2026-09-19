@@ -32,7 +32,7 @@ public sealed class SourceDeclaration
     {
         string text = File.ReadAllText(Path);
         if (!SHA256.HashData(Encoding.UTF8.GetBytes(text)).SequenceEqual(SourceHash))
-            throw new InvalidDataException("Declaration source generation is stale: " + Path);
+            throw new InvalidDataException(DeclarationCatalog.Stale(Path));
         Verify(text);
         return text;
     }
