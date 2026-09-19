@@ -68,6 +68,15 @@ public sealed class TypeRef : Node
     /// </summary>
     public bool ElementNullable { get; init; }
 
+    /// <summary>
+    /// The '?' marks between the brackets of an array of arrays: bit k-1 set
+    /// means the type after k pairs of brackets is nullable, for k strictly
+    /// inside the rank. `byte[]?[]?` has rank 2, Nullable, and bit 0 here:
+    /// an array that may be null, of arrays that may be null. The outermost
+    /// mark is Nullable and the innermost ElementNullable, as before.
+    /// </summary>
+    public int InnerNullable { get; init; }
+
     /// <summary>How many stars follow the name: <c>byte*</c> is one.</summary>
     public int PointerDepth { get; init; }
 
