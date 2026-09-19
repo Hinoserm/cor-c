@@ -34,10 +34,21 @@ public sealed class DeclarationSession : IDisposable
     private readonly Dictionary<(string Name, int Arity), string?> speculated = new();
     private readonly object gate = new();
 
+    /// <summary>
+    /// WHAT THE SHARED CACHES MAY HOLD, all of it bounded and all of it
+    /// evicted least-recently-used first. The three together are the whole of
+    /// what a project session keeps beyond the unit being compiled: lexed
+    /// headers, decoded index payloads, and the verified text of the library
+    /// files. The defaults come to a little over three hundred megabytes
+    /// against a target with about a gigabyte, and the build may lower them
+    /// (CORC_TOKEN_BUDGET, CORC_DECL_BUDGET, CORC_SOURCE_BUDGET) for a
+    /// smaller machine. None of them is per worker: one session serves every
+    /// thread, so raising --jobs does not raise this.
+    /// </summary>
     public DeclarationSession(string path, string assembly, long declarationBudgetBytes = 32 * 1024 * 1024,
-        long tokenBudgetBytes = 256 * 1024 * 1024)
+        long tokenBudgetBytes = 256 * 1024 * 1024, long sourceBudgetBytes = 16 * 1024 * 1024)
     {
-        Catalog = new DeclarationCatalog(path, declarationBudgetBytes);
+        Catalog = new DeclarationCatalog(path, declarationBudgetBytes, sourceBudgetBytes);
         Tokens = new SyntaxTokenCache(tokenBudgetBytes);
         Assembly = assembly;
         Interfaces = Catalog.Interfaces(assembly);

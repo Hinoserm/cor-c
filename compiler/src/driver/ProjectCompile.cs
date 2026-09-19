@@ -58,7 +58,8 @@ public static class ProjectCompile
 
         long declBudget = long.TryParse(Environment.GetEnvironmentVariable("CORC_DECL_BUDGET"), out long d) ? d : 32L * 1024 * 1024;
         long tokBudget = long.TryParse(Environment.GetEnvironmentVariable("CORC_TOKEN_BUDGET"), out long t) ? t : 256L * 1024 * 1024;
-        using DeclarationSession session = new(index, assembly, declBudget, tokBudget);
+        long srcBudget = long.TryParse(Environment.GetEnvironmentVariable("CORC_SOURCE_BUDGET"), out long c) ? c : 16L * 1024 * 1024;
+        using DeclarationSession session = new(index, assembly, declBudget, tokBudget, srcBudget);
         using WorkerPool? pool = WorkerPool.Open(Driver.Value(args, "--worker-pool"));
         int limit = pool is null ? workers : Math.Max(workers, pool.Size);
         Driver.Session = session;
@@ -145,6 +146,8 @@ public static class ProjectCompile
         Driver.Session = null;
         Console.Error.WriteLine("project " + assembly + ": " + units.Count + " units, " + skipped + " already current, "
             + session.Tokens.Hits + " header lexes reused, " + session.Catalog.PayloadLoads + " index payload loads, "
+            + "caches resident=" + (session.Tokens.ResidentBytes + session.Catalog.ResidentBytes
+                + session.Catalog.ResidentSourceBytes) + ", "
             + "allocated=" + GC.GetTotalAllocatedBytes());
         return failures == 0 ? 0 : 1;
     }
