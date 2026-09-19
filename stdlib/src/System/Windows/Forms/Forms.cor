@@ -614,9 +614,12 @@ public class Form : Control
             g.DrawString(Text, Font, new SolidBrush(title), cx + 7, cy + 2);
             Rectangle close = CloseBox();
             g.FillRectangle(new SolidBrush(face), close.X, close.Y, close.Width, close.Height);
-            ControlPaint.DrawBorder3D(g, close.X, close.Y, close.Width, close.Height, Border3DStyle.Raised);
+            // Pressed in while the button is held over it, and the cross
+            // moves a pixel with it: the button looks like what it is doing.
+            ControlPaint.DrawBorder3D(g, close.X, close.Y, close.Width, close.Height, (_closeDown && _closeHot) ? Border3DStyle.SunkenOuter : Border3DStyle.Raised);
             Pen ink = new Pen(SystemColors.ControlText);
-            int lx = close.X + 4, ly = close.Y + 3, rx = close.X + close.Width - 6, ry = close.Y + close.Height - 5;
+            int press = (_closeDown && _closeHot) ? 1 : 0;
+            int lx = close.X + 4 + press, ly = close.Y + 3 + press, rx = close.X + close.Width - 6 + press, ry = close.Y + close.Height - 5 + press;
             g.DrawLine(ink, lx, ly, rx, ry); g.DrawLine(ink, lx + 1, ly, rx + 1, ry);
             g.DrawLine(ink, lx, ry, rx, ly); g.DrawLine(ink, lx + 1, ry, rx + 1, ly);
         }
@@ -624,6 +627,28 @@ public class Form : Control
         Rectangle client = new Rectangle(co.X, co.Y, ClientRectangle.Width, ClientRectangle.Height);
         PaintTree(seat, co, force ? client : Rectangle.Intersect(client, new Rectangle(0, 0, Width, Height)), force);
     }
+
+    // The close box is held down, waiting to see where the button comes up.
+    bool _closeDown;
+
+    /// The close box, and the caption a drag starts on. Nothing acts on the
+    /// press: a button pressed and released is a decision, a button pressed
+    /// and dragged away is a change of mind, which is how every other button
+    /// on the screen behaves and how Windows behaves.
+    void FrameMouse(int kind, int button, int x, int y, Point co)
+    {
+        bool over = CloseBox().Contains(x, y);
+        if (kind == 4 && button == 1 && over) { _closeDown = true; _closeHot = true; _frameDirty = true; Invalidate(); return; }
+        if (kind == 3 && _closeDown) { if (over != _closeHot) { _closeHot = over; _frameDirty = true; Invalidate(); } return; }
+        if (kind == 5 && _closeDown)
+        {
+            _closeDown = false; _frameDirty = true; Invalidate();
+            if (over) Close();
+            return;
+        }
+        if (kind == 4 && button == 1 && y < co.Y) Application.BeginDrag(this, x, y);
+    }
+    bool _closeHot;
 
     /// A press in the window: the close box, the caption, or the client.
     internal void WindowMouse(int kind, int button, int x, int y)
@@ -638,11 +663,11 @@ public class Form : Control
         {
             // Over the frame with no button held: the pointer says what the
             // edge under it would do, the way Windows does.
-            if (kind == 3 && Application.Captured == null) Seat.Current.SetCursor(CursorFor(ResizeEdges(x, y)));
-            if (kind == 4 && button == 1 && CloseBox().Contains(x, y)) { Close(); return; }
-            if (kind == 4 && button == 1 && y < co.Y) { Application.BeginDrag(this, x, y); }
+            if (kind == 3 && Application.Captured == null && !_closeDown) Seat.Current.SetCursor(CursorFor(ResizeEdges(x, y)));
+            FrameMouse(kind, button, x, y, co);
             return;
         }
+        if (_closeDown) { FrameMouse(kind, button, x, y, co); if (kind != 5) return; }
         if (kind == 3 && HasFrame && Application.Captured == null) Seat.Current.SetCursor(Cursors.Arrow);
         int cx = x - co.X, cy = y - co.Y;
         Control target = HitTest(cx, cy);
