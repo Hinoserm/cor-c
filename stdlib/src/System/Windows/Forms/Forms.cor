@@ -314,6 +314,11 @@ public class Control
     // environment. A window that comes up blank on one machine and right on
     // another is not a thing to reason about from the outside.
     static int _trace = -1;
+
+    /// Turn the trace on from the program itself: a shell that cannot put a
+    /// variable in front of a command can still pass an argument.
+    public static void TracePainting(bool on) { _trace = on ? 1 : 0; }
+
     internal static bool Tracing
     {
         get
