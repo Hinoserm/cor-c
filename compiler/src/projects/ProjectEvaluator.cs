@@ -168,7 +168,10 @@ public sealed class ProjectEvaluator
     {
         if (!Condition(node)) return;
         string type = node.Name.LocalName;
-        if (type is not ("Compile" or "ProjectReference" or "None" or "Content" or "Using" or "PackageReference" or "Reference" or "Analyzer" or "EmbeddedResource"))
+        // RuntimeHostConfigurationOption is accepted for the SDK's sake and
+        // otherwise ignored: this build reads the collector settings from the
+        // properties the items are written in terms of. See corc.csproj.
+        if (type is not ("Compile" or "ProjectReference" or "None" or "Content" or "Using" or "PackageReference" or "Reference" or "Analyzer" or "EmbeddedResource" or "RuntimeHostConfigurationOption"))
             throw new InvalidDataException("Unsupported active item type: " + type);
         string? include = (string?)node.Attribute("Include"), remove = (string?)node.Attribute("Remove"), update = (string?)node.Attribute("Update");
         if ((include is null ? 0 : 1) + (remove is null ? 0 : 1) + (update is null ? 0 : 1) != 1)

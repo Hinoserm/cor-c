@@ -263,6 +263,36 @@ tasks below track that work; moving files alone does not reduce the working set.
   layout section falls from 12.4 MB to 9.1 MB, code is identical in all 118
   objects and the linked kernel is byte for byte what it was.
 
+- [x] More workers no longer bought time. Measured properly it was four
+  separate things, all fixed: name lookup serialised on the catalog lock,
+  an exponential out-path analysis, a thread pool that added workers slowly,
+  and control-flow graphs keyed on block references. Then the collector.
+  What is left of the gap, with numbers (kernel, 118 units, eight workers):
+  the ideal is the longest unit, Core.cor at 3.4 s; the build takes about
+  6 s. Of the difference, the collector's pauses are 1.4-1.9 s -- it stops
+  every worker, sixty-odd times, for full collections against the 256 MB
+  cap -- and the rest is the same work costing more processor time when
+  eight threads allocate at once. The entry source no longer runs alone
+  first (nine tenths of a second, for a static that only differs under
+  --dynamic). Giving the largest unit threads of its own was tried and
+  made things WORSE: more concurrency is more collector, not less wall.
+  The lever that remains is allocation. Per pass it is spread evenly over
+  twenty passes, so no single pass is the answer; per construction, the
+  analyses each pass rebuilds were 37-47% of the optimiser's churn, and
+  those are now arrays (Defs) and lazy lists (Cfg): 21.3 GiB to 19.3 GiB.
+- [ ] Share analyses across passes. Compiling Core.cor builds 109,807
+  control-flow graphs and 51,574 definition maps, one per pass per
+  function, because a pass cannot know whether the previous one changed
+  anything. A function that recorded a version on every mutation of its
+  blocks or instructions would let a pass reuse the last graph when
+  nothing moved, which is most of the time. That is the next structural
+  win and it is not small: the two together are still a third of the
+  optimiser's allocation. Lists are the only cost left in the graph itself.
+- [ ] CORC_REPORT_PHASES (time and allocation per phase of one unit) and
+  CORC_REPORT_PASSES (per pass and per analysis construction, whole
+  process) exist now, and the project summary always reports collector
+  pause and collection counts. Reach for those before guessing.
+
 ## Build utility and the one toolchain executable
 
 - [x] Accept bare `Name=Value` arguments beside nested target names, preserving

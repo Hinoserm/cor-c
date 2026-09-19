@@ -123,27 +123,29 @@ public static class ProjectCompile
             finally { pool.Give(); }
         }
 
-        // THE ENTRY SOURCE IS COMPILED ALONE AND FIRST. It is the one unit of
-        // a project that is not a library part, and the settings that say so
-        // are process-wide; the rest share one set of settings and may run
-        // together. See Lowering's static configuration.
-        foreach (Unit unit in units.Where(unit => unit.Entry))
-            if (Gated(unit) != 0) failures++;
+        // THE ENTRY SOURCE JOINS THE QUEUE LIKE THE REST. It used to be
+        // compiled alone and first because the settings that make a unit the
+        // entry are process-wide statics in Lowering -- but on inspection the
+        // only one that differs between the entry and a library part is
+        // Dynamic, and Dynamic is only ever true with shared libraries on the
+        // command line. Everything else is the same for every unit of a
+        // project. Sitting the other workers idle for the whole of kmain,
+        // which is one of the three largest sources, cost nine tenths of a
+        // second of a six second build.
+        bool dynamic = common.Contains("--dynamic") || common.Contains("--link-shared");
+        if (dynamic)
+            foreach (Unit unit in units.Where(unit => unit.Entry))
+                if (Gated(unit) != 0) failures++;
 
-        // THE REST RUN ON THEIR OWN THREADS, BIGGEST SOURCE FIRST. Parallel
-        // .ForEach leaned on the thread pool, which adds threads a few at a
-        // time as it decides they are wanted, so an eight-worker compile spent
-        // its first seconds with two or three of them and stack samples showed
-        // the rest not blocked but simply absent. And it handed out sources in
-        // list order, so the source that takes longest could be the last one
-        // started and then run alone: 116 of the kernel's 118 units were done
-        // at thirteen seconds and one ran on its own to nineteen. Threads made
-        // here are all present from the start, and taking the largest sources
-        // first is the usual answer to a long tail -- the small ones fill in
-        // behind whatever is still running.
-        Unit[] rest = units.Where(unit => !unit.Entry)
-            .OrderByDescending(unit => { try { return new FileInfo(unit.Source).Length; } catch (IOException) { return 0L; } })
-            .ThenBy(unit => unit.Source, StringComparer.Ordinal).ToArray();
+        // BIGGEST SOURCE FIRST. The longest unit bounds the build however
+        // many workers there are, and a long one started last runs alone at
+        // the end; started first, the small ones fill in behind it. Giving
+        // the largest unit threads of its own was tried and made things
+        // worse: the collector, not the scheduler, is what the last two
+        // seconds are spent on, and more concurrency means more of it.
+        long Size(Unit unit) { try { return new FileInfo(unit.Source).Length; } catch (IOException) { return 0L; } }
+        Unit[] rest = units.Where(unit => !unit.Entry || !dynamic)
+            .OrderByDescending(Size).ThenBy(unit => unit.Source, StringComparer.Ordinal).ToArray();
         int next = -1;
         void Worker()
         {
@@ -172,6 +174,11 @@ public static class ProjectCompile
             + session.Tokens.Hits + " header lexes reused, " + session.Catalog.PayloadLoads + " index payload loads, "
             + "caches resident=" + (session.Tokens.ResidentBytes + session.Catalog.ResidentBytes
                 + session.Catalog.ResidentSourceBytes) + ", "
+            // HOW MUCH OF THE WALL CLOCK THE COLLECTOR TOOK, because that is
+            // the first question when eight workers finish no sooner than
+            // four, and it is answered here rather than guessed at.
+            + "gc pause=" + (long)GC.GetTotalPauseDuration().TotalMilliseconds + "ms gen0=" + GC.CollectionCount(0)
+            + " gen1=" + GC.CollectionCount(1) + " gen2=" + GC.CollectionCount(2) + ", "
             + "allocated=" + GC.GetTotalAllocatedBytes());
         return failures == 0 ? 0 : 1;
     }

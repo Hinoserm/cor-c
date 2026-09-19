@@ -30,6 +30,7 @@ public sealed class Liveness
 
     public Liveness(Function f) : this(new Cfg(f))
     {
+    
     }
 
     public Liveness(Cfg cfg)
