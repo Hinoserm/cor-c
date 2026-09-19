@@ -40,7 +40,8 @@
 //              8 Paint      a = x | y << 16, b = w | h << 16, relative to the window
 //              9 Focus      a = 1 gained, 0 lost
 //             10 Close      the system asks the window to close
-//   ioctls   0x47550001 width, 0x47550002 height, 0x47550003 format
+//   ioctls   0x47550001 width, 0x47550002 height, 0x47550003 format,
+//            0x47550004 events waiting for this process
 //            0x47550010 create window at x | y << 16, returns the handle and
 //                       selects it; 0x47550020 select a window by handle; then
 //                       on the selected window: 0x47550011 size w | h << 16,
@@ -190,6 +191,9 @@ public class Seat : IDrawingTarget
             at += n;
         }
         _used = 0;
+        // The seat forgets the current window at the end of every write, so
+        // the next batch has to name it again.
+        _window = 0;
     }
 
     public void Target(int window)
@@ -255,8 +259,23 @@ public class Seat : IDrawingTarget
         return true;
     }
 
-    /// Non-blocking: is a message waiting, or is any watched descriptor ready?
-    public bool Poll(int timeoutMs) { Flush(); return Os.Poll(_fd, 1, timeoutMs) > 0; }
+    /// Is a message waiting? Asked of the seat directly: the descriptor's
+    /// own readiness cannot be trusted for a character device. A timeout is
+    /// spent in short sleeps between asks, which the seat's own wait will
+    /// replace once the kernel answers poll for it.
+    public bool Poll(int timeoutMs)
+    {
+        Flush();
+        int waited = 0;
+        while (true)
+        {
+            if (Os.Ioctl(_fd, 0x47550004, 0) > 0) return true;
+            if (waited >= timeoutMs) return false;
+            int step = timeoutMs - waited < 20 ? timeoutMs - waited : 20;
+            System.Threading.Thread.Sleep(step);
+            waited += step;
+        }
+    }
 
     int Int(int at) { return _event[at] | (_event[at + 1] << 8) | (_event[at + 2] << 16) | (_event[at + 3] << 24); }
 }
@@ -569,7 +588,7 @@ public class Form : Control
         if (_handle == 0) return;
         Seat seat = Seat.Current;
         seat.Target(_handle);
-        if (HasFrame && (force || HasInvalid()))
+        if (HasFrame && force)
         {
             Graphics g = new Graphics(seat, 0, 0, new Rectangle(0, 0, Width, Height));
             bool active = Application.ActiveForm == this;
