@@ -13,6 +13,16 @@ readelf -h "$work/compute.o" > "$work/object.header"
 grep -q 'REL (Relocatable file)' "$work/object.header"
 readelf -d "$work/libCompute.so" > "$work/library.dynamic"
 grep -q 'Library soname: \[libCompute.so\]' "$work/library.dynamic"
+test "$(readelf --dyn-syms -W "$work/libCompute.so" | awk '$8 == "__corsac_init" && $7 != "UND" { count++ } END { print count+0 }')" = 1
+if grep -q TEXTREL "$work/library.dynamic"; then
+    echo 'FAIL separate PIC library has text relocations' >&2
+    exit 1
+fi
+if "$corlink" "$work/compute.o" --shared --flat -o "$work/invalid.so" > "$work/invalid.log" 2>&1; then
+    echo 'FAIL shared flat output accepted' >&2
+    exit 1
+fi
+test ! -e "$work/invalid.so"
 "$corc" compile --nostdlib --obj tests/integration/ir-lto/Caller.cor \
     --ref tests/integration/ir-lto/Compute.cor --link-shared "$work/libCompute.so" -o "$work/caller.o"
 for mode in lto native; do
