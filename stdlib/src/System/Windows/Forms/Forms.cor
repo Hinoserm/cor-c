@@ -787,14 +787,18 @@ public class TextBox : Control
         char c = e.KeyChar;
         if (c == '\b')
         {
-            if (!DeleteSelection() && _caret > 0) { Text = Text.Substring(0, _caret - 1) + Text.Substring(_caret); _caret--; _anchor = _caret; }
+            // The caret moves BEFORE the text changes: setting Text clamps the
+            // caret to the new length, and a decrement after that took it one
+            // place too far, so the next letter landed inside the word.
+            if (!DeleteSelection() && _caret > 0) { int at = _caret - 1; Text = Text.Substring(0, at) + Text.Substring(_caret); _caret = _anchor = at; }
             e.Handled = true;
         }
         else if (c == (char)1) { SelectAll(); e.Handled = true; }             // Ctrl+A
         else if (c >= ' ' && c < (char)127)
         {
             DeleteSelection();
-            Text = Text.Substring(0, _caret) + c + Text.Substring(_caret); _caret++; _anchor = _caret;
+            int after = _caret + 1;
+            Text = Text.Substring(0, _caret) + c + Text.Substring(_caret); _caret = _anchor = after;
             e.Handled = true;
         }
         Invalidate();
