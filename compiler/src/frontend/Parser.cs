@@ -2619,6 +2619,7 @@ public sealed class Parser
         // strings was read as a nullable array of strings, which is a different
         // type with a different set of things that need checking before use.
         bool beforeArray = false;
+        int marks = 0;
         bool afterArray = false;
         while (true)
         {
@@ -2646,7 +2647,11 @@ public sealed class Parser
                 }
                 else
                 {
+                    // After some brackets: this level's mark. Whether it is
+                    // the type's own or an inner one is known only once the
+                    // brackets stop coming.
                     afterArray = true;
+                    marks |= 1 << (rank - 1);
                 }
                 continue;
             }
@@ -2654,9 +2659,13 @@ public sealed class Parser
         }
 
         // A '?' seen before any brackets belongs to the ELEMENT once brackets
-        // follow, and to the type itself when none do.
-        bool nullable = rank > 0 ? afterArray : beforeArray;
+        // follow, and to the type itself when none do. The mark after the
+        // last brackets is the type's own; marks between brackets are the
+        // inner levels' -- `byte[]?[]` is an array of arrays that may be null.
+        bool nullable = rank > 0 ? (marks & (1 << (rank - 1))) != 0 : beforeArray;
         bool elementNullable = rank > 0 && beforeArray;
+        int inner = rank > 1 ? marks & ((1 << (rank - 1)) - 1) : 0;
+        afterArray = afterArray || nullable;
 
         if (stars == 0 && !nullable && !elementNullable && rank == 0)
         {
@@ -2666,7 +2675,7 @@ public sealed class Parser
         TypeRef type = new()
         {
             Name = bare.Name, ArrayRank = rank, Nullable = nullable,
-            ElementNullable = elementNullable,
+            ElementNullable = elementNullable, InnerNullable = inner,
             PointerDepth = stars, TupleNames = bare.TupleNames,
             Line = bare.Line, Col = bare.Col,
         };
@@ -5515,8 +5524,9 @@ public sealed class Parser
             Type = new TypeRef
             {
                 Name = declared.Name, Args = declared.Args,
-                Nullable = declared.ArrayRank == 1 && declared.ElementNullable,
+                Nullable = declared.ArrayRank == 1 ? declared.ElementNullable : (declared.InnerNullable & 1) != 0,
                 ElementNullable = declared.ArrayRank > 1 && declared.ElementNullable,
+                InnerNullable = declared.InnerNullable >> 1,
                 PointerDepth = declared.PointerDepth, ArrayRank = declared.ArrayRank - 1,
                 TupleNames = declared.TupleNames, Line = at.Line, Col = at.Col,
             },
@@ -6044,8 +6054,10 @@ public sealed class Parser
                     {
                         Type = new TypeRef
                         {
-                            Name = type.Name, Args = type.Args, Nullable = type.Nullable,
-                            ElementNullable = type.ElementNullable,
+                            Name = type.Name, Args = type.Args,
+                            Nullable = type.ArrayRank == 1 ? type.ElementNullable : (type.InnerNullable & 1) != 0,
+                            ElementNullable = type.ArrayRank > 1 && type.ElementNullable,
+                            InnerNullable = type.InnerNullable >> 1,
                             PointerDepth = type.PointerDepth, ArrayRank = type.ArrayRank - 1,
                             Line = type.Line, Col = type.Col,
                         },
@@ -6095,12 +6107,15 @@ public sealed class Parser
 
                     if (jagged > 0)
                     {
+                        // The type's own '?' becomes an inner mark once
+                        // brackets are added around it: `new byte[]?[n][]`.
                         type = new TypeRef
                         {
                             Name = type.Name,
                             Args = type.Args,
-                            Nullable = type.Nullable,
-                            ElementNullable = type.ElementNullable,
+                            Nullable = false,
+                            ElementNullable = type.ArrayRank > 0 ? type.ElementNullable : type.Nullable,
+                            InnerNullable = type.InnerNullable | (type.ArrayRank > 0 && type.Nullable ? 1 << (type.ArrayRank - 1) : 0),
                             PointerDepth = type.PointerDepth,
                             ArrayRank = type.ArrayRank + jagged,
                             TupleNames = type.TupleNames,

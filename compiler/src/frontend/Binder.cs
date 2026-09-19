@@ -2253,7 +2253,17 @@ public sealed partial class Binder
                 baseType = baseType.AsNullable();
             }
 
-            baseType = Type.ArrayOf(baseType, r.ArrayRank);
+            // One level at a time, so a '?' between two pairs of brackets
+            // lands on the array it follows: `byte[]?[]` is an array of
+            // arrays that may be null.
+            for (int level = 1; level <= r.ArrayRank; level++)
+            {
+                baseType = Type.ArrayOf(baseType, 1);
+                if (level < r.ArrayRank && (r.InnerNullable & (1 << (level - 1))) != 0)
+                {
+                    baseType = baseType.AsNullable();
+                }
+            }
         }
 
         if (!r.Nullable)
