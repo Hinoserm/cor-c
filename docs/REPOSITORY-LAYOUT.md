@@ -29,7 +29,7 @@ cor-c/
   TODO.md
   compiler/
     README.md
-    corc.csproj
+    corc.csproj          the one executable: build, compile, link, asm, index
     src/
       arch/
         corsac/
@@ -48,7 +48,7 @@ cor-c/
         corsac/
         x86/
       optimizations/
-  linker/
+  linker/                library reached as `corc link`
     README.md
     linker.csproj
     src/
@@ -133,11 +133,14 @@ purposeful partial-class subdivisions. The syntax and symbol models, IR model,
 x86 machine IR, and ELF records have been split this way. Do not confuse moving
 files with independent compilation or bounded compiler memory use.
 
-`corc` and `corlink` are separate executable projects. The linker owns the
-relocatable object model and has no dependency on compiler frontend code. The
-compiler references the linker project for emission and convenience linking.
-The root corsac.build and tools/build utility orchestrate projects without a
-solution file; see [BUILD-SYSTEM.md](BUILD-SYSTEM.md).
+`corc` is the only executable. The linker and the build utility are library
+projects it references, reached as `corc link` and `corc build`, so one
+process holds the build graph, the compiler and the linker and schedules
+their work against one pool of threads. The separation that matters is still
+enforced by the project references: the linker owns the relocatable object
+model and has no dependency on compiler frontend code, and it must not
+reference the compiler. The root corsac.build describes the components; see
+[BUILD-SYSTEM.md](BUILD-SYSTEM.md).
 
 ## Runtime layout
 

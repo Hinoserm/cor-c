@@ -91,7 +91,18 @@ public static class ManagedProjectBuild
             {
                 string destination = Path.Combine(output, Path.GetFileName(dependency));
                 if (!File.Exists(destination) || !SHA256.HashData(File.ReadAllBytes(destination)).AsSpan()
-                    .SequenceEqual(SHA256.HashData(File.ReadAllBytes(dependency)))) File.Copy(dependency, destination, true);
+                    .SequenceEqual(SHA256.HashData(File.ReadAllBytes(dependency))))
+                {
+                    // REPLACED, NOT WRITTEN OVER. The toolchain is one
+                    // executable now, so a build of it is very often running
+                    // from the files it is about to replace; writing into a
+                    // mapped image gives the running process torn metadata
+                    // rather than an error. Moving a freshly written file
+                    // over the name leaves that process on the old inode.
+                    string staged = destination + ".new";
+                    File.Copy(dependency, staged, true);
+                    File.Move(staged, destination, true);
+                }
             }
             if (project.OutputType != "Library")
             {

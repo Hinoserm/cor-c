@@ -79,8 +79,8 @@ instruction is already selected automatically.
 Run the focused instruction and backend milestones from the repository root:
 
 ```sh
-tools/build/bin/managed/Release/net10.0/build --file compiler/tests/arch/x86/isa/corsac.build
-tools/build/bin/managed/Release/net10.0/build --file compiler/tests/arch/x86/corsac.build
+compiler/bin/managed/Release/net10.0/corc build --file compiler/tests/arch/x86/isa/corsac.build
+compiler/bin/managed/Release/net10.0/corc build --file compiler/tests/arch/x86/corsac.build
 ```
 
 QEMU execution establishes the tested instruction semantics, not K6 timing.
@@ -100,7 +100,7 @@ extension exclusions and whether automatic packed operations are allowed by
 the execution environment. Owned managed objects require this metadata through
 their ABI contract. LTO restores each unit's selection and rejects changed
 permissions. Rebuild older IR units without this contract before using LTO.
-`corlink --cpu=...` checks declared input requirements against explicit output
+`corc link --cpu=...` checks declared input requirements against explicit output
 permissions, before and after LTO. Foreign objects without metadata are not
 certified by these checks.
 

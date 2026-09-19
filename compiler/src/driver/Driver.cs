@@ -38,7 +38,11 @@ public static class Driver
                 "dependencies-current" => DependenciesCurrent(rest),
                 "project" => Projects.ProjectCommand.Run(rest),
                 "backend" when rest.Length == 0 => BackendCommand.Run(),
-                "build" or "asm" => Build(rest),
+                // `corc build` runs a build manifest; assembling one file is
+                // `corc asm`, which is what that command was always called
+                // when anyone wrote it down.
+                "build" => Corsac.Build.BuildCommand.Run(rest).GetAwaiter().GetResult(),
+                "asm" => Build(rest),
                 "help" or "--help" or "-h" => Usage(),
                 _ => Fail($"unknown command '{command}'"),
             };
@@ -79,8 +83,10 @@ public static class Driver
               corc link @objects.list -o <output> [--entry <symbol>]
               corc index --assembly <identity> <sources...> -o <declarations.idx>
               corc project <file.csproj> [--configuration Release] [--framework net10.0] [--jobs N] [-o output]
-              corc build --target x86-16 <file.asm> -o <output.bin>
-              corc build --target x86-32 <file.asm> --obj -o <output.o>
+              corc compile-project --units <units.tsv> --decl-index <idx> --assembly <identity>
+              corc build [target/path] [Name=Value ...] [--file corsac.build] [--jobs N]
+              corc asm --target x86-16 <file.asm> -o <output.bin>
+              corc asm --target x86-32 <file.asm> --obj -o <output.o>
 
             options:
               --target <name>    x86 (default) or corsac

@@ -23,7 +23,7 @@ done
 cmp "$work/caller-1.o" "$work/caller-2.o"
 for mode in on off; do
     flags=(); if [ "$mode" = off ]; then flags=(--no-lto); fi
-    "$corlink" "${flags[@]}" "$work/caller-1.o" "$work/provider.o" -o "$work/trace-$mode" > "$work/link-$mode.log" 2>&1
+    corlink "${flags[@]}" "$work/caller-1.o" "$work/provider.o" -o "$work/trace-$mode" > "$work/link-$mode.log" 2>&1
     status=0
     "$work/trace-$mode" > "$work/trace-$mode.log" 2>&1 || status=$?
     if [ "$status" != 42 ]; then
@@ -41,7 +41,7 @@ for part in A B; do
 done
 "$corc" compile --nostdlib "${refs[@]}" --decl-index "$work/init.idx" --assembly Initialized \
     tests/integration/indexed/InitCaller.cor --obj -o "$work/init-caller.o" > "$work/init-caller.log" 2>&1
-"$corlink" "$work/init-caller.o" "$work/init-B.o" "$work/init-A.o" "$work/provider.o" -o "$work/init" > "$work/init-link.log" 2>&1
+corlink "$work/init-caller.o" "$work/init-B.o" "$work/init-A.o" "$work/provider.o" -o "$work/init" > "$work/init-link.log" 2>&1
 status=0
 "$work/init" > "$work/init-run.log" 2>&1 || status=$?
 if [ "$status" != 42 ]; then echo "Partial initialization failed, exit $status; diagnostics: $work" >&2; cat "$work/init-run.log" >&2; exit 1; fi

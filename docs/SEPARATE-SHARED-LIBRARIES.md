@@ -11,7 +11,7 @@ objects use `--no-shared-init`; their managed metadata still participates in
 the final image directory. This initializer registers the whole linked image,
 not just the source file that supplied it.
 
-Link the objects with `corlink --shared ... -o libName.so`. The output filename
+Link the objects with `corc link --shared ... -o libName.so`. The output filename
 sets its SONAME. Needed shared libraries are selected from the offered
 `--link-shared` inputs. Shared output cannot use flat or fixed-address options.
 PIC objects currently retain machine code rather than regeneratable LTO IR.

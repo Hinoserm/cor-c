@@ -9,17 +9,15 @@ certificates in [DEFINITION-OWNERSHIP.md](DEFINITION-OWNERSHIP.md).
 
 ## Executables and ownership
 
-`corc` is the compiler executable. `corlink` is the independent linker
-executable. `corc compile --obj ... -o unit.o` produces a relocatable object;
-`corlink unit.o support.o -o program --entry _start` consumes objects without
-loading the parser, binder or optimizer. Existing compile-and-link and
-`corc link` commands remain convenience frontends to the same linking engine.
-The project build pipeline will use separate compilation and link nodes.
+`corc` is the toolchain executable and linking is one of its commands.
+`corc compile --obj ... -o unit.o` produces a relocatable object;
+`corc link unit.o support.o -o program --entry _start` consumes objects. The
+project build pipeline uses separate compilation and link nodes.
 
-The linker owns its object model, ELF reader/writer and relocation engine.
-The compiler references that project for object emission and convenience linking;
-the linker must not reference the compiler. This prevents a project cycle and
-makes independent linker builds possible.
+The linker owns its object model, ELF reader/writer and relocation engine in
+a library project of its own, and must not reference the compiler. That is
+what keeps linking free of the parser, binder and optimizer, and it is a
+property of the project graph rather than of how many programs are installed.
 
 ## Existing binary contract
 
@@ -54,7 +52,7 @@ model (0 hosted Linux GS, 1 bare-metal static block, 2 bare-metal GS), and requi
 metadata flags. Flag 1 requires `.corsac.layout`; all other bits are rejected.
 Compiler-produced objects set flag 1. Version 1 and 2 objects must be rebuilt;
 version 3 registers an image-wide unit metadata directory rather than a single
-unit's frame table. An older linker cannot silently ignore this contract. corlink
+unit's frame table. An older linker cannot silently ignore this contract. The linker
 rejects incompatible models and unknown contracts before LTO or output creation.
 Native assembly/C objects may omit this managed-compiler contract; omission is
 not permission to invent managed type identity. Assembly/type metadata remains
@@ -132,7 +130,7 @@ indexed metadata with source language semantics unchanged.
 ## Acceptance
 
 First acceptance is native machine-object interoperability: compile --obj,
-invoke corlink as a separate process, run the linked executable, and exercise
+invoke `corc link`, run the linked executable, and exercise
 cross-object calls and invalid inputs. GNU binutils interoperability remains
 part of linker tests. Managed independent compilation has separate acceptance:
 mutually referencing files, generics/partial types, incremental rebuilds,

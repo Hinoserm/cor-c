@@ -17,28 +17,28 @@ mkdir -p "$work/source" "$work/root/boot" "$work/root/bin" "$work/root/etc" "$wo
 git -C "$os" archive "$revision" | tar -x -C "$work/source"
 snapshot="$work/source"
 printf 'CORSAC commit: %s\nprofile: x86-486-isa\n' "$revision" > "$work/provenance.txt"
-sha256sum "$corc" "$(dirname "$corc")/corc.dll" "$(dirname "$corlink")/corlink.dll" >> "$work/provenance.txt"
+sha256sum "$corc" "$(dirname "$corc")/corc.dll" "$(dirname corlink)/corlink.dll" >> "$work/provenance.txt"
 bash "$snapshot/tools/kconfig" --root "$snapshot/os/kernel" --out "$work/config" x86-486-isa > "$work/config.log"
 sources=()
 while IFS= read -r line; do
     case "$line" in ''|'#'*) continue ;; esac
     sources+=("$line")
 done < "$work/config/sources.list"
-"$corc" build --target x86-32 "$snapshot/os/kernel/arch/x86/entry.asm" --obj -o "$work/entry.o" > "$work/entry.log" 2>&1
+"$corc" asm --target x86-32 "$snapshot/os/kernel/arch/x86/entry.asm" --obj -o "$work/entry.o" > "$work/entry.log" 2>&1
 "$corc" compile "${sources[@]}" --jobs "$jobs" --freestanding --obj \
     --asm-entry corc_start --tls-gs --cpu 486 --tag 'CORSAC/OS split-toolchain acceptance' \
     --stats -o "$work/kernel.o" > "$work/kernel.compile.log" 2>&1
-"$corlink" "$work/entry.o" "$work/kernel.o" --entry _start --base 0xc0100000 --paddr 0x100000 \
+corlink "$work/entry.o" "$work/kernel.o" --entry _start --base 0xc0100000 --paddr 0x100000 \
     -o "$work/root/boot/kernel" > "$work/kernel.link.log" 2>&1
 nm -n "$work/root/boot/kernel" > "$work/kernel.symbols"
 readelf -lW "$work/root/boot/kernel" > "$work/kernel.segments"
-"$corc" build --target x86-16 "$snapshot/os/boot/x86/stage1/stage1.asm" -o "$work/stage1.bin" > "$work/stage1.log" 2>&1
+"$corc" asm --target x86-16 "$snapshot/os/boot/x86/stage1/stage1.asm" -o "$work/stage1.bin" > "$work/stage1.log" 2>&1
 s2="$snapshot/os/boot/x86/stage2"
 "$corc" compile "$s2/uart8250.cor" "$s2/vga.cor" "$s2/console.cor" "$s2/kbd8042.cor" "$s2/ide.cor" \
     "$snapshot/os/kernel/fs/block.cor" "$snapshot/os/kernel/fs/minixformat.cor" \
     "$snapshot/os/kernel/fs/minixread.cor" "$snapshot/os/kernel/fs/ext3.cor" "$s2/bootfs.cor" "$s2/stage2.cor" \
     --jobs "$jobs" --freestanding --flat --obj --cpu 486 --stats -o "$work/stage2.o" > "$work/stage2.compile.log" 2>&1
-"$corlink" "$work/stage2.o" --flat --base 0x10000 -o "$work/stage2.bin" > "$work/stage2.link.log" 2>&1
+corlink "$work/stage2.o" --flat --base 0x10000 -o "$work/stage2.bin" > "$work/stage2.link.log" 2>&1
 # The boot gap on disk is larger than conventional RAM. Never attempt to
 # execute an image that overlaps the VGA aperture/firmware region.
 stage2_memory="$(sed -n 's/.* memory=\([0-9]*\).*/\1/p' "$work/stage2.link.log")"

@@ -2,7 +2,7 @@
 # MSBuild is used only for the initial build-tool seed and AOT pack provisioning.
 set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-tool="$root/tools/build/bin/managed/Release/net10.0/build"
+tool="$root/compiler/bin/managed/Release/net10.0/corc"
 packages="${NUGET_PACKAGES:-$(dotnet nuget locals global-packages --list | sed 's/^global-packages: //')}"
 have_packs=0
 for pack in "$packages"/runtime.linux-x64.microsoft.dotnet.ilcompiler/10.*/tools/ilc; do
@@ -12,12 +12,17 @@ for pack in "$packages"/runtime.linux-x64.microsoft.dotnet.ilcompiler/10.*/tools
         if [ -f "$packages/microsoft.netcore.app.runtime.nativeaot.linux-x64/$version/runtimes/linux-x64/native/libbootstrapper.o" ]; then have_packs=1; break; fi
     fi
 done
-if [ ! -f "$tool" ] || [ "$(head -c 2 "$tool")" = '#!' ] || [ "$have_packs" = 0 ]; then
-    seed="$root/tools/build/bin/native-seed"
-    dotnet publish "$root/tools/build/build.csproj" -c Release -r linux-x64 \
+# A toolchain from before the build utility, the compiler and the linker
+# became one executable answers `build` as the assembler, so it cannot be
+# asked to rebuild itself. Seed it instead.
+merged=1
+if [ -f "$tool" ]; then "$tool" help 2>/dev/null | grep -q 'corc build \[' || merged=0; fi
+if [ ! -f "$tool" ] || [ "$(head -c 2 "$tool")" = '#!' ] || [ "$have_packs" = 0 ] || [ "$merged" = 0 ]; then
+    seed="$root/compiler/bin/native-seed"
+    dotnet publish "$root/compiler/corc.csproj" -c Release -r linux-x64 \
         -p:PublishAot=true -o "$seed" --nologo -v quiet >&2
-    "$seed/build" --file "$root/tools/build/host.build" >&2
+    "$seed/corc" build --file "$root/tools/build/host.build" >&2
 else
-    "$tool" --file "$root/tools/build/host.build" >&2
+    "$tool" build --file "$root/tools/build/host.build" >&2
 fi
-exec "$tool" "$@"
+exec "$tool" build "$@"
