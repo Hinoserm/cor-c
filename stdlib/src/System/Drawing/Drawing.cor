@@ -779,7 +779,15 @@ public class Graphics : IDisposable
                 root = next;
             }
 
-            table[i] = (byte)(root > 255 ? 255 : (int)root);
+            // HALFWAY TO IT, NOT ALL THE WAY. The full square root is
+            // what the arithmetic of light asks for, and on a small face
+            // it is too much: a quarter-covered edge pixel comes out half
+            // black, every stem gains most of a pixel, and eight-pixel
+            // text closes up into a smudge. The mean of the straight line
+            // and the curve -- a gamma of about 1.4 -- keeps text from
+            // washing out without thickening it.
+            int curved = root > 255 ? 255 : (int)root;
+            table[i] = (byte)((i + curved + 1) / 2);
         }
 
         _gammaTable = table;
