@@ -53,6 +53,46 @@ public class Seat : IDrawingTarget
         if (Width <= 0 || Height <= 0) throw new IOException("seat " + path + " has no screen");
     }
 
+    /// <summary>One mode this display can be put into.</summary>
+    public struct SeatMode
+    {
+        public int Width;
+        public int Height;
+        public int Format;
+        public int Refresh;
+
+        /// "800 x 600" -- what a person picking a screen area reads.
+        public override string ToString()
+        {
+            return Width.ToString() + " x " + Height.ToString();
+        }
+    }
+
+    /// The refresh rate in use, or zero where the card chose it.
+    public int Refresh { get { return (int)Os.Ioctl(_fd, 0x47550032, 0); } }
+
+    /// How many modes this display has. Each is a size, a colour depth and
+    /// a refresh rate; the same size appears once per rate it supports.
+    public int ModeCount() { return (int)Os.Ioctl(_fd, 0x47550030, 0); }
+
+    /// The mode at `index`, or false where there is none.
+    public bool ModeAt(int index, out SeatMode mode)
+    {
+        mode = new SeatMode();
+
+        byte[] request = new byte[20];
+        long at = Sys.ArrayData(request);
+
+        Sys.PokeWord(at, index);
+        if (Os.Ioctl(_fd, 0x47550031, at) != 0) { return false; }
+
+        mode.Width = (int)Sys.PeekWord(at + 4);
+        mode.Height = (int)Sys.PeekWord(at + 8);
+        mode.Format = (int)Sys.PeekWord(at + 12);
+        mode.Refresh = (int)Sys.PeekWord(at + 16);
+        return true;
+    }
+
     /// Whether a seat can be used, without throwing to find out.
     public static bool Usable(string path)
     {

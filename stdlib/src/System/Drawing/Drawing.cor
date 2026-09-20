@@ -270,6 +270,90 @@ public class Graphics : IDisposable
     }
     public void DrawRectangle(Pen pen, Rectangle r) { DrawRectangle(pen, r.X, r.Y, r.Width, r.Height); }
 
+    /// <summary>
+    /// The outline of an ellipse inside this rectangle.
+    ///
+    /// The seat draws spans and lines and nothing curved, so the curve is
+    /// worked out here: a midpoint sweep over one quadrant, mirrored into
+    /// the other three. Integer arithmetic only, which is what makes it
+    /// exact rather than nearly right at the ends of the axes.
+    /// </summary>
+    public void DrawEllipse(Pen pen, int x, int y, int w, int h)
+    {
+        if (w <= 0 || h <= 0) { return; }
+
+        int a = w / 2, b = h / 2;
+        int cx = x + a, cy = y + b;
+
+        for (int i = 0; i < 4; i++)
+        {
+            // Each quadrant's extreme points, plotted so a circle of any
+            // size closes rather than leaving gaps at the axes.
+            FillRectangle(new SolidBrush(pen.Color), cx + (i == 0 ? a : i == 1 ? -a : 0), cy + (i == 2 ? b : i == 3 ? -b : 0), 1, 1);
+        }
+
+        long aa = (long)a * a, bb = (long)b * b;
+        int px = 0, py = b;
+        long fx = 0, fy = 2 * aa * b;
+        long d = bb - aa * b + aa / 4;
+
+        while (fx < fy)
+        {
+            px++;
+            fx += 2 * bb;
+            if (d < 0) { d += bb + fx; }
+            else { py--; fy -= 2 * aa; d += bb + fx - fy; }
+            Quadrants(pen, cx, cy, px, py);
+        }
+
+        d = (long)(bb * (px + 0.5) * (px + 0.5) + aa * (py - 1) * (py - 1) - aa * bb);
+
+        while (py > 0)
+        {
+            py--;
+            fy -= 2 * aa;
+            if (d > 0) { d += aa - fy; }
+            else { px++; fx += 2 * bb; d += aa - fy + fx; }
+            Quadrants(pen, cx, cy, px, py);
+        }
+    }
+
+    void Quadrants(Pen pen, int cx, int cy, int px, int py)
+    {
+        Brush ink = new SolidBrush(pen.Color);
+
+        FillRectangle(ink, cx + px, cy + py, 1, 1);
+        FillRectangle(ink, cx - px, cy + py, 1, 1);
+        FillRectangle(ink, cx + px, cy - py, 1, 1);
+        FillRectangle(ink, cx - px, cy - py, 1, 1);
+    }
+
+    public void DrawEllipse(Pen pen, Rectangle r) { DrawEllipse(pen, r.X, r.Y, r.Width, r.Height); }
+
+    /// <summary>The same, filled: one span per row rather than an outline.</summary>
+    public void FillEllipse(Brush brush, int x, int y, int w, int h)
+    {
+        if (w <= 0 || h <= 0) { return; }
+
+        int a = w / 2, b = h / 2;
+        int cx = x + a, cy = y + b;
+        long aa = (long)a * a, bb = (long)b * b;
+
+        for (int dy = -b; dy <= b; dy++)
+        {
+            // The half-width at this row, which is what makes each row one
+            // span rather than a run of single pixels.
+            long room = aa * (bb - (long)dy * dy);
+            int dx = 0;
+
+            while ((long)(dx + 1) * (dx + 1) * bb <= room) { dx++; }
+
+            FillRectangle(brush, cx - dx, cy + dy, dx * 2 + 1, 1);
+        }
+    }
+
+    public void FillEllipse(Brush brush, Rectangle r) { FillEllipse(brush, r.X, r.Y, r.Width, r.Height); }
+
     public void DrawLine(Pen pen, int x0, int y0, int x1, int y1)
     {
         if (y0 == y1) { int l = x0 < x1 ? x0 : x1; _target.Fill(l + _originX, y0 + _originY, (x0 < x1 ? x1 - x0 : x0 - x1) + 1, 1, pen.Color); return; }
