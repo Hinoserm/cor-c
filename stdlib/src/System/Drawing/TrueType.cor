@@ -2855,6 +2855,21 @@ class TrueTypeSize
 
         if (_hinted && instructionLength > 0)
         {
+            // THE PHANTOM POINTS GO ON THE GRID FIRST. A glyph program
+            // measures from them -- the right-hand stem of an H is placed
+            // at a distance back from the advance, not forward from the
+            // origin -- so a phantom left on the fraction of a pixel the
+            // advance happens to scale to carries that fraction into
+            // every point measured from it, and the stem lands off the
+            // grid however exactly the program rounded its distance.
+            // Only the current positions move; the originals stay where
+            // the scaling put them, because that is what a program asks
+            // for when it wants the distance the designer drew.
+            zone.CurX[real + 0] = (zone.CurX[real + 0] + 32) & -64;
+            zone.CurX[real + 1] = (zone.CurX[real + 1] + 32) & -64;
+            zone.CurY[real + 2] = (zone.CurY[real + 2] + 32) & -64;
+            zone.CurY[real + 3] = (zone.CurY[real + 3] + 32) & -64;
+
             fitted = _hinter.HintGlyph(instructionOffset, instructionLength);
 
             if (!fitted)
