@@ -492,6 +492,18 @@ public class Form : Control
     public const int BorderWidth = 4;         // two bevel pixels and two of face on every side
 
     public event EventHandler? Load;
+
+    /// <summary>
+    /// The display changed size. A form that was filling the screen is the
+    /// one that has to care: a desktop, or a bar along the bottom.
+    /// </summary>
+    public event EventHandler? ScreenChanged;
+
+    internal void RaiseScreenChanged()
+    {
+        EventHandler? h = ScreenChanged;
+        if (h != null) { h(this, EventArgs.Empty); }
+    }
     public event FormClosingEventHandler? FormClosing;
     public event EventHandler? FormClosed;
     public event EventHandler? Activated;
@@ -803,6 +815,52 @@ public class Form : Control
 /// asked for, and the buttons the question needs, centred on the screen
 /// and answered by whichever button was pressed. Windows' API, so a
 /// program written for it needs no changes; drawn with what is here.
+/// <summary>
+/// The display, as .NET describes it: Screen.PrimaryScreen.Bounds is the
+/// whole of it and WorkingArea is what is left once a taskbar has taken
+/// its rows.
+/// </summary>
+public class Screen
+{
+    Screen() { }
+
+    static readonly Screen _primary = new Screen();
+
+    public static Screen PrimaryScreen { get { return _primary; } }
+
+    public static Screen[] AllScreens { get { return new Screen[] { _primary }; } }
+
+    public Rectangle Bounds { get { return new Rectangle(0, 0, Seat.Current.Width, Seat.Current.Height); } }
+
+    public Rectangle WorkingArea { get { return new Rectangle(0, 0, Seat.Current.Width, Seat.Current.WorkAreaHeight()); } }
+
+    public string DeviceName { get { return "seat0"; } }
+
+    public bool Primary { get { return true; } }
+
+    /// <summary>The mode changed. .NET raises SystemEvents.DisplaySettingsChanged
+    /// for this; the name here says which display it was.</summary>
+    public static event EventHandler? DisplaySettingsChanged;
+
+    internal static void RaiseChanged()
+    {
+        EventHandler? h = DisplaySettingsChanged;
+        if (h != null) { h(_primary, EventArgs.Empty); }
+    }
+}
+
+/// <summary>The sizes a program lays itself out against.</summary>
+public static class SystemInformation
+{
+    public static Size PrimaryMonitorSize { get { return new Size(Seat.Current.Width, Seat.Current.Height); } }
+
+    public static Rectangle WorkingArea { get { return Screen.PrimaryScreen.WorkingArea; } }
+
+    public static Rectangle VirtualScreen { get { return Screen.PrimaryScreen.Bounds; } }
+
+    internal static void Rescreen() { }
+}
+
 public static class MessageBox
 {
     public static DialogResult Show(string text) { return Show(text, "", MessageBoxButtons.OK, MessageBoxIcon.None); }
@@ -2297,6 +2355,44 @@ public static class Application
             case 11:
                 Shell.RaiseWindowsChanged();
                 break;
+
+            // THE SCREEN IS A DIFFERENT SIZE NOW. The seat has thrown away
+            // every window's pixels to do it, so there is nothing to keep:
+            // the size is taken again, whoever cares is told, and every
+            // form repaints. A form that filled the screen is made to fill
+            // the new one, which is what a desktop and a taskbar are.
+            case 15:
+            {
+                Seat.Current.Rescreen(m.A & 0xFFFF, (m.A >> 16) & 0xFFFF);
+                SystemInformation.Rescreen();
+                Screen.RaiseChanged();
+
+                int screenWidth = Seat.Current.Width, screenHeight = Seat.Current.Height;
+
+                for (int i = 0; i < _forms.Count; i++)
+                {
+                    Form other = _forms[i];
+
+                    // A FORM THAT FILLED THE SCREEN FILLS THE NEW ONE. Any
+                    // other keeps its size; the seat has already brought it
+                    // inside the screen if it no longer fitted.
+                    if (other.WindowState == FormWindowState.Maximized)
+                    {
+                        other.SetBounds(0, 0, screenWidth, screenHeight);
+                    }
+
+                    other.RaiseScreenChanged();
+                }
+
+                for (int i = 0; i < _forms.Count; i++)
+                {
+                    Form other = _forms[i];
+
+                    other.PaintWindow(new Rectangle(0, 0, other.Width, other.Height), true);
+                }
+                Seat.Current.Present();
+                break;
+            }
             case 12:
             {
                 // Somebody asks what is at a point of one of our windows.

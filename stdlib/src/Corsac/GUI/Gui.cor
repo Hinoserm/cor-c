@@ -68,6 +68,31 @@ public class Seat : IDrawingTarget
         }
     }
 
+    /// <summary>
+    /// The seat changed mode: take the new size. Called by the event pump
+    /// when the seat says so, because Width and Height were read once when
+    /// this was opened and are now wrong.
+    /// </summary>
+    public void Rescreen(int width, int height)
+    {
+        Width = width;
+        Height = height;
+        _used = 0;              // whatever was half-built described the old screen
+        _named = false;
+        _clipOn = false;
+    }
+
+    /// <summary>
+    /// Asks the seat to change mode now. The rate may be zero, which means
+    /// whichever the card would pick for that size.
+    /// </summary>
+    public bool SetMode(int width, int height, int refresh)
+    {
+        Flush();
+        return Os.Ioctl(_fd, 0x47550033,
+                        (long)(width & 0xFFFF) | ((long)(height & 0xFFFF) << 16) | ((long)(refresh & 0xFFFF) << 32)) == 0;
+    }
+
     /// The refresh rate in use, or zero where the card chose it.
     public int Refresh { get { return (int)Os.Ioctl(_fd, 0x47550032, 0); } }
 
