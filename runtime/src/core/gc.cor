@@ -1460,11 +1460,19 @@ static class Gc
             return;
         }
 
+        // A platform that wants to know how long the world stood still says
+        // so here: called with 0 as the collection begins and 1 as it ends.
+        // It must not allocate. A kernel uses it to find out what its
+        // collections cost the machine's interrupt latency.
+        if (PauseHook != 0) Sys.Call(PauseHook, 0, 0, 0);
         GcThreads.StopWorld();
         Retire(Sys.ThreadBlock());
         GcRoots.Enter();
         GcThreads.StartWorld();
+        if (PauseHook != 0) Sys.Call(PauseHook, 1, 0, 0);
     }
+
+    public static long PauseHook;
 
     /// The collection proper; see Collect for why it is entered this way.
     public static void CollectInner()
