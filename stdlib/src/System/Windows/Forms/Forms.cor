@@ -4307,6 +4307,15 @@ public static class Application
                 int key = m.A & 0x1FF;
                 int mods = m.B;
                 if ((m.A & 0x200) != 0) mods = mods | 4;
+
+                // THE RETURN KEY IS ONE KEY TO A FORM AND ANOTHER TO A
+                // TERMINAL. The keyboard driver sends a line feed for it;
+                // .NET has one Keys.Enter, which is 13, so that is what
+                // KeyDown and the dialog keys are told. KeyPress still
+                // carries the character the driver sent, because what a
+                // terminal writes down its pseudo-terminal is that byte
+                // and not one this layer picked.
+                int code = key == 10 ? 13 : key;
                 Form? form = target.FindForm();
                 if (form == null) form = _active;
 
@@ -4316,11 +4325,11 @@ public static class Application
                 // KeyPress. Only what is left over becomes a dialog key,
                 // so a text box keeps its arrows and its Enter, and a form
                 // still gets Tab, Escape and Alt from everywhere else.
-                KeyEventArgs down = new KeyEventArgs((Keys)key, mods);
+                KeyEventArgs down = new KeyEventArgs((Keys)code, mods);
                 target.RaiseKeyDown(down);
                 bool handled = down.Handled;
 
-                if (!handled) handled = target.ProcessDialogKey((Keys)key, mods);
+                if (!handled) handled = target.ProcessDialogKey((Keys)code, mods);
 
                 // ALT AND A LETTER NEVER BECOMES TYPING. It is a mnemonic,
                 // and if nothing answers to it the key is simply dropped.
@@ -4338,7 +4347,7 @@ public static class Application
                     handled = press.Handled;
                 }
 
-                if (!handled && form != null) handled = DialogKey(form, target, (Keys)key, mods);
+                if (!handled && form != null) handled = DialogKey(form, target, (Keys)code, mods);
 
                 Message raw = m; target.DispatchRaw(ref raw);
                 break;
