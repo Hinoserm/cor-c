@@ -3806,15 +3806,19 @@ public class ToolTip
 
     public string GetToolTip(Control c) { int at = _owners.IndexOf(c); return at < 0 ? "" : _texts[at]; }
 
-    /// The timer is one for the whole system and only runs while there is
-    /// something to show a tip for.
+    /// The timer is one for the whole system, and IT RUNS ONLY WHILE THE
+    /// POINTER IS RESTING ON SOMETHING THAT HAS A TIP. It used to be started
+    /// by the first control ever given a tip and never stopped, so any
+    /// program with one tooltip anywhere woke ten times a second for the rest
+    /// of its life -- a timer fired, a frame presented, the seat polled --
+    /// to find, every time, that the pointer was not over anything. A
+    /// program that is not being touched has no business waking at all.
     static void Start()
     {
         if (_clock != null) { return; }
         _clock = new Timer();
         _clock.Interval = 100;
         _clock.Tick += Tick;
-        _clock.Start();
     }
 
     /// The pointer has moved on to `c`, or off everything.
@@ -3824,17 +3828,21 @@ public class ToolTip
         _over = c;
         _since = Application.Now();
         Hide();
+        Timer? clock = _clock;
+        if (clock == null) { return; }
+        if (c != null && _owners.IndexOf(c) >= 0) clock.Start();
+        else clock.Stop();
     }
 
     static void Tick(object sender, EventArgs e)
     {
         Control? over = _over;
 
-        if (over == null) { Hide(); return; }
+        if (over == null) { Hide(); StopClock(); return; }
 
         int at = _owners.IndexOf(over);
 
-        if (at < 0) { Hide(); return; }
+        if (at < 0) { Hide(); StopClock(); return; }
 
         // Never over a drag: a tip that comes up under a held button is
         // in the way of the very thing being done.
@@ -3842,7 +3850,9 @@ public class ToolTip
 
         long waited = Application.Now() - _since;
 
-        if (_shown != null) { if (waited > 5500) Hide(); return; }
+        // Shown and timed out: nothing more to wait for until the pointer
+        // moves on, and Hover starts the clock again when it does.
+        if (_shown != null) { if (waited > 5500) { Hide(); StopClock(); } return; }
         if (waited < 500) { return; }
 
         Point where = over.PointToScreen(new Point(0, over.Height + 2));
@@ -3858,6 +3868,8 @@ public class ToolTip
         _shown = window;
         window.Show();
     }
+
+    static void StopClock() { Timer? clock = _clock; if (clock != null) clock.Stop(); }
 
     static void Hide()
     {
