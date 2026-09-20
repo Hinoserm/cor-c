@@ -2598,7 +2598,7 @@ class TrueTypeRaster
                 if (to <= from) { continue; }
 
                 int first = from - 32 < 0 ? 0 : (from - 32 + 63) / 64;
-                int last = to - 32 < 0 ? -1 : (to - 32 - 1) / 64;
+                int last = to - 32 - 1 < 0 ? -1 : (to - 32 - 1) / 64;     // division rounds toward nought: -1/64 is 0, not -1
                 if (last >= first) { continue; }            // a centre is covered: the rows saw it
 
                 // The tip of a stroke seen from the side is a stub like any
@@ -2635,7 +2635,10 @@ class TrueTypeRaster
         int lastPixel = (to - half - 1) / step;
 
         if (from - half < 0) { firstPixel = (from - half - (step - 1)) / step + 1; }
-        if (to - half < 0) { lastPixel = (to - half - (step - 1) - 1) / step + 1 - 1; }
+        // Floor, not truncation: a span ending exactly on the first
+        // centre has (to - half - 1) of minus one, which divides to nought
+        // and would claim a centre the span does not reach.
+        if (to - half - 1 < 0) { lastPixel = -((-(to - half - 1) + step - 1) / step); }
 
         if (lastPixel < firstPixel)
         {
