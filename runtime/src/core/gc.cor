@@ -2225,6 +2225,7 @@ static class GcLock
 {
     public const long Collecting = 0;   // 1 while a collection is running
     public const long Held = 4;         // the heap lock: 0 free, 1 held
+    public const long Collector = 8;    // the thread block of whoever is collecting
 
     static long _words;
 
@@ -2248,6 +2249,17 @@ static class GcLock
             return false;
         }
         return Sys.Peek(at + Collecting) != 0;
+    }
+
+    /// Whether `block` is the thread doing the collection that is running.
+    /// THE COLLECTOR NEVER STOPS FOR ITSELF. On a kernel it is interrupted
+    /// like anybody else, and the handler may wait for a lock -- a wait that
+    /// is a blocking region, whose end parks the thread until the collection
+    /// is over. Parked there, on the collector's own stack, it never is.
+    public static bool IsCollector(long block)
+    {
+        long at = _words;
+        return at != 0 && block != 0 && Sys.Peek(at + Collector) == block;
     }
 
     public static void Enter()
@@ -2392,12 +2404,22 @@ static class GcThreads
     /// that is asleep in the kernel and will not allocate until woken.
     public static void BeginBlocking()
     {
+        if (GcLock.IsCollector(Sys.ThreadBlock()))
+        {
+            return;
+        }
+
         Platform.SafePoint(Stopped);
     }
 
     public static void EndBlocking()
     {
         long block = Sys.ThreadBlock();
+
+        if (GcLock.IsCollector(block))
+        {
+            return;
+        }
 
         Sys.AtomicSwap(block + Tls.State, 0);
 
@@ -2442,6 +2464,7 @@ static class GcThreads
         long ctl = GcLock.Words();
         long self = Sys.ThreadBlock();
 
+        Sys.AtomicSwap(ctl + GcLock.Collector, self);
         Sys.AtomicSwap(ctl + GcLock.Collecting, 1);
 
         if (_blocks == 0)
@@ -2519,6 +2542,7 @@ static class GcThreads
         long at = GcLock.Words() + GcLock.Collecting;
 
         Sys.AtomicSwap(at, 0);
+        Sys.AtomicSwap(GcLock.Words() + GcLock.Collector, 0);
         Platform.Wake(at, 0x7FFFFFFF);
     }
 

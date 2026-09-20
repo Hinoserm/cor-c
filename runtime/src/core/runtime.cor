@@ -320,7 +320,12 @@ static class Runtime
     public static bool StoppableHere()
     {
         long block = Sys.ThreadBlock();
-        return Sys.PeekWord(block + Tls.State) == 0 && Sys.PeekWord(block + Tls.InAlloc) == 0;
+
+        // Never the collector itself: an interrupt that finds it collecting
+        // -- a scheduling kick, its own clock -- would stop it to wait for
+        // the collection it is the only one doing.
+        return Sys.PeekWord(block + Tls.State) == 0 && Sys.PeekWord(block + Tls.InAlloc) == 0
+            && !GcLock.IsCollector(block);
     }
 
     /// This thread is stopped, and its stack from `stack` up to its base is
