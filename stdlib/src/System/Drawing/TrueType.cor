@@ -2351,9 +2351,15 @@ class TrueTypeRaster
             int size = _x0.Length * 2;
             int[] nx0 = new int[size], ny0 = new int[size], nx1 = new int[size], ny1 = new int[size];
             for (int i = 0; i < _edges; i++) { nx0[i] = _x0[i]; ny0[i] = _y0[i]; nx1[i] = _x1[i]; ny1[i] = _y1[i]; }
+            int[] nnext = new int[size], nrun = new int[size], nex = new int[size], ney = new int[size];
+            for (int i = 0; i < _edges; i++) { nnext[i] = _edgeNext[i]; }
+            for (int i = 0; i < _runNext.Length; i++) { nrun[i] = _runNext[i]; nex[i] = _runEndX[i]; ney[i] = _runEndY[i]; }
+            _runNext = nrun; _runEndX = nex; _runEndY = ney;
             _x0 = nx0; _y0 = ny0; _x1 = nx1; _y1 = ny1;
+            _edgeNext = nnext;
             _crossing = new int[size];
             _winding = new int[size];
+            _source = new int[size];
         }
 
         _x0[_edges] = x0; _y0[_edges] = y0; _x1[_edges] = x1; _y1[_edges] = y1;
@@ -2404,10 +2410,12 @@ class TrueTypeRaster
     void Flatten(TrueTypeZone zone, int realPoints)
     {
         _edges = 0;
+        _runs = 0;
         int first = 0;
 
         for (int contour = 0; contour < zone.ContourCount; contour++)
         {
+            int contourFirstEdge = _edges;
             int last = zone.ContourEnd[contour];
 
             if (last >= realPoints || last < first) { first = last + 1; continue; }
@@ -2463,6 +2471,8 @@ class TrueTypeRaster
             if (holding) { AddCurve(penX, penY, controlX, controlY, startX, startY); }
             else { AddEdge(penX, penY, startX, startY); }
 
+            Profiles(contourFirstEdge);
+
             first = last + 1;
         }
     }
@@ -2510,6 +2520,7 @@ class TrueTypeRaster
 
                 _crossing[_crossings] = x;
                 _winding[_crossings] = direction;
+                _source[_crossings] = e;
                 _crossings++;
             }
 
@@ -2519,22 +2530,22 @@ class TrueTypeRaster
             // crossings, and this keeps equal ones in the order found.
             for (int i = 1; i < _crossings; i++)
             {
-                int cx = _crossing[i], cw = _winding[i];
+                int cx = _crossing[i], cw = _winding[i], ce = _source[i];
                 int j = i - 1;
 
-                while (j >= 0 && _crossing[j] > cx) { _crossing[j + 1] = _crossing[j]; _winding[j + 1] = _winding[j]; j--; }
-                _crossing[j + 1] = cx; _winding[j + 1] = cw;
+                while (j >= 0 && _crossing[j] > cx) { _crossing[j + 1] = _crossing[j]; _winding[j + 1] = _winding[j]; _source[j + 1] = _source[j]; j--; }
+                _crossing[j + 1] = cx; _winding[j + 1] = cw; _source[j + 1] = ce;
             }
 
-            int wind = 0, spanFrom = 0;
+            int wind = 0, spanFrom = 0, spanEdge = -1;
 
             for (int i = 0; i < _crossings; i++)
             {
                 int was = wind;
                 wind += _winding[i];
 
-                if (was == 0 && wind != 0) { spanFrom = _crossing[i]; }
-                else if (was != 0 && wind == 0) { Span(into, row, spanFrom - originX, _crossing[i] - originX, dropout, step); }
+                if (was == 0 && wind != 0) { spanFrom = _crossing[i]; spanEdge = _source[i]; }
+                else if (was != 0 && wind == 0) { Span(into, row, spanFrom - originX, _crossing[i] - originX, dropout, step, spanEdge, _source[i]); }
             }
         }
 
@@ -2570,6 +2581,7 @@ class TrueTypeRaster
 
                 _stubX[count] = ay + (int)(((long)(by - ay) * (sample - x0)) / (x1 - x0)) - originY;
                 _stubW[count] = direction;
+                _stubE[count] = e;
                 count++;
                 if (count >= _stubX.Length) { break; }
             }
@@ -2578,20 +2590,20 @@ class TrueTypeRaster
 
             for (int i = 1; i < count; i++)
             {
-                int cy = _stubX[i], cw = _stubW[i];
+                int cy = _stubX[i], cw = _stubW[i], ce = _stubE[i];
                 int j = i - 1;
-                while (j >= 0 && _stubX[j] > cy) { _stubX[j + 1] = _stubX[j]; _stubW[j + 1] = _stubW[j]; j--; }
-                _stubX[j + 1] = cy; _stubW[j + 1] = cw;
+                while (j >= 0 && _stubX[j] > cy) { _stubX[j + 1] = _stubX[j]; _stubW[j + 1] = _stubW[j]; _stubE[j + 1] = _stubE[j]; j--; }
+                _stubX[j + 1] = cy; _stubW[j + 1] = cw; _stubE[j + 1] = ce;
             }
 
-            int wind = 0, from = 0;
+            int wind = 0, from = 0, fromEdge = -1;
 
             for (int i = 0; i < count; i++)
             {
                 int was = wind;
                 wind += _stubW[i];
 
-                if (was == 0 && wind != 0) { from = _stubX[i]; continue; }
+                if (was == 0 && wind != 0) { from = _stubX[i]; fromEdge = _stubE[i]; continue; }
                 if (!(was != 0 && wind == 0)) { continue; }
 
                 int to = _stubX[i];
@@ -2602,13 +2614,8 @@ class TrueTypeRaster
                 if (last >= first) { continue; }            // a centre is covered: the rows saw it
 
                 // The tip of a stroke seen from the side is a stub like any
-                // other, and spared on the same terms (see IsStub).
-                if (SparesStubs)
-                {
-                    bool wide = to - from >= 32;
-                    if (!ContinuesColumn(sample + 64, from, to) && !(wide && ContinuesColumn(sample + 31, from, to))) { continue; }
-                    if (!ContinuesColumn(sample - 64, from, to) && !(wide && ContinuesColumn(sample - 32, from, to))) { continue; }
-                }
+                // other, and spared on the same terms (see Stub).
+                if (SparesStubs && Stub(fromEdge, _stubE[i], sample, false)) { continue; }
 
                 int row = from + to - 1 < 0 ? -1 : (from + to - 1) / 2 / 64;
                 int lower = to - 32 < 0 ? -1 : (to - 32) / 64;
@@ -2624,7 +2631,7 @@ class TrueTypeRaster
 
     /// One run of "inside", from `from` to `to` in 26.6, on `row`, at a
     /// sample spacing of `step` units (sixty-four for a whole pixel).
-    void Span(TrueTypeBitmap into, int row, int from, int to, bool dropout, int step)
+    void Span(TrueTypeBitmap into, int row, int from, int to, bool dropout, int step, int leftEdge, int rightEdge)
     {
         if (to <= from) { return; }
 
@@ -2654,14 +2661,8 @@ class TrueTypeRaster
             // stem from 3.6 to 4.4 pixels is as near column three's centre
             // as column four's, and which way that tie goes decides
             // whether a d's stem touches its bowl or stands off it.
-            // A STUB IS LEFT ALONE where the face asks for that: the tip
-            // of a stroke, where its two edges meet within this very row,
-            // is not a stroke falling between two samples -- it is the
-            // stroke ENDING, and lighting a pixel there grows a wart on
-            // the terminal of every s. A stroke passing through carries
-            // on in the row above and the row below; a tip has nothing on
-            // one side of it.
-            if (dropout && SparesStubs && IsStub(row, from, to, step)) { return; }
+            // A STUB IS LEFT ALONE where the face asks for that.
+            if (dropout && SparesStubs && Stub(leftEdge, rightEdge, _fillOriginY + row * step + step / 2, true)) { return; }
 
             if (dropout)
             {
@@ -2718,124 +2719,111 @@ class TrueTypeRaster
     int _minX, _maxX, _minY, _maxY;
 
     public bool SparesStubs;
+
+    int[] _edgeNext = new int[64];       // which run of one direction each edge belongs to
+    int[] _source = new int[64];         // which edge made each crossing
+    int[] _runNext = new int[64];        // the run after each one, round its contour
+    int[] _runEndX = new int[64], _runEndY = new int[64];   // where each run hands over to the next
+    int _runs;
+
+    /// <summary>
+    /// THE CONTOUR CUT INTO RUNS THAT ALL GO ONE WAY. Flattening a curve
+    /// makes a dozen little edges where the designer drew one arc, so two
+    /// edges meeting at a corner are hardly ever neighbours in the edge
+    /// list -- but the two RUNS they belong to always are. A run is a
+    /// maximal stretch of the contour whose edges all head up, or all head
+    /// down; horizontal ones join whichever run they are in the middle of.
+    /// The first and last are joined where they head the same way, since
+    /// the contour is a ring and they are the same run cut in two.
+    /// </summary>
+    void Profiles(int from)
+    {
+        if (from >= _edges) { return; }
+
+        int firstRun = _runs, direction = 0;
+
+        for (int e = from; e < _edges; e++)
+        {
+            int d = _y1[e] > _y0[e] ? 1 : _y1[e] < _y0[e] ? -1 : 0;
+
+            if (d != 0 && d != direction) { if (direction != 0 || e > from) { _runs++; } direction = d; }
+            if (_runs == firstRun && e == from) { _runs++; }
+            _edgeNext[e] = _runs - 1;
+        }
+
+        int lastRun = _runs - 1;
+
+        // The ring's two ends are one run where they agree.
+        if (lastRun > firstRun && Heading(firstRun, from) == Heading(lastRun, from))
+        {
+            for (int e = from; e < _edges; e++) { if (_edgeNext[e] == lastRun) { _edgeNext[e] = firstRun; } }
+            _runs--;
+            lastRun--;
+        }
+
+        for (int r = firstRun; r <= lastRun && r < _runNext.Length; r++) { _runNext[r] = r < lastRun ? r + 1 : firstRun; }
+
+        // Where each run hands over to the next: the corner between them,
+        // which is the point a stub comes to.
+        for (int e = from; e < _edges; e++)
+        {
+            int r = _edgeNext[e];
+            if (r >= _runEndX.Length) { continue; }
+            int nextEdge = e + 1 < _edges ? e + 1 : from;
+            if (_edgeNext[nextEdge] != r) { _runEndX[r] = _x1[e]; _runEndY[r] = _y1[e]; }
+        }
+    }
+
+    /// Which way the edges of run `r` head, looking from `from` on.
+    int Heading(int r, int from)
+    {
+        for (int e = from; e < _edges; e++)
+        {
+            if (_edgeNext[e] != r) { continue; }
+            if (_y1[e] != _y0[e]) { return _y1[e] > _y0[e] ? 1 : -1; }
+        }
+        return 0;
+    }
+
+    /// <summary>
+    /// WHETHER A THIN SPAN IS THE TIP OF A STROKE rather than a stroke. The
+    /// two edges that bound it decide: everywhere along a stroke they are
+    /// on opposite sides of the shape and far apart in the contour, and at
+    /// a tip they are the same corner's two sides -- neighbours in the
+    /// ring. A face that asks for stubs to be left alone is asking for
+    /// exactly these to be dropped, and lighting them puts a pip on the
+    /// end of every diagonal: the middle bar of an S grew a tail.
+    /// </summary>
+    bool Stub(int leftEdge, int rightEdge, int sample, bool alongY)
+    {
+        if (leftEdge < 0 || rightEdge < 0) { return false; }
+
+        int left = _edgeNext[leftEdge], right = _edgeNext[rightEdge];
+        if (left >= _runNext.Length || right >= _runNext.Length) { return false; }
+
+        // The corner where one hands over to the other, if they are
+        // neighbours at all.
+        int corner;
+
+        if (left == right) { corner = alongY ? _runEndY[left] : _runEndX[left]; }
+        else if (_runNext[left] == right) { corner = alongY ? _runEndY[left] : _runEndX[left]; }
+        else if (_runNext[right] == left) { corner = alongY ? _runEndY[right] : _runEndX[right]; }
+        else { return false; }
+
+        // AND THE SAMPLE HAS TO BE AT THE CORNER, not merely somewhere
+        // between two runs that happen to meet further along: the two legs
+        // of a w meet at its foot, and every row above the foot is a
+        // stroke to be drawn. Only the row the corner is on is the tip.
+        int apart = corner - sample;
+        if (apart < 0) { apart = -apart; }
+        return apart <= 64;
+    }
     int _fillOriginX, _fillOriginY;
 
-    /// Whether the inside run [from, to) on `row` has nothing continuing
-    /// it on the sample line above, or on the one below.
-    bool IsStub(int row, int from, int to, int step)
-    {
-        int sample = _fillOriginY + row * step + step / 2;
-
-        // NOT EVERY END IS A STUB. The top of an l is an end too, and it
-        // must be drawn: what spares it is that the stroke is at least
-        // half a pixel wide and runs at least half a pixel past this
-        // sample line before it stops. A tip narrower or shorter than
-        // that is the wart; anything more is the letter.
-        bool wide = to - from >= step / 2;
-
-        if (!Continues(sample + step, from, to, step) && !(wide && Continues(sample + step / 2 - 1, from, to, step))) { return true; }
-        if (!Continues(sample - step, from, to, step) && !(wide && Continues(sample - step / 2, from, to, step))) { return true; }
-        return false;
-    }
-
-    /// The same question asked down a column instead of along a row.
-    bool ContinuesColumn(int sample, int from, int to)
-    {
-        int count = 0;
-
-        for (int e = 0; e < _edges; e++)
-        {
-            int x0 = _x0[e], x1 = _x1[e];
-            int direction = 1;
-
-            if (x0 > x1) { int t = x0; x0 = x1; x1 = t; direction = -1; }
-            if (sample < x0 || sample >= x1) { continue; }
-
-            int ay = direction > 0 ? _y0[e] : _y1[e];
-            int by = direction > 0 ? _y1[e] : _y0[e];
-
-            _sideX[count] = ay + (int)(((long)(by - ay) * (sample - x0)) / (x1 - x0)) - _fillOriginY;
-            _sideW[count] = direction;
-            count++;
-            if (count >= _sideX.Length) { break; }
-        }
-
-        for (int i = 1; i < count; i++)
-        {
-            int cy = _sideX[i], cw = _sideW[i];
-            int j = i - 1;
-            while (j >= 0 && _sideX[j] > cy) { _sideX[j + 1] = _sideX[j]; _sideW[j + 1] = _sideW[j]; j--; }
-            _sideX[j + 1] = cy; _sideW[j + 1] = cw;
-        }
-
-        int wind = 0, runFrom = 0;
-
-        for (int i = 0; i < count; i++)
-        {
-            int was = wind;
-            wind += _sideW[i];
-
-            if (was == 0 && wind != 0) { runFrom = _sideX[i]; }
-            else if (was != 0 && wind == 0)
-            {
-                if (runFrom <= to + 64 && _sideX[i] >= from - 64) { return true; }
-            }
-        }
-        return false;
-    }
-
-    int[] _sideX = new int[256];
-    int[] _sideW = new int[256];
-
-    bool Continues(int sample, int from, int to, int step)
-    {
-        // Every inside run on that line; one that comes within a sample's
-        // width of this one is the same stroke carrying on.
-        int count = 0;
-
-        for (int e = 0; e < _edges; e++)
-        {
-            int y0 = _y0[e], y1 = _y1[e];
-            int direction = 1;
-
-            if (y0 > y1) { int t = y0; y0 = y1; y1 = t; direction = -1; }
-            if (sample < y0 || sample >= y1) { continue; }
-
-            int ax = direction > 0 ? _x0[e] : _x1[e];
-            int bx = direction > 0 ? _x1[e] : _x0[e];
-
-            _stubX[count] = ax + (int)(((long)(bx - ax) * (sample - y0)) / (y1 - y0)) - _fillOriginX;
-            _stubW[count] = direction;
-            count++;
-            if (count >= _stubX.Length) { break; }
-        }
-
-        for (int i = 1; i < count; i++)
-        {
-            int cx = _stubX[i], cw = _stubW[i];
-            int j = i - 1;
-            while (j >= 0 && _stubX[j] > cx) { _stubX[j + 1] = _stubX[j]; _stubW[j + 1] = _stubW[j]; j--; }
-            _stubX[j + 1] = cx; _stubW[j + 1] = cw;
-        }
-
-        int wind = 0, runFrom = 0;
-
-        for (int i = 0; i < count; i++)
-        {
-            int was = wind;
-            wind += _stubW[i];
-
-            if (was == 0 && wind != 0) { runFrom = _stubX[i]; }
-            else if (was != 0 && wind == 0)
-            {
-                if (runFrom <= to + step && _stubX[i] >= from - step) { return true; }
-            }
-        }
-        return false;
-    }
 
     int[] _stubX = new int[256];
     int[] _stubW = new int[256];
+    int[] _stubE = new int[256];
 
     /// The pixels whose centres an extent can cover: first and one past
     /// last. Never empty -- see Render.
