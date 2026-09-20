@@ -154,6 +154,7 @@ public sealed class TaskExecutor
             bool passed = !result.TimedOut && result.ExitCode == expected;
             string detail = executable + (result.TimedOut ? " timed out" : " exited " + result.ExitCode + ", expected " + expected)
                 + "; logs: " + result.LogPrefix;
+            if (!passed) ShowFailure(target.Path, result.LogPrefix);
             if (isTest) report.Add(new TestResult { Target = target.Path, Name = testName,
                 Status = result.TimedOut ? "timed-out" : passed ? "passed" : "failed", Detail = detail, Process = result });
             if (!passed) throw new BuildException(detail);
@@ -166,6 +167,42 @@ public sealed class TaskExecutor
             throw;
         }
         finally { if (temporary is not null) File.Delete(temporary); }
+    }
+
+    /// <summary>
+    /// Prints what a failed step said, rather than only where to find it.
+    ///
+    /// Standard output is echoed as it arrives, but standard error is only
+    /// copied to its file -- and standard error is where a tool says why it
+    /// gave up. So a failure showed a path and nothing else, and the reason
+    /// was one cat away in a directory named after a timestamp.
+    ///
+    /// The tail is bounded because a compiler that fails on every file of a
+    /// large project should not push the reason off the top of the screen.
+    /// </summary>
+    private static void ShowFailure(string label, string prefix)
+    {
+        foreach (string suffix in new[] { ".err.log", ".out.log" })
+        {
+            string path = prefix + suffix;
+
+            string[] lines;
+            try { lines = File.ReadAllLines(path); }
+            catch (IOException) { continue; }
+
+            if (lines.Length == 0) continue;
+
+            const int most = 20;
+            int from = Math.Max(0, lines.Length - most);
+
+            if (from > 0)
+                Console.Error.WriteLine("/" + label + "! ... " + from + " earlier lines in " + path);
+
+            for (int at = from; at < lines.Length; at++)
+                Console.Error.WriteLine("/" + label + "! " + lines[at]);
+
+            return;
+        }
     }
 
     private string Project(XElement task)
