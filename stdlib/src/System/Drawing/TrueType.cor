@@ -599,6 +599,17 @@ class TrueTypeZone
     public int[] OrgY = new int[0];
     public int[] CurX = new int[0];          // where the point is now, 26.6
     public int[] CurY = new int[0];
+
+    // THE DESIGNER'S OWN NUMBERS, in font units and never scaled. The two
+    // interpolating instructions work out "how far along between these
+    // two points was this one drawn" -- and that ratio taken from scaled
+    // coordinates has already lost the fraction of a unit the scaling
+    // rounded away, which is a fraction of a pixel once stretched back
+    // out. Taken from these it is exact. False for the twilight zone,
+    // which was never drawn by anybody.
+    public int[] UnsX = new int[0];
+    public int[] UnsY = new int[0];
+    public bool HasUnscaled;
     public bool[] TouchX = new bool[0];      // moved, or pinned, along x
     public bool[] TouchY = new bool[0];
     public bool[] OnCurve = new bool[0];
@@ -610,6 +621,7 @@ class TrueTypeZone
         {
             OrgX = new int[points]; OrgY = new int[points];
             CurX = new int[points]; CurY = new int[points];
+            UnsX = new int[points]; UnsY = new int[points];
             TouchX = new bool[points]; TouchY = new bool[points];
             OnCurve = new bool[points];
         }
@@ -758,9 +770,15 @@ class TrueTypeHinter
     /// Font units to 26.6 pixels at the size this hinter was set to.
     public int Scale(int units)
     {
+        // THROUGH A 16.16 FACTOR, the way every rasteriser a face was
+        // tested against does it. Dividing exactly is more accurate and
+        // differs by one unit in a few hundred coordinates -- which is
+        // enough to tip a stem that straddles two pixel centres into the
+        // other column, so the accurate answer draws the wrong letter.
         int upem = _face.UnitsPerEm;
-        long value = (long)units * _ppem * 64;
-        return (int)((value >= 0 ? value + upem / 2 : value - upem / 2) / upem);
+        long factor = ((((long)_ppem * 64) << 16) + upem / 2) / upem;
+        long value = (long)units * factor;
+        return (int)(value >= 0 ? (value + 0x8000) >> 16 : -((-value + 0x8000) >> 16));
     }
 
     static int MulDiv(int a, int b, int c)
@@ -860,6 +878,16 @@ class TrueTypeHinter
         return Mul14(x, _dvx) + Mul14(y, _dvy);
     }
 
+    /// The same again over the unscaled outline, in font units.
+    int ProjectUnscaled(TrueTypeZone zone, int point)
+    {
+        int x = zone.UnsX[point], y = zone.UnsY[point];
+
+        if (_dvy == 0) { return _dvx >= 0 ? x : -x; }
+        if (_dvx == 0) { return _dvy >= 0 ? y : -y; }
+        return Mul14(x, _dvx) + Mul14(y, _dvy);
+    }
+
     /// <summary>
     /// Move a point by `distance` ALONG THE FREEDOM VECTOR so that its
     /// projection changes by that much. The two vectors are usually the
@@ -871,24 +899,30 @@ class TrueTypeHinter
     {
         if (point < 0 || point >= zone.PointCount) { Soft(); return; }
 
-        if (_fvy == 0)
+        // THE SHORT WAY IS ONLY FOR BOTH VECTORS ON ONE AXIS. A diagonal
+        // stroke is hinted by measuring ACROSS it -- the projection vector
+        // set perpendicular to the stroke -- while moving the point along
+        // x, and then the move is the distance divided by the cosine
+        // between the two. Taking the short way whenever the freedom
+        // vector alone was on an axis moved such points by the raw
+        // distance, often in the wrong direction: the arms of an x came
+        // out doubled and lopsided, which is a line where none belongs.
+        if (_fvy == 0 && _pvy == 0)
         {
-            zone.CurX[point] += _fvx >= 0 ? distance : -distance;
+            zone.CurX[point] += (_fvx >= 0) == (_pvx >= 0) ? distance : -distance;
             if (touch) { zone.TouchX[point] = true; }
             return;
         }
-        if (_fvx == 0)
+        if (_fvx == 0 && _pvx == 0)
         {
-            zone.CurY[point] += _fvy >= 0 ? distance : -distance;
+            zone.CurY[point] += (_fvy >= 0) == (_pvy >= 0) ? distance : -distance;
             if (touch) { zone.TouchY[point] = true; }
             return;
         }
         if (_fdotp == 0) { return; }
 
-        zone.CurX[point] += MulDiv(distance, _fvx, _fdotp);
-        zone.CurY[point] += MulDiv(distance, _fvy, _fdotp);
-
-        if (touch) { zone.TouchX[point] = true; zone.TouchY[point] = true; }
+        if (_fvx != 0) { zone.CurX[point] += MulDiv(distance, _fvx, _fdotp); if (touch) { zone.TouchX[point] = true; } }
+        if (_fvy != 0) { zone.CurY[point] += MulDiv(distance, _fvy, _fdotp); if (touch) { zone.TouchY[point] = true; } }
     }
 
     void SetFreedomDotProjection()
@@ -1756,8 +1790,12 @@ class TrueTypeHinter
             return;
         }
 
-        int orgFrom = ProjectDual(first, _rp1), curFrom = Project(first, _rp1, false);
-        int orgTo = ProjectDual(second, _rp2), curTo = Project(second, _rp2, false);
+        // From the unscaled outline wherever all three zones have one.
+        bool exact = first.HasUnscaled && second.HasUnscaled && zone.HasUnscaled;
+
+        int orgFrom = exact ? ProjectUnscaled(first, _rp1) : ProjectDual(first, _rp1);
+        int orgTo = exact ? ProjectUnscaled(second, _rp2) : ProjectDual(second, _rp2);
+        int curFrom = Project(first, _rp1, false), curTo = Project(second, _rp2, false);
         int orgRange = orgTo - orgFrom, curRange = curTo - curFrom;
 
         for (int i = 0; i < _loop && !Failed; i++)
@@ -1766,11 +1804,11 @@ class TrueTypeHinter
 
             if (point < 0 || point >= zone.PointCount) { Soft(); break; }
 
-            int org = ProjectDual(zone, point);
+            int org = exact ? ProjectUnscaled(zone, point) : ProjectDual(zone, point);
             int now = Project(zone, point, false);
-            int want = orgRange != 0 && curRange != 0
+            int want = orgRange != 0
                      ? curFrom + MulDiv(org - orgFrom, curRange, orgRange)
-                     : curFrom + (org - orgFrom);
+                     : curFrom + (ProjectDual(zone, point) - ProjectDual(first, _rp1));
 
             Move(zone, point, want - now, true);
         }
@@ -1843,15 +1881,21 @@ class TrueTypeHinter
     {
         int[] org = horizontal ? zone.OrgX : zone.OrgY;
         int[] cur = horizontal ? zone.CurX : zone.CurY;
+        int[] uns = zone.HasUnscaled ? (horizontal ? zone.UnsX : zone.UnsY) : org;
 
-        int orgFrom = org[from], orgTo = org[to];
-        int curFrom = cur[from], curTo = cur[to];
+        // The two references in the order the designer drew them.
+        int lowRef = from, highRef = to;
+        if (uns[lowRef] > uns[highRef]) { lowRef = to; highRef = from; }
 
-        int low = orgFrom < orgTo ? orgFrom : orgTo;
-        int high = orgFrom < orgTo ? orgTo : orgFrom;
-        int lowCur = orgFrom < orgTo ? curFrom : curTo;
-        int highCur = orgFrom < orgTo ? curTo : curFrom;
-        int orgRange = high - low, curRange = highCur - lowCur;
+        int lowOrg = org[lowRef], highOrg = org[highRef];
+        int lowCur = cur[lowRef], highCur = cur[highRef];
+        int lowUns = uns[lowRef], highUns = uns[highRef];
+        int lowShift = lowCur - lowOrg, highShift = highCur - highOrg;
+
+        // Between the two, a point keeps its PLACE ALONG THE WAY as drawn;
+        // the factor is 16.16 so the rounding matches point for point.
+        bool flat = lowUns == highUns || lowCur == highCur;
+        long factor = flat ? 0 : (((long)(highCur - lowCur) << 16) + (highUns - lowUns) / 2) / (highUns - lowUns);
 
         int at = from;
 
@@ -1862,12 +1906,17 @@ class TrueTypeHinter
 
             int value = org[at];
 
-            if (value <= low) { cur[at] = lowCur + (value - low); }
-            else if (value >= high) { cur[at] = highCur + (value - high); }
-            else if (orgRange > 0) { cur[at] = lowCur + MulDiv(value - low, curRange, orgRange); }
-            else { cur[at] = lowCur; }
+            if (value <= lowOrg) { cur[at] = value + lowShift; }
+            else if (value >= highOrg) { cur[at] = value + highShift; }
+            else if (flat) { cur[at] = value + lowShift; }
+            else
+            {
+                long product = (long)(uns[at] - lowUns) * factor;
+                cur[at] = lowCur + (int)(product >= 0 ? (product + 0x8000) >> 16 : -((-product + 0x8000) >> 16));
+            }
         }
     }
+
 
     /// ISECT: a point put where two lines cross. Rare, and used by faces
     /// that construct a junction rather than draw one.
@@ -2078,16 +2127,27 @@ class TrueTypeHinter
 
     /// What SCANCTRL and SCANTYPE asked for: whether the rasteriser should
     /// keep thin strokes that fall between two pixel centres, and how.
+    /// SCANTYPE 2 switches the rescue off however SCANCTRL is set; 1 and 5
+    /// keep it but leave a stroke's very tip alone (see Span).
+    public bool DropoutDisabled { get { return _scanType == 2; } }
+    public bool DropoutSparesStubs { get { return _scanType == 1 || _scanType == 5; } }
+
     public bool DropoutControl
     {
         get
         {
-            if ((_scanControl & 0x100) != 0) { return false; }          // never
-            if ((_scanControl & 0x200) != 0) { return true; }           // always
-            // The low byte is "up to this many pixels per em": below
-            // that size a thin stroke needs the help, above it does not.
+            // SCANCTRL, as the specification lays it out: the low byte is
+            // a size, bit 8 says "on at or below that size" (and 0xFF
+            // means every size), bit 11 says "off above it". Bits 9, 10,
+            // 12 and 13 concern rotated and stretched text, which this
+            // never draws.
             int limit = _scanControl & 0xFF;
-            return limit != 0 && _ppem <= limit;
+            bool on = false;
+
+            if ((_scanControl & 0x100) != 0 && (limit == 0xFF || _ppem <= limit)) { on = true; }
+            if ((_scanControl & 0x800) != 0 && limit != 0xFF && _ppem > limit) { on = false; }
+
+            return on;
         }
     }
 
@@ -2358,6 +2418,8 @@ class TrueTypeRaster
     /// </summary>
     void Fill(TrueTypeBitmap into, int originX, int originY, bool dropout, int step)
     {
+        _fillOriginX = originX; _fillOriginY = originY;
+
         for (int row = 0; row < into.Height; row++)
         {
             // The centre of this row of samples, in outline coordinates.
@@ -2436,7 +2498,28 @@ class TrueTypeRaster
             // a thin stroke almost always lights SOME of them, and comes
             // out as a faint grey line instead of vanishing -- which is
             // the point of supersampling in the first place.
-            if (dropout) { into.Set((from + to) / 2 / step, row); }
+            // The pixel whose centre is nearest the middle of the stroke,
+            // and the LOWER one when it falls exactly between two -- a
+            // stem from 3.6 to 4.4 pixels is as near column three's centre
+            // as column four's, and which way that tie goes decides
+            // whether a d's stem touches its bowl or stands off it.
+            // A STUB IS LEFT ALONE where the face asks for that: the tip
+            // of a stroke, where its two edges meet within this very row,
+            // is not a stroke falling between two samples -- it is the
+            // stroke ENDING, and lighting a pixel there grows a wart on
+            // the terminal of every s. A stroke passing through carries
+            // on in the row above and the row below; a tip has nothing on
+            // one side of it.
+            if (dropout && SparesStubs && IsStub(row, from, to, step)) { return; }
+
+            if (dropout)
+            {
+                int pixel = (from + to - 1) / 2 / step;
+                if (from + to - 1 < 0) { pixel = -1; }
+                if (pixel < 0) { pixel = 0; }
+                if (pixel >= into.Width) { pixel = into.Width - 1; }
+                into.Set(pixel, row);
+            }
             return;
         }
 
@@ -2469,7 +2552,97 @@ class TrueTypeRaster
         right = (maxX + 63) >> 6;
         bottom = minY >> 6;
         top = (maxY + 63) >> 6;
+        _minX = minX; _maxX = maxX; _minY = minY; _maxY = maxY;
         return true;
+    }
+
+    int _minX, _maxX, _minY, _maxY;
+
+    public bool SparesStubs;
+    int _fillOriginX, _fillOriginY;
+
+    /// Whether the inside run [from, to) on `row` has nothing continuing
+    /// it on the sample line above, or on the one below.
+    bool IsStub(int row, int from, int to, int step)
+    {
+        int sample = _fillOriginY + row * step + step / 2;
+
+        // NOT EVERY END IS A STUB. The top of an l is an end too, and it
+        // must be drawn: what spares it is that the stroke is at least
+        // half a pixel wide and runs at least half a pixel past this
+        // sample line before it stops. A tip narrower or shorter than
+        // that is the wart; anything more is the letter.
+        bool wide = to - from >= step / 2;
+
+        if (!Continues(sample + step, from, to, step) && !(wide && Continues(sample + step / 2 - 1, from, to, step))) { return true; }
+        if (!Continues(sample - step, from, to, step) && !(wide && Continues(sample - step / 2, from, to, step))) { return true; }
+        return false;
+    }
+
+    bool Continues(int sample, int from, int to, int step)
+    {
+        // Every inside run on that line; one that comes within a sample's
+        // width of this one is the same stroke carrying on.
+        int count = 0;
+
+        for (int e = 0; e < _edges; e++)
+        {
+            int y0 = _y0[e], y1 = _y1[e];
+            int direction = 1;
+
+            if (y0 > y1) { int t = y0; y0 = y1; y1 = t; direction = -1; }
+            if (sample < y0 || sample >= y1) { continue; }
+
+            int ax = direction > 0 ? _x0[e] : _x1[e];
+            int bx = direction > 0 ? _x1[e] : _x0[e];
+
+            _stubX[count] = ax + (int)(((long)(bx - ax) * (sample - y0)) / (y1 - y0)) - _fillOriginX;
+            _stubW[count] = direction;
+            count++;
+            if (count >= _stubX.Length) { break; }
+        }
+
+        for (int i = 1; i < count; i++)
+        {
+            int cx = _stubX[i], cw = _stubW[i];
+            int j = i - 1;
+            while (j >= 0 && _stubX[j] > cx) { _stubX[j + 1] = _stubX[j]; _stubW[j + 1] = _stubW[j]; j--; }
+            _stubX[j + 1] = cx; _stubW[j + 1] = cw;
+        }
+
+        int wind = 0, runFrom = 0;
+
+        for (int i = 0; i < count; i++)
+        {
+            int was = wind;
+            wind += _stubW[i];
+
+            if (was == 0 && wind != 0) { runFrom = _stubX[i]; }
+            else if (was != 0 && wind == 0)
+            {
+                if (runFrom <= to + step && _stubX[i] >= from - step) { return true; }
+            }
+        }
+        return false;
+    }
+
+    int[] _stubX = new int[256];
+    int[] _stubW = new int[256];
+
+    /// The pixels whose centres an extent can cover: first and one past
+    /// last. Never empty -- see Render.
+    static int Tight(int low, int high, out int end)
+    {
+        int first = (low + 31) >> 6;
+        end = (high + 32) >> 6;
+
+        if (first >= end)
+        {
+            end = first;
+            if (((low + 31) & 63) - 31 + ((high + 32) & 63) - 32 < 0) { first = first - 1; }
+            else { end = end + 1; }
+        }
+        return first;
     }
 
     /// <summary>
@@ -2486,6 +2659,17 @@ class TrueTypeRaster
 
         int left, right, bottom, top;
         if (!Bounds(out left, out right, out bottom, out top)) { return made; }
+
+        // ONE BIT A PIXEL TAKES A TIGHTER BOX. A pixel is lit when its
+        // centre is inside the outline, so the columns that can be lit
+        // run from the first centre at or after the left edge to the last
+        // before the right one -- the extent ROUNDED, not rounded out. An
+        // outline thinner than a pixel may hold no centre at all; then
+        // the box is the single column nearer its middle, and the stroke
+        // the dropout rule saves is put there and nowhere else. This is
+        // what decides which of two columns a hairline l stands in.
+        left = Tight(_minX, _maxX, out right);
+        bottom = Tight(_minY, _maxY, out top);
 
         made.Width = right - left;
         made.Height = top - bottom;
@@ -2693,9 +2877,15 @@ class TrueTypeSize
 
     int Scale(int units)
     {
-        long value = (long)units * _ppem * 64;
+        // THROUGH A 16.16 FACTOR, the way every rasteriser a face was
+        // tested against does it. Dividing exactly is more accurate and
+        // differs by one unit in a few hundred coordinates -- which is
+        // enough to tip a stem that straddles two pixel centres into the
+        // other column, so the accurate answer draws the wrong letter.
         int upem = _face.UnitsPerEm;
-        return (int)((value >= 0 ? value + upem / 2 : value - upem / 2) / upem);
+        long factor = ((((long)_ppem * 64) << 16) + upem / 2) / upem;
+        long value = (long)units * factor;
+        return (int)(value >= 0 ? (value + 0x8000) >> 16 : -((-value + 0x8000) >> 16));
     }
 
     public int PixelsPerEm { get { return _ppem; } }
@@ -2775,7 +2965,8 @@ class TrueTypeSize
             return blank;
         }
 
-        return _raster.Render(_hinter.Glyph, real, fittedAdvance, _hinter.DropoutControl || !_hinted);
+        _raster.SparesStubs = _hinted && _hinter.DropoutSparesStubs;
+        return _raster.Render(_hinter.Glyph, real, fittedAdvance, (_hinter.DropoutControl && !_hinter.DropoutDisabled) || !_hinted);
     }
 
     /// The same glyph, antialiased. See Draw; the only difference is the
@@ -2837,6 +3028,8 @@ class TrueTypeSize
         {
             zone.OrgX[i] = Scale(_outline.X[i]);
             zone.OrgY[i] = Scale(_outline.Y[i]);
+            zone.UnsX[i] = _outline.X[i];
+            zone.UnsY[i] = _outline.Y[i];
             zone.CurX[i] = zone.OrgX[i];
             zone.CurY[i] = zone.OrgY[i];
             zone.OnCurve[i] = _outline.OnCurve[i];
@@ -2848,6 +3041,11 @@ class TrueTypeSize
         Phantom(zone, real + 1, Scale(originUnits + advance), 0);
         Phantom(zone, real + 2, 0, 0);
         Phantom(zone, real + 3, 0, 0);
+        zone.UnsX[real + 0] = originUnits;           zone.UnsY[real + 0] = 0;
+        zone.UnsX[real + 1] = originUnits + advance; zone.UnsY[real + 1] = 0;
+        zone.UnsX[real + 2] = 0;                     zone.UnsY[real + 2] = 0;
+        zone.UnsX[real + 3] = 0;                     zone.UnsY[real + 3] = 0;
+        zone.HasUnscaled = true;
 
         for (int i = 0; i < _outline.ContourCount; i++) { zone.ContourEnd[i] = _outline.ContourEnd[i]; }
 
