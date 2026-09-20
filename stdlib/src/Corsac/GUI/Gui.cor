@@ -547,6 +547,9 @@ public static class Shell
     public static event MouseEventHandler? PointerMoved;
     /// An answer to Seat.Inspect is ready (Seat.InspectRead()).
     public static event EventHandler? Inspected;
+    /// Ctrl+Esc was pressed (after WatchWindows()): the seat takes that
+    /// key from whoever has the keyboard and hands it to the shell.
+    public static event EventHandler? StartRequested;
 
     public static void WatchWindows() { Seat.Current.WatchWindows(); }
     public static void WatchPointer() { Seat.Current.WatchPointer(); }
@@ -557,5 +560,6 @@ public static class Shell
 
     internal static void RaiseWindowsChanged() { if (WindowsChanged != null) WindowsChanged(null!, EventArgs.Empty); }
     internal static void RaisePointerMoved(MouseEventArgs e) { if (PointerMoved != null) PointerMoved(null!, e); }
+    internal static void RaiseStartRequested() { if (StartRequested != null) StartRequested(null!, EventArgs.Empty); }
     internal static void RaiseInspected() { if (Inspected != null) Inspected(null!, EventArgs.Empty); }
 }

@@ -482,7 +482,21 @@ public class Control
     /// Whether the keyboard can land here at all. A label, a panel and a
     /// group box say no however TabStop is set; everything a person types
     /// into or presses says yes.
-    public virtual bool CanSelect { get { return TabStop && Visible && Enabled && !(this is Label) && !(this is Panel) && !(this is GroupBox) && !(this is Form); } }
+    public virtual bool CanSelect { get { return TabStop && Reachable && !(this is Label) && !(this is Panel) && !(this is GroupBox) && !(this is Form); } }
+
+    /// Shown and enabled ALL THE WAY UP. A control's own flags say nothing
+    /// about the page it sits on: everything on a tab page that is not the
+    /// one in front is still "visible" by its own account, and the Tab key
+    /// walked the focus off into controls nobody could see. The same for a
+    /// mnemonic, which otherwise fires a button on a hidden page.
+    internal bool Reachable
+    {
+        get
+        {
+            for (Control? c = this; c != null; c = c._parent) { if (!c._visible || !c._enabled) return false; }
+            return true;
+        }
+    }
 
     /// <summary>
     /// Alt was held and `key` was pressed: is that letter mine? A control
@@ -4423,7 +4437,7 @@ public static class Application
         // the screen changing size. Everything else names a window and is
         // dropped when that window has gone.
         if (f == null && m.Kind != 1 && m.Kind != 11 && m.Kind != 12 && m.Kind != 13
-            && m.Kind != 14 && m.Kind != 15) return;
+            && m.Kind != 14 && m.Kind != 15 && m.Kind != 16) return;
         switch (m.Kind)
         {
             case 1:
@@ -4526,6 +4540,9 @@ public static class Application
                 break;
             case 11:
                 Shell.RaiseWindowsChanged();
+                break;
+            case 16:
+                if (m.A == 1) Shell.RaiseStartRequested();
                 break;
 
             // THE SCREEN IS A DIFFERENT SIZE NOW. The seat has thrown away
@@ -4652,7 +4669,7 @@ public static class Application
     {
         List<Control> all = new List<Control>();
         Order(f, all);
-        for (int i = 0; i < all.Count; i++) if (all[i].Visible && all[i].Enabled && all[i].ProcessMnemonic(key)) return true;
+        for (int i = 0; i < all.Count; i++) if (all[i].Reachable && all[i].ProcessMnemonic(key)) return true;
         return false;
     }
 
