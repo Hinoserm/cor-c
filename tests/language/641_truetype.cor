@@ -33,14 +33,22 @@
 // garbage bytes rejected: True
 // missing file throws: True
 // garbage memory font throws: True
+// above 256 colours, edges are blended: True
+// at 256 colours, no blending at all: True
+// plain overload never blends: True
+// both modes draw something: True
 //
 // The whole TrueType pipeline, proven against a small synthetic face built
 // with fontTools (support/truetype-fixture-gen.py): the sfnt directory, the
 // cmap, glyf and loca tables, the hinting virtual machine running a real
 // font program, control value program and one glyph's own instructions, the
-// scan converter, the FontFamily/PrivateFontCollection surface, and
+// scan converter, the FontFamily/PrivateFontCollection surface,
 // Graphics.DrawString/MeasureString drawing and measuring proportionally
-// through nothing but ordinary Fill calls.
+// through nothing but ordinary Fill calls, and antialiasing switching
+// itself on above 256 colours and off at or below it, driven by the
+// drawing target's own reported colour count rather than a global seat
+// -- which is what lets a plain IDrawingTarget test double answer this
+// question with no running seat at all.
 
 using System;
 using System.Drawing;
@@ -50,8 +58,18 @@ using System.IO;
 class CaptureTarget : IDrawingTarget
 {
     public List<int> Rects = new List<int>();
+    public List<int> Colors = new List<int>();      // one ARGB per Fill, parallel to Rects
 
-    public void Fill(int x, int y, int w, int h, Color colour) { Rects.Add(x); Rects.Add(y); Rects.Add(w); Rects.Add(h); }
+    // Settable, so one target can stand in for a 256-colour palette
+    // screen or a full-colour one -- exactly the fact DrawString's
+    // antialiasing decision is supposed to be asking about.
+    public int Colours { get { return _colours; } set { _colours = value; } }
+    int _colours = 65536;
+
+    public void Fill(int x, int y, int w, int h, Color colour)
+    {
+        Rects.Add(x); Rects.Add(y); Rects.Add(w); Rects.Add(h); Colors.Add(colour.ToArgb());
+    }
     public void Copy(int sx, int sy, int dx, int dy, int w, int h) { }
     public void Line(int x0, int y0, int x1, int y1, Color colour) { }
     public void Glyph(int id, int x, int y, Color foreground, Color background, bool transparent) { }
@@ -171,6 +189,53 @@ class Program
         try { collection.AddMemoryFont(garbage); }
         catch (ArgumentException) { garbageThrew = true; }
         Line("garbage memory font throws: " + garbageThrew);
+
+        // --- antialiasing: on above 256 colours, off at or below it ----
+
+        CaptureTarget hi = new CaptureTarget();
+        hi.Colours = 65536;
+        Graphics gHi = new Graphics(hi, 0, 0, new Rectangle(0, 0, 100, 40));
+        gHi.DrawString("H", big, Brushes.Black, SystemColors.Control, 5, 5);
+
+        bool sawBlend = false;
+        for (int i = 0; i < hi.Colors.Count; i++)
+        {
+            int argb = hi.Colors[i];
+            bool isForeground = argb == Color.Black.ToArgb();
+            bool isBackground = argb == SystemColors.Control.ToArgb();
+            if (!isForeground && !isBackground) { sawBlend = true; }
+        }
+        Line("above 256 colours, edges are blended: " + sawBlend);
+
+        CaptureTarget lo = new CaptureTarget();
+        lo.Colours = 256;
+        Graphics gLo = new Graphics(lo, 0, 0, new Rectangle(0, 0, 100, 40));
+        gLo.DrawString("H", big, Brushes.Black, SystemColors.Control, 5, 5);
+
+        bool sawOnlyForeground = true;
+        for (int i = 0; i < lo.Colors.Count; i++)
+        {
+            if (lo.Colors[i] != Color.Black.ToArgb()) { sawOnlyForeground = false; }
+        }
+        Line("at 256 colours, no blending at all: " + sawOnlyForeground);
+
+        // The plain, no-background overload never antialiases either,
+        // whatever the mode -- there is nothing to blend against.
+        CaptureTarget plain = new CaptureTarget();
+        plain.Colours = 65536;
+        Graphics gPlain = new Graphics(plain, 0, 0, new Rectangle(0, 0, 100, 40));
+        gPlain.DrawString("H", big, Brushes.Black, 5, 5);
+
+        bool plainOnlyForeground = true;
+        for (int i = 0; i < plain.Colors.Count; i++)
+        {
+            if (plain.Colors[i] != Color.Black.ToArgb()) { plainOnlyForeground = false; }
+        }
+        Line("plain overload never blends: " + plainOnlyForeground);
+
+        // Both modes light the glyph in roughly the same place: coverage
+        // adds edge pixels, it does not move the letter.
+        Line("both modes draw something: " + (hi.Colors.Count > 0 && lo.Colors.Count > 0));
 
         return 0;
     }

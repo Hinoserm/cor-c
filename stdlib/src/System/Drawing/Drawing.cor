@@ -338,6 +338,16 @@ public interface IDrawingTarget
     /// given: how an icon is drawn once it has been handed over.
     void Blit(int id, int sx, int sy, int x, int y, int w, int h);
     void Clip(int x, int y, int w, int h);
+
+    /// How many colours the target can actually show: what decides
+    /// whether antialiased text is worth drawing at all, since blending
+    /// two colours into a third needs a palette with room for the third
+    /// one. Asked of the target and not of Corsac.GUI's Seat directly,
+    /// because System.Drawing is built before System.Windows.Forms (which
+    /// is where Seat lives) and must not need it -- and because it is
+    /// what makes a Graphics over a test double answerable without a
+    /// running seat at all.
+    int Colours { get; }
 }
 
 /// A drawing surface. Every call becomes an operation in the seat's batch,
@@ -478,7 +488,12 @@ public class Graphics : IDisposable
 
         TrueTypeSize? scaled = font.Scaled;
 
-        if (scaled != null) { DrawScalableString(s, scaled, font.Height, font.Style, solid.Color, Color.Transparent, true, x, y); return; }
+        // NO KNOWN BACKGROUND: nothing here is antialiased, because
+        // blending needs a colour to blend against and the seat cannot
+        // hand one back by reading the pixel underneath. A caller that
+        // knows what it just painted -- almost every control does --
+        // wants the overload below instead.
+        if (scaled != null) { DrawScalableString(s, scaled, font.Height, font.Style, solid.Color, false, Color.Transparent, Color.Transparent, true, x, y); return; }
 
         int cx = x + _originX, cy = y + _originY;
         for (int i = 0; i < s.Length; i++)
@@ -492,13 +507,33 @@ public class Graphics : IDisposable
     }
 
     /// <summary>
-    /// A run of text set in a scalable face: each rune's bitmap plotted a
-    /// row of spans at a time, advanced by its own fitted width rather
-    /// than a fixed one. `transparent` false also fills the space behind
-    /// each glyph -- the cell width is its advance, which is what makes
-    /// an opaque proportional string look like a filled bar rather than
-    /// letter-shaped holes in one.
+    /// The same, antialiased against `background` -- the colour already
+    /// there, which the caller knows because it just painted it (a
+    /// control's OnPaintBackground runs before OnPaint every time). Text
+    /// still shows through anything drawn under it exactly as the plain
+    /// overload does; only the edges of each letter are blended, which is
+    /// what makes this correct rather than a guess: the caller is not
+    /// claiming there is nothing under the text, only saying what colour
+    /// it is.
+    ///
+    /// CORSAC-only. GDI+'s antialiasing reads its own bitmap back to find
+    /// out what is underneath; this seat has no such read-back, so the
+    /// caller supplies the one fact that stands in for it. Below 256
+    /// colours, or for the bitmap system font, this draws exactly as the
+    /// plain overload -- there is nothing here for either to blend with.
     /// </summary>
+    public void DrawString(string s, Font font, Brush brush, Color background, int x, int y)
+    {
+        SolidBrush? solid = brush as SolidBrush;
+        if (solid == null) { return; }
+
+        TrueTypeSize? scaled = font.Scaled;
+
+        if (scaled != null) { DrawScalableString(s, scaled, font.Height, font.Style, solid.Color, true, background, Color.Transparent, true, x, y); return; }
+
+        DrawString(s, font, brush, x, y);
+    }
+
     /// <summary>
     /// The kerning adjustment between two glyphs, scaled from the face's
     /// font units to pixels at this size. Nought for a face with no kern
@@ -517,8 +552,34 @@ public class Graphics : IDisposable
         return (int)((value >= 0 ? value + upem / 2 : value - upem / 2) / upem);
     }
 
-    void DrawScalableString(string s, TrueTypeSize scaled, int lineHeight, FontStyle style, Color foreground, Color background, bool transparent, int x, int y)
+    /// <summary>
+    /// A run of text set in a scalable face: each rune's bitmap plotted a
+    /// row of spans at a time, advanced by its own fitted width rather
+    /// than a fixed one. `transparent` false also fills the space behind
+    /// each glyph -- the cell width is its advance, which is what makes
+    /// an opaque proportional string look like a filled bar rather than
+    /// letter-shaped holes in one.
+    ///
+    /// `blend`, when not null, is the colour already behind the text --
+    /// what the caller's own OnPaintBackground just painted there -- and
+    /// switches this to the antialiased path: each glyph is rasterised as
+    /// coverage rather than one bit, and every partially-covered pixel is
+    /// blended between `blend` and the foreground rather than drawn flat.
+    /// The seat has no way to read a pixel back to find out what is
+    /// really behind the text, which is what GDI+ itself does to
+    /// antialias; the caller already knows, since it just painted it, so
+    /// that is what stands in for a framebuffer read here. Antialiasing
+    /// is skipped below 256 colours regardless -- a palette that thin
+    /// cannot blend two colours into a third worth looking at, and
+    /// Windows 98 itself shipped with smoothing off for exactly that
+    /// reason -- and for the bitmap system font, which has no coverage
+    /// to blend from.
+    /// </summary>
+    void DrawScalableString(string s, TrueTypeSize scaled, int lineHeight, FontStyle style, Color foreground, bool hasBlend, Color blend, Color background, bool transparent, int x, int y)
     {
+        bool antialiased = hasBlend && _target.Colours > 256;
+
+        if (antialiased) { DrawScalableStringAA(s, scaled, lineHeight, style, foreground, blend, background, transparent, x, y); return; }
         bool bold = (style & FontStyle.Bold) != 0;
         bool italic = (style & FontStyle.Italic) != 0;
 
@@ -593,6 +654,130 @@ public class Graphics : IDisposable
             penX += advance;
         }
     }
+
+    /// <summary>
+    /// A straight linear blend of black text against a light background
+    /// reads thin and grey, not black: half the light a pixel reflects
+    /// is still most of what the eye sees, so a coverage of "half" looks
+    /// far lighter than half black. Every real text renderer -- ClearType,
+    /// FreeType, DirectWrite -- corrects for this with a gamma curve that
+    /// pushes the middle of the range darker before blending, which is
+    /// what keeps antialiased text looking as bold as the crisp version
+    /// rather than washed out. Built once, looked up per pixel: cheap.
+    /// </summary>
+    static byte[]? _gammaTable;
+
+    static byte[] GammaTable()
+    {
+        if (_gammaTable != null) { return _gammaTable; }
+
+        byte[] table = new byte[256];
+
+        for (int i = 0; i < 256; i++)
+        {
+            // (coverage/255)^0.5 * 255 == sqrt(255 * coverage): a gamma
+            // of two, done in exact integer arithmetic by the same
+            // Newton's-method square root the rasteriser already uses,
+            // rather than a real floating point pow -- this whole engine
+            // avoids floating point on purpose, and a lookup table built
+            // once from integers is no less correct for it.
+            long target = 255L * i;
+            long root = target <= 0 ? 0 : 1;
+
+            while (root * root < target) { root = root << 1; }
+            while (root > 0)
+            {
+                long next = (root + target / root) >> 1;
+                if (next >= root) { break; }
+                root = next;
+            }
+
+            table[i] = (byte)(root > 255 ? 255 : (int)root);
+        }
+
+        _gammaTable = table;
+        return table;
+    }
+
+    /// <summary>
+    /// DrawScalableString's antialiased twin: the same loop, kerning and
+    /// synthetic styles, but each glyph comes from GlyphAA as coverage
+    /// rather than one bit, and is drawn a run of EQUAL coverage at a
+    /// time rather than a run of lit pixels. Interior pixels are all 255
+    /// and coalesce into the same wide, cheap fills the crisp path uses;
+    /// only the antialiased rim -- a pixel or two around the letter's
+    /// edge -- costs an extra blend and its own small fill, which is what
+    /// keeps this affordable on text-sized glyphs at ordinary sizes.
+    /// </summary>
+    void DrawScalableStringAA(string s, TrueTypeSize scaled, int lineHeight, FontStyle style, Color foreground, Color blend, Color background, bool transparent, int x, int y)
+    {
+        byte[] gamma = GammaTable();
+        bool bold = (style & FontStyle.Bold) != 0;
+        bool italic = (style & FontStyle.Italic) != 0;
+        int boldExtra = bold ? 1 : 0;
+
+        int penX = x, lineTop = y;
+        int previousGlyph = -1;
+
+        for (int i = 0; i < s.Length; )
+        {
+            Rune rune;
+            int taken;
+
+            if (!Rune.TryDecodeFromUtf8(s, i, out rune, out taken)) { taken = 1; rune = new Rune('?'); }
+            i += taken;
+
+            if (rune.Value == '\n') { penX = x; lineTop += lineHeight; previousGlyph = -1; continue; }
+
+            int glyphIndex = scaled.Face.GlyphIndex(rune.Value);
+            TrueTypeCoverageBitmap? bitmap = scaled.GlyphAA(glyphIndex);
+
+            if (bitmap == null) { previousGlyph = glyphIndex; continue; }
+
+            penX += Kern(scaled, previousGlyph, glyphIndex);
+            previousGlyph = glyphIndex;
+
+            int advance = bitmap.Advance + boldExtra;
+
+            if (!transparent)
+            {
+                int cellWidth = advance + (italic ? bitmap.Height / 2 : 0);
+                _target.Fill(penX + _originX, lineTop + _originY, cellWidth, lineHeight, background);
+            }
+
+            int baseline = lineTop + scaled.Ascent;
+            int glyphX = penX + bitmap.Left + _originX;
+            int glyphTop = baseline - bitmap.Top + _originY;
+
+            for (int pass = 0; pass <= boldExtra; pass++)
+            {
+                // Bold's second pass is the same coverage, one pixel to
+                // the right: two overlapping antialiased shapes read as
+                // one heavier one, the same trick the crisp path uses.
+                for (int row = 0; row < bitmap.Height; row++)
+                {
+                    int shear = italic ? (bitmap.Height - row) / 3 : 0;
+                    int col = 0;
+
+                    while (col < bitmap.Width)
+                    {
+                        int coverage = bitmap.At(col, row);
+
+                        if (coverage == 0) { col++; continue; }
+
+                        int start = col;
+                        while (col < bitmap.Width && bitmap.At(col, row) == coverage) { col++; }
+
+                        Color drawColor = coverage >= 255 ? foreground : ColorBlend.Mix(blend, foreground, gamma[coverage]);
+                        _target.Fill(glyphX + start + shear + pass, glyphTop + row, col - start, 1, drawColor);
+                    }
+                }
+            }
+
+            penX += advance;
+        }
+    }
+
     public void DrawString(string s, Font font, Brush brush, Point p) { DrawString(s, font, brush, p.X, p.Y); }
 
     /// Part of what this surface already shows, moved: what a scrolling
@@ -624,7 +809,10 @@ public class Graphics : IDisposable
     {
         TrueTypeSize? scaled = font.Scaled;
 
-        if (scaled != null) { DrawScalableString(s, scaled, font.Height, font.Style, foreground, background, false, x, y); return; }
+        // Opaque already knows its own background -- it is about to
+        // paint the whole cell with it -- so that same colour is what
+        // antialiasing blends the letter's edges against too.
+        if (scaled != null) { DrawScalableString(s, scaled, font.Height, font.Style, foreground, true, background, background, false, x, y); return; }
 
         int cx = x + _originX, cy = y + _originY;
         for (int i = 0; i < s.Length; i++)

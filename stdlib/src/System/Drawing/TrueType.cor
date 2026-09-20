@@ -2081,6 +2081,29 @@ internal class TrueTypeBitmap
 }
 
 /// <summary>
+/// A glyph, drawn antialiased: one BYTE per pixel, 0 for nothing and 255
+/// for solidly inside, everything between it a fraction of the pixel the
+/// outline actually covered. Where TrueTypeBitmap is what a palette
+/// screen draws crisp text from, this is what a screen with the colours
+/// to blend a fractional coverage against a background draws from.
+/// </summary>
+internal class TrueTypeCoverageBitmap
+{
+    public int Width;
+    public int Height;
+    public int Left;
+    public int Top;
+    public int Advance;
+    public byte[] Coverage = new byte[0];
+
+    public byte At(int x, int y)
+    {
+        if (x < 0 || y < 0 || x >= Width || y >= Height) { return 0; }
+        return Coverage[y * Width + x];
+    }
+}
+
+/// <summary>
 /// Scan conversion. The outline arrives as points in 26.6 pixels, already
 /// grid-fitted; this turns its curves into straight lines, then fills what
 /// is inside by the non-zero winding rule, one row at a time, sampling at
@@ -2238,12 +2261,20 @@ class TrueTypeRaster
     /// 26.6 coordinates, so that the caller decides the box and this only
     /// decides what is inside it.
     /// </summary>
-    void Fill(TrueTypeBitmap into, int originX, int originY, bool dropout)
+    /// <summary>
+    /// Fill the flattened outline into a bitmap, one sample per row at
+    /// `step` intervals rather than always sixty-four (a whole pixel):
+    /// the antialiased path calls this with a quarter of that, sampling
+    /// four rows to the pixel, and everything below still works because
+    /// nothing here assumes a pixel is sixty-four units wide -- only that
+    /// `step` is.
+    /// </summary>
+    void Fill(TrueTypeBitmap into, int originX, int originY, bool dropout, int step)
     {
         for (int row = 0; row < into.Height; row++)
         {
-            // The centre of this row of pixels, in outline coordinates.
-            int sample = originY + row * 64 + 32;
+            // The centre of this row of samples, in outline coordinates.
+            int sample = originY + row * step + step / 2;
 
             _crossings = 0;
 
@@ -2289,49 +2320,49 @@ class TrueTypeRaster
                 wind += _winding[i];
 
                 if (was == 0 && wind != 0) { spanFrom = _crossing[i]; }
-                else if (was != 0 && wind == 0) { Span(into, row, spanFrom - originX, _crossing[i] - originX, dropout); }
+                else if (was != 0 && wind == 0) { Span(into, row, spanFrom - originX, _crossing[i] - originX, dropout, step); }
             }
         }
     }
 
-    /// One run of "inside", from `from` to `to` in 26.6, on `row`.
-    void Span(TrueTypeBitmap into, int row, int from, int to, bool dropout)
+    /// One run of "inside", from `from` to `to` in 26.6, on `row`, at a
+    /// sample spacing of `step` units (sixty-four for a whole pixel).
+    void Span(TrueTypeBitmap into, int row, int from, int to, bool dropout, int step)
     {
         if (to <= from) { return; }
 
-        // The pixels whose CENTRE the span covers: centre of pixel n is
-        // at n*64 + 32, so the first is ceil((from - 32) / 64).
-        int firstPixel = (from - 32 + 63) / 64;
-        int lastPixel = (to - 32 - 1) / 64;
+        // The samples whose CENTRE the span covers: centre of sample n is
+        // at n*step + step/2, so the first is ceil((from - step/2) / step).
+        int half = step / 2;
+        int firstPixel = (from - half + step - 1) / step;
+        int lastPixel = (to - half - 1) / step;
 
-        if (from - 32 < 0) { firstPixel = (from - 32 - 63) / 64 + 1; }
-        if (to - 32 < 0) { lastPixel = (to - 32 - 63 - 1) / 64 + 1 - 1; }
+        if (from - half < 0) { firstPixel = (from - half - (step - 1)) / step + 1; }
+        if (to - half < 0) { lastPixel = (to - half - (step - 1) - 1) / step + 1 - 1; }
 
         if (lastPixel < firstPixel)
         {
             // NOTHING WAS LIT. A stroke thinner than the gap between two
-            // pixel centres fell between them; without this it would
-            // simply not be drawn, and the letter would come apart.
-            if (dropout) { into.Set((from + to) / 2 / 64, row); }
+            // sample centres fell between them; without this it would
+            // simply not be drawn, and the letter would come apart. The
+            // antialiased path turns this off: at four samples per pixel
+            // a thin stroke almost always lights SOME of them, and comes
+            // out as a faint grey line instead of vanishing -- which is
+            // the point of supersampling in the first place.
+            if (dropout) { into.Set((from + to) / 2 / step, row); }
             return;
         }
 
         for (int x = firstPixel; x <= lastPixel; x++) { into.Set(x, row); }
     }
 
-    /// <summary>
-    /// The whole job: a fitted outline in, a bitmap and its bearings out.
-    /// The box is the outline's own extent rounded out to whole pixels,
-    /// which is the smallest box that holds every lit pixel.
-    /// </summary>
-    public TrueTypeBitmap Render(TrueTypeZone zone, int realPoints, int advance, bool dropout)
+    /// The box the flattened outline needs, in whole pixels: the extent
+    /// rounded out, which is the smallest box that holds every lit pixel.
+    /// Assumes Flatten has already been called; false for an empty glyph.
+    bool Bounds(out int left, out int right, out int bottom, out int top)
     {
-        TrueTypeBitmap made = new TrueTypeBitmap();
-        made.Advance = (advance + 32) >> 6;
-
-        Flatten(zone, realPoints);
-
-        if (_edges == 0) { return made; }
+        left = right = bottom = top = 0;
+        if (_edges == 0) { return false; }
 
         int minX = _x0[0], maxX = _x0[0], minY = _y0[0], maxY = _y0[0];
 
@@ -2347,10 +2378,27 @@ class TrueTypeRaster
             if (_y1[e] > maxY) { maxY = _y1[e]; }
         }
 
-        int left = minX >> 6;
-        int right = (maxX + 63) >> 6;
-        int bottom = minY >> 6;
-        int top = (maxY + 63) >> 6;
+        left = minX >> 6;
+        right = (maxX + 63) >> 6;
+        bottom = minY >> 6;
+        top = (maxY + 63) >> 6;
+        return true;
+    }
+
+    /// <summary>
+    /// The whole job: a fitted outline in, a bitmap and its bearings out.
+    /// The box is the outline's own extent rounded out to whole pixels,
+    /// which is the smallest box that holds every lit pixel.
+    /// </summary>
+    public TrueTypeBitmap Render(TrueTypeZone zone, int realPoints, int advance, bool dropout)
+    {
+        TrueTypeBitmap made = new TrueTypeBitmap();
+        made.Advance = (advance + 32) >> 6;
+
+        Flatten(zone, realPoints);
+
+        int left, right, bottom, top;
+        if (!Bounds(out left, out right, out bottom, out top)) { return made; }
 
         made.Width = right - left;
         made.Height = top - bottom;
@@ -2368,10 +2416,91 @@ class TrueTypeRaster
         // The bitmap's rows run down and the outline's y runs up, so row
         // nought is the TOP of the box: the sample line for row r is at
         // top - r - 1 in pixels.
-        Fill(made, left * 64, (top * 64 - made.Height * 64), dropout);
+        Fill(made, left * 64, (top * 64 - made.Height * 64), dropout, 64);
 
         // Flip: Fill worked in outline order, bottom row first.
         Flip(made);
+        return made;
+    }
+
+    /// <summary>
+    /// The same job, antialiased: the outline sampled four rows and four
+    /// columns to the pixel -- sixteen samples -- and each output pixel's
+    /// coverage is how many of its sixteen came out inside, 0 to 255.
+    /// Cheap because it is CACHED: TrueTypeSize draws a glyph once and
+    /// keeps the bitmap, so the extra sampling is paid once per distinct
+    /// glyph at a given size, not once per frame it appears in.
+    ///
+    /// Dropout control is off here: at four samples to the pixel a stroke
+    /// thinner than a pixel almost always lights some of them, and comes
+    /// out as a faint grey line rather than needing to be rescued from
+    /// vanishing altogether, which is the entire point of supersampling.
+    /// </summary>
+    public TrueTypeCoverageBitmap RenderAA(TrueTypeZone zone, int realPoints, int advance)
+    {
+        const int Scale = 4;
+
+        TrueTypeCoverageBitmap made = new TrueTypeCoverageBitmap();
+        made.Advance = (advance + 32) >> 6;
+
+        Flatten(zone, realPoints);
+
+        int left, right, bottom, top;
+        if (!Bounds(out left, out right, out bottom, out top)) { return made; }
+
+        made.Width = right - left;
+        made.Height = top - bottom;
+
+        if (made.Width <= 0 || made.Height <= 0 || made.Width > 256 || made.Height > 256)
+        {
+            made.Width = 0; made.Height = 0;
+            return made;
+        }
+
+        made.Left = left;
+        made.Top = top;
+
+        TrueTypeBitmap sub = new TrueTypeBitmap();
+        sub.Width = made.Width * Scale;
+        sub.Height = made.Height * Scale;
+        sub.Bits = new byte[sub.Stride * sub.Height];
+
+        int step = 64 / Scale;
+        Fill(sub, left * 64, (top * 64 - made.Height * 64), false, step);
+
+        made.Coverage = new byte[made.Width * made.Height];
+
+        for (int oy = 0; oy < made.Height; oy++)
+        {
+            for (int ox = 0; ox < made.Width; ox++)
+            {
+                int count = 0;
+
+                for (int sy = 0; sy < Scale; sy++)
+                {
+                    for (int sx = 0; sx < Scale; sx++)
+                    {
+                        if (sub.At(ox * Scale + sx, oy * Scale + sy)) { count++; }
+                    }
+                }
+
+                made.Coverage[oy * made.Width + ox] = (byte)(count * 255 / (Scale * Scale));
+            }
+        }
+
+        // Flip: sub was filled in outline order, bottom row first, same
+        // as Render's bitmap -- the coverage rows need the same reversal.
+        for (int row = 0; row < made.Height / 2; row++)
+        {
+            int other = made.Height - 1 - row;
+
+            for (int x = 0; x < made.Width; x++)
+            {
+                byte t = made.Coverage[row * made.Width + x];
+                made.Coverage[row * made.Width + x] = made.Coverage[other * made.Width + x];
+                made.Coverage[other * made.Width + x] = t;
+            }
+        }
         return made;
     }
 
@@ -2422,6 +2551,13 @@ class TrueTypeSize
     int[] _cacheKey = new int[CacheSize];
     TrueTypeBitmap?[] _cacheValue = new TrueTypeBitmap?[CacheSize];
 
+    // The same cache again, for antialiased bitmaps: a program drawing
+    // both crisp and antialiased text at one size (rare, but a mode
+    // change mid-session can do it) keeps both without either evicting
+    // the other.
+    int[] _cacheKeyAA = new int[CacheSize];
+    TrueTypeCoverageBitmap?[] _cacheValueAA = new TrueTypeCoverageBitmap?[CacheSize];
+
     public int Ascent;                       // pixels above the baseline
     public int Descent;                      // pixels below it, positive
     public int LineSpacing;                  // baseline to baseline
@@ -2431,7 +2567,7 @@ class TrueTypeSize
         _face = face;
         _ppem = ppem;
 
-        for (int i = 0; i < CacheSize; i++) { _cacheKey[i] = -1; }
+        for (int i = 0; i < CacheSize; i++) { _cacheKey[i] = -1; _cacheKeyAA[i] = -1; }
 
         _hinter = new TrueTypeHinter(face);
         _hinted = _hinter.Prepare(ppem, pointSize) && !_hinter.GridFittingInhibited;
@@ -2494,12 +2630,77 @@ class TrueTypeSize
         return Draw(glyph);
     }
 
+    /// The antialiased bitmap for a glyph, cached the same way Glyph is.
+    public TrueTypeCoverageBitmap? GlyphAA(int glyph)
+    {
+        if (glyph < 0 || glyph >= _face.GlyphCount) { return null; }
+
+        int slot = glyph & (CacheSize - 1);
+
+        for (int probe = 0; probe < 8; probe++)
+        {
+            int at = (slot + probe) & (CacheSize - 1);
+
+            if (_cacheKeyAA[at] == glyph) { return _cacheValueAA[at]; }
+            if (_cacheKeyAA[at] < 0)
+            {
+                TrueTypeCoverageBitmap? made = DrawAA(glyph);
+                _cacheKeyAA[at] = glyph;
+                _cacheValueAA[at] = made;
+                return made;
+            }
+        }
+        return DrawAA(glyph);
+    }
+
     /// <summary>
     /// The whole path for one glyph: load it, scale it, put the phantom
     /// points on the end, run its program, fill it.
     /// </summary>
     TrueTypeBitmap? Draw(int glyph)
     {
+        int real, fittedAdvance, blankAdvance;
+
+        if (!Fit(glyph, out real, out fittedAdvance, out blankAdvance))
+        {
+            // An empty glyph -- a space -- still has an advance.
+            TrueTypeBitmap blank = new TrueTypeBitmap();
+            blank.Advance = blankAdvance;
+            return blank;
+        }
+
+        return _raster.Render(_hinter.Glyph, real, fittedAdvance, _hinter.DropoutControl || !_hinted);
+    }
+
+    /// The same glyph, antialiased. See Draw; the only difference is the
+    /// last step, which rasterises with coverage instead of one bit.
+    TrueTypeCoverageBitmap? DrawAA(int glyph)
+    {
+        int real, fittedAdvance, blankAdvance;
+
+        if (!Fit(glyph, out real, out fittedAdvance, out blankAdvance))
+        {
+            TrueTypeCoverageBitmap blank = new TrueTypeCoverageBitmap();
+            blank.Advance = blankAdvance;
+            return blank;
+        }
+
+        return _raster.RenderAA(_hinter.Glyph, real, fittedAdvance);
+    }
+
+    /// <summary>
+    /// Everything Draw and DrawAA share: load the glyph, scale it, add
+    /// the phantom points, hint it. False for an empty glyph (a space),
+    /// with `blankAdvance` set to its scaled width; true otherwise, with
+    /// the hinter's own zone (_hinter.Glyph) left ready to rasterise and
+    /// `real`/`fittedAdvance` describing it.
+    /// </summary>
+    bool Fit(int glyph, out int real, out int fittedAdvance, out int blankAdvance)
+    {
+        real = 0;
+        fittedAdvance = 0;
+        blankAdvance = 0;
+
         _outline.PointCount = 0;
         _outline.ContourCount = 0;
 
@@ -2507,13 +2708,11 @@ class TrueTypeSize
 
         if (!Load(glyph, 0, 0, 0, 0x4000, 0, 0, 0x4000, out instructionOffset, out instructionLength))
         {
-            // An empty glyph -- a space -- still has an advance.
-            TrueTypeBitmap blank = new TrueTypeBitmap();
-            blank.Advance = (Scale(_face.AdvanceWidth(glyph)) + 32) >> 6;
-            return blank;
+            blankAdvance = (Scale(_face.AdvanceWidth(glyph)) + 32) >> 6;
+            return false;
         }
 
-        int real = _outline.PointCount;
+        real = _outline.PointCount;
         int advance = _face.AdvanceWidth(glyph);
         int bearing = _face.LeftSideBearing(glyph);
 
@@ -2576,9 +2775,8 @@ class TrueTypeSize
             for (int i = 0; i < zone.PointCount; i++) { zone.CurX[i] += shift; }
         }
 
-        int fittedAdvance = zone.CurX[real + 1] - zone.CurX[real];
-
-        return _raster.Render(zone, real, fittedAdvance, _hinter.DropoutControl || !_hinted);
+        fittedAdvance = zone.CurX[real + 1] - zone.CurX[real];
+        return true;
     }
 
     static void Phantom(TrueTypeZone zone, int at, int x, int y)

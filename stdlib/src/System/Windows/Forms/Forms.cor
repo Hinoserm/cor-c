@@ -322,6 +322,27 @@ public static class ControlPaint
 
         if (!underline) { return; }
 
+        Underline(g, text, font, brush, x, y);
+    }
+
+    /// <summary>
+    /// The same, antialiased against `background` -- the colour the
+    /// caller just painted behind the text, which every control here
+    /// already knows at the point it draws its own label.
+    /// </summary>
+    public static void DrawStringMnemonic(Graphics g, string text, Font font, Brush brush, Color background, int x, int y, bool underline)
+    {
+        string shown = StripMnemonic(text);
+        g.DrawString(shown, font, brush, background, x, y);
+
+        if (!underline) { return; }
+
+        Underline(g, text, font, brush, x, y);
+    }
+
+    static void Underline(Graphics g, string text, Font font, Brush brush, int x, int y)
+    {
+
         int at = MnemonicIndex(text);
 
         if (at < 0) { return; }
@@ -499,6 +520,12 @@ public class Control
 
     public virtual string Text { get { return _text; } set { _text = value; OnTextChanged(EventArgs.Empty); Invalidate(); } }
     public Color BackColor { get { return _back; } set { _back = value; Invalidate(); } }
+
+    /// What is really behind this control's own drawing: its own
+    /// BackColor, or its parent's when this one is transparent -- the
+    /// same lookup every OnPaintBackground here already does, factored
+    /// out so text drawing can tell antialiasing what to blend against.
+    internal Color EffectiveBackColor { get { return _back == Color.Transparent ? (_parent == null ? SystemColors.Control : _parent.BackColor) : _back; } }
     public Color ForeColor { get { return _fore; } set { _fore = value; Invalidate(); } }
     public Font Font { get { return _font; } set { _font = value; Invalidate(); } }
     public bool Visible { get { return _visible; } set { _visible = value; if (_parent != null) _parent.Invalidate(Bounds); else Invalidate(); } }
@@ -1409,7 +1436,7 @@ public class Label : Control
             ControlPaint.DrawStringMnemonic(g, Text, Font, new SolidBrush(SystemColors.ControlLightLight), x + 1, y + 1, true);
             ControlPaint.DrawStringMnemonic(g, Text, Font, new SolidBrush(SystemColors.GrayText), x, y, true);
         }
-        else ControlPaint.DrawStringMnemonic(g, Text, Font, new SolidBrush(ForeColor), x, y, true);
+        else ControlPaint.DrawStringMnemonic(g, Text, Font, new SolidBrush(ForeColor), EffectiveBackColor, x, y, true);
         base.OnPaint(e);
     }
 }
@@ -1469,7 +1496,7 @@ public class Button : Control
             ControlPaint.DrawStringMnemonic(g, Text, Font, new SolidBrush(SystemColors.ControlLightLight), x + picture + 1, y + 1, true);
             ControlPaint.DrawStringMnemonic(g, Text, Font, new SolidBrush(SystemColors.GrayText), x + picture, y, true);
         }
-        else ControlPaint.DrawStringMnemonic(g, Text, Font, new SolidBrush(ForeColor), x + picture, y, true);
+        else ControlPaint.DrawStringMnemonic(g, Text, Font, new SolidBrush(ForeColor), EffectiveBackColor, x + picture, y, true);
 
         if (Focused && Enabled)
         {
@@ -1547,7 +1574,7 @@ public class ToolBarButton : Button
         else
         {
             SizeF size = g.MeasureString(shown, Font);
-            g.DrawString(shown, Font, new SolidBrush(Enabled ? ForeColor : SystemColors.GrayText),
+            g.DrawString(shown, Font, new SolidBrush(Enabled ? ForeColor : SystemColors.GrayText), BackColor,
                 (Width - (int)size.Width) / 2 + offset, (Height - (int)size.Height) / 2 + offset);
         }
     }
@@ -1652,7 +1679,7 @@ public class CheckBox : Control
             ControlPaint.DrawStringMnemonic(g, Text, Font, new SolidBrush(SystemColors.ControlLightLight), tx + 1, ty + 1, true);
             ControlPaint.DrawStringMnemonic(g, Text, Font, new SolidBrush(SystemColors.GrayText), tx, ty, true);
         }
-        else ControlPaint.DrawStringMnemonic(g, Text, Font, new SolidBrush(ForeColor), tx, ty, true);
+        else ControlPaint.DrawStringMnemonic(g, Text, Font, new SolidBrush(ForeColor), EffectiveBackColor, tx, ty, true);
 
         if (Focused && Enabled) ControlPaint.DrawFocusRectangle(g, tx - 2, ty - 1, (int)size.Width + 4, (int)size.Height + 2);
         base.OnPaint(e);
@@ -1769,7 +1796,7 @@ public class RadioButton : Control
             ControlPaint.DrawStringMnemonic(g, Text, Font, new SolidBrush(SystemColors.ControlLightLight), tx + 1, ty + 1, true);
             ControlPaint.DrawStringMnemonic(g, Text, Font, new SolidBrush(SystemColors.GrayText), tx, ty, true);
         }
-        else ControlPaint.DrawStringMnemonic(g, Text, Font, new SolidBrush(ForeColor), tx, ty, true);
+        else ControlPaint.DrawStringMnemonic(g, Text, Font, new SolidBrush(ForeColor), EffectiveBackColor, tx, ty, true);
 
         if (Focused && Enabled) ControlPaint.DrawFocusRectangle(g, tx - 2, ty - 1, (int)size.Width + 4, (int)size.Height + 2);
         base.OnPaint(e);
@@ -1854,7 +1881,7 @@ public class GroupBox : Control
         if (shown.Length > 0)
         {
             g.FillRectangle(new SolidBrush(BackColor), 8, 0, (int)size.Width + 5, (int)size.Height);
-            ControlPaint.DrawStringMnemonic(g, Text, Font, new SolidBrush(Enabled ? ForeColor : SystemColors.GrayText), 10, 0, true);
+            ControlPaint.DrawStringMnemonic(g, Text, Font, new SolidBrush(Enabled ? ForeColor : SystemColors.GrayText), BackColor, 10, 0, true);
         }
         base.OnPaint(e);
     }
@@ -2019,6 +2046,7 @@ public class ListBox : Control
             g.DrawString(text, Font,
                 new SolidBrush(!Enabled ? SystemColors.GrayText
                               : picked ? SystemColors.HighlightText : ForeColor),
+                picked ? SystemColors.Highlight : (Enabled ? BackColor : SystemColors.Control),
                 3, y);
         }
         base.OnPaint(e);
@@ -2330,13 +2358,13 @@ public class TextBox : Control
         int from = SelectionStart, count = SelectionLength;
         if (count > 0 && Focused)
         {
-            g.DrawString(shown.Substring(0, from), Font, new SolidBrush(ForeColor), left, top);
+            g.DrawString(shown.Substring(0, from), Font, new SolidBrush(ForeColor), BackColor, left, top);
             g.DrawStringOpaque(shown.Substring(from, count), Font, SystemColors.HighlightText, SystemColors.Highlight, left + from * Font.GlyphWidth, top);
-            g.DrawString(shown.Substring(from + count), Font, new SolidBrush(ForeColor), left + (from + count) * Font.GlyphWidth, top);
+            g.DrawString(shown.Substring(from + count), Font, new SolidBrush(ForeColor), BackColor, left + (from + count) * Font.GlyphWidth, top);
         }
         else
         {
-            g.DrawString(shown, Font, new SolidBrush(ForeColor), left, top);
+            g.DrawString(shown, Font, new SolidBrush(ForeColor), BackColor, left, top);
         }
         if (Focused) g.FillRectangle(new SolidBrush(ForeColor), left + _caret * Font.GlyphWidth, top, 1, Font.Height);
         base.OnPaint(e);
@@ -2878,10 +2906,10 @@ public class ComboBox : Control
         if (Focused && live && DropDownStyle == ComboBoxStyle.DropDownList)
         {
             g.FillRectangle(new SolidBrush(SystemColors.Highlight), 3, 3, bx - 5, h - 6);
-            g.DrawString(shown, Font, new SolidBrush(SystemColors.HighlightText), 4, ty);
+            g.DrawString(shown, Font, new SolidBrush(SystemColors.HighlightText), SystemColors.Highlight, 4, ty);
             ControlPaint.DrawFocusRectangle(g, 3, 3, bx - 5, h - 6);
         }
-        else g.DrawString(shown, Font, new SolidBrush(live ? ForeColor : SystemColors.GrayText), 4, ty);
+        else g.DrawString(shown, Font, new SolidBrush(live ? ForeColor : SystemColors.GrayText), live ? SystemColors.Window : SystemColors.Control, 4, ty);
 
         base.OnPaint(e);
     }
@@ -3084,7 +3112,8 @@ internal class ComboPopup : Form
 
             if (picked) g.FillRectangle(new SolidBrush(SystemColors.Highlight), 1, y, Width - 2, Height_);
             g.DrawString(_owner.Items.TextAt(index), Font,
-                new SolidBrush(picked ? SystemColors.HighlightText : SystemColors.WindowText), 3, y);
+                new SolidBrush(picked ? SystemColors.HighlightText : SystemColors.WindowText),
+                picked ? SystemColors.Highlight : SystemColors.Window, 3, y);
         }
         base.OnPaint(e);
     }
@@ -3190,7 +3219,7 @@ public class NumericUpDown : Control
             live ? SystemColors.ControlText : SystemColors.GrayText);
 
         int ty = (h - Font.Height) / 2;
-        g.DrawString(_typed, Font, new SolidBrush(live ? ForeColor : SystemColors.GrayText), 4, ty);
+        g.DrawString(_typed, Font, new SolidBrush(live ? ForeColor : SystemColors.GrayText), live ? SystemColors.Window : SystemColors.Control, 4, ty);
 
         if (Focused && live) g.FillRectangle(new SolidBrush(ForeColor), 4 + _typed.Length * Font.GlyphWidth, ty, 1, Font.Height);
         base.OnPaint(e);
@@ -3415,7 +3444,7 @@ public class TabControl : Control
         int ty = y + (TabHeight - Font.Height) / 2 + (front ? 1 : 0);
         int tx = x + (w - shown.Length * Font.GlyphWidth) / 2;
 
-        ControlPaint.DrawStringMnemonic(g, _pages[index].Text, Font, new SolidBrush(Enabled ? ForeColor : SystemColors.GrayText), tx, ty, true);
+        ControlPaint.DrawStringMnemonic(g, _pages[index].Text, Font, new SolidBrush(Enabled ? ForeColor : SystemColors.GrayText), SystemColors.Control, tx, ty, true);
 
         if (front && Focused && Enabled)
             ControlPaint.DrawFocusRectangle(g, tx - 3, ty - 2, shown.Length * Font.GlyphWidth + 6, Font.Height + 4);
@@ -3537,7 +3566,7 @@ public class StatusBar : Control
             if (w < 0) w = 0;
 
             ControlPaint.DrawBorder3D(g, x, 2, w, Height - 4, Border3DStyle.SunkenOuter);
-            g.DrawString(_panels[i].Text, Font, new SolidBrush(ForeColor), x + 4, (Height - Font.Height) / 2);
+            g.DrawString(_panels[i].Text, Font, new SolidBrush(ForeColor), BackColor, x + 4, (Height - Font.Height) / 2);
             x += w + 2;
         }
 
@@ -3581,7 +3610,7 @@ public class LinkLabel : Label
         string shown = ControlPaint.StripMnemonic(Text);
         Color ink = !Enabled ? SystemColors.GrayText : LinkVisited ? VisitedLinkColor : ForeColor;
 
-        g.DrawString(shown, Font, new SolidBrush(ink), 0, 0);
+        g.DrawString(shown, Font, new SolidBrush(ink), EffectiveBackColor, 0, 0);
         g.FillRectangle(new SolidBrush(ink), 0, Font.Height - 1, shown.Length * Font.GlyphWidth, 1);
 
         if (Focused && Enabled) ControlPaint.DrawFocusRectangle(g, -1, -1, shown.Length * Font.GlyphWidth + 2, Font.Height + 2);
@@ -3727,7 +3756,7 @@ internal class ToolTipWindow : Form
         Graphics g = e.Graphics;
         g.FillRectangle(new SolidBrush(SystemColors.Info), 0, 0, Width, Height);
         g.DrawRectangle(new Pen(SystemColors.WindowFrame), 0, 0, Width, Height);
-        g.DrawString(_text, Font, new SolidBrush(SystemColors.InfoText), 4, 3);
+        g.DrawString(_text, Font, new SolidBrush(SystemColors.InfoText), SystemColors.Info, 4, 3);
     }
 }
 
@@ -3898,10 +3927,10 @@ public class ContextMenuStrip : Form
             if (!item.Enabled)
                 ControlPaint.DrawStringMnemonic(g, item.Text, Font, new SolidBrush(SystemColors.ControlLightLight), Gutter + 1, ty + 1, true);
 
-            ControlPaint.DrawStringMnemonic(g, item.Text, Font, new SolidBrush(ink), Gutter, ty, true);
+            ControlPaint.DrawStringMnemonic(g, item.Text, Font, new SolidBrush(ink), hot ? SystemColors.Highlight : BackColor, Gutter, ty, true);
 
             if (item.ShortcutText.Length > 0)
-                g.DrawString(item.ShortcutText, Font, new SolidBrush(ink), Width - 8 - item.ShortcutText.Length * Font.GlyphWidth, ty);
+                g.DrawString(item.ShortcutText, Font, new SolidBrush(ink), hot ? SystemColors.Highlight : BackColor, Width - 8 - item.ShortcutText.Length * Font.GlyphWidth, ty);
         }
         base.OnPaint(e);
     }
