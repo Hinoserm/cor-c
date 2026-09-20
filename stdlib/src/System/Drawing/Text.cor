@@ -58,8 +58,8 @@ public sealed class FontFamily : IDisposable
         // The installed face that plays each part, where it is installed;
         // the bitmap system font where it is not, so a machine with no
         // fonts directory still draws.
-        FontFamily? found = Find(genericFamily == GenericFontFamilies.Serif ? "Liberation Serif"
-                               : genericFamily == GenericFontFamilies.Monospace ? "Liberation Mono" : "Liberation Sans");
+        FontFamily? found = Find(genericFamily == GenericFontFamilies.Serif ? "Times New Roman"
+                               : genericFamily == GenericFontFamilies.Monospace ? "Courier New" : "Tahoma");
 
         _name = found == null ? "System" : found._name;
         Face = found == null ? null : found.Face;
@@ -205,7 +205,7 @@ public abstract class FontCollection : IDisposable
 /// LAZY ON PURPOSE. Every graphical program asks for the interface font
 /// and almost none asks for anything else, and a dozen faces are four
 /// megabytes. So a family asked for by name is looked for by FILE name
-/// first -- "Liberation Sans" against LiberationSans-Regular.ttf -- and
+/// first -- "Tahoma" against Tahoma-Regular.ttf -- and
 /// only that file is read; its own name table then confirms it. Reading
 /// every file happens when somebody enumerates the families, which is a
 /// font picker and nobody else.
