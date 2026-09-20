@@ -286,7 +286,7 @@ public class Seat : IDrawingTarget
     // call convention carries 32-bit arguments, so a handle cannot ride in the
     // high half of the argument as a 64-bit ABI would allow.
 
-    void Select(int handle) { Os.Ioctl(_fd, 0x47550020, handle); }
+    void Select(int handle) { Os.Ioctl(_fd, 0x47550029, handle); }
 
     public int CreateWindow(int x, int y, int w, int h)
     {

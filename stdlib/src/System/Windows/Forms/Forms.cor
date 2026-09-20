@@ -2283,7 +2283,12 @@ public static class Application
     {
         Form? f = FormOf(m.Window);
         if (_crashing && f != null && f != _crashBox) return;
-        if (f == null && m.Kind != 1 && m.Kind != 11 && m.Kind != 12 && m.Kind != 13 && m.Kind != 14) return;
+        // THE EVENTS THAT BELONG TO NO WINDOW: a key for whatever has focus,
+        // the window list changing, an inspection, the pointer moving, and
+        // the screen changing size. Everything else names a window and is
+        // dropped when that window has gone.
+        if (f == null && m.Kind != 1 && m.Kind != 11 && m.Kind != 12 && m.Kind != 13
+            && m.Kind != 14 && m.Kind != 15) return;
         switch (m.Kind)
         {
             case 1:
