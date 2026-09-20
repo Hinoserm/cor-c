@@ -32,10 +32,16 @@
 // thing by the same pattern.
 enum Colour { Red, Green = 5, Blue }
 
-struct Point
+// NOT CALLED POINT, deliberately. The standard library is compiled
+// from source alongside every test, and System.Drawing declares a
+// Point of its own. A type of that name in the GLOBAL namespace is found
+// before a using-directive of the compilation unit -- C#'s own lookup
+// order -- so it captures the name inside System.Windows.Forms too, and
+// the library stops compiling. Nothing here is about Points.
+struct Spot
 {
     public int X;
-    public Point(int x) { X = x; }
+    public Spot(int x) { X = x; }
 }
 
 class Animal { }
@@ -58,7 +64,7 @@ static class Program
         long l => "long " + l,
         bool b => "bool " + b,
         Colour c => "enum " + c,
-        Point p => "struct " + p.X,
+        Spot p => "struct " + p.X,
         null => "null nothing",
         _ => "other",
     };
@@ -78,7 +84,7 @@ static class Program
         Console.WriteLine(Describe(7L));
         Console.WriteLine(Describe(true));
         Console.WriteLine(Describe(Colour.Green));
-        Console.WriteLine(Describe(new Point(3)));
+        Console.WriteLine(Describe(new Spot(3)));
 
         // A DERIVED CLASS BEFORE ITS BASE still reaches the derived arm, and
         // the arms are tried in the order they were written.

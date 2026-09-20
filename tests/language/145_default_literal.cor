@@ -11,7 +11,13 @@
 // declaration's type, a method's return type -- so a bare `default` means what
 // `default(T)` means with the T that is already there.
 
-struct Point
+// NOT CALLED POINT, deliberately. The standard library is compiled
+// from source alongside every test, and System.Drawing declares a
+// Point of its own. A type of that name in the GLOBAL namespace is found
+// before a using-directive of the compilation unit -- C#'s own lookup
+// order -- so it captures the name inside System.Windows.Forms too, and
+// the library stops compiling. Nothing here is about Points.
+struct Spot
 {
     public int X;
     public long Y;
@@ -59,7 +65,7 @@ static class Program
         string? got = Nothing();
         Line("return " + Zero() + " " + (got == null ? "null" : got) + " " + Wide());
 
-        Point p = default;
+        Spot p = default;
         Line("struct " + p.X + " " + p.Y);
         return 0;
     }

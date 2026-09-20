@@ -2,19 +2,25 @@
 // expect-exit: 0
 // expect-output:
 // read 1 2
-// tostring Point { X = 1, Y = 2 }
+// tostring Spot { X = 1, Y = 2 }
 // decon 1 2
 // named 3 4
 // single Wrapped { Value = 7 }
 // own Pair(5,6)
-// struct Size { W = 8, H = 9 }
+// struct Extent { W = 8, H = 9 }
 //
 // A positional record's parameter list becomes the constructor, the
 // properties, a Deconstruct that reads them back in order, and a ToString
 // spelled the way C# spells one. A record that writes its own ToString keeps
 // it. Value equality is deliberately NOT generated -- see AddRecordMembers.
 
-record Point(int X, int Y);
+// NOT CALLED POINT, deliberately. The standard library is compiled
+// from source alongside every test, and System.Drawing declares a
+// Point of its own. A type of that name in the GLOBAL namespace is found
+// before a using-directive of the compilation unit -- C#'s own lookup
+// order -- so it captures the name inside System.Windows.Forms too, and
+// the library stops compiling. Nothing here is about Points.
+record Spot(int X, int Y);
 
 record Wrapped(int Value);
 
@@ -26,7 +32,7 @@ record Pair(int A, int B)
     }
 }
 
-record struct Size(int W, int H);
+record struct Extent(int W, int H);
 
 static class Program
 {
@@ -40,14 +46,14 @@ static class Program
     {
         int one = 1;
         int two = 2;
-        Point p = new Point(one, two);
+        Spot p = new Spot(one, two);
         Line("read " + p.X + " " + p.Y);
         Line("tostring " + p.ToString());
 
         var (x, y) = p;
         Line("decon " + x + " " + y);
 
-        Point q = new Point(one + 2, two + 2);
+        Spot q = new Spot(one + 2, two + 2);
         int qx = 0;
         int qy = 0;
         q.Deconstruct(out qx, out qy);
@@ -56,7 +62,7 @@ static class Program
         Line("single " + new Wrapped(one + 6).ToString());
         Line("own " + new Pair(5, 6).ToString());
 
-        Size s = new Size(8, 9);
+        Extent s = new Extent(8, 9);
         Line("struct " + s.ToString());
         return 0;
     }
