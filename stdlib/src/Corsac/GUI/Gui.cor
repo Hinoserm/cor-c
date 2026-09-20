@@ -77,6 +77,8 @@ public class Seat : IDrawingTarget
     {
         Width = width;
         Height = height;
+        Format = (int)Os.Ioctl(_fd, 0x47550003, 0);      // the depth may be what changed
+        Epoch++;
         _used = 0;              // whatever was half-built described the old screen
         _named = false;
         _clipOn = false;
@@ -86,11 +88,18 @@ public class Seat : IDrawingTarget
     /// Asks the seat to change mode now. The rate may be zero, which means
     /// whichever the card would pick for that size.
     /// </summary>
-    public bool SetMode(int width, int height, int refresh)
+    public bool SetMode(int width, int height, int refresh) { return SetMode(width, height, refresh, 0); }
+
+    /// The same with a colour depth in bits per pixel; nought keeps the
+    /// depth the seat is in. Only a mode the display's own list holds is
+    /// taken -- see ModeAt -- so asking for one that is not there is a
+    /// refusal and not an experiment on the monitor.
+    public bool SetMode(int width, int height, int refresh, int bits)
     {
         Flush();
         return Os.Ioctl(_fd, 0x47550033,
-                        (long)(width & 0xFFFF) | ((long)(height & 0xFFFF) << 16) | ((long)(refresh & 0xFFFF) << 32)) == 0;
+                        (long)(width & 0xFFFF) | ((long)(height & 0xFFFF) << 16) | ((long)(refresh & 0xFFFF) << 32)
+                        | ((long)(bits & 0xFF) << 48)) == 0;
     }
 
     /// The refresh rate in use, or zero where the card chose it.
@@ -132,7 +141,22 @@ public class Seat : IDrawingTarget
 
     /// How many colours this screen can show: what a picture with several
     /// versions of itself chooses between.
-    public int Colours { get { return Format == 0 ? 256 : Format == 1 ? 16 : 65536; } }
+    /// Bits to a pixel in the mode the seat is in. Format is the kernel's
+    /// GfxFormat: 1 an eight-bit palette, 2 five-six-five, 3 and 4 eight
+    /// bits a channel, packed in three bytes or padded to four.
+    public int BitsPerPixel { get { return BitsOf(Format); } }
+
+    public static int BitsOf(int format) { return format == 2 ? 16 : format == 3 ? 24 : format == 4 ? 32 : 8; }
+
+    /// How many colours that is: what decides whether a gradient or an
+    /// antialiased letter is worth drawing.
+    public int Colours { get { return Format == 2 ? 65536 : Format >= 3 ? 16777216 : 256; } }
+
+    /// Counts mode changes. Anything a program handed the seat that was
+    /// converted to the mode's pixels -- an icon -- went with the old mode;
+    /// whoever holds one compares this with the value it had when it
+    /// handed the picture over, and hands it over again when they differ.
+    public int Epoch;
 
     // Ids for pictures and pointer shapes the seat keeps for us. Handing
     // them out here rather than making every caller invent one is what

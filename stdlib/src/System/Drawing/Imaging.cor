@@ -475,6 +475,12 @@ public class Icon
     /// is the first time. -1 when the file holds nothing we can decode.
     public int Prepared(int size)
     {
+        // A MODE CHANGE TOOK EVERY PICTURE THE SEAT WAS KEEPING: they were
+        // in the old mode's pixels. What this icon handed over is gone,
+        // and the image chosen for 256 colours may not be the one to use
+        // at sixteen million, so it is chosen and handed over again.
+        if (_epoch != Seat.Current.Epoch) { _known = 0; _epoch = Seat.Current.Epoch; }
+
         for (int i = 0; i < _known; i++) if (_sizes[i] == size) return _ids[i];
         if (_known >= _ids.Length) return _ids[0];
 
@@ -503,6 +509,7 @@ public class Icon
     }
 
     int _lastWidth, _lastHeight;
+    int _epoch;
     public int Width { get { return _lastWidth; } }
     public int Height { get { return _lastHeight; } }
 }

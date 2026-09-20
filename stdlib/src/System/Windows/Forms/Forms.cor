@@ -489,6 +489,16 @@ public class Control
 
         if (CanSelect) { Focus(); PerformClick(); return true; }
 
+        // A CONTAINER HANDS IT INWARD. "&Colors" on a group box means the
+        // thing inside the box, which is the first of its own children
+        // the keyboard can land on -- not whatever happens to follow the
+        // box on the form.
+        if (_controls != null && _controls.Count > 0)
+        {
+            Control? inside = FirstSelectable(this);
+            if (inside != null) { inside.Focus(); return true; }
+        }
+
         // A LABEL PASSES IT ON to the next control that can take it, in
         // tab order, which is the whole reason a label has a mnemonic.
         Control? owner = Parent;
@@ -508,6 +518,20 @@ public class Control
         if (best == null) { return false; }
         best.Focus();
         return true;
+    }
+
+    static Control? FirstSelectable(Control root)
+    {
+        Control? best = null;
+
+        for (int i = 0; i < root.Controls.Count; i++)
+        {
+            Control child = root.Controls[i];
+            Control? found = child.CanSelect ? child : FirstSelectable(child);
+
+            if (found != null && (best == null || child.TabIndex < best.TabIndex)) { best = found; }
+        }
+        return best;
     }
 
     /// <summary>
