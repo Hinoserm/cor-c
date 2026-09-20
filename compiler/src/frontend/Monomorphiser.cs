@@ -1042,10 +1042,14 @@ public sealed class Monomorphiser
         }
 
         made.Attributes.AddRange(d.Attributes);
+        made.AttributeParts.AddRange(d.AttributeParts);
 
         foreach (EnumMember em in d.EnumMembers)
         {
-            made.EnumMembers.Add(new EnumMember { Name = em.Name, Value = em.Value, Line = em.Line, Col = em.Col });
+            EnumMember copy = new() { Name = em.Name, Value = em.Value, Line = em.Line, Col = em.Col };
+
+            copy.Attributes.AddRange(em.Attributes);
+            made.EnumMembers.Add(copy);
         }
 
         // NUMBERED AS WE GO, so a specialisation can find the same member of the
@@ -1096,13 +1100,19 @@ public sealed class Monomorphiser
         switch (m)
         {
             case FieldDecl f:
-                return new FieldDecl
+            {
+                FieldDecl copy = new()
                 {
                     Name = f.Name, Mods = f.Mods, Type = Sub(f.Type, map),
                     Init = f.Init is null ? null : Rewrite(f.Init, map),
+                    DeclaredInit = f.DeclaredInit is null ? null : Rewrite(f.DeclaredInit, map),
                     VtableSlotHint = f.VtableSlotHint,
                     Line = f.Line, Col = f.Col,
                 };
+
+                copy.Attributes.AddRange(f.Attributes);
+                return copy;
+            }
 
             case PropertyDecl p:
             {

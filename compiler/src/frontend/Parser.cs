@@ -959,6 +959,24 @@ public sealed class Parser
         return last;
     }
 
+    /// <summary>
+    /// The attributes just read, as nodes the rest of the compiler can keep.
+    ///
+    /// `_attributeParts` is scratch and is cleared by the next attribute
+    /// list, so anything that wants to remember an attribute copies it out
+    /// before parsing anything else.
+    /// </summary>
+    private List<AttributeRef> CapturedAttributes()
+    {
+        List<AttributeRef> captured = new();
+
+        foreach ((string target, string name, string? argument) in _attributeParts)
+        {
+            captured.Add(new AttributeRef { Target = target, Name = name, Argument = argument });
+        }
+        return captured;
+    }
+
     private Mods ParseMods()
     {
         Mods m = Mods.None;
@@ -1168,6 +1186,7 @@ public sealed class Parser
         };
 
         decl.Attributes.AddRange(_attributes);
+        decl.AttributeParts.AddRange(CapturedAttributes());
 
         // WHERE THIS ONE WAS WRITTEN, before its own body moves the path on.
         // Empty means the top level, and a top-level type has no outer.
@@ -1249,10 +1268,21 @@ public sealed class Parser
         {
             while (!At(Tok.RBrace) && !At(Tok.End))
             {
+                SkipAttributes();
+
+                if (At(Tok.RBrace) || At(Tok.End))
+                {
+                    break;                  // a trailing comma, then the brace
+                }
+
+                List<AttributeRef> on = CapturedAttributes();
                 Token m = Cur;
                 string member = Expect(Tok.Ident, "an enum member").Text;
                 Expr? value = Take(Tok.Assign) ? ParseExpr() : null;
-                decl.EnumMembers.Add(new EnumMember { Name = member, Value = value, Line = m.Line, Col = m.Col });
+                EnumMember declared = new() { Name = member, Value = value, Line = m.Line, Col = m.Col };
+
+                declared.Attributes.AddRange(on);
+                decl.EnumMembers.Add(declared);
 
                 if (!Take(Tok.Comma))
                 {
@@ -1333,6 +1363,7 @@ public sealed class Parser
             File = _file, Line = start.Line, Col = start.Col, SourceFrom = start.Pos,
         };
         declaration.Attributes.AddRange(_attributes);
+        declaration.AttributeParts.AddRange(CapturedAttributes());
         ParseTypeParams(declaration.TypeParams);
         MethodDecl invoke = new()
         {
@@ -1736,6 +1767,7 @@ public sealed class Parser
         // .NET's way of saying a method hands back a null only where it was
         // given one, and Path.ChangeExtension is declared with it.
         string? returnsNullOnlyWith = null;
+        List<AttributeRef> attributes = CapturedAttributes();
 
         foreach ((string target, string attribute, string? argument) in _attributeParts)
         {
@@ -1895,11 +1927,14 @@ public sealed class Parser
             Token also = Expect(Tok.Ident, "another name in the declaration");
             Expr? value = Take(Tok.Assign) ? Initialiser(type) : null;
 
-            rest.Add(new FieldDecl
+            FieldDecl more = new()
             {
                 Name = also.Text, Mods = mods, Type = type, Init = value, IsEvent = isEvent,
-                Line = also.Line, Col = also.Col,
-            });
+                DeclaredInit = value, Line = also.Line, Col = also.Col,
+            };
+
+            more.Attributes.AddRange(attributes);
+            rest.Add(more);
         }
 
         Expect(Tok.Semi, "';' after the field");
@@ -1907,9 +1942,10 @@ public sealed class Parser
         FieldDecl first = new()
         {
             Name = name, Mods = mods, Type = type, Init = init, IsEvent = isEvent,
-            Line = start.Line, Col = start.Col,
+            DeclaredInit = init, Line = start.Line, Col = start.Col,
         };
 
+        first.Attributes.AddRange(attributes);
         first.More.AddRange(rest);
         return first;
     }

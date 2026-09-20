@@ -676,6 +676,7 @@ public static class Driver
         }
 
         List<string> backendErrors = new();
+        List<CompileError> registryErrors = new();
         // Flat stage-two objects must already place their managed entry first;
         // the separate linker does not regenerate code or guess its prologue.
         if (flat && module.Entry is { } flatEntry)
@@ -692,6 +693,19 @@ public static class Driver
         Corsac.Lang.Opt.Pipeline.ReportAccounts();
         new TargetContract(freestanding ? (Lowering.TlsGs ? 2u : 1u) : 0u, requiresManagedLayouts: true, requiresCodeGenerationContract: true).Attach(obj);
         ManagedLayouts.Attach(obj, front.Value.bound);
+
+        // WHAT THIS PROGRAM'S SETTINGS ARE, for the kernel to read out of the
+        // file rather than out of the running process -- which is why the
+        // section is a note and is not loaded. docs/software/REGISTRY.md in
+        // the OS repository describes both the declarations and the bytes.
+        foreach (RegistrySchema schema in RegistryDeclarations.Collect(front.Value.unit, front.Value.bound, registryErrors))
+        {
+            Section declared = new(RegistrySchema.SectionName, SectionKind.Note);
+
+            declared.Bytes.AddRange(schema.Encode());
+            obj.Sections.Add(declared);
+        }
+
         DefinitionSemantics.Attach(obj, definitionSemantics);
 #if COR_SELFHOST_BENCHMARK
         Program.BenchmarkStage("link-output");
@@ -717,6 +731,15 @@ public static class Driver
                 Console.Error.Write(x86.Statistics());
             }
         }
+        if (registryErrors.Count > 0)
+        {
+            foreach (CompileError e in registryErrors)
+            {
+                Console.Error.WriteLine(e.ToString());
+            }
+            return 1;
+        }
+
         if (backendErrors.Count > 0)
         {
             foreach (string e in backendErrors)

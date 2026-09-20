@@ -22,6 +22,7 @@ public static class Program
         try
         {
             SyntaxTokenCacheTests.Run();
+            RegistrySchemaTests.Run();
             RuntimeSourceListTests.Run(work);
             DeclarationBatchTests.Run(work);
             SourceIndexTests.Run(work);
