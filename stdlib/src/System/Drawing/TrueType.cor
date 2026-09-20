@@ -2341,7 +2341,10 @@ class TrueTypeRaster
 
     void AddEdge(int x0, int y0, int x1, int y1)
     {
-        if (y0 == y1) { return; }            // horizontal edges cross no scanline
+        // A horizontal edge crosses no row and the row sweep skips it on
+        // its own (its span of y is empty) -- but it is exactly what the
+        // column sweep needs: the flat top of a serif IS a horizontal edge.
+        if (y0 == y1 && x0 == x1) { return; }
 
         if (_edges >= _x0.Length)
         {
@@ -2598,6 +2601,15 @@ class TrueTypeRaster
                 int last = to - 32 < 0 ? -1 : (to - 32 - 1) / 64;
                 if (last >= first) { continue; }            // a centre is covered: the rows saw it
 
+                // The tip of a stroke seen from the side is a stub like any
+                // other, and spared on the same terms (see IsStub).
+                if (SparesStubs)
+                {
+                    bool wide = to - from >= 32;
+                    if (!ContinuesColumn(sample + 64, from, to) && !(wide && ContinuesColumn(sample + 31, from, to))) { continue; }
+                    if (!ContinuesColumn(sample - 64, from, to) && !(wide && ContinuesColumn(sample - 32, from, to))) { continue; }
+                }
+
                 int row = from + to - 1 < 0 ? -1 : (from + to - 1) / 2 / 64;
                 int lower = to - 32 < 0 ? -1 : (to - 32) / 64;
                 int other = row == lower ? lower + 1 : lower;
@@ -2722,6 +2734,55 @@ class TrueTypeRaster
         if (!Continues(sample - step, from, to, step) && !(wide && Continues(sample - step / 2, from, to, step))) { return true; }
         return false;
     }
+
+    /// The same question asked down a column instead of along a row.
+    bool ContinuesColumn(int sample, int from, int to)
+    {
+        int count = 0;
+
+        for (int e = 0; e < _edges; e++)
+        {
+            int x0 = _x0[e], x1 = _x1[e];
+            int direction = 1;
+
+            if (x0 > x1) { int t = x0; x0 = x1; x1 = t; direction = -1; }
+            if (sample < x0 || sample >= x1) { continue; }
+
+            int ay = direction > 0 ? _y0[e] : _y1[e];
+            int by = direction > 0 ? _y1[e] : _y0[e];
+
+            _sideX[count] = ay + (int)(((long)(by - ay) * (sample - x0)) / (x1 - x0)) - _fillOriginY;
+            _sideW[count] = direction;
+            count++;
+            if (count >= _sideX.Length) { break; }
+        }
+
+        for (int i = 1; i < count; i++)
+        {
+            int cy = _sideX[i], cw = _sideW[i];
+            int j = i - 1;
+            while (j >= 0 && _sideX[j] > cy) { _sideX[j + 1] = _sideX[j]; _sideW[j + 1] = _sideW[j]; j--; }
+            _sideX[j + 1] = cy; _sideW[j + 1] = cw;
+        }
+
+        int wind = 0, runFrom = 0;
+
+        for (int i = 0; i < count; i++)
+        {
+            int was = wind;
+            wind += _sideW[i];
+
+            if (was == 0 && wind != 0) { runFrom = _sideX[i]; }
+            else if (was != 0 && wind == 0)
+            {
+                if (runFrom <= to + 64 && _sideX[i] >= from - 64) { return true; }
+            }
+        }
+        return false;
+    }
+
+    int[] _sideX = new int[256];
+    int[] _sideW = new int[256];
 
     bool Continues(int sample, int from, int to, int step)
     {
