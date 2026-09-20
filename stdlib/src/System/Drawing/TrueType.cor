@@ -911,6 +911,25 @@ class TrueTypeHinter
         return Mul14(x, _dvx) + Mul14(y, _dvy);
     }
 
+    /// <summary>
+    /// How far apart two points were DRAWN, along the dual vector. Taken
+    /// from the unscaled outline and scaled once, wherever both points
+    /// have one: the difference of two coordinates that were each rounded
+    /// when scaled can be a unit out, and a unit is enough. A stem drawn
+    /// 31.5 units from its neighbour measures 32 that way, lands on
+    /// exactly two and a half pixels, and rounds up where the designer --
+    /// who laid a pixel delta on top expecting it to round down -- meant
+    /// it to go the other way: an arm of a K a whole pixel out.
+    /// </summary>
+    int OriginalDistance(TrueTypeZone zone, int point, TrueTypeZone reference, int from)
+    {
+        if (zone.HasUnscaled && reference.HasUnscaled)
+        {
+            return Scale(ProjectUnscaled(zone, point) - ProjectUnscaled(reference, from));
+        }
+        return ProjectDual(zone, point) - ProjectDual(reference, from);
+    }
+
     /// The same again over the unscaled outline, in font units.
     int ProjectUnscaled(TrueTypeZone zone, int point)
     {
@@ -1447,7 +1466,7 @@ class TrueTypeHinter
 
                 if (top < 0 || top >= z1.PointCount || deeper < 0 || deeper >= z0.PointCount) { Soft(); Push(0); }
                 else if (op == 0x49) { Push(Project(z0, deeper, false) - Project(z1, top, false)); }
-                else { Push(ProjectDual(z0, deeper) - ProjectDual(z1, top)); }
+                else { Push(OriginalDistance(z0, deeper, z1, top)); }
             }
 
             // --- moving points ---------------------------------------------
@@ -1715,7 +1734,7 @@ class TrueTypeHinter
 
         if (point < 0 || point >= zone.PointCount || _rp0 < 0 || _rp0 >= reference.PointCount) { Soft(); return; }
 
-        int original = ProjectDual(zone, point) - ProjectDual(reference, _rp0);
+        int original = OriginalDistance(zone, point, reference, _rp0);
 
         // THE SINGLE WIDTH CUT-IN: a face may declare one width that every
         // stem too small to round to anything sensible should take, so that
