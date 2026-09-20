@@ -22,13 +22,13 @@ public static class RegistryDeclarations
     const int MaxSegmentChars = 32;
 
     /// <summary>
-    /// Read from the DECLARATIONS rather than from the bound type table: a
-    /// class that only holds settings is never used as a type, so it is
-    /// never materialised as a symbol, and looking for it among the symbols
-    /// finds nothing. The bound result is still what says what an enum
-    /// member's value came out as.
+    /// Read from the DECLARATIONS and from nothing else: a class that only
+    /// holds settings is never used as a type, so it is never materialised
+    /// as a symbol, and looking for it among the symbols finds nothing.
+    /// Working from the declarations also means this can run before binding,
+    /// which is what turning a declared member into a property will need.
     /// </summary>
-    public static List<RegistrySchema> Collect(CompilationUnit unit, BindResult bound, List<CompileError> errors)
+    public static List<RegistrySchema> Collect(CompilationUnit unit, List<CompileError> errors)
     {
         List<TypeDecl> declarations = unit.Types
             .Where(decl => decl.AttributeParts.Any(a => a.Is("Registry")))
@@ -103,7 +103,7 @@ public static class RegistryDeclarations
 
                 if (domain is not null && byDomain.TryGetValue(domain, out RegistrySchema? schema))
                 {
-                    Walk(decl, schema, unit, bound, errors);
+                    Walk(decl, schema, unit, errors);
                 }
             }
         }
@@ -158,8 +158,7 @@ public static class RegistryDeclarations
     /// class carrying the attribute names the domain and contributes no
     /// segment of its own.
     /// </summary>
-    static void Walk(TypeDecl root, RegistrySchema schema, CompilationUnit unit,
-                     BindResult bound, List<CompileError> errors)
+    static void Walk(TypeDecl root, RegistrySchema schema, CompilationUnit unit, List<CompileError> errors)
     {
         string rootKey = Key(root);
 
@@ -191,7 +190,7 @@ public static class RegistryDeclarations
                 if (member is FieldDecl field && field.Mods.HasFlag(Mods.Static)
                     && !field.Name.Contains('$') && !field.Name.StartsWith('<'))
                 {
-                    Declare(field, prefix, schema, bound, errors);
+                    Declare(field, prefix, schema, unit, errors);
                 }
             }
         }
@@ -201,7 +200,7 @@ public static class RegistryDeclarations
         => decl.Outer is string outer && outer.Length > 0 ? outer + "." + decl.Name : decl.Name;
 
     static void Declare(FieldDecl field, string prefix, RegistrySchema schema,
-                        BindResult bound, List<CompileError> errors)
+                        CompilationUnit unit, List<CompileError> errors)
     {
         string key = prefix + field.Name.ToLowerInvariant();
         string written = field.Type.Name;
@@ -210,7 +209,8 @@ public static class RegistryDeclarations
         entry.Label = Text(field, "Label") ?? Derived(field.Name);
         entry.Description = Text(field, "Description") ?? "";
 
-        TypeSymbol? choice = null;
+        TypeDecl? choice = null;
+        Dictionary<string, long>? choices = null;
 
         switch (written)
         {
@@ -228,17 +228,18 @@ public static class RegistryDeclarations
                 entry.Kind = RegistryValueKind.Binary;
                 break;
             default:
-                choice = Lookup(bound, written);
+                choice = Lookup(unit, written);
 
-                if (choice is not { Kind: TypeKind.Enum })
+                if (choice is null)
                 {
                     errors.Add(Error(field, $"a registry setting cannot be '{written}'; it is int, bool, "
                                           + "string, byte[] or an enum"));
                     return;
                 }
 
+                choices = Values(choice);
                 entry.Kind = RegistryValueKind.Enum;
-                entry.Enum = Intern(choice, schema);
+                entry.Enum = Intern(choice, choices, schema);
                 break;
         }
 
@@ -249,7 +250,7 @@ public static class RegistryDeclarations
             return;
         }
 
-        if (!Default(field, entry, choice, errors))
+        if (!Default(field, entry, choices, errors))
         {
             return;
         }
@@ -285,7 +286,7 @@ public static class RegistryDeclarations
     /// default, which the doc does not allow: the whole design rests on the
     /// default living in the program.
     /// </summary>
-    static bool Default(FieldDecl field, RegistryEntry entry, TypeSymbol? choice, List<CompileError> errors)
+    static bool Default(FieldDecl field, RegistryEntry entry, Dictionary<string, long>? choices, List<CompileError> errors)
     {
         if (field.DeclaredInit is not Expr init)
         {
@@ -313,7 +314,7 @@ public static class RegistryDeclarations
             return false;
         }
 
-        if (Fold.TryConst(init, out long value, e => Named(e, choice)))
+        if (Fold.TryConst(init, out long value, e => Named(e, choices)))
         {
             entry.Default = value;
             return true;
@@ -324,9 +325,9 @@ public static class RegistryDeclarations
     }
 
     /// <summary>`Units.Banana` as the number it is, for an enum-typed setting.</summary>
-    static long? Named(Expr e, TypeSymbol? choice)
+    static long? Named(Expr e, Dictionary<string, long>? choices)
     {
-        if (choice is null)
+        if (choices is null)
         {
             return null;
         }
@@ -338,14 +339,14 @@ public static class RegistryDeclarations
             _ => null,
         };
 
-        return member is not null && choice.EnumValues.TryGetValue(member, out long value) ? value : null;
+        return member is not null && choices.TryGetValue(member, out long value) ? value : null;
     }
 
     /// <summary>
     /// An enumeration, emitted once per schema and referenced by index: two
     /// settings sharing a type do not carry two copies of its members.
     /// </summary>
-    static int Intern(TypeSymbol choice, RegistrySchema schema)
+    static int Intern(TypeDecl choice, Dictionary<string, long> values, RegistrySchema schema)
     {
         int at = schema.Enums.FindIndex(e => e.Name == choice.Name);
 
@@ -357,19 +358,18 @@ public static class RegistryDeclarations
         RegistryEnum emitted = new RegistryEnum
         {
             Name = choice.Name,
-            FlagSet = choice.IsFlags,
+            FlagSet = choice.Attributes.Contains("Flags") || choice.Attributes.Contains("FlagsAttribute"),
         };
 
         // Declaration order, which is the order a settings page shows them
         // in. TypeSymbol.EnumValues is a dictionary and has no order at all.
-        if (choice.Decl is TypeDecl decl)
         {
-            foreach (EnumMember member in decl.EnumMembers)
+            foreach (EnumMember member in choice.EnumMembers)
             {
                 emitted.Members.Add(new RegistryEnumMember
                 {
                     Name = member.Name,
-                    Value = choice.EnumValues.TryGetValue(member.Name, out long value) ? value : 0,
+                    Value = values.TryGetValue(member.Name, out long value) ? value : 0,
                     Label = Text(member.Attributes, "Label") ?? Derived(member.Name),
                     Description = Text(member.Attributes, "Description") ?? "",
                 });
@@ -380,23 +380,51 @@ public static class RegistryDeclarations
         return schema.Enums.Count - 1;
     }
 
-    static TypeSymbol? Lookup(BindResult bound, string name)
+    /// <summary>
+    /// An enum member's value, worked out the way the binder works it out: a
+    /// running counter that an explicit constant resets.
+    /// </summary>
+    static Dictionary<string, long> Values(TypeDecl choice)
     {
-        if (bound.Types.TryGetValue(name, out TypeSymbol? found))
-        {
-            return found;
-        }
+        Dictionary<string, long> values = new(StringComparer.Ordinal);
+        long next = 0;
 
-        // A nested enum is in the table under its full path; the field wrote
-        // whatever was in scope where it was written.
-        foreach (TypeSymbol type in bound.Types.Values)
+        foreach (EnumMember member in choice.EnumMembers)
         {
-            if (type.Kind == TypeKind.Enum && type.Name == name)
+            if (member.Value is Expr written && Fold.TryConst(written, out long folded))
             {
-                return type;
+                next = folded;
+            }
+
+            values[member.Name] = next++;
+        }
+        return values;
+    }
+
+    static TypeDecl? Lookup(CompilationUnit unit, string name)
+    {
+        TypeDecl? found = null;
+
+        foreach (TypeDecl decl in unit.Types)
+        {
+            if (decl.Kind != TypeKind.Enum)
+            {
+                continue;
+            }
+
+            // A nested enum is in the table under its full path; the field
+            // wrote whatever was in scope where it was written.
+            if (Key(decl) == name)
+            {
+                return decl;
+            }
+
+            if (decl.Name == name)
+            {
+                found = decl;
             }
         }
-        return null;
+        return found;
     }
 
     static string? Text(FieldDecl field, string name) => Text(field.Attributes, name);

@@ -698,7 +698,7 @@ public static class Driver
         // file rather than out of the running process -- which is why the
         // section is a note and is not loaded. docs/software/REGISTRY.md in
         // the OS repository describes both the declarations and the bytes.
-        foreach (RegistrySchema schema in RegistryDeclarations.Collect(front.Value.unit, front.Value.bound, registryErrors))
+        foreach (RegistrySchema schema in RegistryDeclarations.Collect(front.Value.unit, registryErrors))
         {
             Section declared = new(RegistrySchema.SectionName, SectionKind.Note);
 
