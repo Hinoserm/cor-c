@@ -134,6 +134,41 @@ static class Gc
     static long _markPeak;
     static bool _markOverflow;
 
+    // ---- a collection that lets the other threads run while it marks -----
+    //
+    // SNAPSHOT AT THE BEGINNING. The world stops twice, briefly: once to
+    // write down where every object starts and read the roots, and once to
+    // read the roots again, finish, and sweep. Between the two the
+    // collecting thread marks and every other thread runs.
+    //
+    //   - The marker never reads anything a running thread may change. It
+    //     finds the object a word points at through a bitmap of the object
+    //     starts AS THEY WERE at the first stop, and a copy of the chunk
+    //     index made then, and it writes only the flags of those objects --
+    //     which no running thread touches, because nothing is freed while a
+    //     mark is under way (Free) and an allocation is carved from memory
+    //     that was free at the snapshot.
+    //   - What a running thread overwrites, it reports first (Barrier): the
+    //     compiler emits the report at every store of a reference into the
+    //     heap or a static. So everything reachable at the snapshot is
+    //     marked, whatever is unlinked meanwhile.
+    //   - What is allocated meanwhile has no start bit, is therefore never
+    //     marked, and is kept by the sweep for exactly that reason.
+    //
+    // A program with one thread, or a heap whose snapshot tables could not
+    // be had, collects the old way: one stop for all of it.
+    static long _cycle;             // which collection the snapshot tables are of
+    static bool _snapshots;         // every chunk has its table for this cycle
+    static bool _concurrent;        // this cycle lets the world run while marking
+    static long _phase;             // 0 the first stop, 1 the second
+    static long _barrier;           // the barrier's ring, or 0
+    const long BarrierBytes = 65536;
+    const long BarrierCount = 16384;
+
+    public static long ConcurrentCycles;
+    public static long BarrierTaken;
+    public static long BarrierOverflows;
+
 
     // Work counters, for finding out where a collection's time goes.
     public static long MarkCalls;
@@ -893,9 +928,17 @@ static class Gc
         // Growth refused -- the cap, or the operating system. A collection
         // may free enough; if it does not, the last resort is to ask for a
         // chunk once more (the cap may have been met by garbage just freed).
-        if (block == 0)
+        //
+        // SOMEBODY ELSE'S COLLECTION MAY BE HALF WAY THROUGH, marking while
+        // this thread runs. It cannot be joined and another cannot be begun;
+        // it is waited out, and if what it frees is still not enough -- it
+        // frees only what was garbage when it began -- this thread runs one
+        // of its own.
+        for (long attempt = 0; block == 0 && attempt < 3; attempt++)
         {
-            CollectLocked();
+            if (_collecting) WaitOutCycle();
+            else CollectLocked();
+
             block = dedicated ? TakeDedicated(need) : Take(need);
 
             if (block == 0 && !dedicated && Grow(need))
@@ -1097,6 +1140,7 @@ static class Gc
         {
             OutOfMemory();
         }
+        _barrier = Platform.Map(BarrierBytes);
         _markAt = Platform.Map(MarkBytes);
 
         if (_markAt != 0)
@@ -1146,6 +1190,17 @@ static class Gc
     /// must cost nothing worse than the memory it forgot to give back.
     public static void Free(long at)
     {
+        // NOTHING IS FREED WHILE A MARK IS UNDER WAY. The marker reads and
+        // flags the objects of its snapshot with nothing held; an object
+        // that went back to the free list under it, was merged with its
+        // neighbour and handed out again, would have its flags written into
+        // the middle of somebody's data. The sweep that ends the mark finds
+        // it unreferenced and frees it then.
+        if (Runtime.Marking != 0)
+        {
+            return;
+        }
+
         long tb = Sys.ThreadBlock();
         long block = ValidAllocated(at);
 
@@ -1322,6 +1377,11 @@ static class Gc
     /// beginning of a potentially very densely populated megabyte chunk.
     static long BlockForPointer(long at)
     {
+        if (_snapshots)
+        {
+            return SnapshotBlock(at);
+        }
+
         // One past a payload -- a span's end -- is one past the block's
         // footer's start, which is still inside the chunk's used extent, so
         // the plain lookup finds it; no boundary case needs a second look.
@@ -1378,6 +1438,45 @@ static class Gc
             block = block + size;
         }
         return 0;
+    }
+
+    /// The object of the snapshot that `at` points into, or 0. Reads the
+    /// snapshot's own tables and one header that no running thread writes:
+    /// safe with the world running.
+    static long SnapshotBlock(long at)
+    {
+        long chunk = HeapChunks.OfSnapshot(at);
+
+        if (chunk == 0 || HeapChunks.StartsCycle(chunk) != _cycle)
+        {
+            return 0;
+        }
+
+        // A payload begins a header past its block, so the block begins at
+        // or below `at - HeaderBytes`; the nearest start at or below that
+        // is the only candidate, and its size says whether it reaches.
+        long highest = (at - HeaderBytes) & -8;
+
+        if (highest < HeapChunks.First(chunk))
+        {
+            return 0;
+        }
+
+        long block = HeapChunks.StartAtOrBelow(chunk, highest);
+
+        if (block == 0)
+        {
+            return 0;
+        }
+
+        long size = Sys.Peek(block) & SizeMask;
+
+        if (size < Smallest || at > block + size - FooterBytes)
+        {
+            return 0;
+        }
+
+        return block;
     }
 
     /// Marks the block a word might refer to and queues it for scanning.
@@ -1457,14 +1556,60 @@ static class Gc
     /// see GcRoots for the reasoning -- and reached only from Alloc.
     public static void Collect()
     {
-        GcLock.Enter();
-        CollectLocked();
+        while (true)
+        {
+            GcLock.Enter();
+
+            if (!_collecting)
+            {
+                CollectLocked();
+                GcLock.Exit();
+                return;
+            }
+
+            // Somebody else's collection is between its two stops. Asking
+            // for one means wanting one that STARTED after the call: wait
+            // that one out, as a thread that is blocked and readable.
+            GcLock.Exit();
+            GcThreads.BeginBlocking();
+            long cycling = GcLock.Words() + GcLock.Cycling;
+
+            while (Sys.Peek(cycling) != 0)
+            {
+                Platform.Wait(cycling, 1);
+            }
+
+            GcThreads.EndBlocking();
+        }
+    }
+
+    /// With the heap lock held, waits until the collection in progress has
+    /// finished -- letting go of the lock to do it, since that collection
+    /// needs it for its second stop -- as a thread that is blocked, readable
+    /// and counted as stopped.
+    static void WaitOutCycle()
+    {
+        long cycling = GcLock.Words() + GcLock.Cycling;
         GcLock.Exit();
+        GcThreads.BeginBlocking();
+
+        while (Sys.Peek(cycling) != 0)
+        {
+            Platform.Wait(cycling, 1);
+        }
+
+        GcThreads.EndBlocking();
+        GcLock.Enter();
     }
 
     /// A collection with the heap lock already held: stop every other thread,
     /// give up this thread's own allocation buffer -- after which every chunk
     /// is a walkable chain of blocks again -- collect, and let them go.
+    ///
+    /// THE LOCK IS LET GO OF IN THE MIDDLE when the collection is one that
+    /// lets the world run while it marks, and taken again for the second
+    /// stop: a caller must not carry anything it read of the heap across
+    /// this call.
     static void CollectLocked()
     {
         if (!HeapChunks.Any() || _collecting)
@@ -1473,15 +1618,41 @@ static class Gc
         }
 
         // A platform that wants to know how long the world stood still says
-        // so here: called with 0 as the collection begins and 1 as it ends.
-        // It must not allocate. A kernel uses it to find out what its
-        // collections cost the machine's interrupt latency.
+        // so here: called with 0 as a stop begins and 1 as it ends. It must
+        // not allocate. A kernel uses it to find out what its collections
+        // cost the machine's interrupt latency.
+        long ctl = GcLock.Words();
+        Sys.AtomicSwap(ctl + GcLock.Cycling, 1);
         if (PauseHook != 0) Sys.Call(PauseHook, 0, 0, 0);
         GcThreads.StopWorld();
         Retire(Sys.ThreadBlock());
+        _phase = Zero;
         GcRoots.Enter();
+
+        if (_concurrent)
+        {
+            // The barrier is up BEFORE anybody runs: a store made by the
+            // first instruction after the stop is already reported.
+            Runtime.Marking = 1;
+            GcThreads.StartWorld();
+            if (PauseHook != 0) Sys.Call(PauseHook, 1, 0, 0);
+            GcLock.Exit();
+
+            MarkWhileTheyRun();
+
+            GcLock.Enter();
+            if (PauseHook != 0) Sys.Call(PauseHook, 0, 0, 0);
+            GcThreads.StopWorld();
+            Retire(Sys.ThreadBlock());
+            Runtime.Marking = 0;
+            _phase = 1;
+            GcRoots.Enter();
+        }
+
         GcThreads.StartWorld();
         if (PauseHook != 0) Sys.Call(PauseHook, 1, 0, 0);
+        Sys.AtomicSwap(ctl + GcLock.Cycling, 0);
+        Platform.Wake(ctl + GcLock.Cycling, 0x7FFFFFFF);
     }
 
     public static long PauseHook;
@@ -1492,17 +1663,55 @@ static class Gc
     public static long Deferred;
 
     /// The collection proper; see Collect for why it is entered this way.
+    /// Entered once for a collection made in one stop, and once for each
+    /// stop of one that lets the world run in between (_phase).
     public static void CollectInner()
     {
-        _collecting = true;
-        SyncEnd();
-        BuildBlockAnchors();
-        _markHead = Zero;
-        _markTail = Zero;
-        _markPeak = Zero;
-        _markOverflow = _markAt == 0;
+        if (_phase == 0)
+        {
+            _collecting = true;
+            _sinceAtStop = _since;
+            SyncEnd();
+            _cycle = _cycle + 1;
+            BuildBlockAnchors();
+            _markHead = Zero;
+            _markTail = Zero;
+            _markPeak = Zero;
+            _markOverflow = _markAt == 0;
+            ResetBarrier();
 
-        GcRoots.ScanAll();
+            // Worth it only when there is somebody to let run, and possible
+            // only with the snapshot's tables and the barrier's ring.
+            _concurrent = _snapshots && _barrier != 0 && _markAt != 0 && GcThreads.Others();
+
+            GcRoots.ScanAll();
+
+            if (_concurrent)
+            {
+                ConcurrentCycles = ConcurrentCycles + 1;
+                return;                 // the marking is done with the world running
+            }
+        }
+        else
+        {
+            // THE SECOND STOP. What the running threads reported, the roots
+            // as they are now, and whatever those reach.
+            bool lost = TakeBarrier(true);
+
+            if (lost)
+            {
+                // The ring filled and reports were dropped: the snapshot's
+                // promise is void. Everything marked is scanned again, with
+                // the world stopped, from the graph as it stands.
+                BarrierOverflows = BarrierOverflows + 1;
+                UnscanMarked();
+                _markOverflow = true;
+            }
+
+            GcRoots.ScanAll();
+            ScanNewcomers();
+        }
+
         Drain();
 
         // A live graph wider than the queue leaves blocks marked but never
@@ -1516,46 +1725,292 @@ static class Gc
         {
             _markOverflow = false;
             RescanPasses = RescanPasses + 1;
-            long chunk = HeapChunks.Newest();
-
-            while (chunk != 0)
-            {
-                long block = HeapChunks.First(chunk);
-                long end = HeapChunks.End(chunk);
-
-                while (block < end)
-                {
-                    long word = Sys.Peek(block);
-                    long size = word & SizeMask;
-
-                    if (size < Smallest || block + size > end)
-                    {
-                        // Broken metadata cannot be walked safely; stop at
-                        // this chunk rather than read what is not there.
-                        block = end;
-                    }
-                    else
-                    {
-                        if ((word & FlagMark) != 0 && (word & FlagScan) == 0)
-                        {
-                            Stamp(block, size, (word & FlagMask) | FlagScan);
-                            ScanRange(block + HeaderBytes, block + size - FooterBytes);
-                            Drain();
-                        }
-                        block = block + size;
-                    }
-                }
-                chunk = HeapChunks.Next(chunk);
-            }
+            RescanMarked();
         }
 
         HeapChunks.SetBlockAnchorsActive(false);
         Sweep();
+        _snapshots = false;
+        _concurrent = false;
 
-        _since = Zero;
+        // What was allocated while the mark ran was not looked at by it and
+        // still counts towards the next.
+        _since = _since > _sinceAtStop ? _since - _sinceAtStop : Zero;
         _threshold = _liveBytes > MinThreshold ? _liveBytes : MinThreshold;
         Collections = Collections + 1;
         _collecting = false;
+    }
+
+    static long _sinceAtStop;
+
+    /// Between the two stops, on the collecting thread, with the heap lock
+    /// NOT held: scan what is queued, take what the running threads have
+    /// reported, and go round until there is neither.
+    static void MarkWhileTheyRun()
+    {
+        while (true)
+        {
+            Drain();
+
+            while (_markOverflow)
+            {
+                _markOverflow = false;
+                RescanPasses = RescanPasses + 1;
+                RescanMarked();
+            }
+
+            TakeBarrier(false);
+
+            if (_markHead == _markTail && !_markOverflow)
+            {
+                return;
+            }
+        }
+    }
+
+    /// Every block that is marked and not yet scanned, scanned. By the
+    /// snapshot's start bits when there are any -- which is safe with the
+    /// world running -- and by walking the chain of blocks otherwise.
+    static void RescanMarked()
+    {
+        long chunk = _snapshots ? HeapChunks.SnapshotChunk(0) : HeapChunks.Newest();
+        long which = 0;
+
+        while (chunk != 0)
+        {
+            long block = HeapChunks.First(chunk);
+            long end = HeapChunks.End(chunk);
+
+            if (_snapshots)
+            {
+                block = HeapChunks.StartsCycle(chunk) == _cycle ? HeapChunks.NextStart(chunk, block) : 0;
+
+                while (block != 0)
+                {
+                    long flags = Sys.Peek(block);
+
+                    if ((flags & FlagMark) != 0 && (flags & FlagScan) == 0)
+                    {
+                        long extent = flags & SizeMask;
+                        Stamp(block, extent, (flags & FlagMask) | FlagScan);
+                        ScanRange(block + HeaderBytes, block + extent - FooterBytes);
+                        Drain();
+                    }
+
+                    block = HeapChunks.NextStart(chunk, block + 8);
+                }
+
+                which = which + 1;
+                chunk = HeapChunks.SnapshotChunk(which);
+                continue;
+            }
+
+            while (block < end)
+            {
+                long word = Sys.Peek(block);
+                long size = word & SizeMask;
+
+                if (size < Smallest || block + size > end)
+                {
+                    // Broken metadata cannot be walked safely; stop at
+                    // this chunk rather than read what is not there.
+                    block = end;
+                }
+                else
+                {
+                    if ((word & FlagMark) != 0 && (word & FlagScan) == 0)
+                    {
+                        Stamp(block, size, (word & FlagMask) | FlagScan);
+                        ScanRange(block + HeaderBytes, block + size - FooterBytes);
+                        Drain();
+                    }
+                    block = block + size;
+                }
+            }
+            chunk = HeapChunks.Next(chunk);
+        }
+    }
+
+    /// Takes the scanned flag off every marked block, so that the rescan
+    /// reads them all again. World stopped.
+    static void UnscanMarked()
+    {
+        long chunk = HeapChunks.Newest();
+
+        while (chunk != 0)
+        {
+            long block = HeapChunks.First(chunk);
+            long end = HeapChunks.End(chunk);
+
+            while (block < end)
+            {
+                long word = Sys.Peek(block);
+                long size = word & SizeMask;
+
+                if (size < Smallest || block + size > end)
+                {
+                    block = end;
+                }
+                else
+                {
+                    if ((word & FlagMark) != 0 && (word & FlagScan) != 0)
+                    {
+                        Stamp(block, size, (word & FlagMask) & ~FlagScan);
+                    }
+                    block = block + size;
+                }
+            }
+            chunk = HeapChunks.Next(chunk);
+        }
+    }
+
+    /// What was allocated while the mark ran is kept without being marked,
+    /// and so was never read. It is read now, world stopped: whatever it
+    /// refers to was reachable at the snapshot or is a newcomer itself if
+    /// every store was reported -- and if one was not, this is what finds
+    /// the object it hid.
+    static void ScanNewcomers()
+    {
+        long chunk = HeapChunks.Newest();
+
+        while (chunk != 0)
+        {
+            long block = HeapChunks.First(chunk);
+            long end = HeapChunks.End(chunk);
+            bool known = HeapChunks.StartsCycle(chunk) == _cycle;
+
+            while (block < end)
+            {
+                long word = Sys.Peek(block);
+                long size = word & SizeMask;
+
+                if (size < Smallest || block + size > end)
+                {
+                    block = end;
+                }
+                else
+                {
+                    if ((word & FlagFree) == 0 && !(known && HeapChunks.IsStart(chunk, block)))
+                    {
+                        ScanRange(block + HeaderBytes, block + size - FooterBytes);
+                    }
+                    block = block + size;
+                }
+            }
+            chunk = HeapChunks.Next(chunk);
+        }
+    }
+
+    // ---- the barrier's ring ----------------------------------------------
+    //
+    // Many writers, one reader, nothing held: a writer claims a place with
+    // one atomic add and stores into it; the reader takes places in order
+    // and stops at one that is claimed and not yet written. A writer is
+    // never stopped for a collection between its claim and its store
+    // (Tls.InAlloc), so at a stop every claimed place is written or was
+    // given up because the ring was full -- and a full ring is remembered.
+
+    static void ResetBarrier()
+    {
+        long ctl = GcLock.Words();
+
+        if (_barrier != 0)
+        {
+            long i = 0;
+            while (i < BarrierCount) { Sys.Poke(_barrier + i * 4, Zero); i = i + 1; }
+        }
+
+        Sys.AtomicSwap(ctl + GcLock.BarrierTail, 0);
+        Sys.AtomicSwap(ctl + GcLock.BarrierHead, 0);
+        Sys.AtomicSwap(ctl + GcLock.BarrierLost, 0);
+    }
+
+    /// What the compiled barrier calls, through Runtime.WriteBarrier, when a
+    /// reference is about to be stored at `slot` while a mark is under way:
+    /// the reference about to be overwritten, which the snapshot may reach
+    /// only through here, and the one going in, which costs a word and
+    /// covers a store somebody made without a barrier.
+    public static void Barrier(long slot, long value)
+    {
+        long tb = Sys.ThreadBlock();
+        long was = Sys.Peek(tb + Tls.InAlloc);
+        Sys.Poke(tb + Tls.InAlloc, 1);
+        long old = Sys.Peek(slot);
+
+        if (old != 0)
+        {
+            Report(old);
+        }
+
+        if (value != 0 && value != old)
+        {
+            Report(value);
+        }
+
+        Sys.Poke(tb + Tls.InAlloc, was);
+    }
+
+    static void Report(long value)
+    {
+        long ctl = GcLock.Words();
+
+        if (_barrier == 0)
+        {
+            return;
+        }
+
+        long place = Sys.AtomicAdd(ctl + GcLock.BarrierTail, 1) & 0xFFFFFFFF;
+        long head = Sys.Peek(ctl + GcLock.BarrierHead) & 0xFFFFFFFF;
+
+        if (((place - head) & 0xFFFFFFFF) >= BarrierCount)
+        {
+            Sys.AtomicSwap(ctl + GcLock.BarrierLost, 1);
+            return;
+        }
+
+        Sys.Poke(_barrier + (place & (BarrierCount - 1)) * 4, value);
+    }
+
+    /// Marks what has been reported. With the world running it stops at a
+    /// place claimed and not yet written; with the world stopped (`all`)
+    /// there is no such place, only ones given up. Answers whether any
+    /// report was dropped.
+    static bool TakeBarrier(bool all)
+    {
+        long ctl = GcLock.Words();
+
+        if (_barrier == 0)
+        {
+            return false;
+        }
+
+        long head = Sys.Peek(ctl + GcLock.BarrierHead) & 0xFFFFFFFF;
+        long tail = Sys.Peek(ctl + GcLock.BarrierTail) & 0xFFFFFFFF;
+
+        while (head != tail)
+        {
+            long at = _barrier + (head & (BarrierCount - 1)) * 4;
+            long value = Sys.Peek(at);
+
+            if (value == 0)
+            {
+                if (!all)
+                {
+                    break;
+                }
+            }
+            else
+            {
+                Sys.Poke(at, Zero);
+                BarrierTaken = BarrierTaken + 1;
+                MarkAt(value);
+            }
+
+            head = (head + 1) & 0xFFFFFFFF;
+        }
+
+        Sys.AtomicSwap(ctl + GcLock.BarrierHead, head);
+        return Sys.Peek(ctl + GcLock.BarrierLost) != 0;
     }
 
     // Build only while the world is stopped and all allocation buffers have
@@ -1564,14 +2019,17 @@ static class Gc
     static void BuildBlockAnchors()
     {
         HeapChunks.SetBlockAnchorsActive(false);
+        bool every = HeapChunks.SnapshotIndex();
         long chunk = HeapChunks.Newest();
         while (chunk != 0)
         {
             long anchors = HeapChunks.PrepareBlockAnchors(chunk);
+            if (anchors == 0) every = false;
             if (anchors != 0)
             {
                 long pages = HeapChunks.BlockAnchorCount(chunk);
                 for (long i = 0; i < pages; i++) Sys.Poke(anchors + i * 4, Zero);
+                HeapChunks.ClearStarts(chunk, _cycle);
                 long block = HeapChunks.First(chunk);
                 long end = HeapChunks.End(chunk);
                 long page = 0;
@@ -1587,12 +2045,16 @@ static class Gc
                         Sys.Poke(anchors + page * 4, block);
                         page = page + 1;
                     }
+                    // WHERE EVERY OBJECT STARTS, as of this stop: what the
+                    // marker finds objects by from here on (SnapshotBlock).
+                    if ((header & FlagFree) == 0) HeapChunks.SetStart(chunk, block);
                     block = block + size;
                 }
             }
             chunk = HeapChunks.Next(chunk);
         }
         HeapChunks.SetBlockAnchorsActive(true);
+        _snapshots = every;
     }
 
     /// Walks every block in every chunk: unmarked ones become free, adjacent
@@ -1615,7 +2077,7 @@ static class Gc
                 return false;
             }
 
-            if ((word & FlagMark) != 0)
+            if ((word & FlagMark) != 0 || Newcomer(chunk, block, word))
             {
                 return true;
             }
@@ -1624,6 +2086,19 @@ static class Gc
         }
 
         return false;
+    }
+
+    /// Allocated while the mark ran: not in the snapshot, so never marked,
+    /// and kept because of it. Only a collection that let the world run has
+    /// any.
+    static bool Newcomer(long chunk, long block, long word)
+    {
+        if (!_concurrent || (word & FlagFree) != 0)
+        {
+            return false;
+        }
+
+        return HeapChunks.StartsCycle(chunk) != _cycle || !HeapChunks.IsStart(chunk, block);
     }
 
     static void Sweep()
@@ -1666,7 +2141,7 @@ static class Gc
                 }
                 else
                 {
-                    if ((word & FlagMark) == 0)
+                    if ((word & FlagMark) == 0 && !Newcomer(chunk, block, word))
                     {
                         if (deadSize == 0)
                         {
@@ -1755,9 +2230,145 @@ static class HeapChunks
         return (Limit(chunk) - chunk + 4095) / 4096;
     }
 
+    // After the anchors, in the same mapping: the cycle the start bits are
+    // of, and the start bits -- one for every eight bytes of the chunk, set
+    // where an allocated block began at that cycle's first stop.
+    static long StartWords(long chunk)
+    {
+        return ((Limit(chunk) - chunk) / 8 + 31) / 32;
+    }
+
     static long AnchorBytes(long chunk)
     {
-        return (BlockAnchorCount(chunk) * 4 + 4095) & -4096;
+        return (BlockAnchorCount(chunk) * 4 + 4 + StartWords(chunk) * 4 + 4095) & -4096;
+    }
+
+    static long Starts(long chunk)
+    {
+        long anchors = Sys.Peek(chunk + ChunkAnchors);
+        return anchors == 0 ? 0 : anchors + BlockAnchorCount(chunk) * 4;
+    }
+
+    public static long StartsCycle(long chunk)
+    {
+        long starts = Starts(chunk);
+        return starts == 0 ? -1 : Sys.Peek(starts);
+    }
+
+    public static void ClearStarts(long chunk, long cycle)
+    {
+        long starts = Starts(chunk);
+        if (starts == 0) return;
+        long words = StartWords(chunk);
+        for (long i = 0; i < words; i++) Sys.Poke(starts + 4 + i * 4, 0);
+        Sys.Poke(starts, cycle);
+    }
+
+    public static void SetStart(long chunk, long block)
+    {
+        long starts = Starts(chunk);
+        if (starts == 0) return;
+        long bit = (block - chunk) / 8;
+        long at = starts + 4 + (bit / 32) * 4;
+        Sys.Poke(at, Sys.Peek(at) | (1L << (int)(bit & 31)));
+    }
+
+    public static bool IsStart(long chunk, long block)
+    {
+        long starts = Starts(chunk);
+        if (starts == 0) return false;
+        long bit = (block - chunk) / 8;
+        return (Sys.Peek(starts + 4 + (bit / 32) * 4) & (1L << (int)(bit & 31))) != 0;
+    }
+
+    /// The highest start at or below `address`, or 0.
+    public static long StartAtOrBelow(long chunk, long address)
+    {
+        long starts = Starts(chunk);
+        if (starts == 0) return 0;
+        long bit = (address - chunk) / 8;
+        long word = bit / 32;
+        long bits = Sys.Peek(starts + 4 + word * 4) & 0xFFFFFFFF;
+        long keep = bit & 31;
+        if (keep != 31) bits = bits & ((1L << (int)(keep + 1)) - 1);
+
+        while (bits == 0)
+        {
+            if (word == 0) return 0;
+            word = word - 1;
+            bits = Sys.Peek(starts + 4 + word * 4) & 0xFFFFFFFF;
+        }
+
+        long top = 31;
+        while ((bits & (1L << (int)top)) == 0) top = top - 1;
+        return chunk + (word * 32 + top) * 8;
+    }
+
+    /// The lowest start at or above `address`, or 0.
+    public static long NextStart(long chunk, long address)
+    {
+        long starts = Starts(chunk);
+        if (starts == 0) return 0;
+        long words = StartWords(chunk);
+        long bit = (address - chunk + 7) / 8;
+        long word = bit / 32;
+        if (word >= words) return 0;
+        long bits = (Sys.Peek(starts + 4 + word * 4) & 0xFFFFFFFF) & ~((1L << (int)(bit & 31)) - 1);
+
+        while (bits == 0)
+        {
+            word = word + 1;
+            if (word >= words) return 0;
+            bits = Sys.Peek(starts + 4 + word * 4) & 0xFFFFFFFF;
+        }
+
+        long low = 0;
+        while ((bits & (1L << (int)low)) == 0) low = low + 1;
+        return chunk + (word * 32 + low) * 8;
+    }
+
+    // THE CHUNK INDEX AS IT WAS AT THE STOP. The live one is edited in
+    // place, and moved, under the heap lock; the marker holds no lock.
+    static long _snap;
+    static long _snapCount;
+    static long _snapCapacity;
+
+    public static bool SnapshotIndex()
+    {
+        _snapCount = 0;
+        if (_indexFailed || _index == 0) return false;
+
+        if (_snapCapacity < _indexCount)
+        {
+            if (_snap != 0) Platform.Unmap(_snap, _snapCapacity * 4);
+            _snapCapacity = 0;
+            _snap = Platform.Map(_indexCapacity * 4);
+            if (_snap == 0) return false;
+            _snapCapacity = _indexCapacity;
+        }
+
+        for (long i = 0; i < _indexCount; i++) Sys.Poke(_snap + i * 4, Sys.Peek(_index + i * 4));
+        _snapCount = _indexCount;
+        return true;
+    }
+
+    public static long SnapshotChunk(long i)
+    {
+        return i < _snapCount ? Sys.Peek(_snap + i * 4) : 0;
+    }
+
+    public static long OfSnapshot(long at)
+    {
+        long low = 0, high = _snapCount;
+        while (low < high)
+        {
+            long middle = low + (high - low) / 2;
+            if ((Sys.Peek(_snap + middle * 4) & 0xFFFFFFFF) <= (at & 0xFFFFFFFF)) low = middle + 1;
+            else high = middle;
+        }
+        if (low == 0) return 0;
+        long candidate = Sys.Peek(_snap + (low - 1) * 4);
+        return (at & 0xFFFFFFFF) < (Sys.Peek(candidate + ChunkLimit) & 0xFFFFFFFF) ? candidate : 0;
     }
 
     public static long PrepareBlockAnchors(long chunk)
@@ -2226,6 +2837,10 @@ static class GcLock
     public const long Collecting = 0;   // 1 while a collection is running
     public const long Held = 4;         // the heap lock: 0 free, 1 held
     public const long Collector = 8;    // the thread block of whoever is collecting
+    public const long Cycling = 12;     // 1 from a collection's first stop to the end of its last
+    public const long BarrierTail = 16; // the barrier's ring: places claimed,
+    public const long BarrierHead = 20; //   places taken,
+    public const long BarrierLost = 24; //   and whether a report was dropped
 
     static long _words;
 
@@ -2305,6 +2920,13 @@ static class GcThreads
     public static long Count()
     {
         return _count;
+    }
+
+    /// Whether any thread but this one is registered: whether there is
+    /// anybody for a collection to let run.
+    public static bool Others()
+    {
+        return _blocks != 0 && _count > 1;
     }
 
     static long At(long i)

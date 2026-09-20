@@ -1,0 +1,172 @@
+// test: concurrent mark
+// expect-exit: 0
+// expect-output:
+// nodes 16000
+// intact True
+// named True
+// concurrent True
+//
+// A collection that marks while the other threads run must hear of every
+// reference they overwrite (the write barrier), or a node that is unlinked
+// from one place, held only in a local for a while, and linked in somewhere
+// the marker has already been, is swept while it is still in use.
+//
+// Four threads each keep sixteen lists and do nothing but that: take the
+// head off one list, make garbage -- which is what starts collections -- and
+// push the node onto another list. The heap is capped so that collections
+// run the whole time. Every node carries its value twice and a string made
+// from it; a node that was swept and handed out again has neither.
+
+class Node
+{
+    public int Value;
+    public int Check;
+    public string Name;
+    public Node Next;
+}
+
+class Shuffler : Action
+{
+    public const int Lists = 16;
+    public const int Nodes = 4000;
+    public const int Moves = 60000;
+
+    public Node[] Heads = new Node[Lists];
+
+    int _seed;
+
+    public Shuffler(int seed)
+    {
+        _seed = seed;
+    }
+
+    public void Invoke()
+    {
+        for (int i = 0; i < Nodes; i++)
+        {
+            Node n = new Node();
+
+            n.Value = _seed * Nodes + i;
+            n.Check = n.Value ^ 0x5A5A5A5A;
+            n.Name = "v" + n.Value;
+            n.Next = Heads[i % Lists];
+            Heads[i % Lists] = n;
+        }
+
+        int state = _seed * 7919 + 17;
+
+        for (int move = 0; move < Moves; move++)
+        {
+            state = state * 1103515245 + 12345;
+            int from = (state >> 16) & (Lists - 1);
+            state = state * 1103515245 + 12345;
+            int to = (state >> 16) & (Lists - 1);
+
+            Node taken = Heads[from];
+
+            if (taken == null)
+            {
+                continue;
+            }
+
+            // Unlinked: from here until it is pushed, the node and the whole
+            // list behind its old neighbours hang on what the barrier said.
+            Heads[from] = taken.Next;
+            taken.Next = null;
+
+            string waste = "waste " + move + " of " + _seed;
+
+            if (waste.Length == 0)
+            {
+                return;
+            }
+
+            taken.Next = Heads[to];
+            Heads[to] = taken;
+        }
+    }
+}
+
+static class Program
+{
+    static void Say(string label, long value)
+    {
+        Sys.Print(label);
+        Sys.PrintInt(value);
+        Sys.PrintLine();
+    }
+
+    static void SayBool(string label, bool value)
+    {
+        Sys.Print(label);
+        Sys.Print(value ? "True" : "False");
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        int workers = 4;
+
+        Gc.SetLimit(8388608);
+
+        Shuffler[] bodies = new Shuffler[workers];
+        Thread[] threads = new Thread[workers];
+
+        for (int i = 0; i < workers; i++)
+        {
+            Shuffler body = new Shuffler(i);
+
+            bodies[i] = body;
+            threads[i] = Thread.Start(body);
+        }
+
+        long mine = 0;
+
+        for (int i = 0; i < 40000; i++)
+        {
+            string s = "main " + i;
+
+            mine = mine + s.Length;
+        }
+
+        for (int i = 0; i < workers; i++)
+        {
+            threads[i].Join();
+        }
+
+        long nodes = 0;
+        bool intact = true;
+        bool named = true;
+
+        for (int i = 0; i < workers; i++)
+        {
+            for (int list = 0; list < Shuffler.Lists; list++)
+            {
+                Node n = bodies[i].Heads[list];
+
+                while (n != null)
+                {
+                    nodes = nodes + 1;
+
+                    if ((n.Value ^ 0x5A5A5A5A) != n.Check || n.Value / Shuffler.Nodes != i)
+                    {
+                        intact = false;
+                    }
+
+                    if (n.Name != "v" + n.Value)
+                    {
+                        named = false;
+                    }
+
+                    n = n.Next;
+                }
+            }
+        }
+
+        Say("nodes ", nodes);
+        SayBool("intact ", intact);
+        SayBool("named ", named);
+        SayBool("concurrent ", Gc.ConcurrentCycles > 0);
+        return mine > 0 ? 0 : 1;
+    }
+}

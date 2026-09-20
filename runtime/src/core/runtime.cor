@@ -430,6 +430,18 @@ static class Runtime
         Gc.Free(at);
     }
 
+    /// Nonzero while a collection marks with the other threads running. The
+    /// compiler reads it, inline, before every store of a reference into
+    /// the heap or a static, and calls WriteBarrier when it is set.
+    public static int Marking;
+
+    /// What compiled code calls before storing the reference `value` at
+    /// `slot`, while Marking is set. See Gc.Barrier.
+    public static void WriteBarrier(long slot, long value)
+    {
+        Gc.Barrier(slot, value);
+    }
+
     /// Free for a program that links no collector, so that the optimiser can
     /// retarget Free the way it retargets Alloc and leave Gc unreachable.
     /// A bump region records no sizes and reclaims nothing, so there is

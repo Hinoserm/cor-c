@@ -624,10 +624,80 @@ public sealed partial class Lowering
                 {
                     _e.Emit(Opcode.Fence, null);
                 }
+                ReferenceBarrier(m, value);
                 _e.Store(m.Address, new RegOperand(value), m.Offset, LoadSize(m.Type));
                 break;
         }
     }
+
+    /// <summary>
+    /// THE WRITE BARRIER. A collector that marks while the program runs must
+    /// hear of every reference the program overwrites, or an object reachable
+    /// when the mark began can be unlinked from under it and swept while
+    /// still in use. So a store of anything that may be a reference is
+    /// preceded by one load and one branch -- <c>Runtime.Marking</c>, zero
+    /// except while such a mark is under way -- and, when it is set, a call
+    /// to <c>Runtime.WriteBarrier(slot, value)</c>, which reads what is about
+    /// to be overwritten. A store into a freshly made object overwrites
+    /// nothing and has no barrier: those go straight to the builder and not
+    /// through here.
+    ///
+    /// A store through a pointer to a local is reported too; the collector
+    /// reads a number that is not a reference as exactly that.
+    /// </summary>
+    private void ReferenceBarrier(MemPlace m, VReg value)
+    {
+        if (!MayHoldReference(m.Type) || value.Type != IrTypes.Word || _inBarrier)
+        {
+            return;
+        }
+        if (!_b.Types.TryGetValue(RuntimeType, out TypeSymbol? rt))
+        {
+            return;
+        }
+        FieldSymbol? flag = rt.Fields.FirstOrDefault(f => f.Static && f.Name == "Marking");
+        MethodSymbol? barrier = RuntimeMethod("WriteBarrier", 2);
+        if (flag is null || barrier is null)
+        {
+            return;                         // a runtime with no concurrent collector
+        }
+        // The collector's own code stores no references it needs to hear of,
+        // and must not call itself.
+        if (_method is { Owner.Name: "Gc" or "GcThreads" or "GcLock" or "GcRoots" or "HeapChunks" or "Runtime" or "Platform" })
+        {
+            return;
+        }
+
+        Require(barrier);
+        _statics.Add(flag);
+
+        Block report = _f.NewBlock("barrier");
+        Block store = _f.NewBlock("stored");
+        VReg marking = _e.Load(IrType.I32, new SymOperand(StaticSymbol(flag)), 0, 4);
+        _e.Branch(marking, report, store);
+
+        _e.SetBlock(report);
+        _inBarrier = true;
+        VReg slot = RegOf(m.Address);
+        if (m.Offset != 0)
+        {
+            slot = _e.Binary(Opcode.Add, slot, m.Offset);
+        }
+        // The runtime declares both as `long`; an address is not a signed thing.
+        VReg a = IrTypes.Of(barrier.Params[0].Type) == IrType.I64 && slot.Type != IrType.I64 ? _e.Unary(Opcode.ZExt32, slot) : slot;
+        VReg b = IrTypes.Of(barrier.Params[1].Type) == IrType.I64 && value.Type != IrType.I64 ? _e.Unary(Opcode.ZExt32, value) : value;
+        _e.Call(CallLabel(barrier), IrType.Void, R(a), R(b));
+        _inBarrier = false;
+        _e.Jump(store);
+        _e.SetBlock(store);
+    }
+
+    private bool _inBarrier;
+
+    /// <summary>Whether a stored value of this type may be a reference the collector follows.</summary>
+    private bool MayHoldReference(Type t)
+        => LoadSize(t) == _t.WordSize && !t.IsPointer
+        && (HoldsReference(t) || t.ParamName is not null || t.Prim is Prim.Any);
 
     /// <summary>How many bytes a value of a type occupies in memory.</summary>
     private int LoadSize(Type t) => Math.Max(1, t.Size);
