@@ -2810,50 +2810,84 @@ public class TrackBar : Control
     /// meet, which is what gives it the moulded look rather than the look
     /// of a rectangle with a corner cut off.
     /// </summary>
+    /// <summary>
+    /// ONE SHAPE, SHADED FROM ITS OWN OUTLINE. The thumb used to be a
+    /// complete raised box with a triangle stuck on the end, and a complete
+    /// box has a bottom edge: a dark line straight across the middle of the
+    /// thumb, where the box stopped and the nose began. It is now a mask --
+    /// which pixels are thumb -- and each pixel takes its colour from which
+    /// of its neighbours are not: lit where the outside is above or to the
+    /// left, dark where it is below or to the right, with the second ring
+    /// inside each as every other raised thing here has. The diagonal sides
+    /// of the nose come out right by the same rule, with no case for them.
+    /// </summary>
     void Thumb(Graphics g, int along, int top)
     {
         bool nosed = TickStyle == TickStyle.TopLeft || TickStyle == TickStyle.BottomRight;
-        int body = nosed ? ThumbLong - ThumbShort / 2 - 1 : ThumbLong;
-        int x = Across ? along : top, y = Across ? top : along;
-        int w = Across ? ThumbShort : body, h = Across ? body : ThumbShort;
-
-        // A NOSE THAT POINTS AT THE TICKS. When the ticks are above, the
-        // point is at the top and the body hangs below it.
         bool pointFirst = TickStyle == TickStyle.TopLeft;
-        int nose = nosed ? ThumbShort / 2 + 1 : 0;
+        int nose = nosed ? ThumbShort / 2 : 0;
+        int w = Across ? ThumbShort : ThumbLong, h = Across ? ThumbLong : ThumbShort;
+        int x = Across ? along : top, y = Across ? top : along;
 
-        if (Across && pointFirst) y += nose;
-        if (!Across && pointFirst) x += nose;
+        // Two spare pixels all round, so a pixel may ask about its
+        // neighbour's neighbour without asking where the edge is.
+        bool[] inside = new bool[(w + 4) * (h + 4)];
+        int stride = w + 4;
 
-        g.FillRectangle(new SolidBrush(SystemColors.Control), x, y, w, h);
-        ControlPaint.DrawBorder3D(g, x, y, w, h, Border3DStyle.Raised);
-
-        if (nose == 0) { return; }
-
-        // The triangle, a row at a time, each row bevelled at both ends.
-        Pen lit = new Pen(SystemColors.ControlLightLight), shade = new Pen(SystemColors.ControlDarkDark);
-        Brush face = new SolidBrush(SystemColors.Control);
-
-        for (int step = 0; step < nose; step++)
+        for (int v = 0; v < h; v++)
         {
-            int half = pointFirst ? step : nose - 1 - step;
-            int width = half * 2 + 1;
-            int line = pointFirst ? y - nose + step : y + h + step;
+            for (int u = 0; u < w; u++)
+            {
+                // Along the short side, and how far into the long one from
+                // the blunt end: the nose narrows a column a row.
+                int across = Across ? u : v;
+                int deep = Across ? v : u;
+                if (pointFirst) deep = ThumbLong - 1 - deep;
 
-            if (Across)
-            {
-                int left = along + ThumbShort / 2 - half;
-                g.FillRectangle(face, left, line, width, 1);
-                g.FillRectangle(new SolidBrush(SystemColors.ControlLightLight), left, line, 1, 1);
-                g.FillRectangle(new SolidBrush(SystemColors.ControlDarkDark), left + width - 1, line, 1, 1);
+                int intoNose = deep - (ThumbLong - 1 - nose);
+                int middle = ThumbShort / 2;
+                bool on = intoNose <= 0 || (across >= middle - (nose - intoNose) && across <= middle + (nose - intoNose));
+
+                inside[(v + 2) * stride + (u + 2)] = on;
             }
-            else
+        }
+
+        Color face = SystemColors.Control, lit = SystemColors.ControlLightLight, soft = SystemColors.ControlLight;
+        Color dark = SystemColors.ControlDark, black = SystemColors.ControlDarkDark;
+
+        for (int v = 0; v < h; v++)
+        {
+            int runFrom = 0;
+            Color runColour = face;
+            bool running = false;
+
+            for (int u = 0; u <= w; u++)
             {
-                int column = pointFirst ? x - nose + step : x + w + step;
-                int upper = along + ThumbShort / 2 - half;
-                g.FillRectangle(face, column, upper, 1, width);
-                g.FillRectangle(new SolidBrush(SystemColors.ControlLightLight), column, upper, 1, 1);
-                g.FillRectangle(new SolidBrush(SystemColors.ControlDarkDark), column, upper + width - 1, 1, 1);
+                Color colour = face;
+                bool on = u < w && inside[(v + 2) * stride + (u + 2)];
+
+                if (on)
+                {
+                    int at = (v + 2) * stride + (u + 2);
+                    bool openLeft = !inside[at - 1], openUp = !inside[at - stride];
+                    bool openRight = !inside[at + 1], openDown = !inside[at + stride];
+
+                    if (openRight || openDown) colour = black;
+                    else if (openLeft || openUp) colour = lit;
+                    else
+                    {
+                        bool nearDark = !inside[at + 2] || !inside[at + stride * 2] || !inside[at + stride + 1];
+                        bool nearLit = !inside[at - 2] || !inside[at - stride * 2] || !inside[at - stride - 1];
+                        colour = nearDark ? dark : nearLit ? soft : face;
+                    }
+                }
+
+                if (running && (!on || colour != runColour))
+                {
+                    g.FillRectangle(new SolidBrush(runColour), x + runFrom, y + v, u - runFrom, 1);
+                    running = false;
+                }
+                if (on && !running) { running = true; runFrom = u; runColour = colour; }
             }
         }
     }
