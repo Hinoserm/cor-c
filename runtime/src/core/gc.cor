@@ -839,7 +839,19 @@ static class Gc
         // than the allocation rate.
         if (_since + need >= _threshold && HeapChunks.Any())
         {
-            CollectLocked();
+            // A PLATFORM MAY SAY "NOT HERE". This collection is owed because
+            // a quota was reached, not because memory ran out, so it can be
+            // put off: the quota stays exceeded and the next allocation made
+            // somewhere better pays it. A kernel says so when interrupts are
+            // off -- a collection stops the world for tens of milliseconds,
+            // and started there it stops every device on the machine for as
+            // long. Put off only so far: past four quotas it is taken
+            // wherever it falls, and the collection that memory itself
+            // demands (below) asks nobody.
+            bool later = DeferHook != 0 && _since + need < _threshold * 4
+                      && Sys.Call(DeferHook, 0, 0, 0) != 0;
+            if (later) Deferred = Deferred + 1;
+            else CollectLocked();
         }
 
         // A small request takes a buffer of its own and is answered from it,
@@ -1473,6 +1485,11 @@ static class Gc
     }
 
     public static long PauseHook;
+
+    /// Asked before a collection that pressure, not shortage, calls for:
+    /// nonzero puts it off. It must not allocate. See AllocSlow.
+    public static long DeferHook;
+    public static long Deferred;
 
     /// The collection proper; see Collect for why it is entered this way.
     public static void CollectInner()
