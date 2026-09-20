@@ -1,0 +1,177 @@
+// test: truetype
+// sources: tests/language/support/truetype_fixture.cor
+// expect-exit: 0
+// expect-output:
+// face: upem=1000 glyphs=6 fpgm=5 prep=3
+// hinter: prepare=True failed=False soft=0
+// H: hinted=True failed=False w=11 h=14
+// .##.....###
+// .##.....###
+// .##.....###
+// .##.....###
+// .##.....###
+// .##.....###
+// .##########
+// .##########
+// .##.....###
+// .##.....###
+// .##.....###
+// .##.....###
+// .##.....###
+// .##.....###
+// family: CorsacTest
+// families in collection: 1
+// font from family: CorsacTest h=20 gw=10
+// font by name: CorsacTest h=20
+// system font unaffected: System h=16 gw=8
+// unknown family throws: True
+// draw fills: 48
+// measure HI = 25 x 24
+// HI kerns 2px tighter than IH: True
+// measure H = 16, HH = 32, doubled = True
+// newline breaks the line: True
+// garbage bytes rejected: True
+// missing file throws: True
+// garbage memory font throws: True
+//
+// The whole TrueType pipeline, proven against a small synthetic face built
+// with fontTools (support/truetype-fixture-gen.py): the sfnt directory, the
+// cmap, glyf and loca tables, the hinting virtual machine running a real
+// font program, control value program and one glyph's own instructions, the
+// scan converter, the FontFamily/PrivateFontCollection surface, and
+// Graphics.DrawString/MeasureString drawing and measuring proportionally
+// through nothing but ordinary Fill calls.
+
+using System;
+using System.Drawing;
+using System.Collections.Generic;
+using System.IO;
+
+class CaptureTarget : IDrawingTarget
+{
+    public List<int> Rects = new List<int>();
+
+    public void Fill(int x, int y, int w, int h, Color colour) { Rects.Add(x); Rects.Add(y); Rects.Add(w); Rects.Add(h); }
+    public void Copy(int sx, int sy, int dx, int dy, int w, int h) { }
+    public void Line(int x0, int y0, int x1, int y1, Color colour) { }
+    public void Glyph(int id, int x, int y, Color foreground, Color background, bool transparent) { }
+    public void Blit(int id, int sx, int sy, int x, int y, int w, int h) { }
+    public void Clip(int x, int y, int w, int h) { }
+}
+
+class Program
+{
+    static void Line(string s) { Console.WriteLine(s); }
+
+    static int Main()
+    {
+        byte[] bytes = CorsacTests.TrueTypeFixture.Bytes();
+        TrueTypeFace? face = TrueTypeFace.FromBytes(bytes);
+
+        if (face == null) { Line("no face"); return 1; }
+
+        Line("face: upem=" + face.UnitsPerEm + " glyphs=" + face.GlyphCount
+           + " fpgm=" + face.FontProgramLength + " prep=" + face.ControlProgramLength);
+
+        // --- the hinting virtual machine ------------------------------
+
+        TrueTypeHinter hinter = new TrueTypeHinter(face);
+        bool prepared = hinter.Prepare(20, 20 * 64);
+
+        Line("hinter: prepare=" + prepared + " failed=" + hinter.Failed + " soft=" + hinter.SoftErrors);
+
+        // --- a hinted glyph, rasterised, pixel for pixel --------------
+
+        TrueTypeSize size = new TrueTypeSize(face, 20, 20 * 64);
+        int glyphH = face.GlyphIndex('H');
+        TrueTypeBitmap? bitmap = size.Glyph(glyphH);
+
+        if (bitmap == null) { Line("H: no bitmap"); return 1; }
+
+        Line("H: hinted=" + size.Hinted + " failed=" + size.HintFailed + " w=" + bitmap.Width + " h=" + bitmap.Height);
+
+        for (int y = 0; y < bitmap.Height; y++)
+        {
+            string row = "";
+            for (int x = 0; x < bitmap.Width; x++) { row = row + (bitmap.At(x, y) ? "#" : "."); }
+            Line(row);
+        }
+
+        // --- FontFamily and PrivateFontCollection ---------------------
+
+        PrivateFontCollection collection = new PrivateFontCollection();
+        collection.AddMemoryFont(bytes);
+
+        Line("family: " + collection.Families[0].Name);
+        Line("families in collection: " + collection.Families.Length);
+
+        Font fromFamily = new Font(collection.Families[0], 20);
+        Line("font from family: " + fromFamily.Name + " h=" + fromFamily.Height + " gw=" + fromFamily.GlyphWidth);
+
+        Font byName = new Font("CorsacTest", 20);
+        Line("font by name: " + byName.Name + " h=" + byName.Height);
+
+        Font system = new Font("System", 9);
+        Line("system font unaffected: " + system.Name + " h=" + system.Height + " gw=" + system.GlyphWidth);
+
+        bool threw = false;
+        try { Font bad = new Font(new FontFamily("NoSuchFace"), 12); }
+        catch (ArgumentException) { threw = true; }
+        Line("unknown family throws: " + threw);
+
+        // --- Graphics.DrawString and MeasureString ---------------------
+
+        CaptureTarget target = new CaptureTarget();
+        Graphics g = new Graphics(target, 0, 0, new Rectangle(0, 0, 200, 60));
+        Font big = new Font(collection.Families[0], 24);
+
+        g.DrawString("HI", big, Brushes.Black, 5, 5);
+        Line("draw fills: " + (target.Rects.Count / 4));
+
+        SizeF measured = g.MeasureString("HI", big);
+        Line("measure HI = " + (int)measured.Width + " x " + (int)measured.Height);
+
+        // The fixture's kern table pulls H against I by a tenth of an em
+        // and says nothing about I against H: proof that Graphics is
+        // really consulting the kern table Font/TrueTypeFace parse, not
+        // just summing plain advances.
+        int widthHI = (int)g.MeasureString("HI", big).Width;
+        int widthIH = (int)g.MeasureString("IH", big).Width;
+        Line("HI kerns 2px tighter than IH: " + (widthIH - widthHI == 2));
+
+        int widthOne = (int)g.MeasureString("H", big).Width;
+        int widthTwo = (int)g.MeasureString("HH", big).Width;
+        Line("measure H = " + widthOne + ", HH = " + widthTwo + ", doubled = " + (widthTwo == widthOne * 2));
+
+        CaptureTarget target2 = new CaptureTarget();
+        Graphics g2 = new Graphics(target2, 0, 0, new Rectangle(0, 0, 200, 100));
+        g2.DrawString("H\nI", big, Brushes.Black, 0, 0);
+
+        int maxYFirstLine = 0, minYSecondLine = int.MaxValue;
+        for (int i = 0; i < target2.Rects.Count; i += 4)
+        {
+            int y = target2.Rects[i + 1];
+            if (y < big.Height) { if (y > maxYFirstLine) { maxYFirstLine = y; } }
+            else { if (y < minYSecondLine) { minYSecondLine = y; } }
+        }
+        Line("newline breaks the line: " + (minYSecondLine > maxYFirstLine));
+
+        // --- garbage in, refusal out, not a crash --------------------
+
+        byte[] garbage = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 };
+        TrueTypeFace? bogus = TrueTypeFace.FromBytes(garbage);
+        Line("garbage bytes rejected: " + (bogus == null));
+
+        bool missingThrew = false;
+        try { collection.AddFontFile("/nonexistent/path/to/nothing.ttf"); }
+        catch (FileNotFoundException) { missingThrew = true; }
+        Line("missing file throws: " + missingThrew);
+
+        bool garbageThrew = false;
+        try { collection.AddMemoryFont(garbage); }
+        catch (ArgumentException) { garbageThrew = true; }
+        Line("garbage memory font throws: " + garbageThrew);
+
+        return 0;
+    }
+}

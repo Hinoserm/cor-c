@@ -1,0 +1,2693 @@
+// TrueType -- reading a scalable face, fitting it to the pixel grid, and
+// turning it into bitmaps.
+//
+// WHAT IS HERE, in the order a glyph passes through it:
+//
+//   TrueTypeFace     the file: its table directory, the character map, the
+//                    metrics, and the outlines in font units.
+//   TrueTypeHinter   the face's own grid-fitting programs, run. A TrueType
+//                    font carries bytecode -- a font program, a control
+//                    value program and a program for every glyph -- whose
+//                    whole purpose is to move the outline's points so that
+//                    stems land on whole pixels and are all the same
+//                    thickness. At the sizes a user interface is drawn in
+//                    this is the difference between text and mud: an
+//                    outline scaled to eleven pixels and filled comes out
+//                    with stems one pixel here and two there, bowls that
+//                    close up and crossbars that vanish. The instructions
+//                    are what the designer did about that, and running
+//                    them is the only way to get the result they intended.
+//   TrueTypeRaster   the fitted outline, filled: one bit a pixel, with the
+//                    drop-out control that keeps a thin stroke continuous
+//                    where it passes between two pixel centres.
+//
+// WHY IT IS IN A LIBRARY AND NOT IN THE SEAT. A font file is a program and
+// a set of offsets somebody else wrote, and the code that reads one is
+// where systems have been broken into for thirty years. The seat runs with
+// the display's privileges; this runs with the privileges of whichever
+// program wanted the text, and hands the seat finished bitmaps.
+//
+// Arithmetic is fixed point throughout, as the format defines it: 26.6 for
+// coordinates in pixels, 2.14 for unit vectors, 16.16 for scales. There is
+// no floating point in a glyph's path from the file to the screen.
+
+using System;
+using System.IO;
+
+namespace System.Drawing;
+
+/// <summary>One glyph's outline: points, which of them are on the curve,
+/// and where each contour ends. Coordinates are whatever the holder says
+/// they are -- font units out of the file, 26.6 pixels once scaled.</summary>
+internal class TrueTypeOutline
+{
+    public int PointCount;
+    public int ContourCount;
+    public int[] X = new int[0];
+    public int[] Y = new int[0];
+    public bool[] OnCurve = new bool[0];
+    public int[] ContourEnd = new int[0];
+
+    /// The glyph program, and where in the file's bytes it sits.
+    public int InstructionOffset;
+    public int InstructionLength;
+
+    /// From the metrics table, in font units.
+    public int AdvanceWidth;
+    public int LeftSideBearing;
+    public int XMin, YMin, XMax, YMax;
+
+    public void Reserve(int points, int contours)
+    {
+        if (points > X.Length)
+        {
+            int[] x = new int[points + 16], y = new int[points + 16];
+            bool[] on = new bool[points + 16];
+            for (int i = 0; i < PointCount; i++) { x[i] = X[i]; y[i] = Y[i]; on[i] = OnCurve[i]; }
+            X = x; Y = y; OnCurve = on;
+        }
+        if (contours > ContourEnd.Length)
+        {
+            int[] ends = new int[contours + 8];
+            for (int i = 0; i < ContourCount; i++) ends[i] = ContourEnd[i];
+            ContourEnd = ends;
+        }
+    }
+}
+
+/// <summary>
+/// A TrueType file, opened. Everything is read out of the one byte array
+/// on demand; nothing is copied but the outlines asked for.
+///
+/// EVERY OFFSET IS CHECKED. The file says where its tables are and how
+/// long; a read past the end of the array answers nought rather than
+/// faulting, and a table that claims to extend past the file is treated
+/// as absent. A face that lies about itself draws nothing, which is the
+/// worst it should be able to do.
+/// </summary>
+internal class TrueTypeFace
+{
+    readonly byte[] _data;
+
+    int _cmap, _cmapFormat;
+    int _name, _nameLength;
+    int _glyf, _glyfLength, _loca, _head, _hhea, _hmtx, _maxp, _kern;
+    int _fpgm, _fpgmLength, _prep, _prepLength, _cvt, _cvtLength;
+    bool _longLoca;
+    int _metricCount;
+
+    public int UnitsPerEm;
+    public int GlyphCount;
+    public int Ascender, Descender, LineGap;
+
+    // What the hinter needs to size its machine, from maxp.
+    public int MaxPoints, MaxContours, MaxCompositePoints, MaxCompositeContours;
+    public int MaxZones, MaxTwilightPoints, MaxStorage, MaxFunctionDefs, MaxInstructionDefs, MaxStack;
+
+    public byte[] Data { get { return _data; } }
+    public int FontProgramOffset { get { return _fpgm; } }
+    public int FontProgramLength { get { return _fpgmLength; } }
+    public int ControlProgramOffset { get { return _prep; } }
+    public int ControlProgramLength { get { return _prepLength; } }
+    public int ControlValueCount { get { return _cvtLength / 2; } }
+    public int ControlValue(int index) { return S16(_cvt + index * 2); }
+
+    TrueTypeFace(byte[] data) { _data = data; }
+
+    public static TrueTypeFace? FromFile(string path)
+    {
+        byte[] bytes;
+        try { bytes = File.ReadAllBytes(path); }
+        catch (IOException) { return null; }
+        return FromBytes(bytes);
+    }
+
+    public static TrueTypeFace? FromBytes(byte[] bytes)
+    {
+        TrueTypeFace face = new TrueTypeFace(bytes);
+        return face.Open() ? face : null;
+    }
+
+    // --- reading, big-endian and bounds-checked ---------------------------
+
+    public int U8(int at) { return at < 0 || at >= _data.Length ? 0 : _data[at] & 255; }
+    public int U16(int at) { return (U8(at) << 8) | U8(at + 1); }
+    public int S16(int at) { int v = U16(at); return v >= 0x8000 ? v - 0x10000 : v; }
+    public int S8(int at) { int v = U8(at); return v >= 0x80 ? v - 0x100 : v; }
+    int U32(int at) { return (U16(at) << 16) | U16(at + 2); }
+
+    bool Open()
+    {
+        if (_data.Length < 12) { return false; }
+
+        int version = U32(0);
+
+        // 0x00010000 is TrueType; 'true' is Apple's spelling of the same.
+        // 'OTTO' is PostScript outlines in an OpenType wrapper, which this
+        // does not draw.
+        if (version != 0x00010000 && version != 0x74727565) { return false; }
+
+        int tables = U16(4);
+
+        if (12 + tables * 16 > _data.Length) { return false; }
+
+        for (int i = 0; i < tables; i++)
+        {
+            int record = 12 + i * 16;
+            int tag = U32(record), offset = U32(record + 8), length = U32(record + 12);
+
+            if (offset < 0 || length < 0 || offset > _data.Length || length > _data.Length - offset) { continue; }
+
+            if (tag == 0x6E616D65) { _name = offset; _nameLength = length; }   // name
+            if (tag == 0x636D6170) { _cmap = offset; }                          // cmap
+            else if (tag == 0x676C7966) { _glyf = offset; _glyfLength = length; } // glyf
+            else if (tag == 0x6C6F6361) { _loca = offset; }                     // loca
+            else if (tag == 0x68656164) { _head = offset; }                     // head
+            else if (tag == 0x68686561) { _hhea = offset; }                     // hhea
+            else if (tag == 0x686D7478) { _hmtx = offset; }                     // hmtx
+            else if (tag == 0x6D617870) { _maxp = offset; }                     // maxp
+            else if (tag == 0x6B65726E) { _kern = offset; }                     // kern
+            else if (tag == 0x6670676D) { _fpgm = offset; _fpgmLength = length; } // fpgm
+            else if (tag == 0x70726570) { _prep = offset; _prepLength = length; } // prep
+            else if (tag == 0x63767420) { _cvt = offset; _cvtLength = length; }   // cvt
+        }
+
+        if (_cmap == 0 || _glyf == 0 || _loca == 0 || _head == 0 || _hhea == 0 || _hmtx == 0 || _maxp == 0) { return false; }
+
+        UnitsPerEm = U16(_head + 18);
+        _longLoca = S16(_head + 50) != 0;
+
+        if (UnitsPerEm < 16 || UnitsPerEm > 16384) { return false; }
+
+        Ascender = S16(_hhea + 4);
+        Descender = S16(_hhea + 6);
+        LineGap = S16(_hhea + 8);
+        _metricCount = U16(_hhea + 34);
+
+        GlyphCount = U16(_maxp + 4);
+        MaxPoints = U16(_maxp + 6);
+        MaxContours = U16(_maxp + 8);
+        MaxCompositePoints = U16(_maxp + 10);
+        MaxCompositeContours = U16(_maxp + 12);
+        MaxZones = U16(_maxp + 14);
+        MaxTwilightPoints = U16(_maxp + 16);
+        MaxStorage = U16(_maxp + 18);
+        MaxFunctionDefs = U16(_maxp + 20);
+        MaxInstructionDefs = U16(_maxp + 22);
+        MaxStack = U16(_maxp + 24);
+
+        return FindCharacterMap();
+    }
+
+    /// The Unicode subtable: full repertoire (format 12) where the face has
+    /// one, the basic plane (format 4) otherwise.
+    bool FindCharacterMap()
+    {
+        int count = U16(_cmap + 2);
+        int best = 0, bestFormat = 0;
+
+        for (int i = 0; i < count; i++)
+        {
+            int record = _cmap + 4 + i * 8;
+            int platform = U16(record), encoding = U16(record + 2);
+            int table = _cmap + U32(record + 4);
+            int format = U16(table);
+            bool unicode = platform == 0 || (platform == 3 && (encoding == 1 || encoding == 10));
+
+            if (!unicode) { continue; }
+            if (format == 12 && bestFormat != 12) { best = table; bestFormat = 12; }
+            else if (format == 4 && bestFormat == 0) { best = table; bestFormat = 4; }
+        }
+
+        _cmap = best;
+        _cmapFormat = bestFormat;
+        return best != 0;
+    }
+
+    /// <summary>Which glyph draws this character; nought, the face's own
+    /// "missing" box, when it has none.</summary>
+    public int GlyphIndex(int character)
+    {
+        if (_cmapFormat == 12)
+        {
+            int groups = U32(_cmap + 12);
+            int low = 0, high = groups - 1;
+
+            while (low <= high)
+            {
+                int middle = (low + high) / 2;
+                int group = _cmap + 16 + middle * 12;
+                int first = U32(group), last = U32(group + 4);
+
+                if (character < first) { high = middle - 1; }
+                else if (character > last) { low = middle + 1; }
+                else { return Clamp(U32(group + 8) + character - first); }
+            }
+            return 0;
+        }
+
+        if (character > 0xFFFF) { return 0; }
+
+        int segments = U16(_cmap + 6) / 2;
+        int ends = _cmap + 14;
+        int starts = ends + segments * 2 + 2;
+        int deltas = starts + segments * 2;
+        int ranges = deltas + segments * 2;
+
+        int lo = 0, hi = segments - 1;
+
+        while (lo <= hi)
+        {
+            int mid = (lo + hi) / 2;
+
+            if (character > U16(ends + mid * 2)) { lo = mid + 1; continue; }
+            if (character < U16(starts + mid * 2)) { hi = mid - 1; continue; }
+
+            int range = U16(ranges + mid * 2);
+
+            if (range == 0) { return Clamp((character + S16(deltas + mid * 2)) & 0xFFFF); }
+
+            // THE FORMAT'S FAMOUS TRICK: the range offset is relative to
+            // its own position in the file, and points into the glyph id
+            // array that follows the four parallel arrays.
+            int glyph = U16(ranges + mid * 2 + range + (character - U16(starts + mid * 2)) * 2);
+
+            return glyph == 0 ? 0 : Clamp((glyph + S16(deltas + mid * 2)) & 0xFFFF);
+        }
+        return 0;
+    }
+
+    int Clamp(int glyph) { return glyph < 0 || glyph >= GlyphCount ? 0 : glyph; }
+
+    public int AdvanceWidth(int glyph)
+    {
+        if (_metricCount == 0) { return 0; }
+        // Past the last full record every glyph shares its advance: the
+        // format's economy for monospaced runs at the end of a face.
+        return U16(_hmtx + (glyph < _metricCount ? glyph : _metricCount - 1) * 4);
+    }
+
+    public int LeftSideBearing(int glyph)
+    {
+        if (glyph < _metricCount) { return S16(_hmtx + glyph * 4 + 2); }
+        return S16(_hmtx + _metricCount * 4 + (glyph - _metricCount) * 2);
+    }
+
+    /// <summary>The adjustment between two glyphs, in font units, from a
+    /// format 0 kerning table; nought when the face has none.</summary>
+    public int Kerning(int left, int right)
+    {
+        if (_kern == 0 || U16(_kern) != 0) { return 0; }
+
+        int tables = U16(_kern + 2);
+        int at = _kern + 4;
+
+        for (int t = 0; t < tables; t++)
+        {
+            int length = U16(at + 2), coverage = U16(at + 4);
+
+            // Horizontal, not cross-stream, format 0: the only kind a
+            // line of text laid left to right has a use for.
+            if ((coverage & 0xFF07) == 0x0001)
+            {
+                int pairs = U16(at + 6);
+                int key = (left << 16) | right;
+                int low = 0, high = pairs - 1;
+
+                while (low <= high)
+                {
+                    int middle = (low + high) / 2;
+                    int entry = at + 14 + middle * 6;
+                    int found = (U16(entry) << 16) | U16(entry + 2);
+
+                    if (found == key) { return S16(entry + 4); }
+                    if ((uint)found < (uint)key) { low = middle + 1; } else { high = middle - 1; }
+                }
+            }
+            if (length <= 0) { break; }
+            at += length;
+        }
+        return 0;
+    }
+
+    int GlyphOffset(int glyph, out int length)
+    {
+        int from, to;
+
+        if (_longLoca) { from = U32(_loca + glyph * 4); to = U32(_loca + glyph * 4 + 4); }
+        else { from = U16(_loca + glyph * 2) * 2; to = U16(_loca + glyph * 2 + 2) * 2; }
+
+        length = to - from;
+
+        if (from < 0 || length <= 0 || to > _glyfLength) { length = 0; return 0; }
+        return _glyf + from;
+    }
+
+    /// True when the glyph is built from other glyphs.
+    public bool IsComposite(int glyph)
+    {
+        int length;
+        int at = GlyphOffset(glyph, out length);
+        return length > 0 && S16(at) < 0;
+    }
+
+    /// <summary>
+    /// A simple glyph's points, in font units, appended to `into`. False
+    /// for an empty glyph (a space) and for a composite, which the caller
+    /// assembles with ComponentCount and Component.
+    /// </summary>
+    public bool LoadSimple(int glyph, TrueTypeOutline into)
+    {
+        into.AdvanceWidth = AdvanceWidth(glyph);
+        into.LeftSideBearing = LeftSideBearing(glyph);
+        into.InstructionLength = 0;
+
+        int length;
+        int at = GlyphOffset(glyph, out length);
+
+        if (length < 10) { return false; }
+
+        int contours = S16(at);
+
+        if (contours <= 0) { return false; }
+
+        into.XMin = S16(at + 2); into.YMin = S16(at + 4);
+        into.XMax = S16(at + 6); into.YMax = S16(at + 8);
+
+        int basePoint = into.PointCount, baseContour = into.ContourCount;
+        int ends = at + 10;
+        int points = U16(ends + (contours - 1) * 2) + 1;
+
+        if (points <= 0 || points > 20000) { return false; }
+
+        into.Reserve(basePoint + points, baseContour + contours);
+
+        for (int i = 0; i < contours; i++) { into.ContourEnd[baseContour + i] = basePoint + U16(ends + i * 2); }
+
+        int program = ends + contours * 2;
+
+        into.InstructionLength = U16(program);
+        into.InstructionOffset = program + 2;
+
+        int cursor = program + 2 + into.InstructionLength;
+        int limit = at + length;
+
+        // THE FLAGS, run-length packed: a flag with the repeat bit set is
+        // followed by how many more times it applies. Kept in a scratch
+        // array because the coordinates that follow are read in two
+        // passes, all the x's and then all the y's, each driven by them.
+        byte[] flags = new byte[points];
+
+        for (int i = 0; i < points; )
+        {
+            if (cursor >= limit) { return false; }
+
+            int flag = U8(cursor++);
+            int repeat = (flag & 8) != 0 ? U8(cursor++) : 0;
+
+            for (int r = 0; r <= repeat && i < points; r++) { flags[i++] = (byte)flag; }
+        }
+
+        int value = 0;
+
+        for (int i = 0; i < points; i++)
+        {
+            int flag = flags[i];
+
+            if ((flag & 2) != 0) { int d = U8(cursor++); value += (flag & 16) != 0 ? d : -d; }
+            else if ((flag & 16) == 0) { value += S16(cursor); cursor += 2; }
+
+            into.X[basePoint + i] = value;
+            into.OnCurve[basePoint + i] = (flag & 1) != 0;
+        }
+
+        value = 0;
+
+        for (int i = 0; i < points; i++)
+        {
+            int flag = flags[i];
+
+            if ((flag & 4) != 0) { int d = U8(cursor++); value += (flag & 32) != 0 ? d : -d; }
+            else if ((flag & 32) == 0) { value += S16(cursor); cursor += 2; }
+
+            into.Y[basePoint + i] = value;
+        }
+
+        into.PointCount = basePoint + points;
+        into.ContourCount = baseContour + contours;
+        return true;
+    }
+
+    // --- composites -------------------------------------------------------
+
+    /// What one component record says. The transform is 2.14.
+    public class Component
+    {
+        public int Glyph;
+        public int Flags;
+        public int Argument1, Argument2;
+        public int XX = 0x4000, XY, YX, YY = 0x4000;
+        public bool ArgumentsAreOffsets { get { return (Flags & 2) != 0; } }
+        public bool RoundToGrid { get { return (Flags & 4) != 0; } }
+        public bool HasTransform { get { return (Flags & (8 | 0x40 | 0x80)) != 0; } }
+        public bool UseMyMetrics { get { return (Flags & 0x200) != 0; } }
+
+        /// Rare, and off by default: when it is not set -- which is
+        /// nearly always -- an offset given as a distance rather than as
+        /// matched points is applied AFTER the transform, unscaled and
+        /// unrotated by it. Getting this backwards is one of the
+        /// classic TrueType composite bugs; it shows up only on rotated
+        /// or scaled components, which most accented Latin letters are
+        /// not, so a face can look right for months before it doesn't.
+        public bool ScaledComponentOffset { get { return (Flags & 0x800) != 0; } }
+    }
+
+    /// <summary>The components of a composite glyph, and where its own
+    /// instructions are, if it has any.</summary>
+    public Component[] Components(int glyph, out int instructionOffset, out int instructionLength)
+    {
+        instructionOffset = 0;
+        instructionLength = 0;
+
+        int length;
+        int at = GlyphOffset(glyph, out length);
+
+        if (length < 10 || S16(at) >= 0) { return new Component[0]; }
+
+        List<Component> found = new List<Component>();
+        int cursor = at + 10, limit = at + length;
+        int flags = 0;
+
+        while (cursor + 4 <= limit && found.Count < 64)
+        {
+            Component part = new Component();
+
+            flags = U16(cursor);
+            part.Flags = flags;
+            part.Glyph = Clamp(U16(cursor + 2));
+            cursor += 4;
+
+            if ((flags & 1) != 0) { part.Argument1 = S16(cursor); part.Argument2 = S16(cursor + 2); cursor += 4; }
+            else if ((flags & 2) != 0) { part.Argument1 = S8(cursor); part.Argument2 = S8(cursor + 1); cursor += 2; }
+            else { part.Argument1 = U8(cursor); part.Argument2 = U8(cursor + 1); cursor += 2; }
+
+            if ((flags & 8) != 0) { part.XX = part.YY = S16(cursor); cursor += 2; }
+            else if ((flags & 0x40) != 0) { part.XX = S16(cursor); part.YY = S16(cursor + 2); cursor += 4; }
+            else if ((flags & 0x80) != 0)
+            {
+                part.XX = S16(cursor); part.XY = S16(cursor + 2);
+                part.YX = S16(cursor + 4); part.YY = S16(cursor + 6);
+                cursor += 8;
+            }
+
+            found.Add(part);
+
+            if ((flags & 0x20) == 0) { break; }
+        }
+
+        if ((flags & 0x100) != 0 && cursor + 2 <= limit)
+        {
+            instructionLength = U16(cursor);
+            instructionOffset = cursor + 2;
+        }
+
+        Component[] parts = new Component[found.Count];
+        for (int i = 0; i < parts.Length; i++) { parts[i] = found[i]; }
+        return parts;
+    }
+
+    /// <summary>
+    /// The family name from the face's own `name` table: nameID 1
+    /// ("Font Family Name"), preferring a Windows Unicode record and
+    /// falling back to whatever the face has. A face with none, or a
+    /// corrupt table, answers "" rather than failing outright -- a bad
+    /// name is not a reason to refuse a font that otherwise parses.
+    /// </summary>
+    public string FamilyName
+    {
+        get
+        {
+            if (_name == 0 || _nameLength < 6) { return ""; }
+
+            int count = U16(_name + 2);
+            int stringArea = _name + U16(_name + 4);
+            int best = -1, bestScore = -1;
+
+            for (int i = 0; i < count; i++)
+            {
+                int record = _name + 6 + i * 12;
+                int platform = U16(record), encoding = U16(record + 2), language = U16(record + 4), nameId = U16(record + 6);
+
+                if (nameId != 1) { continue; }
+
+                // Highest preference to Windows Unicode US English, then
+                // any Windows Unicode, then Macintosh Roman, then whatever
+                // is there: the same order every reader uses.
+                int score = platform == 3 && encoding == 1 && language == 0x409 ? 4
+                          : platform == 3 && encoding == 1 ? 3
+                          : platform == 0 ? 2
+                          : platform == 1 && encoding == 0 ? 1
+                          : 0;
+
+                if (score > bestScore) { bestScore = score; best = record; }
+            }
+
+            if (best < 0) { return ""; }
+
+            int platformFound = U16(best), length = U16(best + 8), offset = U16(best + 10);
+            int at = stringArea + offset;
+
+            if (length <= 0 || at < 0 || at + length > _data.Length) { return ""; }
+
+            // Platform 3 (and 0) store UTF-16BE; platform 1 stores bytes
+            // one to a character. Either way the result is ASCII for any
+            // ordinary family name, which is all a window's title bar or
+            // a font picker needs.
+            bool wide = platformFound == 3 || platformFound == 0;
+            int step = wide ? 2 : 1;
+            string built = "";
+
+            for (int i = at; i + step <= at + length; i += step)
+            {
+                int ch = wide ? U16(i) : U8(i);
+                built = built + (char)(ch > 255 ? '?' : ch);
+            }
+            return built;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The grid-fitter: a TrueType virtual machine.
+// ---------------------------------------------------------------------------
+
+/// <summary>
+/// One zone of points the hinter works on. Zone 1 is the glyph; zone 0 is
+/// the "twilight" zone, a scratch area of points that belong to no contour
+/// and that a font's own programs use to hold intermediate positions.
+///
+/// Every point is kept twice: where it started, scaled but unmoved, and
+/// where it is now. Instructions measure against the first and move the
+/// second, and the difference is the whole of what hinting does.
+/// </summary>
+class TrueTypeZone
+{
+    public int PointCount;
+    public int ContourCount;
+
+    public int[] OrgX = new int[0];          // scaled, unhinted, 26.6
+    public int[] OrgY = new int[0];
+    public int[] CurX = new int[0];          // where the point is now, 26.6
+    public int[] CurY = new int[0];
+    public bool[] TouchX = new bool[0];      // moved, or pinned, along x
+    public bool[] TouchY = new bool[0];
+    public bool[] OnCurve = new bool[0];
+    public int[] ContourEnd = new int[0];
+
+    public void Allocate(int points, int contours)
+    {
+        if (points > OrgX.Length)
+        {
+            OrgX = new int[points]; OrgY = new int[points];
+            CurX = new int[points]; CurY = new int[points];
+            TouchX = new bool[points]; TouchY = new bool[points];
+            OnCurve = new bool[points];
+        }
+        if (contours > ContourEnd.Length) { ContourEnd = new int[contours]; }
+        PointCount = points;
+        ContourCount = contours;
+    }
+
+    public void Untouch()
+    {
+        for (int i = 0; i < PointCount; i++) { TouchX[i] = false; TouchY[i] = false; }
+    }
+
+    /// The first point of the contour that `point` belongs to, and the last.
+    public void Contour(int point, out int first, out int last)
+    {
+        first = 0;
+        last = PointCount - 1;
+
+        for (int i = 0; i < ContourCount; i++)
+        {
+            if (point <= ContourEnd[i]) { last = ContourEnd[i]; return; }
+            first = ContourEnd[i] + 1;
+        }
+    }
+}
+
+/// <summary>
+/// The TrueType interpreter: the machine a font's own programs run on.
+///
+/// WHY A FONT CONTAINS A PROGRAM AT ALL. An outline is a set of curves in
+/// a thousandth-of-an-em grid, and a screen is a coarse grid of whole
+/// pixels. Scaling one onto the other and filling what lands inside gives,
+/// at eleven pixels, stems that are one pixel wide here and two there,
+/// bowls that fill in, crossbars that fall between two rows and disappear,
+/// and a line of text whose letters do not sit on the same baseline. None
+/// of that is a rounding error to be tuned away: it is what happens when a
+/// shape meets a grid a tenth of its detail.
+///
+/// So the designer writes a program. It says: this point is the left edge
+/// of a stem, put it on a pixel boundary; this stem is the same width as
+/// that one, so use the same rounded width for both; this crossbar is one
+/// pixel high whatever the size says. The instructions below are that
+/// language, and running them is the only way to get the shapes the face
+/// was drawn to produce. Everything else -- a clever rasteriser, more
+/// bits of antialiasing -- is a way of making an unhinted outline less
+/// bad. This is the way of making it right.
+///
+/// Fixed point throughout, as the format defines: distances in 26.6
+/// (sixty-fourths of a pixel), unit vectors in 2.14, scales in 16.16.
+/// </summary>
+class TrueTypeHinter
+{
+    // --- the machine's state ----------------------------------------------
+
+    readonly TrueTypeFace _face;
+    byte[] _data;
+
+    int[] _stack;
+    int _top;
+
+    int[] _storage;
+    int[] _cvt;                              // scaled to 26.6
+
+    // A function is a stretch of some program. The program a definition
+    // was found in has to be remembered with it: FDEF appears in the font
+    // program and the call comes from a glyph's.
+    int[] _functionAt;
+    int[] _functionLength;
+
+    public TrueTypeZone Glyph = new TrueTypeZone();
+    public TrueTypeZone Twilight = new TrueTypeZone();
+
+    // The graphics state, in the specification's own names.
+    int _pvx, _pvy;                          // projection vector, 2.14
+    int _fvx, _fvy;                          // freedom vector, 2.14
+    int _dvx, _dvy;                          // dual projection vector, 2.14
+    int _fdotp;                              // freedom . projection, 2.14
+    int _rp0, _rp1, _rp2;
+    int _zp0, _zp1, _zp2;
+    int _loop;
+    int _roundPeriod, _roundPhase, _roundThreshold;
+    bool _roundOff;
+    int _minimumDistance;
+    int _cvtCutIn;
+    int _singleWidth, _singleWidthCutIn;
+    int _deltaBase, _deltaShift;
+    bool _autoFlip;
+    int _instructControl;
+    int _scanControl, _scanType;
+
+    int _ppem;
+    int _pointSize;                          // 26.6 points
+
+    // What the state was after the control value program ran: every glyph
+    // starts from that, not from the machine's defaults.
+    int[] _cvtAfterPrep = new int[0];
+    int[] _storageAfterPrep = new int[0];
+    bool _prepared;
+
+    public bool Failed;                      // a program did something impossible
+
+    public TrueTypeHinter(TrueTypeFace face)
+    {
+        _face = face;
+        _data = face.Data;
+
+        int stack = face.MaxStack < 64 ? 64 : face.MaxStack + 32;
+        _stack = new int[stack > 4096 ? 4096 : stack];
+        _storage = new int[face.MaxStorage + 4];
+
+        int functions = face.MaxFunctionDefs + 4;
+        _functionAt = new int[functions > 512 ? 512 : functions];
+        _functionLength = new int[_functionAt.Length];
+
+        _cvt = new int[face.ControlValueCount + 4];
+
+        int twilight = face.MaxTwilightPoints + 4;
+        Twilight.Allocate(twilight, 0);
+    }
+
+    // --- fixed point ------------------------------------------------------
+
+    /// Font units to 26.6 pixels at the size this hinter was set to.
+    public int Scale(int units)
+    {
+        int upem = _face.UnitsPerEm;
+        long value = (long)units * _ppem * 64;
+        return (int)((value >= 0 ? value + upem / 2 : value - upem / 2) / upem);
+    }
+
+    static int MulDiv(int a, int b, int c)
+    {
+        if (c == 0) { return 0; }
+        long value = (long)a * b;
+        long half = c / 2;
+        return (int)((value >= 0 ? value + half : value - half) / c);
+    }
+
+    /// a * b where b is 2.14: the dot of a distance with a unit vector.
+    static int Mul14(int a, int b) { long v = (long)a * b; return (int)((v + 0x2000) >> 14); }
+
+    static int Abs(int v) { return v < 0 ? -v : v; }
+
+    /// The length of (x, y), in the units x and y are in. Integer only:
+    /// a decreasing sweep that is exact to the unit.
+    static int Length(int x, int y)
+    {
+        long xx = (long)x * x + (long)y * y;
+
+        if (xx <= 0) { return 0; }
+
+        // Newton's method from a power-of-two start, which converges in a
+        // handful of turns for anything a font contains.
+        long root = 1;
+        while (root * root < xx) { root = root << 1; }
+        while (root > 0)
+        {
+            long next = (root + xx / root) >> 1;
+            if (next >= root) { break; }
+            root = next;
+        }
+        return (int)root;
+    }
+
+    /// (x, y) as a 2.14 unit vector. A zero vector becomes the x axis,
+    /// which is what the specification says to do rather than divide by
+    /// nought.
+    static void Normalise(int x, int y, out int ux, out int uy)
+    {
+        int length = Length(x, y);
+
+        if (length == 0) { ux = 0x4000; uy = 0; return; }
+
+        ux = MulDiv(x, 0x4000, length);
+        uy = MulDiv(y, 0x4000, length);
+    }
+
+    // --- the stack --------------------------------------------------------
+
+    void Push(int value) { if (_top < _stack.Length) { _stack[_top++] = value; } else { Fail(); } }
+    int Pop() { if (_top > 0) { return _stack[--_top]; } Fail(); return 0; }
+
+    internal void Fail() { Failed = true; }
+
+    /// A point number out of range, a reference that is not there: the
+    /// instruction does nothing and the program carries on. Recorded, so
+    /// that a face which does this everywhere can be told from one that
+    /// does it once, and a caller can decide how much to trust a face
+    /// that does it a lot.
+    internal void Soft() { _soft++; }
+    internal int _soft;
+    public int SoftErrors { get { return _soft; } }
+
+    // --- zones ------------------------------------------------------------
+
+    TrueTypeZone Zone(int which) { return which == 0 ? Twilight : Glyph; }
+
+    /// <summary>
+    /// A point's position measured along the projection vector: what every
+    /// instruction that speaks of a distance actually compares.
+    /// </summary>
+    int Project(TrueTypeZone zone, int point, bool original)
+    {
+        if (point < 0 || point >= zone.PointCount) { Soft(); return 0; }
+
+        int x = original ? zone.OrgX[point] : zone.CurX[point];
+        int y = original ? zone.OrgY[point] : zone.CurY[point];
+
+        if (_pvy == 0) { return _pvx >= 0 ? x : -x; }
+        if (_pvx == 0) { return _pvy >= 0 ? y : -y; }
+        return Mul14(x, _pvx) + Mul14(y, _pvy);
+    }
+
+    /// The same along the DUAL projection vector, which is the projection
+    /// vector as it was before the outline moved: measuring an original
+    /// distance with the current vector would compare two different things.
+    int ProjectDual(TrueTypeZone zone, int point)
+    {
+        if (point < 0 || point >= zone.PointCount) { Soft(); return 0; }
+
+        int x = zone.OrgX[point], y = zone.OrgY[point];
+
+        if (_dvy == 0) { return _dvx >= 0 ? x : -x; }
+        if (_dvx == 0) { return _dvy >= 0 ? y : -y; }
+        return Mul14(x, _dvx) + Mul14(y, _dvy);
+    }
+
+    /// <summary>
+    /// Move a point by `distance` ALONG THE FREEDOM VECTOR so that its
+    /// projection changes by that much. The two vectors are usually the
+    /// same axis and this is an addition; when they are not, the move is
+    /// divided by the cosine between them, which is what lets a font move
+    /// a point diagonally to close a distance measured horizontally.
+    /// </summary>
+    void Move(TrueTypeZone zone, int point, int distance, bool touch)
+    {
+        if (point < 0 || point >= zone.PointCount) { Soft(); return; }
+
+        if (_fvy == 0)
+        {
+            zone.CurX[point] += _fvx >= 0 ? distance : -distance;
+            if (touch) { zone.TouchX[point] = true; }
+            return;
+        }
+        if (_fvx == 0)
+        {
+            zone.CurY[point] += _fvy >= 0 ? distance : -distance;
+            if (touch) { zone.TouchY[point] = true; }
+            return;
+        }
+        if (_fdotp == 0) { return; }
+
+        zone.CurX[point] += MulDiv(distance, _fvx, _fdotp);
+        zone.CurY[point] += MulDiv(distance, _fvy, _fdotp);
+
+        if (touch) { zone.TouchX[point] = true; zone.TouchY[point] = true; }
+    }
+
+    void SetFreedomDotProjection()
+    {
+        _fdotp = Mul14(_fvx, _pvx) + Mul14(_fvy, _pvy);
+
+        // Perpendicular vectors mean a move along the freedom vector
+        // cannot change the projected distance at all. The specification
+        // says to treat that as the identity rather than as a division
+        // by nought, and every implementation does.
+        if (Abs(_fdotp) < 0x400) { _fdotp = 0x4000; }
+    }
+
+    // --- rounding ---------------------------------------------------------
+
+    /// <summary>
+    /// The rounding the state calls for. Every one of the six named modes
+    /// and the two programmable ones are a period, a phase and a threshold
+    /// applied the same way, which is how the specification defines them
+    /// and why SROUND can express all the others.
+    /// </summary>
+    int Round(int distance)
+    {
+        if (_roundOff) { return distance; }
+
+        bool negative = distance < 0;
+        int value = negative ? -distance : distance;
+
+        value = value + _roundThreshold - _roundPhase;
+        value = value & -_roundPeriod;
+        value = value + _roundPhase;
+
+        // A distance must not round through nought and come out the other
+        // side: a stem of a twentieth of a pixel is thin, not inverted.
+        if (value < 0) { value = _roundPhase; }
+
+        return negative ? -value : value;
+    }
+
+    void RoundToGrid() { _roundOff = false; _roundPeriod = 64; _roundPhase = 0; _roundThreshold = 32; }
+    void RoundToHalfGrid() { _roundOff = false; _roundPeriod = 64; _roundPhase = 32; _roundThreshold = 32; }
+    void RoundToDoubleGrid() { _roundOff = false; _roundPeriod = 32; _roundPhase = 0; _roundThreshold = 16; }
+    void RoundDownToGrid() { _roundOff = false; _roundPeriod = 64; _roundPhase = 0; _roundThreshold = 0; }
+    void RoundUpToGrid() { _roundOff = false; _roundPeriod = 64; _roundPhase = 0; _roundThreshold = 63; }
+    void RoundOff() { _roundOff = true; _roundPeriod = 64; _roundPhase = 0; _roundThreshold = 0; }
+
+    /// SROUND and S45ROUND: the period, phase and threshold packed into
+    /// one byte. `gridPeriod` is 64 for the first and 64*sqrt(2)/2 for the
+    /// second, which is the diagonal a 45-degree vector steps along.
+    void SuperRound(int selector, int gridPeriod)
+    {
+        _roundOff = false;
+
+        int period = (selector >> 6) & 3;
+        _roundPeriod = period == 0 ? gridPeriod / 2 : period == 1 ? gridPeriod : gridPeriod * 2;
+        if (_roundPeriod <= 0) { _roundPeriod = 1; }
+
+        int phase = (selector >> 4) & 3;
+        _roundPhase = phase * _roundPeriod / 4;
+
+        int threshold = selector & 15;
+        _roundThreshold = threshold == 0 ? _roundPeriod - 1 : (threshold - 4) * _roundPeriod / 8;
+    }
+
+    // --- running a program ------------------------------------------------
+
+    int U8(int at) { return at < 0 || at >= _data.Length ? 0 : _data[at] & 255; }
+    int S16at(int at) { int v = (U8(at) << 8) | U8(at + 1); return v >= 0x8000 ? v - 0x10000 : v; }
+
+    /// <summary>
+    /// Where the instruction at `at` ends. The push instructions carry
+    /// their data inline, so stepping over one -- to skip a branch not
+    /// taken, or a function definition -- means knowing how much it
+    /// swallows. Everything else is one byte.
+    /// </summary>
+    int After(int at)
+    {
+        int op = U8(at);
+
+        if (op == 0x40) { return at + 2 + U8(at + 1); }               // NPUSHB
+        if (op == 0x41) { return at + 2 + U8(at + 1) * 2; }           // NPUSHW
+        if (op >= 0xB0 && op <= 0xB7) { return at + 2 + (op - 0xB0); }      // PUSHB
+        if (op >= 0xB8 && op <= 0xBF) { return at + 1 + (op - 0xB8 + 1) * 2; } // PUSHW
+        return at + 1;
+    }
+
+    /// Forward to the instruction that closes the branch `at` opens:
+    /// the matching ELSE or EIF, counting nested IFs. `stopAtElse` is
+    /// false when an ELSE has already been taken.
+    int SkipBranch(int at, int end, bool stopAtElse)
+    {
+        int depth = 0;
+
+        while (at < end)
+        {
+            int op = U8(at);
+
+            if (op == 0x58) { depth++; }                              // IF
+            else if (op == 0x59) { if (depth == 0) { return at + 1; } depth--; }   // EIF
+            else if (op == 0x1B && depth == 0 && stopAtElse) { return at + 1; }    // ELSE
+
+            at = After(at);
+        }
+        return end;
+    }
+
+    int _depth;
+
+    /// <summary>
+    /// The interpreter. `at` to `end` is a stretch of the font file: the
+    /// font program, the control value program, or one glyph's.
+    /// </summary>
+    public bool Execute(int at, int end)
+    {
+        if (_depth > 32) { Failed = true; return false; }
+        if (end > _data.Length) { end = _data.Length; }
+
+        _depth++;
+
+        // A bound on work as well as on nesting. A font is data, and data
+        // can say "loop for ever"; a program that has not finished in ten
+        // million instructions is not going to.
+        int budget = 2000000;
+
+        while (at < end && !Failed)
+        {
+            if (--budget <= 0) { Fail(); break; }
+
+            int op = U8(at);
+            int next = at + 1;
+
+            // --- pushing ---------------------------------------------------
+
+            if (op == 0x40)                                            // NPUSHB
+            {
+                int count = U8(at + 1);
+                for (int i = 0; i < count; i++) { Push(U8(at + 2 + i)); }
+                next = at + 2 + count;
+            }
+            else if (op == 0x41)                                       // NPUSHW
+            {
+                int count = U8(at + 1);
+                for (int i = 0; i < count; i++) { Push(S16at(at + 2 + i * 2)); }
+                next = at + 2 + count * 2;
+            }
+            else if (op >= 0xB0 && op <= 0xB7)                         // PUSHB
+            {
+                int count = op - 0xB0 + 1;
+                for (int i = 0; i < count; i++) { Push(U8(at + 1 + i)); }
+                next = at + 1 + count;
+            }
+            else if (op >= 0xB8 && op <= 0xBF)                         // PUSHW
+            {
+                int count = op - 0xB8 + 1;
+                for (int i = 0; i < count; i++) { Push(S16at(at + 1 + i * 2)); }
+                next = at + 1 + count * 2;
+            }
+
+            // --- the vectors -----------------------------------------------
+
+            else if (op == 0x00 || op == 0x01)                         // SVTCA
+            {
+                // Set both vectors to an axis: the commonest instruction
+                // in any font, because most hinting is done one axis at a
+                // time -- stems in x, baselines and crossbars in y.
+                bool xAxis = op == 0x01;
+                _pvx = _fvx = _dvx = xAxis ? 0x4000 : 0;
+                _pvy = _fvy = _dvy = xAxis ? 0 : 0x4000;
+                SetFreedomDotProjection();
+            }
+            else if (op == 0x02 || op == 0x03)                         // SPVTCA
+            {
+                bool xAxis = op == 0x03;
+                _pvx = _dvx = xAxis ? 0x4000 : 0;
+                _pvy = _dvy = xAxis ? 0 : 0x4000;
+                SetFreedomDotProjection();
+            }
+            else if (op == 0x04 || op == 0x05)                         // SFVTCA
+            {
+                bool xAxis = op == 0x05;
+                _fvx = xAxis ? 0x4000 : 0;
+                _fvy = xAxis ? 0 : 0x4000;
+                SetFreedomDotProjection();
+            }
+            else if (op >= 0x06 && op <= 0x09)                         // SPVTL, SFVTL
+            {
+                int p1 = Pop(), p2 = Pop();
+                bool perpendicular = (op & 1) != 0;
+                TrueTypeZone z1 = Zone(_zp1), z2 = Zone(_zp2);
+
+                if (p1 < 0 || p1 >= z1.PointCount || p2 < 0 || p2 >= z2.PointCount) { Soft(); break; }
+
+                int dx = z2.CurX[p2] - z1.CurX[p1];
+                int dy = z2.CurY[p2] - z1.CurY[p1];
+                int ox = z2.OrgX[p2] - z1.OrgX[p1];
+                int oy = z2.OrgY[p2] - z1.OrgY[p1];
+
+                if (perpendicular) { int t = dx; dx = -dy; dy = t; t = ox; ox = -oy; oy = t; }
+
+                int ux, uy;
+                Normalise(dx, dy, out ux, out uy);
+
+                if (op <= 0x07)
+                {
+                    _pvx = ux; _pvy = uy;
+                    Normalise(ox, oy, out _dvx, out _dvy);
+                }
+                else { _fvx = ux; _fvy = uy; }
+                SetFreedomDotProjection();
+            }
+            else if (op == 0x0A)                                       // SPVFS
+            {
+                _pvy = Pop() & 0xFFFF; _pvx = Pop() & 0xFFFF;
+                if (_pvx >= 0x8000) { _pvx -= 0x10000; }
+                if (_pvy >= 0x8000) { _pvy -= 0x10000; }
+                Normalise(_pvx, _pvy, out _pvx, out _pvy);
+                _dvx = _pvx; _dvy = _pvy;
+                SetFreedomDotProjection();
+            }
+            else if (op == 0x0B)                                       // SFVFS
+            {
+                _fvy = Pop() & 0xFFFF; _fvx = Pop() & 0xFFFF;
+                if (_fvx >= 0x8000) { _fvx -= 0x10000; }
+                if (_fvy >= 0x8000) { _fvy -= 0x10000; }
+                Normalise(_fvx, _fvy, out _fvx, out _fvy);
+                SetFreedomDotProjection();
+            }
+            else if (op == 0x0C) { Push(_pvx); Push(_pvy); }           // GPV
+            else if (op == 0x0D) { Push(_fvx); Push(_fvy); }           // GFV
+            else if (op == 0x0E) { _fvx = _pvx; _fvy = _pvy; SetFreedomDotProjection(); }   // SFVTPV
+            else if (op == 0x86 || op == 0x87)                         // SDPVTL
+            {
+                int p1 = Pop(), p2 = Pop();
+                bool perpendicular = (op & 1) != 0;
+                TrueTypeZone z1 = Zone(_zp1), z2 = Zone(_zp2);
+
+                if (p1 < 0 || p1 >= z1.PointCount || p2 < 0 || p2 >= z2.PointCount) { Soft(); break; }
+
+                int ox = z2.OrgX[p2] - z1.OrgX[p1], oy = z2.OrgY[p2] - z1.OrgY[p1];
+                int dx = z2.CurX[p2] - z1.CurX[p1], dy = z2.CurY[p2] - z1.CurY[p1];
+
+                if (perpendicular) { int t = ox; ox = -oy; oy = t; t = dx; dx = -dy; dy = t; }
+
+                Normalise(ox, oy, out _dvx, out _dvy);
+                Normalise(dx, dy, out _pvx, out _pvy);
+                SetFreedomDotProjection();
+            }
+
+            // --- the reference points and zones ----------------------------
+
+            else if (op == 0x10) { _rp0 = Pop(); }                     // SRP0
+            else if (op == 0x11) { _rp1 = Pop(); }                     // SRP1
+            else if (op == 0x12) { _rp2 = Pop(); }                     // SRP2
+            else if (op == 0x13) { _zp0 = Pop() & 1; }                 // SZP0
+            else if (op == 0x14) { _zp1 = Pop() & 1; }                 // SZP1
+            else if (op == 0x15) { _zp2 = Pop() & 1; }                 // SZP2
+            else if (op == 0x16) { _zp0 = _zp1 = _zp2 = Pop() & 1; }   // SZPS
+            else if (op == 0x17) { _loop = Pop(); if (_loop < 0) { _loop = 0; } if (_loop > 4096) { _loop = 4096; } }
+
+            // --- the rounding state ----------------------------------------
+
+            else if (op == 0x18) { RoundToGrid(); }                    // RTG
+            else if (op == 0x19) { RoundToHalfGrid(); }                // RTHG
+            else if (op == 0x3D) { RoundToDoubleGrid(); }              // RTDG
+            else if (op == 0x7A) { RoundOff(); }                       // ROFF
+            else if (op == 0x7C) { RoundUpToGrid(); }                  // RUTG
+            else if (op == 0x7D) { RoundDownToGrid(); }                // RDTG
+            else if (op == 0x76) { SuperRound(Pop(), 64); }            // SROUND
+            else if (op == 0x77) { SuperRound(Pop(), 45); }            // S45ROUND
+            else if (op == 0x1A) { _minimumDistance = Pop(); }         // SMD
+            else if (op == 0x1D) { _cvtCutIn = Pop(); }                // SCVTCI
+            else if (op == 0x1E) { _singleWidthCutIn = Pop(); }        // SSWCI
+            else if (op == 0x1F) { _singleWidth = Scale(Pop()); }      // SSW
+            else if (op == 0x4D) { _autoFlip = true; }                 // FLIPON
+            else if (op == 0x4E) { _autoFlip = false; }                // FLIPOFF
+            else if (op == 0x5E) { _deltaBase = Pop(); }               // SDB
+            else if (op == 0x5F) { _deltaShift = Pop(); }              // SDS
+            else if (op == 0x85) { _scanControl = Pop(); }             // SCANCTRL
+            else if (op == 0x8D) { _scanType = Pop(); }                // SCANTYPE
+            else if (op == 0x8E) { int value = Pop(); int selector = Pop();
+                                   _instructControl = (_instructControl & ~selector) | (value & selector); }  // INSTCTRL
+            else if (op == 0x7E || op == 0x7F) { Pop(); }              // SANGW, AA: nothing to do
+
+            // --- the stack -------------------------------------------------
+
+            else if (op == 0x20) { int v = Pop(); Push(v); Push(v); }  // DUP
+            else if (op == 0x21) { Pop(); }                            // POP
+            else if (op == 0x22) { _top = 0; }                         // CLEAR
+            else if (op == 0x23) { int a = Pop(), b = Pop(); Push(a); Push(b); }   // SWAP
+            else if (op == 0x24) { Push(_top); }                       // DEPTH
+            else if (op == 0x25)                                       // CINDEX
+            {
+                int k = Pop();
+                Push(k >= 1 && k <= _top ? _stack[_top - k] : 0);
+            }
+            else if (op == 0x26)                                       // MINDEX
+            {
+                // The kth element from the top, moved to the top and the
+                // ones above it shifted down to close the gap.
+                int k = Pop();
+
+                if (k >= 1 && k <= _top)
+                {
+                    int value = _stack[_top - k];
+                    for (int i = _top - k; i < _top - 1; i++) { _stack[i] = _stack[i + 1]; }
+                    _stack[_top - 1] = value;
+                }
+            }
+            else if (op == 0x8A)                                       // ROLL
+            {
+                int a = Pop(), b = Pop(), c = Pop();
+                Push(b); Push(a); Push(c);
+            }
+
+            // --- arithmetic and logic --------------------------------------
+
+            else if (op == 0x50) { int b = Pop(), a = Pop(); Push(a < b ? 1 : 0); }
+            else if (op == 0x51) { int b = Pop(), a = Pop(); Push(a <= b ? 1 : 0); }
+            else if (op == 0x52) { int b = Pop(), a = Pop(); Push(a > b ? 1 : 0); }
+            else if (op == 0x53) { int b = Pop(), a = Pop(); Push(a >= b ? 1 : 0); }
+            else if (op == 0x54) { int b = Pop(), a = Pop(); Push(a == b ? 1 : 0); }
+            else if (op == 0x55) { int b = Pop(), a = Pop(); Push(a != b ? 1 : 0); }
+            else if (op == 0x56) { Push((Round(Pop()) & 127) == 64 ? 1 : 0); }     // ODD
+            else if (op == 0x57) { Push((Round(Pop()) & 127) == 0 ? 1 : 0); }      // EVEN
+            else if (op == 0x5A) { int b = Pop(), a = Pop(); Push(a != 0 && b != 0 ? 1 : 0); }
+            else if (op == 0x5B) { int b = Pop(), a = Pop(); Push(a != 0 || b != 0 ? 1 : 0); }
+            else if (op == 0x5C) { Push(Pop() == 0 ? 1 : 0); }                     // NOT
+            else if (op == 0x60) { int b = Pop(), a = Pop(); Push(a + b); }
+            else if (op == 0x61) { int b = Pop(), a = Pop(); Push(a - b); }
+            else if (op == 0x62) { int b = Pop(), a = Pop(); Push(b == 0 ? 0 : MulDiv(a, 64, b)); }
+            else if (op == 0x63) { int b = Pop(), a = Pop(); Push(MulDiv(a, b, 64)); }
+            else if (op == 0x64) { Push(Abs(Pop())); }
+            else if (op == 0x65) { Push(-Pop()); }
+            else if (op == 0x66) { Push(Pop() & -64); }                            // FLOOR
+            else if (op == 0x67) { Push((Pop() + 63) & -64); }                     // CEILING
+            else if (op == 0x8B) { int b = Pop(), a = Pop(); Push(a > b ? a : b); }
+            else if (op == 0x8C) { int b = Pop(), a = Pop(); Push(a < b ? a : b); }
+            else if (op >= 0x68 && op <= 0x6B) { Push(Round(Pop())); }             // ROUND
+            else if (op >= 0x6C && op <= 0x6F) { Push(Pop()); }                    // NROUND
+
+            // --- storage and the control value table -----------------------
+
+            // OUT OF RANGE IS IGNORED, NOT FATAL. A face may write past
+            // the storage it declared in maxp, and dropping that one write
+            // costs a nudge; abandoning the program costs the whole of the
+            // face's hinting. Every shipping rasteriser makes the same
+            // choice, and an unknown OPCODE is still fatal because that
+            // one leaves the stack out of step with what the font meant.
+            else if (op == 0x42) { int v = Pop(), i = Pop();                       // WS
+                                   if (i >= 0 && i < _storage.Length) { _storage[i] = v; } }
+            else if (op == 0x43) { int i = Pop();                                  // RS
+                                   Push(i >= 0 && i < _storage.Length ? _storage[i] : 0); }
+            else if (op == 0x44) { int v = Pop(), i = Pop();                       // WCVTP, in pixels
+                                   if (i >= 0 && i < _cvt.Length) { _cvt[i] = v; } }
+            else if (op == 0x70) { int v = Pop(), i = Pop();                       // WCVTF, in font units
+                                   if (i >= 0 && i < _cvt.Length) { _cvt[i] = Scale(v); } }
+            else if (op == 0x45) { int i = Pop();                                  // RCVT
+                                   Push(i >= 0 && i < _cvt.Length ? _cvt[i] : 0); }
+
+            // --- the size, and what the machine is -------------------------
+
+            else if (op == 0x4B) { Push(_ppem); }                                  // MPPEM
+            else if (op == 0x4C) { Push(_pointSize); }                             // MPS
+            else if (op == 0x88)                                                   // GETINFO
+            {
+                int selector = Pop();
+                int answer = 0;
+
+                // Version 35 -- Windows 98's rasteriser -- is what a font
+                // of this era tests for, and what the hinting below is.
+                if ((selector & 1) != 0) { answer = answer | 35; }
+                // Not rotated, not stretched, no grey: every other bit is
+                // deliberately nought, and saying so is what stops a font
+                // taking a path we do not implement.
+                Push(answer);
+            }
+            else if (op == 0x4F) { Pop(); }                                        // DEBUG
+
+            // --- control flow ----------------------------------------------
+
+            else if (op == 0x58)                                       // IF
+            {
+                if (Pop() == 0) { next = SkipBranch(at + 1, end, true); }
+            }
+            else if (op == 0x1B)                                       // ELSE
+            {
+                // Reached by falling out of a taken branch: everything
+                // from here to the EIF is the other arm.
+                next = SkipBranch(at + 1, end, false);
+            }
+            else if (op == 0x59) { }                                   // EIF
+            else if (op == 0x1C)                                       // JMPR
+            {
+                int offset = Pop();
+                next = at + offset;
+                if (offset == 0) { Fail(); }
+            }
+            else if (op == 0x78 || op == 0x79)                         // JROT, JROF
+            {
+                int condition = Pop(), offset = Pop();
+                bool jump = op == 0x78 ? condition != 0 : condition == 0;
+                if (jump) { next = at + offset; if (offset == 0) { Failed = true; } }
+            }
+            else if (op == 0x2C)                                       // FDEF
+            {
+                int number = Pop();
+                int body = at + 1;
+                int finish = body;
+
+                while (finish < end && U8(finish) != 0x2D) { finish = After(finish); }   // ENDF
+
+                if (number >= 0 && number < _functionAt.Length)
+                {
+                    _functionAt[number] = body;
+                    _functionLength[number] = finish - body;
+                }
+                next = finish + 1;
+            }
+            else if (op == 0x89)                                       // IDEF
+            {
+                // An instruction definition: a font redefining an opcode
+                // we do not have. Recorded as skipped rather than run --
+                // the fonts that use one use it for effects this does not
+                // implement, and running the body would be worse.
+                Pop();
+                int finish = at + 1;
+                while (finish < end && U8(finish) != 0x2D) { finish = After(finish); }
+                next = finish + 1;
+            }
+            else if (op == 0x2D) { break; }                            // ENDF
+            else if (op == 0x2B)                                       // CALL
+            {
+                int number = Pop();
+                if (number >= 0 && number < _functionAt.Length && _functionLength[number] > 0)
+                {
+                    Execute(_functionAt[number], _functionAt[number] + _functionLength[number]);
+                }
+            }
+            else if (op == 0x2A)                                       // LOOPCALL
+            {
+                int number = Pop(), times = Pop();
+                if (times > 65535) { times = 65535; }
+                if (number >= 0 && number < _functionAt.Length && _functionLength[number] > 0)
+                {
+                    for (int i = 0; i < times && !Failed; i++)
+                    {
+                        Execute(_functionAt[number], _functionAt[number] + _functionLength[number]);
+                    }
+                }
+            }
+
+            // --- measuring -------------------------------------------------
+
+            else if (op == 0x46 || op == 0x47)                         // GC
+            {
+                int point = Pop();
+                TrueTypeZone zone = Zone(_zp2);
+                Push(op == 0x46 ? Project(zone, point, false) : ProjectDual(zone, point));
+            }
+            else if (op == 0x48)                                       // SCFS
+            {
+                int value = Pop(), point = Pop();
+                TrueTypeZone zone = Zone(_zp2);
+                Move(zone, point, value - Project(zone, point, false), true);
+
+                // In the twilight zone a point put somewhere is also
+                // ORIGINALLY there: nothing moved it, it was placed, and
+                // a later measurement against its original position must
+                // agree with where it is.
+                if (_zp2 == 0 && point >= 0 && point < zone.PointCount)
+                {
+                    zone.OrgX[point] = zone.CurX[point];
+                    zone.OrgY[point] = zone.CurY[point];
+                }
+            }
+            else if (op == 0x49 || op == 0x4A)                         // MD
+            {
+                int p2 = Pop(), p1 = Pop();
+                TrueTypeZone z0 = Zone(_zp0), z1 = Zone(_zp1);
+
+                if (op == 0x49) { Push(Project(z0, p2, false) - Project(z1, p1, false)); }
+                else { Push(ProjectDual(z0, p2) - ProjectDual(z1, p1)); }
+            }
+
+            // --- moving points ---------------------------------------------
+
+            else if (op == 0x2E || op == 0x2F)                         // MDAP
+            {
+                // "This point is a reference": put it on the grid if the
+                // opcode says to, and make it rp0 and rp1 either way.
+                int point = Pop();
+                TrueTypeZone zone = Zone(_zp0);
+
+                if (op == 0x2F)
+                {
+                    int now = Project(zone, point, false);
+                    Move(zone, point, Round(now) - now, true);
+                }
+                else { Touch(zone, point); }
+
+                _rp0 = point; _rp1 = point;
+            }
+            else if (op == 0x3E || op == 0x3F)                         // MIAP
+            {
+                // The same, but the position comes from the control value
+                // table: this is how every face puts its baseline, its
+                // x-height and its cap height on the same pixel row for
+                // every letter that has one.
+                int index = Pop(), point = Pop();
+                TrueTypeZone zone = Zone(_zp0);
+                int value = index >= 0 && index < _cvt.Length ? _cvt[index] : 0;
+
+                if (point < 0 || point >= zone.PointCount) { Soft(); break; }
+
+                if (_zp0 == 0)
+                {
+                    // A twilight point has no position of its own: the
+                    // table's value IS its position.
+                    zone.OrgX[point] = Mul14(value, _fvx);
+                    zone.OrgY[point] = Mul14(value, _fvy);
+                    zone.CurX[point] = zone.OrgX[point];
+                    zone.CurY[point] = zone.OrgY[point];
+                }
+
+                int now = Project(zone, point, false);
+
+                if (op == 0x3F)
+                {
+                    // THE CUT-IN. When the outline's own position is
+                    // already close to the table's, the outline wins:
+                    // the table is there to make things agree, not to
+                    // drag a point that was right where it was.
+                    if (Abs(value - now) > _cvtCutIn) { value = now; }
+                    value = Round(value);
+                }
+
+                Move(zone, point, value - now, true);
+                _rp0 = point; _rp1 = point;
+            }
+            else if (op >= 0xC0 && op <= 0xDF)                         // MDRP
+            {
+                MoveDirect(op, Pop());
+            }
+            else if (op >= 0xE0)                                       // MIRP
+            {
+                int index = Pop(), point = Pop();
+                MoveIndirect(op, point, index);
+            }
+            else if (op == 0x3A || op == 0x3B)                         // MSIRP
+            {
+                int distance = Pop(), point = Pop();
+                TrueTypeZone zone = Zone(_zp1);
+                TrueTypeZone reference = Zone(_zp0);
+
+                if (_zp1 == 0 && point >= 0 && point < zone.PointCount && _rp0 >= 0 && _rp0 < reference.PointCount)
+                {
+                    zone.OrgX[point] = reference.OrgX[_rp0] + Mul14(distance, _fvx);
+                    zone.OrgY[point] = reference.OrgY[_rp0] + Mul14(distance, _fvy);
+                    zone.CurX[point] = zone.OrgX[point];
+                    zone.CurY[point] = zone.OrgY[point];
+                }
+
+                int now = Project(zone, point, false) - Project(reference, _rp0, false);
+                Move(zone, point, distance - now, true);
+
+                _rp1 = _rp0; _rp2 = point;
+                if (op == 0x3B) { _rp0 = point; }
+            }
+            else if (op == 0x3C)                                       // ALIGNRP
+            {
+                TrueTypeZone reference = Zone(_zp0);
+                TrueTypeZone zone = Zone(_zp1);
+                int to = Project(reference, _rp0, false);
+
+                for (int i = 0; i < _loop && !Failed; i++)
+                {
+                    int point = Pop();
+                    Move(zone, point, to - Project(zone, point, false), true);
+                }
+                _loop = 1;
+            }
+            else if (op == 0x27)                                       // ALIGNPTS
+            {
+                int p2 = Pop(), p1 = Pop();
+                TrueTypeZone z1 = Zone(_zp1), z2 = Zone(_zp0);
+                int gap = Project(z2, p2, false) - Project(z1, p1, false);
+
+                Move(z1, p1, gap / 2, true);
+                Move(z2, p2, -(gap - gap / 2), true);
+            }
+            else if (op == 0x38)                                       // SHPIX
+            {
+                int amount = Pop();
+                TrueTypeZone zone = Zone(_zp2);
+
+                for (int i = 0; i < _loop && !Failed; i++)
+                {
+                    int point = Pop();
+                    MoveAlongFreedom(zone, point, amount);
+                }
+                _loop = 1;
+            }
+            else if (op == 0x32 || op == 0x33)                         // SHP
+            {
+                int shift = ShiftAmount(op);
+                TrueTypeZone zone = Zone(_zp2);
+
+                for (int i = 0; i < _loop && !Failed; i++) { Move(zone, Pop(), shift, true); }
+                _loop = 1;
+            }
+            else if (op == 0x34 || op == 0x35)                         // SHC
+            {
+                int shift = ShiftAmount(op);
+                int contour = Pop();
+                TrueTypeZone zone = Zone(_zp2);
+                int reference = op == 0x34 ? _rp2 : _rp1;
+                int first = contour == 0 ? 0 : (contour - 1 < zone.ContourCount ? zone.ContourEnd[contour - 1] + 1 : zone.PointCount);
+                int last = contour < zone.ContourCount ? zone.ContourEnd[contour] : -1;
+
+                for (int i = first; i <= last; i++)
+                {
+                    // The reference point itself is not moved by the shift
+                    // it defines.
+                    if (i != reference || (op == 0x34 ? _zp1 : _zp0) != _zp2) { Move(zone, i, shift, true); }
+                }
+            }
+            else if (op == 0x36 || op == 0x37)                         // SHZ
+            {
+                int shift = ShiftAmount(op);
+                int which = Pop() & 1;
+                TrueTypeZone zone = Zone(which);
+
+                for (int i = 0; i < zone.PointCount; i++) { Move(zone, i, shift, false); }
+            }
+            else if (op == 0x39)                                       // IP
+            {
+                Interpolate();
+            }
+            else if (op == 0x30 || op == 0x31)                         // IUP
+            {
+                InterpolateUntouched(op == 0x31);
+            }
+            else if (op == 0x29)                                       // UTP
+            {
+                int point = Pop();
+                TrueTypeZone zone = Zone(_zp0);
+
+                if (point >= 0 && point < zone.PointCount)
+                {
+                    if (_fvx != 0) { zone.TouchX[point] = false; }
+                    if (_fvy != 0) { zone.TouchY[point] = false; }
+                }
+            }
+            else if (op == 0x0F)                                       // ISECT
+            {
+                Intersect();
+            }
+
+            // --- the on-curve flags ----------------------------------------
+
+            else if (op == 0x80)                                       // FLIPPT
+            {
+                for (int i = 0; i < _loop && !Failed; i++)
+                {
+                    int point = Pop();
+                    if (point >= 0 && point < Glyph.PointCount) { Glyph.OnCurve[point] = !Glyph.OnCurve[point]; }
+                }
+                _loop = 1;
+            }
+            else if (op == 0x81 || op == 0x82)                         // FLIPRGON, FLIPRGOFF
+            {
+                int high = Pop(), low = Pop();
+                bool on = op == 0x81;
+
+                for (int i = low; i <= high; i++)
+                {
+                    if (i >= 0 && i < Glyph.PointCount) { Glyph.OnCurve[i] = on; }
+                }
+            }
+
+            // --- the deltas ------------------------------------------------
+
+            else if (op == 0x5D || op == 0x71 || op == 0x72)           // DELTAP1..3
+            {
+                Delta(op == 0x5D ? 0 : op == 0x71 ? 16 : 32, true);
+            }
+            else if (op >= 0x73 && op <= 0x75)                         // DELTAC1..3
+            {
+                Delta((op - 0x73) * 16, false);
+            }
+
+            else
+            {
+                // An opcode this machine does not know. Stopping is right:
+                // the stack is now out of step with what the font meant,
+                // and going on would move points at random.
+                Failed = true;
+            }
+
+            at = next;
+        }
+
+        _depth--;
+        return !Failed;
+    }
+
+    // --- the instructions that needed more room ---------------------------
+
+    void Touch(TrueTypeZone zone, int point)
+    {
+        if (point < 0 || point >= zone.PointCount) { Soft(); return; }
+        if (_fvx != 0) { zone.TouchX[point] = true; }
+        if (_fvy != 0) { zone.TouchY[point] = true; }
+    }
+
+    /// SHPIX's move: the given number of sixty-fourths along the freedom
+    /// vector, with no projection involved at all.
+    void MoveAlongFreedom(TrueTypeZone zone, int point, int amount)
+    {
+        if (point < 0 || point >= zone.PointCount) { Soft(); return; }
+
+        if (_fvx != 0) { zone.CurX[point] += Mul14(amount, _fvx); zone.TouchX[point] = true; }
+        if (_fvy != 0) { zone.CurY[point] += Mul14(amount, _fvy); zone.TouchY[point] = true; }
+    }
+
+    /// How far the reference point of a SHP, SHC or SHZ has itself moved:
+    /// that displacement is what those instructions pass on.
+    int ShiftAmount(int op)
+    {
+        bool useRp2 = (op & 1) == 0;
+        TrueTypeZone zone = useRp2 ? Zone(_zp1) : Zone(_zp0);
+        int point = useRp2 ? _rp2 : _rp1;
+
+        if (point < 0 || point >= zone.PointCount) { Soft(); return 0; }
+        return Project(zone, point, false) - ProjectDual(zone, point);
+    }
+
+    /// <summary>
+    /// MDRP: move a point to a distance from rp0 that is the outline's own
+    /// distance, rounded. This is the instruction that makes a stem a whole
+    /// number of pixels wide.
+    /// </summary>
+    void MoveDirect(int op, int point)
+    {
+        TrueTypeZone zone = Zone(_zp1);
+        TrueTypeZone reference = Zone(_zp0);
+
+        if (point < 0 || point >= zone.PointCount || _rp0 < 0 || _rp0 >= reference.PointCount) { Soft(); return; }
+
+        int original = ProjectDual(zone, point) - ProjectDual(reference, _rp0);
+
+        // THE SINGLE WIDTH CUT-IN: a face may declare one width that every
+        // stem too small to round to anything sensible should take, so that
+        // at six pixels the letters still look like a typeface rather than
+        // like gravel.
+        if (Abs(original - _singleWidth) < _singleWidthCutIn)
+        {
+            original = original < 0 ? -_singleWidth : _singleWidth;
+        }
+
+        int distance = (op & 4) != 0 ? Round(original) : original;
+
+        if ((op & 2) != 0)
+        {
+            if (original >= 0) { if (distance < _minimumDistance) { distance = _minimumDistance; } }
+            else { if (distance > -_minimumDistance) { distance = -_minimumDistance; } }
+        }
+
+        int now = Project(zone, point, false) - Project(reference, _rp0, false);
+        Move(zone, point, distance - now, true);
+
+        _rp1 = _rp0;
+        _rp2 = point;
+        if ((op & 1) != 0) { _rp0 = point; }
+    }
+
+    /// <summary>
+    /// MIRP: the same, but the distance comes from the control value table,
+    /// so that every stem of the face that shares an entry comes out the
+    /// same width. This is the instruction that makes the letters of a word
+    /// look like they belong together.
+    /// </summary>
+    void MoveIndirect(int op, int point, int index)
+    {
+        TrueTypeZone zone = Zone(_zp1);
+        TrueTypeZone reference = Zone(_zp0);
+
+        if (point < 0 || point >= zone.PointCount || _rp0 < 0 || _rp0 >= reference.PointCount) { Soft(); return; }
+
+        int value = index >= 0 && index < _cvt.Length ? _cvt[index] : 0;
+
+        if (Abs(value - _singleWidth) < _singleWidthCutIn)
+        {
+            value = value < 0 ? -_singleWidth : _singleWidth;
+        }
+
+        if (_zp1 == 0)
+        {
+            // Into the twilight zone: the point has no outline position,
+            // so the table's distance from rp0 is where it now is.
+            zone.OrgX[point] = reference.OrgX[_rp0] + Mul14(value, _fvx);
+            zone.OrgY[point] = reference.OrgY[_rp0] + Mul14(value, _fvy);
+            zone.CurX[point] = zone.OrgX[point];
+            zone.CurY[point] = zone.OrgY[point];
+        }
+
+        int original = ProjectDual(zone, point) - ProjectDual(reference, _rp0);
+        int now = Project(zone, point, false) - Project(reference, _rp0, false);
+
+        // AUTO FLIP: the table holds distances as positive numbers, and
+        // the same entry serves a stem measured left to right and one
+        // measured right to left. The sign of the outline's own distance
+        // decides which this is.
+        if (_autoFlip && ((original ^ value) < 0)) { value = -value; }
+
+        int distance = value;
+
+        if ((op & 4) != 0)
+        {
+            // The cut-in again: a point already further from the table's
+            // value than this keeps its own distance. Without it, a face
+            // whose table describes stems would drag accents and serifs
+            // to stem widths as well.
+            if (Abs(value - original) > _cvtCutIn) { distance = original; }
+            distance = Round(distance);
+        }
+
+        if ((op & 2) != 0)
+        {
+            if (original >= 0) { if (distance < _minimumDistance) { distance = _minimumDistance; } }
+            else { if (distance > -_minimumDistance) { distance = -_minimumDistance; } }
+        }
+
+        Move(zone, point, distance - now, true);
+
+        _rp1 = _rp0;
+        _rp2 = point;
+        if ((op & 1) != 0) { _rp0 = point; }
+    }
+
+    /// <summary>
+    /// IP: put each point where it was between rp1 and rp2, proportionally,
+    /// now that those two have moved. What holds the inside of a letter
+    /// together once its edges have been pinned to the grid.
+    /// </summary>
+    void Interpolate()
+    {
+        TrueTypeZone first = Zone(_zp0), second = Zone(_zp1), zone = Zone(_zp2);
+
+        if (_rp1 < 0 || _rp1 >= first.PointCount || _rp2 < 0 || _rp2 >= second.PointCount)
+        {
+            for (int i = 0; i < _loop; i++) { Pop(); }
+            _loop = 1;
+            Failed = true;
+            return;
+        }
+
+        int orgFrom = ProjectDual(first, _rp1), curFrom = Project(first, _rp1, false);
+        int orgTo = ProjectDual(second, _rp2), curTo = Project(second, _rp2, false);
+        int orgRange = orgTo - orgFrom, curRange = curTo - curFrom;
+
+        for (int i = 0; i < _loop && !Failed; i++)
+        {
+            int point = Pop();
+
+            if (point < 0 || point >= zone.PointCount) { Soft(); break; }
+
+            int org = ProjectDual(zone, point);
+            int now = Project(zone, point, false);
+            int want = orgRange != 0 && curRange != 0
+                     ? curFrom + MulDiv(org - orgFrom, curRange, orgRange)
+                     : curFrom + (org - orgFrom);
+
+            Move(zone, point, want - now, true);
+        }
+        _loop = 1;
+    }
+
+    /// <summary>
+    /// IUP: every point the program did not touch, carried along by the
+    /// ones it did. Run once per axis at the end of nearly every glyph
+    /// program, and the reason a face need only hint a dozen points of a
+    /// letter that has sixty.
+    ///
+    /// Within each contour, the untouched points between two touched ones
+    /// are scaled into the gap where they sit inside it, and shifted
+    /// bodily where they fall outside -- which is what keeps a curve's
+    /// shape instead of stretching it.
+    /// </summary>
+    void InterpolateUntouched(bool horizontal)
+    {
+        TrueTypeZone zone = Glyph;
+        int first = 0;
+
+        for (int contour = 0; contour < zone.ContourCount; contour++)
+        {
+            int last = zone.ContourEnd[contour];
+
+            if (last >= zone.PointCount) { break; }
+
+            // The first touched point of the contour.
+            int start = -1;
+
+            for (int i = first; i <= last; i++)
+            {
+                if (horizontal ? zone.TouchX[i] : zone.TouchY[i]) { start = i; break; }
+            }
+
+            if (start < 0) { first = last + 1; continue; }
+
+            int anchor = start;
+            int i2 = start;
+
+            // Round the contour once, from the first touched point, in
+            // stretches that end at the next touched one.
+            while (true)
+            {
+                int nextTouched = -1;
+                int step = i2;
+
+                for (int k = 0; k < last - first + 1; k++)
+                {
+                    step = step == last ? first : step + 1;
+                    if (horizontal ? zone.TouchX[step] : zone.TouchY[step]) { nextTouched = step; break; }
+                }
+
+                if (nextTouched < 0) { break; }
+
+                Stretch(zone, horizontal, i2, nextTouched, first, last);
+
+                if (nextTouched == anchor) { break; }
+                i2 = nextTouched;
+            }
+
+            first = last + 1;
+        }
+    }
+
+    /// The points strictly between `from` and `to` along the contour,
+    /// carried by those two.
+    void Stretch(TrueTypeZone zone, bool horizontal, int from, int to, int first, int last)
+    {
+        int[] org = horizontal ? zone.OrgX : zone.OrgY;
+        int[] cur = horizontal ? zone.CurX : zone.CurY;
+
+        int orgFrom = org[from], orgTo = org[to];
+        int curFrom = cur[from], curTo = cur[to];
+
+        int low = orgFrom < orgTo ? orgFrom : orgTo;
+        int high = orgFrom < orgTo ? orgTo : orgFrom;
+        int lowCur = orgFrom < orgTo ? curFrom : curTo;
+        int highCur = orgFrom < orgTo ? curTo : curFrom;
+        int orgRange = high - low, curRange = highCur - lowCur;
+
+        int at = from;
+
+        for (int k = 0; k < last - first + 1; k++)
+        {
+            at = at == last ? first : at + 1;
+            if (at == to) { break; }
+
+            int value = org[at];
+
+            if (value <= low) { cur[at] = lowCur + (value - low); }
+            else if (value >= high) { cur[at] = highCur + (value - high); }
+            else if (orgRange > 0) { cur[at] = lowCur + MulDiv(value - low, curRange, orgRange); }
+            else { cur[at] = lowCur; }
+        }
+    }
+
+    /// ISECT: a point put where two lines cross. Rare, and used by faces
+    /// that construct a junction rather than draw one.
+    void Intersect()
+    {
+        int b1 = Pop(), b0 = Pop(), a1 = Pop(), a0 = Pop(), point = Pop();
+
+        TrueTypeZone target = Zone(_zp2);
+        TrueTypeZone lineA = Zone(_zp0);
+        TrueTypeZone lineB = Zone(_zp1);
+
+        if (point < 0 || point >= target.PointCount
+            || a0 < 0 || a0 >= lineA.PointCount || a1 < 0 || a1 >= lineA.PointCount
+            || b0 < 0 || b0 >= lineB.PointCount || b1 < 0 || b1 >= lineB.PointCount) { Soft(); return; }
+
+        int ax = lineA.CurX[a1] - lineA.CurX[a0], ay = lineA.CurY[a1] - lineA.CurY[a0];
+        int bx = lineB.CurX[b1] - lineB.CurX[b0], by = lineB.CurY[b1] - lineB.CurY[b0];
+        int dx = lineB.CurX[b0] - lineA.CurX[a0], dy = lineB.CurY[b0] - lineA.CurY[a0];
+
+        long cross = (long)ax * by - (long)ay * bx;
+
+        target.TouchX[point] = true;
+        target.TouchY[point] = true;
+
+        if (cross == 0)
+        {
+            // Parallel: the specification says to put the point halfway
+            // between the two lines' starts rather than nowhere.
+            target.CurX[point] = (lineA.CurX[a0] + lineA.CurX[a1] + lineB.CurX[b0] + lineB.CurX[b1]) / 4;
+            target.CurY[point] = (lineA.CurY[a0] + lineA.CurY[a1] + lineB.CurY[b0] + lineB.CurY[b1]) / 4;
+            return;
+        }
+
+        long along = ((long)dx * by - (long)dy * bx);
+
+        target.CurX[point] = lineA.CurX[a0] + (int)(along * ax / cross);
+        target.CurY[point] = lineA.CurY[a0] + (int)(along * ay / cross);
+    }
+
+    /// <summary>
+    /// DELTAP and DELTAC: a nudge of a fraction of a pixel, at one size
+    /// only. The last resort, and the honest one: when the rules have not
+    /// produced the right shape at eleven pixels, the designer says what
+    /// eleven pixels should look like.
+    /// </summary>
+    void Delta(int extra, bool points)
+    {
+        int count = Pop();
+
+        if (count < 0 || count > 4096) { Soft(); return; }
+
+        for (int i = 0; i < count && !Failed; i++)
+        {
+            int target = Pop();
+            int argument = Pop();
+
+            int ppem = ((argument >> 4) & 15) + _deltaBase + extra;
+
+            if (ppem != _ppem) { continue; }
+
+            int selector = argument & 15;
+            int magnitude = selector - 8;
+
+            // The selector has no nought: eight steps below and eight
+            // above, which is why the halves are not symmetrical here.
+            if (magnitude >= 0) { magnitude = magnitude + 1; }
+
+            int amount = magnitude * 64;
+            amount = _deltaShift >= 0 && _deltaShift < 31 ? amount >> _deltaShift : 0;
+
+            if (points) { Move(Zone(_zp0), target, amount, true); }
+            else if (target >= 0 && target < _cvt.Length) { _cvt[target] += amount; }
+        }
+    }
+
+    // --- setting up -------------------------------------------------------
+
+    /// The graphics state every program starts from.
+    void ResetState()
+    {
+        _pvx = _fvx = _dvx = 0x4000;
+        _pvy = _fvy = _dvy = 0;
+        _fdotp = 0x4000;
+        _rp0 = _rp1 = _rp2 = 0;
+        _zp0 = _zp1 = _zp2 = 1;
+        _loop = 1;
+        RoundToGrid();
+        _minimumDistance = 64;
+        _cvtCutIn = 68;                      // seventeen sixteenths of a pixel
+        _singleWidth = 0;
+        _singleWidthCutIn = 0;
+        _deltaBase = 9;
+        _deltaShift = 3;
+        _autoFlip = true;
+        _top = 0;
+    }
+
+    /// <summary>
+    /// Fit this face to a size: scale the control value table, run the
+    /// font program and then the control value program, and remember the
+    /// state they leave behind. Everything here is per size, which is why
+    /// a hinter is kept per size and not per glyph.
+    /// </summary>
+    public bool Prepare(int ppem, int pointSize)
+    {
+        _ppem = ppem;
+        _pointSize = pointSize;
+        _prepared = false;
+        Failed = false;
+        _scanControl = 0;
+        _scanType = 0;
+        _instructControl = 0;
+
+        for (int i = 0; i < _functionAt.Length; i++) { _functionAt[i] = 0; _functionLength[i] = 0; }
+        for (int i = 0; i < _storage.Length; i++) { _storage[i] = 0; }
+
+        int values = _face.ControlValueCount;
+        for (int i = 0; i < _cvt.Length; i++) { _cvt[i] = i < values ? Scale(_face.ControlValue(i)) : 0; }
+
+        ResetState();
+
+        if (_face.FontProgramLength > 0)
+        {
+            Execute(_face.FontProgramOffset, _face.FontProgramOffset + _face.FontProgramLength);
+        }
+        FontProgramFailed = Failed;
+
+        ResetState();
+
+        if (!Failed && _face.ControlProgramLength > 0)
+        {
+            Execute(_face.ControlProgramOffset, _face.ControlProgramOffset + _face.ControlProgramLength);
+        }
+
+        // WHAT THE PREPARATION LEFT. A glyph program may change the table
+        // and the storage; the next glyph must not see those changes, so
+        // the state as of here is what each one is given.
+        if (_cvtAfterPrep.Length < _cvt.Length) { _cvtAfterPrep = new int[_cvt.Length]; }
+        if (_storageAfterPrep.Length < _storage.Length) { _storageAfterPrep = new int[_storage.Length]; }
+
+        for (int i = 0; i < _cvt.Length; i++) { _cvtAfterPrep[i] = _cvt[i]; }
+        for (int i = 0; i < _storage.Length; i++) { _storageAfterPrep[i] = _storage[i]; }
+
+        _prepared = !Failed;
+        return _prepared;
+    }
+
+    public bool Prepared { get { return _prepared; } }
+    public bool FontProgramFailed;
+
+    /// True when the control value program said not to grid-fit at all.
+    public bool GridFittingInhibited { get { return (_instructControl & 1) != 0; } }
+
+    /// What SCANCTRL and SCANTYPE asked for: whether the rasteriser should
+    /// keep thin strokes that fall between two pixel centres, and how.
+    public bool DropoutControl
+    {
+        get
+        {
+            if ((_scanControl & 0x100) != 0) { return false; }          // never
+            if ((_scanControl & 0x200) != 0) { return true; }           // always
+            // The low byte is "up to this many pixels per em": below
+            // that size a thin stroke needs the help, above it does not.
+            int limit = _scanControl & 0xFF;
+            return limit != 0 && _ppem <= limit;
+        }
+    }
+
+    /// <summary>
+    /// Run one glyph's program over its outline. `outline` comes in scaled
+    /// to 26.6 and goes out grid-fitted; the four phantom points carrying
+    /// the advance are appended by the caller and are moved too, which is
+    /// how a hinted glyph's advance width comes out a whole pixel.
+    /// </summary>
+    public bool HintGlyph(int instructionOffset, int instructionLength)
+    {
+        if (!_prepared) { return false; }
+
+        Failed = false;
+
+        for (int i = 0; i < _cvt.Length; i++) { _cvt[i] = _cvtAfterPrep[i]; }
+        for (int i = 0; i < _storage.Length; i++) { _storage[i] = _storageAfterPrep[i]; }
+
+        for (int i = 0; i < Twilight.PointCount; i++)
+        {
+            Twilight.OrgX[i] = 0; Twilight.OrgY[i] = 0;
+            Twilight.CurX[i] = 0; Twilight.CurY[i] = 0;
+            Twilight.TouchX[i] = false; Twilight.TouchY[i] = false;
+        }
+
+        ResetState();
+        Glyph.Untouch();
+
+        if (instructionLength <= 0) { return true; }
+
+        Execute(instructionOffset, instructionOffset + instructionLength);
+
+        // A PROGRAM THAT FAILED LEAVES THE OUTLINE WHERE IT GOT TO, and
+        // that is usually worse than where it started. The caller is told
+        // so and draws the unhinted outline instead.
+        return !Failed;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The rasteriser: a fitted outline, filled.
+// ---------------------------------------------------------------------------
+
+/// <summary>
+/// One glyph, drawn. One bit per pixel, rows padded to whole bytes, most
+/// significant bit leftmost -- which is the shape the seat's glyph cache
+/// takes and the blitter expands.
+///
+/// WHY ONE BIT AND NOT GREY. The screen this draws on is an indexed mode
+/// with a fixed palette; grey text needs a blend against whatever is
+/// behind each pixel, which is a read of the frame buffer per pixel and a
+/// palette search per result. It is also, at these sizes, not what the
+/// era looked like: Windows 98 shipped with font smoothing off, and the
+/// crispness of a well hinted bitmap is the point of having hinted it.
+/// </summary>
+internal class TrueTypeBitmap
+{
+    public int Width;
+    public int Height;
+    public int Left;                         // from the pen to the leftmost column
+    public int Top;                          // from the baseline UP to the top row
+    public int Advance;                      // whole pixels to the next pen position
+    public byte[] Bits = new byte[0];
+
+    public int Stride { get { return (Width + 7) / 8; } }
+
+    public bool At(int x, int y)
+    {
+        if (x < 0 || y < 0 || x >= Width || y >= Height) { return false; }
+        return (Bits[y * Stride + (x >> 3)] & (0x80 >> (x & 7))) != 0;
+    }
+
+    public void Set(int x, int y)
+    {
+        if (x < 0 || y < 0 || x >= Width || y >= Height) { return; }
+        Bits[y * Stride + (x >> 3)] |= (byte)(0x80 >> (x & 7));
+    }
+}
+
+/// <summary>
+/// Scan conversion. The outline arrives as points in 26.6 pixels, already
+/// grid-fitted; this turns its curves into straight lines, then fills what
+/// is inside by the non-zero winding rule, one row at a time, sampling at
+/// the centre of each pixel.
+///
+/// The one subtlety is DROPOUT CONTROL. A stroke thinner than a pixel that
+/// passes between two pixel centres lights nothing at all, and a letter
+/// drawn that way comes apart: the thin stroke of an 'e' vanishes, a serif
+/// disappears, a curve breaks into dashes. So a span that contains no
+/// pixel centre still lights one pixel. The font says whether it wants
+/// this, through SCANCTRL, and at the sizes a user interface uses it
+/// always does.
+/// </summary>
+class TrueTypeRaster
+{
+    // The flattened outline: one array of line segments in 26.6.
+    int[] _x0 = new int[64];
+    int[] _y0 = new int[64];
+    int[] _x1 = new int[64];
+    int[] _y1 = new int[64];
+    int _edges;
+
+    int[] _crossing = new int[64];           // x of each crossing, 26.6
+    int[] _winding = new int[64];            // +1 or -1
+    int _crossings;
+
+    void AddEdge(int x0, int y0, int x1, int y1)
+    {
+        if (y0 == y1) { return; }            // horizontal edges cross no scanline
+
+        if (_edges >= _x0.Length)
+        {
+            int size = _x0.Length * 2;
+            int[] nx0 = new int[size], ny0 = new int[size], nx1 = new int[size], ny1 = new int[size];
+            for (int i = 0; i < _edges; i++) { nx0[i] = _x0[i]; ny0[i] = _y0[i]; nx1[i] = _x1[i]; ny1[i] = _y1[i]; }
+            _x0 = nx0; _y0 = ny0; _x1 = nx1; _y1 = ny1;
+            _crossing = new int[size];
+            _winding = new int[size];
+        }
+
+        _x0[_edges] = x0; _y0[_edges] = y0; _x1[_edges] = x1; _y1[_edges] = y1;
+        _edges++;
+    }
+
+    /// <summary>
+    /// A quadratic curve, as straight lines. How many depends on how far
+    /// the control point pulls the curve off the chord: a shallow curve at
+    /// eight pixels needs two segments and a deep one at forty needs a
+    /// dozen, and choosing per curve is what keeps a small glyph cheap
+    /// without making a large one polygonal.
+    /// </summary>
+    void AddCurve(int x0, int y0, int cx, int cy, int x1, int y1)
+    {
+        int bow = Abs(cx * 2 - x0 - x1) + Abs(cy * 2 - y0 - y1);
+        int steps = 2 + bow / 96;            // 96 is a pixel and a half of bow
+
+        if (steps > 24) { steps = 24; }
+
+        int px = x0, py = y0;
+
+        for (int i = 1; i <= steps; i++)
+        {
+            // De Casteljau in integers: (1-t)^2 p0 + 2t(1-t) c + t^2 p1,
+            // with t as i/steps kept as a numerator so nothing is lost to
+            // a division until the end.
+            int t = i, u = steps - i;
+            long a = (long)u * u, b = 2L * u * t, c = (long)t * t;
+            long total = (long)steps * steps;
+
+            int qx = (int)((a * x0 + b * cx + c * x1) / total);
+            int qy = (int)((a * y0 + b * cy + c * y1) / total);
+
+            AddEdge(px, py, qx, qy);
+            px = qx; py = qy;
+        }
+    }
+
+    static int Abs(int v) { return v < 0 ? -v : v; }
+
+    /// <summary>
+    /// Walk the contours, turning the on- and off-curve points into edges.
+    /// TrueType's economy: two off-curve points in a row have an on-curve
+    /// point halfway between them that is not stored, because it can be
+    /// worked out. Every reader has to put it back.
+    /// </summary>
+    void Flatten(TrueTypeZone zone, int realPoints)
+    {
+        _edges = 0;
+        int first = 0;
+
+        for (int contour = 0; contour < zone.ContourCount; contour++)
+        {
+            int last = zone.ContourEnd[contour];
+
+            if (last >= realPoints || last < first) { first = last + 1; continue; }
+
+            int count = last - first + 1;
+
+            if (count < 2) { first = last + 1; continue; }
+
+            // Where the pen starts: the first on-curve point, or the
+            // midpoint of the first two when the contour has none at all.
+            int startX, startY, begin;
+
+            if (zone.OnCurve[first]) { startX = zone.CurX[first]; startY = zone.CurY[first]; begin = first + 1; }
+            else if (zone.OnCurve[last]) { startX = zone.CurX[last]; startY = zone.CurY[last]; begin = first; }
+            else
+            {
+                startX = (zone.CurX[first] + zone.CurX[last]) / 2;
+                startY = (zone.CurY[first] + zone.CurY[last]) / 2;
+                begin = first;
+            }
+
+            int penX = startX, penY = startY;
+            int controlX = 0, controlY = 0;
+            bool holding = false;
+
+            for (int k = 0; k < count; k++)
+            {
+                int i = begin + k;
+                if (i > last) { i = first + (i - last - 1); }
+
+                int px = zone.CurX[i], py = zone.CurY[i];
+
+                if (zone.OnCurve[i])
+                {
+                    if (holding) { AddCurve(penX, penY, controlX, controlY, px, py); holding = false; }
+                    else { AddEdge(penX, penY, px, py); }
+                    penX = px; penY = py;
+                }
+                else
+                {
+                    if (holding)
+                    {
+                        // THE IMPLIED POINT, halfway between two controls.
+                        int midX = (controlX + px) / 2, midY = (controlY + py) / 2;
+                        AddCurve(penX, penY, controlX, controlY, midX, midY);
+                        penX = midX; penY = midY;
+                    }
+                    controlX = px; controlY = py;
+                    holding = true;
+                }
+            }
+
+            if (holding) { AddCurve(penX, penY, controlX, controlY, startX, startY); }
+            else { AddEdge(penX, penY, startX, startY); }
+
+            first = last + 1;
+        }
+    }
+
+    /// <summary>
+    /// Fill the flattened outline into a bitmap. `originX` and `originY`
+    /// are where the bitmap's top-left corner sits in the outline's own
+    /// 26.6 coordinates, so that the caller decides the box and this only
+    /// decides what is inside it.
+    /// </summary>
+    void Fill(TrueTypeBitmap into, int originX, int originY, bool dropout)
+    {
+        for (int row = 0; row < into.Height; row++)
+        {
+            // The centre of this row of pixels, in outline coordinates.
+            int sample = originY + row * 64 + 32;
+
+            _crossings = 0;
+
+            for (int e = 0; e < _edges; e++)
+            {
+                int y0 = _y0[e], y1 = _y1[e];
+                int direction = 1;
+
+                if (y0 > y1) { int t = y0; y0 = y1; y1 = t; direction = -1; }
+
+                // Half-open, so a vertex shared by two edges is counted
+                // once and a shape does not leak at its corners.
+                if (sample < y0 || sample >= y1) { continue; }
+
+                int ax = direction > 0 ? _x0[e] : _x1[e];
+                int bx = direction > 0 ? _x1[e] : _x0[e];
+
+                int x = ax + (int)(((long)(bx - ax) * (sample - y0)) / (y1 - y0));
+
+                _crossing[_crossings] = x;
+                _winding[_crossings] = direction;
+                _crossings++;
+            }
+
+            if (_crossings < 2) { continue; }
+
+            // Insertion sort: a scanline of a letter has a handful of
+            // crossings, and this keeps equal ones in the order found.
+            for (int i = 1; i < _crossings; i++)
+            {
+                int cx = _crossing[i], cw = _winding[i];
+                int j = i - 1;
+
+                while (j >= 0 && _crossing[j] > cx) { _crossing[j + 1] = _crossing[j]; _winding[j + 1] = _winding[j]; j--; }
+                _crossing[j + 1] = cx; _winding[j + 1] = cw;
+            }
+
+            int wind = 0, spanFrom = 0;
+
+            for (int i = 0; i < _crossings; i++)
+            {
+                int was = wind;
+                wind += _winding[i];
+
+                if (was == 0 && wind != 0) { spanFrom = _crossing[i]; }
+                else if (was != 0 && wind == 0) { Span(into, row, spanFrom - originX, _crossing[i] - originX, dropout); }
+            }
+        }
+    }
+
+    /// One run of "inside", from `from` to `to` in 26.6, on `row`.
+    void Span(TrueTypeBitmap into, int row, int from, int to, bool dropout)
+    {
+        if (to <= from) { return; }
+
+        // The pixels whose CENTRE the span covers: centre of pixel n is
+        // at n*64 + 32, so the first is ceil((from - 32) / 64).
+        int firstPixel = (from - 32 + 63) / 64;
+        int lastPixel = (to - 32 - 1) / 64;
+
+        if (from - 32 < 0) { firstPixel = (from - 32 - 63) / 64 + 1; }
+        if (to - 32 < 0) { lastPixel = (to - 32 - 63 - 1) / 64 + 1 - 1; }
+
+        if (lastPixel < firstPixel)
+        {
+            // NOTHING WAS LIT. A stroke thinner than the gap between two
+            // pixel centres fell between them; without this it would
+            // simply not be drawn, and the letter would come apart.
+            if (dropout) { into.Set((from + to) / 2 / 64, row); }
+            return;
+        }
+
+        for (int x = firstPixel; x <= lastPixel; x++) { into.Set(x, row); }
+    }
+
+    /// <summary>
+    /// The whole job: a fitted outline in, a bitmap and its bearings out.
+    /// The box is the outline's own extent rounded out to whole pixels,
+    /// which is the smallest box that holds every lit pixel.
+    /// </summary>
+    public TrueTypeBitmap Render(TrueTypeZone zone, int realPoints, int advance, bool dropout)
+    {
+        TrueTypeBitmap made = new TrueTypeBitmap();
+        made.Advance = (advance + 32) >> 6;
+
+        Flatten(zone, realPoints);
+
+        if (_edges == 0) { return made; }
+
+        int minX = _x0[0], maxX = _x0[0], minY = _y0[0], maxY = _y0[0];
+
+        for (int e = 0; e < _edges; e++)
+        {
+            if (_x0[e] < minX) { minX = _x0[e]; }
+            if (_x1[e] < minX) { minX = _x1[e]; }
+            if (_x0[e] > maxX) { maxX = _x0[e]; }
+            if (_x1[e] > maxX) { maxX = _x1[e]; }
+            if (_y0[e] < minY) { minY = _y0[e]; }
+            if (_y1[e] < minY) { minY = _y1[e]; }
+            if (_y0[e] > maxY) { maxY = _y0[e]; }
+            if (_y1[e] > maxY) { maxY = _y1[e]; }
+        }
+
+        int left = minX >> 6;
+        int right = (maxX + 63) >> 6;
+        int bottom = minY >> 6;
+        int top = (maxY + 63) >> 6;
+
+        made.Width = right - left;
+        made.Height = top - bottom;
+
+        if (made.Width <= 0 || made.Height <= 0 || made.Width > 256 || made.Height > 256)
+        {
+            made.Width = 0; made.Height = 0;
+            return made;
+        }
+
+        made.Left = left;
+        made.Top = top;
+        made.Bits = new byte[made.Stride * made.Height];
+
+        // The bitmap's rows run down and the outline's y runs up, so row
+        // nought is the TOP of the box: the sample line for row r is at
+        // top - r - 1 in pixels.
+        Fill(made, left * 64, (top * 64 - made.Height * 64), dropout);
+
+        // Flip: Fill worked in outline order, bottom row first.
+        Flip(made);
+        return made;
+    }
+
+    static void Flip(TrueTypeBitmap map)
+    {
+        int stride = map.Stride;
+
+        for (int row = 0; row < map.Height / 2; row++)
+        {
+            int other = map.Height - 1 - row;
+
+            for (int i = 0; i < stride; i++)
+            {
+                byte t = map.Bits[row * stride + i];
+                map.Bits[row * stride + i] = map.Bits[other * stride + i];
+                map.Bits[other * stride + i] = t;
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// One face at one size: the thing a Font actually points at.
+// ---------------------------------------------------------------------------
+
+/// <summary>
+/// A face fitted to a size, with the glyphs it has drawn so far kept.
+///
+/// A glyph costs a program run and a fill the first time and a lookup
+/// every time after, which is what makes text at this quality affordable
+/// on a machine of this period: a screen of text is a few hundred
+/// lookups and a few dozen rasterisations, not one per letter per frame.
+/// </summary>
+class TrueTypeSize
+{
+    readonly TrueTypeFace _face;
+    readonly TrueTypeHinter _hinter;
+    readonly TrueTypeRaster _raster = new TrueTypeRaster();
+    readonly TrueTypeOutline _outline = new TrueTypeOutline();
+
+    readonly int _ppem;
+    readonly bool _hinted;
+
+    // The cache: open addressing on the glyph number, one probe sequence,
+    // and a fixed size that is thrown away rather than grown -- a screen
+    // of text touches a hundred glyphs and this holds five.
+    const int CacheSize = 512;
+    int[] _cacheKey = new int[CacheSize];
+    TrueTypeBitmap?[] _cacheValue = new TrueTypeBitmap?[CacheSize];
+
+    public int Ascent;                       // pixels above the baseline
+    public int Descent;                      // pixels below it, positive
+    public int LineSpacing;                  // baseline to baseline
+
+    public TrueTypeSize(TrueTypeFace face, int ppem, int pointSize)
+    {
+        _face = face;
+        _ppem = ppem;
+
+        for (int i = 0; i < CacheSize; i++) { _cacheKey[i] = -1; }
+
+        _hinter = new TrueTypeHinter(face);
+        _hinted = _hinter.Prepare(ppem, pointSize) && !_hinter.GridFittingInhibited;
+
+        Ascent = Up(face.Ascender);
+        Descent = -Up(face.Descender);
+        if (Descent < 0) { Descent = -Descent; }
+        LineSpacing = Ascent + Descent + Up(face.LineGap);
+    }
+
+    int Up(int units)
+    {
+        long value = (long)units * _ppem;
+        int upem = _face.UnitsPerEm;
+        return (int)((value >= 0 ? value + upem / 2 : value - upem / 2) / upem);
+    }
+
+    int Scale(int units)
+    {
+        long value = (long)units * _ppem * 64;
+        int upem = _face.UnitsPerEm;
+        return (int)((value >= 0 ? value + upem / 2 : value - upem / 2) / upem);
+    }
+
+    public int PixelsPerEm { get { return _ppem; } }
+
+    /// Whether the face's own programs ran: false when it has none, or
+    /// when one of them failed and the outline is being drawn unfitted.
+    public bool Hinted { get { return _hinted; } }
+    public bool HintFailed { get { return _hintFailed; } }
+    bool _hintFailed;
+    public TrueTypeFace Face { get { return _face; } }
+
+    /// The advance of a glyph in whole pixels, without drawing it.
+    public int Advance(int glyph)
+    {
+        TrueTypeBitmap? made = Glyph(glyph);
+        return made == null ? 0 : made.Advance;
+    }
+
+    public TrueTypeBitmap? Glyph(int glyph)
+    {
+        if (glyph < 0 || glyph >= _face.GlyphCount) { return null; }
+
+        int slot = glyph & (CacheSize - 1);
+
+        for (int probe = 0; probe < 8; probe++)
+        {
+            int at = (slot + probe) & (CacheSize - 1);
+
+            if (_cacheKey[at] == glyph) { return _cacheValue[at]; }
+            if (_cacheKey[at] < 0)
+            {
+                TrueTypeBitmap? made = Draw(glyph);
+                _cacheKey[at] = glyph;
+                _cacheValue[at] = made;
+                return made;
+            }
+        }
+        return Draw(glyph);
+    }
+
+    /// <summary>
+    /// The whole path for one glyph: load it, scale it, put the phantom
+    /// points on the end, run its program, fill it.
+    /// </summary>
+    TrueTypeBitmap? Draw(int glyph)
+    {
+        _outline.PointCount = 0;
+        _outline.ContourCount = 0;
+
+        int instructionOffset = 0, instructionLength = 0;
+
+        if (!Load(glyph, 0, 0, 0, 0x4000, 0, 0, 0x4000, out instructionOffset, out instructionLength))
+        {
+            // An empty glyph -- a space -- still has an advance.
+            TrueTypeBitmap blank = new TrueTypeBitmap();
+            blank.Advance = (Scale(_face.AdvanceWidth(glyph)) + 32) >> 6;
+            return blank;
+        }
+
+        int real = _outline.PointCount;
+        int advance = _face.AdvanceWidth(glyph);
+        int bearing = _face.LeftSideBearing(glyph);
+
+        // THE FOUR PHANTOM POINTS. They are not part of the drawing: they
+        // carry the glyph's origin and its advance so that the font's own
+        // program can move them, which is how a hinted advance comes out a
+        // whole number of pixels and a line of text does not drift.
+        _outline.Reserve(real + 4, _outline.ContourCount);
+
+        int originUnits = _outline.XMin - bearing;
+
+        TrueTypeZone zone = _hinter.Glyph;
+        zone.Allocate(real + 4, _outline.ContourCount);
+
+        for (int i = 0; i < real; i++)
+        {
+            zone.OrgX[i] = Scale(_outline.X[i]);
+            zone.OrgY[i] = Scale(_outline.Y[i]);
+            zone.CurX[i] = zone.OrgX[i];
+            zone.CurY[i] = zone.OrgY[i];
+            zone.OnCurve[i] = _outline.OnCurve[i];
+            zone.TouchX[i] = false;
+            zone.TouchY[i] = false;
+        }
+
+        Phantom(zone, real + 0, Scale(originUnits), 0);
+        Phantom(zone, real + 1, Scale(originUnits + advance), 0);
+        Phantom(zone, real + 2, 0, 0);
+        Phantom(zone, real + 3, 0, 0);
+
+        for (int i = 0; i < _outline.ContourCount; i++) { zone.ContourEnd[i] = _outline.ContourEnd[i]; }
+
+        bool fitted = false;
+
+        if (_hinted && instructionLength > 0)
+        {
+            fitted = _hinter.HintGlyph(instructionOffset, instructionLength);
+
+            if (!fitted)
+            {
+                _hintFailed = true;
+                // The program failed. Put the outline back where it was:
+                // half a hinted glyph is worse than an unhinted one.
+                for (int i = 0; i < zone.PointCount; i++)
+                {
+                    zone.CurX[i] = zone.OrgX[i];
+                    zone.CurY[i] = zone.OrgY[i];
+                }
+            }
+        }
+
+        if (!fitted)
+        {
+            // UNHINTED, BUT NOT UNFITTED. With no program to say where the
+            // stems are, the least that can be done is to put the glyph's
+            // origin and its advance on whole pixels, so that letters sit
+            // on the same grid even when their insides do not.
+            int shift = ((zone.CurX[real] + 32) & -64) - zone.CurX[real];
+
+            for (int i = 0; i < zone.PointCount; i++) { zone.CurX[i] += shift; }
+        }
+
+        int fittedAdvance = zone.CurX[real + 1] - zone.CurX[real];
+
+        return _raster.Render(zone, real, fittedAdvance, _hinter.DropoutControl || !_hinted);
+    }
+
+    static void Phantom(TrueTypeZone zone, int at, int x, int y)
+    {
+        zone.OrgX[at] = x; zone.OrgY[at] = y;
+        zone.CurX[at] = x; zone.CurY[at] = y;
+        zone.OnCurve[at] = true;
+        zone.TouchX[at] = false;
+        zone.TouchY[at] = false;
+    }
+
+    /// <summary>
+    /// A glyph's points into the working outline, in font units, applying
+    /// a component's offset and transform. Composites nest, so this calls
+    /// itself; the depth is bounded because a font that refers to itself
+    /// is a font that would not otherwise stop.
+    /// </summary>
+    bool Load(int glyph, int depth, int dx, int dy, int xx, int xy, int yx, int yy,
+              out int instructionOffset, out int instructionLength)
+    {
+        instructionOffset = 0;
+        instructionLength = 0;
+
+        if (depth > 5) { return false; }
+
+        if (!_face.IsComposite(glyph))
+        {
+            int before = _outline.PointCount;
+
+            if (!_face.LoadSimple(glyph, _outline)) { return false; }
+
+            if (depth > 0 || dx != 0 || dy != 0 || xx != 0x4000 || xy != 0 || yx != 0 || yy != 0x4000)
+            {
+                for (int i = before; i < _outline.PointCount; i++)
+                {
+                    int x = _outline.X[i], y = _outline.Y[i];
+                    _outline.X[i] = dx + ((x * xx + y * yx) >> 14);
+                    _outline.Y[i] = dy + ((x * xy + y * yy) >> 14);
+                }
+            }
+
+            if (depth == 0)
+            {
+                instructionOffset = _outline.InstructionOffset;
+                instructionLength = _outline.InstructionLength;
+            }
+            return _outline.PointCount > before;
+        }
+
+        int composite, compositeLength;
+        TrueTypeFace.Component[] parts = _face.Components(glyph, out composite, out compositeLength);
+
+        if (depth == 0)
+        {
+            instructionOffset = composite;
+            instructionLength = compositeLength;
+
+            // The composite's own box and metrics, which its program and
+            // the phantom points need.
+            _outline.AdvanceWidth = _face.AdvanceWidth(glyph);
+            _outline.LeftSideBearing = _face.LeftSideBearing(glyph);
+        }
+
+        bool any = false;
+
+        for (int i = 0; i < parts.Length; i++)
+        {
+            TrueTypeFace.Component part = parts[i];
+
+            int ox = 0, oy = 0;
+
+            if (part.ArgumentsAreOffsets) { ox = part.Argument1; oy = part.Argument2; }
+            // Point matching -- "put this component's point 3 on the
+            // parent's point 17" -- is rare enough outside CJK that the
+            // component is simply placed unshifted when it is asked for.
+
+            int childOffset, childLength;
+
+            // THE OFFSET IS UNSCALED BY DEFAULT: dx and dy already carry
+            // the accumulated transform of every ancestor, in font units,
+            // and ox/oy are added to them directly rather than run
+            // through this component's own matrix. Only the rare face
+            // that sets ScaledComponentOffset wants the offset rotated
+            // and scaled the way the outline's points are.
+            int fx = part.ScaledComponentOffset ? dx + ((ox * xx + oy * yx) >> 14) : dx + ox;
+            int fy = part.ScaledComponentOffset ? dy + ((ox * xy + oy * yy) >> 14) : dy + oy;
+
+            if (Load(part.Glyph, depth + 1, fx, fy,
+                     (xx * part.XX) >> 14, (xy * part.XX + yy * part.XY) >> 14,
+                     (yx * part.YY + xx * part.YX) >> 14, (yy * part.YY) >> 14,
+                     out childOffset, out childLength)) { any = true; }
+        }
+
+        if (depth == 0 && any)
+        {
+            // The box of what was assembled, for the phantom points.
+            int minX = _outline.X[0], maxX = _outline.X[0], minY = _outline.Y[0], maxY = _outline.Y[0];
+
+            for (int i = 1; i < _outline.PointCount; i++)
+            {
+                if (_outline.X[i] < minX) { minX = _outline.X[i]; }
+                if (_outline.X[i] > maxX) { maxX = _outline.X[i]; }
+                if (_outline.Y[i] < minY) { minY = _outline.Y[i]; }
+                if (_outline.Y[i] > maxY) { maxY = _outline.Y[i]; }
+            }
+            _outline.XMin = minX; _outline.XMax = maxX;
+            _outline.YMin = minY; _outline.YMax = maxY;
+        }
+
+        return any;
+    }
+}

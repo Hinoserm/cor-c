@@ -7,11 +7,15 @@
 // later the GUI kernel, executes them against the engine. Colours are
 // logical RGB all the way down; the target resolves them to its depth.
 //
-// Text is drawn as glyphs the seat already knows: the system font's 256
-// glyphs are defined by the kernel when the seat is opened, with ids equal
-// to their character codes. A Font is therefore a name and a size and,
-// today, always draws with that one bitmap face. Scalable faces arrive with
-// the glyph cache protocol and change nothing above this file.
+// Text is drawn one of two ways. The bitmap system font's 256 glyphs are
+// defined by the kernel when the seat is opened, with ids equal to their
+// character codes, and DrawString sends a Glyph operation per character.
+// A Font naming a FontFamily built from a TrueType file (Text.cor,
+// TrueType.cor) draws proportionally instead: each glyph is grid-fitted
+// and cached by System.Drawing.TrueTypeSize, then plotted here as spans
+// of Fill, one run of set pixels per row -- ordinary drawing operations,
+// so a scalable face needs nothing from the seat that a filled rectangle
+// does not already have.
 
 namespace System.Drawing;
 
@@ -215,18 +219,97 @@ public static class Pens
 
 public enum FontStyle { Regular = 0, Bold = 1, Italic = 2, Underline = 4, Strikeout = 8 }
 
-/// One bitmap face for now, eight by sixteen, the system font the kernel
-/// captured from the firmware. Size and style are recorded so that a
-/// program's choices survive to the day scalable faces arrive.
+/// <summary>
+/// A face and a size to draw it at. The default is the kernel's bitmap
+/// system font, eight by sixteen and drawn a byte at a time; naming a
+/// FontFamily that wraps a TrueType face instead makes this a scalable
+/// font, grid-fitted and drawn proportionally by Graphics.DrawString.
+///
+/// Size is in pixels here, not points: there is one physical pixel size
+/// to a screen with no notion of DPI, so the distinction .NET makes
+/// between a Font's Size and its SizeInPoints does not apply and the two
+/// are the same number.
+/// </summary>
 public class Font : IDisposable
 {
     public string Name;
     public float Size;
     public FontStyle Style;
-    public Font(string name, float size) { Name = name; Size = size; Style = FontStyle.Regular; }
-    public Font(string name, float size, FontStyle style) { Name = name; Size = size; Style = style; }
-    public int Height { get { return 16; } }
-    public int GlyphWidth { get { return 8; } }
+    public FontFamily FontFamily { get; private set; }
+
+    // The face fitted to Size, made once and kept: a TrueTypeSize already
+    // caches every glyph it has drawn, so the cost of a Font is paid once
+    // regardless of how many strings are drawn with it.
+    TrueTypeSize? _scaled;
+    bool _scaleTried;
+
+    public Font(string name, float size) : this(name, size, FontStyle.Regular) { }
+
+    public Font(string name, float size, FontStyle style)
+    {
+        // A NAME NOBODY KNOWS IS NOT AN ERROR HERE: GDI+ itself falls
+        // back to a generic face rather than fail a program over a font
+        // that turned out not to be installed, and that is worth keeping
+        // even though our fallback is one face rather than a choice.
+        FontFamily? found = FontFamily.Find(name);
+        FontFamily = found ?? FontFamily.SystemFamily;
+        Name = FontFamily.Name;
+        Size = size;
+        Style = style;
+    }
+
+    public Font(FontFamily family, float size) : this(family, size, FontStyle.Regular) { }
+
+    public Font(FontFamily family, float size, FontStyle style)
+    {
+        FontFamily = family;
+        Name = family.Name;
+        Size = size;
+        Style = style;
+    }
+
+    /// The face fitted to Size, or null for the bitmap system font.
+    internal TrueTypeSize? Scaled
+    {
+        get
+        {
+            if (!_scaleTried)
+            {
+                _scaleTried = true;
+                if (FontFamily.Face != null)
+                {
+                    int px = (int)(Size + 0.5f);
+                    if (px < 1) { px = 1; }
+                    _scaled = new TrueTypeSize(FontFamily.Face, px, px * 64);
+                }
+            }
+            return _scaled;
+        }
+    }
+
+    /// The line's height: the bitmap font's fixed sixteen, or a scalable
+    /// face's own ascent and descent at this size.
+    public int Height { get { TrueTypeSize? s = Scaled; return s == null ? 16 : s.LineSpacing; } }
+
+    /// <summary>
+    /// Meaningful only for the bitmap font, which is fixed-width: every
+    /// glyph is this many pixels wide, and that is the whole of how the
+    /// widget set lays out text today. A scalable font has no single
+    /// glyph width -- ask Graphics.MeasureString instead -- so this
+    /// answers the width of its capital M, which is at least the right
+    /// order of size for code that has not been taught proportional
+    /// layout yet.
+    /// </summary>
+    public int GlyphWidth
+    {
+        get
+        {
+            TrueTypeSize? s = Scaled;
+            if (s == null) { return 8; }
+            return s.Advance(s.Face.GlyphIndex('M'));
+        }
+    }
+
     public void Dispose() { }
 }
 
@@ -391,7 +474,12 @@ public class Graphics : IDisposable
     public void DrawString(string s, Font font, Brush brush, int x, int y)
     {
         SolidBrush? solid = brush as SolidBrush;
-        if (solid == null) return;
+        if (solid == null) { return; }
+
+        TrueTypeSize? scaled = font.Scaled;
+
+        if (scaled != null) { DrawScalableString(s, scaled, font.Height, font.Style, solid.Color, Color.Transparent, true, x, y); return; }
+
         int cx = x + _originX, cy = y + _originY;
         for (int i = 0; i < s.Length; i++)
         {
@@ -400,6 +488,109 @@ public class Graphics : IDisposable
             if (c > 255) c = '?';
             _target.Glyph(c, cx, cy, solid.Color, Color.Transparent, true);
             cx += font.GlyphWidth;
+        }
+    }
+
+    /// <summary>
+    /// A run of text set in a scalable face: each rune's bitmap plotted a
+    /// row of spans at a time, advanced by its own fitted width rather
+    /// than a fixed one. `transparent` false also fills the space behind
+    /// each glyph -- the cell width is its advance, which is what makes
+    /// an opaque proportional string look like a filled bar rather than
+    /// letter-shaped holes in one.
+    /// </summary>
+    /// <summary>
+    /// The kerning adjustment between two glyphs, scaled from the face's
+    /// font units to pixels at this size. Nought for a face with no kern
+    /// table, or a pair it says nothing about, which is the common case
+    /// and costs one table lookup to learn.
+    /// </summary>
+    static int Kern(TrueTypeSize scaled, int leftGlyph, int rightGlyph)
+    {
+        if (leftGlyph < 0) { return 0; }
+
+        int units = scaled.Face.Kerning(leftGlyph, rightGlyph);
+        if (units == 0) { return 0; }
+
+        long value = (long)units * scaled.PixelsPerEm;
+        int upem = scaled.Face.UnitsPerEm;
+        return (int)((value >= 0 ? value + upem / 2 : value - upem / 2) / upem);
+    }
+
+    void DrawScalableString(string s, TrueTypeSize scaled, int lineHeight, FontStyle style, Color foreground, Color background, bool transparent, int x, int y)
+    {
+        bool bold = (style & FontStyle.Bold) != 0;
+        bool italic = (style & FontStyle.Italic) != 0;
+
+        // SYNTHETIC STYLES: this face has one outline, not four, so bold
+        // and italic are made rather than chosen -- exactly what GDI
+        // itself falls back to when a family has no separate bold or
+        // italic design. Bold is the classic trick of filling a shape
+        // twice, a pixel apart, which thickens every stroke by one pixel
+        // regardless of its direction; italic is a shear, each row
+        // pushed right in proportion to how far above the baseline it
+        // sits, which is the same slant an oblique face applies to an
+        // upright one.
+        int boldExtra = bold ? 1 : 0;
+
+        int penX = x, lineTop = y;
+        int previousGlyph = -1;
+
+        for (int i = 0; i < s.Length; )
+        {
+            Rune rune;
+            int taken;
+
+            if (!Rune.TryDecodeFromUtf8(s, i, out rune, out taken)) { taken = 1; rune = new Rune('?'); }
+            i += taken;
+
+            if (rune.Value == '\n') { penX = x; lineTop += lineHeight; previousGlyph = -1; continue; }
+
+            int glyphIndex = scaled.Face.GlyphIndex(rune.Value);
+            TrueTypeBitmap? bitmap = scaled.Glyph(glyphIndex);
+
+            if (bitmap == null) { previousGlyph = glyphIndex; continue; }
+
+            penX += Kern(scaled, previousGlyph, glyphIndex);
+            previousGlyph = glyphIndex;
+
+            int advance = bitmap.Advance + boldExtra;
+
+            if (!transparent)
+            {
+                int cellWidth = advance + (italic ? bitmap.Height / 2 : 0);
+                _target.Fill(penX + _originX, lineTop + _originY, cellWidth, lineHeight, background);
+            }
+
+            int baseline = lineTop + scaled.Ascent;
+            int glyphX = penX + bitmap.Left + _originX;
+            int glyphTop = baseline - bitmap.Top + _originY;
+
+            for (int row = 0; row < bitmap.Height; row++)
+            {
+                // The higher above the baseline, the further right: a
+                // shear about the baseline, not about the glyph's own
+                // top, which is what keeps a whole line's slanted
+                // letters leaning the same way instead of fanning out.
+                int shear = italic ? (bitmap.Height - row) / 3 : 0;
+                int run = -1;
+
+                for (int col = 0; col <= bitmap.Width; col++)
+                {
+                    bool set = col < bitmap.Width && bitmap.At(col, row);
+
+                    if (set && run < 0) { run = col; }
+                    else if (!set && run >= 0)
+                    {
+                        int spanX = glyphX + run + shear;
+                        int spanW = col - run + boldExtra;
+                        _target.Fill(spanX, glyphTop + row, spanW, 1, foreground);
+                        run = -1;
+                    }
+                }
+            }
+
+            penX += advance;
         }
     }
     public void DrawString(string s, Font font, Brush brush, Point p) { DrawString(s, font, brush, p.X, p.Y); }
@@ -431,6 +622,10 @@ public class Graphics : IDisposable
 
     public void DrawStringOpaque(string s, Font font, Color foreground, Color background, int x, int y)
     {
+        TrueTypeSize? scaled = font.Scaled;
+
+        if (scaled != null) { DrawScalableString(s, scaled, font.Height, font.Style, foreground, background, false, x, y); return; }
+
         int cx = x + _originX, cy = y + _originY;
         for (int i = 0; i < s.Length; i++)
         {
@@ -442,6 +637,10 @@ public class Graphics : IDisposable
 
     public SizeF MeasureString(string s, Font font)
     {
+        TrueTypeSize? scaled = font.Scaled;
+
+        if (scaled != null) { return MeasureScalableString(s, scaled, font.Height, font.Style); }
+
         int longest = 0, lines = 1, run = 0;
         for (int i = 0; i < s.Length; i++)
         {
@@ -450,6 +649,34 @@ public class Graphics : IDisposable
         }
         if (run > longest) longest = run;
         return new SizeF(longest * font.GlyphWidth, lines * font.Height);
+    }
+
+    /// The same measurement for a scalable face: runes decoded, each
+    /// one's own fitted advance summed rather than a fixed width, which
+    /// is the entire difference proportional text makes to this method.
+    static SizeF MeasureScalableString(string s, TrueTypeSize scaled, int lineHeight, FontStyle style)
+    {
+        int boldExtra = (style & FontStyle.Bold) != 0 ? 1 : 0;
+        int widest = 0, run = 0, lines = 1;
+        int previousGlyph = -1;
+
+        for (int i = 0; i < s.Length; )
+        {
+            Rune rune;
+            int taken;
+
+            if (!Rune.TryDecodeFromUtf8(s, i, out rune, out taken)) { taken = 1; rune = new Rune('?'); }
+            i += taken;
+
+            if (rune.Value == '\n') { lines++; if (run > widest) { widest = run; } run = 0; previousGlyph = -1; continue; }
+
+            int glyphIndex = scaled.Face.GlyphIndex(rune.Value);
+
+            run += Kern(scaled, previousGlyph, glyphIndex) + scaled.Advance(glyphIndex) + boldExtra;
+            previousGlyph = glyphIndex;
+        }
+        if (run > widest) { widest = run; }
+        return new SizeF(widest, lines * lineHeight);
     }
 
     public void Dispose() { }

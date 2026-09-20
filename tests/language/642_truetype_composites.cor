@@ -1,0 +1,64 @@
+// test: truetype_composites
+// sources: tests/language/support/truetype_composite_fixture.cor
+// expect-exit: 0
+// expect-output:
+// glyph=7 composite=True
+// w=11 h=17 top=17 left=2
+// row 0: separated from H by a gap: True
+// row 0: dot itself present: True
+//
+// A composite glyph's component carries a placement offset AND a scaling
+// transform together, the combination that exposes whether a reader
+// scales the offset by the transform (wrong, unless the rare
+// ScaledComponentOffset flag says to) or leaves it alone (right, and what
+// virtually every real font relies on for something as ordinary as an
+// accent over a letter). Getting this backwards puts the mark on top of
+// the letter instead of above it -- correct here shows a mark riding
+// well clear of the H's cap height, with blank rows between them.
+
+using System;
+using System.Drawing;
+
+class Program
+{
+    static void Line(string s) { Console.WriteLine(s); }
+
+    static int Main()
+    {
+        byte[] bytes = CorsacTests.TrueTypeCompositeFixture.Bytes();
+        TrueTypeFace? face = TrueTypeFace.FromBytes(bytes);
+
+        if (face == null) { Line("no face"); return 1; }
+
+        int glyph = face.GlyphIndex(0x1E24);
+        Line("glyph=" + glyph + " composite=" + face.IsComposite(glyph));
+
+        TrueTypeSize size = new TrueTypeSize(face, 20, 20 * 64);
+        TrueTypeBitmap? bitmap = size.Glyph(glyph);
+
+        if (bitmap == null) { Line("no bitmap"); return 1; }
+
+        Line("w=" + bitmap.Width + " h=" + bitmap.Height + " top=" + bitmap.Top + " left=" + bitmap.Left);
+
+        // The dot sits in the top row or two; the H's crossbar and stems
+        // fill most of the rest. A wrongly-scaled offset would drag the
+        // dot down into the middle of the H, erasing the gap between
+        // them; the correct placement leaves at least one blank row.
+        bool sawDot = false, sawGap = false, sawLetter = false;
+        int dotRow = -1;
+
+        for (int y = 0; y < bitmap.Height; y++)
+        {
+            bool any = false;
+            for (int x = 0; x < bitmap.Width; x++) { if (bitmap.At(x, y)) { any = true; break; } }
+
+            if (any && dotRow < 0 && !sawLetter) { dotRow = y; sawDot = true; }
+            else if (!any && sawDot && !sawGap) { sawGap = true; }
+            else if (any && sawGap) { sawLetter = true; }
+        }
+
+        Line("row 0: separated from H by a gap: " + (sawDot && sawGap && sawLetter));
+        Line("row 0: dot itself present: " + sawDot);
+        return 0;
+    }
+}
