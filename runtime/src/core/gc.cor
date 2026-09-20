@@ -1216,19 +1216,40 @@ static class Gc
         // the same address, through the fast path and with no lock -- which is
         // the whole of what a formatting buffer or an enumerator in a loop
         // costs. Only this thread may touch this buffer, so nothing is held.
+        //
+        // NOT TO BE STOPPED IN THE MIDDLE (Tls.InAlloc, as in Alloc). A stop
+        // retires this buffer; a thread stopped between reading the pointer
+        // and storing it would put back a pointer into a buffer it no longer
+        // has. And a stop is the only moment a mark can begin, so with the
+        // stop held off the test of Marking below is still true at the store.
+        long inside = Sys.Peek(tb + Tls.InAlloc);
+        Sys.Poke(tb + Tls.InAlloc, 1);
         long ptr = Sys.Peek(tb + Tls.AllocPtr);
 
-        if (ptr != 0 && block + size == ptr && block >= Sys.Peek(tb + Tls.AllocBase))
+        if (Runtime.Marking == 0 && ptr != 0 && block + size == ptr && block >= Sys.Peek(tb + Tls.AllocBase))
         {
             // The fast path's one assumption is that memory above the pointer
             // has never been written; the bytes are cleared here instead.
             ZeroWords(block, ptr);
             Sys.Poke(tb + Tls.AllocPtr, block);
             Frees = Frees + 1;
+            Sys.Poke(tb + Tls.InAlloc, inside);
             return;
         }
 
+        Sys.Poke(tb + Tls.InAlloc, inside);
         GcLock.Enter();
+
+        // AGAIN, NOW THAT THE LOCK IS HELD. Waiting for it is a safepoint: a
+        // collection may have stopped this thread right there, taken its
+        // snapshot with this block in it, and begun to mark. The first stop
+        // is made with this lock held, so from here the answer cannot change.
+        if (Runtime.Marking != 0)
+        {
+            GcLock.Exit();
+            return;
+        }
+
         SyncEnd();
 
         // The bytes go back off the pressure counter. `_since` measures how
