@@ -1,8 +1,18 @@
 // test: registry_schema
+// sources: tests/language/support/540_registry.cor
 // expect-exit: 0
 // expect-output:
 // width 800
 // title Paint
+// units 0
+// maximised false
+// width 1024
+// title Draw
+// units 18
+// maximised true
+// set True True
+// reverted 800 Paint
+// set False False
 //
 // SETTINGS ARE DECLARED, not reached through loose string calls. A class
 // carrying [Registry("Maker.App")] names a domain; the static classes nested
@@ -53,8 +63,37 @@ class Program
 {
     static int Main()
     {
+        // NOTHING HAS BEEN SET, so every one of these is the initialiser
+        // written beside it, inlined at the read site.
         Console.WriteLine("width " + Settings.Canvas.Width);
         Console.WriteLine("title " + Settings.Window.Title);
+        Console.WriteLine("units " + (int)Settings.Canvas.Units);
+        Console.WriteLine("maximised " + (Settings.Window.Maximised ? "true" : "false"));
+
+        // ASSIGNMENT IS THE WRITE. A declared member is a property, so this
+        // is a set_ call reaching the registry, not a store into a field.
+        Settings.Canvas.Width = 1024;
+        Settings.Window.Title = "Draw";
+        Settings.Canvas.Units = Units.Pear;
+        Settings.Window.Maximised = true;
+
+        Console.WriteLine("width " + Settings.Canvas.Width);
+        Console.WriteLine("title " + Settings.Window.Title);
+        Console.WriteLine("units " + (int)Settings.Canvas.Units);
+        Console.WriteLine("maximised " + (Settings.Window.Maximised ? "true" : "false"));
+
+        // IsSet AND Revert ARE RESOLVED AT COMPILE TIME, against the shape of
+        // the call rather than its argument's value: asking whether a setting
+        // is set is not a question about the number it currently answers.
+        Console.WriteLine("set " + Registry.IsSet(Settings.Canvas.Width)
+                          + " " + Registry.IsSet(Settings.Window.Title));
+
+        Registry.Revert(Settings.Canvas.Width);
+        Registry.Revert(Settings.Window.Title);
+
+        Console.WriteLine("reverted " + Settings.Canvas.Width + " " + Settings.Window.Title);
+        Console.WriteLine("set " + Registry.IsSet(Settings.Canvas.Width)
+                          + " " + Registry.IsSet(Settings.Window.Title));
         return 0;
     }
 }

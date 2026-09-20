@@ -19,4 +19,23 @@ public sealed class CompilationUnit : Node
     /// writes for a shape knows every naming that shape was ever given.
     /// </summary>
     public List<TypeRef> TupleNamings { get; } = new();
+
+    /// <summary>
+    /// The settings this program declares, one schema per domain, worked out
+    /// before anything is bound -- because a declared setting stops being a
+    /// field at that point and becomes a property. The driver writes them
+    /// into the object's .corsac.registry section.
+    /// </summary>
+    public List<Metadata.RegistrySchema> RegistrySchemas { get; } = new();
+
+    /// <summary>
+    /// Where each declared setting lives, by the path it is written with:
+    /// "Settings.Canvas.Width" to "/corsac/paint/canvas/width".
+    ///
+    /// `Registry.IsSet(Settings.Canvas.Width)` must not EVALUATE its
+    /// argument -- asking whether a value is set is not a question about a
+    /// value -- so the compiler resolves the shape of the call instead, and
+    /// this is what it resolves it against.
+    /// </summary>
+    public Dictionary<string, string> RegistryKeys { get; } = new(StringComparer.Ordinal);
 }

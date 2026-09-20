@@ -192,6 +192,100 @@ public sealed partial class Binder
         return Sole(name, out sym);
     }
 
+    /// <summary>
+    /// `Registry.IsSet(Settings.Canvas.Width)` as the call it stands for.
+    ///
+    /// IsSet becomes a question about the key and Revert becomes a delete of
+    /// the USER scope, which is the only scope a program's own declared
+    /// member ever writes.
+    ///
+    /// An argument that is not a declared setting is reported and then stood
+    /// in for, rather than refused here: leaving the call as written would
+    /// have it resolved again as an ordinary method nothing declares, and a
+    /// second complaint about the same mistake helps nobody.
+    /// </summary>
+    private Expr Setting(CallExpr asking)
+    {
+        MemberExpr called = (MemberExpr)asking.Target;
+        string? written = WrittenPath(asking.Args[0]);
+        string? key = written is null ? null : Key(written);
+
+        if (key is null)
+        {
+            Error(asking, $"Registry.{called.Name} takes a setting declared under a [Registry] class, "
+                        + (written is null
+                            ? "and this is not one -- not a name, and not a value read out of one"
+                            : $"and '{written}' is not one"));
+            key = "";
+        }
+
+        bool forget = called.Name == "Revert";
+
+        CallExpr instead = new()
+        {
+            Target = new MemberExpr
+            {
+                Target = new NameExpr { Name = "Registry", Line = asking.Line, Col = asking.Col, File = asking.File },
+                Name = forget ? "Delete" : "HasKey",
+                Line = asking.Line, Col = asking.Col, File = asking.File,
+            },
+            Line = asking.Line, Col = asking.Col, File = asking.File,
+        };
+
+        instead.Args.Add(new LiteralExpr
+        {
+            Kind = Lit.Str, Text = key, Line = asking.Line, Col = asking.Col, File = asking.File,
+        });
+        instead.Args.Add(new MemberExpr
+        {
+            Target = new NameExpr { Name = "RegistryScope", Line = asking.Line, Col = asking.Col, File = asking.File },
+            Name = forget ? "User" : "Both",
+            Line = asking.Line, Col = asking.Col, File = asking.File,
+        });
+        return instead;
+    }
+
+    /// <summary>A dotted path of plain names, or null for anything else.</summary>
+    private static string? WrittenPath(Expr e)
+    {
+        return e switch
+        {
+            NameExpr { TypeArgs.Count: 0 } name => name.Name,
+            MemberExpr member => WrittenPath(member.Target) is string outer ? outer + "." + member.Name : null,
+            _ => null,
+        };
+    }
+
+    /// <summary>
+    /// The setting a written path names. A path may be written short --
+    /// `Canvas.Width` from inside Settings -- so a suffix is accepted where
+    /// exactly one setting ends that way, and refused where several do.
+    /// </summary>
+    private string? Key(string written)
+    {
+        if (_registryKeys.TryGetValue(written, out string? found))
+        {
+            return found;
+        }
+
+        string? only = null;
+
+        foreach ((string path, string key) in _registryKeys)
+        {
+            if (!path.EndsWith("." + written, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (only is not null)
+            {
+                return null;            // several, so the short path says nothing
+            }
+            only = key;
+        }
+        return only;
+    }
+
     private bool TypeCandidate(string key, out TypeSymbol? symbol)
     {
         if (_r.Types.TryGetValue(key, out symbol))
@@ -369,6 +463,13 @@ public sealed partial class Binder
     /// code cannot be told otherwise. Zero means nothing is being linked and
     /// the count decides.
     /// </summary>
+    /// <summary>
+    /// Where each declared registry setting lives, by the path it is written
+    /// with. Empty in a program that declares none, which is nearly all of
+    /// them. See CompilationUnit.RegistryKeys.
+    /// </summary>
+    private IReadOnlyDictionary<string, string> _registryKeys = new Dictionary<string, string>(StringComparer.Ordinal);
+
     public static BindResult Bind(CompilationUnit unit, string file = "<source>", Action<string>? requireDeclaration = null,
         IReadOnlyDictionary<(string Name, int Arity), int>? indexedInterfaces = null,
         Action<string, string>? requireExtensions = null,
@@ -724,6 +825,8 @@ public sealed partial class Binder
 
     private void Run(CompilationUnit unit)
     {
+        _registryKeys = unit.RegistryKeys;
+
         // WHAT EVERY TUPLE SHAPE HAS BEEN CALLED, before any of it is checked.
         //
         // A specialisation carries its arguments in its name and not in an
@@ -7088,6 +7191,25 @@ public sealed partial class Binder
             case CallExpr { Target: MemberExpr { Target: NameExpr { Name: "Enum" } } asked } wanted
                 when !FindType("Enum", out _) && EnumStatic(asked, wanted) is Type answered:
                 return answered;
+
+            // ASKING WHETHER A SETTING IS SET IS NOT A QUESTION ABOUT ITS
+            // VALUE, and neither is forgetting one. Both take a declared
+            // member, and a declared member is a property -- so evaluating
+            // the argument would read the registry and hand these a number,
+            // by which point what was asked about is gone. The SHAPE of the
+            // call is read instead, at compile time, exactly as nameof and
+            // sizeof are.
+            // Guarded on this program declaring settings at all, so one that
+            // declares none keeps whatever it means by Registry.IsSet.
+            case CallExpr { Args.Count: 1, Target: MemberExpr { Name: "IsSet" or "Revert",
+                                                                Target: NameExpr { Name: "Registry" } } } asking
+                when _registryKeys.Count > 0:
+            {
+                Expr resolved = Setting(asking);
+
+                _r.Rewrites[asking] = resolved;
+                return CheckExpr(resolved);
+            }
 
             case CallExpr { Args.Count: 0, Target: MemberExpr { Name: "ToString" } spelt } written
                 when Stringify(spelt, written) is Expr instead:

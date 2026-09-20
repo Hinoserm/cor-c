@@ -837,7 +837,7 @@ public sealed class Parser
     /// PROVES about null, which the checker has to know to accept
     /// `if (!string.IsNullOrEmpty(dir)) { Use(dir); }`.
     /// </summary>
-    private readonly List<(string Target, string Name, string? Argument)> _attributeParts = new();
+    private readonly List<AttributeRef> _attributeParts = new();
 
     /// <summary>
     /// Reads an attribute list, keeping what each one is CALLED and dropping
@@ -889,7 +889,10 @@ public sealed class Parser
                         {
                             _attributes.Add(_t[j].Text);
                         }
-                        _attributeParts.Add((target, _t[j].Text, Argument(j + 1)));
+                        AttributeRef written = new() { Target = target, Name = _t[j].Text };
+
+                        written.Arguments.AddRange(Arguments(j + 1));
+                        _attributeParts.Add(written);
                     }
                 }
                 else if (At(Tok.RBracket))
@@ -913,15 +916,17 @@ public sealed class Parser
     /// "path" as well -- the last name or literal before the argument ends is
     /// what every one of those spellings comes down to.
     /// </summary>
-    private string? Argument(int open)
+    private List<AttributeArgument> Arguments(int open)
     {
+        List<AttributeArgument> arguments = new();
+
         if (open >= _t.Count || _t[open].Kind != Tok.LParen)
         {
-            return null;
+            return arguments;
         }
 
         int depth = 0;
-        string? last = null;
+        int from = open + 1;
 
         for (int j = open; j < _t.Count; j++)
         {
@@ -937,16 +942,48 @@ public sealed class Parser
 
                 if (depth == 0)
                 {
-                    return last;
+                    Argument(from, j, arguments);
+                    return arguments;
                 }
                 continue;
             }
 
             if (_t[j].Kind == Tok.Comma && depth == 1)
             {
-                return last;
+                Argument(from, j, arguments);
+                from = j + 1;
             }
+        }
+        return arguments;
+    }
 
+    /// <summary>
+    /// One argument of an attribute, reduced to the one word it amounts to.
+    ///
+    /// `false` is "false", `"path"` is "path" and `nameof(path)` is "path" as
+    /// well -- the last name or literal in it is what every one of those
+    /// spellings comes down to. `Closed = true` is that, with a name in
+    /// front, which is how C# writes an attribute's named argument.
+    /// </summary>
+    private void Argument(int from, int to, List<AttributeArgument> into)
+    {
+        if (from >= to)
+        {
+            return;                     // `[Foo()]`, or a trailing comma
+        }
+
+        string? name = null;
+
+        if (to - from > 2 && _t[from].Kind == Tok.Ident && _t[from + 1].Kind == Tok.Assign)
+        {
+            name = _t[from].Text;
+            from += 2;
+        }
+
+        string? last = null;
+
+        for (int j = from; j < to; j++)
+        {
             if (_t[j].Kind is Tok.Ident or Tok.Str)
             {
                 last = _t[j].Text;
@@ -956,7 +993,11 @@ public sealed class Parser
                 last = _t[j].Kind == Tok.KwTrue ? "true" : "false";
             }
         }
-        return last;
+
+        if (last is not null)
+        {
+            into.Add(new AttributeArgument { Name = name, Value = last });
+        }
     }
 
     /// <summary>
@@ -970,9 +1011,12 @@ public sealed class Parser
     {
         List<AttributeRef> captured = new();
 
-        foreach ((string target, string name, string? argument) in _attributeParts)
+        foreach (AttributeRef written in _attributeParts)
         {
-            captured.Add(new AttributeRef { Target = target, Name = name, Argument = argument });
+            AttributeRef copy = new() { Target = written.Target, Name = written.Name };
+
+            copy.Arguments.AddRange(written.Arguments);
+            captured.Add(copy);
         }
         return captured;
     }
@@ -1769,11 +1813,11 @@ public sealed class Parser
         string? returnsNullOnlyWith = null;
         List<AttributeRef> attributes = CapturedAttributes();
 
-        foreach ((string target, string attribute, string? argument) in _attributeParts)
+        foreach (AttributeRef written in _attributeParts)
         {
-            if (target == "return" && attribute == "NotNullIfNotNull")
+            if (written.Target == "return" && written.Name == "NotNullIfNotNull")
             {
-                returnsNullOnlyWith = argument;
+                returnsNullOnlyWith = written.Argument;
                 break;
             }
         }
@@ -2456,11 +2500,11 @@ public sealed class Parser
 
             bool? whenProved = null;
 
-            foreach ((string _, string attribute, string? argument) in _attributeParts)
+            foreach (AttributeRef written in _attributeParts)
             {
-                if (attribute == "NotNullWhen" && argument is "true" or "false")
+                if (written.Name == "NotNullWhen" && written.Argument is "true" or "false")
                 {
-                    whenProved = argument == "true";
+                    whenProved = written.Argument == "true";
                     break;
                 }
             }

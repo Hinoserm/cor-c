@@ -397,6 +397,12 @@ public sealed class Monomorphiser
         CompilationUnit output = new() { Line = unit.Line, Col = unit.Col };
         output.Usings.AddRange(unit.Usings);
         output.TupleNamings.AddRange(unit.TupleNamings);
+        output.RegistrySchemas.AddRange(unit.RegistrySchemas);
+
+        foreach ((string path, string key) in unit.RegistryKeys)
+        {
+            output.RegistryKeys[path] = key;
+        }
 
         // Concrete declarations pass through, with their bodies rewritten so
         // any generic reference inside them names a specialisation.

@@ -676,7 +676,6 @@ public static class Driver
         }
 
         List<string> backendErrors = new();
-        List<CompileError> registryErrors = new();
         // Flat stage-two objects must already place their managed entry first;
         // the separate linker does not regenerate code or guess its prologue.
         if (flat && module.Entry is { } flatEntry)
@@ -698,7 +697,7 @@ public static class Driver
         // file rather than out of the running process -- which is why the
         // section is a note and is not loaded. docs/software/REGISTRY.md in
         // the OS repository describes both the declarations and the bytes.
-        foreach (RegistrySchema schema in RegistryDeclarations.Collect(front.Value.unit, registryErrors))
+        foreach (RegistrySchema schema in front.Value.unit.RegistrySchemas)
         {
             Section declared = new(RegistrySchema.SectionName, SectionKind.Note);
 
@@ -731,15 +730,6 @@ public static class Driver
                 Console.Error.Write(x86.Statistics());
             }
         }
-        if (registryErrors.Count > 0)
-        {
-            foreach (CompileError e in registryErrors)
-            {
-                Console.Error.WriteLine(e.ToString());
-            }
-            return 1;
-        }
-
         if (backendErrors.Count > 0)
         {
             foreach (string e in backendErrors)

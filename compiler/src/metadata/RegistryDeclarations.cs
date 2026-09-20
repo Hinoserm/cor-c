@@ -43,15 +43,15 @@ public static class RegistryDeclarations
         // inherits it, which is how a library joins in: a shared toolkit
         // reading window geometry cannot hardcode a name, because the domain
         // belongs to whichever program links it.
-        List<(TypeDecl Decl, string Name)> named = new();
+        List<(TypeDecl Decl, AttributeRef Attribute)> named = new();
 
         foreach (TypeDecl decl in declarations)
         {
             foreach (AttributeRef attribute in decl.AttributeParts.Where(a => a.Is("Registry")))
             {
-                if (attribute.Argument is string argument && argument.Length > 0)
+                if (attribute.Argument is { Length: > 0 })
                 {
-                    named.Add((decl, argument));
+                    named.Add((decl, attribute));
                 }
             }
         }
@@ -59,16 +59,29 @@ public static class RegistryDeclarations
         Dictionary<string, RegistrySchema> byDomain = new(StringComparer.Ordinal);
         List<string> order = new();
 
-        foreach ((TypeDecl decl, string name) in named)
+        foreach ((TypeDecl decl, AttributeRef attribute) in named)
         {
-            string? domain = Domain(name, decl, errors);
+            string? domain = Domain(attribute.Argument!, decl, errors);
 
-            if (domain is null || byDomain.ContainsKey(domain))
+            if (domain is null)
             {
                 continue;
             }
 
-            byDomain[domain] = new RegistrySchema { Domain = domain };
+            // CLOSED IS DECIDED WHERE THE DOMAIN IS NAMED. The bit says
+            // undeclared keys under the program's own namespace fault, and
+            // the design is explicit that a library must not be able to flip
+            // it: only the declaration that names the domain is asked.
+            if (byDomain.TryGetValue(domain, out RegistrySchema? already))
+            {
+                if (attribute.Says("Closed") != already.Closed)
+                {
+                    errors.Add(Error(decl, $"'{domain}' is declared closed in one place and open in another"));
+                }
+                continue;
+            }
+
+            byDomain[domain] = new RegistrySchema { Domain = domain, Closed = attribute.Says("Closed") };
             order.Add(domain);
         }
 
@@ -180,29 +193,186 @@ public static class RegistryDeclarations
                 continue;
             }
 
-            foreach (MemberDecl member in decl.Members)
+            List<(int At, PropertyDecl Property)> rewritten = new();
+
+            for (int at = 0; at < decl.Members.Count; at++)
             {
+                MemberDecl member = decl.Members[at];
+
                 // A SETTING IS SOMETHING SOMEBODY WROTE. The binder adds
                 // fields of its own to a static class -- a StaticReady$ flag,
                 // a stashed exception, a property's backing field -- and none
                 // of them is a setting; they are told apart by the characters
                 // a name in source cannot contain.
-                if (member is FieldDecl field && field.Mods.HasFlag(Mods.Static)
+                // `const` is implicitly static and is not written Static, so
+                // it is taken here rather than filtered out -- being told it
+                // cannot be a setting is the point, and silently ignoring a
+                // declaration somebody wrote is the one answer that helps
+                // nobody.
+                if (member is FieldDecl field
+                    && (field.Mods.HasFlag(Mods.Static) || field.Mods.HasFlag(Mods.Const))
                     && !field.Name.Contains('$') && !field.Name.StartsWith('<'))
                 {
-                    Declare(field, prefix, schema, unit, errors);
+                    if (Declare(field, prefix, schema, unit, errors) is RegistryEntry entry)
+                    {
+                        string where = Path(schema.Domain, entry);
+
+                        unit.RegistryKeys[key + "." + field.Name] = where;
+                        rewritten.Add((at, Property(field, where, entry)));
+                    }
                 }
+            }
+
+            // A DECLARED MEMBER IS NOT STORAGE. Replacing the field here,
+            // before anything binds a name to it, is what makes
+            // `Settings.Canvas.Width` read the registry and assigning to it
+            // write one: the accessors are ordinary property accessors and
+            // the binder needs to know nothing about any of this.
+            foreach ((int at, PropertyDecl property) in rewritten)
+            {
+                decl.Members[at] = property;
             }
         }
     }
 
+    /// <summary>
+    /// The property a declared field becomes.
+    ///
+    /// The getter hands back what the registry has or the field's own
+    /// initialiser, inlined at the read site exactly as written -- the
+    /// default is never stored anywhere at run time. The setter always
+    /// writes USER, because a declared member is what a program uses to save
+    /// its own preference; writing MACHINE is administration and goes
+    /// through the library with an explicit scope.
+    /// </summary>
+    static string Path(string domain, RegistryEntry entry)
+        => "/" + domain.Replace('.', '/') + "/" + entry.Key;
+
+    static PropertyDecl Property(FieldDecl field, string key, RegistryEntry entry)
+    {
+        bool wide = entry.Kind is RegistryValueKind.Int or RegistryValueKind.Enum;
+
+        // The library answers an integer and an enumeration as a long, since
+        // that is what the record holds; the property is whatever type the
+        // field was written as, so the two are squared here.
+        Expr fallback = field.DeclaredInit!;
+
+        if (wide)
+        {
+            fallback = new CastExpr { Type = Named("long", field), Operand = fallback, Line = field.Line, Col = field.Col };
+        }
+
+        Expr read = Call(field, Reader(entry.Kind), Text(key, field), fallback, Scope("Both", field));
+
+        if (wide)
+        {
+            read = new CastExpr { Type = field.Type, Operand = read, Line = field.Line, Col = field.Col };
+        }
+
+        Block getter = new() { Line = field.Line, Col = field.Col };
+
+        getter.Statements.Add(new ReturnStmt { Value = read, Line = field.Line, Col = field.Col });
+
+        Expr written = new NameExpr { Name = "value", Line = field.Line, Col = field.Col };
+
+        if (wide)
+        {
+            written = new CastExpr { Type = Named("long", field), Operand = written, Line = field.Line, Col = field.Col };
+        }
+
+        Block setter = new() { Line = field.Line, Col = field.Col };
+
+        setter.Statements.Add(new ExprStmt
+        {
+            Expr = Call(field, Writer(entry.Kind), Text(key, field), written, Scope("User", field)),
+            Line = field.Line, Col = field.Col,
+        });
+
+        PropertyDecl property = new()
+        {
+            Name = field.Name, Mods = field.Mods, Type = field.Type,
+            Getter = getter, Setter = setter, Auto = false, HasSetter = true,
+            Scope = field.Scope, Namespace = field.Namespace,
+            Line = field.Line, Col = field.Col, File = field.File,
+        };
+
+        return property;
+    }
+
+    static string Reader(RegistryValueKind kind) => kind switch
+    {
+        RegistryValueKind.String => "ReadString",
+        RegistryValueKind.Bool => "ReadBool",
+        RegistryValueKind.Binary => "ReadBinary",
+        RegistryValueKind.Enum => "ReadEnum",
+        _ => "ReadInt",
+    };
+
+    static string Writer(RegistryValueKind kind) => kind switch
+    {
+        RegistryValueKind.String => "WriteString",
+        RegistryValueKind.Bool => "WriteBool",
+        RegistryValueKind.Binary => "WriteBinary",
+        RegistryValueKind.Enum => "WriteEnum",
+        _ => "WriteInt",
+    };
+
+    /// <summary>
+    /// A call of the registry library, positioned at the DECLARATION. None of
+    /// this was written by anybody, so a diagnostic about it -- a program
+    /// that declares settings and links no registry library being the one
+    /// that matters -- has to point at the field somebody did write.
+    /// </summary>
+    static CallExpr Call(FieldDecl at, string method, params Expr[] args)
+    {
+        CallExpr call = new()
+        {
+            Target = new MemberExpr
+            {
+                Target = new NameExpr { Name = "Registry", Line = at.Line, Col = at.Col, File = at.File },
+                Name = method, Line = at.Line, Col = at.Col, File = at.File,
+            },
+            Line = at.Line, Col = at.Col, File = at.File,
+        };
+
+        call.Args.AddRange(args);
+        return call;
+    }
+
+    static Expr Text(string value, FieldDecl at)
+        => new LiteralExpr { Kind = Lit.Str, Text = value, Line = at.Line, Col = at.Col, File = at.File };
+
+    static Expr Scope(string which, FieldDecl at)
+        => new MemberExpr
+        {
+            Target = new NameExpr { Name = "RegistryScope", Line = at.Line, Col = at.Col, File = at.File },
+            Name = which, Line = at.Line, Col = at.Col, File = at.File,
+        };
+
+    static TypeRef Named(string name, FieldDecl at)
+        => new() { Name = name, Line = at.Line, Col = at.Col, File = at.File };
+
     static string Key(TypeDecl decl)
         => decl.Outer is string outer && outer.Length > 0 ? outer + "." + decl.Name : decl.Name;
 
-    static void Declare(FieldDecl field, string prefix, RegistrySchema schema,
-                        CompilationUnit unit, List<CompileError> errors)
+    static RegistryEntry? Declare(FieldDecl field, string prefix, RegistrySchema schema,
+                                  CompilationUnit unit, List<CompileError> errors)
     {
         string key = prefix + field.Name.ToLowerInvariant();
+
+        // A SETTING IS SOMETHING SOMEBODY CAN CHANGE. `const` is a value
+        // inlined at every use and has no storage to redirect; `readonly`
+        // says in as many words that it is not assignable. Either one
+        // declared as a setting is a mistake worth naming rather than a
+        // property that would refuse to be written.
+        if (field.Mods.HasFlag(Mods.Const) || field.Mods.HasFlag(Mods.Readonly))
+        {
+            errors.Add(Error(field, $"'{field.Name}' cannot be a registry setting: a setting is written, "
+                                  + "and this is declared "
+                                  + (field.Mods.HasFlag(Mods.Const) ? "const" : "readonly")));
+            return null;
+        }
+
         string written = field.Type.Name;
         RegistryEntry entry = new RegistryEntry { Key = key };
 
@@ -234,7 +404,7 @@ public static class RegistryDeclarations
                 {
                     errors.Add(Error(field, $"a registry setting cannot be '{written}'; it is int, bool, "
                                           + "string, byte[] or an enum"));
-                    return;
+                    return null;
                 }
 
                 choices = Values(choice);
@@ -247,12 +417,12 @@ public static class RegistryDeclarations
         {
             errors.Add(Error(field, $"a registry setting cannot be an array of '{written}'; "
                                   + "byte[] is the only one the format has a record for"));
-            return;
+            return null;
         }
 
         if (!Default(field, entry, choices, errors))
         {
-            return;
+            return null;
         }
 
         // TWO USES OF ONE KEY MUST AGREE. They are separate declarations in
@@ -264,7 +434,7 @@ public static class RegistryDeclarations
         if (already is null)
         {
             schema.Entries.Add(entry);
-            return;
+            return entry;
         }
 
         if (already.Kind != entry.Kind)
@@ -275,6 +445,8 @@ public static class RegistryDeclarations
         {
             errors.Add(Error(field, $"'{key}' is declared with two different defaults"));
         }
+
+        return already;
     }
 
     static bool Same(byte[]? a, byte[]? b)

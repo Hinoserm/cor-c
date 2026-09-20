@@ -1,0 +1,84 @@
+// A registry for tests that have no kernel under them.
+//
+// The real one is a character device and an append-only log per domain; see
+// docs/software/REGISTRY.md and os/lib/registry.cor in the OS repository.
+// What a DECLARED SETTING needs of it is only this much: a read answers what
+// was stored or the caller's own default, and a write stores. That is enough
+// to prove the compiler's half -- that a declared member reads through the
+// registry rather than out of a field, and that a member nobody has set
+// still comes back as the initialiser written beside it.
+
+enum RegistryScope
+{
+    User = 0,
+    Machine = 1,
+    Both = 2,
+}
+
+static class Registry
+{
+    static Dictionary<string, long> _words = new Dictionary<string, long>();
+    static Dictionary<string, string> _text = new Dictionary<string, string>();
+
+    public static long ReadInt(string key, long fallback, RegistryScope scope = RegistryScope.Both)
+    {
+        long value;
+        return _words.TryGetValue(key, out value) ? value : fallback;
+    }
+
+    public static bool ReadBool(string key, bool fallback, RegistryScope scope = RegistryScope.Both)
+    {
+        long value;
+        return _words.TryGetValue(key, out value) ? value != 0 : fallback;
+    }
+
+    public static long ReadEnum(string key, long fallback, RegistryScope scope = RegistryScope.Both)
+    {
+        long value;
+        return _words.TryGetValue(key, out value) ? value : fallback;
+    }
+
+    public static string ReadString(string key, string fallback, RegistryScope scope = RegistryScope.Both)
+    {
+        string value;
+        return _text.TryGetValue(key, out value) ? value : fallback;
+    }
+
+    public static bool HasKey(string key, RegistryScope scope = RegistryScope.Both)
+    {
+        long word;
+        string text;
+        return _words.TryGetValue(key, out word) || _text.TryGetValue(key, out text);
+    }
+
+    public static long Delete(string key, RegistryScope scope)
+    {
+        _words.Remove(key);
+        _text.Remove(key);
+        return 0;
+    }
+
+    public static long WriteInt(string key, long value, RegistryScope scope)
+    {
+        _words[key] = value;
+        return 0;
+    }
+
+    public static long WriteBool(string key, bool value, RegistryScope scope)
+    {
+        _words[key] = value ? 1 : 0;
+        return 0;
+    }
+
+    public static long WriteEnum(string key, long value, RegistryScope scope)
+    {
+        _words[key] = value;
+        return 0;
+    }
+
+    public static long WriteString(string key, string value, RegistryScope scope)
+    {
+        _text[key] = value;
+        return 0;
+    }
+}

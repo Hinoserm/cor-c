@@ -23,6 +23,7 @@ public static class Program
         {
             SyntaxTokenCacheTests.Run();
             RegistrySchemaTests.Run();
+            RegistryDeclarationTests.Run();
             RuntimeSourceListTests.Run(work);
             DeclarationBatchTests.Run(work);
             SourceIndexTests.Run(work);
