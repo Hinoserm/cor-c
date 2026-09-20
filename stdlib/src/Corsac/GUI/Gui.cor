@@ -97,9 +97,19 @@ public class Seat : IDrawingTarget
     public bool SetMode(int width, int height, int refresh, int bits)
     {
         Flush();
-        return Os.Ioctl(_fd, 0x47550033,
-                        (long)(width & 0xFFFF) | ((long)(height & 0xFFFF) << 16) | ((long)(refresh & 0xFFFF) << 32)
-                        | ((long)(bits & 0xFF) << 48)) == 0;
+
+        // FOUR WORDS BY ADDRESS, not packed into the argument: an ioctl's
+        // argument is one machine word, and on a 32-bit machine everything
+        // packed above bit 31 -- the rate and the depth -- simply never
+        // arrived, so a change of depth alone "succeeded" by doing nothing.
+        byte[] request = new byte[16];
+        long at = Sys.ArrayData(request);
+
+        Sys.PokeWord(at, width);
+        Sys.PokeWord(at + 4, height);
+        Sys.PokeWord(at + 8, refresh);
+        Sys.PokeWord(at + 12, bits);
+        return Os.Ioctl(_fd, 0x47550034, at) == 0;
     }
 
     /// The refresh rate in use, or zero where the card chose it.

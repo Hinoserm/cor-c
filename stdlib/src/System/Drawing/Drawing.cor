@@ -268,7 +268,8 @@ public class Font : IDisposable
         Style = style;
     }
 
-    /// The face fitted to Size, or null for the bitmap system font.
+    /// The face fitted to Size, or null for the bitmap system font. Bold
+    /// takes the family's bold design where it has one.
     internal TrueTypeSize? Scaled
     {
         get
@@ -276,16 +277,69 @@ public class Font : IDisposable
             if (!_scaleTried)
             {
                 _scaleTried = true;
-                if (FontFamily.Face != null)
+
+                bool wantBold = (Style & FontStyle.Bold) != 0;
+                TrueTypeFace? face = wantBold && FontFamily.BoldFace != null ? FontFamily.BoldFace : FontFamily.Face;
+
+                if (face != null)
                 {
                     int px = (int)(Size + 0.5f);
                     if (px < 1) { px = 1; }
-                    _scaled = new TrueTypeSize(FontFamily.Face, px, px * 64);
+                    _scaled = TrueTypeSize.For(face, px);
+                    _realBold = wantBold && FontFamily.BoldFace != null;
                 }
             }
             return _scaled;
         }
     }
+
+    bool _realBold;
+
+    /// The style still to be faked when drawing: bold only when the
+    /// family had no bold face of its own, italic always.
+    internal FontStyle Synthetic
+    {
+        get { TrueTypeSize? s = Scaled; return _realBold ? (Style & ~FontStyle.Bold) : Style; }
+    }
+
+    /// <summary>
+    /// How wide one line of text comes out in this font, in pixels: the
+    /// one measurement everything that lays text out needs, and the only
+    /// honest one once letters are not all the same width.
+    /// </summary>
+    public int TextWidth(string text) { return TextWidth(text, 0, text.Length); }
+
+    public int TextWidth(string text, int start, int count)
+    {
+        TrueTypeSize? scaled = Scaled;
+        if (count <= 0) { return 0; }
+        if (scaled == null) { return count * 8; }
+
+        int extra = (Synthetic & FontStyle.Bold) != 0 ? 1 : 0;
+        int width = 0, previous = -1, end = start + count;
+
+        for (int i = start; i < end; )
+        {
+            Rune rune;
+            int taken;
+
+            if (!Rune.TryDecodeFromUtf8(text, i, out rune, out taken)) { taken = 1; rune = new Rune('?'); }
+            i += taken;
+
+            int glyph = scaled.Face.GlyphIndex(rune.Value);
+            width += Graphics.Kern(scaled, previous, glyph) + scaled.Advance(glyph) + extra;
+            previous = glyph;
+        }
+        return width;
+    }
+
+    /// From the top of a line down to its baseline: thirteen rows of the
+    /// bitmap font's sixteen, the face's own ascent otherwise.
+    public int Ascent { get { TrueTypeSize? s = Scaled; return s == null ? 13 : s.Ascent; } }
+
+    public bool Bold { get { return (Style & FontStyle.Bold) != 0; } }
+    public bool Italic { get { return (Style & FontStyle.Italic) != 0; } }
+    public float SizeInPoints { get { return Size; } }
 
     /// The line's height: the bitmap font's fixed sixteen, or a scalable
     /// face's own ascent and descent at this size.
@@ -315,7 +369,40 @@ public class Font : IDisposable
 
 public static class SystemFonts
 {
-    public static Font DefaultFont { get { return new Font("System", 9); } }
+    /// What the interface is set in, in pixels. Eleven is what eight
+    /// points came to on the screens of the era.
+    public const int DefaultSize = 11;
+
+    static Font? _default, _caption;
+
+    /// <summary>
+    /// The interface font: the installed sans where there is one, the
+    /// kernel's bitmap face where there is not. ONE OBJECT, shared, since
+    /// every control asks for it and a font carries its fitted face.
+    /// </summary>
+    public static Font DefaultFont
+    {
+        get
+        {
+            if (_default == null) { _default = new Font(FontFamily.GenericSansSerif, DefaultSize); }
+            return _default;
+        }
+    }
+
+    public static Font MessageBoxFont { get { return DefaultFont; } }
+    public static Font MenuFont { get { return DefaultFont; } }
+    public static Font StatusFont { get { return DefaultFont; } }
+    public static Font DialogFont { get { return DefaultFont; } }
+
+    /// A window's title: the same face, bold.
+    public static Font CaptionFont
+    {
+        get
+        {
+            if (_caption == null) { _caption = new Font(FontFamily.GenericSansSerif, DefaultSize, FontStyle.Bold); }
+            return _caption;
+        }
+    }
 }
 
 public class SizeF
@@ -493,7 +580,7 @@ public class Graphics : IDisposable
         // hand one back by reading the pixel underneath. A caller that
         // knows what it just painted -- almost every control does --
         // wants the overload below instead.
-        if (scaled != null) { DrawScalableString(s, scaled, font.Height, font.Style, solid.Color, false, Color.Transparent, Color.Transparent, true, x, y); return; }
+        if (scaled != null) { DrawScalableString(s, scaled, font.Height, font.Synthetic, solid.Color, false, Color.Transparent, Color.Transparent, true, x, y); return; }
 
         int cx = x + _originX, cy = y + _originY;
         for (int i = 0; i < s.Length; i++)
@@ -529,7 +616,7 @@ public class Graphics : IDisposable
 
         TrueTypeSize? scaled = font.Scaled;
 
-        if (scaled != null) { DrawScalableString(s, scaled, font.Height, font.Style, solid.Color, true, background, Color.Transparent, true, x, y); return; }
+        if (scaled != null) { DrawScalableString(s, scaled, font.Height, font.Synthetic, solid.Color, true, background, Color.Transparent, true, x, y); return; }
 
         DrawString(s, font, brush, x, y);
     }
@@ -540,7 +627,7 @@ public class Graphics : IDisposable
     /// table, or a pair it says nothing about, which is the common case
     /// and costs one table lookup to learn.
     /// </summary>
-    static int Kern(TrueTypeSize scaled, int leftGlyph, int rightGlyph)
+    internal static int Kern(TrueTypeSize scaled, int leftGlyph, int rightGlyph)
     {
         if (leftGlyph < 0) { return 0; }
 
@@ -812,7 +899,7 @@ public class Graphics : IDisposable
         // Opaque already knows its own background -- it is about to
         // paint the whole cell with it -- so that same colour is what
         // antialiasing blends the letter's edges against too.
-        if (scaled != null) { DrawScalableString(s, scaled, font.Height, font.Style, foreground, true, background, background, false, x, y); return; }
+        if (scaled != null) { DrawScalableString(s, scaled, font.Height, font.Synthetic, foreground, true, background, background, false, x, y); return; }
 
         int cx = x + _originX, cy = y + _originY;
         for (int i = 0; i < s.Length; i++)
@@ -827,7 +914,7 @@ public class Graphics : IDisposable
     {
         TrueTypeSize? scaled = font.Scaled;
 
-        if (scaled != null) { return MeasureScalableString(s, scaled, font.Height, font.Style); }
+        if (scaled != null) { return MeasureScalableString(s, scaled, font.Height, font.Synthetic); }
 
         int longest = 0, lines = 1, run = 0;
         for (int i = 0; i < s.Length; i++)

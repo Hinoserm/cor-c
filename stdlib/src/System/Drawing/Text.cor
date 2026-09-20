@@ -26,6 +26,12 @@ public sealed class FontFamily : IDisposable
     readonly string _name;
     internal readonly TrueTypeFace? Face;
 
+    /// The family's own bold design, where a file for one was found. A
+    /// Font asked for bold draws with this rather than thickening the
+    /// regular face, which is the difference between a bold typeface and
+    /// a smudged one.
+    internal TrueTypeFace? BoldFace;
+
     public FontFamily(string name)
     {
         FontFamily? found = Find(name);
@@ -37,6 +43,7 @@ public sealed class FontFamily : IDisposable
 
         _name = found._name;
         Face = found.Face;
+        BoldFace = found.BoldFace;
     }
 
     /// <summary>
@@ -48,8 +55,15 @@ public sealed class FontFamily : IDisposable
     /// </summary>
     public FontFamily(GenericFontFamilies genericFamily)
     {
-        _name = "System";
-        Face = null;
+        // The installed face that plays each part, where it is installed;
+        // the bitmap system font where it is not, so a machine with no
+        // fonts directory still draws.
+        FontFamily? found = Find(genericFamily == GenericFontFamilies.Serif ? "Liberation Serif"
+                               : genericFamily == GenericFontFamilies.Monospace ? "Liberation Mono" : "Liberation Sans");
+
+        _name = found == null ? "System" : found._name;
+        Face = found == null ? null : found.Face;
+        BoldFace = found == null ? null : found.BoldFace;
     }
 
     internal FontFamily(string name, TrueTypeFace? face)
@@ -60,9 +74,8 @@ public sealed class FontFamily : IDisposable
 
     public string Name { get { return _name; } }
 
-    /// Every style is drawn from the one face this wraps: there is no
-    /// separate bold or italic outline to ask for, so every style anyone
-    /// asks about is available.
+    /// Every style can be drawn: bold from the family's bold face where it
+    /// has one and thickened where it has not, italic always by slanting.
     public bool IsStyleAvailable(FontStyle style) { return true; }
 
     public int GetEmHeight(FontStyle style) { return Face == null ? 16 : Face.UnitsPerEm; }
@@ -101,7 +114,12 @@ public sealed class FontFamily : IDisposable
     // faithful choice: nothing stops two programs seeing the same names,
     // because nothing here allows two programs to disagree about what a
     // name like "System" means.
-    static readonly List<FontFamily> _roster = new List<FontFamily>();
+    // Made on first use, by hand. As a field initialiser this list was
+    // still null when the first caller arrived from another class in a
+    // shared library -- SystemFonts, asking for the interface font -- and
+    // every graphical program died before its first window.
+    static List<FontFamily>? _rosterHeld;
+    static List<FontFamily> _roster { get { if (_rosterHeld == null) { _rosterHeld = new List<FontFamily>(); } return _rosterHeld; } }
 
     internal static void Register(FontFamily family)
     {
@@ -129,7 +147,7 @@ public sealed class FontFamily : IDisposable
     {
         if (Same(name, "System")) { return SystemFamily; }
         for (int i = 0; i < _roster.Count; i++) { if (Same(_roster[i]._name, name)) { return _roster[i]; } }
-        return null;
+        return Installed.Find(name);
     }
 
     static FontFamily? _system;
@@ -146,6 +164,7 @@ public sealed class FontFamily : IDisposable
     {
         get
         {
+            Installed.LoadAll();
             FontFamily[] all = new FontFamily[_roster.Count + 1];
             all[0] = SystemFamily;
             for (int i = 0; i < _roster.Count; i++) { all[i + 1] = _roster[i]; }
@@ -178,12 +197,132 @@ public abstract class FontCollection : IDisposable
     public virtual void Dispose() { }
 }
 
-/// The system's own faces. There being none installed yet beyond the
-/// kernel's bitmap font, this holds exactly "System" -- a program that
-/// enumerates it and finds one face is seeing the truth, not a stub.
+/// <summary>
+/// The fonts directory, read. A face is installed by being a TrueType file
+/// in /usr/share/fonts; there is no registration step, which is one fewer
+/// thing to be out of step with what is on the disc.
+///
+/// LAZY ON PURPOSE. Every graphical program asks for the interface font
+/// and almost none asks for anything else, and a dozen faces are four
+/// megabytes. So a family asked for by name is looked for by FILE name
+/// first -- "Liberation Sans" against LiberationSans-Regular.ttf -- and
+/// only that file is read; its own name table then confirms it. Reading
+/// every file happens when somebody enumerates the families, which is a
+/// font picker and nobody else.
+/// </summary>
+static class Installed
+{
+    public const string Folder = "/usr/share/fonts";
+
+    static string[]? _files;
+    static bool _all;
+
+    static string[] Files()
+    {
+        if (_files == null)
+        {
+            try { _files = Directory.Exists(Folder) ? Directory.GetFiles(Folder) : new string[0]; }
+            catch (IOException) { _files = new string[0]; }
+        }
+        return _files;
+    }
+
+    /// Letters and digits only, lower case: what a family name and a file
+    /// name are compared as.
+    static string Squash(string text)
+    {
+        string built = "";
+
+        for (int i = 0; i < text.Length; i++)
+        {
+            char c = text[i];
+            if (c >= 'A' && c <= 'Z') { c = (char)(c + 32); }
+            if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) { built = built + c; }
+        }
+        return built;
+    }
+
+    static string FileName(string path)
+    {
+        int slash = path.LastIndexOf('/');
+        return slash < 0 ? path : path.Substring(slash + 1);
+    }
+
+    static bool IsFont(string path) { return path.EndsWith(".ttf") || path.EndsWith(".TTF"); }
+
+    static TrueTypeFace? Read(string path)
+    {
+        try { return TrueTypeFace.FromBytes(File.ReadAllBytes(path)); }
+        catch (IOException) { return null; }
+    }
+
+    public static FontFamily? Find(string name)
+    {
+        string key = Squash(name);
+        if (key.Length == 0) { return null; }
+
+        string[] files = Files();
+        TrueTypeFace? regular = null, bold = null;
+
+        for (int i = 0; i < files.Length; i++)
+        {
+            if (!IsFont(files[i])) { continue; }
+
+            string squashed = Squash(FileName(files[i]));
+            if (!squashed.StartsWith(key)) { continue; }
+
+            bool isBold = squashed.IndexOf("bold") >= 0;
+            if (squashed.IndexOf("italic") >= 0 || squashed.IndexOf("oblique") >= 0) { continue; }
+            if (isBold ? bold != null : regular != null) { continue; }
+
+            TrueTypeFace? face = Read(files[i]);
+
+            // THE FILE'S OWN WORD for what it is. A file name is a hint,
+            // and "PT Sans" is a prefix of "PT Sans Narrow".
+            if (face == null || Squash(face.FamilyName) != key) { continue; }
+
+            if (isBold) { bold = face; } else { regular = face; }
+        }
+
+        if (regular == null) { regular = bold; }
+        if (regular == null) { return null; }
+
+        FontFamily family = new FontFamily(regular.FamilyName, regular);
+        family.BoldFace = bold == regular ? null : bold;
+        FontFamily.Register(family);
+        return family;
+    }
+
+    /// Every file, for the one caller that wants the whole list.
+    public static void LoadAll()
+    {
+        if (_all) { return; }
+        _all = true;
+
+        string[] files = Files();
+
+        for (int i = 0; i < files.Length; i++)
+        {
+            if (!IsFont(files[i])) { continue; }
+
+            string squashed = Squash(FileName(files[i]));
+            if (squashed.IndexOf("bold") >= 0 || squashed.IndexOf("italic") >= 0) { continue; }
+
+            TrueTypeFace? face = Read(files[i]);
+            if (face != null && face.FamilyName.Length > 0) { FontFamily.Find(face.FamilyName); }
+        }
+    }
+}
+
+/// The system's own faces: the kernel's bitmap font, and whatever is in the
+/// fonts directory.
 public sealed class InstalledFontCollection : FontCollection
 {
-    public InstalledFontCollection() { Held.Add(FontFamily.SystemFamily); }
+    public InstalledFontCollection()
+    {
+        FontFamily[] all = FontFamily.Families;
+        for (int i = 0; i < all.Length; i++) { Held.Add(all[i]); }
+    }
 }
 
 /// <summary>

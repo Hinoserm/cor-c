@@ -350,7 +350,14 @@ public static class ControlPaint
         SolidBrush? solid = brush as SolidBrush;
         Color ink = solid == null ? SystemColors.ControlText : solid.Color;
 
-        g.FillRectangle(new SolidBrush(ink), x + at * font.GlyphWidth, y + font.Height - 1, font.GlyphWidth, 1);
+        // Under the letter itself, wherever the letters before it put it
+        // and however wide it is: nothing here is a fixed number of pixels
+        // once the face is proportional.
+        string shown = StripMnemonic(text);
+        int before = font.TextWidth(shown, 0, at);
+        int wide = at < shown.Length ? font.TextWidth(shown, at, 1) : 0;
+
+        g.FillRectangle(new SolidBrush(ink), x + before, y + font.Ascent + 1, wide, 1);
     }
 
     /// `text` without its mnemonic markers.
@@ -1075,10 +1082,12 @@ public class Form : Control
             // The window's own icon sits at the left of its caption.
             if (_icon != null) { _icon.Draw(g, titleX, cy + (ch - 16) / 2, 16); titleX += 18; }
 
-            // Bold by being drawn twice, a pixel apart: there is one font
-            // on this machine and this is how the era faked a heavier one.
-            g.DrawString(Text, Font, new SolidBrush(title), titleX, cy + (ch - Font.Height) / 2);
-            g.DrawString(Text, Font, new SolidBrush(title), titleX + 1, cy + (ch - Font.Height) / 2);
+            // The caption font is the interface face's own bold. The colour
+            // behind it is the caption's left-hand colour, which under a
+            // gradient is very nearly what is behind a title that starts at
+            // the left -- near enough that the blended rim does not show.
+            Font captionFont = SystemFonts.CaptionFont;
+            g.DrawString(Text, captionFont, new SolidBrush(title), from, titleX, cy + (ch - captionFont.Height) / 2);
 
             Rectangle close = CloseBox();
             if (!close.IsEmpty)
@@ -1254,7 +1263,7 @@ public static class MessageBox
             else run++;
         }
         if (run > longest) longest = run;
-        int textW = longest * font.GlyphWidth, textH = lines * font.Height;
+        int textW = TextRenderer.MeasureText(text, font).Width, textH = lines * font.Height;
 
         string[] names = Names(buttons);
         int buttonsW = names.Length * ButtonW + (names.Length - 1) * Gap;
@@ -1329,6 +1338,29 @@ public static class MessageBox
         if (name == "Ignore") return DialogResult.Ignore;
         if (name == "Yes") return DialogResult.Yes;
         return DialogResult.No;
+    }
+}
+
+/// <summary>
+/// .NET's TextRenderer, the measuring half: how big a piece of text comes
+/// out in a font, without needing a Graphics to ask.
+/// </summary>
+public static class TextRenderer
+{
+    public static Size MeasureText(string text, Font font)
+    {
+        int widest = 0, lines = 1, start = 0;
+
+        for (int i = 0; i <= text.Length; i++)
+        {
+            if (i < text.Length && text[i] != '\n') { continue; }
+
+            int wide = font.TextWidth(text, start, i - start);
+            if (wide > widest) { widest = wide; }
+            if (i < text.Length) { lines++; }
+            start = i + 1;
+        }
+        return new Size(widest, lines * font.Height);
     }
 }
 
@@ -1420,7 +1452,7 @@ public class Label : Control
             // the wire and four on the screen, and a label sized to five
             // pushes everything after it a character to the right.
             string shown = ControlPaint.StripMnemonic(value);
-            Width = shown.Length == 0 ? 0 : Longest(shown) * Font.GlyphWidth;
+            Width = shown.Length == 0 ? 0 : TextRenderer.MeasureText(shown, Font).Width;
             Height = Lines(shown) * Font.Height;
         }
     }
@@ -1449,7 +1481,7 @@ public class Label : Control
     {
         Graphics g = e.Graphics;
         string shown = ControlPaint.StripMnemonic(Text);
-        int high = Lines(shown) * Font.Height, wide = Longest(shown) * Font.GlyphWidth;
+        int high = Lines(shown) * Font.Height, wide = TextRenderer.MeasureText(shown, Font).Width;
         int y = TextAlign == ContentAlignment.MiddleLeft || TextAlign == ContentAlignment.MiddleCenter || TextAlign == ContentAlignment.MiddleRight ? (Height - high) / 2
               : TextAlign == ContentAlignment.BottomLeft || TextAlign == ContentAlignment.BottomCenter || TextAlign == ContentAlignment.BottomRight ? Height - high : 0;
         int x = TextAlign == ContentAlignment.TopCenter || TextAlign == ContentAlignment.MiddleCenter || TextAlign == ContentAlignment.BottomCenter ? (Width - wide) / 2
@@ -2383,14 +2415,14 @@ public class TextBox : Control
         if (count > 0 && Focused)
         {
             g.DrawString(shown.Substring(0, from), Font, new SolidBrush(ForeColor), BackColor, left, top);
-            g.DrawStringOpaque(shown.Substring(from, count), Font, SystemColors.HighlightText, SystemColors.Highlight, left + from * Font.GlyphWidth, top);
-            g.DrawString(shown.Substring(from + count), Font, new SolidBrush(ForeColor), BackColor, left + (from + count) * Font.GlyphWidth, top);
+            g.DrawStringOpaque(shown.Substring(from, count), Font, SystemColors.HighlightText, SystemColors.Highlight, left + Font.TextWidth(shown, 0, from), top);
+            g.DrawString(shown.Substring(from + count), Font, new SolidBrush(ForeColor), BackColor, left + Font.TextWidth(shown, 0, from + count), top);
         }
         else
         {
             g.DrawString(shown, Font, new SolidBrush(ForeColor), BackColor, left, top);
         }
-        if (Focused) g.FillRectangle(new SolidBrush(ForeColor), left + _caret * Font.GlyphWidth, top, 1, Font.Height);
+        if (Focused) g.FillRectangle(new SolidBrush(ForeColor), left + Font.TextWidth(shown, 0, _caret > shown.Length ? shown.Length : _caret), top, 1, Font.Height);
         base.OnPaint(e);
     }
 
@@ -2451,8 +2483,19 @@ public class TextBox : Control
 
     int ColumnAt(int x)
     {
-        int column = (x - 4 + Font.GlyphWidth / 2) / Font.GlyphWidth;
-        return Clamp(column);
+        // The boundary nearest the click: walk the text until the next
+        // letter's middle is past the pointer.
+        string shown = Shown();
+        int at = 0, edge = 4;
+
+        while (at < shown.Length)
+        {
+            int wide = Font.TextWidth(shown, at, 1);
+            if (x < edge + (wide + 1) / 2) { break; }
+            edge += wide;
+            at++;
+        }
+        return Clamp(at);
     }
 
     /// A click puts the caret where it landed, rounded to the nearest
@@ -2920,8 +2963,7 @@ public class ComboBox : Control
 
         string shown = base.Text;
         int room = bx - 6;
-        int fits = Font.GlyphWidth > 0 ? room / Font.GlyphWidth : 0;
-        if (shown.Length > fits && fits > 0) shown = shown.Substring(0, fits);
+        while (shown.Length > 1 && Font.TextWidth(shown) > room) { shown = shown.Substring(0, shown.Length - 1); }
 
         int ty = (h - Font.Height) / 2;
 
@@ -3245,7 +3287,7 @@ public class NumericUpDown : Control
         int ty = (h - Font.Height) / 2;
         g.DrawString(_typed, Font, new SolidBrush(live ? ForeColor : SystemColors.GrayText), live ? SystemColors.Window : SystemColors.Control, 4, ty);
 
-        if (Focused && live) g.FillRectangle(new SolidBrush(ForeColor), 4 + _typed.Length * Font.GlyphWidth, ty, 1, Font.Height);
+        if (Focused && live) g.FillRectangle(new SolidBrush(ForeColor), 4 + Font.TextWidth(_typed), ty, 1, Font.Height);
         base.OnPaint(e);
     }
 
@@ -3400,7 +3442,7 @@ public class TabControl : Control
 
     public override void SetBounds(int x, int y, int w, int h) { base.SetBounds(x, y, w, h); Arrange(); }
 
-    int TabWidth(int index) { return ControlPaint.StripMnemonic(_pages[index].Text).Length * Font.GlyphWidth + 18; }
+    int TabWidth(int index) { return Font.TextWidth(ControlPaint.StripMnemonic(_pages[index].Text)) + 18; }
 
     int TabLeft(int index)
     {
@@ -3466,12 +3508,12 @@ public class TabControl : Control
 
         string shown = ControlPaint.StripMnemonic(_pages[index].Text);
         int ty = y + (TabHeight - Font.Height) / 2 + (front ? 1 : 0);
-        int tx = x + (w - shown.Length * Font.GlyphWidth) / 2;
+        int tx = x + (w - Font.TextWidth(shown)) / 2;
 
         ControlPaint.DrawStringMnemonic(g, _pages[index].Text, Font, new SolidBrush(Enabled ? ForeColor : SystemColors.GrayText), SystemColors.Control, tx, ty, true);
 
         if (front && Focused && Enabled)
-            ControlPaint.DrawFocusRectangle(g, tx - 3, ty - 2, shown.Length * Font.GlyphWidth + 6, Font.Height + 4);
+            ControlPaint.DrawFocusRectangle(g, tx - 3, ty - 2, Font.TextWidth(shown) + 6, Font.Height + 4);
     }
 
     protected override void OnMouseDown(MouseEventArgs e)
@@ -3635,9 +3677,9 @@ public class LinkLabel : Label
         Color ink = !Enabled ? SystemColors.GrayText : LinkVisited ? VisitedLinkColor : ForeColor;
 
         g.DrawString(shown, Font, new SolidBrush(ink), EffectiveBackColor, 0, 0);
-        g.FillRectangle(new SolidBrush(ink), 0, Font.Height - 1, shown.Length * Font.GlyphWidth, 1);
+        g.FillRectangle(new SolidBrush(ink), 0, Font.Ascent + 1, Font.TextWidth(shown), 1);
 
-        if (Focused && Enabled) ControlPaint.DrawFocusRectangle(g, -1, -1, shown.Length * Font.GlyphWidth + 2, Font.Height + 2);
+        if (Focused && Enabled) ControlPaint.DrawFocusRectangle(g, -1, -1, Font.TextWidth(shown) + 2, Font.Height + 2);
     }
 
     protected override void OnClick(EventArgs e)
@@ -3771,7 +3813,7 @@ internal class ToolTipWindow : Form
         ShowInTaskbar = false;
         BackColor = SystemColors.Info;
         ForeColor = SystemColors.InfoText;
-        Width = text.Length * Font.GlyphWidth + 8;
+        Width = Font.TextWidth(text) + 8;
         Height = Font.Height + 6;
     }
 
@@ -3876,12 +3918,13 @@ public class ContextMenuStrip : Form
 
         for (int i = 0; i < Items.Count; i++)
         {
-            int length = ControlPaint.StripMnemonic(Items[i].Text).Length;
+            int length = Font.TextWidth(ControlPaint.StripMnemonic(Items[i].Text));
             if (length > widest) widest = length;
-            if (Items[i].ShortcutText.Length > shortcut) shortcut = Items[i].ShortcutText.Length;
+            int keys = Font.TextWidth(Items[i].ShortcutText);
+            if (keys > shortcut) shortcut = keys;
         }
 
-        int w = Gutter + widest * Font.GlyphWidth + (shortcut > 0 ? (shortcut + 2) * Font.GlyphWidth : 0) + 24;
+        int w = Gutter + widest + (shortcut > 0 ? shortcut + 16 : 0) + 24;
         int h = Depth(Items.Count) + Pad * 2;
         Seat seat = Seat.Current;
 
@@ -3954,7 +3997,7 @@ public class ContextMenuStrip : Form
             ControlPaint.DrawStringMnemonic(g, item.Text, Font, new SolidBrush(ink), hot ? SystemColors.Highlight : BackColor, Gutter, ty, true);
 
             if (item.ShortcutText.Length > 0)
-                g.DrawString(item.ShortcutText, Font, new SolidBrush(ink), hot ? SystemColors.Highlight : BackColor, Width - 8 - item.ShortcutText.Length * Font.GlyphWidth, ty);
+                g.DrawString(item.ShortcutText, Font, new SolidBrush(ink), hot ? SystemColors.Highlight : BackColor, Width - 8 - Font.TextWidth(item.ShortcutText), ty);
         }
         base.OnPaint(e);
     }

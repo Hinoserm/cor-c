@@ -2562,6 +2562,25 @@ class TrueTypeSize
     public int Descent;                      // pixels below it, positive
     public int LineSpacing;                  // baseline to baseline
 
+    // ONE PER FACE PER SIZE, for the whole program. Every control has a
+    // Font and nearly all of them are the same face at the same size; a
+    // hinter and a glyph cache each would be a few hundred kilobytes a
+    // button, all holding the same letters.
+    static List<TrueTypeSize>? _sharedHeld;
+    static List<TrueTypeSize> _shared { get { if (_sharedHeld == null) { _sharedHeld = new List<TrueTypeSize>(); } return _sharedHeld; } }
+
+    public static TrueTypeSize For(TrueTypeFace face, int ppem)
+    {
+        for (int i = 0; i < _shared.Count; i++)
+        {
+            if (_shared[i]._face == face && _shared[i]._ppem == ppem) { return _shared[i]; }
+        }
+
+        TrueTypeSize made = new TrueTypeSize(face, ppem, ppem * 64);
+        _shared.Add(made);
+        return made;
+    }
+
     public TrueTypeSize(TrueTypeFace face, int ppem, int pointSize)
     {
         _face = face;
