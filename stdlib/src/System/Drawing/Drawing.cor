@@ -51,27 +51,53 @@ public struct Color
 /// The colours a Windows desktop is made of. Same names, same defaults.
 public static class SystemColors
 {
-    // A warm-neutral scheme drawn from the 256-colour cube and greys the
-    // seat shows: bevels in four greys, captions in a two-colour gradient.
-    public static Color Control { get { return Color.FromArgb(218, 218, 218); } }
+    // THE WINDOWS 98 THREE-DIMENSIONAL SCHEME, to the byte. These are not
+    // approximations of it: #C0C0C0 face, #DFDFDF light, #808080 shadow,
+    // #FFFFFF highlight and black dark-shadow are the five values every
+    // bevel in the system is built from, and a control drawn with anything
+    // else reads as belonging to a different machine. The caption's two
+    // blues and the teal desktop are the defaults of the era.
+    public static Color Control { get { return Color.FromArgb(192, 192, 192); } }
     public static Color ControlText { get { return Color.Black; } }
-    public static Color ControlLight { get { return Color.FromArgb(238, 238, 238); } }
+    public static Color ControlLight { get { return Color.FromArgb(223, 223, 223); } }
     public static Color ControlLightLight { get { return Color.White; } }
     public static Color ControlDark { get { return Color.FromArgb(128, 128, 128); } }
-    public static Color ControlDarkDark { get { return Color.FromArgb(58, 58, 58); } }
+    public static Color ControlDarkDark { get { return Color.Black; } }
+
+    /// .NET's names for the same five, which is what most code reaches for.
+    public static Color ButtonFace { get { return Control; } }
+    public static Color ButtonHighlight { get { return ControlLightLight; } }
+    public static Color ButtonShadow { get { return ControlDark; } }
+
     public static Color Window { get { return Color.White; } }
     public static Color WindowText { get { return Color.Black; } }
-    public static Color Desktop { get { return Color.FromArgb(0, 95, 135); } }
-    public static Color ActiveCaption { get { return Color.FromArgb(0, 95, 175); } }
-    public static Color GradientActiveCaption { get { return Color.FromArgb(0, 95, 175); } }
+    public static Color WindowFrame { get { return Color.Black; } }
+    public static Color Desktop { get { return Color.FromArgb(0, 128, 128); } }
+    public static Color AppWorkspace { get { return Color.FromArgb(128, 128, 128); } }
+
+    public static Color ActiveCaption { get { return Color.FromArgb(0, 0, 128); } }
+    public static Color GradientActiveCaption { get { return Color.FromArgb(16, 132, 208); } }
     public static Color ActiveCaptionText { get { return Color.White; } }
-    public static Color InactiveCaption { get { return Color.FromArgb(138, 138, 138); } }
-    public static Color GradientInactiveCaption { get { return Color.FromArgb(138, 138, 138); } }
-    public static Color InactiveCaptionText { get { return Color.FromArgb(218, 218, 218); } }
-    public static Color Highlight { get { return Color.FromArgb(0, 95, 175); } }
+    public static Color InactiveCaption { get { return Color.FromArgb(128, 128, 128); } }
+    public static Color GradientInactiveCaption { get { return Color.FromArgb(181, 181, 181); } }
+    public static Color InactiveCaptionText { get { return Color.FromArgb(192, 192, 192); } }
+    public static Color ActiveBorder { get { return Control; } }
+    public static Color InactiveBorder { get { return Control; } }
+
+    public static Color Highlight { get { return Color.FromArgb(0, 0, 128); } }
     public static Color HighlightText { get { return Color.White; } }
+    public static Color HotTrack { get { return Color.FromArgb(0, 0, 255); } }
     public static Color GrayText { get { return Color.FromArgb(128, 128, 128); } }
-    public static Color ScrollBar { get { return Color.FromArgb(236, 236, 236); } }
+    public static Color ScrollBar { get { return Color.FromArgb(192, 192, 192); } }
+
+    public static Color Menu { get { return Control; } }
+    public static Color MenuText { get { return Color.Black; } }
+    public static Color MenuBar { get { return Control; } }
+    public static Color MenuHighlight { get { return Highlight; } }
+
+    /// The tooltip's pale yellow, which Windows calls the info colours.
+    public static Color Info { get { return Color.FromArgb(255, 255, 225); } }
+    public static Color InfoText { get { return Color.Black; } }
 }
 
 public static class ColorBlend

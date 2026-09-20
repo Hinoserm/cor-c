@@ -137,54 +137,244 @@ public struct Message
 // Controls
 // ---------------------------------------------------------------------------
 
-public enum Border3DStyle { Raised, Sunken, SunkenOuter, Flat, Etched, Bump }
+public enum Border3DStyle { Raised, Sunken, RaisedOuter, SunkenOuter, RaisedInner, SunkenInner, Flat, Etched, Bump }
 
-/// What WinForms' ControlPaint draws: the three-dimensional edges every
-/// control wears. Two pixels of light on the top and left, two of shade on
-/// the bottom and right, and the reverse for something sunk; SunkenOuter
-/// is the thin rim of a button held down. The same four greys everywhere,
-/// which is what makes a screen of controls read as one thing.
+/// Which way a small arrow points: the glyph on a scroll bar's button, a
+/// combo box's drop button and a spin button's two halves.
+public enum ArrowDirection { Up, Down, Left, Right }
+
+/// <summary>
+/// What WinForms' ControlPaint draws: the bevels, arrows, ticks and focus
+/// rectangles that every control is assembled from.
+///
+/// The bevel is Windows 98's, to the pixel. A raised edge is white on the
+/// outside of the top and left with #DFDFDF just inside it, black on the
+/// outside of the bottom and right with #808080 just inside; a sunken edge
+/// is that reversed. Everything in the system -- a button, a field, a
+/// group frame, a status panel -- is one of those two, which is exactly
+/// why a screen of them reads as a single machine rather than a collection
+/// of widgets.
+/// </summary>
 public static class ControlPaint
 {
     public static void DrawBorder3D(Graphics g, Rectangle r, Border3DStyle style) { DrawBorder3D(g, r.X, r.Y, r.Width, r.Height, style); }
 
+    /// One line of colour down the top and left, another down the bottom
+    /// and right: the half of a bevel that every style below is built from.
+    static void Corner(Graphics g, int x, int y, int w, int h, Color topLeft, Color bottomRight)
+    {
+        Pen tl = new Pen(topLeft), br = new Pen(bottomRight);
+        g.DrawLine(tl, x, y, x + w - 2, y);
+        g.DrawLine(tl, x, y, x, y + h - 2);
+        g.DrawLine(br, x + w - 1, y, x + w - 1, y + h - 1);
+        g.DrawLine(br, x, y + h - 1, x + w - 1, y + h - 1);
+    }
+
     public static void DrawBorder3D(Graphics g, int x, int y, int w, int h, Border3DStyle style)
     {
-        Pen light = new Pen(SystemColors.ControlLight), lighter = new Pen(SystemColors.ControlLightLight);
-        Pen dark = new Pen(SystemColors.ControlDark), darker = new Pen(SystemColors.ControlDarkDark);
+        if (w <= 0 || h <= 0) { return; }
+
+        Color face = SystemColors.Control;
+        Color light = SystemColors.ControlLight;             // #DFDFDF
+        Color lighter = SystemColors.ControlLightLight;      // white
+        Color dark = SystemColors.ControlDark;               // #808080
+        Color darker = SystemColors.ControlDarkDark;         // black
+
         if (style == Border3DStyle.Raised)
         {
-            g.DrawLine(light, x, y, x + w - 1, y); g.DrawLine(light, x, y, x, y + h - 1);
-            g.DrawLine(lighter, x + 1, y + 1, x + w - 2, y + 1); g.DrawLine(lighter, x + 1, y + 1, x + 1, y + h - 2);
-            g.DrawLine(darker, x, y + h - 1, x + w - 1, y + h - 1); g.DrawLine(darker, x + w - 1, y, x + w - 1, y + h - 1);
-            g.DrawLine(dark, x + 1, y + h - 2, x + w - 2, y + h - 2); g.DrawLine(dark, x + w - 2, y + 1, x + w - 2, y + h - 2);
+            Corner(g, x, y, w, h, lighter, darker);
+            Corner(g, x + 1, y + 1, w - 2, h - 2, light, dark);
         }
         else if (style == Border3DStyle.Sunken)
         {
-            g.DrawLine(dark, x, y, x + w - 1, y); g.DrawLine(dark, x, y, x, y + h - 1);
-            g.DrawLine(darker, x + 1, y + 1, x + w - 2, y + 1); g.DrawLine(darker, x + 1, y + 1, x + 1, y + h - 2);
-            g.DrawLine(lighter, x, y + h - 1, x + w - 1, y + h - 1); g.DrawLine(lighter, x + w - 1, y, x + w - 1, y + h - 1);
-            g.DrawLine(light, x + 1, y + h - 2, x + w - 2, y + h - 2); g.DrawLine(light, x + w - 2, y + 1, x + w - 2, y + h - 2);
+            Corner(g, x, y, w, h, dark, lighter);
+            Corner(g, x + 1, y + 1, w - 2, h - 2, darker, light);
         }
-        else if (style == Border3DStyle.SunkenOuter)
-        {
-            g.DrawRectangle(darker, x, y, w, h);
-            g.DrawRectangle(dark, x + 1, y + 1, w - 2, h - 2);
-        }
+        else if (style == Border3DStyle.RaisedOuter) { Corner(g, x, y, w, h, lighter, darker); }
+        else if (style == Border3DStyle.SunkenOuter) { Corner(g, x, y, w, h, dark, lighter); }
+        else if (style == Border3DStyle.RaisedInner) { Corner(g, x, y, w, h, light, dark); }
+        else if (style == Border3DStyle.SunkenInner) { Corner(g, x, y, w, h, darker, light); }
         else if (style == Border3DStyle.Etched)
         {
-            // A GROOVE: a dark line with a light one just inside and below
-            // it, which is how a group box's frame is drawn and has been
-            // since Windows 95.
-            g.DrawRectangle(dark, x, y, w - 1, h - 1);
-            g.DrawRectangle(lighter, x + 1, y + 1, w - 1, h - 1);
+            // A GROOVE: shadow outside, highlight just inside, which is the
+            // frame a group box and a menu separator have always worn.
+            Corner(g, x, y, w, h, dark, lighter);
+            Corner(g, x + 1, y + 1, w - 2, h - 2, face, face);
+            Pen hi = new Pen(lighter);
+            g.DrawLine(hi, x + 1, y + 1, x + w - 2, y + 1);
+            g.DrawLine(hi, x + 1, y + 1, x + 1, y + h - 2);
+            Pen sh = new Pen(dark);
+            g.DrawLine(sh, x + w - 2, y + 1, x + w - 2, y + h - 2);
+            g.DrawLine(sh, x + 1, y + h - 2, x + w - 2, y + h - 2);
         }
         else if (style == Border3DStyle.Bump)
         {
-            g.DrawRectangle(lighter, x, y, w - 1, h - 1);
-            g.DrawRectangle(dark, x + 1, y + 1, w - 1, h - 1);
+            Corner(g, x, y, w, h, lighter, dark);
+            Corner(g, x + 1, y + 1, w - 2, h - 2, dark, lighter);
         }
-        else g.DrawRectangle(dark, x, y, w, h);
+        else { g.DrawRectangle(new Pen(dark), x, y, w, h); }
+    }
+
+    /// <summary>
+    /// A raised button face, or a pressed one: the two-line bevel plus the
+    /// single black rim a default button wears, all of it sized so that the
+    /// caller can simply put the text in the middle.
+    /// </summary>
+    public static void DrawButtonFace(Graphics g, int x, int y, int w, int h, bool pressed, bool isDefault, Color face)
+    {
+        if (isDefault)
+        {
+            // THE DEFAULT BUTTON IS RINGED IN BLACK, and the button proper
+            // is drawn one pixel inside that ring. This is the only visual
+            // difference Windows gives it, and it is the thing that tells
+            // a person which button Enter will press.
+            g.DrawRectangle(new Pen(SystemColors.WindowFrame), x, y, w, h);
+            x++; y++; w -= 2; h -= 2;
+        }
+        g.FillRectangle(new SolidBrush(face), x, y, w, h);
+        if (pressed)
+        {
+            // Held in: no highlight at all, one shadow line and the dark
+            // rim outside it. Windows draws no white on a pressed button.
+            Corner(g, x, y, w, h, SystemColors.ControlDark, SystemColors.ControlLight);
+            Corner(g, x + 1, y + 1, w - 2, h - 2, SystemColors.ControlDarkDark, SystemColors.Control);
+        }
+        else { DrawBorder3D(g, x, y, w, h, Border3DStyle.Raised); }
+    }
+
+    /// <summary>
+    /// The dotted rectangle that says where the keyboard is. Every other
+    /// pixel, on a grid that starts at an even coordinate so neighbouring
+    /// rectangles line up instead of shimmering against each other.
+    /// </summary>
+    public static void DrawFocusRectangle(Graphics g, Rectangle r) { DrawFocusRectangle(g, r.X, r.Y, r.Width, r.Height); }
+
+    public static void DrawFocusRectangle(Graphics g, int x, int y, int w, int h)
+    {
+        if (w <= 0 || h <= 0) { return; }
+
+        Brush ink = new SolidBrush(SystemColors.ControlText);
+        int right = x + w - 1, bottom = y + h - 1;
+
+        for (int i = x; i <= right; i++)
+        {
+            if (((i + y) & 1) == 0) { g.FillRectangle(ink, i, y, 1, 1); }
+            if (((i + bottom) & 1) == 0) { g.FillRectangle(ink, i, bottom, 1, 1); }
+        }
+        for (int i = y + 1; i < bottom; i++)
+        {
+            if (((x + i) & 1) == 0) { g.FillRectangle(ink, x, i, 1, 1); }
+            if (((right + i) & 1) == 0) { g.FillRectangle(ink, right, i, 1, 1); }
+        }
+    }
+
+    /// <summary>
+    /// The solid triangle on a scroll arrow, a drop button or a spinner.
+    /// `size` is the triangle's height in pixels; four is what Windows
+    /// uses everywhere, and the shape is drawn row by row so that it is
+    /// the same triangle at every position rather than a scaled one.
+    /// </summary>
+    public static void DrawArrow(Graphics g, ArrowDirection direction, int x, int y, int size, Color colour)
+    {
+        Brush ink = new SolidBrush(colour);
+
+        if (direction == ArrowDirection.Down || direction == ArrowDirection.Up)
+        {
+            int widest = size * 2 - 1;
+            for (int row = 0; row < size; row++)
+            {
+                int width = direction == ArrowDirection.Down ? widest - row * 2 : row * 2 + 1;
+                g.FillRectangle(ink, x + (widest - width) / 2, y + row, width, 1);
+            }
+        }
+        else
+        {
+            int tallest = size * 2 - 1;
+            for (int column = 0; column < size; column++)
+            {
+                int height = direction == ArrowDirection.Right ? tallest - column * 2 : column * 2 + 1;
+                g.FillRectangle(ink, x + column, y + (tallest - height) / 2, 1, height);
+            }
+        }
+    }
+
+    /// The tick in a check box: three strokes, drawn rather than written,
+    /// because no font on this machine has a check mark in it.
+    public static void DrawCheckMark(Graphics g, int x, int y, Color colour)
+    {
+        Pen ink = new Pen(colour);
+        g.DrawLine(ink, x + 0, y + 3, x + 2, y + 5);
+        g.DrawLine(ink, x + 0, y + 4, x + 2, y + 6);
+        g.DrawLine(ink, x + 2, y + 5, x + 6, y + 1);
+        g.DrawLine(ink, x + 2, y + 6, x + 6, y + 2);
+    }
+
+    /// <summary>
+    /// Text with its mnemonic underlined. `&amp;F` means "F is the letter that
+    /// picks this", drawn as F with a line under it; `&amp;&amp;` is a literal
+    /// ampersand. When `underline` is false the marker is simply removed,
+    /// which is what Windows does until the first Alt is pressed.
+    /// </summary>
+    public static void DrawStringMnemonic(Graphics g, string text, Font font, Brush brush, int x, int y, bool underline)
+    {
+        string shown = StripMnemonic(text);
+        g.DrawString(shown, font, brush, x, y);
+
+        if (!underline) { return; }
+
+        int at = MnemonicIndex(text);
+
+        if (at < 0) { return; }
+
+        SolidBrush? solid = brush as SolidBrush;
+        Color ink = solid == null ? SystemColors.ControlText : solid.Color;
+
+        g.FillRectangle(new SolidBrush(ink), x + at * font.GlyphWidth, y + font.Height - 1, font.GlyphWidth, 1);
+    }
+
+    /// `text` without its mnemonic markers.
+    public static string StripMnemonic(string text)
+    {
+        if (text.IndexOf('&') < 0) { return text; }
+
+        string built = "";
+
+        for (int i = 0; i < text.Length; i++)
+        {
+            if (text[i] == '&' && i + 1 < text.Length) { built = built + text[i + 1]; i++; }
+            else if (text[i] != '&') { built = built + text[i]; }
+        }
+        return built;
+    }
+
+    /// Where in the STRIPPED text the underlined letter sits, or -1.
+    public static int MnemonicIndex(string text)
+    {
+        int shown = 0;
+
+        for (int i = 0; i < text.Length; i++)
+        {
+            if (text[i] == '&' && i + 1 < text.Length)
+            {
+                if (text[i + 1] == '&') { shown++; i++; continue; }
+                return shown;
+            }
+            if (text[i] != '&') { shown++; }
+        }
+        return -1;
+    }
+
+    /// The letter `text` answers to, in lower case, or nought for none.
+    public static char MnemonicOf(string text)
+    {
+        int at = MnemonicIndex(text);
+
+        if (at < 0) { return '\0'; }
+
+        string shown = StripMnemonic(text);
+        char c = shown[at];
+
+        return c >= 'A' && c <= 'Z' ? (char)(c + 32) : c;
     }
 }
 
@@ -209,7 +399,14 @@ public class ControlCollection
     public ControlCollection(Control owner) { _owner = owner; }
     public int Count { get { return _items.Count; } }
     public Control this[int i] { get { return _items[i]; } }
-    public void Add(Control c) { c.Parent = _owner; _items.Add(c); c.Invalidate(); }
+    /// Added controls take their tab order from the order they were added
+    /// in, which is what a form built in code expects and what .NET does
+    /// when nothing sets TabIndex. Setting it afterwards still wins.
+    public void Add(Control c) { c.Parent = _owner; if (c.TabIndex < 0) c.TabIndex = _items.Count; _items.Add(c); c.Invalidate(); }
+    public void Insert(int at, Control c) { c.Parent = _owner; if (c.TabIndex < 0) c.TabIndex = at; _items.Insert(at, c); c.Invalidate(); }
+    public bool Contains(Control c) { return _items.Contains(c); }
+    public int IndexOf(Control c) { return _items.IndexOf(c); }
+    public void Clear() { while (_items.Count > 0) Remove(_items[0]); }
     public void Remove(Control c) { _items.Remove(c); c.Parent = null; _owner.Invalidate(); }
     public void AddRange(Control[] cs) { for (int i = 0; i < cs.Length; i++) Add(cs[i]); }
 }
@@ -233,6 +430,8 @@ public class Control
     public event MouseEventHandler? MouseDown;
     public event MouseEventHandler? MouseUp;
     public event MouseEventHandler? MouseMove;
+    public event EventHandler? MouseEnter;
+    public event EventHandler? MouseLeave;
     public event MouseEventHandler? MouseWheel;
     public event KeyPressEventHandler? KeyPress;
     public event KeyEventHandler? KeyDown;
@@ -245,6 +444,58 @@ public class Control
     public string Name = "";
     public object? Tag;
     public bool TabStop = true;
+
+    /// Where this control sits in the form's keyboard order. Negative
+    /// means "not set": ControlCollection.Add fills it in with the order
+    /// things were added, so a form written top to bottom tabs top to
+    /// bottom without anybody saying so.
+    public int TabIndex = -1;
+
+    /// Whether the keyboard can land here at all. A label, a panel and a
+    /// group box say no however TabStop is set; everything a person types
+    /// into or presses says yes.
+    public virtual bool CanSelect { get { return TabStop && Visible && Enabled && !(this is Label) && !(this is Panel) && !(this is GroupBox) && !(this is Form); } }
+
+    /// <summary>
+    /// Alt was held and `key` was pressed: is that letter mine? A control
+    /// whose Text carries `&amp;X` answers to x by doing whatever a click
+    /// would do. A label hands it on to the control after it, which is how
+    /// "&amp;Name:" in front of a text box puts the caret in the box.
+    /// </summary>
+    internal virtual bool ProcessMnemonic(char key)
+    {
+        if (ControlPaint.MnemonicOf(Text) != key) { return false; }
+
+        if (CanSelect) { Focus(); PerformClick(); return true; }
+
+        // A LABEL PASSES IT ON to the next control that can take it, in
+        // tab order, which is the whole reason a label has a mnemonic.
+        Control? owner = Parent;
+
+        if (owner == null) { return false; }
+
+        Control? best = null;
+
+        for (int i = 0; i < owner.Controls.Count; i++)
+        {
+            Control other = owner.Controls[i];
+
+            if (other == this || !other.CanSelect || other.TabIndex < TabIndex) { continue; }
+            if (best == null || other.TabIndex < best.TabIndex) { best = other; }
+        }
+
+        if (best == null) { return false; }
+        best.Focus();
+        return true;
+    }
+
+    /// <summary>
+    /// A key the form would otherwise act on -- Enter, Escape, Tab, an
+    /// arrow -- offered to the control first. True means the control took
+    /// it and the form must not. .NET spells this ProcessDialogKey and so
+    /// does this.
+    /// </summary>
+    internal virtual bool ProcessDialogKey(Keys key, int modifiers) { return false; }
 
     public virtual string Text { get { return _text; } set { _text = value; OnTextChanged(EventArgs.Empty); Invalidate(); } }
     public Color BackColor { get { return _back; } set { _back = value; Invalidate(); } }
@@ -438,6 +689,8 @@ public class Control
     protected virtual void OnMouseDown(MouseEventArgs e) { if (MouseDown != null) MouseDown(this, e); }
     protected virtual void OnMouseUp(MouseEventArgs e) { if (MouseUp != null) MouseUp(this, e); }
     protected virtual void OnMouseMove(MouseEventArgs e) { if (MouseMove != null) MouseMove(this, e); }
+    protected virtual void OnMouseEnter(EventArgs e) { EventHandler? h = MouseEnter; if (h != null) h(this, e); }
+    protected virtual void OnMouseLeave(EventArgs e) { EventHandler? h = MouseLeave; if (h != null) h(this, e); }
     /// The wheel. Delta is in Windows' units: 120 per notch, positive for
     /// the wheel rolled away from the hand, which scrolls up.
     protected virtual void OnMouseWheel(MouseEventArgs e) { if (MouseWheel != null) MouseWheel(this, e); }
@@ -456,6 +709,8 @@ public class Control
         if (Enabled && e.Button == MouseButtons.Left && e.X >= 0 && e.Y >= 0 && e.X < Width && e.Y < Height) OnClick(EventArgs.Empty);
     }
     internal void RaiseMouseMove(MouseEventArgs e) { OnMouseMove(e); }
+    internal void RaiseMouseEnter() { OnMouseEnter(EventArgs.Empty); }
+    internal void RaiseMouseLeave() { OnMouseLeave(EventArgs.Empty); }
     internal void RaiseMouseWheel(MouseEventArgs e) { OnMouseWheel(e); }
     internal void RaiseKeyPress(KeyPressEventArgs e) { OnKeyPress(e); }
     internal void RaiseKeyDown(KeyEventArgs e) { OnKeyDown(e); }
@@ -520,6 +775,19 @@ public class Form : Control
     /// Button.DialogResult) and read back by whoever called ShowDialog.
     public DialogResult DialogResult = DialogResult.None;
 
+    /// <summary>
+    /// The button Enter presses and the button Escape presses. The accept
+    /// button also wears the black ring that says so. A dialog that sets
+    /// these two needs no key handling of its own, which is the point.
+    /// </summary>
+    public Button? AcceptButton
+    {
+        get { return _accept; }
+        set { if (_accept != null) _accept.NotDefault(); _accept = value; if (value != null) value.MakeDefault(); Invalidate(); }
+    }
+    Button? _accept;
+    public Button? CancelButton;
+
     /// Shows the form and runs the message loop until it closes; what
     /// it returns is the form's DialogResult. Other windows keep taking
     /// input meanwhile -- the loop is the same loop -- which is enough for
@@ -568,6 +836,11 @@ public class Form : Control
     /// person is not meant to dismiss -- a login screen, say -- has none,
     /// and there is then nothing to press and nothing to draw.
     public bool ControlBox = true;
+
+    /// The picture at the left of the caption, and the one the taskbar
+    /// shows for this window.
+    public Icon? Icon { get { return _icon; } set { _icon = value; FrameChanged(); } }
+    Icon? _icon;
 
     Rectangle CloseBox()
     {
@@ -712,27 +985,64 @@ public class Form : Control
             g.FillRectangle(faceBrush, 0, frameCo.Y + clientH, w, h - frameCo.Y - clientH);  // the bottom border
             g.FillRectangle(faceBrush, 0, frameCo.Y, frameCo.X, clientH);                    // the left border
             g.FillRectangle(faceBrush, frameCo.X + clientW, frameCo.Y, w - frameCo.X - clientW, clientH);
-            ControlPaint.DrawBorder3D(g, 0, 0, w, h, Border3DStyle.Raised);
-            // The caption: one colour, blue when active and grey when not, the
-            // title in white, bold by being drawn twice, and the close button
-            // at the right.
+            // THE FRAME IS TWO BEVELS, not one: a thin raised rim around
+            // the outside and a second one just inside it. That is what
+            // gives a window of this era its depth, and it is why the
+            // border is four pixels rather than two.
+            ControlPaint.DrawBorder3D(g, 0, 0, w, h, Border3DStyle.RaisedOuter);
+            ControlPaint.DrawBorder3D(g, 1, 1, w - 2, h - 2, Border3DStyle.RaisedInner);
+
             int cx = BorderWidth, cy = BorderWidth, cw = w - 2 * BorderWidth, ch = CaptionHeight - 2;
-            g.FillRectangle(new SolidBrush(active ? SystemColors.ActiveCaption : SystemColors.InactiveCaption), cx, cy, cw, ch);
+
+            // THE CAPTION IS A GRADIENT ONLY WHERE THERE ARE COLOURS FOR
+            // ONE. Windows 98 shipped the gradient on and turned it off on
+            // a 256-colour display, and it was right to: this palette has
+            // six levels per channel, so a ramp across it comes out as
+            // five hard steps, which looks worse than the flat navy the
+            // era used before it. Flat below 256 colours, gradient above.
+            Color from = active ? SystemColors.ActiveCaption : SystemColors.InactiveCaption;
+            Color to = active ? SystemColors.GradientActiveCaption : SystemColors.GradientInactiveCaption;
+
+            if (Seat.Current.Colours <= 256) { g.FillRectangle(new SolidBrush(from), cx, cy, cw, ch); }
+            else
+            {
+                // Bands of four pixels: at this width the banding is
+                // invisible and it is a few hundred operations instead of
+                // a few thousand.
+                const int Band = 4;
+
+                for (int at = 0; at < cw; at += Band)
+                {
+                    int width = at + Band > cw ? cw - at : Band;
+                    g.FillRectangle(new SolidBrush(ColorBlend.Mix(from, to, cw <= 1 ? 0 : at * 256 / cw)), cx + at, cy, width, ch);
+                }
+            }
+
             Color title = active ? SystemColors.ActiveCaptionText : SystemColors.InactiveCaptionText;
-            g.DrawString(Text, Font, new SolidBrush(title), cx + 6, cy + 2);
-            g.DrawString(Text, Font, new SolidBrush(title), cx + 7, cy + 2);
+            int titleX = cx + 4;
+
+            // The window's own icon sits at the left of its caption.
+            if (_icon != null) { _icon.Draw(g, titleX, cy + (ch - 16) / 2, 16); titleX += 18; }
+
+            // Bold by being drawn twice, a pixel apart: there is one font
+            // on this machine and this is how the era faked a heavier one.
+            g.DrawString(Text, Font, new SolidBrush(title), titleX, cy + (ch - Font.Height) / 2);
+            g.DrawString(Text, Font, new SolidBrush(title), titleX + 1, cy + (ch - Font.Height) / 2);
+
             Rectangle close = CloseBox();
             if (!close.IsEmpty)
             {
-            g.FillRectangle(new SolidBrush(face), close.X, close.Y, close.Width, close.Height);
-            // Pressed in while the button is held over it, and the cross
-            // moves a pixel with it: the button looks like what it is doing.
-            ControlPaint.DrawBorder3D(g, close.X, close.Y, close.Width, close.Height, (_closeDown && _closeHot) ? Border3DStyle.SunkenOuter : Border3DStyle.Raised);
-            Pen ink = new Pen(SystemColors.ControlText);
-            int press = (_closeDown && _closeHot) ? 1 : 0;
-            int lx = close.X + 4 + press, ly = close.Y + 3 + press, rx = close.X + close.Width - 6 + press, ry = close.Y + close.Height - 5 + press;
-            g.DrawLine(ink, lx, ly, rx, ry); g.DrawLine(ink, lx + 1, ly, rx + 1, ry);
-            g.DrawLine(ink, lx, ry, rx, ly); g.DrawLine(ink, lx + 1, ry, rx + 1, ly);
+                bool held = _closeDown && _closeHot;
+                ControlPaint.DrawButtonFace(g, close.X, close.Y, close.Width, close.Height, held, false, face);
+
+                // THE CROSS IS SIX BY SIX, drawn as two strokes a pixel
+                // thick each way, which at this size is the shape Windows
+                // drew and is legible where a thinner one is not.
+                Pen ink = new Pen(SystemColors.ControlText);
+                int press = held ? 1 : 0;
+                int lx = close.X + (close.Width - 7) / 2 + press, ly = close.Y + (close.Height - 7) / 2 + press;
+                g.DrawLine(ink, lx, ly, lx + 6, ly + 6); g.DrawLine(ink, lx + 1, ly, lx + 7, ly + 6);
+                g.DrawLine(ink, lx, ly + 6, lx + 6, ly); g.DrawLine(ink, lx + 1, ly + 6, lx + 7, ly);
             }
         }
         Point co = ClientOffset();
@@ -802,12 +1112,12 @@ public class Form : Control
         if (kind == 4)
         {
             if (target is TextBox box) box.FocusByClick();
-            if (target.TabStop && !(target is Label)) Application.SetFocus(target);
+            if (target.CanSelect) Application.SetFocus(target);
             target.RaiseMouseDown(e);
             Application.Captured = target;
         }
         else if (kind == 5) { Application.Captured = null; to.RaiseMouseUp(e); }
-        else { to.RaiseMouseMove(e); }
+        else { Application.Hover(to); to.RaiseMouseMove(e); }
     }
 }
 
@@ -927,8 +1237,15 @@ public static class MessageBox
             b.DialogResult = ResultOf(names[i]);
             b.SetBounds(x, y, ButtonW, ButtonH);
             box.Controls.Add(b);
+            // THE FIRST BUTTON IS THE DEFAULT and a Cancel, where there is
+            // one, is what Escape presses. A message box then answers to
+            // Enter and Escape without anybody wiring it up.
+            if (i == 0) { box.AcceptButton = b; b.Focus(); }
+            if (b.DialogResult == DialogResult.Cancel) box.CancelButton = b;
             x += ButtonW + Gap;
         }
+        // No Cancel on it: Escape still shuts it, as Windows lets it.
+        if (box.CancelButton == null && names.Length == 1) box.CancelButton = (Button)box.Controls[box.Controls.Count - 1];
         // Closing the box by its corner is a Cancel where there is one,
         // and otherwise the answer of its only or last button.
         box.FormClosed += (sender, e) =>
@@ -1035,17 +1352,73 @@ public class Label : Control
     internal override string ClassName { get { return "Label"; } }
     public Label() { TabStop = false; BackColor = Color.Transparent; }
     public bool AutoSize = true;
-    public override string Text { get { return base.Text; } set { base.Text = value; if (AutoSize) { SizeF s = SystemFonts.DefaultFont.Height > 0 ? new Graphics(Seat.Current, 0, 0, Rectangle.Empty).MeasureString(value, Font) : new SizeF(0, 0); Width = (int)s.Width; Height = (int)s.Height; } } }
+
+    /// Where the text sits in the label's box. A label put beside a
+    /// control that is taller than one line wants to be middle-left, which
+    /// is why this is here and why AutoSize is off when it is used.
+    public ContentAlignment TextAlign = ContentAlignment.TopLeft;
+
+    public override string Text
+    {
+        get { return base.Text; }
+        set
+        {
+            base.Text = value;
+            if (!AutoSize) { return; }
+            // MEASURED WITHOUT THE MARKER: "&File" is five characters on
+            // the wire and four on the screen, and a label sized to five
+            // pushes everything after it a character to the right.
+            string shown = ControlPaint.StripMnemonic(value);
+            Width = shown.Length == 0 ? 0 : Longest(shown) * Font.GlyphWidth;
+            Height = Lines(shown) * Font.Height;
+        }
+    }
+
+    static int Longest(string s)
+    {
+        int longest = 0, run = 0;
+        for (int i = 0; i < s.Length; i++) { if (s[i] == '\n') { if (run > longest) longest = run; run = 0; } else run++; }
+        return run > longest ? run : longest;
+    }
+
+    static int Lines(string s)
+    {
+        int lines = 1;
+        for (int i = 0; i < s.Length; i++) if (s[i] == '\n') lines++;
+        return lines;
+    }
+
     protected override void OnPaintBackground(PaintEventArgs e)
     {
         if (BackColor == Color.Transparent) { Control? p = Parent; e.Graphics.FillRectangle(new SolidBrush(p == null ? SystemColors.Control : p.BackColor), e.ClipRectangle); }
         else base.OnPaintBackground(e);
     }
+
     protected override void OnPaint(PaintEventArgs e)
     {
-        e.Graphics.DrawString(Text, Font, new SolidBrush(ForeColor), 0, 0);
+        Graphics g = e.Graphics;
+        string shown = ControlPaint.StripMnemonic(Text);
+        int high = Lines(shown) * Font.Height, wide = Longest(shown) * Font.GlyphWidth;
+        int y = TextAlign == ContentAlignment.MiddleLeft || TextAlign == ContentAlignment.MiddleCenter || TextAlign == ContentAlignment.MiddleRight ? (Height - high) / 2
+              : TextAlign == ContentAlignment.BottomLeft || TextAlign == ContentAlignment.BottomCenter || TextAlign == ContentAlignment.BottomRight ? Height - high : 0;
+        int x = TextAlign == ContentAlignment.TopCenter || TextAlign == ContentAlignment.MiddleCenter || TextAlign == ContentAlignment.BottomCenter ? (Width - wide) / 2
+              : TextAlign == ContentAlignment.TopRight || TextAlign == ContentAlignment.MiddleRight || TextAlign == ContentAlignment.BottomRight ? Width - wide : 0;
+
+        if (!Enabled)
+        {
+            ControlPaint.DrawStringMnemonic(g, Text, Font, new SolidBrush(SystemColors.ControlLightLight), x + 1, y + 1, true);
+            ControlPaint.DrawStringMnemonic(g, Text, Font, new SolidBrush(SystemColors.GrayText), x, y, true);
+        }
+        else ControlPaint.DrawStringMnemonic(g, Text, Font, new SolidBrush(ForeColor), x, y, true);
         base.OnPaint(e);
     }
+}
+
+public enum ContentAlignment
+{
+    TopLeft = 1, TopCenter = 2, TopRight = 4,
+    MiddleLeft = 16, MiddleCenter = 32, MiddleRight = 64,
+    BottomLeft = 256, BottomCenter = 512, BottomRight = 1024,
 }
 
 public class Panel : Control
@@ -1058,20 +1431,54 @@ public class Button : Control
 {
     internal override string ClassName { get { return "Button"; } }
     bool _down;
+    bool _default;
     public Button() { Width = 75; Height = 23; }
+
+    /// Set by Form.AcceptButton. A default button is ringed in black and
+    /// is what Enter presses from anywhere on the form.
+    public bool IsDefault { get { return _default; } }
+    internal void MakeDefault() { _default = true; Invalidate(); }
+    internal void NotDefault() { _default = false; Invalidate(); }
+
+    /// The picture on the button, left of the text when there is text and
+    /// centred when there is not.
+    public Icon? Image;
+    public int ImageSize = 16;
+
     protected override void OnPaint(PaintEventArgs e)
     {
         Graphics g = e.Graphics;
         int w = Width, h = Height;
-        g.FillRectangle(new SolidBrush(BackColor), 0, 0, w, h);
-        if (_down) ControlPaint.DrawBorder3D(g, 0, 0, w, h, Border3DStyle.SunkenOuter); else ControlPaint.DrawBorder3D(g, 0, 0, w, h, Border3DStyle.Raised);
-        SizeF s = g.MeasureString(Text, Font);
-        int tx = (w - (int)s.Width) / 2 + (_down ? 1 : 0), ty = (h - (int)s.Height) / 2 + (_down ? 1 : 0);
-        g.DrawString(Text, Font, new SolidBrush(Enabled ? ForeColor : SystemColors.GrayText), tx, ty);
-        if (Focused) g.DrawRectangle(new Pen(SystemColors.ControlDark), 4, 4, w - 8, h - 8);
+
+        ControlPaint.DrawButtonFace(g, 0, 0, w, h, _down, _default, BackColor);
+
+        string shown = ControlPaint.StripMnemonic(Text);
+        SizeF size = g.MeasureString(shown, Font);
+        int picture = Image == null ? 0 : ImageSize + (shown.Length > 0 ? 4 : 0);
+        int span = picture + (int)size.Width;
+        int x = (w - span) / 2 + (_down ? 1 : 0);
+        int y = (h - (int)size.Height) / 2 + (_down ? 1 : 0);
+
+        if (Image != null) Image.Draw(g, x, (h - ImageSize) / 2 + (_down ? 1 : 0), ImageSize);
+
+        if (!Enabled)
+        {
+            // GREYED OUT IS TWO PASSES, not one grey one: the text in
+            // white one pixel down and right, then in shadow on top. That
+            // embossed look is how Windows has said "not now" since 3.0.
+            ControlPaint.DrawStringMnemonic(g, Text, Font, new SolidBrush(SystemColors.ControlLightLight), x + picture + 1, y + 1, true);
+            ControlPaint.DrawStringMnemonic(g, Text, Font, new SolidBrush(SystemColors.GrayText), x + picture, y, true);
+        }
+        else ControlPaint.DrawStringMnemonic(g, Text, Font, new SolidBrush(ForeColor), x + picture, y, true);
+
+        if (Focused && Enabled)
+        {
+            int inset = _default ? 4 : 3;
+            ControlPaint.DrawFocusRectangle(g, inset, inset, w - inset * 2, h - inset * 2);
+        }
         base.OnPaint(e);
     }
-    protected override void OnMouseDown(MouseEventArgs e) { _down = true; Invalidate(); base.OnMouseDown(e); }
+    protected override void OnMouseDown(MouseEventArgs e) { _down = true; Focus(); Invalidate(); base.OnMouseDown(e); }
     protected override void OnMouseUp(MouseEventArgs e) { _down = false; Invalidate(); base.OnMouseUp(e); }
 
     /// The answer this button gives a dialog. A click with one set hands it
@@ -1099,7 +1506,60 @@ public class Button : Control
         }
         base.OnMouseMove(e);
     }
-    protected override void OnKeyPress(KeyPressEventArgs e) { if (e.KeyChar == ' ' || e.KeyChar == '\r') { PerformClick(); e.Handled = true; } base.OnKeyPress(e); }
+
+    /// Space presses the focused button, and Enter presses it whether or
+    /// not it is the form's default -- both the way Windows does it. The
+    /// button goes down while the key is held so it looks pressed.
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (e.KeyCode == Keys.Space || e.KeyCode == Keys.Enter)
+        {
+            if (!_down) { _down = true; Invalidate(); }
+            e.Handled = true;
+            _down = false;
+            Invalidate();
+            PerformClick();
+        }
+        base.OnKeyDown(e);
+    }
+}
+
+/// <summary>
+/// A button that looks like part of a toolbar: no bevel until the pointer
+/// is over it, and held-in while pressed. What the era put along the top
+/// of a folder window.
+/// </summary>
+public class ToolBarButton : Button
+{
+    internal override string ClassName { get { return "ToolBarButton"; } }
+    bool _hot, _held;
+    public ToolBarButton() { Width = 24; Height = 23; TabStop = false; }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        Graphics g = e.Graphics;
+        g.FillRectangle(new SolidBrush(BackColor), 0, 0, Width, Height);
+        if (_held) ControlPaint.DrawBorder3D(g, 0, 0, Width, Height, Border3DStyle.SunkenOuter);
+        else if (_hot && Enabled) ControlPaint.DrawBorder3D(g, 0, 0, Width, Height, Border3DStyle.RaisedOuter);
+        string shown = ControlPaint.StripMnemonic(Text);
+        int offset = _held ? 1 : 0;
+        if (Image != null) Image.Draw(g, (Width - ImageSize) / 2 + offset, (Height - ImageSize) / 2 + offset, ImageSize);
+        else
+        {
+            SizeF size = g.MeasureString(shown, Font);
+            g.DrawString(shown, Font, new SolidBrush(Enabled ? ForeColor : SystemColors.GrayText),
+                (Width - (int)size.Width) / 2 + offset, (Height - (int)size.Height) / 2 + offset);
+        }
+    }
+
+    protected override void OnMouseDown(MouseEventArgs e) { _held = true; Invalidate(); }
+    protected override void OnMouseUp(MouseEventArgs e) { _held = false; Invalidate(); }
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        bool over = e.X >= 0 && e.Y >= 0 && e.X < Width && e.Y < Height;
+        if (over != _hot) { _hot = over; if (!over) _held = false; Invalidate(); }
+    }
+    protected override void OnMouseLeave(EventArgs e) { if (_hot || _held) { _hot = false; _held = false; Invalidate(); } base.OnMouseLeave(e); }
 }
 
 /// <summary>
@@ -1116,38 +1576,43 @@ public class CheckBox : Control
 
     bool _checked;
     bool _down;
+    CheckState _state = CheckState.Unchecked;
 
     public CheckBox() { Width = 104; Height = 17; BackColor = Color.Transparent; }
 
     public event EventHandler? CheckedChanged;
+    public event EventHandler? CheckStateChanged;
 
     /// Whether a click changes the value. False leaves it to the program,
     /// which is what a check box driven by something else wants.
     public bool AutoCheck = true;
 
+    /// Three states rather than two, cycled by clicking: what a setting
+    /// that is on for some of a selection and off for the rest shows.
+    public bool ThreeState = false;
+
     public bool Checked
     {
-        get { return _checked; }
-        set
-        {
-            if (_checked == value) { return; }
-            _checked = value;
-            Invalidate();
-            OnCheckedChanged(EventArgs.Empty);
-        }
+        get { return _state != CheckState.Unchecked; }
+        set { CheckState = value ? CheckState.Checked : CheckState.Unchecked; }
     }
 
     public CheckState CheckState
     {
-        get { return _checked ? CheckState.Checked : CheckState.Unchecked; }
-        set { Checked = value != CheckState.Unchecked; }
+        get { return _state; }
+        set
+        {
+            if (_state == value) { return; }
+            bool was = Checked;
+            _state = value;
+            Invalidate();
+            OnCheckStateChanged(EventArgs.Empty);
+            if (was != Checked) { OnCheckedChanged(EventArgs.Empty); }
+        }
     }
 
-    protected virtual void OnCheckedChanged(EventArgs e)
-    {
-        EventHandler? h = CheckedChanged;
-        if (h != null) { h(this, e); }
-    }
+    protected virtual void OnCheckedChanged(EventArgs e) { EventHandler? h = CheckedChanged; if (h != null) h(this, e); }
+    protected virtual void OnCheckStateChanged(EventArgs e) { EventHandler? h = CheckStateChanged; if (h != null) h(this, e); }
 
     protected override void OnPaintBackground(PaintEventArgs e)
     {
@@ -1164,48 +1629,52 @@ public class CheckBox : Control
         Graphics g = e.Graphics;
         int top = (Height - BoxSize) / 2;
 
-        g.FillRectangle(new SolidBrush(Enabled ? SystemColors.Window : SystemColors.Control), 0, top, BoxSize, BoxSize);
-        ControlPaint.DrawBorder3D(g, 0, top, BoxSize, BoxSize,
-            _down ? Border3DStyle.SunkenOuter : Border3DStyle.Sunken);
+        // THE WELL IS WHITE AND SUNK, or face-coloured when the control is
+        // off or held in: the same well a text box has, thirteen pixels of
+        // it, drawn with the same two-line bevel.
+        Color well = !Enabled || _down || _state == CheckState.Indeterminate ? SystemColors.Control : SystemColors.Window;
+        g.FillRectangle(new SolidBrush(well), 0, top, BoxSize, BoxSize);
+        ControlPaint.DrawBorder3D(g, 0, top, BoxSize, BoxSize, Border3DStyle.Sunken);
 
-        if (_checked)
+        if (_state != CheckState.Unchecked)
         {
-            // THE TICK IS DRAWN, not written: a font that has no check mark
-            // is every font this machine has. Three short strokes, the same
-            // shape Windows draws at this size.
-            Pen ink = new Pen(Enabled ? ForeColor : SystemColors.GrayText);
-
-            g.DrawLine(ink, 3, top + 6, 5, top + 8);
-            g.DrawLine(ink, 3, top + 7, 5, top + 9);
-            g.DrawLine(ink, 5, top + 8, 9, top + 4);
-            g.DrawLine(ink, 5, top + 9, 9, top + 5);
+            Color ink = Enabled && _state == CheckState.Checked ? ForeColor : SystemColors.GrayText;
+            ControlPaint.DrawCheckMark(g, 3, top + 3, ink);
         }
 
-        SizeF size = g.MeasureString(Text, Font);
+        string shown = ControlPaint.StripMnemonic(Text);
+        SizeF size = g.MeasureString(shown, Font);
+        int tx = BoxSize + 5;
         int ty = (Height - (int)size.Height) / 2;
 
-        g.DrawString(Text, Font, new SolidBrush(Enabled ? ForeColor : SystemColors.GrayText), BoxSize + 4, ty);
-
-        if (Focused)
+        if (!Enabled)
         {
-            g.DrawRectangle(new Pen(SystemColors.ControlDark), BoxSize + 2, ty - 1, (int)size.Width + 4, (int)size.Height + 2);
+            ControlPaint.DrawStringMnemonic(g, Text, Font, new SolidBrush(SystemColors.ControlLightLight), tx + 1, ty + 1, true);
+            ControlPaint.DrawStringMnemonic(g, Text, Font, new SolidBrush(SystemColors.GrayText), tx, ty, true);
         }
+        else ControlPaint.DrawStringMnemonic(g, Text, Font, new SolidBrush(ForeColor), tx, ty, true);
+
+        if (Focused && Enabled) ControlPaint.DrawFocusRectangle(g, tx - 2, ty - 1, (int)size.Width + 4, (int)size.Height + 2);
         base.OnPaint(e);
     }
 
-    protected override void OnMouseDown(MouseEventArgs e) { _down = true; Invalidate(); base.OnMouseDown(e); }
+    protected override void OnMouseDown(MouseEventArgs e) { _down = true; Focus(); Invalidate(); base.OnMouseDown(e); }
     protected override void OnMouseUp(MouseEventArgs e) { _down = false; Invalidate(); base.OnMouseUp(e); }
 
     protected override void OnClick(EventArgs e)
     {
-        if (AutoCheck) { Checked = !Checked; }
+        if (AutoCheck)
+        {
+            if (!ThreeState) { Checked = !Checked; }
+            else { CheckState = _state == CheckState.Unchecked ? CheckState.Checked : _state == CheckState.Checked ? CheckState.Indeterminate : CheckState.Unchecked; }
+        }
         base.OnClick(e);
     }
 
-    protected override void OnKeyPress(KeyPressEventArgs e)
+    protected override void OnKeyDown(KeyEventArgs e)
     {
-        if (e.KeyChar == ' ') { PerformClick(); e.Handled = true; }
-        base.OnKeyPress(e);
+        if (e.KeyCode == Keys.Space) { PerformClick(); e.Handled = true; }
+        base.OnKeyDown(e);
     }
 }
 
@@ -1223,6 +1692,7 @@ public class RadioButton : Control
     const int DotSize = 12;
 
     bool _checked;
+    bool _down;
 
     public RadioButton() { Width = 104; Height = 17; BackColor = Color.Transparent; }
 
@@ -1278,20 +1748,70 @@ public class RadioButton : Control
         Graphics g = e.Graphics;
         int top = (Height - DotSize) / 2;
 
-        g.FillEllipse(new SolidBrush(Enabled ? SystemColors.Window : SystemColors.Control), 0, top, DotSize, DotSize);
-        g.DrawEllipse(new Pen(SystemColors.ControlDark), 0, top, DotSize, DotSize);
+        // THE CIRCLE IS BEVELLED LIKE EVERYTHING ELSE: a white well, a
+        // shadow arc across the top left and a highlight across the bottom
+        // right. Drawn as two half-circles because there is no arc in the
+        // seat, and at twelve pixels two halves are exactly right.
+        Dial(g, 0, top, !Enabled || _down ? SystemColors.Control : SystemColors.Window);
 
         if (_checked)
         {
             g.FillEllipse(new SolidBrush(Enabled ? ForeColor : SystemColors.GrayText), 4, top + 4, 4, 4);
         }
 
-        SizeF size = g.MeasureString(Text, Font);
+        string shown = ControlPaint.StripMnemonic(Text);
+        SizeF size = g.MeasureString(shown, Font);
+        int tx = DotSize + 5;
         int ty = (Height - (int)size.Height) / 2;
 
-        g.DrawString(Text, Font, new SolidBrush(Enabled ? ForeColor : SystemColors.GrayText), DotSize + 4, ty);
+        if (!Enabled)
+        {
+            ControlPaint.DrawStringMnemonic(g, Text, Font, new SolidBrush(SystemColors.ControlLightLight), tx + 1, ty + 1, true);
+            ControlPaint.DrawStringMnemonic(g, Text, Font, new SolidBrush(SystemColors.GrayText), tx, ty, true);
+        }
+        else ControlPaint.DrawStringMnemonic(g, Text, Font, new SolidBrush(ForeColor), tx, ty, true);
+
+        if (Focused && Enabled) ControlPaint.DrawFocusRectangle(g, tx - 2, ty - 1, (int)size.Width + 4, (int)size.Height + 2);
         base.OnPaint(e);
     }
+
+    /// <summary>
+    /// The twelve-pixel dial, drawn a pixel at a time: a well, a shadowed
+    /// ring around its upper left and a highlighted one around its lower
+    /// right -- the same bevel every other control wears, bent into a
+    /// circle. Each pixel is placed by comparing four times its squared
+    /// distance from the centre against the ring radii, so there is no
+    /// floating point and no arc to approximate; the circle closes.
+    /// </summary>
+    static void Dial(Graphics g, int x, int y, Color well)
+    {
+        Brush inside = new SolidBrush(well);
+        Brush outerUp = new SolidBrush(SystemColors.ControlDark);
+        Brush outerDown = new SolidBrush(SystemColors.ControlLightLight);
+        Brush innerUp = new SolidBrush(SystemColors.ControlDarkDark);
+        Brush innerDown = new SolidBrush(SystemColors.ControlLight);
+
+        for (int row = 0; row < DotSize; row++)
+        {
+            for (int column = 0; column < DotSize; column++)
+            {
+                int dx = 2 * column - (DotSize - 1), dy = 2 * row - (DotSize - 1);
+                int distance = dx * dx + dy * dy;
+
+                if (distance > 144) { continue; }
+
+                bool upper = dx + dy <= 0;
+                Brush ink = distance > 100 ? (upper ? outerUp : outerDown)
+                          : distance > 64 ? (upper ? innerUp : innerDown)
+                          : inside;
+
+                g.FillRectangle(ink, x + column, y + row, 1, 1);
+            }
+        }
+    }
+
+    protected override void OnMouseDown(MouseEventArgs e) { _down = true; Focus(); Invalidate(); base.OnMouseDown(e); }
+    protected override void OnMouseUp(MouseEventArgs e) { _down = false; Invalidate(); base.OnMouseUp(e); }
 
     protected override void OnClick(EventArgs e)
     {
@@ -1299,10 +1819,10 @@ public class RadioButton : Control
         base.OnClick(e);
     }
 
-    protected override void OnKeyPress(KeyPressEventArgs e)
+    protected override void OnKeyDown(KeyEventArgs e)
     {
-        if (e.KeyChar == ' ') { PerformClick(); e.Handled = true; }
-        base.OnKeyPress(e);
+        if (e.KeyCode == Keys.Space) { PerformClick(); e.Handled = true; }
+        base.OnKeyDown(e);
     }
 }
 
@@ -1317,20 +1837,24 @@ public class GroupBox : Control
 
     public GroupBox() { TabStop = false; Width = 200; Height = 100; }
 
+    /// Inside the frame: where a control put at 0,0 in this box lands.
+    public override Rectangle ClientRectangle { get { return new Rectangle(0, 0, Width, Height); } }
+
     protected override void OnPaint(PaintEventArgs e)
     {
         Graphics g = e.Graphics;
-        SizeF size = g.MeasureString(Text, Font);
-        int top = Text.Length == 0 ? 0 : (int)size.Height / 2;
+        string shown = ControlPaint.StripMnemonic(Text);
+        SizeF size = g.MeasureString(shown, Font);
+        int top = shown.Length == 0 ? 0 : (int)size.Height / 2;
 
         // THE CAPTION SITS IN THE LINE, so the frame is drawn first and the
         // stretch behind the text painted out afterwards.
         ControlPaint.DrawBorder3D(g, 0, top, Width, Height - top, Border3DStyle.Etched);
 
-        if (Text.Length > 0)
+        if (shown.Length > 0)
         {
-            g.FillRectangle(new SolidBrush(BackColor), 8, 0, (int)size.Width + 4, (int)size.Height);
-            g.DrawString(Text, Font, new SolidBrush(ForeColor), 10, 0);
+            g.FillRectangle(new SolidBrush(BackColor), 8, 0, (int)size.Width + 5, (int)size.Height);
+            ControlPaint.DrawStringMnemonic(g, Text, Font, new SolidBrush(Enabled ? ForeColor : SystemColors.GrayText), 10, 0, true);
         }
         base.OnPaint(e);
     }
@@ -1345,8 +1869,10 @@ public class ListBox : Control
     internal override string ClassName { get { return "ListBox"; } }
 
     readonly ObjectCollection _items;
+    readonly VScrollBar _bar;
     int _selected = -1;
     int _top;
+    bool _syncing;
 
     public ListBox()
     {
@@ -1354,7 +1880,46 @@ public class ListBox : Control
         Width = 120;
         Height = 95;
         BackColor = SystemColors.Window;
+
+        // THE BAR IS A CHILD OF THE LIST, not something the program has to
+        // put beside it: a list that overflows grows one and a list that
+        // does not has none, which is what every list in Windows does.
+        _bar = new VScrollBar();
+        _bar.TabStop = false;
+        _bar.Visible = false;
+        _bar.ValueChanged += BarMoved;
+        Controls.Add(_bar);
+        Layout();
     }
+
+    void BarMoved(object sender, EventArgs e) { if (!_syncing) TopIndex = _bar.Value; }
+
+    /// The bar appears exactly when the rows do not all fit, and is sized
+    /// to what is showing.
+    void Layout()
+    {
+        int rows = (Height - 4) / ItemHeight;
+        bool wanted = _items.Count > rows && rows > 0;
+
+        _bar.Visible = wanted;
+        if (!wanted) { return; }
+
+        _syncing = true;
+        _bar.SetBounds(Width - 2 - ScrollWidth, 2, ScrollWidth, Height - 4);
+        _bar.Minimum = 0;
+        _bar.Maximum = _items.Count - 1;
+        _bar.LargeChange = rows;
+        _bar.SmallChange = 1;
+        if (_bar.Value != _top) _bar.Value = _top > _bar.Maximum ? _bar.Maximum : _top;
+        _syncing = false;
+    }
+
+    const int ScrollWidth = 16;
+
+    /// How wide the rows are: the whole box, less the bar when it is there.
+    int RowWidth { get { return Width - 4 - (_bar.Visible ? ScrollWidth : 0); } }
+
+    public override void SetBounds(int x, int y, int w, int h) { base.SetBounds(x, y, w, h); Layout(); }
 
     public event EventHandler? SelectedIndexChanged;
 
@@ -1396,6 +1961,9 @@ public class ListBox : Control
             if (want > most) { want = most < 0 ? 0 : most; }
             if (_top == want) { return; }
             _top = want;
+            _syncing = true;
+            if (_bar.Visible && want <= _bar.Maximum) _bar.Value = want;
+            _syncing = false;
             Invalidate();
         }
     }
@@ -1418,6 +1986,7 @@ public class ListBox : Control
     internal void ItemsChanged()
     {
         if (_selected >= _items.Count) { _selected = _items.Count - 1; }
+        Layout();
         TopIndex = _top;
         Invalidate();
     }
@@ -1443,7 +2012,8 @@ public class ListBox : Control
 
             if (picked)
             {
-                g.FillRectangle(new SolidBrush(SystemColors.Highlight), 2, y, Width - 4, ItemHeight);
+                g.FillRectangle(new SolidBrush(SystemColors.Highlight), 2, y, RowWidth, ItemHeight);
+                if (Focused) ControlPaint.DrawFocusRectangle(g, 2, y, RowWidth, ItemHeight);
             }
 
             g.DrawString(text, Font,
@@ -1478,6 +2048,8 @@ public class ListBox : Control
         else if (e.KeyCode == Keys.Up && _selected > 0) { SelectedIndex = _selected - 1; e.Handled = true; }
         else if (e.KeyCode == Keys.Home && _items.Count > 0) { SelectedIndex = 0; e.Handled = true; }
         else if (e.KeyCode == Keys.End && _items.Count > 0) { SelectedIndex = _items.Count - 1; e.Handled = true; }
+        else if (e.KeyCode == Keys.PageDown && _items.Count > 0) { int to = _selected + Rows(); SelectedIndex = to >= _items.Count ? _items.Count - 1 : to; e.Handled = true; }
+        else if (e.KeyCode == Keys.PageUp && _items.Count > 0) { int to = _selected - Rows(); SelectedIndex = to < 0 ? 0 : to; e.Handled = true; }
         base.OnKeyDown(e);
     }
 
@@ -1644,7 +2216,11 @@ public abstract class ScrollBar : Control
     {
         Graphics g = e.Graphics;
         int x, y, w, h;
-        g.FillRectangle(new SolidBrush(SystemColors.ScrollBar), 0, 0, Width, Height);
+        // THE TRACK IS THE PALE GREY the era's dither of face and white
+        // averages to. Windows drew the dither itself; a pixel at a time
+        // over the wire is thousands of operations for one scroll bar, and
+        // the flat colour is indistinguishable at this size.
+        g.FillRectangle(new SolidBrush(Color.FromArgb(223, 223, 223)), 0, 0, Width, Height);
         Box(0, ButtonL, out x, out y, out w, out h); Arrow(g, x, y, w, h, true);
         Box(Length - ButtonL, ButtonL, out x, out y, out w, out h); Arrow(g, x, y, w, h, false);
         if (Scrollable)
@@ -1658,16 +2234,12 @@ public abstract class ScrollBar : Control
 
     void Arrow(Graphics g, int x, int y, int w, int h, bool first)
     {
-        g.FillRectangle(new SolidBrush(SystemColors.Control), x, y, w, h);
-        ControlPaint.DrawBorder3D(g, x, y, w, h, Border3DStyle.Raised);
-        Pen ink = new Pen(Scrollable ? SystemColors.ControlText : SystemColors.GrayText);
-        int cx = x + w / 2, cy = y + h / 2;
-        // A triangle of four widening lines, pointing to the bar's start or end.
-        for (int i = 0; i < 4; i++)
-        {
-            if (Vertical) { int row = first ? cy - 2 + i : cy + 2 - i; g.DrawLine(ink, cx - i, row, cx + i, row); }
-            else { int col = first ? cx - 2 + i : cx + 2 - i; g.DrawLine(ink, col, cy - i, col, cy + i); }
-        }
+        ControlPaint.DrawButtonFace(g, x, y, w, h, false, false, SystemColors.Control);
+        Color ink = Scrollable ? SystemColors.ControlText : SystemColors.GrayText;
+        ArrowDirection way = Vertical ? (first ? ArrowDirection.Up : ArrowDirection.Down)
+                                      : (first ? ArrowDirection.Left : ArrowDirection.Right);
+        if (Vertical) ControlPaint.DrawArrow(g, way, x + w / 2 - 3, y + h / 2 - 2, 4, ink);
+        else ControlPaint.DrawArrow(g, way, x + w / 2 - 2, y + h / 2 - 3, 4, ink);
     }
 
     protected override void OnMouseDown(MouseEventArgs e)
@@ -1861,15 +2433,1326 @@ public class TextBox : Control
     internal void FocusByClick() { _clickFocus = true; }
 }
 
+// ---------------------------------------------------------------------------
+// The rest of the widget set: the controls a dialog of this era is built
+// from. Every one of them is keyboard-complete -- there is nothing below
+// that needs a mouse -- and every one wears the same five-grey bevel, which
+// is what makes a screen of them look like one machine.
+// ---------------------------------------------------------------------------
+
+/// <summary>
+/// A picture. SizeMode says what happens when the picture and the box are
+/// different sizes; Normal draws it at its own size in the corner, and
+/// CenterImage puts it in the middle, which is what an icon in a dialog
+/// wants.
+/// </summary>
+public enum PictureBoxSizeMode { Normal = 0, StretchImage = 1, AutoSize = 2, CenterImage = 3 }
+
+public enum BorderStyle { None = 0, FixedSingle = 1, Fixed3D = 2 }
+
+public class PictureBox : Control
+{
+    internal override string ClassName { get { return "PictureBox"; } }
+
+    Icon? _image;
+    int _size = 32;
+
+    public PictureBox() { TabStop = false; Width = 32; Height = 32; BackColor = Color.Transparent; }
+
+    public Icon? Image { get { return _image; } set { _image = value; Invalidate(); } }
+
+    /// The pixel size the icon is drawn at. An icon is a set of drawings,
+    /// not one picture, so this picks which of them is used.
+    public int ImageSize { get { return _size; } set { _size = value; Invalidate(); } }
+
+    public PictureBoxSizeMode SizeMode = PictureBoxSizeMode.CenterImage;
+    public BorderStyle BorderStyle = BorderStyle.None;
+
+    protected override void OnPaintBackground(PaintEventArgs e)
+    {
+        if (BackColor == Color.Transparent) { Control? p = Parent; e.Graphics.FillRectangle(new SolidBrush(p == null ? SystemColors.Control : p.BackColor), e.ClipRectangle); }
+        else base.OnPaintBackground(e);
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        Graphics g = e.Graphics;
+
+        if (BorderStyle == BorderStyle.Fixed3D) ControlPaint.DrawBorder3D(g, 0, 0, Width, Height, Border3DStyle.Sunken);
+        else if (BorderStyle == BorderStyle.FixedSingle) g.DrawRectangle(new Pen(SystemColors.WindowFrame), 0, 0, Width, Height);
+
+        if (_image != null)
+        {
+            int x = SizeMode == PictureBoxSizeMode.Normal ? 0 : (Width - _size) / 2;
+            int y = SizeMode == PictureBoxSizeMode.Normal ? 0 : (Height - _size) / 2;
+            _image.Draw(g, x, y, _size);
+        }
+        base.OnPaint(e);
+    }
+}
+
+/// <summary>
+/// A bar that fills up. Windows 98 draws it as separate blocks with a gap
+/// between them rather than one solid stretch, and that is what is drawn
+/// here: the blocks are what make it read as progress rather than as a
+/// coloured rectangle.
+/// </summary>
+public class ProgressBar : Control
+{
+    internal override string ClassName { get { return "ProgressBar"; } }
+
+    int _min, _max = 100, _value;
+
+    public ProgressBar() { TabStop = false; Width = 200; Height = 20; BackColor = SystemColors.Control; }
+
+    public int Minimum { get { return _min; } set { _min = value; if (_max < _min) _max = _min; Clamp(); Invalidate(); } }
+    public int Maximum { get { return _max; } set { _max = value; if (_max < _min) _min = _max; Clamp(); Invalidate(); } }
+    public int Value { get { return _value; } set { _value = value; Clamp(); Invalidate(); } }
+
+    /// How far PerformStep moves it, which is how a loop reports itself
+    /// without doing arithmetic at every turn.
+    public int Step = 10;
+    public void PerformStep() { Value = _value + Step; }
+    public void Increment(int by) { Value = _value + by; }
+
+    void Clamp() { if (_value < _min) _value = _min; if (_value > _max) _value = _max; }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        Graphics g = e.Graphics;
+
+        g.FillRectangle(new SolidBrush(SystemColors.Control), 0, 0, Width, Height);
+        ControlPaint.DrawBorder3D(g, 0, 0, Width, Height, Border3DStyle.Sunken);
+
+        int span = _max - _min;
+        int inside = Width - 4;
+
+        if (span <= 0 || inside <= 0) { base.OnPaint(e); return; }
+
+        // ONE BLOCK EVERY SEVEN PIXELS: six of colour and one of gap, which
+        // is the spacing Windows uses and the reason the bar looks like it
+        // is counting rather than sliding.
+        const int Block = 6, Gap = 1;
+        int blocks = (inside + Gap) / (Block + Gap);
+        int filled = (int)(((long)(_value - _min) * blocks + span / 2) / span);
+
+        for (int i = 0; i < filled; i++)
+            g.FillRectangle(new SolidBrush(SystemColors.Highlight), 2 + i * (Block + Gap), 2, Block, Height - 4);
+
+        base.OnPaint(e);
+    }
+}
+
+/// <summary>
+/// A slider. .NET's TrackBar: Minimum, Maximum, Value, TickFrequency and a
+/// Scroll event, worked with the arrows, Page keys and Home and End as well
+/// as the pointer.
+/// </summary>
+public enum Orientation { Horizontal = 0, Vertical = 1 }
+
+public enum TickStyle { None = 0, TopLeft = 1, BottomRight = 2, Both = 3 }
+
+public class TrackBar : Control
+{
+    internal override string ClassName { get { return "TrackBar"; } }
+
+    int _min, _max = 10, _value;
+    bool _held;
+
+    public TrackBar() { Width = 150; Height = 45; BackColor = SystemColors.Control; }
+
+    public event EventHandler? ValueChanged;
+    public event EventHandler? Scroll;
+
+    public Orientation Orientation = Orientation.Horizontal;
+    public TickStyle TickStyle = TickStyle.BottomRight;
+    public int TickFrequency = 1;
+    public int SmallChange = 1;
+    public int LargeChange = 5;
+
+    public int Minimum { get { return _min; } set { _min = value; if (_max < _min) _max = _min; Value = _value; Invalidate(); } }
+    public int Maximum { get { return _max; } set { _max = value; if (_max < _min) _min = _max; Value = _value; Invalidate(); } }
+
+    public int Value
+    {
+        get { return _value; }
+        set
+        {
+            int want = value < _min ? _min : value > _max ? _max : value;
+            if (want == _value) { return; }
+            _value = want;
+            Invalidate();
+            EventHandler? h = ValueChanged;
+            if (h != null) h(this, EventArgs.Empty);
+        }
+    }
+
+    void Moved(int to)
+    {
+        int was = _value;
+        Value = to;
+        if (_value == was) { return; }
+        EventHandler? h = Scroll;
+        if (h != null) h(this, EventArgs.Empty);
+    }
+
+    // The geometry. The thumb is Windows' size -- eleven by twenty-one for
+    // a horizontal bar -- and the groove it runs in is four pixels deep,
+    // sunk, and as long as the control less one thumb's width.
+    const int ThumbShort = 11, ThumbLong = 21;
+    bool Across { get { return Orientation == Orientation.Horizontal; } }
+    int Span { get { return Across ? Width : Height; } }
+    int Depth { get { return Across ? Height : Width; } }
+    int Room { get { int r = Span - ThumbShort; return r < 1 ? 1 : r; } }
+    int Offset { get { int range = _max - _min; return range <= 0 ? 0 : (int)((long)Room * (_value - _min) / range); } }
+
+    int ValueAt(int along)
+    {
+        int range = _max - _min;
+        if (range <= 0) { return _min; }
+        int at = along - ThumbShort / 2;
+        if (at < 0) at = 0;
+        if (at > Room) at = Room;
+        return _min + (int)(((long)at * range + Room / 2) / Room);
+    }
+
+    /// Where the groove sits across the control: a little above centre when
+    /// the ticks are below it, which is how Windows lays it out.
+    int Line
+    {
+        get
+        {
+            if (TickStyle == TickStyle.None || TickStyle == TickStyle.Both) return (Depth - ThumbLong) / 2;
+            return TickStyle == TickStyle.BottomRight ? (Depth - ThumbLong) / 2 - 3 : (Depth - ThumbLong) / 2 + 3;
+        }
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        Graphics g = e.Graphics;
+        g.FillRectangle(new SolidBrush(BackColor), 0, 0, Width, Height);
+
+        int top = Line;
+        int groove = top + ThumbLong / 2 - 2;
+
+        if (Across) { g.FillRectangle(new SolidBrush(SystemColors.ControlDark), 1, groove, Width - 2, 4); ControlPaint.DrawBorder3D(g, 1, groove, Width - 2, 4, Border3DStyle.Sunken); }
+        else { g.FillRectangle(new SolidBrush(SystemColors.ControlDark), groove, 1, 4, Height - 2); ControlPaint.DrawBorder3D(g, groove, 1, 4, Height - 2, Border3DStyle.Sunken); }
+
+        Ticks(g, top);
+        Thumb(g, Offset, top);
+
+        if (Focused && Enabled) ControlPaint.DrawFocusRectangle(g, 0, 0, Width, Height);
+        base.OnPaint(e);
+    }
+
+    void Ticks(Graphics g, int top)
+    {
+        if (TickStyle == TickStyle.None || TickFrequency < 1) { return; }
+
+        int range = _max - _min;
+        if (range <= 0) { return; }
+
+        Pen ink = new Pen(Enabled ? SystemColors.ControlDarkDark : SystemColors.GrayText);
+        bool before = TickStyle == TickStyle.TopLeft || TickStyle == TickStyle.Both;
+        bool after = TickStyle == TickStyle.BottomRight || TickStyle == TickStyle.Both;
+
+        for (int at = _min; at <= _max; at += TickFrequency)
+        {
+            int along = ThumbShort / 2 + (int)((long)Room * (at - _min) / range);
+
+            if (Across)
+            {
+                if (before) g.DrawLine(ink, along, top - 5, along, top - 2);
+                if (after) g.DrawLine(ink, along, top + ThumbLong + 2, along, top + ThumbLong + 5);
+            }
+            else
+            {
+                if (before) g.DrawLine(ink, top - 5, along, top - 2, along);
+                if (after) g.DrawLine(ink, top + ThumbLong + 2, along, top + ThumbLong + 5, along);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The pointer-shaped thumb: a rectangle with a triangular nose that
+    /// points at the ticks. Drawn as a body and a nose so the two bevels
+    /// meet, which is what gives it the moulded look rather than the look
+    /// of a rectangle with a corner cut off.
+    /// </summary>
+    void Thumb(Graphics g, int along, int top)
+    {
+        bool nosed = TickStyle == TickStyle.TopLeft || TickStyle == TickStyle.BottomRight;
+        int body = nosed ? ThumbLong - ThumbShort / 2 - 1 : ThumbLong;
+        int x = Across ? along : top, y = Across ? top : along;
+        int w = Across ? ThumbShort : body, h = Across ? body : ThumbShort;
+
+        // A NOSE THAT POINTS AT THE TICKS. When the ticks are above, the
+        // point is at the top and the body hangs below it.
+        bool pointFirst = TickStyle == TickStyle.TopLeft;
+        int nose = nosed ? ThumbShort / 2 + 1 : 0;
+
+        if (Across && pointFirst) y += nose;
+        if (!Across && pointFirst) x += nose;
+
+        g.FillRectangle(new SolidBrush(SystemColors.Control), x, y, w, h);
+        ControlPaint.DrawBorder3D(g, x, y, w, h, Border3DStyle.Raised);
+
+        if (nose == 0) { return; }
+
+        // The triangle, a row at a time, each row bevelled at both ends.
+        Pen lit = new Pen(SystemColors.ControlLightLight), shade = new Pen(SystemColors.ControlDarkDark);
+        Brush face = new SolidBrush(SystemColors.Control);
+
+        for (int step = 0; step < nose; step++)
+        {
+            int half = pointFirst ? step : nose - 1 - step;
+            int width = half * 2 + 1;
+            int line = pointFirst ? y - nose + step : y + h + step;
+
+            if (Across)
+            {
+                int left = along + ThumbShort / 2 - half;
+                g.FillRectangle(face, left, line, width, 1);
+                g.FillRectangle(new SolidBrush(SystemColors.ControlLightLight), left, line, 1, 1);
+                g.FillRectangle(new SolidBrush(SystemColors.ControlDarkDark), left + width - 1, line, 1, 1);
+            }
+            else
+            {
+                int column = pointFirst ? x - nose + step : x + w + step;
+                int upper = along + ThumbShort / 2 - half;
+                g.FillRectangle(face, column, upper, 1, width);
+                g.FillRectangle(new SolidBrush(SystemColors.ControlLightLight), column, upper, 1, 1);
+                g.FillRectangle(new SolidBrush(SystemColors.ControlDarkDark), column, upper + width - 1, 1, 1);
+            }
+        }
+    }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        Focus();
+        int along = Across ? e.X : e.Y;
+        int at = Offset;
+
+        // On the thumb: drag it. Beside it: a page toward the pointer,
+        // which is what a click on a track does everywhere.
+        if (along >= at && along < at + ThumbShort) { _held = true; }
+        else Moved(along < at ? _value - LargeChange : _value + LargeChange);
+        base.OnMouseDown(e);
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        if (_held) Moved(ValueAt(Across ? e.X : e.Y));
+        base.OnMouseMove(e);
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e) { _held = false; base.OnMouseUp(e); }
+
+    protected override void OnMouseWheel(MouseEventArgs e)
+    {
+        int notches = e.Delta / 120;
+        if (notches != 0) Moved(_value + notches * SmallChange);
+        base.OnMouseWheel(e);
+    }
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (e.KeyCode == Keys.Left || e.KeyCode == Keys.Down) { Moved(_value - SmallChange); e.Handled = true; }
+        else if (e.KeyCode == Keys.Right || e.KeyCode == Keys.Up) { Moved(_value + SmallChange); e.Handled = true; }
+        else if (e.KeyCode == Keys.PageDown) { Moved(_value - LargeChange); e.Handled = true; }
+        else if (e.KeyCode == Keys.PageUp) { Moved(_value + LargeChange); e.Handled = true; }
+        else if (e.KeyCode == Keys.Home) { Moved(_min); e.Handled = true; }
+        else if (e.KeyCode == Keys.End) { Moved(_max); e.Handled = true; }
+        base.OnKeyDown(e);
+    }
+}
+
+/// <summary>
+/// A box with a value in it and a list behind it. DropDownList is the one
+/// a settings page wants: the text cannot be typed into, only chosen, and
+/// the whole face is a button that opens the list.
+/// </summary>
+public enum ComboBoxStyle { Simple = 0, DropDown = 1, DropDownList = 2 }
+
+public class ComboBox : Control
+{
+    internal override string ClassName { get { return "ComboBox"; } }
+
+    readonly ObjectCollection _items;
+    int _selected = -1;
+    bool _down;
+    ComboPopup? _open;
+
+    /// The drop button, which is the height of the box less its bevel and
+    /// as wide as a scroll bar's button. Windows' is seventeen wide.
+    const int ButtonWidth = 17;
+
+    public ComboBox()
+    {
+        _items = new ObjectCollection(this);
+        Width = 121;
+        Height = 21;
+        BackColor = SystemColors.Window;
+        ForeColor = SystemColors.WindowText;
+    }
+
+    public event EventHandler? SelectedIndexChanged;
+    public event EventHandler? DropDown;
+    public event EventHandler? DropDownClosed;
+
+    public ComboBoxStyle DropDownStyle = ComboBoxStyle.DropDownList;
+    public ObjectCollection Items { get { return _items; } }
+    public int ItemHeight = 13;
+
+    /// How many rows the list shows before it needs a scroll bar. Windows'
+    /// default is eight and so is this.
+    public int MaxDropDownItems = 8;
+
+    public int SelectedIndex
+    {
+        get { return _selected; }
+        set
+        {
+            int want = value < -1 || value >= _items.Count ? -1 : value;
+            if (_selected == want) { return; }
+            _selected = want;
+            base.Text = want < 0 ? "" : _items.TextAt(want);
+            Invalidate();
+            EventHandler? h = SelectedIndexChanged;
+            if (h != null) h(this, EventArgs.Empty);
+        }
+    }
+
+    public object? SelectedItem
+    {
+        get { return _selected < 0 ? null : _items[_selected]; }
+        set { SelectedIndex = _items.IndexOf(value); }
+    }
+
+    public override string Text
+    {
+        get { return base.Text; }
+        set
+        {
+            int at = _items.IndexOfText(value);
+            if (at >= 0) { SelectedIndex = at; return; }
+            base.Text = value;
+        }
+    }
+
+    public bool DroppedDown { get { return _open != null; } set { if (value) Open(); else Shut(); } }
+
+    internal void ItemsChanged()
+    {
+        if (_selected >= _items.Count) { _selected = _items.Count - 1; base.Text = _selected < 0 ? "" : _items.TextAt(_selected); }
+        Invalidate();
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        Graphics g = e.Graphics;
+        int w = Width, h = Height;
+        bool live = Enabled;
+
+        // THE WHOLE FACE IS SUNK, like a text box, and the button sits
+        // inside the sunken well -- not beside it. That inset is the
+        // difference between a combo box and a text box with a button
+        // stuck on the end.
+        g.FillRectangle(new SolidBrush(live ? SystemColors.Window : SystemColors.Control), 0, 0, w, h);
+        ControlPaint.DrawBorder3D(g, 0, 0, w, h, Border3DStyle.Sunken);
+
+        int bx = w - ButtonWidth - 2, by = 2, bh = h - 4;
+        ControlPaint.DrawButtonFace(g, bx, by, ButtonWidth, bh, _down, false, SystemColors.Control);
+        ControlPaint.DrawArrow(g, ArrowDirection.Down, bx + ButtonWidth / 2 - 3 + (_down ? 1 : 0), by + bh / 2 - 2 + (_down ? 1 : 0), 4,
+            live ? SystemColors.ControlText : SystemColors.GrayText);
+
+        string shown = base.Text;
+        int room = bx - 6;
+        int fits = Font.GlyphWidth > 0 ? room / Font.GlyphWidth : 0;
+        if (shown.Length > fits && fits > 0) shown = shown.Substring(0, fits);
+
+        int ty = (h - Font.Height) / 2;
+
+        // THE CHOSEN ROW IS HIGHLIGHTED WHEN THE BOX HAS THE FOCUS, which
+        // is how a drop-down list says the keyboard will change it.
+        if (Focused && live && DropDownStyle == ComboBoxStyle.DropDownList)
+        {
+            g.FillRectangle(new SolidBrush(SystemColors.Highlight), 3, 3, bx - 5, h - 6);
+            g.DrawString(shown, Font, new SolidBrush(SystemColors.HighlightText), 4, ty);
+            ControlPaint.DrawFocusRectangle(g, 3, 3, bx - 5, h - 6);
+        }
+        else g.DrawString(shown, Font, new SolidBrush(live ? ForeColor : SystemColors.GrayText), 4, ty);
+
+        base.OnPaint(e);
+    }
+
+    /// The list, as a window of its own below the box -- or above it when
+    /// there is no room below, which is what the screen's bottom edge
+    /// makes necessary and what Windows does.
+    public void Open()
+    {
+        if (_open != null || _items.Count == 0 || !Enabled) { return; }
+
+        int rows = _items.Count < MaxDropDownItems ? _items.Count : MaxDropDownItems;
+        Point at = PointToScreen(new Point(0, Height));
+        ComboPopup popup = new ComboPopup(this, rows);
+
+        int high = popup.Height;
+        int y = at.Y;
+        if (y + high > Seat.Current.Height) { y = at.Y - Height - high; }
+        if (y < 0) { y = 0; }
+
+        popup.SetBounds(at.X, y, Width, high);
+        _open = popup;
+        _down = true;
+        Invalidate();
+        popup.Show();
+        popup.Activate();
+
+        EventHandler? h = DropDown;
+        if (h != null) h(this, EventArgs.Empty);
+    }
+
+    public void Shut()
+    {
+        ComboPopup? popup = _open;
+        if (popup == null) { return; }
+        _open = null;
+        _down = false;
+        Invalidate();
+        if (!popup.IsClosed) popup.Close();
+
+        EventHandler? h = DropDownClosed;
+        if (h != null) h(this, EventArgs.Empty);
+    }
+
+    internal void Chose(int index) { SelectedIndex = index; Shut(); Focus(); }
+    internal void Dismissed() { _open = null; _down = false; Invalidate(); }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        Focus();
+        if (_open != null) Shut();
+        else if (DropDownStyle == ComboBoxStyle.DropDownList || e.X >= Width - ButtonWidth - 2) Open();
+        base.OnMouseDown(e);
+    }
+
+    protected override void OnMouseWheel(MouseEventArgs e)
+    {
+        if (_open != null) { base.OnMouseWheel(e); return; }
+        int notches = e.Delta / 120;
+        if (notches != 0 && _items.Count > 0)
+        {
+            int want = _selected - notches;
+            if (want < 0) want = 0;
+            if (want >= _items.Count) want = _items.Count - 1;
+            SelectedIndex = want;
+        }
+        base.OnMouseWheel(e);
+    }
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        // F4 AND ALT+DOWN OPEN IT, the arrows change the value without
+        // opening it, and Escape shuts it: Windows' keyboard, exactly.
+        if (e.KeyCode == Keys.F4 || (e.KeyCode == Keys.Down && e.Alt))
+        {
+            if (_open == null) Open(); else Shut();
+            e.Handled = true;
+        }
+        else if (e.KeyCode == Keys.Escape && _open != null) { Shut(); e.Handled = true; }
+        else if (e.KeyCode == Keys.Down && _selected + 1 < _items.Count) { SelectedIndex = _selected + 1; e.Handled = true; }
+        else if (e.KeyCode == Keys.Up && _selected > 0) { SelectedIndex = _selected - 1; e.Handled = true; }
+        else if (e.KeyCode == Keys.Home && _items.Count > 0) { SelectedIndex = 0; e.Handled = true; }
+        else if (e.KeyCode == Keys.End && _items.Count > 0) { SelectedIndex = _items.Count - 1; e.Handled = true; }
+        base.OnKeyDown(e);
+    }
+
+    protected override void OnKeyPress(KeyPressEventArgs e)
+    {
+        // A LETTER JUMPS TO THE NEXT ITEM STARTING WITH IT, wrapping, so a
+        // long list of modes is reachable by typing rather than arrowing.
+        char c = e.KeyChar;
+        if (c > ' ' && c < (char)127 && DropDownStyle == ComboBoxStyle.DropDownList)
+        {
+            int at = _items.NextStartingWith(c, _selected);
+            if (at >= 0) { SelectedIndex = at; e.Handled = true; }
+        }
+        base.OnKeyPress(e);
+    }
+
+    protected override void OnLostFocus(EventArgs e) { Invalidate(); base.OnLostFocus(e); }
+    protected override void OnGotFocus(EventArgs e) { Invalidate(); base.OnGotFocus(e); }
+
+    /// <summary>The things in the list. .NET calls it ComboBox.ObjectCollection.</summary>
+    public class ObjectCollection
+    {
+        readonly ComboBox _owner;
+        readonly List<object?> _held = new List<object?>();
+
+        public ObjectCollection(ComboBox owner) { _owner = owner; }
+
+        public int Count { get { return _held.Count; } }
+        public object? this[int index] { get { return _held[index]; } set { _held[index] = value; _owner.ItemsChanged(); } }
+        public int Add(object? item) { _held.Add(item); _owner.ItemsChanged(); return _held.Count - 1; }
+        public void AddRange(object?[] more) { for (int i = 0; i < more.Length; i++) _held.Add(more[i]); _owner.ItemsChanged(); }
+        public void Clear() { _held.Clear(); _owner.SelectedIndex = -1; _owner.ItemsChanged(); }
+        public void RemoveAt(int index) { _held.RemoveAt(index); _owner.ItemsChanged(); }
+
+        public int IndexOf(object? item)
+        {
+            for (int i = 0; i < _held.Count; i++) if (Equals(_held[i], item)) return i;
+            return -1;
+        }
+
+        internal int IndexOfText(string text)
+        {
+            for (int i = 0; i < _held.Count; i++) if (TextAt(i) == text) return i;
+            return -1;
+        }
+
+        internal int NextStartingWith(char c, int after)
+        {
+            char want = c >= 'A' && c <= 'Z' ? (char)(c + 32) : c;
+            for (int step = 1; step <= _held.Count; step++)
+            {
+                int i = (after + step + _held.Count) % _held.Count;
+                string text = TextAt(i);
+                if (text.Length == 0) continue;
+                char first = text[0];
+                if (first >= 'A' && first <= 'Z') first = (char)(first + 32);
+                if (first == want) return i;
+            }
+            return -1;
+        }
+
+        internal string TextAt(int index) { object? held = _held[index]; return held == null ? "" : held.ToString()!; }
+    }
+}
+
+/// <summary>
+/// The list a combo box drops: its own window, above everything, gone as
+/// soon as something is chosen, Escape is pressed or the focus moves.
+/// </summary>
+internal class ComboPopup : Form
+{
+    internal override string ClassName { get { return "ComboPopup"; } }
+
+    readonly ComboBox _owner;
+    readonly int _rows;
+    int _hot;
+    int _top;
+
+    internal ComboPopup(ComboBox owner, int rows)
+    {
+        _owner = owner;
+        _rows = rows;
+        _hot = owner.SelectedIndex < 0 ? 0 : owner.SelectedIndex;
+        FormBorderStyle = FormBorderStyle.None;
+        StartPosition = FormStartPosition.Manual;
+        TopMost = true;
+        ShowInTaskbar = false;
+        BackColor = SystemColors.Window;
+        Height = rows * owner.ItemHeight + 2;
+        Scroll();
+    }
+
+    int Height_ { get { return _owner.ItemHeight; } }
+
+    void Scroll()
+    {
+        if (_hot < _top) _top = _hot;
+        else if (_hot >= _top + _rows) _top = _hot - _rows + 1;
+        int most = _owner.Items.Count - _rows;
+        if (_top > most) _top = most < 0 ? 0 : most;
+        if (_top < 0) _top = 0;
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        Graphics g = e.Graphics;
+        g.FillRectangle(new SolidBrush(SystemColors.Window), 0, 0, Width, Height);
+        g.DrawRectangle(new Pen(SystemColors.WindowFrame), 0, 0, Width, Height);
+
+        for (int row = 0; row < _rows; row++)
+        {
+            int index = _top + row;
+            if (index >= _owner.Items.Count) break;
+
+            int y = 1 + row * Height_;
+            bool picked = index == _hot;
+
+            if (picked) g.FillRectangle(new SolidBrush(SystemColors.Highlight), 1, y, Width - 2, Height_);
+            g.DrawString(_owner.Items.TextAt(index), Font,
+                new SolidBrush(picked ? SystemColors.HighlightText : SystemColors.WindowText), 3, y);
+        }
+        base.OnPaint(e);
+    }
+
+    int At(int y) { int i = _top + (y - 1) / Height_; return i >= 0 && i < _owner.Items.Count ? i : -1; }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        int at = At(e.Y);
+        if (at >= 0 && at != _hot) { _hot = at; Invalidate(); }
+        base.OnMouseMove(e);
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        int at = At(e.Y);
+        base.OnMouseUp(e);
+        if (at >= 0) _owner.Chose(at);
+        else _owner.Shut();
+    }
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (e.KeyCode == Keys.Down && _hot + 1 < _owner.Items.Count) { _hot++; Scroll(); Invalidate(); e.Handled = true; }
+        else if (e.KeyCode == Keys.Up && _hot > 0) { _hot--; Scroll(); Invalidate(); e.Handled = true; }
+        else if (e.KeyCode == Keys.Home) { _hot = 0; Scroll(); Invalidate(); e.Handled = true; }
+        else if (e.KeyCode == Keys.End) { _hot = _owner.Items.Count - 1; Scroll(); Invalidate(); e.Handled = true; }
+        else if (e.KeyCode == Keys.Enter || e.KeyCode == Keys.Space) { _owner.Chose(_hot); e.Handled = true; }
+        else if (e.KeyCode == Keys.Escape || e.KeyCode == Keys.F4) { _owner.Shut(); _owner.Focus(); e.Handled = true; }
+        base.OnKeyDown(e);
+    }
+
+    protected override void OnDeactivate(EventArgs e) { base.OnDeactivate(e); _owner.Dismissed(); if (!IsClosed) Close(); }
+}
+
+/// <summary>
+/// A number with two small buttons beside it. .NET's NumericUpDown: the
+/// value can be typed as well as spun, and the arrows, Page keys, Home
+/// and End all move it.
+/// </summary>
+public class NumericUpDown : Control
+{
+    internal override string ClassName { get { return "NumericUpDown"; } }
+
+    const int ButtonWidth = 17;
+
+    int _value;
+    int _min;
+    int _max = 100;
+    string _typed = "0";
+    int _held;                    // 1 while the up button is in, 2 for down
+
+    public NumericUpDown()
+    {
+        Width = 120;
+        Height = 21;
+        BackColor = SystemColors.Window;
+        ForeColor = SystemColors.WindowText;
+    }
+
+    public event EventHandler? ValueChanged;
+
+    public int Increment = 1;
+    public int Minimum { get { return _min; } set { _min = value; if (_max < _min) _max = _min; Value = _value; } }
+    public int Maximum { get { return _max; } set { _max = value; if (_max < _min) _min = _max; Value = _value; } }
+
+    public int Value
+    {
+        get { return _value; }
+        set
+        {
+            int want = value < _min ? _min : value > _max ? _max : value;
+            if (want == _value && _typed == want.ToString()) { return; }
+            _value = want;
+            _typed = want.ToString();
+            Invalidate();
+            EventHandler? h = ValueChanged;
+            if (h != null) h(this, EventArgs.Empty);
+        }
+    }
+
+    public void UpButton() { Value = _value + Increment; }
+    public void DownButton() { Value = _value - Increment; }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        Graphics g = e.Graphics;
+        int w = Width, h = Height;
+        bool live = Enabled;
+
+        g.FillRectangle(new SolidBrush(live ? SystemColors.Window : SystemColors.Control), 0, 0, w, h);
+        ControlPaint.DrawBorder3D(g, 0, 0, w, h, Border3DStyle.Sunken);
+
+        int bx = w - ButtonWidth - 2, by = 2, bh = h - 4;
+        int upper = bh / 2, lower = bh - upper;
+
+        ControlPaint.DrawButtonFace(g, bx, by, ButtonWidth, upper, _held == 1, false, SystemColors.Control);
+        ControlPaint.DrawArrow(g, ArrowDirection.Up, bx + ButtonWidth / 2 - 2 + (_held == 1 ? 1 : 0), by + upper / 2 - 1 + (_held == 1 ? 1 : 0), 3,
+            live ? SystemColors.ControlText : SystemColors.GrayText);
+
+        ControlPaint.DrawButtonFace(g, bx, by + upper, ButtonWidth, lower, _held == 2, false, SystemColors.Control);
+        ControlPaint.DrawArrow(g, ArrowDirection.Down, bx + ButtonWidth / 2 - 2 + (_held == 2 ? 1 : 0), by + upper + lower / 2 - 1 + (_held == 2 ? 1 : 0), 3,
+            live ? SystemColors.ControlText : SystemColors.GrayText);
+
+        int ty = (h - Font.Height) / 2;
+        g.DrawString(_typed, Font, new SolidBrush(live ? ForeColor : SystemColors.GrayText), 4, ty);
+
+        if (Focused && live) g.FillRectangle(new SolidBrush(ForeColor), 4 + _typed.Length * Font.GlyphWidth, ty, 1, Font.Height);
+        base.OnPaint(e);
+    }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        Focus();
+        if (e.X >= Width - ButtonWidth - 2)
+        {
+            bool up = e.Y < Height / 2;
+            _held = up ? 1 : 2;
+            if (up) UpButton(); else DownButton();
+            Invalidate();
+        }
+        base.OnMouseDown(e);
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e) { if (_held != 0) { _held = 0; Invalidate(); } base.OnMouseUp(e); }
+
+    protected override void OnMouseWheel(MouseEventArgs e)
+    {
+        int notches = e.Delta / 120;
+        if (notches != 0) Value = _value + notches * Increment;
+        base.OnMouseWheel(e);
+    }
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (e.KeyCode == Keys.Up) { UpButton(); e.Handled = true; }
+        else if (e.KeyCode == Keys.Down) { DownButton(); e.Handled = true; }
+        else if (e.KeyCode == Keys.PageUp) { Value = _value + Increment * 10; e.Handled = true; }
+        else if (e.KeyCode == Keys.PageDown) { Value = _value - Increment * 10; e.Handled = true; }
+        else if (e.KeyCode == Keys.Home) { Value = _min; e.Handled = true; }
+        else if (e.KeyCode == Keys.End) { Value = _max; e.Handled = true; }
+        base.OnKeyDown(e);
+    }
+
+    protected override void OnKeyPress(KeyPressEventArgs e)
+    {
+        char c = e.KeyChar;
+
+        if (c >= '0' && c <= '9')
+        {
+            // TYPED DIGITS ARE ACCUMULATED and only become the value when
+            // they are inside the range, so a box that goes to 1600 can be
+            // typed into without the first "1" snapping to the minimum.
+            string next = _typed == "0" ? "" + c : _typed + c;
+            if (next.Length <= 9)
+            {
+                int parsed = int.Parse(next);
+                _typed = next;
+                if (parsed >= _min && parsed <= _max) { _value = parsed; EventHandler? h = ValueChanged; if (h != null) h(this, EventArgs.Empty); }
+                Invalidate();
+            }
+            e.Handled = true;
+        }
+        else if (c == '\b')
+        {
+            _typed = _typed.Length > 1 ? _typed.Substring(0, _typed.Length - 1) : "0";
+            int parsed = int.Parse(_typed);
+            if (parsed >= _min && parsed <= _max) _value = parsed;
+            Invalidate();
+            e.Handled = true;
+        }
+        else if (c == '\r') { Value = _value; e.Handled = true; }
+        base.OnKeyPress(e);
+    }
+
+    /// Leaving the box settles whatever was typed into a real value.
+    protected override void OnLostFocus(EventArgs e) { int parsed = int.Parse(_typed); _value = parsed; Value = parsed; Invalidate(); base.OnLostFocus(e); }
+    protected override void OnGotFocus(EventArgs e) { Invalidate(); base.OnGotFocus(e); }
+}
+
+/// <summary>
+/// One page of a tab control: a container with a caption on its tab. It is
+/// an ordinary control, so anything can be put on it at coordinates of its
+/// own, and the tab control moves and shows it.
+/// </summary>
+public class TabPage : Control
+{
+    internal override string ClassName { get { return "TabPage"; } }
+
+    public TabPage() { TabStop = false; BackColor = SystemColors.Control; }
+    public TabPage(string text) : this() { Text = text; }
+}
+
+/// <summary>
+/// Pages behind tabs. The tabs are drawn as Windows 98 drew them: the
+/// selected one is a pixel taller, two wider, and joins the page below it
+/// with no line between, which is the whole trick that makes the front tab
+/// look like it is in front.
+/// </summary>
+public class TabControl : Control
+{
+    internal override string ClassName { get { return "TabControl"; } }
+
+    readonly TabPageCollection _pages;
+    int _selected = -1;
+    int _hot = -1;
+
+    /// The height of the tab strip, and how far a selected tab grows.
+    public const int TabHeight = 21;
+    const int Grow = 2;
+
+    public TabControl()
+    {
+        _pages = new TabPageCollection(this);
+        Width = 300;
+        Height = 200;
+        BackColor = SystemColors.Control;
+    }
+
+    public event EventHandler? SelectedIndexChanged;
+
+    public TabPageCollection TabPages { get { return _pages; } }
+
+    public int SelectedIndex
+    {
+        get { return _selected; }
+        set
+        {
+            int want = value < 0 || value >= _pages.Count ? -1 : value;
+            if (want == _selected) { return; }
+            _selected = want;
+            Arrange();
+            Invalidate();
+            EventHandler? h = SelectedIndexChanged;
+            if (h != null) h(this, EventArgs.Empty);
+        }
+    }
+
+    public TabPage? SelectedTab
+    {
+        get { return _selected < 0 ? null : _pages[_selected]; }
+        set { SelectedIndex = value == null ? -1 : _pages.IndexOf(value); }
+    }
+
+    /// Where a page sits: inside the frame, below the tabs.
+    public Rectangle DisplayRectangle { get { return new Rectangle(3, TabHeight + 2, Width - 6, Height - TabHeight - 5); } }
+
+    internal void Arrange()
+    {
+        Rectangle area = DisplayRectangle;
+
+        for (int i = 0; i < _pages.Count; i++)
+        {
+            TabPage page = _pages[i];
+            page.SetBounds(area.X, area.Y, area.Width, area.Height);
+            page.Visible = i == _selected;
+        }
+        if (_selected < 0 && _pages.Count > 0) { SelectedIndex = 0; }
+    }
+
+    public override void SetBounds(int x, int y, int w, int h) { base.SetBounds(x, y, w, h); Arrange(); }
+
+    int TabWidth(int index) { return ControlPaint.StripMnemonic(_pages[index].Text).Length * Font.GlyphWidth + 18; }
+
+    int TabLeft(int index)
+    {
+        int x = 2;
+        for (int i = 0; i < index; i++) x += TabWidth(i);
+        return x;
+    }
+
+    int TabAt(int x, int y)
+    {
+        if (y >= TabHeight + Grow) { return -1; }
+        int at = 2;
+        for (int i = 0; i < _pages.Count; i++)
+        {
+            int w = TabWidth(i);
+            if (x >= at && x < at + w) { return i; }
+            at += w;
+        }
+        return -1;
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        Graphics g = e.Graphics;
+
+        g.FillRectangle(new SolidBrush(BackColor), 0, 0, Width, Height);
+
+        // THE PAGE FRAME FIRST, tabs on top of it: the selected tab has to
+        // paint out the frame's top edge where it meets it, and the only
+        // way to do that is to draw it afterwards.
+        int frame = TabHeight;
+        ControlPaint.DrawBorder3D(g, 0, frame, Width, Height - frame, Border3DStyle.RaisedOuter);
+        ControlPaint.DrawBorder3D(g, 1, frame + 1, Width - 2, Height - frame - 2, Border3DStyle.RaisedInner);
+
+        for (int i = 0; i < _pages.Count; i++) if (i != _selected) Tab(g, i, false);
+        if (_selected >= 0) Tab(g, _selected, true);
+
+        base.OnPaint(e);
+    }
+
+    void Tab(Graphics g, int index, bool front)
+    {
+        int x = TabLeft(index), w = TabWidth(index);
+        int y = front ? 0 : Grow;
+        int h = TabHeight - y + (front ? Grow + 2 : 0);
+
+        if (front) { x -= Grow; w += Grow * 2; }
+
+        Pen lit = new Pen(SystemColors.ControlLightLight);
+        Pen shade = new Pen(SystemColors.ControlDarkDark);
+
+        g.FillRectangle(new SolidBrush(SystemColors.Control), x, y, w, h);
+
+        // A TAB IS A BOX WITH NO BOTTOM: highlight up the left and along
+        // the top, shadow down the right, and nothing at all across the
+        // foot, which is what joins it to the page.
+        g.DrawLine(lit, x, y + 2, x, y + h - 1);
+        g.DrawLine(lit, x + 2, y, x + w - 3, y);
+        g.DrawLine(lit, x + 1, y + 1, x + 1, y + 1);
+        g.DrawLine(shade, x + w - 1, y + 2, x + w - 1, y + h - 1);
+        g.DrawLine(new Pen(SystemColors.ControlDark), x + w - 2, y + 2, x + w - 2, y + h - 1);
+        g.DrawLine(new Pen(SystemColors.ControlDark), x + w - 2, y + 1, x + w - 2, y + 1);
+
+        string shown = ControlPaint.StripMnemonic(_pages[index].Text);
+        int ty = y + (TabHeight - Font.Height) / 2 + (front ? 1 : 0);
+        int tx = x + (w - shown.Length * Font.GlyphWidth) / 2;
+
+        ControlPaint.DrawStringMnemonic(g, _pages[index].Text, Font, new SolidBrush(Enabled ? ForeColor : SystemColors.GrayText), tx, ty, true);
+
+        if (front && Focused && Enabled)
+            ControlPaint.DrawFocusRectangle(g, tx - 3, ty - 2, shown.Length * Font.GlyphWidth + 6, Font.Height + 4);
+    }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        int at = TabAt(e.X, e.Y);
+        if (at >= 0) { Focus(); SelectedIndex = at; }
+        base.OnMouseDown(e);
+    }
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        // Left and right walk the tabs when the strip has the focus;
+        // Ctrl+Tab walks them from anywhere on the page, as in Windows.
+        if (e.KeyCode == Keys.Left && _selected > 0) { SelectedIndex = _selected - 1; e.Handled = true; }
+        else if (e.KeyCode == Keys.Right && _selected + 1 < _pages.Count) { SelectedIndex = _selected + 1; e.Handled = true; }
+        else if (e.KeyCode == Keys.Tab && e.Control && _pages.Count > 0)
+        {
+            SelectedIndex = (_selected + (e.Shift ? _pages.Count - 1 : 1)) % _pages.Count;
+            e.Handled = true;
+        }
+        base.OnKeyDown(e);
+    }
+
+    public class TabPageCollection
+    {
+        readonly TabControl _owner;
+        readonly List<TabPage> _held = new List<TabPage>();
+
+        public TabPageCollection(TabControl owner) { _owner = owner; }
+
+        public int Count { get { return _held.Count; } }
+        public TabPage this[int index] { get { return _held[index]; } }
+        public int IndexOf(TabPage page) { return _held.IndexOf(page); }
+
+        public void Add(TabPage page)
+        {
+            _held.Add(page);
+            _owner.Controls.Add(page);
+            page.TabStop = false;
+            if (_owner.SelectedIndex < 0) _owner.SelectedIndex = 0;
+            _owner.Arrange();
+            _owner.Invalidate();
+        }
+
+        public TabPage Add(string text) { TabPage page = new TabPage(text); Add(page); return page; }
+    }
+}
+
+/// <summary>
+/// The strip along the bottom of a window: sunken panels with text in
+/// them, and a grip in the corner of a window that can be resized.
+/// </summary>
+public class StatusBarPanel
+{
+    public string Text = "";
+    public int Width = 100;
+
+    /// A panel with this set takes whatever room is left over, which is
+    /// what the first panel of a status bar usually does.
+    public bool Spring;
+
+    internal StatusBar? Owner;
+
+    public StatusBarPanel() { }
+    public StatusBarPanel(string text) { Text = text; }
+}
+
+public class StatusBar : Control
+{
+    internal override string ClassName { get { return "StatusBar"; } }
+
+    readonly List<StatusBarPanel> _panels = new List<StatusBarPanel>();
+
+    public StatusBar() { TabStop = false; Height = 20; BackColor = SystemColors.Control; }
+
+    /// Whether the corner shows the diagonal ribs that say a window can be
+    /// dragged bigger.
+    public bool SizingGrip = true;
+
+    public int Count { get { return _panels.Count; } }
+    public StatusBarPanel this[int index] { get { return _panels[index]; } }
+
+    public StatusBarPanel AddPanel(string text) { StatusBarPanel panel = new StatusBarPanel(text); panel.Owner = this; _panels.Add(panel); Invalidate(); return panel; }
+
+    /// The whole bar as one panel, which is the common case.
+    public override string Text
+    {
+        get { return _panels.Count > 0 ? _panels[0].Text : base.Text; }
+        set
+        {
+            if (_panels.Count == 0) { StatusBarPanel only = AddPanel(value); only.Spring = true; }
+            else _panels[0].Text = value;
+            Invalidate();
+        }
+    }
+
+    public void SetPanel(int index, string text) { if (index >= 0 && index < _panels.Count) { _panels[index].Text = text; Invalidate(); } }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        Graphics g = e.Graphics;
+        g.FillRectangle(new SolidBrush(BackColor), 0, 0, Width, Height);
+
+        int grip = SizingGrip ? 16 : 0;
+        int fixedWidth = 0, springing = 0;
+
+        for (int i = 0; i < _panels.Count; i++) { if (_panels[i].Spring) springing++; else fixedWidth += _panels[i].Width; }
+
+        int spare = Width - grip - fixedWidth - (_panels.Count + 1) * 2;
+        int each = springing > 0 && spare > 0 ? spare / springing : 0;
+        int x = 2;
+
+        for (int i = 0; i < _panels.Count; i++)
+        {
+            int w = _panels[i].Spring ? each : _panels[i].Width;
+            if (w < 0) w = 0;
+
+            ControlPaint.DrawBorder3D(g, x, 2, w, Height - 4, Border3DStyle.SunkenOuter);
+            g.DrawString(_panels[i].Text, Font, new SolidBrush(ForeColor), x + 4, (Height - Font.Height) / 2);
+            x += w + 2;
+        }
+
+        if (SizingGrip)
+        {
+            // THREE RIBS IN THE CORNER, each a light line with a shadow
+            // beside it: the same grip every window of the era wore.
+            Pen lit = new Pen(SystemColors.ControlLightLight), shade = new Pen(SystemColors.ControlDark);
+
+            for (int rib = 0; rib < 3; rib++)
+            {
+                int at = Width - 3 - rib * 4;
+                g.DrawLine(shade, at, Height - 3, Width - 3, at - (Width - Height));
+                g.DrawLine(lit, at - 1, Height - 3, Width - 3, at - 1 - (Width - Height));
+            }
+        }
+        base.OnPaint(e);
+    }
+}
+
+/// <summary>
+/// Text that is a link: blue, underlined, and a hand over it. .NET's
+/// LinkLabel, less the multiple-link machinery nothing here needs.
+/// </summary>
+public class LinkLabel : Label
+{
+    internal override string ClassName { get { return "LinkLabel"; } }
+
+    public LinkLabel() { ForeColor = Color.FromArgb(0, 0, 238); TabStop = true; }
+
+    public event EventHandler? LinkClicked;
+    public Color ActiveLinkColor = Color.FromArgb(255, 0, 0);
+    public Color VisitedLinkColor = Color.FromArgb(128, 0, 128);
+    public bool LinkVisited;
+
+    public override bool CanSelect { get { return TabStop && Visible && Enabled; } }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        Graphics g = e.Graphics;
+        string shown = ControlPaint.StripMnemonic(Text);
+        Color ink = !Enabled ? SystemColors.GrayText : LinkVisited ? VisitedLinkColor : ForeColor;
+
+        g.DrawString(shown, Font, new SolidBrush(ink), 0, 0);
+        g.FillRectangle(new SolidBrush(ink), 0, Font.Height - 1, shown.Length * Font.GlyphWidth, 1);
+
+        if (Focused && Enabled) ControlPaint.DrawFocusRectangle(g, -1, -1, shown.Length * Font.GlyphWidth + 2, Font.Height + 2);
+    }
+
+    protected override void OnClick(EventArgs e)
+    {
+        LinkVisited = true;
+        Invalidate();
+        EventHandler? h = LinkClicked;
+        if (h != null) h(this, EventArgs.Empty);
+        base.OnClick(e);
+    }
+
+    protected override void OnMouseDown(MouseEventArgs e) { Focus(); base.OnMouseDown(e); }
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (e.KeyCode == Keys.Enter || e.KeyCode == Keys.Space) { PerformClick(); e.Handled = true; }
+        base.OnKeyDown(e);
+    }
+}
+
+/// <summary>
+/// The little yellow box that appears when the pointer rests on something.
+/// One of these serves a whole form: SetToolTip says what each control's
+/// text is, and the rest happens on the message loop's timer.
+/// </summary>
+public class ToolTip
+{
+    static ToolTipWindow? _shown;
+    static Control? _over;
+    static long _since;
+    static readonly List<Control> _owners = new List<Control>();
+    static readonly List<string> _texts = new List<string>();
+    static Timer? _clock;
+
+    /// How long the pointer must rest before the tip appears, and how long
+    /// the tip stays up. Windows' numbers.
+    public int InitialDelay = 500;
+    public int AutoPopDelay = 5000;
+    public bool Active = true;
+
+    public ToolTip() { }
+
+    public void SetToolTip(Control c, string text)
+    {
+        int at = _owners.IndexOf(c);
+
+        if (text.Length == 0) { if (at >= 0) { _owners.RemoveAt(at); _texts.RemoveAt(at); } return; }
+        if (at >= 0) { _texts[at] = text; return; }
+
+        _owners.Add(c);
+        _texts.Add(text);
+        Start();
+    }
+
+    public string GetToolTip(Control c) { int at = _owners.IndexOf(c); return at < 0 ? "" : _texts[at]; }
+
+    /// The timer is one for the whole system and only runs while there is
+    /// something to show a tip for.
+    static void Start()
+    {
+        if (_clock != null) { return; }
+        _clock = new Timer();
+        _clock.Interval = 100;
+        _clock.Tick += Tick;
+        _clock.Start();
+    }
+
+    /// The pointer has moved on to `c`, or off everything.
+    internal static void Hover(Control? c)
+    {
+        if (_over == c) { return; }
+        _over = c;
+        _since = Application.Now();
+        Hide();
+    }
+
+    static void Tick(object sender, EventArgs e)
+    {
+        Control? over = _over;
+
+        if (over == null) { Hide(); return; }
+
+        int at = _owners.IndexOf(over);
+
+        if (at < 0) { Hide(); return; }
+
+        long waited = Application.Now() - _since;
+
+        if (_shown != null) { if (waited > 5500) Hide(); return; }
+        if (waited < 500) { return; }
+
+        Point where = over.PointToScreen(new Point(0, over.Height + 2));
+        ToolTipWindow window = new ToolTipWindow(_texts[at]);
+        int x = where.X, y = where.Y;
+
+        if (x + window.Width > Seat.Current.Width) x = Seat.Current.Width - window.Width;
+        if (y + window.Height > Seat.Current.Height) y = where.Y - over.Height - window.Height - 4;
+        if (x < 0) x = 0;
+        if (y < 0) y = 0;
+
+        window.SetBounds(x, y, window.Width, window.Height);
+        _shown = window;
+        window.Show();
+    }
+
+    static void Hide()
+    {
+        ToolTipWindow? window = _shown;
+        _shown = null;
+        if (window != null && !window.IsClosed) window.Close();
+    }
+
+    public void Hide(Control c) { Hide(); }
+    public void RemoveAll() { _owners.Clear(); _texts.Clear(); Hide(); }
+}
+
+/// The tip's window: no frame, never in the taskbar, and it never takes
+/// the focus, so whatever the person was doing keeps it.
+internal class ToolTipWindow : Form
+{
+    internal override string ClassName { get { return "ToolTip"; } }
+
+    readonly string _text;
+
+    internal ToolTipWindow(string text)
+    {
+        _text = text;
+        FormBorderStyle = FormBorderStyle.None;
+        StartPosition = FormStartPosition.Manual;
+        TopMost = true;
+        ShowInTaskbar = false;
+        BackColor = SystemColors.Info;
+        ForeColor = SystemColors.InfoText;
+        Width = text.Length * Font.GlyphWidth + 8;
+        Height = Font.Height + 6;
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        Graphics g = e.Graphics;
+        g.FillRectangle(new SolidBrush(SystemColors.Info), 0, 0, Width, Height);
+        g.DrawRectangle(new Pen(SystemColors.WindowFrame), 0, 0, Width, Height);
+        g.DrawString(_text, Font, new SolidBrush(SystemColors.InfoText), 4, 3);
+    }
+}
+
 public class ToolStripItem
 {
     public string Text = "";
     public Icon? Image;                // drawn in the gutter the text is already indented past
     public event EventHandler? Click;
     internal ContextMenuStrip? Owner;
+
+    /// A greyed-out command: still listed, still says what it is, and does
+    /// nothing. Leaving it out instead would make the menu change shape.
+    public bool Enabled = true;
+
+    /// A tick to the left of the name, for a command that is a setting.
+    public bool Checked;
+
+    /// What to put in the right-hand column: "Ctrl+S", "F5". Not acted on
+    /// here -- the program's own key handling does that -- but a menu that
+    /// does not say so leaves the keys undiscoverable.
+    public string ShortcutText = "";
+
     public ToolStripItem() { }
     public ToolStripItem(string text) { Text = text; }
-    public void PerformClick() { if (Click != null) Click(this, EventArgs.Empty); }
+    public void PerformClick() { if (Enabled && Click != null) Click(this, EventArgs.Empty); }
 }
 
 public class ToolStripMenuItem : ToolStripItem
@@ -1880,7 +3763,7 @@ public class ToolStripMenuItem : ToolStripItem
 
 public class ToolStripSeparator : ToolStripItem
 {
-    public ToolStripSeparator() : base("-") { }
+    public ToolStripSeparator() : base("-") { Enabled = false; }
 }
 
 public class ToolStripItemCollection
@@ -1898,16 +3781,29 @@ public class ToolStripItemCollection
     void Append(ToolStripItem item) { item.Owner = _owner; _items.Add(item); }
 }
 
+/// <summary>
 /// A popup list of commands at a screen position: a right-click menu, a
 /// start menu. Its own top-level window above everything; it goes away
 /// when a command is chosen, when Escape is pressed, or when a click
 /// anywhere else takes the focus from it.
+///
+/// It is worked with the keyboard as well as the pointer: the arrows move
+/// the highlight, Enter chooses, Escape shuts it, and a letter chooses the
+/// command whose name carries that letter after an ampersand.
+/// </summary>
 public class ContextMenuStrip : Form
 {
     internal override string ClassName { get { return "ContextMenuStrip"; } }
     public ToolStripItemCollection Items;
     int _hot = -1;
-    public const int ItemHeight = 22;
+    public const int ItemHeight = 19;
+    public const int SeparatorHeight = 9;
+
+    /// The band down the left that icons sit in. The text starts after it,
+    /// which is what lines every name in a menu up whether or not the
+    /// command beside it has a picture.
+    const int Gutter = 22;
+    const int Pad = 3;
 
     public ContextMenuStrip()
     {
@@ -1916,45 +3812,96 @@ public class ContextMenuStrip : Form
         StartPosition = FormStartPosition.Manual;
         TopMost = true;
         ShowInTaskbar = false;
-        BackColor = SystemColors.Control;
+        BackColor = SystemColors.Menu;
     }
 
     public void Show(Point screen) { Show(screen.X, screen.Y); }
 
     public void Show(int screenX, int screenY)
     {
-        int widest = 0;
-        for (int i = 0; i < Items.Count; i++) if (Items[i].Text.Length > widest) widest = Items[i].Text.Length;
-        int w = widest * Font.GlyphWidth + 42, h = Items.Count * ItemHeight + 6;
+        int widest = 0, shortcut = 0;
+
+        for (int i = 0; i < Items.Count; i++)
+        {
+            int length = ControlPaint.StripMnemonic(Items[i].Text).Length;
+            if (length > widest) widest = length;
+            if (Items[i].ShortcutText.Length > shortcut) shortcut = Items[i].ShortcutText.Length;
+        }
+
+        int w = Gutter + widest * Font.GlyphWidth + (shortcut > 0 ? (shortcut + 2) * Font.GlyphWidth : 0) + 24;
+        int h = Depth(Items.Count) + Pad * 2;
         Seat seat = Seat.Current;
+
         if (screenX + w > seat.Width) screenX = seat.Width - w;
         if (screenY + h > seat.WorkAreaHeight()) screenY = screenY - h;
         if (screenY < 0) screenY = 0;
+        if (screenX < 0) screenX = 0;
+
         SetBounds(screenX, screenY, w, h);
+        _hot = -1;
         Show();
+        Activate();
     }
 
-    int ItemAt(int y) { int i = (y - 3) / ItemHeight; return i >= 0 && i < Items.Count ? i : -1; }
+    /// How far down the menu the item at `index` starts, counting the
+    /// separators, which are shorter than commands.
+    int Depth(int index)
+    {
+        int at = 0;
+        for (int i = 0; i < index && i < Items.Count; i++) at += Items[i] is ToolStripSeparator ? SeparatorHeight : ItemHeight;
+        return at;
+    }
+
+    int ItemAt(int y)
+    {
+        int at = Pad;
+        for (int i = 0; i < Items.Count; i++)
+        {
+            int high = Items[i] is ToolStripSeparator ? SeparatorHeight : ItemHeight;
+            if (y >= at && y < at + high) return i;
+            at += high;
+        }
+        return -1;
+    }
 
     protected override void OnPaint(PaintEventArgs e)
     {
         Graphics g = e.Graphics;
         g.FillRectangle(new SolidBrush(BackColor), 0, 0, Width, Height);
         ControlPaint.DrawBorder3D(g, 0, 0, Width, Height, Border3DStyle.Raised);
+
         for (int i = 0; i < Items.Count; i++)
         {
-            int y = 3 + i * ItemHeight;
-            if (Items[i] is ToolStripSeparator)
+            ToolStripItem item = Items[i];
+            int y = Pad + Depth(i);
+
+            if (item is ToolStripSeparator)
             {
-                g.DrawLine(new Pen(SystemColors.ControlDark), 4, y + ItemHeight / 2, Width - 5, y + ItemHeight / 2);
-                g.DrawLine(new Pen(SystemColors.ControlLightLight), 4, y + ItemHeight / 2 + 1, Width - 5, y + ItemHeight / 2 + 1);
+                // THE GROOVE, not a line: shadow with highlight under it,
+                // the same edge a group box wears.
+                int at = y + SeparatorHeight / 2 - 1;
+                g.DrawLine(new Pen(SystemColors.ControlDark), 3, at, Width - 4, at);
+                g.DrawLine(new Pen(SystemColors.ControlLightLight), 3, at + 1, Width - 4, at + 1);
                 continue;
             }
-            bool hot = i == _hot;
+
+            bool hot = i == _hot && item.Enabled;
+
             if (hot) g.FillRectangle(new SolidBrush(SystemColors.Highlight), 3, y, Width - 6, ItemHeight);
-            Icon? picture = Items[i].Image;
-            if (picture != null) picture.Draw(g, 5, y + (ItemHeight - 16) / 2, 16);
-            g.DrawString(Items[i].Text, Font, new SolidBrush(hot ? SystemColors.HighlightText : ForeColor), 26, y + (ItemHeight - Font.Height) / 2);
+
+            if (item.Checked) ControlPaint.DrawCheckMark(g, 7, y + (ItemHeight - 8) / 2, hot ? SystemColors.HighlightText : SystemColors.MenuText);
+            else if (item.Image != null) item.Image.Draw(g, 4, y + (ItemHeight - 16) / 2, 16);
+
+            int ty = y + (ItemHeight - Font.Height) / 2;
+            Color ink = !item.Enabled ? SystemColors.GrayText : hot ? SystemColors.HighlightText : SystemColors.MenuText;
+
+            if (!item.Enabled)
+                ControlPaint.DrawStringMnemonic(g, item.Text, Font, new SolidBrush(SystemColors.ControlLightLight), Gutter + 1, ty + 1, true);
+
+            ControlPaint.DrawStringMnemonic(g, item.Text, Font, new SolidBrush(ink), Gutter, ty, true);
+
+            if (item.ShortcutText.Length > 0)
+                g.DrawString(item.ShortcutText, Font, new SolidBrush(ink), Width - 8 - item.ShortcutText.Length * Font.GlyphWidth, ty);
         }
         base.OnPaint(e);
     }
@@ -1970,15 +3917,58 @@ public class ContextMenuStrip : Form
     {
         int at = ItemAt(e.Y);
         base.OnMouseUp(e);
-        if (at < 0 || Items[at] is ToolStripSeparator) return;
-        ToolStripItem item = Items[at];
+        if (at < 0 || !Items[at].Enabled) return;
+        Choose(at);
+    }
+
+    void Choose(int index)
+    {
+        ToolStripItem item = Items[index];
         Close();
         item.PerformClick();
+    }
+
+    /// The next command in `step`'s direction, skipping separators and
+    /// anything greyed out, wrapping at the ends.
+    void Step(int step)
+    {
+        if (Items.Count == 0) { return; }
+
+        int at = _hot;
+        for (int tried = 0; tried < Items.Count; tried++)
+        {
+            at = (at + step + Items.Count) % Items.Count;
+            if (Items[at].Enabled && !(Items[at] is ToolStripSeparator)) { _hot = at; Invalidate(); return; }
+        }
+    }
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (e.KeyCode == Keys.Down) { Step(1); e.Handled = true; }
+        else if (e.KeyCode == Keys.Up) { Step(-1); e.Handled = true; }
+        else if (e.KeyCode == Keys.Escape) { e.Handled = true; Close(); }
+        else if ((e.KeyCode == Keys.Enter || e.KeyCode == Keys.Space) && _hot >= 0 && Items[_hot].Enabled) { e.Handled = true; Choose(_hot); }
+        base.OnKeyDown(e);
     }
 
     protected override void OnKeyPress(KeyPressEventArgs e)
     {
         if (e.KeyChar == (char)27) { e.Handled = true; Close(); return; }
+
+        // A LETTER PICKS THE COMMAND CARRYING IT. One match runs straight
+        // away; that is what a menu's underlined letters are for.
+        char key = e.KeyChar >= 'A' && e.KeyChar <= 'Z' ? (char)(e.KeyChar + 32) : e.KeyChar;
+
+        if (key > ' ' && key < (char)127)
+        {
+            for (int i = 0; i < Items.Count; i++)
+            {
+                if (!Items[i].Enabled || ControlPaint.MnemonicOf(Items[i].Text) != key) continue;
+                e.Handled = true;
+                Choose(i);
+                return;
+            }
+        }
         base.OnKeyPress(e);
     }
 
@@ -2115,6 +4105,25 @@ public static class Application
     /// before the window moved were against the old place, and applying
     /// their deltas again sent the window off the screen.
     internal static void BeginDrag(Form f, int x, int y) { _dragging = f; _dragX = x; _dragY = y; }
+
+    static Control? _hot;
+
+    /// <summary>
+    /// The pointer is over `c`. Whatever it was over before is told it has
+    /// left and `c` is told it has been entered, which is what a toolbar
+    /// button's hot bevel and a tooltip's timer both wait for.
+    /// </summary>
+    internal static void Hover(Control? c)
+    {
+        if (_hot == c) { return; }
+        Control? was = _hot;
+        _hot = c;
+        if (was != null) was.RaiseMouseLeave();
+        if (c != null) c.RaiseMouseEnter();
+        ToolTip.Hover(c);
+    }
+
+    internal static void Forget(Control c) { if (_hot == c) _hot = null; }
 
     internal static void SetFocus(Control? c)
     {
@@ -2297,19 +4306,40 @@ public static class Application
                 if (target == null) return;
                 int key = m.A & 0x1FF;
                 int mods = m.B;
-                if (m.Kind == 1 && (m.A & 0x200) != 0) mods = mods | 4;
-                if (key < 256)
+                if ((m.A & 0x200) != 0) mods = mods | 4;
+                Form? form = target.FindForm();
+                if (form == null) form = _active;
+
+                // THE ORDER WINDOWS USES, and the reason a dialog feels
+                // right: the control sees the key first, as a KeyDown and
+                // then -- if it is a character and nobody took it -- as a
+                // KeyPress. Only what is left over becomes a dialog key,
+                // so a text box keeps its arrows and its Enter, and a form
+                // still gets Tab, Escape and Alt from everywhere else.
+                KeyEventArgs down = new KeyEventArgs((Keys)key, mods);
+                target.RaiseKeyDown(down);
+                bool handled = down.Handled;
+
+                if (!handled) handled = target.ProcessDialogKey((Keys)key, mods);
+
+                // ALT AND A LETTER NEVER BECOMES TYPING. It is a mnemonic,
+                // and if nothing answers to it the key is simply dropped.
+                if (!handled && (mods & 4) != 0 && key > 32 && key < 256)
                 {
-                    KeyPressEventArgs e = new KeyPressEventArgs((char)key);
-                    target.RaiseKeyPress(e);
-                    if (!e.Handled && key == 9) { Form? tf = target.FindForm(); if (tf != null) SetFocus(NextFocusable(tf, target)); }
-                    if (!e.Handled && key == 27 && target.FindForm() != null && !(target is TextBox)) { }
+                    if (form != null) handled = Mnemonic(form, Lower((char)key));
+                    else handled = true;
+                    if (!handled) handled = true;
                 }
-                else
+
+                if (!handled && key < 256)
                 {
-                    KeyEventArgs e = new KeyEventArgs((Keys)key, mods);
-                    target.RaiseKeyDown(e);
+                    KeyPressEventArgs press = new KeyPressEventArgs((char)key);
+                    target.RaiseKeyPress(press);
+                    handled = press.Handled;
                 }
+
+                if (!handled && form != null) handled = DialogKey(form, target, (Keys)key, mods);
+
                 Message raw = m; target.DispatchRaw(ref raw);
                 break;
             }
@@ -2427,21 +4457,119 @@ public static class Application
         }
     }
 
-    static Control NextFocusable(Form f, Control from)
+    static char Lower(char c) { return c >= 'A' && c <= 'Z' ? (char)(c + 32) : c; }
+
+    /// <summary>
+    /// The keys a form acts on when no control wanted them: Tab and
+    /// Shift+Tab to move the focus, Enter to press the default button,
+    /// Escape to press the cancel button, and the arrows to move within a
+    /// set of radio buttons. True when the key was used.
+    /// </summary>
+    static bool DialogKey(Form f, Control target, Keys key, int mods)
     {
-        List<Control> all = new List<Control>();
-        Collect(f, all);
-        int i = all.IndexOf(from);
-        for (int step = 1; step <= all.Count; step++)
+        if (key == Keys.Tab)
         {
-            Control c = all[(i + step + all.Count) % all.Count];
-            if (c.Visible && c.Enabled && c.TabStop && !(c is Label) && !(c is Panel) && !(c is Form)) return c;
+            Control? next = Step(f, target, (mods & 1) != 0 ? -1 : 1);
+            if (next != null) SetFocus(next);
+            return true;
         }
-        return from;
+
+        if (key == Keys.Enter)
+        {
+            Button? accept = f.AcceptButton;
+            if (accept != null && accept.Visible && accept.Enabled) { accept.PerformClick(); return true; }
+            return false;
+        }
+
+        if (key == Keys.Escape)
+        {
+            Button? cancel = f.CancelButton;
+            if (cancel != null && cancel.Visible && cancel.Enabled) { cancel.PerformClick(); return true; }
+            return false;
+        }
+
+        // A SET OF RADIO BUTTONS IS ONE STOP on the tab order, and the
+        // arrows move within it -- picking as they go, which is what
+        // Windows does and what makes a set usable without the mouse.
+        if (target is RadioButton picked && (key == Keys.Up || key == Keys.Down || key == Keys.Left || key == Keys.Right))
+        {
+            Control? owner = picked.Parent;
+            if (owner == null) return false;
+            List<Control> group = new List<Control>();
+            Order(owner, group);
+            List<Control> radios = new List<Control>();
+            for (int i = 0; i < group.Count; i++) if (group[i] is RadioButton r && r.Parent == owner && r.Enabled && r.Visible) radios.Add(group[i]);
+            int at = radios.IndexOf(picked);
+            if (at < 0 || radios.Count < 2) return false;
+            int step = (key == Keys.Up || key == Keys.Left) ? -1 : 1;
+            Control moved = radios[(at + step + radios.Count) % radios.Count];
+            SetFocus(moved);
+            ((RadioButton)moved).Checked = true;
+            return true;
+        }
+        return false;
     }
 
-    static void Collect(Control c, List<Control> into)
+    /// Alt and a letter: whichever control on this form answers to it.
+    static bool Mnemonic(Form f, char key)
     {
-        for (int i = 0; i < c.Controls.Count; i++) { into.Add(c.Controls[i]); Collect(c.Controls[i], into); }
+        List<Control> all = new List<Control>();
+        Order(f, all);
+        for (int i = 0; i < all.Count; i++) if (all[i].Visible && all[i].Enabled && all[i].ProcessMnemonic(key)) return true;
+        return false;
     }
+
+    /// The control `step` places along the tab order from `from`, wrapping.
+    static Control? Step(Form f, Control from, int step)
+    {
+        List<Control> all = new List<Control>();
+        Order(f, all);
+        List<Control> stops = new List<Control>();
+        for (int i = 0; i < all.Count; i++) if (all[i].CanSelect && !Skipped(all[i])) stops.Add(all[i]);
+        if (stops.Count == 0) return null;
+        int at = stops.IndexOf(from);
+        if (at < 0) return stops[step > 0 ? 0 : stops.Count - 1];
+        return stops[(at + step + stops.Count) % stops.Count];
+    }
+
+    /// A radio button that is not the checked one of its set is stepped
+    /// over: Windows gives the whole set a single stop, at whichever
+    /// button is on, and the arrows move inside it.
+    static bool Skipped(Control c)
+    {
+        if (!(c is RadioButton radio) || radio.Checked) return false;
+        Control? owner = radio.Parent;
+        if (owner == null) return false;
+        for (int i = 0; i < owner.Controls.Count; i++)
+            if (owner.Controls[i] is RadioButton other && other.Checked && other.Visible && other.Enabled) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// Every control under `root`, in keyboard order: each container's
+    /// children sorted by TabIndex, each one followed immediately by its
+    /// own children. That is what makes a group box a place on the order
+    /// rather than a hole in it.
+    /// </summary>
+    static void Order(Control root, List<Control> into)
+    {
+        int count = root.Controls.Count;
+        List<Control> level = new List<Control>();
+        for (int i = 0; i < count; i++) level.Add(root.Controls[i]);
+
+        // A short insertion sort: a form has tens of controls, not
+        // thousands, and this keeps controls with equal TabIndex in the
+        // order they were added.
+        for (int i = 1; i < level.Count; i++)
+        {
+            Control moving = level[i];
+            int j = i - 1;
+            while (j >= 0 && level[j].TabIndex > moving.TabIndex) { level[j + 1] = level[j]; j--; }
+            level[j + 1] = moving;
+        }
+
+        for (int i = 0; i < level.Count; i++) { into.Add(level[i]); Order(level[i], into); }
+    }
+
+    internal static Control? NextInOrder(Form f, Control from, int step) { return Step(f, from, step); }
 }
