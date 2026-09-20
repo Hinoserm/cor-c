@@ -344,6 +344,15 @@ internal class TrueTypeFace
     }
 
     /// True when the glyph is built from other glyphs.
+    /// The left edge a glyph's header records, in font units: what its
+    /// left side bearing is measured to.
+    public int HeaderXMin(int glyph)
+    {
+        int length;
+        int at = GlyphOffset(glyph, out length);
+        return length > 0 ? S16(at + 2) : 0;
+    }
+
     public bool IsComposite(int glyph)
     {
         int length;
@@ -781,12 +790,36 @@ class TrueTypeHinter
         return (int)(value >= 0 ? (value + 0x8000) >> 16 : -((-value + 0x8000) >> 16));
     }
 
+    /// <summary>
+    /// A control value, scaled THE COARSE WAY: the 16.16 factor loses its
+    /// low six bits before it is used, and the value gains six to make up
+    /// for them. That is less accurate than the way an outline is scaled
+    /// and it is deliberate, because it is what the rasterisers a face
+    /// was tuned against do -- and a face tuned by machine leans on it. A
+    /// blue zone that scales to 11.50 pixels rounds up and one at 11.48
+    /// rounds down; Fira's cap height at sixteen pixels is exactly that
+    /// close, and the accurate answer puts the top of every digit a whole
+    /// pixel too high.
+    /// </summary>
+    int ScaleControlValue(int units)
+    {
+        int upem = _face.UnitsPerEm;
+        long factor = (((((long)_ppem * 64) << 16) + upem / 2) / upem) >> 6;
+        long value = (long)units * 64 * factor;
+        return (int)(value >= 0 ? (value + 0x8000) >> 16 : -((-value + 0x8000) >> 16));
+    }
+
     static int MulDiv(int a, int b, int c)
     {
         if (c == 0) { return 0; }
-        long value = (long)a * b;
-        long half = c / 2;
-        return (int)((value >= 0 ? value + half : value - half) / c);
+
+        // Rounded to nearest on the MAGNITUDES, the sign put back after:
+        // adding half of a negative divisor rounds the wrong way.
+        bool negative = (a < 0) != (b < 0) != (c < 0);
+        long value = (long)(a < 0 ? -(long)a : a) * (b < 0 ? -(long)b : b);
+        long divisor = c < 0 ? -(long)c : c;
+        long result = (value + divisor / 2) / divisor;
+        return (int)(negative ? -result : result);
     }
 
     /// a * b where b is 2.14: the dot of a distance with a unit vector.
@@ -1252,7 +1285,8 @@ class TrueTypeHinter
             else if (op == 0x5C) { Push(Pop() == 0 ? 1 : 0); }                     // NOT
             else if (op == 0x60) { int b = Pop(), a = Pop(); Push(a + b); }
             else if (op == 0x61) { int b = Pop(), a = Pop(); Push(a - b); }
-            else if (op == 0x62) { int b = Pop(), a = Pop(); Push(b == 0 ? 0 : MulDiv(a, 64, b)); }
+            // DIV truncates where MUL rounds; both as the rasterisers do.
+            else if (op == 0x62) { int b = Pop(), a = Pop(); Push(b == 0 ? 0 : (int)(((long)a * 64) / b)); }
             else if (op == 0x63) { int b = Pop(), a = Pop(); Push(MulDiv(a, b, 64)); }
             else if (op == 0x64) { Push(Abs(Pop())); }
             else if (op == 0x65) { Push(-Pop()); }
@@ -1400,11 +1434,20 @@ class TrueTypeHinter
             }
             else if (op == 0x49 || op == 0x4A)                         // MD
             {
-                int p2 = Pop(), p1 = Pop();
+                // THE ORDER MATTERS AND IS NOT THE OBVIOUS ONE: the point
+                // pushed FIRST is measured from the point pushed last, in
+                // zp0 and zp1 respectively. Hand-written hinting rarely
+                // cares, since it mostly wants the size of the distance;
+                // ttfautohint divides one of these by a subtraction it
+                // does itself to get an interpolation ratio, and with
+                // the sign flipped every point it interpolates lands as
+                // far BELOW the baseline as it belonged above it.
+                int top = Pop(), deeper = Pop();
                 TrueTypeZone z0 = Zone(_zp0), z1 = Zone(_zp1);
 
-                if (op == 0x49) { Push(Project(z0, p2, false) - Project(z1, p1, false)); }
-                else { Push(ProjectDual(z0, p2) - ProjectDual(z1, p1)); }
+                if (top < 0 || top >= z1.PointCount || deeper < 0 || deeper >= z0.PointCount) { Soft(); Push(0); }
+                else if (op == 0x49) { Push(Project(z0, deeper, false) - Project(z1, top, false)); }
+                else { Push(ProjectDual(z0, deeper) - ProjectDual(z1, top)); }
             }
 
             // --- moving points ---------------------------------------------
@@ -2087,7 +2130,7 @@ class TrueTypeHinter
         for (int i = 0; i < _storage.Length; i++) { _storage[i] = 0; }
 
         int values = _face.ControlValueCount;
-        for (int i = 0; i < _cvt.Length; i++) { _cvt[i] = i < values ? Scale(_face.ControlValue(i)) : 0; }
+        for (int i = 0; i < _cvt.Length; i++) { _cvt[i] = i < values ? ScaleControlValue(_face.ControlValue(i)) : 0; }
 
         ResetState();
 
@@ -2993,6 +3036,197 @@ class TrueTypeSize
     /// `real`/`fittedAdvance` describing it.
     /// </summary>
     bool Fit(int glyph, out int real, out int fittedAdvance, out int blankAdvance)
+    {
+        if (_hinted && _face.IsComposite(glyph))
+        {
+            if (FitComposite(glyph, out real, out fittedAdvance)) { return true; }
+
+            // Anything the careful way cannot do falls to the old one.
+        }
+        return FitFlat(glyph, out real, out fittedAdvance, out blankAdvance);
+    }
+
+    // ---- composites, component by component --------------------------
+    //
+    // A COMPOSITE IS NOT ONE OUTLINE WITH ONE PROGRAM. Each component is
+    // a glyph in its own right and is fitted as one, by ITS program, at
+    // its own origin; only then is it moved to where the composite wants
+    // it -- by an offset that the composite may ask to have rounded to
+    // whole pixels, precisely so that a fitted dot stays fitted over a
+    // fitted stem -- and only after all of them are placed does the
+    // composite's own program, if it has one, run over the lot. Flatten
+    // the parts in font units and run just the composite's program, and
+    // every i, every j, every accented letter and every per cent sign is
+    // drawn from components nobody hinted.
+
+    int[] _partX = new int[0], _partY = new int[0];
+    bool[] _partOn = new bool[0];
+    int[] _partEnd = new int[0];
+    int _partPoints, _partContours;
+    int _metricsOrigin, _metricsAdvance;
+    bool _metricsTaken;
+
+    void PartReserve(int points, int contours)
+    {
+        if (points > _partX.Length)
+        {
+            int size = points + 64;
+            int[] x = new int[size], y = new int[size];
+            bool[] on = new bool[size];
+            for (int i = 0; i < _partPoints; i++) { x[i] = _partX[i]; y[i] = _partY[i]; on[i] = _partOn[i]; }
+            _partX = x; _partY = y; _partOn = on;
+        }
+        if (contours > _partEnd.Length)
+        {
+            int[] end = new int[contours + 16];
+            for (int i = 0; i < _partContours; i++) { end[i] = _partEnd[i]; }
+            _partEnd = end;
+        }
+    }
+
+    bool FitComposite(int glyph, out int real, out int fittedAdvance)
+    {
+        real = 0;
+        fittedAdvance = 0;
+
+        _partPoints = 0;
+        _partContours = 0;
+        _metricsTaken = false;
+
+        if (!Gather(glyph, 0)) { return false; }
+        if (_partPoints == 0) { return false; }
+
+        int composite, compositeLength;
+        _face.Components(glyph, out composite, out compositeLength);
+
+        TrueTypeZone zone = _hinter.Glyph;
+        zone.Allocate(_partPoints + 4, _partContours);
+
+        // What the components became IS this glyph's outline: there is
+        // no drawn original of the assembly to measure against.
+        for (int i = 0; i < _partPoints; i++)
+        {
+            zone.OrgX[i] = _partX[i]; zone.OrgY[i] = _partY[i];
+            zone.CurX[i] = _partX[i]; zone.CurY[i] = _partY[i];
+            zone.OnCurve[i] = _partOn[i];
+            zone.TouchX[i] = false; zone.TouchY[i] = false;
+        }
+        for (int i = 0; i < _partContours; i++) { zone.ContourEnd[i] = _partEnd[i]; }
+        zone.HasUnscaled = false;
+
+        real = _partPoints;
+
+        int origin, advance;
+
+        if (_metricsTaken) { origin = _metricsOrigin; advance = _metricsAdvance; }
+        else
+        {
+            int originUnits = _face.HeaderXMin(glyph) - _face.LeftSideBearing(glyph);
+            origin = (Scale(originUnits) + 32) & -64;
+            advance = (Scale(originUnits + _face.AdvanceWidth(glyph)) + 32) & -64;
+        }
+
+        Phantom(zone, real + 0, origin, 0);
+        Phantom(zone, real + 1, advance, 0);
+        Phantom(zone, real + 2, 0, 0);
+        Phantom(zone, real + 3, 0, 0);
+
+        if (compositeLength > 0)
+        {
+            if (!_hinter.HintGlyph(composite, compositeLength))
+            {
+                for (int i = 0; i < zone.PointCount; i++) { zone.CurX[i] = zone.OrgX[i]; zone.CurY[i] = zone.OrgY[i]; }
+            }
+        }
+
+        fittedAdvance = zone.CurX[real + 1] - zone.CurX[real];
+        return true;
+    }
+
+    /// One glyph's fitted points, appended to the parts: itself if it is
+    /// simple, its components in turn if it is not.
+    bool Gather(int glyph, int depth)
+    {
+        if (depth > 5) { return false; }
+
+        if (!_face.IsComposite(glyph))
+        {
+            int real, advance, blank;
+
+            if (!FitFlat(glyph, out real, out advance, out blank)) { return true; }   // empty: nothing to add
+
+            TrueTypeZone zone = _hinter.Glyph;
+            PartReserve(_partPoints + real, _partContours + zone.ContourCount);
+
+            for (int c = 0; c < zone.ContourCount; c++)
+            {
+                if (zone.ContourEnd[c] >= real) { break; }
+                _partEnd[_partContours] = _partPoints + zone.ContourEnd[c];
+                _partContours++;
+            }
+            for (int i = 0; i < real; i++)
+            {
+                _partX[_partPoints] = zone.CurX[i]; _partY[_partPoints] = zone.CurY[i];
+                _partOn[_partPoints] = zone.OnCurve[i];
+                _partPoints++;
+            }
+
+            _lastOrigin = zone.CurX[real]; _lastAdvance = zone.CurX[real + 1];
+            return true;
+        }
+
+        int unused, unusedLength;
+        TrueTypeFace.Component[] parts = _face.Components(glyph, out unused, out unusedLength);
+
+        for (int p = 0; p < parts.Length; p++)
+        {
+            TrueTypeFace.Component part = parts[p];
+
+            // Placing by matched points is left to the old way.
+            if (!part.ArgumentsAreOffsets) { return false; }
+
+            int firstPoint = _partPoints;
+
+            if (!Gather(part.Glyph, depth + 1)) { return false; }
+
+            if (part.UseMyMetrics && depth == 0)
+            {
+                _metricsTaken = true; _metricsOrigin = _lastOrigin; _metricsAdvance = _lastAdvance;
+            }
+
+            if (part.HasTransform)
+            {
+                for (int i = firstPoint; i < _partPoints; i++)
+                {
+                    int x = _partX[i], y = _partY[i];
+                    _partX[i] = (int)(((long)x * part.XX + (long)y * part.YX) >> 14);
+                    _partY[i] = (int)(((long)x * part.XY + (long)y * part.YY) >> 14);
+                }
+            }
+
+            int ox = part.Argument1, oy = part.Argument2;
+
+            if (part.ScaledComponentOffset)
+            {
+                int tx = (ox * part.XX + oy * part.YX) >> 14, ty = (ox * part.XY + oy * part.YY) >> 14;
+                ox = tx; oy = ty;
+            }
+
+            int sx = Scale(ox), sy = Scale(oy);
+
+            // ROUNDED WHERE ASKED: the dot of an i sits a whole number of
+            // pixels above its stem, or the gap between them changes
+            // from one size to the next.
+            if (part.RoundToGrid) { sx = (sx + 32) & -64; sy = (sy + 32) & -64; }
+
+            for (int i = firstPoint; i < _partPoints; i++) { _partX[i] += sx; _partY[i] += sy; }
+        }
+        return true;
+    }
+
+    int _lastOrigin, _lastAdvance;
+
+    bool FitFlat(int glyph, out int real, out int fittedAdvance, out int blankAdvance)
     {
         real = 0;
         fittedAdvance = 0;
