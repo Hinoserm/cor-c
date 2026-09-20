@@ -88,6 +88,41 @@ public class Seat : IDrawingTarget
     /// Asks the seat to change mode now. The rate may be zero, which means
     /// whichever the card would pick for that size.
     /// </summary>
+    /// <summary>
+    /// The card this seat draws on, as its driver describes it. Asked of
+    /// the seat each time: how much display memory is free changes as
+    /// windows come and go.
+    /// </summary>
+    public DisplayAdapter Adapter()
+    {
+        DisplayAdapter made = new DisplayAdapter();
+        byte[] block = new byte[160];
+
+        Flush();
+        if (Os.Ioctl(_fd, 0x47550035, Sys.ArrayData(block)) < 0) { return made; }
+
+        made.Name = Text(block, 0, 64);
+        made.Detail = Text(block, 64, 64);
+        made.Driver = Text(block, 128, 16);
+        made.MemoryKiB = Word(block, 144);
+        made.FreeKiB = Word(block, 148);
+        made.Capabilities = Word(block, 152);
+        made.ModeCount = Word(block, 156);
+        return made;
+    }
+
+    static string Text(byte[] block, int from, int room)
+    {
+        string text = "";
+        for (int i = 0; i < room && block[from + i] != 0; i++) text = text + (char)block[from + i];
+        return text;
+    }
+
+    static int Word(byte[] block, int at)
+    {
+        return block[at] | (block[at + 1] << 8) | (block[at + 2] << 16) | (block[at + 3] << 24);
+    }
+
     public bool SetMode(int width, int height, int refresh) { return SetMode(width, height, refresh, 0); }
 
     /// The same with a colour depth in bits per pixel; nought keeps the
@@ -537,6 +572,23 @@ public static class Cursors
     /// Shapes a program defined itself are numbered from here: the id it
     /// gave DefineCursor, plus this.
     public const int Base = 256;
+}
+
+/// What Seat.Adapter() answers with.
+public class DisplayAdapter
+{
+    public string Name = "";            // "Cirrus Logic GD5446"
+    public string Detail = "";          // the bus, the engine, the BIOS: one line
+    public string Driver = "";          // the driver's own short word for it
+    public int MemoryKiB, FreeKiB;
+    public int Capabilities;
+    public int ModeCount;
+
+    /// "4 MB", "512 KB": display memory the way a card's box said it.
+    public string MemoryText
+    {
+        get { return MemoryKiB >= 1024 && MemoryKiB % 1024 == 0 ? (MemoryKiB / 1024) + " MB" : MemoryKiB + " KB"; }
+    }
 }
 
 public static class Shell
