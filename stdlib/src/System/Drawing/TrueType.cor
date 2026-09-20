@@ -2515,6 +2515,80 @@ class TrueTypeRaster
                 else if (was != 0 && wind == 0) { Span(into, row, spanFrom - originX, _crossing[i] - originX, dropout, step); }
             }
         }
+
+        if (dropout && step == 64) { SweepColumns(into, originX, originY); }
+    }
+
+    /// <summary>
+    /// THE SECOND SWEEP, DOWN THE COLUMNS. Sampling along rows finds every
+    /// stroke that crosses a row's centre line and misses one that lies
+    /// flat between two of them -- a serif, the bar of a small e, the foot
+    /// of a 2 -- however long it is. Those are found the same way turned
+    /// on its side: down each column's centre line, an inside run holding
+    /// no pixel centre is a stroke the rows could not see. Nothing is
+    /// FILLED here; the rows did that. This only rescues.
+    /// </summary>
+    void SweepColumns(TrueTypeBitmap into, int originX, int originY)
+    {
+        for (int column = 0; column < into.Width; column++)
+        {
+            int sample = originX + column * 64 + 32;
+            int count = 0;
+
+            for (int e = 0; e < _edges; e++)
+            {
+                int x0 = _x0[e], x1 = _x1[e];
+                int direction = 1;
+
+                if (x0 > x1) { int t = x0; x0 = x1; x1 = t; direction = -1; }
+                if (sample < x0 || sample >= x1) { continue; }
+
+                int ay = direction > 0 ? _y0[e] : _y1[e];
+                int by = direction > 0 ? _y1[e] : _y0[e];
+
+                _stubX[count] = ay + (int)(((long)(by - ay) * (sample - x0)) / (x1 - x0)) - originY;
+                _stubW[count] = direction;
+                count++;
+                if (count >= _stubX.Length) { break; }
+            }
+
+            if (count < 2) { continue; }
+
+            for (int i = 1; i < count; i++)
+            {
+                int cy = _stubX[i], cw = _stubW[i];
+                int j = i - 1;
+                while (j >= 0 && _stubX[j] > cy) { _stubX[j + 1] = _stubX[j]; _stubW[j + 1] = _stubW[j]; j--; }
+                _stubX[j + 1] = cy; _stubW[j + 1] = cw;
+            }
+
+            int wind = 0, from = 0;
+
+            for (int i = 0; i < count; i++)
+            {
+                int was = wind;
+                wind += _stubW[i];
+
+                if (was == 0 && wind != 0) { from = _stubX[i]; continue; }
+                if (!(was != 0 && wind == 0)) { continue; }
+
+                int to = _stubX[i];
+                if (to <= from) { continue; }
+
+                int first = from - 32 < 0 ? 0 : (from - 32 + 63) / 64;
+                int last = to - 32 < 0 ? -1 : (to - 32 - 1) / 64;
+                if (last >= first) { continue; }            // a centre is covered: the rows saw it
+
+                int row = from + to - 1 < 0 ? -1 : (from + to - 1) / 2 / 64;
+                int lower = to - 32 < 0 ? -1 : (to - 32) / 64;
+                int other = row == lower ? lower + 1 : lower;
+
+                if (into.At(column, other)) { continue; }
+                if (row < 0) { row = 0; }
+                if (row >= into.Height) { row = into.Height - 1; }
+                into.Set(column, row);
+            }
+        }
     }
 
     /// One run of "inside", from `from` to `to` in 26.6, on `row`, at a
@@ -2559,6 +2633,14 @@ class TrueTypeRaster
             {
                 int pixel = (from + to - 1) / 2 / step;
                 if (from + to - 1 < 0) { pixel = -1; }
+
+                // The stroke lies between two centres; if the OTHER of
+                // the two is already lit the stroke is already drawn, by
+                // whatever lit it, and a second pixel only thickens it.
+                int lower = to - half < 0 ? -1 : (to - half) / step;
+                int other = pixel == lower ? lower + 1 : lower;
+                if (into.At(other, row)) { return; }
+
                 if (pixel < 0) { pixel = 0; }
                 if (pixel >= into.Width) { pixel = into.Width - 1; }
                 into.Set(pixel, row);
