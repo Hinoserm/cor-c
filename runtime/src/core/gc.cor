@@ -162,8 +162,8 @@ static class Gc
     static bool _concurrent;        // this cycle lets the world run while marking
     static long _phase;             // 0 the first stop, 1 the second
     static long _barrier;           // the barrier's ring, or 0
-    const long BarrierBytes = 65536;
-    const long BarrierCount = 16384;
+    const long BarrierBytes = 131072;
+    const long BarrierCount = 16384;        // places, two words each
 
     public static long ConcurrentCycles;
     public static long BarrierTaken;
@@ -1653,7 +1653,10 @@ static class Gc
         if (_concurrent)
         {
             // The barrier is up BEFORE anybody runs: a store made by the
-            // first instruction after the stop is already reported.
+            // first instruction after the stop is already reported. (A plain
+            // store, seen by the others in time because the atomic exchange
+            // that lets them go comes after it and this is a machine that
+            // keeps one processor's stores in order for the rest.)
             Runtime.Marking = 1;
             GcThreads.StartWorld();
             if (PauseHook != 0) Sys.Call(PauseHook, 1, 0, 0);
@@ -1924,26 +1927,41 @@ static class Gc
 
     // ---- the barrier's ring ----------------------------------------------
     //
-    // Many writers, one reader, nothing held: a writer claims a place with
-    // one atomic add and stores into it; the reader takes places in order
-    // and stops at one that is claimed and not yet written. A writer is
-    // never stopped for a collection between its claim and its store
-    // (Tls.InAlloc), so at a stop every claimed place is written or was
-    // given up because the ring was full -- and a full ring is remembered.
+    // Many writers, one reader, nothing held. A writer claims a place with
+    // one atomic add, stores its value there, and then SIGNS the place with
+    // the number it claimed; the reader takes places in order and takes one
+    // only if it carries the number the reader has reached. The numbers
+    // never start again, so a signature is good for one visit of one place.
+    //
+    // WHY A SIGNATURE AND NOT JUST "NOT ZERO". A writer is never stopped
+    // for a collection between claiming and storing (Tls.InAlloc) -- but on
+    // a kernel it can be BLOCKED there: an interrupt arrives on top of it,
+    // the handler waits for a lock, and a thread waiting for a lock counts
+    // as stopped. The stop goes ahead with a place claimed and empty, and
+    // the store comes late, perhaps cycles later, into a place that by then
+    // belongs to somebody else's claim. Unsigned, the reader would take the
+    // stale value for the new claim and miss the real one. Signed with an
+    // old number, it is nobody's, and is written over.
+    //
+    // A place found claimed and unsigned at a stop means a report is
+    // missing; so does a full ring. Either is remembered (BarrierLost) and
+    // the mark is finished the long way, with the world stopped -- which
+    // reads the late writer's stack, where the missing value is.
 
     static void ResetBarrier()
     {
         long ctl = GcLock.Words();
 
-        if (_barrier != 0)
-        {
-            long i = 0;
-            while (i < BarrierCount) { Sys.Poke(_barrier + i * 4, Zero); i = i + 1; }
-        }
-
-        Sys.AtomicSwap(ctl + GcLock.BarrierTail, 0);
-        Sys.AtomicSwap(ctl + GcLock.BarrierHead, 0);
+        // Whatever was claimed since the last mark ended was claimed by a
+        // barrier already past its test of Marking: it reports on a graph
+        // this snapshot does not need to be told about.
+        Sys.AtomicSwap(ctl + GcLock.BarrierHead, Sys.Peek(ctl + GcLock.BarrierTail));
         Sys.AtomicSwap(ctl + GcLock.BarrierLost, 0);
+    }
+
+    static long Signature(long place)
+    {
+        return (place & 0x7FFFFFFF) | 0x80000000;
     }
 
     /// What the compiled barrier calls, through Runtime.WriteBarrier, when a
@@ -1989,7 +2007,9 @@ static class Gc
             return;
         }
 
-        Sys.Poke(_barrier + (place & (BarrierCount - 1)) * 4, value);
+        long at = _barrier + (place & (BarrierCount - 1)) * 8;
+        Sys.Poke(at + 4, value);
+        Sys.AtomicSwap(at, Signature(place));
     }
 
     /// Marks what has been reported. With the world running it stops at a
@@ -2010,19 +2030,24 @@ static class Gc
 
         while (head != tail)
         {
-            long at = _barrier + (head & (BarrierCount - 1)) * 4;
-            long value = Sys.Peek(at);
+            long at = _barrier + (head & (BarrierCount - 1)) * 8;
 
-            if (value == 0)
+            if ((Sys.Peek(at) & 0xFFFFFFFF) != Signature(head))
             {
+                // Claimed, not signed. With the world running its writer is
+                // a few instructions away: come back. At a stop there is no
+                // such thing as a moment: the report is missing.
                 if (!all)
                 {
                     break;
                 }
+
+                Sys.AtomicSwap(ctl + GcLock.BarrierLost, 1);
             }
             else
             {
-                Sys.Poke(at, Zero);
+                long value = Sys.Peek(at + 4);
+                Sys.AtomicSwap(at, 0);
                 BarrierTaken = BarrierTaken + 1;
                 MarkAt(value);
             }
@@ -3047,7 +3072,9 @@ static class GcThreads
     /// that is asleep in the kernel and will not allocate until woken.
     public static void BeginBlocking()
     {
-        if (GcLock.IsCollector(Sys.ThreadBlock()))
+        long self = Sys.ThreadBlock();
+
+        if (GcLock.IsCollector(self) || Sys.Peek(self + Tls.InAlloc) != 0)
         {
             return;
         }
@@ -3055,11 +3082,21 @@ static class GcThreads
         Platform.SafePoint(Stopped);
     }
 
+    // NOT FROM INSIDE THE ALLOCATOR OR THE BARRIER (Tls.InAlloc). On a
+    // kernel an interrupt lands anywhere, its handler may wait for a lock,
+    // and a wait is a blocking region -- on the thread block of whatever it
+    // interrupted. If that was the few instructions between an allocation's
+    // limit check and its bump, or between a barrier's claim and its store,
+    // counting the thread as stopped lets a collection retire the buffer it
+    // is about to bump in, or read a ring with a report still missing. So
+    // there the wait is made as a running thread: the collector asks again,
+    // and the handler is out in microseconds, since what it waits for is
+    // held by code that neither allocates nor can be stopped.
     public static void EndBlocking()
     {
         long block = Sys.ThreadBlock();
 
-        if (GcLock.IsCollector(block))
+        if (GcLock.IsCollector(block) || Sys.Peek(block + Tls.InAlloc) != 0)
         {
             return;
         }
