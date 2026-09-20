@@ -1027,6 +1027,80 @@ public sealed partial class Lowering
     }
 
     /// <summary>
+    /// The descriptor of a primitive: int, bool, char and the rest.
+    ///
+    /// A primitive has no vtable and nothing to dispatch, but a descriptor
+    /// is what a TYPE'S IDENTITY is here -- `typeof(int) == typeof(int)`
+    /// compares two addresses -- so it needs one, and every unit must agree
+    /// on it. Coalescible and marked as the library's for exactly that
+    /// reason: two copies would be two types, and `typeof(int)` in a program
+    /// would not equal `typeof(int)` in the library it links.
+    ///
+    /// The name is the one .NET answers, because that is what `Type.Name`
+    /// means: `typeof(int).Name` is "Int32" and has been since 2002.
+    /// </summary>
+    private string PrimitiveDescriptor(Prim prim)
+    {
+        string named = PrimitiveName(prim);
+
+        if (prim == Prim.String)
+        {
+            return SequenceDescriptor("byte", 1, isString: true);
+        }
+
+        if (_primitiveDescriptors.TryGetValue(prim, out string? sym))
+        {
+            return sym;
+        }
+
+        sym = "v_" + Safe(named);
+        _primitiveDescriptors[prim] = sym;
+
+        byte[] d = new byte[_t.DescriptorBytes];
+        int w = _t.WordSize;
+
+        WriteWord(d, DescSize * w, PrimitiveBytes(prim));
+        WriteWord(d, DescDepth * w, -1);
+
+        DataItem item = new(sym, d) { ReadOnly = true, Align = _t.Align64, FromLibrary = true, Coalescible = true };
+
+        _m.Data.Add(item);
+        item.Relocs.Add(new DataReloc(DescName * w, InternString(named), 0));
+        item.Relocs.Add(new DataReloc(DescSelf * w, sym, 0));
+        return sym;
+    }
+
+    private readonly Dictionary<Prim, string> _primitiveDescriptors = new();
+
+    private static string PrimitiveName(Prim prim) => prim switch
+    {
+        Prim.Bool => "Boolean",
+        Prim.I8 => "SByte",
+        Prim.I16 => "Int16",
+        Prim.I32 => "Int32",
+        Prim.I64 => "Int64",
+        Prim.U8 => "Byte",
+        Prim.U16 => "UInt16",
+        Prim.U32 => "UInt32",
+        Prim.U64 => "UInt64",
+        Prim.NInt => "IntPtr",
+        Prim.NUInt => "UIntPtr",
+        Prim.F32 => "Single",
+        Prim.F64 => "Double",
+        Prim.Char => "Char",
+        _ => "String",
+    };
+
+    private int PrimitiveBytes(Prim prim) => prim switch
+    {
+        Prim.Bool or Prim.I8 or Prim.U8 => 1,
+        Prim.I16 or Prim.U16 or Prim.Char => 2,
+        Prim.I32 or Prim.U32 or Prim.F32 => 4,
+        Prim.I64 or Prim.U64 or Prim.F64 => 8,
+        _ => _t.WordSize,
+    };
+
+    /// <summary>
     /// Whether an array of elements spelled this way holds references.
     ///
     /// INTERIM, and by name rather than by type: the one place that creates

@@ -21,9 +21,13 @@ public static class IrTypes
     /// <summary>The IR type a source type is carried in.</summary>
     public static IrType Of(Type t)
     {
-        if (t.Symbol is { Kind: TypeKind.Enum })
+        // AN ENUM IS ITS UNDERLYING INTEGER, which is int unless the
+        // declaration said otherwise: `enum E : long` is carried in sixty-four
+        // bits, and carrying it in thirty-two would drop the top half of every
+        // member that needed them.
+        if (t.Symbol is { Kind: TypeKind.Enum } counted)
         {
-            return IrType.I32;      // an enum is its int, whatever the word is
+            return counted.EnumUnderlying is Prim.I64 or Prim.U64 ? IrType.I64 : IrType.I32;
         }
 
         if (t.IsPointer || t.IsNullableValue || t.IsReference || t.IsArray || t.Symbol is not null)

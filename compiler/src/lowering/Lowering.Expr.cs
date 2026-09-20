@@ -479,10 +479,17 @@ public sealed partial class Lowering
             case SizeOfExpr so:
                 return _e.Const(_b.SizeOfType(so), IrType.I32);
 
-            case TypeOfExpr to:
-                return _b.TypeOfs.TryGetValue(to, out TypeSymbol? named)
-                     ? _e.Address(DescriptorOf(named))
-                     : _e.Const(0, IrTypes.Word);
+            case TypeOfExpr to when _b.TypeOfs.TryGetValue(to, out TypeSymbol? named):
+                return _e.Address(DescriptorOf(named));
+
+            case TypeOfExpr to when _b.PrimitiveTypeOfs.TryGetValue(to, out Prim prim):
+                return _e.Address(PrimitiveDescriptor(prim));
+
+            case TypeOfExpr to when _b.ArrayTypeOfs.TryGetValue(to, out Type? element):
+                return _e.Address(SequenceDescriptor(element.ToString(), Math.Max(1, element.Size), isString: false));
+
+            case TypeOfExpr:
+                return _e.Const(0, IrTypes.Word);
 
             case DefaultExpr df when IsStructValue(_b.TypeOf(df)):
                 return Allocate(df, Math.Max(1, _b.TypeOf(df).Symbol!.InstanceSize));
@@ -2508,6 +2515,12 @@ public sealed partial class Lowering
     /// <summary>The standard library's one-character-as-a-string, what a char joined to a string becomes.</summary>
     private const string FromCharMethod = "FromByte";
 
+    /// <summary>Whether the linked String provides this, without complaining
+    /// when it does not.</summary>
+    private bool HasStringMethod(string method)
+        => _b.Types.TryGetValue(Prelude.StringType, out TypeSymbol? type)
+        && type.Methods.Any(m => m.Name == method && m.Static && m.Params.Count == 1);
+
     private MethodSymbol? StringMethod(Node at, string method, int argCount, string because)
     {
         if (_b.Types.TryGetValue(Prelude.StringType, out TypeSymbol? type))
@@ -2710,9 +2723,19 @@ public sealed partial class Lowering
         bool asChar = type.Prim == Prim.Char;
         bool asBool = type.Prim == Prim.Bool;
         bool asReal = type.IsFloat;
+
+        // AN UNSIGNED SIXTY-FOUR-BIT NUMBER IS NOT A SIGNED ONE. Everything
+        // narrower fits in a long with its value intact, so the signed
+        // formatter is exact for it; a ulong with its top bit set does not,
+        // and reads as negative. Falls back where no library provides the
+        // unsigned formatter, which is what a freestanding build with its own
+        // minimal String does.
+        bool asUnsigned = type.Prim is Prim.U64
+                       || (type.Prim is Prim.NUInt && _t.WordSize == 8);
         string method = asChar ? FromCharMethod
                       : asBool ? Prelude.FromBoolMethod
                       : asReal ? Prelude.FromDoubleMethod
+                      : asUnsigned && HasStringMethod(Prelude.FromUIntMethod) ? Prelude.FromUIntMethod
                       : Prelude.FromIntMethod;
         string because = asChar ? "joining a char to a string"
                        : asBool ? "joining a bool to a string"

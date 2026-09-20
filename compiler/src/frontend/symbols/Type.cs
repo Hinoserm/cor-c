@@ -235,7 +235,8 @@ public sealed class Type : IEquatable<Type>
     // own width. Treating int? as four bytes truncated the cell address on a
     // load; it only appeared to work while image layout happened to leave the
     // allocation below 4 GiB.
-    public int Size => Symbol is { Kind: TypeKind.Enum } ? 4
+    public int Size => Symbol is { Kind: TypeKind.Enum } counted
+        ? Target.Current.SizeOf(counted.EnumUnderlying)
         : IsPointer || IsNullableValue || IsReference || IsArray || Symbol is not null
         ? Target.Current.WordSize
         : Target.Current.SizeOf(Prim);

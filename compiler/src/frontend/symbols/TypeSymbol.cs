@@ -57,6 +57,13 @@ public sealed class TypeSymbol
     public Dictionary<string, long> EnumValues { get; } = new();
 
     /// <summary>
+    /// What an enum is STORED AS: `enum E : long` is eight bytes and `enum
+    /// E : byte` is one, exactly as C# says. Int32 when none was written,
+    /// which is C#'s default and by far the common case.
+    /// </summary>
+    public Prim EnumUnderlying { get; set; } = Prim.I32;
+
+    /// <summary>
     /// Whether an enum was written `[Flags]`: a SET OF BITS rather than a
     /// list of alternatives. C# gives it one behaviour and one only, and it
     /// is the one people notice -- `(Read | Run).ToString()` says

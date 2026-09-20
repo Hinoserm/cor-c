@@ -385,6 +385,13 @@ abstract class TextWriter : IDisposable
         Write(String.FromInt(value));
     }
 
+    /// A ulong is not a long: above long.MaxValue the signed formatter reads
+    /// the top bit as a sign and answers a negative number.
+    public virtual void Write(ulong value)
+    {
+        Write(String.FromUInt(value));
+    }
+
     public virtual void WriteLine()
     {
         Write('\n');
@@ -397,6 +404,12 @@ abstract class TextWriter : IDisposable
     }
 
     public virtual void WriteLine(long value)
+    {
+        Write(value);
+        WriteLine();
+    }
+
+    public virtual void WriteLine(ulong value)
     {
         Write(value);
         WriteLine();
