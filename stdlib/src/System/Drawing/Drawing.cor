@@ -7,11 +7,15 @@
 // later the GUI kernel, executes them against the engine. Colours are
 // logical RGB all the way down; the target resolves them to its depth.
 //
-// Text is drawn as glyphs the seat already knows: the system font's 256
-// glyphs are defined by the kernel when the seat is opened, with ids equal
-// to their character codes. A Font is therefore a name and a size and,
-// today, always draws with that one bitmap face. Scalable faces arrive with
-// the glyph cache protocol and change nothing above this file.
+// Text is drawn one of two ways. The bitmap system font's 256 glyphs are
+// defined by the kernel when the seat is opened, with ids equal to their
+// character codes, and DrawString sends a Glyph operation per character.
+// A Font naming a FontFamily built from a TrueType file (Text.cor,
+// TrueType.cor) draws proportionally instead: each glyph is grid-fitted
+// and cached by System.Drawing.TrueTypeSize, then plotted here as spans
+// of Fill, one run of set pixels per row -- ordinary drawing operations,
+// so a scalable face needs nothing from the seat that a filled rectangle
+// does not already have.
 
 namespace System.Drawing;
 
@@ -51,27 +55,53 @@ public struct Color
 /// The colours a Windows desktop is made of. Same names, same defaults.
 public static class SystemColors
 {
-    // A warm-neutral scheme drawn from the 256-colour cube and greys the
-    // seat shows: bevels in four greys, captions in a two-colour gradient.
-    public static Color Control { get { return Color.FromArgb(218, 218, 218); } }
+    // THE WINDOWS 98 THREE-DIMENSIONAL SCHEME, to the byte. These are not
+    // approximations of it: #C0C0C0 face, #DFDFDF light, #808080 shadow,
+    // #FFFFFF highlight and black dark-shadow are the five values every
+    // bevel in the system is built from, and a control drawn with anything
+    // else reads as belonging to a different machine. The caption's two
+    // blues and the teal desktop are the defaults of the era.
+    public static Color Control { get { return Color.FromArgb(192, 192, 192); } }
     public static Color ControlText { get { return Color.Black; } }
-    public static Color ControlLight { get { return Color.FromArgb(238, 238, 238); } }
+    public static Color ControlLight { get { return Color.FromArgb(223, 223, 223); } }
     public static Color ControlLightLight { get { return Color.White; } }
     public static Color ControlDark { get { return Color.FromArgb(128, 128, 128); } }
-    public static Color ControlDarkDark { get { return Color.FromArgb(58, 58, 58); } }
+    public static Color ControlDarkDark { get { return Color.Black; } }
+
+    /// .NET's names for the same five, which is what most code reaches for.
+    public static Color ButtonFace { get { return Control; } }
+    public static Color ButtonHighlight { get { return ControlLightLight; } }
+    public static Color ButtonShadow { get { return ControlDark; } }
+
     public static Color Window { get { return Color.White; } }
     public static Color WindowText { get { return Color.Black; } }
-    public static Color Desktop { get { return Color.FromArgb(0, 95, 135); } }
-    public static Color ActiveCaption { get { return Color.FromArgb(0, 95, 175); } }
-    public static Color GradientActiveCaption { get { return Color.FromArgb(0, 95, 175); } }
+    public static Color WindowFrame { get { return Color.Black; } }
+    public static Color Desktop { get { return Color.FromArgb(0, 128, 128); } }
+    public static Color AppWorkspace { get { return Color.FromArgb(128, 128, 128); } }
+
+    public static Color ActiveCaption { get { return Color.FromArgb(0, 0, 128); } }
+    public static Color GradientActiveCaption { get { return Color.FromArgb(16, 132, 208); } }
     public static Color ActiveCaptionText { get { return Color.White; } }
-    public static Color InactiveCaption { get { return Color.FromArgb(138, 138, 138); } }
-    public static Color GradientInactiveCaption { get { return Color.FromArgb(138, 138, 138); } }
-    public static Color InactiveCaptionText { get { return Color.FromArgb(218, 218, 218); } }
-    public static Color Highlight { get { return Color.FromArgb(0, 95, 175); } }
+    public static Color InactiveCaption { get { return Color.FromArgb(128, 128, 128); } }
+    public static Color GradientInactiveCaption { get { return Color.FromArgb(181, 181, 181); } }
+    public static Color InactiveCaptionText { get { return Color.FromArgb(192, 192, 192); } }
+    public static Color ActiveBorder { get { return Control; } }
+    public static Color InactiveBorder { get { return Control; } }
+
+    public static Color Highlight { get { return Color.FromArgb(0, 0, 128); } }
     public static Color HighlightText { get { return Color.White; } }
+    public static Color HotTrack { get { return Color.FromArgb(0, 0, 255); } }
     public static Color GrayText { get { return Color.FromArgb(128, 128, 128); } }
-    public static Color ScrollBar { get { return Color.FromArgb(236, 236, 236); } }
+    public static Color ScrollBar { get { return Color.FromArgb(192, 192, 192); } }
+
+    public static Color Menu { get { return Control; } }
+    public static Color MenuText { get { return Color.Black; } }
+    public static Color MenuBar { get { return Control; } }
+    public static Color MenuHighlight { get { return Highlight; } }
+
+    /// The tooltip's pale yellow, which Windows calls the info colours.
+    public static Color Info { get { return Color.FromArgb(255, 255, 225); } }
+    public static Color InfoText { get { return Color.Black; } }
 }
 
 public static class ColorBlend
@@ -189,24 +219,190 @@ public static class Pens
 
 public enum FontStyle { Regular = 0, Bold = 1, Italic = 2, Underline = 4, Strikeout = 8 }
 
-/// One bitmap face for now, eight by sixteen, the system font the kernel
-/// captured from the firmware. Size and style are recorded so that a
-/// program's choices survive to the day scalable faces arrive.
+/// <summary>
+/// A face and a size to draw it at. The default is the kernel's bitmap
+/// system font, eight by sixteen and drawn a byte at a time; naming a
+/// FontFamily that wraps a TrueType face instead makes this a scalable
+/// font, grid-fitted and drawn proportionally by Graphics.DrawString.
+///
+/// Size is in pixels here, not points: there is one physical pixel size
+/// to a screen with no notion of DPI, so the distinction .NET makes
+/// between a Font's Size and its SizeInPoints does not apply and the two
+/// are the same number.
+/// </summary>
 public class Font : IDisposable
 {
     public string Name;
     public float Size;
     public FontStyle Style;
-    public Font(string name, float size) { Name = name; Size = size; Style = FontStyle.Regular; }
-    public Font(string name, float size, FontStyle style) { Name = name; Size = size; Style = style; }
-    public int Height { get { return 16; } }
-    public int GlyphWidth { get { return 8; } }
+    public FontFamily FontFamily { get; private set; }
+
+    // The face fitted to Size, made once and kept: a TrueTypeSize already
+    // caches every glyph it has drawn, so the cost of a Font is paid once
+    // regardless of how many strings are drawn with it.
+    TrueTypeSize? _scaled;
+    bool _scaleTried;
+
+    public Font(string name, float size) : this(name, size, FontStyle.Regular) { }
+
+    public Font(string name, float size, FontStyle style)
+    {
+        // A NAME NOBODY KNOWS IS NOT AN ERROR HERE: GDI+ itself falls
+        // back to a generic face rather than fail a program over a font
+        // that turned out not to be installed, and that is worth keeping
+        // even though our fallback is one face rather than a choice.
+        FontFamily? found = FontFamily.Find(name);
+        FontFamily = found ?? FontFamily.SystemFamily;
+        Name = FontFamily.Name;
+        Size = size;
+        Style = style;
+    }
+
+    public Font(FontFamily family, float size) : this(family, size, FontStyle.Regular) { }
+
+    public Font(FontFamily family, float size, FontStyle style)
+    {
+        FontFamily = family;
+        Name = family.Name;
+        Size = size;
+        Style = style;
+    }
+
+    /// The face fitted to Size, or null for the bitmap system font. Bold
+    /// takes the family's bold design where it has one.
+    internal TrueTypeSize? Scaled
+    {
+        get
+        {
+            if (!_scaleTried)
+            {
+                _scaleTried = true;
+
+                bool wantBold = (Style & FontStyle.Bold) != 0;
+                TrueTypeFace? face = wantBold && FontFamily.BoldFace != null ? FontFamily.BoldFace : FontFamily.Face;
+
+                if (face != null)
+                {
+                    int px = (int)(Size + 0.5f);
+                    if (px < 1) { px = 1; }
+                    _scaled = TrueTypeSize.For(face, px);
+                    _realBold = wantBold && FontFamily.BoldFace != null;
+                }
+            }
+            return _scaled;
+        }
+    }
+
+    bool _realBold;
+
+    /// The style still to be faked when drawing: bold only when the
+    /// family had no bold face of its own, italic always.
+    internal FontStyle Synthetic
+    {
+        get { TrueTypeSize? s = Scaled; return _realBold ? (Style & ~FontStyle.Bold) : Style; }
+    }
+
+    /// <summary>
+    /// How wide one line of text comes out in this font, in pixels: the
+    /// one measurement everything that lays text out needs, and the only
+    /// honest one once letters are not all the same width.
+    /// </summary>
+    public int TextWidth(string text) { return TextWidth(text, 0, text.Length); }
+
+    public int TextWidth(string text, int start, int count)
+    {
+        TrueTypeSize? scaled = Scaled;
+        if (count <= 0) { return 0; }
+        if (scaled == null) { return count * 8; }
+
+        int extra = (Synthetic & FontStyle.Bold) != 0 ? 1 : 0;
+        int width = 0, previous = -1, end = start + count;
+
+        for (int i = start; i < end; )
+        {
+            Rune rune;
+            int taken;
+
+            if (!Rune.TryDecodeFromUtf8(text, i, out rune, out taken)) { taken = 1; rune = new Rune('?'); }
+            i += taken;
+
+            int glyph = scaled.Face.GlyphIndex(rune.Value);
+            width += Graphics.Kern(scaled, previous, glyph) + scaled.Advance(glyph) + extra;
+            previous = glyph;
+        }
+        return width;
+    }
+
+    /// From the top of a line down to its baseline: thirteen rows of the
+    /// bitmap font's sixteen, the face's own ascent otherwise.
+    public int Ascent { get { TrueTypeSize? s = Scaled; return s == null ? 13 : s.Ascent; } }
+
+    public bool Bold { get { return (Style & FontStyle.Bold) != 0; } }
+    public bool Italic { get { return (Style & FontStyle.Italic) != 0; } }
+    public float SizeInPoints { get { return Size; } }
+
+    /// The line's height: the bitmap font's fixed sixteen, or a scalable
+    /// face's own ascent and descent at this size.
+    public int Height { get { TrueTypeSize? s = Scaled; return s == null ? 16 : s.LineSpacing; } }
+
+    /// <summary>
+    /// Meaningful only for the bitmap font, which is fixed-width: every
+    /// glyph is this many pixels wide, and that is the whole of how the
+    /// widget set lays out text today. A scalable font has no single
+    /// glyph width -- ask Graphics.MeasureString instead -- so this
+    /// answers the width of its capital M, which is at least the right
+    /// order of size for code that has not been taught proportional
+    /// layout yet.
+    /// </summary>
+    public int GlyphWidth
+    {
+        get
+        {
+            TrueTypeSize? s = Scaled;
+            if (s == null) { return 8; }
+            return s.Advance(s.Face.GlyphIndex('M'));
+        }
+    }
+
     public void Dispose() { }
 }
 
 public static class SystemFonts
 {
-    public static Font DefaultFont { get { return new Font("System", 9); } }
+    /// What the interface is set in, in pixels. Eleven is what eight
+    /// points came to on the screens of the era.
+    public const int DefaultSize = 11;
+
+    static Font? _default, _caption;
+
+    /// <summary>
+    /// The interface font: the installed sans where there is one, the
+    /// kernel's bitmap face where there is not. ONE OBJECT, shared, since
+    /// every control asks for it and a font carries its fitted face.
+    /// </summary>
+    public static Font DefaultFont
+    {
+        get
+        {
+            if (_default == null) { _default = new Font(FontFamily.GenericSansSerif, DefaultSize); }
+            return _default;
+        }
+    }
+
+    public static Font MessageBoxFont { get { return DefaultFont; } }
+    public static Font MenuFont { get { return DefaultFont; } }
+    public static Font StatusFont { get { return DefaultFont; } }
+    public static Font DialogFont { get { return DefaultFont; } }
+
+    /// A window's title: the same face, bold.
+    public static Font CaptionFont
+    {
+        get
+        {
+            if (_caption == null) { _caption = new Font(FontFamily.GenericSansSerif, DefaultSize, FontStyle.Bold); }
+            return _caption;
+        }
+    }
 }
 
 public class SizeF
@@ -229,6 +425,16 @@ public interface IDrawingTarget
     /// given: how an icon is drawn once it has been handed over.
     void Blit(int id, int sx, int sy, int x, int y, int w, int h);
     void Clip(int x, int y, int w, int h);
+
+    /// How many colours the target can actually show: what decides
+    /// whether antialiased text is worth drawing at all, since blending
+    /// two colours into a third needs a palette with room for the third
+    /// one. Asked of the target and not of Corsac.GUI's Seat directly,
+    /// because System.Drawing is built before System.Windows.Forms (which
+    /// is where Seat lives) and must not need it -- and because it is
+    /// what makes a Graphics over a test double answerable without a
+    /// running seat at all.
+    int Colours { get; }
 }
 
 /// A drawing surface. Every call becomes an operation in the seat's batch,
@@ -270,6 +476,90 @@ public class Graphics : IDisposable
     }
     public void DrawRectangle(Pen pen, Rectangle r) { DrawRectangle(pen, r.X, r.Y, r.Width, r.Height); }
 
+    /// <summary>
+    /// The outline of an ellipse inside this rectangle.
+    ///
+    /// The seat draws spans and lines and nothing curved, so the curve is
+    /// worked out here: a midpoint sweep over one quadrant, mirrored into
+    /// the other three. Integer arithmetic only, which is what makes it
+    /// exact rather than nearly right at the ends of the axes.
+    /// </summary>
+    public void DrawEllipse(Pen pen, int x, int y, int w, int h)
+    {
+        if (w <= 0 || h <= 0) { return; }
+
+        int a = w / 2, b = h / 2;
+        int cx = x + a, cy = y + b;
+
+        for (int i = 0; i < 4; i++)
+        {
+            // Each quadrant's extreme points, plotted so a circle of any
+            // size closes rather than leaving gaps at the axes.
+            FillRectangle(new SolidBrush(pen.Color), cx + (i == 0 ? a : i == 1 ? -a : 0), cy + (i == 2 ? b : i == 3 ? -b : 0), 1, 1);
+        }
+
+        long aa = (long)a * a, bb = (long)b * b;
+        int px = 0, py = b;
+        long fx = 0, fy = 2 * aa * b;
+        long d = bb - aa * b + aa / 4;
+
+        while (fx < fy)
+        {
+            px++;
+            fx += 2 * bb;
+            if (d < 0) { d += bb + fx; }
+            else { py--; fy -= 2 * aa; d += bb + fx - fy; }
+            Quadrants(pen, cx, cy, px, py);
+        }
+
+        d = (long)(bb * (px + 0.5) * (px + 0.5) + aa * (py - 1) * (py - 1) - aa * bb);
+
+        while (py > 0)
+        {
+            py--;
+            fy -= 2 * aa;
+            if (d > 0) { d += aa - fy; }
+            else { px++; fx += 2 * bb; d += aa - fy + fx; }
+            Quadrants(pen, cx, cy, px, py);
+        }
+    }
+
+    void Quadrants(Pen pen, int cx, int cy, int px, int py)
+    {
+        Brush ink = new SolidBrush(pen.Color);
+
+        FillRectangle(ink, cx + px, cy + py, 1, 1);
+        FillRectangle(ink, cx - px, cy + py, 1, 1);
+        FillRectangle(ink, cx + px, cy - py, 1, 1);
+        FillRectangle(ink, cx - px, cy - py, 1, 1);
+    }
+
+    public void DrawEllipse(Pen pen, Rectangle r) { DrawEllipse(pen, r.X, r.Y, r.Width, r.Height); }
+
+    /// <summary>The same, filled: one span per row rather than an outline.</summary>
+    public void FillEllipse(Brush brush, int x, int y, int w, int h)
+    {
+        if (w <= 0 || h <= 0) { return; }
+
+        int a = w / 2, b = h / 2;
+        int cx = x + a, cy = y + b;
+        long aa = (long)a * a, bb = (long)b * b;
+
+        for (int dy = -b; dy <= b; dy++)
+        {
+            // The half-width at this row, which is what makes each row one
+            // span rather than a run of single pixels.
+            long room = aa * (bb - (long)dy * dy);
+            int dx = 0;
+
+            while ((long)(dx + 1) * (dx + 1) * bb <= room) { dx++; }
+
+            FillRectangle(brush, cx - dx, cy + dy, dx * 2 + 1, 1);
+        }
+    }
+
+    public void FillEllipse(Brush brush, Rectangle r) { FillEllipse(brush, r.X, r.Y, r.Width, r.Height); }
+
     public void DrawLine(Pen pen, int x0, int y0, int x1, int y1)
     {
         if (y0 == y1) { int l = x0 < x1 ? x0 : x1; _target.Fill(l + _originX, y0 + _originY, (x0 < x1 ? x1 - x0 : x0 - x1) + 1, 1, pen.Color); return; }
@@ -281,7 +571,17 @@ public class Graphics : IDisposable
     public void DrawString(string s, Font font, Brush brush, int x, int y)
     {
         SolidBrush? solid = brush as SolidBrush;
-        if (solid == null) return;
+        if (solid == null) { return; }
+
+        TrueTypeSize? scaled = font.Scaled;
+
+        // NO KNOWN BACKGROUND: nothing here is antialiased, because
+        // blending needs a colour to blend against and the seat cannot
+        // hand one back by reading the pixel underneath. A caller that
+        // knows what it just painted -- almost every control does --
+        // wants the overload below instead.
+        if (scaled != null) { DrawScalableString(s, scaled, font.Height, font.Synthetic, solid.Color, false, Color.Transparent, Color.Transparent, true, x, y); return; }
+
         int cx = x + _originX, cy = y + _originY;
         for (int i = 0; i < s.Length; i++)
         {
@@ -292,6 +592,287 @@ public class Graphics : IDisposable
             cx += font.GlyphWidth;
         }
     }
+
+    /// <summary>
+    /// The same, antialiased against `background` -- the colour already
+    /// there, which the caller knows because it just painted it (a
+    /// control's OnPaintBackground runs before OnPaint every time). Text
+    /// still shows through anything drawn under it exactly as the plain
+    /// overload does; only the edges of each letter are blended, which is
+    /// what makes this correct rather than a guess: the caller is not
+    /// claiming there is nothing under the text, only saying what colour
+    /// it is.
+    ///
+    /// CORSAC-only. GDI+'s antialiasing reads its own bitmap back to find
+    /// out what is underneath; this seat has no such read-back, so the
+    /// caller supplies the one fact that stands in for it. Below 256
+    /// colours, or for the bitmap system font, this draws exactly as the
+    /// plain overload -- there is nothing here for either to blend with.
+    /// </summary>
+    public void DrawString(string s, Font font, Brush brush, Color background, int x, int y)
+    {
+        SolidBrush? solid = brush as SolidBrush;
+        if (solid == null) { return; }
+
+        TrueTypeSize? scaled = font.Scaled;
+
+        if (scaled != null) { DrawScalableString(s, scaled, font.Height, font.Synthetic, solid.Color, true, background, Color.Transparent, true, x, y); return; }
+
+        DrawString(s, font, brush, x, y);
+    }
+
+    /// <summary>
+    /// The kerning adjustment between two glyphs, scaled from the face's
+    /// font units to pixels at this size. Nought for a face with no kern
+    /// table, or a pair it says nothing about, which is the common case
+    /// and costs one table lookup to learn.
+    /// </summary>
+    internal static int Kern(TrueTypeSize scaled, int leftGlyph, int rightGlyph)
+    {
+        if (leftGlyph < 0) { return 0; }
+
+        int units = scaled.Face.Kerning(leftGlyph, rightGlyph);
+        if (units == 0) { return 0; }
+
+        long value = (long)units * scaled.PixelsPerEm;
+        int upem = scaled.Face.UnitsPerEm;
+        return (int)((value >= 0 ? value + upem / 2 : value - upem / 2) / upem);
+    }
+
+    /// <summary>
+    /// A run of text set in a scalable face: each rune's bitmap plotted a
+    /// row of spans at a time, advanced by its own fitted width rather
+    /// than a fixed one. `transparent` false also fills the space behind
+    /// each glyph -- the cell width is its advance, which is what makes
+    /// an opaque proportional string look like a filled bar rather than
+    /// letter-shaped holes in one.
+    ///
+    /// `blend`, when not null, is the colour already behind the text --
+    /// what the caller's own OnPaintBackground just painted there -- and
+    /// switches this to the antialiased path: each glyph is rasterised as
+    /// coverage rather than one bit, and every partially-covered pixel is
+    /// blended between `blend` and the foreground rather than drawn flat.
+    /// The seat has no way to read a pixel back to find out what is
+    /// really behind the text, which is what GDI+ itself does to
+    /// antialias; the caller already knows, since it just painted it, so
+    /// that is what stands in for a framebuffer read here. Antialiasing
+    /// is skipped below 256 colours regardless -- a palette that thin
+    /// cannot blend two colours into a third worth looking at, and
+    /// Windows 98 itself shipped with smoothing off for exactly that
+    /// reason -- and for the bitmap system font, which has no coverage
+    /// to blend from.
+    /// </summary>
+    void DrawScalableString(string s, TrueTypeSize scaled, int lineHeight, FontStyle style, Color foreground, bool hasBlend, Color blend, Color background, bool transparent, int x, int y)
+    {
+        bool antialiased = hasBlend && _target.Colours > 256;
+
+        if (antialiased) { DrawScalableStringAA(s, scaled, lineHeight, style, foreground, blend, background, transparent, x, y); return; }
+        bool bold = (style & FontStyle.Bold) != 0;
+        bool italic = (style & FontStyle.Italic) != 0;
+
+        // SYNTHETIC STYLES: this face has one outline, not four, so bold
+        // and italic are made rather than chosen -- exactly what GDI
+        // itself falls back to when a family has no separate bold or
+        // italic design. Bold is the classic trick of filling a shape
+        // twice, a pixel apart, which thickens every stroke by one pixel
+        // regardless of its direction; italic is a shear, each row
+        // pushed right in proportion to how far above the baseline it
+        // sits, which is the same slant an oblique face applies to an
+        // upright one.
+        int boldExtra = bold ? 1 : 0;
+
+        int penX = x, lineTop = y;
+        int previousGlyph = -1;
+
+        for (int i = 0; i < s.Length; )
+        {
+            Rune rune;
+            int taken;
+
+            if (!Rune.TryDecodeFromUtf8(s, i, out rune, out taken)) { taken = 1; rune = new Rune('?'); }
+            i += taken;
+
+            if (rune.Value == '\n') { penX = x; lineTop += lineHeight; previousGlyph = -1; continue; }
+
+            int glyphIndex = scaled.Face.GlyphIndex(rune.Value);
+            TrueTypeBitmap? bitmap = scaled.Glyph(glyphIndex);
+
+            if (bitmap == null) { previousGlyph = glyphIndex; continue; }
+
+            penX += Kern(scaled, previousGlyph, glyphIndex);
+            previousGlyph = glyphIndex;
+
+            int advance = bitmap.Advance + boldExtra;
+
+            if (!transparent)
+            {
+                int cellWidth = advance + (italic ? bitmap.Height / 2 : 0);
+                _target.Fill(penX + _originX, lineTop + _originY, cellWidth, lineHeight, background);
+            }
+
+            int baseline = lineTop + scaled.Ascent;
+            int glyphX = penX + bitmap.Left + _originX;
+            int glyphTop = baseline - bitmap.Top + _originY;
+
+            for (int row = 0; row < bitmap.Height; row++)
+            {
+                // The higher above the baseline, the further right: a
+                // shear about the baseline, not about the glyph's own
+                // top, which is what keeps a whole line's slanted
+                // letters leaning the same way instead of fanning out.
+                int shear = italic ? (bitmap.Height - row) / 3 : 0;
+                int run = -1;
+
+                for (int col = 0; col <= bitmap.Width; col++)
+                {
+                    bool set = col < bitmap.Width && bitmap.At(col, row);
+
+                    if (set && run < 0) { run = col; }
+                    else if (!set && run >= 0)
+                    {
+                        int spanX = glyphX + run + shear;
+                        int spanW = col - run + boldExtra;
+                        _target.Fill(spanX, glyphTop + row, spanW, 1, foreground);
+                        run = -1;
+                    }
+                }
+            }
+
+            penX += advance;
+        }
+    }
+
+    /// <summary>
+    /// A straight linear blend of black text against a light background
+    /// reads thin and grey, not black: half the light a pixel reflects
+    /// is still most of what the eye sees, so a coverage of "half" looks
+    /// far lighter than half black. Every real text renderer -- ClearType,
+    /// FreeType, DirectWrite -- corrects for this with a gamma curve that
+    /// pushes the middle of the range darker before blending, which is
+    /// what keeps antialiased text looking as bold as the crisp version
+    /// rather than washed out. Built once, looked up per pixel: cheap.
+    /// </summary>
+    static byte[]? _gammaTable;
+
+    static byte[] GammaTable()
+    {
+        if (_gammaTable != null) { return _gammaTable; }
+
+        byte[] table = new byte[256];
+
+        for (int i = 0; i < 256; i++)
+        {
+            // (coverage/255)^0.5 * 255 == sqrt(255 * coverage): a gamma
+            // of two, done in exact integer arithmetic by the same
+            // Newton's-method square root the rasteriser already uses,
+            // rather than a real floating point pow -- this whole engine
+            // avoids floating point on purpose, and a lookup table built
+            // once from integers is no less correct for it.
+            long target = 255L * i;
+            long root = target <= 0 ? 0 : 1;
+
+            while (root * root < target) { root = root << 1; }
+            while (root > 0)
+            {
+                long next = (root + target / root) >> 1;
+                if (next >= root) { break; }
+                root = next;
+            }
+
+            // HALFWAY TO IT, NOT ALL THE WAY. The full square root is
+            // what the arithmetic of light asks for, and on a small face
+            // it is too much: a quarter-covered edge pixel comes out half
+            // black, every stem gains most of a pixel, and eight-pixel
+            // text closes up into a smudge. The mean of the straight line
+            // and the curve -- a gamma of about 1.4 -- keeps text from
+            // washing out without thickening it.
+            int curved = root > 255 ? 255 : (int)root;
+            table[i] = (byte)((i + curved + 1) / 2);
+        }
+
+        _gammaTable = table;
+        return table;
+    }
+
+    /// <summary>
+    /// DrawScalableString's antialiased twin: the same loop, kerning and
+    /// synthetic styles, but each glyph comes from GlyphAA as coverage
+    /// rather than one bit, and is drawn a run of EQUAL coverage at a
+    /// time rather than a run of lit pixels. Interior pixels are all 255
+    /// and coalesce into the same wide, cheap fills the crisp path uses;
+    /// only the antialiased rim -- a pixel or two around the letter's
+    /// edge -- costs an extra blend and its own small fill, which is what
+    /// keeps this affordable on text-sized glyphs at ordinary sizes.
+    /// </summary>
+    void DrawScalableStringAA(string s, TrueTypeSize scaled, int lineHeight, FontStyle style, Color foreground, Color blend, Color background, bool transparent, int x, int y)
+    {
+        byte[] gamma = GammaTable();
+        bool bold = (style & FontStyle.Bold) != 0;
+        bool italic = (style & FontStyle.Italic) != 0;
+        int boldExtra = bold ? 1 : 0;
+
+        int penX = x, lineTop = y;
+        int previousGlyph = -1;
+
+        for (int i = 0; i < s.Length; )
+        {
+            Rune rune;
+            int taken;
+
+            if (!Rune.TryDecodeFromUtf8(s, i, out rune, out taken)) { taken = 1; rune = new Rune('?'); }
+            i += taken;
+
+            if (rune.Value == '\n') { penX = x; lineTop += lineHeight; previousGlyph = -1; continue; }
+
+            int glyphIndex = scaled.Face.GlyphIndex(rune.Value);
+            TrueTypeCoverageBitmap? bitmap = scaled.GlyphAA(glyphIndex);
+
+            if (bitmap == null) { previousGlyph = glyphIndex; continue; }
+
+            penX += Kern(scaled, previousGlyph, glyphIndex);
+            previousGlyph = glyphIndex;
+
+            int advance = bitmap.Advance + boldExtra;
+
+            if (!transparent)
+            {
+                int cellWidth = advance + (italic ? bitmap.Height / 2 : 0);
+                _target.Fill(penX + _originX, lineTop + _originY, cellWidth, lineHeight, background);
+            }
+
+            int baseline = lineTop + scaled.Ascent;
+            int glyphX = penX + bitmap.Left + _originX;
+            int glyphTop = baseline - bitmap.Top + _originY;
+
+            for (int pass = 0; pass <= boldExtra; pass++)
+            {
+                // Bold's second pass is the same coverage, one pixel to
+                // the right: two overlapping antialiased shapes read as
+                // one heavier one, the same trick the crisp path uses.
+                for (int row = 0; row < bitmap.Height; row++)
+                {
+                    int shear = italic ? (bitmap.Height - row) / 3 : 0;
+                    int col = 0;
+
+                    while (col < bitmap.Width)
+                    {
+                        int coverage = bitmap.At(col, row);
+
+                        if (coverage == 0) { col++; continue; }
+
+                        int start = col;
+                        while (col < bitmap.Width && bitmap.At(col, row) == coverage) { col++; }
+
+                        Color drawColor = coverage >= 255 ? foreground : ColorBlend.Mix(blend, foreground, gamma[coverage]);
+                        _target.Fill(glyphX + start + shear + pass, glyphTop + row, col - start, 1, drawColor);
+                    }
+                }
+            }
+
+            penX += advance;
+        }
+    }
+
     public void DrawString(string s, Font font, Brush brush, Point p) { DrawString(s, font, brush, p.X, p.Y); }
 
     /// Part of what this surface already shows, moved: what a scrolling
@@ -321,6 +902,13 @@ public class Graphics : IDisposable
 
     public void DrawStringOpaque(string s, Font font, Color foreground, Color background, int x, int y)
     {
+        TrueTypeSize? scaled = font.Scaled;
+
+        // Opaque already knows its own background -- it is about to
+        // paint the whole cell with it -- so that same colour is what
+        // antialiasing blends the letter's edges against too.
+        if (scaled != null) { DrawScalableString(s, scaled, font.Height, font.Synthetic, foreground, true, background, background, false, x, y); return; }
+
         int cx = x + _originX, cy = y + _originY;
         for (int i = 0; i < s.Length; i++)
         {
@@ -332,6 +920,10 @@ public class Graphics : IDisposable
 
     public SizeF MeasureString(string s, Font font)
     {
+        TrueTypeSize? scaled = font.Scaled;
+
+        if (scaled != null) { return MeasureScalableString(s, scaled, font.Height, font.Synthetic); }
+
         int longest = 0, lines = 1, run = 0;
         for (int i = 0; i < s.Length; i++)
         {
@@ -340,6 +932,34 @@ public class Graphics : IDisposable
         }
         if (run > longest) longest = run;
         return new SizeF(longest * font.GlyphWidth, lines * font.Height);
+    }
+
+    /// The same measurement for a scalable face: runes decoded, each
+    /// one's own fitted advance summed rather than a fixed width, which
+    /// is the entire difference proportional text makes to this method.
+    static SizeF MeasureScalableString(string s, TrueTypeSize scaled, int lineHeight, FontStyle style)
+    {
+        int boldExtra = (style & FontStyle.Bold) != 0 ? 1 : 0;
+        int widest = 0, run = 0, lines = 1;
+        int previousGlyph = -1;
+
+        for (int i = 0; i < s.Length; )
+        {
+            Rune rune;
+            int taken;
+
+            if (!Rune.TryDecodeFromUtf8(s, i, out rune, out taken)) { taken = 1; rune = new Rune('?'); }
+            i += taken;
+
+            if (rune.Value == '\n') { lines++; if (run > widest) { widest = run; } run = 0; previousGlyph = -1; continue; }
+
+            int glyphIndex = scaled.Face.GlyphIndex(rune.Value);
+
+            run += Kern(scaled, previousGlyph, glyphIndex) + scaled.Advance(glyphIndex) + boldExtra;
+            previousGlyph = glyphIndex;
+        }
+        if (run > widest) { widest = run; }
+        return new SizeF(widest, lines * lineHeight);
     }
 
     public void Dispose() { }

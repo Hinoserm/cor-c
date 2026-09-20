@@ -34,12 +34,18 @@ class Tag
     }
 }
 
-struct Point
+// NOT CALLED POINT, deliberately. The standard library is compiled
+// from source alongside every test, and System.Drawing declares a
+// Point of its own. A type of that name in the GLOBAL namespace is found
+// before a using-directive of the compilation unit -- C#'s own lookup
+// order -- so it captures the name inside System.Windows.Forms too, and
+// the library stops compiling. Nothing here is about Points.
+struct Spot
 {
     public int X;
     public long Y;
 
-    public Point(int x, long y)
+    public Spot(int x, long y)
     {
         X = x;
         Y = y;
@@ -81,7 +87,7 @@ static class Program
         Sys.PrintLine();
     }
 
-    static async Task<string> Params(string tag, double x, bool b, Point p)
+    static async Task<string> Params(string tag, double x, bool b, Spot p)
     {
         await Task.Yield();
         await Task.Yield();
@@ -98,7 +104,7 @@ static class Program
         string s = "text";
         object o = new Tag("tag");
         int[] arr = new int[] { 1, 2, 3 };
-        Point pt = new Point(7, 1L << 35);
+        Spot pt = new Spot(7, 1L << 35);
 
         await Task.Yield();
 
@@ -133,7 +139,7 @@ static class Program
 
         double half = 2.5;
         bool yes = true;
-        Point pp = new Point(7, -(1L << 35));
+        Spot pp = new Spot(7, -(1L << 35));
         string ps = await Params("p", half, yes, pp);
         Line("params " + ps);
 

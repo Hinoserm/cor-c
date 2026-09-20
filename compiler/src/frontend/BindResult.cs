@@ -268,6 +268,18 @@ public sealed partial class BindResult
     /// <summary>Which type each typeof(T) named, once resolved.</summary>
     public Dictionary<TypeOfExpr, TypeSymbol> TypeOfs { get; } = new(ReferenceEqualityComparer.Instance);
 
+    /// <summary>
+    /// `typeof` of a type that has no declaration to point at: int, bool,
+    /// string and the rest. C# has always allowed it -- `typeof(int)` is
+    /// ordinary code -- and a generic that asks what T is cannot be written
+    /// without it.
+    /// </summary>
+    public Dictionary<TypeOfExpr, Prim> PrimitiveTypeOfs { get; } = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>`typeof` of an array. Every array of one element type shares
+    /// one descriptor, so `typeof(byte[]) == typeof(byte[])` holds.</summary>
+    public Dictionary<TypeOfExpr, Type> ArrayTypeOfs { get; } = new(ReferenceEqualityComparer.Instance);
+
     /// <summary>The calls that are GetType(), which is not a declared method.</summary>
     public HashSet<CallExpr> GetTypes { get; } = new(ReferenceEqualityComparer.Instance);
 
@@ -410,6 +422,8 @@ public sealed partial class BindResult
         PropertySetters.Clear();
         SizeOfs.Clear();
         TypeOfs.Clear();
+        PrimitiveTypeOfs.Clear();
+        ArrayTypeOfs.Clear();
         GetTypes.Clear();
         Invocations.Clear();
         Receivers.Clear();
@@ -485,6 +499,8 @@ public sealed partial class BindResult
         CopyEntries(PropertySetters, copy.PropertySetters);
         CopyEntries(SizeOfs, copy.SizeOfs);
         CopyEntries(TypeOfs, copy.TypeOfs);
+        CopyEntries(PrimitiveTypeOfs, copy.PrimitiveTypeOfs);
+        CopyEntries(ArrayTypeOfs, copy.ArrayTypeOfs);
         foreach (var item in GetTypes) copy.GetTypes.Add(item);
         CopyEntries(Invocations, copy.Invocations);
         CopyEntries(Receivers, copy.Receivers);

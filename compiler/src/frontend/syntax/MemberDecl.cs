@@ -6,6 +6,13 @@ public abstract class MemberDecl : Node
     public Mods Mods { get; init; }
 
     /// <summary>
+    /// The attributes written in front of this member, with their arguments.
+    /// Empty for the overwhelming majority of members, which is why it is a
+    /// plain list rather than anything cleverer.
+    /// </summary>
+    public List<AttributeRef> Attributes { get; } = new();
+
+    /// <summary>
     /// The using directives of the file THIS MEMBER was written in, which is
     /// not always the file its type was.
     ///

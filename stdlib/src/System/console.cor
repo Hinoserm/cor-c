@@ -344,6 +344,11 @@ static class Console
         Out.Write(value);
     }
 
+    public static void Write(ulong value)
+    {
+        Out.Write(value);
+    }
+
     public static void Write(int value)
     {
         Out.Write((long)value);
@@ -371,6 +376,11 @@ static class Console
     }
 
     public static void WriteLine(long value)
+    {
+        Out.WriteLine(value);
+    }
+
+    public static void WriteLine(ulong value)
     {
         Out.WriteLine(value);
     }

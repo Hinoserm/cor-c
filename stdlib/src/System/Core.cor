@@ -119,6 +119,22 @@ static class String {
         return exact;
     }
 
+    // THE SAME, UNSIGNED. A ulong above long.MaxValue has its top bit set,
+    // and the signed formatter reads that as a negative number: ulong.MaxValue
+    // printed as -1 rather than as 18446744073709551615.
+    //
+    // One division takes the top digit off, after which what is left is below
+    // long.MaxValue and the signed path is exact. Unsigned division is a
+    // different instruction from signed division, which is the whole reason
+    // this cannot simply call the other one.
+    public static string FromUInt(ulong value) {
+        if (value <= 9223372036854775807UL) { return FromInt((long)value); }
+
+        ulong rest = value / 10;
+
+        return Concat(FromInt((long)rest), FromInt((long)(value - rest * 10)));
+    }
+
     // ONE CHARACTER, AS A STRING. C# spells it value.ToString() on a char and
     // this is that.
     //

@@ -24,4 +24,8 @@ stdlib/src/System/unix.cor
 stdlib/src/System/process.cor
 stdlib/src/System/power.cor
 stdlib/src/System/Drawing/Drawing.cor
+stdlib/src/System/Drawing/TrueType.cor
+stdlib/src/System/Drawing/Text.cor
+stdlib/src/Corsac/GUI/Gui.cor
+stdlib/src/System/Drawing/Imaging.cor
 stdlib/src/System/Windows/Forms/Forms.cor

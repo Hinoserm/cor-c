@@ -1,0 +1,372 @@
+// System.Drawing.Text -- the font collections. .NET's own shape: a font
+// family names an installed or private face; a collection is where a
+// program's own font FILES live, since nothing here can install one for
+// the whole machine.
+
+using System;
+using System.IO;
+
+namespace System.Drawing;
+
+/// The three families every GDI+ program can ask for without naming one:
+/// a face with serifs, one without, and one where every character is the
+/// same width. Answered from GenericSansSerif and friends below rather
+/// than from a real choice among faces, since none is bundled yet.
+public enum GenericFontFamilies { Serif, SansSerif, Monospace }
+
+/// <summary>
+/// A typeface: what a Font is drawn with, apart from its size and style.
+/// The built-in "System" family is the kernel's fixed 8-by-16 bitmap face,
+/// used until a program loads a scalable one of its own; every other
+/// FontFamily wraps a parsed TrueType face and draws proportionally,
+/// grid-fitted at whatever size a Font asks for.
+/// </summary>
+public sealed class FontFamily : IDisposable
+{
+    readonly string _name;
+    internal readonly TrueTypeFace? Face;
+
+    /// The family's own bold design, where a file for one was found. A
+    /// Font asked for bold draws with this rather than thickening the
+    /// regular face, which is the difference between a bold typeface and
+    /// a smudged one.
+    internal TrueTypeFace? BoldFace;
+
+    public FontFamily(string name)
+    {
+        FontFamily? found = Find(name);
+
+        if (found == null)
+        {
+            throw new ArgumentException("Font '" + name + "' cannot be found.");
+        }
+
+        _name = found._name;
+        Face = found.Face;
+        BoldFace = found.BoldFace;
+    }
+
+    /// <summary>
+    /// One of the three generic families. None is bundled as a distinct
+    /// face yet, so all three are the system bitmap font today; a program
+    /// that draws with GenericSansSerif rather than naming "System" will
+    /// pick up a real scalable face the day one ships, with no changes of
+    /// its own -- which is the whole reason .NET offers the generic names.
+    /// </summary>
+    public FontFamily(GenericFontFamilies genericFamily)
+    {
+        // The installed face that plays each part, where it is installed;
+        // the bitmap system font where it is not, so a machine with no
+        // fonts directory still draws.
+        FontFamily? found = Find(genericFamily == GenericFontFamilies.Serif ? "Times New Roman"
+                               : genericFamily == GenericFontFamilies.Monospace ? "Courier New" : "Tahoma");
+
+        _name = found == null ? "System" : found._name;
+        Face = found == null ? null : found.Face;
+        BoldFace = found == null ? null : found.BoldFace;
+    }
+
+    internal FontFamily(string name, TrueTypeFace? face)
+    {
+        _name = name;
+        Face = face;
+    }
+
+    public string Name { get { return _name; } }
+
+    /// Every style can be drawn: bold from the family's bold face where it
+    /// has one and thickened where it has not, italic always by slanting.
+    public bool IsStyleAvailable(FontStyle style) { return true; }
+
+    public int GetEmHeight(FontStyle style) { return Face == null ? 16 : Face.UnitsPerEm; }
+
+    public int GetCellAscent(FontStyle style)
+    {
+        return Face == null ? 13 : Scale(Face.Ascender);
+    }
+
+    public int GetCellDescent(FontStyle style)
+    {
+        return Face == null ? 3 : Scale(-Face.Descender);
+    }
+
+    public int GetLineSpacing(FontStyle style)
+    {
+        return Face == null ? 16 : Scale(Face.Ascender - Face.Descender + Face.LineGap);
+    }
+
+    int Scale(int units) { return Face == null ? units : units; }
+
+    public void Dispose() { }
+
+    public override string ToString() { return "[FontFamily: Name=" + _name + "]"; }
+
+    // --- the process-wide roster --------------------------------------
+
+    // Every family anyone has loaded, installed or generic: what
+    // FontFamily(string) searches and what Font(string, float) falls
+    // back to when the name given is not among them. A program's own
+    // PrivateFontCollection adds to this when it loads a file, which
+    // matches .NET only loosely -- there, a private collection's faces
+    // are NOT found by name unless the FontFamily came from it directly.
+    // On a machine with no installed collection of its own to distinguish
+    // that from, keeping one shared roster is the simpler and still
+    // faithful choice: nothing stops two programs seeing the same names,
+    // because nothing here allows two programs to disagree about what a
+    // name like "System" means.
+    // Made on first use, by hand. As a field initialiser this list was
+    // still null when the first caller arrived from another class in a
+    // shared library -- SystemFonts, asking for the interface font -- and
+    // every graphical program died before its first window.
+    static List<FontFamily>? _rosterHeld;
+    static List<FontFamily> _roster { get { if (_rosterHeld == null) { _rosterHeld = new List<FontFamily>(); } return _rosterHeld; } }
+
+    internal static void Register(FontFamily family)
+    {
+        for (int i = 0; i < _roster.Count; i++)
+        {
+            if (Same(_roster[i]._name, family._name)) { _roster[i] = family; return; }
+        }
+        _roster.Add(family);
+    }
+
+    static bool Same(string a, string b)
+    {
+        if (a.Length != b.Length) { return false; }
+        for (int i = 0; i < a.Length; i++)
+        {
+            char x = a[i], y = b[i];
+            if (x >= 'A' && x <= 'Z') { x = (char)(x + 32); }
+            if (y >= 'A' && y <= 'Z') { y = (char)(y + 32); }
+            if (x != y) { return false; }
+        }
+        return true;
+    }
+
+    internal static FontFamily? Find(string name)
+    {
+        if (Same(name, "System")) { return SystemFamily; }
+        for (int i = 0; i < _roster.Count; i++) { if (Same(_roster[i]._name, name)) { return _roster[i]; } }
+        return Installed.Find(name);
+    }
+
+    static FontFamily? _system;
+    internal static FontFamily SystemFamily
+    {
+        get { if (_system == null) { _system = new FontFamily("System", null); } return _system; }
+    }
+
+    public static FontFamily GenericSansSerif { get { return new FontFamily(GenericFontFamilies.SansSerif); } }
+    public static FontFamily GenericSerif { get { return new FontFamily(GenericFontFamilies.Serif); } }
+    public static FontFamily GenericMonospace { get { return new FontFamily(GenericFontFamilies.Monospace); } }
+
+    public static FontFamily[] Families
+    {
+        get
+        {
+            Installed.LoadAll();
+            FontFamily[] all = new FontFamily[_roster.Count + 1];
+            all[0] = SystemFamily;
+            for (int i = 0; i < _roster.Count; i++) { all[i + 1] = _roster[i]; }
+            return all;
+        }
+    }
+}
+
+/// <summary>
+/// Where a program's own fonts live before a Font is made from one.
+/// .NET's shape: FontCollection is the base every kind of roster shares,
+/// InstalledFontCollection is read-only and speaks for the system, and
+/// PrivateFontCollection is where AddFontFile puts what a program loaded
+/// itself.
+/// </summary>
+public abstract class FontCollection : IDisposable
+{
+    internal readonly List<FontFamily> Held = new List<FontFamily>();
+
+    public FontFamily[] Families
+    {
+        get
+        {
+            FontFamily[] made = new FontFamily[Held.Count];
+            for (int i = 0; i < Held.Count; i++) { made[i] = Held[i]; }
+            return made;
+        }
+    }
+
+    public virtual void Dispose() { }
+}
+
+/// <summary>
+/// The fonts directory, read. A face is installed by being a TrueType file
+/// in /usr/share/fonts; there is no registration step, which is one fewer
+/// thing to be out of step with what is on the disc.
+///
+/// LAZY ON PURPOSE. Every graphical program asks for the interface font
+/// and almost none asks for anything else, and a dozen faces are four
+/// megabytes. So a family asked for by name is looked for by FILE name
+/// first -- "Tahoma" against Tahoma-Regular.ttf -- and
+/// only that file is read; its own name table then confirms it. Reading
+/// every file happens when somebody enumerates the families, which is a
+/// font picker and nobody else.
+/// </summary>
+static class Installed
+{
+    public const string Folder = "/usr/share/fonts";
+
+    static string[]? _files;
+    static bool _all;
+
+    static string[] Files()
+    {
+        if (_files == null)
+        {
+            try { _files = Directory.Exists(Folder) ? Directory.GetFiles(Folder) : new string[0]; }
+            catch (IOException) { _files = new string[0]; }
+        }
+        return _files;
+    }
+
+    /// Letters and digits only, lower case: what a family name and a file
+    /// name are compared as.
+    static string Squash(string text)
+    {
+        string built = "";
+
+        for (int i = 0; i < text.Length; i++)
+        {
+            char c = text[i];
+            if (c >= 'A' && c <= 'Z') { c = (char)(c + 32); }
+            if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) { built = built + c; }
+        }
+        return built;
+    }
+
+    static string FileName(string path)
+    {
+        int slash = path.LastIndexOf('/');
+        return slash < 0 ? path : path.Substring(slash + 1);
+    }
+
+    static bool IsFont(string path) { return path.EndsWith(".ttf") || path.EndsWith(".TTF"); }
+
+    static TrueTypeFace? Read(string path)
+    {
+        try { return TrueTypeFace.FromBytes(File.ReadAllBytes(path)); }
+        catch (IOException) { return null; }
+    }
+
+    public static FontFamily? Find(string name)
+    {
+        string key = Squash(name);
+        if (key.Length == 0) { return null; }
+
+        string[] files = Files();
+        TrueTypeFace? regular = null, bold = null;
+
+        for (int i = 0; i < files.Length; i++)
+        {
+            if (!IsFont(files[i])) { continue; }
+
+            string squashed = Squash(FileName(files[i]));
+            if (!squashed.StartsWith(key)) { continue; }
+
+            bool isBold = squashed.IndexOf("bold") >= 0;
+            if (squashed.IndexOf("italic") >= 0 || squashed.IndexOf("oblique") >= 0) { continue; }
+            if (isBold ? bold != null : regular != null) { continue; }
+
+            TrueTypeFace? face = Read(files[i]);
+
+            // THE FILE'S OWN WORD for what it is. A file name is a hint,
+            // and "PT Sans" is a prefix of "PT Sans Narrow".
+            if (face == null || Squash(face.FamilyName) != key) { continue; }
+
+            if (isBold) { bold = face; } else { regular = face; }
+        }
+
+        if (regular == null) { regular = bold; }
+        if (regular == null) { return null; }
+
+        FontFamily family = new FontFamily(regular.FamilyName, regular);
+        family.BoldFace = bold == regular ? null : bold;
+        FontFamily.Register(family);
+        return family;
+    }
+
+    /// Every file, for the one caller that wants the whole list.
+    public static void LoadAll()
+    {
+        if (_all) { return; }
+        _all = true;
+
+        string[] files = Files();
+
+        for (int i = 0; i < files.Length; i++)
+        {
+            if (!IsFont(files[i])) { continue; }
+
+            string squashed = Squash(FileName(files[i]));
+            if (squashed.IndexOf("bold") >= 0 || squashed.IndexOf("italic") >= 0) { continue; }
+
+            TrueTypeFace? face = Read(files[i]);
+            if (face != null && face.FamilyName.Length > 0) { FontFamily.Find(face.FamilyName); }
+        }
+    }
+}
+
+/// The system's own faces: the kernel's bitmap font, and whatever is in the
+/// fonts directory.
+public sealed class InstalledFontCollection : FontCollection
+{
+    public InstalledFontCollection()
+    {
+        FontFamily[] all = FontFamily.Families;
+        for (int i = 0; i < all.Length; i++) { Held.Add(all[i]); }
+    }
+}
+
+/// <summary>
+/// A program's own font files, loaded and parsed. Each one becomes a
+/// FontFamily under the name the file itself carries -- its `name` table
+/// says what it is called, the same as it would to Windows.
+/// </summary>
+public sealed class PrivateFontCollection : FontCollection
+{
+    public void AddFontFile(string filename)
+    {
+        byte[] bytes;
+
+        try { bytes = File.ReadAllBytes(filename); }
+        catch (IOException) { throw new FileNotFoundException(filename); }
+
+        AddFromBytes(bytes, filename);
+    }
+
+    /// <summary>
+    /// A font already in memory, as bytes rather than as the file it came
+    /// from. .NET's AddMemoryFont takes an unmanaged pointer and a
+    /// length; this machine has no such pointer at this layer, so a byte
+    /// array stands in for it, which is the whole of the difference.
+    /// </summary>
+    public void AddMemoryFont(byte[] data)
+    {
+        AddFromBytes(data, "<memory>");
+    }
+
+    void AddFromBytes(byte[] bytes, string source)
+    {
+        TrueTypeFace? face = TrueTypeFace.FromBytes(bytes);
+
+        if (face == null)
+        {
+            throw new ArgumentException(source + " is not a font this reads: not TrueType, or truncated.");
+        }
+
+        string name = face.FamilyName;
+        if (name.Length == 0) { name = source; }
+
+        FontFamily family = new FontFamily(name, face);
+        Held.Add(family);
+        FontFamily.Register(family);
+    }
+}

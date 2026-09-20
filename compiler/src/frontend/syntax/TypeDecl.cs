@@ -22,6 +22,13 @@ public sealed class TypeDecl : Node
     public List<TypeParam> TypeParams { get; } = new();
     /// <summary>The attributes written on it, by name: `[Flags]` is "Flags".</summary>
     public List<string> Attributes { get; } = new();
+
+    /// <summary>
+    /// The same attributes with their arguments, for the ones whose argument
+    /// is the whole point -- `[Registry("CORSAC.Paint")]` names a domain, and
+    /// the name in it is the source of truth for where those settings live.
+    /// </summary>
+    public List<AttributeRef> AttributeParts { get; } = new();
     /// <summary>Base class and interfaces, undistinguished until binding.</summary>
     public List<TypeRef> Bases { get; } = new();
 

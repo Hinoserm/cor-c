@@ -11,7 +11,13 @@
 // Enums: implicit and explicit member values, comparison, switch on an
 // enum, casting from an int, enums in a List, and an enum-typed field.
 
-enum Color
+// NOT CALLED COLOR, deliberately. The standard library is compiled
+// from source alongside every test, and System.Drawing declares a
+// Color of its own. A type of that name in the GLOBAL namespace is found
+// before a using-directive of the compilation unit -- C#'s own lookup
+// order -- so it captures the name inside System.Windows.Forms too, and
+// the library stops compiling. Nothing here is about Colors.
+enum Hue
 {
     Red,
     Green = 5,
@@ -20,7 +26,7 @@ enum Color
 
 class Pixel
 {
-    public Color Tint;
+    public Hue Tint;
 }
 
 static class Program
@@ -31,42 +37,42 @@ static class Program
         Sys.PrintLine();
     }
 
-    static string Name(Color c)
+    static string Name(Hue c)
     {
         switch (c)
         {
-            case Color.Red: return "red";
-            case Color.Green: return "green";
-            case Color.Blue: return "blue";
+            case Hue.Red: return "red";
+            case Hue.Green: return "green";
+            case Hue.Blue: return "blue";
             default: return "?";
         }
     }
 
     static int Main()
     {
-        Line("values " + (int)Color.Red + " " + (int)Color.Green + " " + (int)Color.Blue);
+        Line("values " + (int)Hue.Red + " " + (int)Hue.Green + " " + (int)Hue.Blue);
 
-        Color c = Color.Green;
-        Line("compare " + (c == Color.Green) + " " + (c != Color.Red));
-        Line("switch " + Name(c) + " " + Name(Color.Red) + " " + Name(Color.Blue));
+        Hue c = Hue.Green;
+        Line("compare " + (c == Hue.Green) + " " + (c != Hue.Red));
+        Line("switch " + Name(c) + " " + Name(Hue.Red) + " " + Name(Hue.Blue));
 
         int six = 6;
-        Color fromInt = (Color)six;
-        Line("cast " + (fromInt == Color.Blue));
+        Hue fromInt = (Hue)six;
+        Line("cast " + (fromInt == Hue.Blue));
 
-        List<Color> all = new List<Color>();
-        all.Add(Color.Red);
-        all.Add(Color.Green);
-        all.Add(Color.Blue);
+        List<Hue> all = new List<Hue>();
+        all.Add(Hue.Red);
+        all.Add(Hue.Green);
+        all.Add(Hue.Blue);
         int sum = 0;
-        foreach (Color k in all)
+        foreach (Hue k in all)
         {
             sum += (int)k;
         }
         Line("list " + all.Count + " " + sum);
 
         Pixel p = new Pixel();
-        p.Tint = Color.Green;
+        p.Tint = Hue.Green;
         Line("field " + (int)p.Tint);
         return 0;
     }

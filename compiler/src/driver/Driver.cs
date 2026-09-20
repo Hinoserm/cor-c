@@ -692,6 +692,19 @@ public static class Driver
         Corsac.Lang.Opt.Pipeline.ReportAccounts();
         new TargetContract(freestanding ? (Lowering.TlsGs ? 2u : 1u) : 0u, requiresManagedLayouts: true, requiresCodeGenerationContract: true).Attach(obj);
         ManagedLayouts.Attach(obj, front.Value.bound);
+
+        // WHAT THIS PROGRAM'S SETTINGS ARE, for the kernel to read out of the
+        // file rather than out of the running process -- which is why the
+        // section is a note and is not loaded. docs/software/REGISTRY.md in
+        // the OS repository describes both the declarations and the bytes.
+        foreach (RegistrySchema schema in front.Value.unit.RegistrySchemas)
+        {
+            Section declared = new(RegistrySchema.SectionName, SectionKind.Note);
+
+            declared.Bytes.AddRange(schema.Encode());
+            obj.Sections.Add(declared);
+        }
+
         DefinitionSemantics.Attach(obj, definitionSemantics);
 #if COR_SELFHOST_BENCHMARK
         Program.BenchmarkStage("link-output");
@@ -997,7 +1010,8 @@ public static class Driver
                 "System/Text/RegularExpressions.cor", "System/console.cor", "System/environment.cor",
                 "System/Net/Net.cor", "System/Security/Cryptography/Cryptography.cor",
                 "System/signals.cor", "System/unix.cor", "System/process.cor", "System/power.cor",
-                "System/Drawing/Drawing.cor", "Corsac/GUI/Gui.cor", "System/Drawing/Imaging.cor",
+                "System/Drawing/Drawing.cor", "System/Drawing/TrueType.cor", "System/Drawing/Text.cor",
+                "Corsac/GUI/Gui.cor", "System/Drawing/Imaging.cor",
                 "System/Windows/Forms/Forms.cor" })
             {
                 libs.Add(Path.Combine(root, "stdlib", "src", dotnet));

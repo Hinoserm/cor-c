@@ -192,6 +192,122 @@ public sealed partial class Binder
         return Sole(name, out sym);
     }
 
+    /// <summary>
+    /// `Registry.IsSet(Settings.Canvas.Width)` as the call it stands for.
+    ///
+    /// IsSet becomes a question about the key and Revert becomes a delete of
+    /// the USER scope, which is the only scope a program's own declared
+    /// member ever writes.
+    ///
+    /// An argument that is not a declared setting is reported and then stood
+    /// in for, rather than refused here: leaving the call as written would
+    /// have it resolved again as an ordinary method nothing declares, and a
+    /// second complaint about the same mistake helps nobody.
+    /// </summary>
+    private Expr Setting(CallExpr asking)
+    {
+        MemberExpr called = (MemberExpr)asking.Target;
+        string? written = WrittenPath(asking.Args[0]);
+        string? key = written is null ? null : Key(written);
+
+        if (key is null)
+        {
+            Error(asking, $"Registry.{called.Name} takes a setting declared under a [Registry] class, "
+                        + (written is null
+                            ? "and this is not one -- not a name, and not a value read out of one"
+                            : $"and '{written}' is not one"));
+            key = "";
+        }
+
+        bool forget = called.Name == "Revert";
+
+        CallExpr instead = new()
+        {
+            Target = new MemberExpr
+            {
+                Target = new NameExpr { Name = "Registry", Line = asking.Line, Col = asking.Col, File = asking.File },
+                Name = forget ? "Delete" : "HasKey",
+                Line = asking.Line, Col = asking.Col, File = asking.File,
+            },
+            Line = asking.Line, Col = asking.Col, File = asking.File,
+        };
+
+        instead.Args.Add(new LiteralExpr
+        {
+            Kind = Lit.Str, Text = key, Line = asking.Line, Col = asking.Col, File = asking.File,
+        });
+        instead.Args.Add(new MemberExpr
+        {
+            Target = new NameExpr { Name = "RegistryScope", Line = asking.Line, Col = asking.Col, File = asking.File },
+            Name = forget ? "User" : "Both",
+            Line = asking.Line, Col = asking.Col, File = asking.File,
+        });
+        return instead;
+    }
+
+    /// <summary>A dotted path of plain names, or null for anything else.</summary>
+    private static string? WrittenPath(Expr e)
+    {
+        return e switch
+        {
+            NameExpr { TypeArgs.Count: 0 } name => name.Name,
+            MemberExpr member => WrittenPath(member.Target) is string outer ? outer + "." + member.Name : null,
+            _ => null,
+        };
+    }
+
+    /// <summary>
+    /// The setting a written path names. A path may be written short --
+    /// `Canvas.Width` from inside Settings -- so a suffix is accepted where
+    /// exactly one setting ends that way, and refused where several do.
+    /// </summary>
+    private string? Key(string written)
+    {
+        if (_registryKeys.TryGetValue(written, out string? found))
+        {
+            return found;
+        }
+
+        string? only = null;
+
+        foreach ((string path, string key) in _registryKeys)
+        {
+            if (!path.EndsWith("." + written, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (only is not null)
+            {
+                return null;            // several, so the short path says nothing
+            }
+            only = key;
+        }
+        return only;
+    }
+
+    /// <summary>What an enum written `: name` is stored as, or null where
+    /// that is not something an enum may be stored as.</summary>
+    private static Prim? Underlying(string name) => name switch
+    {
+        "byte" => Prim.U8,
+        "sbyte" => Prim.I8,
+        "short" => Prim.I16,
+        "ushort" => Prim.U16,
+        "int" => Prim.I32,
+        "uint" => Prim.U32,
+        "long" => Prim.I64,
+        "ulong" => Prim.U64,
+        _ => null,
+    };
+
+    /// <summary>Whether a primitive is one this compiler emits a descriptor for.</summary>
+    private static bool Descriptive(Prim prim)
+        => prim is Prim.Bool or Prim.I8 or Prim.I16 or Prim.I32 or Prim.I64
+                or Prim.U8 or Prim.U16 or Prim.U32 or Prim.U64
+                or Prim.NInt or Prim.NUInt or Prim.F32 or Prim.F64
+                or Prim.Char or Prim.String;
+
     private bool TypeCandidate(string key, out TypeSymbol? symbol)
     {
         if (_r.Types.TryGetValue(key, out symbol))
@@ -369,6 +485,13 @@ public sealed partial class Binder
     /// code cannot be told otherwise. Zero means nothing is being linked and
     /// the count decides.
     /// </summary>
+    /// <summary>
+    /// Where each declared registry setting lives, by the path it is written
+    /// with. Empty in a program that declares none, which is nearly all of
+    /// them. See CompilationUnit.RegistryKeys.
+    /// </summary>
+    private IReadOnlyDictionary<string, string> _registryKeys = new Dictionary<string, string>(StringComparer.Ordinal);
+
     public static BindResult Bind(CompilationUnit unit, string file = "<source>", Action<string>? requireDeclaration = null,
         IReadOnlyDictionary<(string Name, int Arity), int>? indexedInterfaces = null,
         Action<string, string>? requireExtensions = null,
@@ -724,6 +847,8 @@ public sealed partial class Binder
 
     private void Run(CompilationUnit unit)
     {
+        _registryKeys = unit.RegistryKeys;
+
         // WHAT EVERY TUPLE SHAPE HAS BEEN CALLED, before any of it is checked.
         //
         // A specialisation carries its arguments in its name and not in an
@@ -1589,8 +1714,11 @@ public sealed partial class Binder
         // question being asked.
         foreach (TypeRef u in d.Kind == TypeKind.Enum ? d.Bases : Enumerable.Empty<TypeRef>())
         {
-            if (u.Name is not ("byte" or "sbyte" or "short" or "ushort"
-                            or "int" or "uint" or "long" or "ulong"))
+            if (Underlying(u.Name) is Prim held)
+            {
+                sym.EnumUnderlying = held;
+            }
+            else
             {
                 Error(u, $"an enum's underlying type must be an integer; '{u.Name}' is not one");
             }
@@ -2440,7 +2568,7 @@ public sealed partial class Binder
         {
             return new Type
             {
-                Prim = path.Kind == TypeKind.Enum ? Prim.I32 : Prim.Void,
+                Prim = path.Kind == TypeKind.Enum ? path.EnumUnderlying : Prim.Void,
                 Symbol = path,
                 Args = r.Args.Select(a => Resolve(a, context)).ToArray(),
                 UseArgs = r.UseArgs?.Select(a => Resolve(a, context)).ToArray(),
@@ -2479,7 +2607,7 @@ public sealed partial class Binder
         {
             return new Type
             {
-                Prim = sym.Kind == TypeKind.Enum ? Prim.I32 : Prim.Void,
+                Prim = sym.Kind == TypeKind.Enum ? sym.EnumUnderlying : Prim.Void,
                 Symbol = sym,
                 Args = r.Args.Select(a => Resolve(a, context)).ToArray(),
                 UseArgs = r.UseArgs?.Select(a => Resolve(a, context)).ToArray(),
@@ -5289,7 +5417,7 @@ public sealed partial class Binder
             return null;
         }
 
-        Type asEnum = new() { Prim = Prim.I32, Symbol = chosen };
+        Type asEnum = new() { Prim = chosen.EnumUnderlying, Symbol = chosen };
         List<Expr> rest = call.Args.Skip(skip).ToList();
 
         switch (named.Name)
@@ -5426,7 +5554,10 @@ public sealed partial class Binder
 
         if (had.IsInteger && !had.Nullable)
         {
-            return Call("String", "FromInt", call, spelt.Target);
+            // ulong.ToString() is not long.ToString(): see String.FromUInt.
+            bool unsigned = had.Prim is Prim.U64 || (had.Prim is Prim.NUInt && Target.Current.WordSize == 8);
+
+            return Call("String", unsigned ? "FromUInt" : "FromInt", call, spelt.Target);
         }
 
         return null;
@@ -7089,6 +7220,25 @@ public sealed partial class Binder
                 when !FindType("Enum", out _) && EnumStatic(asked, wanted) is Type answered:
                 return answered;
 
+            // ASKING WHETHER A SETTING IS SET IS NOT A QUESTION ABOUT ITS
+            // VALUE, and neither is forgetting one. Both take a declared
+            // member, and a declared member is a property -- so evaluating
+            // the argument would read the registry and hand these a number,
+            // by which point what was asked about is gone. The SHAPE of the
+            // call is read instead, at compile time, exactly as nameof and
+            // sizeof are.
+            // Guarded on this program declaring settings at all, so one that
+            // declares none keeps whatever it means by Registry.IsSet.
+            case CallExpr { Args.Count: 1, Target: MemberExpr { Name: "IsSet" or "Revert",
+                                                                Target: NameExpr { Name: "Registry" } } } asking
+                when _registryKeys.Count > 0:
+            {
+                Expr resolved = Setting(asking);
+
+                _r.Rewrites[asking] = resolved;
+                return CheckExpr(resolved);
+            }
+
             case CallExpr { Args.Count: 0, Target: MemberExpr { Name: "ToString" } spelt } written
                 when Stringify(spelt, written) is Expr instead:
             {
@@ -7706,7 +7856,7 @@ public sealed partial class Binder
                         // `flags & ~Ways.Read` a Ways rather than an int.
                         if (t.Symbol is { Kind: TypeKind.Enum })
                         {
-                            return new Type { Prim = Prim.I32, Symbol = t.Symbol };
+                            return new Type { Prim = t.Symbol.EnumUnderlying, Symbol = t.Symbol };
                         }
                         return Promote(t);
 
@@ -8443,13 +8593,27 @@ public sealed partial class Binder
                 // instantiation is being compiled.
                 Type named = Resolve(to.Type, _thisType);
 
-                // ONLY A DECLARED TYPE HAS A DESCRIPTOR. An int has no vtable
-                // to put one in front of, so typeof(int) has nothing to be --
-                // and answering with a null or a zero would make the failure
-                // arrive as a fault in whoever read the name.
-                if (named.Symbol is null)
+                // A PRIMITIVE HAS A DESCRIPTOR TOO. It has no vtable to put
+                // one in front of, but a descriptor is what a type's IDENTITY
+                // is here -- two of them compare by address -- and `typeof(int)`
+                // is ordinary C# that a generic asking what T is cannot do
+                // without. One is emitted per primitive and shared, so every
+                // `typeof(int)` in a program is the same address.
+                if (named.Symbol is null || named.ArrayRank > 0)
                 {
-                    Error(to, $"typeof needs a class, interface or struct; '{named}' is not one");
+                    if (named.ArrayRank > 0 && named.Element is Type element)
+                    {
+                        _r.ArrayTypeOfs[to] = element;
+                        return Type.TypeHandle;
+                    }
+
+                    if (named.ArrayRank == 0 && named.PointerDepth == 0 && Descriptive(named.Prim))
+                    {
+                        _r.PrimitiveTypeOfs[to] = named.Prim;
+                        return Type.TypeHandle;
+                    }
+
+                    Error(to, $"typeof needs a type with a descriptor; '{named}' has none");
                     return Type.Error;
                 }
 
@@ -10086,7 +10250,7 @@ public sealed partial class Binder
             && shadowed.Kind == TypeKind.Enum && shadowed.EnumValues.ContainsKey(m.Name)
             && (target.Symbol is null || target.Symbol.FindField(m.Name) is null))
         {
-            Type asEnum = new() { Prim = Prim.I32, Symbol = shadowed };
+            Type asEnum = new() { Prim = shadowed.EnumUnderlying, Symbol = shadowed };
 
             _r.Resolved[m] = new ConstSym(shadowed.EnumValues[m.Name], asEnum);
             return asEnum;
@@ -10129,7 +10293,7 @@ public sealed partial class Binder
             //
             // A member is a constant, so it becomes one: the same ConstSym a
             // named const uses, and the same single instruction.
-            Type enumType = new() { Prim = Prim.I32, Symbol = en.Symbol };
+            Type enumType = new() { Prim = en.Symbol.EnumUnderlying, Symbol = en.Symbol };
 
             _r.Resolved[m] = new ConstSym(value, enumType);
             return enumType;
@@ -11838,7 +12002,7 @@ public sealed partial class Binder
                 // now -- it is the difference between "Read, Run" and "5".
                 if (l.Symbol is { Kind: TypeKind.Enum } bits && ReferenceEquals(bits, r.Symbol))
                 {
-                    return new Type { Prim = Prim.I32, Symbol = bits };
+                    return new Type { Prim = bits.EnumUnderlying, Symbol = bits };
                 }
                 goto case BinOp.Add;
 

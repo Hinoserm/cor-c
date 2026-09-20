@@ -402,6 +402,7 @@ public static class Prelude
     public const string ConcatMethod = "Concat";
     public const string CompareMethod = "Compare";
     public const string FromIntMethod = "FromInt";
+    public const string FromUIntMethod = "FromUInt";
     public const string FromBoolMethod = "FromBool";
     public const string FromDoubleMethod = "FromDouble";
 

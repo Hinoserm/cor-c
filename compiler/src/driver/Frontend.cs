@@ -140,6 +140,20 @@ public static class Frontend
             });
         MergePartialTypes(unit);
 
+        // BEFORE ANYTHING IS BOUND, because a declared setting is not
+        // storage: the fields under a [Registry] class become properties
+        // here, and binding a name to a field it no longer has would be too
+        // late. The schemas ride along on the unit to the driver, which
+        // writes them into the object file.
+        List<CompileError> settings = new();
+
+        unit.RegistrySchemas.AddRange(RegistryDeclarations.Collect(unit, settings));
+
+        if (Report(settings))
+        {
+            return null;
+        }
+
         IReadOnlyList<CompileError> generic;
         unit = Monomorphiser.Expand(unit, name, library, out generic, declarations is null ? null : declarations.Require);
 

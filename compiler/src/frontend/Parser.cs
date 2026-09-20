@@ -837,7 +837,7 @@ public sealed class Parser
     /// PROVES about null, which the checker has to know to accept
     /// `if (!string.IsNullOrEmpty(dir)) { Use(dir); }`.
     /// </summary>
-    private readonly List<(string Target, string Name, string? Argument)> _attributeParts = new();
+    private readonly List<AttributeRef> _attributeParts = new();
 
     /// <summary>
     /// Reads an attribute list, keeping what each one is CALLED and dropping
@@ -889,7 +889,10 @@ public sealed class Parser
                         {
                             _attributes.Add(_t[j].Text);
                         }
-                        _attributeParts.Add((target, _t[j].Text, Argument(j + 1)));
+                        AttributeRef written = new() { Target = target, Name = _t[j].Text };
+
+                        written.Arguments.AddRange(Arguments(j + 1));
+                        _attributeParts.Add(written);
                     }
                 }
                 else if (At(Tok.RBracket))
@@ -913,15 +916,17 @@ public sealed class Parser
     /// "path" as well -- the last name or literal before the argument ends is
     /// what every one of those spellings comes down to.
     /// </summary>
-    private string? Argument(int open)
+    private List<AttributeArgument> Arguments(int open)
     {
+        List<AttributeArgument> arguments = new();
+
         if (open >= _t.Count || _t[open].Kind != Tok.LParen)
         {
-            return null;
+            return arguments;
         }
 
         int depth = 0;
-        string? last = null;
+        int from = open + 1;
 
         for (int j = open; j < _t.Count; j++)
         {
@@ -937,16 +942,48 @@ public sealed class Parser
 
                 if (depth == 0)
                 {
-                    return last;
+                    Argument(from, j, arguments);
+                    return arguments;
                 }
                 continue;
             }
 
             if (_t[j].Kind == Tok.Comma && depth == 1)
             {
-                return last;
+                Argument(from, j, arguments);
+                from = j + 1;
             }
+        }
+        return arguments;
+    }
 
+    /// <summary>
+    /// One argument of an attribute, reduced to the one word it amounts to.
+    ///
+    /// `false` is "false", `"path"` is "path" and `nameof(path)` is "path" as
+    /// well -- the last name or literal in it is what every one of those
+    /// spellings comes down to. `Closed = true` is that, with a name in
+    /// front, which is how C# writes an attribute's named argument.
+    /// </summary>
+    private void Argument(int from, int to, List<AttributeArgument> into)
+    {
+        if (from >= to)
+        {
+            return;                     // `[Foo()]`, or a trailing comma
+        }
+
+        string? name = null;
+
+        if (to - from > 2 && _t[from].Kind == Tok.Ident && _t[from + 1].Kind == Tok.Assign)
+        {
+            name = _t[from].Text;
+            from += 2;
+        }
+
+        string? last = null;
+
+        for (int j = from; j < to; j++)
+        {
             if (_t[j].Kind is Tok.Ident or Tok.Str)
             {
                 last = _t[j].Text;
@@ -956,7 +993,32 @@ public sealed class Parser
                 last = _t[j].Kind == Tok.KwTrue ? "true" : "false";
             }
         }
-        return last;
+
+        if (last is not null)
+        {
+            into.Add(new AttributeArgument { Name = name, Value = last });
+        }
+    }
+
+    /// <summary>
+    /// The attributes just read, as nodes the rest of the compiler can keep.
+    ///
+    /// `_attributeParts` is scratch and is cleared by the next attribute
+    /// list, so anything that wants to remember an attribute copies it out
+    /// before parsing anything else.
+    /// </summary>
+    private List<AttributeRef> CapturedAttributes()
+    {
+        List<AttributeRef> captured = new();
+
+        foreach (AttributeRef written in _attributeParts)
+        {
+            AttributeRef copy = new() { Target = written.Target, Name = written.Name };
+
+            copy.Arguments.AddRange(written.Arguments);
+            captured.Add(copy);
+        }
+        return captured;
     }
 
     private Mods ParseMods()
@@ -1168,6 +1230,7 @@ public sealed class Parser
         };
 
         decl.Attributes.AddRange(_attributes);
+        decl.AttributeParts.AddRange(CapturedAttributes());
 
         // WHERE THIS ONE WAS WRITTEN, before its own body moves the path on.
         // Empty means the top level, and a top-level type has no outer.
@@ -1249,10 +1312,21 @@ public sealed class Parser
         {
             while (!At(Tok.RBrace) && !At(Tok.End))
             {
+                SkipAttributes();
+
+                if (At(Tok.RBrace) || At(Tok.End))
+                {
+                    break;                  // a trailing comma, then the brace
+                }
+
+                List<AttributeRef> on = CapturedAttributes();
                 Token m = Cur;
                 string member = Expect(Tok.Ident, "an enum member").Text;
                 Expr? value = Take(Tok.Assign) ? ParseExpr() : null;
-                decl.EnumMembers.Add(new EnumMember { Name = member, Value = value, Line = m.Line, Col = m.Col });
+                EnumMember declared = new() { Name = member, Value = value, Line = m.Line, Col = m.Col };
+
+                declared.Attributes.AddRange(on);
+                decl.EnumMembers.Add(declared);
 
                 if (!Take(Tok.Comma))
                 {
@@ -1333,6 +1407,7 @@ public sealed class Parser
             File = _file, Line = start.Line, Col = start.Col, SourceFrom = start.Pos,
         };
         declaration.Attributes.AddRange(_attributes);
+        declaration.AttributeParts.AddRange(CapturedAttributes());
         ParseTypeParams(declaration.TypeParams);
         MethodDecl invoke = new()
         {
@@ -1736,12 +1811,13 @@ public sealed class Parser
         // .NET's way of saying a method hands back a null only where it was
         // given one, and Path.ChangeExtension is declared with it.
         string? returnsNullOnlyWith = null;
+        List<AttributeRef> attributes = CapturedAttributes();
 
-        foreach ((string target, string attribute, string? argument) in _attributeParts)
+        foreach (AttributeRef written in _attributeParts)
         {
-            if (target == "return" && attribute == "NotNullIfNotNull")
+            if (written.Target == "return" && written.Name == "NotNullIfNotNull")
             {
-                returnsNullOnlyWith = argument;
+                returnsNullOnlyWith = written.Argument;
                 break;
             }
         }
@@ -1895,11 +1971,14 @@ public sealed class Parser
             Token also = Expect(Tok.Ident, "another name in the declaration");
             Expr? value = Take(Tok.Assign) ? Initialiser(type) : null;
 
-            rest.Add(new FieldDecl
+            FieldDecl more = new()
             {
                 Name = also.Text, Mods = mods, Type = type, Init = value, IsEvent = isEvent,
-                Line = also.Line, Col = also.Col,
-            });
+                DeclaredInit = value, Line = also.Line, Col = also.Col,
+            };
+
+            more.Attributes.AddRange(attributes);
+            rest.Add(more);
         }
 
         Expect(Tok.Semi, "';' after the field");
@@ -1907,9 +1986,10 @@ public sealed class Parser
         FieldDecl first = new()
         {
             Name = name, Mods = mods, Type = type, Init = init, IsEvent = isEvent,
-            Line = start.Line, Col = start.Col,
+            DeclaredInit = init, Line = start.Line, Col = start.Col,
         };
 
+        first.Attributes.AddRange(attributes);
         first.More.AddRange(rest);
         return first;
     }
@@ -2420,11 +2500,11 @@ public sealed class Parser
 
             bool? whenProved = null;
 
-            foreach ((string _, string attribute, string? argument) in _attributeParts)
+            foreach (AttributeRef written in _attributeParts)
             {
-                if (attribute == "NotNullWhen" && argument is "true" or "false")
+                if (written.Name == "NotNullWhen" && written.Argument is "true" or "false")
                 {
-                    whenProved = argument == "true";
+                    whenProved = written.Argument == "true";
                     break;
                 }
             }

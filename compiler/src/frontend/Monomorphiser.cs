@@ -397,6 +397,12 @@ public sealed class Monomorphiser
         CompilationUnit output = new() { Line = unit.Line, Col = unit.Col };
         output.Usings.AddRange(unit.Usings);
         output.TupleNamings.AddRange(unit.TupleNamings);
+        output.RegistrySchemas.AddRange(unit.RegistrySchemas);
+
+        foreach ((string path, string key) in unit.RegistryKeys)
+        {
+            output.RegistryKeys[path] = key;
+        }
 
         // Concrete declarations pass through, with their bodies rewritten so
         // any generic reference inside them names a specialisation.
@@ -1042,10 +1048,14 @@ public sealed class Monomorphiser
         }
 
         made.Attributes.AddRange(d.Attributes);
+        made.AttributeParts.AddRange(d.AttributeParts);
 
         foreach (EnumMember em in d.EnumMembers)
         {
-            made.EnumMembers.Add(new EnumMember { Name = em.Name, Value = em.Value, Line = em.Line, Col = em.Col });
+            EnumMember copy = new() { Name = em.Name, Value = em.Value, Line = em.Line, Col = em.Col };
+
+            copy.Attributes.AddRange(em.Attributes);
+            made.EnumMembers.Add(copy);
         }
 
         // NUMBERED AS WE GO, so a specialisation can find the same member of the
@@ -1096,13 +1106,19 @@ public sealed class Monomorphiser
         switch (m)
         {
             case FieldDecl f:
-                return new FieldDecl
+            {
+                FieldDecl copy = new()
                 {
                     Name = f.Name, Mods = f.Mods, Type = Sub(f.Type, map),
                     Init = f.Init is null ? null : Rewrite(f.Init, map),
+                    DeclaredInit = f.DeclaredInit is null ? null : Rewrite(f.DeclaredInit, map),
                     VtableSlotHint = f.VtableSlotHint,
                     Line = f.Line, Col = f.Col,
                 };
+
+                copy.Attributes.AddRange(f.Attributes);
+                return copy;
+            }
 
             case PropertyDecl p:
             {
