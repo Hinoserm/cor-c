@@ -710,6 +710,28 @@ class TrueTypeHinter
     int[] _storageAfterPrep = new int[0];
     bool _prepared;
 
+    // THE GRAPHICS STATE AFTER THE CONTROL VALUE PROGRAM, kept whole. A
+    // face tunes the machine in prep -- the minimum distance it will
+    // allow between two points, how far a stem may sit from its table
+    // entry before the table stops applying, which way to round -- and
+    // the specification says every glyph then starts from THAT, not from
+    // the machine's own defaults. A heavily hinted face such as Tahoma
+    // relies on it completely: reset the state instead and its stems
+    // collapse to nothing, because a minimum distance of one pixel it
+    // deliberately turned off comes back on and shoves both edges of a
+    // stem onto the same grid line.
+    int _pvxAfterPrep, _pvyAfterPrep, _fvxAfterPrep, _fvyAfterPrep;
+    int _dvxAfterPrep, _dvyAfterPrep, _fdotpAfterPrep;
+    int _rp0AfterPrep, _rp1AfterPrep, _rp2AfterPrep;
+    int _zp0AfterPrep, _zp1AfterPrep, _zp2AfterPrep;
+    int _loopAfterPrep;
+    int _roundPeriodAfterPrep, _roundPhaseAfterPrep, _roundThresholdAfterPrep;
+    bool _roundOffAfterPrep;
+    int _minimumDistanceAfterPrep, _cvtCutInAfterPrep;
+    int _singleWidthAfterPrep, _singleWidthCutInAfterPrep;
+    int _deltaBaseAfterPrep, _deltaShiftAfterPrep;
+    bool _autoFlipAfterPrep;
+
     public bool Failed;                      // a program did something impossible
 
     public TrueTypeHinter(TrueTypeFace face)
@@ -1627,9 +1649,19 @@ class TrueTypeHinter
             original = original < 0 ? -_singleWidth : _singleWidth;
         }
 
+        // THE FLAG BITS OF MDRP AND MIRP, which are not where a reading of
+        // "MIRP[abcde]" suggests: a, the bit that makes this point the new
+        // reference, is the TOP of the five (0x10), and b, keep at least the
+        // minimum distance, is 0x08. Rounding is 0x04 and the last two are
+        // the distance type. Read a and b as 0x01 and 0x02 instead and a
+        // face's stems collapse: every MIRP that asked for a rounded
+        // distance of nought -- which is how a stem's left edge is pinned to
+        // the pen -- gets shoved a whole pixel right by a minimum distance
+        // it never asked for, and both edges of the stem land on the same
+        // column.
         int distance = (op & 4) != 0 ? Round(original) : original;
 
-        if ((op & 2) != 0)
+        if ((op & 8) != 0)
         {
             if (original >= 0) { if (distance < _minimumDistance) { distance = _minimumDistance; } }
             else { if (distance > -_minimumDistance) { distance = -_minimumDistance; } }
@@ -1640,7 +1672,7 @@ class TrueTypeHinter
 
         _rp1 = _rp0;
         _rp2 = point;
-        if ((op & 1) != 0) { _rp0 = point; }
+        if ((op & 16) != 0) { _rp0 = point; }
     }
 
     /// <summary>
@@ -1694,7 +1726,7 @@ class TrueTypeHinter
             distance = Round(distance);
         }
 
-        if ((op & 2) != 0)
+        if ((op & 8) != 0)
         {
             if (original >= 0) { if (distance < _minimumDistance) { distance = _minimumDistance; } }
             else { if (distance > -_minimumDistance) { distance = -_minimumDistance; } }
@@ -1704,7 +1736,7 @@ class TrueTypeHinter
 
         _rp1 = _rp0;
         _rp2 = point;
-        if ((op & 1) != 0) { _rp0 = point; }
+        if ((op & 16) != 0) { _rp0 = point; }
     }
 
     /// <summary>
@@ -1913,6 +1945,59 @@ class TrueTypeHinter
 
     // --- setting up -------------------------------------------------------
 
+    /// The state the control value program left, taken down.
+    void SaveState()
+    {
+        _pvxAfterPrep = _pvx; _pvyAfterPrep = _pvy;
+        _fvxAfterPrep = _fvx; _fvyAfterPrep = _fvy;
+        _dvxAfterPrep = _dvx; _dvyAfterPrep = _dvy;
+        _fdotpAfterPrep = _fdotp;
+        _rp0AfterPrep = _rp0; _rp1AfterPrep = _rp1; _rp2AfterPrep = _rp2;
+        _zp0AfterPrep = _zp0; _zp1AfterPrep = _zp1; _zp2AfterPrep = _zp2;
+        _loopAfterPrep = _loop;
+        _roundPeriodAfterPrep = _roundPeriod;
+        _roundPhaseAfterPrep = _roundPhase;
+        _roundThresholdAfterPrep = _roundThreshold;
+        _roundOffAfterPrep = _roundOff;
+        _minimumDistanceAfterPrep = _minimumDistance;
+        _cvtCutInAfterPrep = _cvtCutIn;
+        _singleWidthAfterPrep = _singleWidth;
+        _singleWidthCutInAfterPrep = _singleWidthCutIn;
+        _deltaBaseAfterPrep = _deltaBase;
+        _deltaShiftAfterPrep = _deltaShift;
+        _autoFlipAfterPrep = _autoFlip;
+    }
+
+    /// <summary>
+    /// That state again, handed to a glyph program about to run -- but
+    /// only the half of it a face means to keep. WHICH HALF IS NOT
+    /// ARBITRARY: the tuning the control value program did carries over,
+    /// while the things a glyph program invariably sets for itself in its
+    /// first few instructions -- which axis it is working along, which
+    /// way to round, which points it is measuring from -- go back to the
+    /// machine's defaults, because a glyph that does not set them expects
+    /// the defaults and not whatever the previous glyph happened to leave.
+    /// </summary>
+    void RestoreState()
+    {
+        _pvx = _fvx = _dvx = 0x4000;
+        _pvy = _fvy = _dvy = 0;
+        _fdotp = 0x4000;
+        _rp0 = _rp1 = _rp2 = 0;
+        _zp0 = _zp1 = _zp2 = 1;
+        _loop = 1;
+        RoundToGrid();
+
+        _minimumDistance = _minimumDistanceAfterPrep;
+        _cvtCutIn = _cvtCutInAfterPrep;
+        _singleWidth = _singleWidthAfterPrep;
+        _singleWidthCutIn = _singleWidthCutInAfterPrep;
+        _deltaBase = _deltaBaseAfterPrep;
+        _deltaShift = _deltaShiftAfterPrep;
+        _autoFlip = _autoFlipAfterPrep;
+        _top = 0;
+    }
+
     /// The graphics state every program starts from.
     void ResetState()
     {
@@ -1979,6 +2064,8 @@ class TrueTypeHinter
         for (int i = 0; i < _cvt.Length; i++) { _cvtAfterPrep[i] = _cvt[i]; }
         for (int i = 0; i < _storage.Length; i++) { _storageAfterPrep[i] = _storage[i]; }
 
+        SaveState();
+
         _prepared = !Failed;
         return _prepared;
     }
@@ -2026,7 +2113,7 @@ class TrueTypeHinter
             Twilight.TouchX[i] = false; Twilight.TouchY[i] = false;
         }
 
-        ResetState();
+        RestoreState();
         Glyph.Untouch();
 
         if (instructionLength <= 0) { return true; }
