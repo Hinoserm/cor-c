@@ -960,6 +960,22 @@ public class Form : Control
         if (TopMost) seat.TopMostWindow(_handle, true);
         if (!ShowInTaskbar) seat.ListOnTaskbar(_handle, false);
         _shown = true;
+
+        // A WINDOW THAT MERELY APPEARS. A tooltip is a form like any
+        // other as far as the seat knows, and shown like any other it
+        // took the activation, the keyboard and the focus -- so the
+        // dialog under it went inactive and a drag in progress died the
+        // moment its own tip came up. WinForms' name for the way out is
+        // ShowWithoutActivation, and it means what it says.
+        if (ShowWithoutActivation)
+        {
+            Application.RegisterQuietly(this);
+            OnLoad(EventArgs.Empty);
+            seat.ShowWindow(_handle);
+            Invalidate();
+            return;
+        }
+
         Application.Register(this);
         OnLoad(EventArgs.Empty);
         seat.ShowWindow(_handle);
@@ -967,6 +983,12 @@ public class Form : Control
         Application.SetFocus(FirstFocusable(this) ?? this);
         seat.FocusWindow(_handle);
     }
+
+    /// True for a window that is shown without being made the active one:
+    /// it takes no focus, no keyboard and no activation from whatever had
+    /// them. Overridden by the few that want it.
+    protected virtual bool ShowWithoutActivation { get { return false; } }
+    internal bool StaysInactive { get { return ShowWithoutActivation; } }
 
     static Control? FirstFocusable(Control c)
     {
@@ -3766,6 +3788,10 @@ public class ToolTip
 
         if (at < 0) { Hide(); return; }
 
+        // Never over a drag: a tip that comes up under a held button is
+        // in the way of the very thing being done.
+        if (Application.ButtonHeld) { _since = Application.Now(); Hide(); return; }
+
         long waited = Application.Now() - _since;
 
         if (_shown != null) { if (waited > 5500) Hide(); return; }
@@ -3801,6 +3827,7 @@ public class ToolTip
 internal class ToolTipWindow : Form
 {
     internal override string ClassName { get { return "ToolTip"; } }
+    protected override bool ShowWithoutActivation { get { return true; } }
 
     readonly string _text;
 
@@ -4181,6 +4208,9 @@ public static class Application
     public static Form? ActiveForm { get { return _active; } }
     internal static Control? Captured;
 
+    /// A mouse button is down somewhere: nothing pops up over a drag.
+    internal static bool ButtonHeld;
+    internal static void RegisterQuietly(Form f) { if (!_forms.Contains(f)) _forms.Add(f); }
     internal static void Register(Form f) { if (!_forms.Contains(f)) _forms.Add(f); CancelDrag(f); _active = f; f.RaiseActivated(); }
 
     /// A drag ends when activation moves away from the window being
@@ -4457,7 +4487,8 @@ public static class Application
                 f!.WindowMouse(3, 0, wx, wy); break;
             }
             case 4:
-                if (_active != f) { _active = f; f!.RaiseActivated(); }
+                ButtonHeld = true;
+                if (_active != f && !f!.StaysInactive) { _active = f; f!.RaiseActivated(); }
                 f!.WindowMouse(4, m.A, Seat.LowSigned(m.B), Seat.HighSigned(m.B)); break;
             case 6:
             {
@@ -4471,6 +4502,7 @@ public static class Application
                 break;
             }
             case 5:
+                ButtonHeld = false;
                 SettleDrag();
                 // A press on an edge that never moved still put an outline
                 // on the screen: it goes when the button does, either way.
