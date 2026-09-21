@@ -2844,10 +2844,15 @@ static class GcRoots
 
         long i = 0;
 
-        while (i < _extraCount)
+        while (_extra != 0 && i < ExtraMax)
         {
             long start = Sys.Peek(_extra + i * 8);
-            if (start != 0) Gc.ScanRange(start, Sys.Peek(_extra + i * 8 + 4));
+            // A slot whose start is the claim mark is one a thread is filling
+            // in: its end is not written yet and there is nothing to scan.
+            if (start != 0 && start != Claiming)
+            {
+                Gc.ScanRange(start, Sys.Peek(_extra + i * 8 + 4));
+            }
             i = i + 1;
         }
     }
@@ -2870,8 +2875,11 @@ static class GcRoots
     const long ExtraMax = 128;
     const long ExtraBytes = ExtraMax * 8;
 
+    // A slot's start word is also how it is owned: zero is free, this is
+    // taken but not yet filled in, anything else is a range being scanned.
+    const long Claiming = 1;
+
     static long _extra;
-    static long _extraCount;
 
     /// Adds [start, end) to the root ranges every collection scans. Answers
     /// false only if the table is full or the operating system refuses it,
@@ -2893,31 +2901,44 @@ static class GcRoots
             }
         }
 
-        for (long i = 0; i < _extraCount; i++)
+        // A SLOT IS TAKEN, NOT CHOSEN. Two threads registering at once --
+        // two processors parking a kernel continuation, each on its own
+        // stack -- both found the same slot empty and both wrote into it:
+        // one's start beside the other's end. The pair that came out named
+        // a range beginning on one stack and ending on another, with
+        // whatever lay between them, and the next collection walked into
+        // the gap and faulted in the kernel. The start word is claimed
+        // first, with a compare and swap, and nothing else is written to
+        // the slot until it belongs to this thread.
+        for (long i = 0; i < ExtraMax; i++)
         {
-            if (Sys.Peek(_extra + i * 8) != 0) continue;
-            Sys.Poke(_extra + i * 8 + 4, end);
-            Sys.Poke(_extra + i * 8, start);
+            long at = _extra + i * 8;
+
+            if (Sys.Cas(at, 0, Claiming) != 0)
+            {
+                continue;
+            }
+
+            Sys.Poke(at + 4, end);
+            Sys.Fence();                  // the end is there before the start says so
+            Sys.Poke(at, start);
             return true;
         }
-        if (_extraCount >= ExtraMax)
-        {
-            return false;
-        }
-        Sys.Poke(_extra + _extraCount * 8, start);
-        Sys.Poke(_extra + _extraCount * 8 + 4, end);
-        _extraCount = _extraCount + 1;
-        return true;
+
+        return false;
     }
 
     // The caller serializes root registration/removal against collection.
     public static bool Unregister(long start, long end)
     {
-        for (long i = 0; i < _extraCount; i++)
+        for (long i = 0; _extra != 0 && i < ExtraMax; i++)
         {
             long at = _extra + i * 8;
             if (start == 0 || Sys.Peek(at) != start || Sys.Peek(at + 4) != end) continue;
-            Sys.Poke(at, 0);
+            // The start goes first, and atomically: a slot whose start is
+            // zero is free, and it must not become free while its end still
+            // names this stack.
+            Sys.AtomicSwap(at, 0);
             Sys.Poke(at + 4, 0);
             return true;
         }
