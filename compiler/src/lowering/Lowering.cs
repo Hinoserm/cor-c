@@ -638,6 +638,24 @@ public sealed partial class Lowering
             VReg only = e.Address(ThreadBlock0);
             e.Store(new SymOperand(ThreadBlockSelf), new RegOperand(only));
             e.Store(only, only, TlsSelf);
+
+            // AND WHERE ITS STACK BEGINS, which is where the collector's scan
+            // of it ends. This was left out "because nobody left anything
+            // there" -- true of argc and argv, and beside the point: with the
+            // base at zero the scan ran from the stack pointer up to nothing,
+            // so a freestanding program's stack was NEVER SCANNED and every
+            // object held only by a local was the sweep's to take. A boot
+            // loader lost a directory block it was in the middle of reading
+            // the first time it had allocated enough to collect; a kernel ran
+            // its whole start-up that way -- probing, mounting, loading the
+            // first program -- until the first trap from a program set the
+            // base for it, and survived or did not according to where its
+            // start-up's few collections happened to fall. Whatever called
+            // this stub, its frame is above this one and holds nothing of
+            // ours: the frame pointer plus the pushed word is the top.
+            VReg top = e.Reg(IrTypes.Word, "fp");
+            e.Emit(Opcode.FramePointer, top);
+            e.Store(only, e.Binary(Opcode.Add, top, Target.Current.WordSize), TlsStackBase);
         }
 
         // Linux: the block goes behind a GDT entry and GS names it. This is
