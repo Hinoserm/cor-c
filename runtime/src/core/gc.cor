@@ -2972,6 +2972,7 @@ static class GcLock
     public const long BarrierTail = 16; // the barrier's ring: places claimed,
     public const long BarrierHead = 20; //   places taken,
     public const long BarrierLost = 24; //   and whether a report was dropped
+    public const long Owner = 28;       // the thread block of whoever holds the heap lock
 
     static long _words;
 
@@ -2995,6 +2996,17 @@ static class GcLock
             return false;
         }
         return Sys.Peek(at + Collecting) != 0;
+    }
+
+    /// Whether THIS thread holds the heap lock. On a kernel an interrupt
+    /// lands on top of the holder -- the collector sweeping a chunk, an
+    /// allocation refilling its buffer -- and anything it then does that
+    /// might allocate would wait for a lock its own thread holds, for ever.
+    /// What can be put off, asks this first.
+    public static bool HeldByMe()
+    {
+        long at = _words;
+        return at != 0 && Sys.Peek(at + Owner) == Sys.ThreadBlock() && Sys.Peek(at + Held) != 0;
     }
 
     /// Whether `block` is the thread doing the collection that is running.
@@ -3022,10 +3034,12 @@ static class GcLock
             }
             Sys.Pause();
         }
+        Sys.AtomicSwap(Words() + Owner, Sys.ThreadBlock());
     }
 
     public static void Exit()
     {
+        Sys.AtomicSwap(Words() + Owner, 0);
         Sys.AtomicSwap(Words() + Held, 0);
     }
 }

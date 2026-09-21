@@ -309,6 +309,12 @@ static class Runtime
     // may not stop is inside the allocator's fast path (Tls.InAlloc); the
     // hook is asked again until it is out.
 
+    /// Whether this thread holds the heap lock (see GcLock.HeldByMe).
+    public static bool HoldsHeapLock()
+    {
+        return GcLock.HeldByMe();
+    }
+
     /// Whether a collection is waiting for threads to stop.
     public static bool CollectionPending()
     {
