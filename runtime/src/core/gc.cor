@@ -2966,13 +2966,12 @@ static class GcRoots
 static class GcLock
 {
     public const long Collecting = 0;   // 1 while a collection is running
-    public const long Held = 4;         // the heap lock: 0 free, 1 held
+    public const long Held = 4;         // the heap lock: 0 free, else the thread block of its holder
     public const long Collector = 8;    // the thread block of whoever is collecting
     public const long Cycling = 12;     // 1 from a collection's first stop to the end of its last
     public const long BarrierTail = 16; // the barrier's ring: places claimed,
     public const long BarrierHead = 20; //   places taken,
     public const long BarrierLost = 24; //   and whether a report was dropped
-    public const long Owner = 28;       // the thread block of whoever holds the heap lock
 
     static long _words;
 
@@ -3006,7 +3005,9 @@ static class GcLock
     public static bool HeldByMe()
     {
         long at = _words;
-        return at != 0 && Sys.Peek(at + Owner) == Sys.ThreadBlock() && Sys.Peek(at + Held) != 0;
+        long me = Sys.ThreadBlock();
+        if (me == 0) me = 1;
+        return at != 0 && Sys.Peek(at + Held) == me;
     }
 
     /// Whether `block` is the thread doing the collection that is running.
@@ -3024,7 +3025,14 @@ static class GcLock
     {
         long at = Words() + Held;
 
-        while (Sys.Cas(at, 0, 1) != 0)
+        // THE WORD THAT SAYS IT IS HELD SAYS BY WHOM, in the one exchange
+        // that takes it. Two words -- held, then holder -- left an instant
+        // between them in which an interrupt on top of the new holder was
+        // told nobody it knew held the lock.
+        long me = Sys.ThreadBlock();
+        if (me == 0) me = 1;
+
+        while (Sys.Cas(at, 0, me) != 0)
         {
             // A thread spinning for this lock is a thread the collector is
             // waiting for; without this the two would wait for each other.
@@ -3034,12 +3042,10 @@ static class GcLock
             }
             Sys.Pause();
         }
-        Sys.AtomicSwap(Words() + Owner, Sys.ThreadBlock());
     }
 
     public static void Exit()
     {
-        Sys.AtomicSwap(Words() + Owner, 0);
         Sys.AtomicSwap(Words() + Held, 0);
     }
 }
