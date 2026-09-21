@@ -595,10 +595,7 @@ internal sealed partial class Selector
                 break;
             case Opcode.MemSet:
                 if (SelectFrameSet(i)) break;
-                Mov(Edi, RM(i.Operands[0]));
-                Mov(Eax, RM(i.Operands[1]));
-                Mov(Ecx, RM(i.Operands[2]));
-                Emit(MOp.RepStosb);
+                SelectMemSet(i);
                 break;
             case Opcode.AtomicSwap:
             case Opcode.AtomicAdd:
@@ -1754,6 +1751,56 @@ internal sealed partial class Selector
         }
         if (offset < length) EmitW(MOp.Mov, 1, MMem.Frame(start + offset), Imm(repeated & 255));
         return true;
+    }
+
+    // WHOLE WORDS, like MemCopy beside it. This wrote one byte a time --
+    // rep stosb for every length, however long -- while a copy of the same
+    // bytes went four at a time. On a Pentium 233 that made CLEARING a page
+    // 185 microseconds against 47 to COPY one: four times the cost for half
+    // the memory traffic, on the path of every anonymous page fault, every
+    // new page table and every frame the allocator hands out. No emulator
+    // shows it; the board was asked and said so.
+    private void SelectMemSet(Instr i)
+    {
+        Mov(Edi, RM(i.Operands[0]));
+
+        // The fill byte in all four lanes, so the words below carry it.
+        if (i.Operands[1] is ImmOperand fill)
+        {
+            uint repeated = unchecked((uint)(byte)fill.Value * 0x01010101u);
+            Mov(Eax, Imm(unchecked((int)repeated)));
+        }
+        else
+        {
+            Mov(Eax, RM(i.Operands[1]));
+            Emit(MOp.And, Eax, Imm(0xFF));
+            Emit(MOp.Imul3, Eax, Eax, Imm(unchecked((int)0x01010101u)));
+        }
+
+        if (i.Operands[2] is ImmOperand n)
+        {
+            if (n.Value / 4 > 0)
+            {
+                Mov(Ecx, Imm(n.Value / 4));
+                Emit(MOp.RepStosd);
+            }
+            if (n.Value % 4 > 0)
+            {
+                Mov(Ecx, Imm(n.Value % 4));
+                Emit(MOp.RepStosb);
+            }
+            return;
+        }
+
+        Mov(Ecx, RM(i.Operands[2]));
+        // REP consumes ECX, so the remainder is kept before the words go.
+        MReg remainder = Temp();
+        Mov(remainder, Ecx);
+        Emit(MOp.Shr, Ecx, Imm(2));
+        Emit(MOp.RepStosd);
+        Mov(Ecx, remainder);
+        Emit(MOp.And, Ecx, Imm(3));
+        Emit(MOp.RepStosb);
     }
 
     private void SelectMemCopy(Instr i)
