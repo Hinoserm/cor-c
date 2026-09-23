@@ -2331,6 +2331,7 @@ static class Termios
     // c_cflag
     public const long HangUpOnClose = 0x400; // HUPCL: the last close drops DTR
     public const long LocalLine = 0x800;    // CLOCAL: the line's carrier means nothing
+    public const long HardwareFlow = 0x80000000; // CRTSCTS: RTS/CTS flow control
 
     // c_oflag
     public const long PostProcess = 0x1;    // OPOST

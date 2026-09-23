@@ -950,6 +950,9 @@ class TerminalSettings
     public bool NlToCrNl { get { return Output(Termios.NlToCrNl); } set { SetOutput(Termios.NlToCrNl, value); } }
     /// A local line: losing the carrier does not hang it up (CLOCAL).
     public bool LocalLine { get { return Control(Termios.LocalLine); } set { SetControl(Termios.LocalLine, value); } }
+    /// RTS/CTS hardware flow control (CRTSCTS): output waits while the far
+    /// end holds CTS down, and RTS drops while this end's input is full.
+    public bool HardwareFlowControl { get { return Control(Termios.HardwareFlow); } set { SetControl(Termios.HardwareFlow, value); } }
     /// The last close drops DTR, hanging up a modem (HUPCL).
     public bool HangUpOnClose { get { return Control(Termios.HangUpOnClose); } set { SetControl(Termios.HangUpOnClose, value); } }
 
