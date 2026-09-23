@@ -928,6 +928,8 @@ class TerminalSettings
     bool Input(long bit) { return (Termios.Input(_t) & bit) != 0; }
     void SetInput(long bit, bool on) { Termios.SetInput(_t, on ? Termios.Input(_t) | bit : Termios.Input(_t) & ~bit); }
     bool Output(long bit) { return (Termios.Output(_t) & bit) != 0; }
+    bool Control(long bit) { return (Termios.Control(_t) & bit) != 0; }
+    void SetControl(long bit, bool on) { Termios.SetControl(_t, on ? Termios.Control(_t) | bit : Termios.Control(_t) & ~bit); }
     void SetOutput(long bit, bool on) { Termios.SetOutput(_t, on ? Termios.Output(_t) | bit : Termios.Output(_t) & ~bit); }
 
     /// Typed characters are repeated on the screen (ECHO).
@@ -946,6 +948,10 @@ class TerminalSettings
     public bool PostProcess { get { return Output(Termios.PostProcess); } set { SetOutput(Termios.PostProcess, value); } }
     /// A written newline goes out as return plus newline (ONLCR).
     public bool NlToCrNl { get { return Output(Termios.NlToCrNl); } set { SetOutput(Termios.NlToCrNl, value); } }
+    /// A local line: losing the carrier does not hang it up (CLOCAL).
+    public bool LocalLine { get { return Control(Termios.LocalLine); } set { SetControl(Termios.LocalLine, value); } }
+    /// The last close drops DTR, hanging up a modem (HUPCL).
+    public bool HangUpOnClose { get { return Control(Termios.HangUpOnClose); } set { SetControl(Termios.HangUpOnClose, value); } }
 
     public int InterruptChar { get { return (int)Termios.Char(_t, Termios.Intr); } set { Termios.SetChar(_t, Termios.Intr, value); } }
     public int QuitChar { get { return (int)Termios.Char(_t, Termios.Quit); } set { Termios.SetChar(_t, Termios.Quit, value); } }

@@ -2328,6 +2328,10 @@ static class Termios
     public const long IgnoreCr = 0x80;      // IGNCR
     public const long FlowControl = 0x400;  // IXON
 
+    // c_cflag
+    public const long HangUpOnClose = 0x400; // HUPCL: the last close drops DTR
+    public const long LocalLine = 0x800;    // CLOCAL: the line's carrier means nothing
+
     // c_oflag
     public const long PostProcess = 0x1;    // OPOST
     public const long NlToCrNl = 0x4;       // ONLCR
