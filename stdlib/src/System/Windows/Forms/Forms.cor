@@ -146,6 +146,9 @@ public struct Message
 
 public enum Border3DStyle { Raised, Sunken, RaisedOuter, SunkenOuter, RaisedInner, SunkenInner, Flat, Etched, Bump }
 
+/// Which ways something scrolls, with .NET's values.
+public enum ScrollBars { None = 0, Horizontal = 1, Vertical = 2, Both = 3 }
+
 /// Which way a small arrow points: the glyph on a scroll bar's button, a
 /// combo box's drop button and a spin button's two halves.
 public enum ArrowDirection { Up, Down, Left, Right }
@@ -807,6 +810,28 @@ public class Control
     internal void RaiseMouseLeave() { OnMouseLeave(EventArgs.Empty); }
     internal void RaiseMouseWheel(MouseEventArgs e) { OnMouseWheel(e); }
 
+    // MIDDLE-BUTTON AUTOSCROLL (docs/software/MOUSE-AND-SCROLL.md, section 3),
+    // as Internet Explorer and Office did it. A view that scrolls says which
+    // ways and moves itself by pixels when asked; everything else -- the
+    // marker, the cursors, the speed, when it starts and stops -- is
+    // AutoScroll's. Windows Forms had no such hook, so these are CORSAC's.
+
+    /// The ways middle-button autoscroll may move this control. None, the
+    /// default, leaves a middle press to the control as an ordinary press.
+    protected virtual ScrollBars AutoScrollDirections { get { return ScrollBars.None; } }
+
+    /// Move the view by pixels: positive `dy` toward the end (the content
+    /// goes up), positive `dx` toward the right.
+    protected virtual void AutoScrollBy(int dx, int dy) { }
+
+    /// True for a control that has a use of its own for the middle button
+    /// -- a link, a paste -- so autoscroll never takes that press from it.
+    protected virtual bool HandlesMiddleButton { get { return false; } }
+
+    internal ScrollBars AutoScrollWays { get { return AutoScrollDirections; } }
+    internal bool TakesMiddle { get { return HandlesMiddleButton; } }
+    internal void AutoScrollStep(int dx, int dy) { AutoScrollBy(dx, dy); }
+
     // PIECES OF A NOTCH ARE KEPT. A high-resolution wheel sends a notch in
     // several deltas smaller than 120, and what the WM_MOUSEWHEEL
     // documentation tells every Windows program to do is add them up and act
@@ -1202,6 +1227,7 @@ public class Form : Control
         Point co = ClientOffset();
         Rectangle client = new Rectangle(co.X, co.Y, ClientRectangle.Width, ClientRectangle.Height);
         PaintTree(seat, co, force ? client : Rectangle.Intersect(client, new Rectangle(0, 0, Width, Height)), force);
+        AutoScroll.Overlay(this, seat);
     }
 
     // The close box is held down, waiting to see where the button comes up.
@@ -1230,6 +1256,10 @@ public class Form : Control
     /// A press in the window: the close box, the caption, or the client.
     internal void WindowMouse(int kind, int button, int x, int y)
     {
+        // While autoscroll runs it has the mouse: moves steer it, and the
+        // presses and releases that end it end it, wherever they land.
+        if (AutoScroll.Active) { AutoScroll.Mouse(this, kind, button, x, y); return; }
+        if (AutoScroll.SwallowRelease && kind == 5) { AutoScroll.SwallowRelease = false; return; }
         Point co = ClientOffset();
         // A control holding the button gets everything until it comes up,
         // even where the pointer has left the window altogether.
@@ -1264,6 +1294,7 @@ public class Form : Control
         MouseButtons b = Application.ButtonOf(button);
         int clicks = kind == 4 ? Application.CountClick(target, b, x, y) : kind == 5 ? Application.LastClicks : 0;
         MouseEventArgs e = new MouseEventArgs(b, clicks, cx - origin.X, cy - origin.Y, 0);
+        if (kind == 4 && b == MouseButtons.Middle && AutoScroll.TryBegin(this, target, x, y)) return;
         if (kind == 4)
         {
             if (target is TextBox box) box.FocusByClick();
@@ -2260,6 +2291,17 @@ public class ListBox : Control
         }
         Focus();
         base.OnMouseDown(e);
+    }
+
+    protected override ScrollBars AutoScrollDirections { get { return _items.Count > Rows() ? ScrollBars.Vertical : ScrollBars.None; } }
+
+    int _scrollRest;
+    protected override void AutoScrollBy(int dx, int dy)
+    {
+        int total = _scrollRest + dy;
+        int rows = total / ItemHeight;
+        _scrollRest = total - rows * ItemHeight;
+        if (rows != 0) TopIndex = _top + rows;
     }
 
     protected override void OnMouseWheel(MouseEventArgs e)
@@ -4280,6 +4322,275 @@ public class ContextMenuStrip : Form
 
 public delegate void WatchHandler(int fd);
 
+// ---------------------------------------------------------------------------
+// Middle-button autoscroll (docs/software/MOUSE-AND-SCROLL.md, section 3)
+// ---------------------------------------------------------------------------
+
+/// As Internet Explorer and Office did it on Windows XP with an IntelliMouse.
+///
+/// A MIDDLE press on a view that scrolls (Control.AutoScrollDirections)
+/// puts an origin marker under the pointer. Released without moving, the
+/// autoscroll stays -- sticky -- until the next press of any button, a key,
+/// or the window losing the focus; held and moved, it lasts until the
+/// button comes up. The view moves toward the pointer, faster the further
+/// the pointer is from the marker, nothing inside a small dead zone around
+/// it; the pointer shows which way. A view that scrolls one way only is
+/// scrolled that way only, by the same rule -- IE did -- unless the user
+/// asked for grab-and-drag, where the content follows the pointer instead.
+static class AutoScroll
+{
+    internal static bool Active;
+    internal static bool SwallowRelease;
+
+    static Form? _form;
+    static Control? _view;
+    static ScrollBars _ways;
+    static int _originX, _originY;          // window coordinates
+    static int _x, _y;                      // the pointer, window coordinates
+    static bool _held;                      // the button is still down
+    static bool _moved;                     // it has moved past the drag size since the press
+    static bool _grab;
+    static int _restX, _restY;              // thousandths of a pixel, carried between ticks
+    static Timer? _timer;
+    static int _shape = -1;
+
+    const int Dead = 12;                    // pixels around the marker that do nothing
+    const int PixelsPerSecondPerPixel = 8;  // speed for each pixel past the dead zone
+    const int TickMilliseconds = 20;
+    const int MarkerSize = 32;
+    const int MarkerBitmap = 0x7FF0;
+
+    /// A middle press: starts autoscroll if it lands on a view that scrolls
+    /// and not on a control with its own use for the button.
+    internal static bool TryBegin(Form form, Control hit, int x, int y)
+    {
+        if (!SystemInformation.MiddleButtonAutoScroll || hit.TakesMiddle) return false;
+        Control? view = hit;
+        while (view != null && view.AutoScrollWays == ScrollBars.None) view = view.Parent;
+        if (view == null) return false;
+        _form = form; _view = view; _ways = view.AutoScrollWays;
+        _originX = x; _originY = y; _x = x; _y = y;
+        _held = true; _moved = false; _restX = 0; _restY = 0;
+        _grab = SystemInformation.AutoScrollGrab && _ways != ScrollBars.Both;
+        Active = true;
+        DefineShapes();
+        Shape();
+        if (_timer == null)
+        {
+            _timer = new Timer();
+            _timer.Interval = TickMilliseconds;
+            _timer.Tick += Tick;
+        }
+        if (!_grab) _timer.Start();
+        form.PaintWindow(new Rectangle(_originX - MarkerSize / 2, _originY - MarkerSize / 2, MarkerSize, MarkerSize), false);
+        Seat.Current.Present();
+        return true;
+    }
+
+    internal static void Mouse(Form form, int kind, int button, int x, int y)
+    {
+        if (form != _form) { End(); return; }
+        if (kind == 3)
+        {
+            if (_grab && _held && _view != null)
+            {
+                // Grab-and-drag: the content follows the pointer.
+                _view.AutoScrollStep(_ways == ScrollBars.Horizontal ? _x - x : 0, _ways == ScrollBars.Vertical ? _y - y : 0);
+                _form!.PaintWindow(new Rectangle(0, 0, _form.Width, _form.Height), false);
+                Seat.Current.Present();
+            }
+            _x = x; _y = y;
+            Size drag = SystemInformation.DragSize;
+            if (Math2.Abs(x - _originX) > drag.Width / 2 || Math2.Abs(y - _originY) > drag.Height / 2) _moved = true;
+            Shape();
+            return;
+        }
+        if (kind == 5 && button == 3)
+        {
+            _held = false;
+            // Held and moved: this release is the end. Released where it was
+            // pressed: sticky, until the next press.
+            if (_moved || _grab) End();
+            return;
+        }
+        if (kind == 4)
+        {
+            // Any press ends it and is not passed on -- nor is its release,
+            // which would otherwise arrive at a control that never saw the
+            // press and be taken for a click.
+            End();
+            SwallowRelease = true;
+        }
+    }
+
+    static void Tick(object sender, EventArgs e)
+    {
+        if (!Active || _view == null || _form == null) return;
+        int dx = (_ways & ScrollBars.Horizontal) != 0 ? Step(_x - _originX, ref _restX) : 0;
+        int dy = (_ways & ScrollBars.Vertical) != 0 ? Step(_y - _originY, ref _restY) : 0;
+        if (dx == 0 && dy == 0) return;
+        _view.AutoScrollStep(dx, dy);
+        _form.PaintWindow(new Rectangle(0, 0, _form.Width, _form.Height), false);
+        Seat.Current.Present();
+    }
+
+    /// Pixels to move this tick for an offset from the marker: nothing inside
+    /// the dead zone, then a speed that grows with the distance past it.
+    static int Step(int offset, ref int rest)
+    {
+        int past = Math2.Abs(offset) - Dead;
+        if (past <= 0) { rest = 0; return 0; }
+        int thousandths = rest + past * PixelsPerSecondPerPixel * TickMilliseconds;
+        int pixels = thousandths / 1000;
+        rest = thousandths - pixels * 1000;
+        return offset < 0 ? -pixels : pixels;
+    }
+
+    internal static void End()
+    {
+        if (!Active) return;
+        Active = false;
+        if (_timer != null) _timer.Stop();
+        Seat.Current.SetCursor(Cursors.Arrow);
+        _shape = -1;
+        Form? form = _form;
+        _form = null; _view = null;
+        if (form != null)
+        {
+            // What the marker covered, painted again from underneath.
+            form.PaintWindow(new Rectangle(_originX - MarkerSize / 2, _originY - MarkerSize / 2, MarkerSize, MarkerSize), true);
+            Seat.Current.Present();
+        }
+    }
+
+    /// The marker, over whatever was just painted in the window it is in.
+    internal static void Overlay(Form form, Seat seat)
+    {
+        if (!Active || form != _form || _grab) return;
+        Graphics g = new Graphics(seat, 0, 0, new Rectangle(0, 0, form.Width, form.Height));
+        g.DrawBitmap(MarkerBitmap + (int)_ways, _originX - MarkerSize / 2, _originY - MarkerSize / 2, MarkerSize, MarkerSize);
+    }
+
+    /// The pointer: the marker's own shape near it, else the direction.
+    static void Shape()
+    {
+        int dx = (_ways & ScrollBars.Horizontal) != 0 ? _x - _originX : 0;
+        int dy = (_ways & ScrollBars.Vertical) != 0 ? _y - _originY : 0;
+        bool east = dx > Dead, west = dx < -Dead, south = dy > Dead, north = dy < -Dead;
+        int shape = _grab ? (_ways == ScrollBars.Horizontal ? Cursors.NoMoveHoriz : Cursors.NoMoveVert)
+                  : north && east ? Cursors.PanNE : north && west ? Cursors.PanNW
+                  : south && east ? Cursors.PanSE : south && west ? Cursors.PanSW
+                  : north ? Cursors.PanNorth : south ? Cursors.PanSouth : east ? Cursors.PanEast : west ? Cursors.PanWest
+                  : _ways == ScrollBars.Vertical ? Cursors.NoMoveVert : _ways == ScrollBars.Horizontal ? Cursors.NoMoveHoriz
+                  : Cursors.NoMove2D;
+        if (shape == _shape) return;
+        _shape = shape;
+        Seat.Current.SetCursor(shape);
+    }
+
+    // ---- the pictures -------------------------------------------------------
+    //
+    // Drawn here rather than shipped: a white disc ringed in black with a dot
+    // in the middle, and black arrowheads round it for the ways the view can
+    // go, which is what IE's marker and its cursors look like. The seat
+    // reduces a cursor to two colours and a hole, and these are drawn in
+    // exactly those.
+
+    static bool _defined;
+
+    static void DefineShapes()
+    {
+        if (_defined) return;
+        _defined = true;
+        Seat seat = Seat.Current;
+        // The markers, as bitmaps, one per set of ways (ScrollBars' value).
+        seat.DefineBitmap(MarkerBitmap + (int)ScrollBars.Vertical, MarkerSize, MarkerSize, Marker(false, true, false, true));
+        seat.DefineBitmap(MarkerBitmap + (int)ScrollBars.Horizontal, MarkerSize, MarkerSize, Marker(true, false, true, false));
+        seat.DefineBitmap(MarkerBitmap + (int)ScrollBars.Both, MarkerSize, MarkerSize, Marker(true, true, true, true));
+        // The cursors, hot spot in the middle.
+        Cursor(Cursors.NoMove2D, Marker(true, true, true, true));
+        Cursor(Cursors.NoMoveVert, Marker(false, true, false, true));
+        Cursor(Cursors.NoMoveHoriz, Marker(true, false, true, false));
+        Cursor(Cursors.PanNorth, Pan(0, -1));
+        Cursor(Cursors.PanSouth, Pan(0, 1));
+        Cursor(Cursors.PanEast, Pan(1, 0));
+        Cursor(Cursors.PanWest, Pan(-1, 0));
+        Cursor(Cursors.PanNE, Pan(1, -1));
+        Cursor(Cursors.PanNW, Pan(-1, -1));
+        Cursor(Cursors.PanSE, Pan(1, 1));
+        Cursor(Cursors.PanSW, Pan(-1, 1));
+    }
+
+    static void Cursor(int shape, byte[] argb)
+    {
+        Seat.Current.DefineCursor(shape - Cursors.Base, MarkerSize, MarkerSize, MarkerSize / 2, MarkerSize / 2, argb);
+    }
+
+    static void Put(byte[] argb, int x, int y, bool black)
+    {
+        if (x < 0 || y < 0 || x >= MarkerSize || y >= MarkerSize) return;
+        int at = (y * MarkerSize + x) * 4;
+        byte v = (byte)(black ? 0 : 255);
+        argb[at] = v; argb[at + 1] = v; argb[at + 2] = v; argb[at + 3] = 255;   // B, G, R, A
+    }
+
+    /// The disc and dot, and arrowheads east, north, west, south as asked.
+    static byte[] Marker(bool east, bool north, bool west, bool south)
+    {
+        byte[] argb = new byte[MarkerSize * MarkerSize * 4];
+        int c = MarkerSize / 2;
+        for (int y = 0; y < MarkerSize; y++)
+            for (int x = 0; x < MarkerSize; x++)
+            {
+                int d = (x - c) * (x - c) + (y - c) * (y - c);
+                if (d <= 81) Put(argb, x, y, d > 64);            // a disc of radius 9, its rim black
+            }
+        for (int y = c - 1; y <= c; y++) for (int x = c - 1; x <= c; x++) Put(argb, x, y, true);
+        if (east) Arrow(argb, 1, 0);
+        if (west) Arrow(argb, -1, 0);
+        if (north) Arrow(argb, 0, -1);
+        if (south) Arrow(argb, 0, 1);
+        return argb;
+    }
+
+    /// The dot, and one arrowhead the way the view is going.
+    static byte[] Pan(int dx, int dy)
+    {
+        byte[] argb = new byte[MarkerSize * MarkerSize * 4];
+        int c = MarkerSize / 2;
+        for (int y = c - 2; y <= c + 1; y++) for (int x = c - 2; x <= c + 1; x++) Put(argb, x, y, !(y > c - 2 && y < c + 1 && x > c - 2 && x < c + 1));
+        Arrow(argb, dx, dy);
+        return argb;
+    }
+
+    /// A filled black arrowhead with a white edge, pointing (dx, dy) out
+    /// from the middle: its tip 14 pixels out, its base 8.
+    static void Arrow(byte[] argb, int dx, int dy)
+    {
+        int c = MarkerSize / 2;
+        for (int y = 0; y < MarkerSize; y++)
+            for (int x = 0; x < MarkerSize; x++)
+            {
+                // Along the arrow's axis and across it, in a frame where the
+                // axis is (dx, dy); a diagonal is scaled so its reach matches.
+                int px = x - c, py = y - c;
+                int along = px * dx + py * dy, across = px * dy - py * dx;
+                if (dx != 0 && dy != 0) { along = along * 7 / 10; across = across * 7 / 10; }
+                if (along < 8 || along > 14) continue;
+                int half = 14 - along;                           // narrower toward the tip
+                int width = across < 0 ? -across : across;
+                if (width <= half) Put(argb, x, y, width < half);  // the edge white, the inside black
+            }
+    }
+}
+
+/// The two integer helpers autoscroll needs, here because Math is the core
+/// library's own and not exported to this one.
+static class Math2
+{
+    internal static int Abs(int x) { return x < 0 ? -x : x; }
+}
+
 public static class Application
 {
     // THE DOUBLE-CLICK: a second press of the same button on the same
@@ -4632,6 +4943,8 @@ public static class Application
         {
             case 1:
             {
+                // A key ends autoscroll and goes nowhere else, as in IE.
+                if (AutoScroll.Active) { AutoScroll.End(); return; }
                 Control? target = _focus ?? _active;
                 if (target == null) return;
                 int key = m.A & 0x1FF;
@@ -4726,6 +5039,7 @@ public static class Application
                 break;
             }
             case 9:
+                if (m.A == 0 && AutoScroll.Active) AutoScroll.End();
                 if (m.A != 0) { CancelDrag(f); _active = f; f!.RaiseActivated(); }
                 else { if (_dragging == f) CancelDrag(null); if (_active == f) _active = null; f!.RaiseDeactivate(); }
                 break;

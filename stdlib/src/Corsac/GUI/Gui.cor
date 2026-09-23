@@ -584,6 +584,15 @@ public static class Cursors
     /// Shapes a program defined itself are numbered from here: the id it
     /// gave DefineCursor, plus this.
     public const int Base = 256;
+
+    /// The autoscroll shapes, with .NET's names: the origin marker and the
+    /// direction the view is moving. Windows Forms defines them (Forms.cor,
+    /// AutoScroll) the first time middle-button autoscroll starts; their ids
+    /// are the top of a program's own range, so a program's shapes do not
+    /// meet them.
+    public const int NoMove2D = Base + 0x7F0, NoMoveVert = Base + 0x7F1, NoMoveHoriz = Base + 0x7F2;
+    public const int PanNorth = Base + 0x7F3, PanSouth = Base + 0x7F4, PanEast = Base + 0x7F5, PanWest = Base + 0x7F6;
+    public const int PanNE = Base + 0x7F7, PanNW = Base + 0x7F8, PanSE = Base + 0x7F9, PanSW = Base + 0x7FA;
 }
 
 /// What Seat.Adapter() answers with.
