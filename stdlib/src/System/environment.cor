@@ -183,6 +183,12 @@ static class Environment
         get { return Os.Micros() / 1000; }
     }
 
+    /// Milliseconds since start, wrapping as .NET's does.
+    public static int TickCount
+    {
+        get { return (int)(Os.Micros() / 1000); }
+    }
+
     /// Ends the process now, flushing the console first, as .NET does.
     /// Os.Exit runs whatever was left with Runtime.OnExit, which is the
     /// flush.

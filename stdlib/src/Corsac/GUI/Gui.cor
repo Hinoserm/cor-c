@@ -436,6 +436,18 @@ public class Seat : IDrawingTarget
     /// The seat puts the arrow back the moment the pointer leaves.
     public void SetCursor(int cursor) { Os.Ioctl(_fd, 0x47550025, cursor); }
 
+    // --- the mouse's settings, asked the way Windows asks: the index is
+    // the Win32 one (SM_* for GetSystemMetrics, SPI_GET* for
+    // SystemParametersInfo); System.Windows.Forms.SystemInformation is the
+    // .NET face of these -------------------------------------------------
+    public int SystemMetric(int index) { return (int)Os.Ioctl(_fd, 0x47550040, index); }
+    public int ParameterInfo(int action) { return (int)Os.Ioctl(_fd, 0x47550041, action); }
+
+    /// The mouse's settings are read again, as this program's user sees the
+    /// registry: what the desktop does when a session starts, and the Mouse
+    /// control panel after a change.
+    public void ReloadSettings() { Os.Ioctl(_fd, 0x47550042, 0); }
+
     /// The drag outline the seat draws over everything: where a window is
     /// heading while the button is held. A width of zero takes it away.
     public void SetBand(int x, int y, int width, int height)
@@ -572,6 +584,15 @@ public static class Cursors
     /// Shapes a program defined itself are numbered from here: the id it
     /// gave DefineCursor, plus this.
     public const int Base = 256;
+
+    /// The autoscroll shapes, with .NET's names: the origin marker and the
+    /// direction the view is moving. Windows Forms defines them (Forms.cor,
+    /// AutoScroll) the first time middle-button autoscroll starts; their ids
+    /// are the top of a program's own range, so a program's shapes do not
+    /// meet them.
+    public const int NoMove2D = Base + 0x7F0, NoMoveVert = Base + 0x7F1, NoMoveHoriz = Base + 0x7F2;
+    public const int PanNorth = Base + 0x7F3, PanSouth = Base + 0x7F4, PanEast = Base + 0x7F5, PanWest = Base + 0x7F6;
+    public const int PanNE = Base + 0x7F7, PanNW = Base + 0x7F8, PanSE = Base + 0x7F9, PanSW = Base + 0x7FA;
 }
 
 /// What Seat.Adapter() answers with.

@@ -37,6 +37,7 @@ public static class Program
             RethrowTests.Run();
             ExtensionLookupTests.Run(work);
             InitializerScopeTests.Run(work);
+            StaticContextTests.Run(work);
             ClosureOwnershipTests.Run(work);
             StructuralOwnershipTests.Run(work);
             string path = Path.Combine(work, "declarations.idx");
