@@ -436,6 +436,18 @@ public class Seat : IDrawingTarget
     /// The seat puts the arrow back the moment the pointer leaves.
     public void SetCursor(int cursor) { Os.Ioctl(_fd, 0x47550025, cursor); }
 
+    // --- the mouse's settings, asked the way Windows asks: the index is
+    // the Win32 one (SM_* for GetSystemMetrics, SPI_GET* for
+    // SystemParametersInfo); System.Windows.Forms.SystemInformation is the
+    // .NET face of these -------------------------------------------------
+    public int SystemMetric(int index) { return (int)Os.Ioctl(_fd, 0x47550040, index); }
+    public int ParameterInfo(int action) { return (int)Os.Ioctl(_fd, 0x47550041, action); }
+
+    /// The mouse's settings are read again, as this program's user sees the
+    /// registry: what the desktop does when a session starts, and the Mouse
+    /// control panel after a change.
+    public void ReloadSettings() { Os.Ioctl(_fd, 0x47550042, 0); }
+
     /// The drag outline the seat draws over everything: where a window is
     /// heading while the button is held. A width of zero takes it away.
     public void SetBand(int x, int y, int width, int height)
