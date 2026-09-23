@@ -9660,6 +9660,14 @@ public sealed partial class Binder
         _ => true,
     };
 
+    /// Checking the body of a static method, where there is no `this`. A
+    /// lambda's body is checked inside its closure class, whose fields are
+    /// the captures and are read from the closure object, so that is never
+    /// a static context whatever the method around it was.
+    private bool InStaticContext =>
+        _method is { Static: true }
+        && !(_thisType?.Name.StartsWith("Lambda$", StringComparison.Ordinal) ?? false);
+
     private Type CheckName(NameExpr n)
     {
         // A static method group retained as the target of a compiler-generated
@@ -9753,6 +9761,18 @@ public sealed partial class Binder
 
             FieldSymbol? f = _thisType.FindField(n.Name) ?? _thisType.FindField("<" + n.Name + ">");
 
+            // NO INSTANCE IN A STATIC METHOD (C#'s CS0120). A static method
+            // naming one of its class's instance fields has no object to read
+            // it from. Letting it bind produced a field read with no receiver,
+            // which reached the optimiser as a value nobody defined and
+            // crashed it (ConstantAndCopyPropagation, a null register) with no
+            // file or line -- two kernel files hit it on 2026-09-23.
+            if (f is { Static: false } && InStaticContext)
+            {
+                Error(n, $"An object reference is required for the non-static field, method, or property '{_thisType.Name}.{n.Name}'");
+                return Type.Error;
+            }
+
             if (f != null)
             {
                 FieldSym read = new(f);
@@ -9781,6 +9801,19 @@ public sealed partial class Binder
 
             List<MethodSymbol> methods = _thisType.FindMethods(n.Name);
 
+            // From a static method only the static overloads are callable
+            // without a receiver; a group with none is CS0120.
+            if (methods.Count > 0 && InStaticContext)
+            {
+                List<MethodSymbol> statics = methods.Where(m => m.Static).ToList();
+                if (statics.Count == 0)
+                {
+                    Error(n, $"An object reference is required for the non-static field, method, or property '{_thisType.Name}.{n.Name}'");
+                    return Type.Error;
+                }
+                methods = statics;
+            }
+
             if (methods.Count > 0)
             {
                 _r.Resolved[n] = new MethodGroupSym(methods);
@@ -9788,6 +9821,12 @@ public sealed partial class Binder
             }
 
             MethodSymbol? getter = _thisType.FindMethods("get_" + n.Name).FirstOrDefault();
+
+            if (getter is { Static: false } && InStaticContext)
+            {
+                Error(n, $"An object reference is required for the non-static field, method, or property '{_thisType.Name}.{n.Name}'");
+                return Type.Error;
+            }
 
             if (getter != null)
             {
