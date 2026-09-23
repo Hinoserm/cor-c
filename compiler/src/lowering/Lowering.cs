@@ -296,7 +296,18 @@ public sealed partial class Lowering
         {
             foreach (TypeSymbol t in _b.Types.Values)
             {
-                if (t.Decl?.File == "<prelude>") continue;
+                // A PRELUDE TYPE THE LIBRARY ADDS TO. `Math` is the prelude's,
+                // for its intrinsics, and Core.cor gives it Abs(long) and
+                // Min(long, long) with bodies: those are the library's to
+                // publish, or every other library calling them links against
+                // a symbol nobody defines. Emits skips the intrinsics.
+                if (t.Decl?.File == "<prelude>")
+                {
+                    // One part of a split library roots only its own file's.
+                    foreach (MethodSymbol m in t.Methods)
+                        if (_library || (PartOfALibrary && m.Decl?.OwnedImplementation == true)) Require(m);
+                    continue;
+                }
                 if (t.Decl?.FromLibrary == true && !_library) continue;
                 // Another shared object's; and, when this is one library of
                 // several, an instantiation is reached rather than rooted.

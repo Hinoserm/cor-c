@@ -9753,6 +9753,19 @@ public sealed partial class Binder
 
             FieldSymbol? f = _thisType.FindField(n.Name) ?? _thisType.FindField("<" + n.Name + ">");
 
+            // AN INSTANCE MEMBER FROM A STATIC METHOD HAS NO OBJECT. C#
+            // refuses it (CS0120); bound anyway, it read a `this` the method
+            // does not have, and the optimiser later failed with nothing but
+            // "Value cannot be null (Parameter 'key')" -- no file, no line.
+            // A generated closure's own fields are the exception: its body
+            // runs as an instance method of the closure.
+            if (f != null && !f.Static && _method is { Static: true }
+                && !_thisType.Name.StartsWith("Lambda$", StringComparison.Ordinal))
+            {
+                Error(n, $"an object reference is required for the non-static field '{n.Name}' (a static method has no 'this')");
+                return Type.Error;
+            }
+
             if (f != null)
             {
                 FieldSym read = new(f);
@@ -9788,6 +9801,13 @@ public sealed partial class Binder
             }
 
             MethodSymbol? getter = _thisType.FindMethods("get_" + n.Name).FirstOrDefault();
+
+            if (getter != null && !getter.Static && _method is { Static: true }
+                && !_thisType.Name.StartsWith("Lambda$", StringComparison.Ordinal))
+            {
+                Error(n, $"an object reference is required for the non-static property '{n.Name}' (a static method has no 'this')");
+                return Type.Error;
+            }
 
             if (getter != null)
             {

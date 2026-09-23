@@ -85,7 +85,12 @@ public static class ProjectCompile
         // object made the other way round is not current. "2" is the stamp's
         // own version, so a stamp written before the role was included is
         // never trusted.
-        string optionsText = "2\t" + string.Join('\t', common);
+        //
+        // AND THE COMPILER THAT MADE IT. A fixed compiler with unchanged
+        // sources otherwise keeps every object the broken one made: a
+        // library's missing export stayed missing across rebuilds until the
+        // objects were deleted by hand.
+        string optionsText = "3\t" + CompilerIdentity() + "\t" + string.Join('\t', common);
         string Stamp(Unit unit)
         {
             using SHA256 sha = SHA256.Create();
@@ -227,5 +232,18 @@ public static class ProjectCompile
             + " gen1=" + GC.CollectionCount(1) + " gen2=" + GC.CollectionCount(2) + ", "
             + "allocated=" + GC.GetTotalAllocatedBytes());
         return failures == 0 ? 0 : 1;
+    }
+
+    static string? _compilerIdentity;
+
+    /// <summary>A hash of the running compiler's own executable, once per process.</summary>
+    static string CompilerIdentity()
+    {
+        if (_compilerIdentity is not null) return _compilerIdentity;
+        string? self = Environment.ProcessPath;
+        if (self is null || !File.Exists(self)) return _compilerIdentity = "unknown";
+        using SHA256 sha = SHA256.Create();
+        using FileStream stream = File.OpenRead(self);
+        return _compilerIdentity = Convert.ToHexString(sha.ComputeHash(stream));
     }
 }

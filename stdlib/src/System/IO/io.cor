@@ -960,11 +960,25 @@ enum FileAttributes
 /// beside the rest of the type for the reason DateTime's UtcNow is here:
 /// reading a clock is a call on the platform, and a freestanding build has
 /// no platform to call. This machine keeps no zone, so the local reading and
-/// the UTC one are the same instant and the offset is zero either way.
+/// the UTC one differ by the offset TimeZoneInfo.Local has at that moment.
 partial struct DateTimeOffset
 {
     public static DateTimeOffset UtcNow => new DateTimeOffset(DateTime.UtcNow, TimeSpan.Zero);
-    public static DateTimeOffset Now => new DateTimeOffset(DateTime.UtcNow, TimeSpan.Zero);
+
+    public static DateTimeOffset Now
+    {
+        get
+        {
+            DateTime utc = DateTime.UtcNow;
+            TimeSpan offset = TimeZoneInfo.Local.GetUtcOffset(utc);
+            return new DateTimeOffset(utc.Ticks + offset.Ticks, offset);
+        }
+    }
+
+    /// The same moment, read in the machine's zone.
+    public DateTime LocalDateTime => TimeZoneInfo.ConvertTimeFromUtc(UtcDateTime, TimeZoneInfo.Local);
+
+    public DateTimeOffset ToLocalTime() { return TimeZoneInfo.ConvertTime(this, TimeZoneInfo.Local); }
 }
 
 /// What .NET calls a moment on this platform's clock: the wall clock, as
@@ -973,23 +987,38 @@ partial struct DateTime
 {
     public static DateTime UtcNow
     {
-        get { return new DateTime(UnixEpoch.Ticks + Os.Micros() * 10); }
+        get { return new DateTime(UnixEpoch.Ticks + Os.Micros() * 10, DateTimeKind.Utc); }
     }
 
-    /// Local time is UTC here: the machine keeps no zone.
+    /// The time in TimeZoneInfo.Local: TZ, else /etc/localtime, else UTC.
     public static DateTime Now
     {
-        get { return UtcNow; }
+        get { return TimeZoneInfo.ConvertTimeFromUtc(UtcNow, TimeZoneInfo.Local); }
     }
 
     public static DateTime Today
     {
-        get { return UtcNow.Date; }
+        get { return Now.Date; }
+    }
+
+    /// UTC as local time; a local time left alone. Unspecified is taken as
+    /// UTC, as .NET takes it.
+    public DateTime ToLocalTime()
+    {
+        if (Kind == DateTimeKind.Local) return this;
+        return TimeZoneInfo.ConvertTimeFromUtc(SpecifyKind(this, DateTimeKind.Utc), TimeZoneInfo.Local);
+    }
+
+    /// Local time as UTC; UTC left alone. Unspecified is taken as local.
+    public DateTime ToUniversalTime()
+    {
+        if (Kind == DateTimeKind.Utc) return this;
+        return TimeZoneInfo.ConvertTimeToUtc(SpecifyKind(this, DateTimeKind.Local));
     }
 
     public static DateTime FromUnixTimeSeconds(long seconds)
     {
-        return new DateTime(UnixEpoch.Ticks + seconds * 10000000);
+        return new DateTime(UnixEpoch.Ticks + seconds * 10000000, DateTimeKind.Utc);
     }
 
     /// The same instant with the nanoseconds stat(2) also reports, rounded to
@@ -997,7 +1026,7 @@ partial struct DateTime
     /// same second are written at the same time, and `cp -u` copies nothing.
     public static DateTime FromUnixTime(long seconds, long nsec)
     {
-        return new DateTime(UnixEpoch.Ticks + seconds * 10000000 + nsec / 100);
+        return new DateTime(UnixEpoch.Ticks + seconds * 10000000 + nsec / 100, DateTimeKind.Utc);
     }
 
 }
@@ -1127,8 +1156,8 @@ abstract class FileSystemInfo
 
     public DateTime LastWriteTime
     {
-        get { return LastWriteTimeUtc; }
-        set { LastWriteTimeUtc = value; }
+        get { return LastWriteTimeUtc.ToLocalTime(); }
+        set { LastWriteTimeUtc = value.ToUniversalTime(); }
     }
 
     public DateTime LastAccessTimeUtc
@@ -1147,8 +1176,8 @@ abstract class FileSystemInfo
 
     public DateTime LastAccessTime
     {
-        get { return LastAccessTimeUtc; }
-        set { LastAccessTimeUtc = value; }
+        get { return LastAccessTimeUtc.ToLocalTime(); }
+        set { LastAccessTimeUtc = value.ToUniversalTime(); }
     }
 
     /// Unix has no creation time; .NET reports the status change time.
@@ -1163,7 +1192,7 @@ abstract class FileSystemInfo
 
     public DateTime CreationTime
     {
-        get { return CreationTimeUtc; }
+        get { return CreationTimeUtc.ToLocalTime(); }
     }
 
     /// Where a symbolic link points, or null when this is not one.
@@ -1619,7 +1648,7 @@ partial static class File
 
     public static DateTime GetLastWriteTime(string path)
     {
-        return GetLastWriteTimeUtc(path);
+        return GetLastWriteTimeUtc(path).ToLocalTime();
     }
 
     public static DateTime GetLastAccessTimeUtc(string path)
@@ -1629,7 +1658,7 @@ partial static class File
 
     public static DateTime GetLastAccessTime(string path)
     {
-        return GetLastAccessTimeUtc(path);
+        return GetLastAccessTimeUtc(path).ToLocalTime();
     }
 
     public static DateTime GetCreationTimeUtc(string path)
@@ -1639,7 +1668,7 @@ partial static class File
 
     public static DateTime GetCreationTime(string path)
     {
-        return GetCreationTimeUtc(path);
+        return GetCreationTimeUtc(path).ToLocalTime();
     }
 
     static void SetTimes(string path, long atime, long mtime)
@@ -1658,7 +1687,7 @@ partial static class File
 
     public static void SetLastWriteTime(string path, DateTime when)
     {
-        SetLastWriteTimeUtc(path, when);
+        SetLastWriteTimeUtc(path, when.ToUniversalTime());
     }
 
     public static void SetLastAccessTimeUtc(string path, DateTime when)
@@ -1668,7 +1697,7 @@ partial static class File
 
     public static void SetLastAccessTime(string path, DateTime when)
     {
-        SetLastAccessTimeUtc(path, when);
+        SetLastAccessTimeUtc(path, when.ToUniversalTime());
     }
 
     /// THE LINK ITSELF when `followLinks` is false. .NET has no spelling for
@@ -1858,7 +1887,7 @@ partial static class Directory
 
     public static DateTime GetLastWriteTime(string path)
     {
-        return GetLastWriteTimeUtc(path);
+        return GetLastWriteTimeUtc(path).ToLocalTime();
     }
 }
 

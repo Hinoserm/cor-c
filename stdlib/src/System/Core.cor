@@ -8245,6 +8245,15 @@ struct TimeSpan {
     }
 }
 
+/// Whether a DateTime is UTC, the machine's local time, or not said --
+/// .NET's three, with .NET's meanings: ToLocalTime treats Unspecified as
+/// UTC, and ToUniversalTime treats it as local.
+enum DateTimeKind {
+    Unspecified = 0,
+    Utc = 1,
+    Local = 2,
+}
+
 /// A MOMENT, counted in ticks from the start of the first day of year 1 -- the
 /// same epoch .NET uses, so a tick count means the same thing on both sides.
 ///
@@ -8254,8 +8263,33 @@ struct TimeSpan {
 /// arithmetic can be done on.
 partial struct DateTime {
     private long ticks;
+    private DateTimeKind kind;
 
     public DateTime(long inTicks) { ticks = inTicks; }
+
+    public DateTime(long inTicks, DateTimeKind inKind) { ticks = inTicks; kind = inKind; }
+
+    public DateTime(int year, int month, int day, int hour, int minute, int second, DateTimeKind inKind) {
+        ticks = DateParts.DaysFrom(year, month, day) * 864000000000
+              + ((long)hour * 3600 + (long)minute * 60 + (long)second) * 10000000;
+        kind = inKind;
+    }
+
+    public DateTime(int year, int month, int day, int hour, int minute, int second,
+                    int millisecond, DateTimeKind inKind) {
+        ticks = DateParts.DaysFrom(year, month, day) * 864000000000
+              + ((long)hour * 3600 + (long)minute * 60 + (long)second) * 10000000
+              + (long)millisecond * 10000;
+        kind = inKind;
+    }
+
+    /// Whether this is UTC, local time, or not said.
+    public DateTimeKind Kind => kind;
+
+    /// The same reading, said to be of another kind -- no conversion.
+    public static DateTime SpecifyKind(DateTime value, DateTimeKind inKind) {
+        return new DateTime(value.Ticks, inKind);
+    }
 
     public DateTime(int year, int month, int day) {
         ticks = DateParts.DaysFrom(year, month, day) * 864000000000;
@@ -8301,11 +8335,11 @@ partial struct DateTime {
     public int DayOfYear => (int)(WholeDays - DateParts.DaysFrom(Year, 1, 1) + 1);
 
     /// Midnight of the same day, which is what .NET's Date property answers.
-    public DateTime Date => new DateTime(WholeDays * 864000000000);
+    public DateTime Date => new DateTime(WholeDays * 864000000000, kind);
 
     public TimeSpan TimeOfDay => new TimeSpan(ticks % 864000000000);
 
-    public DateTime AddTicks(long value) { return new DateTime(ticks + value); }
+    public DateTime AddTicks(long value) { return new DateTime(ticks + value, kind); }
     public DateTime AddMilliseconds(double value) { return AddTicks((long)(value * 10000.0)); }
     public DateTime AddSeconds(double value) { return AddTicks((long)(value * 10000000.0)); }
     public DateTime AddMinutes(double value) { return AddTicks((long)(value * 600000000.0)); }
@@ -8324,7 +8358,7 @@ partial struct DateTime {
         int limit = DateTime.DaysInMonth(year, month);
 
         if (day > limit) { day = limit; }
-        return new DateTime(year, month, day, Hour, Minute, Second, Millisecond);
+        return new DateTime(year, month, day, Hour, Minute, Second, Millisecond, kind);
     }
 
     public DateTime AddYears(int count) { return AddMonths(count * 12); }
@@ -8348,8 +8382,8 @@ partial struct DateTime {
     // rather than one Subtract.
 
     public static TimeSpan operator -(DateTime a, DateTime b) { return new TimeSpan(a.Ticks - b.Ticks); }
-    public static DateTime operator +(DateTime a, TimeSpan span) { return new DateTime(a.Ticks + span.Ticks); }
-    public static DateTime operator -(DateTime a, TimeSpan span) { return new DateTime(a.Ticks - span.Ticks); }
+    public static DateTime operator +(DateTime a, TimeSpan span) { return new DateTime(a.Ticks + span.Ticks, a.Kind); }
+    public static DateTime operator -(DateTime a, TimeSpan span) { return new DateTime(a.Ticks - span.Ticks, a.Kind); }
 
     public static bool operator ==(DateTime a, DateTime b) { return a.Ticks == b.Ticks; }
     public static bool operator !=(DateTime a, DateTime b) { return a.Ticks != b.Ticks; }
@@ -8596,11 +8630,7 @@ partial struct DateTimeOffset {
     /// UtcDateTime unless the offset is zero.
     public DateTime DateTime => new DateTime(ticks);
 
-    public DateTime UtcDateTime => new DateTime(ticks - offset);
-
-    /// The machine keeps no zone, so local time IS UTC here -- and this is the
-    /// same instant either way.
-    public DateTime LocalDateTime => UtcDateTime;
+    public DateTime UtcDateTime => new DateTime(ticks - offset, DateTimeKind.Utc);
 
     public long Ticks => ticks;
     public long UtcTicks => ticks - offset;

@@ -1,0 +1,830 @@
+// System.TimeZoneInfo -- .NET's API over the IANA tz database, as .NET reads
+// it on Linux, with Windows' zone names beside the IANA ones.
+//
+// WHERE A ZONE COMES FROM. /usr/share/zoneinfo/<id>, a TZif file: a table of
+// every change of offset the zone has had, then (version 2 and later) the
+// POSIX rule it follows after the table ends. The machine's own zone is
+// /etc/localtime, named by /etc/timezone where the machine keeps one (as
+// Debian does), and TZ in the environment overrides both -- a zone name
+// ("America/Chicago", ":America/Chicago"), a file, or a POSIX rule itself.
+// That last is how a GUI session gives the programs it starts its user's
+// zone (docs/software/KERNEL-LOG-AND-TIME.md in the kernel, section 8).
+//
+// WINDOWS NAMES TOO. FindSystemTimeZoneById takes "Central Standard Time"
+// as readily as "America/Chicago", as .NET 6 does, mapped by CLDR's
+// windowsZones table (the entries a machine needs, not every territory);
+// GetSystemTimeZones lists the zones by their Windows names and display
+// names, which is what a Windows program and a Windows user expect to see.
+
+class TimeZoneNotFoundException : Exception
+{
+    public TimeZoneNotFoundException(string message) : base(message) { }
+}
+
+class InvalidTimeZoneException : Exception
+{
+    public InvalidTimeZoneException(string message) : base(message) { }
+}
+
+sealed class TimeZoneInfo
+{
+    public string Id { get; private set; }
+    public string DisplayName { get; private set; }
+    public string StandardName { get; private set; }
+    public string DaylightName { get; private set; }
+    public TimeSpan BaseUtcOffset { get; private set; }
+    public bool SupportsDaylightSavingTime { get; private set; }
+
+    /// Whether the Id is an IANA name, as .NET answers it.
+    public bool HasIanaId { get; private set; }
+
+    // The table: UTC seconds of each change, and which type applies from it.
+    long[] _at = new long[0];
+    int[] _type = new int[0];
+    long[] _offset = new long[0];        // per type, seconds east of UTC
+    bool[] _dst = new bool[0];
+    string[] _abbr = new string[0];
+    PosixRule? _rule;
+
+    TimeZoneInfo(string id)
+    {
+        Id = id;
+        DisplayName = id;
+        StandardName = id;
+        DaylightName = id;
+    }
+
+    // ---- the well-known zones --------------------------------------------
+
+    static TimeZoneInfo? _utc;
+    static TimeZoneInfo? _local;
+
+    public static TimeZoneInfo Utc
+    {
+        get
+        {
+            if (_utc == null)
+            {
+                TimeZoneInfo z = new TimeZoneInfo("UTC");
+                z.DisplayName = "(UTC) Coordinated Universal Time";
+                z.StandardName = "Coordinated Universal Time";
+                z.DaylightName = "Coordinated Universal Time";
+                z.BaseUtcOffset = TimeSpan.Zero;
+                z._offset = new long[] { 0 };
+                z._dst = new bool[] { false };
+                z._abbr = new string[] { "UTC" };
+                _utc = z;
+            }
+            return _utc;
+        }
+    }
+
+    /// The machine's zone, or the session's: TZ, then /etc/localtime, then UTC.
+    public static TimeZoneInfo Local
+    {
+        get
+        {
+            if (_local == null) _local = FindLocal();
+            return _local;
+        }
+    }
+
+    /// Forgets the zones read so far, so the next question reads them again.
+    public static void ClearCachedData()
+    {
+        _local = null;
+    }
+
+    static TimeZoneInfo FindLocal()
+    {
+        string? tz = Environment.GetEnvironmentVariable("TZ");
+        if (tz != null && tz.Length > 0)
+        {
+            string name = tz.StartsWith(":") ? tz.Substring(1) : tz;
+            TimeZoneInfo? named = TryFile(name, name);
+            if (named != null) return named;
+            PosixRule? rule = PosixRule.Parse(name);
+            if (rule != null) return FromRule(name, rule);
+        }
+        if (File.Exists("/etc/localtime"))
+        {
+            string id = "Local";
+            try
+            {
+                if (File.Exists("/etc/timezone")) id = File.ReadAllText("/etc/timezone").Trim();
+            }
+            catch (IOException) { }
+            TimeZoneInfo? local = Load(id, "/etc/localtime");
+            if (local != null) return local;
+        }
+        return Utc;
+    }
+
+    // ---- finding a zone by name -------------------------------------------
+
+    const string Database = "/usr/share/zoneinfo/";
+
+    public static TimeZoneInfo FindSystemTimeZoneById(string id)
+    {
+        if (id == null) throw new ArgumentNullException("id");
+        if (id == "UTC" || id == "Etc/UTC" || id == "Coordinated Universal Time") return Utc;
+        string? iana;
+        string file = TryConvertWindowsIdToIanaId(id, out iana) ? iana! : id;
+        TimeZoneInfo? zone = TryFile(id, file);
+        if (zone == null) throw new TimeZoneNotFoundException("the time zone '" + id + "' is not on this machine");
+        return zone;
+    }
+
+    static TimeZoneInfo? TryFile(string id, string name)
+    {
+        if (name.Length == 0 || name.Contains("..")) return null;
+        string path = name.StartsWith("/") ? name : Database + name;
+        if (!File.Exists(path)) return null;
+        return Load(id, path);
+    }
+
+    static TimeZoneInfo? Load(string id, string path)
+    {
+        byte[] data;
+        try { data = File.ReadAllBytes(path); }
+        catch (IOException) { return null; }
+        TimeZoneInfo zone = new TimeZoneInfo(id);
+        if (!zone.Read(data)) throw new InvalidTimeZoneException("'" + path + "' is not a TZif file");
+        zone.Name();
+        return zone;
+    }
+
+    static TimeZoneInfo FromRule(string id, PosixRule rule)
+    {
+        TimeZoneInfo zone = new TimeZoneInfo(id);
+        zone._rule = rule;
+        zone._offset = new long[] { rule.Standard };
+        zone._dst = new bool[] { false };
+        zone._abbr = new string[] { rule.StandardName };
+        zone.Name();
+        return zone;
+    }
+
+    /// Every zone this machine has, by its Windows name, west to east.
+    public static ReadOnlyCollection<TimeZoneInfo> GetSystemTimeZones()
+    {
+        List<TimeZoneInfo> zones = new List<TimeZoneInfo>();
+        for (int i = 0; i < WindowsZones.Length; i += 3)
+        {
+            if (!File.Exists(Database + WindowsZones[i + 1])) continue;
+            TimeZoneInfo? zone = TryFile(WindowsZones[i], WindowsZones[i + 1]);
+            if (zone != null) zones.Add(zone);
+        }
+        zones.Sort((a, b) => a.BaseUtcOffset != b.BaseUtcOffset
+            ? a.BaseUtcOffset.CompareTo(b.BaseUtcOffset)
+            : string.Compare(a.DisplayName, b.DisplayName));
+        return new ReadOnlyCollection<TimeZoneInfo>(zones);
+    }
+
+    // ---- the TZif file ------------------------------------------------------
+
+    static long Be32(byte[] d, int at)
+    {
+        return (long)(int)((d[at] << 24) | (d[at + 1] << 16) | (d[at + 2] << 8) | d[at + 3]);
+    }
+
+    static long Be64(byte[] d, int at)
+    {
+        return (Be32(d, at) << 32) | (Be32(d, at + 4) & 0xFFFFFFFFL);
+    }
+
+    bool Read(byte[] d)
+    {
+        if (d.Length < 44 || d[0] != (byte)'T' || d[1] != (byte)'Z' || d[2] != (byte)'i' || d[3] != (byte)'f') return false;
+        int version = d[4] == 0 ? 1 : d[4] - (byte)'0';
+        int at = 0;
+        int timeSize = 4;
+        if (version >= 2)
+        {
+            // Skip the 32-bit block to the 64-bit one that follows it.
+            at = 44 + (int)(Be32(d, 32) * 4 + Be32(d, 32) + Be32(d, 36) * 6 + Be32(d, 40)
+                          + Be32(d, 28) * 8 + Be32(d, 24) + Be32(d, 20));
+            timeSize = 8;
+            if (at + 44 > d.Length || d[at] != (byte)'T') return false;
+        }
+        long isut = Be32(d, at + 20), isstd = Be32(d, at + 24), leap = Be32(d, at + 28);
+        long times = Be32(d, at + 32), types = Be32(d, at + 36), chars = Be32(d, at + 40);
+        int p = at + 44;
+        _at = new long[times];
+        _type = new int[times];
+        for (int i = 0; i < times; i++) { _at[i] = timeSize == 8 ? Be64(d, p) : Be32(d, p); p += timeSize; }
+        for (int i = 0; i < times; i++) { _type[i] = d[p++]; }
+        _offset = new long[types];
+        _dst = new bool[types];
+        int[] name = new int[types];
+        for (int i = 0; i < types; i++)
+        {
+            _offset[i] = Be32(d, p);
+            _dst[i] = d[p + 4] != 0;
+            name[i] = d[p + 5];
+            p += 6;
+        }
+        int text = p;
+        _abbr = new string[types];
+        for (int i = 0; i < types; i++)
+        {
+            string s = "";
+            for (int c = text + name[i]; c < text + chars && d[c] != 0; c++) s += (char)d[c];
+            _abbr[i] = s;
+        }
+        p = text + (int)chars + (int)leap * (timeSize + 4) + (int)isstd + (int)isut;
+        if (version >= 2 && p < d.Length && d[p] == 10)
+        {
+            int end = p + 1;
+            while (end < d.Length && d[end] != 10) end++;
+            string footer = "";
+            for (int c = p + 1; c < end; c++) footer += (char)d[c];
+            if (footer.Length > 0) _rule = PosixRule.Parse(footer);
+        }
+        return types > 0;
+    }
+
+    /// The names: Windows' for a zone that has one, the zone's own otherwise.
+    void Name()
+    {
+        string? windows = null;
+        string? iana = null;
+        HasIanaId = !TryConvertWindowsIdToIanaId(Id, out iana);
+        if (HasIanaId) TryConvertIanaIdToWindowsId(Id, out windows);
+        else windows = Id;
+
+        // The offset a zone is known by: its standard time now.
+        long now = UnixSeconds(DateTime.UtcNow);
+        long standard = _rule != null ? _rule.Standard : StandardAt(now);
+        BaseUtcOffset = new TimeSpan(standard * 10000000);
+        SupportsDaylightSavingTime = (_rule != null && _rule.HasDaylight) || HasDst();
+
+        string? found = windows != null ? Display(windows) : null;
+        string display = found != null ? found : "";
+        string plain = "(UTC" + (standard < 0 ? "-" : "+") + Two(Math.Abs(standard) / 3600) + ":" + Two(Math.Abs(standard) / 60 % 60) + ") ";
+        DisplayName = display.Length > 0 ? display : plain + Id;
+        StandardName = windows != null ? windows : (_rule != null ? _rule.StandardName : Abbreviation(now, false));
+        DaylightName = windows != null ? windows.Replace("Standard", "Daylight")
+                     : (_rule != null && _rule.HasDaylight ? _rule.DaylightName : StandardName);
+    }
+
+    static string Two(long v) { return v < 10 ? "0" + v : "" + v; }
+
+    bool HasDst()
+    {
+        for (int i = 0; i < _dst.Length; i++) if (_dst[i]) return true;
+        return false;
+    }
+
+    long StandardAt(long utc)
+    {
+        int i = Index(utc);
+        if (i >= 0 && !_dst[_type[i]]) return _offset[_type[i]];
+        for (int j = (i < 0 ? _at.Length : i) - 1; j >= 0; j--) if (!_dst[_type[j]]) return _offset[_type[j]];
+        for (int t = 0; t < _offset.Length; t++) if (!_dst[t]) return _offset[t];
+        return _offset.Length > 0 ? _offset[0] : 0;
+    }
+
+    string Abbreviation(long utc, bool dst)
+    {
+        for (int t = 0; t < _abbr.Length; t++) if (_dst[t] == dst) return _abbr[t];
+        return Id;
+    }
+
+    /// The last change at or before `utc`, or -1 before the first.
+    int Index(long utc)
+    {
+        int lo = 0, hi = _at.Length - 1, found = -1;
+        while (lo <= hi)
+        {
+            int mid = (lo + hi) / 2;
+            if (_at[mid] <= utc) { found = mid; lo = mid + 1; }
+            else hi = mid - 1;
+        }
+        return found;
+    }
+
+    // ---- offsets ------------------------------------------------------------
+
+    static long UnixSeconds(DateTime when)
+    {
+        return (when.Ticks - DateTime.UnixEpoch.Ticks) / 10000000;
+    }
+
+    /// Seconds east of UTC, and whether it is daylight time, at `utc` seconds.
+    void At(long utc, out long offset, out bool dst)
+    {
+        if (_at.Length == 0 || utc >= _at[_at.Length - 1])
+        {
+            if (_rule != null)
+            {
+                dst = _rule.InDaylight(utc);
+                offset = dst ? _rule.Daylight : _rule.Standard;
+                return;
+            }
+        }
+        int i = Index(utc);
+        if (i < 0)
+        {
+            int t = 0;
+            while (t < _dst.Length - 1 && _dst[t]) t++;
+            offset = _offset.Length > 0 ? _offset[t] : 0;
+            dst = false;
+            return;
+        }
+        offset = _offset[_type[i]];
+        dst = _dst[_type[i]];
+    }
+
+    public TimeSpan GetUtcOffset(DateTime dateTime)
+    {
+        long utc = dateTime.Kind == DateTimeKind.Utc ? UnixSeconds(dateTime) : UnixSeconds(LocalToUtcDateTime(dateTime));
+        long offset; bool dst;
+        At(utc, out offset, out dst);
+        return new TimeSpan(offset * 10000000);
+    }
+
+    public bool IsDaylightSavingTime(DateTime dateTime)
+    {
+        long utc = dateTime.Kind == DateTimeKind.Utc ? UnixSeconds(dateTime) : UnixSeconds(LocalToUtcDateTime(dateTime));
+        long offset; bool dst;
+        At(utc, out offset, out dst);
+        return dst;
+    }
+
+    /// A local reading two UTC times map onto: the hour repeated when daylight
+    /// time ends.
+    public bool IsAmbiguousTime(DateTime dateTime)
+    {
+        long local = UnixSeconds(dateTime);
+        return Candidates(local) > 1;
+    }
+
+    /// A local reading no UTC time maps onto: the hour skipped when daylight
+    /// time starts.
+    public bool IsInvalidTime(DateTime dateTime)
+    {
+        long local = UnixSeconds(dateTime);
+        return Candidates(local) == 0;
+    }
+
+    /// How many UTC times read as `local` here: 0, 1 or 2.
+    int Candidates(long local)
+    {
+        long a, b; bool da, db;
+        At(local - 86400, out a, out da);
+        At(local + 86400, out b, out db);
+        int found = 0;
+        long offset; bool dst;
+        At(local - a, out offset, out dst);
+        if (offset == a) found++;
+        if (b != a)
+        {
+            At(local - b, out offset, out dst);
+            if (offset == b) found++;
+        }
+        return found;
+    }
+
+    /// The UTC time a local reading here stands for. An ambiguous reading is
+    /// taken as standard time and a skipped one moved forward by the gap, as
+    /// .NET's ConvertTimeToUtc takes them.
+    DateTime LocalToUtcDateTime(DateTime local)
+    {
+        long seconds = UnixSeconds(local);
+        long before, after; bool db, da;
+        At(seconds - 86400, out before, out db);
+        At(seconds + 86400, out after, out da);
+        long chosen = before;
+        long offset; bool dst;
+        // Standard time first, then the other, and the first that maps back.
+        long standard = db ? after : before, other = db ? before : after;
+        At(seconds - standard, out offset, out dst);
+        if (offset == standard) chosen = standard;
+        else
+        {
+            At(seconds - other, out offset, out dst);
+            chosen = offset == other ? other : Math.Min(standard, other);
+        }
+        long sub = local.Ticks % 10000000;
+        return new DateTime(DateTime.UnixEpoch.Ticks + (seconds - chosen) * 10000000 + sub, DateTimeKind.Utc);
+    }
+
+    // ---- conversions ----------------------------------------------------------
+
+    public static DateTime ConvertTimeFromUtc(DateTime dateTime, TimeZoneInfo destinationTimeZone)
+    {
+        long utc = UnixSeconds(dateTime);
+        long offset; bool dst;
+        destinationTimeZone.At(utc, out offset, out dst);
+        DateTimeKind kind = destinationTimeZone == Local ? DateTimeKind.Local
+                          : destinationTimeZone == Utc ? DateTimeKind.Utc : DateTimeKind.Unspecified;
+        return new DateTime(dateTime.Ticks + offset * 10000000, kind);
+    }
+
+    public static DateTime ConvertTimeToUtc(DateTime dateTime)
+    {
+        if (dateTime.Kind == DateTimeKind.Utc) return dateTime;
+        return Local.LocalToUtcDateTime(dateTime);
+    }
+
+    public static DateTime ConvertTimeToUtc(DateTime dateTime, TimeZoneInfo sourceTimeZone)
+    {
+        if (dateTime.Kind == DateTimeKind.Utc) return dateTime;
+        return sourceTimeZone.LocalToUtcDateTime(dateTime);
+    }
+
+    /// From whatever `dateTime` is (UTC, or local, by its Kind) to `destinationTimeZone`.
+    public static DateTime ConvertTime(DateTime dateTime, TimeZoneInfo destinationTimeZone)
+    {
+        DateTime utc = dateTime.Kind == DateTimeKind.Utc ? dateTime : Local.LocalToUtcDateTime(dateTime);
+        return ConvertTimeFromUtc(utc, destinationTimeZone);
+    }
+
+    public static DateTime ConvertTime(DateTime dateTime, TimeZoneInfo sourceTimeZone, TimeZoneInfo destinationTimeZone)
+    {
+        DateTime utc = sourceTimeZone == Utc ? DateTime.SpecifyKind(dateTime, DateTimeKind.Utc)
+                     : sourceTimeZone.LocalToUtcDateTime(dateTime);
+        return ConvertTimeFromUtc(utc, destinationTimeZone);
+    }
+
+    public static DateTimeOffset ConvertTime(DateTimeOffset dateTimeOffset, TimeZoneInfo destinationTimeZone)
+    {
+        DateTime utc = dateTimeOffset.UtcDateTime;
+        long offset; bool dst;
+        destinationTimeZone.At(UnixSeconds(utc), out offset, out dst);
+        TimeSpan span = new TimeSpan(offset * 10000000);
+        return new DateTimeOffset(utc.Ticks + span.Ticks, span);
+    }
+
+    public static DateTime ConvertTimeBySystemTimeZoneId(DateTime dateTime, string destinationTimeZoneId)
+    {
+        return ConvertTime(dateTime, FindSystemTimeZoneById(destinationTimeZoneId));
+    }
+
+    public static DateTime ConvertTimeBySystemTimeZoneId(DateTime dateTime, string sourceTimeZoneId, string destinationTimeZoneId)
+    {
+        return ConvertTime(dateTime, FindSystemTimeZoneById(sourceTimeZoneId), FindSystemTimeZoneById(destinationTimeZoneId));
+    }
+
+    /// The daylight-saving rule the zone follows now, as .NET describes one;
+    /// a zone with none has none.
+    public AdjustmentRule[] GetAdjustmentRules()
+    {
+        if (_rule == null || !_rule.HasDaylight) return new AdjustmentRule[0];
+        return new AdjustmentRule[] { _rule.Adjustment() };
+    }
+
+    public override string ToString() { return DisplayName; }
+
+    public bool Equals(TimeZoneInfo? other) { return other != null && other.Id == Id; }
+
+    // ---- Windows' names ---------------------------------------------------------
+
+    public static bool TryConvertWindowsIdToIanaId(string windowsId, out string? ianaId)
+    {
+        for (int i = 0; i < WindowsZones.Length; i += 3)
+        {
+            if (WindowsZones[i] == windowsId) { ianaId = WindowsZones[i + 1]; return true; }
+        }
+        ianaId = null;
+        return false;
+    }
+
+    public static bool TryConvertIanaIdToWindowsId(string ianaId, out string? windowsId)
+    {
+        for (int i = 0; i < WindowsZones.Length; i += 3)
+        {
+            if (WindowsZones[i + 1] == ianaId) { windowsId = WindowsZones[i]; return true; }
+        }
+        windowsId = null;
+        return false;
+    }
+
+    static string? Display(string windowsId)
+    {
+        for (int i = 0; i < WindowsZones.Length; i += 3)
+        {
+            if (WindowsZones[i] == windowsId) return WindowsZones[i + 2];
+        }
+        return null;
+    }
+
+    // Windows ID, the IANA zone CLDR maps it to for the world ("001"), and
+    // the display name Windows shows for it.
+    static readonly string[] WindowsZones = new string[]
+    {
+        "Dateline Standard Time", "Etc/GMT+12", "(UTC-12:00) International Date Line West",
+        "Hawaiian Standard Time", "Pacific/Honolulu", "(UTC-10:00) Hawaii",
+        "Alaskan Standard Time", "America/Anchorage", "(UTC-09:00) Alaska",
+        "Pacific Standard Time", "America/Los_Angeles", "(UTC-08:00) Pacific Time (US & Canada)",
+        "US Mountain Standard Time", "America/Phoenix", "(UTC-07:00) Arizona",
+        "Mountain Standard Time", "America/Denver", "(UTC-07:00) Mountain Time (US & Canada)",
+        "Central America Standard Time", "America/Guatemala", "(UTC-06:00) Central America",
+        "Central Standard Time", "America/Chicago", "(UTC-06:00) Central Time (US & Canada)",
+        "Central Standard Time (Mexico)", "America/Mexico_City", "(UTC-06:00) Guadalajara, Mexico City, Monterrey",
+        "Canada Central Standard Time", "America/Regina", "(UTC-06:00) Saskatchewan",
+        "SA Pacific Standard Time", "America/Bogota", "(UTC-05:00) Bogota, Lima, Quito, Rio Branco",
+        "Eastern Standard Time", "America/New_York", "(UTC-05:00) Eastern Time (US & Canada)",
+        "US Eastern Standard Time", "America/Indianapolis", "(UTC-05:00) Indiana (East)",
+        "Atlantic Standard Time", "America/Halifax", "(UTC-04:00) Atlantic Time (Canada)",
+        "SA Western Standard Time", "America/La_Paz", "(UTC-04:00) Georgetown, La Paz, Manaus, San Juan",
+        "Pacific SA Standard Time", "America/Santiago", "(UTC-04:00) Santiago",
+        "Newfoundland Standard Time", "America/St_Johns", "(UTC-03:30) Newfoundland",
+        "E. South America Standard Time", "America/Sao_Paulo", "(UTC-03:00) Brasilia",
+        "Argentina Standard Time", "America/Buenos_Aires", "(UTC-03:00) City of Buenos Aires",
+        "Greenland Standard Time", "America/Godthab", "(UTC-03:00) Greenland",
+        "Azores Standard Time", "Atlantic/Azores", "(UTC-01:00) Azores",
+        "UTC", "Etc/UTC", "(UTC) Coordinated Universal Time",
+        "GMT Standard Time", "Europe/London", "(UTC+00:00) Dublin, Edinburgh, Lisbon, London",
+        "Greenwich Standard Time", "Atlantic/Reykjavik", "(UTC+00:00) Monrovia, Reykjavik",
+        "W. Europe Standard Time", "Europe/Berlin", "(UTC+01:00) Amsterdam, Berlin, Bern, Rome, Stockholm, Vienna",
+        "Central Europe Standard Time", "Europe/Budapest", "(UTC+01:00) Belgrade, Bratislava, Budapest, Ljubljana, Prague",
+        "Romance Standard Time", "Europe/Paris", "(UTC+01:00) Brussels, Copenhagen, Madrid, Paris",
+        "Central European Standard Time", "Europe/Warsaw", "(UTC+01:00) Sarajevo, Skopje, Warsaw, Zagreb",
+        "W. Central Africa Standard Time", "Africa/Lagos", "(UTC+01:00) West Central Africa",
+        "GTB Standard Time", "Europe/Bucharest", "(UTC+02:00) Athens, Bucharest",
+        "FLE Standard Time", "Europe/Kiev", "(UTC+02:00) Helsinki, Kyiv, Riga, Sofia, Tallinn, Vilnius",
+        "Egypt Standard Time", "Africa/Cairo", "(UTC+02:00) Cairo",
+        "South Africa Standard Time", "Africa/Johannesburg", "(UTC+02:00) Harare, Pretoria",
+        "Israel Standard Time", "Asia/Jerusalem", "(UTC+02:00) Jerusalem",
+        "Turkey Standard Time", "Europe/Istanbul", "(UTC+03:00) Istanbul",
+        "Russian Standard Time", "Europe/Moscow", "(UTC+03:00) Moscow, St. Petersburg",
+        "Arab Standard Time", "Asia/Riyadh", "(UTC+03:00) Kuwait, Riyadh",
+        "E. Africa Standard Time", "Africa/Nairobi", "(UTC+03:00) Nairobi",
+        "Iran Standard Time", "Asia/Tehran", "(UTC+03:30) Tehran",
+        "Arabian Standard Time", "Asia/Dubai", "(UTC+04:00) Abu Dhabi, Muscat",
+        "Afghanistan Standard Time", "Asia/Kabul", "(UTC+04:30) Kabul",
+        "Pakistan Standard Time", "Asia/Karachi", "(UTC+05:00) Islamabad, Karachi",
+        "India Standard Time", "Asia/Calcutta", "(UTC+05:30) Chennai, Kolkata, Mumbai, New Delhi",
+        "Nepal Standard Time", "Asia/Katmandu", "(UTC+05:45) Kathmandu",
+        "Bangladesh Standard Time", "Asia/Dhaka", "(UTC+06:00) Dhaka",
+        "SE Asia Standard Time", "Asia/Bangkok", "(UTC+07:00) Bangkok, Hanoi, Jakarta",
+        "China Standard Time", "Asia/Shanghai", "(UTC+08:00) Beijing, Chongqing, Hong Kong, Urumqi",
+        "Singapore Standard Time", "Asia/Singapore", "(UTC+08:00) Kuala Lumpur, Singapore",
+        "W. Australia Standard Time", "Australia/Perth", "(UTC+08:00) Perth",
+        "Taipei Standard Time", "Asia/Taipei", "(UTC+08:00) Taipei",
+        "Tokyo Standard Time", "Asia/Tokyo", "(UTC+09:00) Osaka, Sapporo, Tokyo",
+        "Korea Standard Time", "Asia/Seoul", "(UTC+09:00) Seoul",
+        "Cen. Australia Standard Time", "Australia/Adelaide", "(UTC+09:30) Adelaide",
+        "AUS Central Standard Time", "Australia/Darwin", "(UTC+09:30) Darwin",
+        "E. Australia Standard Time", "Australia/Brisbane", "(UTC+10:00) Brisbane",
+        "AUS Eastern Standard Time", "Australia/Sydney", "(UTC+10:00) Canberra, Melbourne, Sydney",
+        "Tasmania Standard Time", "Australia/Hobart", "(UTC+10:00) Hobart",
+        "New Zealand Standard Time", "Pacific/Auckland", "(UTC+12:00) Auckland, Wellington",
+        "Tonga Standard Time", "Pacific/Tongatapu", "(UTC+13:00) Nuku'alofa",
+    };
+}
+
+/// One period of daylight-saving rules, as .NET's TimeZoneInfo describes
+/// them.
+sealed class AdjustmentRule
+{
+    public DateTime DateStart { get; private set; }
+    public DateTime DateEnd { get; private set; }
+    public TimeSpan DaylightDelta { get; private set; }
+    public TransitionTime DaylightTransitionStart { get; private set; }
+    public TransitionTime DaylightTransitionEnd { get; private set; }
+    public TimeSpan BaseUtcOffsetDelta => TimeSpan.Zero;
+
+    public static AdjustmentRule CreateAdjustmentRule(DateTime dateStart, DateTime dateEnd, TimeSpan daylightDelta,
+        TransitionTime daylightTransitionStart, TransitionTime daylightTransitionEnd)
+    {
+        AdjustmentRule rule = new AdjustmentRule();
+        rule.DateStart = dateStart;
+        rule.DateEnd = dateEnd;
+        rule.DaylightDelta = daylightDelta;
+        rule.DaylightTransitionStart = daylightTransitionStart;
+        rule.DaylightTransitionEnd = daylightTransitionEnd;
+        return rule;
+    }
+}
+
+/// When daylight time starts or ends, as .NET says it: a fixed date, or the
+/// nth given weekday of a month (week 5 is the last).
+struct TransitionTime
+{
+    public DateTime TimeOfDay { get; private set; }
+    public int Month { get; private set; }
+    public int Week { get; private set; }
+    public int Day { get; private set; }
+    public DayOfWeek DayOfWeek { get; private set; }
+    public bool IsFixedDateRule { get; private set; }
+
+    public static TransitionTime CreateFloatingDateRule(DateTime timeOfDay, int month, int week, DayOfWeek dayOfWeek)
+    {
+        TransitionTime t = new TransitionTime();
+        t.TimeOfDay = timeOfDay; t.Month = month; t.Week = week; t.DayOfWeek = dayOfWeek; t.Day = 1;
+        t.IsFixedDateRule = false;
+        return t;
+    }
+
+    public static TransitionTime CreateFixedDateRule(DateTime timeOfDay, int month, int day)
+    {
+        TransitionTime t = new TransitionTime();
+        t.TimeOfDay = timeOfDay; t.Month = month; t.Day = day; t.Week = 1;
+        t.IsFixedDateRule = true;
+        return t;
+    }
+}
+
+/// A POSIX TZ rule -- "CST6CDT,M3.2.0,M11.1.0" -- the rule a TZif file ends
+/// with and the form TZ may take. Offsets are kept EAST of UTC, the way
+/// round everything else here counts them; the string writes them west.
+sealed class PosixRule
+{
+    public string StandardName = "";
+    public string DaylightName = "";
+    public long Standard;
+    public long Daylight;
+    public bool HasDaylight;
+    long[] _start = new long[] { 0, 3, 2, 0, 7200 };   // kind (0 M, 1 J, 2 n), m, w, d, seconds
+    long[] _end = new long[] { 0, 11, 1, 0, 7200 };
+
+    string _text = "";
+    int _at;
+
+    public static PosixRule? Parse(string text)
+    {
+        PosixRule r = new PosixRule();
+        r._text = text;
+        string std = r.Name();
+        if (std.Length == 0) return null;
+        long west;
+        if (!r.Offset(out west)) return null;
+        r.StandardName = std;
+        r.Standard = -west;
+        r.Daylight = r.Standard + 3600;
+        if (r._at < text.Length)
+        {
+            string dst = r.Name();
+            if (dst.Length == 0) return null;
+            r.DaylightName = dst;
+            r.HasDaylight = true;
+            if (r._at < text.Length && text[r._at] != ',')
+            {
+                long dwest;
+                if (!r.Offset(out dwest)) return null;
+                r.Daylight = -dwest;
+            }
+            if (r._at < text.Length)
+            {
+                if (text[r._at] != ',') return null;
+                r._at++;
+                if (!r.Date(r._start)) return null;
+                if (r._at >= text.Length || text[r._at] != ',') return null;
+                r._at++;
+                if (!r.Date(r._end)) return null;
+            }
+            if (r._at != text.Length) return null;
+        }
+        return r;
+    }
+
+    public bool InDaylight(long utc)
+    {
+        if (!HasDaylight) return false;
+        long year = YearOf(utc + Standard);
+        long start = Transition(year, _start) - Standard;
+        long end = Transition(year, _end) - Daylight;
+        return start < end ? utc >= start && utc < end : utc >= start || utc < end;
+    }
+
+    public AdjustmentRule Adjustment()
+    {
+        return AdjustmentRule.CreateAdjustmentRule(DateTime.MinValue.Date, DateTime.MaxValue.Date,
+            new TimeSpan((Daylight - Standard) * 10000000), Transition(_start), Transition(_end));
+    }
+
+    static TransitionTime Transition(long[] r)
+    {
+        DateTime time = new DateTime(1, 1, 1).AddSeconds(r[4]);
+        if (r[0] == 0) return TransitionTime.CreateFloatingDateRule(time, (int)r[1], (int)r[2], (DayOfWeek)(int)r[3]);
+        // A day of the year: said as the date it falls on in a year without Feb 29.
+        long day = r[0] == 1 ? r[3] - 1 : r[3];
+        DateTime date = new DateTime(2001, 1, 1).AddDays(day);
+        return TransitionTime.CreateFixedDateRule(time, date.Month, date.Day);
+    }
+
+    static bool Leap(long y) { return (y % 4 == 0 && y % 100 != 0) || y % 400 == 0; }
+
+    static long DaysFromEpoch(long year)
+    {
+        long days = 0;
+        if (year >= 1970) for (long y = 1970; y < year; y++) days += Leap(y) ? 366 : 365;
+        else for (long y = year; y < 1970; y++) days -= Leap(y) ? 366 : 365;
+        return days;
+    }
+
+    static long DaysBeforeMonth(long year, long month)
+    {
+        long d = month <= 1 ? 0 : month == 2 ? 31 : month == 3 ? 59 : month == 4 ? 90 : month == 5 ? 120
+               : month == 6 ? 151 : month == 7 ? 181 : month == 8 ? 212 : month == 9 ? 243 : month == 10 ? 273
+               : month == 11 ? 304 : month == 12 ? 334 : 365;
+        if (month > 2 && Leap(year)) d++;
+        return d;
+    }
+
+    static long YearOf(long seconds)
+    {
+        long days = seconds >= 0 ? seconds / 86400 : (seconds - 86399) / 86400;
+        long year = 1970;
+        while (days < 0) { year--; days += Leap(year) ? 366 : 365; }
+        while (true)
+        {
+            long length = Leap(year) ? 366 : 365;
+            if (days < length) return year;
+            days -= length;
+            year++;
+        }
+    }
+
+    static long Transition(long year, long[] r)
+    {
+        long day;
+        if (r[0] == 1) day = r[3] - 1 + (Leap(year) && r[3] >= 60 ? 1 : 0);
+        else if (r[0] == 2) day = r[3];
+        else
+        {
+            long first = DaysBeforeMonth(year, r[1]);
+            long weekday = ((DaysFromEpoch(year) + first + 4) % 7 + 7) % 7;
+            long d = (r[3] - weekday + 7) % 7 + (r[2] - 1) * 7;
+            long length = DaysBeforeMonth(year, r[1] + 1) - first;
+            while (d >= length) d -= 7;
+            day = first + d;
+        }
+        return (DaysFromEpoch(year) + day) * 86400 + r[4];
+    }
+
+    string Name()
+    {
+        if (_at < _text.Length && _text[_at] == '<')
+        {
+            int close = _text.IndexOf('>', _at);
+            if (close < 0) return "";
+            string quoted = _text.Substring(_at + 1, close - _at - 1);
+            _at = close + 1;
+            return quoted;
+        }
+        int from = _at;
+        while (_at < _text.Length && char.IsLetter(_text[_at])) _at++;
+        return _at - from >= 3 ? _text.Substring(from, _at - from) : "";
+    }
+
+    bool Number(out long value)
+    {
+        value = 0;
+        int from = _at;
+        while (_at < _text.Length && _text[_at] >= '0' && _text[_at] <= '9') { value = value * 10 + (_text[_at] - '0'); _at++; }
+        return _at > from;
+    }
+
+    bool Offset(out long seconds)
+    {
+        seconds = 0;
+        long sign = 1;
+        if (_at < _text.Length && (_text[_at] == '+' || _text[_at] == '-')) { if (_text[_at] == '-') sign = -1; _at++; }
+        long h, m = 0, s = 0;
+        if (!Number(out h)) return false;
+        if (_at < _text.Length && _text[_at] == ':') { _at++; if (!Number(out m)) return false; }
+        if (_at < _text.Length && _text[_at] == ':') { _at++; if (!Number(out s)) return false; }
+        seconds = sign * (h * 3600 + m * 60 + s);
+        return true;
+    }
+
+    bool Date(long[] into)
+    {
+        long a, b, c;
+        if (_at < _text.Length && _text[_at] == 'M')
+        {
+            _at++;
+            if (!Number(out a) || _at >= _text.Length || _text[_at] != '.') return false;
+            _at++;
+            if (!Number(out b) || _at >= _text.Length || _text[_at] != '.') return false;
+            _at++;
+            if (!Number(out c)) return false;
+            if (a < 1 || a > 12 || b < 1 || b > 5 || c > 6) return false;
+            into[0] = 0; into[1] = a; into[2] = b; into[3] = c;
+        }
+        else if (_at < _text.Length && _text[_at] == 'J')
+        {
+            _at++;
+            if (!Number(out a) || a < 1 || a > 365) return false;
+            into[0] = 1; into[3] = a;
+        }
+        else
+        {
+            if (!Number(out a) || a > 365) return false;
+            into[0] = 2; into[3] = a;
+        }
+        into[4] = 7200;
+        if (_at < _text.Length && _text[_at] == '/')
+        {
+            _at++;
+            long t;
+            if (!Offset(out t)) return false;
+            into[4] = t;
+        }
+        return true;
+    }
+}
