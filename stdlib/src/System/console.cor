@@ -453,8 +453,21 @@ static class Console
         if (c == 27 && Os.Poll(Fd.In, 1, 20) > 0)
         {
             int second = Terminal.ReadByte(Fd.In);
-            int third = second == 91 || second == 79 ? Terminal.ReadByte(Fd.In) : -1;
-            info = Escape(second, third);
+            if (second == 91 || second == 79)
+            {
+                info = Sequence(second);
+            }
+            else if (second >= 32 && second != 127)
+            {
+                // ESC and a key is that key with Alt: what xterm sends for it.
+                ConsoleKeyInfo plain = Plain(second);
+                info = new ConsoleKeyInfo(plain.KeyChar, plain.Key,
+                    (plain.Modifiers & ConsoleModifiers.Shift) != 0, true, false);
+            }
+            else
+            {
+                info = Escape(second, -1);
+            }
         }
         else
         {
@@ -522,6 +535,69 @@ static class Console
             return new ConsoleKeyInfo((char)0, ConsoleKey.None, false, false, false);
         }
         return new ConsoleKeyInfo((char)c, ConsoleKey.None, false, false, false);
+    }
+
+    /// A whole control sequence, read to its final byte: ESC [ then any
+    /// parameters (digits and ';') and intermediates, then one byte from @
+    /// to ~. ESC O is followed by just the final. Reading only as far as the
+    /// first parameter left the rest of a modified key -- ESC [ 1 ; 5 C for
+    /// Ctrl+Right, ESC [ 3 ; 5 ~ for Ctrl+Delete -- to be read as typing,
+    /// and ";5C" went into the command line. The modifier parameter is
+    /// xterm's: one more than Shift 1 + Alt 2 + Control 4.
+    static ConsoleKeyInfo Sequence(int introducer)
+    {
+        int first = -1;
+        int modifier = 1;
+        int field = 0;
+        int value = -1;
+        int final = -1;
+        for (int taken = 0; taken < 32; taken++)
+        {
+            // THE REST OF A SEQUENCE IS ALREADY ON ITS WAY; a gap longer than
+            // this is a person, and what they type next is not part of it.
+            if (Os.Poll(Fd.In, 1, 50) <= 0) break;
+            int b = Terminal.ReadByte(Fd.In);
+            if (b < 0) break;
+            if (introducer == 79 || (b >= 64 && b <= 126))
+            {
+                final = b;
+                break;
+            }
+            if (b >= 48 && b <= 57)
+            {
+                value = (value < 0 ? 0 : value) * 10 + (b - 48);
+                if (value > 9999) value = 9999;
+            }
+            else if (b == 59 || b == 58)
+            {
+                if (field == 0) first = value;
+                else if (field == 1 && value > 0) modifier = value;
+                field = field + 1;
+                value = -1;
+            }
+        }
+        if (field == 0) first = value;
+        else if (field == 1 && value > 0) modifier = value;
+
+        ConsoleKey key = ConsoleKey.Escape;
+        if (final == 65) { key = ConsoleKey.UpArrow; }
+        else if (final == 66) { key = ConsoleKey.DownArrow; }
+        else if (final == 67) { key = ConsoleKey.RightArrow; }
+        else if (final == 68) { key = ConsoleKey.LeftArrow; }
+        else if (final == 72) { key = ConsoleKey.Home; }
+        else if (final == 70) { key = ConsoleKey.End; }
+        else if (final == 126)
+        {
+            // ESC [ n ~ : Home, Insert, Delete, End, PageUp, PageDown.
+            if (first == 1 || first == 7) { key = ConsoleKey.Home; }
+            else if (first == 2) { key = ConsoleKey.Insert; }
+            else if (first == 3) { key = ConsoleKey.Delete; }
+            else if (first == 4 || first == 8) { key = ConsoleKey.End; }
+            else if (first == 5) { key = ConsoleKey.PageUp; }
+            else if (first == 6) { key = ConsoleKey.PageDown; }
+        }
+        int bits = modifier - 1;
+        return new ConsoleKeyInfo((char)0, key, (bits & 1) != 0, (bits & 2) != 0, (bits & 4) != 0);
     }
 
     static ConsoleKeyInfo Escape(int second, int third)
