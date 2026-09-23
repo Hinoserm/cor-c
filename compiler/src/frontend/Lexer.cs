@@ -1227,6 +1227,27 @@ public sealed class Lexer
                 return (char)value;
             }
 
+            // C#'s variable-length form: one to four hexadecimal digits,
+            // as many as there are. "\x1b[0m" is the escape and then "[0m".
+            case 'x':
+            {
+                int value = 0, digits = 0;
+                while (digits < 4 && !Done && Uri.IsHexDigit(Cur))
+                {
+                    value = value * 16 + Convert.ToInt32(Cur.ToString(), 16);
+                    Advance();
+                    digits++;
+                }
+                if (digits == 0)
+                {
+                    throw Error(@"\x needs one to four hexadecimal digits", line, col);
+                }
+                return (char)value;
+            }
+
+            // C# 13's escape character, U+001B.
+            case 'e':  return '\u001b';
+
             default:
                 throw Error($"'\\{c}' is not an escape sequence", line, col);
         }
