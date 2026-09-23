@@ -94,6 +94,33 @@ static class Environment
         return null;
     }
 
+    /// Sets, or with a null or empty value removes, a variable of this
+    /// process's environment, as .NET does. It reaches what this process
+    /// starts from now on (UnixProcess.Exec, Process.Start); the process's
+    /// original block, which the kernel handed over, is left as it was.
+    public static void SetEnvironmentVariable(string variable, string? value)
+    {
+        if (variable == null) throw new ArgumentNullException("variable");
+        if (variable.Length == 0 || variable.IndexOf('=') >= 0 || variable[0] == '\0')
+            throw new ArgumentException("not a variable name: " + variable, "variable");
+        string[] all = Environ();
+        List<string> made = new List<string>();
+        for (int i = 0; i < all.Length; i++)
+        {
+            string entry = all[i];
+            if (entry.Length > variable.Length && entry[variable.Length] == '=' && String.StartsWith(entry, variable)) continue;
+            made.Add(entry);
+        }
+        if (value != null && value.Length > 0) made.Add(variable + "=" + value);
+        _env = made.ToArray();
+        _changed = true;
+    }
+
+    static bool _changed;
+
+    /// Whether SetEnvironmentVariable has changed the block since the start.
+    public static bool EnvironmentChanged => _changed;
+
     public static Dictionary<string, string> GetEnvironmentVariables()
     {
         Dictionary<string, string> vars = new Dictionary<string, string>();

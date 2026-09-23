@@ -137,9 +137,10 @@ static class UnixProcess
         return Os.Exec(path, argv, envp);
     }
 
+    /// With this process's environment, including what SetEnvironmentVariable changed.
     public static int Exec(string path, string[] argv)
     {
-        return Os.Exec(path, argv, null);
+        return Os.Exec(path, argv, Environment.EnvironmentChanged ? Environment.EnvironmentBlock() : null);
     }
 
     /// The program named on PATH when its name has no slash, as execvp(3)
