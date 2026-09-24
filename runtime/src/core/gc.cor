@@ -1841,14 +1841,30 @@ static class Gc
             return;
         }
 
-        if (GcThreads.Others() && _barrier != 0 && _markAt != 0)
-        {
-            CollectConcurrently();
-        }
-        else
+        if (!GcThreads.Others())
         {
             CollectAlone();
+            return;
         }
+
+        // SEVERAL THREADS ARE NEVER COLLECTED ALONE. CollectAlone reads one
+        // stack, this one's; every other thread's is read only by the rounds
+        // a concurrent collection asks, and without them an object another
+        // thread holds only in a register or on its stack is swept from under
+        // it. The two tables the concurrent collection needs are asked for
+        // again if Start could not have them; without them there is no safe
+        // collection at all, and saying so is the only honest answer.
+        if (_barrier == 0) _barrier = Platform.Map(BarrierBytes);
+        if (_markAt == 0)
+        {
+            _markAt = Platform.Map(MarkBytes);
+            if (_markAt != 0) _markCount = MarkBytes / GreyEntry;
+        }
+        if (_barrier == 0 || _markAt == 0)
+        {
+            OutOfMemory("out of memory: no room for the collector's tables, and several threads to collect for\n");
+        }
+        CollectConcurrently();
     }
 
     public static long PauseHook;
@@ -2528,8 +2544,12 @@ static class Gc
                     }
                     long header = Sys.Peek(block);
                     long size = header & SizeMask;
+                    // A CHAIN THAT BREAKS leaves the rest of the chunk without
+                    // starts, and an object without a start is a newcomer: kept
+                    // and never traced. No snapshot, then, and the collection
+                    // is given up rather than run on half of one.
                     if (size < Smallest || block + size > end
-                        || Sys.Peek(block + size - FooterBytes) != header) break;
+                        || Sys.Peek(block + size - FooterBytes) != header) { every = false; break; }
                     long last = (block + size - 1 - chunk) / 4096;
                     while (page <= last)
                     {
@@ -2603,13 +2623,20 @@ static class Gc
     // to the end. With the world running it is safe because of where a
     // running thread can be:
     //
-    //   - The free index is emptied at the stop (BeginSweep), so nothing a
-    //     thread takes afterwards comes from a chunk not yet swept: it comes
-    //     from a block this sweep has already put back, from the bump space
-    //     past where the current chunk ended AT THE STOP -- which is as far
-    //     as that chunk is walked -- or from a chunk made since, which is
-    //     not on the list being walked. So no allocation buffer in use is
-    //     ever inside a walk, and a walk never meets a chain it cannot read.
+    //   - The free index is emptied at the stop (BeginSweep). What a thread
+    //     takes afterwards comes from a block this sweep has already put
+    //     back, from the bump space past where the current chunk ended AT
+    //     THE STOP -- which is as far as that chunk is walked -- from a chunk
+    //     made since, which is not on the list being walked, OR from the tail
+    //     of a buffer somebody retired meanwhile (Refill, Deregister). That
+    //     last one CAN be in a chunk not yet swept, and it is safe for one
+    //     reason only: every buffer in use at BeginSweep was captured there,
+    //     whole, base to limit, and every walk steps over the captured span
+    //     unread whatever has happened inside it since. A retired tail is
+    //     linked where it lies (Retire uses Link, never Merge), so it never
+    //     reaches outside that span. Change either and this breaks: a walk
+    //     would meet a chain it cannot read, or objects made after the mark
+    //     with nothing to say they are new.
     //   - Nothing is freed by hand while it runs (Free), so no block is put
     //     on the free index that the walk would then put on it again.
     //   - What is allocated meanwhile is unmarked and outside the snapshot:
