@@ -1,0 +1,35 @@
+// test: enum underlying types
+// expect-exit: 0
+// expect-output:
+// uint c0000002 c0000002
+// long c0000001 -5
+// byte 250
+// order True True
+//
+// An enum converts, compares and orders as its underlying type: a `: uint`
+// enum's 0xC0000002 is a large positive number as a long, not a negative
+// one, and it is greater than 5, as NTSTATUS codes need.
+
+enum Status : uint { Ok = 5, Failed = 0xC0000002 }
+enum Wide : long { Big = 0xC0000001, Negative = -5 }
+enum Small : byte { High = 250 }
+
+static class Program
+{
+    static Status Get() { return Status.Failed; }
+
+    static void Hex(string label, long a, long b)
+    {
+        Console.WriteLine(label + " " + a.ToString("x") + " " + b.ToString("x"));
+    }
+
+    static int Main()
+    {
+        Status s = Get();
+        Hex("uint", (long)s, (long)Status.Failed);
+        Console.WriteLine("long " + ((long)Wide.Big).ToString("x") + " " + (long)Wide.Negative);
+        Console.WriteLine("byte " + (int)Small.High);
+        Console.WriteLine("order " + (s > Status.Ok) + " " + (Status.Failed > Status.Ok));
+        return 0;
+    }
+}
