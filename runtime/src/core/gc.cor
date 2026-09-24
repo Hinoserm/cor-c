@@ -3562,6 +3562,14 @@ static class GcLock
 
     static long _words;
 
+    /// The collection round now, without making the control words: 0 while
+    /// nothing has made them, since no round has been asked yet.
+    public static long EpochIfMade()
+    {
+        long at = _words;
+        return at == 0 ? 0 : Sys.Peek(at + Epoch);
+    }
+
     public static long Words()
     {
         if (_words == 0)
@@ -3683,14 +3691,15 @@ static class GcThreads
             return;
         }
 
-        Sys.Poke(block + Tls.Epoch, Sys.Peek(GcLock.Words() + GcLock.Epoch));
-
         // The FIRST thread is only written down, and takes no lock: a program
         // with one thread must not be made to ask for memory it will never
         // read, and on bare metal there is no memory to ask for until the
-        // program has said where the heap is.
+        // program has said where the heap is -- which is why its epoch is
+        // read without making the control words (a boot loader's entry
+        // registers its thread before Main can call Platform.SetHeap).
         if (_blocks == 0 && _first == 0)
         {
+            Sys.Poke(block + Tls.Epoch, GcLock.EpochIfMade());
             _first = block;
             return;
         }
