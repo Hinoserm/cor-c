@@ -1,0 +1,53 @@
+// test: a method group's receiver is evaluated when the delegate is made
+// expect-exit: 0
+// expect-output:
+// 1 2 3
+// 9
+// method group receiver ok
+//
+// `workers[i].Run` in a loop made delegates that read `workers[i]` when they
+// were CALLED, with `i` one past the end by then: every thread started from
+// such a delegate threw IndexOutOfRangeException. C# takes the receiver's
+// value at the conversion; so does this. And a method group of another
+// object's instance method converts in an assignment as it does in an
+// argument.
+class Worker
+{
+    public int Id;
+    public Worker(int id) { Id = id; }
+    public void Run() { Program.Seen = Program.Seen + Id + " "; }
+    public void Say() { Program.Last = Id; }
+}
+
+static class Program
+{
+    public static string Seen = "";
+    public static int Last;
+
+    static int Main()
+    {
+        Worker[] workers = new Worker[3];
+        ThreadStart[] runs = new ThreadStart[3];
+        for (int i = 0; i < workers.Length; i++)
+        {
+            workers[i] = new Worker(i + 1);
+            runs[i] = workers[i].Run;
+        }
+        for (int i = 0; i < runs.Length; i++) runs[i]();
+        Console.WriteLine(Seen.Trim());
+
+        Worker w = new Worker(9);
+        ThreadStart say = w.Say;
+        w = new Worker(4);
+        say();
+        Console.WriteLine(Last);
+
+        Thread[] threads = new Thread[3];
+        for (int i = 0; i < threads.Length; i++) threads[i] = new Thread(workers[i].Run);
+        for (int i = 0; i < threads.Length; i++) threads[i].Start();
+        for (int i = 0; i < threads.Length; i++) threads[i].Join();
+
+        Console.WriteLine("method group receiver ok");
+        return 0;
+    }
+}

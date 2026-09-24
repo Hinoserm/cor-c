@@ -475,6 +475,7 @@ static class Platform
     public static void SafePoint(long mode)
     {
         Sys.Syscall(Call.Getpid, 0, 0, 0, 0, 0, 0);
+        GcThreads.Spill(mode, Sys.Stack(), Sys.FramePointer());
         GcThreads.SafePoint(mode);
     }
 

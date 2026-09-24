@@ -587,6 +587,21 @@ public sealed partial class Binder
     private int _closures;
     private readonly Dictionary<string, ClosureInfo> _groupClosures = new();
 
+    /// <summary>
+    /// Method groups with a receiver that is not `this`: the lambda made for
+    /// `workers[i].Run` and the receiver expression, which is evaluated ONCE,
+    /// when the delegate is made, into the closure's $target field. Reading it
+    /// from inside the delegate instead captured `workers` and `i`, and a
+    /// delegate made in a loop called the method on whatever the last
+    /// iteration left there -- or, with `i` one past the end, threw.
+    /// </summary>
+    private readonly Dictionary<LambdaExpr, Expr> _boundTargets = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>The first closure made for each bound method group: its class and Invoke, shared by later conversions of the same method with their own receivers.</summary>
+    private readonly Dictionary<string, ClosureInfo> _boundClosures = new();
+
+    private const string BoundTargetField = "$target";
+
     /// Names the hidden locals a rewritten foreach needs, so nested loops do
     /// not share one.
     private int _iterations;
@@ -3536,12 +3551,13 @@ public sealed partial class Binder
             return;
         }
 
-        // Static method groups have the same contextual delegate conversion
-        // in assignments and returns as in arguments. Reuse the closure
+        // Method groups have the same contextual delegate conversion in
+        // assignments and returns as in arguments -- static ones, `this`'s,
+        // and another object's (bound: MethodGroupLambda). Reuse the closure
         // lowering path rather than treating the unresolved group as void.
         if (at is Expr methodSource && !_r.Rewrites.ContainsKey(methodSource)
             && _r.Resolved.TryGetValue(methodSource, out Sym? methodSym)
-            && methodSym is MethodGroupSym methods && methods.Methods.All(m => m.Static)
+            && methodSym is MethodGroupSym or CapturedMethodGroupSym
             && MethodGroupLambda(methodSource, to) is LambdaExpr methodWrapper)
         {
             _r.Rewrites[methodSource] = methodWrapper;
@@ -4316,10 +4332,21 @@ public sealed partial class Binder
         string name2 = lam.GroupIdentity is string groupIdentity
             ? $"Lambda$Group${(_thisType?.Key ?? "")}${groupIdentity}"
             : $"Lambda${_closureOwner}${_closures++}";
+        // A BOUND method group made before is the same class again, with this
+        // conversion's own receiver as the value of its one field.
+        bool bound = _boundTargets.TryGetValue(lam, out Expr? boundReceiver);
+        if (bound && _boundClosures.TryGetValue(name2, out ClosureInfo? boundProto))
+        {
+            _r.Closures[lam] = new ClosureInfo(boundProto.Type,
+                new List<(FieldSymbol, Sym)> { (boundProto.Captures[0].Field, new ValueSym(boundReceiver!)) },
+                boundProto.Invoke);
+            return wanted;
+        }
+
         // A method group already turned into a closure in this type is that
         // closure again, when nothing but the plain `this` could be captured;
         // a nested capture would need a different source for the same field.
-        if (lam.GroupIdentity is not null && _groupClosures.TryGetValue(name2, out ClosureInfo? sharedClosure)
+        if (!bound && lam.GroupIdentity is not null && _groupClosures.TryGetValue(name2, out ClosureInfo? sharedClosure)
             && (_method is { Static: true } || (_capturedThisType is null && _thisType is not null)))
         {
             _r.Closures[lam] = sharedClosure;
@@ -4348,7 +4375,19 @@ public sealed partial class Binder
         TypeSymbol? enclosingThis = null;
         Sym? enclosingThisSource = null;
 
-        if (_method is { Static: false })
+        // A bound method group's closure holds its receiver and nothing else,
+        // so that every conversion of the method has the same layout.
+        if (bound)
+        {
+            FieldSymbol targetField = new()
+            {
+                Name = BoundTargetField, Type = _r.TypeOf(boundReceiver!), Owner = closure, Offset = at,
+            };
+            at += Math.Max(8, targetField.Type.Size);
+            closure.Fields.Add(targetField);
+            fields.Add((targetField, new ValueSym(boundReceiver!)));
+        }
+        else if (_method is { Static: false })
         {
             // A lambda nested inside another closure needs the ORIGINAL
             // receiver, not the intermediate closure object. The outer
@@ -4450,7 +4489,8 @@ public sealed partial class Binder
         _r.Types[name2] = closure;
         _r.Methods[body] = run;
         _r.Closures[lam] = new ClosureInfo(closure, fields, run);
-        if (lam.GroupIdentity is not null) _groupClosures[name2] = _r.Closures[lam];
+        if (bound) _boundClosures[name2] = _r.Closures[lam];
+        else if (lam.GroupIdentity is not null) _groupClosures[name2] = _r.Closures[lam];
 
         // WHAT WAS PROVED ABOUT A CAPTURE GOES IN WITH IT.
         //
@@ -4842,7 +4882,25 @@ public sealed partial class Binder
             return null;
         }
 
-        CallExpr call = new() { Target = source, Line = source.Line, Col = source.Col };
+        // A RECEIVER THAT IS NOT `this` IS A VALUE, taken now. The call in
+        // the delegate is made on the closure's $target field instead.
+        Expr callTarget = source;
+        Expr? receiver = null;
+        if (source is MemberExpr member && sym is MethodGroupSym instanceGroup
+            && instanceGroup.Methods.Any(m => !m.Static)
+            && member.Target is not ThisExpr and not BaseExpr && !member.NullConditional)
+        {
+            receiver = member.Target;
+            MemberExpr onTarget = new()
+            {
+                Target = new NameExpr { Name = BoundTargetField, Line = source.Line, Col = source.Col },
+                Name = member.Name, Line = source.Line, Col = source.Col,
+            };
+            onTarget.TypeArgs.AddRange(member.TypeArgs);
+            callTarget = onTarget;
+        }
+
+        CallExpr call = new() { Target = callTarget, Line = source.Line, Col = source.Col };
         LambdaExpr made = new() { Body = call, Line = source.Line, Col = source.Col };
         // Which method the group means here is the one whose arity the
         // delegate's Invoke has; its identity names the closure class, so a
@@ -4850,7 +4908,8 @@ public sealed partial class Binder
         // same class and the two compare equal, as C# requires of delegates.
         IReadOnlyList<MethodSymbol> candidates = sym is MethodGroupSym mg ? mg.Methods : ((CapturedMethodGroupSym)sym).Methods;
         MethodSymbol? chosen = candidates.FirstOrDefault(m => m.Params.Count == invoke.Params.Count);
-        if (chosen is not null) made.GroupIdentity = ClosureIdentity.Of(chosen);
+        if (chosen is not null) made.GroupIdentity = ClosureIdentity.Of(chosen) + (receiver is null ? "" : "$bound");
+        if (receiver is not null) _boundTargets[made] = receiver;
 
         for (int i = 0; i < invoke.Params.Count; i++)
         {

@@ -114,6 +114,29 @@ static class Tls
     /// collector is about to retire -- and asks again a moment later.
     public const long InAlloc = 64;
 
+    /// The collector's last handshake round this thread has answered
+    /// (GcThreads): a thread whose number is behind the collector's owes it
+    /// a piece of work -- the objects of its own allocation buffer, or its
+    /// own stack -- which it does at its next safepoint, or which the
+    /// collector does for it while it is blocked. Never a stop.
+    public const long Epoch = 68;
+
+    /// Set by a kernel that has arranged for this thread to answer a
+    /// handshake the moment it resumes (an interrupted GUI kernel thread),
+    /// so that it is not arranged twice; cleared by the answer.
+    public const long HandshakeArmed = 72;
+
+    /// The registers of a thread that went blocked. Platform.SafePoint pushes
+    /// every callee-saved register in its own frame -- and then returns,
+    /// and the wait that follows writes its frames over that one. A caller's
+    /// reference that lives only in EBX, ESI or EDI for the length of the
+    /// wait would be nowhere the collector reads. So the frame is copied
+    /// here as the thread says it is stopped (GcThreads.Spill), and read with
+    /// its stack while it is (Gc.ScanStack). SpillCount words from Spill.
+    public const long SpillCount = 76;
+    public const long Spill = 80;
+    public const long SpillMax = 12;
+
     /// The size of the block. The compiler lays the first one down in .bss.
     public const long Bytes = 128;
 }
@@ -253,6 +276,7 @@ static class Runtime
         Sys.PokeWord(block + Tls.Self, block);
         Sys.PokeWord(block + Tls.StackBase, stackTop);
         Sys.PokeWord(block + Tls.StackLimit, stackTop);
+        Sys.PokeWord(block + Tls.SpillCount, 0);
         Sys.PokeWord(block + Tls.State, 1);
         GcThreads.Register(block);
     }
@@ -268,6 +292,7 @@ static class Runtime
         long block = Sys.ThreadBlock();
 
         Sys.PokeWord(block + Tls.StackLimit, Sys.PeekWord(block + Tls.StackBase));
+        Sys.PokeWord(block + Tls.SpillCount, 0);
         Sys.AtomicSwap(block + Tls.State, 1);
     }
 
@@ -297,17 +322,17 @@ static class Runtime
         GcThreads.EndBlocking();
     }
 
-    // ---- stopping a thread from the outside ---------------------------------
+    // ---- answering the collector from the outside -------------------------------
     //
-    // A collector stops a thread by taking its allocation buffer away and
-    // waiting for it to allocate or block. A thread that does neither for a
-    // long time -- a processor in a kernel copying a page -- is prompted:
-    // the platform's stop hook interrupts it, and the interrupt handler,
-    // with every register of the interrupted code pushed on the stack under
-    // it, publishes THAT stack as scannable with MarkStoppedAt, waits for
-    // the collection to end, and resumes with EndBlocking. The one place it
-    // may not stop is inside the allocator's fast path (Tls.InAlloc); the
-    // hook is asked again until it is out.
+    // A collector never stops a thread; it asks each, in handshake rounds, for
+    // a piece of work only that thread can do (lib/rt/gc.cor, GcThreads). A
+    // thread answers at its next safepoint. One that reaches none for a long
+    // time -- a processor in a kernel copying a page -- is prompted: the
+    // platform's stop hook interrupts it, and the interrupt handler, with
+    // every register of the interrupted code pushed on the stack under it,
+    // answers for it right there with AnswerAt and returns. The one place it
+    // may not answer is inside the allocator or the barrier (Tls.InAlloc);
+    // the hook is asked again a moment later.
 
     /// Whether this thread holds the heap lock (see GcLock.HeldByMe).
     public static bool HoldsHeapLock()
@@ -315,32 +340,48 @@ static class Runtime
         return GcLock.HeldByMe();
     }
 
-    /// Whether a collection is waiting for threads to stop.
+    /// Whether a collection is under way.
     public static bool CollectionPending()
     {
         return GcLock.IsCollecting();
     }
 
-    /// Whether this thread can be stopped where it stands: it is running,
-    /// and it is not in the middle of an allocation.
-    public static bool StoppableHere()
+    /// Whether this thread owes the collector an answer it can give where it
+    /// stands: it is running, not in the allocator or the barrier, and not
+    /// the collector.
+    public static bool AnswerOwed()
     {
         long block = Sys.ThreadBlock();
-
-        // Never the collector itself: an interrupt that finds it collecting
-        // -- a scheduling kick, its own clock -- would stop it to wait for
-        // the collection it is the only one doing.
         return Sys.PeekWord(block + Tls.State) == 0 && Sys.PeekWord(block + Tls.InAlloc) == 0
-            && !GcLock.IsCollector(block);
+            && !GcLock.HeldByMe() && GcThreads.Owes(block);
     }
 
-    /// This thread is stopped, and its stack from `stack` up to its base is
-    /// what the collector reads. EndBlocking is how it comes back.
-    public static void MarkStoppedAt(long stack)
+    /// The answer, given for this thread by an interrupt handler: its stack
+    /// from `stack` -- the trap frame, every register in it -- up to its base.
+    /// Does not wait for anything.
+    public static void AnswerAt(long stack)
     {
-        long block = Sys.ThreadBlock();
-        Sys.PokeWord(block + Tls.StackLimit, stack);
-        Sys.AtomicSwap(block + Tls.State, 1);
+        GcThreads.Answer(stack);
+    }
+
+    /// Whether the thread `block` is running and owes an answer: the ones a
+    /// stop hook has to interrupt.
+    public static bool ThreadOwes(long block)
+    {
+        return Sys.PeekWord(block + Tls.State) == 0 && GcThreads.Owes(block);
+    }
+
+    /// A safepoint: the open round answered, if this thread owes it.
+    public static void Poll()
+    {
+        GcThreads.Park();
+    }
+
+    /// Up to `budget` blocks of a mark under way scanned by this thread --
+    /// what an idle processor does before it halts. True when there was work.
+    public static bool HelpCollect(long budget)
+    {
+        return Gc.Assist(budget) > 0;
     }
 
     /// Whether the thread `block` is running managed code right now, as the

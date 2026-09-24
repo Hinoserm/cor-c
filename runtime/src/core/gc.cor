@@ -127,12 +127,9 @@ static class Gc
     static long _liveBytes;     // block bytes found live by the last sweep
     static long _liveBlocks;
 
-    static long _markAt;        // the mark queue, or 0
-    static long _markCount;     // its capacity in entries
-    static long _markHead;
-    static long _markTail;
+    static long _markAt;        // the grey queue, or 0 (GcLock.GreyHead/GreyTail)
+    static long _markCount;     // its capacity in entries, a power of two
     static long _markPeak;
-    static bool _markOverflow;
 
     // ---- a collection that lets the other threads run while it marks -----
     //
@@ -160,7 +157,6 @@ static class Gc
     static long _cycle;             // which collection the snapshot tables are of
     static bool _snapshots;         // every chunk has its table for this cycle
     static bool _concurrent;        // this cycle lets the world run while marking
-    static long _phase;             // 0 the first stop, 1 the second
     static long _barrier;           // the barrier's ring, or 0
     const long BarrierBytes = 131072;
     const long BarrierCount = 16384;        // places, two words each
@@ -706,6 +702,9 @@ static class Gc
 
     const long BufferBytes = 65536;
 
+    /// Queued blocks an allocating thread scans while a mark is under way.
+    const long AssistBudget = 32;
+
     // This is only an allocation-policy hint. A concurrent owner may change
     // the bin after this read; AllocSlow always rechecks/takes under the heap
     // lock. Never dereference the observed free-block address without that
@@ -800,11 +799,20 @@ static class Gc
         long at = Sys.Peek(block + Tls.AllocPtr);
         long limit = Sys.Peek(block + Tls.AllocLimit);
 
-        // A thread that was STOPPED had its limit taken away to stop it (see
-        // StopWorld), which is where the real one went.
+        // A thread asked to answer a handshake had its limit taken away, so
+        // that its next allocation comes to the slow path (GcThreads.Round);
+        // the real one is kept aside.
         if (limit == 0)
         {
             limit = Sys.Peek(block + Tls.AllocSaved);
+        }
+
+        // WHILE STAMPING IS OPEN a buffer's objects are written into the
+        // snapshot before it goes: the snapshot stepped over it, and once
+        // it is retired its owner's STAMP answer would look in the next one.
+        if (_stamping)
+        {
+            StampBuffer(block);
         }
 
         Sys.Poke(block + Tls.AllocSaved, Zero);
@@ -852,15 +860,25 @@ static class Gc
         long need = (bytes + Overhead + 7) & SizeMask;
         long tb = Sys.ThreadBlock();
 
-        // A thread that cannot bump in its own buffer is about to touch the
-        // shared heap, which is exactly what it may not do while somebody is
-        // collecting: this is the safepoint every thread eventually reaches.
+        // THE SAFEPOINT every allocating thread reaches: the collector's open
+        // round answered, if this thread owes it -- never a wait -- and, while
+        // a mark is under way, a little of the marking done here, so that the
+        // threads that cause a collection help to finish it.
         if (GcLock.IsCollecting())
         {
             GcThreads.Park();
+            Assist(AssistBudget);
         }
 
         GcLock.Enter();
+
+        // A buffer limit taken away to ask for that answer (GcThreads.Round)
+        // is given back: the buffer was this thread's all along.
+        if (Sys.Peek(tb + Tls.AllocLimit) == 0 && Sys.Peek(tb + Tls.AllocSaved) != 0)
+        {
+            Sys.Poke(tb + Tls.AllocLimit, Sys.Peek(tb + Tls.AllocSaved));
+            Sys.Poke(tb + Tls.AllocSaved, Zero);
+        }
 
         if (!_ready)
         {
@@ -1145,7 +1163,7 @@ static class Gc
 
         if (_markAt != 0)
         {
-            _markCount = MarkBytes / 4;
+            _markCount = MarkBytes / GreyEntry;
         }
     }
 
@@ -1217,16 +1235,17 @@ static class Gc
         // the whole of what a formatting buffer or an enumerator in a loop
         // costs. Only this thread may touch this buffer, so nothing is held.
         //
-        // NOT TO BE STOPPED IN THE MIDDLE (Tls.InAlloc, as in Alloc). A stop
-        // retires this buffer; a thread stopped between reading the pointer
-        // and storing it would put back a pointer into a buffer it no longer
-        // has. And a stop is the only moment a mark can begin, so with the
-        // stop held off the test of Marking below is still true at the store.
+        // NOT TO BE ANSWERED FOR IN THE MIDDLE (Tls.InAlloc, as in Alloc): a
+        // collector stamping this buffer's objects for the thread, or
+        // unmarking them, reads the pointer this is about to move.
         long inside = Sys.Peek(tb + Tls.InAlloc);
         Sys.Poke(tb + Tls.InAlloc, 1);
         long ptr = Sys.Peek(tb + Tls.AllocPtr);
 
-        if (Runtime.Marking == 0 && !_sweeping && ptr != 0 && block + size == ptr && block >= Sys.Peek(tb + Tls.AllocBase))
+        // Not while a collection is anywhere under way: the block may carry
+        // the snapshot's start, and an object bumped into it again would be
+        // swept as the one that was freed.
+        if (Runtime.Marking == 0 && !_sweeping && !_collecting && ptr != 0 && block + size == ptr && block >= Sys.Peek(tb + Tls.AllocBase))
         {
             // The fast path's one assumption is that memory above the pointer
             // has never been written; the bytes are cleared here instead.
@@ -1240,11 +1259,13 @@ static class Gc
         Sys.Poke(tb + Tls.InAlloc, inside);
         GcLock.Enter();
 
-        // AGAIN, NOW THAT THE LOCK IS HELD. Waiting for it is a safepoint: a
-        // collection may have stopped this thread right there, taken its
-        // snapshot with this block in it, and begun to mark. The first stop
-        // is made with this lock held, so from here the answer cannot change.
-        if (Runtime.Marking != 0 || _sweeping)
+        // AGAIN, NOW THAT THE LOCK IS HELD, and for the WHOLE of a collection,
+        // not only while it marks or sweeps. A collection begins with this lock
+        // held and its snapshot says this block is an object; freed and handed
+        // out again before the sweep, the new object would carry the old one's
+        // start and be swept as the old one, dead -- and a dedicated chunk
+        // given back here would be walked by the sweep after it was unmapped.
+        if (Runtime.Marking != 0 || _sweeping || _collecting)
         {
             GcLock.Exit();
             return;
@@ -1500,62 +1521,214 @@ static class Gc
         return block;
     }
 
+    // ---- marking, by many threads at once --------------------------------
+    //
+    // THE COLLECTOR IS NOT THE ONLY MARKER. A store's barrier marks what it
+    // overwrites and what it writes; a thread that allocates while a mark is
+    // under way scans a few queued blocks before it goes on; an idle
+    // processor scans until there is nothing left; the collecting thread
+    // scans most. So a mark is a compare-and-swap on the header -- exactly one
+    // thread wins it, and that thread queues the block -- and the queue is a
+    // ring many threads push to and take from with nothing held (the barrier
+    // ring's signature scheme, with a compare-and-swap to take as well).
+    //
+    // A FULL QUEUE LOSES NOTHING. A block that could not be queued keeps its
+    // mark and the Overflow word says so; a rescan pass (RescanMarked) finds
+    // every block marked and not yet scanned, and scans it.
+
+    const long GreyEntry = 8;       // a signature and a block
+
+    static long GreySignature(long place)
+    {
+        return (place & 0x7FFFFFFF) | 0x80000000;
+    }
+
+    /// Queues a block this thread has just marked.
+    static void PushGrey(long block)
+    {
+        long ctl = GcLock.Words();
+
+        while (true)
+        {
+            long tail = Sys.Peek(ctl + GcLock.GreyTail) & 0xFFFFFFFF;
+            long head = Sys.Peek(ctl + GcLock.GreyHead) & 0xFFFFFFFF;
+
+            if (_markAt == 0 || ((tail - head) & 0xFFFFFFFF) >= _markCount)
+            {
+                Sys.AtomicSwap(ctl + GcLock.Overflow, 1);
+                return;
+            }
+
+            // Claimed with a compare-and-swap and not an add, so that a place
+            // is only ever claimed when it is free: an add past a full ring
+            // would leave a claim nobody fills, and every taker would stop at
+            // it for good.
+            if ((Sys.Cas(ctl + GcLock.GreyTail, tail, (tail + 1) & 0xFFFFFFFF) & 0xFFFFFFFF) != tail)
+            {
+                continue;
+            }
+
+            long at = _markAt + (tail & (_markCount - 1)) * GreyEntry;
+            Sys.Poke(at + 4, block);
+            Sys.AtomicSwap(at, GreySignature(tail));
+
+            long depth = (tail + 1 - head) & 0xFFFFFFFF;
+            if (depth > _markPeak) _markPeak = depth;
+            return;
+        }
+    }
+
+    /// The next queued block, or 0 when there is none ready to take -- the
+    /// queue is empty, or the next place is claimed and not yet written,
+    /// which its pusher is a few instructions from doing.
+    static long PopGrey()
+    {
+        long ctl = GcLock.Words();
+
+        while (true)
+        {
+            long head = Sys.Peek(ctl + GcLock.GreyHead) & 0xFFFFFFFF;
+            long tail = Sys.Peek(ctl + GcLock.GreyTail) & 0xFFFFFFFF;
+
+            if (head == tail || _markAt == 0)
+            {
+                return 0;
+            }
+
+            long at = _markAt + (head & (_markCount - 1)) * GreyEntry;
+
+            if ((Sys.Peek(at) & 0xFFFFFFFF) != GreySignature(head))
+            {
+                return 0;
+            }
+
+            // Read before the take: once the head has moved past this place a
+            // pusher may claim it again and write over the block.
+            long block = Sys.Peek(at + 4);
+
+            if ((Sys.Cas(ctl + GcLock.GreyHead, head, (head + 1) & 0xFFFFFFFF) & 0xFFFFFFFF) == head)
+            {
+                return block;
+            }
+        }
+    }
+
+    /// Whether marking has nothing left in hand: the queue is empty and no
+    /// thread is scanning a block it took. Read in that order, so that a
+    /// thread between taking the last block and scanning it is seen.
+    static bool GreyIdle()
+    {
+        long ctl = GcLock.Words();
+        long head = Sys.Peek(ctl + GcLock.GreyHead) & 0xFFFFFFFF;
+        long tail = Sys.Peek(ctl + GcLock.GreyTail) & 0xFFFFFFFF;
+        return head == tail && Sys.Peek(ctl + GcLock.Active) == 0;
+    }
+
+    /// Adds `flag` to a block's header -- and then its footer -- against every
+    /// other thread doing the same. True only for the thread that set it;
+    /// false for a free block and for one that already had it.
+    static bool SetFlag(long block, long flag)
+    {
+        while (true)
+        {
+            long word = Sys.Peek(block) & 0xFFFFFFFF;
+
+            if ((word & FlagFree) != 0 || (word & flag) != 0)
+            {
+                return false;
+            }
+
+            if ((Sys.Cas(block, word, word | flag) & 0xFFFFFFFF) == word)
+            {
+                SyncFooter(block);
+                return true;
+            }
+        }
+    }
+
+    /// The footer brought up to the header. Two threads adding two flags
+    /// may write their footers in either order; the one that sees the header
+    /// change under it writes again.
+    static void SyncFooter(long block)
+    {
+        while (true)
+        {
+            long word = Sys.Peek(block);
+            Sys.Poke(block + (word & SizeMask) - FooterBytes, word);
+
+            if (Sys.Peek(block) == word)
+            {
+                return;
+            }
+        }
+    }
+
     /// Marks the block a word might refer to and queues it for scanning.
     static void MarkAt(long at)
     {
         MarkCalls = MarkCalls + 1;
         long block = BlockForPointer(at);
 
-        if (block == 0)
+        // A word pointing at a free block is a number that happens to look
+        // like a pointer: SetFlag refuses it.
+        if (block == 0 || !SetFlag(block, FlagMark))
         {
             return;
         }
 
-        long word = Sys.Peek(block);
-
-        // A live object is never on the free list, so a word pointing at a
-        // free block is a number that happens to look like a pointer.
-        if ((word & FlagFree) != 0 || (word & FlagMark) != 0)
-        {
-            return;
-        }
-
-        Stamp(block, word & SizeMask, (word & FlagMask) | FlagMark);
-
-        if (_markAt != 0 && _markTail < _markCount)
-        {
-            Sys.Poke(_markAt + _markTail * 4, block);
-            _markTail = _markTail + 1;
-
-            if (_markTail > _markPeak)
-            {
-                _markPeak = _markTail;
-            }
-        }
-        else
-        {
-            _markOverflow = true;
-        }
+        Sys.AtomicAdd(GcLock.Words() + GcLock.Pushes, 1);
+        PushGrey(block);
     }
 
-    /// Scans every queued block, and everything they queue, until the queue
-    /// is empty, then resets it so it can fill again: a queue whose head and
-    /// tail only ever advanced was full for good after its first overflow.
-    /// A block scanned here is flagged so a rescan pass skips it.
+    /// Scans queued blocks until there are none ready.
     static void Drain()
     {
-        while (_markHead < _markTail)
-        {
-            long block = Sys.Peek(_markAt + _markHead * 4);
-            _markHead = _markHead + 1;
+        DrainSome(-1);
+    }
 
-            long word = Sys.Peek(block);
-            long size = word & SizeMask;
-            Stamp(block, size, (word & FlagMask) | FlagScan);
-            ScanRange(block + HeaderBytes, block + size - FooterBytes);
+    /// Scans at most `budget` queued blocks -- all of them when it is
+    /// negative -- and answers how many. Any thread may: the one that takes
+    /// a block scans it, and says it is busy (Active) from before the take
+    /// until after the scan, so that nobody decides the mark is over while
+    /// a block is in its hands.
+    static long DrainSome(long budget)
+    {
+        long ctl = GcLock.Words();
+        long done = 0;
+
+        while (budget < 0 || done < budget)
+        {
+            if (Sys.Peek(ctl + GcLock.Abort) != 0)
+            {
+                break;
+            }
+
+            Sys.AtomicAdd(ctl + GcLock.Active, 1);
+            long block = PopGrey();
+
+            if (block == 0)
+            {
+                Sys.AtomicAdd(ctl + GcLock.Active, -1);
+                break;
+            }
+
+            if (SetFlag(block, FlagScan))
+            {
+                long size = Sys.Peek(block) & SizeMask;
+                ScanRange(block + HeaderBytes, block + size - FooterBytes);
+            }
+
+            Sys.AtomicAdd(ctl + GcLock.Active, -1);
+            done = done + 1;
         }
-        _markHead = Zero;
-        _markTail = Zero;
+
+        return done;
+    }
+
+    /// Whether a push found the queue full since this was last asked.
+    static bool TakeOverflow()
+    {
+        return Sys.AtomicSwap(GcLock.Words() + GcLock.Overflow, 0) != 0;
     }
 
     /// Marks everything reachable from a range of memory, a word at a time.
@@ -1623,14 +1796,44 @@ static class Gc
         GcLock.Enter();
     }
 
-    /// A collection with the heap lock already held: stop every other thread,
-    /// give up this thread's own allocation buffer -- after which every chunk
-    /// is a walkable chain of blocks again -- collect, and let them go.
-    ///
-    /// THE LOCK IS LET GO OF IN THE MIDDLE when the collection is one that
-    /// lets the world run while it marks, and taken again for the second
-    /// stop: a caller must not carry anything it read of the heap across
-    /// this call.
+    // ---- a collection ---------------------------------------------------------
+    //
+    // NOBODY IS EVER STOPPED. A collection with one thread simply runs,
+    // start to end, on that thread (CollectAlone): there is nobody to stop.
+    // A collection with several runs while every thread goes on working
+    // (CollectConcurrently), and asks each of them, in HANDSHAKE ROUNDS
+    // (GcThreads.Round), for the part only that thread can do -- at its next
+    // safepoint, or done for it by the collector if it is blocked:
+    //
+    //   1. The barrier goes on (Marking 1: it logs what stores overwrite and
+    //      write), and with the heap lock held the collector writes down where
+    //      every object starts -- stepping over the allocation buffers threads
+    //      are bumping in, which are not walkable.
+    //   2. STAMP: each thread writes down where the objects in its own buffer
+    //      start. After this round every object that existed at the snapshot
+    //      can be found from a pointer into it.
+    //   3. The barrier marks from now on (Marking 2): the old value and the
+    //      new, both. What it logged meanwhile is marked. The collector marks
+    //      from its own stack and the statics.
+    //   4. SCAN: each thread marks from its own stack and registers.
+    //   5. The mark runs -- the collector, threads that allocate, idle
+    //      processors -- and ACK rounds follow until one passes in which
+    //      nothing at all was marked: then everything reachable is marked,
+    //      because the barrier marks directly and what it finds unmarked can
+    //      only be garbage or new.
+    //   6. The barrier goes off, one more ACK round sees every thread out of
+    //      it, and the sweep runs chunk by chunk, stepping over the buffers
+    //      in use, with every thread still working.
+    //
+    // WHAT IS NEW IS KEPT. An object allocated after the snapshot has no
+    // start bit; the marker cannot find it and the sweep keeps it (Newcomer).
+    // What it refers to arrived through a store the barrier saw, or through
+    // the stack of a thread that has not yet answered SCAN.
+
+    /// The same collection with the heap lock already held, and held again
+    /// when this returns. It is let go of while the others are asked for
+    /// their part and while the mark and the sweep run: a caller must carry
+    /// nothing it read of the heap across this call.
     static void CollectLocked()
     {
         if (!HeapChunks.Any() || _collecting)
@@ -1638,57 +1841,14 @@ static class Gc
             return;
         }
 
-        // A platform that wants to know how long the world stood still says
-        // so here: called with 0 as a stop begins and 1 as it ends. It must
-        // not allocate. A kernel uses it to find out what its collections
-        // cost the machine's interrupt latency.
-        long ctl = GcLock.Words();
-        Sys.AtomicSwap(ctl + GcLock.Cycling, 1);
-        if (PauseHook != 0) Sys.Call(PauseHook, 0, 0, 0);
-        GcThreads.StopWorld();
-        Retire(Sys.ThreadBlock());
-        _phase = Zero;
-        GcRoots.Enter();
-
-        if (_concurrent)
+        if (GcThreads.Others() && _barrier != 0 && _markAt != 0)
         {
-            // The barrier is up BEFORE anybody runs: a store made by the
-            // first instruction after the stop is already reported. (A plain
-            // store, seen by the others in time because the atomic exchange
-            // that lets them go comes after it and this is a machine that
-            // keeps one processor's stores in order for the rest.)
-            Runtime.Marking = 1;
-            GcThreads.StartWorld();
-            if (PauseHook != 0) Sys.Call(PauseHook, 1, 0, 0);
-            GcLock.Exit();
-
-            MarkWhileTheyRun();
-
-            GcLock.Enter();
-            if (PauseHook != 0) Sys.Call(PauseHook, 0, 0, 0);
-            GcThreads.StopWorld();
-            Retire(Sys.ThreadBlock());
-            Runtime.Marking = 0;
-            _phase = 1;
-            GcRoots.Enter();
+            CollectConcurrently();
         }
-
-        GcThreads.StartWorld();
-        if (PauseHook != 0) Sys.Call(PauseHook, 1, 0, 0);
-
-        if (_sweeping)
+        else
         {
-            // THE SWEEP IS NOT PART OF THE STOP EITHER. Everything is marked;
-            // what is left is a walk of every block in the heap, and the
-            // others need not stand still for it. A chunk at a time under
-            // the heap lock, which is let go between chunks.
-            GcLock.Exit();
-            SweepWhileTheyRun();
-            GcLock.Enter();
-            FinishCycle();
+            CollectAlone();
         }
-        Sys.AtomicSwap(ctl + GcLock.Cycling, 0);
-        Platform.Wake(ctl + GcLock.Cycling, 0x7FFFFFFF);
     }
 
     public static long PauseHook;
@@ -1698,86 +1858,283 @@ static class Gc
     public static long DeferHook;
     public static long Deferred;
 
-    /// The collection proper; see Collect for why it is entered this way.
-    /// Entered once for a collection made in one stop, and once for each
-    /// stop of one that lets the world run in between (_phase).
+    /// Collections given up half way -- a barrier report lost to a full
+    /// ring -- and begun again later. Nothing is freed by one.
+    public static long Aborted;
+
+    /// Handshake rounds asked for, over all collections.
+    public static long HandshakeRounds;
+
+    static bool _rootsOnly;         // CollectInner: the collector's own roots and no more
+    static long _sinceAtStop;
+
+    /// One thread, nobody to ask: the whole collection, here and now.
+    static void CollectAlone()
+    {
+        long ctl = GcLock.Words();
+        long self = Sys.ThreadBlock();
+
+        // A platform that wants to know how long its only thread stood still
+        // says so here: called with 0 as the collection begins and 1 as it
+        // ends. It must not allocate.
+        Sys.AtomicSwap(ctl + GcLock.Cycling, 1);
+        Sys.AtomicSwap(ctl + GcLock.Collecting, 1);
+        Sys.AtomicSwap(ctl + GcLock.Collector, self);
+        if (PauseHook != 0) Sys.Call(PauseHook, 0, 0, 0);
+
+        Retire(self);
+        GcThreads.CaptureBuffers();
+        _collecting = true;
+        _concurrent = false;
+        _sinceAtStop = _since;
+        SyncEnd();
+        _cycle = _cycle + 1;
+        Sys.AtomicSwap(ctl + GcLock.Overflow, _markAt == 0 ? 1 : 0);
+        BuildBlockAnchors(false);
+        _rootsOnly = false;
+        GcRoots.Enter();
+
+        if (PauseHook != 0) Sys.Call(PauseHook, 1, 0, 0);
+        Sys.AtomicSwap(ctl + GcLock.Collector, 0);
+        Sys.AtomicSwap(ctl + GcLock.Collecting, 0);
+        Sys.AtomicSwap(ctl + GcLock.Cycling, 0);
+        Platform.Wake(ctl + GcLock.Cycling, 0x7FFFFFFF);
+    }
+
+    /// Entered through GcRoots.Enter, with every register on the stack:
+    /// either the collector's own roots of a concurrent collection, or the
+    /// whole of a collection with one thread.
     public static void CollectInner()
     {
-        if (_phase == 0)
+        GcRoots.ScanAll();
+
+        if (_rootsOnly)
         {
-            _collecting = true;
-            _sinceAtStop = _since;
-            SyncEnd();
-            _cycle = _cycle + 1;
-            BuildBlockAnchors();
-            _markHead = Zero;
-            _markTail = Zero;
-            _markPeak = Zero;
-            _markOverflow = _markAt == 0;
-            ResetBarrier();
-
-            // Worth it only when there is somebody to let run, and possible
-            // only with the snapshot's tables and the barrier's ring.
-            _concurrent = _snapshots && _barrier != 0 && _markAt != 0 && GcThreads.Others();
-
-            GcRoots.ScanAll();
-
-            if (_concurrent)
-            {
-                ConcurrentCycles = ConcurrentCycles + 1;
-                return;                 // the marking is done with the world running
-            }
-        }
-        else
-        {
-            // THE SECOND STOP. What the running threads reported, the roots
-            // as they are now, and whatever those reach.
-            bool lost = TakeBarrier(true);
-
-            if (lost)
-            {
-                // The ring filled and reports were dropped: the snapshot's
-                // promise is void. Everything marked is scanned again, with
-                // the world stopped, from the graph as it stands.
-                BarrierOverflows = BarrierOverflows + 1;
-                UnscanMarked();
-                _markOverflow = true;
-            }
-
-            GcRoots.ScanAll();
-            ScanNewcomers();
-        }
-
-        Drain();
-
-        // A live graph wider than the queue leaves blocks marked but never
-        // queued. Each pass over the heap scans those, draining the queue
-        // as it goes so their descendants are followed transitively rather
-        // than one pass per generation -- which, for a list whose links run
-        // against address order, was one pass per NODE. Passes are bounded
-        // by how often the queue overflowed. Correctness never depends on
-        // the queue: with no queue at all this still terminates.
-        while (_markOverflow)
-        {
-            _markOverflow = false;
-            RescanPasses = RescanPasses + 1;
-            RescanMarked();
-        }
-
-        HeapChunks.SetBlockAnchorsActive(false);
-
-        if (_concurrent)
-        {
-            // Begun here, with the world stopped, so that nobody holds
-            // anything of the free index it throws away; done afterwards,
-            // with the world running (SweepWhileTheyRun).
-            BeginSweep();
             return;
         }
 
+        MarkToEmpty();
+        HeapChunks.SetBlockAnchorsActive(false);
         BeginSweep();
         while (SweepNext()) { }
         FinishCycle();
+    }
+
+    /// Several threads: the collection runs beside them. Entered and left
+    /// with the heap lock held.
+    static void CollectConcurrently()
+    {
+        long ctl = GcLock.Words();
+        long self = Sys.ThreadBlock();
+
+        Sys.AtomicSwap(ctl + GcLock.Cycling, 1);
+        Sys.AtomicSwap(ctl + GcLock.Collector, self);
+        Sys.AtomicSwap(ctl + GcLock.Abort, 0);
+        Sys.AtomicSwap(ctl + GcLock.Overflow, 0);
+        Sys.AtomicSwap(ctl + GcLock.Collecting, 1);
+        _collecting = true;
+        _sinceAtStop = _since;
+        SyncEnd();
+        _cycle = _cycle + 1;
+        ResetBarrier();
+
+        // 1. The barrier logs, then the snapshot of where objects start. The
+        //    collector's own buffer is stepped over like everybody's and its
+        //    objects written in here: the round below counts the collector as
+        //    having answered, and a buffer retired unstamped holds objects
+        //    that are kept and never traced -- what only they refer to was
+        //    swept from under them.
+        Runtime.Marking = 1;
+        _stamping = true;
+        GcThreads.CaptureBuffers();
+        BuildBlockAnchors(true);
+
+        if (!_snapshots)
+        {
+            GcLock.Exit();
+            GiveUp(false);
+            return;
+        }
+
+        StampBuffer(self);
+
+        _concurrent = true;
+        ConcurrentCycles = ConcurrentCycles + 1;
+        GcLock.Exit();
+
+        // 2. Every thread's own buffer.
+        GcThreads.Round(GcThreads.Stamp);
+
+        if (Sys.Peek(ctl + GcLock.BarrierLost) != 0)
+        {
+            GiveUp(false);
+            return;
+        }
+
+        // 3. The barrier marks. Buffers retired from here on are not stamped:
+        //    a thread may have answered SCAN before it allocated what is in
+        //    them, and stamping would make them findable and then unmarked.
+        GcLock.Enter();
+        _stamping = false;
+        GcLock.Exit();
+        Runtime.Marking = 2;
+        TakeBarrier(false);
+        _rootsOnly = true;
+        GcRoots.Enter();
+        _rootsOnly = false;
+
+        // 4. Every thread's stack. When it has been answered, every thread
+        //    has passed a safepoint since it saw the barrier mark, so every
+        //    report it logged is signed and in the ring.
+        GcThreads.Round(GcThreads.Scan);
+
+        if (TakeBarrier(true))
+        {
+            GiveUp(true);
+            return;
+        }
+
+        // 5. Mark to the end, and prove it is the end.
+        while (true)
+        {
+            MarkToEmpty();
+            long before = Sys.Peek(ctl + GcLock.Pushes);
+            GcThreads.Round(GcThreads.Ack);
+            MarkToEmpty();
+
+            if (Sys.Peek(ctl + GcLock.Pushes) == before)
+            {
+                break;
+            }
+        }
+
+        // 6. The barrier off; everybody seen out of it; the sweep.
+        Runtime.Marking = 0;
+        GcThreads.Round(GcThreads.Ack);
+        MarkToEmpty();
+
+        GcLock.Enter();
+        HeapChunks.SetBlockAnchorsActive(false);
+        GcThreads.CaptureBuffers();
+        GcThreads.UnmarkBuffers();
+        BeginSweep();
+        Sys.AtomicSwap(ctl + GcLock.Collector, 0);
+        Sys.AtomicSwap(ctl + GcLock.Collecting, 0);
+        GcLock.Exit();
+
+        SweepWhileTheyRun();
+
+        GcLock.Enter();
+        FinishCycle();
+        Sys.AtomicSwap(ctl + GcLock.Cycling, 0);
+        Platform.Wake(ctl + GcLock.Cycling, 0x7FFFFFFF);
+    }
+
+    /// Stamping is open: a buffer retired now has its objects' starts
+    /// written down first (Retire). From the snapshot until SCAN is asked.
+    static bool _stamping;
+
+    /// Scans until nothing is queued, nothing is being scanned, and no push
+    /// was lost to a full queue.
+    static void MarkToEmpty()
+    {
+        long ctl = GcLock.Words();
+
+        while (true)
+        {
+            Drain();
+
+            if (TakeOverflow())
+            {
+                RescanPasses = RescanPasses + 1;
+                RescanMarked();
+                continue;
+            }
+
+            if (GreyIdle())
+            {
+                return;
+            }
+
+            // Somebody else has a block in hand, or a push is half made: it
+            // is a few instructions from done. A spin, not Platform.Wait: that
+            // sleeps WHILE a word holds a value, and there is no value here
+            // to sleep on -- waiting on Active being 0 slept for ever the
+            // moment it was.
+            Sys.Pause();
+        }
+    }
+
+    /// A concurrent collection that cannot finish soundly -- a barrier
+    /// report was lost to a full ring -- is given up: every thread is seen out
+    /// of its barrier, what was marked is unmarked, and nothing is freed. The
+    /// next allocation that wants a collection starts a new one. Entered
+    /// without the heap lock; left holding it.
+    static void GiveUp(bool marked)
+    {
+        long ctl = GcLock.Words();
+
+        Runtime.Marking = 0;
+        Sys.AtomicSwap(ctl + GcLock.Abort, 1);
+        GcThreads.Round(GcThreads.Ack);
+
+        while (Sys.Peek(ctl + GcLock.Active) != 0)
+        {
+            Sys.Pause();
+        }
+
+        Sys.AtomicSwap(ctl + GcLock.GreyHead, Sys.Peek(ctl + GcLock.GreyTail));
+        Sys.AtomicSwap(ctl + GcLock.Overflow, 0);
+
+        if (marked)
+        {
+            ClearMarks();
+        }
+
+        GcLock.Enter();
+        _stamping = false;
+        HeapChunks.SetBlockAnchorsActive(false);
+        _snapshots = false;
+        _concurrent = false;
+        _collecting = false;
+        Aborted = Aborted + 1;
+        Sys.AtomicSwap(ctl + GcLock.Abort, 0);
+        Sys.AtomicSwap(ctl + GcLock.Collector, 0);
+        Sys.AtomicSwap(ctl + GcLock.Collecting, 0);
+        Sys.AtomicSwap(ctl + GcLock.Cycling, 0);
+        Platform.Wake(ctl + GcLock.Cycling, 0x7FFFFFFF);
+    }
+
+    /// Every mark and scanned flag of the snapshot taken off again, for a
+    /// collection given up. Every thread is out of its barrier and nobody is
+    /// marking; the snapshot's objects are never written by a running thread.
+    static void ClearMarks()
+    {
+        long which = 0;
+        long chunk = HeapChunks.SnapshotChunk(0);
+
+        while (chunk != 0)
+        {
+            if (HeapChunks.StartsCycle(chunk) == _cycle)
+            {
+                long block = HeapChunks.NextStart(chunk, HeapChunks.First(chunk));
+
+                while (block != 0)
+                {
+                    long word = Sys.Peek(block);
+
+                    if ((word & (FlagMark | FlagScan)) != 0)
+                    {
+                        Stamp(block, word & SizeMask, word & FlagMask & ~(FlagMark | FlagScan));
+                    }
+
+                    block = HeapChunks.NextStart(chunk, block + 8);
+                }
+            }
+
+            which = which + 1;
+            chunk = HeapChunks.SnapshotChunk(which);
+        }
     }
 
     /// The end of a collection, with the heap lock held.
@@ -1809,36 +2166,10 @@ static class Gc
         }
     }
 
-    static long _sinceAtStop;
-
-    /// Between the two stops, on the collecting thread, with the heap lock
-    /// NOT held: scan what is queued, take what the running threads have
-    /// reported, and go round until there is neither.
-    static void MarkWhileTheyRun()
-    {
-        while (true)
-        {
-            Drain();
-
-            while (_markOverflow)
-            {
-                _markOverflow = false;
-                RescanPasses = RescanPasses + 1;
-                RescanMarked();
-            }
-
-            TakeBarrier(false);
-
-            if (_markHead == _markTail && !_markOverflow)
-            {
-                return;
-            }
-        }
-    }
-
-    /// Every block that is marked and not yet scanned, scanned. By the
-    /// snapshot's start bits when there are any -- which is safe with the
-    /// world running -- and by walking the chain of blocks otherwise.
+    /// Every block that is marked and not yet scanned, scanned: the blocks a
+    /// full queue could not take. By the snapshot's start bits when there are
+    /// any, which is safe with every thread running; otherwise, with one
+    /// thread, by walking.
     static void RescanMarked()
     {
         long chunk = _snapshots ? HeapChunks.SnapshotChunk(0) : HeapChunks.Newest();
@@ -1857,10 +2188,9 @@ static class Gc
                 {
                     long flags = Sys.Peek(block);
 
-                    if ((flags & FlagMark) != 0 && (flags & FlagScan) == 0)
+                    if ((flags & FlagMark) != 0 && (flags & FlagScan) == 0 && SetFlag(block, FlagScan))
                     {
-                        long extent = flags & SizeMask;
-                        Stamp(block, extent, (flags & FlagMask) | FlagScan);
+                        long extent = Sys.Peek(block) & SizeMask;
                         ScanRange(block + HeaderBytes, block + extent - FooterBytes);
                         Drain();
                     }
@@ -1886,9 +2216,8 @@ static class Gc
                 }
                 else
                 {
-                    if ((word & FlagMark) != 0 && (word & FlagScan) == 0)
+                    if ((word & FlagMark) != 0 && (word & FlagScan) == 0 && SetFlag(block, FlagScan))
                     {
-                        Stamp(block, size, (word & FlagMask) | FlagScan);
                         ScanRange(block + HeaderBytes, block + size - FooterBytes);
                         Drain();
                     }
@@ -1899,74 +2228,108 @@ static class Gc
         }
     }
 
-    /// Takes the scanned flag off every marked block, so that the rescan
-    /// reads them all again. World stopped.
-    static void UnscanMarked()
+    // ---- what the other threads do for a collection ------------------------------
+
+    /// Where the objects in a thread's own buffer start, written into the
+    /// snapshot (the STAMP round, or its buffer being retired while stamping
+    /// is open). By the thread itself, or by the collector while it is
+    /// blocked: nobody else is bumping in the buffer meanwhile.
+    public static void StampBuffer(long block)
     {
-        long chunk = HeapChunks.Newest();
+        long at = Sys.Peek(block + Tls.AllocBase);
+        long upto = Sys.Peek(block + Tls.AllocPtr);
 
-        while (chunk != 0)
+        if (at == 0 || upto <= at)
         {
-            long block = HeapChunks.First(chunk);
-            long end = HeapChunks.End(chunk);
+            return;
+        }
 
-            while (block < end)
+        long chunk = HeapChunks.OfSnapshot(at);
+
+        // A buffer in a chunk made since the snapshot holds only newcomers.
+        if (chunk == 0 || HeapChunks.StartsCycle(chunk) != _cycle)
+        {
+            return;
+        }
+
+        while (at < upto)
+        {
+            long word = Sys.Peek(at);
+            long size = word & SizeMask;
+
+            if (size < Smallest || at + size > upto)
             {
-                long word = Sys.Peek(block);
-                long size = word & SizeMask;
-
-                if (size < Smallest || block + size > end)
-                {
-                    block = end;
-                }
-                else
-                {
-                    if ((word & FlagMark) != 0 && (word & FlagScan) != 0)
-                    {
-                        Stamp(block, size, (word & FlagMask) & ~FlagScan);
-                    }
-                    block = block + size;
-                }
+                return;
             }
-            chunk = HeapChunks.Next(chunk);
+
+            if ((word & FlagFree) == 0)
+            {
+                HeapChunks.SetStartShared(chunk, at);
+            }
+
+            at = at + size;
         }
     }
 
-    /// What was allocated while the mark ran is kept without being marked,
-    /// and so was never read. It is read now, world stopped: whatever it
-    /// refers to was reachable at the snapshot or is a newcomer itself if
-    /// every store was reported -- and if one was not, this is what finds
-    /// the object it hid.
-    static void ScanNewcomers()
+    /// The marks this collection left on the objects in a thread's buffer,
+    /// taken off. The sweep steps over a buffer in use -- it is not a chain of
+    /// blocks past its bump pointer -- and so never reaches the objects in it
+    /// to clear them, as it does every other block's; left marked and
+    /// scanned, the next collection would find them done already, never scan
+    /// them, and sweep what only they refer to. Below the bump pointer the
+    /// objects are whole and nobody but a collector writes their headers; the
+    /// heap lock is held, so the buffer is not retired meanwhile.
+    public static void UnmarkBuffer(long block)
     {
-        long chunk = HeapChunks.Newest();
+        long at = Sys.Peek(block + Tls.AllocBase);
+        long upto = Sys.Peek(block + Tls.AllocPtr);
 
-        while (chunk != 0)
+        if (at == 0)
         {
-            long block = HeapChunks.First(chunk);
-            long end = HeapChunks.End(chunk);
-            bool known = HeapChunks.StartsCycle(chunk) == _cycle;
-
-            while (block < end)
-            {
-                long word = Sys.Peek(block);
-                long size = word & SizeMask;
-
-                if (size < Smallest || block + size > end)
-                {
-                    block = end;
-                }
-                else
-                {
-                    if ((word & FlagFree) == 0 && !(known && HeapChunks.IsStart(chunk, block)))
-                    {
-                        ScanRange(block + HeaderBytes, block + size - FooterBytes);
-                    }
-                    block = block + size;
-                }
-            }
-            chunk = HeapChunks.Next(chunk);
+            return;
         }
+
+        while (at < upto)
+        {
+            long word = Sys.Peek(at);
+            long size = word & SizeMask;
+
+            if (size < Smallest || at + size > upto)
+            {
+                return;
+            }
+
+            if ((word & (FlagMark | FlagScan)) != 0)
+            {
+                Stamp(at, size, word & FlagMask & ~(FlagMark | FlagScan));
+            }
+
+            at = at + size;
+        }
+    }
+
+    /// A thread's stack, from `from` up to its base, marked from.
+    public static void ScanStack(long block, long from)
+    {
+        long to = Sys.Peek(block + Tls.StackBase);
+
+        if (from != 0 && to > from)
+        {
+            ScanRange(from, to);
+        }
+    }
+
+    /// A few queued blocks scanned by a thread that is allocating while a
+    /// mark is under way: the collection's cost shared by the threads that
+    /// cause it, and done sooner on a machine with processors to spare.
+    public static long Assist(long budget)
+    {
+        if (Runtime.Marking != 2 || _markAt == 0)
+        {
+            return 0;
+        }
+
+        return DrainSome(budget);
     }
 
     // ---- the barrier's ring ----------------------------------------------
@@ -2013,6 +2376,13 @@ static class Gc
     /// the reference about to be overwritten, which the snapshot may reach
     /// only through here, and the one going in, which costs a word and
     /// covers a store somebody made without a barrier.
+    ///
+    /// TWO WAYS. While the threads are still writing down where their own
+    /// buffers' objects start (Marking 1) a pointer cannot yet be resolved,
+    /// so the two words are logged in the ring. Afterwards (Marking 2) they
+    /// are marked on the spot: that is what lets a collection end without
+    /// stopping anybody, because a mark already made is not made again, and
+    /// once everything reachable is marked the barrier finds nothing new.
     public static void Barrier(long slot, long value)
     {
         long tb = Sys.ThreadBlock();
@@ -2020,14 +2390,29 @@ static class Gc
         Sys.Poke(tb + Tls.InAlloc, 1);
         long old = Sys.Peek(slot);
 
-        if (old != 0)
+        if (Runtime.Marking == 2)
         {
-            Report(old);
-        }
+            if (old != 0)
+            {
+                MarkAt(old);
+            }
 
-        if (value != 0 && value != old)
+            if (value != 0 && value != old)
+            {
+                MarkAt(value);
+            }
+        }
+        else
         {
-            Report(value);
+            if (old != 0)
+            {
+                Report(old);
+            }
+
+            if (value != 0 && value != old)
+            {
+                Report(value);
+            }
         }
 
         Sys.Poke(tb + Tls.InAlloc, was);
@@ -2103,10 +2488,15 @@ static class Gc
         return Sys.Peek(ctl + GcLock.BarrierLost) != 0;
     }
 
-    // Build only while the world is stopped and all allocation buffers have
-    // been retired. Marking changes flags, not block boundaries. The anchors
-    // are disabled before sweep can merge blocks, and rebuilt next time.
-    static void BuildBlockAnchors()
+    // Built with the heap lock held. With one thread its buffer has been
+    // retired and every chunk walks; with several (`stepping`), the buffers
+    // other threads are bumping in are not walkable, and are stepped over
+    // whole -- GcThreads.CaptureBuffers wrote them down, sorted, a moment
+    // before, and none can be replaced while the lock is held. Their objects
+    // are written in by their owners (the STAMP round). Marking changes flags,
+    // not block boundaries. The anchors are disabled before sweep can merge
+    // blocks, and rebuilt next time.
+    static void BuildBlockAnchors(bool stepping)
     {
         HeapChunks.SetBlockAnchorsActive(false);
         bool every = HeapChunks.SnapshotIndex();
@@ -2123,8 +2513,19 @@ static class Gc
                 long block = HeapChunks.First(chunk);
                 long end = HeapChunks.End(chunk);
                 long page = 0;
+                long step = stepping ? GcThreads.BufferAtOrAbove(block) : GcThreads.BufferCount();
                 while (block < end)
                 {
+                    if (stepping)
+                    {
+                        while (step < GcThreads.BufferCount() && GcThreads.BufferBase(step) < block) step = step + 1;
+                        if (step < GcThreads.BufferCount() && GcThreads.BufferBase(step) == block)
+                        {
+                            block = GcThreads.BufferLimit(step);
+                            step = step + 1;
+                            continue;
+                        }
+                    }
                     long header = Sys.Peek(block);
                     long size = header & SizeMask;
                     if (size < Smallest || block + size > end
@@ -2156,6 +2557,13 @@ static class Gc
     {
         long block = HeapChunks.First(chunk);
         long end = HeapChunks.End(chunk);
+
+        // A thread is bumping in it.
+        long step = GcThreads.BufferAtOrAbove(block);
+        if (step < GcThreads.BufferCount() && GcThreads.BufferBase(step) < end)
+        {
+            return true;
+        }
 
         while (block < end)
         {
@@ -2259,9 +2667,27 @@ static class Gc
             long end = chunk == _sweepCurrent ? _sweepCurrentEnd : HeapChunks.End(chunk);
             long deadStart = 0;
             long deadSize = 0;
+            long step = GcThreads.BufferAtOrAbove(block);
 
             while (block < end)
             {
+                // A BUFFER A THREAD IS BUMPING IN (captured at BeginSweep):
+                // not a chain of blocks, and all of it kept this time.
+                while (step < GcThreads.BufferCount() && GcThreads.BufferBase(step) < block) step = step + 1;
+                if (step < GcThreads.BufferCount() && GcThreads.BufferBase(step) == block)
+                {
+                    if (deadSize != 0)
+                    {
+                        Stamp(deadStart, deadSize, FlagFree);
+                        Link(deadStart);
+                        deadSize = Zero;
+                    }
+                    liveBytes = liveBytes + (GcThreads.BufferLimit(step) - block);
+                    block = GcThreads.BufferLimit(step);
+                    step = step + 1;
+                    continue;
+                }
+
                 long word = Sys.Peek(block);
                 long size = word & SizeMask;
                 SweepVisits = SweepVisits + 1;
@@ -2402,6 +2828,25 @@ static class HeapChunks
         long bit = (block - chunk) / 8;
         long at = starts + 4 + (bit / 32) * 4;
         Sys.Poke(at, Sys.Peek(at) | (1L << (int)(bit & 31)));
+    }
+
+    /// SetStart when other threads are writing starts into the same table
+    /// at the same time -- each its own buffer, but buffers share words of
+    /// the table where they meet.
+    public static void SetStartShared(long chunk, long block)
+    {
+        long starts = Starts(chunk);
+        if (starts == 0) return;
+        long bit = (block - chunk) / 8;
+        long at = starts + 4 + (bit / 32) * 4;
+        long mask = 1L << (int)(bit & 31);
+
+        while (true)
+        {
+            long word = Sys.Peek(at) & 0xFFFFFFFF;
+            if ((word & mask) != 0) return;
+            if ((Sys.Cas(at, word, (word | mask) & 0xFFFFFFFF) & 0xFFFFFFFF) == word) return;
+        }
     }
 
     public static bool IsStart(long chunk, long block)
@@ -2834,12 +3279,10 @@ static class GcRoots
     public static void ScanAll()
     {
         // This thread's stack, from where the collector is standing to the
-        // top the thread began at, and then every OTHER registered thread's,
-        // from the stack pointer it wrote down when it stopped. A thread that
-        // is running is not scanned, because a running thread has no stack a
-        // collector could believe -- which is why the world is stopped first.
+        // top the thread began at. Every OTHER thread's stack is marked from
+        // by that thread itself, or by the collector for it while it is
+        // blocked, in the SCAN round (GcThreads) -- never by stopping it.
         Gc.ScanRange(Sys.Stack(), Sys.EntryStack());
-        GcThreads.ScanStacks(Sys.ThreadBlock());
         Gc.ScanRange(Sys.DataStart(), Sys.DataEnd());
 
         long i = 0;
@@ -2993,6 +3436,24 @@ static class GcLock
     public const long BarrierTail = 16; // the barrier's ring: places claimed,
     public const long BarrierHead = 20; //   places taken,
     public const long BarrierLost = 24; //   and whether a report was dropped
+    // HANDSHAKES (GcThreads): what the collector is asking every thread to
+    // do, which round of asking this is, and how many have not done it yet.
+    public const long Epoch = 28;       // the round; a thread's Tls.Epoch says which it has done
+    public const long Request = 32;     // what the round asks: GcThreads.Stamp, Scan or Ack
+    public const long Pending = 36;     // threads that still owe this round
+    // THE GREY QUEUE (Gc.PushGrey): blocks marked and not yet scanned, many
+    // pushers and many takers, nothing held.
+    public const long GreyTail = 40;    // places claimed
+    public const long GreyHead = 44;    // places taken
+    public const long Pushes = 48;      // blocks ever marked: termination looks for no change
+    public const long Active = 52;      // threads scanning a block they took off the queue
+    public const long Overflow = 56;    // a push found the queue full: the rescan finds it
+    public const long Abort = 60;       // this cycle is being given up (a lost barrier report)
+    // What the collector sleeps on while it waits for a round: moved on by
+    // everything that could let the round finish -- an answer, a thread
+    // blocking, a thread leaving -- so that a wake sent before the collector
+    // went to sleep is never lost (the futex sleeps only while it is unmoved).
+    public const long Stirs = 64;
 
     static long _words;
 
@@ -3086,9 +3547,6 @@ static class GcThreads
     static long _count;
     static long _first;         // the one thread, before there is a table
 
-    /// A thread has stopped and its stack can be read.
-    public const long Stopped = 1;
-
     public static long Count()
     {
         return _count;
@@ -3109,12 +3567,18 @@ static class GcThreads
     /// Adds a thread. The first one is only written down, because a program
     /// with one thread needs no table and must not ask for memory it will
     /// never read (a bare-metal program has no heap at all until it says so).
+    ///
+    /// A thread added while a collection is asking its rounds owes none of
+    /// them: its stack began after every snapshot the collection took, and
+    /// what it was handed came from a thread that does owe them.
     public static void Register(long block)
     {
         if (block == 0)
         {
             return;
         }
+
+        Sys.Poke(block + Tls.Epoch, Sys.Peek(GcLock.Words() + GcLock.Epoch));
 
         // The FIRST thread is only written down, and takes no lock: a program
         // with one thread must not be made to ask for memory it will never
@@ -3136,6 +3600,7 @@ static class GcThreads
             Add(_first);
             _first = 0;
         }
+        Sys.Poke(block + Tls.Epoch, Sys.Peek(GcLock.Words() + GcLock.Epoch));
         Add(block);
         GcLock.Exit();
     }
@@ -3150,7 +3615,11 @@ static class GcThreads
         }
     }
 
-    /// Takes a thread out: its stack is about to stop being a stack.
+    /// Takes a thread out: its stack is about to stop being a stack. A round
+    /// it still owes is answered here -- its buffer's objects are written down
+    /// as it is retired, and its stack no longer matters -- so the collector
+    /// does not wait for a thread that is gone. A thread being answered for
+    /// by the collector at this moment (Busy) is waited out first.
     public static void Deregister(long block)
     {
         if (_blocks == 0)
@@ -3162,8 +3631,21 @@ static class GcThreads
             return;
         }
 
+        while (true)
+        {
+            long state = Sys.Peek(block + Tls.State);
+
+            if (state != Busy && (Sys.Cas(block + Tls.State, state, Gone) & 0xFFFFFFFF) == state)
+            {
+                break;
+            }
+
+            Sys.Pause();
+        }
+
         GcLock.Enter();
         Gc.Retire(block);
+        Settle(block);
 
         long i = 0;
 
@@ -3184,23 +3666,265 @@ static class GcThreads
         GcLock.Exit();
     }
 
-    // ---- stopping ------------------------------------------------------------
+    // ---- handshakes ----------------------------------------------------------
+    //
+    // THE COLLECTOR NEVER STOPS A THREAD. It asks, in rounds: it names what
+    // the round wants (GcLock.Request), counts the threads that owe it
+    // (Pending), and moves the round number on (Epoch). A running thread
+    // answers at its next safepoint -- its next slow allocation, the end of a
+    // wait, a spin on the heap lock, or on a kernel an interrupt the collector
+    // sends for the purpose -- does the round's work on its own buffer or its
+    // own stack, and carries on. A thread that is blocked cannot answer, so
+    // the collector answers for it: it takes the thread's state from Stopped
+    // to Busy, does the work on the stack the thread published, and gives the
+    // state back; a thread whose wait ends meanwhile waits for Busy to pass
+    // before it runs (EndBlocking).
+    //
+    // To be answered soon, a running thread's buffer limit is taken away as
+    // the round is asked, so its very next allocation comes to the slow path.
 
-    /// Stops here until the collection that is running has finished.
+    /// What a round asks.
+    public const long Stamp = 1;    // write down where your buffer's objects start
+    public const long Scan = 2;     // mark from your stack
+    public const long Ack = 3;      // pass a safepoint: be out of any barrier
+
+    /// Thread states (Tls.State).
+    public const long Running = 0;
+    public const long Stopped = 1;
+    public const long Busy = 2;     // stopped, and the collector is answering for it
+    public const long Gone = 3;     // deregistering
+
+    public static long Answered, AnsweredFor;
+
+    /// Asks every other thread for `request` and returns when all have
+    /// answered. Called by the collector, without the heap lock. While it
+    /// waits it answers for the blocked, marks what is queued, prompts the
+    /// ones that have not answered, and waits a turn.
+    public static void Round(long request)
+    {
+        long ctl = GcLock.Words();
+        long self = Sys.ThreadBlock();
+
+        GcLock.Enter();
+        long epoch = (Sys.Peek(ctl + GcLock.Epoch) + 1) & 0x7FFFFFFF;
+        long owed = 0;
+        long i = 0;
+
+        while (i < _count)
+        {
+            long block = At(i);
+
+            if (block != self && Sys.Peek(block + Tls.State) == Gone)
+            {
+                // Leaving, and waiting for this lock to do it: not counted, so
+                // marked square with the round, or its Settle on the way out
+                // would take a count some other thread still owes.
+                //
+                // ITS BUFFER IS STAMPED HERE, for it. It bumps nothing more,
+                // and it cannot retire the buffer until this lock is let go
+                // -- perhaps after stamping has closed, when Retire no longer
+                // writes the objects in. Unstamped they would be newcomers:
+                // kept, never traced, and what only they refer to swept.
+                if (request == Stamp)
+                {
+                    Gc.StampBuffer(block);
+                }
+                Sys.Poke(block + Tls.Epoch, epoch);
+            }
+            else if (block != self)
+            {
+                owed = owed + 1;
+
+                // The buffer's limit taken away: the next allocation on that
+                // thread comes to the slow path, which answers.
+                long limit = Sys.Peek(block + Tls.AllocLimit);
+                if (limit != 0)
+                {
+                    Sys.Poke(block + Tls.AllocSaved, limit);
+                    Sys.AtomicSwap(block + Tls.AllocLimit, 0);
+                }
+            }
+            i = i + 1;
+        }
+
+        Sys.AtomicSwap(ctl + GcLock.Request, request);
+        Sys.AtomicSwap(ctl + GcLock.Pending, owed);
+        // Last: a thread that sees the new round sees what it asks and how
+        // many owe it.
+        Sys.AtomicSwap(ctl + GcLock.Epoch, epoch);
+        Sys.Poke(self + Tls.Epoch, epoch);
+        GcLock.Exit();
+        Gc.HandshakeRounds = Gc.HandshakeRounds + 1;
+
+        long turns = 0;
+
+        while (true)
+        {
+            // Read BEFORE looking for blocked threads: one that blocks after
+            // the look moves it, and the sleep below does not happen.
+            long stirs = Sys.Peek(ctl + GcLock.Stirs);
+            long pending = Sys.Peek(ctl + GcLock.Pending);
+
+            if (pending <= 0)
+            {
+                return;
+            }
+
+            AnswerForStopped(epoch, request);
+
+            if (Sys.Peek(ctl + GcLock.Pending) <= 0)
+            {
+                return;
+            }
+
+            if (request != Stamp)
+            {
+                Gc.Assist(64);
+            }
+
+            if ((turns & 0xF) == 0)
+            {
+                Platform.PromptStop();
+            }
+
+            turns = turns + 1;
+            Platform.Wait(ctl + GcLock.Stirs, stirs);
+            Sys.Pause();
+        }
+    }
+
+    /// The round, done for every thread that owes it and is blocked. The
+    /// heap lock is held for the walk of the table, which a thread starting
+    /// or ending may otherwise be changing.
+    static void AnswerForStopped(long epoch, long request)
+    {
+        long ctl = GcLock.Words();
+        long self = Sys.ThreadBlock();
+
+        GcLock.Enter();
+        long i = 0;
+
+        while (i < _count)
+        {
+            long block = At(i);
+
+            if (block != self && Sys.Peek(block + Tls.Epoch) != epoch
+                && (Sys.Cas(block + Tls.State, Stopped, Busy) & 0xFFFFFFFF) == Stopped)
+            {
+                if (Sys.Peek(block + Tls.Epoch) != epoch)
+                {
+                    // Blocked: its stack from where it stopped, and the
+                    // registers it stopped with (Tls.Spill).
+                    if (request == Scan)
+                    {
+                        Gc.ScanRange(block + Tls.Spill, block + Tls.Spill + Sys.Peek(block + Tls.SpillCount) * 4);
+                    }
+                    Work(block, request, Sys.Peek(block + Tls.StackLimit));
+                    Sys.Poke(block + Tls.Epoch, epoch);
+                    Sys.AtomicAdd(ctl + GcLock.Pending, -1);
+                    AnsweredFor = AnsweredFor + 1;
+                }
+
+                Sys.AtomicSwap(block + Tls.State, Stopped);
+                Platform.Wake(block + Tls.State, 1);
+            }
+            i = i + 1;
+        }
+
+        GcLock.Exit();
+    }
+
+    /// What a round asks, done on `block`'s behalf with its stack from `from`.
+    static void Work(long block, long request, long from)
+    {
+        if (request == Stamp)
+        {
+            Gc.StampBuffer(block);
+        }
+        else if (request == Scan)
+        {
+            Gc.ScanStack(block, from);
+        }
+    }
+
+    /// Whether `block` owes the round that is open.
+    public static bool Owes(long block)
+    {
+        long at = GcLock.Words();
+
+        return block != 0 && Sys.Peek(at + GcLock.Pending) > 0
+            && Sys.Peek(block + Tls.Epoch) != Sys.Peek(at + GcLock.Epoch)
+            && !GcLock.IsCollector(block);
+    }
+
+    /// This thread's answer to the open round, if it owes one, with its stack
+    /// from `stack` up -- every register already below `stack` (a safepoint's
+    /// spill, or a kernel's trap frame).
+    public static void Answer(long stack)
+    {
+        long block = Sys.ThreadBlock();
+
+        // Not from inside the allocator (InAlloc), and not while holding the
+        // heap lock: an interrupt that lands in the middle of a buffer being
+        // replaced finds its base new and its pointer old, and would write
+        // down objects that are not there. The thread answers at its next
+        // safepoint instead; the collector asks again.
+        if (!Owes(block) || Sys.Peek(block + Tls.InAlloc) != 0 || GcLock.HeldByMe())
+        {
+            return;
+        }
+
+        long ctl = GcLock.Words();
+        long epoch = Sys.Peek(ctl + GcLock.Epoch);
+        long request = Sys.Peek(ctl + GcLock.Request);
+
+        Work(block, request, stack);
+        Settle(block);
+        Answered = Answered + 1;
+        Sys.Poke(block + Tls.HandshakeArmed, 0);
+    }
+
+    /// `block` is square with the open round, and the collector is told.
+    static void Settle(long block)
+    {
+        long ctl = GcLock.Words();
+        long epoch = Sys.Peek(ctl + GcLock.Epoch);
+
+        if (Sys.Peek(ctl + GcLock.Pending) <= 0 || Sys.Peek(block + Tls.Epoch) == epoch
+            || GcLock.IsCollector(block))
+        {
+            return;
+        }
+
+        Sys.Poke(block + Tls.Epoch, epoch);
+        Sys.AtomicAdd(ctl + GcLock.Pending, -1);
+        Stir();
+    }
+
+    /// The collector, if it is asleep waiting for a round, woken to look.
+    static void Stir()
+    {
+        long ctl = GcLock.Words();
+        Sys.AtomicAdd(ctl + GcLock.Stirs, 1);
+        Platform.Wake(ctl + GcLock.Stirs, 1);
+    }
+
+    /// A safepoint: the open round answered, if this thread owes one. Never
+    /// a wait.
     public static void Park()
     {
-        Platform.SafePoint(0);
+        Platform.SafePoint(Running);
     }
 
     /// This thread is about to wait on something that only another thread can
     /// answer: it counts as stopped, and its stack is read where it stands,
-    /// until EndBlocking. Without this a collector would wait for a thread
-    /// that is asleep in the kernel and will not allocate until woken.
+    /// until EndBlocking. The collector, waiting for it to answer a round,
+    /// is told, so that it answers for it.
     public static void BeginBlocking()
     {
         long self = Sys.ThreadBlock();
 
-        if (GcLock.IsCollector(self) || Sys.Peek(self + Tls.InAlloc) != 0)
+        if (GcLock.IsCollector(self) || Sys.Peek(self + Tls.InAlloc) != 0 || GcLock.HeldByMe())
         {
             return;
         }
@@ -3208,34 +3932,83 @@ static class GcThreads
         Platform.SafePoint(Stopped);
     }
 
-    // NOT FROM INSIDE THE ALLOCATOR OR THE BARRIER (Tls.InAlloc). On a
-    // kernel an interrupt lands anywhere, its handler may wait for a lock,
-    // and a wait is a blocking region -- on the thread block of whatever it
-    // interrupted. If that was the few instructions between an allocation's
-    // limit check and its bump, or between a barrier's claim and its store,
-    // counting the thread as stopped lets a collection retire the buffer it
-    // is about to bump in, or read a ring with a report still missing. So
-    // there the wait is made as a running thread: the collector asks again,
-    // and the handler is out in microseconds, since what it waits for is
-    // held by code that neither allocates nor can be stopped.
+    // NOT FROM INSIDE THE ALLOCATOR OR THE BARRIER (Tls.InAlloc), NOR WITH
+    // THE HEAP LOCK HELD. On a kernel an interrupt lands anywhere, its
+    // handler may wait for a lock, and a wait is a blocking region -- on the
+    // thread block of whatever it interrupted. If that was the few
+    // instructions between an allocation's limit check and its bump, a
+    // barrier's claim and its store, or a buffer half replaced under the heap
+    // lock, counting the thread as stopped would let the collector answer for
+    // it with a buffer half bumped or half replaced, or read a ring with a
+    // report still missing. So there the wait is made as a running thread
+    // (BeginBlocking tests the same, and the two always agree: the lock and
+    // the allocator are the interrupted code's, held across the wait).
     public static void EndBlocking()
     {
         long block = Sys.ThreadBlock();
 
-        if (GcLock.IsCollector(block) || Sys.Peek(block + Tls.InAlloc) != 0)
+        if (GcLock.IsCollector(block) || Sys.Peek(block + Tls.InAlloc) != 0 || GcLock.HeldByMe())
         {
             return;
         }
 
-        Sys.AtomicSwap(block + Tls.State, 0);
-
-        // Read AFTER saying this thread runs again: a collection that began in
-        // between has not seen the store, and would otherwise sweep while this
-        // thread allocated.
-        if (GcLock.IsCollecting())
+        // Back to running -- unless the collector is answering for this
+        // thread at this moment, reading its stack: then it waits the
+        // moment out, since what it would do next is change that stack.
+        while (true)
         {
-            Park();
+            long state = Sys.Peek(block + Tls.State);
+
+            if (state == Running || state == Gone)
+            {
+                break;
+            }
+
+            if (state == Stopped && (Sys.Cas(block + Tls.State, Stopped, Running) & 0xFFFFFFFF) == Stopped)
+            {
+                break;
+            }
+
+            Platform.Wait(block + Tls.State, Busy);
+            Sys.Pause();
         }
+
+        if (Owes(block))
+        {
+            Platform.SafePoint(Running);
+        }
+    }
+
+    /// What Platform.SafePoint calls first when the thread is about to count
+    /// as stopped: the frame it pushed every callee-saved register into,
+    /// [from, to), copied into the thread block (Tls.Spill). Those registers
+    /// are pushed at the frame's bottom, under its locals, so a frame larger
+    /// than the room is copied from the bottom. The frame is gone once
+    /// SafePoint returns and the wait begins; the copy is what the collector
+    /// reads instead, and it stays true for the whole wait, because a
+    /// register a caller left a value in is either pushed again by some
+    /// frame still on the stack or not touched at all until the wait ends.
+    public static void Spill(long mode, long from, long to)
+    {
+        if (mode == Running)
+        {
+            return;
+        }
+
+        long block = Sys.ThreadBlock();
+        long words = to > from ? (to - from) / 4 : 0;
+
+        if (words > Tls.SpillMax)
+        {
+            words = Tls.SpillMax;
+        }
+
+        for (long i = 0; i < words; i++)
+        {
+            Sys.Poke(block + Tls.Spill + i * 4, Sys.Peek(from + i * 4));
+        }
+
+        Sys.Poke(block + Tls.SpillCount, words);
     }
 
     /// What Platform.SafePoint calls once every callee-saved register is on
@@ -3245,138 +4018,126 @@ static class GcThreads
     {
         long block = Sys.ThreadBlock();
 
-        // Where this thread's live stack begins. Everything above it, up to
-        // the top it started from, is what the collector reads.
+        if (mode == Running)
+        {
+            Answer(Sys.Stack());
+            return;
+        }
+
+        // Stopping: where this thread's live stack begins. Everything above
+        // it, up to the top it started from, is what the collector reads.
         Sys.Poke(block + Tls.StackLimit, Sys.Stack());
         Sys.AtomicSwap(block + Tls.State, Stopped);
 
-        if (mode != 0)
+        if (Owes(block))
         {
-            return;
-        }
-
-        long at = GcLock.Words() + GcLock.Collecting;
-
-        while (Sys.Peek(at) != 0)
-        {
-            Platform.Wait(at, 1);
-        }
-        Sys.AtomicSwap(block + Tls.State, 0);
-    }
-
-    /// Brings every other thread to a stop. The heap lock must be held.
-    public static void StopWorld()
-    {
-        long ctl = GcLock.Words();
-        long self = Sys.ThreadBlock();
-
-        Sys.AtomicSwap(ctl + GcLock.Collector, self);
-        Sys.AtomicSwap(ctl + GcLock.Collecting, 1);
-
-        if (_blocks == 0)
-        {
-            return;     // one thread: it is the one asking
-        }
-
-        // Taking a thread's buffer away is what stops it: with no room left
-        // in it, its next allocation must come to the slow path, and the slow
-        // path parks. The limit is put aside first and not simply dropped --
-        // it is the end of a stretch of memory that is not yet a block, and
-        // Gc.Retire needs it to make one.
-        long i = 0;
-
-        while (i < _count)
-        {
-            if (At(i) != self)
-            {
-                Sys.Poke(At(i) + Tls.AllocSaved, Sys.Peek(At(i) + Tls.AllocLimit));
-                Sys.AtomicSwap(At(i) + Tls.AllocLimit, 0);
-            }
-            i = i + 1;
-        }
-
-        // A thread that is neither allocating nor blocking never notices
-        // its buffer is gone: the platform is asked to prompt it -- on a
-        // kernel, an interrupt to every processor still running -- and
-        // asked again while any is still running, since one prompted in
-        // the middle of an allocation lets that one finish first.
-        long spins = 0;
-
-        while (Running(self) > 0)
-        {
-            if ((spins & 0xF) == 0)
-            {
-                Platform.PromptStop();
-            }
-            spins = spins + 1;
-            Sys.Pause();
-        }
-
-        // Stopped threads cannot retire their own buffers -- they are not
-        // running -- and the tails have to become blocks before anything
-        // walks a chunk. The lock is held here, so it can be done for them.
-        i = 0;
-
-        while (i < _count)
-        {
-            if (At(i) != self)
-            {
-                Gc.Retire(At(i));
-            }
-            i = i + 1;
+            // The collector is waiting for this thread; it may be asleep
+            // waiting. Now it can answer for it.
+            Stir();
         }
     }
 
-    static long Running(long self)
-    {
-        long running = 0;
-        long i = 0;
+    // ---- the buffers in use, for the walks to step over ------------------------
 
-        while (i < _count)
+    const long BufferMax = Max;
+    static long _buffers;           // BufferMax pairs: base, limit; sorted by base
+    static long _bufferCount;
+
+    /// Every registered thread's allocation buffer as it stands, sorted by
+    /// where it begins. The heap lock is held, so none is being replaced.
+    public static void CaptureBuffers()
+    {
+        _bufferCount = 0;
+
+        if (_buffers == 0)
         {
-            if (At(i) != self && Sys.Peek(At(i) + Tls.State) == 0)
+            _buffers = Platform.Map(BufferMax * 8);
+
+            if (_buffers == 0)
             {
-                running = running + 1;
+                return;
             }
-            i = i + 1;
-        }
-        return running;
-    }
-
-    public static void StartWorld()
-    {
-        long at = GcLock.Words() + GcLock.Collecting;
-
-        Sys.AtomicSwap(at, 0);
-        Sys.AtomicSwap(GcLock.Words() + GcLock.Collector, 0);
-        Platform.Wake(at, 0x7FFFFFFF);
-    }
-
-    /// Hands every stopped thread's stack to the collector.
-    public static void ScanStacks(long self)
-    {
-        if (_blocks == 0)
-        {
-            return;
         }
 
         long i = 0;
 
-        while (i < _count)
+        while (i < _count || (i == 0 && _blocks == 0 && _first != 0))
         {
-            long block = At(i);
+            long block = _blocks == 0 ? _first : At(i);
+            long from = Sys.Peek(block + Tls.AllocBase);
+            long limit = Sys.Peek(block + Tls.AllocLimit);
 
-            if (block != self)
+            if (limit == 0)
             {
-                long from = Sys.Peek(block + Tls.StackLimit);
-                long to = Sys.Peek(block + Tls.StackBase);
+                limit = Sys.Peek(block + Tls.AllocSaved);
+            }
 
-                if (from != 0 && to > from)
+            if (from != 0 && limit > from && _bufferCount < BufferMax)
+            {
+                // Insertion by base: a few entries, captured twice a collection.
+                long at = _bufferCount;
+
+                while (at > 0 && Sys.Peek(_buffers + (at - 1) * 8) > from)
                 {
-                    Gc.ScanRange(from, to);
+                    Sys.Poke(_buffers + at * 8, Sys.Peek(_buffers + (at - 1) * 8));
+                    Sys.Poke(_buffers + at * 8 + 4, Sys.Peek(_buffers + (at - 1) * 8 + 4));
+                    at = at - 1;
                 }
+
+                Sys.Poke(_buffers + at * 8, from);
+                Sys.Poke(_buffers + at * 8 + 4, limit);
+                _bufferCount = _bufferCount + 1;
+            }
+
+            if (_blocks == 0)
+            {
+                break;
             }
             i = i + 1;
         }
+    }
+
+    public static long BufferCount()
+    {
+        return _bufferCount;
+    }
+
+    /// Every registered thread's buffer unmarked (Gc.UnmarkBuffer), as the
+    /// sweep that steps over them begins. The heap lock is held.
+    public static void UnmarkBuffers()
+    {
+        if (_blocks == 0)
+        {
+            if (_first != 0) Gc.UnmarkBuffer(_first);
+            return;
+        }
+
+        for (long i = 0; i < _count; i++)
+        {
+            Gc.UnmarkBuffer(At(i));
+        }
+    }
+
+    public static long BufferBase(long i)
+    {
+        return Sys.Peek(_buffers + i * 8);
+    }
+
+    public static long BufferLimit(long i)
+    {
+        return Sys.Peek(_buffers + i * 8 + 4);
+    }
+
+    /// The first captured buffer beginning at or above `address`.
+    public static long BufferAtOrAbove(long address)
+    {
+        long i = 0;
+
+        while (i < _bufferCount && BufferBase(i) < address)
+        {
+            i = i + 1;
+        }
+
+        return i;
     }
 }

@@ -243,6 +243,7 @@ static class Platform
         long a = _spill + 1;
         long b = _spill + 2;
         long c = _spill + 3;
+        GcThreads.Spill(mode, Sys.Stack(), Sys.FramePointer());
         GcThreads.SafePoint(mode);
         _spill = a + b + c;
     }

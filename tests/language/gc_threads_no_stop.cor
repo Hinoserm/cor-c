@@ -1,0 +1,158 @@
+// test: collections run while every thread keeps working, and lose nothing
+// expect-exit: 0
+// expect-output:
+// no-stop collector ok
+//
+// Four threads and the main one build chains of nodes, publish them into
+// shared slots and take each other's away, as fast as they can, with a
+// payload in every node that says what it should hold. Every chain is walked
+// and every payload checked, again and again, while the collector runs
+// beside them asking for its handshakes: a node freed while still reachable
+// is reused, and the check that reads it fails.
+class Node
+{
+    public Node? Next;
+    public long Value;
+    public long Check;
+    public byte[] Payload;
+
+    public Node(long value, Node? next)
+    {
+        Value = value;
+        Next = next;
+        Payload = new byte[16 + (int)(value % 40)];
+        for (int i = 0; i < Payload.Length; i++) Payload[i] = (byte)(value + i);
+        Check = value * 31 + Payload.Length;
+    }
+
+    public bool Good()
+    {
+        if (Check != Value * 31 + Payload.Length) return false;
+        for (int i = 0; i < Payload.Length; i++)
+        {
+            if (Payload[i] != (byte)(Value + i)) return false;
+        }
+        return true;
+    }
+}
+
+class Gate { }
+
+class Worker
+{
+    public int Id;
+    public long Bad;
+    long _seed;
+
+    public Worker(int id) { Id = id; _seed = 12345 + id * 7919; }
+
+    long Next()
+    {
+        _seed = (_seed * 1103515245 + 12345) & 0x7FFFFFFF;
+        return _seed;
+    }
+
+    static long Walk(Node? n)
+    {
+        long bad = 0;
+        long count = 0;
+        while (n != null && count < 100000)
+        {
+            if (!n.Good()) bad = bad + 1;
+            n = n.Next;
+            count = count + 1;
+        }
+        return bad;
+    }
+
+    public void Run()
+    {
+        Node? mine = null;
+        for (int round = 0; round < Program.Rounds; round++)
+        {
+            // A chain of this thread's own.
+            for (int i = 0; i < 40; i++) mine = new Node(Next() % 100000, mine);
+
+            // Published into a shared slot, taking whatever was there -- a
+            // chain another thread built -- which is then walked and kept a
+            // while through this thread's stack alone.
+            int slot = (int)(Next() % Program.Shared.Length);
+            Node? taken = Program.Exchange(slot, mine);
+            Bad = Bad + Walk(taken);
+            Bad = Bad + Walk(mine);
+
+            // Every so often the chain is let go, and a new one begun.
+            if (Next() % 8 == 0) mine = null;
+            else mine = taken;
+
+            // A stretch with no allocation at all, so that answering the
+            // collector sometimes waits for a thread that is only computing.
+            if (Next() % 64 == 0)
+            {
+                long spin = 0;
+                for (int k = 0; k < 20000; k++) spin = spin + k * Id;
+                if (spin == -1) Bad = Bad + 1;
+            }
+        }
+        Bad = Bad + Walk(mine);
+    }
+}
+
+static class Program
+{
+    public static int Rounds = 3000;
+    public static Node?[] Shared = new Node?[64];
+    static Gate _lock = new Gate();
+
+    public static Node? Exchange(int slot, Node? chain)
+    {
+        lock (_lock)
+        {
+            Node? was = Shared[slot];
+            Shared[slot] = chain;
+            return was;
+        }
+    }
+
+    static int Main()
+    {
+        Worker[] workers = new Worker[4];
+        Thread[] threads = new Thread[4];
+        for (int i = 0; i < workers.Length; i++)
+        {
+            workers[i] = new Worker(i + 1);
+            threads[i] = new Thread(workers[i].Run);
+        }
+        for (int i = 0; i < threads.Length; i++) threads[i].Start();
+
+        Worker main = new Worker(0);
+        main.Run();
+
+        for (int i = 0; i < threads.Length; i++) threads[i].Join();
+
+        long bad = main.Bad;
+        for (int i = 0; i < workers.Length; i++) bad = bad + workers[i].Bad;
+        for (int i = 0; i < Shared.Length; i++)
+        {
+            Node? n = Shared[i];
+            while (n != null)
+            {
+                if (!n.Good()) bad = bad + 1;
+                n = n.Next;
+            }
+        }
+
+        if (bad != 0)
+        {
+            Console.WriteLine("corrupt nodes: " + bad);
+            return 1;
+        }
+        if (Gc.ConcurrentCycles == 0)
+        {
+            Console.WriteLine("no collection ran beside the threads (" + Gc.Collections + " collections)");
+            return 2;
+        }
+        Console.WriteLine("no-stop collector ok");
+        return 0;
+    }
+}

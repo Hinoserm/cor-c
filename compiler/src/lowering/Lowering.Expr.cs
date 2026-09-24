@@ -1007,7 +1007,13 @@ public sealed partial class Lowering
             // rather than in a local's register. Handing over the VALUE instead
             // left the closure with a field marked as a cell and a number in
             // it, and the lambda then read whatever that number addressed.
-            if (from is LocalSym { Boxed: true } cell && DeclOf(cell) is LocalDecl d)
+            // A VALUE TAKEN NOW: a method group's receiver, evaluated where
+            // the delegate is made (Binder.MethodGroupLambda).
+            if (from is ValueSym taken)
+            {
+                value = Eval(taken.Value);
+            }
+            else if (from is LocalSym { Boxed: true } cell && DeclOf(cell) is LocalDecl d)
             {
                 value = LocalReg(d);
             }
