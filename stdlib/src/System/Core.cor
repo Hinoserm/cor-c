@@ -3250,22 +3250,37 @@ static class Single {
 // after it -- so an encoding has nothing to convert and everything to name.
 // .NET's shape is kept because source says Encoding.UTF8.GetBytes(s).
 
-class UTF8Encoding {
-    public byte[] GetBytes(string s) {
+class UTF8Encoding : Encoding {
+    // Whether a file written in it starts with the byte-order mark (the
+    // preamble), and whether bad bytes throw: .NET's two options. A string
+    // here is its UTF-8 already, so decoding has nothing to reject.
+    private bool emitIdentifier;
+    private bool throwOnInvalid;
+
+    public UTF8Encoding() { }
+    public UTF8Encoding(bool encoderShouldEmitUTF8Identifier) { emitIdentifier = encoderShouldEmitUTF8Identifier; }
+    public UTF8Encoding(bool encoderShouldEmitUTF8Identifier, bool throwOnInvalidBytes) {
+        emitIdentifier = encoderShouldEmitUTF8Identifier;
+        throwOnInvalid = throwOnInvalidBytes;
+    }
+
+    public override byte[] GetPreamble() { return emitIdentifier ? new byte[] { 0xEF, 0xBB, 0xBF } : new byte[0]; }
+
+    public override byte[] GetBytes(string s) {
         byte[] made = new byte[s.Length];
 
         for (int i = 0; i < s.Length; i++) { made[i] = (byte)Sys.GetByte(s, i); }
         return made;
     }
 
-    public string GetString(byte[] bytes) {
+    public override string GetString(byte[] bytes) {
         string made = Sys.NewBytes(bytes.Length);
 
         for (int i = 0; i < bytes.Length; i++) { Sys.SetByte(made, i, bytes[i]); }
         return made;
     }
 
-    public string GetString(ReadOnlySpan<byte> bytes) {
+    public override string GetString(ReadOnlySpan<byte> bytes) {
         string made = Sys.NewBytes(bytes.Length);
 
         for (int i = 0; i < bytes.Length; i++) { Sys.SetByte(made, i, bytes[i]); }
@@ -3276,23 +3291,23 @@ class UTF8Encoding {
 
     // .NET's overload that reads PART of a block, which is how a name table is
     // read out of an image a name at a time.
-    public string GetString(byte[] bytes, int at, int count) {
+    public override string GetString(byte[] bytes, int at, int count) {
         string made = Sys.NewBytes(count);
 
         for (int i = 0; i < count; i++) { Sys.SetByte(made, i, bytes[at + i]); }
         return made;
     }
 
-    public int GetByteCount(string s) { return s.Length; }
+    public override int GetByteCount(string s) { return s.Length; }
 
     /// HOW MANY UTF-16 CHARS the bytes decode to, which is not how many bytes
     /// there are and not how many characters either: anything above the basic
     /// plane counts twice, because that is what a UTF-16 buffer has to hold.
-    public int GetCharCount(byte[] bytes) { return GetChars(bytes).Length; }
+    public override int GetCharCount(byte[] bytes) { return GetChars(bytes).Length; }
 
-    public char[] GetChars(byte[] bytes) { return GetChars(bytes, 0, bytes.Length); }
+    public override char[] GetChars(byte[] bytes) { return GetChars(bytes, 0, bytes.Length); }
 
-    public char[] GetChars(byte[] bytes, int index, int count) {
+    public override char[] GetChars(byte[] bytes, int index, int count) {
         string text = GetString(bytes, index, count);
         List<char> made = new List<char>();
         int at = 0;
@@ -3323,10 +3338,10 @@ class UTF8Encoding {
 // UTF-8 encoding above on a machine whose strings are bytes, and it is not a
 // detail -- a four-character section tag read as ASCII must be four characters
 // whatever the image holds, or a corrupt tag reads back as a valid one.
-class ASCIIEncoding {
+class ASCIIEncoding : Encoding {
     private const int Substitute = 63;              // '?'
 
-    public byte[] GetBytes(string s) {
+    public override byte[] GetBytes(string s) {
         byte[] made = new byte[s.Length];
 
         for (int i = 0; i < s.Length; i++) {
@@ -3337,11 +3352,11 @@ class ASCIIEncoding {
         return made;
     }
 
-    public string GetString(byte[] bytes) {
+    public override string GetString(byte[] bytes) {
         return GetString(bytes, 0, bytes.Length);
     }
 
-    public string GetString(byte[] bytes, int at, int count) {
+    public override string GetString(byte[] bytes, int at, int count) {
         string made = Sys.NewBytes(count);
 
         for (int i = 0; i < count; i++) {
@@ -3352,7 +3367,7 @@ class ASCIIEncoding {
         return made;
     }
 
-    public string GetString(ReadOnlySpan<byte> bytes) {
+    public override string GetString(ReadOnlySpan<byte> bytes) {
         string made = Sys.NewBytes(bytes.Length);
 
         for (int i = 0; i < bytes.Length; i++) {
@@ -3365,16 +3380,16 @@ class ASCIIEncoding {
 
     public byte[] GetBytes(ReadOnlySpan<byte> bytes) { return bytes.ToArray(); }
 
-    public int GetByteCount(string s) { return s.Length; }
+    public override int GetByteCount(string s) { return s.Length; }
 
     /// ONE BYTE IS ONE CHARACTER in ASCII, and anything above 127 is not ASCII
     /// at all: .NET's decoder replaces it with '?', which is the substitution
     /// this encoding has always used.
-    public int GetCharCount(byte[] bytes) { return bytes.Length; }
+    public override int GetCharCount(byte[] bytes) { return bytes.Length; }
 
-    public char[] GetChars(byte[] bytes) { return GetChars(bytes, 0, bytes.Length); }
+    public override char[] GetChars(byte[] bytes) { return GetChars(bytes, 0, bytes.Length); }
 
-    public char[] GetChars(byte[] bytes, int index, int count) {
+    public override char[] GetChars(byte[] bytes, int index, int count) {
         char[] made = new char[count];
 
         for (int i = 0; i < count; i++) {
@@ -3573,7 +3588,7 @@ struct Rune {
 ///
 /// The conversion is real work here, unlike UTF8Encoding's: a string on this
 /// machine is UTF-8, so GetBytes decodes and re-encodes rather than copying.
-class UnicodeEncoding {
+class UnicodeEncoding : Encoding {
     private bool big;
     private bool mark;
 
@@ -3589,7 +3604,7 @@ class UnicodeEncoding {
 
     /// U+FEFF, in this encoding's byte order, or nothing when the encoding was
     /// not asked to emit one. .NET's GetPreamble.
-    public byte[] GetPreamble() {
+    public override byte[] GetPreamble() {
         if (!mark) { return new byte[0]; }
 
         byte[] made = new byte[2];
@@ -3598,7 +3613,7 @@ class UnicodeEncoding {
         return made;
     }
 
-    public int GetByteCount(string s) {
+    public override int GetByteCount(string s) {
         int count = 0;
         int at = 0;
 
@@ -3614,7 +3629,7 @@ class UnicodeEncoding {
         return count;
     }
 
-    public byte[] GetBytes(string s) {
+    public override byte[] GetBytes(string s) {
         byte[] made = new byte[GetByteCount(s)];
         int written = 0;
         int at = 0;
@@ -3639,9 +3654,9 @@ class UnicodeEncoding {
         return made;
     }
 
-    public string GetString(byte[] bytes) { return GetString(bytes, 0, bytes.Length); }
+    public override string GetString(byte[] bytes) { return GetString(bytes, 0, bytes.Length); }
 
-    public string GetString(byte[] bytes, int index, int count) {
+    public override string GetString(byte[] bytes, int index, int count) {
         StringBuilder made = new StringBuilder();
         int at = index;
         int end = index + count;
@@ -3672,7 +3687,7 @@ class UnicodeEncoding {
         return made.ToString();
     }
 
-    public int GetCharCount(byte[] bytes) { return GetString(bytes).Length; }
+    public override int GetCharCount(byte[] bytes) { return GetString(bytes).Length; }
 
     private int Unit(byte[] bytes, int at) {
         int first = bytes[at] & 255;
@@ -3697,14 +3712,14 @@ class UnicodeEncoding {
 /// in it and plenty of things hold text in it, because indexing is then what
 /// indexing looks like -- the nth character is at the nth position, which is
 /// true in neither of the other two.
-class UTF32Encoding {
+class UTF32Encoding : Encoding {
     private bool big;
 
     public UTF32Encoding() { big = false; }
 
     public UTF32Encoding(bool bigEndian, bool byteOrderMark) { big = bigEndian; }
 
-    public int GetByteCount(string s) {
+    public override int GetByteCount(string s) {
         int count = 0;
         int at = 0;
 
@@ -3720,7 +3735,7 @@ class UTF32Encoding {
         return count;
     }
 
-    public byte[] GetBytes(string s) {
+    public override byte[] GetBytes(string s) {
         byte[] made = new byte[GetByteCount(s)];
         int written = 0;
         int at = 0;
@@ -3745,9 +3760,9 @@ class UTF32Encoding {
         return made;
     }
 
-    public string GetString(byte[] bytes) { return GetString(bytes, 0, bytes.Length); }
+    public override string GetString(byte[] bytes) { return GetString(bytes, 0, bytes.Length); }
 
-    public string GetString(byte[] bytes, int index, int count) {
+    public override string GetString(byte[] bytes, int index, int count) {
         StringBuilder made = new StringBuilder();
 
         for (int at = index; at + 3 < index + count; at = at + 4) {
@@ -3766,15 +3781,40 @@ class UTF32Encoding {
     }
 }
 
-static class Encoding {
-    public static UTF8Encoding UTF8 => new UTF8Encoding();
-    public static ASCIIEncoding ASCII => new ASCIIEncoding();
+/// .NET's Encoding: the abstract base every encoding derives from, and the
+/// static properties naming the common ones, typed Encoding as .NET types
+/// them. What a derived encoding must say is how text becomes bytes and bytes
+/// text; everything else is said once, here, in terms of those.
+abstract class Encoding {
+    public static Encoding UTF8 => new UTF8Encoding(true);
+    public static Encoding ASCII => new ASCIIEncoding();
 
     /// UTF-16, little end first, which is what .NET means by "Unicode" -- the
     /// name is a historical accident and the encoding is one of several.
-    public static UnicodeEncoding Unicode => new UnicodeEncoding();
-    public static UnicodeEncoding BigEndianUnicode => new UnicodeEncoding(true, true);
-    public static UTF32Encoding UTF32 => new UTF32Encoding();
+    public static Encoding Unicode => new UnicodeEncoding();
+    public static Encoding BigEndianUnicode => new UnicodeEncoding(true, true);
+    public static Encoding UTF32 => new UTF32Encoding();
+
+    public abstract byte[] GetBytes(string s);
+    public abstract int GetByteCount(string s);
+    public abstract string GetString(byte[] bytes, int index, int count);
+
+    public virtual string GetString(byte[] bytes) { return GetString(bytes, 0, bytes.Length); }
+    public virtual string GetString(ReadOnlySpan<byte> bytes) { byte[] copy = bytes.ToArray(); return GetString(copy, 0, copy.Length); }
+
+    /// The UTF-16 code units the bytes decode to: the text, then as UTF-16,
+    /// which is what a char array holds whatever the encoding was.
+    public virtual char[] GetChars(byte[] bytes) { return GetChars(bytes, 0, bytes.Length); }
+    public virtual char[] GetChars(byte[] bytes, int index, int count) {
+        string text = GetString(bytes, index, count);
+        byte[] utf8 = new byte[text.Length];
+        for (int i = 0; i < text.Length; i++) { utf8[i] = (byte)Sys.GetByte(text, i); }
+        return new UTF8Encoding().GetChars(utf8, 0, utf8.Length);
+    }
+    public virtual int GetCharCount(byte[] bytes) { return GetChars(bytes).Length; }
+
+    /// The byte-order mark a file in this encoding may begin with; none by default.
+    public virtual byte[] GetPreamble() { return new byte[0]; }
 }
 
 // ---- a view of part of an array --------------------------------------------

@@ -316,14 +316,23 @@ class BufferedStream : Stream
 class BinaryWriter : IDisposable
 {
     Stream _stream;
+    bool _leaveOpen;
 
-    public BinaryWriter(Stream output)
+    public BinaryWriter(Stream output) : this(output, new UTF8Encoding(), false) { }
+
+    public BinaryWriter(Stream output, Encoding encoding) : this(output, encoding, false) { }
+
+    /// With an encoding for its strings and chars -- UTF-8, or ASCII, which is
+    /// a part of it: a string here is its UTF-8 bytes, and those are what it
+    /// writes -- and whether Dispose leaves the stream open.
+    public BinaryWriter(Stream output, Encoding encoding, bool leaveOpen)
     {
-        if (output == null)
-        {
-            throw new ArgumentNullException("output");
-        }
+        if (output == null) throw new ArgumentNullException("output");
+        if (encoding == null) throw new ArgumentNullException("encoding");
+        if (!(encoding is UTF8Encoding) && !(encoding is ASCIIEncoding))
+            throw new NotSupportedException("BinaryWriter writes strings as UTF-8 here; " + encoding.GetType().Name + " is not supported");
         _stream = output;
+        _leaveOpen = leaveOpen;
     }
 
     public Stream BaseStream
@@ -436,7 +445,7 @@ class BinaryWriter : IDisposable
     public void Dispose()
     {
         _stream.Flush();
-        _stream.Dispose();
+        if (!_leaveOpen) _stream.Dispose();
     }
 
     void Fixed(long value, int width)
@@ -472,14 +481,22 @@ class BinaryWriter : IDisposable
 class BinaryReader : IDisposable
 {
     Stream _stream;
+    bool _leaveOpen;
 
-    public BinaryReader(Stream input)
+    public BinaryReader(Stream input) : this(input, new UTF8Encoding(), false) { }
+
+    public BinaryReader(Stream input, Encoding encoding) : this(input, encoding, false) { }
+
+    /// With an encoding for its strings and chars (UTF-8, or ASCII, a part of
+    /// it) and whether Dispose leaves the stream open.
+    public BinaryReader(Stream input, Encoding encoding, bool leaveOpen)
     {
-        if (input == null)
-        {
-            throw new ArgumentNullException("input");
-        }
+        if (input == null) throw new ArgumentNullException("input");
+        if (encoding == null) throw new ArgumentNullException("encoding");
+        if (!(encoding is UTF8Encoding) && !(encoding is ASCIIEncoding))
+            throw new NotSupportedException("BinaryReader reads strings as UTF-8 here; " + encoding.GetType().Name + " is not supported");
         _stream = input;
+        _leaveOpen = leaveOpen;
     }
 
     public Stream BaseStream
@@ -635,7 +652,7 @@ class BinaryReader : IDisposable
 
     public void Dispose()
     {
-        _stream.Dispose();
+        if (!_leaveOpen) _stream.Dispose();
     }
 
     // THE END OF THE STREAM IS AN EXCEPTION for every typed read, because a

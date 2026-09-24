@@ -2756,7 +2756,44 @@ public sealed class Parser
             throw Error("a tuple needs at least two elements");
         }
 
+        InferTupleNames(tuple);
         return tuple;
+    }
+
+    /// <summary>
+    /// C# 7.1's INFERRED TUPLE NAMES: an element written as a name or a
+    /// member access is named by it -- `(block, index)` has elements `block`
+    /// and `index`, `(b, b.N)` has `b` and `N` -- unless it was named
+    /// explicitly, the name would be inferred for two elements, or it is one
+    /// of ValueTuple's own members (Item1.., Rest, ToString, Equals,
+    /// GetHashCode, CompareTo, GetType), which are never inferred.
+    /// </summary>
+    private static void InferTupleNames(TupleExpr tuple)
+    {
+        string?[] inferred = new string?[tuple.Items.Count];
+        for (int i = 0; i < tuple.Items.Count; i++)
+        {
+            if (tuple.Names[i].Length != 0) continue;
+            string? name = tuple.Items[i] switch
+            {
+                NameExpr n when n.TypeArgs.Count == 0 => n.Name,
+                MemberExpr m => m.Name,
+                _ => null,
+            };
+            if (name is null || name is "Rest" or "ToString" or "Equals" or "GetHashCode" or "CompareTo" or "GetType"
+                || (name.StartsWith("Item", StringComparison.Ordinal) && name.Length > 4 && name[4..].All(char.IsAsciiDigit)))
+                continue;
+            inferred[i] = name;
+        }
+        for (int i = 0; i < inferred.Length; i++)
+        {
+            string? name = inferred[i];
+            if (name is null) continue;
+            bool taken = false;
+            for (int j = 0; j < tuple.Items.Count && !taken; j++)
+                if (j != i && (inferred[j] == name || tuple.Names[j] == name)) taken = true;
+            if (!taken) tuple.Names[i] = name;
+        }
     }
 
     /// <summary>

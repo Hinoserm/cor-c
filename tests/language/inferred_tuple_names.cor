@@ -1,0 +1,45 @@
+// test: inferred tuple names
+// expect-exit: 0
+// expect-output:
+// b3
+// 1
+// 7 x
+// 2 1
+// 5 5
+//
+// C# 7.1 infers a tuple element's name from a name or a member access
+// written there, unless it is named explicitly, would be inferred twice, or
+// is one of ValueTuple's own members.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+class Block { public int N; }
+
+static class Program
+{
+    static int Main()
+    {
+        int index = 3; string block = "b";
+        var pair = (block, index);
+        Console.WriteLine(pair.block + pair.index);
+
+        List<Block> blocks = new List<Block> { new Block { N = 1 }, new Block { N = 2 } };
+        Dictionary<Block, int> ids = blocks.Select((block, index) => (block, index)).ToDictionary(p => p.block, p => p.index);
+        Console.WriteLine(ids[blocks[1]]);
+
+        Block one = blocks[0];
+        var member = (one.N, name: "x");
+        member.N = 7;
+        Console.WriteLine(member.N + " " + member.name);
+
+        int a = 1, b = 2;
+        (a, b) = (b, a);
+        Console.WriteLine(a + " " + b);
+
+        var twice = (index, index);
+        Console.WriteLine((twice.Item1 + 2) + " " + (twice.Item2 + 2));
+        return 0;
+    }
+}

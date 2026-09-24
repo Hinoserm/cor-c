@@ -185,7 +185,7 @@ public static class Header
         {
             foreach (EnumMember m in t.EnumMembers)
             {
-                s.Append("    ").Append(m.Name);
+                s.Append("    ").Append(Lexer.Identifier(m.Name));
 
                 if (owner != null
                     && owner.EnumValues.TryGetValue(m.Name, out long value))
@@ -232,7 +232,7 @@ public static class Header
                 break;
 
             case PropertyDecl d:
-                s.Append("    ").Append(Modifiers(d.Mods)).Append(Spell(d.Type, made)).Append(' ').Append(d.Name);
+                s.Append("    ").Append(Modifiers(d.Mods)).Append(Spell(d.Type, made)).Append(' ').Append(Lexer.Identifier(d.Name));
 
                 // A property whose getter or setter has a BODY is represented
                 // by real `get_Name` / `set_Name` methods in the library.  A
@@ -264,7 +264,7 @@ public static class Header
                 break;
 
             case FieldDecl d:
-                s.Append("    ").Append(Modifiers(d.Mods)).Append(Spell(d.Type, made)).Append(' ').Append(d.Name);
+                s.Append("    ").Append(Modifiers(d.Mods)).Append(Spell(d.Type, made)).Append(' ').Append(Lexer.Identifier(d.Name));
 
                 // A CONST KEEPS ITS VALUE, because a const is not storage: every
                 // use of one is the number written out where the name was, so a
@@ -310,7 +310,7 @@ public static class Header
         // into an ordinary static method for every consuming compilation.
         string by = p.IsThis ? "this " : p.IsParams ? "params " : p.IsOut ? "out " : p.IsRef ? "ref " : "";
 
-        return by + Spell(p.Type, made) + " " + p.Name;
+        return by + Spell(p.Type, made) + " " + Lexer.Identifier(p.Name);
     }
 
     private static void TypeParams(StringBuilder s, List<TypeParam> ps)

@@ -45,6 +45,16 @@ public sealed class Lexer
         };
 
 
+    /// <summary>
+    /// Whether a name is a keyword, which source has to write as `@name` to
+    /// use it as an identifier: a name kept without its `@` is written back
+    /// with one (Header).
+    /// </summary>
+    public static bool IsKeyword(string name) => Keywords.ContainsKey(name);
+
+    /// <summary>A name as source writes it: `@base` for a parameter called base.</summary>
+    public static string Identifier(string name) => IsKeyword(name) ? "@" + name : name;
+
     private static readonly Dictionary<string, Tok> Keywords = new(StringComparer.Ordinal)
     {
         ["namespace"] = Tok.KwNamespace, ["using"] = Tok.KwUsing,
@@ -270,8 +280,13 @@ public sealed class Lexer
         // lexer needs to know the spelling existed.
         if (c == '@' && (char.IsLetter(Peek(1)) || Peek(1) == '_'))
         {
+            // `@base`: the name is `base`, and the token STARTS at the `@`,
+            // so that anything copying source by token position -- the
+            // declaration index's slices -- keeps the `@` that makes the name
+            // an identifier rather than the keyword.
             Advance();
-            return Word(line, col, _pos, verbatim: true);
+            Token named = Word(line, col, _pos, verbatim: true);
+            return new Token(named.Kind, named.Text, line, col, start);
         }
 
         return c switch

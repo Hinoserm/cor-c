@@ -1,0 +1,28 @@
+// test: encoding hierarchy
+// expect-exit: 0
+// expect-output:
+// héllo 42
+// abc 3 0 4
+//
+// Encoding is the abstract base of UTF8Encoding, ASCIIEncoding and the
+// others, with .NET's static properties typed Encoding; UTF8Encoding takes
+// its byte-order-mark option; BinaryReader and BinaryWriter take an encoding
+// and leaveOpen.
+
+using System;
+using System.IO;
+using System.Text;
+static class Program
+{
+    static int Main()
+    {
+        MemoryStream m = new MemoryStream();
+        using (BinaryWriter w = new BinaryWriter(m, new UTF8Encoding(false, true), leaveOpen: true)) { w.Write("héllo"); w.Write(42); }
+        m.Position = 0;
+        BinaryReader r = new BinaryReader(m, Encoding.UTF8);
+        Console.WriteLine(r.ReadString() + " " + r.ReadInt32());
+        Encoding e = Encoding.ASCII;
+        Console.WriteLine(e.GetString(e.GetBytes("abc")) + " " + Encoding.UTF8.GetPreamble().Length + " " + new UTF8Encoding().GetPreamble().Length + " " + Encoding.Unicode.GetByteCount("ab"));
+        return 0;
+    }
+}
