@@ -4093,6 +4093,41 @@ static class GcThreads
         }
     }
 
+    /// A thread counted as stopped that is now standing on another stack --
+    /// a kernel's trap entry, arriving from a program on the process's own
+    /// kernel stack -- says so: where the collector reads it from and the
+    /// top it reads up to, changed together. The block is claimed from the
+    /// collector (Stopped to Busy, as the collector claims it to answer for
+    /// the thread) for the two stores, so no scan ever pairs one stack's
+    /// limit with another's top and reads across whatever lies between
+    /// them. A running thread only moves its top.
+    public static void MoveStack(long limit, long top)
+    {
+        long block = Sys.ThreadBlock();
+
+        while (true)
+        {
+            long state = Sys.Peek(block + Tls.State);
+
+            if (state != Stopped && state != Busy)
+            {
+                Sys.Poke(block + Tls.StackBase, top);
+                return;
+            }
+
+            if (state == Stopped && (Sys.Cas(block + Tls.State, Stopped, Busy) & 0xFFFFFFFF) == Stopped)
+            {
+                Sys.Poke(block + Tls.StackLimit, limit);
+                Sys.Poke(block + Tls.StackBase, top);
+                Sys.AtomicSwap(block + Tls.State, Stopped);
+                return;
+            }
+
+            Platform.Wait(block + Tls.State, Busy);
+            Sys.Pause();
+        }
+    }
+
     /// What Platform.SafePoint calls first when the thread is about to count
     /// as stopped: the frame it pushed every callee-saved register into,
     /// [from, to), copied into the thread block (Tls.Spill). Those registers

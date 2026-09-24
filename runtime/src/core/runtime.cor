@@ -330,6 +330,13 @@ static class Runtime
         GcThreads.EndBlocking();
     }
 
+    /// A stopped thread's stack changed under it: its limit and top, set
+    /// together (GcThreads.MoveStack).
+    public static void MoveStack(long limit, long top)
+    {
+        GcThreads.MoveStack(limit, top);
+    }
+
     // ---- answering the collector from the outside -------------------------------
     //
     // A collector never stops a thread; it asks each, in handshake rounds, for
