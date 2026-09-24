@@ -20,6 +20,8 @@
 // ##.....###
 // ##.....###
 // family: CorsacTest
+// tables: head at True length 54, OS/2 present, zzzz 0
+// names: family CorsacTest, style Regular, symbol False
 // families in collection: 1
 // font from family: CorsacTest h=20 gw=10
 // font by name: CorsacTest h=20
@@ -121,6 +123,10 @@ class Program
         collection.AddMemoryFont(bytes);
 
         Line("family: " + collection.Families[0].Name);
+        int headLength, osLength;
+        int headAt = face.Table("head", out headLength), osAt = face.Table("OS/2", out osLength);
+        Line("tables: head at " + (headAt > 0) + " length " + headLength + ", OS/2 " + (osAt > 0 ? "present" : "absent") + ", zzzz " + face.Table("zzzz", out osLength));
+        Line("names: family " + face.Name(1) + ", style " + face.Name(2) + ", symbol " + face.IsSymbol);
         Line("families in collection: " + collection.Families.Length);
 
         Font fromFamily = new Font(collection.Families[0], 20);

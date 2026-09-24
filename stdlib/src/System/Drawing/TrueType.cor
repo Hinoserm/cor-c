@@ -89,6 +89,30 @@ internal class TrueTypeFace : FontFace
     readonly byte[] _data;
 
     int _cmap, _cmapFormat;
+    bool _symbol;
+
+    /// Every table in the directory, by tag: where it is and how long.
+    readonly Dictionary<int, int> _tableOffset = new Dictionary<int, int>();
+    readonly Dictionary<int, int> _tableLength = new Dictionary<int, int>();
+
+    /// A table's offset in the file, and its length; 0 when the face has
+    /// no such table. `tag` is its four letters ("OS/2", "hdmx").
+    public int Table(string tag, out int length)
+    {
+        int key = 0;
+        for (int i = 0; i < 4; i++) { key = (key << 8) | (i < tag.Length ? tag[i] & 0xFF : 0x20); }
+        int offset;
+        length = 0;
+        if (!_tableOffset.TryGetValue(key, out offset)) { return 0; }
+        _tableLength.TryGetValue(key, out length);
+        return offset;
+    }
+
+    /// Whether the face's characters come from a symbol subtable (Windows
+    /// platform, encoding 0): its codes are U+F020..U+F0FF, and a
+    /// character is looked for there as U+F000 and its code page 1252
+    /// byte, as Windows' TrueType driver maps a symbol font's glyph set.
+    public bool IsSymbol { get { return _symbol; } }
     int _name, _nameLength;
     int _glyf, _glyfLength, _loca, _head, _hhea, _hmtx, _maxp, _kern;
     int _fpgm, _fpgmLength, _prep, _prepLength, _cvt, _cvtLength;
@@ -149,6 +173,8 @@ internal class TrueTypeFace : FontFace
 
             if (offset < 0 || length < 0 || offset > _data.Length || length > _data.Length - offset) { continue; }
 
+            _tableOffset[tag] = offset;
+            _tableLength[tag] = length;
             if (tag == 0x6E616D65) { _name = offset; _nameLength = length; }   // name
             if (tag == 0x636D6170) { _cmap = offset; }                          // cmap
             else if (tag == 0x676C7966) { _glyf = offset; _glyfLength = length; } // glyf
@@ -210,6 +236,17 @@ internal class TrueTypeFace : FontFace
             else if (format == 4 && bestFormat == 0) { best = table; bestFormat = 4; }
         }
 
+        // No Unicode subtable: a symbol font's (3, 0), format 4.
+        if (best == 0)
+        {
+            for (int i = 0; i < count; i++)
+            {
+                int record = _cmap + 4 + i * 8;
+                int table = _cmap + U32(record + 4);
+                if (U16(record) == 3 && U16(record + 2) == 0 && U16(table) == 4) { best = table; bestFormat = 4; _symbol = true; break; }
+            }
+        }
+
         _cmap = best;
         _cmapFormat = bestFormat;
         return best != 0;
@@ -218,6 +255,58 @@ internal class TrueTypeFace : FontFace
     /// <summary>Which glyph draws this character; nought, the face's own
     /// "missing" box, when it has none.</summary>
     public override int GlyphIndex(int character)
+    {
+        if (!_symbol) { return Lookup(character); }
+        if (character >= 0xF000 && character <= 0xF0FF) { return Lookup(character); }
+        int b = CodePage1252.Byte(character);
+        return b < 0 ? 0 : Lookup(0xF000 + b);
+    }
+
+    /// The runs of codes the character map covers, as (first, count)
+    /// pairs in ascending order: format 4's segments without the closing
+    /// U+FFFF one, or format 12's groups. A symbol face's are its code page
+    /// 1252 bytes and U+F020..U+F0FF, as its characters are looked up.
+    public List<int> CharacterRuns()
+    {
+        List<int> runs = new List<int>();
+        if (_symbol)
+        {
+            int start = -1, previous = -2;
+            List<int> codes = new List<int>();
+            for (int b = 0; b < 256; b++) { codes.Add(CodePage1252.Character(b)); }
+            codes.Sort();
+            foreach (int c in codes)
+            {
+                if (c != previous + 1) { if (start >= 0) { runs.Add(start); runs.Add(previous - start + 1); } start = c; }
+                previous = c;
+            }
+            if (start >= 0) { runs.Add(start); runs.Add(previous - start + 1); }
+            runs.Add(0xF020); runs.Add(0xE0);
+            return runs;
+        }
+        if (_cmapFormat == 12)
+        {
+            int groups = U32(_cmap + 12);
+            for (int i = 0; i < groups; i++)
+            {
+                int group = _cmap + 16 + i * 12;
+                runs.Add(U32(group)); runs.Add(U32(group + 4) - U32(group) + 1);
+            }
+            return runs;
+        }
+        int segments = U16(_cmap + 6) / 2;
+        int ends = _cmap + 14, starts = ends + segments * 2 + 2;
+        for (int i = 0; i < segments; i++)
+        {
+            int first = U16(starts + i * 2), last = U16(ends + i * 2);
+            if (first == 0xFFFF && last == 0xFFFF) { continue; }
+            if (last >= first) { runs.Add(first); runs.Add(last - first + 1); }
+        }
+        return runs;
+    }
+
+    /// The character map's own answer for a code.
+    int Lookup(int character)
     {
         if (_cmapFormat == 12)
         {
@@ -527,57 +616,59 @@ internal class TrueTypeFace : FontFace
     /// corrupt table, answers "" rather than failing outright -- a bad
     /// name is not a reason to refuse a font that otherwise parses.
     /// </summary>
-    public override string FamilyName
+    public override string FamilyName { get { return Name(1); } }
+
+    /// A name record's text (1 family, 2 style, 3 unique, 4 full name),
+    /// the Windows US English one where there is one; "" when none.
+    public string Name(int id)
     {
-        get
+        if (_name == 0 || _nameLength < 6) { return ""; }
+
+        int count = U16(_name + 2);
+        int stringArea = _name + U16(_name + 4);
+        int best = -1, bestScore = -1;
+
+        for (int i = 0; i < count; i++)
         {
-            if (_name == 0 || _nameLength < 6) { return ""; }
+            int record = _name + 6 + i * 12;
+            int platform = U16(record), encoding = U16(record + 2), language = U16(record + 4), nameId = U16(record + 6);
 
-            int count = U16(_name + 2);
-            int stringArea = _name + U16(_name + 4);
-            int best = -1, bestScore = -1;
+            if (nameId != id) { continue; }
 
-            for (int i = 0; i < count; i++)
-            {
-                int record = _name + 6 + i * 12;
-                int platform = U16(record), encoding = U16(record + 2), language = U16(record + 4), nameId = U16(record + 6);
+            // Highest preference to Windows Unicode US English, then
+            // any Windows Unicode, then Macintosh Roman, then whatever
+            // is there: the same order every reader uses.
+            bool windows = platform == 3 && (encoding == 1 || encoding == 0);
+            int score = windows && language == 0x409 ? 4
+                      : windows ? 3
+                      : platform == 0 ? 2
+                      : platform == 1 && encoding == 0 ? 1
+                      : 0;
 
-                if (nameId != 1) { continue; }
-
-                // Highest preference to Windows Unicode US English, then
-                // any Windows Unicode, then Macintosh Roman, then whatever
-                // is there: the same order every reader uses.
-                int score = platform == 3 && encoding == 1 && language == 0x409 ? 4
-                          : platform == 3 && encoding == 1 ? 3
-                          : platform == 0 ? 2
-                          : platform == 1 && encoding == 0 ? 1
-                          : 0;
-
-                if (score > bestScore) { bestScore = score; best = record; }
-            }
-
-            if (best < 0) { return ""; }
-
-            int platformFound = U16(best), length = U16(best + 8), offset = U16(best + 10);
-            int at = stringArea + offset;
-
-            if (length <= 0 || at < 0 || at + length > _data.Length) { return ""; }
-
-            // Platform 3 (and 0) store UTF-16BE; platform 1 stores bytes
-            // one to a character. Either way the result is ASCII for any
-            // ordinary family name, which is all a window's title bar or
-            // a font picker needs.
-            bool wide = platformFound == 3 || platformFound == 0;
-            int step = wide ? 2 : 1;
-            string built = "";
-
-            for (int i = at; i + step <= at + length; i += step)
-            {
-                int ch = wide ? U16(i) : U8(i);
-                built = built + (char)(ch > 255 ? '?' : ch);
-            }
-            return built;
+            if (score > bestScore) { bestScore = score; best = record; }
         }
+
+        if (best < 0) { return ""; }
+
+        int platformFound = U16(best), length = U16(best + 8), offset = U16(best + 10);
+        int at = stringArea + offset;
+
+        if (length <= 0 || at < 0 || at + length > _data.Length) { return ""; }
+
+        // Platform 3 (and 0) store UTF-16BE; platform 1 stores bytes
+        // one to a character. Either way the result is ASCII for any
+        // ordinary family name, which is all a window's title bar or
+        // a font picker needs.
+        bool wide = platformFound == 3 || platformFound == 0;
+        int step = wide ? 2 : 1;
+        string built = "";
+
+        for (int i = at; i + step <= at + length; i += step)
+        {
+            int ch = wide ? U16(i) : U8(i);
+            built = built + (char)(ch > 255 ? '?' : ch);
+        }
+        return built;
     }
 }
 
