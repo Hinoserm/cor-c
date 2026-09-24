@@ -167,7 +167,7 @@ internal static class AsmText
                 yield return $"int {Op(i.Operands[0], 1, false)}";
                 yield break;
             case MOp.SyscallTrap:
-                yield return "int 0x80";
+                yield return i.Operands.Count > 0 ? $"int {Op(i.Operands[0], 1, false)}" : "int 0x80";
                 yield break;
             case MOp.In:
                 yield return $"in {RegName((int)Gpr.Eax, i.Width)}, dx";

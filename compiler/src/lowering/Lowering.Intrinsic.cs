@@ -392,13 +392,16 @@ public sealed partial class Lowering
 
             // ---- the operating system and function pointers --------------------
             case "Syscall":
+            case "GuiCall":
+            case "GuiService":
             {
                 List<Operand> args = new();
                 for (int i = 1; i < target.Params.Count; i++)
                 {
                     args.Add(R(ToWord(Arg(call, target, i))));
                 }
-                VReg r = _e.Syscall(R(ToWord(Arg(call, target, 0))), args);
+                int vector = target.Name == "GuiCall" ? 0x81 : target.Name == "GuiService" ? 0x82 : 0x80;
+                VReg r = _e.Syscall(R(ToWord(Arg(call, target, 0))), args, vector);
                 return Widen(r);
             }
             case "Call":

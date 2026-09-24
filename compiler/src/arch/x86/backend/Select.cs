@@ -2241,7 +2241,7 @@ internal sealed partial class Selector
             Emit(MOp.Push, Ebp);
             Mov(Ebp, a6);
         }
-        Emit(MOp.SyscallTrap);
+        Emit(MOp.SyscallTrap, new MImm(i.Offset == 0 ? 0x80 : i.Offset));
         if (sixth)
         {
             Emit(MOp.Pop, Ebp);

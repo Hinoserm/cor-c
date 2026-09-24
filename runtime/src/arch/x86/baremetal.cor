@@ -279,8 +279,18 @@ static class Platform
     /// which is how a test harness reads the result. On real hardware the
     /// port is nothing, the write goes nowhere, and the halt below is the
     /// whole of it.
+    /// An image that is not alone on the machine -- CORSAC's GUI kernel, in
+    /// ring 1, where a port write or a HLT is a fault -- installs this, and
+    /// exiting becomes a call to it. It does not return.
+    public static long ExitHook;
+
     public static void Exit(int code)
     {
+        if (ExitHook != 0)
+        {
+            Sys.Call(ExitHook, code, 0, 0);
+        }
+
         Sys.PortOut8(Port.DebugExit, code & 0xFF);
         Sys.Cli();
 

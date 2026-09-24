@@ -154,10 +154,13 @@ public sealed class Builder
         return d;
     }
 
-    public VReg Syscall(Operand number, IEnumerable<Operand> args)
+    /// A trap to the system: `int vector`, 0x80 unless the GUI kernel's
+    /// doors are meant. The vector rides in Offset, which every copy of an
+    /// instruction already carries.
+    public VReg Syscall(Operand number, IEnumerable<Operand> args, int vector = 0x80)
     {
         VReg d = Function.NewReg(IrTypes.Word);
-        Instr i = new() { Op = Opcode.Syscall, Dest = d };
+        Instr i = new() { Op = Opcode.Syscall, Dest = d, Offset = vector == 0x80 ? 0 : vector };
         i.Operands.Add(number);
         i.Operands.AddRange(args);
         Append(i);

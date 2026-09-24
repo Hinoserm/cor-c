@@ -697,7 +697,7 @@ internal sealed class Encoder
                 B(0xF3, 0x90);
                 break;
             case MOp.SyscallTrap:
-                B(0xCD, 0x80);
+                B(0xCD, i.Operands.Count > 0 ? (byte)((MImm)i.Operands[0]).Value : (byte)0x80);
                 break;
 
             // ---- driver and kernel instructions ---------------------------
