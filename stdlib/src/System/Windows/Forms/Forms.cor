@@ -1029,11 +1029,11 @@ public class Form : Control
     /// The shape that says what those edges will move.
     internal static int CursorFor(int edges)
     {
-        if (edges == (1 | 4) || edges == (2 | 8)) return Cursors.SizeNWSE;
-        if (edges == (2 | 4) || edges == (1 | 8)) return Cursors.SizeNESW;
-        if ((edges & 3) != 0) return Cursors.SizeWE;
-        if ((edges & 12) != 0) return Cursors.SizeNS;
-        return Cursors.Arrow;
+        if (edges == (1 | 4) || edges == (2 | 8)) return CursorShapes.SizeNWSE;
+        if (edges == (2 | 4) || edges == (1 | 8)) return CursorShapes.SizeNESW;
+        if ((edges & 3) != 0) return CursorShapes.SizeWE;
+        if ((edges & 12) != 0) return CursorShapes.SizeNS;
+        return CursorShapes.Arrow;
     }
 
     public new void Show()
@@ -1278,7 +1278,7 @@ public class Form : Control
             return;
         }
         if (_closeDown) { FrameMouse(kind, button, x, y, co); if (kind != 5) return; }
-        if (kind == 3 && HasFrame && Application.Captured == null) Seat.Current.SetCursor(Cursors.Arrow);
+        if (kind == 3 && HasFrame && Application.Captured == null) Seat.Current.SetCursor(CursorShapes.Arrow);
         ClientMouse(kind, button, x, y, co);
     }
 
@@ -4451,7 +4451,7 @@ static class AutoScroll
         if (!Active) return;
         Active = false;
         if (_timer != null) _timer.Stop();
-        Seat.Current.SetCursor(Cursors.Arrow);
+        Seat.Current.SetCursor(CursorShapes.Arrow);
         _shape = -1;
         Form? form = _form;
         _form = null; _view = null;
@@ -4477,12 +4477,12 @@ static class AutoScroll
         int dx = (_ways & ScrollBars.Horizontal) != 0 ? _x - _originX : 0;
         int dy = (_ways & ScrollBars.Vertical) != 0 ? _y - _originY : 0;
         bool east = dx > Dead, west = dx < -Dead, south = dy > Dead, north = dy < -Dead;
-        int shape = _grab ? (_ways == ScrollBars.Horizontal ? Cursors.NoMoveHoriz : Cursors.NoMoveVert)
-                  : north && east ? Cursors.PanNE : north && west ? Cursors.PanNW
-                  : south && east ? Cursors.PanSE : south && west ? Cursors.PanSW
-                  : north ? Cursors.PanNorth : south ? Cursors.PanSouth : east ? Cursors.PanEast : west ? Cursors.PanWest
-                  : _ways == ScrollBars.Vertical ? Cursors.NoMoveVert : _ways == ScrollBars.Horizontal ? Cursors.NoMoveHoriz
-                  : Cursors.NoMove2D;
+        int shape = _grab ? (_ways == ScrollBars.Horizontal ? CursorShapes.NoMoveHoriz : CursorShapes.NoMoveVert)
+                  : north && east ? CursorShapes.PanNE : north && west ? CursorShapes.PanNW
+                  : south && east ? CursorShapes.PanSE : south && west ? CursorShapes.PanSW
+                  : north ? CursorShapes.PanNorth : south ? CursorShapes.PanSouth : east ? CursorShapes.PanEast : west ? CursorShapes.PanWest
+                  : _ways == ScrollBars.Vertical ? CursorShapes.NoMoveVert : _ways == ScrollBars.Horizontal ? CursorShapes.NoMoveHoriz
+                  : CursorShapes.NoMove2D;
         if (shape == _shape) return;
         _shape = shape;
         Seat.Current.SetCursor(shape);
@@ -4508,22 +4508,22 @@ static class AutoScroll
         seat.DefineBitmap(MarkerBitmap + (int)ScrollBars.Horizontal, MarkerSize, MarkerSize, Marker(true, false, true, false));
         seat.DefineBitmap(MarkerBitmap + (int)ScrollBars.Both, MarkerSize, MarkerSize, Marker(true, true, true, true));
         // The cursors, hot spot in the middle.
-        Cursor(Cursors.NoMove2D, Marker(true, true, true, true));
-        Cursor(Cursors.NoMoveVert, Marker(false, true, false, true));
-        Cursor(Cursors.NoMoveHoriz, Marker(true, false, true, false));
-        Cursor(Cursors.PanNorth, Pan(0, -1));
-        Cursor(Cursors.PanSouth, Pan(0, 1));
-        Cursor(Cursors.PanEast, Pan(1, 0));
-        Cursor(Cursors.PanWest, Pan(-1, 0));
-        Cursor(Cursors.PanNE, Pan(1, -1));
-        Cursor(Cursors.PanNW, Pan(-1, -1));
-        Cursor(Cursors.PanSE, Pan(1, 1));
-        Cursor(Cursors.PanSW, Pan(-1, 1));
+        Cursor(CursorShapes.NoMove2D, Marker(true, true, true, true));
+        Cursor(CursorShapes.NoMoveVert, Marker(false, true, false, true));
+        Cursor(CursorShapes.NoMoveHoriz, Marker(true, false, true, false));
+        Cursor(CursorShapes.PanNorth, Pan(0, -1));
+        Cursor(CursorShapes.PanSouth, Pan(0, 1));
+        Cursor(CursorShapes.PanEast, Pan(1, 0));
+        Cursor(CursorShapes.PanWest, Pan(-1, 0));
+        Cursor(CursorShapes.PanNE, Pan(1, -1));
+        Cursor(CursorShapes.PanNW, Pan(-1, -1));
+        Cursor(CursorShapes.PanSE, Pan(1, 1));
+        Cursor(CursorShapes.PanSW, Pan(-1, 1));
     }
 
     static void Cursor(int shape, byte[] argb)
     {
-        Seat.Current.DefineCursor(shape - Cursors.Base, MarkerSize, MarkerSize, MarkerSize / 2, MarkerSize / 2, argb);
+        Seat.Current.DefineCursor(shape - CursorShapes.Base, MarkerSize, MarkerSize, MarkerSize / 2, MarkerSize / 2, argb);
     }
 
     static void Put(byte[] argb, int x, int y, bool black)
@@ -4710,7 +4710,7 @@ public static class Application
         if (!_dragPending || _dragging == null) { _dragPending = false; return; }
         _dragPending = false;
         _sinceDrag = 0;
-        if (_resizeEdges != 0) { Seat.Current.ClearBand(); Seat.Current.SetCursor(Cursors.Arrow); _dragging.SetBounds(_dragToX, _dragToY, _dragToW, _dragToH); }
+        if (_resizeEdges != 0) { Seat.Current.ClearBand(); Seat.Current.SetCursor(CursorShapes.Arrow); _dragging.SetBounds(_dragToX, _dragToY, _dragToW, _dragToH); }
         else _dragging.SetBounds(_dragToX, _dragToY, _dragging.Width, _dragging.Height);
     }
     static bool _paintPending;
@@ -4735,7 +4735,7 @@ public static class Application
     static void CancelDrag(Form? nowActive)
     {
         if (_dragging == null || _dragging == nowActive) return;
-        if (_resizeEdges != 0) { Seat.Current.ClearBand(); Seat.Current.SetCursor(Cursors.Arrow); }
+        if (_resizeEdges != 0) { Seat.Current.ClearBand(); Seat.Current.SetCursor(CursorShapes.Arrow); }
         _dragging = null; _dragPending = false; _resizeEdges = 0; _sinceDrag = 0;
     }
     internal static void Unregister(Form f) { _forms.Remove(f); if (_active == f) _active = _forms.Count > 0 ? _forms[_forms.Count - 1] : null; if (_focus != null && _focus.FindForm() == f) _focus = null; }

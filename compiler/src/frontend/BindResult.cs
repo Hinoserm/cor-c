@@ -178,6 +178,14 @@ public sealed partial class BindResult
     /// </summary>
     public Dictionary<Node, TypeSymbol> TestedTypes { get; } = new(ReferenceEqualityComparer.Instance);
 
+    /// <summary>
+    /// An ARRAY TYPE a pattern, `as` or switch arm tests for: `o is byte[] b`.
+    /// An array has no symbol for TestedTypes to hold -- what identifies it at
+    /// run time is the descriptor its element type and stride share -- so
+    /// the whole bound type is kept.
+    /// </summary>
+    public Dictionary<Node, Type> TestedArrays { get; } = new(ReferenceEqualityComparer.Instance);
+
     public Dictionary<SwitchArm, int> ArmSlot { get; } = new(ReferenceEqualityComparer.Instance);
 
     /// <summary>
@@ -403,6 +411,7 @@ public sealed partial class BindResult
         ValuePatterns.Clear();
         StringTests.Clear();
         TestedTypes.Clear();
+        TestedArrays.Clear();
         ArmSlot.Clear();
         PatternSym.Clear();
         ArmTests.Clear();
@@ -480,6 +489,7 @@ public sealed partial class BindResult
         foreach (var item in ValuePatterns) copy.ValuePatterns.Add(item);
         foreach (var item in StringTests) copy.StringTests.Add(item);
         CopyEntries(TestedTypes, copy.TestedTypes);
+        CopyEntries(TestedArrays, copy.TestedArrays);
         CopyEntries(ArmSlot, copy.ArmSlot);
         CopyEntries(PatternSym, copy.PatternSym);
         foreach (var item in ArmTests) copy.ArmTests.Add(item);

@@ -157,6 +157,54 @@ public sealed partial class Lowering
     }
 
     /// <summary>The descriptor and vtable shared by every box of one type.</summary>
+    private string? _objectDescriptor;
+
+    /// <summary>
+    /// The descriptor of a bare `new object()`: an object with nothing in it
+    /// but its header, what C# programs make to lock on. It derives from
+    /// nothing and implements nothing, so like a box it has a display of
+    /// itself alone and an empty interface list, and every virtual slot is
+    /// object's own -- ToString answers "System.Object", as .NET does.
+    /// Structural and shared, so every unit's bare object is one type.
+    /// </summary>
+    private string ObjectDescriptor()
+    {
+        if (_objectDescriptor is { } made)
+        {
+            return made;
+        }
+
+        const string sym = "t_System_Object";
+        _objectDescriptor = sym;
+
+        int w = _t.WordSize;
+        int slots = Math.Max(Math.Max(_b.ToStringSlot, _b.CompareSlot), Math.Max(_b.EqualsSlot, _b.HashSlot)) + 1;
+        byte[] block = new byte[_t.DescriptorBytes + slots * w];
+        WriteWord(block, DescSize * w, _t.ObjectHeaderBytes);
+        WriteWord(block, DescDepth * w, 0);
+        WriteWord(block, DescPayload * w, _t.ObjectHeaderBytes);
+
+        DataItem item = new(sym, block) { ReadOnly = true, Align = _t.Align64, FromLibrary = true, Coalescible = true };
+        _m.Data.Add(item);
+        item.Relocs.Add(new DataReloc(DescName * w, InternString("System.Object"), 0));
+        item.Relocs.Add(new DataReloc(DescSelf * w, sym, 0));
+
+        DataItem display = new("td_System_Object", new byte[w]) { ReadOnly = true, Exported = false };
+        display.Relocs.Add(new DataReloc(0, sym, 0));
+        _m.Data.Add(display);
+        item.Relocs.Add(new DataReloc(DescDisplay * w, display.Name, 0));
+
+        DataItem faces = new("tf_System_Object", new byte[w]) { ReadOnly = true, Exported = false };
+        _m.Data.Add(faces);
+        item.Relocs.Add(new DataReloc(DescInterfaces * w, faces.Name, 0));
+
+        item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.ToStringSlot * w, ObjectToStringStub(), 0));
+        item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.EqualsSlot * w, ObjectEqualsStub(), 0));
+        item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.HashSlot * w, ObjectHashStub(), 0));
+        item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.CompareSlot * w, ObjectCompareStub(), 0));
+        return sym;
+    }
+
     private string BoxDescriptor(Type of)
     {
         string name = BoxName(of);

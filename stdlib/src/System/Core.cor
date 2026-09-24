@@ -7035,8 +7035,16 @@ class TimeoutException : SystemException
 /// failure is: the call would have been fine a moment ago.
 class ObjectDisposedException : InvalidOperationException
 {
-    public ObjectDisposedException(string name)
-        : base(String.Concat("Cannot access a disposed object: ", name)) { }
+    string? _objectName;
+
+    public ObjectDisposedException(string? objectName)
+        : base(String.Concat("Cannot access a disposed object: ", objectName ?? "")) { _objectName = objectName; }
+
+    public ObjectDisposedException(string? objectName, string? message)
+        : base(message ?? String.Concat("Cannot access a disposed object: ", objectName ?? "")) { _objectName = objectName; }
+
+    /// The name of the object that was used after it was disposed.
+    public string ObjectName { get { return _objectName ?? ""; } }
 }
 
 class ArithmeticException : SystemException

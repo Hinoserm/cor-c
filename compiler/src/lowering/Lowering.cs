@@ -1022,8 +1022,8 @@ public sealed partial class Lowering
     }
 
     /// <summary>
-    /// The descriptor for arrays of one element type, and for strings. There
-    /// are no methods, so the vtable that follows it is empty; what matters is
+    /// The descriptor for arrays of one element type, and for strings. An
+    /// array's vtable holds only object's own virtuals; what matters most is
     /// that every array of bytes shares one, so `GetType` and the flags agree.
     /// </summary>
     private string SequenceDescriptor(string element, int stride, bool isString, bool? elementsAreReferences = null)
@@ -1036,8 +1036,15 @@ public sealed partial class Lowering
         }
 
         sym = "q_" + (isString ? "string" : "array_" + Safe(element));
-        byte[] d = new byte[_t.DescriptorBytes];
         int w = _t.WordSize;
+
+        // AN ARRAY IS AN OBJECT, and answers object's virtuals: `o.ToString()`
+        // on an array held as object, and the "Unable to cast" message a
+        // failed cast builds from it, read these slots. With no vtable they
+        // read whatever data followed the descriptor and jumped there. A
+        // string's own methods are reached by name, never through here.
+        int slots = isString ? 0 : Math.Max(Math.Max(_b.ToStringSlot, _b.CompareSlot), Math.Max(_b.EqualsSlot, _b.HashSlot)) + 1;
+        byte[] d = new byte[_t.DescriptorBytes + slots * w];
         WriteWord(d, DescSize * w, stride);
         WriteWord(d, DescDepth * w, -1);
         WriteWord(d, DescFlags * w, isString ? 3 : 1);
@@ -1052,6 +1059,13 @@ public sealed partial class Lowering
         _m.Data.Add(item);
         item.Relocs.Add(new DataReloc(DescName * w, InternString(isString ? "string" : element + "[]"), 0));
         item.Relocs.Add(new DataReloc(DescSelf * w, sym, 0));
+        if (slots > 0)
+        {
+            item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.ToStringSlot * w, ObjectToStringStub(), 0));
+            item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.EqualsSlot * w, ObjectEqualsStub(), 0));
+            item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.HashSlot * w, ObjectHashStub(), 0));
+            item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.CompareSlot * w, ObjectCompareStub(), 0));
+        }
         return sym;
     }
 

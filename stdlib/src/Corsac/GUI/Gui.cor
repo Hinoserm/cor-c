@@ -64,7 +64,13 @@ public class Seat : IDrawingTarget
 
     long _start;                    // the GUI kernel's start number this program last saw
     long _defined;                  // the start its shared definitions were last made in
-    int _restoring;                 // how many threads are putting their things back
+
+    /// EVERYTHING KEPT FOR A RESTART IS SHARED BY THE PROGRAM'S THREADS, and
+    /// guarded by this: the windows, the definitions, the bindings, the
+    /// watches. Never held across a call into the GUI kernel -- a restore
+    /// copies what it needs under it and replays with it let go, since a call
+    /// may itself find the GUI kernel restarted and come back here.
+    readonly object _keep = new object();
 
     /// A call through the gate, with the two answers that are not the
     /// seat's: ENOSYS, this thread is not attached (or the gate is closed
@@ -96,21 +102,28 @@ public class Seat : IDrawingTarget
     /// kernel starts yet again meanwhile, it is all done once more.
     bool Attach()
     {
+        // HALF A MINUTE IN ALL, whatever the GUI kernel does meanwhile: a tenth
+        // of a second a try while it is not up, and a try for every start
+        // that a restore finds overtaken by another -- a GUI kernel that keeps
+        // crashing is given up on, not chased for ever.
         for (int tries = 0; tries < 300; tries++)
         {
             long attached = Platform.Result(Sys.Syscall(GuiAttach, 0, 0, 0));
             if (attached != 0) { Thread.Sleep(100); continue; }
-            while (true)
+            long start = Platform.Result(Sys.GuiCall(CallIoctl, SeatStart, 0, 0));
+            if (start <= 0) return true;
+            bool first;
+            lock (_keep)
             {
-                long start = Platform.Result(Sys.GuiCall(CallIoctl, SeatStart, 0, 0));
-                if (start <= 0) return true;
-                if (_start == 0) { _start = start; _defined = start; return true; }
-                if (start != _start) _start = start;
-                long me = Platform.Result(Sys.GuiCall(CallIoctl, SeatWhoami, 0, 0));
-                Restore(start, me);
-                long after = Platform.Result(Sys.GuiCall(CallIoctl, SeatStart, 0, 0));
-                if (after == start || after <= 0) return true;
+                first = _start == 0;
+                if (first) { _start = start; _defined = start; }
+                else _start = start;
             }
+            if (first) return true;
+            long me = Platform.Result(Sys.GuiCall(CallIoctl, SeatWhoami, 0, 0));
+            Restore(start, me);
+            long after = Platform.Result(Sys.GuiCall(CallIoctl, SeatStart, 0, 0));
+            if (after == start || after <= 0) return true;
         }
         return false;
     }
@@ -139,6 +152,16 @@ public class Seat : IDrawingTarget
         public long Start;               // the GUI kernel's start it was last made in
         public bool Shown, Desktop, TopMost, NoTaskbar;
         public string Title = "";
+
+        public Kept Copy()
+        {
+            Kept made = new Kept();
+            made.Handle = Handle; made.X = X; made.Y = Y; made.W = W; made.H = H;
+            made.Owner = Owner; made.Start = Start;
+            made.Shown = Shown; made.Desktop = Desktop; made.TopMost = TopMost; made.NoTaskbar = NoTaskbar;
+            made.Title = Title;
+            return made;
+        }
     }
 
     List<Kept> _kept = new List<Kept>();
@@ -150,6 +173,7 @@ public class Seat : IDrawingTarget
     List<long> _watchesPointer = new List<long>();
     int _reservedBottom = -1;
 
+    /// Under _keep.
     Kept? Find(int handle)
     {
         for (int i = 0; i < _kept.Count; i++) if (_kept[i].Handle == handle) return _kept[i];
@@ -166,55 +190,77 @@ public class Seat : IDrawingTarget
     /// (Epoch), as after a mode change.
     void Restore(long start, long me)
     {
-        Interlocked.Increment(ref _restoring);
-        try
+        // What to make again, copied under the lock; made with it let go.
+        bool define;
+        byte[][] ops;
+        int[] bindShapes, bindIds;
+        int reserved;
+        bool watchWindows, watchPointer;
+        List<Kept> mine = new List<Kept>();
+        lock (_keep)
         {
-            if (_defined != start)
+            define = _defined != start;
+            if (define) _defined = start;
+            List<byte[]> all = new List<byte[]>();
+            if (define)
             {
-                _defined = start;
-                Width = (int)Ioctl(0x47550001, 0);
-                Height = (int)Ioctl(0x47550002, 0);
-                Format = (int)Ioctl(0x47550003, 0);
-                Epoch++;
-                _used = 0;
-                _named = false;
-                _clipOn = false;
-                _window = 0;
-                foreach (byte[] op in _glyphs.Values) Send(op);
-                foreach (byte[] op in _bitmaps.Values) Send(op);
-                foreach (byte[] op in _cursors.Values) Send(op);
-                foreach (KeyValuePair<int, int> bound in _bindings) Ioctl(0x47550028, (bound.Key & 0xFF) | ((bound.Value & 0xFF) << 8));
-                if (_reservedBottom >= 0) Ioctl(0x4755001A, _reservedBottom);
+                foreach (byte[] op in _glyphs.Values) all.Add(op);
+                foreach (byte[] op in _bitmaps.Values) all.Add(op);
+                foreach (byte[] op in _cursors.Values) all.Add(op);
             }
-            if (_watchesWindows.Contains(me)) Ioctl(0x4755001D, 0);
-            if (_watchesPointer.Contains(me)) Ioctl(0x47550020, 0);
-
+            ops = all.ToArray();
+            bindShapes = new int[define ? _bindings.Count : 0];
+            bindIds = new int[bindShapes.Length];
+            if (define)
+            {
+                int at = 0;
+                foreach (KeyValuePair<int, int> bound in _bindings) { bindShapes[at] = bound.Key; bindIds[at] = bound.Value; at++; }
+            }
+            reserved = _reservedBottom;
+            watchWindows = _watchesWindows.Contains(me);
+            watchPointer = _watchesPointer.Contains(me);
             for (int i = 0; i < _kept.Count; i++)
             {
                 Kept w = _kept[i];
                 if (w.Owner != me || w.Start == start) continue;
                 w.Start = start;
-                if (Ioctl(SeatCreateAs, w.Handle) < 0)
-                {
-                    Console.Error.WriteLine("Corsac.GUI: window " + w.Handle + " could not be made again after the GUI kernel restarted");
-                    continue;
-                }
-                Ioctl(0x47550011, (w.W & 0xFFFF) | (w.H << 16));
-                Ioctl(0x47550015, (w.X & 0xFFFF) | (w.Y << 16));
-                if (w.Title.Length > 0) SendTitle(w.Title);
-                if (w.Desktop) Ioctl(0x47550018, 0);
-                if (w.TopMost) Ioctl(0x47550019, 1);
-                if (w.NoTaskbar) Ioctl(0x47550024, 1);
-            }
-            for (int i = 0; i < _kept.Count; i++)
-            {
-                Kept w = _kept[i];
-                if (w.Owner != me || !w.Shown) continue;
-                Select(w.Handle);
-                Ioctl(0x47550012, 0);
+                mine.Add(w.Copy());
             }
         }
-        finally { Interlocked.Decrement(ref _restoring); }
+
+        if (define)
+        {
+            Width = (int)Ioctl(0x47550001, 0);
+            Height = (int)Ioctl(0x47550002, 0);
+            Format = (int)Ioctl(0x47550003, 0);
+            Epoch++;
+            foreach (byte[] op in ops) Send(op);
+            for (int i = 0; i < bindShapes.Length; i++) Ioctl(0x47550028, (bindShapes[i] & 0xFF) | ((bindIds[i] & 0xFF) << 8));
+            if (reserved >= 0) Ioctl(0x4755001A, reserved);
+        }
+        if (watchWindows) Ioctl(0x4755001D, 0);
+        if (watchPointer) Ioctl(0x47550020, 0);
+
+        foreach (Kept w in mine)
+        {
+            if (Ioctl(SeatCreateAs, w.Handle) < 0)
+            {
+                Console.Error.WriteLine("Corsac.GUI: window " + w.Handle + " could not be made again after the GUI kernel restarted");
+                continue;
+            }
+            Ioctl(0x47550011, (w.W & 0xFFFF) | (w.H << 16));
+            Ioctl(0x47550015, (w.X & 0xFFFF) | (w.Y << 16));
+            if (w.Title.Length > 0) SendTitle(w.Title);
+            if (w.Desktop) Ioctl(0x47550018, 0);
+            if (w.TopMost) Ioctl(0x47550019, 1);
+            if (w.NoTaskbar) Ioctl(0x47550024, 1);
+        }
+        foreach (Kept w in mine)
+        {
+            if (!w.Shown) continue;
+            Select(w.Handle);
+            Ioctl(0x47550012, 0);
+        }
     }
 
     /// One op, written whole.
@@ -416,7 +462,7 @@ public class Seat : IDrawingTarget
     /// A shape this program defined becomes one of the standard ones, for
     /// every program on the seat: what a system does once with real cursor
     /// art, so that nothing else has to know where the art came from.
-    public void BindCursor(int shape, int id) { _bindings[shape] = id; Ioctl(0x47550028, (shape & 0xFF) | ((id & 0xFF) << 8)); }
+    public void BindCursor(int shape, int id) { lock (_keep) { _bindings[shape] = id; } Ioctl(0x47550028, (shape & 0xFF) | ((id & 0xFF) << 8)); }
 
     /// How many windows the seat is showing, everybody's included.
     public int ShownWindows() { int n = (int)Ioctl(0x47550005, 0); return n < 0 ? 0 : n; }
@@ -514,7 +560,7 @@ public class Seat : IDrawingTarget
         byte[] one = new byte[24 + bytes];
         Put(one, 0, 7); Put(one, 4, id); Put(one, 8, width); Put(one, 12, height); Put(one, 16, 0); Put(one, 20, bytes);
         for (int i = 0; i < bytes; i++) one[24 + i] = argb[i];
-        _bitmaps[id] = one;
+        lock (_keep) { _bitmaps[id] = one; }
         Send(one);
         Renew();
     }
@@ -530,7 +576,7 @@ public class Seat : IDrawingTarget
         Put(one, 0, 11); Put(one, 4, id); Put(one, 8, width); Put(one, 12, height);
         Put(one, 16, (hotX & 0xFFFF) | (hotY << 16)); Put(one, 20, bytes);
         for (int i = 0; i < bytes; i++) one[24 + i] = argb[i];
-        _cursors[id] = one;
+        lock (_keep) { _cursors[id] = one; }
         Send(one);
         Renew();
     }
@@ -559,8 +605,7 @@ public class Seat : IDrawingTarget
         Kept kept = new Kept();
         kept.Handle = handle; kept.X = x; kept.Y = y; kept.W = w; kept.H = h;
         kept.Owner = (long)handle >> 12;            // the thread that made it (its handle says so)
-        kept.Start = _start;
-        _kept.Add(kept);
+        lock (_keep) { kept.Start = _start; _kept.Add(kept); }
         return handle;
     }
     /// What every window call goes through: the seat's answer, and an
@@ -570,32 +615,32 @@ public class Seat : IDrawingTarget
         if (answer < 0) throw new InvalidOperationException("the seat refused " + what + " (" + (-answer) + ")");
     }
 
-    public void ShowWindow(int handle) { Flush(); Select(handle); Must(Ioctl(0x47550012, 0), "showing a window"); Kept? k = Find(handle); if (k != null) k.Shown = true; }
-    public void HideWindow(int handle) { Flush(); Select(handle); Must(Ioctl(0x47550013, 0), "hiding a window"); Kept? k = Find(handle); if (k != null) k.Shown = false; }
+    public void ShowWindow(int handle) { Flush(); Select(handle); Must(Ioctl(0x47550012, 0), "showing a window"); lock (_keep) { Kept? k = Find(handle); if (k != null) k.Shown = true; } }
+    public void HideWindow(int handle) { Flush(); Select(handle); Must(Ioctl(0x47550013, 0), "hiding a window"); lock (_keep) { Kept? k = Find(handle); if (k != null) k.Shown = false; } }
     public void RaiseWindow(int handle) { Flush(); Select(handle); Must(Ioctl(0x47550014, 0), "raising a window"); }
     public void MoveWindow(int handle, int x, int y)
     {
         Flush(); Select(handle); Must(Ioctl(0x47550015, (x & 0xFFFF) | (y << 16)), "moving a window");
-        Kept? k = Find(handle); if (k != null) { k.X = x; k.Y = y; }
+        lock (_keep) { Kept? k = Find(handle); if (k != null) { k.X = x; k.Y = y; } }
     }
     public void ResizeWindow(int handle, int w, int h)
     {
         Flush(); Select(handle); Must(Ioctl(0x47550011, (w & 0xFFFF) | (h << 16)), "resizing a window");
-        Kept? k = Find(handle); if (k != null) { k.W = w; k.H = h; }
+        lock (_keep) { Kept? k = Find(handle); if (k != null) { k.W = w; k.H = h; } }
     }
     public void DestroyWindow(int handle)
     {
         Flush(); Select(handle); Ioctl(0x47550016, 0); _window = 0; _named = false;
-        Kept? k = Find(handle); if (k != null) _kept.Remove(k);
+        lock (_keep) { Kept? k = Find(handle); if (k != null) _kept.Remove(k); }
     }
     public void FocusWindow(int handle) { Flush(); Select(handle); Ioctl(0x47550017, 0); }
     /// This window is the desktop: the surface under everything, never raised.
-    public void DesktopWindow(int handle) { Flush(); Select(handle); Ioctl(0x47550018, 0); Kept? k = Find(handle); if (k != null) k.Desktop = true; }
+    public void DesktopWindow(int handle) { Flush(); Select(handle); Ioctl(0x47550018, 0); lock (_keep) { Kept? k = Find(handle); if (k != null) k.Desktop = true; } }
     /// This window stays above every ordinary one (a bar).
-    public void TopMostWindow(int handle, bool on) { Flush(); Select(handle); Ioctl(0x47550019, on ? 1 : 0); Kept? k = Find(handle); if (k != null) k.TopMost = on; }
+    public void TopMostWindow(int handle, bool on) { Flush(); Select(handle); Ioctl(0x47550019, on ? 1 : 0); lock (_keep) { Kept? k = Find(handle); if (k != null) k.TopMost = on; } }
     /// This window is not listed on a taskbar.
     /// Whether this window is listed on a taskbar; takes effect at once.
-    public void ListOnTaskbar(int handle, bool listed) { Flush(); Select(handle); Ioctl(0x47550024, listed ? 0 : 1); Kept? k = Find(handle); if (k != null) k.NoTaskbar = !listed; }
+    public void ListOnTaskbar(int handle, bool listed) { Flush(); Select(handle); Ioctl(0x47550024, listed ? 0 : 1); lock (_keep) { Kept? k = Find(handle); if (k != null) k.NoTaskbar = !listed; } }
 
     /// The window's title, as the seat lists it (a taskbar reads it).
     public void SetTitle(int handle, string title)
@@ -603,14 +648,14 @@ public class Seat : IDrawingTarget
         byte[] bytes = new byte[64];
         for (int i = 0; i < title.Length && i < 63; i++) bytes[i] = (byte)title[i];
         Flush(); Select(handle); Ioctl(0x4755001B, Sys.ArrayData(bytes));
-        Kept? k = Find(handle); if (k != null) k.Title = title;
+        lock (_keep) { Kept? k = Find(handle); if (k != null) k.Title = title; }
     }
 
     /// Ask for a WindowsChanged message whenever the seat's list or focus changes.
     public void WatchWindows()
     {
         long me = Ioctl(SeatWhoami, 0);
-        if (!_watchesWindows.Contains(me)) _watchesWindows.Add(me);
+        lock (_keep) { if (!_watchesWindows.Contains(me)) _watchesWindows.Add(me); }
         Ioctl(0x4755001D, 0);
     }
 
@@ -648,7 +693,7 @@ public class Seat : IDrawingTarget
     public void WatchPointer()
     {
         long me = Ioctl(SeatWhoami, 0);
-        if (!_watchesPointer.Contains(me)) _watchesPointer.Add(me);
+        lock (_keep) { if (!_watchesPointer.Contains(me)) _watchesPointer.Add(me); }
         Ioctl(0x47550020, 0);
     }
 
@@ -705,7 +750,7 @@ public class Seat : IDrawingTarget
         byte[] op = new byte[20 + padded];
         Put(op, 0, 4); Put(op, 4, id); Put(op, 8, width); Put(op, 12, height); Put(op, 16, bits.Length);
         for (int i = 0; i < bits.Length; i++) op[20 + i] = bits[i];
-        _glyphs[id] = op;
+        lock (_keep) { _glyphs[id] = op; }
         Room(5 + padded / 4);
         for (int i = 0; i < op.Length; i++) _batch[_used++] = op[i];
     }
@@ -732,7 +777,7 @@ public class Seat : IDrawingTarget
     public void InjectPointerHWheel(int notches) { Ioctl(0x4755000B, notches); }
 
     /// Rows at the bottom of the screen a bar owns: windows keep out of them.
-    public void ReserveBottom(int rows) { _reservedBottom = rows; Ioctl(0x4755001A, rows); }
+    public void ReserveBottom(int rows) { lock (_keep) { _reservedBottom = rows; } Ioctl(0x4755001A, rows); }
     /// The screen height minus what a bar has reserved: where windows go.
     public int WorkAreaHeight() { int h = (int)Ioctl(0x47550006, 0); return h <= 0 ? Height : h; }
     static int Signed16(int v) { int n = v & 0xFFFF; return n >= 0x8000 ? n - 0x10000 : n; }
@@ -821,7 +866,7 @@ public class SeatWindowInfo
 /// The shell's events and powers: what a taskbar, a desktop or a spy tool
 /// uses, raised by the Forms message loop from the seat's messages.
 /// The shapes a pointer can take. The seat draws them; these are its names.
-public static class Cursors
+public static class CursorShapes
 {
     public const int Arrow = 0, SizeWE = 1, SizeNS = 2, SizeNWSE = 3, SizeNESW = 4;
     public const int IBeam = 5, Wait = 6, Help = 7, No = 8, Move = 9, Hand = 10, Cross = 11;

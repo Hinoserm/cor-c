@@ -3,6 +3,7 @@
 // expect-output:
 // drained 6
 // last 3
+// field 3
 //
 // `while ((r = Next()) != null)` narrows r inside the loop, as C# does: the
 // value tested is the value now in r. Written the other way round too.
@@ -15,6 +16,7 @@ class Item
 static class Program
 {
     static int _left = 3;
+    static Item? _current;
 
     static Item? Next()
     {
@@ -48,6 +50,10 @@ static class Program
             Say("drained ", sum);
             Say("last ", first.Value);
         }
+
+        // A field is narrowed the same way.
+        _left = 3;
+        if ((_current = Next()) != null) Say("field ", _current.Value);
         return 0;
     }
 }

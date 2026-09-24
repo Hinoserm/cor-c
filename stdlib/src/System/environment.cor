@@ -178,6 +178,43 @@ static class Environment
         }
     }
 
+    /// The name this machine goes by on the network: uname(2)'s nodename,
+    /// which is where .NET reads it on Linux.
+    public static string MachineName
+    {
+        get
+        {
+            byte[] names = new byte[65 * 6];                  // struct utsname: six fields of 65
+            if (Platform.Result(Sys.Syscall(122, Sys.ArrayData(names), 0, 0)) < 0) return "localhost";
+            string made = "";
+            for (int i = 65; i < 130 && names[i] != 0; i++) made = made + (char)names[i];
+            return made.Length > 0 ? made : "localhost";
+        }
+    }
+
+    /// `%NAME%` replaced by the variable's value wherever the variable is
+    /// set, and left as written where it is not -- .NET's rule, which is
+    /// Windows' ExpandEnvironmentStrings.
+    public static string ExpandEnvironmentVariables(string name)
+    {
+        if (name == null) throw new ArgumentNullException(nameof(name));
+        string made = "";
+        int at = 0;
+        while (at < name.Length)
+        {
+            int open = name.IndexOf('%', at);
+            if (open < 0) { made = made + name.Substring(at); break; }
+            int close = name.IndexOf('%', open + 1);
+            if (close < 0) { made = made + name.Substring(at); break; }
+            string variable = name.Substring(open + 1, close - open - 1);
+            string? value = variable.Length > 0 ? GetEnvironmentVariable(variable) : null;
+            made = made + name.Substring(at, open - at);
+            if (value != null) { made = made + value; at = close + 1; }
+            else { made = made + "%" + variable; at = close; }       // the closing % may open the next one
+        }
+        return made;
+    }
+
     public static long TickCount64
     {
         get { return Os.Micros() / 1000; }

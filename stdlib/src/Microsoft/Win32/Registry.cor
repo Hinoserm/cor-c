@@ -1,0 +1,660 @@
+// Microsoft.Win32.Registry: the Windows registry, with .NET's names and
+// answers, kept in CORSAC's own registry (the corsac86 repository's
+// docs/software/REGISTRY.md) as the Windows guest's hives.
+//
+// WHERE IT LIVES. HKEY_LOCAL_MACHINE is /windows/machine (HKLM\SYSTEM is
+// /windows/machine/system, a file of its own), HKEY_USERS\.DEFAULT is
+// /windows/default, HKEY_CURRENT_USER is /windows/user in the user's own
+// ~/.registry. The kernel keeps them apart: no hive inherits from another, as
+// in Windows. HKEY_CLASSES_ROOT is HKLM\SOFTWARE\Classes, as Windows 2000
+// keeps the machine's half of it; HKEY_CURRENT_CONFIG is HKLM\SYSTEM\
+// CurrentControlSet\Hardware Profiles\Current.
+//
+// HOW A KEY AND A VALUE ARE KEPT. The kernel's registry is paths to typed
+// records; Windows has keys holding subkeys and named values, and a key may
+// have a subkey and a value of the same name. So under a key's path:
+//
+//   <key>/\\             a record saying the key exists, holding its name as
+//                       it was written (the kernel folds paths to lower case,
+//                       and Windows keeps a name's case while ignoring it)
+//   <key>/\<value>      a value: a Binary record holding the REG_* type, the
+//                       value's name as written, and the bytes exactly as
+//                       Windows keeps them (a REG_SZ is UTF-16LE with its
+//                       terminator), so ntdll reads the very same bytes
+//   <key>/<subkey>/...  a subkey
+//
+// A backslash cannot be in a key's name, so a segment that starts with one is
+// never a subkey. In a name, '/', '%' and '\' are written %2F, %25 and %5C.
+
+namespace Microsoft.Win32;
+
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Text;
+
+public enum RegistryHive
+{
+    ClassesRoot = -2147483648,
+    CurrentUser = -2147483647,
+    LocalMachine = -2147483646,
+    Users = -2147483645,
+    PerformanceData = -2147483644,
+    CurrentConfig = -2147483643,
+}
+
+public enum RegistryView
+{
+    Default = 0,
+    Registry64 = 256,
+    Registry32 = 512,
+}
+
+public enum RegistryValueKind
+{
+    None = -1,
+    Unknown = 0,
+    String = 1,
+    ExpandString = 2,
+    Binary = 3,
+    DWord = 4,
+    MultiString = 7,
+    QWord = 11,
+}
+
+public enum RegistryValueOptions
+{
+    None = 0,
+    DoNotExpandEnvironmentNames = 1,
+}
+
+public enum RegistryKeyPermissionCheck
+{
+    Default = 0,
+    ReadSubTree = 1,
+    ReadWriteSubTree = 2,
+}
+
+/// The roots, and the two calls that name a key and a value in one string.
+public static class Registry
+{
+    public static readonly RegistryKey CurrentUser = RegistryKey.OpenBaseKey(RegistryHive.CurrentUser, RegistryView.Default);
+    public static readonly RegistryKey LocalMachine = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Default);
+    public static readonly RegistryKey ClassesRoot = RegistryKey.OpenBaseKey(RegistryHive.ClassesRoot, RegistryView.Default);
+    public static readonly RegistryKey Users = RegistryKey.OpenBaseKey(RegistryHive.Users, RegistryView.Default);
+    public static readonly RegistryKey PerformanceData = RegistryKey.OpenBaseKey(RegistryHive.PerformanceData, RegistryView.Default);
+    public static readonly RegistryKey CurrentConfig = RegistryKey.OpenBaseKey(RegistryHive.CurrentConfig, RegistryView.Default);
+
+    /// A value by its whole name, "HKEY_CURRENT_USER\Software\Acme": the
+    /// value, `defaultValue` when the key is there and the value is not, and
+    /// null when the key is not there at all -- .NET's three answers.
+    public static object? GetValue(string keyName, string? valueName, object? defaultValue)
+    {
+        string rest;
+        RegistryKey root = RootOf(keyName, out rest);
+        RegistryKey? key = rest.Length == 0 ? root : root.OpenSubKey(rest);
+        if (key == null) return null;
+        return key.GetValue(valueName, defaultValue);
+    }
+
+    public static void SetValue(string keyName, string? valueName, object value)
+    {
+        SetValue(keyName, valueName, value, RegistryValueKind.Unknown);
+    }
+
+    /// Makes the key if it is not there, as .NET does.
+    public static void SetValue(string keyName, string? valueName, object value, RegistryValueKind valueKind)
+    {
+        string rest;
+        RegistryKey root = RootOf(keyName, out rest);
+        RegistryKey key = rest.Length == 0 ? root : root.CreateSubKey(rest);
+        key.SetValue(valueName, value, valueKind);
+    }
+
+    static RegistryKey RootOf(string keyName, out string rest)
+    {
+        int slash = keyName.IndexOf('\\');
+        string first = slash < 0 ? keyName : keyName.Substring(0, slash);
+        rest = slash < 0 ? "" : keyName.Substring(slash + 1);
+        string upper = first.ToUpperInvariant();
+        if (upper == "HKEY_CURRENT_USER" || upper == "HKCU") return CurrentUser;
+        if (upper == "HKEY_LOCAL_MACHINE" || upper == "HKLM") return LocalMachine;
+        if (upper == "HKEY_CLASSES_ROOT" || upper == "HKCR") return ClassesRoot;
+        if (upper == "HKEY_USERS" || upper == "HKU") return Users;
+        if (upper == "HKEY_CURRENT_CONFIG" || upper == "HKCC") return CurrentConfig;
+        if (upper == "HKEY_PERFORMANCE_DATA") return PerformanceData;
+        throw new ArgumentException("the registry key name must start with a valid base key name", nameof(keyName));
+    }
+}
+
+/// One key: a root, or a key opened or made under one.
+public sealed class RegistryKey : IDisposable
+{
+    readonly string _name;              // as Windows names it: "HKEY_CURRENT_USER\Software\Acme"
+    readonly string _path;              // where it is kept: "/windows/user/software/acme"
+    readonly long _scope;               // the registry scope its hive lives in
+    readonly bool _writable;
+    readonly RegistryView _view;
+    bool _closed;
+
+    RegistryKey(string name, string path, long scope, bool writable, RegistryView view)
+    {
+        _name = name; _path = path; _scope = scope; _writable = writable; _view = view;
+    }
+
+    // ---- the roots -------------------------------------------------------------------
+
+    const long ScopeUser = 0, ScopeMachine = 1;
+
+    public static RegistryKey OpenBaseKey(RegistryHive hKey, RegistryView view)
+    {
+        if (hKey == RegistryHive.CurrentUser) return new RegistryKey("HKEY_CURRENT_USER", "/windows/user", ScopeUser, true, view);
+        if (hKey == RegistryHive.LocalMachine) return new RegistryKey("HKEY_LOCAL_MACHINE", "/windows/machine", ScopeMachine, true, view);
+        if (hKey == RegistryHive.Users) return new RegistryKey("HKEY_USERS", "", ScopeMachine, true, view);
+        if (hKey == RegistryHive.ClassesRoot) return new RegistryKey("HKEY_CLASSES_ROOT", "/windows/machine/software/classes", ScopeMachine, true, view);
+        if (hKey == RegistryHive.CurrentConfig)
+            return new RegistryKey("HKEY_CURRENT_CONFIG", "/windows/machine/system/currentcontrolset/hardware profiles/current", ScopeMachine, true, view);
+        if (hKey == RegistryHive.PerformanceData) return new RegistryKey("HKEY_PERFORMANCE_DATA", "", ScopeMachine, false, view);
+        throw new ArgumentException("the hive is not one this registry keeps", nameof(hKey));
+    }
+
+    public static RegistryKey OpenBaseKey(RegistryHive hKey, RegistryView view, string machineName)
+    {
+        if (machineName.Length > 0 && machineName != "." && machineName != Environment.MachineName)
+            throw new IOException("the registry of another machine cannot be reached");
+        return OpenBaseKey(hKey, view);
+    }
+
+    // ---- what it is ----------------------------------------------------------------------
+
+    public string Name { get { return _name; } }
+    public RegistryView View { get { return _view; } }
+    public override string ToString() { return _name; }
+
+    public int SubKeyCount { get { return GetSubKeyNames().Length; } }
+    public int ValueCount { get { return GetValueNames().Length; } }
+
+    // ---- opening, making and deleting keys -------------------------------------------
+
+    public RegistryKey? OpenSubKey(string name) { return OpenSubKey(name, false); }
+
+    public RegistryKey? OpenSubKey(string name, bool writable)
+    {
+        Live();
+        string path, shown;
+        long scope;
+        if (!Under(name, out path, out shown, out scope)) return null;
+        if (path.Length == 0) return null;
+        if (!Exists(path, scope)) return null;
+        return new RegistryKey(shown, path, scope, writable, _view);
+    }
+
+    public RegistryKey? OpenSubKey(string name, RegistryKeyPermissionCheck permissionCheck)
+    {
+        return OpenSubKey(name, permissionCheck == RegistryKeyPermissionCheck.ReadWriteSubTree);
+    }
+
+    public RegistryKey CreateSubKey(string subkey) { return CreateSubKey(subkey, true); }
+
+    /// Opens the key, making it and every key above it that is not there.
+    public RegistryKey CreateSubKey(string subkey, bool writable)
+    {
+        Live();
+        Writable();
+        string path, shown;
+        long scope;
+        if (!Under(subkey, out path, out shown, out scope) || path.Length == 0)
+            throw new ArgumentException("the key cannot be made here", nameof(subkey));
+        // Every key between here and it gets its marker, so each is there to
+        // be listed and opened, as in Windows.
+        string[] parts = Split(subkey);
+        string at = _path, named = _name;
+        for (int i = 0; i < parts.Length; i++)
+        {
+            at = at + "/" + Escape(parts[i]);
+            named = named + "\\" + parts[i];
+            if (!Exists(at, scope)) Mark(at, parts[i], scope);
+        }
+        return new RegistryKey(shown, path, scope, writable, _view);
+    }
+
+    public RegistryKey CreateSubKey(string subkey, RegistryKeyPermissionCheck permissionCheck)
+    {
+        return CreateSubKey(subkey, permissionCheck != RegistryKeyPermissionCheck.ReadSubTree);
+    }
+
+    public void DeleteSubKey(string subkey) { DeleteSubKey(subkey, true); }
+
+    /// A key with no subkeys of its own, and its values.
+    public void DeleteSubKey(string subkey, bool throwOnMissingSubKey)
+    {
+        Live();
+        Writable();
+        RegistryKey? key = OpenSubKey(subkey, true);
+        if (key == null)
+        {
+            if (throwOnMissingSubKey) throw new ArgumentException("the subkey does not exist", nameof(subkey));
+            return;
+        }
+        if (key.GetSubKeyNames().Length > 0) throw new InvalidOperationException("the key has subkeys; DeleteSubKeyTree deletes them");
+        key.Clear();
+    }
+
+    public void DeleteSubKeyTree(string subkey) { DeleteSubKeyTree(subkey, true); }
+
+    public void DeleteSubKeyTree(string subkey, bool throwOnMissingSubKey)
+    {
+        Live();
+        Writable();
+        RegistryKey? key = OpenSubKey(subkey, true);
+        if (key == null)
+        {
+            if (throwOnMissingSubKey) throw new ArgumentException("the subkey does not exist", nameof(subkey));
+            return;
+        }
+        foreach (string child in key.GetSubKeyNames()) key.DeleteSubKeyTree(child, false);
+        key.Clear();
+    }
+
+    /// Every record the key itself has -- its values and its marker.
+    void Clear()
+    {
+        foreach (string path in RegistryStore.Enumerate(_path + "/", _scope))
+        {
+            string rest = path.Substring(_path.Length + 1);
+            if (rest.IndexOf('/') < 0) RegistryStore.Delete(path, _scope);
+        }
+    }
+
+    // ---- listing ---------------------------------------------------------------------------
+
+    /// The subkeys, each named as it was written.
+    public string[] GetSubKeyNames()
+    {
+        Live();
+        if (_path.Length == 0) return _name == "HKEY_USERS" ? new[] { ".DEFAULT" } : new string[0];
+        List<string> names = new List<string>();
+        HashSet<string> seen = new HashSet<string>();
+        foreach (string path in RegistryStore.Enumerate(_path + "/", _scope))
+        {
+            string rest = path.Substring(_path.Length + 1);
+            int slash = rest.IndexOf('/');
+            if (slash <= 0) continue;
+            string segment = rest.Substring(0, slash);
+            if (segment[0] == '\\' || !seen.Add(segment)) continue;
+            names.Add(NameOfKey(_path + "/" + segment, _scope, segment));
+        }
+        return names.ToArray();
+    }
+
+    /// The values, each named as it was written; the default value, if set,
+    /// is the empty name.
+    public string[] GetValueNames()
+    {
+        Live();
+        if (_path.Length == 0) return new string[0];
+        List<string> names = new List<string>();
+        foreach (string path in RegistryStore.Enumerate(_path + "/\\", _scope))
+        {
+            string rest = path.Substring(_path.Length + 1);
+            if (rest.IndexOf('/') >= 0 || rest == "\\\\") continue;
+            RegistryValueKind kind;
+            byte[]? data;
+            string? name;
+            if (Read(path, out kind, out name, out data) && name != null) names.Add(name);
+        }
+        return names.ToArray();
+    }
+
+    // ---- values ------------------------------------------------------------------------------
+
+    public object? GetValue(string? name) { return GetValue(name, null, RegistryValueOptions.None); }
+    public object? GetValue(string? name, object? defaultValue) { return GetValue(name, defaultValue, RegistryValueOptions.None); }
+
+    /// The value, as .NET hands it back: a string for REG_SZ and
+    /// REG_EXPAND_SZ (expanded unless asked not to), a string[] for
+    /// REG_MULTI_SZ, an int for REG_DWORD, a long for REG_QWORD, and a byte[]
+    /// for anything else.
+    public object? GetValue(string? name, object? defaultValue, RegistryValueOptions options)
+    {
+        Live();
+        RegistryValueKind kind;
+        byte[]? data;
+        string? written;
+        if (_path.Length == 0 || !Read(ValuePath(name), out kind, out written, out data) || data == null) return defaultValue;
+        if (kind == RegistryValueKind.String) return Utf16(data);
+        if (kind == RegistryValueKind.ExpandString)
+        {
+            string raw = Utf16(data);
+            return (options & RegistryValueOptions.DoNotExpandEnvironmentNames) != 0 ? raw : Environment.ExpandEnvironmentVariables(raw);
+        }
+        if (kind == RegistryValueKind.MultiString)
+        {
+            string all = Utf16Whole(data);
+            List<string> parts = new List<string>();
+            int start = 0;
+            for (int i = 0; i < all.Length; i++)
+            {
+                if (all[i] != '\0') continue;
+                if (i == start) break;                    // the empty string that ends the list
+                parts.Add(all.Substring(start, i - start));
+                start = i + 1;
+            }
+            return parts.ToArray();
+        }
+        if (kind == RegistryValueKind.DWord && data.Length >= 4) return BitConverter.ToInt32(data, 0);
+        if (kind == RegistryValueKind.QWord && data.Length >= 8) return BitConverter.ToInt64(data, 0);
+        return data;
+    }
+
+    public RegistryValueKind GetValueKind(string? name)
+    {
+        Live();
+        RegistryValueKind kind;
+        byte[]? data;
+        string? written;
+        if (_path.Length == 0 || !Read(ValuePath(name), out kind, out written, out data))
+            throw new IOException("the specified registry value does not exist");
+        return kind;
+    }
+
+    public void SetValue(string? name, object value) { SetValue(name, value, RegistryValueKind.Unknown); }
+
+    /// Stores the value. With no kind given, .NET's rule: an int is a DWORD,
+    /// a string[] a MULTI_SZ, a byte[] BINARY, and anything else its string.
+    public void SetValue(string? name, object value, RegistryValueKind valueKind)
+    {
+        Live();
+        Writable();
+        if (_path.Length == 0) throw new UnauthorizedAccessException("values cannot be kept at this key");
+        if (value == null) throw new ArgumentNullException(nameof(value));
+        RegistryValueKind kind = valueKind;
+        if (kind == RegistryValueKind.Unknown)
+        {
+            kind = value is int ? RegistryValueKind.DWord
+                 : value is string[] ? RegistryValueKind.MultiString
+                 : value is byte[] ? RegistryValueKind.Binary
+                 : RegistryValueKind.String;
+        }
+        byte[] data;
+        if (kind == RegistryValueKind.String || kind == RegistryValueKind.ExpandString) data = Utf16Z(value.ToString() ?? "");
+        else if (kind == RegistryValueKind.MultiString)
+        {
+            if (!(value is string[] strings)) throw new ArgumentException("a MultiString value must be a string[]");
+            StringBuilder all = new StringBuilder();
+            foreach (string one in strings) { all.Append(one); all.Append('\0'); }
+            data = Utf16Z(all.ToString());
+        }
+        else if (kind == RegistryValueKind.DWord) data = BitConverter.GetBytes(Convert.ToInt32(value));
+        else if (kind == RegistryValueKind.QWord) data = BitConverter.GetBytes(Convert.ToInt64(value));
+        else if (kind == RegistryValueKind.Binary || kind == RegistryValueKind.None)
+        {
+            if (!(value is byte[] bytes)) throw new ArgumentException("a Binary value must be a byte[]");
+            data = bytes;
+        }
+        else throw new ArgumentException("the value kind is not one the registry keeps", nameof(valueKind));
+        Write(ValuePath(name), kind, name ?? "", data);
+    }
+
+    public void DeleteValue(string name) { DeleteValue(name, true); }
+
+    public void DeleteValue(string name, bool throwOnMissingValue)
+    {
+        Live();
+        Writable();
+        long answer = _path.Length == 0 ? -2 : RegistryStore.Delete(ValuePath(name), _scope);
+        if (answer < 0 && throwOnMissingValue) throw new ArgumentException("the value does not exist", nameof(name));
+    }
+
+    // ---- the rest of the surface -----------------------------------------------------------------
+
+    /// Everything written so far, on the disc now rather than within the
+    /// second the kernel takes anyway.
+    public void Flush() { RegistryStore.Flush(); }
+
+    public void Close() { _closed = true; }
+    public void Dispose() { Close(); }
+
+    void Live() { if (_closed) throw new ObjectDisposedException("RegistryKey", "the key is closed"); }
+    void Writable() { if (!_writable) throw new UnauthorizedAccessException("the key was not opened for writing"); }
+
+    // ---- paths ---------------------------------------------------------------------------------------
+
+    /// Where a subkey named relative to this one lives, what Windows calls
+    /// it, and in which scope. HKEY_USERS has one subkey, .DEFAULT.
+    bool Under(string name, out string path, out string shown, out long scope)
+    {
+        path = ""; shown = ""; scope = _scope;
+        string[] parts = Split(name);
+        if (parts.Length == 0) { path = _path; shown = _name; return _path.Length > 0; }
+        string at = _path;
+        int from = 0;
+        if (_path.Length == 0)
+        {
+            if (_name != "HKEY_USERS" || parts[0].ToUpperInvariant() != ".DEFAULT") return false;
+            at = "/windows/default";
+            scope = ScopeMachine;
+            from = 1;
+        }
+        string named = _name;
+        for (int i = 0; i < parts.Length; i++)
+        {
+            named = named + "\\" + parts[i];
+            if (i >= from) at = at + "/" + Escape(parts[i]);
+        }
+        path = at;
+        shown = named;
+        return true;
+    }
+
+    static string[] Split(string name)
+    {
+        List<string> parts = new List<string>();
+        foreach (string part in name.Split('\\')) if (part.Length > 0) parts.Add(part);
+        return parts.ToArray();
+    }
+
+    /// A name as a path segment: the three characters a segment cannot hold
+    /// written %2F, %5C and %25.
+    static string Escape(string name)
+    {
+        StringBuilder made = new StringBuilder();
+        foreach (char c in name)
+        {
+            if (c == '/') made.Append("%2F");
+            else if (c == '\\') made.Append("%5C");
+            else if (c == '%') made.Append("%25");
+            else made.Append(c);
+        }
+        return made.ToString();
+    }
+
+    string ValuePath(string? name) { return _path + "/\\" + Escape(name ?? ""); }
+
+    static string MarkerPath(string key) { return key + "/\\\\"; }
+
+    static bool Exists(string key, long scope)
+    {
+        RegistryValueKind kind;
+        byte[]? data;
+        string? name;
+        return Read(MarkerPath(key), out kind, out name, out data);
+    }
+
+    static void Mark(string key, string name, long scope)
+    {
+        Write(MarkerPath(key), RegistryValueKind.None, name, new byte[0], scope);
+    }
+
+    /// The name a subkey was made with; its folded segment where it has no
+    /// marker to say.
+    static string NameOfKey(string key, long scope, string segment)
+    {
+        RegistryValueKind kind;
+        byte[]? data;
+        string? name;
+        if (Read(MarkerPath(key), out kind, out name, out data, scope) && name != null) return name;
+        return segment;
+    }
+
+    // ---- one record: [kind, 4 bytes][name's length, 2][name, UTF-8][the data] -------------------
+
+    bool Read(string path, out RegistryValueKind kind, out string? name, out byte[]? data)
+    {
+        return Read(path, out kind, out name, out data, _scope);
+    }
+
+    static bool Read(string path, out RegistryValueKind kind, out string? name, out byte[]? data, long scope = -1)
+    {
+        kind = RegistryValueKind.Unknown; name = null; data = null;
+        byte[]? record = RegistryStore.Get(path, scope < 0 ? ScopeFor(path) : scope);
+        if (record == null || record.Length < 6) return false;
+        kind = (RegistryValueKind)BitConverter.ToInt32(record, 0);
+        int nameBytes = record[4] | (record[5] << 8);
+        if (6 + nameBytes > record.Length) return false;
+        name = Encoding.UTF8.GetString(record, 6, nameBytes);
+        data = new byte[record.Length - 6 - nameBytes];
+        Array.Copy(record, 6 + nameBytes, data, 0, data.Length);
+        return true;
+    }
+
+    void Write(string path, RegistryValueKind kind, string name, byte[] data)
+    {
+        Write(path, kind, name, data, _scope);
+    }
+
+    static void Write(string path, RegistryValueKind kind, string name, byte[] data, long scope)
+    {
+        byte[] nameBytes = Encoding.UTF8.GetBytes(name);
+        byte[] record = new byte[6 + nameBytes.Length + data.Length];
+        byte[] head = BitConverter.GetBytes((int)kind);
+        Array.Copy(head, 0, record, 0, 4);
+        record[4] = (byte)nameBytes.Length;
+        record[5] = (byte)(nameBytes.Length >> 8);
+        Array.Copy(nameBytes, 0, record, 6, nameBytes.Length);
+        Array.Copy(data, 0, record, 6 + nameBytes.Length, data.Length);
+        long answer = RegistryStore.Set(path, scope, record);
+        if (answer < 0) throw new UnauthorizedAccessException("the registry refused the write (" + (-answer) + ")");
+    }
+
+    static long ScopeFor(string path) { return path.StartsWith("/windows/user") ? ScopeUser : ScopeMachine; }
+
+    // ---- UTF-16, as Windows keeps strings -----------------------------------------------------------
+
+    static byte[] Utf16Z(string text)
+    {
+        byte[] bytes = new byte[(text.Length + 1) * 2];
+        for (int i = 0; i < text.Length; i++) { bytes[i * 2] = (byte)text[i]; bytes[i * 2 + 1] = (byte)(text[i] >> 8); }
+        return bytes;
+    }
+
+    /// Up to the first terminator.
+    static string Utf16(byte[] data)
+    {
+        StringBuilder made = new StringBuilder();
+        for (int i = 0; i + 1 < data.Length; i += 2)
+        {
+            char c = (char)(data[i] | (data[i + 1] << 8));
+            if (c == '\0') break;
+            made.Append(c);
+        }
+        return made.ToString();
+    }
+
+    /// All of it, terminators included.
+    static string Utf16Whole(byte[] data)
+    {
+        StringBuilder made = new StringBuilder();
+        for (int i = 0; i + 1 < data.Length; i += 2) made.Append((char)(data[i] | (data[i + 1] << 8)));
+        return made.ToString();
+    }
+}
+
+/// The kernel's registry, spoken to through /dev/registry: records as bytes,
+/// by path, in a scope.
+static class RegistryStore
+{
+    const long Get_ = 0x52454701, Set_ = 0x52454702, Delete_ = 0x52454703, Enumerate_ = 0x52454704, Flush_ = 0x52454705;
+    const long BinaryType = 4;
+    static int _fd = -2;
+
+    static int Fd()
+    {
+        if (_fd == -2) _fd = Os.Open("/dev/registry", 2, 0);
+        if (_fd < 0) throw new IOException("this machine's registry is not running (the kernel was started with registry=off, or has none)");
+        return _fd;
+    }
+
+    /// The request block /dev/registry takes, laid out in one array: the
+    /// scope, the key's address and length, the type, the flags, the number,
+    /// and the value's address and length.
+    static byte[] Request(string path, long scope, byte[] key, long valueAt, long valueBytes, long type)
+    {
+        byte[] request = new byte[64];
+        long at = Sys.ArrayData(request);
+        Sys.Poke(at, scope);
+        Sys.Poke(at + 8, Sys.ArrayData(key));
+        Sys.PokeWord(at + 16, key.Length);
+        Sys.PokeWord(at + 20, type);
+        Sys.PokeWord(at + 24, 0);
+        Sys.Poke(at + 32, 0);
+        Sys.Poke(at + 40, valueAt);
+        Sys.PokeWord(at + 48, valueBytes);
+        return request;
+    }
+
+    public static byte[]? Get(string path, long scope)
+    {
+        byte[] key = Encoding.UTF8.GetBytes(path);
+        byte[] room = new byte[65536];
+        byte[] request = Request(path, scope, key, Sys.ArrayData(room), room.Length, 0);
+        if (Os.Ioctl(Fd(), Get_, Sys.ArrayData(request)) < 0) return null;
+        long type = Sys.PeekWord(Sys.ArrayData(request) + 20) & 0xFFFFFFFF;
+        if (type != BinaryType) return null;
+        long bytes = Sys.PeekWord(Sys.ArrayData(request) + 48) & 0xFFFFFFFF;
+        byte[] got = new byte[(int)bytes];
+        Array.Copy(room, got, (int)bytes);
+        return got;
+    }
+
+    public static long Set(string path, long scope, byte[] record)
+    {
+        byte[] key = Encoding.UTF8.GetBytes(path);
+        byte[] request = Request(path, scope, key, Sys.ArrayData(record), record.Length, BinaryType);
+        return Os.Ioctl(Fd(), Set_, Sys.ArrayData(request));
+    }
+
+    public static long Delete(string path, long scope)
+    {
+        byte[] key = Encoding.UTF8.GetBytes(path);
+        byte[] request = Request(path, scope, key, 0, 0, 0);
+        return Os.Ioctl(Fd(), Delete_, Sys.ArrayData(request));
+    }
+
+    /// Every record's path under `prefix`, folded to lower case as the kernel
+    /// keeps them.
+    public static string[] Enumerate(string prefix, long scope)
+    {
+        byte[] key = Encoding.UTF8.GetBytes(prefix);
+        byte[] room = new byte[262144];
+        byte[] request = Request(prefix, scope, key, Sys.ArrayData(room), room.Length, 0);
+        if (Os.Ioctl(Fd(), Enumerate_, Sys.ArrayData(request)) < 0) return new string[0];
+        long bytes = Sys.PeekWord(Sys.ArrayData(request) + 48) & 0xFFFFFFFF;
+        List<string> found = new List<string>();
+        int start = 0;
+        for (int i = 0; i < bytes; i++)
+        {
+            if (room[i] != 0) continue;
+            found.Add(Encoding.UTF8.GetString(room, start, i - start));
+            start = i + 1;
+        }
+        return found.ToArray();
+    }
+
+    public static void Flush()
+    {
+        byte[] key = new byte[1];
+        byte[] request = Request("", 0, key, 0, 0, 0);
+        Os.Ioctl(Fd(), Flush_, Sys.ArrayData(request));
+    }
+}

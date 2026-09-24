@@ -25,6 +25,7 @@ public static class Prelude
     public const string PrintHex = "PrintHex";
     public const string Exit = "Exit";
     public const string Word = "Word";
+    public const string FromWord = "FromWord";
     public const string Bits = "Bits";
     public const string FromBits = "FromBits";
 
@@ -415,6 +416,9 @@ public static class Prelude
             public static void PrintLine() { }
             public static void Exit(int code) { }
             public static long Word(object x) { return 0; }
+            // The other way: a word read out of memory, taken as the reference
+            // it holds. What an atomic swap of a reference field hands back.
+            public static object? FromWord(long word) { return null; }
 
             // THE BITS OF A REAL, and back again. A double lives in the other
             // register bank, so reinterpreting one is a MOVE between banks --

@@ -441,6 +441,15 @@ public sealed partial class Lowering
                 {
                     return CheckedCast(cast, v, wanted);
                 }
+
+                // `(byte[])o` ASKS, as any downcast does: C# throws
+                // InvalidCastException for an object that is not a byte array,
+                // and handing back the reference unchecked let a string be
+                // indexed as bytes.
+                if (to.IsArray && (from.Prim == Prim.Any || from.Symbol is { Kind: TypeKind.Interface }))
+                {
+                    return CheckedArrayCast(cast, v, to);
+                }
                 return Convert(cast, v, from, to);
             }
 
@@ -533,6 +542,10 @@ public sealed partial class Lowering
                 if (_b.StringTests.Contains(asx))
                 {
                     return AsStringValue(v, _b.TypeOf(asx.Operand));
+                }
+                if (_b.TestedArrays.TryGetValue(asx, out Type? asArray))
+                {
+                    return AsArray(v, asArray);
                 }
                 TypeSymbol? want = _b.TestedTypes.TryGetValue(asx, out TypeSymbol? resolved) ? resolved
                                  : _b.Types.TryGetValue(asx.Type.Name, out TypeSymbol? found) ? found : null;
@@ -794,6 +807,14 @@ public sealed partial class Lowering
             Type element = type.Element ?? Type.I32;
             VReg count = EvalAs(nw.ArraySize, Type.I32);
             return AllocateArray(nw, count, element);
+        }
+
+        // `new object()`: a header and nothing else, the thing to lock on.
+        if (sym is null && type.Prim == Prim.Any && nw.Args.Count == 0)
+        {
+            VReg bare = Allocate(nw, _t.ObjectHeaderBytes);
+            _e.Store(R(bare), new SymOperand(ObjectDescriptor(), _t.DescriptorBytes), 0, _t.WordSize);
+            return bare;
         }
 
         if (sym is null)
@@ -1214,6 +1235,87 @@ public sealed partial class Lowering
         return result;
     }
 
+    /// <summary>
+    /// Whether an object is an array of this type: `o is byte[]`.
+    ///
+    /// AN ARRAY'S TYPE IS ITS DESCRIPTOR, one per element type and stride and
+    /// shared by every unit (SequenceDescriptor), so the test is one address
+    /// compared with another -- which is also why `(object)"ab" is byte[]` is
+    /// false although a string is laid out as bytes: strings have a
+    /// descriptor of their own.
+    ///
+    /// C#'s ARRAY COVARIANCE for `object[]`: any array whose elements are
+    /// references is one, `string[]` included, and an array of values is not.
+    /// The descriptor's element flag says exactly that. Covariance between
+    /// two class element types (`Dog[] is Animal[]`) would need the element's
+    /// own descriptor in the array's, which it does not carry; such a test
+    /// answers for the exact type only.
+    /// </summary>
+    private VReg ArrayTest(VReg obj, Type array)
+    {
+        Type element = array.Element!;
+        int w = _t.WordSize;
+        VReg result = _f.NewReg(IrType.I32, "isarr");
+        Block some = _f.NewBlock("arrsome");
+        Block end = _f.NewBlock("arrend");
+        _e.CopyTo(result, Imm(0, IrType.I32));
+        _e.Branch(obj, some, end);
+        _e.SetBlock(some);
+        VReg vt = _e.Load(IrTypes.Word, obj, 0);
+        VReg wanted = _e.Address(SequenceDescriptor(element.ToString(), Math.Max(1, element.Size), isString: false),
+                                 _t.DescriptorBytes);
+        _e.CopyTo(result, R(_e.Binary(Opcode.Eq, R(vt), R(wanted), IrType.I32)));
+        if (element.Prim == Prim.Any && element.ArrayRank == 0)
+        {
+            Block other = _f.NewBlock("arrcov");
+            _e.Branch(result, end, other);
+            _e.SetBlock(other);
+            VReg flags = _e.Load(IrTypes.Word, vt, DescFlags * w - _t.DescriptorBytes);
+            VReg gc = _e.Load(IrTypes.Word, vt, DescGcFlags * w - _t.DescriptorBytes);
+            VReg sequence = _e.Binary(Opcode.Eq, R(flags), Imm(1, IrTypes.Word), IrType.I32);
+            VReg refs = _e.Binary(Opcode.And, gc, GcElementsAreReferences);
+            VReg anyRefs = _e.Binary(Opcode.Ne, R(refs), Imm(0, IrTypes.Word), IrType.I32);
+            _e.CopyTo(result, R(_e.Binary(Opcode.And, R(sequence), R(anyRefs), IrType.I32)));
+        }
+        _e.Jump(end);
+        _e.SetBlock(end);
+        return result;
+    }
+
+    /// <summary>The object when it is an array of the type, null otherwise.</summary>
+    private VReg AsArray(VReg obj, Type array)
+    {
+        VReg test = ArrayTest(obj, array);
+        VReg result = _f.NewReg(IrTypes.Word, "asarr");
+        Block yes = _f.NewBlock("asarryes");
+        Block no = _f.NewBlock("asarrno");
+        Block end = _f.NewBlock("asarrend");
+        _e.Branch(test, yes, no);
+        _e.SetBlock(yes);
+        _e.CopyTo(result, R(obj));
+        _e.Jump(end);
+        _e.SetBlock(no);
+        _e.CopyTo(result, Imm(0, IrTypes.Word));
+        _e.Jump(end);
+        _e.SetBlock(end);
+        return result;
+    }
+
+    /// <summary>`(T[])o`: null passes, anything else must be such an array.</summary>
+    private VReg CheckedArrayCast(Node at, VReg obj, Type array)
+    {
+        Block check = _f.NewBlock("acastck");
+        Block ok = _f.NewBlock("acastok");
+        Block bad = _f.NewBlock("acastbad");
+        _e.Branch(obj, check, ok);
+        _e.SetBlock(check);
+        _e.Branch(ArrayTest(obj, array), ok, bad);
+        _e.SetBlock(bad);
+        CastFailed(obj);
+        _e.SetBlock(ok);
+        return obj;
+    }
+
     /// <summary>A cast that is not a reinterpretation: null passes, anything else must be the type.</summary>
     private VReg CheckedCast(Node at, VReg obj, TypeSymbol want)
     {
@@ -1224,6 +1326,14 @@ public sealed partial class Lowering
         _e.SetBlock(check);
         _e.Branch(TypeTest(obj, want), ok, bad);
         _e.SetBlock(bad);
+        CastFailed(obj);
+        _e.SetBlock(ok);
+        return obj;
+    }
+
+    /// <summary>The end of a cast that failed: InvalidCastException, and nothing after it.</summary>
+    private void CastFailed(VReg obj)
+    {
         MethodSymbol? fail = RuntimeMethod("InvalidCast", 1);
         if (fail is not null)
         {
@@ -1232,8 +1342,6 @@ public sealed partial class Lowering
         }
         _e.Emit(Opcode.Trap, null);
         _e.Unreachable();
-        _e.SetBlock(ok);
-        return obj;
     }
 
     private VReg EmitIs(IsExpr isx)
@@ -1317,6 +1425,16 @@ public sealed partial class Lowering
         {
             return BoxPattern(isx, obj, boxed,
                               _b.PatternSlot.TryGetValue(isx, out int held) ? held : null);
+        }
+
+        if (_b.TestedArrays.TryGetValue(isx, out Type? array))
+        {
+            VReg held = AsArray(obj, array);
+            if (_b.PatternSlot.TryGetValue(isx, out int named))
+            {
+                BindPattern(isx, named, array, held);
+            }
+            return _e.Binary(Opcode.Ne, R(held), Imm(0, held.Type), IrType.I32);
         }
 
         TypeSymbol? want = _b.TestedTypes.TryGetValue(isx, out TypeSymbol? resolved) ? resolved
@@ -1416,6 +1534,16 @@ public sealed partial class Lowering
             {
                 VReg matched = BoxPattern(arm, subject, boxed,
                                           _b.ArmSlot.TryGetValue(arm, out int into) ? into : null);
+                _e.Branch(matched, body, next);
+            }
+            else if (arm.Type is not null && _b.ArmTests.Contains(arm)
+                     && _b.TestedArrays.TryGetValue(arm, out Type? array))
+            {
+                VReg matched = AsArray(subject, array);
+                if (_b.ArmSlot.TryGetValue(arm, out int named))
+                {
+                    BindPattern(arm, named, array, matched);
+                }
                 _e.Branch(matched, body, next);
             }
             else if (arm.Type is not null && _b.ArmTests.Contains(arm))

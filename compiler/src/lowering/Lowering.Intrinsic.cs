@@ -19,7 +19,15 @@ public sealed partial class Lowering
     /// </summary>
     private VReg EmitIntrinsic(CallExpr call, MethodSymbol target)
     {
+        // A GENERIC INTRINSIC is reached through its specialised copy --
+        // `Sys.AddressOf<T>(ref T)` becomes `AddressOf$Box?$305` -- and it is
+        // the same instruction whatever T is, so it is known by the name
+        // before the first '$'. No intrinsic's own name has one.
         string name = target.Name;
+        if (name.IndexOf('$') is int cut and > 0)
+        {
+            name = name[..cut];
+        }
         IrType word = IrTypes.Word;
         IrType returns = IrTypes.Of(target.Returns);
 
@@ -78,6 +86,8 @@ public sealed partial class Lowering
 
             case "Word":
                 return Widen(Arg(call, target, 0));
+            case "FromWord":
+                return ToWord(Arg(call, target, 0));
 
             case "Bits":
                 return _e.Unary(Opcode.Bits, R(Arg(call, target, 0)), IrType.I64);

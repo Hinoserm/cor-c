@@ -2,7 +2,7 @@
 // expect-exit: 0
 // expect-output:
 // int 2 1 5 5 7
-// cas 7 9 9
+// cas 7 7 9
 // long 5000000001 4999999999 42
 // threads 40000
 // refs True True True

@@ -1,0 +1,70 @@
+// test: array type tests
+// expect-exit: 0
+// expect-output:
+// bytes True False False False
+// named 3 ab
+// as 2 null
+// covariant True False
+// switch bytes strings ints other null
+// cast 4 threw
+// bare System.Object True False 1
+//
+// `o is byte[]`, `o is string[] s`, `as T[]`, `(T[])o` and switch arms over
+// array types, with C#'s answers: a string is not a byte array, null is
+// nothing, `string[]` is an `object[]` and `int[]` is not, and a failed cast
+// throws. Then `new object()`, the thing a program locks on.
+
+using System;
+
+static class Program
+{
+    static string Kind(object? o) => o switch
+    {
+        byte[] b => "bytes",
+        string[] s => "strings",
+        int[] n => "ints",
+        null => "null",
+        _ => "other",
+    };
+
+    static int Main()
+    {
+        object bytes = new byte[] { 1, 2, 3 };
+        object text = "ab";
+        object strings = new string[] { "a", "b" };
+        object? nothing = null;
+        Console.WriteLine("bytes " + (bytes is byte[]) + " " + (text is byte[]) + " " + (nothing is byte[]) + " " + (strings is byte[]));
+
+        if (bytes is byte[] held && strings is string[] named)
+            Console.WriteLine("named " + held.Length + " " + named[0] + named[1]);
+
+        string[]? got = strings as string[];
+        int[]? none = bytes as int[];
+        Console.WriteLine("as " + (got == null ? -1 : got.Length) + " " + (none == null ? "null" : "set"));
+
+        Console.WriteLine("covariant " + (strings is object[]) + " " + (new int[2] is object[]));
+
+        Console.WriteLine("switch " + Kind(bytes) + " " + Kind(strings) + " " + Kind(new int[1]) + " " + Kind(text) + " " + Kind(null));
+
+        object four = new int[4];
+        int[] cast = (int[])four;
+        string threw = "no";
+        try
+        {
+            byte[] wrong = (byte[])four;
+            threw = "no " + wrong.Length;
+        }
+        catch (InvalidCastException)
+        {
+            threw = "threw";
+        }
+        Console.WriteLine("cast " + cast.Length + " " + threw);
+
+        object gate = new object();
+        object other = new object();
+        int inside = 0;
+        lock (gate) { inside++; }
+        Console.WriteLine("bare " + gate.ToString() + " " + gate.Equals(gate) + " " + gate.Equals(other) + " " + inside);
+        return 0;
+    }
+}

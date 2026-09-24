@@ -2697,6 +2697,14 @@ public sealed partial class Binder
             _closures = 0;
             _nextSlot = 0;
             _maxSlot = 0;
+
+            // WHAT THE LAST METHOD PROVED IS NOTHING HERE. The null state is
+            // flow state, and a path is kept as text: `_held` proved non-null
+            // by a test in one method was still "proved" in every method
+            // checked after it, so a field read as `Box` where it is `Box?`,
+            // and a generic call over it was specialised for the wrong type.
+            _notNull.Clear();
+            _notNullPaths.Clear();
             PushScope(functionBoundary: true);
 
             for (int i = 0; i < _method.Params.Count; i++)
@@ -8465,6 +8473,10 @@ public sealed partial class Binder
                         {
                             _r.TestedTypes[arm] = armSymbol;
                         }
+                        else if (tested.IsArray)
+                        {
+                            _r.TestedArrays[arm] = tested;
+                        }
 
                         // WHETHER THIS ARM NEEDS A RUNTIME TEST AT ALL.
                         //
@@ -8844,6 +8856,10 @@ public sealed partial class Binder
                 {
                     _r.TestedTypes[isx] = testedSymbol;
                 }
+                else if (tested.IsArray)
+                {
+                    _r.TestedArrays[isx] = tested;
+                }
 
                 if (operand.IsNullableValue)
                 {
@@ -8948,6 +8964,10 @@ public sealed partial class Binder
                 if (type.Symbol is { } asSymbol)
                 {
                     _r.TestedTypes[asx] = asSymbol;
+                }
+                else if (type.IsArray)
+                {
+                    _r.TestedArrays[asx] = type;
                 }
 
                 if (!type.IsReference && !type.IsError)
@@ -9425,7 +9445,7 @@ public sealed partial class Binder
                 // narrows r on the path the test holds, and so does this.
                 if (side is AssignExpr { Op: null, Target: NameExpr written }
                     && _r.Resolved.TryGetValue(written, out Sym? assigned)
-                    && assigned is LocalSym or ParamSym)
+                    && assigned is LocalSym or ParamSym or FieldSym or CapturedFieldSym)
                 {
                     about = assigned;
                     whenTrue = b.Op == BinOp.Ne;
@@ -10960,6 +10980,20 @@ public sealed partial class Binder
 
         _wanted = null;
 
+        // THE RECEIVER IS EVALUATED FIRST, so what it proves holds in the
+        // arguments: `_form!.PaintWindow(r, _form.Width)` is legal C#, the `!`
+        // having set _form's null state before the argument reads it. The
+        // arguments are checked before the target here (overloads are chosen
+        // from them), so the receiver chain's `!`s are applied ahead of them.
+        for (Expr? chain = (c.Target as MemberExpr)?.Target; chain is not null;
+             chain = chain switch { MemberExpr inner => inner.Target, SuppressExpr sure => sure.Operand, _ => null })
+        {
+            if (chain is SuppressExpr asserted)
+            {
+                Proved(asserted.Operand);
+            }
+        }
+
         List<Type> args = new();
         foreach (Expr argument in c.Args)
         {
@@ -11330,6 +11364,20 @@ public sealed partial class Binder
                 Type want = Wants(m, i);
 
                 if (c.Args[i] is NewExpr { Type.Name.Length: 0, Elements: null } && want.Symbol is not null) continue;
+
+                // A BY-REFERENCE ARGUMENT FITS ONLY ITS OWN TYPE. C# counts an
+                // overload applicable only when every ref and out argument's
+                // type is the parameter's exactly (nullability aside); one that
+                // would need a conversion is not a candidate at all. Taken as
+                // one here, `Interlocked.Exchange(ref box, b)` chose the
+                // (ref object?) overload over the generic that fits, and was
+                // then refused for the very mismatch that should have ruled it
+                // out.
+                if (c.Args[i] is RefArgExpr && m.Params[i].ByRef && !m.Params[i].ReadOnly)
+                {
+                    if (args[i].IsError || args[i].AsNonNullable().Equals(want.AsNonNullable())) continue;
+                    return false;
+                }
 
                 if (Convertible(args[i], want) || args[i].IsError || Unmade(want)
                     || (variant && Variant(args[i], want)))

@@ -1,0 +1,41 @@
+// test: null state per method
+// expect-exit: 0
+// expect-output:
+// set True
+// picked True True
+//
+// What one method proved about a field is not known in the next. Fill
+// writes a non-null Box into _held, which proves it there; Main is checked
+// after it and must still see `Box?`, so Pick infers T = Box? and takes null
+// as its third argument, as C# does.
+
+class Box
+{
+    public int Value;
+}
+
+static class Program
+{
+    static Box? _held;
+
+    static void Fill()
+    {
+        _held = new Box();
+        _held.Value = 1;
+    }
+
+    static T Pick<T>(ref T first, T second, T third) where T : class?
+    {
+        return third ?? second;
+    }
+
+    static int Main()
+    {
+        Fill();
+        Console.WriteLine("set " + (_held != null));
+        Box other = new Box();
+        Box? got = Pick(ref _held, other, null);
+        Console.WriteLine("picked " + (got == other) + " " + (_held != null));
+        return 0;
+    }
+}

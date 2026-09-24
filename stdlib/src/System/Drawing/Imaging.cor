@@ -543,7 +543,7 @@ public class CursorArt
         int id = Seat.NextCursorId();
         Seat.Current.DefineCursor(id, picture.Width, picture.Height,
                                   file.Entries[best].HotX, file.Entries[best].HotY, picture.Pixels);
-        made.Shape = Cursors.Base + id;
+        made.Shape = CursorShapes.Base + id;
         made.Width = picture.Width; made.Height = picture.Height;
         return made;
     }
