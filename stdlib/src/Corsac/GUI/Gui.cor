@@ -61,7 +61,8 @@ public class Seat : IDrawingTarget
     const long CallRead = 16, CallWrite = 17, CallIoctl = 18;
     const long NoSys = 38, Io = 5;
     const long SeatStart = 0x4755002A, SeatWhoami = 0x4755002B, SeatCreateAs = 0x4755002C;
-    const long SeatCursorAt = 0x4755002E, SeatCursorTo = 0x4755002F, SeatAnimateCursor = 0x47550030, SeatClipCursor = 0x47550031;
+    const long SeatCursorAt = 0x4755002E, SeatCursorTo = 0x4755002F, SeatAnimateCursor = 0x47550030, SeatClipCursor = 0x47550031,
+               SeatVanishPointer = 0x47550032;
 
     long _start;                    // the GUI kernel's start number this program last saw
     long _defined;                  // the start its shared definitions were last made in
@@ -478,18 +479,23 @@ public class Seat : IDrawingTarget
     /// art, so that nothing else has to know where the art came from.
     public void BindCursor(int shape, int id) { lock (_keep) { _bindings[shape] = id; } Ioctl(0x47550028, (shape & 0xFF) | ((id & 0xFFFF) << 8)); }
 
+    /// A standard shape back to the seat's own drawing of it.
+    public void UnbindCursor(int shape) { lock (_keep) { _bindings.Remove(shape); } Ioctl(0x47550028, (shape & 0xFF) | (0xFFFF << 8)); }
+
     /// AN ANIMATED CURSOR, as an .ani file describes one: the cursor `id`
     /// (defined already) shown as the others in turn, each for its number
     /// of sixtieths of a second. Selected and bound like any cursor, by id.
-    public void AnimateCursor(int id, int[] frames, int[] jiffies)
+    /// False if the seat would not take it (a frame it does not have).
+    public bool AnimateCursor(int id, int[] frames, int[] jiffies)
     {
         int steps = Math.Min(Math.Min(frames.Length, jiffies.Length), 64);
         byte[] record = new byte[8 + 64 * 8];
         Put(record, 0, id); Put(record, 4, steps);
         for (int i = 0; i < steps; i++) { Put(record, 8 + i * 8, frames[i]); Put(record, 12 + i * 8, jiffies[i]); }
         Flush();
+        if (Ioctl(SeatAnimateCursor, Sys.ArrayData(record)) < 0) return false;
         lock (_keep) { _animations[id] = record; }
-        Ioctl(SeatAnimateCursor, Sys.ArrayData(record));
+        return true;
     }
 
     /// For a program that attaches its threads to the GUI kernel itself (the
@@ -505,6 +511,10 @@ public class Seat : IDrawingTarget
         if (at < 0) return new Point(0, 0);
         return new Point((int)(at & 0xFFFF), (int)((at >> 16) & 0xFFFF));
     }
+
+    /// A character was typed into a text box: the pointer is hidden until it
+    /// next moves, if the user has "Hide pointer while typing" on.
+    public void VanishPointer() { Ioctl(SeatVanishPointer, 0); }
 
     /// Put the pointer somewhere, as moving the mouse would: SetCursorPos.
     public void MoveCursorTo(int x, int y) { Ioctl(SeatCursorTo, (x & 0xFFFF) | ((y & 0xFFFF) << 16)); }

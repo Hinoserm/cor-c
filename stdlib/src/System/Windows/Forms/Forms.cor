@@ -56,6 +56,7 @@ using System;
 using System.IO;
 using System.Drawing;
 using Corsac.GUI;
+using Microsoft.Win32;
 
 namespace System.Windows.Forms;
 
@@ -705,7 +706,17 @@ public class Control
         return new Point(x, y);
     }
 
-    public Point PointToScreen(Point p) { Form? f = FindForm(); Point o = ClientOrigin(); return new Point(p.X + o.X + (f == null ? 0 : f.Left), p.Y + o.Y + (f == null ? 0 : f.Top)); }
+    /// A point in this control's client area, on the screen. Through the
+    /// form's frame too: its client area starts below the caption and inside
+    /// the border, and leaving that out put every screen point of a control
+    /// on a framed form off by the caption's height.
+    public Point PointToScreen(Point p)
+    {
+        Form? f = FindForm();
+        Point o = ClientOrigin();
+        Point frame = f == null ? new Point(0, 0) : f.ClientOffset();
+        return new Point(p.X + o.X + (f == null ? 0 : f.Left + frame.X), p.Y + o.Y + (f == null ? 0 : f.Top + frame.Y));
+    }
 
     public void Invalidate() { Invalidate(ClientRectangle); }
     public void Invalidate(Rectangle r)
@@ -1339,7 +1350,7 @@ public class Form : Control
         {
             // Over the frame with no button held: the pointer says what the
             // edge under it would do, the way Windows does.
-            if (kind == 3 && Application.Captured == null && !_closeDown) Seat.Current.SetCursor(CursorFor(ResizeEdges(x, y)));
+            if (kind == 3 && Application.Captured == null && !_closeDown) Cursor.WearShape(CursorFor(ResizeEdges(x, y)));
             FrameMouse(kind, button, x, y, co);
             return;
         }
@@ -1367,7 +1378,14 @@ public class Form : Control
             target.RaiseMouseDown(e);
             Application.Captured = target;
         }
-        else if (kind == 5) { Application.Captured = null; to.RaiseMouseUp(e); }
+        else if (kind == 5)
+        {
+            Application.Captured = null;
+            to.RaiseMouseUp(e);
+            // The button is up: what is under the pointer now says what it
+            // wears, as Windows asks again when the capture goes.
+            Cursor.Over(target);
+        }
         else
         {
             Application.Hover(to);
@@ -1488,6 +1506,15 @@ public sealed class Cursor : IDisposable
         if (_hidden == 0) return;
         _hidden--;
         if (_hidden == 0) Wear(_current ?? Cursors.Default);
+    }
+
+    /// A seat shape with no Cursor of its own (a frame edge's), worn the
+    /// same way: hidden while the pointer is hidden.
+    internal static void WearShape(int shape)
+    {
+        if (_hidden > 0) { Wear(Cursors.Default); return; }
+        try { Seat.Current.SetCursor(shape); }
+        catch (IOException) { }
     }
 
     /// Onto the pointer, or the empty shape while it is hidden. The seat
@@ -1615,6 +1642,7 @@ public class Screen
     {
         EventHandler? h = DisplaySettingsChanged;
         if (h != null) { h(_primary, EventArgs.Empty); }
+        SystemEvents.RaiseDisplaySettingsChanged();
     }
 }
 
@@ -1659,6 +1687,8 @@ public static class SystemInformation
     /// The speed slider, 1 to 20.
     public static int MouseSpeed { get { return Parameter(0x70, 10); } }
     public static bool IsListBoxSmoothScrollingEnabled { get { return Parameter(0x1006, 1) != 0; } }
+    /// XP's "Snap To": a dialog's default button takes the pointer when it opens.
+    public static bool IsSnapToDefaultEnabled { get { return Parameter(0x5F, 0) != 0; } }
     public static int MouseHoverTime { get { return 400; } }
     public static Size MouseHoverSize { get { return new Size(4, 4); } }
 
@@ -2403,6 +2433,16 @@ public class ListBox : Control
     int _top;
     bool _syncing;
 
+    // XP'S SMOOTH-SCROLLING LIST BOX (SPI_GETLISTBOXSMOOTHSCROLLING, on by
+    // default): a scroll glides to where it is going over a moment instead
+    // of jumping. `_top` is where the list is scrolled to; `_pixel` is where
+    // it is drawn from, which catches up.
+    int _pixel;
+    Timer? _glide;
+    int _glideFrom, _glideTo;
+    long _glideStart;
+    const int GlideMillis = 120;
+
     public ListBox()
     {
         _items = new ObjectCollection(this);
@@ -2493,9 +2533,46 @@ public class ListBox : Control
             _syncing = true;
             if (_bar.Visible && want <= _bar.Maximum) _bar.Value = want;
             _syncing = false;
-            Invalidate();
+            Glide(want * ItemHeight);
         }
     }
+
+    /// Drawn from `to` pixels: at once, or gliding there if the user has
+    /// smooth scrolling on and the list is on the screen.
+    void Glide(int to)
+    {
+        if (!Visible || FindForm() == null || !SystemInformation.IsListBoxSmoothScrollingEnabled)
+        {
+            StopGlide();
+            _pixel = to;
+            Invalidate();
+            return;
+        }
+        _glideFrom = _pixel;
+        _glideTo = to;
+        _glideStart = Application.Now();
+        if (_glide == null)
+        {
+            _glide = new Timer();
+            _glide.Interval = 10;
+            _glide.Tick += (s, e) => { GlideStep(); };
+        }
+        _glide.Start();
+        GlideStep();
+    }
+
+    void GlideStep()
+    {
+        long gone = Application.Now() - _glideStart;
+        if (gone >= GlideMillis) { StopGlide(); _pixel = _glideTo; Invalidate(); return; }
+        // Fast at first and settling, as a thing that was pushed does.
+        long left = GlideMillis - gone;
+        int travel = _glideTo - _glideFrom;
+        _pixel = _glideTo - (int)(travel * left * left / ((long)GlideMillis * GlideMillis));
+        Invalidate();
+    }
+
+    void StopGlide() { if (_glide != null) _glide.Stop(); }
 
     protected virtual void OnSelectedIndexChanged(EventArgs e)
     {
@@ -2517,6 +2594,8 @@ public class ListBox : Control
         if (_selected >= _items.Count) { _selected = _items.Count - 1; }
         Layout();
         TopIndex = _top;
+        StopGlide();
+        _pixel = _top * ItemHeight;             // a list whose rows changed is drawn where it is, not glided
         Invalidate();
     }
 
@@ -2525,18 +2604,17 @@ public class ListBox : Control
         Graphics g = e.Graphics;
 
         g.FillRectangle(new SolidBrush(Enabled ? BackColor : SystemColors.Control), 0, 0, Width, Height);
-        ControlPaint.DrawBorder3D(g, 0, 0, Width, Height, Border3DStyle.Sunken);
 
-        int rows = Rows();
-
-        for (int row = 0; row < rows; row++)
+        // From `_pixel`, which may be part-way through a row while gliding:
+        // the rows that show even in part, and the border drawn last over
+        // whatever of them reaches into it.
+        for (int index = _pixel / ItemHeight; index < _items.Count; index++)
         {
-            int index = _top + row;
+            int y = 2 + index * ItemHeight - _pixel;
 
-            if (index >= _items.Count) { break; }
+            if (y >= Height - 2) { break; }
 
             string text = _items.TextAt(index);
-            int y = 2 + row * ItemHeight;
             bool picked = index == _selected;
 
             if (picked)
@@ -2551,6 +2629,7 @@ public class ListBox : Control
                 picked ? SystemColors.Highlight : (Enabled ? BackColor : SystemColors.Control),
                 3, y);
         }
+        ControlPaint.DrawBorder3D(g, 0, 0, Width, Height, Border3DStyle.Sunken);
         base.OnPaint(e);
     }
 
@@ -2558,7 +2637,7 @@ public class ListBox : Control
     {
         if (e.Y >= 2)
         {
-            int index = _top + (e.Y - 2) / ItemHeight;
+            int index = (_pixel + e.Y - 2) / ItemHeight;
 
             if (index >= 0 && index < _items.Count) { SelectedIndex = index; }
         }
@@ -2910,6 +2989,9 @@ public class TextBox : Control
         base.OnKeyPress(e);
         if (e.Handled || ReadOnly) return;
         char c = e.KeyChar;
+        // XP's edit control hides the pointer as it takes a character, if
+        // the user has "Hide pointer while typing" on (the seat asks).
+        if (c >= ' ' || c == '\b') { try { Seat.Current.VanishPointer(); } catch (IOException) { } }
         if (c == '\b')
         {
             // The caret moves BEFORE the text changes: setting Text clamps the
@@ -4763,7 +4845,7 @@ static class AutoScroll
                   : CursorShapes.NoMove2D;
         if (shape == _shape) return;
         _shape = shape;
-        Seat.Current.SetCursor(shape);
+        Cursor.WearShape(shape);
     }
 
     // ---- the pictures -------------------------------------------------------
@@ -4964,7 +5046,7 @@ public static class Application
         // intermediate size would be a new surface, a full repaint and a
         // composition, which is what made a resize crawl. The seat draws an
         // outline instead, and the last one is the size that is applied.
-        Seat.Current.SetCursor(Form.CursorFor(edges));
+        Cursor.WearShape(Form.CursorFor(edges));
         Seat.Current.SetBand(f.Left, f.Top, f.Width, f.Height);
     }
 
@@ -5136,6 +5218,11 @@ public static class Application
     {
         dialog.Show();
         dialog.Activate();
+        // SNAP TO: the pointer onto the dialog's default button, as Windows'
+        // dialog manager puts it there when the user has asked for that.
+        Button? accept = dialog.AcceptButton;
+        if (accept != null && accept.Visible && SystemInformation.IsSnapToDefaultEnabled)
+            Cursor.Position = accept.PointToScreen(new Point(accept.Width / 2, accept.Height / 2));
         Seat seat = Seat.Current;
         bool was = _running;
         _running = true;
@@ -5346,6 +5433,11 @@ public static class Application
                 break;
             case 16:
                 if (m.A == 1) Shell.RaiseStartRequested();
+                break;
+            case 17:
+                // WM_SETTINGCHANGE: every setting SystemInformation answers
+                // is asked of the seat again, and whoever cares is told.
+                SystemEvents.RaiseUserPreferenceChanged((UserPreferenceCategory)m.A);
                 break;
 
             // THE SCREEN IS A DIFFERENT SIZE NOW. The seat has thrown away

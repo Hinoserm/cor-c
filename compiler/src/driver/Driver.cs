@@ -1013,7 +1013,7 @@ public static class Driver
                 "Microsoft/Win32/Registry.cor",
                 "System/Drawing/Drawing.cor", "System/Drawing/TrueType.cor", "System/Drawing/Text.cor",
                 "Corsac/GUI/Gui.cor", "System/Drawing/Imaging.cor",
-                "System/Windows/Forms/Forms.cor" })
+                "System/Windows/Forms/Forms.cor", "Microsoft/Win32/SystemEvents.cor" })
             {
                 libs.Add(Path.Combine(root, "stdlib", "src", dotnet));
             }

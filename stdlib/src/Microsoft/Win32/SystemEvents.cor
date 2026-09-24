@@ -1,0 +1,59 @@
+// Microsoft.Win32.SystemEvents: what the system tells every program, as
+// .NET names it. Raised by the Windows Forms message loop from the seat's
+// events -- the settings changed (Windows' WM_SETTINGCHANGE, which the seat
+// sends to every program when the mouse's settings are read again) and the
+// display's mode changed.
+
+using System;
+using System.Windows.Forms;
+
+namespace Microsoft.Win32;
+
+/// What kind of setting changed, with .NET's names and values.
+public enum UserPreferenceCategory
+{
+    Accessibility = 1,
+    Color = 2,
+    Desktop = 3,
+    General = 4,
+    Icon = 5,
+    Keyboard = 6,
+    Menu = 7,
+    Mouse = 8,
+    Policy = 9,
+    Power = 10,
+    Screensaver = 11,
+    Window = 12,
+    Locale = 13,
+    VisualStyle = 14,
+}
+
+public class UserPreferenceChangedEventArgs : EventArgs
+{
+    public UserPreferenceChangedEventArgs(UserPreferenceCategory category) { Category = category; }
+    public UserPreferenceCategory Category { get; }
+}
+
+public delegate void UserPreferenceChangedEventHandler(object sender, UserPreferenceChangedEventArgs e);
+
+public static class SystemEvents
+{
+    /// A setting changed: after it, whatever a program read from
+    /// SystemInformation may be different.
+    public static event UserPreferenceChangedEventHandler? UserPreferenceChanged;
+
+    /// The display's mode changed.
+    public static event EventHandler? DisplaySettingsChanged;
+
+    internal static void RaiseUserPreferenceChanged(UserPreferenceCategory category)
+    {
+        UserPreferenceChangedEventHandler? h = UserPreferenceChanged;
+        if (h != null) h(null!, new UserPreferenceChangedEventArgs(category));
+    }
+
+    internal static void RaiseDisplaySettingsChanged()
+    {
+        EventHandler? h = DisplaySettingsChanged;
+        if (h != null) h(null!, EventArgs.Empty);
+    }
+}
