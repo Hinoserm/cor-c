@@ -1611,6 +1611,25 @@ static class Convert {
     public static int ToInt32(string value) { return Int32.Parse(value); }
     public static long ToInt64(string value) { return Int64.Parse(value); }
     public static long ToInt64(string value, int fromBase) { return (long)ToUInt64(value, fromBase); }
+
+    // The other widths in a base, as .NET has them: the digits read whole,
+    // and too many for the width an OverflowException. In base 2, 8 and 16
+    // .NET reads a signed type's top bit as its sign ("FF" is -1 as an
+    // sbyte), and so do these.
+    public static byte ToByte(string value, int fromBase) { return (byte)Within(value, fromBase, 0xFF, "an unsigned byte"); }
+    public static ushort ToUInt16(string value, int fromBase) { return (ushort)Within(value, fromBase, 0xFFFF, "a UInt16"); }
+    public static uint ToUInt32(string value, int fromBase) { return (uint)Within(value, fromBase, 0xFFFFFFFF, "a UInt32"); }
+    public static sbyte ToSByte(string value, int fromBase) { return (sbyte)(byte)Within(value, fromBase, 0xFF, "a signed byte"); }
+    public static short ToInt16(string value, int fromBase) { return (short)(ushort)Within(value, fromBase, 0xFFFF, "an Int16"); }
+
+    static ulong Within(string value, int fromBase, ulong most, string what) {
+        if (fromBase != 2 && fromBase != 8 && fromBase != 10 && fromBase != 16) { throw new ArgumentException("Invalid Base.", "fromBase"); }
+        if (value.Length == 0) { throw new FormatException("Could not find any recognizable digits."); }
+        string digits = fromBase == 16 && value.Length > 2 && value[0] == '0' && (value[1] == 'x' || value[1] == 'X') ? value.Substring(2) : value;
+        ulong got = ToUInt64(digits, fromBase);
+        if (got > most) { throw new OverflowException("Value was either too large or too small for " + what + "."); }
+        return got;
+    }
     public static double ToDouble(string value) { return Double.Parse(value); }
 
     public static int ToInt32(double value) { return (int)Checked(Math.Round(value), -2147483648.0, 2147483647.0, "Int32"); }
