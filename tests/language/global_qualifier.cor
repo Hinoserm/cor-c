@@ -1,0 +1,17 @@
+// test: global qualifier
+// expect-exit: 0
+// expect-output:
+// 3 x
+//
+// global:: names the global namespace, where every qualified name begins.
+
+static class Program
+{
+    static int Main()
+    {
+        global::System.Collections.Generic.List<string> names = new global::System.Collections.Generic.List<string>();
+        names.Add("x");
+        global::System.Console.WriteLine(global::System.Math.Max(3, 2) + " " + names[0]);
+        return 0;
+    }
+}

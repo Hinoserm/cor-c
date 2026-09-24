@@ -109,7 +109,14 @@ public static class Frontend
                     foreach (MemberDecl member in decl.Members)
                     {
                         member.File = file;
-                        if (declarations is not null && !isElsewhere) member.OwnedImplementation = true;
+                        // WHOSE IMPLEMENTATION, said by the member itself: a
+                        // type can be two declarations merged -- the prelude's
+                        // intrinsic Math and the library's Math -- and the
+                        // merged type's own flag then speaks for only one of
+                        // them. A --ref library's members are compiled
+                        // elsewhere whatever they merge into.
+                        if (isElsewhere) member.OwnedImplementation = false;
+                        else if (declarations is not null) member.OwnedImplementation = true;
                     }
                 }
 

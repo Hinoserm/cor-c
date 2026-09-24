@@ -369,7 +369,7 @@ public static class Driver
                     or "--load" or "--paddr" or "--cpu" or "--tune" or "--fpu" or "--with" or "--asm-entry"
                     or "--ref" or "--libdir" or "--runpath" or "--trace-opt" or "--batch-without"
                     or "-D" or "--define" or "--jobs" or "--decl-index" or "--assembly" or "--dependency-file" or "--main-type"
-                    or "--subsystem" or "--resources" or "--icon-resource")
+                    or "--subsystem" or "--resources" or "--icon-resource" or "--using")
                 {
                     i++;
                 }
@@ -507,6 +507,9 @@ public static class Driver
         {
             symbols.AddRange(given.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries));
         }
+
+        // THE PROJECT'S USINGS, in every file (Parser.ProjectUsings).
+        Parser.ProjectUsings = Values(args, "--using").ToList();
 
         Frontend.WarningsAreErrors = !args.Contains("-Wno-error");
 

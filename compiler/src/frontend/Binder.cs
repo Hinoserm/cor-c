@@ -1036,6 +1036,15 @@ public sealed partial class Binder
 
         foreach (TypeDecl d in unit.Types)
         {
+            if (d.Kind == TypeKind.Enum && _r.Types.TryGetValue(TypeKey(d), out TypeSymbol? enumSym) && ReferenceEquals(enumSym.Decl, d))
+            {
+                _in = d.File;
+                EnumUnderlying(d, enumSym);
+            }
+        }
+
+        foreach (TypeDecl d in unit.Types)
+        {
             // A TEMPLATE GETS ITS MEMBERS DECLARED, because a generic method
             // written over `List<T>` reads them: `values.Count` and
             // `values[i]` are how string.Join is written. It gets no bodies
@@ -1639,7 +1648,9 @@ public sealed partial class Binder
     /// </summary>
     private static Expr Retarget(Expr init, TypeRef declared)
     {
-        if (init is not NewExpr nw || nw.Type.Name.Length != 0)
+        // A collection expression is made for its type by the checker, which
+        // knows what the type is (the assignment this becomes wants it).
+        if (init is not NewExpr nw || nw.Type.Name.Length != 0 || nw.Collection)
         {
             return init;
         }
@@ -1718,15 +1729,24 @@ public sealed partial class Binder
         return null;
     }
 
-    private void DeclareMembersIn(TypeDecl d, TypeSymbol sym)
+    /// <summary>
+    /// WHAT FOLLOWS THE COLON ON AN ENUM IS NOT A BASE CLASS.
+    ///
+    /// It is the UNDERLYING TYPE -- how wide each member is stored -- and it
+    /// is always one of the integer primitives. Resolved through the same
+    /// path as a base class it was looked for among the declared types and
+    /// reported as 'byte' is not a known type, which is true and is not the
+    /// question being asked.
+    ///
+    /// SETTLED FOR EVERY ENUM BEFORE ANY MEMBER IS DECLARED: a type
+    /// declared earlier that takes the enum as a parameter resolves the enum's
+    /// type then, and the type an enum resolves to carries its width. A
+    /// `ref Size` parameter taken as an int-wide Size refused a byte-wide
+    /// Size argument -- as it did in a project, where declaration order is
+    /// the index's.
+    /// </summary>
+    private void EnumUnderlying(TypeDecl d, TypeSymbol sym)
     {
-        // WHAT FOLLOWS THE COLON ON AN ENUM IS NOT A BASE CLASS.
-        //
-        // It is the UNDERLYING TYPE -- how wide each member is stored -- and it
-        // is always one of the integer primitives. Resolved through the same
-        // path as a base class it was looked for among the declared types and
-        // reported as 'byte' is not a known type, which is true and is not the
-        // question being asked.
         foreach (TypeRef u in d.Kind == TypeKind.Enum ? d.Bases : Enumerable.Empty<TypeRef>())
         {
             if (Underlying(u.Name) is Prim held)
@@ -1738,6 +1758,12 @@ public sealed partial class Binder
                 Error(u, $"an enum's underlying type must be an integer; '{u.Name}' is not one");
             }
         }
+    }
+
+    private void DeclareMembersIn(TypeDecl d, TypeSymbol sym)
+    {
+        // An enum's underlying type was settled before any members were
+        // declared (EnumUnderlying), so the checks below find it in place.
 
         // CHECKED AND THEN FALLS THROUGH, rather than returning: the member
         // values are worked out further down this same method, and returning
@@ -2860,6 +2886,15 @@ public sealed partial class Binder
     private void CheckBlock(Block b)
     {
         PushScope();
+
+        // A GENERIC LOCAL FUNCTION is a hidden generic method of the type
+        // (Block.GenericLocals); in this block its written name is that
+        // method's group, as a method of the type is reached by its own.
+        foreach ((string name, string method) in b.GenericLocals)
+        {
+            List<MethodSymbol>? methods = _thisType?.FindMethods(method);
+            if (methods is { Count: > 0 }) Declare(b, name, new MethodGroupSym(methods));
+        }
 
         // C# LOCAL FUNCTIONS ARE BLOCK-SCOPED, not declaration-scoped: a call
         // above the declaration is valid and recursion requires the name to be
@@ -6605,6 +6640,63 @@ public sealed partial class Binder
         return total;
     }
 
+    /// <summary>
+    /// What a collection expression is, for the type that wants it: an array
+    /// of that element; for IEnumerable&lt;T&gt;, IReadOnlyCollection&lt;T&gt; and
+    /// IReadOnlyList&lt;T&gt;, which an array is, an array of T; and for a class
+    /// or struct with an Add, its collection initializer. Null, and why, for
+    /// anything else.
+    ///
+    /// A SPREAD (`..items`) needs a list to gather into, and a list of an
+    /// element type the program never named cannot be made this late -- the
+    /// specialisations are made before checking. So a spread is refused, and
+    /// says so, until the monomorphiser makes that list.
+    /// </summary>
+    private Expr? CollectionFor(NewExpr collection, Type target, out string? why)
+    {
+        why = null;
+        if (collection.Adds.Any(add => add.Spread))
+        {
+            why = "a spread ('..') in a collection expression is not supported yet; add the elements with a loop";
+            return null;
+        }
+        List<Expr> elements = collection.Adds.Select(add => add.Args[0]).ToList();
+
+        Type? element = null;
+        if (target.IsArray && target.ArrayRank == 1) element = target.Element;
+        else if (target.Symbol is { Kind: TypeKind.Interface, Decl: { } decl }
+                 && decl.Template is string template && decl.TemplateArgs.Count == 1
+                 && Last(template) is "IEnumerable" or "IReadOnlyCollection" or "IReadOnlyList")
+        {
+            if (Resolve(decl.TemplateArgs[0], _thisType) is { IsError: false } argument) element = argument;
+        }
+        if (element is not null)
+        {
+            if (RefOf(element) is not TypeRef elementRef)
+            {
+                why = $"a collection expression cannot make an array of '{element}'";
+                return null;
+            }
+            return new NewExpr
+            {
+                Type = elementRef, Elements = elements,
+                Line = collection.Line, Col = collection.Col,
+            };
+        }
+
+        if (target.Symbol is { Kind: TypeKind.Class or TypeKind.Struct } && !target.IsArray && RefOf(target) is TypeRef targetRef)
+        {
+            NewExpr made = new() { Type = targetRef, Line = collection.Line, Col = collection.Col };
+            made.Adds.AddRange(collection.Adds);
+            return made;
+        }
+
+        why = $"a collection expression cannot be a '{target}'";
+        return null;
+
+        static string Last(string name) => name.Contains('.') ? name[(name.LastIndexOf('.') + 1)..] : name;
+    }
+
     /// <summary>What a type is called, where it has a name a TypeRef could hold.</summary>
     /// <summary>
     /// A type as a TypeRef, or null when it has no name one could hold.
@@ -7608,6 +7700,28 @@ public sealed partial class Binder
 
                 RequireNonNull(target, ix.Target, "index into");
                 return target.Element ?? Type.Error;
+            }
+
+            case NewExpr { Collection: true, Type.Name.Length: 0 } collection:
+            {
+                // A COLLECTION EXPRESSION becomes what its target is: an array
+                // of the elements, or the target's own collection initializer.
+                if (_wanted is not { } target || target.IsError)
+                {
+                    if (_wanted is null)
+                        Error(collection, "a collection expression needs a type to become; write it where one is wanted, or as 'new T[] { ... }'");
+                    foreach (InitAdd add in collection.Adds) CheckExpr(add.Args[0]);
+                    return Type.Error;
+                }
+                Expr? made = CollectionFor(collection, target, out string? why);
+                if (made is null)
+                {
+                    Error(collection, why!);
+                    foreach (InitAdd add in collection.Adds) CheckExpr(add.Args[0]);
+                    return Type.Error;
+                }
+                _r.Rewrites[collection] = made;
+                return CheckExpr(made);
             }
 
             case NewExpr nw:
@@ -9848,6 +9962,9 @@ public sealed partial class Binder
                 // value wherever one is wanted, which is what lets it stand in
                 // a constant pattern.
                 ConstSym k => k.Type,
+                // A generic local function's name: its method group, called
+                // as any method of the type is.
+                MethodGroupSym => Type.Void,
                 _ => Type.Error,
             };
 
@@ -11191,7 +11308,7 @@ public sealed partial class Binder
 
         bool WrittenFits(Type had, Type want, Expr written)
         {
-            if (written is NewExpr { Type.Name.Length: 0, Elements: null } && want.Symbol is not null) return true;
+            if (written is NewExpr { Type.Name.Length: 0, Elements: null } && (want.Symbol is not null || (written is NewExpr { Collection: true } && want.IsArray))) return true;
             if (Convertible(had, want) || had.IsError || Unmade(want) || Variant(had, want))
             {
                 return true;
@@ -11449,7 +11566,7 @@ public sealed partial class Binder
             {
                 Type want = Wants(m, i);
 
-                if (c.Args[i] is NewExpr { Type.Name.Length: 0, Elements: null } && want.Symbol is not null) continue;
+                if (c.Args[i] is NewExpr { Type.Name.Length: 0, Elements: null } && (want.Symbol is not null || (c.Args[i] is NewExpr { Collection: true } && want.IsArray))) continue;
 
                 // A BY-REFERENCE ARGUMENT FITS ONLY ITS OWN TYPE. C# counts an
                 // overload applicable only when every ref and out argument's

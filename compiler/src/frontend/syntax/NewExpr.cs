@@ -20,6 +20,14 @@ public sealed class NewExpr : Expr
     /// </summary>
     public List<Expr>? Elements { get; set; }
 
+    /// <summary>
+    /// A COLLECTION EXPRESSION, <c>[a, b, ..c]</c>: a target-typed collection
+    /// whose elements are its Adds (a spread is an Add marked Spread). The
+    /// checker makes it an array or a collection initializer of the type that
+    /// wants it.
+    /// </summary>
+    public bool Collection { get; init; }
+
     /// <summary>The `{ … }` after the constructor, if there was one.</summary>
     public InitBody Body { get; } = new();
 

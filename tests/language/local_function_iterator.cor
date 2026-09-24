@@ -1,0 +1,25 @@
+// test: local function iterator
+// expect-exit: 0
+// expect-output:
+// 30
+//
+// A local function may be an iterator of its own: its yield returns are not
+// its enclosing method's, and it sees the locals around it.
+
+using System;
+using System.Collections.Generic;
+static class Program
+{
+    static int Main()
+    {
+        int limit = 3;
+        IEnumerable<int> Numbers()
+        {
+            for (int i = 0; i < limit; i++) yield return i * 10;
+        }
+        int sum = 0;
+        foreach (int n in Numbers()) sum += n;
+        Console.WriteLine(sum);
+        return 0;
+    }
+}

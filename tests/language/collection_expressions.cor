@@ -1,0 +1,31 @@
+// test: collection expressions
+// expect-exit: 0
+// expect-output:
+// 6 2 2 15 3
+// 0 2 9 8
+//
+// C# 12's collection expressions, target-typed: an array, a List<T>, a
+// read-only interface (which an array is), in a declaration, a field, an
+// assignment, an argument and a return, and the empty one.
+
+using System;
+using System.Collections.Generic;
+class Holder { public List<string> Names = ["a", "b"]; public int[] Codes = [9]; }
+static class Program
+{
+    static int Sum(int[] a) { int s = 0; foreach (int x in a) s += x; return s; }
+    static int Count(IEnumerable<string> items) { int n = 0; foreach (string s in items) n++; return n; }
+    static int[] Make() { return [4, 4]; }
+    static int Main()
+    {
+        int[] a = [1, 2, 3];
+        string[] b;
+        b = ["x", "y"];
+        List<int> l = [4, 5];
+        Holder h = new Holder();
+        Console.WriteLine(Sum(a) + " " + b.Length + " " + l.Count + " " + Sum([7, 8]) + " " + Count(["p", "q", "r"]));
+        int[] e = [];
+        Console.WriteLine(e.Length + " " + h.Names.Count + " " + h.Codes[0] + " " + Sum(Make()));
+        return 0;
+    }
+}

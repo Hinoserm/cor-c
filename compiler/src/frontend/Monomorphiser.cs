@@ -1267,6 +1267,7 @@ public sealed class Monomorphiser
             case Block b:
             {
                 Block made = new() { Line = b.Line, Col = b.Col, ArithmeticContext = b.ArithmeticContext };
+                made.GenericLocals.AddRange(b.GenericLocals);
 
                 foreach (Stmt inner in b.Statements)
                 {
@@ -1486,7 +1487,7 @@ public sealed class Monomorphiser
 
         foreach (InitAdd add in from.Adds)
         {
-            InitAdd copy = new() { Line = add.Line, Col = add.Col };
+            InitAdd copy = new() { Spread = add.Spread, Line = add.Line, Col = add.Col };
 
             foreach (Expr one in add.Args)
             {
@@ -1734,6 +1735,9 @@ public sealed class Monomorphiser
                 {
                     Type = Sub(nw.Type, map),
                     ArraySize = nw.ArraySize is null ? null : Rewrite(nw.ArraySize, map),
+                    // A collection expression stays one: the copy is made into
+                    // its target's type by the checker, as the original is.
+                    Collection = nw.Collection,
                     Line = nw.Line, Col = nw.Col,
                 };
 

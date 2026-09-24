@@ -1,0 +1,19 @@
+// test: string tostring
+// expect-exit: 0
+// expect-output:
+// xy!System.Object!
+//
+// String.ToString is the string itself, and a T : class bound to string
+// answers it too.
+
+using System;
+static class Program
+{
+    static string Show<T>(T a) where T : class => a.ToString() + "!";
+    static int Main()
+    {
+        string s = "x";
+        Console.WriteLine(s.ToString() + Show("y") + Show(new object()));
+        return 0;
+    }
+}

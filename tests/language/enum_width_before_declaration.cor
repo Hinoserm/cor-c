@@ -1,0 +1,30 @@
+// test: enum width before declaration
+// expect-exit: 0
+// expect-output:
+// B D True 4
+//
+// An enum's underlying type is known before any member is declared: a class
+// declared before a byte-wide enum takes it by ref and out as the byte-wide
+// type it is, not as an int-wide one.
+
+using System;
+
+static class Isa
+{
+    public static bool Parse(string text, out Width size) { size = text == "b" ? Width.B : Width.D; return true; }
+    public static void Flip(ref Width size) { size = size == Width.B ? Width.D : Width.B; }
+}
+
+enum Width : byte { B, D }
+
+static class Program
+{
+    static int Main()
+    {
+        Isa.Parse("b", out Width s);
+        Width t = s;
+        Isa.Flip(ref t);
+        Console.WriteLine(s + " " + t + " " + (sizeof(Width) == 1) + " " + (int)Width.D * 4);
+        return 0;
+    }
+}

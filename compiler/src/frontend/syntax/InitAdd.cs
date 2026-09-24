@@ -11,4 +11,7 @@ namespace Corsac.Lang;
 public sealed class InitAdd : Node
 {
     public List<Expr> Args { get; } = new();
+
+    /// <summary>`..items` in a collection expression: every element of it, not it.</summary>
+    public bool Spread { get; init; }
 }

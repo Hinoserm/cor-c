@@ -1,0 +1,35 @@
+// test: generic local function
+// expect-exit: 0
+// expect-output:
+// 110 abab
+//
+// A local function may be generic, with constraints; it is a hidden generic
+// method of its type, known by its own name in its block, static when its
+// member is and able to use the instance when not.
+
+using System;
+using System.Collections.Generic;
+class Codec
+{
+    int _base = 100;
+    public int Read(int[] numbers, string[] words)
+    {
+        T At<T>(T[] values, int index) => index >= 0 && index < values.Length ? values[index] : throw new InvalidOperationException("outside");
+        int first = At(numbers, 1);
+        string word = At(words, 0);
+        return first + word.Length + _base;
+    }
+    public static string Twice(string s)
+    {
+        return Pair(s, s);
+        static string Pair<T>(T a, T b) where T : class => a.ToString() + b.ToString();
+    }
+}
+static class Program
+{
+    static int Main()
+    {
+        Console.WriteLine(new Codec().Read(new[] { 5, 7 }, new[] { "abc" }) + " " + Codec.Twice("ab"));
+        return 0;
+    }
+}

@@ -71,8 +71,14 @@ public sealed class ProjectEvaluator
             throw new InvalidDataException("AssemblyName must be a simple output name");
         if (!managed && Get("CheckForOverflowUnderflow").Equals("true", StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("Project-wide checked arithmetic is not yet implemented");
-        if (items.Any(item => item.Type == "Using") || (!managed && Get("ImplicitUsings") is "enable" or "true"))
-            throw new InvalidDataException("Generated project-wide using directives are not yet connected to indexed compilation");
+        // THE GLOBAL USINGS the SDK would generate a file of: its implicit
+        // ones for Microsoft.NET.Sdk, then the <Using> items, in order, less
+        // any a <Using Remove> took away.
+        List<string> usings = new();
+        if (Get("ImplicitUsings") is "enable" or "true")
+            usings.AddRange(new[] { "System", "System.Collections.Generic", "System.IO", "System.Linq", "System.Net.Http", "System.Threading", "System.Threading.Tasks" });
+        foreach (string written in _usingItems) if (!usings.Contains(written)) usings.Add(written);
+        foreach (string removed in _removedUsings) usings.Remove(removed);
         string[] sources = items.Where(item => item.Type == "Compile").Select(item => item.Include).ToArray();
         if (sources.Distinct(StringComparer.Ordinal).Count() != sources.Length) throw new InvalidDataException("Duplicate Compile items in " + project);
         List<string> defines = Split(Get("DefineConstants")).ToList();
@@ -88,6 +94,7 @@ public sealed class ProjectEvaluator
             Framework = framework, StartupObject = Get("StartupObject"), Sources = sources,
             References = items.Where(item => item.Type == "ProjectReference").Select(item => item.Include).ToArray(),
             Defines = defines.Distinct(StringComparer.Ordinal).ToArray(), WarningsAsErrors = Get("TreatWarningsAsErrors") == "true",
+            Usings = usings.ToArray(),
             Properties = new Dictionary<string, string>(properties, StringComparer.OrdinalIgnoreCase),
             Evaluation = string.Join("\n", inputs.Select(path => path + ":" + File.GetLastWriteTimeUtc(path).Ticks)) };
     }
@@ -164,10 +171,27 @@ public sealed class ProjectEvaluator
             }
         }
     }
+    /// <summary>&lt;Using&gt; items as written: a namespace, or `Alias=Name`.</summary>
+    private readonly List<string> _usingItems = new();
+    private readonly List<string> _removedUsings = new();
+
     private void EvaluateItem(XElement node)
     {
         if (!Condition(node)) return;
         string type = node.Name.LocalName;
+
+        // A USING IS A NAME, NOT A PATH: `<Using Include="System.Text" />`,
+        // with Alias="" to name it, or Static="true" for a type's members.
+        if (type == "Using")
+        {
+            string? name = (string?)node.Attribute("Include");
+            string? gone = (string?)node.Attribute("Remove");
+            if (gone is not null) { foreach (string one in Split(Expand(gone))) _removedUsings.Add(one); return; }
+            if (name is null) throw new InvalidDataException("A <Using> needs Include or Remove");
+            string? alias = (string?)node.Attribute("Alias") ?? node.Elements().FirstOrDefault(e => e.Name.LocalName == "Alias")?.Value;
+            foreach (string one in Split(Expand(name))) _usingItems.Add(alias is { Length: > 0 } ? alias + "=" + one : one);
+            return;
+        }
         // RuntimeHostConfigurationOption is accepted for the SDK's sake and
         // otherwise ignored: this build reads the collector settings from the
         // properties the items are written in terms of. See corc.csproj.

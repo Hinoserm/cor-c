@@ -1,0 +1,34 @@
+// test: positional pattern combinators
+// expect-exit: 0
+// expect-output:
+// fldcw 5
+// fnstsw 7
+// other -1
+// in 1
+// out 0
+//
+// Each element of a positional pattern is a whole pattern: `or`, `and` and
+// `not` combine inside it as they do after `is`.
+
+using System;
+
+static class Program
+{
+    static int Encode(string name, int width) => (name, width) switch
+    {
+        ("fldcw", 0 or 2) => 5,
+        ("fnstsw", 0 or 2) => 7,
+        _ => -1,
+    };
+
+    static int Main()
+    {
+        Console.WriteLine("fldcw " + Encode("fldcw", 2));
+        Console.WriteLine("fnstsw " + Encode("fnstsw", 0));
+        Console.WriteLine("other " + Encode("fldcw", 4));
+        (int, int) pair = (3, 9);
+        Console.WriteLine("in " + (pair is (> 0 and < 5, not 0) ? 1 : 0));
+        Console.WriteLine("out " + (pair is (> 5, _) ? 1 : 0));
+        return 0;
+    }
+}

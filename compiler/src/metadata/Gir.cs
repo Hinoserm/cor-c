@@ -46,7 +46,10 @@ public static class Gir
     // what an enum prints, so dropping it on the way through here would make a
     // template's enum print differently from the same enum compiled directly.
     // 9: throw statements preserve explicit throw versus bare rethrow.
-    public const ushort Major = 9;
+    // 10: `new` keeps its array elements (`new[] { a, b }` lost them), and
+    // collection expressions and their spreads are marked; a block carries
+    // its generic local functions.
+    public const ushort Major = 10;
 
     /// <summary>Bumped when something is APPENDED that an old reader can ignore.</summary>
     public const ushort Minor = 0;
@@ -478,6 +481,8 @@ public static class Gir
                 case Block b:
                     U8((byte)S.Block);
                     U8(b.ArithmeticContext);
+                    I32(b.GenericLocals.Count);
+                    foreach ((string name, string method) in b.GenericLocals) { Str(name); Str(method); }
                     I32(b.Statements.Count);
 
                     foreach (Stmt one in b.Statements)
@@ -665,6 +670,7 @@ public static class Gir
 
             foreach (InitAdd add in body.Adds)
             {
+                Bool(add.Spread);
                 I32(add.Args.Count);
 
                 foreach (Expr a in add.Args)
@@ -800,6 +806,16 @@ public static class Gir
                     {
                         Expr(a);
                     }
+
+                    // `new[] { a, b }`'s elements, and whether it was a
+                    // collection expression: both are the expression.
+                    Bool(nw.Elements != null);
+                    if (nw.Elements is { } elements)
+                    {
+                        I32(elements.Count);
+                        foreach (Expr element in elements) Expr(element);
+                    }
+                    Bool(nw.Collection);
 
                     Body(nw.Body);
                     break;
@@ -1281,6 +1297,8 @@ public static class Gir
                     byte arithmetic = U8();
                     if (arithmetic > 2) throw new AsmException(0, "invalid block arithmetic context");
                     Block b = new() { ArithmeticContext = arithmetic };
+                    int locals = Count();
+                    for (int i = 0; i < locals; i++) { string name = Str(); b.GenericLocals.Add((name, Str())); }
                     int n = Count();
 
                     for (int i = 0; i < n; i++)
@@ -1504,7 +1522,7 @@ public static class Gir
 
             for (int i = 0; i < adds; i++)
             {
-                InitAdd add = new();
+                InitAdd add = new() { Spread = Bool() };
                 int args = Count();
 
                 for (int j = 0; j < args; j++)
@@ -1627,20 +1645,31 @@ public static class Gir
                 {
                     TypeRef type = Type();
                     Expr? size = Expr();
-                    NewExpr nw = new() { Type = type, ArraySize = size };
+                    List<string?> argNames = new();
                     int names = Count();
 
                     for (int i = 0; i < names; i++)
                     {
                         string name = Str();
-                        nw.ArgNames.Add(name.Length == 0 ? null : name);
+                        argNames.Add(name.Length == 0 ? null : name);
                     }
+                    List<Expr> argList = new();
                     int args = Count();
 
                     for (int i = 0; i < args; i++)
                     {
-                        nw.Args.Add(Need());
+                        argList.Add(Need());
                     }
+                    List<Expr>? elements = null;
+                    if (Bool())
+                    {
+                        elements = new List<Expr>();
+                        int count = Count();
+                        for (int i = 0; i < count; i++) elements.Add(Need());
+                    }
+                    NewExpr nw = new() { Type = type, ArraySize = size, Elements = elements, Collection = Bool() };
+                    nw.ArgNames.AddRange(argNames);
+                    nw.Args.AddRange(argList);
 
                     ReadBody(nw.Body);
                     return nw;

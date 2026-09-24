@@ -43,6 +43,11 @@ enum StringSplitOptions {
 }
 
 static class String {
+    // String.ToString: the string itself, as .NET answers it, whether or not
+    // a format provider is given -- a string is already its own text.
+    public static string ToString(string value) { return value; }
+    public static string ToString(string value, IFormatProvider? provider) { return value; }
+
     // LINQ's Count(predicate) over a string. A string is a sequence of char in
     // C#; it is a primitive byte string here, so this instance-shaped static
     // helper supplies the same source surface without putting a vtable on it.

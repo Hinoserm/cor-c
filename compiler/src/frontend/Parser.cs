@@ -632,6 +632,15 @@ public sealed class Parser
 
     // ---- compilation unit -----------------------------------------------
 
+    /// <summary>
+    /// The project's own using directives, in every file: what an SDK
+    /// project's ImplicitUsings and &lt;Using&gt; items make into a generated
+    /// file of global usings. `Name` imports a namespace (or a type, for a
+    /// static one), `Alias=Name` names one. Set by the driver (--using) for
+    /// the whole compilation.
+    /// </summary>
+    public static IReadOnlyList<string> ProjectUsings { get; set; } = Array.Empty<string>();
+
     public CompilationUnit ParseUnit()
     {
         Token start = Cur;
@@ -640,6 +649,13 @@ public sealed class Parser
         _namespace = "";
         _typePath = "";
         _fileScope = new FileScope();
+        foreach (string project in ProjectUsings)
+        {
+            int equals = project.IndexOf('=');
+            if (equals > 0) _fileScope.Aliases.Add(("", project[..equals], project[(equals + 1)..]));
+            else _fileScope.Imports.Add(("", project));
+            unit.Usings.Add(equals > 0 ? project[..equals] : project);
+        }
 
         ParseUsings(unit);
 
@@ -1364,6 +1380,15 @@ public sealed class Parser
                 member.Namespace = _namespace;
                 decl.Members.Add(member);
 
+                // Its generic local functions, as members of their own.
+                foreach (MethodDecl hoisted in _hoisted)
+                {
+                    hoisted.Scope = _fileScope;
+                    hoisted.Namespace = _namespace;
+                    decl.Members.Add(hoisted);
+                }
+                _hoisted.Clear();
+
                 // `const int A = 0, B = 1;` is several fields written once;
                 // the extras arrive with the first and become members here,
                 // so nothing below this ever sees a declaration with more
@@ -1858,6 +1883,8 @@ public sealed class Parser
     {
         Token start = Cur;
         Mods mods = ParseMods();
+        _memberStatic = (mods & Mods.Static) != 0;
+        _memberName = start.Text;
         // `event T Name;` is a field of a delegate type whose compound
         // assignments combine and remove handlers. The keyword is all the
         // syntax there is; the binder and lowering give += and -= their
@@ -2946,6 +2973,27 @@ public sealed class Parser
     {
         Token at = Expect(Tok.LBrace, "'{'");
         Block block = new() { Line = at.Line, Col = at.Col };
+        _blocks.Push(block);
+        try { return ParseBlockBody(block); }
+        finally { _blocks.Pop(); }
+    }
+
+    /// <summary>The blocks being read, innermost on top: where a generic local function is declared.</summary>
+    private readonly Stack<Block> _blocks = new();
+
+    /// <summary>Generic local functions made into members of the type being read, added after the member that declared them.</summary>
+    private readonly List<MethodDecl> _hoisted = new();
+
+    /// <summary>Whether the member being read is static: its generic local functions are.</summary>
+    private bool _memberStatic;
+
+    /// <summary>The name of the member being read, which its hoisted local functions are named after.</summary>
+    private string _memberName = "";
+    private int _hoistSerial;
+
+    private Block ParseBlockBody(Block block)
+    {
+        Token at = _t[_i - 1];
 
         if (SkipImplementation)
         {
@@ -4422,8 +4470,22 @@ public sealed class Parser
             }
         }
 
-        // Then the name and the bracket that opens its parameters.
-        return j + 1 < _t.Count && _t[j].Kind == Tok.Ident && _t[j + 1].Kind == Tok.LParen;
+        // Then the name, its type parameters if it is generic, and the
+        // bracket that opens its parameters.
+        if (j >= _t.Count || _t[j].Kind != Tok.Ident) return false;
+        j++;
+        if (j < _t.Count && _t[j].Kind == Tok.Lt)
+        {
+            int angles = 0;
+            while (j < _t.Count)
+            {
+                if (_t[j].Kind == Tok.Lt) angles++;
+                else if (_t[j].Kind == Tok.Gt) { angles--; if (angles == 0) { j++; break; } }
+                else if (_t[j].Kind is not (Tok.Ident or Tok.Comma)) return false;
+                j++;
+            }
+        }
+        return j < _t.Count && _t[j].Kind == Tok.LParen;
     }
 
     /// <summary>
@@ -4434,6 +4496,25 @@ public sealed class Parser
     /// which is exactly how C# spells them, so the type a user could write by
     /// hand is the type this builds.
     /// </summary>
+    private Stmt ParseGenericLocalFunction(Token at, TypeRef? returns, string name)
+    {
+        if (_blocks.Count == 0) throw Error("a generic local function must be declared in a block");
+        MethodDecl m = new()
+        {
+            Name = name + "$" + _memberName + "$" + _hoistSerial++,
+            Returns = returns ?? VoidType(),
+            Mods = _memberStatic ? Mods.Static | Mods.Private : Mods.Private,
+            Line = at.Line, Col = at.Col, Body = null,
+        };
+        ParseTypeParams(m.TypeParams);
+        ParseParams(m.Params);
+        ParseConstraints(m.TypeParams);
+        MethodDecl finished = FinishMethod(m);
+        _blocks.Peek().GenericLocals.Add((name, finished.Name));
+        _hoisted.Add(finished);
+        return new Block { Line = at.Line, Col = at.Col };
+    }
+
     private Stmt ParseLocalFunction(Token at)
     {
         TypeRef? returns = Take(Tok.KwVoid)
@@ -4442,6 +4523,14 @@ public sealed class Parser
 
         string name = Expect(Tok.Ident, "the local function's name").Text;
 
+        // A GENERIC LOCAL FUNCTION is a generic method of the type, hidden
+        // under a name of its own and known by its written name only in this
+        // block (Block.GenericLocals): a delegate, which the other local
+        // functions are, cannot be generic.
+        if (At(Tok.Lt))
+        {
+            return ParseGenericLocalFunction(at, returns, name);
+        }
 
         Expect(Tok.LParen, "'(' to open the parameters");
 
@@ -4477,7 +4566,10 @@ public sealed class Parser
         }
         else
         {
-            lam = new LambdaExpr { BlockBody = ParseBlock(), Line = at.Line, Col = at.Col };
+            // ITS OWN BODY, as a method's is: a local function may be an
+            // iterator of its own, and its `yield`s are not its enclosing
+            // method's.
+            lam = new LambdaExpr { BlockBody = ReadBodyBlock(returns, at.Line, at.Col), Line = at.Line, Col = at.Col };
         }
 
         lam.Params.AddRange(made.Params);
@@ -4735,11 +4827,13 @@ public sealed class Parser
                     Line = at.Line,
                     Col = at.Col,
                 };
+                // EACH ELEMENT IS A WHOLE PATTERN, `or` and `and` and all:
+                // `("fldcw", 0 or 2)` is as good C# as `x is 0 or 2`.
                 built = new BinaryExpr
                 {
                     Op = BinOp.AndAlso,
                     Left = built,
-                    Right = ParsePrimaryPattern(member, at),
+                    Right = ParseIsPattern(member, at),
                     Line = at.Line,
                     Col = at.Col,
                 };
@@ -6055,6 +6149,30 @@ public sealed class Parser
 
         switch (Cur.Kind)
         {
+            // A COLLECTION EXPRESSION, `[1, 2, ..more]`: C# 12's target-typed
+            // collection, read as the target-typed `new() { 1, 2 }` it is,
+            // brackets for braces (NewExpr.Collection).
+            case Tok.LBracket:
+            {
+                _i++;
+                NewExpr collection = new()
+                {
+                    Type = new TypeRef { Name = "", Line = at.Line, Col = at.Col },
+                    Collection = true,
+                    Line = at.Line, Col = at.Col,
+                };
+                while (!At(Tok.RBracket))
+                {
+                    Token elementAt = Cur;
+                    InitAdd add = new() { Spread = Take(Tok.DotDot), Line = elementAt.Line, Col = elementAt.Col };
+                    add.Args.Add(ParseExpr());
+                    collection.Adds.Add(add);
+                    if (!Take(Tok.Comma)) break;
+                }
+                Expect(Tok.RBracket, "']' to close the collection expression");
+                return collection;
+            }
+
             case Tok.Int:
                 _i++;
                 return new LiteralExpr { Kind = Lit.Int, Text = at.Text, IntValue = ParseIntText(at), Line = at.Line, Col = at.Col };

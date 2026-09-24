@@ -48,6 +48,7 @@ public static class ProjectCommand
         if (path is null || workers < 1) throw new ArgumentException("project needs a .csproj path and a positive worker count");
         IReadOnlyList<EvaluatedProject> graph = ProjectGraph.Evaluate(path, configuration, framework);
         EvaluatedProject project = graph[^1];
+        Parser.ProjectUsings = project.Usings;
         // Ordinary MSBuild properties are ignored by .NET but select the native
         // target here. Command-line selections override project defaults.
         List<string> defaults = new();
@@ -69,7 +70,17 @@ public static class ProjectCommand
         foreach (EvaluatedProject node in graph)
         foreach (string source in node.Sources)
         {
-            if (!owners.TryAdd(source, node)) throw new InvalidDataException("The same source participates in multiple projects: " + source);
+            // A SOURCE TWO PROJECTS COMPILE -- build.csproj takes the project
+            // evaluator's files from the compiler's tree -- is two copies of
+            // its types in .NET, one per assembly. One native image has one
+            // table of types, so it is compiled once, in the first project
+            // that has it (a referenced one: the graph is in build order); the
+            // one difference is that .NET would give each copy its own statics.
+            if (!owners.TryAdd(source, node))
+            {
+                Console.Error.WriteLine("corc: " + source + " is in " + owners[source].AssemblyName + " and " + node.AssemblyName + "; compiled once");
+                continue;
+            }
             symbols[source] = node.Defines;
             CompilationUnit header = Parser.ParseText(File.ReadAllText(source), source, node.Defines, declarationsOnly: true);
             foreach (TypeDecl type in header.Types)
@@ -86,6 +97,12 @@ public static class ProjectCommand
         if (entries.Count != 1) throw new InvalidDataException("Project must select exactly one entry point; found " + entries.Count);
         Dictionary<string, string> generation = owners.Keys.ToDictionary(source => source, ProjectState.FileIdentity, StringComparer.Ordinal);
         string index = Path.Combine(work, "declarations.idx");
+        // One set of project usings for the whole compilation: a referenced
+        // project with different ones would need them per file.
+        foreach (EvaluatedProject node in graph)
+            if (!node.Usings.SequenceEqual(project.Usings))
+                throw new InvalidDataException("Referenced projects with different global usings are not yet supported: " + node.Path);
+        Parser.ProjectUsings = project.Usings;
         SourceIndexBuilder.Write(index, owners.Keys, project.AssemblyName, fileSymbols: symbols);
         string[] libraries = Driver.DefaultLibraries(Target.X86).ToArray();
         if (libraries.Length == 0) throw new InvalidDataException("The native runtime sources were not found");
@@ -117,6 +134,7 @@ public static class ProjectCommand
             else { args.Add("--main-type"); args.Add(entries[0].Type); }
             if (!owner.WarningsAsErrors) args.Add("-Wno-error");
             foreach (string define in owner.Defines) { args.Add("--define"); args.Add(define); }
+            foreach (string use in owner.Usings) { args.Add("--using"); args.Add(use); }
             foreach (string library in libraries) { args.Add("--ref"); args.Add(library); }
             bool current = Current(destination, signature, index);
             if (!Compile(args, destination, signature, index)) return 1;

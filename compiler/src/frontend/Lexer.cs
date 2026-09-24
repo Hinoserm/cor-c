@@ -204,7 +204,24 @@ public sealed class Lexer
 
         if (char.IsLetter(c) || c == '_')
         {
-            return Word(line, col, start);
+            Token word = Word(line, col, start);
+
+            // `global::` NAMES THE GLOBAL NAMESPACE, which is where a qualified
+            // name already begins here: namespaces are not a tree, and a name
+            // resolves from its last parts. So the qualifier is read and
+            // dropped, and what follows it is the name. Any other alias before
+            // `::` is an extern alias, which a program here cannot have.
+            if (word.Kind == Tok.Ident && Cur == ':' && Peek() == ':')
+            {
+                if (word.Text != "global")
+                {
+                    throw Error($"'{word.Text}::' names an extern alias; only 'global::' is known here", line, col);
+                }
+                Advance();
+                Advance();
+                return Next();
+            }
+            return word;
         }
 
         if (char.IsDigit(c) || (c == '.' && char.IsDigit(Peek())))
