@@ -7,6 +7,9 @@ static class Environment
     public static int ExitCode;
     public static string NewLine = "\n";
 
+    /// The processors this process may run on.
+    public static int ProcessorCount { get { return Os.ProcessorCount(); } }
+
     /// THE PROGRAM'S OWN PATH, which .NET 6 added and which is the only honest
     /// way to find anything installed beside it. /proc/self/exe is what the
     /// kernel answers with; argv[0] is what the caller chose to say and may be

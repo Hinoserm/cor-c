@@ -90,6 +90,7 @@ static class Call
     public const long RtSigaction = 174;
     public const long RtSigprocmask = 175;
     public const long GetRandom = 355;
+    public const long SchedGetaffinity = 242;   // (pid, bytes, mask)
     public const long Utimensat = 320;
     public const long Sync = 36;
     public const long Fsync = 118;
@@ -1112,6 +1113,20 @@ static class Os
         }
 
         return (int)r;
+    }
+
+    /// How many processors this process may run on: the bits of its
+    /// sched_getaffinity(2) mask, which is what .NET's ProcessorCount counts.
+    public static int ProcessorCount()
+    {
+        byte[] mask = new byte[128];
+        long got = Platform.Result(Sys.Syscall(Call.SchedGetaffinity, 0, mask.Length, AddressOf(mask)));
+        int count = 0;
+        for (int i = 0; i < got && i < mask.Length; i++)
+        {
+            for (int bit = 0; bit < 8; bit++) if (((mask[i] >> bit) & 1) != 0) count++;
+        }
+        return count > 0 ? count : 1;
     }
 
     /// getrandom(2): bytes into the buffer, blocking until the pool is seeded.

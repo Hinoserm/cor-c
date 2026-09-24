@@ -325,6 +325,9 @@ static class Platform
 /// mistake in it, and a compile error is where that mistake should surface.
 static class Os
 {
+    /// One processor: a machine with no operating system runs one thread.
+    public static int ProcessorCount() { return 1; }
+
     /// Everything written goes to the console whatever the descriptor.
     public static int Write(int fd, string s)
     {

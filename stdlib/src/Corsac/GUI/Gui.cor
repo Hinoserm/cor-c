@@ -61,8 +61,8 @@ public class Seat : IDrawingTarget
     const long CallRead = 16, CallWrite = 17, CallIoctl = 18;
     const long NoSys = 38, Io = 5;
     const long SeatStart = 0x4755002A, SeatWhoami = 0x4755002B, SeatCreateAs = 0x4755002C;
-    const long SeatCursorAt = 0x4755002E, SeatCursorTo = 0x4755002F, SeatAnimateCursor = 0x47550030, SeatClipCursor = 0x47550031,
-               SeatVanishPointer = 0x47550032;
+    const long SeatCursorAt = 0x4755002E, SeatCursorTo = 0x4755002F, SeatAnimateCursor = 0x47550036, SeatClipCursor = 0x47550037,
+               SeatVanishPointer = 0x47550038;
 
     long _start;                    // the GUI kernel's start number this program last saw
     long _defined;                  // the start its shared definitions were last made in

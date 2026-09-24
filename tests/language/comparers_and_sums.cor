@@ -1,0 +1,45 @@
+// test: equality comparers, lambda return overloads, ProcessorCount
+// expect-exit: 0
+// expect-output:
+// 2 2 1 2 3 True
+// 5000000001 5 3.5 15000000515
+// 3.5 7 7
+//
+// HashSet honours its comparer (it took one and ignored it); ToHashSet and
+// ToDictionary take one; `xs.Sum(x => x.Bytes)` over a long picks
+// Sum(Func<T, long>) by C#'s better conversion from a lambda, not the
+// double overload declared first; and a Func<T, long> handed on inside a
+// generic finds the long overload, since no Func<T, long> converts to a
+// Func<T, double>.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+class Item { public long Bytes; public int Small; public double Real; }
+class Part { public int Size; }
+static class L
+{
+    public static int S<T>(IReadOnlyList<T> xs, Func<T, int> f) { int s = 0; foreach (T x in xs) s += f(x); return s; }
+    public static double S<T>(IReadOnlyList<T> xs, Func<T, double> f) { double s = 0; foreach (T x in xs) s += f(x); return s; }
+    public static long S<T>(IReadOnlyList<T> xs, Func<T, long> f) { long s = 0; foreach (T x in xs) s += f(x); return s; }
+    public static double A<T>(IReadOnlyList<T> xs, Func<T, long> f) { return (double)S(xs, f) / xs.Count; }
+}
+class Node { public string Name = ""; public override bool Equals(object? o) => o is Node n && n.Name == Name; public override int GetHashCode() => Name.Length; }
+static class Program { static int Main() {
+  HashSet<string> ci = new(StringComparer.OrdinalIgnoreCase) { "Alpha", "ALPHA", "beta" };
+  HashSet<Node> byRef = new(ReferenceEqualityComparer.Instance);
+  Node a = new() { Name = "x" }, b = new() { Name = "x" };
+  byRef.Add(a); byRef.Add(b);
+  HashSet<Node> byValue = new() { a, b };
+  var names = new[] { "a", "A", "b" }.ToHashSet(StringComparer.OrdinalIgnoreCase);
+  var d = new[] { "one", "two" }.ToDictionary(s => s.ToUpperInvariant(), s => s.Length, StringComparer.OrdinalIgnoreCase);
+  Console.WriteLine(ci.Count + " " + byRef.Count + " " + byValue.Count + " " + names.Count + " " + d["one"] + " " + (Environment.ProcessorCount >= 1));
+  List<Item> xs = new() { new Item { Bytes = 5000000000, Small = 2, Real = 1.5 }, new Item { Bytes = 1, Small = 3, Real = 2 } };
+  long sa = xs.Sum(x => x.Bytes);
+  int sb = xs.Sum(x => x.Small);
+  double sc = xs.Sum(x => x.Real);
+  long sd = checked(3 * (xs.Sum(x => x.Bytes)) + 512);
+  Console.WriteLine(sa + " " + sb + " " + sc + " " + sd);
+  List<Part> ps = new() { new Part { Size = 3 }, new Part { Size = 4 } };
+  Console.WriteLine(L.A(ps, p => (long)p.Size) + " " + L.S(ps, p => (long)p.Size) + " " + L.S(ps, p => p.Size));
+  return 0; } }

@@ -4844,6 +4844,36 @@ public sealed partial class Binder
     /// </summary>
     private bool _throughTemplates;
 
+    /// <summary>
+    /// C#'s better conversion from a LAMBDA (12.6.4.5): of two candidates
+    /// that both take it, the one whose delegate returns exactly what the
+    /// lambda produces, and failing that the one whose return converts to
+    /// the other's. `xs.Sum(x => x.Bytes)` over a long is Sum(Func&lt;T,
+    /// long&gt;), not the Func&lt;T, double&gt; one declared first. True when
+    /// `a` is better for some lambda and worse for none.
+    /// </summary>
+    private bool BetterLambdas(MethodSymbol a, Dictionary<string, Type> aBound, MethodSymbol b,
+                               Dictionary<string, Type> bBound, List<Expr> written)
+    {
+        bool better = false;
+        for (int i = 0; i < written.Count && i < a.Params.Count && i < b.Params.Count; i++)
+        {
+            if (written[i] is not LambdaExpr lam) continue;
+            Type? made = Produces(a, a.Params[i].Type, lam, aBound);
+            if (made is null || made.IsError) continue;
+            Type ga = Close(Substitute(Invoked(a.Params[i].Type)?.Returns ?? Type.Error, Applied(a.Params[i].Type)), aBound);
+            Type gb = Close(Substitute(Invoked(b.Params[i].Type)?.Returns ?? Type.Error, Applied(b.Params[i].Type)), bBound);
+            if (ga.IsError || gb.IsError || ga.Equals(gb)) continue;
+            bool aExact = ga.Equals(made), bExact = gb.Equals(made);
+            if (aExact && !bExact) { better = true; continue; }
+            if (bExact && !aExact) return false;
+            bool aToB = Convertible(ga, gb), bToA = Convertible(gb, ga);
+            if (aToB && !bToA) { better = true; continue; }
+            if (bToA && !aToB) return false;
+        }
+        return better;
+    }
+
     private bool Infer(MethodSymbol m, List<Type> args, List<Expr> written, out Dictionary<string, Type> bound)
     {
         bool ok = InferOnce(m, args, written, out bound);
@@ -6342,6 +6372,21 @@ public sealed partial class Binder
     /// <summary>
     /// Matches one parameter against one argument, binding type parameters.
     /// </summary>
+    /// <summary>
+    /// A TYPE ARGUMENT against a type argument. Where the parameter's names no
+    /// type parameter of the method, the two must be the same type, or both
+    /// references one converts to (the variance an in/out parameter allows):
+    /// C# converts `Func&lt;T, long&gt;` to no `Func&lt;T, double&gt;`, so
+    /// `Sum(xs, f)` with f a Func of long does not find the double overload.
+    /// </summary>
+    private bool UnifyArgument(MethodSymbol m, Type want, Type got, Dictionary<string, Type> bound)
+    {
+        if (m.TypeParams.Any(t => Mentions(want, t))) return Unify(m, want, got, bound);
+        if (got.IsError || want.IsError) return true;
+        if (want.IsReference && got.IsReference) return Convertible(got, want);
+        return Convertible(got, want) && Convertible(want, got);
+    }
+
     private bool Unify(MethodSymbol m, Type want, Type got, Dictionary<string, Type> bound)
     {
         if (want.ParamName is string name && m.TypeParams.Contains(name))
@@ -6407,7 +6452,7 @@ public sealed partial class Binder
         {
             for (int i = 0; i < want.Args.Count; i++)
             {
-                if (!Unify(m, want.Args[i], got.Args[i], bound))
+                if (!UnifyArgument(m, want.Args[i], got.Args[i], bound))
                 {
                     return false;
                 }
@@ -6440,7 +6485,7 @@ public sealed partial class Binder
             {
                 for (int i = 0; i < want.Args.Count; i++)
                 {
-                    if (!Unify(m, want.Args[i], through[i], bound))
+                    if (!UnifyArgument(m, want.Args[i], through[i], bound))
                     {
                         return false;
                     }
@@ -6470,7 +6515,7 @@ public sealed partial class Binder
             if (through is not null && through.Count == want.Args.Count)
             {
                 for (int i = 0; i < through.Count; i++)
-                    if (!Unify(m, want.Args[i], through[i], bound)) return false;
+                    if (!UnifyArgument(m, want.Args[i], through[i], bound)) return false;
                 return true;
             }
         }
@@ -6485,7 +6530,7 @@ public sealed partial class Binder
         {
             for (int i = 0; i < want.Args.Count; i++)
             {
-                if (!Unify(m, want.Args[i], Resolve(made.TemplateArgs[i], _thisType), bound))
+                if (!UnifyArgument(m, want.Args[i], Resolve(made.TemplateArgs[i], _thisType), bound))
                 {
                     return false;
                 }
@@ -12019,7 +12064,9 @@ public sealed partial class Binder
                                  : best.TypeParams.Count(t => bound?.ContainsKey(t) != true);
 
                     if (best is null || openNow < openBest
-                        || (openNow == openBest && Specificity(candidate) > Specificity(best)))
+                        || (openNow == openBest && Specificity(candidate) > Specificity(best))
+                        || (openNow == openBest && Specificity(candidate) == Specificity(best)
+                            && BetterLambdas(candidate, got, best, bound ?? new(), c.Args)))
                     {
                         best = candidate;
                         bound = got;

@@ -6524,6 +6524,13 @@ static class Enumerable {
         return made;
     }
 
+    public static HashSet<T> ToHashSet<T>(this IEnumerable<T> source, IEqualityComparer<T>? comparer) {
+        if (source == null) throw new ArgumentNullException(nameof(source));
+        HashSet<T> made = comparer == null ? new HashSet<T>() : new HashSet<T>(comparer);
+        foreach (T item in source) { made.Add(item); }
+        return made;
+    }
+
     public static Dictionary<K, T> ToDictionary<T, K>(this IEnumerable<T> source, Func<T, K> key) {
         IReadOnlyList<T> items = AsList(source);
 
@@ -6551,6 +6558,22 @@ static class Enumerable {
 
         Dictionary<K, V> made = new Dictionary<K, V>(items.Count);
         for (int i = 0; i < items.Count; i++) { made[key(items[i])] = value(items[i]); }
+        return made;
+    }
+
+    /// With the key's own equality, as .NET's fourth overload: a duplicate
+    /// key is refused, as it is by every ToDictionary.
+    public static Dictionary<K, V> ToDictionary<T, K, V>(this IEnumerable<T> source,
+                                                         Func<T, K> key, Func<T, V> value, IEqualityComparer<K>? comparer) {
+        if (source == null) throw new ArgumentNullException(nameof(source));
+        if (key == null) throw new ArgumentNullException(nameof(key));
+        if (value == null) throw new ArgumentNullException(nameof(value));
+        Dictionary<K, V> made = comparer == null ? new Dictionary<K, V>() : new Dictionary<K, V>(comparer);
+        foreach (T item in source) {
+            K selected = key(item);
+            if ((object)selected == null) throw new ArgumentNullException("key");
+            if (!made.TryAdd(selected, value(item))) throw new ArgumentException("An item with the same key has already been added.");
+        }
         return made;
     }
 
@@ -8503,6 +8526,9 @@ class HashSetEnumerator<T> : IEnumerator<T> {
 }
 
 class HashSet<T> : IReadOnlySet<T>, IEnumerable<T> {
+    // The comparer this set was given, or null for the default: an object's
+    // own Equals and hash, a number's word -- as Dictionary's.
+    private IEqualityComparer<T>? by;
     private T[] items;
     private int[] state;      // 0 empty, 1 used, 2 erased
     private int count;
@@ -8584,24 +8610,23 @@ class HashSet<T> : IReadOnlySet<T>, IEnumerable<T> {
         foreach (T value in source) { Add(value); }
     }
 
-    public HashSet(object comparer) : this() { }
+    /// Equality by `comparer` -- StringComparer.OrdinalIgnoreCase,
+    /// ReferenceEqualityComparer -- or, given null, the default.
+    public HashSet(IEqualityComparer<T>? comparer) : this() { by = comparer; }
 
-    // The current table hashes words by identity already. Accepting the .NET
-    // comparer-bearing constructor preserves the API and its intended policy;
-    // richer comparer dispatch can replace Hash when value comparers arrive.
-    public HashSet(IEnumerable<T> source, object comparer) : this(source) { }
-
-    /// .NET's HashSet(IEnumerable<T>, IEqualityComparer<T>). There is one
-    /// comparer here -- reference identity, which is what every set in this
-    /// compiler wants -- so the comparer is taken and not consulted, as the
-    /// two overloads above already do.
-    public HashSet(IReadOnlyList<T> source, object comparer) : this() {
-        for (int i = 0; i < source.Count; i++) { Add(source[i]); }
+    public HashSet(IEnumerable<T> source, IEqualityComparer<T>? comparer) : this() {
+        by = comparer;
+        foreach (T value in source) { Add(value); }
     }
 
     public int Count => count;
 
+    /// The comparer the set compares by: the one it was given, or the default.
+    public IEqualityComparer<T> Comparer => by ?? EqualityComparer<T>.Default;
+
     private bool Same(T a, T b) {
+        IEqualityComparer<T>? with = by;
+        if (with != null) { return with.Equals(a, b); }
         if (Sys.IsObject(a)) { return Sys.KeyEquals(a, b); }
         return Sys.Word(a) == Sys.Word(b);
     }
@@ -8609,10 +8634,11 @@ class HashSet<T> : IReadOnlySet<T>, IEnumerable<T> {
     // The same avalanche Dictionary uses. Without it, sequential integer keys
     // collide in runs and linear probing degrades to a linear scan.
     private int Hash(T value) {
-        // The key's own hash when it is an object that has one, as .NET's
-        // default comparer asks: a set of strings, or of tuples, holds equal
-        // ones once.
-        long h = Sys.IsObject(value) ? Sys.KeyHash(value) : Sys.Word(value);
+        // The comparer's hash, or the key's own when it is an object that has
+        // one, as .NET's default comparer asks: a set of strings, or of
+        // tuples, holds equal ones once.
+        IEqualityComparer<T>? with = by;
+        long h = with != null ? with.GetHashCode(value) : Sys.IsObject(value) ? Sys.KeyHash(value) : Sys.Word(value);
         h = h ^ (h >> 33);
         h = h * 8127156113;
         h = h ^ (h >> 29);
