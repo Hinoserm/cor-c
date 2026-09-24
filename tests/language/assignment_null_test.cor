@@ -1,0 +1,53 @@
+// test: assignment null test
+// expect-exit: 0
+// expect-output:
+// drained 6
+// last 3
+//
+// `while ((r = Next()) != null)` narrows r inside the loop, as C# does: the
+// value tested is the value now in r. Written the other way round too.
+
+class Item
+{
+    public int Value;
+}
+
+static class Program
+{
+    static int _left = 3;
+
+    static Item? Next()
+    {
+        if (_left == 0) return null;
+        Item made = new Item();
+        made.Value = _left;
+        _left = _left - 1;
+        return made;
+    }
+
+    static void Say(string label, long value)
+    {
+        Sys.Print(label);
+        Sys.PrintInt(value);
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        int sum = 0;
+        Item? r;
+        while ((r = Next()) != null)
+        {
+            sum = sum + r.Value;
+        }
+
+        _left = 3;
+        Item? first;
+        if (null != (first = Next()))
+        {
+            Say("drained ", sum);
+            Say("last ", first.Value);
+        }
+        return 0;
+    }
+}

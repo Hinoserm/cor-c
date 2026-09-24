@@ -8098,6 +8098,21 @@ public sealed partial class Binder
                 {
                     target = targetPrechecked ? assignmentWanted! : CheckExpr(a.Target);
 
+                    // A WRITE THROUGH `a![i]` STORES INTO THE ARRAY AS IT WAS
+                    // DECLARED. Suppressing an array strips its elements'
+                    // annotation too, for reading (SuppressExpr): `filled![i]`
+                    // reads as not null. The same element as an assignment
+                    // target is storage, and storage is what the declaration
+                    // says -- C# takes `owners![i] = null` for a `Process?[]?`,
+                    // since `!` speaks for the array reference, not for what
+                    // it may hold. Reading the stripped type here refused it.
+                    if (a.Target is IndexExpr { Target: SuppressExpr sureArray }
+                        && _r.TypeOf(sureArray.Operand) is { IsArray: true, Element: Type declaredElement }
+                        && declaredElement.Nullable)
+                    {
+                        target = declaredElement;
+                    }
+
                     string? propertyName = a.Target switch
                     {
                         NameExpr n => n.Name,
@@ -9402,6 +9417,19 @@ public sealed partial class Binder
                 if (side is null)
                 {
                     return false;
+                }
+
+                // AN ASSIGNMENT TESTED PROVES WHAT IT WROTE. `while ((r =
+                // Next()) != null) r.Kind` is the loop C# writes to drain
+                // anything, and the value tested is the one now in r: C#
+                // narrows r on the path the test holds, and so does this.
+                if (side is AssignExpr { Op: null, Target: NameExpr written }
+                    && _r.Resolved.TryGetValue(written, out Sym? assigned)
+                    && assigned is LocalSym or ParamSym)
+                {
+                    about = assigned;
+                    whenTrue = b.Op == BinOp.Ne;
+                    return true;
                 }
 
                 // A NULL-CONDITIONAL CHAIN PROVES ITS RECEIVER. `t.Decl?.Template
