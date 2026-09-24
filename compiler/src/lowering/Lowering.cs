@@ -55,6 +55,13 @@ public sealed partial class Lowering
     public static bool TlsGs { get; set; }
 
     /// <summary>
+    /// Sys.Syscall traps to 0x83 instead of 0x80: the program is one of
+    /// CORSAC's ring-1 kernels, whose Linux file calls go through a gate of
+    /// their own (--ring1-syscalls). The numbers and registers are Linux's.
+    /// </summary>
+    public static bool Ring1Syscalls { get; set; }
+
+    /// <summary>
     /// The runtime and the class library are shared objects this program
     /// links rather than source compiled into it.
     ///

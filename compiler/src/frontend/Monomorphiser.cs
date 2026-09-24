@@ -1193,6 +1193,9 @@ public sealed class Monomorphiser
                 // declares, and every generic method in the image then reports
                 // that its own T is not a known type.
                 made.TypeParams.AddRange(md.TypeParams);
+                // And its attributes: [DoesNotReturn] is read off the
+                // declaration by the checker (Binder.NeverReturns).
+                made.Attributes.AddRange(md.Attributes);
 
                 foreach (Param p in md.Params)
                 {

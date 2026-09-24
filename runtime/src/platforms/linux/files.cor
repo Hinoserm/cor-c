@@ -1,0 +1,469 @@
+// Linux's file calls: open, read, write, seek, stat, the name space and
+// directories, as thin wrappers over Sys.Syscall -- the part of the Os class
+// that System.IO is built on.
+//
+// TWO KINDS OF CALLER COMPILE THIS FILE. A Linux program, beside system.cor,
+// whose Sys.Syscall is `int 0x80`; and CORSAC's ring-1 kernels, beside
+// baremetal.cor, compiled with --ring1-syscalls, whose Sys.Syscall is
+// `int 0x83`, the kernel's gate for their file calls (corsac86
+// docs/software/GUI-KERNEL.md, "Files and identity"). The numbers, the
+// registers and the structures (abi.cor) are Linux's for both. Every address
+// handed to the kernel goes through Platform.Linear: a ring-1 kernel's
+// segment may not start at 0, and the kernel wants the linear address.
+//
+// ---- raw memory, and why there is any ---------------------------------
+//
+// Every structure the kernel fills in -- a stat, a timespec, a directory
+// record, a termios -- is a block of bytes with fields at fixed offsets,
+// and this language has no way to declare one. A byte[] is the block; Raw
+// reads and writes its fields. The alternative, a class per structure with
+// the kernel writing into its fields, needs the compiler to promise a
+// layout it does not promise.
+
+static partial class Os
+{
+    /// The address of a string's or byte array's first byte.
+    private static long BytesOf(string s)
+    {
+        return Platform.Linear(Sys.ArrayData(s));
+    }
+
+    private static long BytesOf(byte[] b)
+    {
+        return Platform.Linear(Sys.ArrayData(b));
+    }
+
+    /// A copy of `s` with a zero byte after it, which is what the kernel
+    /// means by a path. The block from Sys.NewBytes is zeroed by the
+    /// allocator; the store is there so nothing depends on that.
+    ///
+    /// A byte loop rather than Sys.Copy: a path is short, and the block
+    /// copy the backend selects for Sys.Copy (rep movsb) mis-assigns its
+    /// registers as of this writing when an operand already sits in one of
+    /// them. The loop is correct on any backend and costs nothing here.
+    private static string CString(string s)
+    {
+        int n = s.Length;
+        string c = Sys.NewBytes(n + 1);
+
+        for (int i = 0; i < n; i++)
+        {
+            Sys.SetByte(c, i, Sys.GetByte(s, i));
+        }
+        Sys.SetByte(c, n, 0);
+        return c;
+    }
+
+    /// open(2). The mode is what a file is CREATED with and is ignored
+    /// otherwise, exactly as open(2)'s third argument is.
+    public static int Open(string path, int flags, int mode)
+    {
+        string c = CString(path);
+        return (int)Err.Result(Sys.Syscall(Call.Open, BytesOf(c), flags, mode));
+    }
+
+    /// Two-argument open, with the 0644 (0x1A4) a Unix makes a file with when
+    /// nothing says otherwise -- user.cor's default, kept.
+    public static int Open(string path, int flags)
+    {
+        return Open(path, flags, 0x1A4);
+    }
+
+    public static int Close(int fd)
+    {
+        return (int)Err.Result(Sys.Syscall(Call.Close, fd, 0, 0));
+    }
+
+    /// read(2) into part of an array. Zero means the end; negative is -errno.
+    /// The range is checked here because the kernel would happily write past
+    /// the array, and that is the one bug a language with bounds checks is
+    /// supposed to make impossible.
+    public static int Read(int fd, byte[] buf, int at, int count)
+    {
+        if (at < 0 || count < 0 || at > buf.Length - count)
+        {
+            throw new IndexOutOfRangeException("read range is outside its buffer");
+        }
+        return (int)Err.Result(Sys.Syscall(Call.Read, fd, BytesOf(buf) + at, count));
+    }
+
+    /// The raw form: an address and a count, for code that manages its own
+    /// buffer. Answers the kernel's number as a long, like user.cor's.
+    public static long Read(int fd, long into, long count)
+    {
+        return Err.Result(Sys.Syscall(Call.Read, fd, into, count));
+    }
+
+    /// write(2) from part of an array. ONE call: the kernel may take fewer
+    /// bytes than offered, and the caller that cares loops. Negative is -errno.
+    public static int Write(int fd, byte[] buf, int at, int count)
+    {
+        if (at < 0 || count < 0 || at > buf.Length - count)
+        {
+            throw new IndexOutOfRangeException("write range is outside its buffer");
+        }
+        return (int)Err.Result(Sys.Syscall(Call.Write, fd, BytesOf(buf) + at, count));
+    }
+
+    public static long Write(int fd, long at, long count)
+    {
+        return Err.Result(Sys.Syscall(Call.Write, fd, at, count));
+    }
+
+    /// The address of a byte array's first byte, as the kernel is to be
+    /// handed it. Public because the structure helpers and any program that
+    /// manages its own buffer need it.
+    public static long AddressOf(byte[] b)
+    {
+        return Platform.Linear(Sys.ArrayData(b));
+    }
+
+    /// A copy of `s` with a zero byte after it, for the calls that take a
+    /// path. Public for the same reason AddressOf is.
+    public static string CStr(string s)
+    {
+        return CString(s);
+    }
+
+    /// lseek(2) with a 64-bit offset.
+    ///
+    /// _llseek, not lseek: the i386 lseek takes and returns a 32-bit offset,
+    /// so it cannot say where it is in a file over 2 GB and cannot be asked to
+    /// go there. _llseek splits the offset into two words and writes the
+    /// answer into a buffer, which is why this one needs eight bytes of room.
+    public static long Lseek(int fd, long offset, int whence)
+    {
+        byte[] where = new byte[8];
+        long got = Err.Result(Sys.Syscall(Call.LlSeek, fd,
+            (offset >> 32) & 0xFFFFFFFF, offset & 0xFFFFFFFF,
+            AddressOf(where), whence, 0));
+
+        if (got < 0)
+        {
+            return got;
+        }
+        return Raw.I64(where, 0);
+    }
+
+    /// Where the descriptor is now, without moving it.
+    public static long Tell(int fd)
+    {
+        return Lseek(fd, 0, Whence.Current);
+    }
+
+    /// How long an open file is: to the end and back again. A pipe answers
+    /// -ESPIPE, which is the honest answer to "how long is a pipe".
+    public static long SizeOf(int fd)
+    {
+        long here = Lseek(fd, 0, Whence.Current);
+
+        if (here < 0)
+        {
+            return here;
+        }
+
+        long end = Lseek(fd, 0, Whence.End);
+
+        if (end < 0)
+        {
+            return end;
+        }
+        Lseek(fd, here, Whence.Set);
+        return end;
+    }
+
+    public static int Truncate(int fd, long length)
+    {
+        return (int)Err.Result(Sys.Syscall(Call.Ftruncate, fd, length, 0));
+    }
+
+    public static int Stat(string path, byte[] into)
+    {
+        StatBuf.Check(into);
+        string c = CString(path);
+        return (int)Err.Result(Sys.Syscall(Call.Stat64, BytesOf(c), AddressOf(into), 0));
+    }
+
+    /// The link itself rather than what it points at.
+    public static int Lstat(string path, byte[] into)
+    {
+        StatBuf.Check(into);
+        string c = CString(path);
+        return (int)Err.Result(Sys.Syscall(Call.Lstat64, BytesOf(c), AddressOf(into), 0));
+    }
+
+    public static int Fstat(int fd, byte[] into)
+    {
+        StatBuf.Check(into);
+        return (int)Err.Result(Sys.Syscall(Call.Fstat64, fd, AddressOf(into), 0));
+    }
+
+    /// Whether the name resolves to anything at all.
+    public static bool Exists(string path)
+    {
+        byte[] st = StatBuf.Room();
+        return Stat(path, st) >= 0;
+    }
+
+    /// The mode word, or 0 when the name is not there -- 0 is not a mode any
+    /// real file has, so "not there" and "there" stay distinguishable without
+    /// a second call.
+    public static long ModeOf(string path)
+    {
+        byte[] st = StatBuf.Room();
+
+        if (Stat(path, st) < 0)
+        {
+            return 0;
+        }
+        return StatBuf.Mode(st);
+    }
+
+    /// How many bytes the named file holds, or -errno.
+    public static long SizeOf(string path)
+    {
+        byte[] st = StatBuf.Room();
+        int r = Stat(path, st);
+
+        if (r < 0)
+        {
+            return r;
+        }
+        return StatBuf.Size(st);
+    }
+
+    public static int Create(string path, int mode)
+    {
+        return Open(path, O.Write | O.Create | O.Truncate, mode);
+    }
+
+    public static int Unlink(string path)
+    {
+        string c = CString(path);
+        return (int)Err.Result(Sys.Syscall(Call.Unlink, BytesOf(c), 0, 0));
+    }
+
+    /// rename(2). BOTH paths are copied before either address is taken: a
+    /// second allocation can collect, and a collection can run while the first
+    /// address is only in a register, which no conservative scan of the stack
+    /// would find.
+    public static int Rename(string from, string to)
+    {
+        string a = CString(from);
+        string b = CString(to);
+        return (int)Err.Result(Sys.Syscall(Call.Rename, BytesOf(a), BytesOf(b), 0));
+    }
+
+    public static int Mkdir(string path, int mode)
+    {
+        string c = CString(path);
+        return (int)Err.Result(Sys.Syscall(Call.Mkdir, BytesOf(c), mode, 0));
+    }
+
+    /// 0755, which is what mkdir(1) makes a directory with.
+    public static int Mkdir(string path)
+    {
+        return Mkdir(path, 0x1ED);
+    }
+
+    public static int Rmdir(string path)
+    {
+        string c = CString(path);
+        return (int)Err.Result(Sys.Syscall(Call.Rmdir, BytesOf(c), 0, 0));
+    }
+
+    public static int Chmod(string path, int mode)
+    {
+        string c = CString(path);
+        return (int)Err.Result(Sys.Syscall(Call.Chmod, BytesOf(c), mode, 0));
+    }
+
+    /// access(2). 0 asks only whether the name resolves; 1/2/4 are execute,
+    /// write and read.
+    public static int Access(string path, int mode)
+    {
+        string c = CString(path);
+        return (int)Err.Result(Sys.Syscall(Call.Access, BytesOf(c), mode, 0));
+    }
+
+    /// link(2): another directory entry for the inode `existing` already
+    /// names. Not a copy -- the two names are the same file thereafter.
+    public static int Link(string existing, string name)
+    {
+        string a = CString(existing);
+        string b = CString(name);
+        return (int)Err.Result(Sys.Syscall(Call.Link, BytesOf(a), BytesOf(b), 0));
+    }
+
+    public static int Symlink(string target, string name)
+    {
+        string a = CString(target);
+        string b = CString(name);
+        return (int)Err.Result(Sys.Syscall(Call.Symlink, BytesOf(a), BytesOf(b), 0));
+    }
+
+    /// Where a symbolic link points, or null when it is not one.
+    public static string? Readlink(string path)
+    {
+        string c = CString(path);
+        byte[] room = new byte[4096];
+        int n = (int)Err.Result(Sys.Syscall(Call.Readlink, BytesOf(c), AddressOf(room), room.Length));
+
+        if (n < 0)
+        {
+            return null;
+        }
+        return Raw.Text(room, 0, n);
+    }
+
+    /// The working directory, or null when it is longer than the buffer or has
+    /// been removed underneath us.
+    public static string? Getcwd()
+    {
+        byte[] room = new byte[4096];
+        int n = (int)Err.Result(Sys.Syscall(Call.Getcwd, AddressOf(room), room.Length, 0));
+
+        if (n <= 0)
+        {
+            return null;
+        }
+        // The kernel counts the NUL it wrote; a string here does not have one.
+        return Raw.Text(room, 0, n - 1);
+    }
+
+    /// One getdents64(2): as many whole records as fit, or 0 at the end.
+    /// Dirent below walks the buffer.
+    public static int Getdents(int fd, byte[] into, int count)
+    {
+        if (count < 0 || count > into.Length)
+        {
+            throw new IndexOutOfRangeException("directory buffer is too small for that count");
+        }
+        return (int)Err.Result(Sys.Syscall(Call.Getdents64, fd, AddressOf(into), count));
+    }
+
+    /// Every name in a directory except "." and "..", or null when it cannot
+    /// be opened. Sorted by nothing: the order is the filing system's, which
+    /// is what readdir(3) gives too.
+    public static string[]? ListDir(string path)
+    {
+        int fd = Open(path, O.Read | O.Directory);
+
+        if (fd < 0)
+        {
+            return null;
+        }
+
+        List<string> names = new List<string>();
+        byte[] block = new byte[4096];
+
+        while (true)
+        {
+            int got = Getdents(fd, block, block.Length);
+
+            if (got <= 0)
+            {
+                break;
+            }
+
+            int at = 0;
+
+            while (at < got)
+            {
+                string name = Dirent.Name(block, at);
+
+                if (name != "." && name != "..")
+                {
+                    names.Add(name);
+                }
+                at = at + Dirent.Length(block, at);
+            }
+        }
+        Close(fd);
+        return names.ToArray();
+    }
+
+    /// utimensat(2) on a path: access and modification times as seconds
+    /// and nanoseconds; a negative seconds value leaves that time alone.
+    /// `follow` false changes a symbolic link itself.
+    public static int Utimensat(string path, long atimeSeconds, long atimeNanos, long mtimeSeconds, long mtimeNanos, bool follow)
+    {
+        byte[] times = new byte[16];
+        Raw.SetU32(times, 0, atimeSeconds < 0 ? 0 : atimeSeconds);
+        Raw.SetU32(times, 4, atimeSeconds < 0 ? 1073741822 : atimeNanos);   // UTIME_OMIT
+        Raw.SetU32(times, 8, mtimeSeconds < 0 ? 0 : mtimeSeconds);
+        Raw.SetU32(times, 12, mtimeSeconds < 0 ? 1073741822 : mtimeNanos);
+        return (int)Err.Result(Sys.Syscall(Call.Utimensat, -100, BytesOf(CString(path)), AddressOf(times), follow ? 0 : 0x100, 0, 0));
+    }
+
+    /// chown(2), by name, following symbolic links.
+    public static int Chown(string path, int uid, int gid)
+    {
+        string c = CString(path);
+        return (int)Err.Result(Sys.Syscall(Call.Chown, BytesOf(c), uid, gid));
+    }
+
+    /// statfs64(2): how big a filing system is and how much of it is left.
+    public static int Statfs(string path, byte[] into)
+    {
+        StatFs.Check(into);
+        string c = CString(path);
+        return (int)Err.Result(Sys.Syscall(Call.Statfs64, BytesOf(c),
+                                                StatFs.Bytes, BytesOf(into)));
+    }
+
+    public static int Fstatfs(int fd, byte[] into)
+    {
+        StatFs.Check(into);
+        return (int)Err.Result(Sys.Syscall(Call.Fstatfs64, fd,
+                                                StatFs.Bytes, BytesOf(into)));
+    }
+
+    public static int Close(long fd)
+    {
+        return Close((int)fd);
+    }
+
+    public static long Read(long fd, string into, long count)
+    {
+        if (count < 0 || count > into.Length)
+        {
+            throw new IndexOutOfRangeException("read range is outside its buffer");
+        }
+        return Err.Result(Sys.Syscall(Call.Read, fd, BytesOf(into), count));
+    }
+
+    public static long Write(long fd, string s)
+    {
+        return Write((int)fd, s);
+    }
+
+    public static long Lseek(long fd, long offset, long whence)
+    {
+        return Lseek((int)fd, offset, (int)whence);
+    }
+
+    // ---- the clock files are stamped by, and a device's own calls ---------
+
+    /// Microseconds since the epoch, gettimeofday(2)'s answer as one number:
+    /// DateTime.UtcNow, which System.IO's file times are compared with.
+    public static long Micros()
+    {
+        byte[] tv = new byte[TimeVal.Bytes];
+
+        if (Err.Result(Sys.Syscall(Call.GetTimeOfDay, AddressOf(tv), 0, 0)) < 0)
+        {
+            return 0;
+        }
+        // U32 rather than I32 so the multiply is 64-bit: seconds since the
+        // epoch times a million overflows an int before the end of an hour.
+        return Raw.U32(tv, 0) * 1000000 + Raw.U32(tv, 4);
+    }
+
+    /// ioctl(2) on a descriptor (System.IO's BlockDevice). A ring-1 kernel's
+    /// gate does not answer it.
+    public static long Ioctl(int fd, long request, long argument)
+    {
+        return Err.Result(Sys.Syscall(Call.Ioctl, fd, request, argument));
+    }
+}

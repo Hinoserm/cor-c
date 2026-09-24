@@ -49,7 +49,9 @@ public static class Gir
     // 10: `new` keeps its array elements (`new[] { a, b }` lost them), and
     // collection expressions and their spreads are marked; a block carries
     // its generic local functions.
-    public const ushort Major = 10;
+    // 11: a method carries its attributes' targets and names, for
+    // [DoesNotReturn], which the checker reads off the declaration.
+    public const ushort Major = 11;
 
     /// <summary>Bumped when something is APPENDED that an old reader can ignore.</summary>
     public const ushort Minor = 0;
@@ -413,6 +415,14 @@ public static class Gir
 
                     // The parameter this method's result is null only for.
                     Str(d.NotNullIfNotNull ?? "");
+                    I32(d.Attributes.Count);
+
+                    foreach (AttributeRef a in d.Attributes)
+                    {
+                        Str(a.Target);
+                        Str(a.Name);
+                    }
+
                     I32(d.TypeParams.Count);
 
                     foreach (TypeParam p in d.TypeParams)
@@ -1203,6 +1213,14 @@ public static class Gir
                     TypeRef? returns = TypeOrNull();
                     bool ctor = Bool();
                     string onlyFor = Str();
+                    List<AttributeRef> attributes = new();
+                    int na = Count();
+
+                    for (int i = 0; i < na; i++)
+                    {
+                        string target = Str();
+                        attributes.Add(new AttributeRef { Target = target, Name = Str() });
+                    }
 
                     List<string> typeParams = new();
                     int tp = Count();
@@ -1247,6 +1265,7 @@ public static class Gir
                         d.TypeParams.Add(new TypeParam { Name = one });
                     }
 
+                    d.Attributes.AddRange(attributes);
                     d.Params.AddRange(ps);
                     return d;
                 }

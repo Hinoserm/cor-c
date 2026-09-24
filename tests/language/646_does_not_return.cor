@@ -1,0 +1,48 @@
+// test: [DoesNotReturn] ends a path for null analysis, as C#'s nullable analysis has it
+// expect-exit: 0
+// expect-output:
+// found: alpha
+// found through a block: beta
+// found through an if: gamma
+//
+// A null check whose branch ends in a call to a method declared
+// [DoesNotReturn] -- Environment.Exit, a throw helper -- guards the code
+// after it: reaching that code means the value was not null, and the
+// compiler must not warn that it may be. Only null analysis is affected;
+// definite assignment does not count such a call, as C#'s does not.
+
+using System.Diagnostics.CodeAnalysis;
+
+class Program
+{
+    [DoesNotReturn]
+    static void Fail(string why)
+    {
+        throw new InvalidOperationException(why);
+    }
+
+    static string? Find(string name) { return name.Length > 0 ? name : null; }
+
+    static int Main()
+    {
+        string? a = Find("alpha");
+        if (a == null) Fail("no alpha");
+        Console.WriteLine("found: " + a.ToUpperInvariant().ToLowerInvariant());
+
+        string? b = Find("beta");
+        if (b == null)
+        {
+            Console.WriteLine("about to fail");
+            Fail("no beta");
+        }
+        Console.WriteLine("found through a block: " + b.Substring(0));
+
+        string? c = Find("gamma");
+        if (c == null)
+        {
+            if (DateTime.Now.Year > 0) Fail("no gamma"); else Environment.Exit(3);
+        }
+        Console.WriteLine("found through an if: " + c.Trim());
+        return 0;
+    }
+}

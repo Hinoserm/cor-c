@@ -1,0 +1,594 @@
+// The Linux i386 ABI's constants and structures: the call numbers, the
+// descriptors, open(2)'s flags, errno, and the byte layouts of stat64,
+// statfs64, getdents64 and the time structures, with Raw to read them. No
+// system call is made here.
+//
+// Apart from system.cor so that code which makes Linux's file calls without
+// being a Linux process -- CORSAC's ring-1 kernels, through files.cor and a
+// gate of their own -- has the same numbers and structures by the same
+// names.
+
+/// The i386 system-call numbers this library uses, from asm/unistd_32.h. The
+/// name matches os/lib/user.cor's `Call` on purpose -- a utility that says
+/// Call.Write means the same thing here -- but the NUMBERS are Linux's and
+/// the argument conventions are Linux's, and they are not the same as the
+/// CORSAC kernel's.
+static class Call
+{
+    public const long Exit = 1;         // (status)
+    public const long Read = 3;         // (fd, address, count) -> read, or -errno
+    public const long Write = 4;        // (fd, address, count) -> written, or -errno
+    public const long Open = 5;         // (path, flags, mode) -> fd, or -errno
+    public const long Close = 6;        // (fd) -> 0, or -errno
+    public const long Getpid = 20;      // () -> pid; the cheapest call there is
+    public const long Brk = 45;         // (address) -> the break now; unused
+    public const long Mmap2 = 192;      // (addr, len, prot, flags, fd, pgoff) -> address
+    public const long ExitGroup = 252;  // (status): every thread, not just this one
+    public const long SetThreadArea = 243;  // (user_desc): a GDT entry of this thread's own
+    public const long Futex = 240;      // (uaddr, op, val, timeout, uaddr2, val3)
+
+    // ---- processes -------------------------------------------------------
+    public const long Fork = 2;         // () -> child pid in the parent, 0 in the child
+    public const long Waitpid = 7;      // (pid, status, options) -> pid, or -errno
+    public const long Execve = 11;      // (path, argv, envp): does not return on success
+    public const long Kill = 37;        // (pid, signal)
+    public const long Getppid = 64;
+    public const long Getuid = 199;     // getuid32; the 16-bit getuid (24) truncates
+    public const long Getgid = 200;     // getgid32
+    public const long Setpgid = 57;     // (pid, pgid)
+    public const long Getpgid = 132;    // (pid) -> the group it is in
+    public const long Setsid = 66;      // () -> the new session id
+    public const long Setuid = 213;     // setuid32; the 16-bit one (23) truncates
+    public const long Setgid = 214;     // setgid32
+    public const long Setgroups = 206;  // setgroups32 (count, list)
+    public const long Umask = 60;       // (mask) -> the mask it replaced
+    public const long Chown = 212;      // chown32 (path, uid, gid)
+
+    // ---- files and directories -------------------------------------------
+    public const long Unlink = 10;
+    public const long Link = 9;         // (existing, new): a second name for one inode
+    public const long Chdir = 12;
+    public const long Lseek = 19;       // 32-bit offsets only; LlSeek is the one to use
+    public const long Rename = 38;
+    public const long Mkdir = 39;       // (path, mode)
+    public const long Rmdir = 40;
+    public const long Dup = 41;
+    public const long Pipe = 42;        // (int[2]) -> 0; the two descriptors go in the array
+    public const long Ioctl = 54;
+    public const long Dup2 = 63;        // (from, to)
+    public const long Ftruncate = 93;
+    public const long LlSeek = 140;     // (fd, high, low, result, whence): 64-bit lseek
+    public const long Getcwd = 183;     // (buffer, size) -> length INCLUDING the NUL
+    public const long Stat64 = 195;     // (path, buffer)
+    public const long Lstat64 = 196;    // (path, buffer): the link itself, not its target
+    public const long Fstat64 = 197;    // (fd, buffer)
+    public const long Getdents64 = 220; // (fd, buffer, count) -> bytes of records
+    public const long Access = 33;      // (path, mode)
+    public const long Chmod = 15;
+    public const long Symlink = 83;
+    public const long Readlink = 85;
+    public const long Poll = 168;       // (fds, nfds, timeout_ms)
+    public const long Fcntl = 55;       // (fd, cmd, arg)
+    public const long RtSigaction = 174;
+    public const long RtSigprocmask = 175;
+    public const long GetRandom = 355;
+    public const long SchedGetaffinity = 242;   // (pid, bytes, mask)
+    public const long Utimensat = 320;
+    public const long Sync = 36;
+    public const long Fsync = 118;
+    public const long Fdatasync = 148;
+    public const long Mount = 21;       // (source, target, type, flags, data)
+    public const long Umount2 = 52;     // (target, flags)
+    public const long Statfs64 = 268;   // (path, size, buffer)
+    public const long Fstatfs64 = 269;  // (fd, size, buffer)
+    public const long Reboot = 88;      // (magic1, magic2, cmd, arg)  // (dirfd, path, times[2], flags)  // (buffer, count, flags)
+    public const long Munmap = 91;
+
+    // ---- time ------------------------------------------------------------
+    public const long Time = 13;        // (address or 0) -> seconds since the epoch
+    public const long GetTimeOfDay = 78;
+    public const long NanoSleep = 162;  // (request, remainder)
+    public const long ClockGetTime = 265;
+    public const long ClockGetRes = 266;
+    public const long Sched_Yield = 158;
+
+    // ---- sockets ---------------------------------------------------------
+    //
+    // TWO WAYS IN, and which one works is the kernel's choice. i386 grew
+    // separate socket calls in Linux 4.3; before that every one of them went
+    // through socketcall(2) with its arguments in a block of words. Os.Sock
+    // below tries the direct call and falls back on -ENOSYS, so this library
+    // runs on either without being told which it is on.
+    public const long SocketCall = 102; // (which, args): the old, universal door
+    public const long Socket = 359;
+    public const long SocketPair = 360;
+    public const long Bind = 361;
+    public const long Connect = 362;
+    public const long Listen = 363;
+    public const long Accept4 = 364;
+    public const long GetSockOpt = 365;
+    public const long SetSockOpt = 366;
+    public const long GetSockName = 367;
+    public const long GetPeerName = 368;
+    public const long SendTo = 369;
+    public const long SendMsg = 370;
+    public const long RecvFrom = 371;
+    public const long RecvMsg = 372;
+    public const long Shutdown = 373;
+}
+
+/// The three standard descriptors, as os/lib/user.cor spells them.
+static class Fd
+{
+    public const int In = 0;
+    public const int Out = 1;
+    public const int Err = 2;
+}
+
+/// open(2) flags, Linux i386 values. The same names and -- not by accident --
+/// the same numbers as os/lib/user.cor's O, which took them from Linux.
+static class O
+{
+    public const int Read = 0;          // O_RDONLY
+    public const int Write = 1;         // O_WRONLY
+    public const int ReadWrite = 2;     // O_RDWR
+    public const int AccessMask = 3;
+
+    public const int Create = 64;       // O_CREAT
+    public const int Exclusive = 128;   // O_EXCL
+    public const int Truncate = 512;    // O_TRUNC
+    public const int Append = 1024;     // O_APPEND
+    public const int NonBlock = 2048;   // O_NONBLOCK
+    public const int Dsync = 0x1000;    // O_DSYNC
+    public const int Sync = 0x101000;   // O_SYNC includes O_DSYNC
+    public const int Directory = 65536; // O_DIRECTORY
+
+    /// O_LARGEFILE. On a 32-bit kernel an open WITHOUT this refuses, with
+    /// EOVERFLOW, any file whose size does not fit in 31 bits -- which is
+    /// every disc image and every block device of 2 GiB or more. .NET opens
+    /// with it always on Linux, and so does everything here.
+    public const int LargeFile = 32768; // 0100000
+}
+
+/// The errno values a program here has a reason to test for. A failed call
+/// answers the NEGATIVE of one of these, as the raw kernel interface does;
+/// there is no errno variable because there is no libc.
+static class Err
+{
+    public const long Perm = 1;         // EPERM
+    public const long NoEnt = 2;        // ENOENT
+    public const long Intr = 4;         // EINTR
+    public const long Io = 5;           // EIO
+    public const long BadF = 9;         // EBADF
+    public const long Again = 11;       // EAGAIN
+    public const long NoMem = 12;       // ENOMEM
+    public const long Access = 13;      // EACCES
+    public const long NoDev = 19;
+    public const long NetDown = 100;
+    public const long ConnReset = 104;
+    public const long NoBufs = 105;
+    public const long Fault = 14;
+
+    public const long MFile = 24;
+    public const long MsgSize = 90;
+    public const long ProtoNoSupport = 93;      // EPROTONOSUPPORT
+    public const long NotSup = 95;
+    public const long AFNoSupport = 97;
+    public const long AddrInUse = 98;
+    public const long NetUnreach = 101;
+    public const long ConnAborted = 103;
+    public const long IsConn = 106;
+    public const long TimedOut = 110;
+    public const long ConnRefused = 111;
+    public const long HostUnreach = 113;
+    public const long Already = 114;
+    public const long InProgress = 115;
+    public const long NotConn = 107;
+    public const long Exist = 17;       // EEXIST
+    public const long NotDir = 20;      // ENOTDIR
+    public const long IsDir = 21;       // EISDIR
+    public const long Inval = 22;       // EINVAL
+    public const long NoSpc = 28;       // ENOSPC
+    public const long Pipe = 32;        // EPIPE
+    public const long Range = 34;       // ERANGE
+    public const long NameTooLong = 36; // ENAMETOOLONG
+    public const long NotEmpty = 39;    // ENOTEMPTY
+    public const long NoSys = 38;       // ENOSYS: the kernel has no such call
+    public const long NotSock = 88;     // ENOTSOCK
+    public const long NoTty = 25;       // ENOTTY: not a terminal
+    public const long Spipe = 29;       // ESPIPE: a pipe cannot seek
+
+    /// A call's answer as the number it is. The register is 32 bits: an
+    /// address in the top half of the space arrives with its sign extended,
+    /// and is not an error. Only the last 4095 values are (asm/errno:
+    /// -MAX_ERRNO), and they come back negative.
+    public static long Result(long raw)
+    {
+        long word = raw & 0xFFFFFFFF;
+        if (word >= 0xFFFFF001)
+        {
+            return word - 0x100000000;
+        }
+        return word;
+    }
+}
+
+/// Little-endian fields in a byte array. The one place that knows how the
+/// machine spells a number wider than a byte.
+static class Raw
+{
+    public static long U8(byte[] b, int at)
+    {
+        return b[at];
+    }
+
+    public static long U16(byte[] b, int at)
+    {
+        return b[at * 2 + 0] | (b[at * 2 + 1] << 8);
+    }
+
+    /// An unsigned 32-bit field, widened into a long so that 0x80000000 is
+    /// two billion and not minus two billion.
+    public static long U32(byte[] b, int at)
+    {
+        long low = b[at + 0] | (b[at + 1] << 8);
+        long high = b[at + 2] | (b[at + 3] << 8);
+        return low | (high << 16);
+    }
+
+    /// The same four bytes read as a signed number, which is what a mode, a
+    /// uid or a seconds-since-the-epoch is.
+    public static int I32(byte[] b, int at)
+    {
+        return (int)U32(b, at);
+    }
+
+    public static long I64(byte[] b, int at)
+    {
+        return U32(b, at) | (((long)I32(b, at + 4)) << 32);
+    }
+
+    public static void SetU32(byte[] b, int at, long value)
+    {
+        b[at + 0] = (byte)(value & 0xFF);
+        b[at + 1] = (byte)((value >> 8) & 0xFF);
+        b[at + 2] = (byte)((value >> 16) & 0xFF);
+        b[at + 3] = (byte)((value >> 24) & 0xFF);
+    }
+
+    public static void SetI64(byte[] b, int at, long value)
+    {
+        SetU32(b, at, value & 0xFFFFFFFF);
+        SetU32(b, at + 4, (value >> 32) & 0xFFFFFFFF);
+    }
+
+    /// `count` bytes as text. The kernel's strings are bytes and this treats
+    /// them as bytes: no decoding, because a path is not necessarily UTF-8 and
+    /// a program that round-trips one must not change it.
+    public static string Text(byte[] b, int at, int count)
+    {
+        string s = Sys.NewBytes(count);
+
+        for (int i = 0; i < count; i++)
+        {
+            Sys.SetByte(s, i, b[at + i]);
+        }
+        return s;
+    }
+
+    /// Text up to the first zero byte, which is how the kernel ends a name.
+    public static string CText(byte[] b, int at, int limit)
+    {
+        int n = 0;
+
+        while (at + n < limit && b[at + n] != 0)
+        {
+            n = n + 1;
+        }
+        return Text(b, at, n);
+    }
+}
+
+/// lseek(2)'s third argument.
+static class Whence
+{
+    public const int Set = 0;
+    public const int Current = 1;
+    /// os/lib/user.cor's name for Current; a ported utility says Whence.Cur.
+    public const int Cur = 1;
+    public const int End = 2;
+}
+
+/// The i386 `struct stat64` that stat64/lstat64/fstat64 fill in. The odd
+/// offsets are real: the 64-bit fields in it are packed to four bytes, so
+/// st_size sits at 44 and not at 48.
+static class StatBuf
+{
+    public const int Bytes = 96;
+
+    public const int Dev = 0;           // 8 bytes
+    public const int ModeAt = 16;
+    public const int NlinkAt = 20;
+    public const int UidAt = 24;
+    public const int GidAt = 28;
+    public const int RdevAt = 32;       // 8 bytes
+    public const int SizeAt = 44;       // 8 bytes, four-byte aligned
+    public const int BlkSizeAt = 52;
+    public const int BlocksAt = 56;     // 8 bytes
+    public const int AtimeAt = 64;
+    public const int MtimeAt = 72;
+    public const int CtimeAt = 80;
+
+    // THE NANOSECONDS EACH TIME ALREADY HAS. struct stat64 stores every
+    // timestamp as a pair -- seconds, then nanoseconds in the word after it --
+    // so these are not new fields the kernel has to fill: they are the four
+    // bytes at 68, 76 and 84 that were being skipped over.
+    //
+    // Without them no two events inside one second can be told apart, and
+    // `cp -u` and `mv -u` are exactly the programs that have to: a file
+    // rewritten a moment after the copy has the same whole second and is
+    // judged unchanged.
+    public const int AtimeNsecAt = 68;
+    public const int MtimeNsecAt = 76;
+    public const int CtimeNsecAt = 84;
+    public const int InoAt = 88;        // 8 bytes
+
+    public const long TypeMask = 0xF000;
+    public const long Fifo = 0x1000;
+    public const long Char = 0x2000;
+    public const long Dir = 0x4000;
+    public const long Block = 0x6000;
+    public const long File = 0x8000;
+    public const long Link = 0xA000;
+    public const long Socket = 0xC000;
+
+    public const long PermissionMask = 0xFFF;
+
+    /// Somewhere to put one.
+    public static byte[] Room()
+    {
+        return new byte[Bytes];
+    }
+
+    /// Refuses a buffer that cannot hold one, rather than letting the kernel
+    /// write past the end of an array -- the one thing a language with bounds
+    /// checks must not allow a system call to do behind its back.
+    public static void Check(byte[] b)
+    {
+        if (b.Length < Bytes)
+        {
+            throw new ArgumentException("a stat buffer is 96 bytes");
+        }
+    }
+
+    public static long Device(byte[] b) { return Raw.I64(b, Dev); }
+    public static long Rdev(byte[] b)   { return Raw.I64(b, RdevAt); }
+    public static long Mode(byte[] b)   { return Raw.U32(b, ModeAt); }
+    public static long Links(byte[] b)  { return Raw.U32(b, NlinkAt); }
+    public static long Uid(byte[] b)    { return Raw.U32(b, UidAt); }
+    public static long Gid(byte[] b)    { return Raw.U32(b, GidAt); }
+    public static long Size(byte[] b)   { return Raw.I64(b, SizeAt); }
+    public static long Blocks(byte[] b) { return Raw.I64(b, BlocksAt); }
+    public static long Ino(byte[] b)    { return Raw.I64(b, InoAt); }
+    public static long Mtime(byte[] b)  { return Raw.I32(b, MtimeAt); }
+    public static long Atime(byte[] b)  { return Raw.I32(b, AtimeAt); }
+    public static long Ctime(byte[] b)  { return Raw.I32(b, CtimeAt); }
+
+    public static long MtimeNsec(byte[] b) { return Raw.U32(b, MtimeNsecAt); }
+    public static long AtimeNsec(byte[] b) { return Raw.U32(b, AtimeNsecAt); }
+    public static long CtimeNsec(byte[] b) { return Raw.U32(b, CtimeNsecAt); }
+
+    /// What POSIX spells S_ISDIR and its family, asked of a mode word.
+    public static bool IsDirMode(long mode)   { return (mode & TypeMask) == Dir; }
+    public static bool IsFileMode(long mode)  { return (mode & TypeMask) == File; }
+    public static bool IsCharMode(long mode)  { return (mode & TypeMask) == Char; }
+    public static bool IsBlockMode(long mode) { return (mode & TypeMask) == Block; }
+    public static bool IsLinkMode(long mode)  { return (mode & TypeMask) == Link; }
+    public static bool IsFifoMode(long mode)  { return (mode & TypeMask) == Fifo; }
+    public static bool IsSocketMode(long mode) { return (mode & TypeMask) == Socket; }
+
+    /// And asked of a path, which is what a program usually has.
+    public static bool IsDir(string path)  { return IsDirMode(Os.ModeOf(path)); }
+    public static bool IsFile(string path) { return IsFileMode(Os.ModeOf(path)); }
+}
+
+/// StatBuf under os/lib/user.cor's name for it.
+///
+/// THE ONLY REASON THIS EXISTS is that a static method and a type cannot share
+/// a name here: `Os.Stat(path, buffer)` is a method on Os, and inside Os the
+/// name Stat then means that method and never the type, so the type had to be
+/// called something else. A utility written against user.cor says Stat.IsDir
+/// and Stat.Room, and outside Os those resolve to this.
+static class Stat
+{
+    public const int Bytes = StatBuf.Bytes;
+
+    public const long TypeMask = StatBuf.TypeMask;
+    public const long Fifo = StatBuf.Fifo;
+    public const long Char = StatBuf.Char;
+    public const long Dir = StatBuf.Dir;
+    public const long Block = StatBuf.Block;
+    public const long File = StatBuf.File;
+    public const long Link = StatBuf.Link;
+    public const long Socket = StatBuf.Socket;
+
+    public static byte[] Room()            { return StatBuf.Room(); }
+    public static void Check(byte[] b)     { StatBuf.Check(b); }
+
+    public static long Device(byte[] b)    { return StatBuf.Device(b); }
+    public static long Rdev(byte[] b)      { return StatBuf.Rdev(b); }
+    public static long Mode(byte[] b)      { return StatBuf.Mode(b); }
+    public static long Links(byte[] b)     { return StatBuf.Links(b); }
+    public static long Uid(byte[] b)       { return StatBuf.Uid(b); }
+    public static long Gid(byte[] b)       { return StatBuf.Gid(b); }
+    public static long Size(byte[] b)      { return StatBuf.Size(b); }
+    public static long Blocks(byte[] b)    { return StatBuf.Blocks(b); }
+    public static long Ino(byte[] b)       { return StatBuf.Ino(b); }
+    public static long Mtime(byte[] b)     { return StatBuf.Mtime(b); }
+    public static long Atime(byte[] b)     { return StatBuf.Atime(b); }
+    public static long Ctime(byte[] b)     { return StatBuf.Ctime(b); }
+
+    public static long MtimeNsec(byte[] b) { return StatBuf.MtimeNsec(b); }
+    public static long AtimeNsec(byte[] b) { return StatBuf.AtimeNsec(b); }
+    public static long CtimeNsec(byte[] b) { return StatBuf.CtimeNsec(b); }
+
+    public static bool IsDirMode(long mode)   { return StatBuf.IsDirMode(mode); }
+    public static bool IsFileMode(long mode)  { return StatBuf.IsFileMode(mode); }
+    public static bool IsCharMode(long mode)  { return StatBuf.IsCharMode(mode); }
+    public static bool IsBlockMode(long mode) { return StatBuf.IsBlockMode(mode); }
+    public static bool IsLinkMode(long mode)  { return StatBuf.IsLinkMode(mode); }
+    public static bool IsFifoMode(long mode)  { return StatBuf.IsFifoMode(mode); }
+    public static bool IsSocketMode(long mode) { return StatBuf.IsSocketMode(mode); }
+
+    public static bool IsDir(string path)  { return StatBuf.IsDir(path); }
+    public static bool IsFile(string path) { return StatBuf.IsFile(path); }
+}
+
+/// The i386 `struct statfs64` that statfs64(2) fills in. Its 64-bit fields
+/// are packed to four bytes, as the stat structure's are, so the offsets run
+/// on without padding.
+static class StatFs
+{
+    public const int Bytes = 84;
+
+    public const int TypeAt = 0;        // the filing system's magic number
+    public const int BlockSizeAt = 4;   // the unit the counts below are in
+    public const int BlocksAt = 8;      // 8 bytes
+    public const int FreeAt = 16;       // 8 bytes: free to the superuser
+    public const int AvailableAt = 24;  // 8 bytes: free to everybody else
+    public const int FilesAt = 32;      // 8 bytes
+    public const int FilesFreeAt = 40;  // 8 bytes
+    public const int FsidAt = 48;       // 8 bytes
+    public const int NameLengthAt = 56;
+    public const int FragmentSizeAt = 60;
+    public const int FlagsAt = 64;
+
+    public static byte[] Room()
+    {
+        return new byte[Bytes];
+    }
+
+    public static void Check(byte[] b)
+    {
+        if (b.Length < Bytes)
+        {
+            throw new ArgumentException("a statfs buffer is 84 bytes");
+        }
+    }
+
+    public static long Type(byte[] b)         { return Raw.U32(b, TypeAt); }
+    public static long BlockSize(byte[] b)    { return Raw.I32(b, BlockSizeAt); }
+    public static long Blocks(byte[] b)       { return Raw.I64(b, BlocksAt); }
+    public static long Free(byte[] b)         { return Raw.I64(b, FreeAt); }
+    public static long Available(byte[] b)    { return Raw.I64(b, AvailableAt); }
+    public static long Files(byte[] b)        { return Raw.I64(b, FilesAt); }
+    public static long FilesFree(byte[] b)    { return Raw.I64(b, FilesFreeAt); }
+    public static long NameLength(byte[] b)   { return Raw.I32(b, NameLengthAt); }
+    public static long FragmentSize(byte[] b) { return Raw.I32(b, FragmentSizeAt); }
+    public static long Flags(byte[] b)        { return Raw.I32(b, FlagsAt); }
+}
+
+/// One record in a getdents64(2) buffer: an inode, an offset, the length of
+/// the record itself, a kind, and a NUL-terminated name. The records are
+/// variable length, which is why the length is in the record.
+static class Dirent
+{
+    public const int InoAt = 0;         // 8 bytes
+    public const int OffAt = 8;         // 8 bytes
+    public const int LengthAt = 16;     // 2 bytes: the WHOLE record
+    public const int TypeAt = 18;
+    public const int NameAt = 19;
+
+    public const long Unknown = 0;
+    public const long Fifo = 1;
+    public const long Char = 2;
+    public const long DirKind = 4;
+    public const long Block = 6;
+    public const long FileKind = 8;
+    public const long LinkKind = 10;
+    public const long SocketKind = 12;
+
+    /// How far to the next record. Zero would be a loop, so it is refused.
+    public static int Length(byte[] b, int at)
+    {
+        int n = (int)(b[at + LengthAt] | (b[at + LengthAt + 1] << 8));
+
+        if (n <= 0)
+        {
+            throw new InvalidOperationException("a directory record of no length");
+        }
+        return n;
+    }
+
+    public static long Ino(byte[] b, int at)
+    {
+        return Raw.I64(b, at + InoAt);
+    }
+
+    /// The kind without a stat, when the filing system bothered to say; most
+    /// do, and Unknown is the answer when one does not.
+    public static long Kind(byte[] b, int at)
+    {
+        return b[at + TypeAt];
+    }
+
+    public static string Name(byte[] b, int at)
+    {
+        return Raw.CText(b, at + NameAt, at + Length(b, at));
+    }
+}
+
+/// The 32-bit `struct timespec`: whole seconds and nanoseconds within the
+/// second, both signed words on i386.
+static class TimeSpec
+{
+    public const int Bytes = 8;
+
+    public static byte[] Room()
+    {
+        return new byte[Bytes];
+    }
+
+    public static void Check(byte[] b)
+    {
+        if (b.Length < Bytes)
+        {
+            throw new ArgumentException("a timespec is 8 bytes");
+        }
+    }
+
+    public static long Seconds(byte[] b) { return Raw.I32(b, 0); }
+    public static long Nanos(byte[] b)   { return Raw.I32(b, 4); }
+
+    public static void Set(byte[] b, long seconds, long nanos)
+    {
+        Raw.SetU32(b, 0, seconds);
+        Raw.SetU32(b, 4, nanos);
+    }
+}
+
+/// `struct timeval`: seconds and MICROseconds, which is the older call's
+/// resolution and the reason it is a different structure.
+static class TimeVal
+{
+    public const int Bytes = 8;
+
+    public static byte[] Room()
+    {
+        return new byte[Bytes];
+    }
+
+    public static long Seconds(byte[] b) { return Raw.I32(b, 0); }
+    public static long Micros(byte[] b)  { return Raw.I32(b, 4); }
+}
+
+/// Which clock. Realtime can jump -- it is the one a user sets -- so anything
+/// measuring an interval must use Monotonic and nothing else.
+static class ClockId
+{
+    public const int Realtime = 0;
+    public const int Monotonic = 1;
+    public const int ProcessCpu = 2;
+    public const int ThreadCpu = 3;
+    public const int MonotonicRaw = 4;
+}

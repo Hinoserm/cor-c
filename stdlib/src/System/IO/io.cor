@@ -274,18 +274,44 @@ class FileStream : Stream
 class MemoryStream : Stream
 {
     byte[] _bytes;
+    /// Where the stream's first byte is in _bytes, and how much of it the
+    /// stream may use: all of an array it made, a window of one it was
+    /// given. Positions and lengths are the stream's, from _origin.
+    int _origin;
+    int _capacity;
     int _length;
     int _position;
+    /// Only a stream that made its own array grows it; one over a caller's
+    /// array is that array's size for good, as .NET's is.
+    bool _expandable;
+    /// Whether GetBuffer may hand the array out: not for a window of
+    /// someone else's (.NET's publiclyVisible).
+    bool _visible;
 
     public MemoryStream()
     {
         _bytes = new byte[256];
+        _capacity = _bytes.Length;
+        _expandable = true;
+        _visible = true;
     }
 
-    public MemoryStream(byte[] buffer)
+    /// Over all of `buffer`, which it reads and writes in place and never
+    /// grows.
+    public MemoryStream(byte[] buffer) : this(buffer, 0, buffer.Length) { _visible = true; }
+
+    /// Over `count` bytes of `buffer` from `index`: position 0 is
+    /// buffer[index], and the stream ends after `count` bytes.
+    public MemoryStream(byte[] buffer, int index, int count)
     {
+        if (buffer == null) throw new ArgumentNullException("buffer");
+        if (index < 0) throw new ArgumentOutOfRangeException("index");
+        if (count < 0) throw new ArgumentOutOfRangeException("count");
+        if (buffer.Length - index < count) throw new ArgumentException("the offset and length are outside the buffer");
         _bytes = buffer;
-        _length = buffer.Length;
+        _origin = index;
+        _capacity = count;
+        _length = count;
     }
 
     public override bool CanRead { get { return true; } }
@@ -297,12 +323,17 @@ class MemoryStream : Stream
     public override long Position
     {
         get { return _position; }
-        set { _position = (int)value; }
+        set
+        {
+            if (value < 0) throw new ArgumentOutOfRangeException("value");
+            _position = (int)value;
+        }
     }
 
     public override long Seek(long offset, SeekOrigin origin)
     {
         long at = origin == SeekOrigin.Begin ? offset : origin == SeekOrigin.Current ? _position + offset : _length + offset;
+        if (at < 0) throw new IOException("an attempt was made to move the position before the beginning of the stream");
         _position = (int)at;
         return at;
     }
@@ -318,16 +349,17 @@ class MemoryStream : Stream
         {
             return 0;
         }
-        Array.Copy(_bytes, _position, buffer, offset, n);
+        Array.Copy(_bytes, _origin + _position, buffer, offset, n);
         _position = _position + n;
         return n;
     }
 
     public override void Write(byte[] buffer, int offset, int count)
     {
-        if (_position + count > _bytes.Length)
+        if (_position + count > _capacity)
         {
-            int size = _bytes.Length * 2;
+            if (!_expandable) throw new NotSupportedException("memory stream is not expandable");
+            int size = _capacity * 2;
             while (size < _position + count)
             {
                 size = size * 2;
@@ -335,8 +367,11 @@ class MemoryStream : Stream
             byte[] bigger = new byte[size];
             Array.Copy(_bytes, 0, bigger, 0, _length);
             _bytes = bigger;
+            _capacity = size;
         }
-        Array.Copy(buffer, offset, _bytes, _position, count);
+        // Bytes between the old end and a position seeked past it are zero.
+        if (_position > _length) Array.Clear(_bytes, _origin + _length, _position - _length);
+        Array.Copy(buffer, offset, _bytes, _origin + _position, count);
         _position = _position + count;
         if (_position > _length)
         {
@@ -347,12 +382,15 @@ class MemoryStream : Stream
     public byte[] ToArray()
     {
         byte[] copy = new byte[_length];
-        Array.Copy(_bytes, 0, copy, 0, _length);
+        Array.Copy(_bytes, _origin, copy, 0, _length);
         return copy;
     }
 
+    /// The array itself. A stream over a window of someone else's array
+    /// will not hand it out (UnauthorizedAccessException, as .NET's).
     public byte[] GetBuffer()
     {
+        if (!_visible) throw new UnauthorizedAccessException("the MemoryStream's internal buffer cannot be accessed");
         return _bytes;
     }
 }
@@ -912,8 +950,20 @@ partial static class File
         }
     }
 
+    /// Moves a file, and throws IOException if `to` already exists, as
+    /// .NET's does: rename(2) alone would replace it.
     public static void Move(string from, string to)
     {
+        Move(from, to, false);
+    }
+
+    /// Moves a file, replacing `to` if `overwrite` says so: rename(2), which
+    /// replaces it in one step, so a reader sees the old file or the new
+    /// one and never neither.
+    public static void Move(string from, string to, bool overwrite)
+    {
+        if (!Exists(from)) throw new FileNotFoundException("could not find file '" + from + "'", from);
+        if (!overwrite && Os.Exists(to)) throw new IOException("the file '" + to + "' already exists");
         int r = Os.Rename(from, to);
         if (r < 0)
         {

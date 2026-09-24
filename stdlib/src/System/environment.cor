@@ -231,7 +231,9 @@ static class Environment
 
     /// Ends the process now, flushing the console first, as .NET does.
     /// Os.Exit runs whatever was left with Runtime.OnExit, which is the
-    /// flush.
+    /// flush. [DoesNotReturn], as .NET's: a null check that ends in it
+    /// guards what follows.
+    [DoesNotReturn]
     public static void Exit(int code)
     {
         Os.Exit(code);

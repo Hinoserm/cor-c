@@ -2039,6 +2039,9 @@ public sealed class Parser
                 NotNullIfNotNull = returnsNullOnlyWith,
                 Line = start.Line, Col = start.Col, Body = null,
             };
+            // `[DoesNotReturn]` and the rest, which the checker reads off the
+            // declaration (Binder.NeverReturns).
+            m.Attributes.AddRange(attributes);
             ParseTypeParams(m.TypeParams);
             ParseParams(m.Params);
             ParseConstraints(m.TypeParams);
@@ -6731,6 +6734,7 @@ internal static class MethodDeclExtensions
     {
         to.TypeParams.AddRange(from.TypeParams);
         to.Params.AddRange(from.Params);
+        to.Attributes.AddRange(from.Attributes);
         return to;
     }
 }

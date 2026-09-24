@@ -1,0 +1,63 @@
+// test: MemoryStream over a window of an array, fixed-size streams, File.Move's overwrite rule
+// expect-exit: 0
+// expect-output:
+// window: length=4 bytes=03-04-05-06 array[2]=33
+// fixed: NotSupportedException
+// hidden: UnauthorizedAccessException
+// visible: same array
+// move: IOException, source kept
+// move overwrite: moved, source gone
+//
+// As .NET has them: a MemoryStream made over a caller's array reads and
+// writes that array in place, from its index, and never grows it; only a
+// stream over a whole array hands the array back from GetBuffer. File.Move
+// with two arguments refuses an existing destination, and with overwrite
+// replaces it.
+
+using System.IO;
+
+class Program
+{
+    static string Hex(byte[] bytes)
+    {
+        StringBuilder made = new StringBuilder();
+        for (int i = 0; i < bytes.Length; i++)
+        {
+            if (i > 0) { made.Append('-'); }
+            made.Append(bytes[i].ToString("X2"));
+        }
+        return made.ToString();
+    }
+
+    static int Main()
+    {
+        byte[] array = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 };
+        MemoryStream window = new MemoryStream(array, 2, 4);
+        byte[] read = new byte[8];
+        int n = window.Read(read, 0, 8);
+        byte[] got = new byte[n];
+        Array.Copy(read, got, n);
+        window.Position = 0;
+        window.WriteByte(33);
+        Console.WriteLine("window: length=" + window.Length + " bytes=" + Hex(got) + " array[2]=" + array[2]);
+
+        try { window.Position = 3; window.Write(new byte[] { 9, 9 }, 0, 2); Console.WriteLine("fixed: grew"); }
+        catch (NotSupportedException) { Console.WriteLine("fixed: NotSupportedException"); }
+
+        try { window.GetBuffer(); Console.WriteLine("hidden: handed out"); }
+        catch (UnauthorizedAccessException) { Console.WriteLine("hidden: UnauthorizedAccessException"); }
+
+        MemoryStream whole = new MemoryStream(array);
+        Console.WriteLine(whole.GetBuffer() == array ? "visible: same array" : "visible: a copy");
+
+        string from = "/tmp/cor-645-" + Environment.ProcessId + "-from", to = "/tmp/cor-645-" + Environment.ProcessId + "-to";
+        File.WriteAllText(from, "new");
+        File.WriteAllText(to, "old");
+        try { File.Move(from, to); Console.WriteLine("move: replaced"); }
+        catch (IOException) { Console.WriteLine("move: IOException, source " + (File.Exists(from) ? "kept" : "gone")); }
+        File.Move(from, to, true);
+        Console.WriteLine("move overwrite: " + (File.ReadAllText(to) == "new" ? "moved" : "not moved") + ", source " + (File.Exists(from) ? "kept" : "gone"));
+        File.Delete(to);
+        return 0;
+    }
+}

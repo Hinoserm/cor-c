@@ -183,6 +183,9 @@ public static class Driver
                                  at gs:[0], as on Linux, not in one global word.
                                  For a kernel with a block per processor; the
                                  program must load GS before managed code runs
+              --ring1-syscalls   with --freestanding: Sys.Syscall traps to 0x83, the
+                                 CORSAC ring-1 kernels' gate for Linux's file
+                                 calls, instead of 0x80
               --base <addr>      load or link address, hexadecimal (0x10000)
               --load <addr>      where a loader puts the image, when that is
                                  not where it is linked to run: the ELF's
@@ -404,6 +407,7 @@ public static class Driver
         bool flat = args.Contains("--flat");
         Corsac.Lang.Lower.Lowering.Freestanding = freestanding;
         Corsac.Lang.Lower.Lowering.TlsGs = freestanding && args.Contains("--tls-gs");
+        Corsac.Lang.Lower.Lowering.Ring1Syscalls = freestanding && args.Contains("--ring1-syscalls");
 
         // --asm-entry: an assembled object supplies `_start`, and this is the
         // name it calls once it has a stack and a cleared .bss.
@@ -999,6 +1003,13 @@ public static class Driver
         if (File.Exists(system))
         {
             libs.Add(system);
+        }
+        if (!freestanding)
+        {
+            // Linux's numbers and structures, and its file calls, which the
+            // ring-1 kernels of CORSAC compile too (files.cor).
+            libs.Add(Path.Combine(root, "runtime", "src", "platforms", "linux", "abi.cor"));
+            libs.Add(Path.Combine(root, "runtime", "src", "platforms", "linux", "files.cor"));
         }
         if (!freestanding)
         {

@@ -110,6 +110,18 @@ static class Platform
         _limit = end;
     }
 
+    /// Where this image's data segment starts in the linear space: 0 for a
+    /// flat image, the segment's base for one that is not (CORSAC's NT
+    /// kernel, which says so before it makes a call). A kernel below is
+    /// handed linear addresses (Linear), so files.cor's calls work either way.
+    public static long SegmentBase;
+
+    /// The linear address of `at`, an address in this image's own segment.
+    public static long Linear(long at)
+    {
+        return at + SegmentBase;
+    }
+
     /// Fresh, zeroed, 8-aligned memory of `bytes`, or 0 when the region is
     /// exhausted.
     ///
@@ -323,7 +335,10 @@ static class Platform
 /// Deliberately small. A name that cannot be honoured is worse than a name
 /// that is not there: a program that calls Os.Open on bare metal has a
 /// mistake in it, and a compile error is where that mistake should surface.
-static class Os
+/// Partial for the one exception: CORSAC's ring-1 kernels, which have a
+/// kernel below them that answers Linux's file calls, compile the Linux
+/// platform's files.cor beside this for them.
+static partial class Os
 {
     /// One processor: a machine with no operating system runs one thread.
     public static int ProcessorCount() { return 1; }

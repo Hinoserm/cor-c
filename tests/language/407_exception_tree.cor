@@ -9,6 +9,7 @@
 // out of range caught as ArgumentException
 // overflow caught as ArithmeticException
 // disposed caught as InvalidOperationException
+// platform not supported caught as NotSupportedException
 // invalid data is not an IOException
 // every one of them is a SystemException
 //
@@ -44,6 +45,9 @@ class Program
 
         try { throw new ObjectDisposedException("reader"); }
         catch (InvalidOperationException) { Console.WriteLine("disposed caught as InvalidOperationException"); }
+
+        try { throw new PlatformNotSupportedException(); }
+        catch (NotSupportedException) { Console.WriteLine("platform not supported caught as NotSupportedException"); }
 
         // System.IO.InvalidDataException is the one that is NOT an IOException,
         // because nothing went wrong with the device.

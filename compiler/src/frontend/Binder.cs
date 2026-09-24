@@ -3224,7 +3224,11 @@ public sealed partial class Binder
                 // reaching the line after the `if` means the condition was
                 // FALSE -- so whatever that proves holds from here on, and is
                 // deliberately not forgotten.
-                if (!thenLeaves)
+                // A branch that ends calling a [DoesNotReturn] method --
+                // Environment.Exit, a throw helper -- leaves as far as null is
+                // concerned, as C#'s nullable analysis has it; definite
+                // assignment above does not count it, as C#'s does not.
+                if (!thenLeaves && !NeverReturns(i.Then))
                 {
                     Forget(inElse);
                 }
@@ -10209,6 +10213,31 @@ public sealed partial class Binder
         IfStmt i => i.Else != null && Leaves(i.Then) && Leaves(i.Else),
         _ => false,
     };
+
+    /// <summary>
+    /// Whether a statement ends in a call to a method declared
+    /// `[DoesNotReturn]` (System.Diagnostics.CodeAnalysis): the null state
+    /// after it is never reached. Asked after the statement is checked, so the
+    /// call has been resolved.
+    /// </summary>
+    private bool NeverReturns(Stmt s) => s switch
+    {
+        ExprStmt { Expr: Expr e } => Called(e) is { Decl: not null } m
+            && m.Decl.Attributes.Any(a => a.Target.Length == 0 && a.Name is "DoesNotReturn" or "DoesNotReturnAttribute"),
+        Block b => b.Statements.Count > 0 && (Leaves(b.Statements[^1]) || NeverReturns(b.Statements[^1])),
+        IfStmt i => i.Else != null && (Leaves(i.Then) || NeverReturns(i.Then)) && (Leaves(i.Else) || NeverReturns(i.Else)),
+        _ => false,
+    };
+
+    /// <summary>
+    /// The method a call expression resolved to, through any rewrite the
+    /// binder made of it (a bare `F()` in a static method is `T.F()`).
+    /// </summary>
+    private MethodSymbol? Called(Expr e)
+    {
+        for (int hops = 0; hops < 8 && _r.Rewrites.TryGetValue(e, out Expr? to); hops++) e = to;
+        return e is CallExpr call && _r.Calls.TryGetValue(call, out MethodSymbol? m) ? m : null;
+    }
 
     /// <summary>
     /// Whether a completed case reaches the statement after its switch.
