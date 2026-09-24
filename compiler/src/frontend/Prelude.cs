@@ -979,6 +979,11 @@ public static class Prelude
             // (`int 0x82`, which ring 3 may not use).
             public static long GuiCall(long number, long a, long b, long c) { return 0; }
             public static long GuiService(long number, long a, long b, long c) { return 0; }
+            // A Windows system call (`int 0x2E`): EAX the call's number and EDX
+            // the address of its arguments, as ntdll's stubs make it; the
+            // answer is its NTSTATUS. For a CORSAC program attached to the NT
+            // kernel -- csrss -- which serves Windows programs from outside them.
+            public static long NtCall(long number, long arguments) { return 0; }
             // The stack pointer as the program was entered, for a runtime that
             // needs to find what the loader left there: argc and argv.
             public static long EntryStack() { return 0; }

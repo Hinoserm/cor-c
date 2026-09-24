@@ -71,8 +71,11 @@ if [ -z "${CORC:-}" ]; then
     CORC="dotnet $dll"
 fi
 
+# The compiler answers absolute paths; CORC_LIBS may be relative to the root.
+lib_path() { case "$1" in /*) printf '%s' "$1" ;; *) printf '%s' "$root/$1" ;; esac; }
+
 for lib in $libs; do
-    if [ ! -f "$root/$lib" ]; then
+    if [ ! -f "$(lib_path "$lib")" ]; then
         echo "library source $lib not found (set CORC_LIBS to override)" >&2
         exit 2
     fi
@@ -141,7 +144,7 @@ fi
 
 lib_paths=""
 for lib in $libs; do
-    lib_paths="$lib_paths $root/$lib"
+    lib_paths="$lib_paths $(lib_path "$lib")"
 done
 
 for f in "${tests[@]}"; do

@@ -414,6 +414,15 @@ public sealed partial class Lowering
                 VReg r = _e.Syscall(R(ToWord(Arg(call, target, 0))), args, vector);
                 return Widen(r);
             }
+            case "NtCall":
+            {
+                // NT's convention: the arguments' address in EDX, which is the
+                // third of Syscall's registers (EBX, ECX, EDX).
+                VReg number = ToWord(Arg(call, target, 0));
+                List<Operand> args = new() { Imm(0, number.Type), Imm(0, number.Type), R(ToWord(Arg(call, target, 1))) };
+                VReg r = _e.Syscall(R(number), args, 0x2E);
+                return Widen(r);
+            }
             case "Call":
             {
                 VReg fn = Address(call, target, 0);
