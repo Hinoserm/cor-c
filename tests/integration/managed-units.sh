@@ -10,7 +10,10 @@ mkdir -p build
 work="$(mktemp -d "$root/build/managed-units.XXXXXX")"
 echo "Managed separate-unit acceptance: $work"
 refs=()
-while IFS= read -r source; do refs+=(--ref "$root/$source"); done < tests/integration/managed-runtime.sources
+# The compiler's own default library set, asked of it rather than kept in a
+# list beside these tests: the two must be identical, and a copy that must
+# match is a copy that will drift.
+while IFS= read -r source; do refs+=(--ref "$source"); done < <("$corc" library-sources)
 provider="$root/tests/integration/indexed/TraceProvider.cor"
 caller="$root/tests/integration/indexed/TraceCaller.cor"
 "$corc" index --assembly ManagedTrace "$provider" -o "$work/trace.idx"

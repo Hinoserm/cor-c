@@ -65,7 +65,7 @@ public sealed class DeclarationCatalog : IDisposable
             {
                 held.Used = ++sourceClock;
                 if (!held.Hash.AsSpan().SequenceEqual(source.SourceHash))
-                    throw new InvalidDataException("Declaration source generation is stale: " + source.Path);
+                    throw new InvalidDataException(Stale(source.Path));
                 source.Verify(held.Text);
                 return held.Text;
             }
@@ -73,7 +73,7 @@ public sealed class DeclarationCatalog : IDisposable
         string text = File.ReadAllText(source.Path);
         byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(text));
         if (!hash.AsSpan().SequenceEqual(source.SourceHash))
-            throw new InvalidDataException("Declaration source generation is stale: " + source.Path);
+            throw new InvalidDataException(Stale(source.Path));
         source.Verify(text);
         long size = 128L + source.Path.Length * 2L + text.Length * 2L + hash.Length;
         lock (sourceGate)
@@ -92,6 +92,16 @@ public sealed class DeclarationCatalog : IDisposable
         }
         return text;
     }
+
+    /// <summary>
+    /// What to say when a source has moved on since the index was written.
+    /// It names the file and what to do about it, because this is not a
+    /// fault in the program being compiled and the reader's next question is
+    /// always the same one.
+    /// </summary>
+    internal static string Stale(string path)
+        => "declaration index is out of date: " + path + " has changed since the index was built; "
+            + "rebuild the index before compiling against it";
 
     private sealed class Source
     {

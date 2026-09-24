@@ -1,14 +1,17 @@
+using Corsac;
+using Corsac.Lang;
+
 namespace Corsac.Tests.Metadata;
 
+/// <summary>
+/// The library sources the fixtures compile against: the compiler's own
+/// default set, asked of the compiler. There used to be a list of them
+/// checked in beside the tests, which had to be identical to the default set
+/// and twice was not -- interface slots are numbered over the declarations,
+/// so a unit built from a short list numbers every later slot differently
+/// and the link stops. A copy that must match is a copy that will drift.
+/// </summary>
 internal static class RuntimeDeclarations
 {
-    public static string[] Sources()
-    {
-        for (DirectoryInfo? directory = new(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
-        {
-            string list = Path.Combine(directory.FullName, "tests/integration/managed-runtime.sources");
-            if (File.Exists(list)) return File.ReadAllLines(list).Select(path => Path.Combine(directory.FullName, path)).ToArray();
-        }
-        throw new DirectoryNotFoundException("Cannot locate real runtime declarations for metadata fixtures");
-    }
+    public static string[] Sources() => Driver.DefaultLibraries(Target.X86).ToArray();
 }

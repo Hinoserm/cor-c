@@ -135,7 +135,27 @@ public static class ProjectCompile
             one.Add("--dependency-file"); one.Add(unit.Receipt);
             one.Add("-o"); one.Add(unit.Object);
             long before = GC.GetTotalAllocatedBytes();
-            int code = Driver.Compile(one.ToArray());
+            int code;
+            try
+            {
+                code = Driver.Compile(one.ToArray());
+            }
+            // A UNIT THAT CANNOT BE COMPILED IS A FAILED UNIT, not a dead
+            // process. Compiling one source by itself reports a bad input and
+            // exits; the same input reached through here threw on a worker
+            // thread, where nothing was catching, and the runtime took the
+            // whole process down with a core dump. What it printed was a
+            // stack trace, so a stale index -- an ordinary thing to have --
+            // looked like a compiler crash.
+            catch (Exception failure) when (failure is InvalidDataException or IOException)
+            {
+                lock (gate)
+                {
+                    done++;
+                    Console.Error.WriteLine("corc: compiling " + unit.Source + ": " + failure.Message);
+                }
+                return 1;
+            }
             long after = GC.GetTotalAllocatedBytes();
             if (code == 0)
             {
