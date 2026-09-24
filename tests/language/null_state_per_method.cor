@@ -3,20 +3,25 @@
 // expect-output:
 // set True
 // picked True True
+// receivers 7 9
 //
 // What one method proved about a field is not known in the next. Fill
 // writes a non-null Box into _held, which proves it there; Main is checked
 // after it and must still see `Box?`, so Pick infers T = Box? and takes null
-// as its third argument, as C# does.
+// as its third argument, as C# does. And a receiver's `!` holds in what is
+// evaluated after it: a call's arguments, an assignment's right-hand side.
 
 class Box
 {
     public int Value;
+    public int Plus(int more) { return Value + more; }
 }
 
 static class Program
 {
     static Box? _held;
+    static int[]? _slots;
+    static Box? _shown;
 
     static void Fill()
     {
@@ -36,6 +41,18 @@ static class Program
         Box other = new Box();
         Box? got = Pick(ref _held, other, null);
         Console.WriteLine("picked " + (got == other) + " " + (_held != null));
+
+        _slots = new int[] { 0, 7 };
+        _slots![0] = _slots[1];
+        _shown = new Box();
+        _shown.Value = 9;
+        Show();
         return 0;
+    }
+
+    static void Show()
+    {
+        int first = _slots![0];
+        Console.WriteLine("receivers " + first + " " + _shown!.Plus(_shown.Value - 9));
     }
 }

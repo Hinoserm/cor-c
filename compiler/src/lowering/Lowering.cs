@@ -1022,6 +1022,29 @@ public sealed partial class Lowering
     }
 
     /// <summary>
+    /// How an array's element type names its descriptor: WITHOUT a reference's
+    /// `?`, at every depth. `string?[]` and `string[]` are one array at run
+    /// time -- the checker converts between them with no copy -- so they
+    /// must share a descriptor, or `o is string?[]` is false for the very
+    /// array it names. A Nullable value's `?` stays: an `int?[]` holds cells,
+    /// and is a different array.
+    /// </summary>
+    private static string ElementKey(Type element) => Unannotated(element).ToString();
+
+    private static Type Unannotated(Type t)
+    {
+        if (t.IsNullableValue)
+        {
+            return t;
+        }
+        if (t.IsArray && t.Element is Type inner)
+        {
+            return Type.ArrayOf(Unannotated(inner));
+        }
+        return t.AsNonNullable();
+    }
+
+    /// <summary>
     /// The descriptor for arrays of one element type, and for strings. An
     /// array's vtable holds only object's own virtuals; what matters most is
     /// that every array of bytes shares one, so `GetType` and the flags agree.

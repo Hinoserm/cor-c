@@ -20,6 +20,7 @@
 
 using System;
 using System.IO;
+using System.Collections.Generic;
 using System.IO.Compression;
 using Corsac.GUI;
 
@@ -514,22 +515,42 @@ public class Icon
     public int Height { get { return _lastHeight; } }
 }
 
-/// A pointer shape from a .cur file, given to the seat once and then
-/// selected by number. The seat reduces it to what the card's hardware
-/// cursor can show.
+/// A pointer shape from a .cur or .ani file, given to the seat once and
+/// then selected by number. The seat reduces it to what the card's
+/// hardware cursor can show; an animated one it steps through itself.
 public class CursorArt
 {
     public int Shape = -1;             // what SetCursor takes, or -1 if it did not load
     public int Width;
     public int Height;
+    public int HotX, HotY;             // the point of it that is the pointer's position
+    public Bitmap? Picture;            // the first (or only) image, to draw it
+    public bool Animated;
 
     public static CursorArt? FromFile(string path)
     {
-        IconFile? file = IconFile.Load(path);
-        if (file == null || file.Entries.Length == 0) return null;
+        byte[] bytes;
+        try { bytes = File.ReadAllBytes(path); }
+        catch (IOException) { return null; }
+        return FromBytes(bytes);
+    }
 
-        // A cursor file's images are all the same drawing at different
-        // depths; the largest the hardware can hold wins.
+    public static CursorArt? FromBytes(byte[] bytes)
+    {
+        if (bytes.Length >= 12 && Tag(bytes, 0) == "RIFF" && Tag(bytes, 8) == "ACON") return FromAnimation(bytes);
+        IconFile? file = IconFile.Read(bytes);
+        if (file == null) return null;
+        int id = Seat.NextCursorId();
+        CursorArt? made = Define(file, id);
+        if (made != null) made.Shape = CursorShapes.Base + id;
+        return made;
+    }
+
+    /// The image of a cursor file the hardware can hold -- the largest up
+    /// to 32 pixels, since a file's images are one drawing at several
+    /// depths -- defined in the seat as `id`.
+    static CursorArt? Define(IconFile file, int id)
+    {
         int best = -1;
         for (int i = 0; i < file.Entries.Length; i++)
             if (file.Entries[i].Width <= 32 && file.Entries[i].Height <= 32)
@@ -540,11 +561,102 @@ public class CursorArt
         if (picture == null) return null;
 
         CursorArt made = new CursorArt();
-        int id = Seat.NextCursorId();
         Seat.Current.DefineCursor(id, picture.Width, picture.Height,
                                   file.Entries[best].HotX, file.Entries[best].HotY, picture.Pixels);
-        made.Shape = CursorShapes.Base + id;
         made.Width = picture.Width; made.Height = picture.Height;
+        made.HotX = file.Entries[best].HotX; made.HotY = file.Entries[best].HotY;
+        made.Picture = picture;
         return made;
+    }
+
+    static string Tag(byte[] b, int at)
+    {
+        if (at + 4 > b.Length) return "";
+        return "" + (char)b[at] + (char)b[at + 1] + (char)b[at + 2] + (char)b[at + 3];
+    }
+
+    static int U32(byte[] b, int at) { return (b[at] & 255) | ((b[at + 1] & 255) << 8) | ((b[at + 2] & 255) << 16) | ((b[at + 3] & 255) << 24); }
+
+    /// AN ANIMATED CURSOR (.ani): a RIFF file of type ACON holding a header
+    /// (anih: the frame and step counts and the default rate, in sixtieths
+    /// of a second), optionally each step's rate and which frame it shows
+    /// (rate, seq), and the frames themselves as whole cursor files inside
+    /// LIST fram. Each frame is defined in the seat, and the first becomes
+    /// the animation the seat steps through.
+    static CursorArt? FromAnimation(byte[] bytes)
+    {
+        int frames = 0, steps = 0, rate = 10;
+        int[]? rates = null, sequence = null;
+        List<IconFile> images = new List<IconFile>();
+        int end = Math.Min(bytes.Length, 8 + U32(bytes, 4));
+        if (!Chunks(bytes, 12, end, images, ref frames, ref steps, ref rate, ref rates, ref sequence)) return null;
+        if (images.Count == 0) return null;
+        if (steps <= 0) steps = images.Count;
+
+        int[] ids = new int[images.Count];
+        CursorArt? first = null;
+        for (int i = 0; i < images.Count; i++)
+        {
+            ids[i] = Seat.NextCursorId();
+            CursorArt? frame = Define(images[i], ids[i]);
+            if (frame == null) return null;
+            if (first == null) first = frame;
+        }
+        if (first == null) return null;
+
+        steps = Math.Min(steps, 64);
+        int[] shown = new int[steps], jiffies = new int[steps];
+        for (int i = 0; i < steps; i++)
+        {
+            int frame = sequence != null && i < sequence.Length ? sequence[i] : i;
+            if (frame < 0 || frame >= ids.Length) frame = 0;
+            shown[i] = ids[frame];
+            jiffies[i] = rates != null && i < rates.Length ? rates[i] : rate;
+            if (jiffies[i] <= 0) jiffies[i] = 1;
+        }
+        Seat.Current.AnimateCursor(ids[0], shown, jiffies);
+        first.Shape = CursorShapes.Base + ids[0];
+        first.Animated = true;
+        return first;
+    }
+
+    /// The chunks from `at` to `end`, into what FromAnimation keeps; a
+    /// LIST is read inside. False for a file that lies about its sizes.
+    static bool Chunks(byte[] b, int at, int end, List<IconFile> images, ref int frames, ref int steps,
+                       ref int rate, ref int[]? rates, ref int[]? sequence)
+    {
+        while (at + 8 <= end)
+        {
+            string id = Tag(b, at);
+            int size = U32(b, at + 4);
+            int data = at + 8;
+            if (size < 0 || data + size > end) return false;
+            if (id == "anih" && size >= 36)
+            {
+                frames = U32(b, data + 4);
+                steps = U32(b, data + 8);
+                rate = U32(b, data + 28);
+                if ((U32(b, data + 32) & 1) == 0) return false;     // raw bitmaps, not cursors: never written by Windows' tools
+            }
+            else if (id == "rate" || id == "seq ")
+            {
+                int[] values = new int[size / 4];
+                for (int i = 0; i < values.Length; i++) values[i] = U32(b, data + i * 4);
+                if (id == "rate") rates = values; else sequence = values;
+            }
+            else if (id == "LIST" && size >= 4)
+            {
+                if (!Chunks(b, data + 4, data + size, images, ref frames, ref steps, ref rate, ref rates, ref sequence)) return false;
+            }
+            else if (id == "icon")
+            {
+                byte[] one = new byte[size];
+                for (int i = 0; i < size; i++) one[i] = b[data + i];
+                IconFile? file = IconFile.Read(one);
+                if (file != null && file.Entries.Length > 0) images.Add(file);
+            }
+            at = data + size + (size & 1);                          // chunks are word-aligned
+        }
+        return true;
     }
 }

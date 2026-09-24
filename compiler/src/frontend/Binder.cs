@@ -8011,6 +8011,9 @@ public sealed partial class Binder
                 {
                     _wanted = assignmentWanted;
                 }
+                // `_at![j] = _at[last]`: the target's receiver is evaluated
+                // before the value, so its `!` holds on the right-hand side.
+                ProveReceivers(a.Target switch { MemberExpr m => m.Target, IndexExpr ix => ix.Target, _ => null });
                 Type value = CheckExpr(a.Value);
                 _wanted = previousWanted;
 
@@ -9326,6 +9329,29 @@ public sealed partial class Binder
     /// Records that this expression is not null from here on -- because it was
     /// just dereferenced, or because the author wrote `!` after it.
     /// </summary>
+    /// <summary>
+    /// The `!`s along a receiver chain -- `a!.b!.c` -- applied now, because
+    /// C# evaluates the receiver before what follows it (a call's arguments,
+    /// an assignment's value) and those are checked here first.
+    /// </summary>
+    private void ProveReceivers(Expr? receiver)
+    {
+        for (Expr? chain = receiver; chain is not null;
+             chain = chain switch
+             {
+                 MemberExpr inner => inner.Target,
+                 IndexExpr indexed => indexed.Target,
+                 SuppressExpr sure => sure.Operand,
+                 _ => null,
+             })
+        {
+            if (chain is SuppressExpr asserted)
+            {
+                Proved(asserted.Operand);
+            }
+        }
+    }
+
     private void Proved(Node at)
     {
         if (at is not Expr e)
@@ -10985,14 +11011,7 @@ public sealed partial class Binder
         // having set _form's null state before the argument reads it. The
         // arguments are checked before the target here (overloads are chosen
         // from them), so the receiver chain's `!`s are applied ahead of them.
-        for (Expr? chain = (c.Target as MemberExpr)?.Target; chain is not null;
-             chain = chain switch { MemberExpr inner => inner.Target, SuppressExpr sure => sure.Operand, _ => null })
-        {
-            if (chain is SuppressExpr asserted)
-            {
-                Proved(asserted.Operand);
-            }
-        }
+        ProveReceivers((c.Target as MemberExpr)?.Target);
 
         List<Type> args = new();
         foreach (Expr argument in c.Args)

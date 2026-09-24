@@ -479,6 +479,72 @@ public class Control
     public event EventHandler? GotFocus;
     public event EventHandler? LostFocus;
     public event EventHandler? TextChanged;
+    public event EventHandler? CursorChanged;
+
+    Cursor? _cursor;
+    bool _useWaitCursor;
+
+    /// <summary>
+    /// The pointer's shape over this control. AMBIENT, as in .NET: one never
+    /// set is the control's own DefaultCursor if that says something (a text
+    /// box's I-beam), else its parent's.
+    /// </summary>
+    public virtual Cursor Cursor
+    {
+        get
+        {
+            if (_cursor != null) return _cursor;
+            Cursor own = DefaultCursor;
+            if (own != Cursors.Default) return own;
+            return _parent != null ? _parent.Cursor : Cursors.Default;
+        }
+        set
+        {
+            if (_cursor == value) return;
+            _cursor = value;
+            OnCursorChanged(EventArgs.Empty);
+        }
+    }
+
+    /// What this kind of control wears when nobody has said otherwise.
+    protected virtual Cursor DefaultCursor { get { return Cursors.Default; } }
+
+    protected virtual void OnCursorChanged(EventArgs e)
+    {
+        if (CursorChanged != null) CursorChanged(this, e);
+        // The pointer over this control -- or one inheriting from it -- wears
+        // the new one now, not at its next move.
+        Control? hot = Application.HotControl;
+        for (Control? c = hot; c != null; c = c._parent)
+            if (c == this) { Cursor.Over(hot!); break; }
+    }
+
+    /// <summary>
+    /// The hourglass over this control and everything in it, whatever their
+    /// own Cursor says: .NET's way of saying "busy" without a program having
+    /// to remember what each control wore before.
+    /// </summary>
+    public bool UseWaitCursor
+    {
+        get { return _useWaitCursor; }
+        set
+        {
+            _useWaitCursor = value;
+            if (_controls != null) for (int i = 0; i < _controls.Count; i++) _controls[i].UseWaitCursor = value;
+            OnCursorChanged(EventArgs.Empty);
+        }
+    }
+
+    /// What the pointer wears over this control: the hourglass when it or a
+    /// parent is waiting, its Cursor otherwise.
+    internal Cursor EffectiveCursor
+    {
+        get
+        {
+            for (Control? c = this; c != null; c = c._parent) if (c._useWaitCursor) return Cursors.WaitCursor;
+            return Cursor;
+        }
+    }
 
     public Control? Parent { get { return _parent; } set { _parent = value; } }
     public ControlCollection Controls { get { if (_controls == null) _controls = new ControlCollection(this); return _controls; } }
@@ -1278,7 +1344,6 @@ public class Form : Control
             return;
         }
         if (_closeDown) { FrameMouse(kind, button, x, y, co); if (kind != 5) return; }
-        if (kind == 3 && HasFrame && Application.Captured == null) Seat.Current.SetCursor(CursorShapes.Arrow);
         ClientMouse(kind, button, x, y, co);
     }
 
@@ -1303,7 +1368,14 @@ public class Form : Control
             Application.Captured = target;
         }
         else if (kind == 5) { Application.Captured = null; to.RaiseMouseUp(e); }
-        else { Application.Hover(to); to.RaiseMouseMove(e); }
+        else
+        {
+            Application.Hover(to);
+            // WM_SETCURSOR: not while a control holds the button, which keeps
+            // the shape it had when it took the press.
+            if (Application.Captured == null) Cursor.Over(to);
+            to.RaiseMouseMove(e);
+        }
     }
 }
 
@@ -1311,6 +1383,207 @@ public class Form : Control
 /// asked for, and the buttons the question needs, centred on the screen
 /// and answered by whichever button was pressed. Windows' API, so a
 /// program written for it needs no changes; drawn with what is here.
+/// <summary>
+/// A pointer shape, as .NET names it: one of the system's (Cursors) or one
+/// read from a .cur or .ani file. Which one the pointer wears over a control
+/// is that control's Cursor, asked each time the pointer moves over it, as
+/// Windows asks with WM_SETCURSOR.
+/// </summary>
+public sealed class Cursor : IDisposable
+{
+    readonly int _shape;               // what the seat takes (CursorShapes)
+    readonly string _name;             // a system cursor's .NET name; "" for one from a file
+    readonly CursorArt? _art;
+
+    internal Cursor(int shape, string name) { _shape = shape; _name = name; }
+
+    /// A cursor file, still or animated. Windows' own error when it is not one.
+    public Cursor(string fileName)
+    {
+        CursorArt? art = CursorArt.FromFile(fileName);
+        if (art == null || art.Shape < 0) throw new ArgumentException("Image format is not valid. The image file may be corrupted.", "fileName");
+        _art = art; _shape = art.Shape; _name = "";
+    }
+
+    public Cursor(Stream stream)
+    {
+        MemoryStream copy = new MemoryStream();
+        stream.CopyTo(copy);
+        CursorArt? art = CursorArt.FromBytes(copy.ToArray());
+        if (art == null || art.Shape < 0) throw new ArgumentException("Image format is not valid. The image file may be corrupted.", "stream");
+        _art = art; _shape = art.Shape; _name = "";
+    }
+
+    internal int Shape { get { return _shape; } }
+
+    /// The point of the picture that is the pointer's position.
+    public Point HotSpot { get { return _art == null ? new Point(0, 0) : new Point(_art.HotX, _art.HotY); } }
+
+    /// The picture's size: a file's own, or the system's 32 by 32.
+    public Size Size { get { return _art == null ? new Size(32, 32) : new Size(_art.Width, _art.Height); } }
+
+    public object? Tag { get; set; }
+
+    public void Dispose() { }
+
+    public override string ToString() { return "[Cursor: " + (_name.Length > 0 ? _name : "System.Windows.Forms.Cursor") + "]"; }
+
+    public override bool Equals(object? obj) { return obj is Cursor other && other._shape == _shape; }
+
+    public override int GetHashCode() { return _shape; }
+
+    public static bool operator ==(Cursor? left, Cursor? right)
+    {
+        if (ReferenceEquals(left, right)) return true;
+        if (left is null || right is null) return false;
+        return left._shape == right._shape;
+    }
+
+    public static bool operator !=(Cursor? left, Cursor? right) { return !(left == right); }
+
+    // ---- the pointer itself -------------------------------------------------
+
+    static Cursor? _current;
+    static int _hidden;                // Hide less Show, as Windows' ShowCursor counts
+    static int _blank = -1;            // the empty shape a hidden pointer wears
+    static Rectangle _clip;
+
+    /// The shape the pointer wears now. Setting it changes it at once, until
+    /// the pointer next moves over a control and takes that one's Cursor --
+    /// which is why a long job sets it to WaitCursor and does not return to
+    /// the message loop until it is done.
+    public static Cursor? Current
+    {
+        get { return _current ?? Cursors.Default; }
+        set { _current = value; Wear(value ?? Cursors.Default); }
+    }
+
+    /// Where the pointer is on the screen; set, it goes there as if moved.
+    public static Point Position
+    {
+        get { try { return Seat.Current.CursorPosition(); } catch (IOException) { return new Point(0, 0); } }
+        set { try { Seat.Current.MoveCursorTo(value.X, value.Y); } catch (IOException) { } }
+    }
+
+    /// The rectangle the pointer is kept in: the whole screen, unless a
+    /// program has set a smaller one. Empty lets it go.
+    public static Rectangle Clip
+    {
+        get { return _clip.Width > 0 && _clip.Height > 0 ? _clip : Screen.PrimaryScreen.Bounds; }
+        set
+        {
+            _clip = value;
+            try { Seat.Current.ClipCursor(value); } catch (IOException) { }
+        }
+    }
+
+    public static void Hide()
+    {
+        _hidden++;
+        if (_hidden == 1) Wear(_current ?? Cursors.Default);
+    }
+
+    public static void Show()
+    {
+        if (_hidden == 0) return;
+        _hidden--;
+        if (_hidden == 0) Wear(_current ?? Cursors.Default);
+    }
+
+    /// Onto the pointer, or the empty shape while it is hidden. The seat
+    /// takes it only while the pointer is over one of this program's windows.
+    internal static void Wear(Cursor c)
+    {
+        try
+        {
+            if (_hidden > 0)
+            {
+                if (_blank < 0)
+                {
+                    _blank = Seat.NextCursorId();
+                    Seat.Current.DefineCursor(_blank, 1, 1, 0, 0, new byte[4]);
+                }
+                Seat.Current.SetCursor(CursorShapes.Base + _blank);
+                return;
+            }
+            if (c._shape >= CursorShapes.NoMove2D) AutoScroll.DefineShapes();
+            Seat.Current.SetCursor(c._shape);
+        }
+        catch (IOException) { }
+    }
+
+    /// The pointer has moved onto `over`: its effective cursor goes on, and
+    /// is Current until something sets another.
+    internal static void Over(Control over)
+    {
+        Cursor c = over.EffectiveCursor;
+        _current = c;
+        Wear(c);
+    }
+}
+
+/// <summary>The system's pointer shapes, by .NET's names.</summary>
+public static class Cursors
+{
+    static readonly Cursor _appStarting = new Cursor(CursorShapes.AppStarting, "AppStarting");
+    static readonly Cursor _arrow = new Cursor(CursorShapes.Arrow, "Arrow");
+    static readonly Cursor _cross = new Cursor(CursorShapes.Cross, "Cross");
+    static readonly Cursor _default = new Cursor(CursorShapes.Arrow, "Default");
+    static readonly Cursor _hand = new Cursor(CursorShapes.Hand, "Hand");
+    static readonly Cursor _help = new Cursor(CursorShapes.Help, "Help");
+    static readonly Cursor _hSplit = new Cursor(CursorShapes.SizeNS, "HSplit");
+    static readonly Cursor _iBeam = new Cursor(CursorShapes.IBeam, "IBeam");
+    static readonly Cursor _no = new Cursor(CursorShapes.No, "No");
+    static readonly Cursor _noMove2D = new Cursor(CursorShapes.NoMove2D, "NoMove2D");
+    static readonly Cursor _noMoveHoriz = new Cursor(CursorShapes.NoMoveHoriz, "NoMoveHoriz");
+    static readonly Cursor _noMoveVert = new Cursor(CursorShapes.NoMoveVert, "NoMoveVert");
+    static readonly Cursor _panEast = new Cursor(CursorShapes.PanEast, "PanEast");
+    static readonly Cursor _panNE = new Cursor(CursorShapes.PanNE, "PanNE");
+    static readonly Cursor _panNorth = new Cursor(CursorShapes.PanNorth, "PanNorth");
+    static readonly Cursor _panNW = new Cursor(CursorShapes.PanNW, "PanNW");
+    static readonly Cursor _panSE = new Cursor(CursorShapes.PanSE, "PanSE");
+    static readonly Cursor _panSouth = new Cursor(CursorShapes.PanSouth, "PanSouth");
+    static readonly Cursor _panSW = new Cursor(CursorShapes.PanSW, "PanSW");
+    static readonly Cursor _panWest = new Cursor(CursorShapes.PanWest, "PanWest");
+    static readonly Cursor _sizeAll = new Cursor(CursorShapes.Move, "SizeAll");
+    static readonly Cursor _sizeNESW = new Cursor(CursorShapes.SizeNESW, "SizeNESW");
+    static readonly Cursor _sizeNS = new Cursor(CursorShapes.SizeNS, "SizeNS");
+    static readonly Cursor _sizeNWSE = new Cursor(CursorShapes.SizeNWSE, "SizeNWSE");
+    static readonly Cursor _sizeWE = new Cursor(CursorShapes.SizeWE, "SizeWE");
+    static readonly Cursor _upArrow = new Cursor(CursorShapes.UpArrow, "UpArrow");
+    static readonly Cursor _vSplit = new Cursor(CursorShapes.SizeWE, "VSplit");
+    static readonly Cursor _waitCursor = new Cursor(CursorShapes.Wait, "WaitCursor");
+
+    public static Cursor AppStarting { get { return _appStarting; } }
+    public static Cursor Arrow { get { return _arrow; } }
+    public static Cursor Cross { get { return _cross; } }
+    public static Cursor Default { get { return _default; } }
+    public static Cursor Hand { get { return _hand; } }
+    public static Cursor Help { get { return _help; } }
+    public static Cursor HSplit { get { return _hSplit; } }
+    public static Cursor IBeam { get { return _iBeam; } }
+    public static Cursor No { get { return _no; } }
+    public static Cursor NoMove2D { get { return _noMove2D; } }
+    public static Cursor NoMoveHoriz { get { return _noMoveHoriz; } }
+    public static Cursor NoMoveVert { get { return _noMoveVert; } }
+    public static Cursor PanEast { get { return _panEast; } }
+    public static Cursor PanNE { get { return _panNE; } }
+    public static Cursor PanNorth { get { return _panNorth; } }
+    public static Cursor PanNW { get { return _panNW; } }
+    public static Cursor PanSE { get { return _panSE; } }
+    public static Cursor PanSouth { get { return _panSouth; } }
+    public static Cursor PanSW { get { return _panSW; } }
+    public static Cursor PanWest { get { return _panWest; } }
+    public static Cursor SizeAll { get { return _sizeAll; } }
+    public static Cursor SizeNESW { get { return _sizeNESW; } }
+    public static Cursor SizeNS { get { return _sizeNS; } }
+    public static Cursor SizeNWSE { get { return _sizeNWSE; } }
+    public static Cursor SizeWE { get { return _sizeWE; } }
+    public static Cursor UpArrow { get { return _upArrow; } }
+    public static Cursor VSplit { get { return _vSplit; } }
+    public static Cursor WaitCursor { get { return _waitCursor; } }
+}
+
 /// <summary>
 /// The display, as .NET describes it: Screen.PrimaryScreen.Bounds is the
 /// whole of it and WorkingArea is what is left once a taskbar has taken
@@ -2573,6 +2846,7 @@ public class HScrollBar : ScrollBar
 public class TextBox : Control
 {
     internal override string ClassName { get { return "TextBox"; } }
+    protected override Cursor DefaultCursor { get { return Cursors.IBeam; } }
     // The caret and the selection: `_caret` is where typing goes, `_anchor`
     // is the other end of the selection, equal to the caret when nothing is
     // selected. What a Windows text box does: a typed character replaces the
@@ -3888,6 +4162,8 @@ public class StatusBar : Control
 public class LinkLabel : Label
 {
     internal override string ClassName { get { return "LinkLabel"; } }
+    // The whole label is its link here, so the hand is over all of it.
+    protected override Cursor DefaultCursor { get { return Cursors.Hand; } }
 
     public LinkLabel() { ForeColor = Color.FromArgb(0, 0, 238); TabStop = true; }
 
@@ -4358,7 +4634,9 @@ static class AutoScroll
     const int PixelsPerSecondPerPixel = 8;  // speed for each pixel past the dead zone
     const int TickMilliseconds = 20;
     const int MarkerSize = 32;
-    const int MarkerBitmap = 0x7FF0;
+    // The markers' bitmap ids, one per set of ways (ScrollBars' value),
+    // handed out when they are defined: a bitmap id is below 256.
+    static int[] _markers = new int[4];
 
     /// A middle press: starts autoscroll if it lands on a view that scrolls
     /// and not on a control with its own use for the button.
@@ -4451,7 +4729,7 @@ static class AutoScroll
         if (!Active) return;
         Active = false;
         if (_timer != null) _timer.Stop();
-        Seat.Current.SetCursor(CursorShapes.Arrow);
+        Cursor.Wear(Cursor.Current ?? Cursors.Default);           // what the pointer wore before it started
         _shape = -1;
         Form? form = _form;
         _form = null; _view = null;
@@ -4468,7 +4746,7 @@ static class AutoScroll
     {
         if (!Active || form != _form || _grab) return;
         Graphics g = new Graphics(seat, 0, 0, new Rectangle(0, 0, form.Width, form.Height));
-        g.DrawBitmap(MarkerBitmap + (int)_ways, _originX - MarkerSize / 2, _originY - MarkerSize / 2, MarkerSize, MarkerSize);
+        g.DrawBitmap(_markers[(int)_ways], _originX - MarkerSize / 2, _originY - MarkerSize / 2, MarkerSize, MarkerSize);
     }
 
     /// The pointer: the marker's own shape near it, else the direction.
@@ -4498,30 +4776,35 @@ static class AutoScroll
 
     static bool _defined;
 
-    static void DefineShapes()
+    /// Cursors.NoMove2D and the Pan shapes are these: defined the first
+    /// time autoscroll starts, or a program asks for one of them.
+    internal static void DefineShapes()
     {
         if (_defined) return;
         _defined = true;
         Seat seat = Seat.Current;
         // The markers, as bitmaps, one per set of ways (ScrollBars' value).
-        seat.DefineBitmap(MarkerBitmap + (int)ScrollBars.Vertical, MarkerSize, MarkerSize, Marker(false, true, false, true));
-        seat.DefineBitmap(MarkerBitmap + (int)ScrollBars.Horizontal, MarkerSize, MarkerSize, Marker(true, false, true, false));
-        seat.DefineBitmap(MarkerBitmap + (int)ScrollBars.Both, MarkerSize, MarkerSize, Marker(true, true, true, true));
+        _markers[(int)ScrollBars.Vertical] = Seat.NextBitmapId();
+        _markers[(int)ScrollBars.Horizontal] = Seat.NextBitmapId();
+        _markers[(int)ScrollBars.Both] = Seat.NextBitmapId();
+        seat.DefineBitmap(_markers[(int)ScrollBars.Vertical], MarkerSize, MarkerSize, Marker(false, true, false, true));
+        seat.DefineBitmap(_markers[(int)ScrollBars.Horizontal], MarkerSize, MarkerSize, Marker(true, false, true, false));
+        seat.DefineBitmap(_markers[(int)ScrollBars.Both], MarkerSize, MarkerSize, Marker(true, true, true, true));
         // The cursors, hot spot in the middle.
-        Cursor(CursorShapes.NoMove2D, Marker(true, true, true, true));
-        Cursor(CursorShapes.NoMoveVert, Marker(false, true, false, true));
-        Cursor(CursorShapes.NoMoveHoriz, Marker(true, false, true, false));
-        Cursor(CursorShapes.PanNorth, Pan(0, -1));
-        Cursor(CursorShapes.PanSouth, Pan(0, 1));
-        Cursor(CursorShapes.PanEast, Pan(1, 0));
-        Cursor(CursorShapes.PanWest, Pan(-1, 0));
-        Cursor(CursorShapes.PanNE, Pan(1, -1));
-        Cursor(CursorShapes.PanNW, Pan(-1, -1));
-        Cursor(CursorShapes.PanSE, Pan(1, 1));
-        Cursor(CursorShapes.PanSW, Pan(-1, 1));
+        DefineShape(CursorShapes.NoMove2D, Marker(true, true, true, true));
+        DefineShape(CursorShapes.NoMoveVert, Marker(false, true, false, true));
+        DefineShape(CursorShapes.NoMoveHoriz, Marker(true, false, true, false));
+        DefineShape(CursorShapes.PanNorth, Pan(0, -1));
+        DefineShape(CursorShapes.PanSouth, Pan(0, 1));
+        DefineShape(CursorShapes.PanEast, Pan(1, 0));
+        DefineShape(CursorShapes.PanWest, Pan(-1, 0));
+        DefineShape(CursorShapes.PanNE, Pan(1, -1));
+        DefineShape(CursorShapes.PanNW, Pan(-1, -1));
+        DefineShape(CursorShapes.PanSE, Pan(1, 1));
+        DefineShape(CursorShapes.PanSW, Pan(-1, 1));
     }
 
-    static void Cursor(int shape, byte[] argb)
+    static void DefineShape(int shape, byte[] argb)
     {
         Seat.Current.DefineCursor(shape - CursorShapes.Base, MarkerSize, MarkerSize, MarkerSize / 2, MarkerSize / 2, argb);
     }
@@ -4710,7 +4993,7 @@ public static class Application
         if (!_dragPending || _dragging == null) { _dragPending = false; return; }
         _dragPending = false;
         _sinceDrag = 0;
-        if (_resizeEdges != 0) { Seat.Current.ClearBand(); Seat.Current.SetCursor(CursorShapes.Arrow); _dragging.SetBounds(_dragToX, _dragToY, _dragToW, _dragToH); }
+        if (_resizeEdges != 0) { Seat.Current.ClearBand(); Cursor.Wear(Cursors.Default); _dragging.SetBounds(_dragToX, _dragToY, _dragToW, _dragToH); }
         else _dragging.SetBounds(_dragToX, _dragToY, _dragging.Width, _dragging.Height);
     }
     static bool _paintPending;
@@ -4735,7 +5018,7 @@ public static class Application
     static void CancelDrag(Form? nowActive)
     {
         if (_dragging == null || _dragging == nowActive) return;
-        if (_resizeEdges != 0) { Seat.Current.ClearBand(); Seat.Current.SetCursor(CursorShapes.Arrow); }
+        if (_resizeEdges != 0) { Seat.Current.ClearBand(); Cursor.Wear(Cursors.Default); }
         _dragging = null; _dragPending = false; _resizeEdges = 0; _sinceDrag = 0;
     }
     internal static void Unregister(Form f) { _forms.Remove(f); if (_active == f) _active = _forms.Count > 0 ? _forms[_forms.Count - 1] : null; if (_focus != null && _focus.FindForm() == f) _focus = null; }
@@ -4754,6 +5037,21 @@ public static class Application
     /// left and `c` is told it has been entered, which is what a toolbar
     /// button's hot bevel and a tooltip's timer both wait for.
     /// </summary>
+    /// The control the pointer is over, as Hover last heard.
+    internal static Control? HotControl { get { return _hot; } }
+
+    /// <summary>The hourglass over every form of this program (Control.UseWaitCursor on each).</summary>
+    public static bool UseWaitCursor
+    {
+        get { return _useWaitCursor; }
+        set
+        {
+            _useWaitCursor = value;
+            for (int i = 0; i < _forms.Count; i++) _forms[i].UseWaitCursor = value;
+        }
+    }
+    static bool _useWaitCursor;
+
     internal static void Hover(Control? c)
     {
         if (_hot == c) { return; }

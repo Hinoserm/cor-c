@@ -61,6 +61,7 @@ public class Seat : IDrawingTarget
     const long CallRead = 16, CallWrite = 17, CallIoctl = 18;
     const long NoSys = 38, Io = 5;
     const long SeatStart = 0x4755002A, SeatWhoami = 0x4755002B, SeatCreateAs = 0x4755002C;
+    const long SeatCursorAt = 0x4755002E, SeatCursorTo = 0x4755002F, SeatAnimateCursor = 0x47550030, SeatClipCursor = 0x47550031;
 
     long _start;                    // the GUI kernel's start number this program last saw
     long _defined;                  // the start its shared definitions were last made in
@@ -85,9 +86,12 @@ public class Seat : IDrawingTarget
         {
             long answer = Platform.Result(Sys.GuiCall(call, a, b, c));
             if (answer != -NoSys && answer != -Io) return answer;
-            long was = _start;
+            long was;
+            lock (_keep) { was = _start; }
             if (!Attach()) return answer;
-            if (answer == -Io && _start == was) return answer;
+            long now;
+            lock (_keep) { now = _start; }
+            if (answer == -Io && now == was) return answer;
         }
     }
 
@@ -169,6 +173,7 @@ public class Seat : IDrawingTarget
     Dictionary<int, byte[]> _bitmaps = new Dictionary<int, byte[]>();      // the whole DefineBitmap op
     Dictionary<int, byte[]> _cursors = new Dictionary<int, byte[]>();      // the whole DefinePointer op
     Dictionary<int, int> _bindings = new Dictionary<int, int>();           // standard shape -> own shape
+    Dictionary<int, byte[]> _animations = new Dictionary<int, byte[]>();   // the whole AnimateCursor record
     List<long> _watchesWindows = new List<long>();     // threads that asked, by id
     List<long> _watchesPointer = new List<long>();
     int _reservedBottom = -1;
@@ -194,6 +199,7 @@ public class Seat : IDrawingTarget
         bool define;
         byte[][] ops;
         int[] bindShapes, bindIds;
+        byte[][] animations;
         int reserved;
         bool watchWindows, watchPointer;
         List<Kept> mine = new List<Kept>();
@@ -209,6 +215,9 @@ public class Seat : IDrawingTarget
                 foreach (byte[] op in _cursors.Values) all.Add(op);
             }
             ops = all.ToArray();
+            List<byte[]> steps = new List<byte[]>();
+            if (define) foreach (byte[] record in _animations.Values) steps.Add(record);
+            animations = steps.ToArray();
             bindShapes = new int[define ? _bindings.Count : 0];
             bindIds = new int[bindShapes.Length];
             if (define)
@@ -235,7 +244,8 @@ public class Seat : IDrawingTarget
             Format = (int)Ioctl(0x47550003, 0);
             Epoch++;
             foreach (byte[] op in ops) Send(op);
-            for (int i = 0; i < bindShapes.Length; i++) Ioctl(0x47550028, (bindShapes[i] & 0xFF) | ((bindIds[i] & 0xFF) << 8));
+            foreach (byte[] record in animations) Ioctl(SeatAnimateCursor, Sys.ArrayData(record));
+            for (int i = 0; i < bindShapes.Length; i++) Ioctl(0x47550028, (bindShapes[i] & 0xFF) | ((bindIds[i] & 0xFFFF) << 8));
             if (reserved >= 0) Ioctl(0x4755001A, reserved);
         }
         if (watchWindows) Ioctl(0x4755001D, 0);
@@ -456,13 +466,59 @@ public class Seat : IDrawingTarget
     // stops two libraries from quietly using the same number.
     static int _nextBitmap;
     static int _nextCursor;
-    public static int NextBitmapId() { int id = _nextBitmap; _nextBitmap = (_nextBitmap + 1) % 256; return id; }
-    public static int NextCursorId() { int id = _nextCursor; _nextCursor = (_nextCursor + 1) % 32; return id; }
+    // A program's own numbers: the seat keeps a map per program, so these
+    // need only be unique within it. Cursor ids stop short of the autoscroll
+    // shapes' (CursorShapes.NoMove2D and on); the seat holds 64 a program.
+    public static int NextBitmapId() { lock (_idLock) { int id = _nextBitmap; _nextBitmap = (_nextBitmap + 1) % 256; return id; } }
+    public static int NextCursorId() { lock (_idLock) { int id = _nextCursor; _nextCursor = (_nextCursor + 1) % 0x7F0; return id; } }
+    static readonly object _idLock = new object();
 
     /// A shape this program defined becomes one of the standard ones, for
     /// every program on the seat: what a system does once with real cursor
     /// art, so that nothing else has to know where the art came from.
-    public void BindCursor(int shape, int id) { lock (_keep) { _bindings[shape] = id; } Ioctl(0x47550028, (shape & 0xFF) | ((id & 0xFF) << 8)); }
+    public void BindCursor(int shape, int id) { lock (_keep) { _bindings[shape] = id; } Ioctl(0x47550028, (shape & 0xFF) | ((id & 0xFFFF) << 8)); }
+
+    /// AN ANIMATED CURSOR, as an .ani file describes one: the cursor `id`
+    /// (defined already) shown as the others in turn, each for its number
+    /// of sixtieths of a second. Selected and bound like any cursor, by id.
+    public void AnimateCursor(int id, int[] frames, int[] jiffies)
+    {
+        int steps = Math.Min(Math.Min(frames.Length, jiffies.Length), 64);
+        byte[] record = new byte[8 + 64 * 8];
+        Put(record, 0, id); Put(record, 4, steps);
+        for (int i = 0; i < steps; i++) { Put(record, 8 + i * 8, frames[i]); Put(record, 12 + i * 8, jiffies[i]); }
+        Flush();
+        lock (_keep) { _animations[id] = record; }
+        Ioctl(SeatAnimateCursor, Sys.ArrayData(record));
+    }
+
+    /// For a program that attaches its threads to the GUI kernel itself (the
+    /// gui program does, to start it): after a restart it found, what this
+    /// seat had there is made again, as any call here would have done had
+    /// it been the one to find the restart.
+    public bool Resume() { return Attach(); }
+
+    /// Where the pointer is on the screen: Windows' GetCursorPos.
+    public Point CursorPosition()
+    {
+        long at = Ioctl(SeatCursorAt, 0);
+        if (at < 0) return new Point(0, 0);
+        return new Point((int)(at & 0xFFFF), (int)((at >> 16) & 0xFFFF));
+    }
+
+    /// Put the pointer somewhere, as moving the mouse would: SetCursorPos.
+    public void MoveCursorTo(int x, int y) { Ioctl(SeatCursorTo, (x & 0xFFFF) | ((y & 0xFFFF) << 16)); }
+
+    /// Keep the pointer inside a rectangle of the screen (Windows'
+    /// ClipCursor); an empty one lets it go. The seat lets it go too when
+    /// this program loses the focus.
+    public void ClipCursor(Rectangle area)
+    {
+        if (area.Width <= 0 || area.Height <= 0) { Ioctl(SeatClipCursor, 0); return; }
+        long right = area.X + area.Width - 1, bottom = area.Y + area.Height - 1;
+        Ioctl(SeatClipCursor, ((long)area.X & 0xFFFF) | (((long)area.Y & 0xFFFF) << 16)
+                              | ((right & 0xFFFF) << 32) | ((bottom & 0xFFFF) << 48));
+    }
 
     /// How many windows the seat is showing, everybody's included.
     public int ShownWindows() { int n = (int)Ioctl(0x47550005, 0); return n < 0 ? 0 : n; }
@@ -863,13 +919,12 @@ public class SeatWindowInfo
 }
 
 
-/// The shell's events and powers: what a taskbar, a desktop or a spy tool
-/// uses, raised by the Forms message loop from the seat's messages.
 /// The shapes a pointer can take. The seat draws them; these are its names.
 public static class CursorShapes
 {
     public const int Arrow = 0, SizeWE = 1, SizeNS = 2, SizeNWSE = 3, SizeNESW = 4;
     public const int IBeam = 5, Wait = 6, Help = 7, No = 8, Move = 9, Hand = 10, Cross = 11;
+    public const int UpArrow = 12, AppStarting = 13;
 
     /// Shapes a program defined itself are numbered from here: the id it
     /// gave DefineCursor, plus this.
@@ -902,6 +957,8 @@ public class DisplayAdapter
     }
 }
 
+/// The shell's events and powers: what a taskbar, a desktop or a spy tool
+/// uses, raised by the Forms message loop from the seat's messages.
 public static class Shell
 {
     /// The seat's window list or focus changed (after WatchWindows()).

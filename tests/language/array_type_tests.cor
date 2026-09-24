@@ -5,6 +5,7 @@
 // named 3 ab
 // as 2 null
 // covariant True False
+// annotated True True
 // switch bytes strings ints other null
 // cast 4 threw
 // bare System.Object True False 1
@@ -12,7 +13,8 @@
 // `o is byte[]`, `o is string[] s`, `as T[]`, `(T[])o` and switch arms over
 // array types, with C#'s answers: a string is not a byte array, null is
 // nothing, `string[]` is an `object[]` and `int[]` is not, and a failed cast
-// throws. Then `new object()`, the thing a program locks on.
+// throws; a reference's `?` is not part of an array's type. Then
+// `new object()`, the thing a program locks on.
 
 using System;
 
@@ -43,6 +45,10 @@ static class Program
         Console.WriteLine("as " + (got == null ? -1 : got.Length) + " " + (none == null ? "null" : "set"));
 
         Console.WriteLine("covariant " + (strings is object[]) + " " + (new int[2] is object[]));
+
+        // `string?[]` and `string[]` are one array at run time.
+        object maybe = new string?[] { null, "x" };
+        Console.WriteLine("annotated " + (strings is string?[]) + " " + (maybe is string[]));
 
         Console.WriteLine("switch " + Kind(bytes) + " " + Kind(strings) + " " + Kind(new int[1]) + " " + Kind(text) + " " + Kind(null));
 

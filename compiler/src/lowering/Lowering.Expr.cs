@@ -495,7 +495,7 @@ public sealed partial class Lowering
                 return _e.Address(PrimitiveDescriptor(prim));
 
             case TypeOfExpr to when _b.ArrayTypeOfs.TryGetValue(to, out Type? element):
-                return _e.Address(SequenceDescriptor(element.ToString(), Math.Max(1, element.Size), isString: false));
+                return _e.Address(SequenceDescriptor(ElementKey(element), Math.Max(1, element.Size), isString: false));
 
             case TypeOfExpr:
                 return _e.Const(0, IrTypes.Word);
@@ -895,7 +895,7 @@ public sealed partial class Lowering
         VReg bytes = stride == 1 ? count : _e.Binary(Opcode.Mul, count, stride);
         VReg total = _e.Binary(Opcode.Add, WordOf(bytes), _t.ArrayHeaderBytes);
         VReg array = AllocateDynamic(at, total);
-        string desc = SequenceDescriptor(element.ToString(), stride, isString: false);
+        string desc = SequenceDescriptor(ElementKey(element), stride, isString: false);
         _e.Store(R(array), new SymOperand(desc, _t.DescriptorBytes), 0, _t.WordSize);
         _e.Emit(Opcode.InitArrayLength, null, R(array), R(count));
 
@@ -1262,7 +1262,7 @@ public sealed partial class Lowering
         _e.Branch(obj, some, end);
         _e.SetBlock(some);
         VReg vt = _e.Load(IrTypes.Word, obj, 0);
-        VReg wanted = _e.Address(SequenceDescriptor(element.ToString(), Math.Max(1, element.Size), isString: false),
+        VReg wanted = _e.Address(SequenceDescriptor(ElementKey(element), Math.Max(1, element.Size), isString: false),
                                  _t.DescriptorBytes);
         _e.CopyTo(result, R(_e.Binary(Opcode.Eq, R(vt), R(wanted), IrType.I32)));
         if (element.Prim == Prim.Any && element.ArrayRank == 0)

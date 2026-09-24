@@ -2717,7 +2717,12 @@ public sealed class Parser
                 continue;
             }
 
-            if (allowNullable && At(Tok.Question))
+            // `x is string?[]`: where a '?' is not otherwise read as part of
+            // the type (after `is`, it may begin `? a : b`), one followed by
+            // `[]` still is -- nothing else can follow a type there.
+            bool elementMark = !allowNullable && rank == 0 && At(Tok.Question)
+                               && Ahead().Kind == Tok.LBracket && Ahead(2).Kind == Tok.RBracket;
+            if ((allowNullable || elementMark) && At(Tok.Question))
             {
                 _i++;
 
