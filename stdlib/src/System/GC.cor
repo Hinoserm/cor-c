@@ -1,0 +1,85 @@
+// System.GC: what a program may ask of the garbage collector, with .NET's
+// names and answers, over the runtime's collector (runtime/src/core/gc.cor).
+//
+// ONE GENERATION. The collector is a conservative, non-moving mark-sweep: it
+// has no nursery to promote out of, so MaxGeneration is 0, every collection
+// is of generation 0, and asking for an older generation collects the same
+// heap. .NET permits exactly this: MaxGeneration is whatever the runtime has.
+//
+// KEEPALIVE needs no trick here. The collector reads every word of every
+// stack and treats any that points into a block -- the block's start or
+// anywhere inside it -- as a reference, so an object passed to a call is
+// reachable until the call, which is all .NET promises of KeepAlive.
+//
+// NO FINALIZERS run on this runtime, so SuppressFinalize and
+// ReRegisterForFinalize have nothing to change and WaitForPendingFinalizers
+// has nothing to wait for; each still checks its argument as .NET does.
+
+namespace System;
+
+public static class GC
+{
+    /// The oldest generation there is: 0, the only one.
+    public static int MaxGeneration { get { return 0; } }
+
+    /// A full collection now.
+    public static void Collect() { Gc.Collect(); }
+
+    public static void Collect(int generation)
+    {
+        if (generation < 0) throw new ArgumentOutOfRangeException(nameof(generation), "The generation must be non-negative.");
+        Gc.Collect();
+    }
+
+    public static void Collect(int generation, GCCollectionMode mode) { Collect(generation); }
+
+    public static void Collect(int generation, GCCollectionMode mode, bool blocking) { Collect(generation); }
+
+    /// How many collections of `generation` have run: all of them for 0,
+    /// none for a generation this collector does not have.
+    public static int CollectionCount(int generation)
+    {
+        if (generation < 0) throw new ArgumentOutOfRangeException(nameof(generation), "The generation must be non-negative.");
+        return generation == 0 ? (int)Gc.Collections : 0;
+    }
+
+    /// Every object is in generation 0.
+    public static int GetGeneration(object obj)
+    {
+        if (obj == null) throw new ArgumentNullException(nameof(obj));
+        return 0;
+    }
+
+    /// The bytes thought to be in use: what the last collection found live
+    /// and what has been allocated since -- after a collection, if asked.
+    public static long GetTotalMemory(bool forceFullCollection)
+    {
+        if (forceFullCollection) Gc.Collect();
+        return Gc.LiveBytes + Gc.Since;
+    }
+
+    /// Keeps `obj` reachable up to this call.
+    public static void KeepAlive(object? obj) { }
+
+    public static void SuppressFinalize(object obj)
+    {
+        if (obj == null) throw new ArgumentNullException(nameof(obj));
+    }
+
+    public static void ReRegisterForFinalize(object obj)
+    {
+        if (obj == null) throw new ArgumentNullException(nameof(obj));
+    }
+
+    public static void WaitForPendingFinalizers() { }
+}
+
+/// How a collection may be done, as .NET names it; this collector does every
+/// one the same way.
+public enum GCCollectionMode
+{
+    Default = 0,
+    Forced = 1,
+    Optimized = 2,
+    Aggressive = 3,
+}

@@ -1,0 +1,44 @@
+// test: better function member
+// expect-exit: 0
+// expect-output:
+// long 3
+// long
+// int
+// int
+// long
+// double
+// uint
+//
+// Overload resolution picks the BETTER function member (C# 12.6.4.3), not
+// the first one declared that accepts the arguments: a conversion to the
+// argument's own type beats any other, a type that converts to the other
+// beats the other, and a signed integer beats an unsigned one.
+
+using System;
+
+static class Pick
+{
+    public static string F(double a, double b) { return "double"; }
+    public static string F(long a, long b) { return "long"; }
+    public static string F(int a, int b) { return "int"; }
+    public static string F(uint a, uint b) { return "uint"; }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        long a = 5; int b = 3;
+        long m = Math.Min(a, b);
+        Console.WriteLine("long " + m);
+        Console.WriteLine(Pick.F(a, b));                 // (long, int): long
+        Console.WriteLine(Pick.F(b, b));                 // (int, int): int
+        ushort u = 7;
+        Console.WriteLine(Pick.F(u, u));                 // (ushort, ushort): int over uint and long
+        Console.WriteLine(Pick.F(b, a));                 // (int, long): long
+        Console.WriteLine(Pick.F(1.5, b));               // (double, int): double
+        uint w = 9;
+        Console.WriteLine(Pick.F(w, w));                 // (uint, uint): uint
+        return 0;
+    }
+}

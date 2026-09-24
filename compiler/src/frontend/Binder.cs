@@ -11392,6 +11392,57 @@ public sealed partial class Binder
         // assignment: `list.Add(0)` on a List<byte> passes a byte in C#,
         // because the compiler can see the value. Judged per ARGUMENT, since
         // only the written expression carries the constant.
+        // Of the overloads that accept the arguments, the one better than
+        // every other: no argument converts to it worse, and some convert
+        // to it better. With none better than all the rest, the first, as
+        // this was chosen before the rule.
+        MethodSymbol? BetterMember(List<MethodSymbol> applicable)
+        {
+            if (applicable.Count <= 1) return applicable.FirstOrDefault();
+            foreach (MethodSymbol one in applicable)
+            {
+                if (applicable.All(other => ReferenceEquals(other, one) || BetterThan(one, other))) return one;
+            }
+            return applicable[0];
+        }
+
+        bool BetterThan(MethodSymbol one, MethodSymbol other)
+        {
+            bool better = false;
+            for (int i = 0; i < args.Count && i < one.Params.Count && i < other.Params.Count; i++)
+            {
+                int said = BetterConversion(args[i], Wants(one, i), Wants(other, i));
+                if (said < 0) return false;
+                if (said > 0) better = true;
+            }
+            return better;
+        }
+
+        // C# 12.6.4.5: which of two parameter types an argument of type
+        // `from` converts to better -- 1 the first, -1 the second, 0 neither.
+        // The one it already is; else the one that converts to the other and
+        // not back; else a signed integer over an unsigned one.
+        int BetterConversion(Type from, Type first, Type second)
+        {
+            if (from.IsError || Same(first, second)) return 0;
+            bool isFirst = Same(from, first), isSecond = Same(from, second);
+            if (isFirst != isSecond) return isFirst ? 1 : -1;
+            bool toSecond = Convertible(first, second), toFirst = Convertible(second, first);
+            if (toSecond != toFirst) return toSecond ? 1 : -1;
+            if (SignedIntegral(first) && UnsignedIntegral(second)) return 1;
+            if (SignedIntegral(second) && UnsignedIntegral(first)) return -1;
+            return 0;
+        }
+
+        static bool Same(Type a, Type b)
+            => a.Equals(b) || (!a.IsNullableValue && !b.IsNullableValue && a.AsNonNullable().Equals(b.AsNonNullable()));
+
+        static bool SignedIntegral(Type t)
+            => t.Symbol is null && !t.IsNullableValue && t.Prim is Prim.I8 or Prim.I16 or Prim.I32 or Prim.I64 or Prim.NInt;
+
+        static bool UnsignedIntegral(Type t)
+            => t.Symbol is null && !t.IsNullableValue && t.Prim is Prim.U8 or Prim.U16 or Prim.U32 or Prim.U64 or Prim.NUInt;
+
         bool Accepts(MethodSymbol m, bool variant)
         {
             for (int i = 0; i < args.Count && i < m.Params.Count; i++)
@@ -11484,7 +11535,11 @@ public sealed partial class Binder
                                                           || Wants(m, i).Prim == Prim.Any
                                                           || ReferenceEquals(Wants(m, i).Symbol, args[i].Symbol)))
                                 : null)
-                          ?? byArity.FirstOrDefault(m => m.TypeParams.Count == 0 && Accepts(m, false))
+                          // THE BETTER FUNCTION MEMBER (C# 12.6.4.3), not the
+                          // first declared: `Math.Min(long, int)` is
+                          // Min(long, long) wherever Min(double, double)
+                          // happens to be written.
+                          ?? BetterMember(byArity.Where(m => m.TypeParams.Count == 0 && Accepts(m, false)).ToList())
                           // AND LAST, THROUGH A VARIANT INTERFACE. Only when
                           // nothing fits without it: variance makes more things
                           // convertible, and a rule that widens the candidate

@@ -971,6 +971,7 @@ public static class Driver
             Path.Combine(root, "stdlib", "src", "System", "Runtime", "ExceptionServices", "ExceptionDispatchInfo.cor"),
             Path.Combine(root, "runtime", "src", "core", "runtime.cor"),
             Path.Combine(root, "runtime", "src", "core", "gc.cor"),
+            Path.Combine(root, "stdlib", "src", "System", "GC.cor"),
         };
         // The scheduler makes no system call of its own: it asks the
         // platform for the time, a sleep, a wait and a wake, so the same
