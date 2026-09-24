@@ -1531,12 +1531,13 @@ public sealed class Parser
     /// Either is skipped when the body declared one, so a hand-written
     /// Deconstruct or ToString still wins.
     ///
-    /// What is NOT generated is value EQUALITY. That one is not implied by the
-    /// parameter list in the same way -- it changes what `==` means on a type,
-    /// and a reference comparison silently replaced by a member-by-member one
-    /// would change the meaning of code that is already correct. Every record
-    /// in this compiler's own source is a symbol held by identity, and the
-    /// dictionaries that hold them compare references deliberately.
+    /// AND VALUE EQUALITY, as C# gives every record class: Equals, the
+    /// object override, GetHashCode, == and !=, member by member through
+    /// EqualityComparer<T>.Default, the runtime types compared first (C#'s
+    /// EqualityContract). It was left out once, on the ground that this
+    /// compiler's own records are held by identity -- but the compiler runs
+    /// on .NET, where they have value equality already, and the tables that
+    /// want identity say so with ReferenceEqualityComparer.
     private void AddRecordMembers(TypeDecl decl, List<Param> positional, Token start)
     {
         if (positional.Count == 0)
@@ -1602,6 +1603,63 @@ public sealed class Parser
         decl.Members.Add(ctor);
         AddRecordDeconstruct(decl, positional, start);
         AddRecordToString(decl, positional, start);
+        AddRecordEquality(decl, positional, start);
+    }
+
+    /// <summary>
+    /// A record class's value equality, written as C# and parsed into it, as
+    /// the compiler would have written it (C# spec, "Records": Equals(R?),
+    /// Equals(object?), GetHashCode, operator == and !=). Any of them the
+    /// body declared is left to the body.
+    /// </summary>
+    private void AddRecordEquality(TypeDecl decl, List<Param> positional, Token start)
+    {
+        // A record struct has the same members over its fields, with no null
+        // and no runtime type to ask about: a value is exactly its type.
+        bool value = decl.Kind == TypeKind.Struct;
+        if (decl.Kind != TypeKind.Class && !value) return;
+        string self = decl.Name + (decl.TypeParams.Count == 0 ? "" : "<" + string.Join(", ", decl.TypeParams.Select(t => t.Name)) + ">");
+        string maybe = value ? self : self + "?";
+        System.Text.StringBuilder src = new();
+        src.Append(value ? "struct " : "class ").Append(self).Append("\n{\n");
+        if (!decl.Members.Exists(m => m.Name == "Equals"))
+        {
+            src.Append(value ? "    public bool Equals(" : "    public virtual bool Equals(").Append(maybe).Append(" other)\n    {\n");
+            if (!value)
+            {
+                src.Append("        if (other is null) return false;\n");
+                src.Append("        if ((object)this == (object)other) return true;\n");
+                src.Append("        if (GetType() != other.GetType()) return false;\n");
+            }
+            src.Append("        return true");
+            foreach (Param p in positional)
+                src.Append("\n            && EqualityComparer<").Append(p.Type).Append(">.Default.Equals(this.").Append(p.Name).Append(", other.").Append(p.Name).Append(")");
+            src.Append(";\n    }\n");
+            src.Append("    public override bool Equals(object? obj) { return obj is ").Append(self).Append(" other && Equals(other); }\n");
+        }
+        if (!decl.Members.Exists(m => m.Name == "GetHashCode"))
+        {
+            src.Append("    public override int GetHashCode()\n    {\n        int hash = 0;\n");
+            foreach (Param p in positional)
+                src.Append("        hash = unchecked(hash * -1521134295 + EqualityComparer<").Append(p.Type).Append(">.Default.GetHashCode(this.").Append(p.Name).Append("));\n");
+            src.Append("        return hash;\n    }\n");
+        }
+        if (!decl.Members.Exists(m => m.Name is "op_Equality" or "op_Inequality"))
+        {
+            src.Append("    public static bool operator ==(").Append(maybe).Append(" left, ").Append(maybe).Append(" right)\n    {\n");
+            if (!value)
+            {
+                src.Append("        if ((object?)left == (object?)right) return true;\n");
+                src.Append("        if (left is null || right is null) return false;\n");
+            }
+            src.Append("        return left.Equals(right);\n    }\n");
+            src.Append("    public static bool operator !=(").Append(maybe).Append(" left, ").Append(maybe).Append(" right) { return !(left == right); }\n");
+        }
+        src.Append("}\n");
+        Parser sub = new(Lexer.Tokenize(src.ToString(), _file), _file, _declarationsOnly);
+        CompilationUnit unit = sub.ParseUnit();
+        if (unit.Types.Count != 1) return;
+        decl.Members.AddRange(unit.Types[0].Members);
     }
 
     /// <summary>

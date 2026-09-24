@@ -600,7 +600,15 @@ public sealed class Monomorphiser
                 int dot = scope.LastIndexOf('.'); scope = dot < 0 ? "" : scope[..dot];
             }
         if (Candidate(name)) return name;
-        return Imports("");
+        if (Imports("") is { } global) return global;
+
+        // OTHERWISE A QUALIFIED NAME NAMES ITS LAST PART, as Binder.Resolve
+        // reads one: `System.Collections.Generic.Dictionary<K,V>` is the
+        // Dictionary the library declares at the top level, because
+        // namespaces are not a tree here and the qualifier has nothing to
+        // select between.
+        int cut = name.LastIndexOf('.');
+        return cut < 0 ? null : GenericPath(name[(cut + 1)..], arity, location);
     }
 
     /// <summary>

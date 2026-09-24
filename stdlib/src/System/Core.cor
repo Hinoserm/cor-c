@@ -3188,7 +3188,21 @@ static class Double {
         return TryParse(s, out value);
     }
 
+    /// What `d.ToString()` answers: the general format, as string
+    /// concatenation gives it.
+    public static string ToString(this double value) {
+        return String.FromDouble(value);
+    }
+
+    public static string ToString(this double value, IFormatProvider? provider) {
+        return String.FromDouble(value);
+    }
+
     public static string ToString(this double value, string format) {
+        return DoubleFormat.Of(value, format);
+    }
+
+    public static string ToString(this double value, string format, IFormatProvider? provider) {
         return DoubleFormat.Of(value, format);
     }
 
@@ -3198,6 +3212,31 @@ static class Double {
     public static bool IsFinite(double value) {
         return !DoubleFormat.IsNaN(value) && !DoubleFormat.IsInfinity(value);
     }
+}
+
+/// System.Single: float's statics, through double, which holds every float
+/// exactly. Its general format is seven significant digits, as .NET
+/// Framework's float.ToString() was, so 0.1f prints 0.1 and not the double
+/// it widens to.
+static class Single {
+    public static float Parse(string s) { return (float)Double.Parse(s); }
+    public static float Parse(string s, IFormatProvider? provider) { return (float)Double.Parse(s, provider); }
+
+    public static bool TryParse(string s, out float value) {
+        double wide;
+        bool ok = Double.TryParse(s, out wide);
+        value = (float)wide;
+        return ok;
+    }
+
+    public static string ToString(this float value) { return DoubleFormat.General(value, 7); }
+    public static string ToString(this float value, IFormatProvider? provider) { return DoubleFormat.General(value, 7); }
+    public static string ToString(this float value, string format) { return DoubleFormat.Of(value, format); }
+    public static string ToString(this float value, string format, IFormatProvider? provider) { return DoubleFormat.Of(value, format); }
+
+    public static bool IsNaN(float value) { return value != value; }
+    public static bool IsInfinity(float value) { return DoubleFormat.IsInfinity(value); }
+    public static bool IsFinite(float value) { return !IsNaN(value) && !IsInfinity(value); }
 }
 
 // ---- text as bytes ---------------------------------------------------------

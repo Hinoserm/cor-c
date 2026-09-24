@@ -7910,7 +7910,7 @@ public sealed partial class Binder
                             Error(u, $"'-' needs a number, not '{t}'");
                             return Type.Error;
                         }
-                        return Promote(t);
+                        return t.IsNullableValue ? Promote(t.Underlying).AsNullable() : Promote(t);
 
                     case UnOp.BitNot:
                         if (!t.IsInteger)
@@ -7923,9 +7923,10 @@ public sealed partial class Binder
                         // `flags & ~Ways.Read` a Ways rather than an int.
                         if (t.Symbol is { Kind: TypeKind.Enum })
                         {
-                            return new Type { Prim = t.Symbol.EnumUnderlying, Symbol = t.Symbol };
+                            Type same = new Type { Prim = t.Symbol.EnumUnderlying, Symbol = t.Symbol };
+                            return t.IsNullableValue ? same.AsNullable() : same;
                         }
-                        return Promote(t);
+                        return t.IsNullableValue ? Promote(t.Underlying).AsNullable() : Promote(t);
 
                     default:
                         if (!t.IsNumeric)
@@ -10820,6 +10821,21 @@ public sealed partial class Binder
 
     private Type CheckCall(CallExpr c)
     {
+        // `GetType()` WRITTEN BARE inside a class is this object's, as C#
+        // reads every inherited member of object: the call is `this.GetType()`.
+        // Only when nothing in scope is called GetType.
+        if (c.Target is NameExpr { Name: "GetType" } bareGetType && c.Args.Count == 0 && !InStaticContext
+            && Lookup("GetType") is null && _thisType?.FindMethods("GetType").Count is null or 0)
+        {
+            CallExpr ofThis = new()
+            {
+                Target = new MemberExpr { Target = new ThisExpr { Line = bareGetType.Line, Col = bareGetType.Col }, Name = "GetType", Line = bareGetType.Line, Col = bareGetType.Col },
+                Line = c.Line, Col = c.Col,
+            };
+            _r.Rewrites[c] = ofThis;
+            return CheckExpr(ofThis);
+        }
+
         // A NULL-CONDITIONAL CALL evaluates its receiver once, calls only when
         // that value exists, and otherwise produces null. Member access already
         // had this behaviour; invocation did not, so `x?.Items.FirstOrDefault()`
@@ -12180,7 +12196,9 @@ public sealed partial class Binder
             case BinOp.Xor:
                 if (l.Prim == Prim.Bool && r.Prim == Prim.Bool)
                 {
-                    return Type.Bool;
+                    // `bool?` is lifted too, three-valued as C# has it:
+                    // false & null is false, true | null is true.
+                    return l.IsNullableValue || r.IsNullableValue ? Type.Bool.AsNullable() : Type.Bool;
                 }
                 if (!l.IsInteger || !r.IsInteger)
                 {
@@ -12210,6 +12228,7 @@ public sealed partial class Binder
                     Error(b, $"shifts need integers, not '{l}' and '{r}'");
                     return Type.Error;
                 }
+                if (l.IsNullableValue || r.IsNullableValue) return Promote(l.Underlying).AsNullable();
                 return Promote(l);
 
             case BinOp.Add:
@@ -12223,6 +12242,19 @@ public sealed partial class Binder
                 {
                     Error(b, $"'{l}' and '{r}' are not both numbers");
                     return Type.Error;
+                }
+
+                // LIFTED, as C# lifts every arithmetic operator: an `int?`
+                // plus an `int` is an `int?`, null when either is.
+                if (l.IsNullableValue || r.IsNullableValue)
+                {
+                    Type lu = l.IsNullableValue ? l.Underlying : l, ru = r.IsNullableValue ? r.Underlying : r;
+                    if (!NumericRules.TryBinary(lu, ru, out Type liftedType))
+                    {
+                        Error(b, $"'{l}' and '{r}' have no implicit common numeric type");
+                        return Type.Error;
+                    }
+                    return liftedType.AsNullable();
                 }
 
                 RequireNonNull(l, b.Left, "use");

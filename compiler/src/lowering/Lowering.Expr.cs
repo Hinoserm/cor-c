@@ -1749,6 +1749,16 @@ public sealed partial class Lowering
     /// </summary>
     private VReg Combine(Node at, BinOp op, VReg left, Type leftType, Expr rightExpr, Type rightType, Type resultType)
     {
+        // LIFTED, as `a + b` is: `n += 1` for an `int? n` stays null when n
+        // is, and adds to what is in the cell when it is not.
+        if (leftType.IsNullableValue || rightType.IsNullableValue)
+        {
+            VReg right = Eval(rightExpr);
+            if (leftType.Prim == Prim.Bool && rightType.Prim == Prim.Bool && op is BinOp.And or BinOp.Or)
+                return NullableLogic(at, op == BinOp.And, left, leftType, right, rightType);
+            return NullableArith(at, op, left, leftType, right, rightType, resultType.IsNullableValue ? resultType : resultType.AsNullable());
+        }
+
         Type promoted = OperandPromotion(op, leftType, rightType);
         Type rightPromoted = RightOperandPromotion(op, rightType, promoted);
         VReg l = Convert(at, left, leftType, promoted);
@@ -1912,6 +1922,9 @@ public sealed partial class Lowering
             case UnOp.AddressOf:
                 return AddressOf(u, u.Operand);
 
+            case UnOp.Neg or UnOp.BitNot when _b.TypeOf(u.Operand).IsNullableValue:
+                return LiftedUnary(u, _b.TypeOf(u.Operand), _b.TypeOf(u));
+
             case UnOp.Neg:
             {
                 Type operand = _b.TypeOf(u.Operand);
@@ -1976,6 +1989,17 @@ public sealed partial class Lowering
                 if (p is null)
                 {
                     return _e.Const(0, IrTypes.Of(operand));
+                }
+
+                // A NULLABLE ONE IS LIFTED: a null stays null, and a value is
+                // stepped in a new cell (a cell is a value, and whoever holds
+                // the old one keeps it).
+                if (operand.IsNullableValue)
+                {
+                    VReg had = _e.Copy(LoadPlace(p));
+                    VReg stepped = NullableArith(u, inc ? BinOp.Add : BinOp.Sub, had, operand, _e.Const(1, IrType.I32), Type.I32, operand);
+                    StorePlace(p, stepped);
+                    return post ? had : stepped;
                 }
 
                 // A copy, because a register-resident variable's place IS its
@@ -2180,6 +2204,19 @@ public sealed partial class Lowering
             return _e.Binary(b.Op == BinOp.Add ? Opcode.Add : Opcode.Sub, p, scaled);
         }
 
+        // AND ARITHMETIC IS LIFTED: `a + b` over an `int?` is null when either
+        // side is, and the sum, in a new cell, when both have a value.
+        if (b.Op is BinOp.Add or BinOp.Sub or BinOp.Mul or BinOp.Div or BinOp.Rem
+                or BinOp.And or BinOp.Or or BinOp.Xor or BinOp.Shl or BinOp.Shr
+            && (left.IsNullableValue || right.IsNullableValue)
+            && left.Prim != Prim.NullLiteral && right.Prim != Prim.NullLiteral
+            && !(left.Prim == Prim.String || right.Prim == Prim.String))
+        {
+            return left.Prim == Prim.Bool && right.Prim == Prim.Bool && b.Op is BinOp.And or BinOp.Or
+                ? NullableLogic(b, left, right)
+                : NullableArith(b, left, right, _b.TypeOf(b));
+        }
+
         if (left.IsPointer && right.IsPointer && b.Op == BinOp.Sub)
         {
             VReg diff = _e.Binary(Opcode.Sub, Eval(b.Left), Eval(b.Right));
@@ -2361,6 +2398,139 @@ public sealed partial class Lowering
         _e.Jump(end);
         _e.SetBlock(end);
         return result;
+    }
+
+    /// <summary>
+    /// A lifted arithmetic operator: null (the null cell) when either operand
+    /// is, else the operation on what is in them, in a new cell of the result
+    /// type.
+    /// </summary>
+    private VReg NullableArith(BinaryExpr b, Type left, Type right, Type whole)
+    {
+        VReg l = Eval(b.Left);
+        VReg r = Eval(b.Right);
+        return NullableArith(b, b.Op, l, left, r, right, whole);
+    }
+
+    private VReg NullableArith(Node b, BinOp op, VReg l, Type left, VReg r, Type right, Type whole)
+    {
+        Type leftInner = left.IsNullableValue ? left.Underlying : left;
+        Type rightInner = right.IsNullableValue ? right.Underlying : right;
+        Type promoted = OperandPromotion(op, leftInner, rightInner);
+        Type rightPromoted = RightOperandPromotion(op, rightInner, promoted);
+        VReg result = _f.NewReg(IrTypes.Word, "na");
+        Block leftHas = _f.NewBlock("nalhas");
+        Block both = _f.NewBlock("naboth");
+        Block end = _f.NewBlock("naend");
+
+        _e.CopyTo(result, Imm(0, IrTypes.Word));
+
+        if (left.IsNullableValue) _e.Branch(l, leftHas, end); else _e.Jump(leftHas);
+        _e.SetBlock(leftHas);
+        if (right.IsNullableValue) _e.Branch(r, both, end); else _e.Jump(both);
+        _e.SetBlock(both);
+
+        VReg lv = left.IsNullableValue ? LoadPlace(new MemPlace(R(l), 0, leftInner)) : l;
+        VReg rv = right.IsNullableValue ? LoadPlace(new MemPlace(R(r), 0, rightInner)) : r;
+        lv = Convert(b, lv, leftInner, promoted);
+        rv = Convert(b, rv, rightInner, rightPromoted);
+        VReg value = Convert(b, Arith(b, op, lv, rv, promoted), ResultTypeOf(op, promoted), whole.Underlying);
+        _e.CopyTo(result, R(Box(b, value, whole)));
+        _e.Jump(end);
+        _e.SetBlock(end);
+        return result;
+    }
+
+    /// <summary>
+    /// `-x` and `~x` for a nullable x: null stays null, a value is negated
+    /// or complemented in a new cell.
+    /// </summary>
+    private VReg LiftedUnary(UnaryExpr u, Type operand, Type whole)
+    {
+        Type inner = operand.Underlying;
+        Type promoted = NumericRules.Unary(inner);
+        VReg cell = Eval(u.Operand);
+        VReg result = _f.NewReg(IrTypes.Word, "nu");
+        Block has = _f.NewBlock("nuhas");
+        Block end = _f.NewBlock("nuend");
+        _e.CopyTo(result, Imm(0, IrTypes.Word));
+        _e.Branch(cell, has, end);
+        _e.SetBlock(has);
+        VReg v = Convert(u, LoadPlace(new MemPlace(R(cell), 0, inner)), inner, promoted);
+        VReg made = u.Op == UnOp.Neg
+            ? (promoted.IsFloat ? _e.Unary(Opcode.FNeg, v) : _e.Unary(Opcode.Neg, v))
+            : Canonical(_e.Unary(Opcode.Not, v), promoted);
+        Type held = whole.IsNullableValue ? whole.Underlying : promoted;
+        _e.CopyTo(result, R(Box(u, Convert(u, made, promoted, held), held.AsNullable())));
+        _e.Jump(end);
+        _e.SetBlock(end);
+        return result;
+    }
+
+    /// <summary>
+    /// `bool?` &amp; and |, three-valued as C# has them: false &amp; anything is
+    /// false and true | anything is true, even null; otherwise null if either
+    /// is null. The answer is a cell, or null.
+    /// </summary>
+    private VReg NullableLogic(BinaryExpr b, Type left, Type right)
+    {
+        VReg lv = Eval(b.Left);
+        VReg rv = Eval(b.Right);
+        return NullableLogic(b, b.Op == BinOp.And, lv, left, rv, right);
+    }
+
+    private VReg NullableLogic(Node b, bool and, VReg lv, Type left, VReg rv, Type right)
+    {
+        // Each side as 0 false, 1 true, 2 null.
+        VReg l = Tri(lv, left);
+        VReg r = Tri(rv, right);
+        VReg result = _f.NewReg(IrTypes.Word, "nl");
+        Block decided = _f.NewBlock("nldec");
+        Block nulled = _f.NewBlock("nlnull");
+        Block end = _f.NewBlock("nlend");
+        VReg answer = _f.NewReg(IrType.I32, "nlval");
+
+        // The deciding value on either side settles it: false for &, true for |.
+        VReg decisive = _e.Const(and ? 0 : 1, IrType.I32);
+        VReg leftDecides = _e.Binary(Opcode.Eq, R(l), R(decisive), IrType.I32);
+        VReg rightDecides = _e.Binary(Opcode.Eq, R(r), R(decisive), IrType.I32);
+        VReg either = _e.Binary(Opcode.Or, leftDecides, rightDecides);
+        Block check = _f.NewBlock("nlchk");
+        _e.CopyTo(answer, R(decisive));
+        _e.Branch(either, decided, check);
+
+        _e.SetBlock(check);
+        VReg leftNull = _e.Binary(Opcode.Eq, R(l), Imm(2, IrType.I32), IrType.I32);
+        VReg rightNull = _e.Binary(Opcode.Eq, R(r), Imm(2, IrType.I32), IrType.I32);
+        VReg anyNull = _e.Binary(Opcode.Or, leftNull, rightNull);
+        _e.CopyTo(answer, R(_e.Const(and ? 1 : 0, IrType.I32)));
+        _e.Branch(anyNull, nulled, decided);
+
+        _e.SetBlock(nulled);
+        _e.CopyTo(result, Imm(0, IrTypes.Word));
+        _e.Jump(end);
+
+        _e.SetBlock(decided);
+        _e.CopyTo(result, R(Box(b, answer, Type.Bool.AsNullable())));
+        _e.Jump(end);
+        _e.SetBlock(end);
+        return result;
+    }
+
+    /// A bool or bool? as 0 (false), 1 (true) or 2 (null).
+    private VReg Tri(VReg v, Type t)
+    {
+        if (!t.IsNullableValue) return v.Type == IrType.I32 ? v : Narrow(_e, v, Type.I32, Type.I32);
+        VReg tri = _f.NewReg(IrType.I32, "tri");
+        Block some = _f.NewBlock("trisome");
+        Block end = _f.NewBlock("triend");
+        _e.CopyTo(tri, Imm(2, IrType.I32));
+        _e.Branch(v, some, end);
+        _e.SetBlock(some);
+        _e.CopyTo(tri, R(LoadPlace(new MemPlace(R(v), 0, Type.Bool))));
+        _e.Jump(end);
+        _e.SetBlock(end);
+        return tri;
     }
 
     /// <summary>The C# binary numeric promotion, with shifts taking their width from the left alone.</summary>

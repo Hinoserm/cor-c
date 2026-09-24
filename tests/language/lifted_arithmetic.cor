@@ -1,0 +1,56 @@
+// test: lifted arithmetic
+// expect-exit: 0
+// expect-output:
+// sum 7 null
+// mixed 12 2.5
+// bits 6 null 12
+// logic False null True null False True
+// unary -3 null -4
+// compound 5 null 6 null 5
+// flags True null
+//
+// C#'s lifted operators: arithmetic, bitwise and shifts over nullable value
+// types answer null when either side is null, and the operation on the
+// values when both have one; bool?'s & and | are three-valued, so false &
+// null is false and true | null is true. Unary operators, compound
+// assignment and ++ are lifted the same way.
+
+using System;
+
+static class Program
+{
+    static string Show(int? v) { return v.HasValue ? v.Value.ToString() : "null"; }
+    static string Show(bool? v) { return v.HasValue ? v.Value.ToString() : "null"; }
+
+    static int Main()
+    {
+        int? a = 3, b = null, c = 4;
+        Console.WriteLine("sum " + Show(a + c) + " " + Show(a + b));
+
+        int n = 9;
+        double? half = 1.0;
+        double? mixed = half + 1.5;
+        Console.WriteLine("mixed " + Show(a + n) + " " + (mixed.HasValue ? mixed.Value.ToString() : "null"));
+
+        int? six = 6;
+        Console.WriteLine("bits " + Show(six & 7) + " " + Show(six | b) + " " + Show(a << 2));
+
+        bool? t = true, f = false, u = null;
+        Console.WriteLine("logic " + Show(f & u) + " " + Show(t & u) + " " + Show(t | u) + " " + Show(f | u) + " " + Show(t & f) + " " + Show(t | f));
+
+        int? neg = 3, none = null;
+        Console.WriteLine("unary " + Show(-neg) + " " + Show(-none) + " " + Show(~neg));
+
+        int? sum = 3, empty = null;
+        sum += 2; empty += 2;
+        string compound = "compound " + Show(sum) + " " + Show(empty);
+        int? before = sum++;
+        empty++;
+        Console.WriteLine(compound + " " + Show(sum) + " " + Show(empty) + " " + Show(before));
+
+        bool? flag = true, maybe = null;
+        flag &= true; maybe |= false;
+        Console.WriteLine("flags " + Show(flag) + " " + Show(maybe));
+        return 0;
+    }
+}

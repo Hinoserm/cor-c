@@ -1,0 +1,47 @@
+// test: record equality
+// expect-exit: 0
+// expect-output:
+// class True True False True
+// null False False True
+// derived False
+// struct True False
+// set 2
+//
+// C#'s records compare by value: Equals, == and != look at every member,
+// equal records hash alike, a record is never equal to null, and a derived
+// record is not equal to its base with the same members (EqualityContract).
+// A record struct the same, over its fields.
+
+using System;
+using System.Collections.Generic;
+
+record Point(int X, int Y);
+record Named(string Name, int Size);
+record Shape(string Kind);
+record Circle(string Kind, int Radius) : Shape(Kind);
+record struct Span(int Start, int Length);
+
+static class Program
+{
+    static int Main()
+    {
+        Point p = new Point(1, 2), q = new Point(1, 2), z = new Point(2, 2);
+        Console.WriteLine("class " + p.Equals(q) + " " + (p == q) + " " + (p == z) + " " + (p.GetHashCode() == q.GetHashCode()));
+
+        Named? none = null;
+        Named some = new Named("a", 1);
+        Console.WriteLine("null " + some.Equals(none) + " " + (some == none) + " " + (none == null));
+
+        Shape s = new Shape("c");
+        Shape c = new Circle("c", 3);
+        Console.WriteLine("derived " + s.Equals(c));
+
+        Span a = new Span(1, 2), b = new Span(1, 2), d = new Span(2, 2);
+        Console.WriteLine("struct " + (a == b) + " " + a.Equals(d));
+
+        HashSet<Point> seen = new HashSet<Point>();
+        seen.Add(p); seen.Add(q); seen.Add(z);
+        Console.WriteLine("set " + seen.Count);
+        return 0;
+    }
+}

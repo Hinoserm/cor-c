@@ -1,0 +1,31 @@
+// test: qualified generic names
+// expect-exit: 0
+// expect-output:
+// x 1
+// 2 3
+//
+// A generic type named by its whole namespace path specialises exactly as
+// the short name does: System.Collections.Generic.List<string> is List<string>.
+
+using System;
+
+class Holder
+{
+    public System.Collections.Generic.List<string> Names = new System.Collections.Generic.List<string>();
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Holder h = new Holder();
+        h.Names.Add("x");
+        System.Collections.Generic.Dictionary<string, int> d = new System.Collections.Generic.Dictionary<string, int>();
+        d["a"] = 1;
+        Console.WriteLine(h.Names[0] + " " + d["a"]);
+        var pairs = new System.Collections.Generic.Dictionary<int, System.Collections.Generic.List<int>>();
+        pairs[2] = new System.Collections.Generic.List<int> { 3 };
+        foreach (var pair in pairs) Console.WriteLine(pair.Key + " " + pair.Value[0]);
+        return 0;
+    }
+}
