@@ -1,0 +1,135 @@
+// The font engine's two faces of one interface: a FontFace is a typeface
+// read from its file, a SizedFace is that face made ready at one pixel
+// size, and what a SizedFace hands out for each glyph is a GlyphBitmap.
+// Everything that draws text -- System.Drawing's Graphics here, and the
+// GUI kernel's win32k, which compiles these same files -- asks a SizedFace
+// for glyphs and plots them; neither knows or cares which kind of face
+// made them.
+//
+// Two kinds of face implement it:
+//
+//   TrueTypeFace / TrueTypeSize    a scalable outline, grid-fitted by the
+//                                  face's own hinting program and scan
+//                                  converted at each size (TrueType.cor).
+//   BitmapFontFace / BitmapFontSize
+//                                  one of Windows' raster fonts, an FNT
+//                                  resource out of a .FON file: glyphs
+//                                  already drawn at one size, stretched
+//                                  only by whole multiples, emboldened and
+//                                  slanted the way Windows' own bitmap font
+//                                  driver does it (BitmapFont.cor).
+//
+// These files use nothing outside the runtime (no files, no console), so a
+// freestanding image can compile them; reading a face from a path is the
+// library's business (Text.cor), not the engine's.
+
+using System;
+
+namespace System.Drawing;
+
+/// <summary>A typeface as its file describes it.</summary>
+internal abstract class FontFace
+{
+    /// The family's name, as the file gives it.
+    public abstract string FamilyName { get; }
+
+    /// The glyph that draws a character (a Unicode code point); a face's
+    /// fallback glyph when it has none of its own.
+    public abstract int GlyphIndex(int character);
+
+    /// Whether the face really has a glyph of its own for the character.
+    public abstract bool HasGlyph(int character);
+
+    /// The adjustment between two glyphs, in pixels at a size or font
+    /// units for a scalable face: nothing unless the face says so.
+    public virtual int Kerning(int left, int right) { return 0; }
+}
+
+/// <summary>A face made ready at one size: its line metrics, in whole
+/// pixels, and each glyph drawn.</summary>
+internal abstract class SizedFace
+{
+    public int Ascent;                       // pixels above the baseline
+    public int Descent;                      // pixels below it, positive
+    public int LineSpacing;                  // baseline to baseline
+
+    public abstract FontFace Face { get; }
+
+    /// The size, as pixels to the em.
+    public abstract int PixelsPerEm { get; }
+
+    /// A glyph's bitmap, made once and kept; null for a glyph the face has
+    /// not got.
+    public abstract GlyphBitmap? Glyph(int glyph);
+
+    /// A glyph's advance, whole pixels.
+    public virtual int Advance(int glyph)
+    {
+        GlyphBitmap? made = Glyph(glyph);
+        return made == null ? 0 : made.Advance;
+    }
+
+    /// The adjustment between two glyphs, whole pixels at this size;
+    /// nothing when the left one is -1 (the start of a line).
+    public virtual int Kern(int leftGlyph, int rightGlyph) { return 0; }
+
+    /// Whether the face can draw its glyphs antialiased: a scalable one
+    /// can, a bitmap one has only its one-bit glyphs.
+    public virtual bool HasCoverage { get { return false; } }
+
+    /// The glyph antialiased, or null where the face has no such thing (a
+    /// bitmap face): the caller draws the one-bit glyph instead.
+    public virtual GlyphCoverage? GlyphAA(int glyph) { return null; }
+}
+
+/// <summary>
+/// A glyph drawn one bit a pixel, rows top to bottom, high bit leftmost,
+/// placed by its offsets from the pen: what a palette screen draws crisp
+/// text from, and all a bitmap face has.
+/// </summary>
+internal class GlyphBitmap
+{
+    public int Width;
+    public int Height;
+    public int Left;                         // from the pen to the leftmost column
+    public int Top;                          // from the baseline UP to the top row
+    public int Advance;                      // whole pixels to the next pen position
+    public byte[] Bits = new byte[0];
+
+    public int Stride { get { return (Width + 7) / 8; } }
+
+    public bool At(int x, int y)
+    {
+        if (x < 0 || y < 0 || x >= Width || y >= Height) { return false; }
+        return (Bits[y * Stride + (x >> 3)] & (0x80 >> (x & 7))) != 0;
+    }
+
+    public void Set(int x, int y)
+    {
+        if (x < 0 || y < 0 || x >= Width || y >= Height) { return; }
+        Bits[y * Stride + (x >> 3)] |= (byte)(0x80 >> (x & 7));
+    }
+}
+
+/// <summary>
+/// A glyph drawn antialiased: one BYTE per pixel, 0 for nothing and 255
+/// for solidly inside, everything between it a fraction of the pixel the
+/// outline actually covered. Where GlyphBitmap is what a palette screen
+/// draws crisp text from, this is what a screen with the colours to blend
+/// a fractional coverage against a background draws from.
+/// </summary>
+internal class GlyphCoverage
+{
+    public int Width;
+    public int Height;
+    public int Left;
+    public int Top;
+    public int Advance;
+    public byte[] Coverage = new byte[0];
+
+    public byte At(int x, int y)
+    {
+        if (x < 0 || y < 0 || x >= Width || y >= Height) { return 0; }
+        return Coverage[y * Width + x];
+    }
+}

@@ -1015,7 +1015,7 @@ public static class Driver
                 "System/Net/Net.cor", "System/Security/Cryptography/Cryptography.cor", "System/Security/Cryptography/Hashing.cor",
                 "System/signals.cor", "System/unix.cor", "System/process.cor", "System/power.cor",
                 "Microsoft/Win32/Registry.cor",
-                "System/Drawing/Drawing.cor", "System/Drawing/TrueType.cor", "System/Drawing/Text.cor",
+                "System/Drawing/Drawing.cor", "System/Drawing/FontEngine.cor", "System/Drawing/TrueType.cor", "System/Drawing/BitmapFont.cor", "System/Drawing/Text.cor",
                 "Corsac/GUI/Gui.cor", "System/Drawing/Imaging.cor",
                 "System/Windows/Forms/Forms.cor", "Microsoft/Win32/SystemEvents.cor" })
             {

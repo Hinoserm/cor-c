@@ -102,7 +102,7 @@ class Program
 
         TrueTypeSize size = new TrueTypeSize(face, 20, 20 * 64);
         int glyphH = face.GlyphIndex('H');
-        TrueTypeBitmap? bitmap = size.Glyph(glyphH);
+        GlyphBitmap? bitmap = size.Glyph(glyphH);
 
         if (bitmap == null) { Line("H: no bitmap"); return 1; }
 

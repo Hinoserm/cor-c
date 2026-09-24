@@ -34,7 +34,7 @@ class Program
         Line("glyph=" + glyph + " composite=" + face.IsComposite(glyph));
 
         TrueTypeSize size = new TrueTypeSize(face, 20, 20 * 64);
-        TrueTypeBitmap? bitmap = size.Glyph(glyph);
+        GlyphBitmap? bitmap = size.Glyph(glyph);
 
         if (bitmap == null) { Line("no bitmap"); return 1; }
 

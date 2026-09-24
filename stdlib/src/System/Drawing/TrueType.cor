@@ -32,7 +32,6 @@
 // no floating point in a glyph's path from the file to the screen.
 
 using System;
-using System.IO;
 
 namespace System.Drawing;
 
@@ -85,7 +84,7 @@ internal class TrueTypeOutline
 /// as absent. A face that lies about itself draws nothing, which is the
 /// worst it should be able to do.
 /// </summary>
-internal class TrueTypeFace
+internal class TrueTypeFace : FontFace
 {
     readonly byte[] _data;
 
@@ -113,14 +112,6 @@ internal class TrueTypeFace
     public int ControlValue(int index) { return S16(_cvt + index * 2); }
 
     TrueTypeFace(byte[] data) { _data = data; }
-
-    public static TrueTypeFace? FromFile(string path)
-    {
-        byte[] bytes;
-        try { bytes = File.ReadAllBytes(path); }
-        catch (IOException) { return null; }
-        return FromBytes(bytes);
-    }
 
     public static TrueTypeFace? FromBytes(byte[] bytes)
     {
@@ -226,7 +217,7 @@ internal class TrueTypeFace
 
     /// <summary>Which glyph draws this character; nought, the face's own
     /// "missing" box, when it has none.</summary>
-    public int GlyphIndex(int character)
+    public override int GlyphIndex(int character)
     {
         if (_cmapFormat == 12)
         {
@@ -277,6 +268,10 @@ internal class TrueTypeFace
         return 0;
     }
 
+    /// Whether the character has a glyph of its own rather than the
+    /// missing box.
+    public override bool HasGlyph(int character) { return GlyphIndex(character) != 0; }
+
     int Clamp(int glyph) { return glyph < 0 || glyph >= GlyphCount ? 0 : glyph; }
 
     public int AdvanceWidth(int glyph)
@@ -295,7 +290,7 @@ internal class TrueTypeFace
 
     /// <summary>The adjustment between two glyphs, in font units, from a
     /// format 0 kerning table; nought when the face has none.</summary>
-    public int Kerning(int left, int right)
+    public override int Kerning(int left, int right)
     {
         if (_kern == 0 || U16(_kern) != 0) { return 0; }
 
@@ -532,7 +527,7 @@ internal class TrueTypeFace
     /// corrupt table, answers "" rather than failing outright -- a bad
     /// name is not a reason to refuse a font that otherwise parses.
     /// </summary>
-    public string FamilyName
+    public override string FamilyName
     {
         get
         {
@@ -2254,65 +2249,6 @@ class TrueTypeHinter
 // ---------------------------------------------------------------------------
 
 /// <summary>
-/// One glyph, drawn. One bit per pixel, rows padded to whole bytes, most
-/// significant bit leftmost -- which is the shape the seat's glyph cache
-/// takes and the blitter expands.
-///
-/// WHY ONE BIT AND NOT GREY. The screen this draws on is an indexed mode
-/// with a fixed palette; grey text needs a blend against whatever is
-/// behind each pixel, which is a read of the frame buffer per pixel and a
-/// palette search per result. It is also, at these sizes, not what the
-/// era looked like: Windows 98 shipped with font smoothing off, and the
-/// crispness of a well hinted bitmap is the point of having hinted it.
-/// </summary>
-internal class TrueTypeBitmap
-{
-    public int Width;
-    public int Height;
-    public int Left;                         // from the pen to the leftmost column
-    public int Top;                          // from the baseline UP to the top row
-    public int Advance;                      // whole pixels to the next pen position
-    public byte[] Bits = new byte[0];
-
-    public int Stride { get { return (Width + 7) / 8; } }
-
-    public bool At(int x, int y)
-    {
-        if (x < 0 || y < 0 || x >= Width || y >= Height) { return false; }
-        return (Bits[y * Stride + (x >> 3)] & (0x80 >> (x & 7))) != 0;
-    }
-
-    public void Set(int x, int y)
-    {
-        if (x < 0 || y < 0 || x >= Width || y >= Height) { return; }
-        Bits[y * Stride + (x >> 3)] |= (byte)(0x80 >> (x & 7));
-    }
-}
-
-/// <summary>
-/// A glyph, drawn antialiased: one BYTE per pixel, 0 for nothing and 255
-/// for solidly inside, everything between it a fraction of the pixel the
-/// outline actually covered. Where TrueTypeBitmap is what a palette
-/// screen draws crisp text from, this is what a screen with the colours
-/// to blend a fractional coverage against a background draws from.
-/// </summary>
-internal class TrueTypeCoverageBitmap
-{
-    public int Width;
-    public int Height;
-    public int Left;
-    public int Top;
-    public int Advance;
-    public byte[] Coverage = new byte[0];
-
-    public byte At(int x, int y)
-    {
-        if (x < 0 || y < 0 || x >= Width || y >= Height) { return 0; }
-        return Coverage[y * Width + x];
-    }
-}
-
-/// <summary>
 /// Scan conversion. The outline arrives as points in 26.6 pixels, already
 /// grid-fitted; this turns its curves into straight lines, then fills what
 /// is inside by the non-zero winding rule, one row at a time, sampling at
@@ -2491,7 +2427,7 @@ class TrueTypeRaster
     /// nothing here assumes a pixel is sixty-four units wide -- only that
     /// `step` is.
     /// </summary>
-    void Fill(TrueTypeBitmap into, int originX, int originY, bool dropout, int step)
+    void Fill(GlyphBitmap into, int originX, int originY, bool dropout, int step)
     {
         _fillOriginX = originX; _fillOriginY = originY;
 
@@ -2561,7 +2497,7 @@ class TrueTypeRaster
     /// no pixel centre is a stroke the rows could not see. Nothing is
     /// FILLED here; the rows did that. This only rescues.
     /// </summary>
-    void SweepColumns(TrueTypeBitmap into, int originX, int originY)
+    void SweepColumns(GlyphBitmap into, int originX, int originY)
     {
         for (int column = 0; column < into.Width; column++)
         {
@@ -2631,7 +2567,7 @@ class TrueTypeRaster
 
     /// One run of "inside", from `from` to `to` in 26.6, on `row`, at a
     /// sample spacing of `step` units (sixty-four for a whole pixel).
-    void Span(TrueTypeBitmap into, int row, int from, int to, bool dropout, int step, int leftEdge, int rightEdge)
+    void Span(GlyphBitmap into, int row, int from, int to, bool dropout, int step, int leftEdge, int rightEdge)
     {
         if (to <= from) { return; }
 
@@ -2846,9 +2782,9 @@ class TrueTypeRaster
     /// The box is the outline's own extent rounded out to whole pixels,
     /// which is the smallest box that holds every lit pixel.
     /// </summary>
-    public TrueTypeBitmap Render(TrueTypeZone zone, int realPoints, int advance, bool dropout)
+    public GlyphBitmap Render(TrueTypeZone zone, int realPoints, int advance, bool dropout)
     {
-        TrueTypeBitmap made = new TrueTypeBitmap();
+        GlyphBitmap made = new GlyphBitmap();
         made.Advance = (advance + 32) >> 6;
 
         Flatten(zone, realPoints);
@@ -2903,11 +2839,11 @@ class TrueTypeRaster
     /// out as a faint grey line rather than needing to be rescued from
     /// vanishing altogether, which is the entire point of supersampling.
     /// </summary>
-    public TrueTypeCoverageBitmap RenderAA(TrueTypeZone zone, int realPoints, int advance)
+    public GlyphCoverage RenderAA(TrueTypeZone zone, int realPoints, int advance)
     {
         const int Scale = 4;
 
-        TrueTypeCoverageBitmap made = new TrueTypeCoverageBitmap();
+        GlyphCoverage made = new GlyphCoverage();
         made.Advance = (advance + 32) >> 6;
 
         Flatten(zone, realPoints);
@@ -2927,7 +2863,7 @@ class TrueTypeRaster
         made.Left = left;
         made.Top = top;
 
-        TrueTypeBitmap sub = new TrueTypeBitmap();
+        GlyphBitmap sub = new GlyphBitmap();
         sub.Width = made.Width * Scale;
         sub.Height = made.Height * Scale;
         sub.Bits = new byte[sub.Stride * sub.Height];
@@ -2971,7 +2907,7 @@ class TrueTypeRaster
         return made;
     }
 
-    static void Flip(TrueTypeBitmap map)
+    static void Flip(GlyphBitmap map)
     {
         int stride = map.Stride;
 
@@ -3001,7 +2937,7 @@ class TrueTypeRaster
 /// on a machine of this period: a screen of text is a few hundred
 /// lookups and a few dozen rasterisations, not one per letter per frame.
 /// </summary>
-class TrueTypeSize
+class TrueTypeSize : SizedFace
 {
     readonly TrueTypeFace _face;
     readonly TrueTypeHinter _hinter;
@@ -3016,18 +2952,14 @@ class TrueTypeSize
     // of text touches a hundred glyphs and this holds five.
     const int CacheSize = 512;
     int[] _cacheKey = new int[CacheSize];
-    TrueTypeBitmap?[] _cacheValue = new TrueTypeBitmap?[CacheSize];
+    GlyphBitmap?[] _cacheValue = new GlyphBitmap?[CacheSize];
 
     // The same cache again, for antialiased bitmaps: a program drawing
     // both crisp and antialiased text at one size (rare, but a mode
     // change mid-session can do it) keeps both without either evicting
     // the other.
     int[] _cacheKeyAA = new int[CacheSize];
-    TrueTypeCoverageBitmap?[] _cacheValueAA = new TrueTypeCoverageBitmap?[CacheSize];
-
-    public int Ascent;                       // pixels above the baseline
-    public int Descent;                      // pixels below it, positive
-    public int LineSpacing;                  // baseline to baseline
+    GlyphCoverage?[] _cacheValueAA = new GlyphCoverage?[CacheSize];
 
     // ONE PER FACE PER SIZE, for the whole program. Every control has a
     // Font and nearly all of them are the same face at the same size; a
@@ -3084,23 +3016,45 @@ class TrueTypeSize
         return (int)(value >= 0 ? (value + 0x8000) >> 16 : -((-value + 0x8000) >> 16));
     }
 
-    public int PixelsPerEm { get { return _ppem; } }
+    public override int PixelsPerEm { get { return _ppem; } }
 
     /// Whether the face's own programs ran: false when it has none, or
     /// when one of them failed and the outline is being drawn unfitted.
     public bool Hinted { get { return _hinted; } }
     public bool HintFailed { get { return _hintFailed; } }
     bool _hintFailed;
-    public TrueTypeFace Face { get { return _face; } }
+    public override FontFace Face { get { return _face; } }
+    public TrueTypeFace TrueType { get { return _face; } }
+
+    public override bool HasCoverage { get { return true; } }
+
+    /// <summary>
+    /// The kerning between two glyphs, in whole pixels: the face's pair
+    /// adjustment, font units scaled to this size and rounded to the
+    /// nearest. Nought for a face with no kern table, or a pair it says
+    /// nothing about, which is the common case and costs one table lookup
+    /// to learn.
+    /// </summary>
+    public override int Kern(int leftGlyph, int rightGlyph)
+    {
+        if (leftGlyph < 0) { return 0; }
+
+        int units = _face.Kerning(leftGlyph, rightGlyph);
+        if (units == 0) { return 0; }
+
+        long value = (long)units * _ppem;
+        int upem = _face.UnitsPerEm;
+        return (int)((value >= 0 ? value + upem / 2 : value - upem / 2) / upem);
+    }
 
     /// The advance of a glyph in whole pixels, without drawing it.
-    public int Advance(int glyph)
+    public override int Advance(int glyph)
     {
-        TrueTypeBitmap? made = Glyph(glyph);
+        GlyphBitmap? made = Glyph(glyph);
         return made == null ? 0 : made.Advance;
     }
 
-    public TrueTypeBitmap? Glyph(int glyph)
+    public override GlyphBitmap? Glyph(int glyph)
     {
         if (glyph < 0 || glyph >= _face.GlyphCount) { return null; }
 
@@ -3113,7 +3067,7 @@ class TrueTypeSize
             if (_cacheKey[at] == glyph) { return _cacheValue[at]; }
             if (_cacheKey[at] < 0)
             {
-                TrueTypeBitmap? made = Draw(glyph);
+                GlyphBitmap? made = Draw(glyph);
                 _cacheKey[at] = glyph;
                 _cacheValue[at] = made;
                 return made;
@@ -3123,7 +3077,7 @@ class TrueTypeSize
     }
 
     /// The antialiased bitmap for a glyph, cached the same way Glyph is.
-    public TrueTypeCoverageBitmap? GlyphAA(int glyph)
+    public override GlyphCoverage? GlyphAA(int glyph)
     {
         if (glyph < 0 || glyph >= _face.GlyphCount) { return null; }
 
@@ -3136,7 +3090,7 @@ class TrueTypeSize
             if (_cacheKeyAA[at] == glyph) { return _cacheValueAA[at]; }
             if (_cacheKeyAA[at] < 0)
             {
-                TrueTypeCoverageBitmap? made = DrawAA(glyph);
+                GlyphCoverage? made = DrawAA(glyph);
                 _cacheKeyAA[at] = glyph;
                 _cacheValueAA[at] = made;
                 return made;
@@ -3149,14 +3103,14 @@ class TrueTypeSize
     /// The whole path for one glyph: load it, scale it, put the phantom
     /// points on the end, run its program, fill it.
     /// </summary>
-    TrueTypeBitmap? Draw(int glyph)
+    GlyphBitmap? Draw(int glyph)
     {
         int real, fittedAdvance, blankAdvance;
 
         if (!Fit(glyph, out real, out fittedAdvance, out blankAdvance))
         {
             // An empty glyph -- a space -- still has an advance.
-            TrueTypeBitmap blank = new TrueTypeBitmap();
+            GlyphBitmap blank = new GlyphBitmap();
             blank.Advance = blankAdvance;
             return blank;
         }
@@ -3167,13 +3121,13 @@ class TrueTypeSize
 
     /// The same glyph, antialiased. See Draw; the only difference is the
     /// last step, which rasterises with coverage instead of one bit.
-    TrueTypeCoverageBitmap? DrawAA(int glyph)
+    GlyphCoverage? DrawAA(int glyph)
     {
         int real, fittedAdvance, blankAdvance;
 
         if (!Fit(glyph, out real, out fittedAdvance, out blankAdvance))
         {
-            TrueTypeCoverageBitmap blank = new TrueTypeCoverageBitmap();
+            GlyphCoverage blank = new GlyphCoverage();
             blank.Advance = blankAdvance;
             return blank;
         }

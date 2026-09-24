@@ -1,0 +1,155 @@
+// test: bitmap fonts
+// expect-exit: 0
+// expect-output:
+// faces: 1
+// family: CorsacBitmap height=4 em=3 cxmax=3 fixed=False
+// A=0 B=1 euro=2 has Z=False has C=True
+// cp1252: 0x80 is U+20AC, U+2122 is 0x99, U+0100 is -1
+// plain: ascent=3 descent=1 spacing=5 ppem=3 coverage=False
+// A: w=3 h=4 top=3 advance=3
+// .#.
+// #.#
+// ###
+// #.#
+// B: w=2 h=4 top=3 advance=2
+// ##
+// #.
+// ##
+// ..
+// A bold: w=4 h=4 top=3 advance=4
+// .##.
+// ####
+// ####
+// ####
+// A italic: w=4 h=4 top=3 advance=3
+// ..#.
+// .#.#
+// ###.
+// #.#.
+// italic ink 4, bold italic ink 5
+// 2x: ascent=6 spacing=10 advance A=6
+// B 2x: w=4 h=8 top=6 advance=4
+// ####
+// ####
+// ##..
+// ##..
+// ####
+// ####
+// ....
+// ....
+// vector font faces: 0
+// garbage faces: 0
+//
+// The font engine's bitmap face (System.Drawing's BitmapFont.cor): a
+// Windows FNT resource built here byte by byte and wrapped in the NE
+// module a .FON file is, then read back through the same FontFace and
+// SizedFace interface the TrueType face answers -- the header, the glyph
+// lookup through code page 1252 with its default glyph, and the glyphs
+// themselves, plain, stretched by whole multiples, and made bold and
+// italic the way Windows' bitmap font driver makes them. A vector font
+// and bytes that are no module at all give no faces.
+
+using System;
+using System.Drawing;
+using System.Collections.Generic;
+
+class Program
+{
+    static void Line(string s) { Console.WriteLine(s); }
+
+    static void Put16(byte[] b, int at, int v) { b[at] = (byte)v; b[at + 1] = (byte)(v >> 8); }
+    static void Put32(byte[] b, int at, int v) { Put16(b, at, v); Put16(b, at + 2, v >> 16); }
+
+    /// A three-glyph face, 'A' to 'C', four rows high, ascent three.
+    static byte[] Fnt(int type)
+    {
+        byte[] d = new byte[0x100];
+        Put16(d, 0x00, 0x200);                      // dfVersion
+        Put32(d, 0x02, 0xA0);                       // dfSize
+        Put16(d, 0x42, type);                       // dfType
+        Put16(d, 0x44, 3);                          // dfPoints
+        Put16(d, 0x46, 96); Put16(d, 0x48, 96);     // dfVertRes, dfHorizRes
+        Put16(d, 0x4A, 3);                          // dfAscent
+        Put16(d, 0x4C, 1);                          // dfInternalLeading
+        Put16(d, 0x4E, 1);                          // dfExternalLeading
+        Put16(d, 0x53, 400);                        // dfWeight
+        d[0x55] = 0;                                // dfCharSet
+        Put16(d, 0x56, 0);                          // dfPixWidth: variable pitch
+        Put16(d, 0x58, 4);                          // dfPixHeight
+        d[0x5A] = 0x21;                             // dfPitchAndFamily
+        Put16(d, 0x5B, 2);                          // dfAvgWidth
+        Put16(d, 0x5D, 3);                          // dfMaxWidth
+        d[0x5F] = 0x41; d[0x60] = 0x43;             // dfFirstChar, dfLastChar
+        d[0x61] = 2; d[0x62] = 0;                   // dfDefaultChar ('C'), dfBreakChar
+        Put32(d, 0x69, 0x92);                       // dfFace
+        Put32(d, 0x71, 0x86);                       // dfBitsOffset
+        // The character table, with its sentinel.
+        int[] widths = { 3, 2, 1, 8 };
+        int[] offsets = { 0x86, 0x8A, 0x8E, 0x8E };
+        for (int i = 0; i < 4; i++) { Put16(d, 0x76 + i * 4, widths[i]); Put16(d, 0x78 + i * 4, offsets[i]); }
+        // A: .#. / #.# / ### / #.#   B: ## / #. / ## / ..   C: a bar.
+        byte[] bits = { 0x40, 0xA0, 0xE0, 0xA0, 0xC0, 0x80, 0xC0, 0x00, 0x80, 0x80, 0x80, 0x80 };
+        Array.Copy(bits, 0, d, 0x86, bits.Length);
+        string name = "CorsacBitmap";
+        for (int i = 0; i < name.Length; i++) d[0x92 + i] = (byte)name[i];
+        return d;
+    }
+
+    /// The FNT as the one RT_FONT resource of an NE module.
+    static byte[] Fon(byte[] fnt)
+    {
+        byte[] m = new byte[0x100 + fnt.Length];
+        m[0] = (byte)'M'; m[1] = (byte)'Z';
+        Put32(m, 0x3C, 0x40);
+        m[0x40] = (byte)'N'; m[0x41] = (byte)'E';
+        Put16(m, 0x40 + 0x24, 0x40);                // the resource table, at 0x80
+        Put16(m, 0x80, 0);                          // rscAlignShift
+        Put16(m, 0x82, 0x8008); Put16(m, 0x84, 1);  // RT_FONT, one of them
+        Put16(m, 0x8A, 0x100); Put16(m, 0x8C, fnt.Length); Put16(m, 0x90, 0x8001);
+        Put16(m, 0x96, 0);                          // the end of the types
+        Array.Copy(fnt, 0, m, 0x100, fnt.Length);
+        return m;
+    }
+
+    static void Show(string label, GlyphBitmap? g)
+    {
+        if (g == null) { Line(label + ": none"); return; }
+        Line(label + ": w=" + g.Width + " h=" + g.Height + " top=" + g.Top + " advance=" + g.Advance);
+        for (int y = 0; y < g.Height; y++)
+        {
+            string row = "";
+            for (int x = 0; x < g.Width; x++) row += g.At(x, y) ? "#" : ".";
+            Line(row);
+        }
+    }
+
+    static int Main()
+    {
+        List<BitmapFontFace> faces = BitmapFontFace.FromFon(Fon(Fnt(0)));
+        Line("faces: " + faces.Count);
+        if (faces.Count != 1) return 1;
+        BitmapFontFace face = faces[0];
+        FontFace asFace = face;
+        Line("family: " + asFace.FamilyName + " height=" + face.PixHeight + " em=" + face.Em + " cxmax=" + face.CxMax + " fixed=" + face.Fixed);
+        Line("A=" + face.GlyphIndex('A') + " B=" + face.GlyphIndex('B') + " euro=" + face.GlyphIndex(0x20AC) + " has Z=" + face.HasGlyph('Z') + " has C=" + face.HasGlyph('C'));
+        Line("cp1252: 0x80 is U+" + CodePage1252.Character(0x80).ToString("X4") + ", U+2122 is 0x" + CodePage1252.Byte(0x2122).ToString("X2") + ", U+0100 is " + CodePage1252.Byte(0x100));
+
+        SizedFace plain = new BitmapFontSize(face);
+        Line("plain: ascent=" + plain.Ascent + " descent=" + plain.Descent + " spacing=" + plain.LineSpacing + " ppem=" + plain.PixelsPerEm + " coverage=" + plain.HasCoverage);
+        Show("A", plain.Glyph(face.GlyphIndex('A')));
+        Show("B", plain.Glyph(face.GlyphIndex('B')));
+
+        BitmapFontSize bold = new BitmapFontSize(face, 1, 1, true, false);
+        Show("A bold", bold.Glyph(0));
+        BitmapFontSize italic = new BitmapFontSize(face, 1, 1, false, true);
+        Show("A italic", italic.Glyph(0));
+        Line("italic ink " + italic.InkWidth(0) + ", bold italic ink " + new BitmapFontSize(face, 1, 1, true, true).InkWidth(0));
+        BitmapFontSize big = new BitmapFontSize(face, 2, 2, false, false);
+        Line("2x: ascent=" + big.Ascent + " spacing=" + big.LineSpacing + " advance A=" + big.Advance(0));
+        Show("B 2x", big.Glyph(1));
+
+        Line("vector font faces: " + BitmapFontFace.FromFon(Fon(Fnt(1))).Count);
+        Line("garbage faces: " + BitmapFontFace.FromFon(new byte[] { 1, 2, 3 }).Count);
+        return 0;
+    }
+}

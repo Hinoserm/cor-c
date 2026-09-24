@@ -240,7 +240,7 @@ public class Font : IDisposable
     // The face fitted to Size, made once and kept: a TrueTypeSize already
     // caches every glyph it has drawn, so the cost of a Font is paid once
     // regardless of how many strings are drawn with it.
-    TrueTypeSize? _scaled;
+    SizedFace? _scaled;
     bool _scaleTried;
 
     public Font(string name, float size) : this(name, size, FontStyle.Regular) { }
@@ -270,7 +270,7 @@ public class Font : IDisposable
 
     /// The face fitted to Size, or null for the bitmap system font. Bold
     /// takes the family's bold design where it has one.
-    internal TrueTypeSize? Scaled
+    internal SizedFace? Scaled
     {
         get
         {
@@ -299,7 +299,7 @@ public class Font : IDisposable
     /// family had no bold face of its own, italic always.
     internal FontStyle Synthetic
     {
-        get { TrueTypeSize? s = Scaled; return _realBold ? (Style & ~FontStyle.Bold) : Style; }
+        get { SizedFace? s = Scaled; return _realBold ? (Style & ~FontStyle.Bold) : Style; }
     }
 
     /// <summary>
@@ -311,7 +311,7 @@ public class Font : IDisposable
 
     public int TextWidth(string text, int start, int count)
     {
-        TrueTypeSize? scaled = Scaled;
+        SizedFace? scaled = Scaled;
         if (count <= 0) { return 0; }
         if (scaled == null) { return count * 8; }
 
@@ -327,7 +327,7 @@ public class Font : IDisposable
             i += taken;
 
             int glyph = scaled.Face.GlyphIndex(rune.Value);
-            width += Graphics.Kern(scaled, previous, glyph) + scaled.Advance(glyph) + extra;
+            width += scaled.Kern(previous, glyph) + scaled.Advance(glyph) + extra;
             previous = glyph;
         }
         return width;
@@ -335,7 +335,7 @@ public class Font : IDisposable
 
     /// From the top of a line down to its baseline: thirteen rows of the
     /// bitmap font's sixteen, the face's own ascent otherwise.
-    public int Ascent { get { TrueTypeSize? s = Scaled; return s == null ? 13 : s.Ascent; } }
+    public int Ascent { get { SizedFace? s = Scaled; return s == null ? 13 : s.Ascent; } }
 
     public bool Bold { get { return (Style & FontStyle.Bold) != 0; } }
     public bool Italic { get { return (Style & FontStyle.Italic) != 0; } }
@@ -343,7 +343,7 @@ public class Font : IDisposable
 
     /// The line's height: the bitmap font's fixed sixteen, or a scalable
     /// face's own ascent and descent at this size.
-    public int Height { get { TrueTypeSize? s = Scaled; return s == null ? 16 : s.LineSpacing; } }
+    public int Height { get { SizedFace? s = Scaled; return s == null ? 16 : s.LineSpacing; } }
 
     /// <summary>
     /// Meaningful only for the bitmap font, which is fixed-width: every
@@ -358,7 +358,7 @@ public class Font : IDisposable
     {
         get
         {
-            TrueTypeSize? s = Scaled;
+            SizedFace? s = Scaled;
             if (s == null) { return 8; }
             return s.Advance(s.Face.GlyphIndex('M'));
         }
@@ -573,7 +573,7 @@ public class Graphics : IDisposable
         SolidBrush? solid = brush as SolidBrush;
         if (solid == null) { return; }
 
-        TrueTypeSize? scaled = font.Scaled;
+        SizedFace? scaled = font.Scaled;
 
         // NO KNOWN BACKGROUND: nothing here is antialiased, because
         // blending needs a colour to blend against and the seat cannot
@@ -614,29 +614,11 @@ public class Graphics : IDisposable
         SolidBrush? solid = brush as SolidBrush;
         if (solid == null) { return; }
 
-        TrueTypeSize? scaled = font.Scaled;
+        SizedFace? scaled = font.Scaled;
 
         if (scaled != null) { DrawScalableString(s, scaled, font.Height, font.Synthetic, solid.Color, true, background, Color.Transparent, true, x, y); return; }
 
         DrawString(s, font, brush, x, y);
-    }
-
-    /// <summary>
-    /// The kerning adjustment between two glyphs, scaled from the face's
-    /// font units to pixels at this size. Nought for a face with no kern
-    /// table, or a pair it says nothing about, which is the common case
-    /// and costs one table lookup to learn.
-    /// </summary>
-    internal static int Kern(TrueTypeSize scaled, int leftGlyph, int rightGlyph)
-    {
-        if (leftGlyph < 0) { return 0; }
-
-        int units = scaled.Face.Kerning(leftGlyph, rightGlyph);
-        if (units == 0) { return 0; }
-
-        long value = (long)units * scaled.PixelsPerEm;
-        int upem = scaled.Face.UnitsPerEm;
-        return (int)((value >= 0 ? value + upem / 2 : value - upem / 2) / upem);
     }
 
     /// <summary>
@@ -662,9 +644,10 @@ public class Graphics : IDisposable
     /// reason -- and for the bitmap system font, which has no coverage
     /// to blend from.
     /// </summary>
-    void DrawScalableString(string s, TrueTypeSize scaled, int lineHeight, FontStyle style, Color foreground, bool hasBlend, Color blend, Color background, bool transparent, int x, int y)
+    void DrawScalableString(string s, SizedFace scaled, int lineHeight, FontStyle style, Color foreground, bool hasBlend, Color blend, Color background, bool transparent, int x, int y)
     {
-        bool antialiased = hasBlend && _target.Colours > 256;
+        // A bitmap face has only its one-bit glyphs, at any colour depth.
+        bool antialiased = hasBlend && _target.Colours > 256 && scaled.HasCoverage;
 
         if (antialiased) { DrawScalableStringAA(s, scaled, lineHeight, style, foreground, blend, background, transparent, x, y); return; }
         bool bold = (style & FontStyle.Bold) != 0;
@@ -695,11 +678,11 @@ public class Graphics : IDisposable
             if (rune.Value == '\n') { penX = x; lineTop += lineHeight; previousGlyph = -1; continue; }
 
             int glyphIndex = scaled.Face.GlyphIndex(rune.Value);
-            TrueTypeBitmap? bitmap = scaled.Glyph(glyphIndex);
+            GlyphBitmap? bitmap = scaled.Glyph(glyphIndex);
 
             if (bitmap == null) { previousGlyph = glyphIndex; continue; }
 
-            penX += Kern(scaled, previousGlyph, glyphIndex);
+            penX += scaled.Kern(previousGlyph, glyphIndex);
             previousGlyph = glyphIndex;
 
             int advance = bitmap.Advance + boldExtra;
@@ -804,7 +787,7 @@ public class Graphics : IDisposable
     /// edge -- costs an extra blend and its own small fill, which is what
     /// keeps this affordable on text-sized glyphs at ordinary sizes.
     /// </summary>
-    void DrawScalableStringAA(string s, TrueTypeSize scaled, int lineHeight, FontStyle style, Color foreground, Color blend, Color background, bool transparent, int x, int y)
+    void DrawScalableStringAA(string s, SizedFace scaled, int lineHeight, FontStyle style, Color foreground, Color blend, Color background, bool transparent, int x, int y)
     {
         byte[] gamma = GammaTable();
         bool bold = (style & FontStyle.Bold) != 0;
@@ -825,11 +808,11 @@ public class Graphics : IDisposable
             if (rune.Value == '\n') { penX = x; lineTop += lineHeight; previousGlyph = -1; continue; }
 
             int glyphIndex = scaled.Face.GlyphIndex(rune.Value);
-            TrueTypeCoverageBitmap? bitmap = scaled.GlyphAA(glyphIndex);
+            GlyphCoverage? bitmap = scaled.GlyphAA(glyphIndex);
 
             if (bitmap == null) { previousGlyph = glyphIndex; continue; }
 
-            penX += Kern(scaled, previousGlyph, glyphIndex);
+            penX += scaled.Kern(previousGlyph, glyphIndex);
             previousGlyph = glyphIndex;
 
             int advance = bitmap.Advance + boldExtra;
@@ -902,7 +885,7 @@ public class Graphics : IDisposable
 
     public void DrawStringOpaque(string s, Font font, Color foreground, Color background, int x, int y)
     {
-        TrueTypeSize? scaled = font.Scaled;
+        SizedFace? scaled = font.Scaled;
 
         // Opaque already knows its own background -- it is about to
         // paint the whole cell with it -- so that same colour is what
@@ -920,7 +903,7 @@ public class Graphics : IDisposable
 
     public SizeF MeasureString(string s, Font font)
     {
-        TrueTypeSize? scaled = font.Scaled;
+        SizedFace? scaled = font.Scaled;
 
         if (scaled != null) { return MeasureScalableString(s, scaled, font.Height, font.Synthetic); }
 
@@ -937,7 +920,7 @@ public class Graphics : IDisposable
     /// The same measurement for a scalable face: runes decoded, each
     /// one's own fitted advance summed rather than a fixed width, which
     /// is the entire difference proportional text makes to this method.
-    static SizeF MeasureScalableString(string s, TrueTypeSize scaled, int lineHeight, FontStyle style)
+    static SizeF MeasureScalableString(string s, SizedFace scaled, int lineHeight, FontStyle style)
     {
         int boldExtra = (style & FontStyle.Bold) != 0 ? 1 : 0;
         int widest = 0, run = 0, lines = 1;
@@ -955,7 +938,7 @@ public class Graphics : IDisposable
 
             int glyphIndex = scaled.Face.GlyphIndex(rune.Value);
 
-            run += Kern(scaled, previousGlyph, glyphIndex) + scaled.Advance(glyphIndex) + boldExtra;
+            run += scaled.Kern(previousGlyph, glyphIndex) + scaled.Advance(glyphIndex) + boldExtra;
             previousGlyph = glyphIndex;
         }
         if (run > widest) { widest = run; }

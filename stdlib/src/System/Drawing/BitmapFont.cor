@@ -1,0 +1,322 @@
+// Windows' raster fonts: the FNT format, version 2.0 and 3.0, one size of
+// one face a resource, and the .FON file -- an NE module -- that carries a
+// face's sizes as RT_FONT resources. A FontFace and a SizedFace like any
+// other (FontEngine.cor): the glyphs are already drawn, so a size is only
+// a whole-number stretch of them, and bold and italic, where the face has
+// no such design, are made the way Windows' own bitmap font driver makes
+// them.
+//
+// AN FNT RESOURCE is a header, a character table of widths and bitmap
+// offsets, and the bitmaps: each glyph a run of byte-wide columns, left to
+// right, every column its dfPixHeight rows top to bottom, high bit
+// leftmost. The header fields are kept as the file has them, since a
+// system that answers for these fonts (Windows' GDI, whose numbers win32k
+// gives) needs every one of them.
+//
+// Characters are found through the ANSI code page, 1252, whatever the
+// face's charset, as Windows' driver does (it maps each byte with the
+// system code page); a Symbol face's bytes are also its U+F020..U+F0FF
+// row. A character the face has not draws its default glyph.
+
+using System;
+
+namespace System.Drawing;
+
+/// <summary>One FNT resource: one face at the one size it was drawn at.</summary>
+internal sealed class BitmapFontFace : FontFace
+{
+    public string Face = "";
+    public int Version;
+    public int Type, Points, VertRes, HorizRes, Ascent, InternalLeading, ExternalLeading;
+    public bool Italic, Underline, StrikeOut;
+    public int Weight, CharSet, PixWidth, PixHeight, PitchAndFamily, AvgWidth, MaxWidth;
+    /// dfFirstChar and dfLastChar; dfDefaultChar and dfBreakChar as the
+    /// file has them, relative to dfFirstChar.
+    public int FirstChar, LastChar, DefaultChar, BreakChar;
+    /// Each glyph's width and where its bitmap is in Data, from FirstChar
+    /// to LastChar; a glyph's number is its byte less FirstChar.
+    public int[] Widths = new int[0];
+    public int[] Offsets = new int[0];
+    public byte[] Data = new byte[0];
+
+    public override string FamilyName { get { return Face; } }
+
+    /// Every glyph the same width: Windows' driver goes by dfPixWidth, not
+    /// by dfPitchAndFamily's low bit.
+    public bool Fixed { get { return PixWidth != 0; } }
+
+    public int GlyphCount { get { return Widths.Length; } }
+
+    /// dfMaxWidth, or the widest glyph where one is wider.
+    public int CxMax
+    {
+        get
+        {
+            int widest = MaxWidth;
+            foreach (int w in Widths) if (w > widest) widest = w;
+            return widest;
+        }
+    }
+
+    /// The em: the cell less its internal leading.
+    public int Em { get { return InternalLeading > 0 ? PixHeight - InternalLeading : PixHeight; } }
+
+    /// The default glyph's number.
+    public int DefaultGlyph
+    {
+        get
+        {
+            int d = DefaultChar;
+            return d >= 0 && d < Widths.Length ? d : 0;
+        }
+    }
+
+    /// The byte the face draws a character with, or -1.
+    public int ByteOf(int character)
+    {
+        if (CharSet == 2 && character >= 0xF020 && character <= 0xF0FF) return character - 0xF000;
+        return CodePage1252.Byte(character);
+    }
+
+    public override bool HasGlyph(int character)
+    {
+        int b = ByteOf(character);
+        return b >= FirstChar && b <= LastChar;
+    }
+
+    public override int GlyphIndex(int character)
+    {
+        int b = ByteOf(character);
+        return b >= FirstChar && b <= LastChar ? b - FirstChar : DefaultGlyph;
+    }
+
+    /// Whether pixel (x, y) of glyph `glyph` is set, in the face's own size.
+    public bool Pixel(int glyph, int x, int y)
+    {
+        if (glyph < 0 || glyph >= Widths.Length || x < 0 || x >= Widths[glyph] || y < 0 || y >= PixHeight) return false;
+        int at = Offsets[glyph] + (x >> 3) * PixHeight + y;
+        return at >= 0 && at < Data.Length && (Data[at] & (0x80 >> (x & 7))) != 0;
+    }
+
+    /// An FNT resource read, or null when it is not one (or a vector font,
+    /// dfType bit 0, which has no bitmaps).
+    public static BitmapFontFace? FromFnt(byte[] d)
+    {
+        if (d.Length < 0x76) return null;
+        int version = U16(d, 0);
+        if (version != 0x200 && (version != 0x300 || d.Length < 0x94)) return null;
+        BitmapFontFace f = new BitmapFontFace();
+        f.Version = version;
+        f.Data = d;
+        f.Type = U16(d, 0x42);
+        if ((f.Type & 1) != 0) return null;
+        f.Points = U16(d, 0x44);
+        f.VertRes = U16(d, 0x46);
+        f.HorizRes = U16(d, 0x48);
+        f.Ascent = U16(d, 0x4A);
+        f.InternalLeading = U16(d, 0x4C);
+        f.ExternalLeading = U16(d, 0x4E);
+        f.Italic = d[0x50] != 0;
+        f.Underline = d[0x51] != 0;
+        f.StrikeOut = d[0x52] != 0;
+        f.Weight = U16(d, 0x53);
+        f.CharSet = d[0x55];
+        f.PixWidth = U16(d, 0x56);
+        f.PixHeight = U16(d, 0x58);
+        f.PitchAndFamily = d[0x5A];
+        f.AvgWidth = U16(d, 0x5B);
+        f.MaxWidth = U16(d, 0x5D);
+        f.FirstChar = d[0x5F];
+        f.LastChar = d[0x60];
+        f.DefaultChar = d[0x61];
+        f.BreakChar = d[0x62];
+        if (f.LastChar < f.FirstChar || f.PixHeight == 0 || f.Ascent > f.PixHeight) return null;
+        int face = (int)U32(d, 0x69);
+        if (face > 0 && face < d.Length)
+        {
+            int n = 0;
+            while (face + n < d.Length && d[face + n] != 0) n++;
+            char[] name = new char[n];
+            for (int i = 0; i < n; i++) name[i] = (char)CodePage1252.Character(d[face + i]);
+            f.Face = new string(name);
+        }
+        // The character table: WORD width and WORD offset (2.0), or WORD
+        // width and DWORD offset (3.0), one a character.
+        int count = f.LastChar - f.FirstChar + 1;
+        int table = version == 0x200 ? 0x76 : 0x94;
+        int entry = version == 0x200 ? 4 : 6;
+        if (table + count * entry > d.Length) return null;
+        f.Widths = new int[count];
+        f.Offsets = new int[count];
+        for (int i = 0; i < count; i++)
+        {
+            int e = table + i * entry;
+            f.Widths[i] = U16(d, e);
+            f.Offsets[i] = version == 0x200 ? U16(d, e + 2) : (int)U32(d, e + 2);
+        }
+        // A default character past the last is taken as absolute when it
+        // falls inside the face, else the first glyph.
+        if (f.DefaultChar >= count)
+            f.DefaultChar = f.DefaultChar >= f.FirstChar && f.DefaultChar <= f.LastChar ? f.DefaultChar - f.FirstChar : 0;
+        if (f.BreakChar >= count)
+            f.BreakChar = f.BreakChar >= f.FirstChar && f.BreakChar <= f.LastChar ? f.BreakChar - f.FirstChar : 0;
+        return f;
+    }
+
+    /// Every face in a .FON file (an NE module's RT_FONT resources, in the
+    /// order its resource table has them), the vector ones left out.
+    public static List<BitmapFontFace> FromFon(byte[] image)
+    {
+        List<BitmapFontFace> found = new List<BitmapFontFace>();
+        if (image.Length < 0x40 || image[0] != 'M' || image[1] != 'Z') return found;
+        int ne = (int)U32(image, 0x3C);
+        if (ne <= 0 || ne + 0x40 > image.Length || image[ne] != 'N' || image[ne + 1] != 'E') return found;
+        int table = ne + U16(image, ne + 0x24);
+        if (table + 2 > image.Length) return found;
+        int shift = U16(image, table);
+        if (shift > 16) return found;
+        int at = table + 2;
+        while (at + 8 <= image.Length)
+        {
+            int type = U16(image, at);
+            if (type == 0) break;
+            int count = U16(image, at + 2);
+            at += 8;
+            for (int i = 0; i < count && at + 12 <= image.Length; i++)
+            {
+                if (type == 0x8008)
+                {
+                    long offset = (long)U16(image, at) << shift;
+                    long length = (long)U16(image, at + 2) << shift;
+                    if (offset > 0 && length > 0 && offset + length <= image.Length)
+                    {
+                        byte[] bytes = new byte[(int)length];
+                        Array.Copy(image, (int)offset, bytes, 0, (int)length);
+                        BitmapFontFace? f = FromFnt(bytes);
+                        if (f != null) found.Add(f);
+                    }
+                }
+                at += 12;
+            }
+        }
+        return found;
+    }
+
+    static int U16(byte[] b, int at) { return (b[at] & 0xFF) | ((b[at + 1] & 0xFF) << 8); }
+    static long U32(byte[] b, int at) { return (long)U16(b, at) | ((long)U16(b, at + 2) << 16); }
+}
+
+/// <summary>
+/// A bitmap face ready to draw: its glyphs stretched by whole multiples
+/// (across by `xs`, down by `ys`) and, where asked, made bold or italic as
+/// Windows' bitmap font driver makes them: italic shears row r right by
+/// k - r/2 pixels, k = (h - 1) / 2 for a glyph h rows high, top rows most;
+/// bold then ORs each row with itself one pixel right, one column wider,
+/// and advances one pixel more.
+/// </summary>
+internal sealed class BitmapFontSize : SizedFace
+{
+    readonly BitmapFontFace _face;
+    readonly GlyphBitmap?[] _cache;
+
+    public readonly int Xs, Ys;
+    public readonly bool Bold, Italic;
+
+    public BitmapFontSize(BitmapFontFace face, int xs, int ys, bool bold, bool italic)
+    {
+        _face = face;
+        Xs = xs < 1 ? 1 : xs;
+        Ys = ys < 1 ? 1 : ys;
+        Bold = bold;
+        Italic = italic;
+        _cache = new GlyphBitmap?[face.GlyphCount];
+        Ascent = face.Ascent * Ys;
+        Descent = (face.PixHeight - face.Ascent) * Ys;
+        LineSpacing = (face.PixHeight + face.ExternalLeading) * Ys;
+    }
+
+    public BitmapFontSize(BitmapFontFace face) : this(face, 1, 1, false, false) { }
+
+    public override FontFace Face { get { return _face; } }
+    public BitmapFontFace Bitmap { get { return _face; } }
+
+    public override int PixelsPerEm { get { return _face.Em * Ys; } }
+
+    /// The glyph's height, the cell's at this size.
+    public int Height { get { return _face.PixHeight * Ys; } }
+
+    public override int Advance(int glyph)
+    {
+        if (glyph < 0 || glyph >= _face.GlyphCount) return 0;
+        return _face.Widths[glyph] * Xs + (Bold ? 1 : 0);
+    }
+
+    /// How far the glyph's ink reaches right of the pen: its width, one
+    /// more for bold, the shear's k more for italic, k + 1 for both.
+    public int InkWidth(int glyph)
+    {
+        if (glyph < 0 || glyph >= _face.GlyphCount) return 0;
+        int w = _face.Widths[glyph] * Xs;
+        int h = Height;
+        if (Bold && Italic) return w + (h + 1) / 2;
+        if (Italic) return w + (h - 1) / 2;
+        return Bold ? w + 1 : w;
+    }
+
+    public override GlyphBitmap? Glyph(int glyph)
+    {
+        if (glyph < 0 || glyph >= _face.GlyphCount) return null;
+        GlyphBitmap? made = _cache[glyph];
+        if (made != null) return made;
+        made = Draw(glyph);
+        _cache[glyph] = made;
+        return made;
+    }
+
+    GlyphBitmap Draw(int glyph)
+    {
+        int h = Height, k = (h - 1) >> 1;
+        int cx = _face.Widths[glyph] * Xs;
+        GlyphBitmap made = new GlyphBitmap();
+        made.Width = InkWidth(glyph);
+        made.Height = h;
+        made.Left = 0;
+        made.Top = Ascent;
+        made.Advance = Advance(glyph);
+        made.Bits = new byte[made.Stride * h];
+        for (int row = 0; row < h; row++)
+        {
+            int shift = Italic ? k - row / 2 : 0;
+            int sourceRow = row / Ys;
+            for (int col = 0; col < cx; col++)
+            {
+                if (!_face.Pixel(glyph, col / Xs, sourceRow)) continue;
+                made.Set(col + shift, row);
+                if (Bold) made.Set(col + shift + 1, row);
+            }
+        }
+        return made;
+    }
+}
+
+/// <summary>Windows' code page 1252, as NT's c_1252.nls has it: the five
+/// bytes it leaves undefined map to themselves.</summary>
+internal static class CodePage1252
+{
+    static readonly int[] High = new int[]
+    {
+        0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008D, 0x017D, 0x008F,
+        0x0090, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x009D, 0x017E, 0x0178,
+    };
+
+    /// A byte's character.
+    public static int Character(int b) { return b >= 0x80 && b <= 0x9F ? High[b - 0x80] : b & 0xFF; }
+
+    /// A character's byte, or -1 when the code page has none.
+    public static int Byte(int character)
+    {
+        if (character < 0x80 || (character >= 0xA0 && character <= 0xFF)) return character < 0 ? -1 : character;
+        for (int i = 0; i < High.Length; i++) if (High[i] == character) return 0x80 + i;
+        return -1;
+    }
+}
