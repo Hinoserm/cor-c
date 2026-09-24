@@ -26,6 +26,19 @@ public sealed partial class Lowering
     {
         IrType returns = IrTypes.Of(m.Returns);
 
+        // EVERY CALL INTO A TYPE TOUCHES IT (Lowering.StaticInit), whichever
+        // path made it: a static property's getter or setter, a compound
+        // assignment through one, a struct's accessor. They are static
+        // methods like any other, about to read what the initialisers set;
+        // `static Cursor Default { get { return _default; } }` answered null
+        // until something else had touched Cursors. EmitCall has already
+        // asked for an ordinary call, before its arguments, and the optimiser
+        // folds the repeat.
+        if (m.Static || m.Owner.Kind == TypeKind.Struct)
+        {
+            TouchType(m.Owner);
+        }
+
         if (UsesVirtualDispatch(m) && !viaBase && receiver is not null)
         {
             if (m.VtableSlot == _b.ToStringSlot && m.Params.Count == 0)

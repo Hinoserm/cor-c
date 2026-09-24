@@ -1,0 +1,60 @@
+// test: static_property_touches_type
+// expect-exit: 0
+// expect-output:
+// default 7
+// a 1
+// count 3
+// set 9
+// struct 42
+
+// Reading or writing a static property is a static method call, and like one
+// it runs the type's static initialisers first: a getter that returns a
+// private static field must never see it unwritten. The first touch of each
+// type here is through a property, before anything else has touched it.
+using System;
+
+public class Shape
+{
+    internal int _shape;
+    public Shape(int s) { _shape = s; }
+}
+
+public static class Shapes
+{
+    static readonly Shape _a = new Shape(1);
+    static readonly Shape _default = new Shape(7);
+    public static Shape Default { get { return _default; } }
+    public static Shape A { get { return _a; } }
+}
+
+public static class Counter
+{
+    static int _count = 3;
+    public static int Count { get { return _count; } }
+}
+
+public static class Setting
+{
+    static int[] _values = new int[4];
+    public static int Value { get { return _values[0]; } set { _values[0] = value; } }
+}
+
+public struct Box
+{
+    static readonly int[] _table = new int[] { 40, 2 };
+    public int Sum { get { return _table[0] + _table[1]; } }
+}
+
+class Program
+{
+    static void Main()
+    {
+        Console.WriteLine("default " + Shapes.Default._shape);
+        Console.WriteLine("a " + Shapes.A._shape);
+        Console.WriteLine("count " + Counter.Count);
+        Setting.Value = 9;
+        Console.WriteLine("set " + Setting.Value);
+        Box b = default(Box);
+        Console.WriteLine("struct " + b.Sum);
+    }
+}

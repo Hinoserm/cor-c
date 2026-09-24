@@ -543,7 +543,9 @@ public class Control
         get
         {
             for (Control? c = this; c != null; c = c._parent) if (c._useWaitCursor) return Cursors.WaitCursor;
-            return Cursor;
+            // Control.Cursor never answers null in .NET: a derived class's
+            // override that does still leaves the pointer an arrow.
+            return Cursor ?? Cursors.Default;
         }
     }
 
@@ -1519,8 +1521,9 @@ public sealed class Cursor : IDisposable
 
     /// Onto the pointer, or the empty shape while it is hidden. The seat
     /// takes it only while the pointer is over one of this program's windows.
-    internal static void Wear(Cursor c)
+    internal static void Wear(Cursor? c)
     {
+        if (c is null) c = Cursors.Default;
         try
         {
             if (_hidden > 0)
