@@ -80,6 +80,13 @@ static class Clock
         return seconds * NanosPerSecond + nanos;
     }
 
+    /// Microseconds on the same clock: what the collector times its pauses
+    /// by (Gc.PauseClock).
+    public static long NowMicroseconds()
+    {
+        return Now() / 1000;
+    }
+
     /// Milliseconds on the same clock, for programs that measure.
     public static long NowMilliseconds()
     {
@@ -376,17 +383,27 @@ class Thread
     long _stackBytes;
     long _block;
     int _slot;
+    string? _name;
+    bool _background;
+    bool _counted;
+
+    /// How many foreground threads are running, as a futex word the end of
+    /// Main waits on (WaitForForeground); and a spin lock over the counting.
+    static readonly int[] _foreground = new int[2];
 
     /// Big enough for the deepest call a thread body here makes, and cheap:
     /// anonymous pages cost nothing until they are touched.
     const long StackBytes = 1048576;
 
+    /// The runtime's own threads -- Task workers, the pool -- are background
+    /// threads, as .NET's pool threads are.
     Thread(Action body, int slot)
     {
         _done = 0;
         _lock = 0;
         _body = body;
         _slot = slot;
+        _background = true;
     }
 
     public Thread(ThreadStart start)
@@ -399,6 +416,66 @@ class Thread
     public long Id => _id;
 
     public bool IsAlive => _id != 0 && _done == 0;
+
+    /// The thread's name, for a debugger and for the program; null until
+    /// given one.
+    public string? Name
+    {
+        get { return _name; }
+        set { _name = value; }
+    }
+
+    /// A background thread does not keep the process alive: when Main
+    /// returns, the process waits for every FOREGROUND thread and no other,
+    /// as .NET's does. A thread made with a ThreadStart is a foreground one
+    /// until told otherwise; it may be told at any time.
+    public bool IsBackground
+    {
+        get { return _background; }
+        set
+        {
+            Counting(true);
+            try
+            {
+                _background = value;
+                bool running = _id != 0 && Sys.PeekWord(Atom.At(this, Atom.FirstWord)) == 0;
+                if (running && !value && !_counted) Count(1);
+                if (running && value && _counted) Count(-1);
+            }
+            finally { Counting(false); }
+        }
+    }
+
+    static void Counting(bool enter)
+    {
+        long at = Sys.ArrayData(_foreground) + 4;
+        if (!enter)
+        {
+            Sys.AtomicSwap(at, 0);
+            return;
+        }
+        while (Sys.Cas(at, 0, 1) != 0) { }
+    }
+
+    /// With the counting lock held: one foreground thread more or fewer.
+    void Count(int by)
+    {
+        long at = Sys.ArrayData(_foreground);
+        _counted = by > 0;
+        if (Sys.AtomicAdd(at, by) + by == 0) Native.Wake(at, Native.WakeAll);
+    }
+
+    /// The end of Main waits here for the foreground threads (Runtime.Exit).
+    static void WaitForForeground()
+    {
+        long at = Sys.ArrayData(_foreground);
+        while (true)
+        {
+            long now = Sys.PeekWord(at) & 0xFFFFFFFF;
+            if (now == 0) return;
+            Native.Wait(at, now);
+        }
+    }
 
     /// This thread's kernel thread id (gettid(2)), which is the process id on
     /// the first thread.
@@ -480,7 +557,21 @@ class Thread
         if (Sys.Cas(Atom.At(this, Atom.SecondWord), 0, 1) != 0)
             throw new ThreadStateException("Thread has already been started.");
         _slot = Register(this);
-        Launch();
+        if (!_background)
+        {
+            Runtime.ForegroundWait = Sys.AddressOf(Thread.WaitForForeground);
+            Counting(true);
+            try { Count(1); }
+            finally { Counting(false); }
+        }
+        try { Launch(); }
+        catch
+        {
+            Counting(true);
+            try { if (_counted) Count(-1); }
+            finally { Counting(false); }
+            throw;
+        }
     }
 
     void Launch()
@@ -581,7 +672,10 @@ class Thread
     {
         long at = Atom.At(this, Atom.FirstWord);
 
+        Counting(true);
         Sys.AtomicSwap(at, 1);
+        if (_counted) Count(-1);
+        Counting(false);
         Native.Wake(at, Native.WakeAll);
     }
 

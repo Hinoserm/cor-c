@@ -55,7 +55,7 @@ static class Program
         foreach ((string name, int bytes) in sizes.OrderByDescending(f => f.Bytes))
         { total += bytes; order += name; }
         if (total != 11 || order != "bigsmall") return 14;
-        if (otherNames.OrderByDescending(f => f.Count)[0].Count != 1) return 15;
+        if (otherNames.OrderByDescending(f => f.Count).First().Count != 1) return 15;
         ReorderedHolder<int, (int Left, int Right)> inheritedFirst = new(first);
         ReorderedHolder<int, (int Right, int Left)> inheritedSecond = new(second);
         if (inheritedFirst.Value.Left != 11 || inheritedSecond.Value.Left != 44) return 16;

@@ -126,6 +126,7 @@ static class Gc
     static long _threshold;     // collect when _since reaches this
     static long _liveBytes;     // block bytes found live by the last sweep
     static long _liveBlocks;
+    static long _allocated;     // bytes allocated ever: retired buffers' used parts and large blocks
 
     static long _markAt;        // the grey queue, or 0 (GcLock.GreyHead/GreyTail)
     static long _markCount;     // its capacity in entries, a power of two
@@ -204,6 +205,54 @@ static class Gc
     public static long Since
     {
         get { return _since; }
+    }
+
+    /// Bytes allocated since the program began, by every thread: what their
+    /// retired buffers handed out and their large blocks. A buffer still in
+    /// use is counted when it is retired; the calling thread's is added here.
+    public static long Allocated
+    {
+        get
+        {
+            GcLock.Enter();
+            long total = _allocated;
+            GcLock.Exit();
+            return total + InBuffer(Sys.ThreadBlock());
+        }
+    }
+
+    /// Bytes this thread has allocated since it began.
+    public static long AllocatedByThread
+    {
+        get
+        {
+            long block = Sys.ThreadBlock();
+            if (block == 0) return Allocated;
+            return (Sys.Peek(block + Tls.Allocated) & 0xFFFFFFFF)
+                 + ((Sys.Peek(block + Tls.Allocated + 4) & 0xFFFFFFFF) << 32)
+                 + InBuffer(block);
+        }
+    }
+
+    /// What `block`'s current allocation buffer has handed out so far.
+    static long InBuffer(long block)
+    {
+        if (block == 0) return 0;
+        long started = Sys.Peek(block + Tls.AllocBase);
+        long at = Sys.Peek(block + Tls.AllocPtr);
+        return started != 0 && at > started ? at - started : 0;
+    }
+
+    /// Charges `bytes` to the program and to the thread whose block this is.
+    /// Under GcLock, or for a thread that is stopped.
+    static void Count(long block, long bytes)
+    {
+        _allocated = _allocated + bytes;
+        if (block == 0) return;
+        long total = (Sys.Peek(block + Tls.Allocated) & 0xFFFFFFFF)
+                   + ((Sys.Peek(block + Tls.Allocated + 4) & 0xFFFFFFFF) << 32) + bytes;
+        Sys.Poke(block + Tls.Allocated, total & 0xFFFFFFFF);
+        Sys.Poke(block + Tls.Allocated + 4, total >> 32);
     }
 
     public static long Threshold
@@ -798,6 +847,13 @@ static class Gc
 
         long at = Sys.Peek(block + Tls.AllocPtr);
         long limit = Sys.Peek(block + Tls.AllocLimit);
+        long started = Sys.Peek(block + Tls.AllocBase);
+
+        // What the buffer handed out is allocated for good, by its thread.
+        if (started != 0 && at > started)
+        {
+            Count(block, at - started);
+        }
 
         // A thread asked to answer a handshake had its limit taken away, so
         // that its next allocation comes to the slow path (GcThreads.Round);
@@ -992,6 +1048,7 @@ static class Gc
         }
 
         _since = _since + SizeOfBlock(block);
+        Count(Sys.ThreadBlock(), SizeOfBlock(block));
         GcLock.Exit();
         return block + HeaderBytes;
     }
@@ -1834,6 +1891,16 @@ static class Gc
     /// when this returns. It is let go of while the others are asked for
     /// their part and while the mark and the sweep run: a caller must carry
     /// nothing it read of the heap across this call.
+    /// How long the program has stood still for its collector, in
+    /// microseconds: the calling thread for the whole of each collection it
+    /// made (GC.GetTotalPauseDuration). The heap lock is held.
+    public static long PauseMicros;
+
+    /// A monotonic clock in microseconds, from a platform that has one to
+    /// read from any thread at any time (Linux's clock_gettime); 0 where
+    /// there is none, and pauses go untimed.
+    public static long PauseClock;
+
     static void CollectLocked()
     {
         if (!HeapChunks.Any() || _collecting)
@@ -1841,6 +1908,17 @@ static class Gc
             return;
         }
 
+        // An indirect call answers a word, so the clock is read modulo 2^32
+        // microseconds; the difference of two is exact for any collection
+        // shorter than an hour and eleven minutes.
+        long clock = PauseClock;
+        long began = clock != 0 ? Sys.Call(clock, 0, 0, 0) : 0;
+        try { CollectBoth(); }
+        finally { if (clock != 0) PauseMicros = PauseMicros + ((Sys.Call(clock, 0, 0, 0) - began) & 0xFFFFFFFF); }
+    }
+
+    static void CollectBoth()
+    {
         if (!GcThreads.Others())
         {
             CollectAlone();

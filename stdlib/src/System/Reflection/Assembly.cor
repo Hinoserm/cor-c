@@ -1,0 +1,209 @@
+// System.Reflection.Assembly and AssemblyName, as .NET has them, for a
+// program that is one native image.
+//
+// ONE ASSEMBLY. A COR-C program and every library it uses are linked into a
+// single executable, so every type is in the same assembly and it is the
+// executing, entry and calling assembly at once. Its Location is "", which is
+// what .NET answers for an assembly inside a single-file bundle;
+// Environment.ProcessPath is the image, as .NET documents for that case.
+
+namespace System.Reflection;
+
+public class Assembly
+{
+    static Assembly? _program;
+
+    readonly AssemblyName _name;
+
+    protected Assembly()
+    {
+        string? path = Environment.ProcessPath;
+        string name = path is null ? "program" : Stem(path);
+        _name = new AssemblyName();
+        _name.Name = name;
+        _name.Version = new Version(0, 0, 0, 0);
+        _name.CultureName = "";
+        _name.SetPublicKeyToken(new byte[0]);
+    }
+
+    /// The program's image, which holds every type.
+    public static Assembly GetExecutingAssembly() => Program();
+
+    public static Assembly? GetEntryAssembly() => Program();
+
+    public static Assembly GetCallingAssembly() => Program();
+
+    /// The assembly `type` is in: `typeof(T).Assembly`. A Type here is a
+    /// descriptor's address and never null.
+    public static Assembly Of(Type type) => Program();
+
+    static Assembly Program()
+    {
+        Assembly? made = _program;
+        if (made is null)
+        {
+            made = new Assembly();
+            _program = made;
+        }
+        return made;
+    }
+
+    /// "" -- the assembly is inside the program's image, not a file of its own.
+    public virtual string Location => "";
+
+    public virtual string? FullName => _name.FullName;
+
+    public virtual AssemblyName GetName()
+    {
+        AssemblyName copy = new AssemblyName();
+        copy.Name = _name.Name;
+        copy.Version = _name.Version;
+        copy.CultureName = _name.CultureName;
+        copy.SetPublicKeyToken(_name.GetPublicKeyToken());
+        return copy;
+    }
+
+    public override string ToString() => FullName ?? "";
+
+    /// A file's name without its directory or its extension.
+    static string Stem(string path)
+    {
+        int slash = path.LastIndexOf('/');
+        string file = slash < 0 ? path : path.Substring(slash + 1);
+        int dot = file.LastIndexOf('.');
+        return dot <= 0 ? file : file.Substring(0, dot);
+    }
+}
+
+/// An assembly's identity: its name, version, culture and public key token,
+/// and the display name `Name, Version=1.0.0.0, Culture=neutral,
+/// PublicKeyToken=null` that spells all four.
+public sealed class AssemblyName
+{
+    byte[]? _token;
+
+    public AssemblyName() { }
+
+    /// Reads a display name. A field .NET does not know is refused, as .NET
+    /// refuses it, and so is a name that is missing or empty.
+    public AssemblyName(string assemblyName)
+    {
+        if (assemblyName == null) throw new ArgumentNullException(nameof(assemblyName));
+        List<string> parts = Split(assemblyName);
+        if (parts.Count == 0 || parts[0].Trim().Length == 0)
+            throw new FileLoadException("The given assembly name was invalid.");
+        Name = parts[0].Trim();
+        for (int i = 1; i < parts.Count; i++)
+        {
+            string part = parts[i];
+            int equals = part.IndexOf('=');
+            if (equals < 0) throw new FileLoadException("The given assembly name was invalid.");
+            string key = part.Substring(0, equals).Trim();
+            string value = part.Substring(equals + 1).Trim();
+            if (string.Equals(key, "Version", StringComparison.OrdinalIgnoreCase))
+                Version = Version.Parse(value);
+            else if (string.Equals(key, "Culture", StringComparison.OrdinalIgnoreCase))
+                CultureName = string.Equals(value, "neutral", StringComparison.OrdinalIgnoreCase) ? "" : value;
+            else if (string.Equals(key, "PublicKeyToken", StringComparison.OrdinalIgnoreCase))
+                _token = string.Equals(value, "null", StringComparison.OrdinalIgnoreCase) ? new byte[0] : Hex(value);
+            else if (!(string.Equals(key, "PublicKey", StringComparison.OrdinalIgnoreCase)
+                       || string.Equals(key, "ProcessorArchitecture", StringComparison.OrdinalIgnoreCase)
+                       || string.Equals(key, "Retargetable", StringComparison.OrdinalIgnoreCase)
+                       || string.Equals(key, "ContentType", StringComparison.OrdinalIgnoreCase)
+                       || string.Equals(key, "Custom", StringComparison.OrdinalIgnoreCase)))
+                throw new FileLoadException("The given assembly name was invalid.");
+        }
+    }
+
+    public string? Name { get; set; }
+
+    public Version? Version { get; set; }
+
+    /// "" is the invariant (neutral) culture; null is a culture not given.
+    public string? CultureName { get; set; }
+
+    public byte[]? GetPublicKeyToken() => _token;
+
+    public void SetPublicKeyToken(byte[]? publicKeyToken) { _token = publicKeyToken; }
+
+    public string FullName
+    {
+        get
+        {
+            if (Name is null) return "";
+            StringBuilder text = new StringBuilder();
+            Escape(text, Name);
+            if (Version is Version version)
+            {
+                text.Append(", Version=");
+                text.Append(version.ToString());
+            }
+            if (CultureName is string culture)
+            {
+                text.Append(", Culture=");
+                text.Append(culture.Length == 0 ? "neutral" : culture);
+            }
+            if (_token is byte[] token)
+            {
+                text.Append(", PublicKeyToken=");
+                if (token.Length == 0) text.Append("null");
+                else foreach (byte b in token) text.Append(b.ToString("x2"));
+            }
+            return text.ToString();
+        }
+    }
+
+    public override string ToString() => FullName;
+
+    /// The display name's comma-separated parts, a backslash escaping the
+    /// character after it and quotes holding a value whole.
+    static List<string> Split(string text)
+    {
+        List<string> parts = new List<string>();
+        StringBuilder part = new StringBuilder();
+        char quote = '\0';
+        for (int i = 0; i < text.Length; i++)
+        {
+            char c = text[i];
+            if (c == '\\' && i + 1 < text.Length) { part.Append(text[++i]); continue; }
+            if (quote != '\0')
+            {
+                if (c == quote) quote = '\0';
+                else part.Append(c);
+                continue;
+            }
+            if (c == '"' || c == '\'') { quote = c; continue; }
+            if (c == ',') { parts.Add(part.ToString()); part.Clear(); continue; }
+            part.Append(c);
+        }
+        if (quote != '\0') throw new FileLoadException("The given assembly name was invalid.");
+        parts.Add(part.ToString());
+        return parts;
+    }
+
+    static void Escape(StringBuilder text, string name)
+    {
+        foreach (char c in name)
+        {
+            if (c is ',' or '=' or '\\' or '"' or '\'') text.Append('\\');
+            text.Append(c);
+        }
+    }
+
+    static byte[] Hex(string value)
+    {
+        if (value.Length % 2 != 0) throw new FileLoadException("The given assembly name was invalid.");
+        byte[] bytes = new byte[value.Length / 2];
+        for (int i = 0; i < bytes.Length; i++)
+            bytes[i] = (byte)(Digit(value[2 * i]) * 16 + Digit(value[2 * i + 1]));
+        return bytes;
+    }
+
+    static int Digit(char c)
+    {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        throw new FileLoadException("The given assembly name was invalid.");
+    }
+}

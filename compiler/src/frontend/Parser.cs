@@ -664,59 +664,63 @@ public sealed class Parser
         // them by exactly that path -- the same path a nested type is keyed by,
         // which is why one mechanism serves both.
         //
-        // MORE THAN ONE, because the block form may be written twice in a file
-        // and because a file-scoped one may be preceded by directives that come
-        // back round to here.
-        while (At(Tok.KwNamespace))
-        {
-            _i++;
-            _namespace = ParseDottedName();
-            _typePath = _namespace;
-
-            if (!Take(Tok.Semi))
-            {
-                Expect(Tok.LBrace, "'{' or ';' after namespace");
-            }
-
-            // A file-scoped namespace also scopes the using directives that
-            // follow it. This is the ordinary form emitted by current C#
-            // projects, and flattening the namespace does not make those
-            // directives into type declarations.
-            ParseUsings(unit);
-
-            while (!At(Tok.End) && !At(Tok.RBrace) && !At(Tok.KwNamespace))
-            {
-                TakeTypeDecl(unit);
-            }
-
-            // The block form's closing brace, when there was one. A file-scoped
-            // namespace has none, and the loop above stopped at the end of the
-            // file instead.
-            if (Take(Tok.RBrace))
-            {
-                _namespace = "";
-                _typePath = "";
-            }
-
-            ParseUsings(unit);
-        }
-
-        // TOP-LEVEL STATEMENTS: a file that is a program rather than a library.
+        // ANYWHERE AT THE TOP LEVEL, as C# has it: before, between and after
+        // types of the global namespace, more than one, block form nested in
+        // block form. A file-scoped one covers the rest of the file.
         //
+        // TOP-LEVEL STATEMENTS: a file that is a program rather than a library.
         // C# wraps them in a Main of its own making, and so does this -- there
         // is nothing else they could mean, and a file written that way is what
         // `dotnet new console` produces today. Recognised by what is there: a
-        // statement where a type declaration would be.
-        if (!At(Tok.End) && !At(Tok.RBrace) && !StartsTypeDecl())
+        // statement where a type declaration would be, before any type.
+        if (!At(Tok.End) && !At(Tok.RBrace) && !At(Tok.KwNamespace) && !StartsTypeDecl())
         {
             unit.Types.Add(ParseTopLevel(start));
         }
 
+        ParseNamespaceMembers(unit, "");
+        return unit;
+    }
+
+    /// The types and namespaces of one namespace (`within`, "" for the
+    /// global one), up to the brace that closes it or the end of the file.
+    private void ParseNamespaceMembers(CompilationUnit unit, string within)
+    {
         while (!At(Tok.End) && !At(Tok.RBrace))
         {
-            TakeTypeDecl(unit);
+            if (!At(Tok.KwNamespace))
+            {
+                _namespace = within;
+                _typePath = within;
+                TakeTypeDecl(unit);
+                continue;
+            }
+
+            _i++;
+            string name = ParseDottedName();
+            string inner = within.Length == 0 ? name : within + "." + name;
+            _namespace = inner;
+            _typePath = inner;
+            bool block = !Take(Tok.Semi);
+            if (block)
+            {
+                Expect(Tok.LBrace, "'{' or ';' after namespace");
+            }
+
+            // A namespace's own using directives scope what follows them --
+            // the file-scoped form's above all, which current C# projects
+            // write before their types.
+            ParseUsings(unit);
+            ParseNamespaceMembers(unit, inner);
+
+            if (block)
+            {
+                Expect(Tok.RBrace, "'}' to close the namespace");
+                ParseUsings(unit);
+            }
+            _namespace = within;
+            _typePath = within;
         }
-        return unit;
     }
 
     private void TakeTypeDecl(CompilationUnit unit)
@@ -5750,7 +5754,9 @@ public sealed class Parser
         // initialiser with square brackets, and it is read as exactly that.
         // C# target-types it from the declaration, which is the type this
         // already has in hand; what it means is the same array either way.
-        if (At(Tok.LBracket) && declared.ArrayRank > 0)
+        // One with a spread in it (`[..head, 3]`) is the general collection
+        // expression, which the checker makes from the declared type.
+        if (At(Tok.LBracket) && declared.ArrayRank > 0 && !SpreadInBrackets())
         {
             return ElementList(declared, Tok.RBracket);
         }
@@ -5761,6 +5767,26 @@ public sealed class Parser
         }
 
         return ElementList(declared, Tok.RBrace);
+    }
+
+    /// <summary>
+    /// Whether the bracketed list starting here has a spread (`..x`) at its
+    /// own level, where an element begins.
+    /// </summary>
+    private bool SpreadInBrackets()
+    {
+        int depth = 0;
+        for (int j = _i; j < _t.Count && _t[j].Kind != Tok.End; j++)
+        {
+            Tok kind = _t[j].Kind;
+            if (kind is Tok.LBracket or Tok.LParen or Tok.LBrace) depth++;
+            else if (kind is Tok.RBracket or Tok.RParen or Tok.RBrace)
+            {
+                if (--depth == 0) return false;
+            }
+            else if (depth == 1 && kind == Tok.DotDot && _t[j - 1].Kind is Tok.LBracket or Tok.Comma) return true;
+        }
+        return false;
     }
 
     /// <summary>

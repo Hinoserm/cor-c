@@ -351,6 +351,22 @@ public sealed partial class Lowering
 
     // ---- the expressions --------------------------------------------------------------
 
+    /// <summary>
+    /// A const's value. A floating-point one is kept as a double's bits
+    /// (Binder.RealBits), and made as a float or a double from them.
+    /// </summary>
+    private VReg ConstValue(ConstSym k)
+    {
+        if (k.Type.Prim == Prim.F32)
+        {
+            float single = (float)BitConverter.Int64BitsToDouble(k.Value);
+            return _e.Unary(Opcode.Bits, R(_e.Const(BitConverter.SingleToInt32Bits(single), IrType.I32)), IrType.F32);
+        }
+        if (k.Type.Prim == Prim.F64)
+            return _e.Unary(Opcode.Bits, R(_e.Const(k.Value, IrType.I64)), IrType.F64);
+        return _e.Const(k.Value, IrTypes.Of(k.Type));
+    }
+
     private VReg EvalCore(Expr e)
     {
         switch (e)
@@ -596,7 +612,7 @@ public sealed partial class Lowering
         switch (sym)
         {
             case ConstSym k:
-                return _e.Const(k.Value, IrTypes.Of(k.Type));
+                return ConstValue(k);
 
             case PropertyGetSym pg:
                 return CallAccessor(pg.Getter, self: true, target: null);
@@ -655,7 +671,7 @@ public sealed partial class Lowering
                 case PropertyGetSym pg:
                     return CallAccessor(pg.Getter, self: false, target: m.Target);
                 case ConstSym k:
-                    return _e.Const(k.Value, IrTypes.Of(k.Type));
+                    return ConstValue(k);
                 case FieldSym f when f.Field.Static:
                     return LoadPlace(PlaceOfField(f.Field, null, m));
                 case FieldSym f:
@@ -669,10 +685,16 @@ public sealed partial class Lowering
             return target.IsArray ? _e.Unary(Opcode.ArrayLength, R(seq), IrType.I32) : _e.Load(IrType.I32, seq, _t.ArrayCountOffset);
         }
 
-        if (m.Name == "Name" && target.Prim == Prim.Type)
+        // A TYPE'S NAME AND FULL NAME. The descriptor holds the name
+        // ToString answers -- `System.Object`, `System.Int32` -- and Name is
+        // its last part, as .NET's Type.Name is, where the library can say so.
+        if (m.Name is "Name" or "FullName" && target.Prim == Prim.Type)
         {
             VReg desc = Eval(m.Target);
-            return _e.Load(IrTypes.Word, desc, DescName * _t.WordSize);
+            VReg full = _e.Load(IrTypes.Word, desc, DescName * _t.WordSize);
+            if (m.Name == "FullName" || !HasStringMethod(Prelude.TypeNameMethod)) return full;
+            MethodSymbol? simple = StringMethod(m, Prelude.TypeNameMethod, 1, "a type's name");
+            return simple is null ? full : _e.Call(CallLabel(simple), IrTypes.Word, R(full))!;
         }
 
         return Fail(m, $"'{m.Name}' cannot be read here yet");
@@ -3041,6 +3063,7 @@ public sealed partial class Lowering
                        || (type.Prim is Prim.NUInt && _t.WordSize == 8);
         string method = asChar ? FromCharMethod
                       : asBool ? Prelude.FromBoolMethod
+                      : asReal && type.Prim == Prim.F32 && HasStringMethod(Prelude.FromSingleMethod) ? Prelude.FromSingleMethod
                       : asReal ? Prelude.FromDoubleMethod
                       : asUnsigned && HasStringMethod(Prelude.FromUIntMethod) ? Prelude.FromUIntMethod
                       : Prelude.FromIntMethod;

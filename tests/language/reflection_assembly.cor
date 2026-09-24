@@ -1,0 +1,36 @@
+// test: System.Reflection.Assembly and AssemblyName
+// expect-exit: 0
+// expect-output:
+// True True True
+// []
+// corlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089
+// corlib 4.0.0.0 '' 8
+// a\,b, Version=1.2, Culture=fr-FR, PublicKeyToken=null
+// bad
+//
+// typeof(T).Assembly is the program's one assembly, whose Location is ""
+// as .NET answers inside a single-file bundle; AssemblyName reads and
+// writes display names as .NET does.
+
+using System;
+using System.Reflection;
+class Thing { }
+static class Program
+{
+    static int Main()
+    {
+        Assembly a = typeof(Thing).Assembly;
+        Assembly b = typeof(string).Assembly;
+        Console.WriteLine((a == b) + " " + (a == Assembly.GetExecutingAssembly()) + " " + (a.GetName().Name!.Length > 0));
+        Console.WriteLine("[" + a.Location + "]");
+        AssemblyName n = new AssemblyName("corlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=B77A5C561934E089");
+        Console.WriteLine(n.FullName);
+        Console.WriteLine(n.Name + " " + n.Version + " '" + n.CultureName + "' " + n.GetPublicKeyToken()!.Length);
+        AssemblyName m = new() { Name = "a,b", Version = new Version(1, 2), CultureName = "fr-FR" };
+        m.SetPublicKeyToken(Array.Empty<byte>());
+        Console.WriteLine(m.FullName);
+        try { new AssemblyName("x, Colour=blue"); Console.WriteLine("accepted"); }
+        catch (System.IO.FileLoadException) { Console.WriteLine("bad"); }
+        return 0;
+    }
+}

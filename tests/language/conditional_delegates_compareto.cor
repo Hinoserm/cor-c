@@ -1,0 +1,41 @@
+// test: target-typed conditional delegates and primitive CompareTo
+// expect-exit: 0
+// expect-output:
+// 5 2 3
+// none x
+// -1 1 0 -1 1 0
+// 2 m 8
+//
+// `decl is null ? null : decl.Add` is an Action<string> where one is wanted
+// -- an argument, a declaration -- as C# target-types a conditional; and every
+// primitive has CompareTo, NaN ordered below every number. `new Action<string>
+// (list.Add)` makes the delegate, as C#'s delegate-creation expression does.
+
+using System;
+using System.Collections.Generic;
+static class M
+{
+    public static int F(string a, out int e) { e = 1; return 0; }
+    public static int F(string a, bool b, out int e, Action<string>? r = null) { e = 2; r?.Invoke(a); return 5; }
+}
+static class Program
+{
+    static int Main()
+    {
+        List<string> seen = new();
+        List<string>? decl = seen;
+        int x = M.F("a", true, out int e, decl is null ? null : decl.Add);
+        Console.WriteLine(x + " " + e + " " + (seen.Count == 1 ? 3 : 0));
+        List<string>? none = null;
+        Action<string>? say = none is null ? null : none.Add;
+        Func<string, string> pick = seen.Count > 5 ? s => s : s => s + "x";
+        Console.WriteLine((say is null ? "none" : "some") + " " + pick(""));
+        Console.WriteLine(3.CompareTo(4) + " " + ((byte)9).CompareTo((byte)2) + " " + 'a'.CompareTo('a') + " "
+            + double.NaN.CompareTo(1.0) + " " + 1.5f.CompareTo(float.NaN) + " " + double.NaN.CompareTo(double.NaN));
+        Action<string> made = new Action<string>(seen.Add);
+        made("m");
+        Func<int, int> twice = new Func<int, int>(n => n * 2);
+        Console.WriteLine(seen.Count + " " + seen[seen.Count - 1] + " " + twice(4));
+        return 0;
+    }
+}

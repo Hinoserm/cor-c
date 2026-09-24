@@ -1,0 +1,265 @@
+// System.Security.Cryptography's hash algorithms, as .NET has them: the
+// HashAlgorithm base with ComputeHash and the TransformBlock pair, and
+// SHA256 with Create and the one-shot HashData. What .NET Core called
+// System.Security.Cryptography.Algorithms, and built over System.IO for the
+// same reason: a hash of a Stream reads the stream.
+
+/// Something went wrong in a cryptographic operation.
+class CryptographicException : Exception
+{
+    public CryptographicException() : base("Error occurred during a cryptographic operation.") { }
+    public CryptographicException(string message) : base(message) { }
+}
+
+/// A hash algorithm: data in, in as many pieces as it comes in, and a hash
+/// out at the end.
+abstract class HashAlgorithm : IDisposable
+{
+    byte[]? _hash;
+    bool _disposed;
+
+    /// The size of the hash, in bits.
+    public abstract int HashSize { get; }
+
+    /// The hash of everything given so far, once TransformFinalBlock has
+    /// given the last of it.
+    public byte[]? Hash
+    {
+        get
+        {
+            if (_disposed) throw new ObjectDisposedException(nameof(HashAlgorithm));
+            byte[]? made = _hash;
+            if (made == null) throw new CryptographicException("Hash must be finalized before the hash value is retrieved.");
+            byte[] copy = new byte[made.Length];
+            for (int i = 0; i < made.Length; i++) copy[i] = made[i];
+            return copy;
+        }
+    }
+
+    protected abstract void HashCore(byte[] array, int ibStart, int cbSize);
+    protected abstract byte[] HashFinal();
+    public abstract void Initialize();
+
+    public byte[] ComputeHash(byte[] buffer)
+    {
+        if (buffer == null) throw new ArgumentNullException(nameof(buffer));
+        return ComputeHash(buffer, 0, buffer.Length);
+    }
+
+    public byte[] ComputeHash(byte[] buffer, int offset, int count)
+    {
+        Check(buffer, offset, count);
+        HashCore(buffer, offset, count);
+        return Finish();
+    }
+
+    public byte[] ComputeHash(Stream inputStream)
+    {
+        if (inputStream == null) throw new ArgumentNullException(nameof(inputStream));
+        if (_disposed) throw new ObjectDisposedException(nameof(HashAlgorithm));
+        byte[] buffer = new byte[4096];
+        while (true)
+        {
+            int read = inputStream.Read(buffer, 0, buffer.Length);
+            if (read <= 0) break;
+            HashCore(buffer, 0, read);
+        }
+        return Finish();
+    }
+
+    /// A piece of the data, copied to `outputBuffer` as it is when one is
+    /// given; how many bytes that was.
+    public int TransformBlock(byte[] inputBuffer, int inputOffset, int inputCount, byte[]? outputBuffer, int outputOffset)
+    {
+        Check(inputBuffer, inputOffset, inputCount);
+        HashCore(inputBuffer, inputOffset, inputCount);
+        if (outputBuffer != null && (outputBuffer != inputBuffer || outputOffset != inputOffset))
+        {
+            if (outputOffset < 0 || outputOffset > outputBuffer.Length - inputCount)
+                throw new ArgumentOutOfRangeException(nameof(outputOffset));
+            for (int i = 0; i < inputCount; i++) outputBuffer[outputOffset + i] = inputBuffer[inputOffset + i];
+        }
+        return inputCount;
+    }
+
+    /// The last piece: the hash is made (Hash), and the piece is answered.
+    public byte[] TransformFinalBlock(byte[] inputBuffer, int inputOffset, int inputCount)
+    {
+        Check(inputBuffer, inputOffset, inputCount);
+        HashCore(inputBuffer, inputOffset, inputCount);
+        Finish();
+        byte[] piece = new byte[inputCount];
+        for (int i = 0; i < inputCount; i++) piece[i] = inputBuffer[inputOffset + i];
+        return piece;
+    }
+
+    byte[] Finish()
+    {
+        byte[] made = HashFinal();
+        _hash = made;
+        Initialize();
+        byte[] copy = new byte[made.Length];
+        for (int i = 0; i < made.Length; i++) copy[i] = made[i];
+        return copy;
+    }
+
+    void Check(byte[] buffer, int offset, int count)
+    {
+        if (_disposed) throw new ObjectDisposedException(nameof(HashAlgorithm));
+        if (buffer == null) throw new ArgumentNullException(nameof(buffer));
+        if (offset < 0) throw new ArgumentOutOfRangeException(nameof(offset));
+        if (count < 0 || count > buffer.Length - offset) throw new ArgumentException("Offset and length were out of bounds for the array.");
+    }
+
+    public void Clear() { Dispose(); }
+
+    public void Dispose()
+    {
+        _disposed = true;
+        _hash = null;
+    }
+}
+
+/// SHA-256 (FIPS 180-4): a 256-bit hash.
+abstract class SHA256 : HashAlgorithm
+{
+    public const int HashSizeInBits = 256;
+    public const int HashSizeInBytes = 32;
+
+    public override int HashSize => HashSizeInBits;
+
+    public static SHA256 Create() { return new Sha256Implementation(); }
+
+    public static byte[] HashData(byte[] source)
+    {
+        if (source == null) throw new ArgumentNullException(nameof(source));
+        Sha256Implementation made = new Sha256Implementation();
+        return made.ComputeHash(source);
+    }
+
+    public static byte[] HashData(Stream source)
+    {
+        if (source == null) throw new ArgumentNullException(nameof(source));
+        Sha256Implementation made = new Sha256Implementation();
+        return made.ComputeHash(source);
+    }
+}
+
+/// The algorithm itself: 64-byte blocks through the compression function,
+/// the message padded with a one bit, zeros and its length in bits.
+sealed class Sha256Implementation : SHA256
+{
+    static readonly uint[] K = new uint[]
+    {
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+    };
+
+    readonly uint[] _state = new uint[8];
+    readonly uint[] _w = new uint[64];
+    readonly byte[] _block = new byte[64];
+    int _filled;
+    long _length;
+
+    public Sha256Implementation() { Initialize(); }
+
+    public override void Initialize()
+    {
+        _state[0] = 0x6a09e667; _state[1] = 0xbb67ae85; _state[2] = 0x3c6ef372; _state[3] = 0xa54ff53a;
+        _state[4] = 0x510e527f; _state[5] = 0x9b05688c; _state[6] = 0x1f83d9ab; _state[7] = 0x5be0cd19;
+        _filled = 0;
+        _length = 0;
+    }
+
+    protected override void HashCore(byte[] array, int ibStart, int cbSize)
+    {
+        _length = _length + cbSize;
+        int at = ibStart;
+        int end = ibStart + cbSize;
+        while (at < end)
+        {
+            int take = 64 - _filled;
+            if (take > end - at) take = end - at;
+            for (int i = 0; i < take; i++) _block[_filled + i] = array[at + i];
+            _filled = _filled + take;
+            at = at + take;
+            if (_filled == 64)
+            {
+                Compress();
+                _filled = 0;
+            }
+        }
+    }
+
+    protected override byte[] HashFinal()
+    {
+        long bits = _length * 8;
+        _block[_filled] = 0x80;
+        _filled = _filled + 1;
+        if (_filled > 56)
+        {
+            while (_filled < 64) { _block[_filled] = 0; _filled = _filled + 1; }
+            Compress();
+            _filled = 0;
+        }
+        while (_filled < 56) { _block[_filled] = 0; _filled = _filled + 1; }
+        for (int i = 0; i < 8; i++) _block[56 + i] = (byte)(bits >> (56 - 8 * i));
+        Compress();
+
+        byte[] made = new byte[32];
+        for (int i = 0; i < 8; i++)
+        {
+            uint v = _state[i];
+            made[i * 4] = (byte)(v >> 24);
+            made[i * 4 + 1] = (byte)(v >> 16);
+            made[i * 4 + 2] = (byte)(v >> 8);
+            made[i * 4 + 3] = (byte)v;
+        }
+        return made;
+    }
+
+    static uint Rotr(uint x, int n) { return (x >> n) | (x << (32 - n)); }
+
+    void Compress()
+    {
+        uint[] w = _w;
+        for (int i = 0; i < 16; i++)
+        {
+            w[i] = ((uint)_block[i * 4] << 24) | ((uint)_block[i * 4 + 1] << 16) | ((uint)_block[i * 4 + 2] << 8) | _block[i * 4 + 3];
+        }
+        for (int i = 16; i < 64; i++)
+        {
+            uint s0 = Rotr(w[i - 15], 7) ^ Rotr(w[i - 15], 18) ^ (w[i - 15] >> 3);
+            uint s1 = Rotr(w[i - 2], 17) ^ Rotr(w[i - 2], 19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+        }
+
+        uint a = _state[0], b = _state[1], c = _state[2], d = _state[3];
+        uint e = _state[4], f = _state[5], g = _state[6], h = _state[7];
+        for (int i = 0; i < 64; i++)
+        {
+            uint big1 = Rotr(e, 6) ^ Rotr(e, 11) ^ Rotr(e, 25);
+            uint choose = (e & f) ^ (~e & g);
+            uint t1 = h + big1 + choose + K[i] + w[i];
+            uint big0 = Rotr(a, 2) ^ Rotr(a, 13) ^ Rotr(a, 22);
+            uint majority = (a & b) ^ (a & c) ^ (b & c);
+            uint t2 = big0 + majority;
+            h = g;
+            g = f;
+            f = e;
+            e = d + t1;
+            d = c;
+            c = b;
+            b = a;
+            a = t1 + t2;
+        }
+        _state[0] = _state[0] + a; _state[1] = _state[1] + b; _state[2] = _state[2] + c; _state[3] = _state[3] + d;
+        _state[4] = _state[4] + e; _state[5] = _state[5] + f; _state[6] = _state[6] + g; _state[7] = _state[7] + h;
+    }
+}

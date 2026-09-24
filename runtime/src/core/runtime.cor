@@ -137,8 +137,14 @@ static class Tls
     public const long Spill = 80;
     public const long SpillMax = 12;
 
+    /// The bytes this thread has allocated, as two words, low then high: its
+    /// retired allocation buffers' used parts and its large blocks. What is
+    /// in its current buffer is AllocPtr - AllocBase on top
+    /// (GC.GetAllocatedBytesForCurrentThread).
+    public const long Allocated = 128;
+
     /// The size of the block. The compiler lays the first one down in .bss.
-    public const long Bytes = 128;
+    public const long Bytes = 136;
 }
 
 static class Runtime
@@ -277,6 +283,8 @@ static class Runtime
         Sys.PokeWord(block + Tls.StackBase, stackTop);
         Sys.PokeWord(block + Tls.StackLimit, stackTop);
         Sys.PokeWord(block + Tls.SpillCount, 0);
+        Sys.PokeWord(block + Tls.Allocated, 0);
+        Sys.PokeWord(block + Tls.Allocated + 4, 0);
         Sys.PokeWord(block + Tls.State, 1);
         GcThreads.Register(block);
     }
@@ -694,10 +702,17 @@ static class Runtime
         return true;
     }
 
+    /// The end of Main. A process lives on while any FOREGROUND thread does,
+    /// as .NET's does: whoever starts one leaves here the address of what
+    /// waits for them (Thread.WaitForForeground), which runs first.
     public static void Exit(int code)
     {
+        long wait = ForegroundWait;
+        if (wait != 0) Sys.Call(wait, 0, 0, 0);
         Platform.Exit(code);
     }
+
+    public static long ForegroundWait;
 
     // ---- what runs when the process ends ---------------------------------
     //
@@ -1374,7 +1389,9 @@ static class Runtime
         if (exception is Exception) { trace = ((Exception)exception).StackTrace; }
         if (trace.Length == 0) { trace = Trace(Sys.FramePointer()); }
         WriteBytes(StdErr, BytesOf(trace), trace.Length);
-        Exit(134);
+        // At once: an unhandled exception ends the process whatever threads
+        // it has, as .NET's does.
+        Platform.Exit(134);
     }
 
     // The checks the compiler emits. Each THROWS so user code can catch it;

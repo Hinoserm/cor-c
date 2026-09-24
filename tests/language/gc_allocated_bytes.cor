@@ -1,0 +1,30 @@
+// test: GC allocation counters
+// expect-exit: 0
+// expect-output:
+// grew True True
+// thread True
+// precise True
+//
+// GC.GetTotalAllocatedBytes and GC.GetAllocatedBytesForCurrentThread, as
+// .NET has them: they only grow, and allocating a megabyte of arrays grows
+// both by at least that much.
+
+using System;
+static class Program
+{
+    static int Main()
+    {
+        long total = GC.GetTotalAllocatedBytes();
+        long mine = GC.GetAllocatedBytesForCurrentThread();
+        object[] keep = new object[64];
+        for (int i = 0; i < 1024; i++) keep[i % 64] = new byte[1024];
+        long total2 = GC.GetTotalAllocatedBytes();
+        long mine2 = GC.GetAllocatedBytesForCurrentThread();
+        Console.WriteLine("grew " + (total2 - total >= 1024 * 1024) + " " + (mine2 - mine >= 1024 * 1024));
+        byte[] big = new byte[4 * 1024 * 1024];
+        Console.WriteLine("thread " + (GC.GetAllocatedBytesForCurrentThread() - mine2 >= big.Length));
+        Console.WriteLine("precise " + (GC.GetTotalAllocatedBytes(true) >= total2 + big.Length));
+        GC.KeepAlive(keep);
+        return 0;
+    }
+}

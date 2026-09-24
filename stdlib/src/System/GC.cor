@@ -58,6 +58,25 @@ public static class GC
         return Gc.LiveBytes + Gc.Since;
     }
 
+    /// The bytes allocated since the program began. Other threads' current
+    /// allocation buffers are counted as they are retired, which is the
+    /// imprecision .NET allows when `precise` is false; asked precisely, a
+    /// collection retires them all first.
+    public static long GetTotalAllocatedBytes(bool precise)
+    {
+        if (precise) Gc.Collect();
+        return Gc.Allocated;
+    }
+
+    public static long GetTotalAllocatedBytes() { return GetTotalAllocatedBytes(false); }
+
+    /// How long the program has stood still for the collector, in all:
+    /// every collection, the whole of which the thread that made it waited.
+    public static TimeSpan GetTotalPauseDuration() { return new TimeSpan(Gc.PauseMicros * 10); }
+
+    /// The bytes this thread has allocated since it began.
+    public static long GetAllocatedBytesForCurrentThread() { return Gc.AllocatedByThread; }
+
     /// Keeps `obj` reachable up to this call.
     public static void KeepAlive(object? obj) { }
 

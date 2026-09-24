@@ -54,7 +54,7 @@ static class Program
             names.Add(Path.GetFileName(full));
         }
 
-        List<string> sorted = names.OrderBy(n => n, StringComparer.Ordinal);
+        List<string> sorted = names.OrderBy(n => n, StringComparer.Ordinal).ToList();
 
         Line("files " + sorted.Count + " " + sorted[0] + " " + sorted[1]);
 

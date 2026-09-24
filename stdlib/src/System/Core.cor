@@ -171,7 +171,19 @@ static class String {
     // waiting for it, and what `d.ToString()` means once it is wired up.
     // See build/repro-std-double-join.cor.
     public static string FromDouble(double value) {
-        return DoubleFormat.General(value, 15);
+        return DoubleFormat.Shortest(value);
+    }
+
+    /// Type.Name: the last part of the name a type's descriptor holds --
+    /// `Object` of `System.Object`, `Int32` of `System.Int32`.
+    public static string TypeName(string full) {
+        int dot = full.LastIndexOf('.');
+        return dot < 0 ? full : full.Substring(dot + 1);
+    }
+
+    /// `"x = " + f` for a float: the shortest digits that are that float.
+    public static string FromSingle(float value) {
+        return DoubleFormat.ShortestSingle(value);
     }
 
     public static int IndexOf(string s, int ch) {
@@ -690,6 +702,34 @@ static class String {
         return Join<string>(separator, (IReadOnlyList<string>)values);
     }
 
+    /// `string.Join(", ", a, b, c)`: .NET's params forms. A null separator
+    /// is nothing between them, and a null element is nothing.
+    public static string Join(string? separator, params string?[] value) {
+        if (value == null) { throw new ArgumentNullException(nameof(value)); }
+        StringBuilder made = new StringBuilder();
+        for (int i = 0; i < value.Length; i++) {
+            if (i > 0 && separator != null) { made.Append(separator); }
+            string? one = value[i];
+            if (one != null) { made.Append(one); }
+        }
+        return made.ToString();
+    }
+
+    public static string Join(string? separator, params object?[] values) {
+        if (values == null) { throw new ArgumentNullException(nameof(values)); }
+        StringBuilder made = new StringBuilder();
+        for (int i = 0; i < values.Length; i++) {
+            if (i > 0 && separator != null) { made.Append(separator); }
+            object? one = values[i];
+            if (one != null) { made.Append(one.ToString()); }
+        }
+        return made.ToString();
+    }
+
+    public static string Join(char separator, params string?[] value) { return Join(String.FromChar(separator), value); }
+
+    public static string Join(char separator, params object?[] values) { return Join(String.FromChar(separator), values); }
+
     // ---- searching, from somewhere other than the start -------------------
 
     public static int IndexOf(string s, char ch, int start) {
@@ -1192,6 +1232,12 @@ static partial class Path {
 // which is what this machine's console and filing system are.
 
 static class Char {
+    public static int CompareTo(char value, char other) { return value < other ? -1 : value > other ? 1 : 0; }
+    public static int CompareTo(char value, object? other) {
+        if (other == null) return 1;
+        if (other is char number) return CompareTo(value, number);
+        throw new ArgumentException("object must be an Char");
+    }
     public static bool IsDigit(char c) { return c >= '0' && c <= '9'; }
     public static bool IsLetter(char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
     public static bool IsLetterOrDigit(char c) { return IsLetter(c) || IsDigit(c); }
@@ -1821,8 +1867,8 @@ static class Convert {
 static class BitConverter {
     public static long DoubleToInt64Bits(double value) { return Sys.Bits(value); }
     public static double Int64BitsToDouble(long value) { return Sys.FromBits(value); }
-    public static int SingleToInt32Bits(float value) { return (int)Sys.Bits((double)value); }
-    public static float Int32BitsToSingle(int value) { return (float)Sys.FromBits(value); }
+    public static int SingleToInt32Bits(float value) { return Sys.SingleBits(value); }
+    public static float Int32BitsToSingle(int value) { return Sys.FromSingleBits(value); }
 
     /// TRUE, and it is a fact about the processor rather than a choice: every
     /// machine this compiler targets stores the little end first. A program
@@ -2060,6 +2106,9 @@ static class DoubleFormat {
         return x > 1.7976931348623157e308 || x < -1.7976931348623157e308;
     }
 
+    /// The sign bit, which -0.0 has and .NET prints: "-0".
+    static bool Negative(double x) { return BitConverter.DoubleToInt64Bits(x) < 0; }
+
     private static string? Special(double x) {
         if (IsNaN(x)) { return "NaN"; }
         if (x > 0.0 && IsInfinity(x)) { return "Infinity"; }
@@ -2067,82 +2116,95 @@ static class DoubleFormat {
         return null;
     }
 
-    /// `places` digits after the point, rounded half away from zero -- and the
-    /// sign is kept even when every digit rounds to nought, because that is
-    /// what .NET prints and because -0.00 says something 0.00 does not.
+    /// `places` digits after the point, from the value's exact decimal
+    /// expansion, an exact tie rounded to even -- and the sign is kept even
+    /// when every digit rounds to nought, because that is what .NET prints.
     public static string Fixed(double value, int places) {
         string? special = Special(value);
         if (special != null) { return special; }
 
-        bool negative = value < 0.0;
-        double x = negative ? -value : value;
-
-        double scale = 1.0;
-        for (int i = 0; i < places; i++) { scale = scale * 10.0; }
-
-        long scaled = (long)(x * scale + 0.5);
-        string digits = String.FromInt(scaled);
-
-        if (places == 0) {
-            return negative ? String.Concat("-", digits) : digits;
+        bool negative = Negative(value);
+        string digits = "";
+        int point = 0;
+        if (value != 0.0) {
+            int lead;
+            FloatDecimal.Digits(value, 1, false, out lead);
+            int wanted = lead + places;
+            if (wanted > 0) {
+                digits = FloatDecimal.Digits(value, wanted, true, out point);
+            } else if (wanted == 0) {
+                // Below the last place: it rounds to one unit of it or none.
+                digits = FloatDecimal.Digits(value, 0, true, out point);
+            }
         }
 
-        if (digits.Length <= places) {
-            digits = String.Concat(String.Repeat('0', places + 1 - digits.Length), digits);
-        }
-
-        string body = String.Concat(String.Substring(digits, 0, digits.Length - places),
-                      String.Concat(".", String.Substring(digits, digits.Length - places, places)));
-        return negative ? String.Concat("-", body) : body;
+        return Compose(digits, point, negative, places);
     }
 
-    /// The significant digits of |x|, and its decimal exponent, worked out by
-    /// scaling into [1, 10) and peeling one digit at a time.
-    ///
-    /// ONE DIGIT MORE THAN ASKED FOR IS TAKEN, so the last one can be rounded
-    /// rather than truncated: 0.999999 to five digits is 1.0000 and not 0.9999.
-    private static string Significant(double x, int count, out int exponent) {
-        int e = 0;
-        double v = x;
+    /// What a CUSTOM format ("0.0", "#,##0") rounds, which is not the exact
+    /// value: .NET takes its fifteen significant digits and rounds those half
+    /// away from zero at the last place asked for -- 1.25 to "0.0" is 1.3,
+    /// where "F1" says 1.2.
+    public static string FixedCustom(double value, int places) {
+        string? special = Special(value);
+        if (special != null) { return special; }
 
-        while (v >= 10.0) {
-            v = v / 10.0;
-            e = e + 1;
-        }
-        while (v > 0.0 && v < 1.0) {
-            v = v * 10.0;
-            e = e - 1;
-        }
+        bool negative = Negative(value);
+        if (value == 0.0) { return Compose("", 0, negative, places); }
+        int point;
+        string fifteen = FloatDecimal.Digits(value, 15, true, out point);
+        int wanted = point + places;
+        if (wanted >= 15) { return Compose(fifteen, point, negative, places); }
+        if (wanted < 0) { return Compose("", 0, negative, places); }
 
-        int[] digits = new int[count + 1];
-        for (int i = 0; i <= count; i++) {
-            int d = (int)v;
-            if (d > 9) { d = 9; }
-            digits[i] = d;
-            v = (v - (double)d) * 10.0;
-        }
-
-        if (digits[count] >= 5) {
-            int at = count - 1;
+        char[] kept = new char[wanted];
+        for (int i = 0; i < wanted; i++) { kept[i] = (char)Sys.GetByte(fifteen, i); }
+        if (Sys.GetByte(fifteen, wanted) >= 53) {
+            int at = wanted - 1;
             while (at >= 0) {
-                digits[at] = digits[at] + 1;
-                if (digits[at] < 10) { break; }
-                digits[at] = 0;
+                if (kept[at] != '9') {
+                    kept[at] = (char)(kept[at] + 1);
+                    break;
+                }
+                kept[at] = '0';
                 at = at - 1;
             }
-            // Every digit carried, so the number rolled over to the next power
-            // of ten: 9.99 to two digits is 10, which is 1.0 one exponent up.
-            if (at < 0) {
-                digits[0] = 1;
-                e = e + 1;
+            if (at < 0) { return Compose(String.Concat("1", new string(kept)), point + 1, negative, places); }
+        }
+        return Compose(new string(kept), point, negative, places);
+    }
+
+    /// 0.DIGITS x 10^point written with `places` after the point, what the
+    /// digits do not reach being zeros.
+    static string Compose(string digits, int point, bool negative, int places) {
+        StringBuilder made = new StringBuilder();
+        if (negative) { made.Append('-'); }
+        if (point <= 0) {
+            made.Append('0');
+        } else {
+            for (int i = 0; i < point; i++) { made.Append(i < digits.Length ? (char)Sys.GetByte(digits, i) : '0'); }
+        }
+        if (places > 0) {
+            made.Append('.');
+            for (int i = 0; i < places; i++) {
+                int at = point + i;
+                made.Append(at >= 0 && at < digits.Length ? (char)Sys.GetByte(digits, at) : '0');
             }
         }
-
-        StringBuilder made = new StringBuilder();
-        for (int i = 0; i < count; i++) { made.Append((char)(48 + digits[i])); }
-
-        exponent = e;
         return made.ToString();
+    }
+
+    /// `count` significant digits of |x|, exactly rounded, and its decimal
+    /// exponent: x = d.ddd x 10^exponent.
+    private static string Significant(double x, int count, out int exponent) {
+        if (x == 0.0) {
+            exponent = 0;
+            return String.Repeat('0', count);
+        }
+        int point;
+        string digits = FloatDecimal.Digits(x, count, true, out point);
+        exponent = point - 1;
+        return digits;
     }
 
     private static string TrimZeros(string s) {
@@ -2157,17 +2219,9 @@ static class DoubleFormat {
         string? special = Special(value);
         if (special != null) { return special; }
 
-        bool negative = value < 0.0;
-        double x = negative ? -value : value;
-
-        if (x == 0.0) {
-            string zeros = places > 0 ? String.Concat(".", String.Repeat('0', places)) : "";
-            return String.Concat(negative ? "-0" : "0",
-                   String.Concat(zeros, String.Concat(String.FromByte((long)letter), "+000")));
-        }
-
+        bool negative = Negative(value);
         int exponent = 0;
-        string digits = Significant(x, places + 1, out exponent);
+        string digits = Significant(value, places + 1, out exponent);
 
         StringBuilder made = new StringBuilder();
         if (negative) { made.Append('-'); }
@@ -2184,59 +2238,93 @@ static class DoubleFormat {
         return made.ToString();
     }
 
-    /// The default shape, which is .NET's "G": plain digits while the exponent
-    /// is small enough to read, and scientific when it is not.
+    /// .NET's "G" with a precision: that many significant digits, exactly
+    /// rounded, trailing zeros dropped.
     public static string General(double value, int significant) {
         string? special = Special(value);
         if (special != null) { return special; }
-        if (value == 0.0) { return "0"; }
-
-        bool negative = value < 0.0;
-        double x = negative ? -value : value;
+        if (value == 0.0) { return Negative(value) ? "-0" : "0"; }
 
         int exponent = 0;
-        string digits = TrimZeros(Significant(x, significant, out exponent));
+        string digits = TrimZeros(Significant(value, significant, out exponent));
+        return Layout(digits, exponent + 1, Negative(value), significant);
+    }
 
-        // .NET's switch points for a double: below 1e-5 and at or above the
-        // precision itself, the exponent form is shorter and it uses it.
-        if (exponent < -5 || exponent >= significant) {
-            StringBuilder e = new StringBuilder();
-            if (negative) { e.Append('-'); }
-            e.Append((char)Sys.GetByte(digits, 0));
-            if (digits.Length > 1) {
-                e.Append('.');
-                e.Append(String.Substring(digits, 1, digits.Length - 1));
-            }
-            e.Append('E');
-            e.Append(exponent < 0 ? '-' : '+');
-            e.Append(String.PadLeft(String.FromInt(exponent < 0 ? -exponent : exponent), 2, '0'));
-            return e.ToString();
-        }
+    /// What ToString(), "G" and "R" answer since .NET Core 3.0: the shortest
+    /// digits that read back as the same double, written plainly unless the
+    /// point is further out than 17 digits (or the digits' own count).
+    public static string Shortest(double value) {
+        string? special = Special(value);
+        if (special != null) { return special; }
+        if (value == 0.0) { return Negative(value) ? "-0" : "0"; }
+        int point;
+        string digits = FloatDecimal.Shortest(value, out point);
+        return Layout(digits, point, Negative(value), digits.Length > 17 ? digits.Length : 17);
+    }
 
+    /// The same for a float, whose round trip is to a float: nine digits.
+    public static string ShortestSingle(float value) {
+        double wide = (double)value;
+        string? special = Special(wide);
+        if (special != null) { return special; }
+        if (wide == 0.0) { return Negative(wide) ? "-0" : "0"; }
+        int point;
+        string digits = FloatDecimal.ShortestSingle(value, out point);
+        return Layout(digits, point, Negative(wide), digits.Length > 9 ? digits.Length : 9);
+    }
+
+    /// 0.DIGITS x 10^point in .NET's general shape: plain digits while the
+    /// point is within `most` digits and not four places below the units,
+    /// d.dddE+xx otherwise.
+    static string Layout(string digits, int point, bool negative, int most) {
         StringBuilder made = new StringBuilder();
         if (negative) { made.Append('-'); }
 
-        if (exponent < 0) {
+        if (point > most || point < -3) {
+            int exponent = point - 1;
+            made.Append((char)Sys.GetByte(digits, 0));
+            if (digits.Length > 1) {
+                made.Append('.');
+                made.Append(String.Substring(digits, 1, digits.Length - 1));
+            }
+            made.Append('E');
+            made.Append(exponent < 0 ? '-' : '+');
+            made.Append(String.PadLeft(String.FromInt(exponent < 0 ? -exponent : exponent), 2, '0'));
+            return made.ToString();
+        }
+
+        if (point <= 0) {
             made.Append("0.");
-            made.Append(String.Repeat('0', -exponent - 1));
+            made.Append(String.Repeat('0', -point));
             made.Append(digits);
             return made.ToString();
         }
 
-        if (digits.Length <= exponent + 1) {
+        if (digits.Length <= point) {
             made.Append(digits);
-            made.Append(String.Repeat('0', exponent + 1 - digits.Length));
+            made.Append(String.Repeat('0', point - digits.Length));
             return made.ToString();
         }
 
-        made.Append(String.Substring(digits, 0, exponent + 1));
+        made.Append(String.Substring(digits, 0, point));
         made.Append('.');
-        made.Append(String.Substring(digits, exponent + 1, digits.Length - exponent - 1));
+        made.Append(String.Substring(digits, point, digits.Length - point));
         return made.ToString();
     }
 
+    /// A float's standard format: the shortest float digits for "", "G",
+    /// "G0" and "R", and the double's exact answer -- the same value -- for
+    /// the rest.
+    public static string OfSingle(float value, string format) {
+        if (format.Length == 0 || format == "G" || format == "g" || format == "G0" || format == "g0"
+            || format == "R" || format == "r") {
+            return ShortestSingle(value);
+        }
+        return Of((double)value, format);
+    }
+
     public static string Of(double value, string format) {
-        if (format.Length == 0) { return General(value, 15); }
+        if (format.Length == 0) { return Shortest(value); }
         if (PictureFormat.Is(format)) { return PictureFormat.Of(value, format); }
 
         char kind = (char)Sys.GetByte(format, 0);
@@ -2253,8 +2341,8 @@ static class DoubleFormat {
         if (kind == 'f' || kind == 'F') { return Fixed(value, width < 0 ? 2 : width); }
         if (kind == 'e') { return Scientific(value, width < 0 ? 6 : width, 'e'); }
         if (kind == 'E') { return Scientific(value, width < 0 ? 6 : width, 'E'); }
-        if (kind == 'g' || kind == 'G') { return General(value, width <= 0 ? 15 : width); }
-        if (kind == 'r' || kind == 'R') { return General(value, 17); }
+        if (kind == 'g' || kind == 'G') { return width <= 0 ? Shortest(value) : General(value, width); }
+        if (kind == 'r' || kind == 'R') { return Shortest(value); }
         if (kind == 'n' || kind == 'N') {
             string body = Fixed(value, width < 0 ? 2 : width);
             bool negative = Sys.GetByte(body, 0) == 45;
@@ -2274,6 +2362,568 @@ static class DoubleFormat {
             return grouped.ToString();
         }
         throw new FormatException(format);
+    }
+}
+
+// ---- binary floating point to decimal and back, exactly -------------------
+//
+// .NET Core 3.0 made double and float formatting and parsing IEEE-correct:
+// ToString() answers the SHORTEST digits that read back to the same value,
+// "G17", "F2" and "E6" round the value's exact decimal expansion, and Parse
+// rounds what it reads to the nearest value, ties to even. Both directions
+// are done here with exact integer arithmetic, an exact tie always going to
+// the even digit, on the value as f x 2^e:
+// Burger and Dybvig's free-format algorithm for the shortest digits, the
+// same scaling with a fixed count for the rest, and a quotient of two exact
+// integers rounded once for parsing.
+
+/// A nonnegative integer of any size: 32-bit limbs, least significant
+/// first, `count` of them in use. Only what FloatDecimal needs.
+sealed class FloatBig {
+    long[] limbs;
+    int count;
+
+    public FloatBig(long value) {
+        limbs = new long[8];
+        count = 0;
+        while (value != 0) {
+            Push(value & 0xFFFFFFFFL);
+            value = value >> 32;
+        }
+    }
+
+    FloatBig(long[] with, int used) {
+        limbs = with;
+        count = used;
+    }
+
+    public FloatBig Copy() {
+        long[] made = new long[limbs.Length];
+        for (int i = 0; i < count; i++) { made[i] = limbs[i]; }
+        return new FloatBig(made, count);
+    }
+
+    public bool IsZero => count == 0;
+
+    void Push(long limb) {
+        if (count == limbs.Length) {
+            long[] grown = new long[limbs.Length * 2];
+            for (int i = 0; i < count; i++) { grown[i] = limbs[i]; }
+            limbs = grown;
+        }
+        limbs[count] = limb;
+        count = count + 1;
+    }
+
+    void Trim() {
+        while (count > 0 && limbs[count - 1] == 0) { count = count - 1; }
+    }
+
+    /// this *= m, for 0 <= m < 2^31.
+    public void MulSmall(long m) {
+        long carry = 0;
+        for (int i = 0; i < count; i++) {
+            long t = limbs[i] * m + carry;
+            limbs[i] = t & 0xFFFFFFFFL;
+            carry = t >> 32;
+        }
+        if (carry != 0) { Push(carry); }
+        if (m == 0) { count = 0; }
+    }
+
+    /// this += a, for 0 <= a < 2^31.
+    public void AddSmall(long a) {
+        long carry = a;
+        for (int i = 0; i < count && carry != 0; i++) {
+            long t = limbs[i] + carry;
+            limbs[i] = t & 0xFFFFFFFFL;
+            carry = t >> 32;
+        }
+        if (carry != 0) { Push(carry); }
+    }
+
+    public void MulPow10(int n) {
+        while (n >= 9) {
+            MulSmall(1000000000);
+            n = n - 9;
+        }
+        long p = 1;
+        while (n > 0) {
+            p = p * 10;
+            n = n - 1;
+        }
+        if (p != 1) { MulSmall(p); }
+    }
+
+    public void ShiftLeft(int bits) {
+        if (count == 0 || bits == 0) { return; }
+        int whole = bits / 32;
+        int part = bits % 32;
+        long[] made = new long[count + whole + 2];
+        for (int i = 0; i < count; i++) {
+            long v = limbs[i] << part;
+            made[i + whole] = made[i + whole] | (v & 0xFFFFFFFFL);
+            made[i + whole + 1] = made[i + whole + 1] | ((v >> 32) & 0xFFFFFFFFL);
+        }
+        limbs = made;
+        count = count + whole + 2;
+        Trim();
+    }
+
+    public int BitLength() {
+        if (count == 0) { return 0; }
+        long top = limbs[count - 1];
+        int bits = 0;
+        while (top != 0) {
+            bits = bits + 1;
+            top = top >> 1;
+        }
+        return (count - 1) * 32 + bits;
+    }
+
+    public bool Bit(int n) {
+        if (n < 0) { return false; }
+        int word = n / 32;
+        if (word >= count) { return false; }
+        return ((limbs[word] >> (n % 32)) & 1) != 0;
+    }
+
+    /// Whether any of bits [0, n) is set.
+    public bool AnyBelow(int n) {
+        int words = n / 32;
+        for (int i = 0; i < words && i < count; i++) {
+            if (limbs[i] != 0) { return true; }
+        }
+        if (words < count && n % 32 != 0) {
+            return (limbs[words] & ((1L << (n % 32)) - 1)) != 0;
+        }
+        return false;
+    }
+
+    /// Bits [from, from + take) as a number, take <= 62.
+    public long Bits(int from, int take) {
+        long made = 0;
+        for (int b = take - 1; b >= 0; b--) {
+            made = (made << 1) | (Bit(from + b) ? 1L : 0L);
+        }
+        return made;
+    }
+
+    public static int Compare(FloatBig a, FloatBig b) {
+        if (a.count != b.count) { return a.count < b.count ? -1 : 1; }
+        for (int i = a.count - 1; i >= 0; i--) {
+            if (a.limbs[i] != b.limbs[i]) { return a.limbs[i] < b.limbs[i] ? -1 : 1; }
+        }
+        return 0;
+    }
+
+    /// this += b.
+    public void Add(FloatBig b) {
+        long carry = 0;
+        int i = 0;
+        while (i < b.count || carry != 0) {
+            if (i == count) { Push(0); }
+            long t = limbs[i] + (i < b.count ? b.limbs[i] : 0) + carry;
+            limbs[i] = t & 0xFFFFFFFFL;
+            carry = t >> 32;
+            i = i + 1;
+        }
+    }
+
+    /// this -= b, for b <= this.
+    public void Subtract(FloatBig b) {
+        long borrow = 0;
+        for (int i = 0; i < count; i++) {
+            long t = limbs[i] - (i < b.count ? b.limbs[i] : 0) - borrow;
+            borrow = t < 0 ? 1 : 0;
+            limbs[i] = t & 0xFFFFFFFFL;
+        }
+        Trim();
+    }
+
+    public static FloatBig Sum(FloatBig a, FloatBig b) {
+        FloatBig made = a.Copy();
+        made.Add(b);
+        return made;
+    }
+
+    /// this = this * 10 mod s, answering the quotient, which is below 10
+    /// while this is below s.
+    public int NextDigit(FloatBig s) {
+        MulSmall(10);
+        int d = 0;
+        while (Compare(this, s) >= 0) {
+            Subtract(s);
+            d = d + 1;
+        }
+        return d;
+    }
+}
+
+static class FloatDecimal {
+    /// A double as f x 2^e, and whether the gap below it is half the gap
+    /// above (the smallest mantissa of an exponent that is not the least).
+    static long Parts(double value, out int e, out bool unequal) {
+        long bits = BitConverter.DoubleToInt64Bits(value) & 0x7FFFFFFFFFFFFFFFL;
+        int biased = (int)(bits >> 52);
+        long fraction = bits & 0xFFFFFFFFFFFFFL;
+        unequal = fraction == 0 && biased > 1;
+        if (biased == 0) {
+            e = -1074;
+            return fraction;
+        }
+        e = biased - 1075;
+        return fraction | 0x10000000000000L;
+    }
+
+    static long SingleParts(float value, out int e, out bool unequal) {
+        int bits = BitConverter.SingleToInt32Bits(value) & 0x7FFFFFFF;
+        int biased = bits >> 23;
+        long fraction = bits & 0x7FFFFF;
+        unequal = fraction == 0 && biased > 1;
+        if (biased == 0) {
+            e = -149;
+            return fraction;
+        }
+        e = biased - 150;
+        return fraction | 0x800000L;
+    }
+
+    static FloatBig Pow2(int n) {
+        FloatBig made = new FloatBig(1);
+        made.ShiftLeft(n);
+        return made;
+    }
+
+    /// k with 10^(k-1) <= f x 2^e < 10^k, give or take one: the scaling loops
+    /// settle it exactly.
+    static int Estimate(long f, int e) {
+        int bits = 0;
+        long top = f;
+        while (top != 0) {
+            bits = bits + 1;
+            top = top >> 1;
+        }
+        double log = (double)(e + bits - 1) * 0.30102999566398114;
+        int k = (int)log;
+        if ((double)k < log) { k = k + 1; }
+        return k;
+    }
+
+    /// The shortest digits that read back as |value|, and `point`, the power
+    /// of ten they are the fraction of: value = 0.DIGITS x 10^point.
+    public static string Shortest(double value, out int point) {
+        int e;
+        bool unequal;
+        long f = Parts(value, out e, out unequal);
+        return Free(f, e, unequal, out point);
+    }
+
+    public static string ShortestSingle(float value, out int point) {
+        int e;
+        bool unequal;
+        long f = SingleParts(value, out e, out unequal);
+        return Free(f, e, unequal, out point);
+    }
+
+    static string Free(long f, int e, bool unequal, out int point) {
+        bool even = (f & 1) == 0;
+        FloatBig r, s, up, down;
+        if (e >= 0) {
+            FloatBig be = Pow2(e);
+            if (!unequal) {
+                r = new FloatBig(f);
+                r.ShiftLeft(e + 1);
+                s = new FloatBig(2);
+                up = be;
+                down = be.Copy();
+            } else {
+                r = new FloatBig(f);
+                r.ShiftLeft(e + 2);
+                s = new FloatBig(4);
+                up = Pow2(e + 1);
+                down = be;
+            }
+        } else {
+            if (!unequal) {
+                r = new FloatBig(f);
+                r.ShiftLeft(1);
+                s = Pow2(1 - e);
+                up = new FloatBig(1);
+                down = new FloatBig(1);
+            } else {
+                r = new FloatBig(f);
+                r.ShiftLeft(2);
+                s = Pow2(2 - e);
+                up = new FloatBig(2);
+                down = new FloatBig(1);
+            }
+        }
+
+        int k = Estimate(f, e);
+        if (k >= 0) {
+            s.MulPow10(k);
+        } else {
+            r.MulPow10(-k);
+            up.MulPow10(-k);
+            down.MulPow10(-k);
+        }
+
+        // Settle k: the high end of the interval must be below 1 (or at
+        // it, exclusive), and at least a tenth.
+        while (true) {
+            int c = FloatBig.Compare(FloatBig.Sum(r, up), s);
+            if (even ? c >= 0 : c > 0) {
+                s.MulSmall(10);
+                k = k + 1;
+                continue;
+            }
+            FloatBig tenth = FloatBig.Sum(r, up);
+            tenth.MulSmall(10);
+            int t = FloatBig.Compare(tenth, s);
+            if (even ? t < 0 : t <= 0) {
+                r.MulSmall(10);
+                up.MulSmall(10);
+                down.MulSmall(10);
+                k = k - 1;
+                continue;
+            }
+            break;
+        }
+
+        StringBuilder digits = new StringBuilder();
+        while (true) {
+            int d = r.NextDigit(s);
+            up.MulSmall(10);
+            down.MulSmall(10);
+            int low = FloatBig.Compare(r, down);
+            int high = FloatBig.Compare(FloatBig.Sum(r, up), s);
+            bool tc1 = even ? low <= 0 : low < 0;
+            bool tc2 = even ? high >= 0 : high > 0;
+            if (!tc1 && !tc2) {
+                digits.Append((char)(48 + d));
+                continue;
+            }
+            if (tc1 && tc2) {
+                // Both digits read back: the nearer, and on a tie the even.
+                FloatBig twice = r.Copy();
+                twice.MulSmall(2);
+                int c = FloatBig.Compare(twice, s);
+                if (c > 0 || (c == 0 && (d & 1) != 0)) { d = d + 1; }
+            } else if (tc2) {
+                d = d + 1;
+            }
+            digits.Append((char)(48 + d));
+            break;
+        }
+        point = k;
+        return digits.ToString();
+    }
+
+    /// |value|'s exact decimal expansion rounded to `count` significant
+    /// digits, an exact tie to the even digit as .NET does, and its point: value = 0.DIGITS x 10^point.
+    /// With `round` false, the first `count` digits as they are.
+    public static string Digits(double value, int count, bool round, out int point) {
+        int e;
+        bool unequal;
+        long f = Parts(value, out e, out unequal);
+        FloatBig r = new FloatBig(f);
+        FloatBig s = new FloatBig(1);
+        if (e >= 0) { r.ShiftLeft(e); } else { s.ShiftLeft(-e); }
+
+        int k = Estimate(f, e);
+        if (k >= 0) { s.MulPow10(k); } else { r.MulPow10(-k); }
+        while (FloatBig.Compare(r, s) >= 0) {
+            s.MulSmall(10);
+            k = k + 1;
+        }
+        while (true) {
+            FloatBig tenfold = r.Copy();
+            tenfold.MulSmall(10);
+            if (FloatBig.Compare(tenfold, s) >= 0) { break; }
+            r = tenfold;
+            k = k - 1;
+        }
+
+        char[] made = new char[count];
+        for (int i = 0; i < count; i++) { made[i] = (char)(48 + r.NextDigit(s)); }
+
+        if (round) {
+            FloatBig twice = r.Copy();
+            twice.MulSmall(2);
+            int c = FloatBig.Compare(twice, s);
+            // No digits asked for: it is one unit of the next place or none.
+            if (count == 0) {
+                point = k + 1;
+                return c > 0 ? "1" : "";
+            }
+            if (c > 0 || (c == 0 && ((made[count - 1] - '0') & 1) != 0)) {
+                int at = count - 1;
+                while (at >= 0) {
+                    if (made[at] != '9') {
+                        made[at] = (char)(made[at] + 1);
+                        break;
+                    }
+                    made[at] = '0';
+                    at = at - 1;
+                }
+                if (at < 0) {
+                    made[0] = '1';
+                    k = k + 1;
+                }
+            }
+        }
+        point = k;
+        return new string(made);
+    }
+
+    /// The nearest double to DIGITS x 10^exponent (DIGITS an integer), ties to
+    /// even; infinity past the largest.
+    public static double ToDouble(FloatBig digits, int exponent) {
+        return BitConverter.Int64BitsToDouble(Nearest(digits, exponent, 53, -1022, 1023));
+    }
+
+    public static float ToSingle(FloatBig digits, int exponent) {
+        return BitConverter.Int32BitsToSingle((int)Nearest(digits, exponent, 24, -126, 127));
+    }
+
+    /// The bits of the nearest value of a binary format with `precision`
+    /// mantissa bits (the hidden one included) and exponents [minExp, maxExp].
+    static long Nearest(FloatBig digits, int exponent, int precision, int minExp, int maxExp) {
+        long infinity = (long)(maxExp + maxExp + 1) << (precision - 1);
+        if (digits.IsZero) { return 0; }
+        int length = digits.BitLength();
+        // Far outside the range, in either direction, before any big power
+        // of ten is made.
+        int decimalDigits = (int)((double)length * 0.30102999566398114) + 1;
+        if (exponent + decimalDigits > 330 + precision / 8) { return infinity; }
+        if (exponent + decimalDigits < -360) { return 0; }
+
+        FloatBig m;
+        int e2;
+        bool sticky = false;
+        if (exponent >= 0) {
+            m = digits.Copy();
+            m.MulPow10(exponent);
+            e2 = 0;
+        } else {
+            // m = digits / 10^-exponent, with enough bits that one rounding
+            // is exact: the remainder only says whether anything is left.
+            FloatBig divisor = new FloatBig(1);
+            divisor.MulPow10(-exponent);
+            // Enough bits in the quotient for one exact rounding, and no more
+            // than a long holds: the dividend is shifted up, or the divisor
+            // is, whichever makes the quotient about precision + 3 bits.
+            int shift = precision + 3 + divisor.BitLength() - length;
+            FloatBig rest = digits.Copy();
+            if (shift >= 0) { rest.ShiftLeft(shift); } else { divisor.ShiftLeft(-shift); }
+            int qbits = rest.BitLength() - divisor.BitLength() + 1;
+            long q = 0;
+            for (int i = qbits; i >= 0; i--) {
+                FloatBig part = divisor.Copy();
+                part.ShiftLeft(i);
+                if (FloatBig.Compare(part, rest) <= 0) {
+                    rest.Subtract(part);
+                    q = q | (1L << i);
+                }
+            }
+            sticky = !rest.IsZero;
+            m = new FloatBig(q);
+            e2 = -shift;
+        }
+
+        length = m.BitLength();
+        int top = length - 1 + e2;
+        if (top > maxExp) { return infinity; }
+        int keep = precision;
+        if (top < minExp) { keep = precision - (minExp - top); }
+        int drop = length - keep;
+        long mantissa;
+        if (drop <= 0) {
+            mantissa = m.Bits(0, length) << (-drop);
+        } else {
+            mantissa = keep > 0 ? m.Bits(drop, keep) : 0;
+            bool half = m.Bit(drop - 1);
+            bool below = sticky || m.AnyBelow(drop - 1);
+            if (half && (below || (mantissa & 1) != 0)) { mantissa = mantissa + 1; }
+        }
+        int scale = e2 + drop;
+        if (mantissa == (1L << precision)) {
+            mantissa = mantissa >> 1;
+            scale = scale + 1;
+        }
+        if (mantissa >= (1L << (precision - 1))) {
+            long biased = scale + (precision - 1) + maxExp;
+            if (biased >= maxExp + maxExp + 1) { return infinity; }
+            return (biased << (precision - 1)) | (mantissa & ((1L << (precision - 1)) - 1));
+        }
+        return mantissa;
+    }
+
+    /// Reads a real number as .NET's Float style does: white space around it,
+    /// a sign, digits with an optional point, an optional exponent, or
+    /// Infinity, -Infinity, the infinity sign and NaN. False if it is none.
+    public static bool TryRead(string s, out FloatBig digits, out int exponent, out bool negative, out int special) {
+        digits = new FloatBig(0);
+        exponent = 0;
+        negative = false;
+        special = 0;
+        int at = 0;
+        int end = s.Length;
+        while (at < end && Char.IsWhiteSpace(s[at])) { at = at + 1; }
+        while (end > at && Char.IsWhiteSpace(s[end - 1])) { end = end - 1; }
+        if (at < end && (s[at] == '-' || s[at] == '+')) {
+            negative = s[at] == '-';
+            at = at + 1;
+        }
+        string rest = s.Substring(at, end - at);
+        if (rest == "Infinity" || rest == "∞") {
+            special = 1;
+            return true;
+        }
+        if (rest == "NaN") {
+            special = 2;
+            return true;
+        }
+
+        bool any = false;
+        // The integer part may carry group separators, as .NET's default
+        // style for Parse (Float | AllowThousands) allows.
+        while (at < end && ((s[at] >= '0' && s[at] <= '9') || (any && s[at] == ','))) {
+            if (s[at] != ',') {
+                digits.MulSmall(10);
+                digits.AddSmall(s[at] - '0');
+                any = true;
+            }
+            at = at + 1;
+        }
+        if (at < end && s[at] == '.') {
+            at = at + 1;
+            while (at < end && s[at] >= '0' && s[at] <= '9') {
+                digits.MulSmall(10);
+                digits.AddSmall(s[at] - '0');
+                exponent = exponent - 1;
+                at = at + 1;
+                any = true;
+            }
+        }
+        if (!any) { return false; }
+        if (at < end && (s[at] == 'e' || s[at] == 'E')) {
+            at = at + 1;
+            bool down = false;
+            if (at < end && (s[at] == '-' || s[at] == '+')) {
+                down = s[at] == '-';
+                at = at + 1;
+            }
+            if (at >= end || s[at] < '0' || s[at] > '9') { return false; }
+            long power = 0;
+            while (at < end && s[at] >= '0' && s[at] <= '9') {
+                if (power < 100000000) { power = power * 10 + (s[at] - '0'); }
+                at = at + 1;
+            }
+            exponent = exponent + (int)(down ? -power : power);
+        }
+        return at == end;
     }
 }
 
@@ -2322,7 +2972,7 @@ static class PictureFormat {
         for (int i = 0; i < scale; i++) { size = size / 1000.0; }
 
         int places = Decimals(picture);
-        string body = DoubleFormat.Fixed(size, places);
+        string body = DoubleFormat.FixedCustom(size, places);
         int point = String.IndexOf(body, '.');
 
         string whole = point < 0 ? body : String.Substring(body, 0, point);
@@ -2729,6 +3379,12 @@ static class NumberParse {
 // and because the range check belongs to the TYPE rather than to the caller.
 
 static class SByte {
+    public static int CompareTo(sbyte value, sbyte other) { return value < other ? -1 : value > other ? 1 : 0; }
+    public static int CompareTo(sbyte value, object? other) {
+        if (other == null) return 1;
+        if (other is sbyte number) return CompareTo(value, number);
+        throw new ArgumentException("object must be an SByte");
+    }
     public static sbyte MaxValue => sbyte.MaxValue;
     public static sbyte MinValue => sbyte.MinValue;
 
@@ -2751,6 +3407,12 @@ static class SByte {
 }
 
 static class Int16 {
+    public static int CompareTo(short value, short other) { return value < other ? -1 : value > other ? 1 : 0; }
+    public static int CompareTo(short value, object? other) {
+        if (other == null) return 1;
+        if (other is short number) return CompareTo(value, number);
+        throw new ArgumentException("object must be an Int16");
+    }
     public static short MaxValue => short.MaxValue;
     public static short MinValue => short.MinValue;
 
@@ -2773,6 +3435,12 @@ static class Int16 {
 }
 
 static class UInt16 {
+    public static int CompareTo(ushort value, ushort other) { return value < other ? -1 : value > other ? 1 : 0; }
+    public static int CompareTo(ushort value, object? other) {
+        if (other == null) return 1;
+        if (other is ushort number) return CompareTo(value, number);
+        throw new ArgumentException("object must be an UInt16");
+    }
     public static ushort MaxValue => ushort.MaxValue;
     public static ushort MinValue => 0;
 
@@ -2795,6 +3463,12 @@ static class UInt16 {
 }
 
 static class UInt32 {
+    public static int CompareTo(uint value, uint other) { return value < other ? -1 : value > other ? 1 : 0; }
+    public static int CompareTo(uint value, object? other) {
+        if (other == null) return 1;
+        if (other is uint number) return CompareTo(value, number);
+        throw new ArgumentException("object must be an UInt32");
+    }
     public static uint MaxValue => uint.MaxValue;
     public static uint MinValue => 0;
 
@@ -2933,6 +3607,12 @@ static class Int64 {
 }
 
 static class Int32 {
+    public static int CompareTo(int value, int other) { return value < other ? -1 : value > other ? 1 : 0; }
+    public static int CompareTo(int value, object? other) {
+        if (other == null) return 1;
+        if (other is int number) return CompareTo(value, number);
+        throw new ArgumentException("object must be an Int32");
+    }
     public static int MaxValue => int.MaxValue;
     public static int MinValue => int.MinValue;
 
@@ -3083,6 +3763,12 @@ static class UInt64 {
 }
 
 static class Byte {
+    public static int CompareTo(byte value, byte other) { return value < other ? -1 : value > other ? 1 : 0; }
+    public static int CompareTo(byte value, object? other) {
+        if (other == null) return 1;
+        if (other is byte number) return CompareTo(value, number);
+        throw new ArgumentException("object must be an Byte");
+    }
     public static byte MaxValue => byte.MaxValue;
     public static byte MinValue => 0;
 
@@ -3117,60 +3803,44 @@ static class Byte {
 }
 
 static class Double {
+    public const double NaN = (double)0.0 / (double)0.0;
+    public const double PositiveInfinity = (double)1.0 / (double)0.0;
+    public const double NegativeInfinity = (double)(-1.0) / (double)0.0;
+    public const double Epsilon = 4.9406564584124654E-324;
+    public const double MaxValue = 1.7976931348623157E+308;
+    public const double MinValue = -1.7976931348623157E+308;
+    /// NaN is below every number and equal to itself, as .NET orders it.
+    public static int CompareTo(double value, double other) {
+        if (value < other) return -1;
+        if (value > other) return 1;
+        if (value == other) return 0;
+        bool a = value != value, b = other != other;
+        return a ? (b ? 0 : -1) : 1;
+    }
+    public static int CompareTo(double value, object? other) {
+        if (other == null) return 1;
+        if (other is double number) return CompareTo(value, number);
+        throw new ArgumentException("object must be an Double");
+    }
+    /// The nearest double to what `s` says, ties to even, as .NET reads it
+    /// (FloatDecimal.TryRead): past the largest is infinity, below the
+    /// smallest is zero.
     public static double Parse(string s, IFormatProvider? provider) {
-        if (s.Length == 0) { throw new FormatException("empty real number"); }
+        if (s == null) { throw new ArgumentNullException(nameof(s)); }
+        double value;
+        if (!Read(s, out value)) { throw new FormatException("The input string '" + s + "' was not in a correct format."); }
+        return value;
+    }
 
-        int at = 0;
-        bool negative = false;
-        if (s[at] == '-' || s[at] == '+') {
-            negative = s[at] == '-';
-            at = at + 1;
-        }
-
-        double value = 0.0;
-        bool digit = false;
-        while (at < s.Length && s[at] >= '0' && s[at] <= '9') {
-            value = value * 10.0 + (double)(s[at] - '0');
-            at = at + 1;
-            digit = true;
-        }
-
-        if (at < s.Length && s[at] == '.') {
-            at = at + 1;
-            double place = 0.1;
-            while (at < s.Length && s[at] >= '0' && s[at] <= '9') {
-                value = value + (double)(s[at] - '0') * place;
-                place = place * 0.1;
-                at = at + 1;
-                digit = true;
-            }
-        }
-
-        if (!digit) { throw new FormatException("invalid real number"); }
-
-        if (at < s.Length && (s[at] == 'e' || s[at] == 'E')) {
-            at = at + 1;
-            bool down = false;
-            if (at < s.Length && (s[at] == '-' || s[at] == '+')) {
-                down = s[at] == '-';
-                at = at + 1;
-            }
-            if (at >= s.Length || s[at] < '0' || s[at] > '9') {
-                throw new FormatException("invalid real exponent");
-            }
-            int power = 0;
-            while (at < s.Length && s[at] >= '0' && s[at] <= '9') {
-                power = power * 10 + (s[at] - '0');
-                at = at + 1;
-            }
-            while (power > 0) {
-                value = down ? value / 10.0 : value * 10.0;
-                power = power - 1;
-            }
-        }
-
-        if (at != s.Length) { throw new FormatException("invalid real number"); }
-        return negative ? 0.0 - value : value;
+    static bool Read(string s, out double value) {
+        FloatBig digits;
+        int exponent, special;
+        bool negative;
+        value = 0.0;
+        if (!FloatDecimal.TryRead(s, out digits, out exponent, out negative, out special)) { return false; }
+        double magnitude = special == 1 ? 1.0 / 0.0 : special == 2 ? 0.0 / 0.0 : FloatDecimal.ToDouble(digits, exponent);
+        value = negative ? -magnitude : magnitude;
+        return true;
     }
 
     public static double Parse(string s) { return Parse(s, CultureInfo.InvariantCulture); }
@@ -3179,14 +3849,11 @@ static class Double {
     // meaningful when it answered true. The parse above reports its refusals
     // by throwing, so this is where that becomes an answer.
     public static bool TryParse(string s, out double value) {
-        value = 0.0;
-        try {
-            value = Parse(s, CultureInfo.InvariantCulture);
-            return true;
-        } catch (FormatException) {
+        if (s == null) {
             value = 0.0;
             return false;
         }
+        return Read(s, out value);
     }
 
     public static bool TryParse(string s, NumberStyles style, IFormatProvider? provider, out double value) {
@@ -3224,20 +3891,59 @@ static class Double {
 /// Framework's float.ToString() was, so 0.1f prints 0.1 and not the double
 /// it widens to.
 static class Single {
-    public static float Parse(string s) { return (float)Double.Parse(s); }
-    public static float Parse(string s, IFormatProvider? provider) { return (float)Double.Parse(s, provider); }
+    public const float NaN = (float)0.0 / (float)0.0;
+    public const float PositiveInfinity = (float)1.0 / (float)0.0;
+    public const float NegativeInfinity = (float)(-1.0) / (float)0.0;
+    public const float Epsilon = 1.401298E-45F;
+    public const float MaxValue = 3.40282347E+38F;
+    public const float MinValue = -3.40282347E+38F;
+    /// NaN is below every number and equal to itself, as .NET orders it.
+    public static int CompareTo(float value, float other) {
+        if (value < other) return -1;
+        if (value > other) return 1;
+        if (value == other) return 0;
+        bool a = value != value, b = other != other;
+        return a ? (b ? 0 : -1) : 1;
+    }
+    public static int CompareTo(float value, object? other) {
+        if (other == null) return 1;
+        if (other is float number) return CompareTo(value, number);
+        throw new ArgumentException("object must be an Single");
+    }
+    public static float Parse(string s) { return Parse(s, null); }
 
-    public static bool TryParse(string s, out float value) {
-        double wide;
-        bool ok = Double.TryParse(s, out wide);
-        value = (float)wide;
-        return ok;
+    /// The nearest float to what `s` says, rounded once -- not through a
+    /// double, which would round twice.
+    public static float Parse(string s, IFormatProvider? provider) {
+        if (s == null) { throw new ArgumentNullException(nameof(s)); }
+        float value;
+        if (!Read(s, out value)) { throw new FormatException("The input string '" + s + "' was not in a correct format."); }
+        return value;
     }
 
-    public static string ToString(this float value) { return DoubleFormat.General(value, 7); }
-    public static string ToString(this float value, IFormatProvider? provider) { return DoubleFormat.General(value, 7); }
-    public static string ToString(this float value, string format) { return DoubleFormat.Of(value, format); }
-    public static string ToString(this float value, string format, IFormatProvider? provider) { return DoubleFormat.Of(value, format); }
+    public static bool TryParse(string s, out float value) {
+        if (s == null) {
+            value = 0.0F;
+            return false;
+        }
+        return Read(s, out value);
+    }
+
+    static bool Read(string s, out float value) {
+        FloatBig digits;
+        int exponent, special;
+        bool negative;
+        value = 0.0F;
+        if (!FloatDecimal.TryRead(s, out digits, out exponent, out negative, out special)) { return false; }
+        float magnitude = special == 1 ? PositiveInfinity : special == 2 ? NaN : FloatDecimal.ToSingle(digits, exponent);
+        value = negative ? -magnitude : magnitude;
+        return true;
+    }
+
+    public static string ToString(this float value) { return DoubleFormat.ShortestSingle(value); }
+    public static string ToString(this float value, IFormatProvider? provider) { return DoubleFormat.ShortestSingle(value); }
+    public static string ToString(this float value, string format) { return DoubleFormat.OfSingle(value, format); }
+    public static string ToString(this float value, string format, IFormatProvider? provider) { return DoubleFormat.OfSingle(value, format); }
 
     public static bool IsNaN(float value) { return value != value; }
     public static bool IsInfinity(float value) { return DoubleFormat.IsInfinity(value); }
@@ -4189,6 +4895,41 @@ class ListEnumerator<T> : IEnumerator<T> {
     public bool MoveNext() {
         at = at + 1;
         return at < over.Count;
+    }
+}
+
+/// What a collection expression with a spread becomes. `[a, ..rest, b]` is
+/// written by the compiler as a chain of these over the collection being
+/// built -- a List (Gather, Add, AddRange) for an array or an interface
+/// target, the target itself (Element, Spread) for a class with an Add -- one
+/// link per element, in the order written, as C# evaluates them.
+static class CollectionExpressionBuilder {
+    public static List<T> Gather<T>() {
+        return new List<T>();
+    }
+
+    public static List<T> Add<T>(List<T> into, T item) {
+        into.Add(item);
+        return into;
+    }
+
+    public static List<T> AddRange<T>(List<T> into, IEnumerable<T> items) {
+        foreach (T item in items) {
+            into.Add(item);
+        }
+        return into;
+    }
+
+    public static C Element<C, T>(C into, T item) {
+        into.Add(item);
+        return into;
+    }
+
+    public static C Spread<C, T>(C into, IEnumerable<T> items) {
+        foreach (T item in items) {
+            into.Add(item);
+        }
+        return into;
     }
 }
 
@@ -5575,37 +6316,66 @@ static class Enumerable {
         return made;
     }
 
-    public static List<T> OrderBy<T, K>(this IEnumerable<T> source, Func<T, K> key) {
+    /// The elements in the order `by` says, stably: equal keys keep the
+    /// order they came in, as .NET's OrderBy does.
+    private static OrderedList<T> Ordered<T>(IEnumerable<T> source, IComparer<T> by) {
         T[] made = source.ToArray();
-        Sorting.Sort<T>(made, 0, made.Length, new KeyComparer<T, K>(key, false));
-        return Listed(made);
+        Sorting.Sort<T>(made, 0, made.Length, by);
+        return new OrderedList<T>(made, by);
+    }
+
+    public static OrderedList<T> OrderBy<T, K>(this IEnumerable<T> source, Func<T, K> key) {
+        return Ordered(source, new KeyComparer<T, K>(key, false));
     }
 
     /// THE ORDER A COMPARER SAYS, which is .NET's second overload and the one
     /// a program reaches for when the key's own ordering is not the question:
     /// `names.OrderBy(n => n, StringComparer.Ordinal)`.
-    public static List<T> OrderBy<T, K>(this IEnumerable<T> source, Func<T, K> key, IComparer<K> comparer) {
-        T[] made = source.ToArray();
-        Sorting.Sort<T>(made, 0, made.Length, new KeyComparer<T, K>(key, false, comparer));
-        return Listed(made);
+    public static OrderedList<T> OrderBy<T, K>(this IEnumerable<T> source, Func<T, K> key, IComparer<K> comparer) {
+        return Ordered(source, new KeyComparer<T, K>(key, false, comparer));
     }
 
-    public static List<T> OrderByDescending<T, K>(this IEnumerable<T> source, Func<T, K> key, IComparer<K> comparer) {
-        T[] made = source.ToArray();
-        Sorting.Sort<T>(made, 0, made.Length, new KeyComparer<T, K>(key, true, comparer));
-        return Listed(made);
+    public static OrderedList<T> OrderByDescending<T, K>(this IEnumerable<T> source, Func<T, K> key, IComparer<K> comparer) {
+        return Ordered(source, new KeyComparer<T, K>(key, true, comparer));
     }
 
-    public static List<T> OrderByDescending<T, K>(this IEnumerable<T> source, Func<T, K> key) {
-        T[] made = source.ToArray();
-        Sorting.Sort<T>(made, 0, made.Length, new KeyComparer<T, K>(key, true));
-        return Listed(made);
+    public static OrderedList<T> OrderByDescending<T, K>(this IEnumerable<T> source, Func<T, K> key) {
+        return Ordered(source, new KeyComparer<T, K>(key, true));
     }
 
-    public static List<T> Order<T>(this IEnumerable<T> source) {
-        T[] made = source.ToArray();
-        Sorting.Sort<T>(made, 0, made.Length, new DefaultComparer<T>());
-        return Listed(made);
+    public static OrderedList<T> Order<T>(this IEnumerable<T> source) {
+        return Ordered(source, new DefaultComparer<T>());
+    }
+
+    public static OrderedList<T> OrderDescending<T>(this IEnumerable<T> source) {
+        return Ordered(source, new ReverseComparer<T>(new DefaultComparer<T>()));
+    }
+
+    /// THE NEXT KEY, among elements the order so far calls equal: the
+    /// order's comparer and this key's, one after the other, over the same
+    /// elements again -- stably, so what was ordered stays ordered.
+    public static OrderedList<T> ThenBy<T, K>(this IOrderedEnumerable<T> source, Func<T, K> key) {
+        return Then(source, new KeyComparer<T, K>(key, false));
+    }
+
+    public static OrderedList<T> ThenBy<T, K>(this IOrderedEnumerable<T> source, Func<T, K> key, IComparer<K> comparer) {
+        return Then(source, new KeyComparer<T, K>(key, false, comparer));
+    }
+
+    public static OrderedList<T> ThenByDescending<T, K>(this IOrderedEnumerable<T> source, Func<T, K> key) {
+        return Then(source, new KeyComparer<T, K>(key, true));
+    }
+
+    public static OrderedList<T> ThenByDescending<T, K>(this IOrderedEnumerable<T> source, Func<T, K> key, IComparer<K> comparer) {
+        return Then(source, new KeyComparer<T, K>(key, true, comparer));
+    }
+
+    private static OrderedList<T> Then<T>(IOrderedEnumerable<T> source, IComparer<T> next) {
+        if (source == null) { throw new ArgumentNullException(nameof(source)); }
+        if (source is not OrderedList<T> ordered) {
+            throw new ArgumentException("ThenBy continues an order OrderBy made", nameof(source));
+        }
+        return Ordered(ordered, new ThenComparer<T>(ordered.Order, next));
     }
 
     // ---- the aggregates ---------------------------------------------------
@@ -5815,6 +6585,49 @@ static class Enumerable {
 /// DefaultComparer<K>, because a generic class instantiated with another
 /// class's type parameter is the shape the binder refuses; see the note on
 /// Comparer.
+/// What OrderBy and ThenBy answer, as .NET names it: a sequence in an order
+/// that ThenBy may refine.
+interface IOrderedEnumerable<T> : IEnumerable<T> {
+}
+
+/// The ordered elements, and the order that put them so. A List as well, so
+/// what a program does with a sorted list it may still do.
+class OrderedList<T> : List<T>, IOrderedEnumerable<T> {
+    private IComparer<T> order;
+
+    public OrderedList(T[] items, IComparer<T> by) : base(items.Length) {
+        for (int i = 0; i < items.Length; i++) { Add(items[i]); }
+        order = by;
+    }
+
+    public IComparer<T> Order => order;
+}
+
+/// One order, then another among what the first calls equal.
+class ThenComparer<T> : IComparer<T> {
+    private IComparer<T> first;
+    private IComparer<T> second;
+
+    public ThenComparer(IComparer<T> a, IComparer<T> b) {
+        first = a;
+        second = b;
+    }
+
+    public int Compare(T a, T b) {
+        int sign = first.Compare(a, b);
+        return sign != 0 ? sign : second.Compare(a, b);
+    }
+}
+
+/// The opposite of an order.
+class ReverseComparer<T> : IComparer<T> {
+    private IComparer<T> by;
+
+    public ReverseComparer(IComparer<T> of) { by = of; }
+
+    public int Compare(T a, T b) { return by.Compare(b, a); }
+}
+
 class KeyComparer<T, K> : IComparer<T> {
     private Func<T, K> of;
     private bool down;

@@ -1010,9 +1010,9 @@ public static class Driver
             foreach (string dotnet in new[] {
                 "System/interop.cor", "System/Threading/interlocked.cor", "System/IO/io.cor", "System/Collections/Collections.cor",
                 "System/IO/io-streams.cor", "System/IO/timezone.cor", "System/IO/compression.cor", "System/IO/tar.cor",
-                "System/time.cor", "System/values.cor", "System/numerics.cor",
+                "System/time.cor", "System/values.cor", "System/Reflection/Assembly.cor", "System/numerics.cor",
                 "System/Text/RegularExpressions.cor", "System/console.cor", "System/environment.cor",
-                "System/Net/Net.cor", "System/Security/Cryptography/Cryptography.cor",
+                "System/Net/Net.cor", "System/Security/Cryptography/Cryptography.cor", "System/Security/Cryptography/Hashing.cor",
                 "System/signals.cor", "System/unix.cor", "System/process.cor", "System/power.cor",
                 "Microsoft/Win32/Registry.cor",
                 "System/Drawing/Drawing.cor", "System/Drawing/TrueType.cor", "System/Drawing/Text.cor",

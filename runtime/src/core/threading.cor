@@ -2399,7 +2399,7 @@ static class AsyncRuntime
         string text = "Unhandled exception. " + e.ToString() + "\n";
 
         Runtime.WriteBytes(2, Runtime.BytesOf(text), text.Length);
-        Runtime.Exit(134);
+        Platform.Exit(134);
     }
 
     /// `async Task Main` returned `task`: run until it completes, and end the

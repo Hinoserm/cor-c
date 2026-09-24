@@ -422,6 +422,8 @@ static class Platform
     /// allowed to touch the heap.
     public static void SetThreadBlock(long block)
     {
+        // The collector times its pauses by this system's clock.
+        Gc.PauseClock = Sys.AddressOf(Clock.NowMicroseconds);
         Sys.PokeWord(block + Tls.Self, block);
 
         long desc = block + Tls.Scratch;

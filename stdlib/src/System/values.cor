@@ -206,168 +206,174 @@ struct Guid {
 
 // ---- Version --------------------------------------------------------------
 
-/// Major.Minor.Build.Revision, where the last two may be ABSENT rather than
-/// zero -- .NET reports -1 for a field that was never given, and "1.0" and
-/// "1.0.0" are different Versions that compare equal. The distinction is what
-/// lets ToString give back what Parse was handed.
-class Version : IComparable<Version> {
-    private int major;
-    private int minor;
-    private int build;
-    private int revision;
+// IN NAMESPACE System, as .NET has it: library code written in System finds
+// this Version before any a program declares of its own in the global
+// namespace, and a program sees it through `using System;`.
+namespace System
+{
+    /// Major.Minor.Build.Revision, where the last two may be ABSENT rather than
+    /// zero -- .NET reports -1 for a field that was never given, and "1.0" and
+    /// "1.0.0" are different Versions that compare equal. The distinction is what
+    /// lets ToString give back what Parse was handed.
+    class Version : IComparable<Version> {
+        private int major;
+        private int minor;
+        private int build;
+        private int revision;
 
-    public Version() {
-        major = 0;
-        minor = 0;
-        build = -1;
-        revision = -1;
-    }
-
-    public Version(int majorIn, int minorIn) {
-        Check(majorIn, minorIn, 0, 0);
-        major = majorIn;
-        minor = minorIn;
-        build = -1;
-        revision = -1;
-    }
-
-    public Version(int majorIn, int minorIn, int buildIn) {
-        Check(majorIn, minorIn, buildIn, 0);
-        major = majorIn;
-        minor = minorIn;
-        build = buildIn;
-        revision = -1;
-    }
-
-    public Version(int majorIn, int minorIn, int buildIn, int revisionIn) {
-        Check(majorIn, minorIn, buildIn, revisionIn);
-        major = majorIn;
-        minor = minorIn;
-        build = buildIn;
-        revision = revisionIn;
-    }
-
-    public Version(string text) {
-        Version parsed = Parse(text);
-
-        major = parsed.Major;
-        minor = parsed.Minor;
-        build = parsed.Build;
-        revision = parsed.Revision;
-    }
-
-    public int Major => major;
-    public int Minor => minor;
-    public int Build => build;
-    public int Revision => revision;
-
-    /// The low and high sixteen bits of the revision, which is how a build
-    /// system that packs two numbers into one gets them out again.
-    public short MajorRevision => (short)(revision >> 16);
-    public short MinorRevision => (short)(revision & 65535);
-
-    public static Version Parse(string text) {
-        Version? made = null;
-
-        if (!TryParse(text, out made) || made == null) {
-            throw new FormatException("Version string portion was too short or too long.");
-        }
-        return made;
-    }
-
-    /// NULL WHEN IT FAILS, which is why the out parameter is nullable: .NET
-    /// declares this one `out Version? result` for the same reason.
-    public static bool TryParse(string text, out Version? value) {
-        value = null;
-        if (text == null || text.Length == 0) { return false; }
-
-        string[] parts = String.Split(text, '.');
-
-        if (parts.Length < 2 || parts.Length > 4) { return false; }
-
-        int[] fields = new int[4];
-
-        for (int i = 0; i < parts.Length; i++) {
-            int one = 0;
-
-            if (!Int32.TryParse(parts[i], out one) || one < 0) { return false; }
-            fields[i] = one;
+        public Version() {
+            major = 0;
+            minor = 0;
+            build = -1;
+            revision = -1;
         }
 
-        if (parts.Length == 2) { value = new Version(fields[0], fields[1]); return true; }
-        if (parts.Length == 3) { value = new Version(fields[0], fields[1], fields[2]); return true; }
-
-        value = new Version(fields[0], fields[1], fields[2], fields[3]);
-        return true;
-    }
-
-    /// AN ABSENT FIELD IS BELOW ZERO, not equal to it: .NET compares the -1 it
-    /// stores for a field nobody gave, so 1.2 sorts before 1.2.0 and the two are
-    /// not equal. A Version remembers how many numbers it was built from.
-    public int CompareTo(Version other) {
-        if (other == null) { return 1; }
-
-        int sign = Compare(major, other.Major);
-        if (sign != 0) { return sign; }
-
-        sign = Compare(minor, other.Minor);
-        if (sign != 0) { return sign; }
-
-        sign = Compare(build, other.Build);
-        if (sign != 0) { return sign; }
-
-        return Compare(revision, other.Revision);
-    }
-
-    public bool Equals(Version other) { return other != null && CompareTo(other) == 0; }
-
-    public int GetHashCode() {
-        return HashCode.Combine(major, minor, build, revision);
-    }
-
-    /// AS MANY FIELDS AS WERE GIVEN, which is .NET's rule: a Version built with
-    /// two numbers prints two.
-    public string ToString() {
-        if (build < 0) { return ToString(2); }
-        if (revision < 0) { return ToString(3); }
-        return ToString(4);
-    }
-
-    public string ToString(int fieldCount) {
-        if (fieldCount < 0 || fieldCount > 4) {
-            throw new ArgumentException("Argument must be between 0 and 4.");
+        public Version(int majorIn, int minorIn) {
+            Check(majorIn, minorIn, 0, 0);
+            major = majorIn;
+            minor = minorIn;
+            build = -1;
+            revision = -1;
         }
-        if (fieldCount == 0) { return ""; }
-        if (fieldCount == 1) { return String.FromInt(major); }
 
-        StringBuilder made = new StringBuilder();
+        public Version(int majorIn, int minorIn, int buildIn) {
+            Check(majorIn, minorIn, buildIn, 0);
+            major = majorIn;
+            minor = minorIn;
+            build = buildIn;
+            revision = -1;
+        }
 
-        made.Append(major);
-        made.Append('.');
-        made.Append(minor);
+        public Version(int majorIn, int minorIn, int buildIn, int revisionIn) {
+            Check(majorIn, minorIn, buildIn, revisionIn);
+            major = majorIn;
+            minor = minorIn;
+            build = buildIn;
+            revision = revisionIn;
+        }
 
-        if (fieldCount >= 3) {
-            if (build < 0) { throw new ArgumentException("Argument must be between 0 and 2."); }
+        public Version(string text) {
+            Version parsed = Parse(text);
+
+            major = parsed.Major;
+            minor = parsed.Minor;
+            build = parsed.Build;
+            revision = parsed.Revision;
+        }
+
+        public int Major => major;
+        public int Minor => minor;
+        public int Build => build;
+        public int Revision => revision;
+
+        /// The low and high sixteen bits of the revision, which is how a build
+        /// system that packs two numbers into one gets them out again.
+        public short MajorRevision => (short)(revision >> 16);
+        public short MinorRevision => (short)(revision & 65535);
+
+        public static Version Parse(string text) {
+            Version? made = null;
+
+            if (!TryParse(text, out made) || made == null) {
+                throw new FormatException("Version string portion was too short or too long.");
+            }
+            return made;
+        }
+
+        /// NULL WHEN IT FAILS, which is why the out parameter is nullable: .NET
+        /// declares this one `out Version? result` for the same reason.
+        public static bool TryParse(string text, out Version? value) {
+            value = null;
+            if (text == null || text.Length == 0) { return false; }
+
+            string[] parts = String.Split(text, '.');
+
+            if (parts.Length < 2 || parts.Length > 4) { return false; }
+
+            int[] fields = new int[4];
+
+            for (int i = 0; i < parts.Length; i++) {
+                int one = 0;
+
+                if (!Int32.TryParse(parts[i], out one) || one < 0) { return false; }
+                fields[i] = one;
+            }
+
+            if (parts.Length == 2) { value = new Version(fields[0], fields[1]); return true; }
+            if (parts.Length == 3) { value = new Version(fields[0], fields[1], fields[2]); return true; }
+
+            value = new Version(fields[0], fields[1], fields[2], fields[3]);
+            return true;
+        }
+
+        /// AN ABSENT FIELD IS BELOW ZERO, not equal to it: .NET compares the -1 it
+        /// stores for a field nobody gave, so 1.2 sorts before 1.2.0 and the two are
+        /// not equal. A Version remembers how many numbers it was built from.
+        public int CompareTo(Version other) {
+            if (other == null) { return 1; }
+
+            int sign = Compare(major, other.Major);
+            if (sign != 0) { return sign; }
+
+            sign = Compare(minor, other.Minor);
+            if (sign != 0) { return sign; }
+
+            sign = Compare(build, other.Build);
+            if (sign != 0) { return sign; }
+
+            return Compare(revision, other.Revision);
+        }
+
+        public bool Equals(Version other) { return other != null && CompareTo(other) == 0; }
+
+        public int GetHashCode() {
+            return HashCode.Combine(major, minor, build, revision);
+        }
+
+        /// AS MANY FIELDS AS WERE GIVEN, which is .NET's rule: a Version built with
+        /// two numbers prints two.
+        public string ToString() {
+            if (build < 0) { return ToString(2); }
+            if (revision < 0) { return ToString(3); }
+            return ToString(4);
+        }
+
+        public string ToString(int fieldCount) {
+            if (fieldCount < 0 || fieldCount > 4) {
+                throw new ArgumentException("Argument must be between 0 and 4.");
+            }
+            if (fieldCount == 0) { return ""; }
+            if (fieldCount == 1) { return String.FromInt(major); }
+
+            StringBuilder made = new StringBuilder();
+
+            made.Append(major);
             made.Append('.');
-            made.Append(build);
-        }
-        if (fieldCount == 4) {
-            if (revision < 0) { throw new ArgumentException("Argument must be between 0 and 3."); }
-            made.Append('.');
-            made.Append(revision);
-        }
-        return made.ToString();
-    }
+            made.Append(minor);
 
-    private static int Compare(int a, int b) {
-        if (a < b) { return -1; }
-        if (a > b) { return 1; }
-        return 0;
-    }
+            if (fieldCount >= 3) {
+                if (build < 0) { throw new ArgumentException("Argument must be between 0 and 2."); }
+                made.Append('.');
+                made.Append(build);
+            }
+            if (fieldCount == 4) {
+                if (revision < 0) { throw new ArgumentException("Argument must be between 0 and 3."); }
+                made.Append('.');
+                made.Append(revision);
+            }
+            return made.ToString();
+        }
 
-    private static void Check(int majorIn, int minorIn, int buildIn, int revisionIn) {
-        if (majorIn < 0 || minorIn < 0 || buildIn < 0 || revisionIn < 0) {
-            throw new ArgumentOutOfRangeException("version", "Version's parameters must be greater than or equal to zero.");
+        private static int Compare(int a, int b) {
+            if (a < b) { return -1; }
+            if (a > b) { return 1; }
+            return 0;
+        }
+
+        private static void Check(int majorIn, int minorIn, int buildIn, int revisionIn) {
+            if (majorIn < 0 || minorIn < 0 || buildIn < 0 || revisionIn < 0) {
+                throw new ArgumentOutOfRangeException("version", "Version's parameters must be greater than or equal to zero.");
+            }
         }
     }
 }

@@ -28,6 +28,8 @@ public static class Prelude
     public const string FromWord = "FromWord";
     public const string Bits = "Bits";
     public const string FromBits = "FromBits";
+    public const string SingleBits = "SingleBits";
+    public const string FromSingleBits = "FromSingleBits";
 
     // The block primitives. These are what let String live in the standard
     // library as ordinary source rather than being emitted by the compiler
@@ -406,6 +408,8 @@ public static class Prelude
     public const string FromUIntMethod = "FromUInt";
     public const string FromBoolMethod = "FromBool";
     public const string FromDoubleMethod = "FromDouble";
+    public const string FromSingleMethod = "FromSingle";
+    public const string TypeNameMethod = "TypeName";
 
     public const string Source = """
         static class Sys {
@@ -426,6 +430,8 @@ public static class Prelude
             // System.BitConverter is written on top of these two.
             public static long Bits(double x) { return 0; }
             public static double FromBits(long x) { return 0; }
+            public static int SingleBits(float x) { return 0; }
+            public static float FromSingleBits(int x) { return 0; }
 
             // A string and a byte array are the same shape: a length word and
             // that many bytes. These five are the whole of what the machine

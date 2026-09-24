@@ -688,6 +688,21 @@ public sealed partial class Binder
                 _r.TextConstants[key] = text;
                 _constantStates[key] = ConstantState.Complete;
             }
+            else if (Resolve(field.Type, owner) is { } realType && IsReal(realType))
+            {
+                if (RealConstant(field.Init, owner) is double real)
+                {
+                    _r.Constants[key] = RealBits(real, realType);
+                    _r.ConstantTypes[key] = realType;
+                    _constantStates[key] = ConstantState.Complete;
+                }
+                else
+                {
+                    if (_constantStates[key] != ConstantState.Failed)
+                        Error(field, $"'{name}' is const, so it must have a constant expression");
+                    _constantStates[key] = ConstantState.Failed;
+                }
+            }
             else if (ConstantValue(field.Init, owner) is long value)
             {
                 _r.Constants[key] = value;
@@ -705,6 +720,64 @@ public sealed partial class Binder
         {
             _scope = previousScope;
             _in = previous;
+        }
+    }
+
+    private static bool IsReal(Type t) => t.Prim is Prim.F32 or Prim.F64 && !t.Nullable;
+
+    /// <summary>
+    /// A FLOATING-POINT CONST is kept as the bits of its value as a double,
+    /// in the same table as every other const, its type saying which it is. A
+    /// float's value is rounded to a float first, as C# computes it.
+    /// </summary>
+    private static long RealBits(double value, Type type)
+        => BitConverter.DoubleToInt64Bits(type.Prim == Prim.F32 ? (double)(float)value : value);
+
+    /// <summary>
+    /// What a floating-point constant expression is worth: literals, other
+    /// consts (floating or integer), negation, the four operations and casts
+    /// between the numeric types -- which is how `double.NaN` is written, as
+    /// `0.0 / 0.0`. Null when it is not a constant.
+    /// </summary>
+    private double? RealConstant(Expr? e, TypeSymbol? owner)
+    {
+        switch (e)
+        {
+            case null:
+                return null;
+            case LiteralExpr { Kind: Lit.Real } real:
+                return real.RealValue;
+            case LiteralExpr { Kind: Lit.Int } whole:
+                return whole.IntValue;
+            case UnaryExpr { Op: UnOp.Neg } negated:
+                return RealConstant(negated.Operand, owner) is double inner ? -inner : null;
+            case BinaryExpr { Op: BinOp.Add or BinOp.Sub or BinOp.Mul or BinOp.Div or BinOp.Rem } b:
+            {
+                if (RealConstant(b.Left, owner) is not double left || RealConstant(b.Right, owner) is not double right) return null;
+                return b.Op switch
+                {
+                    BinOp.Add => left + right,
+                    BinOp.Sub => left - right,
+                    BinOp.Mul => left * right,
+                    BinOp.Div => left / right,
+                    _ => left % right,
+                };
+            }
+            case CastExpr cast:
+            {
+                Type to = Resolve(cast.Type, owner);
+                if (to.Prim == Prim.F32) return RealConstant(cast.Operand, owner) is double f ? (double)(float)f : null;
+                if (to.Prim == Prim.F64) return RealConstant(cast.Operand, owner);
+                return ConstantValue(cast, owner) is long integral ? integral : null;
+            }
+            case NameExpr local when Lookup(local.Name) is ConstSym { Text: null } named:
+                return IsReal(named.Type) ? BitConverter.Int64BitsToDouble(named.Value) : named.Value;
+            case NameExpr n when owner != null && FindConstant(owner, n.Name) is { } here:
+                return IsReal(here.Type) ? BitConverter.Int64BitsToDouble(here.Value) : here.Value;
+            case MemberExpr m when ConstantOwner(m.Target) is { } named && FindConstant(named, m.Name) is { } there:
+                return IsReal(there.Type) ? BitConverter.Int64BitsToDouble(there.Value) : there.Value;
+            default:
+                return ConstantValue(e, owner) is long value ? value : null;
         }
     }
 
@@ -758,10 +831,10 @@ public sealed partial class Binder
         {
             // A LOCAL const, which names a value exactly as a field's does.
             case NameExpr local when Lookup(local.Name) is ConstSym { Text: null } named:
-                return named.Value;
+                return IsReal(named.Type) ? null : named.Value;
 
             case NameExpr n when owner != null && FindConstant(owner, n.Name) is { } here:
-                return here.Value;
+                return IsReal(here.Type) ? null : here.Value;
 
             case MemberExpr { Target: NameExpr keyword } m
                 when !IsTypeName(keyword.Name)
@@ -779,7 +852,7 @@ public sealed partial class Binder
 
                     if (FindConstant(named, m.Name) is { } elsewhere)
                     {
-                        return elsewhere.Value;
+                        return IsReal(elsewhere.Type) ? null : elsewhere.Value;
                     }
                 }
                 return null;
@@ -2958,7 +3031,14 @@ public sealed partial class Binder
 
                     foreach (LocalDecl one in new[] { d }.Concat(d.Also))
                     {
-                        if (one.Init is not null && ConstantValue(one.Init, _thisType) is long value)
+                        if (IsReal(declared) && RealConstant(one.Init, _thisType) is double real)
+                        {
+                            CheckExpr(one.Init!);
+                            Declare(one, one.Name, new ConstSym(RealBits(real, declared), declared));
+                            continue;
+                        }
+
+                        if (!IsReal(declared) && one.Init is not null && ConstantValue(one.Init, _thisType) is long value)
                         {
                             CheckExpr(one.Init);
                             Declare(one, one.Name, new ConstSym(value, declared));
@@ -4900,6 +4980,7 @@ public sealed partial class Binder
     /// <summary>Whether an expression is already, or can become, a function value.</summary>
     private bool IsFunctionSource(Expr e)
         => e is LambdaExpr
+        || (e is ConditionalExpr c && (IsFunctionSource(c.Then) || IsFunctionSource(c.Else)))
         || (_r.Resolved.TryGetValue(e, out Sym? sym)
             && sym is MethodGroupSym or CapturedMethodGroupSym);
 
@@ -6647,18 +6728,17 @@ public sealed partial class Binder
     /// or struct with an Add, its collection initializer. Null, and why, for
     /// anything else.
     ///
-    /// A SPREAD (`..items`) needs a list to gather into, and a list of an
-    /// element type the program never named cannot be made this late -- the
-    /// specialisations are made before checking. So a spread is refused, and
-    /// says so, until the monomorphiser makes that list.
+    /// A SPREAD (`..items`) makes it a chain of CollectionExpressionBuilder
+    /// calls instead (SpreadFor): generic calls with their arguments spelt, so
+    /// the round after this one makes the copies, and the List an array is
+    /// gathered in, as it does for any generic call.
     /// </summary>
     private Expr? CollectionFor(NewExpr collection, Type target, out string? why)
     {
         why = null;
         if (collection.Adds.Any(add => add.Spread))
         {
-            why = "a spread ('..') in a collection expression is not supported yet; add the elements with a loop";
-            return null;
+            return SpreadFor(collection, target, out why);
         }
         List<Expr> elements = collection.Adds.Select(add => add.Args[0]).ToList();
 
@@ -6693,6 +6773,100 @@ public sealed partial class Binder
 
         why = $"a collection expression cannot be a '{target}'";
         return null;
+
+        static string Last(string name) => name.Contains('.') ? name[(name.LastIndexOf('.') + 1)..] : name;
+    }
+
+    /// <summary>
+    /// A collection expression with a spread in it, as calls: the collection
+    /// is started (a List of the element for an array or an interface target,
+    /// the target itself for a class with an Add), each element and each
+    /// spread is one Element or Spread call on it, in the order written, and
+    /// an array target takes the List's ToArray at the end.
+    /// </summary>
+    private Expr? SpreadFor(NewExpr collection, Type target, out string? why)
+    {
+        why = null;
+        Type? element = null;
+        bool gathered = false;
+        if (target.IsArray && target.ArrayRank == 1)
+        {
+            element = target.Element;
+            gathered = true;
+        }
+        else if (target.Symbol is { Kind: TypeKind.Interface, Decl: { } decl }
+                 && decl.Template is string template && decl.TemplateArgs.Count == 1
+                 && Last(template) is "IEnumerable" or "IReadOnlyCollection" or "IReadOnlyList")
+        {
+            if (Resolve(decl.TemplateArgs[0], _thisType) is { IsError: false } argument) element = argument;
+            gathered = true;
+        }
+        else if (target.Symbol is { Kind: TypeKind.Class or TypeKind.Struct } owner && !target.IsArray)
+        {
+            List<MethodSymbol> adders = owner.FindMethods("Add").Where(a => !a.Static && a.Params.Count == 1).ToList();
+            if (adders.Count == 1 && adders[0].Params[0].Type is { ParamName: null } taken) element = taken;
+            else if (target.Args.Count == 1) element = target.Args[0];
+            if (element is null)
+            {
+                why = $"'{target}' has no single 'Add' to take a collection expression's spread";
+                return null;
+            }
+        }
+        if (element is null)
+        {
+            why = $"a collection expression cannot be a '{target}'";
+            return null;
+        }
+        if (RefOf(element) is not TypeRef elementRef)
+        {
+            why = $"a collection expression cannot gather elements of '{element}'";
+            return null;
+        }
+
+        TypeRef? into = gathered ? null : RefOf(target);
+        if (!gathered && into is null)
+        {
+            why = $"a collection expression cannot be a '{target}'";
+            return null;
+        }
+
+        MemberExpr Builder(string method, Node at)
+        {
+            MemberExpr step = new()
+            {
+                Target = new MemberExpr
+                {
+                    Target = new NameExpr { Name = "System", Line = at.Line, Col = at.Col },
+                    Name = "CollectionExpressionBuilder", Line = at.Line, Col = at.Col,
+                },
+                Name = method, Line = at.Line, Col = at.Col,
+            };
+            if (into is not null) step.TypeArgs.Add(into);
+            step.TypeArgs.Add(elementRef);
+            return step;
+        }
+
+        Expr built = into is not null
+            ? new NewExpr { Type = into, Line = collection.Line, Col = collection.Col }
+            : new CallExpr { Target = Builder("Gather", collection), Line = collection.Line, Col = collection.Col };
+        foreach (InitAdd add in collection.Adds)
+        {
+            string method = gathered ? (add.Spread ? "AddRange" : "Add") : (add.Spread ? "Spread" : "Element");
+            CallExpr call = new() { Target = Builder(method, add), Line = add.Line, Col = add.Col };
+            call.Args.Add(built);
+            call.Args.Add(add.Args[0]);
+            built = call;
+        }
+
+        if (!gathered)
+        {
+            return built;
+        }
+        return new CallExpr
+        {
+            Target = new MemberExpr { Target = built, Name = "ToArray", Line = collection.Line, Col = collection.Col },
+            Line = collection.Line, Col = collection.Col,
+        };
 
         static string Last(string name) => name.Contains('.') ? name[(name.LastIndexOf('.') + 1)..] : name;
     }
@@ -7013,7 +7187,11 @@ public sealed partial class Binder
 
             _wanted = null;
 
-            List<Type> given = add.Args.Select(CheckExpr).ToList();
+            // A TARGET-TYPED `new(...)` or a LAMBDA waits for the Add to say
+            // what it is, as an argument of any call does.
+            List<Type> given = add.Args.Select(argument =>
+                argument is LambdaExpr or NewExpr { Type.Name.Length: 0, Elements: null, Collection: false }
+                    ? Type.Any : CheckExpr(argument)).ToList();
 
             _wanted = outerElement;
 
@@ -7054,6 +7232,18 @@ public sealed partial class Binder
 
             for (int i = 0; i < given.Count; i++)
             {
+                if (add.Args[i] is LambdaExpr lambda)
+                {
+                    given[i] = CheckLambda(lambda, chosen.Params[i].Type);
+                    continue;
+                }
+                if (add.Args[i] is NewExpr { Type.Name.Length: 0, Elements: null, Collection: false })
+                {
+                    Type? saved = _wanted;
+                    _wanted = chosen.Params[i].Type;
+                    given[i] = CheckExpr(add.Args[i]);
+                    _wanted = saved;
+                }
                 given[i] = Settle(add.Args[i], chosen.Params[i].Type, given[i]);
                 CheckAssignable(given[i], chosen.Params[i].Type, add.Args[i], $"argument {i + 1} of 'Add'");
             }
@@ -7736,6 +7926,21 @@ public sealed partial class Binder
                     // says what it wants, and that is what `new()` means there;
                     // a declaration says the same thing and has already filled
                     // this in by the time it reaches here.
+                    // `object gate = new();` is `new object()`: object has no
+                    // symbol here, being the language's own, but it is a type
+                    // a target-typed new can make.
+                    if (_wanted is { Prim: Prim.Any, Symbol: null, IsArray: false } && nw.Body.IsEmpty)
+                    {
+                        NewExpr plain = new()
+                        {
+                            Type = new TypeRef { Name = "object", Line = nw.Line, Col = nw.Col },
+                            Line = nw.Line, Col = nw.Col,
+                        };
+                        plain.Args.AddRange(nw.Args);
+                        _r.Rewrites[nw] = plain;
+                        return CheckExpr(plain);
+                    }
+
                     if (_wanted is not { Symbol: not null })
                     {
                         Error(nw, "the type of 'new()' cannot be worked out here; write the type, "
@@ -7795,6 +8000,42 @@ public sealed partial class Binder
                     return Type.ArrayOf(type);
                 }
 
+                // A DELEGATE-CREATION EXPRESSION, `new Action<string>(list.Add)`:
+                // the one argument -- a method group, a lambda or a delegate --
+                // becomes the delegate, exactly as it would assigned to one. A
+                // delegate is an interface here, with no constructor, so left
+                // to the object path below it built an empty object.
+                // Action and Func are interfaces with an Invoke; `new` of any
+                // other interface is not C# at all.
+                if (type.Symbol is { Kind: TypeKind.Interface } face && !type.IsArray
+                    && (face.Decl?.IsDelegate == true || face.FindMethods("Invoke").Any())
+                    && nw.Body.Adds.Count == 0
+                    && nw.Body.Inits.Count == 0 && nw.Body.Indexes.Count == 0)
+                {
+                    if (nw.Args.Count != 1)
+                    {
+                        Error(nw, $"a delegate '{type}' is made from exactly one method, lambda or delegate");
+                        foreach (Expr argument in nw.Args) CheckExpr(argument);
+                        return Type.Error;
+                    }
+                    Expr source = nw.Args[0];
+                    Type? outerDelegate = _wanted;
+                    _wanted = type;
+                    Type made = source is LambdaExpr lambda ? CheckLambda(lambda, type) : CheckExpr(source);
+                    _wanted = outerDelegate;
+                    if (source is not LambdaExpr && MethodGroupLambda(source, type) is LambdaExpr wrapper)
+                    {
+                        _r.Rewrites[source] = wrapper;
+                        made = CheckLambda(wrapper, type);
+                    }
+                    else if (source is not LambdaExpr)
+                    {
+                        CheckAssignable(made, type, source, "the delegate's method");
+                    }
+                    _r.Rewrites[nw] = source;
+                    return type;
+                }
+
                 // AN ARGUMENT IS NOT WHAT THE SURROUNDING DECLARATION IS
                 // WAITING FOR, here as at any other call.
                 Type? outerNew = _wanted;
@@ -7802,7 +8043,7 @@ public sealed partial class Binder
                 _wanted = null;
 
                 List<Type> constructorArgs = nw.Args.Select(argument =>
-                    argument is NewExpr { Type.Name.Length: 0, Elements: null } ? Type.Any : CheckExpr(argument)).ToList();
+                    argument is LambdaExpr or NewExpr { Type.Name.Length: 0, Elements: null } ? Type.Any : CheckExpr(argument)).ToList();
 
                 _wanted = outerNew;
 
@@ -7908,6 +8149,11 @@ public sealed partial class Binder
                         _r.NewConstructors[nw] = ctor;
                         for (int i = 0; i < constructorArgs.Count; i++)
                         {
+                            if (nw.Args[i] is LambdaExpr lambda)
+                            {
+                                constructorArgs[i] = CheckLambda(lambda, ctor.Params[i].Type);
+                                continue;
+                            }
                             if (MethodGroupLambda(nw.Args[i], ctor.Params[i].Type) is LambdaExpr wrapper)
                             {
                                 _r.Rewrites[nw.Args[i]] = wrapper;
@@ -8396,17 +8642,44 @@ public sealed partial class Binder
                 // it is how anybody writes a default.
                 CheckCondition(c2.Cond);
 
+                // A DELEGATE IS WANTED: an arm that is a method group or a
+                // lambda becomes one, as C#'s target-typed conditional makes
+                // `decl is null ? null : decl.Add` an Action<string>.
+                Type? wantedDelegate = _wanted is { IsError: false } w && w.AsNonNullable() is { } plain
+                                       && plain.Symbol?.FindMethods("Invoke").Any() == true ? plain : null;
+                Type Arm(Expr arm)
+                {
+                    if (wantedDelegate is not null && arm is LambdaExpr lambda) return CheckLambda(lambda, wantedDelegate);
+                    Type had = CheckExpr(arm);
+                    if (wantedDelegate is not null && !_r.Rewrites.ContainsKey(arm)
+                        && MethodGroupLambda(arm, wantedDelegate) is LambdaExpr wrapper)
+                    {
+                        _r.Rewrites[arm] = wrapper;
+                        return CheckLambda(wrapper, wantedDelegate);
+                    }
+                    return had;
+                }
+
+                // Checked again (a call's argument, once its overload is
+                // known), what an earlier look decided about the arms goes.
+                _r.Boxes.Remove(c2.Then);
+                _r.Boxes.Remove(c2.Else);
+
                 List<Sym> whenTrue = Assume(c2.Cond, true);
-                Type a2 = CheckExpr(c2.Then);
+                Type a2 = Arm(c2.Then);
 
                 Forget(whenTrue);
 
                 List<Sym> whenFalse = Assume(c2.Cond, false);
-                Type b2 = CheckExpr(c2.Else);
+                Type b2 = Arm(c2.Else);
 
                 Forget(whenFalse);
 
-                if (a2.IsError || b2.IsError)
+                // A METHOD GROUP WITH NOTHING TO SAY WHICH DELEGATE it is has
+                // no type yet (void): the call checks this again once its
+                // overload says (FunctionSource). Nothing is decided now -- a
+                // `null` arm against it must not put it in a nullable cell.
+                if (a2.IsError || b2.IsError || a2.IsVoid || b2.IsVoid)
                 {
                     return Type.Error;
                 }
@@ -10791,9 +11064,36 @@ public sealed partial class Binder
             // A TYPE'S NAME, which is the whole of reflection tier 1's surface
             // alongside comparing two of them. Read straight out of the
             // descriptor the code generator put in front of the vtable.
-            if (m.Name == "Name" && target.Prim == Prim.Type)
+            if (m.Name is "Name" or "FullName" && target.Prim == Prim.Type)
             {
                 return Type.String;
+            }
+
+            // ITS ASSEMBLY, which is the program's: one image holds every
+            // type (System.Reflection.Assembly). The Type is still evaluated,
+            // as reading a member of it would be.
+            if (m.Name == "Assembly" && target.Prim == Prim.Type)
+            {
+                CallExpr of = new()
+                {
+                    Target = new MemberExpr
+                    {
+                        Target = new MemberExpr
+                        {
+                            Target = new MemberExpr
+                            {
+                                Target = new NameExpr { Name = "System", Line = m.Line, Col = m.Col },
+                                Name = "Reflection", Line = m.Line, Col = m.Col,
+                            },
+                            Name = "Assembly", Line = m.Line, Col = m.Col,
+                        },
+                        Name = "Of", Line = m.Line, Col = m.Col,
+                    },
+                    Line = m.Line, Col = m.Col,
+                };
+                of.Args.Add(m.Target);
+                _r.Rewrites[m] = of;
+                return CheckExpr(of);
             }
 
             // A STRING'S METHODS ARE CALLED THE WAY C# CALLS THEM.
@@ -11851,6 +12151,16 @@ public sealed partial class Binder
                     _r.Rewrites[c.Args[i]] = wrapper;
                     args[i] = CheckLambda(wrapper, want);
                     continue;
+                }
+
+                // A CONDITIONAL WITH A METHOD GROUP OR LAMBDA ARM, checked
+                // again now that the delegate it has to be is known.
+                if (c.Args[i] is ConditionalExpr { } choosing && IsFunctionSource(choosing))
+                {
+                    Type? saved = _wanted;
+                    _wanted = want;
+                    args[i] = CheckExpr(choosing);
+                    _wanted = saved;
                 }
 
                 // WITH THE INFERRED ARGUMENTS PUT IN. A parameter declared 'T'

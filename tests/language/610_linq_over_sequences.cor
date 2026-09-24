@@ -39,7 +39,7 @@ static class Program
         set.Add("b");
         set.Add("c");
 
-        List<string> sorted = set.OrderBy(s => s);
+        List<string> sorted = set.OrderBy(s => s).ToList();
         string joined = "";
 
         foreach (string s in sorted)
@@ -55,7 +55,7 @@ static class Program
         map["b"] = 2;
         map["c"] = 3;
 
-        List<KeyValuePair<string, int>> pairs = map.OrderBy(p => p.Key);
+        List<KeyValuePair<string, int>> pairs = map.OrderBy(p => p.Key).ToList();
         string shown = "";
 
         foreach (KeyValuePair<string, int> p in pairs)
@@ -70,7 +70,7 @@ static class Program
         Line("readonly " + view.Where(n => n > 1).Count());
 
         // An ordering the comparer decides rather than the key's own.
-        List<string> down = set.OrderByDescending(s => s, StringComparer.Ordinal);
+        List<string> down = set.OrderByDescending(s => s, StringComparer.Ordinal).ToList();
         string backwards = "";
 
         foreach (string s in down)

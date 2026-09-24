@@ -1,0 +1,41 @@
+// test: collection expression spreads
+// expect-exit: 0
+// expect-output:
+// a x y b|4
+// 1 2 3 4 5 6|6
+// p q r|3
+// 7 7 8|3
+//
+// C# 12's spread element, `..items`: into an array (as Driver.cs's
+// `args = [implied, ..args]` does), a List<T>, an IEnumerable<T>, from an
+// array, a list and an enumerable, with the elements in the order written.
+
+using System;
+using System.Collections.Generic;
+static class Program
+{
+    static IEnumerable<string> Three() { yield return "p"; yield return "q"; yield return "r"; }
+    static string Join<T>(IEnumerable<T> items)
+    {
+        string s = "";
+        int n = 0;
+        foreach (T x in items) { s += (n++ == 0 ? "" : " ") + x; }
+        return s + "|" + n;
+    }
+    static int Main()
+    {
+        string[] args = ["x", "y"];
+        args = ["a", ..args, "b"];
+        Console.WriteLine(Join(args));
+        List<int> tail = [4, 5];
+        int[] head = [1, 2];
+        List<int> all = [..head, 3, ..tail, 6];
+        Console.WriteLine(Join(all));
+        IEnumerable<string> copied = [..Three()];
+        Console.WriteLine(Join(copied));
+        int[] sevens = [7];
+        int[] mixed = [..sevens, ..sevens, 8];
+        Console.WriteLine(Join(mixed));
+        return 0;
+    }
+}

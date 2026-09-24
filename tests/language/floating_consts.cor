@@ -1,0 +1,31 @@
+// test: floating-point const fields and locals
+// expect-exit: 0
+// expect-output:
+// True True Infinity -Infinity True 1.7976931348623157E+308 -3.4028235E+38
+// 2.5 0.75 1.25 3.14159 6.28318
+// 1065353216 1
+//
+// C# allows `const double` and `const float`; double.NaN, the infinities,
+// Epsilon, MaxValue and MinValue are consts of .NET's. BitConverter's float
+// bits are the float's own.
+
+using System;
+class Shape
+{
+    public const double Pi = 3.14159;
+    public const double Tau = Pi * 2;
+    public const float Quarter = 0.25f;
+}
+static class Program
+{
+    static int Main()
+    {
+        const double half = 1.0 / 2;
+        const float threeQuarters = 1 - Shape.Quarter;
+        Console.WriteLine(double.IsNaN(double.NaN) + " " + float.IsNaN(float.NaN) + " " + double.PositiveInfinity + " "
+            + double.NegativeInfinity + " " + (double.Epsilon > 0) + " " + double.MaxValue + " " + float.MinValue);
+        Console.WriteLine((half * 5) + " " + threeQuarters + " " + (half + Shape.Quarter * 3) + " " + Shape.Pi + " " + Shape.Tau);
+        Console.WriteLine(BitConverter.SingleToInt32Bits(1.0f) + " " + BitConverter.Int32BitsToSingle(0x3F800000));
+        return 0;
+    }
+}

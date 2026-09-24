@@ -93,6 +93,10 @@ public sealed partial class Lowering
                 return _e.Unary(Opcode.Bits, R(Arg(call, target, 0)), IrType.I64);
             case "FromBits":
                 return _e.Unary(Opcode.Bits, R(Arg(call, target, 0)), IrType.F64);
+            case "SingleBits":
+                return _e.Unary(Opcode.Bits, R(Arg(call, target, 0)), IrType.I32);
+            case "FromSingleBits":
+                return _e.Unary(Opcode.Bits, R(ToI32(Arg(call, target, 0))), IrType.F32);
 
             case "MemoryCopy":
             {

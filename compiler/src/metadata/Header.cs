@@ -275,8 +275,13 @@ public static class Header
                     && bound.Constants.TryGetValue((owner, d.Name),
                                                    out long value))
                 {
-                    s.Append(" = ").Append(value.ToString(
-                        System.Globalization.CultureInfo.InvariantCulture));
+                    // A FLOATING-POINT ONE is its double's bits (Binder.
+                    // RealBits), spelt back as a constant expression that
+                    // round-trips -- NaN and the infinities as divisions.
+                    Prim held = bound.ConstantTypes.TryGetValue((owner, d.Name), out Type? heldType) ? heldType.Prim : Prim.I64;
+                    s.Append(" = ").Append(held is Prim.F32 or Prim.F64
+                        ? RealSpelling(BitConverter.Int64BitsToDouble(value), held == Prim.F32)
+                        : value.ToString(System.Globalization.CultureInfo.InvariantCulture));
                 }
                 else if ((d.Mods & Mods.Const) != 0
                     && owner != null && bound != null
@@ -339,6 +344,18 @@ public static class Header
         return e != null && Fold.TryConst(e, out long value)
             ? value.ToString(System.Globalization.CultureInfo.InvariantCulture)
             : null;
+    }
+
+    /// <summary>A floating-point const's value as source that reads back to it.</summary>
+    private static string RealSpelling(double value, bool single)
+    {
+        string suffix = single ? "F" : "";
+        if (double.IsNaN(value)) return $"(0.0{suffix} / 0.0{suffix})";
+        if (double.IsPositiveInfinity(value)) return $"(1.0{suffix} / 0.0{suffix})";
+        if (double.IsNegativeInfinity(value)) return $"(-1.0{suffix} / 0.0{suffix})";
+        string digits = single ? ((float)value).ToString("R", System.Globalization.CultureInfo.InvariantCulture)
+                               : value.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+        return (digits.StartsWith('-') ? "(" + digits + suffix + ")" : digits + suffix);
     }
 
     private static string Quoted(string text)

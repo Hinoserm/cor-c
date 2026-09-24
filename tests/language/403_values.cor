@@ -15,6 +15,8 @@
 // Version line is the other thing worth pinning down -- a field nobody gave is
 // -1 and sorts BELOW a given zero, so 1.2 is less than 1.2.0.
 
+using System;
+
 class Counter
 {
     public int Calls;
