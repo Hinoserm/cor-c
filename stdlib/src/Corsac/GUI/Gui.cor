@@ -60,10 +60,11 @@ public class Seat : IDrawingTarget
     const long GuiAttach = 0x4000001A;
     const long CallRead = 16, CallWrite = 17, CallIoctl = 18;
     const long NoSys = 38, Io = 5;
-    const long SeatStart = 0x4755002A, SeatCreateAs = 0x4755002C;
+    const long SeatStart = 0x4755002A, SeatWhoami = 0x4755002B, SeatCreateAs = 0x4755002C;
 
-    long _start;                    // the GUI kernel's start number this program's windows belong to
-    bool _restoring;
+    long _start;                    // the GUI kernel's start number this program last saw
+    long _defined;                  // the start its shared definitions were last made in
+    int _restoring;                 // how many threads are putting their things back
 
     /// A call through the gate, with the two answers that are not the
     /// seat's: ENOSYS, this thread is not attached (or the gate is closed
@@ -85,25 +86,31 @@ public class Seat : IDrawingTarget
     }
 
     /// This thread into the GUI kernel, waiting up to half a minute for it
-    /// to be up; and if it is a new start, everything made again.
+    /// to be up; and what this thread had there, made again if the GUI
+    /// kernel is a new start. THE THREAD'S OWN THINGS ONLY: a window belongs
+    /// to the thread that made it (its handle carries that thread's id), and
+    /// only that thread may make it again, so each thread puts its own back
+    /// the first time it comes in after a restart -- a thread asleep on its
+    /// events is woken for exactly that (poll on the seat says ready). The
+    /// first thread in also makes the program's definitions again. If the GUI
+    /// kernel starts yet again meanwhile, it is all done once more.
     bool Attach()
     {
         for (int tries = 0; tries < 300; tries++)
         {
             long attached = Platform.Result(Sys.Syscall(GuiAttach, 0, 0, 0));
-            if (attached == 0)
+            if (attached != 0) { Thread.Sleep(100); continue; }
+            while (true)
             {
-                if (_restoring) return true;
                 long start = Platform.Result(Sys.GuiCall(CallIoctl, SeatStart, 0, 0));
-                if (start > 0 && _start != 0 && start != _start)
-                {
-                    _start = start;
-                    Restore();
-                }
-                else if (start > 0) _start = start;
-                return true;
+                if (start <= 0) return true;
+                if (_start == 0) { _start = start; _defined = start; return true; }
+                if (start != _start) _start = start;
+                long me = Platform.Result(Sys.GuiCall(CallIoctl, SeatWhoami, 0, 0));
+                Restore(start, me);
+                long after = Platform.Result(Sys.GuiCall(CallIoctl, SeatStart, 0, 0));
+                if (after == start || after <= 0) return true;
             }
-            Thread.Sleep(100);
         }
         return false;
     }
@@ -128,6 +135,8 @@ public class Seat : IDrawingTarget
     class Kept
     {
         public int Handle, X, Y, W, H;
+        public long Owner;               // the thread that made it: only it may make it again
+        public long Start;               // the GUI kernel's start it was last made in
         public bool Shown, Desktop, TopMost, NoTaskbar;
         public string Title = "";
     }
@@ -137,7 +146,8 @@ public class Seat : IDrawingTarget
     Dictionary<int, byte[]> _bitmaps = new Dictionary<int, byte[]>();      // the whole DefineBitmap op
     Dictionary<int, byte[]> _cursors = new Dictionary<int, byte[]>();      // the whole DefinePointer op
     Dictionary<int, int> _bindings = new Dictionary<int, int>();           // standard shape -> own shape
-    bool _watchesWindows, _watchesPointer;
+    List<long> _watchesWindows = new List<long>();     // threads that asked, by id
+    List<long> _watchesPointer = new List<long>();
     int _reservedBottom = -1;
 
     Kept? Find(int handle)
@@ -147,36 +157,48 @@ public class Seat : IDrawingTarget
     }
 
     /// The GUI kernel was started again and everything this program had
-    /// there is gone: made again, in the order it was made the first time,
-    /// and the windows shown last, which is when the seat asks for them to
-    /// be painted. Anything converted to the screen's pixels is handed over
-    /// again by whoever holds it (Epoch), as after a mode change.
-    void Restore()
+    /// there is gone. The shared things -- the screen's size, the program's
+    /// glyphs, pictures and pointer shapes, its bindings and its bar -- are
+    /// made again by the first thread in; then this thread's own windows and
+    /// watches, in the order they were made, and its windows shown last,
+    /// which is when the seat asks for them to be painted. Anything converted
+    /// to the screen's pixels is handed over again by whoever holds it
+    /// (Epoch), as after a mode change.
+    void Restore(long start, long me)
     {
-        _restoring = true;
+        Interlocked.Increment(ref _restoring);
         try
         {
-            Width = (int)Ioctl(0x47550001, 0);
-            Height = (int)Ioctl(0x47550002, 0);
-            Format = (int)Ioctl(0x47550003, 0);
-            Epoch++;
-            _used = 0;
-            _named = false;
-            _clipOn = false;
-            _window = 0;
-
-            foreach (byte[] op in _glyphs.Values) Send(op);
-            foreach (byte[] op in _bitmaps.Values) Send(op);
-            foreach (byte[] op in _cursors.Values) Send(op);
-            foreach (KeyValuePair<int, int> bound in _bindings) Ioctl(0x47550028, (bound.Key & 0xFF) | ((bound.Value & 0xFF) << 8));
-            if (_watchesWindows) Ioctl(0x4755001D, 0);
-            if (_watchesPointer) Ioctl(0x47550020, 0);
-            if (_reservedBottom >= 0) Ioctl(0x4755001A, _reservedBottom);
+            if (_defined != start)
+            {
+                _defined = start;
+                Width = (int)Ioctl(0x47550001, 0);
+                Height = (int)Ioctl(0x47550002, 0);
+                Format = (int)Ioctl(0x47550003, 0);
+                Epoch++;
+                _used = 0;
+                _named = false;
+                _clipOn = false;
+                _window = 0;
+                foreach (byte[] op in _glyphs.Values) Send(op);
+                foreach (byte[] op in _bitmaps.Values) Send(op);
+                foreach (byte[] op in _cursors.Values) Send(op);
+                foreach (KeyValuePair<int, int> bound in _bindings) Ioctl(0x47550028, (bound.Key & 0xFF) | ((bound.Value & 0xFF) << 8));
+                if (_reservedBottom >= 0) Ioctl(0x4755001A, _reservedBottom);
+            }
+            if (_watchesWindows.Contains(me)) Ioctl(0x4755001D, 0);
+            if (_watchesPointer.Contains(me)) Ioctl(0x47550020, 0);
 
             for (int i = 0; i < _kept.Count; i++)
             {
                 Kept w = _kept[i];
-                if (Ioctl(SeatCreateAs, w.Handle) < 0) continue;
+                if (w.Owner != me || w.Start == start) continue;
+                w.Start = start;
+                if (Ioctl(SeatCreateAs, w.Handle) < 0)
+                {
+                    Console.Error.WriteLine("Corsac.GUI: window " + w.Handle + " could not be made again after the GUI kernel restarted");
+                    continue;
+                }
                 Ioctl(0x47550011, (w.W & 0xFFFF) | (w.H << 16));
                 Ioctl(0x47550015, (w.X & 0xFFFF) | (w.Y << 16));
                 if (w.Title.Length > 0) SendTitle(w.Title);
@@ -186,12 +208,13 @@ public class Seat : IDrawingTarget
             }
             for (int i = 0; i < _kept.Count; i++)
             {
-                if (!_kept[i].Shown) continue;
-                Select(_kept[i].Handle);
+                Kept w = _kept[i];
+                if (w.Owner != me || !w.Shown) continue;
+                Select(w.Handle);
                 Ioctl(0x47550012, 0);
             }
         }
-        finally { _restoring = false; }
+        finally { Interlocked.Decrement(ref _restoring); }
     }
 
     /// One op, written whole.
@@ -535,6 +558,8 @@ public class Seat : IDrawingTarget
         Ioctl(0x47550011, (w & 0xFFFF) | (h << 16));
         Kept kept = new Kept();
         kept.Handle = handle; kept.X = x; kept.Y = y; kept.W = w; kept.H = h;
+        kept.Owner = (long)handle >> 12;            // the thread that made it (its handle says so)
+        kept.Start = _start;
         _kept.Add(kept);
         return handle;
     }
@@ -582,7 +607,12 @@ public class Seat : IDrawingTarget
     }
 
     /// Ask for a WindowsChanged message whenever the seat's list or focus changes.
-    public void WatchWindows() { _watchesWindows = true; Ioctl(0x4755001D, 0); }
+    public void WatchWindows()
+    {
+        long me = Ioctl(SeatWhoami, 0);
+        if (!_watchesWindows.Contains(me)) _watchesWindows.Add(me);
+        Ioctl(0x4755001D, 0);
+    }
 
     /// Every shown window on the seat, bottom to top, whoever owns it.
     public SeatWindowInfo[] Windows()
@@ -615,7 +645,12 @@ public class Seat : IDrawingTarget
 
     // --- inspection: what is under a point of the screen, asked of the
     // window's owner through the seat (a spy tool) -------------------------
-    public void WatchPointer() { _watchesPointer = true; Ioctl(0x47550020, 0); }
+    public void WatchPointer()
+    {
+        long me = Ioctl(SeatWhoami, 0);
+        if (!_watchesPointer.Contains(me)) _watchesPointer.Add(me);
+        Ioctl(0x47550020, 0);
+    }
 
     /// The pointer's shape while it is over one of this program's windows.
     /// The seat puts the arrow back the moment the pointer leaves.

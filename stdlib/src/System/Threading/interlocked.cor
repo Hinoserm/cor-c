@@ -1,0 +1,117 @@
+// System.Threading.Interlocked: atomic operations on variables shared between
+// threads, with .NET's names and answers.
+//
+// A `ref` parameter is the address of the caller's variable (Sys.AddressOf
+// hands it back), and the processor's own atomics work on that address: XADD
+// for Add, Increment and Decrement, XCHG for Exchange, CMPXCHG for
+// CompareExchange. Every one is a full barrier, as .NET documents.
+//
+// SIXTY-FOUR BITS ON A 32-BIT PROCESSOR. The 486 has no CMPXCHG8B (it came
+// with the Pentium), so the long forms are done under one lock shared by all
+// of them: atomic with respect to each other, which is what .NET promises of
+// Interlocked on a 32-bit platform -- a plain store to the same long is not
+// atomic there either. Read(ref long) takes the same lock, which is the whole
+// reason .NET has it.
+//
+// A REFERENCE STORED BEHIND THE COLLECTOR'S BACK is an object it may free
+// while the collection marks with the other threads running. The reference
+// forms go through the write barrier first (Runtime.WriteBarrier), exactly as
+// the compiler's own stores do, so both the value replaced and the value put
+// there are seen.
+
+namespace System.Threading;
+
+public static class Interlocked
+{
+    static AtomicCell _wide = new AtomicCell();
+
+    // ---- 32 bits ---------------------------------------------------------------
+
+    public static int Increment(ref int location) { return (int)Sys.AtomicAdd(Sys.AddressOf(ref location), 1) + 1; }
+    public static int Decrement(ref int location) { return (int)Sys.AtomicAdd(Sys.AddressOf(ref location), -1) - 1; }
+
+    /// Adds, and answers the new value.
+    public static int Add(ref int location, int value) { return (int)Sys.AtomicAdd(Sys.AddressOf(ref location), value) + value; }
+
+    /// Stores, and answers what was there.
+    public static int Exchange(ref int location, int value) { return (int)Sys.AtomicSwap(Sys.AddressOf(ref location), value); }
+
+    /// Stores `value` if `comparand` is there, and answers what was there
+    /// either way: the store happened exactly when the answer is `comparand`.
+    public static int CompareExchange(ref int location, int value, int comparand)
+    {
+        return (int)Sys.Cas(Sys.AddressOf(ref location), comparand, value);
+    }
+
+    // ---- 64 bits, under the one lock -----------------------------------------------
+
+    public static long Increment(ref long location) { return Add(ref location, 1); }
+    public static long Decrement(ref long location) { return Add(ref location, -1); }
+
+    public static long Add(ref long location, long value)
+    {
+        _wide.Enter();
+        try { location = location + value; return location; }
+        finally { _wide.Exit(); }
+    }
+
+    public static long Exchange(ref long location, long value)
+    {
+        _wide.Enter();
+        try { long was = location; location = value; return was; }
+        finally { _wide.Exit(); }
+    }
+
+    public static long CompareExchange(ref long location, long value, long comparand)
+    {
+        _wide.Enter();
+        try
+        {
+            long was = location;
+            if (was == comparand) location = value;
+            return was;
+        }
+        finally { _wide.Exit(); }
+    }
+
+    /// A 64-bit read that no concurrent Interlocked write is half way through.
+    public static long Read(ref long location)
+    {
+        _wide.Enter();
+        try { return location; }
+        finally { _wide.Exit(); }
+    }
+
+    // ---- references ------------------------------------------------------------------
+
+    public static object? Exchange(ref object? location, object? value)
+    {
+        return Exchange<object?>(ref location, value);
+    }
+
+    public static object? CompareExchange(ref object? location, object? value, object? comparand)
+    {
+        return CompareExchange<object?>(ref location, value, comparand);
+    }
+
+    public static T Exchange<T>(ref T location, T value) where T : class?
+    {
+        long at = Sys.AddressOf(ref location);
+        long word = Sys.Word(value);
+        if (Runtime.Marking != 0) Runtime.WriteBarrier(at, word);
+        return (T)Sys.FromWord(Sys.AtomicSwap(at, word));
+    }
+
+    public static T CompareExchange<T>(ref T location, T value, T comparand) where T : class?
+    {
+        long at = Sys.AddressOf(ref location);
+        long word = Sys.Word(value);
+        if (Runtime.Marking != 0) Runtime.WriteBarrier(at, word);
+        return (T)Sys.FromWord(Sys.Cas(at, Sys.Word(comparand), word));
+    }
+
+    // ---- ordering ----------------------------------------------------------------------
+
+    /// Every load and store before this is done before any after it.
+    public static void MemoryBarrier() { Sys.Fence(); }
+}

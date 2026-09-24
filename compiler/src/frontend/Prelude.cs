@@ -802,6 +802,11 @@ public static class Prelude
             // The argument is a static method named and not called.
             public static long AddressOf(long method) { return 0; }
             public static long AddressOf(ref int value) { return 0; }
+            // And of any variable passed by reference: what System.Threading.
+            // Interlocked is built on, since a `ref` parameter is already the
+            // address of the caller's variable and an atomic needs exactly that.
+            public static long AddressOf(ref long value) { return 0; }
+            public static long AddressOf<T>(ref T value) { return 0; }
 
             // Calls one. The other half: an address is no use without a way to
             // go there, and the things that hand addresses back -- a service

@@ -1,0 +1,68 @@
+// test: interlocked
+// expect-exit: 0
+// expect-output:
+// int 2 1 5 5 7
+// cas 7 9 9
+// long 5000000001 4999999999 42
+// threads 40000
+// refs True True True
+//
+// System.Threading.Interlocked, with .NET's answers: Increment and Add give
+// the new value, Exchange and CompareExchange the old one. Four threads
+// adding to one counter lose nothing.
+
+using System;
+using System.Threading;
+
+class Box
+{
+    public int Value;
+}
+
+class Adder : Action
+{
+    public void Invoke()
+    {
+        for (int i = 0; i < 10000; i++) Interlocked.Increment(ref Program.Shared);
+    }
+}
+
+static class Program
+{
+    public static int Shared;
+    static long _wide = 5000000000;
+    static Box? _held;
+
+    static int Main()
+    {
+        int n = 1;
+        int incremented = Interlocked.Increment(ref n);
+        int decremented = Interlocked.Decrement(ref n);
+        int added = Interlocked.Add(ref n, 4);
+        int was = Interlocked.Exchange(ref n, 7);
+        Console.WriteLine("int " + incremented + " " + decremented + " " + added + " " + was + " " + n);
+
+        int kept = Interlocked.CompareExchange(ref n, 9, 3);      // no: 7 is not 3
+        int swapped = Interlocked.CompareExchange(ref n, 9, 7);   // yes
+        Console.WriteLine("cas " + kept + " " + swapped + " " + n);
+
+        long up = Interlocked.Increment(ref _wide);
+        Interlocked.Add(ref _wide, -2);
+        long down = Interlocked.Read(ref _wide);
+        Interlocked.Exchange(ref _wide, 42);
+        Console.WriteLine("long " + up + " " + down + " " + Interlocked.Read(ref _wide));
+
+        Thread[] threads = new Thread[4];
+        for (int i = 0; i < threads.Length; i++) threads[i] = Thread.Start(new Adder());
+        for (int i = 0; i < threads.Length; i++) threads[i].Join();
+        Console.WriteLine("threads " + Shared);
+
+        Box first = new Box();
+        Box second = new Box();
+        Box? before = Interlocked.Exchange(ref _held, first);
+        Box? notSwapped = Interlocked.CompareExchange(ref _held, second, null);
+        Box? swappedBox = Interlocked.CompareExchange(ref _held, second, first);
+        Console.WriteLine("refs " + (before == null) + " " + (notSwapped == first) + " " + (swappedBox == first && _held == second));
+        return 0;
+    }
+}

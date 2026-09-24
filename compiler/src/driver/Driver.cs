@@ -1004,7 +1004,7 @@ public static class Driver
             // System.Security.Cryptography, PosixSignalRegistration,
             // System.Diagnostics.Process.
             foreach (string dotnet in new[] {
-                "System/interop.cor", "System/IO/io.cor", "System/Collections/Collections.cor",
+                "System/interop.cor", "System/Threading/interlocked.cor", "System/IO/io.cor", "System/Collections/Collections.cor",
                 "System/IO/io-streams.cor", "System/IO/timezone.cor", "System/IO/compression.cor", "System/IO/tar.cor",
                 "System/time.cor", "System/values.cor", "System/numerics.cor",
                 "System/Text/RegularExpressions.cor", "System/console.cor", "System/environment.cor",
