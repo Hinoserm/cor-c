@@ -4155,19 +4155,53 @@ public class TabControl : Control
 /// The strip along the bottom of a window: sunken panels with text in
 /// them, and a grip in the corner of a window that can be resized.
 /// </summary>
+/// How a status bar panel's width is found: .NET's StatusBarPanelAutoSize.
+public enum StatusBarPanelAutoSize
+{
+    /// Its Width, as set.
+    None = 1,
+    /// The room the other panels leave, shared with any other springing panel.
+    Spring = 2,
+    /// Its text's width in the bar's font, measured every time it changes.
+    Contents = 3,
+}
+
 public class StatusBarPanel
 {
-    public string Text = "";
-    public int Width = 100;
-
-    /// A panel with this set takes whatever room is left over, which is
-    /// what the first panel of a status bar usually does.
-    public bool Spring;
+    string _text = "";
+    int _width = 100, _minWidth = 10;
+    StatusBarPanelAutoSize _autoSize = StatusBarPanelAutoSize.None;
 
     internal StatusBar? Owner;
 
     public StatusBarPanel() { }
-    public StatusBarPanel(string text) { Text = text; }
+    public StatusBarPanel(string text) { _text = text; }
+
+    public string Text { get { return _text; } set { _text = value; Owner?.Invalidate(); } }
+
+    /// Its width, never under MinWidth. With AutoSize Contents or Spring it is
+    /// the width it was last laid out at.
+    public int Width { get { return _width; } set { _width = Math.Max(value, _minWidth); Owner?.Invalidate(); } }
+
+    public int MinWidth
+    {
+        get { return _minWidth; }
+        set
+        {
+            if (value < 0) throw new ArgumentOutOfRangeException("MinWidth");
+            _minWidth = value;
+            if (_width < value) _width = value;
+            Owner?.Invalidate();
+        }
+    }
+
+    public StatusBarPanelAutoSize AutoSize { get { return _autoSize; } set { _autoSize = value; Owner?.Invalidate(); } }
+
+    /// The panel's width as the bar lays it out: its sunken border one pixel
+    /// a side, and the text inset four pixels each side within it.
+    internal int ContentsWidth(Font font) { return Math.Max(_minWidth, TextRenderer.MeasureText(_text, font).Width + 2 * StatusBar.TextInset + 2); }
+
+    internal void LaidOut(int width) { _width = width; }
 }
 
 public class StatusBar : Control
@@ -4193,13 +4227,26 @@ public class StatusBar : Control
         get { return _panels.Count > 0 ? _panels[0].Text : base.Text; }
         set
         {
-            if (_panels.Count == 0) { StatusBarPanel only = AddPanel(value); only.Spring = true; }
+            if (_panels.Count == 0) { StatusBarPanel only = AddPanel(value); only.AutoSize = StatusBarPanelAutoSize.Spring; }
             else _panels[0].Text = value;
             Invalidate();
         }
     }
 
     public void SetPanel(int index, string text) { if (index >= 0 && index < _panels.Count) { _panels[index].Text = text; Invalidate(); } }
+
+    /// Pixels between a panel's border and its text, each side.
+    internal const int TextInset = 3;
+
+    /// As much of the text as fits in `room` pixels: a panel's text is
+    /// clipped to it, never drawn past its border.
+    string Fit(string text, int room)
+    {
+        if (room <= 0) return "";
+        int n = text.Length;
+        while (n > 0 && Font.TextWidth(text, 0, n) > room) n--;
+        return n == text.Length ? text : text.Substring(0, n);
+    }
 
     protected override void OnPaint(PaintEventArgs e)
     {
@@ -4209,7 +4256,15 @@ public class StatusBar : Control
         int grip = SizingGrip ? 16 : 0;
         int fixedWidth = 0, springing = 0;
 
-        for (int i = 0; i < _panels.Count; i++) { if (_panels[i].Spring) springing++; else fixedWidth += _panels[i].Width; }
+        // Contents panels measured first, from the text they hold now, then
+        // the springing ones share what is left.
+        for (int i = 0; i < _panels.Count; i++)
+        {
+            StatusBarPanel p = _panels[i];
+            if (p.AutoSize == StatusBarPanelAutoSize.Spring) { springing++; continue; }
+            if (p.AutoSize == StatusBarPanelAutoSize.Contents) p.LaidOut(p.ContentsWidth(Font));
+            fixedWidth += p.Width;
+        }
 
         int spare = Width - grip - fixedWidth - (_panels.Count + 1) * 2;
         int each = springing > 0 && spare > 0 ? spare / springing : 0;
@@ -4217,11 +4272,18 @@ public class StatusBar : Control
 
         for (int i = 0; i < _panels.Count; i++)
         {
-            int w = _panels[i].Spring ? each : _panels[i].Width;
-            if (w < 0) w = 0;
+            StatusBarPanel p = _panels[i];
+            int w = p.Width;
+            if (p.AutoSize == StatusBarPanelAutoSize.Spring) { w = Math.Max(each, p.MinWidth); p.LaidOut(w); }
+            // The last panels are cut at the grip, as the common control
+            // cuts them, rather than drawn over it.
+            int room = Width - grip - x;
+            if (room <= 0) break;
+            if (w > room) w = room;
 
             ControlPaint.DrawBorder3D(g, x, 2, w, Height - 4, Border3DStyle.SunkenOuter);
-            g.DrawString(_panels[i].Text, Font, new SolidBrush(ForeColor), BackColor, x + 4, (Height - Font.Height) / 2);
+            string shown = Fit(p.Text, w - 2 * TextInset - 2);
+            if (shown.Length > 0) g.DrawString(shown, Font, new SolidBrush(ForeColor), BackColor, x + 1 + TextInset, (Height - Font.Height) / 2);
             x += w + 2;
         }
 
