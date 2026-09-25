@@ -43,14 +43,12 @@
 //              8 Paint      a = x | y << 16, b = w | h << 16, relative to the window
 //              9 Focus      a = 1 gained, 0 lost
 //             10 Close      the system asks the window to close
-//   ioctls   0x47550001 width, 0x47550002 height, 0x47550003 format,
-//            0x47550004 events waiting for this process
-//            0x47550010 create window at x | y << 16, returns the handle and
-//                       selects it; 0x47550020 select a window by handle; then
-//                       on the selected window: 0x47550011 size w | h << 16,
-//                       0x47550012 show, 0x47550013 hide, 0x47550014 raise,
-//                       0x47550015 move x | y << 16, 0x47550016 destroy,
-//                       0x47550017 focus. Selection is per process.
+//   ioctls   the seat's requests, Corsac.GUI's SeatIoctl (the GUI kernel's
+//            os/gui/seat.cor names each one's argument): Create makes a
+//            window at x | y << 16, answers its handle and selects it;
+//            Select selects one by handle; Size, Show, Hide, Raise, Move,
+//            Destroy and Focus act on the selected window. Selection is per
+//            process.
 
 using System;
 using System.IO;

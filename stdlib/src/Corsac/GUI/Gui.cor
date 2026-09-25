@@ -32,6 +32,87 @@ namespace Corsac.GUI;
 // be painted. A program written to Forms never learns it happened.
 // ---------------------------------------------------------------------------
 
+/// The seat's requests (an ioctl's number), as the GUI kernel names them
+/// (os/gui/seat.cor, SeatIoctl, which says what each one's argument is).
+/// The image build holds this copy to that one (CompileTasks.CheckEnumCopy).
+enum SeatIoctl : long
+{
+    Width = 0x47550001,
+    Height = 0x47550002,
+    Format = 0x47550003,
+    Shown = 0x47550005,
+    WorkAreaHeight = 0x47550006,
+    InjectKey = 0x47550007,
+    InjectPointerMove = 0x47550008,
+    InjectPointerButton = 0x47550009,
+    InjectPointerWheel = 0x4755000A,
+    InjectPointerHWheel = 0x4755000B,
+    Create = 0x47550010,
+    Size = 0x47550011,
+    Show = 0x47550012,
+    Hide = 0x47550013,
+    Raise = 0x47550014,
+    Move = 0x47550015,
+    Destroy = 0x47550016,
+    Focus = 0x47550017,
+    Desktop = 0x47550018,
+    TopMost = 0x47550019,
+    ReserveBottom = 0x4755001A,
+    Title = 0x4755001B,
+    ListWindows = 0x4755001C,
+    WatchWindows = 0x4755001D,
+    Activate = 0x4755001E,
+    CloseWindow = 0x4755001F,
+    WatchPointer = 0x47550020,
+    Inspect = 0x47550021,
+    InspectReply = 0x47550022,
+    InspectRead = 0x47550023,
+    NoTaskbar = 0x47550024,
+    Cursor = 0x47550025,
+    Band = 0x47550026,
+    BandSize = 0x47550027,
+    BindCursor = 0x47550028,
+    Select = 0x47550029,
+    Start = 0x4755002A,
+    Whoami = 0x4755002B,
+    CreateAs = 0x4755002C,
+    CursorAt = 0x4755002E,
+    CursorTo = 0x4755002F,
+    ModeCount = 0x47550030,
+    ModeAt = 0x47550031,
+    Refresh = 0x47550032,
+    SetModeExact = 0x47550034,
+    AdapterInfo = 0x47550035,
+    AnimateCursor = 0x47550036,
+    ClipCursor = 0x47550037,
+    VanishPointer = 0x47550038,
+    TrackMove = 0x47550039,
+    TrackSize = 0x4755003A,
+    FrameStyle = 0x4755003B,
+    FrameExStyle = 0x4755003C,
+    FrameIcon = 0x4755003D,
+    FrameMinimum = 0x4755003E,
+    FrameInsets = 0x4755003F,
+    SystemMetric = 0x47550040,
+    ParameterInfo = 0x47550041,
+    ReloadSettings = 0x47550042,
+    Minimized = 0x47550043,
+    MinimizeWindow = 0x47550044,
+    MenuSet = 0x47550045,
+    MenuBar = 0x47550046,
+    MenuTrack = 0x47550047,
+    MenuDelete = 0x47550048,
+    MenuReady = 0x47550049,
+    ClipboardRegister = 0x4755004A,
+    ClipboardSet = 0x4755004B,
+    ClipboardGet = 0x4755004C,
+    ClipboardHas = 0x4755004D,
+    ClipboardClear = 0x4755004E,
+    ClipboardSequence = 0x4755004F,
+    ClipboardFormats = 0x47550050,
+    ClipboardFormatName = 0x47550051,
+}
+
 public class Seat : IDrawingTarget
 {
     static Seat? _current;
@@ -60,12 +141,6 @@ public class Seat : IDrawingTarget
     const long GuiAttach = 0x4000001A;
     const long CallRead = 16, CallWrite = 17, CallIoctl = 18;
     const long NoSys = 38, Io = 5;
-    const long SeatStart = 0x4755002A, SeatWhoami = 0x4755002B, SeatCreateAs = 0x4755002C;
-    const long SeatClipboardRegister = 0x4755004A, SeatClipboardSet = 0x4755004B, SeatClipboardGet = 0x4755004C,
-               SeatClipboardHas = 0x4755004D, SeatClipboardClear = 0x4755004E, SeatClipboardSequence = 0x4755004F,
-               SeatClipboardFormats = 0x47550050, SeatClipboardFormatName = 0x47550051;
-    const long SeatCursorAt = 0x4755002E, SeatCursorTo = 0x4755002F, SeatAnimateCursor = 0x47550036, SeatClipCursor = 0x47550037,
-               SeatVanishPointer = 0x47550038;
 
     long _start;                    // the GUI kernel's start number this program last saw
     long _defined;                  // the start its shared definitions were last made in
@@ -118,7 +193,7 @@ public class Seat : IDrawingTarget
         {
             long attached = Platform.Result(Sys.Syscall(GuiAttach, 0, 0, 0));
             if (attached != 0) { Thread.Sleep(100); continue; }
-            long start = Platform.Result(Sys.GuiCall(CallIoctl, SeatStart, 0, 0));
+            long start = Platform.Result(Sys.GuiCall(CallIoctl, SeatIoctl.Start, 0, 0));
             if (start <= 0) return true;
             bool first;
             lock (_keep)
@@ -128,17 +203,17 @@ public class Seat : IDrawingTarget
                 else _start = start;
             }
             if (first) return true;
-            long me = Platform.Result(Sys.GuiCall(CallIoctl, SeatWhoami, 0, 0));
+            long me = Platform.Result(Sys.GuiCall(CallIoctl, SeatIoctl.Whoami, 0, 0));
             Restore(start, me);
-            long after = Platform.Result(Sys.GuiCall(CallIoctl, SeatStart, 0, 0));
+            long after = Platform.Result(Sys.GuiCall(CallIoctl, SeatIoctl.Start, 0, 0));
             if (after == start || after <= 0) return true;
         }
         return false;
     }
 
-    long Ioctl(long request, long argument)
+    long Ioctl(SeatIoctl request, long argument)
     {
-        return Call(CallIoctl, request, argument & 0xFFFFFFFF, (argument >> 32) & 0xFFFFFFFF);
+        return Call(CallIoctl, (long)request, argument & 0xFFFFFFFF, (argument >> 32) & 0xFFFFFFFF);
     }
 
     int Write(byte[] data, int at, int count)
@@ -249,50 +324,50 @@ public class Seat : IDrawingTarget
 
         if (define)
         {
-            Width = (int)Ioctl(0x47550001, 0);
-            Height = (int)Ioctl(0x47550002, 0);
-            Format = (int)Ioctl(0x47550003, 0);
+            Width = (int)Ioctl(SeatIoctl.Width, 0);
+            Height = (int)Ioctl(SeatIoctl.Height, 0);
+            Format = (int)Ioctl(SeatIoctl.Format, 0);
             Epoch++;
             foreach (byte[] op in ops) Send(op);
-            foreach (byte[] record in animations) Ioctl(SeatAnimateCursor, Sys.ArrayData(record));
-            for (int i = 0; i < bindShapes.Length; i++) Ioctl(0x47550028, (bindShapes[i] & 0xFF) | ((bindIds[i] & 0xFFFF) << 8));
-            if (reserved >= 0) Ioctl(0x4755001A, reserved);
+            foreach (byte[] record in animations) Ioctl(SeatIoctl.AnimateCursor, Sys.ArrayData(record));
+            for (int i = 0; i < bindShapes.Length; i++) Ioctl(SeatIoctl.BindCursor, (bindShapes[i] & 0xFF) | ((bindIds[i] & 0xFFFF) << 8));
+            if (reserved >= 0) Ioctl(SeatIoctl.ReserveBottom, reserved);
         }
         // The menu trees first: a window's bar names one.
         List<byte[]> trees;
         lock (_keep) trees = new List<byte[]>(_menuTrees.Values);
-        foreach (byte[] tree in trees) Ioctl(SeatMenuSet, Sys.ArrayData(tree));
-        if (watchWindows) Ioctl(0x4755001D, 0);
-        if (watchPointer) Ioctl(0x47550020, 0);
+        foreach (byte[] tree in trees) Ioctl(SeatIoctl.MenuSet, Sys.ArrayData(tree));
+        if (watchWindows) Ioctl(SeatIoctl.WatchWindows, 0);
+        if (watchPointer) Ioctl(SeatIoctl.WatchPointer, 0);
 
         foreach (Kept w in mine)
         {
-            if (Ioctl(SeatCreateAs, w.Handle) < 0)
+            if (Ioctl(SeatIoctl.CreateAs, w.Handle) < 0)
             {
                 Console.Error.WriteLine("Corsac.GUI: window " + w.Handle + " could not be made again after the GUI kernel restarted");
                 continue;
             }
-            Ioctl(0x47550011, (w.W & 0xFFFF) | (w.H << 16));
-            Ioctl(0x47550015, (w.X & 0xFFFF) | (w.Y << 16));
+            Ioctl(SeatIoctl.Size, (w.W & 0xFFFF) | (w.H << 16));
+            Ioctl(SeatIoctl.Move, (w.X & 0xFFFF) | (w.Y << 16));
             if (w.Title.Length > 0) SendTitle(w.Title);
             if (w.FrameStyle != 0)
             {
-                Ioctl(SeatFrameExStyle, w.FrameExStyle);
-                Ioctl(SeatFrameStyle, w.FrameStyle);
+                Ioctl(SeatIoctl.FrameExStyle, w.FrameExStyle);
+                Ioctl(SeatIoctl.FrameStyle, w.FrameStyle);
                 if (w.FrameIcon != null) SendFrameIcon(w.FrameIcon);
-                if (w.FrameMinWidth > 0) Ioctl(SeatFrameMinimum, (w.FrameMinWidth & 0xFFFF) | (w.FrameMinHeight << 16));
+                if (w.FrameMinWidth > 0) Ioctl(SeatIoctl.FrameMinimum, (w.FrameMinWidth & 0xFFFF) | (w.FrameMinHeight << 16));
             }
-            if (w.MenuBar != 0) Ioctl(SeatMenuBar, w.MenuBar);
-            if (w.Desktop) Ioctl(0x47550018, 0);
-            if (w.TopMost) Ioctl(0x47550019, 1);
-            if (w.NoTaskbar) Ioctl(0x47550024, 1);
-            if (w.Minimized) Ioctl(0x47550043, 1);
+            if (w.MenuBar != 0) Ioctl(SeatIoctl.MenuBar, w.MenuBar);
+            if (w.Desktop) Ioctl(SeatIoctl.Desktop, 0);
+            if (w.TopMost) Ioctl(SeatIoctl.TopMost, 1);
+            if (w.NoTaskbar) Ioctl(SeatIoctl.NoTaskbar, 1);
+            if (w.Minimized) Ioctl(SeatIoctl.Minimized, 1);
         }
         foreach (Kept w in mine)
         {
             if (!w.Shown) continue;
             Select(w.Handle);
-            Ioctl(0x47550012, 0);
+            Ioctl(SeatIoctl.Show, 0);
         }
     }
 
@@ -312,16 +387,16 @@ public class Seat : IDrawingTarget
     {
         byte[] bytes = new byte[64];
         for (int i = 0; i < title.Length && i < 63; i++) bytes[i] = (byte)title[i];
-        Ioctl(0x4755001B, Sys.ArrayData(bytes));
+        Ioctl(SeatIoctl.Title, Sys.ArrayData(bytes));
     }
 
     public Seat(string path)
     {
         _fd = Os.Open(path, 2, 0);          // O_RDWR
         if (_fd < 0) throw new IOException("cannot open seat " + path);
-        Width = (int)Ioctl(0x47550001, 0);
-        Height = (int)Ioctl(0x47550002, 0);
-        Format = (int)Ioctl(0x47550003, 0);
+        Width = (int)Ioctl(SeatIoctl.Width, 0);
+        Height = (int)Ioctl(SeatIoctl.Height, 0);
+        Format = (int)Ioctl(SeatIoctl.Format, 0);
         // A seat device that exists but has no screen answers every question
         // with an error: the kernel says why on the console. Finding out here
         // is what lets a program say so and stop, rather than failing at its
@@ -353,7 +428,7 @@ public class Seat : IDrawingTarget
     {
         Width = width;
         Height = height;
-        Format = (int)Ioctl(0x47550003, 0);      // the depth may be what changed
+        Format = (int)Ioctl(SeatIoctl.Format, 0);      // the depth may be what changed
         Epoch++;
         _used = 0;              // whatever was half-built described the old screen
         _named = false;
@@ -375,7 +450,7 @@ public class Seat : IDrawingTarget
         byte[] block = new byte[160];
 
         Flush();
-        if (Ioctl(0x47550035, Sys.ArrayData(block)) < 0) { return made; }
+        if (Ioctl(SeatIoctl.AdapterInfo, Sys.ArrayData(block)) < 0) { return made; }
 
         made.Name = Text(block, 0, 64);
         made.Detail = Text(block, 64, 64);
@@ -420,15 +495,15 @@ public class Seat : IDrawingTarget
         Sys.PokeWord(at + 4, height);
         Sys.PokeWord(at + 8, refresh);
         Sys.PokeWord(at + 12, bits);
-        return Ioctl(0x47550034, at) == 0;
+        return Ioctl(SeatIoctl.SetModeExact, at) == 0;
     }
 
     /// The refresh rate in use, or zero where the card chose it.
-    public int Refresh { get { return (int)Ioctl(0x47550032, 0); } }
+    public int Refresh { get { return (int)Ioctl(SeatIoctl.Refresh, 0); } }
 
     /// How many modes this display has. Each is a size, a colour depth and
     /// a refresh rate; the same size appears once per rate it supports.
-    public int ModeCount() { return (int)Ioctl(0x47550030, 0); }
+    public int ModeCount() { return (int)Ioctl(SeatIoctl.ModeCount, 0); }
 
     /// The mode at `index`, or false where there is none.
     public bool ModeAt(int index, out SeatMode mode)
@@ -439,7 +514,7 @@ public class Seat : IDrawingTarget
         long at = Sys.ArrayData(request);
 
         Sys.PokeWord(at, index);
-        if (Ioctl(0x47550031, at) != 0) { return false; }
+        if (Ioctl(SeatIoctl.ModeAt, at) != 0) { return false; }
 
         mode.Width = (int)Sys.PeekWord(at + 4);
         mode.Height = (int)Sys.PeekWord(at + 8);
@@ -499,10 +574,10 @@ public class Seat : IDrawingTarget
     /// A shape this program defined becomes one of the standard ones, for
     /// every program on the seat: what a system does once with real cursor
     /// art, so that nothing else has to know where the art came from.
-    public void BindCursor(int shape, int id) { lock (_keep) { _bindings[shape] = id; } Ioctl(0x47550028, (shape & 0xFF) | ((id & 0xFFFF) << 8)); }
+    public void BindCursor(int shape, int id) { lock (_keep) { _bindings[shape] = id; } Ioctl(SeatIoctl.BindCursor, (shape & 0xFF) | ((id & 0xFFFF) << 8)); }
 
     /// A standard shape back to the seat's own drawing of it.
-    public void UnbindCursor(int shape) { lock (_keep) { _bindings.Remove(shape); } Ioctl(0x47550028, (shape & 0xFF) | (0xFFFF << 8)); }
+    public void UnbindCursor(int shape) { lock (_keep) { _bindings.Remove(shape); } Ioctl(SeatIoctl.BindCursor, (shape & 0xFF) | (0xFFFF << 8)); }
 
     /// AN ANIMATED CURSOR, as an .ani file describes one: the cursor `id`
     /// (defined already) shown as the others in turn, each for its number
@@ -515,7 +590,7 @@ public class Seat : IDrawingTarget
         Put(record, 0, id); Put(record, 4, steps);
         for (int i = 0; i < steps; i++) { Put(record, 8 + i * 8, frames[i]); Put(record, 12 + i * 8, jiffies[i]); }
         Flush();
-        if (Ioctl(SeatAnimateCursor, Sys.ArrayData(record)) < 0) return false;
+        if (Ioctl(SeatIoctl.AnimateCursor, Sys.ArrayData(record)) < 0) return false;
         lock (_keep) { _animations[id] = record; }
         return true;
     }
@@ -529,14 +604,14 @@ public class Seat : IDrawingTarget
     /// Where the pointer is on the screen: Windows' GetCursorPos.
     public Point CursorPosition()
     {
-        long at = Ioctl(SeatCursorAt, 0);
+        long at = Ioctl(SeatIoctl.CursorAt, 0);
         if (at < 0) return new Point(0, 0);
         return new Point((int)(at & 0xFFFF), (int)((at >> 16) & 0xFFFF));
     }
 
     /// A character was typed into a text box: the pointer is hidden until it
     /// next moves, if the user has "Hide pointer while typing" on.
-    public void VanishPointer() { Ioctl(SeatVanishPointer, 0); }
+    public void VanishPointer() { Ioctl(SeatIoctl.VanishPointer, 0); }
 
     // ---- the clipboard --------------------------------------------------------
     //
@@ -551,7 +626,7 @@ public class Seat : IDrawingTarget
         byte[] text = System.Text.Encoding.Unicode.GetBytes(name);
         byte[] args = new byte[8];
         PutWord(args, 0, Sys.ArrayData(text)); PutWord(args, 4, text.Length);
-        long answer = Ioctl(SeatClipboardRegister, Sys.ArrayData(args));
+        long answer = Ioctl(SeatIoctl.ClipboardRegister, Sys.ArrayData(args));
         GC.KeepAlive(text);
         return answer > 0 ? (int)answer : 0;
     }
@@ -563,7 +638,7 @@ public class Seat : IDrawingTarget
     {
         byte[] args = new byte[16];
         PutWord(args, 0, format); PutWord(args, 4, Sys.ArrayData(data)); PutWord(args, 8, data.Length); PutWord(args, 12, empty ? 1 : 0);
-        long answer = Ioctl(SeatClipboardSet, Sys.ArrayData(args));
+        long answer = Ioctl(SeatIoctl.ClipboardSet, Sys.ArrayData(args));
         GC.KeepAlive(data);
         return answer == 0;
     }
@@ -574,12 +649,12 @@ public class Seat : IDrawingTarget
     {
         byte[] args = new byte[12];
         PutWord(args, 0, format);
-        long size = Ioctl(SeatClipboardGet, Sys.ArrayData(args));
+        long size = Ioctl(SeatIoctl.ClipboardGet, Sys.ArrayData(args));
         while (size >= 0)
         {
             byte[] data = new byte[(int)size];
             PutWord(args, 4, Sys.ArrayData(data)); PutWord(args, 8, data.Length);
-            long again = Ioctl(SeatClipboardGet, Sys.ArrayData(args));
+            long again = Ioctl(SeatIoctl.ClipboardGet, Sys.ArrayData(args));
             GC.KeepAlive(data);
             if (again == size) return data;
             size = again;
@@ -587,13 +662,13 @@ public class Seat : IDrawingTarget
         return null;
     }
 
-    public bool IsClipboardFormatAvailable(int format) { return Ioctl(SeatClipboardHas, format) == 1; }
+    public bool IsClipboardFormatAvailable(int format) { return Ioctl(SeatIoctl.ClipboardHas, format) == 1; }
 
     /// EmptyClipboard; false when another program has it open.
-    public bool EmptyClipboard() { return Ioctl(SeatClipboardClear, 0) == 0; }
+    public bool EmptyClipboard() { return Ioctl(SeatIoctl.ClipboardClear, 0) == 0; }
 
     /// GetClipboardSequenceNumber: changes every time the clipboard does.
-    public long ClipboardSequenceNumber { get { return Ioctl(SeatClipboardSequence, 0); } }
+    public long ClipboardSequenceNumber { get { return Ioctl(SeatIoctl.ClipboardSequence, 0); } }
 
     /// The formats on the clipboard, in the order they came, as
     /// EnumClipboardFormats walks them: every one a Windows program put there,
@@ -601,12 +676,12 @@ public class Seat : IDrawingTarget
     public int[] GetClipboardFormats()
     {
         byte[] args = new byte[8];
-        long count = Ioctl(SeatClipboardFormats, Sys.ArrayData(args));
+        long count = Ioctl(SeatIoctl.ClipboardFormats, Sys.ArrayData(args));
         while (count >= 0)
         {
             byte[] list = new byte[(int)count * 4];
             PutWord(args, 0, Sys.ArrayData(list)); PutWord(args, 4, count);
-            long again = Ioctl(SeatClipboardFormats, Sys.ArrayData(args));
+            long again = Ioctl(SeatIoctl.ClipboardFormats, Sys.ArrayData(args));
             GC.KeepAlive(list);
             if (again == count)
             {
@@ -625,11 +700,11 @@ public class Seat : IDrawingTarget
     {
         byte[] args = new byte[12];
         PutWord(args, 0, format);
-        long length = Ioctl(SeatClipboardFormatName, Sys.ArrayData(args));
+        long length = Ioctl(SeatIoctl.ClipboardFormatName, Sys.ArrayData(args));
         if (length <= 0) return null;
         byte[] text = new byte[(int)length * 2];
         PutWord(args, 4, Sys.ArrayData(text)); PutWord(args, 8, length);
-        long again = Ioctl(SeatClipboardFormatName, Sys.ArrayData(args));
+        long again = Ioctl(SeatIoctl.ClipboardFormatName, Sys.ArrayData(args));
         GC.KeepAlive(text);
         return again == length ? System.Text.Encoding.Unicode.GetString(text, 0, text.Length) : null;
     }
@@ -637,21 +712,21 @@ public class Seat : IDrawingTarget
     static void PutWord(byte[] b, int at, long v) { b[at] = (byte)v; b[at + 1] = (byte)(v >> 8); b[at + 2] = (byte)(v >> 16); b[at + 3] = (byte)(v >> 24); }
 
     /// Put the pointer somewhere, as moving the mouse would: SetCursorPos.
-    public void MoveCursorTo(int x, int y) { Ioctl(SeatCursorTo, (x & 0xFFFF) | ((y & 0xFFFF) << 16)); }
+    public void MoveCursorTo(int x, int y) { Ioctl(SeatIoctl.CursorTo, (x & 0xFFFF) | ((y & 0xFFFF) << 16)); }
 
     /// Keep the pointer inside a rectangle of the screen (Windows'
     /// ClipCursor); an empty one lets it go. The seat lets it go too when
     /// this program loses the focus.
     public void ClipCursor(Rectangle area)
     {
-        if (area.Width <= 0 || area.Height <= 0) { Ioctl(SeatClipCursor, 0); return; }
+        if (area.Width <= 0 || area.Height <= 0) { Ioctl(SeatIoctl.ClipCursor, 0); return; }
         long right = area.X + area.Width - 1, bottom = area.Y + area.Height - 1;
-        Ioctl(SeatClipCursor, ((long)area.X & 0xFFFF) | (((long)area.Y & 0xFFFF) << 16)
+        Ioctl(SeatIoctl.ClipCursor, ((long)area.X & 0xFFFF) | (((long)area.Y & 0xFFFF) << 16)
                               | ((right & 0xFFFF) << 32) | ((bottom & 0xFFFF) << 48));
     }
 
     /// How many windows the seat is showing, everybody's included.
-    public int ShownWindows() { int n = (int)Ioctl(0x47550005, 0); return n < 0 ? 0 : n; }
+    public int ShownWindows() { int n = (int)Ioctl(SeatIoctl.Shown, 0); return n < 0 ? 0 : n; }
 
     // --- batches ---------------------------------------------------------
 
@@ -779,15 +854,15 @@ public class Seat : IDrawingTarget
     // call convention carries 32-bit arguments, so a handle cannot ride in the
     // high half of the argument as a 64-bit ABI would allow.
 
-    void Select(int handle) { Ioctl(0x47550029, handle); }
+    void Select(int handle) { Ioctl(SeatIoctl.Select, handle); }
 
     public int CreateWindow(int x, int y, int w, int h)
     {
         Flush();
-        int handle = (int)Ioctl(0x47550010, (x & 0xFFFF) | (y << 16));
+        int handle = (int)Ioctl(SeatIoctl.Create, (x & 0xFFFF) | (y << 16));
         if (handle <= 0) throw new IOException("cannot create a window");
         Select(handle);
-        Ioctl(0x47550011, (w & 0xFFFF) | (h << 16));
+        Ioctl(SeatIoctl.Size, (w & 0xFFFF) | (h << 16));
         Kept kept = new Kept();
         kept.Handle = handle; kept.X = x; kept.Y = y; kept.W = w; kept.H = h;
         kept.Owner = (long)handle >> 12;            // the thread that made it (its handle says so)
@@ -801,23 +876,23 @@ public class Seat : IDrawingTarget
         if (answer < 0) throw new InvalidOperationException("the seat refused " + what + " (" + (-answer) + ")");
     }
 
-    public void ShowWindow(int handle) { Flush(); Select(handle); Must(Ioctl(0x47550012, 0), "showing a window"); lock (_keep) { Kept? k = Find(handle); if (k != null) { k.Shown = true; k.Minimized = false; } } }
-    public void HideWindow(int handle) { Flush(); Select(handle); Must(Ioctl(0x47550013, 0), "hiding a window"); lock (_keep) { Kept? k = Find(handle); if (k != null) { k.Shown = false; k.Minimized = false; } } }
+    public void ShowWindow(int handle) { Flush(); Select(handle); Must(Ioctl(SeatIoctl.Show, 0), "showing a window"); lock (_keep) { Kept? k = Find(handle); if (k != null) { k.Shown = true; k.Minimized = false; } } }
+    public void HideWindow(int handle) { Flush(); Select(handle); Must(Ioctl(SeatIoctl.Hide, 0), "hiding a window"); lock (_keep) { Kept? k = Find(handle); if (k != null) { k.Shown = false; k.Minimized = false; } } }
     /// The window minimized -- off the screen, still on the taskbar, which
     /// asks for it back with a Restore event -- or not any more (ShowWindow
     /// puts it back on the screen).
     public void MinimizeWindow(int handle, bool minimized)
     {
-        Flush(); Select(handle); Ioctl(0x47550043, minimized ? 1 : 0);
+        Flush(); Select(handle); Ioctl(SeatIoctl.Minimized, minimized ? 1 : 0);
         lock (_keep) { Kept? k = Find(handle); if (k != null) { k.Minimized = minimized; if (minimized) k.Shown = false; } }
     }
     /// Ask any window's owner to minimize it (a taskbar button pressed
     /// while its window is the active one).
-    public void RequestMinimize(int handle) { Flush(); Ioctl(0x47550044, handle); }
-    public void RaiseWindow(int handle) { Flush(); Select(handle); Must(Ioctl(0x47550014, 0), "raising a window"); }
+    public void RequestMinimize(int handle) { Flush(); Ioctl(SeatIoctl.MinimizeWindow, handle); }
+    public void RaiseWindow(int handle) { Flush(); Select(handle); Must(Ioctl(SeatIoctl.Raise, 0), "raising a window"); }
     public void MoveWindow(int handle, int x, int y)
     {
-        Flush(); Select(handle); Must(Ioctl(0x47550015, (x & 0xFFFF) | (y << 16)), "moving a window");
+        Flush(); Select(handle); Must(Ioctl(SeatIoctl.Move, (x & 0xFFFF) | (y << 16)), "moving a window");
         lock (_keep) { Kept? k = Find(handle); if (k != null) { k.X = x; k.Y = y; } }
     }
     /// Where the seat's move loop put a window (the Moved event): kept, so
@@ -830,35 +905,33 @@ public class Seat : IDrawingTarget
     /// and the owner is told where it ended (the Moved and Sized events).
     /// Edges: 1 left, 2 right, 4 top, 8 bottom. False when the button is
     /// already up, and nothing is tracked.
-    public bool TrackMove(int handle) { Flush(); Select(handle); return Ioctl(0x47550039, 0) >= 0; }
+    public bool TrackMove(int handle) { Flush(); Select(handle); return Ioctl(SeatIoctl.TrackMove, 0) >= 0; }
     public bool TrackSize(int handle, int edges, int minimumWidth, int minimumHeight)
     {
         Flush(); Select(handle);
-        return Ioctl(0x4755003A, (edges & 0xF) | ((minimumWidth & 0x3FFF) << 4) | ((minimumHeight & 0x3FFF) << 18)) >= 0;
+        return Ioctl(SeatIoctl.TrackSize, (edges & 0xF) | ((minimumWidth & 0x3FFF) << 4) | ((minimumHeight & 0x3FFF) << 18)) >= 0;
     }
 
     public void ResizeWindow(int handle, int w, int h)
     {
-        Flush(); Select(handle); Must(Ioctl(0x47550011, (w & 0xFFFF) | (h << 16)), "resizing a window");
+        Flush(); Select(handle); Must(Ioctl(SeatIoctl.Size, (w & 0xFFFF) | (h << 16)), "resizing a window");
         lock (_keep) { Kept? k = Find(handle); if (k != null) { k.W = w; k.H = h; } }
     }
     public void DestroyWindow(int handle)
     {
-        Flush(); Select(handle); Ioctl(0x47550016, 0); _window = 0; _named = false;
+        Flush(); Select(handle); Ioctl(SeatIoctl.Destroy, 0); _window = 0; _named = false;
         lock (_keep) { Kept? k = Find(handle); if (k != null) _kept.Remove(k); }
     }
-    public void FocusWindow(int handle) { Flush(); Select(handle); Ioctl(0x47550017, 0); }
+    public void FocusWindow(int handle) { Flush(); Select(handle); Ioctl(SeatIoctl.Focus, 0); }
     /// This window is the desktop: the surface under everything, never raised.
-    public void DesktopWindow(int handle) { Flush(); Select(handle); Ioctl(0x47550018, 0); lock (_keep) { Kept? k = Find(handle); if (k != null) k.Desktop = true; } }
+    public void DesktopWindow(int handle) { Flush(); Select(handle); Ioctl(SeatIoctl.Desktop, 0); lock (_keep) { Kept? k = Find(handle); if (k != null) k.Desktop = true; } }
     /// This window stays above every ordinary one (a bar).
-    public void TopMostWindow(int handle, bool on) { Flush(); Select(handle); Ioctl(0x47550019, on ? 1 : 0); lock (_keep) { Kept? k = Find(handle); if (k != null) k.TopMost = on; } }
+    public void TopMostWindow(int handle, bool on) { Flush(); Select(handle); Ioctl(SeatIoctl.TopMost, on ? 1 : 0); lock (_keep) { Kept? k = Find(handle); if (k != null) k.TopMost = on; } }
     /// This window is not listed on a taskbar.
     /// Whether this window is listed on a taskbar; takes effect at once.
-    public void ListOnTaskbar(int handle, bool listed) { Flush(); Select(handle); Ioctl(0x47550024, listed ? 0 : 1); lock (_keep) { Kept? k = Find(handle); if (k != null) k.NoTaskbar = !listed; } }
+    public void ListOnTaskbar(int handle, bool listed) { Flush(); Select(handle); Ioctl(SeatIoctl.NoTaskbar, listed ? 0 : 1); lock (_keep) { Kept? k = Find(handle); if (k != null) k.NoTaskbar = !listed; } }
 
     /// The window's title, as the seat lists it (a taskbar reads it).
-    const long SeatFrameStyle = 0x4755003B, SeatFrameExStyle = 0x4755003C, SeatFrameIcon = 0x4755003D;
-    const long SeatFrameMinimum = 0x4755003E, SeatFrameInsets = 0x4755003F;
 
     /// THE WINDOW'S FRAME, WHICH THE SEAT DRAWS AND ANSWERS, as win32k draws
     /// every Windows window's non-client area: Windows' WS_* and WS_EX_*
@@ -868,8 +941,8 @@ public class Seat : IDrawingTarget
     public void SetFrame(int handle, long style, long exStyle)
     {
         Flush(); Select(handle);
-        Ioctl(SeatFrameExStyle, exStyle);
-        Ioctl(SeatFrameStyle, style);
+        Ioctl(SeatIoctl.FrameExStyle, exStyle);
+        Ioctl(SeatIoctl.FrameStyle, style);
         lock (_keep) { Kept? k = Find(handle); if (k != null) { k.FrameStyle = style; k.FrameExStyle = exStyle; } }
     }
 
@@ -878,7 +951,7 @@ public class Seat : IDrawingTarget
     public void SetFrameIcon(int handle, int[]? pixels)
     {
         Flush(); Select(handle);
-        if (pixels == null) Ioctl(SeatFrameIcon, 0); else SendFrameIcon(pixels);
+        if (pixels == null) Ioctl(SeatIoctl.FrameIcon, 0); else SendFrameIcon(pixels);
         lock (_keep) { Kept? k = Find(handle); if (k != null) k.FrameIcon = pixels; }
     }
 
@@ -890,13 +963,13 @@ public class Seat : IDrawingTarget
             int v = pixels[i];
             bytes[i * 4] = (byte)v; bytes[i * 4 + 1] = (byte)(v >> 8); bytes[i * 4 + 2] = (byte)(v >> 16); bytes[i * 4 + 3] = (byte)(v >> 24);
         }
-        Ioctl(SeatFrameIcon, Sys.ArrayData(bytes));
+        Ioctl(SeatIoctl.FrameIcon, Sys.ArrayData(bytes));
     }
 
     /// The least a size loop makes the window.
     public void SetFrameMinimum(int handle, int width, int height)
     {
-        Flush(); Select(handle); Ioctl(SeatFrameMinimum, (width & 0xFFFF) | (height << 16));
+        Flush(); Select(handle); Ioctl(SeatIoctl.FrameMinimum, (width & 0xFFFF) | (height << 16));
         lock (_keep) { Kept? k = Find(handle); if (k != null) { k.FrameMinWidth = width; k.FrameMinHeight = height; } }
     }
 
@@ -913,14 +986,13 @@ public class Seat : IDrawingTarget
         byte[] styles = new byte[12];
         styles[8] = (byte)(menu ? 1 : 0);
         for (int i = 0; i < 4; i++) { styles[i] = (byte)(style >> (8 * i)); styles[4 + i] = (byte)(exStyle >> (8 * i)); }
-        long answer = Ioctl(SeatFrameInsets, Sys.ArrayData(styles));
+        long answer = Ioctl(SeatIoctl.FrameInsets, Sys.ArrayData(styles));
         if (answer < 0) return;
         left = (int)(answer & 0xFF); top = (int)((answer >> 8) & 0xFF); right = (int)((answer >> 16) & 0xFF); bottom = (int)((answer >> 24) & 0xFF);
     }
 
     // ---- menus the seat runs --------------------------------------------------------
 
-    const long SeatMenuSet = 0x47550045, SeatMenuBar = 0x47550046, SeatMenuTrack = 0x47550047, SeatMenuDelete = 0x47550048, SeatMenuReady = 0x47550049;
 
     /// Every tree handed over, by its id, for a restart of the GUI kernel.
     readonly Dictionary<int, byte[]> _menuTrees = new Dictionary<int, byte[]>();
@@ -932,14 +1004,14 @@ public class Seat : IDrawingTarget
         if (tree.Length < 12) return;
         int root = tree[4] | (tree[5] << 8) | (tree[6] << 16) | (tree[7] << 24);
         Flush();
-        Ioctl(SeatMenuSet, Sys.ArrayData(tree));
+        Ioctl(SeatIoctl.MenuSet, Sys.ArrayData(tree));
         lock (_keep) _menuTrees[root] = tree;
     }
 
     /// The tree `root` is the window's menu bar, drawn in its frame; 0 none.
     public void SetMenuBar(int handle, int root)
     {
-        Flush(); Select(handle); Ioctl(SeatMenuBar, root);
+        Flush(); Select(handle); Ioctl(SeatIoctl.MenuBar, root);
         lock (_keep) { Kept? k = Find(handle); if (k != null) k.MenuBar = root; }
     }
 
@@ -950,16 +1022,16 @@ public class Seat : IDrawingTarget
         byte[] where = new byte[12];
         int[] words = new int[] { root, x, y };
         for (int i = 0; i < 3; i++) { where[i * 4] = (byte)words[i]; where[i * 4 + 1] = (byte)(words[i] >> 8); where[i * 4 + 2] = (byte)(words[i] >> 16); where[i * 4 + 3] = (byte)(words[i] >> 24); }
-        Flush(); Select(handle); Ioctl(SeatMenuTrack, Sys.ArrayData(where));
+        Flush(); Select(handle); Ioctl(SeatIoctl.MenuTrack, Sys.ArrayData(where));
     }
 
     /// The answer to MenuPopup when nothing changed.
-    public void MenuReady() { Flush(); Ioctl(SeatMenuReady, 0); }
+    public void MenuReady() { Flush(); Ioctl(SeatIoctl.MenuReady, 0); }
 
     /// A tree let go of.
     public void DeleteMenu(int root)
     {
-        Flush(); Ioctl(SeatMenuDelete, root);
+        Flush(); Ioctl(SeatIoctl.MenuDelete, root);
         lock (_keep) _menuTrees.Remove(root);
     }
 
@@ -967,23 +1039,23 @@ public class Seat : IDrawingTarget
     {
         byte[] bytes = new byte[64];
         for (int i = 0; i < title.Length && i < 63; i++) bytes[i] = (byte)title[i];
-        Flush(); Select(handle); Ioctl(0x4755001B, Sys.ArrayData(bytes));
+        Flush(); Select(handle); Ioctl(SeatIoctl.Title, Sys.ArrayData(bytes));
         lock (_keep) { Kept? k = Find(handle); if (k != null) k.Title = title; }
     }
 
     /// Ask for a WindowsChanged message whenever the seat's list or focus changes.
     public void WatchWindows()
     {
-        long me = Ioctl(SeatWhoami, 0);
+        long me = Ioctl(SeatIoctl.Whoami, 0);
         lock (_keep) { if (!_watchesWindows.Contains(me)) _watchesWindows.Add(me); }
-        Ioctl(0x4755001D, 0);
+        Ioctl(SeatIoctl.WatchWindows, 0);
     }
 
     /// Every shown window on the seat, bottom to top, whoever owns it.
     public SeatWindowInfo[] Windows()
     {
         byte[] records = new byte[80 * 64];
-        int n = (int)Ioctl(0x4755001C, Sys.ArrayData(records));
+        int n = (int)Ioctl(SeatIoctl.ListWindows, Sys.ArrayData(records));
         if (n < 0) n = 0;
         if (n > 64) n = 64;
         SeatWindowInfo[] result = new SeatWindowInfo[n];
@@ -1006,61 +1078,61 @@ public class Seat : IDrawingTarget
     }
 
     /// Raise and focus any window, whoever owns it (a taskbar button).
-    public void Activate(int handle) { Flush(); Ioctl(0x4755001E, handle); }
+    public void Activate(int handle) { Flush(); Ioctl(SeatIoctl.Activate, handle); }
 
     // --- inspection: what is under a point of the screen, asked of the
     // window's owner through the seat (a spy tool) -------------------------
     public void WatchPointer()
     {
-        long me = Ioctl(SeatWhoami, 0);
+        long me = Ioctl(SeatIoctl.Whoami, 0);
         lock (_keep) { if (!_watchesPointer.Contains(me)) _watchesPointer.Add(me); }
-        Ioctl(0x47550020, 0);
+        Ioctl(SeatIoctl.WatchPointer, 0);
     }
 
     /// The pointer's shape while it is over one of this program's windows.
     /// The seat puts the arrow back the moment the pointer leaves.
-    public void SetCursor(int cursor) { Ioctl(0x47550025, cursor); }
+    public void SetCursor(int cursor) { Ioctl(SeatIoctl.Cursor, cursor); }
 
     // --- the mouse's settings, asked the way Windows asks: the index is
     // the Win32 one (SM_* for GetSystemMetrics, SPI_GET* for
     // SystemParametersInfo); System.Windows.Forms.SystemInformation is the
     // .NET face of these -------------------------------------------------
-    public int SystemMetric(int index) { return (int)Ioctl(0x47550040, index); }
-    public int ParameterInfo(int action) { return (int)Ioctl(0x47550041, action); }
+    public int SystemMetric(int index) { return (int)Ioctl(SeatIoctl.SystemMetric, index); }
+    public int ParameterInfo(int action) { return (int)Ioctl(SeatIoctl.ParameterInfo, action); }
 
     /// The mouse's settings are read again, as this program's user sees the
     /// registry: what the desktop does when a session starts, and the Mouse
     /// control panel after a change.
-    public void ReloadSettings() { Ioctl(0x47550042, 0); }
+    public void ReloadSettings() { Ioctl(SeatIoctl.ReloadSettings, 0); }
 
     /// The drag outline the seat draws over everything: where a window is
     /// heading while the button is held. A width of zero takes it away.
     public void SetBand(int x, int y, int width, int height)
     {
         Flush();
-        Ioctl(0x47550027, (width & 0xFFFF) | (height << 16));
-        Ioctl(0x47550026, (x & 0xFFFF) | (y << 16));
+        Ioctl(SeatIoctl.BandSize, (width & 0xFFFF) | (height << 16));
+        Ioctl(SeatIoctl.Band, (x & 0xFFFF) | (y << 16));
     }
     public void ClearBand() { SetBand(0, 0, 0, 0); }
     /// Ask the owner of the window at a screen point what is there; the
     /// answer arrives as Application.Inspected. Returns the window handle, or -1.
-    public int Inspect(int screenX, int screenY) { Flush(); return (int)Ioctl(0x47550021, (screenX & 0xFFFF) | (screenY << 16)); }
+    public int Inspect(int screenX, int screenY) { Flush(); return (int)Ioctl(SeatIoctl.Inspect, (screenX & 0xFFFF) | (screenY << 16)); }
     public void InspectReply(string text)
     {
         byte[] bytes = new byte[256];
         for (int i = 0; i < text.Length && i < 255; i++) bytes[i] = (byte)text[i];
-        Ioctl(0x47550022, Sys.ArrayData(bytes));
+        Ioctl(SeatIoctl.InspectReply, Sys.ArrayData(bytes));
     }
     public string InspectRead()
     {
         byte[] bytes = new byte[256];
-        int n = (int)Ioctl(0x47550023, Sys.ArrayData(bytes));
+        int n = (int)Ioctl(SeatIoctl.InspectRead, Sys.ArrayData(bytes));
         string text = "";
         for (int i = 0; i < n && i < 255 && bytes[i] != 0; i++) text = text + (char)bytes[i];
         return text;
     }
     /// Ask any window's owner to close it.
-    public void CloseWindow(int handle) { Flush(); Ioctl(0x4755001F, handle); }
+    public void CloseWindow(int handle) { Flush(); Ioctl(SeatIoctl.CloseWindow, handle); }
 
     /// A glyph of the program's own, ids from 256: rows of packed bits, the
     /// most significant first, (width+7)/8 bytes per row.
@@ -1081,25 +1153,25 @@ public class Seat : IDrawingTarget
 
     /// A key, as the keyboard would have given it: a Key code or a
     /// character, and the modifiers (Key.Shift, Ctrl, Alt, Caps, Num) or'd.
-    public void InjectKey(long key, long modifiers) { Ioctl(0x47550007, (key & 0xFFFFFFFF) | (modifiers << 32)); }
+    public void InjectKey(long key, long modifiers) { Ioctl(SeatIoctl.InjectKey, (key & 0xFFFFFFFF) | (modifiers << 32)); }
 
     /// The injected pointer to a place on the screen, in pixels.
-    public void InjectPointerMove(int x, int y) { Ioctl(0x47550008, (x & 0xFFFF) | ((y & 0xFFFF) << 16)); }
+    public void InjectPointerMove(int x, int y) { Ioctl(SeatIoctl.InjectPointerMove, (x & 0xFFFF) | ((y & 0xFFFF) << 16)); }
 
     /// A button of the injected pointer: 1 main, 2 alternate, 3 middle, 4
     /// back, 5 forward.
-    public void InjectPointerButton(int action, bool down) { Ioctl(0x47550009, (action & 0xFF) | ((down ? 1 : 0) << 8)); }
+    public void InjectPointerButton(int action, bool down) { Ioctl(SeatIoctl.InjectPointerButton, (action & 0xFF) | ((down ? 1 : 0) << 8)); }
 
     /// Notches of the wheel, Windows' way: positive away from the user.
-    public void InjectPointerWheel(int notches) { Ioctl(0x4755000A, notches); }
+    public void InjectPointerWheel(int notches) { Ioctl(SeatIoctl.InjectPointerWheel, notches); }
 
     /// Notches of the horizontal wheel, positive to the right.
-    public void InjectPointerHWheel(int notches) { Ioctl(0x4755000B, notches); }
+    public void InjectPointerHWheel(int notches) { Ioctl(SeatIoctl.InjectPointerHWheel, notches); }
 
     /// Rows at the bottom of the screen a bar owns: windows keep out of them.
-    public void ReserveBottom(int rows) { lock (_keep) { _reservedBottom = rows; } Ioctl(0x4755001A, rows); }
+    public void ReserveBottom(int rows) { lock (_keep) { _reservedBottom = rows; } Ioctl(SeatIoctl.ReserveBottom, rows); }
     /// The screen height minus what a bar has reserved: where windows go.
-    public int WorkAreaHeight() { int h = (int)Ioctl(0x47550006, 0); return h <= 0 ? Height : h; }
+    public int WorkAreaHeight() { int h = (int)Ioctl(SeatIoctl.WorkAreaHeight, 0); return h <= 0 ? Height : h; }
     static int Signed16(int v) { int n = v & 0xFFFF; return n >= 0x8000 ? n - 0x10000 : n; }
     public static int LowSigned(int packed) { return Signed16(packed); }
     public static int HighSigned(int packed) { return Signed16(packed >> 16); }
