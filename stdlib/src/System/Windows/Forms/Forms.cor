@@ -957,7 +957,7 @@ public class Control
     internal void DispatchRaw(ref Message m) { WndProc(ref m); }
 }
 
-public enum FormBorderStyle { None = 0, FixedSingle = 1, Sizable = 4, FixedDialog = 3 }
+public enum FormBorderStyle { None = 0, FixedSingle = 1, Fixed3D = 2, FixedDialog = 3, Sizable = 4, FixedToolWindow = 5, SizableToolWindow = 6 }
 
 public enum DialogResult { None = 0, OK = 1, Cancel = 2, Abort = 3, Retry = 4, Ignore = 5, Yes = 6, No = 7 }
 public enum MessageBoxButtons { OK = 0, OKCancel = 1, AbortRetryIgnore = 2, YesNoCancel = 3, YesNo = 4, RetryCancel = 5 }
@@ -977,8 +977,9 @@ public class Form : Control
     FormBorderStyle _border = FormBorderStyle.Sizable;
     FormWindowState _state = FormWindowState.Normal;
     public FormStartPosition StartPosition = FormStartPosition.WindowsDefaultLocation;
-    public const int CaptionHeight = 22;      // the bar under the top border, title and close button
-    public const int BorderWidth = 4;         // two bevel pixels and two of face on every side
+    /// The step between cascaded windows: a caption and a sizing frame,
+    /// SM_CYCAPTION plus SM_CYSIZEFRAME, as Windows cascades them.
+    public const int CascadeStep = 19 + 4;
 
     public event EventHandler? Load;
 
@@ -1002,7 +1003,7 @@ public class Form : Control
 
     public int Handle { get { return _handle; } }
     internal override string ClassName { get { return "Form"; } }
-    public FormBorderStyle FormBorderStyle { get { return _border; } set { _border = value; Invalidate(); } }
+    public FormBorderStyle FormBorderStyle { get { return _border; } set { _border = value; FrameChanged(); Invalidate(); } }
     /// <summary>
     /// Normal, minimized -- off the screen, its taskbar button bringing it
     /// back -- or maximized: a framed form over the work area with its
@@ -1034,11 +1035,14 @@ public class Form : Control
         }
     }
 
+    /// Over the work area with its sizing frame just off the screen, as
+    /// Windows maximizes a window; a borderless one over the whole screen.
     void Maximize()
     {
         Seat seat = Seat.Current;
-        if (!HasFrame) SetBounds(0, 0, seat.Width, seat.Height);
-        else SetBounds(-BorderWidth, -BorderWidth, seat.Width + 2 * BorderWidth, seat.WorkAreaHeight() + 2 * BorderWidth);
+        if (!HasFrame) { SetBounds(0, 0, seat.Width, seat.Height); return; }
+        int frame = FrameBorder();
+        SetBounds(-frame, -frame, seat.Width + 2 * frame, seat.WorkAreaHeight() + 2 * frame);
     }
 
     /// The bounds it goes back to from minimized or maximized, and the state
@@ -1108,45 +1112,128 @@ public class Form : Control
     {
         get
         {
-            if (!HasFrame) return new Rectangle(0, 0, Width, Height);
-            return new Rectangle(0, 0, Width - 2 * BorderWidth, Height - CaptionHeight - 2 * BorderWidth);
+            int l, t, r, b;
+            Insets(out l, out t, out r, out b);
+            return new Rectangle(0, 0, Math.Max(0, Width - l - r), Math.Max(0, Height - t - b));
         }
     }
 
     /// Where the client area starts inside the window.
-    public Point ClientOffset() { return HasFrame ? new Point(BorderWidth, CaptionHeight + BorderWidth) : new Point(0, 0); }
+    public Point ClientOffset() { int l, t, r, b; Insets(out l, out t, out r, out b); return new Point(l, t); }
 
-    /// The close button, in window coordinates.
-    /// Whether the caption carries the close box at all. A window that the
-    /// person is not meant to dismiss -- a login screen, say -- has none,
-    /// and there is then nothing to press and nothing to draw.
-    public bool ControlBox = true;
+    /// Whether the caption carries the system menu and its close box. A
+    /// window the person is not meant to dismiss -- a login screen, say --
+    /// has none.
+    public bool ControlBox { get { return _controlBox; } set { _controlBox = value; FrameChanged(); } }
+    bool _controlBox = true;
 
     /// The picture at the left of the caption, and the one the taskbar
     /// shows for this window.
-    public Icon? Icon { get { return _icon; } set { _icon = value; FrameChanged(); } }
+    public Icon? Icon { get { return _icon; } set { _icon = value; _iconSent = false; FrameChanged(); } }
     Icon? _icon;
+    bool _iconSent;
 
-    Rectangle CloseBox()
+    // ---- the frame, which the seat draws and answers ---------------------------------
+    //
+    // AS WINDOWS DOES IT: the frame, the caption, its buttons, moving and
+    // sizing belong to the system (win32k's non-client area), not to the
+    // program. The form says what frame it wants, in Windows' style bits
+    // -- what WinForms' CreateParams makes of FormBorderStyle, ControlBox,
+    // MinimizeBox and MaximizeBox -- and is told what the person did with it
+    // (Moved, Sized, SysCommand). It draws only its client area.
+
+    const long WsBorder = 0x00800000, WsDlgFrame = 0x00400000, WsCaption = 0x00C00000, WsThickFrame = 0x00040000;
+    const long WsSysMenu = 0x00080000, WsMinimizeBox = 0x00020000, WsMaximizeBox = 0x00010000;
+    const long WsMinimize = 0x20000000, WsMaximize = 0x01000000;
+    const long WsExDlgModalFrame = 0x1, WsExToolWindow = 0x80, WsExClientEdge = 0x200;
+
+    /// The WS_* bits of this form's frame; 0 for none.
+    internal long FrameStyleBits()
     {
-        if (!ControlBox) return Rectangle.Empty;
-        return new Rectangle(Width - BorderWidth - 18, BorderWidth + 2, 16, CaptionHeight - 6);
+        if (!HasFrame) return 0;
+        long style = WsCaption;
+        if (_border == FormBorderStyle.Sizable || _border == FormBorderStyle.SizableToolWindow) style |= WsThickFrame;
+        bool tool = _border == FormBorderStyle.FixedToolWindow || _border == FormBorderStyle.SizableToolWindow;
+        if (_controlBox)
+        {
+            style |= WsSysMenu;
+            // A tool window has only its close box, as Windows draws one.
+            if (!tool && _minimizeBox) style |= WsMinimizeBox;
+            if (!tool && _maximizeBox) style |= WsMaximizeBox;
+        }
+        if (_state == FormWindowState.Maximized) style |= WsMaximize;
+        if (_state == FormWindowState.Minimized) style |= WsMinimize;
+        return style;
     }
 
-    /// The maximize (or restore) and minimize buttons, left of the close
-    /// button with a gap before it, as Windows lays the three out; empty
-    /// when neither is wanted.
-    Rectangle MaximizeBoxBounds()
+    /// The WS_EX_* bits of this form's frame.
+    internal long FrameExStyleBits()
     {
-        Rectangle close = CloseBox();
-        if (close.IsEmpty || !MinimizeBox && !MaximizeBox) return Rectangle.Empty;
-        return new Rectangle(close.X - 18, close.Y, 16, close.Height);
+        if (_border == FormBorderStyle.FixedToolWindow || _border == FormBorderStyle.SizableToolWindow) return WsExToolWindow;
+        if (_border == FormBorderStyle.Fixed3D) return WsExClientEdge;
+        if (_border == FormBorderStyle.FixedDialog) return WsExDlgModalFrame;
+        return 0;
     }
 
-    Rectangle MinimizeBoxBounds()
+    // The insets for the frame last asked about, kept: the seat answers
+    // them (AdjustWindowRectEx) and they change only with the frame.
+    long _insetsFor = -1, _insetsForEx = -1;
+    int _insetL, _insetT, _insetR, _insetB;
+
+    void Insets(out int left, out int top, out int right, out int bottom)
     {
-        Rectangle max = MaximizeBoxBounds();
-        return max.IsEmpty ? max : new Rectangle(max.X - 16, max.Y, 16, max.Height);
+        long style = FrameStyleBits() & ~(WsMaximize | WsMinimize), ex = FrameExStyleBits();
+        if (style != _insetsFor || ex != _insetsForEx)
+        {
+            Seat.Current.FrameInsets(style, ex, out _insetL, out _insetT, out _insetR, out _insetB);
+            _insetsFor = style; _insetsForEx = ex;
+        }
+        left = _insetL; top = _insetT; right = _insetR; bottom = _insetB;
+    }
+
+    /// The frame's own width, without a client edge: what is left off the
+    /// screen when the form is maximized.
+    int FrameBorder()
+    {
+        int l, t, r, b;
+        Insets(out l, out t, out r, out b);
+        return (FrameExStyleBits() & WsExClientEdge) != 0 ? l - 2 : l;
+    }
+
+    /// The least a size loop makes a form, SM_CXMINTRACK's kind of number.
+    public const int MinimumWidth = 120, MinimumHeight = 60;
+
+    // What the seat was last told, so that a change that alters nothing
+    // (a form activated) asks nothing of it.
+    long _sentStyle = -1, _sentExStyle = -1;
+
+    /// The frame told to the seat: its style bits, its icon, its minimum.
+    void SendFrame()
+    {
+        if (_handle == 0) return;
+        Seat seat = Seat.Current;
+        long style = FrameStyleBits(), ex = FrameExStyleBits();
+        if (style != _sentStyle || ex != _sentExStyle)
+        {
+            seat.SetFrame(_handle, style, ex);
+            _sentStyle = style; _sentExStyle = ex;
+        }
+        if (!_iconSent)
+        {
+            seat.SetFrameIcon(_handle, _icon != null ? _icon.SmallPixels() : null);
+            _iconSent = true;
+        }
+    }
+
+    /// A caption button, or the caption double-clicked: WM_SYSCOMMAND,
+    /// done as DefWindowProc does it.
+    internal void SysCommand(int command)
+    {
+        const int ScClose = 0xF060, ScMinimize = 0xF020, ScMaximize = 0xF030, ScRestore = 0xF120;
+        if (command == ScClose) { if (_controlBox) Close(); }
+        else if (command == ScMinimize) { if (_minimizeBox) WindowState = FormWindowState.Minimized; }
+        else if (command == ScMaximize) { if (_maximizeBox) WindowState = FormWindowState.Maximized; }
+        else if (command == ScRestore) WindowState = FormWindowState.Normal;
     }
 
     /// Where the seat's move loop left the window: the form's own record,
@@ -1166,30 +1253,6 @@ public class Form : Control
         if (_handle != 0 && moved) Seat.Current.MoveWindow(_handle, x, y);
     }
 
-    /// The edges a press on a sizable frame takes hold of: 1 left, 2 right,
-    /// 4 top, 8 bottom; a corner is two of them. The band is the border
-    /// plus a couple of pixels, which is what a hand finds.
-    int ResizeEdges(int x, int y)
-    {
-        if (FormBorderStyle != FormBorderStyle.Sizable || _state != FormWindowState.Normal) return 0;
-        const int Band = BorderWidth + 2;
-        int edges = 0;
-        if (x < Band) edges |= 1; else if (x >= Width - Band) edges |= 2;
-        if (y < Band) edges |= 4; else if (y >= Height - Band) edges |= 8;
-        return edges;
-    }
-    public const int MinimumWidth = 120, MinimumHeight = 60;
-
-    /// The shape that says what those edges will move.
-    internal static int CursorFor(int edges)
-    {
-        if (edges == (1 | 4) || edges == (2 | 8)) return CursorShapes.SizeNWSE;
-        if (edges == (2 | 4) || edges == (1 | 8)) return CursorShapes.SizeNESW;
-        if ((edges & 3) != 0) return CursorShapes.SizeWE;
-        if ((edges & 12) != 0) return CursorShapes.SizeNS;
-        return CursorShapes.Arrow;
-    }
-
     public new void Show()
     {
         if (_shown) return;
@@ -1207,6 +1270,11 @@ public class Form : Control
         }
         _handle = seat.CreateWindow(Left, Top, Width, Height);
         seat.SetTitle(_handle, Text);
+        // The frame, before the window is ever on the screen: the seat
+        // draws it on the window's first surface.
+        _sentStyle = -1; _sentExStyle = -1; _iconSent = false;
+        SendFrame();
+        if (HasFrame) seat.SetFrameMinimum(_handle, MinimumWidth, MinimumHeight);
         if (DesktopSurface) seat.DesktopWindow(_handle);
         if (TopMost) seat.TopMostWindow(_handle, true);
         if (!ShowInTaskbar) seat.ListOnTaskbar(_handle, false);
@@ -1283,182 +1351,28 @@ public class Form : Control
     protected virtual void OnDeactivate(EventArgs e) { if (Deactivate != null) Deactivate(this, e); }
     internal void RaiseDeactivate() { FrameChanged(); OnDeactivate(EventArgs.Empty); }
 
-    void FrameChanged() { _frameDirty = true; Application.NeedsPaint(this); }
-
-    // The caption changes colour when the window gains or loses the focus,
-    // and its text when Text is set; an ordinary repaint of the client tree
-    // would not touch the frame, so those mark it and the next paint draws it.
-    bool _frameDirty;
+    /// The frame's style, icon or state changed: the seat is told, and it
+    /// draws the frame again. Activation is the seat's own to show.
+    void FrameChanged() { SendFrame(); }
 
     /// The title, kept by the seat too once the window exists.
     public override string Text { get { return base.Text; } set { base.Text = value; if (_handle != 0) Seat.Current.SetTitle(_handle, value); FrameChanged(); } }
 
-    /// Paint the whole window: the frame, then the client tree.
+    /// Paint the window: its client tree. The frame is the seat's.
     internal void PaintWindow(Rectangle clip, bool force)
     {
         if (_handle == 0) return;
         Seat seat = Seat.Current;
         seat.Target(_handle);
-        if (HasFrame && (force || _frameDirty))
-        {
-            _frameDirty = false;
-            // Within the clip, like everything else (see Compose in the seat).
-            Graphics g = new Graphics(seat, 0, 0, Rectangle.Intersect(clip, new Rectangle(0, 0, Width, Height)));
-            bool active = Application.ActiveForm == this;
-            Color face = SystemColors.Control;
-            int w = Width, h = Height;
-            // THE FRAME ONLY, never over the client. Filling the whole window
-            // here washed the program's own painting away and left it grey
-            // until something forced a full repaint -- on every focus change,
-            // which is the flash that was in the terminal, and an empty
-            // window until it was dragged.
-            Point frameCo = ClientOffset();
-            int clientW = ClientRectangle.Width, clientH = ClientRectangle.Height;
-            SolidBrush faceBrush = new SolidBrush(face);
-            g.FillRectangle(faceBrush, 0, 0, w, frameCo.Y);                                  // caption and the top border
-            g.FillRectangle(faceBrush, 0, frameCo.Y + clientH, w, h - frameCo.Y - clientH);  // the bottom border
-            g.FillRectangle(faceBrush, 0, frameCo.Y, frameCo.X, clientH);                    // the left border
-            g.FillRectangle(faceBrush, frameCo.X + clientW, frameCo.Y, w - frameCo.X - clientW, clientH);
-            // THE FRAME IS TWO BEVELS, not one: a thin raised rim around
-            // the outside and a second one just inside it. That is what
-            // gives a window of this era its depth, and it is why the
-            // border is four pixels rather than two.
-            ControlPaint.DrawBorder3D(g, 0, 0, w, h, Border3DStyle.RaisedOuter);
-            ControlPaint.DrawBorder3D(g, 1, 1, w - 2, h - 2, Border3DStyle.RaisedInner);
-
-            int cx = BorderWidth, cy = BorderWidth, cw = w - 2 * BorderWidth, ch = CaptionHeight - 2;
-
-            // THE CAPTION IS A GRADIENT ONLY WHERE THERE ARE COLOURS FOR
-            // ONE. Windows 98 shipped the gradient on and turned it off on
-            // a 256-colour display, and it was right to: this palette has
-            // six levels per channel, so a ramp across it comes out as
-            // five hard steps, which looks worse than the flat navy the
-            // era used before it. Flat below 256 colours, gradient above.
-            Color from = active ? SystemColors.ActiveCaption : SystemColors.InactiveCaption;
-            Color to = active ? SystemColors.GradientActiveCaption : SystemColors.GradientInactiveCaption;
-
-            if (Seat.Current.Colours <= 256) { g.FillRectangle(new SolidBrush(from), cx, cy, cw, ch); }
-            else
-            {
-                // Bands of four pixels: at this width the banding is
-                // invisible and it is a few hundred operations instead of
-                // a few thousand.
-                const int Band = 4;
-
-                for (int at = 0; at < cw; at += Band)
-                {
-                    int width = at + Band > cw ? cw - at : Band;
-                    g.FillRectangle(new SolidBrush(ColorBlend.Mix(from, to, cw <= 1 ? 0 : at * 256 / cw)), cx + at, cy, width, ch);
-                }
-            }
-
-            Color title = active ? SystemColors.ActiveCaptionText : SystemColors.InactiveCaptionText;
-            int titleX = cx + 4;
-
-            // The window's own icon sits at the left of its caption.
-            if (_icon != null) { _icon.Draw(g, titleX, cy + (ch - 16) / 2, 16); titleX += 18; }
-
-            // The caption font is the interface face's own bold. The colour
-            // behind it is the caption's left-hand colour, which under a
-            // gradient is very nearly what is behind a title that starts at
-            // the left -- near enough that the blended rim does not show.
-            Font captionFont = SystemFonts.CaptionFont;
-            g.DrawString(Text, captionFont, new SolidBrush(title), from, titleX, cy + (ch - captionFont.Height) / 2);
-
-            Rectangle close = CloseBox();
-            if (!close.IsEmpty)
-            {
-                bool held = _closeDown && _closeHot;
-                ControlPaint.DrawButtonFace(g, close.X, close.Y, close.Width, close.Height, held, false, face);
-
-                // THE CROSS IS SIX BY SIX, drawn as two strokes a pixel
-                // thick each way, which at this size is the shape Windows
-                // drew and is legible where a thinner one is not.
-                Pen ink = new Pen(SystemColors.ControlText);
-                int press = held ? 1 : 0;
-                int lx = close.X + (close.Width - 7) / 2 + press, ly = close.Y + (close.Height - 7) / 2 + press;
-                g.DrawLine(ink, lx, ly, lx + 6, ly + 6); g.DrawLine(ink, lx + 1, ly, lx + 7, ly + 6);
-                g.DrawLine(ink, lx, ly + 6, lx + 6, ly); g.DrawLine(ink, lx + 1, ly + 6, lx + 7, ly);
-            }
-            PaintCaptionButton(g, MaximizeBoxBounds(), 2, MaximizeBox, face);
-            PaintCaptionButton(g, MinimizeBoxBounds(), 3, MinimizeBox, face);
-        }
         Point co = ClientOffset();
         Rectangle client = new Rectangle(co.X, co.Y, ClientRectangle.Width, ClientRectangle.Height);
         PaintTree(seat, co, force ? client : Rectangle.Intersect(client, new Rectangle(0, 0, Width, Height)), force);
         AutoScroll.Overlay(this, seat);
     }
 
-    /// The maximize (2) or minimize (3) button: raised, or pushed in while
-    /// held with the pointer on it; its glyph -- the restore glyph when the
-    /// form is maximized -- grey when the button is not wanted.
-    void PaintCaptionButton(Graphics g, Rectangle box, int which, bool enabled, Color face)
-    {
-        if (box.IsEmpty) return;
-        bool held = _held == which && _closeHot;
-        ControlPaint.DrawButtonFace(g, box.X, box.Y, box.Width, box.Height, held, false, face);
-        int press = held ? 1 : 0;
-        int x = box.X + 3 + press, y = box.Y + 2 + press;
-        Color colour = enabled ? SystemColors.ControlText : SystemColors.GrayText;
-        SolidBrush ink = new SolidBrush(colour);
-        if (!enabled) { SolidBrush lit = new SolidBrush(SystemColors.ControlLightLight); Glyph(g, lit, which, x + 1, y + 1); }
-        Glyph(g, ink, which, x, y);
-    }
-
-    void Glyph(Graphics g, SolidBrush ink, int which, int x, int y)
-    {
-        if (which == 3) { g.FillRectangle(ink, x + 1, y + 7, 6, 2); return; }
-        if (_state == FormWindowState.Maximized)
-        {
-            g.FillRectangle(ink, x + 2, y, 6, 2); g.FillRectangle(ink, x + 7, y, 1, 6); g.FillRectangle(ink, x + 2, y, 1, 3); g.FillRectangle(ink, x + 6, y + 5, 2, 1);
-            g.FillRectangle(ink, x, y + 3, 6, 2); g.FillRectangle(ink, x, y + 8, 6, 1); g.FillRectangle(ink, x, y + 3, 1, 6); g.FillRectangle(ink, x + 5, y + 3, 1, 6);
-            return;
-        }
-        g.FillRectangle(ink, x, y, 9, 2); g.FillRectangle(ink, x, y + 8, 9, 1); g.FillRectangle(ink, x, y, 1, 9); g.FillRectangle(ink, x + 8, y, 1, 9);
-    }
-
-    // The caption button held down (1 close, 2 maximize, 3 minimize),
-    // waiting to see where the button comes up.
-    int _held;
-    bool _closeDown { get { return _held != 0; } }
-
-    /// The close box, and the caption a drag starts on. Nothing acts on the
-    /// press: a button pressed and released is a decision, a button pressed
-    /// and dragged away is a change of mind, which is how every other button
-    /// on the screen behaves and how Windows behaves.
-    void FrameMouse(int kind, int button, int x, int y, Point co)
-    {
-        Rectangle close = CloseBox(), max = MaximizeBoxBounds(), min = MinimizeBoxBounds();
-        int under = !close.IsEmpty && close.Contains(x, y) ? 1
-                  : !max.IsEmpty && max.Contains(x, y) && MaximizeBox ? 2
-                  : !min.IsEmpty && min.Contains(x, y) && MinimizeBox ? 3 : 0;
-        if (kind == 4 && button == 1 && under != 0) { _held = under; _closeHot = true; FrameChanged(); return; }
-        if (kind == 3 && _held != 0) { bool over = under == _held; if (over != _closeHot) { _closeHot = over; FrameChanged(); } return; }
-        if (kind == 5 && _held != 0)
-        {
-            int which = _held;
-            _held = 0; FrameChanged();
-            if (under != which) return;
-            if (which == 1) Close();
-            else if (which == 2) WindowState = _state == FormWindowState.Maximized ? FormWindowState.Normal : FormWindowState.Maximized;
-            else WindowState = FormWindowState.Minimized;
-            return;
-        }
-        if (kind == 4 && button == 1 && y < co.Y)
-        {
-            // A double click on the caption maximizes or restores; a
-            // maximized form is not dragged by it.
-            if (Application.CountClick(this, MouseButtons.Left, x, y) >= 2 && MaximizeBox)
-            {
-                WindowState = _state == FormWindowState.Maximized ? FormWindowState.Normal : FormWindowState.Maximized;
-                return;
-            }
-            if (_state == FormWindowState.Normal) Application.BeginDrag(this, x, y);
-        }
-    }
-    bool _closeHot;
-
-    /// A press in the window: the close box, the caption, or the client.
+    /// A press, move or release in the window, which the seat sends only for
+    /// its client area and for a control holding the button: the frame is
+    /// the seat's.
     internal void WindowMouse(int kind, int button, int x, int y)
     {
         // While autoscroll runs it has the mouse: moves steer it, and the
@@ -1469,20 +1383,12 @@ public class Form : Control
         // A control holding the button gets everything until it comes up,
         // even where the pointer has left the window altogether.
         if (kind != 4 && Application.Captured != null) { ClientMouse(kind, button, x, y, co); return; }
-        if (HasFrame && kind == 4 && button == 1)
-        {
-            int edges = ResizeEdges(x, y);
-            if (edges != 0) { Application.BeginResize(this, edges, x, y); return; }
-        }
         if (HasFrame && (y < co.Y || x < co.X || x >= co.X + ClientRectangle.Width || y >= co.Y + ClientRectangle.Height))
         {
-            // Over the frame with no button held: the pointer says what the
-            // edge under it would do, the way Windows does.
-            if (kind == 3 && Application.Captured == null && !_closeDown) Cursor.WearShape(CursorFor(ResizeEdges(x, y)));
-            FrameMouse(kind, button, x, y, co);
+            // Out over the frame: nothing in the client is under the pointer.
+            if (kind == 3) Application.Hover(null);
             return;
         }
-        if (_closeDown) { FrameMouse(kind, button, x, y, co); if (kind != 5) return; }
         ClientMouse(kind, button, x, y, co);
     }
 
@@ -5211,7 +5117,7 @@ public static class Application
     /// what a person opening a second one expects.
     internal static Point NextCascade(int width, int height, int screenWidth, int screenHeight)
     {
-        const int Step = Form.CaptionHeight + Form.BorderWidth;
+        const int Step = Form.CascadeStep;
         const int Margin = 24;
         int shown = Seat.Current.ShownWindows();
         int x = Margin + shown * Step, y = Margin + shown * Step;
@@ -5222,17 +5128,6 @@ public static class Application
     static int _exitCode;
     static Control? _focus;
     static Form? _active;
-    /// A press on a sizable edge: the seat's size loop takes it from here
-    /// (Seat.TrackSize), following the pointer with an outline in the GUI
-    /// kernel however busy this program is, and tells the form the size it
-    /// ended at (Sized), as win32k's loop does for SC_SIZE.
-    internal static void BeginResize(Form f, int edges, int x, int y)
-    {
-        if (f.Handle == 0) return;
-        Cursor.WearShape(Form.CursorFor(edges));
-        Seat.Current.TrackSize(f.Handle, edges, Form.MinimumWidth, Form.MinimumHeight);
-    }
-
     static bool _paintPending;
     static List<int> _watchFds = new List<int>();
     static List<WatchHandler> _watchHandlers = new List<WatchHandler>();
@@ -5250,13 +5145,6 @@ public static class Application
 
     internal static void Unregister(Form f) { _forms.Remove(f); if (_active == f) _active = _forms.Count > 0 ? _forms[_forms.Count - 1] : null; if (_focus != null && _focus.FindForm() == f) _focus = null; }
     internal static void NeedsPaint(Control c) { _paintPending = true; }
-    /// A press on the caption: SC_MOVE. The seat's move loop takes the
-    /// window from here, in the GUI kernel, moving it on every report of
-    /// the pointer whatever this program is doing, and says where it ended
-    /// (Moved). x, y, where in the window the press was, are the seat's to
-    /// know: it keeps the press it is moving by.
-    internal static void BeginDrag(Form f, int x, int y) { if (f.Handle != 0) Seat.Current.TrackMove(f.Handle); }
-
     static Control? _hot;
 
     /// <summary>
@@ -5581,6 +5469,10 @@ public static class Application
             case 19:
                 // Its taskbar button, pressed while it was the active window.
                 if (f != null && f.MinimizeBox) f.WindowState = FormWindowState.Minimized;
+                break;
+            case 22:
+                // WM_SYSCOMMAND: a caption button, or the caption double-clicked.
+                if (f != null) f.SysCommand(m.A);
                 break;
             case 20:
                 // WM_MOVE after the seat's move loop: the window is there

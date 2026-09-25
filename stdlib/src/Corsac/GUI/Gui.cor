@@ -157,6 +157,9 @@ public class Seat : IDrawingTarget
         public long Start;               // the GUI kernel's start it was last made in
         public bool Shown, Desktop, TopMost, NoTaskbar, Minimized;
         public string Title = "";
+        public long FrameStyle, FrameExStyle;     // the frame the seat draws for it (SetFrame)
+        public int[]? FrameIcon;
+        public int FrameMinWidth, FrameMinHeight;
 
         public Kept Copy()
         {
@@ -165,6 +168,8 @@ public class Seat : IDrawingTarget
             made.Owner = Owner; made.Start = Start;
             made.Shown = Shown; made.Desktop = Desktop; made.TopMost = TopMost; made.NoTaskbar = NoTaskbar; made.Minimized = Minimized;
             made.Title = Title;
+            made.FrameStyle = FrameStyle; made.FrameExStyle = FrameExStyle; made.FrameIcon = FrameIcon;
+            made.FrameMinWidth = FrameMinWidth; made.FrameMinHeight = FrameMinHeight;
             return made;
         }
     }
@@ -262,6 +267,13 @@ public class Seat : IDrawingTarget
             Ioctl(0x47550011, (w.W & 0xFFFF) | (w.H << 16));
             Ioctl(0x47550015, (w.X & 0xFFFF) | (w.Y << 16));
             if (w.Title.Length > 0) SendTitle(w.Title);
+            if (w.FrameStyle != 0)
+            {
+                Ioctl(SeatFrameExStyle, w.FrameExStyle);
+                Ioctl(SeatFrameStyle, w.FrameStyle);
+                if (w.FrameIcon != null) SendFrameIcon(w.FrameIcon);
+                if (w.FrameMinWidth > 0) Ioctl(SeatFrameMinimum, (w.FrameMinWidth & 0xFFFF) | (w.FrameMinHeight << 16));
+            }
             if (w.Desktop) Ioctl(0x47550018, 0);
             if (w.TopMost) Ioctl(0x47550019, 1);
             if (w.NoTaskbar) Ioctl(0x47550024, 1);
@@ -738,6 +750,62 @@ public class Seat : IDrawingTarget
     public void ListOnTaskbar(int handle, bool listed) { Flush(); Select(handle); Ioctl(0x47550024, listed ? 0 : 1); lock (_keep) { Kept? k = Find(handle); if (k != null) k.NoTaskbar = !listed; } }
 
     /// The window's title, as the seat lists it (a taskbar reads it).
+    const long SeatFrameStyle = 0x4755003B, SeatFrameExStyle = 0x4755003C, SeatFrameIcon = 0x4755003D;
+    const long SeatFrameMinimum = 0x4755003E, SeatFrameInsets = 0x4755003F;
+
+    /// THE WINDOW'S FRAME, WHICH THE SEAT DRAWS AND ANSWERS, as win32k draws
+    /// every Windows window's non-client area: Windows' WS_* and WS_EX_*
+    /// bits for it (0: none, the program draws the whole window). Presses
+    /// on it never reach the program: the caption moves the window, an edge
+    /// sizes it, a caption button pressed is a SysCommand event.
+    public void SetFrame(int handle, long style, long exStyle)
+    {
+        Flush(); Select(handle);
+        Ioctl(SeatFrameExStyle, exStyle);
+        Ioctl(SeatFrameStyle, style);
+        lock (_keep) { Kept? k = Find(handle); if (k != null) { k.FrameStyle = style; k.FrameExStyle = exStyle; } }
+    }
+
+    /// The small icon at the frame's caption: 16x16 COLORREFs, -1 where
+    /// clear; null for none.
+    public void SetFrameIcon(int handle, int[]? pixels)
+    {
+        Flush(); Select(handle);
+        if (pixels == null) Ioctl(SeatFrameIcon, 0); else SendFrameIcon(pixels);
+        lock (_keep) { Kept? k = Find(handle); if (k != null) k.FrameIcon = pixels; }
+    }
+
+    void SendFrameIcon(int[] pixels)
+    {
+        byte[] bytes = new byte[1024];
+        for (int i = 0; i < 256 && i < pixels.Length; i++)
+        {
+            int v = pixels[i];
+            bytes[i * 4] = (byte)v; bytes[i * 4 + 1] = (byte)(v >> 8); bytes[i * 4 + 2] = (byte)(v >> 16); bytes[i * 4 + 3] = (byte)(v >> 24);
+        }
+        Ioctl(SeatFrameIcon, Sys.ArrayData(bytes));
+    }
+
+    /// The least a size loop makes the window.
+    public void SetFrameMinimum(int handle, int width, int height)
+    {
+        Flush(); Select(handle); Ioctl(SeatFrameMinimum, (width & 0xFFFF) | (height << 16));
+        lock (_keep) { Kept? k = Find(handle); if (k != null) { k.FrameMinWidth = width; k.FrameMinHeight = height; } }
+    }
+
+    /// Where the client area sits inside a window with this frame, as
+    /// AdjustWindowRectEx says: no window needed.
+    public void FrameInsets(long style, long exStyle, out int left, out int top, out int right, out int bottom)
+    {
+        left = 0; top = 0; right = 0; bottom = 0;
+        if (style == 0) return;
+        byte[] styles = new byte[8];
+        for (int i = 0; i < 4; i++) { styles[i] = (byte)(style >> (8 * i)); styles[4 + i] = (byte)(exStyle >> (8 * i)); }
+        long answer = Ioctl(SeatFrameInsets, Sys.ArrayData(styles));
+        if (answer < 0) return;
+        left = (int)(answer & 0xFF); top = (int)((answer >> 8) & 0xFF); right = (int)((answer >> 16) & 0xFF); bottom = (int)((answer >> 24) & 0xFF);
+    }
+
     public void SetTitle(int handle, string title)
     {
         byte[] bytes = new byte[64];

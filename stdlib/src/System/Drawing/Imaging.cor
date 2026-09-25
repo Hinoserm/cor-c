@@ -503,6 +503,27 @@ public class Icon
         return id;
     }
 
+    /// The icon at 16 pixels, as the seat takes a frame's small icon:
+    /// 256 COLORREFs (0x00BBGGRR), -1 where it is clear (less than half
+    /// opaque, as a one-bit mask would have it). Null when the file holds
+    /// nothing readable.
+    public int[]? SmallPixels()
+    {
+        int which = _file.Best(16, Seat.Current.Colours);
+        if (which < 0) return null;
+        Bitmap? picture = _file.Decode(which);
+        if (picture == null) return null;
+        if (picture.Width != 16 || picture.Height != 16) picture = Scaled(picture, 16);
+        int[] made = new int[256];
+        for (int i = 0; i < 256; i++)
+        {
+            int at = i * 4;
+            if ((picture.Pixels[at + 3] & 255) < 128) { made[i] = -1; continue; }
+            made[i] = (picture.Pixels[at + 2] & 255) | ((picture.Pixels[at + 1] & 255) << 8) | ((picture.Pixels[at] & 255) << 16);
+        }
+        return made;
+    }
+
     /// Draw the icon with its top-left corner at (x, y), asking for the
     /// image made for `size` pixels. Nothing happens if the file held
     /// nothing we could read, which is what a program wants: a missing
