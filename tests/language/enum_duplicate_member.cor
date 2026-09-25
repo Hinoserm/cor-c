@@ -1,0 +1,22 @@
+// test: enum_duplicate_member
+// expect-compile-error: already has a member called 'PrivateDialogIndex'
+// One enum naming a member twice is C#'s CS0102, and the compiler says so.
+// It used to take both quietly -- the second's value replacing the first's --
+// which is how a Win32 error enum came to carry one name twice unnoticed.
+
+enum Win32Error : long
+{
+    InvalidIndex = 0x585,
+    PrivateDialogIndex = 0x587,
+    ClipboardNotOpen = 0x58A,
+    PrivateDialogIndex = 0x588,
+}
+
+public static class Program
+{
+    public static int Main()
+    {
+        System.Console.WriteLine((long)Win32Error.PrivateDialogIndex);
+        return 0;
+    }
+}

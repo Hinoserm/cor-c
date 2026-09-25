@@ -1949,6 +1949,15 @@ public sealed partial class Binder
                         Error(m, "an enum member's value must be a constant the compiler can work out");
                     }
                 }
+                // ONE NAME, ONE MEMBER (CS0102), as for fields: taken quietly,
+                // the second silently replaced the first's value -- win32k's
+                // Win32Error had PrivateDialogIndex twice, which C# refuses.
+                if (sym.EnumValues.ContainsKey(m.Name))
+                {
+                    Error(m, $"'{sym.Name}' already has a member called '{m.Name}'");
+                    next++;
+                    continue;
+                }
                 sym.EnumValues[m.Name] = next++;
             }
             return;
