@@ -150,6 +150,11 @@ public static class ElfWriter
             Section s = obj.Sections[i];
             (uint type, uint flags) = Elf.SectionTypeAndFlags(s.Kind);
             uint align = (uint)Math.Max(1, s.Align);
+            // A power of two no bigger than a page, or the layout is wrong: a
+            // stray alignment pads the object toward 4 GiB and dies far from
+            // the cause with an OutOfMemoryException.
+            if ((align & (align - 1)) != 0 || align > 0x1000)
+                throw new InvalidOperationException($"section {s.Name}: alignment 0x{align:x} is not a power of two up to 0x1000");
             uint at = b.AlignTo(align);
             if (s.Kind != SectionKind.Uninitialised)
             {
