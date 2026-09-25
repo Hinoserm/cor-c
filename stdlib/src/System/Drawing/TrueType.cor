@@ -841,6 +841,12 @@ class TrueTypeHinter
 
     public bool Failed;                      // a program did something impossible
 
+    /// What GETINFO says of the transform the glyphs are drawn through:
+    /// turned (selector bit 1 answers bit 8) or stretched unevenly (bit 2
+    /// answers bit 9). A face's own control value program commonly asks
+    /// and switches grid-fitting off (INSTCTRL) for either.
+    public bool Rotated, Stretched;
+
     public TrueTypeHinter(TrueTypeFace face)
     {
         _face = face;
@@ -1433,9 +1439,11 @@ class TrueTypeHinter
                 // Version 35 -- Windows 98's rasteriser -- is what a font
                 // of this era tests for, and what the hinting below is.
                 if ((selector & 1) != 0) { answer = answer | 35; }
-                // Not rotated, not stretched, no grey: every other bit is
-                // deliberately nought, and saying so is what stops a font
-                // taking a path we do not implement.
+                if ((selector & 2) != 0 && Rotated) { answer = answer | 0x100; }
+                if ((selector & 4) != 0 && Stretched) { answer = answer | 0x200; }
+                // No grey: every other bit is deliberately nought, and
+                // saying so is what stops a font taking a path we do not
+                // implement.
                 Push(answer);
             }
             else if (op == 0x4F) { Pop(); }                                        // DEBUG
@@ -2998,6 +3006,31 @@ class TrueTypeRaster
         return made;
     }
 
+    /// <summary>
+    /// The outline filled into a box the caller chose rather than its own:
+    /// `width` by `height` samples `step` apart (64 a pixel, 64 / n for n
+    /// samples a pixel) from the box's bottom-left corner at (originX,
+    /// originY) in the outline's 26.6, top row first. What the box leaves
+    /// out of the outline is cut away; what the outline leaves empty is 0.
+    /// </summary>
+    public GlyphBitmap RenderInto(TrueTypeZone zone, int realPoints, int originX, int originY, int width, int height, bool dropout, int step)
+    {
+        GlyphBitmap made = new GlyphBitmap();
+        made.Width = width > 0 ? width : 0;
+        made.Height = height > 0 ? height : 0;
+        made.Bits = new byte[made.Stride * made.Height];
+        if (made.Width == 0 || made.Height == 0) { return made; }
+
+        Flatten(zone, realPoints);
+
+        int left, right, bottom, top;
+        if (!Bounds(out left, out right, out bottom, out top)) { return made; }
+
+        Fill(made, originX, originY, dropout, step);
+        Flip(made);
+        return made;
+    }
+
     static void Flip(GlyphBitmap map)
     {
         int stride = map.Stride;
@@ -3038,6 +3071,14 @@ class TrueTypeSize : SizedFace
     readonly int _ppem;
     readonly bool _hinted;
 
+    // A SIZE DRAWN THROUGH A WHOLE TRANSFORM (ForMatrix): the glyphs are
+    // fitted at the y axis's pixels to the em and then carried through
+    // the transform divided by that scale, 16.16, y up -- null for a
+    // size that only scales. _noHint asks Fit for the scaled points
+    // untouched (FittedZone's unhinted outline).
+    long[]? _matrix;
+    bool _noHint, _underHalf;
+
     // The cache: open addressing on the glyph number, one probe sequence,
     // and a fixed size that is thrown away rather than grown -- a screen
     // of text touches a hundred glyphs and this holds five.
@@ -3071,7 +3112,9 @@ class TrueTypeSize : SizedFace
         return made;
     }
 
-    public TrueTypeSize(TrueTypeFace face, int ppem, int pointSize)
+    public TrueTypeSize(TrueTypeFace face, int ppem, int pointSize) : this(face, ppem, pointSize, false, false) { }
+
+    TrueTypeSize(TrueTypeFace face, int ppem, int pointSize, bool rotated, bool stretched)
     {
         _face = face;
         _ppem = ppem;
@@ -3079,6 +3122,8 @@ class TrueTypeSize : SizedFace
         for (int i = 0; i < CacheSize; i++) { _cacheKey[i] = -1; _cacheKeyAA[i] = -1; }
 
         _hinter = new TrueTypeHinter(face);
+        _hinter.Rotated = rotated;
+        _hinter.Stretched = stretched;
         _hinted = _hinter.Prepare(ppem, pointSize) && !_hinter.GridFittingInhibited;
 
         Ascent = Up(face.Ascender);
@@ -3235,13 +3280,213 @@ class TrueTypeSize : SizedFace
     /// </summary>
     bool Fit(int glyph, out int real, out int fittedAdvance, out int blankAdvance)
     {
-        if (_hinted && _face.IsComposite(glyph))
+        blankAdvance = 0;
+        if (_hinted && !_noHint && _face.IsComposite(glyph))
         {
-            if (FitComposite(glyph, out real, out fittedAdvance)) { return true; }
+            if (FitComposite(glyph, out real, out fittedAdvance))
+            {
+                if (_matrix != null) { Transform(_hinter.Glyph, ref fittedAdvance); }
+                return true;
+            }
 
             // Anything the careful way cannot do falls to the old one.
         }
-        return FitFlat(glyph, out real, out fittedAdvance, out blankAdvance);
+        if (!FitFlat(glyph, out real, out fittedAdvance, out blankAdvance)) { return false; }
+        if (_matrix != null) { Transform(_hinter.Glyph, ref fittedAdvance); }
+        return true;
+    }
+
+    /// The fitted zone carried through the rest of the transform: every
+    /// point, the phantoms too, so the advance turns with the glyph.
+    void Transform(TrueTypeZone zone, ref int fittedAdvance)
+    {
+        long[] m = _matrix!;
+        for (int i = 0; i < zone.PointCount; i++)
+        {
+            long x = zone.CurX[i], y = zone.CurY[i];
+            zone.CurX[i] = (int)Round16(x * m[0] + y * m[2]);
+            zone.CurY[i] = (int)Round16(x * m[1] + y * m[3]);
+            x = zone.OrgX[i]; y = zone.OrgY[i];
+            zone.OrgX[i] = (int)Round16(x * m[0] + y * m[2]);
+            zone.OrgY[i] = (int)Round16(x * m[1] + y * m[3]);
+        }
+        int real = zone.PointCount - 4;
+        if (real >= 0) { fittedAdvance = zone.CurX[real + 1] - zone.CurX[real]; }
+    }
+
+    static long Round16(long v) { return v >= 0 ? (v + 0x8000) >> 16 : -((-v + 0x8000) >> 16); }
+
+    // ---- the fitted outline for its caller ---------------------------
+
+    /// <summary>
+    /// THE FITTED OUTLINE ITSELF, for a caller that walks its contours --
+    /// GetGlyphOutline's GGO_NATIVE and GGO_BEZIER, text drawn into a path
+    /// -- or fills it into a box of its own: a copy of the zone Draw
+    /// fills, in 26.6 pixels, y up, its four phantom points last (the
+    /// origin, the advance, then the two vertical ones). `hinted` false
+    /// gives the scaled points as the face drew them, its program not run.
+    /// An empty glyph -- a space -- is the four phantom points alone, the
+    /// advance at the second. Null for a glyph the face does not have.
+    /// </summary>
+    public TrueTypeZone? FittedZone(int glyph, bool hinted)
+    {
+        if (glyph < 0 || glyph >= _face.GlyphCount) { return null; }
+
+        int real, fittedAdvance, blankAdvance;
+        _noHint = !hinted;
+        bool any = Fit(glyph, out real, out fittedAdvance, out blankAdvance);
+        _noHint = false;
+
+        TrueTypeZone copy = new TrueTypeZone();
+        if (!any)
+        {
+            copy.Allocate(4, 0);
+            Phantom(copy, 0, 0, 0);
+            Phantom(copy, 1, blankAdvance * 64, 0);
+            Phantom(copy, 2, 0, 0);
+            Phantom(copy, 3, 0, 0);
+            return copy;
+        }
+
+        TrueTypeZone zone = _hinter.Glyph;
+        copy.Allocate(zone.PointCount, zone.ContourCount);
+        for (int i = 0; i < zone.PointCount; i++)
+        {
+            copy.OrgX[i] = zone.OrgX[i]; copy.OrgY[i] = zone.OrgY[i];
+            copy.CurX[i] = zone.CurX[i]; copy.CurY[i] = zone.CurY[i];
+            copy.OnCurve[i] = zone.OnCurve[i];
+        }
+        for (int i = 0; i < zone.ContourCount; i++) { copy.ContourEnd[i] = zone.ContourEnd[i]; }
+        return copy;
+    }
+
+    /// <summary>
+    /// A fitted zone filled one bit a pixel into the box (`left`, `bottom`)
+    /// `width` by `height` whole pixels, rows of `rowBytes` bytes, top row
+    /// first, high bit leftmost: the dropout rule the face asked for, as
+    /// Draw fills.
+    /// </summary>
+    public byte[] RenderBoxed(TrueTypeZone zone, int left, int bottom, int width, int height, int rowBytes)
+    {
+        byte[] made = new byte[rowBytes * (height > 0 ? height : 0)];
+        if (width <= 0 || height <= 0) { return made; }
+
+        _raster.SparesStubs = _hinted && _hinter.DropoutSparesStubs;
+        bool dropout = (_hinter.DropoutControl && !_hinter.DropoutDisabled) || !_hinted;
+        GlyphBitmap map = _raster.RenderInto(zone, zone.PointCount - 4, left * 64, bottom * 64, width, height, dropout, 64);
+
+        int stride = map.Stride, copy = stride < rowBytes ? stride : rowBytes;
+        for (int y = 0; y < height; y++)
+        {
+            for (int i = 0; i < copy; i++) { made[y * rowBytes + i] = map.Bits[y * stride + i]; }
+        }
+        return made;
+    }
+
+    /// <summary>
+    /// A fitted zone filled in grey: `n` samples a pixel each way (2, 4 or
+    /// 8), each pixel of the box the NUMBER of its n x n samples inside the
+    /// outline, 0 to n x n, a byte a pixel in rows of `rowBytes`, top row
+    /// first. No dropout: the samples are the whole of it.
+    /// </summary>
+    public byte[] RenderGray(TrueTypeZone zone, int left, int bottom, int width, int height, int rowBytes, int n)
+    {
+        byte[] made = new byte[rowBytes * (height > 0 ? height : 0)];
+        if (width <= 0 || height <= 0 || n <= 0) { return made; }
+
+        _raster.SparesStubs = false;
+        GlyphBitmap sub = _raster.RenderInto(zone, zone.PointCount - 4, left * 64, bottom * 64, width * n, height * n, false, 64 / n);
+
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width && x < rowBytes; x++)
+            {
+                int count = 0;
+                for (int sy = 0; sy < n; sy++)
+                {
+                    for (int sx = 0; sx < n; sx++)
+                    {
+                        if (sub.At(x * n + sx, y * n + sy)) { count++; }
+                    }
+                }
+                made[y * rowBytes + x] = (byte)count;
+            }
+        }
+        return made;
+    }
+
+    /// Whether the em is under half a pixel along y: a realisation too
+    /// small to draw anything (ForMatrix).
+    public bool EmUnderHalfPixel { get { return _underHalf; } }
+
+    // ---- a size through a whole transform ----------------------------
+
+    static List<TrueTypeSize>? _matrixHeld;
+
+    /// <summary>
+    /// The face drawn through a whole transform -- a turned or unevenly
+    /// stretched one, as GetGlyphOutline's MAT2 or a font's escapement asks
+    /// -- given as pixels per font unit, 16.16, in rows (x' = x m11 + y m21,
+    /// y' = x m12 + y m22) with device y DOWN, as the notional-to-device
+    /// matrix is. Its glyphs are fitted at the y axis's pixels to the em,
+    /// the hinter told through GETINFO whether the transform turns or
+    /// stretches (a face's control value program commonly switches its
+    /// grid-fitting off for either), and then carried through the
+    /// transform divided by that scale. A transform that only scales, the
+    /// same both ways, is the ordinary size of that many pixels to the em.
+    /// Null for one that collapses the y axis. The last few are kept.
+    /// </summary>
+    public static TrueTypeSize? ForMatrix(TrueTypeFace face, long m11, long m12, long m21, long m22)
+    {
+        // Y up, the engine's way: the y column negated.
+        long a = m11, b = -m12, c = m21, d = -m22;
+        long sy = SquareRoot(c * c + d * d), sx = SquareRoot(a * a + b * b);
+        if (sy <= 0) { return null; }
+
+        int upem = face.UnitsPerEm;
+        long em = sy * upem;                                    // pixels to the em, 16.16
+        int ppem = (int)((em + 0x8000) >> 16);
+        bool underHalf = em < 0x8000;
+        if (ppem < 1) { ppem = 1; }
+
+        if (b == 0 && c == 0 && a == d && a > 0 && !underHalf) { return For(face, ppem); }
+
+        if (_matrixHeld == null) { _matrixHeld = new List<TrueTypeSize>(); }
+        for (int i = 0; i < _matrixHeld.Count; i++)
+        {
+            long[] k = _matrixHeld[i]._key;
+            if (_matrixHeld[i]._face == face && k[0] == m11 && k[1] == m12 && k[2] == m21 && k[3] == m22) { return _matrixHeld[i]; }
+        }
+
+        bool rotated = b != 0 || c != 0;
+        bool stretched = sx != sy;
+        TrueTypeSize made = new TrueTypeSize(face, ppem, ppem * 64, rotated, stretched);
+        made._matrix = new long[] { (a << 16) / sy, (b << 16) / sy, (c << 16) / sy, (d << 16) / sy };
+        made._key = new long[] { m11, m12, m21, m22 };
+        made._underHalf = underHalf;
+
+        if (_matrixHeld.Count >= 8) { _matrixHeld.RemoveAt(0); }
+        _matrixHeld.Add(made);
+        return made;
+    }
+
+    long[] _key = new long[4];
+
+    /// The whole square root of a non-negative value, rounded to nearest.
+    static long SquareRoot(long v)
+    {
+        if (v <= 0) { return 0; }
+        long root = 1;
+        while (root < 0x80000000L && root * root < v) { root = root << 1; }
+        while (true)
+        {
+            long next = (root + v / root) >> 1;
+            if (next >= root) { break; }
+            root = next;
+        }
+        // Newton's answer is the floor; the nearer of it and one more.
+        if ((root + 1) * (root + 1) - v < v - root * root) { root = root + 1; }
+        return root;
     }
 
     // ---- composites, component by component --------------------------
@@ -3483,7 +3728,7 @@ class TrueTypeSize : SizedFace
 
         bool fitted = false;
 
-        if (_hinted && instructionLength > 0)
+        if (_hinted && !_noHint && instructionLength > 0)
         {
             // THE PHANTOM POINTS GO ON THE GRID FIRST. A glyph program
             // measures from them -- the right-hand stem of an H is placed
@@ -3515,7 +3760,7 @@ class TrueTypeSize : SizedFace
             }
         }
 
-        if (!fitted)
+        if (!fitted && !_noHint)
         {
             // UNHINTED, BUT NOT UNFITTED. With no program to say where the
             // stems are, the least that can be done is to put the glyph's

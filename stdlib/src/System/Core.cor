@@ -862,6 +862,18 @@ static class String {
         return made;
     }
 
+    // String.CopyTo(sourceIndex, destination, destinationIndex, count): the
+    // characters from sourceIndex on into the array, as .NET copies them. A
+    // range that is not wholly in the string and in the array is
+    // ArgumentOutOfRangeException, before anything is copied.
+    public static void CopyTo(string s, int sourceIndex, char[] destination, int destinationIndex, int count) {
+        if (count < 0) { throw new ArgumentOutOfRangeException("count"); }
+        if (sourceIndex < 0 || sourceIndex > s.Length - count) { throw new ArgumentOutOfRangeException("sourceIndex"); }
+        if (destinationIndex < 0 || destinationIndex > destination.Length - count) { throw new ArgumentOutOfRangeException("destinationIndex"); }
+
+        for (int i = 0; i < count; i++) { destination[destinationIndex + i] = (char)Sys.GetByte(s, sourceIndex + i); }
+    }
+
     // ---- trimming particular characters -----------------------------------
     //
     // .NET's Trim() with no argument trims white space; these trim exactly

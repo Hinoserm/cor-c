@@ -1,0 +1,24 @@
+// test: string copyto
+// expect-exit: 0
+// expect-output:
+// xbcy 3
+//
+// String.CopyTo(sourceIndex, destination, destinationIndex, count) copies
+// the characters into the array where it is told, and a range past either
+// end is ArgumentOutOfRangeException with nothing copied.
+
+using System;
+static class Program
+{
+    static int Main()
+    {
+        char[] made = new char[] { 'x', '.', '.', 'y' };
+        "abcd".CopyTo(1, made, 1, 2);
+        int refused = 0;
+        try { "abcd".CopyTo(3, made, 0, 2); } catch (ArgumentOutOfRangeException) { refused++; }
+        try { "abcd".CopyTo(0, made, 3, 2); } catch (ArgumentOutOfRangeException) { refused++; }
+        try { "abcd".CopyTo(0, made, 0, -1); } catch (ArgumentOutOfRangeException) { refused++; }
+        Console.WriteLine(new string(made) + " " + refused);
+        return 0;
+    }
+}
