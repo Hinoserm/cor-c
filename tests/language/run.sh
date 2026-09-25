@@ -184,6 +184,22 @@ for f in "${tests[@]}"; do
     if [ "$verbose" = 1 ] && [ -s "$work/$name.compile" ]; then
         sed "s/^/    [corc] /" "$work/$name.compile"
     fi
+    # A PROGRAM C# REFUSES: "// expect-compile-error: <text>" passes when the
+    # compiler refuses the file -- a clean failure, not a crash -- and says
+    # <text>. Nothing is run.
+    want_error="$(header_value "$f" expect-compile-error)"
+    if [ -n "$want_error" ]; then
+        if [ "$cc_status" -ne 0 ] && grep -qF -- "$want_error" "$work/$name.compile" && ! grep -q "Unhandled exception" "$work/$name.compile"; then
+            echo "PASS $name"
+            passed=$((passed + 1))
+        else
+            echo "FAIL $name (expected the compile error: $want_error)"
+            sed "s/^/    /" "$work/$name.compile" | head -30
+            failed=$((failed + 1))
+            failed_names="$failed_names $name"
+        fi
+        continue
+    fi
     if [ "$cc_status" -ne 0 ] || [ ! -x "$exe" ]; then
         echo "FAIL $name (compile error, status $cc_status)"
         if [ "$verbose" != 1 ]; then

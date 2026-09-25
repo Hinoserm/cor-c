@@ -61,6 +61,9 @@ Every test starts with a comment block the runner reads:
 - `flags` is optional: compiler options this test is always compiled with,
   on top of any the run was given -- `// flags: --experimental-batch` holds a
   test about that optimiser's input to it on every run.
+- `expect-compile-error` makes the test one the compiler must refuse: it
+  passes when compilation fails cleanly (no crash) with output containing
+  the text given, and nothing is run.
 - `expect-output` is optional. When present, stdout must match the listed
   lines exactly. When absent, stdout is not compared -- used together with
   `expect-exit: nonzero` where the runtime's failure message is not part of

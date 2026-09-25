@@ -160,6 +160,7 @@ public class Seat : IDrawingTarget
         public long FrameStyle, FrameExStyle;     // the frame the seat draws for it (SetFrame)
         public int[]? FrameIcon;
         public int FrameMinWidth, FrameMinHeight;
+        public long MenuBar;                      // the tree that is its bar (SetMenuBar), 0 none
 
         public Kept Copy()
         {
@@ -169,7 +170,7 @@ public class Seat : IDrawingTarget
             made.Shown = Shown; made.Desktop = Desktop; made.TopMost = TopMost; made.NoTaskbar = NoTaskbar; made.Minimized = Minimized;
             made.Title = Title;
             made.FrameStyle = FrameStyle; made.FrameExStyle = FrameExStyle; made.FrameIcon = FrameIcon;
-            made.FrameMinWidth = FrameMinWidth; made.FrameMinHeight = FrameMinHeight;
+            made.FrameMinWidth = FrameMinWidth; made.FrameMinHeight = FrameMinHeight; made.MenuBar = MenuBar;
             return made;
         }
     }
@@ -254,6 +255,10 @@ public class Seat : IDrawingTarget
             for (int i = 0; i < bindShapes.Length; i++) Ioctl(0x47550028, (bindShapes[i] & 0xFF) | ((bindIds[i] & 0xFFFF) << 8));
             if (reserved >= 0) Ioctl(0x4755001A, reserved);
         }
+        // The menu trees first: a window's bar names one.
+        List<byte[]> trees;
+        lock (_keep) trees = new List<byte[]>(_menuTrees.Values);
+        foreach (byte[] tree in trees) Ioctl(SeatMenuSet, Sys.ArrayData(tree));
         if (watchWindows) Ioctl(0x4755001D, 0);
         if (watchPointer) Ioctl(0x47550020, 0);
 
@@ -274,6 +279,7 @@ public class Seat : IDrawingTarget
                 if (w.FrameIcon != null) SendFrameIcon(w.FrameIcon);
                 if (w.FrameMinWidth > 0) Ioctl(SeatFrameMinimum, (w.FrameMinWidth & 0xFFFF) | (w.FrameMinHeight << 16));
             }
+            if (w.MenuBar != 0) Ioctl(SeatMenuBar, w.MenuBar);
             if (w.Desktop) Ioctl(0x47550018, 0);
             if (w.TopMost) Ioctl(0x47550019, 1);
             if (w.NoTaskbar) Ioctl(0x47550024, 1);
@@ -795,15 +801,65 @@ public class Seat : IDrawingTarget
 
     /// Where the client area sits inside a window with this frame, as
     /// AdjustWindowRectEx says: no window needed.
-    public void FrameInsets(long style, long exStyle, out int left, out int top, out int right, out int bottom)
+    public void FrameInsets(long style, long exStyle, out int left, out int top, out int right, out int bottom) { FrameInsets(style, exStyle, false, out left, out top, out right, out bottom); }
+
+    /// The same for a window with a menu bar of one row, as
+    /// AdjustWindowRectEx's bMenu counts one.
+    public void FrameInsets(long style, long exStyle, bool menu, out int left, out int top, out int right, out int bottom)
     {
         left = 0; top = 0; right = 0; bottom = 0;
         if (style == 0) return;
-        byte[] styles = new byte[8];
+        byte[] styles = new byte[12];
+        styles[8] = (byte)(menu ? 1 : 0);
         for (int i = 0; i < 4; i++) { styles[i] = (byte)(style >> (8 * i)); styles[4 + i] = (byte)(exStyle >> (8 * i)); }
         long answer = Ioctl(SeatFrameInsets, Sys.ArrayData(styles));
         if (answer < 0) return;
         left = (int)(answer & 0xFF); top = (int)((answer >> 8) & 0xFF); right = (int)((answer >> 16) & 0xFF); bottom = (int)((answer >> 24) & 0xFF);
+    }
+
+    // ---- menus the seat runs --------------------------------------------------------
+
+    const long SeatMenuSet = 0x47550045, SeatMenuBar = 0x47550046, SeatMenuTrack = 0x47550047, SeatMenuDelete = 0x47550048, SeatMenuReady = 0x47550049;
+
+    /// Every tree handed over, by its id, for a restart of the GUI kernel.
+    readonly Dictionary<int, byte[]> _menuTrees = new Dictionary<int, byte[]>();
+
+    /// A menu tree handed to the seat whole (Forms' MenuWriter lays it out):
+    /// a new one, or one that changed, replacing what it had.
+    public void SetMenu(byte[] tree)
+    {
+        if (tree.Length < 12) return;
+        int root = tree[4] | (tree[5] << 8) | (tree[6] << 16) | (tree[7] << 24);
+        Flush();
+        Ioctl(SeatMenuSet, Sys.ArrayData(tree));
+        lock (_keep) _menuTrees[root] = tree;
+    }
+
+    /// The tree `root` is the window's menu bar, drawn in its frame; 0 none.
+    public void SetMenuBar(int handle, int root)
+    {
+        Flush(); Select(handle); Ioctl(SeatMenuBar, root);
+        lock (_keep) { Kept? k = Find(handle); if (k != null) k.MenuBar = root; }
+    }
+
+    /// The tree `root` opened as a popup at (x, y) on the screen, for the
+    /// window `handle` (TrackPopupMenu).
+    public void TrackMenu(int handle, int root, int x, int y)
+    {
+        byte[] where = new byte[12];
+        int[] words = new int[] { root, x, y };
+        for (int i = 0; i < 3; i++) { where[i * 4] = (byte)words[i]; where[i * 4 + 1] = (byte)(words[i] >> 8); where[i * 4 + 2] = (byte)(words[i] >> 16); where[i * 4 + 3] = (byte)(words[i] >> 24); }
+        Flush(); Select(handle); Ioctl(SeatMenuTrack, Sys.ArrayData(where));
+    }
+
+    /// The answer to MenuPopup when nothing changed.
+    public void MenuReady() { Flush(); Ioctl(SeatMenuReady, 0); }
+
+    /// A tree let go of.
+    public void DeleteMenu(int root)
+    {
+        Flush(); Ioctl(SeatMenuDelete, root);
+        lock (_keep) _menuTrees.Remove(root);
     }
 
     public void SetTitle(int handle, string title)

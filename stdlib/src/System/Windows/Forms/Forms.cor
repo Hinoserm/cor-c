@@ -550,6 +550,11 @@ public class Control
     }
 
     public Control? Parent { get { return _parent; } set { _parent = value; } }
+
+    /// The menu its right click opens (.NET's ContextMenu and
+    /// ContextMenuStrip): a system menu the seat runs.
+    public ContextMenu? ContextMenu;
+    public ContextMenuStrip? ContextMenuStrip;
     public ControlCollection Controls { get { if (_controls == null) _controls = new ControlCollection(this); return _controls; } }
     public string Name = "";
     public object? Tag;
@@ -1133,6 +1138,32 @@ public class Form : Control
     Icon? _icon;
     bool _iconSent;
 
+    /// Its menu bar (.NET's Form.Menu): drawn in the frame and run by the
+    /// seat; its client area starts below it.
+    public MainMenu? Menu
+    {
+        get { return _menu; }
+        set
+        {
+            if (_menu == value) return;
+            if (_menu != null) _menu.Owner = null;
+            _menu = value;
+            if (value != null) value.Owner = this;
+            _insetsFor = -1;
+            SendMenu();
+            Invalidate();
+        }
+    }
+    MainMenu? _menu;
+
+    /// The bar told to the seat: its tree, and that it is this window's.
+    void SendMenu()
+    {
+        if (_handle == 0) return;
+        if (_menu != null) SystemMenus.Send(_menu);
+        Seat.Current.SetMenuBar(_handle, _menu != null ? _menu.RootId : 0);
+    }
+
     // ---- the frame, which the seat draws and answers ---------------------------------
     //
     // AS WINDOWS DOES IT: the frame, the caption, its buttons, moving and
@@ -1185,7 +1216,7 @@ public class Form : Control
         long style = FrameStyleBits() & ~(WsMaximize | WsMinimize), ex = FrameExStyleBits();
         if (style != _insetsFor || ex != _insetsForEx)
         {
-            Seat.Current.FrameInsets(style, ex, out _insetL, out _insetT, out _insetR, out _insetB);
+            Seat.Current.FrameInsets(style, ex, _menu != null && _menu.MenuItems.Count > 0, out _insetL, out _insetT, out _insetR, out _insetB);
             _insetsFor = style; _insetsForEx = ex;
         }
         left = _insetL; top = _insetT; right = _insetR; bottom = _insetB;
@@ -1274,6 +1305,7 @@ public class Form : Control
         // draws it on the window's first surface.
         _sentStyle = -1; _sentExStyle = -1; _iconSent = false;
         SendFrame();
+        SendMenu();
         if (HasFrame) seat.SetFrameMinimum(_handle, MinimumWidth, MinimumHeight);
         if (DesktopSurface) seat.DesktopWindow(_handle);
         if (TopMost) seat.TopMostWindow(_handle, true);
@@ -1416,6 +1448,19 @@ public class Form : Control
         {
             Application.Captured = null;
             to.RaiseMouseUp(e);
+            // WM_CONTEXTMENU: the right button's release opens the context
+            // menu of the control under it, or of the nearest parent with one.
+            if (b == MouseButtons.Right)
+            {
+                for (Control? c = to; c != null; c = c.Parent)
+                {
+                    Point pos = new Point(cx - c.ClientOrigin().X, cy - c.ClientOrigin().Y);
+                    ContextMenu? menu = c.ContextMenu;
+                    ContextMenuStrip? strip = c.ContextMenuStrip;
+                    if (menu != null) { menu.Show(c, pos); break; }
+                    if (strip != null) { Point at = c.PointToScreen(pos); strip.Show(at.X, at.Y); break; }
+                }
+            }
             // The button is up: what is under the pointer now says what it
             // wears, as Windows asks again when the capture goes.
             Cursor.Over(target);
@@ -4530,28 +4575,459 @@ internal class ToolTipWindow : Form
     }
 }
 
+// ---------------------------------------------------------------------------
+// Menus: the system's, run by the seat (the GUI kernel), as Windows' menus
+// are run by win32k. A program's menus are handed to the seat whole; the
+// bar is drawn in the frame and a popup opened by the seat, which hilites,
+// opens submenus, takes the keys and the clicks; the program hears only the
+// item chosen (Click) and that the menu is gone (Collapse).
+// ---------------------------------------------------------------------------
+
+/// A key a menu item answers to from anywhere in its form (.NET's Shortcut):
+/// this system's key codes (Keys), with Keys.Shift, Control and Alt added.
+public enum Shortcut
+{
+    None = 0x0,
+    Ins = 0x105,
+    Del = 0x106,
+    F1 = 0x110,
+    F2 = 0x111,
+    F3 = 0x112,
+    F4 = 0x113,
+    F5 = 0x114,
+    F6 = 0x115,
+    F7 = 0x116,
+    F8 = 0x117,
+    F9 = 0x118,
+    F10 = 0x119,
+    F11 = 0x11A,
+    F12 = 0x11B,
+    ShiftF1 = 0x10110,
+    ShiftF2 = 0x10111,
+    ShiftF3 = 0x10112,
+    ShiftF4 = 0x10113,
+    ShiftF5 = 0x10114,
+    ShiftF6 = 0x10115,
+    ShiftF7 = 0x10116,
+    ShiftF8 = 0x10117,
+    ShiftF9 = 0x10118,
+    ShiftF10 = 0x10119,
+    ShiftF11 = 0x1011A,
+    ShiftF12 = 0x1011B,
+    CtrlF1 = 0x20110,
+    CtrlF2 = 0x20111,
+    CtrlF3 = 0x20112,
+    CtrlF4 = 0x20113,
+    CtrlF5 = 0x20114,
+    CtrlF6 = 0x20115,
+    CtrlF7 = 0x20116,
+    CtrlF8 = 0x20117,
+    CtrlF9 = 0x20118,
+    CtrlF10 = 0x20119,
+    CtrlF11 = 0x2011A,
+    CtrlF12 = 0x2011B,
+    CtrlShiftF1 = 0x30110,
+    CtrlShiftF2 = 0x30111,
+    CtrlShiftF3 = 0x30112,
+    CtrlShiftF4 = 0x30113,
+    CtrlShiftF5 = 0x30114,
+    CtrlShiftF6 = 0x30115,
+    CtrlShiftF7 = 0x30116,
+    CtrlShiftF8 = 0x30117,
+    CtrlShiftF9 = 0x30118,
+    CtrlShiftF10 = 0x30119,
+    CtrlShiftF11 = 0x3011A,
+    CtrlShiftF12 = 0x3011B,
+    CtrlA = 0x20041,
+    CtrlB = 0x20042,
+    CtrlC = 0x20043,
+    CtrlD = 0x20044,
+    CtrlE = 0x20045,
+    CtrlF = 0x20046,
+    CtrlG = 0x20047,
+    CtrlH = 0x20048,
+    CtrlI = 0x20049,
+    CtrlJ = 0x2004A,
+    CtrlK = 0x2004B,
+    CtrlL = 0x2004C,
+    CtrlM = 0x2004D,
+    CtrlN = 0x2004E,
+    CtrlO = 0x2004F,
+    CtrlP = 0x20050,
+    CtrlQ = 0x20051,
+    CtrlR = 0x20052,
+    CtrlS = 0x20053,
+    CtrlT = 0x20054,
+    CtrlU = 0x20055,
+    CtrlV = 0x20056,
+    CtrlW = 0x20057,
+    CtrlX = 0x20058,
+    CtrlY = 0x20059,
+    CtrlZ = 0x2005A,
+    CtrlShiftA = 0x30041,
+    CtrlShiftB = 0x30042,
+    CtrlShiftC = 0x30043,
+    CtrlShiftD = 0x30044,
+    CtrlShiftE = 0x30045,
+    CtrlShiftF = 0x30046,
+    CtrlShiftG = 0x30047,
+    CtrlShiftH = 0x30048,
+    CtrlShiftI = 0x30049,
+    CtrlShiftJ = 0x3004A,
+    CtrlShiftK = 0x3004B,
+    CtrlShiftL = 0x3004C,
+    CtrlShiftM = 0x3004D,
+    CtrlShiftN = 0x3004E,
+    CtrlShiftO = 0x3004F,
+    CtrlShiftP = 0x30050,
+    CtrlShiftQ = 0x30051,
+    CtrlShiftR = 0x30052,
+    CtrlShiftS = 0x30053,
+    CtrlShiftT = 0x30054,
+    CtrlShiftU = 0x30055,
+    CtrlShiftV = 0x30056,
+    CtrlShiftW = 0x30057,
+    CtrlShiftX = 0x30058,
+    CtrlShiftY = 0x30059,
+    CtrlShiftZ = 0x3005A,
+    Ctrl0 = 0x20030,
+    Ctrl1 = 0x20031,
+    Ctrl2 = 0x20032,
+    Ctrl3 = 0x20033,
+    Ctrl4 = 0x20034,
+    Ctrl5 = 0x20035,
+    Ctrl6 = 0x20036,
+    Ctrl7 = 0x20037,
+    Ctrl8 = 0x20038,
+    Ctrl9 = 0x20039,
+    ShiftIns = 0x10105,
+    ShiftDel = 0x10106,
+    CtrlIns = 0x20105,
+    CtrlDel = 0x20106,
+    AltF4 = 0x40113,
+    AltBksp = 0x40008
+}
+
+/// A tree of menu items the seat runs (one per MainMenu, ContextMenu or
+/// ContextMenuStrip): numbered, written as the seat takes it, and told what
+/// the seat did with it.
+internal abstract class MenuSource
+{
+    internal int RootId;
+    internal bool Sent;                    // the seat has it: a change is sent again at once
+    internal bool Writing;                 // being written: a change made meanwhile is in what is written
+
+    internal abstract void Write(MenuWriter w);
+    internal abstract void Chosen(int id);
+    internal virtual void Closed() { }
+    /// WM_INITMENUPOPUP: the menu `id` of this tree is about to open.
+    internal virtual void PopupOf(int id) { }
+
+    /// The tree to the seat again, if it has it.
+    internal void Changed() { if (Sent && !Writing) SystemMenus.Send(this); }
+}
+
+/// A menu tree in the layout the seat's MenuSet reads: its length, the
+/// root's id, how many menus; then each menu's id and item count, and each
+/// item's type, state, id, submenu id, whether a picture follows, its text
+/// in UTF-16 padded to a word, and the picture (256 COLORREFs).
+internal class MenuWriter
+{
+    readonly List<byte> _bytes = new List<byte>();
+    int _menus;
+    int _menuCountAt;
+
+    internal MenuWriter(int root)
+    {
+        Word(0); Word(root); _menuCountAt = _bytes.Count; Word(0);
+    }
+
+    internal void Menu(int id, int items) { Word(id); Word(items); _menus++; }
+
+    internal void Item(int type, int state, int id, int sub, string text, int[]? picture)
+    {
+        Word(type); Word(state); Word(id); Word(sub); Word(picture != null ? 1 : 0); Word(text.Length);
+        foreach (char c in text) { _bytes.Add((byte)c); _bytes.Add((byte)(c >> 8)); }
+        while (_bytes.Count % 4 != 0) _bytes.Add(0);
+        if (picture != null) foreach (int v in picture) Word(v);
+    }
+
+    void Word(int v) { _bytes.Add((byte)v); _bytes.Add((byte)(v >> 8)); _bytes.Add((byte)(v >> 16)); _bytes.Add((byte)(v >> 24)); }
+
+    internal byte[] Done()
+    {
+        byte[] b = _bytes.ToArray();
+        Put(b, 0, b.Length);
+        Put(b, _menuCountAt, _menus);
+        return b;
+    }
+
+    static void Put(byte[] b, int at, int v) { b[at] = (byte)v; b[at + 1] = (byte)(v >> 8); b[at + 2] = (byte)(v >> 16); b[at + 3] = (byte)(v >> 24); }
+}
+
+/// The program's menu trees, by the ids the seat knows them by.
+internal static class SystemMenus
+{
+    const int MftSeparator = 0x800, MftRadioCheck = 0x200, MfsGrayed = 0x3, MfsChecked = 0x8, MfsDefault = 0x1000;
+    internal const int Separator = MftSeparator, RadioCheck = MftRadioCheck, Grayed = MfsGrayed, Checked = MfsChecked, Default = MfsDefault;
+
+    static int _next = 1;
+    static readonly Dictionary<int, MenuSource> _roots = new Dictionary<int, MenuSource>();
+
+    /// A new id: a tree's, or an item's (which is its submenu's too).
+    internal static int NewId() { return _next++; }
+
+    internal static void Register(MenuSource m) { if (m.RootId == 0) m.RootId = NewId(); _roots[m.RootId] = m; }
+
+    internal static void Send(MenuSource m)
+    {
+        Register(m);
+        MenuWriter w = new MenuWriter(m.RootId);
+        m.Writing = true;
+        try { m.Write(w); }
+        finally { m.Writing = false; }
+        Seat.Current.SetMenu(w.Done());
+        m.Sent = true;
+    }
+
+    /// The seat's Command: the item `id` of tree `root` chosen.
+    internal static void Command(int id, int root)
+    {
+        MenuSource? m;
+        if (_roots.TryGetValue(root, out m)) m.Chosen(id);
+    }
+
+    internal static void Closed(int root)
+    {
+        MenuSource? m;
+        if (_roots.TryGetValue(root, out m)) m.Closed();
+    }
+
+    /// The seat's MenuPopup: the program's Popup handlers run, and the tree
+    /// as they left it is the answer the popup opens with.
+    internal static void Popup(int id, int root)
+    {
+        MenuSource? m;
+        if (!_roots.TryGetValue(root, out m)) { Seat.Current.MenuReady(); return; }
+        m.PopupOf(id);
+        Send(m);
+    }
+
+    /// A popup of `m` at (x, y) on the screen, for `owner`'s window.
+    internal static void Track(MenuSource m, Form owner, int x, int y)
+    {
+        if (owner.Handle == 0) return;
+        Send(m);
+        Seat.Current.TrackMenu(owner.Handle, m.RootId, x, y);
+    }
+}
+
+/// A menu (.NET's Menu): items, some with menus of their own.
+public abstract class Menu : MenuSource
+{
+    public MenuItemCollection MenuItems;
+    protected Menu() { MenuItems = new MenuItemCollection(this); }
+
+    /// The tree this menu is in: its root's source.
+    internal abstract MenuSource Root { get; }
+
+    internal void WriteItems(MenuWriter w, int id)
+    {
+        int shown = 0;
+        foreach (MenuItem item in MenuItems) if (item.Visible) shown++;
+        w.Menu(id, shown);
+        foreach (MenuItem item in MenuItems)
+        {
+            if (!item.Visible) continue;
+            int type = item.IsSeparator ? SystemMenus.Separator : 0;
+            if (item.RadioCheck) type |= SystemMenus.RadioCheck;
+            int state = (item.Enabled ? 0 : SystemMenus.Grayed) | (item.Checked ? SystemMenus.Checked : 0) | (item.DefaultItem ? SystemMenus.Default : 0);
+            string text = item.Text;
+            if (item.ShowShortcut && item.Shortcut != Shortcut.None) text = text + "\t" + MenuItem.ShortcutText(item.Shortcut);
+            w.Item(type, state, item.Id, item.MenuItems.Count > 0 ? item.Id : 0, text, null);
+        }
+        foreach (MenuItem item in MenuItems) if (item.Visible && item.MenuItems.Count > 0) item.WriteItems(w, item.Id);
+    }
+
+    internal MenuItem? Find(int id)
+    {
+        foreach (MenuItem item in MenuItems)
+        {
+            if (item.Id == id) return item;
+            MenuItem? deeper = item.Find(id);
+            if (deeper != null) return deeper;
+        }
+        return null;
+    }
+
+    internal override void Write(MenuWriter w) { WriteItems(w, RootId); }
+
+    internal override void Chosen(int id) { MenuItem? item = Find(id); if (item != null) item.PerformClick(); }
+
+    internal override void PopupOf(int id)
+    {
+        if (id == RootId) { RootPopup(); return; }
+        MenuItem? item = Find(id);
+        if (item != null) item.RaisePopup();
+    }
+
+    /// The tree's own popup opening: a ContextMenu's Popup.
+    internal virtual void RootPopup() { }
+
+    /// The item a shortcut belongs to, among this menu's and theirs.
+    internal MenuItem? ForShortcut(Shortcut key)
+    {
+        foreach (MenuItem item in MenuItems)
+        {
+            if (item.Enabled && item.Visible && item.Shortcut == key && item.MenuItems.Count == 0) return item;
+            MenuItem? deeper = item.Enabled ? item.ForShortcut(key) : null;
+            if (deeper != null) return deeper;
+        }
+        return null;
+    }
+}
+
+/// The items of a menu (.NET's Menu.MenuItemCollection).
+public class MenuItemCollection
+{
+    readonly Menu _owner;
+    readonly List<MenuItem> _items = new List<MenuItem>();
+    internal MenuItemCollection(Menu owner) { _owner = owner; }
+    public int Count { get { return _items.Count; } }
+    public MenuItem this[int index] { get { return _items[index]; } }
+    public MenuItem Add(string caption) { MenuItem item = new MenuItem(caption); Add(item); return item; }
+    public MenuItem Add(string caption, EventHandler onClick) { MenuItem item = new MenuItem(caption, onClick); Add(item); return item; }
+    public int Add(MenuItem item) { item.Parent = _owner; _items.Add(item); _owner.Root.Changed(); return _items.Count - 1; }
+    public void AddRange(MenuItem[] items) { foreach (MenuItem item in items) { item.Parent = _owner; _items.Add(item); } _owner.Root.Changed(); }
+    public void Remove(MenuItem item) { if (_items.Remove(item)) { item.Parent = null; _owner.Root.Changed(); } }
+    public void RemoveAt(int index) { _items[index].Parent = null; _items.RemoveAt(index); _owner.Root.Changed(); }
+    public void Clear() { foreach (MenuItem item in _items) item.Parent = null; _items.Clear(); _owner.Root.Changed(); }
+    public int IndexOf(MenuItem item) { return _items.IndexOf(item); }
+    public IEnumerator<MenuItem> GetEnumerator() { return _items.GetEnumerator(); }
+}
+
+/// An item of a menu (.NET's MenuItem): "-" for a separator, '&' before
+/// its mnemonic. Its Click when chosen, from the menu or its Shortcut.
+public class MenuItem : Menu
+{
+    internal readonly int Id = SystemMenus.NewId();
+    internal Menu? Parent;
+    string _text = "";
+    bool _checked, _enabled = true, _radio, _default, _visible = true, _showShortcut = true;
+    Shortcut _shortcut = Shortcut.None;
+
+    public event EventHandler? Click;
+    public event EventHandler? Popup;
+
+    public MenuItem() { }
+    public MenuItem(string text) { _text = text; }
+    public MenuItem(string text, EventHandler onClick) { _text = text; Click += onClick; }
+    public MenuItem(string text, EventHandler onClick, Shortcut shortcut) { _text = text; Click += onClick; _shortcut = shortcut; }
+    public MenuItem(string text, MenuItem[] items) { _text = text; MenuItems.AddRange(items); }
+
+    internal override MenuSource Root { get { return Parent != null ? Parent.Root : this; } }
+
+    public string Text { get { return _text; } set { _text = value; Root.Changed(); } }
+    public bool Checked { get { return _checked; } set { _checked = value; Root.Changed(); } }
+    public bool Enabled { get { return _enabled; } set { _enabled = value; Root.Changed(); } }
+    public bool RadioCheck { get { return _radio; } set { _radio = value; Root.Changed(); } }
+    public bool DefaultItem { get { return _default; } set { _default = value; Root.Changed(); } }
+    public bool Visible { get { return _visible; } set { _visible = value; Root.Changed(); } }
+    public Shortcut Shortcut { get { return _shortcut; } set { _shortcut = value; Root.Changed(); } }
+    public bool ShowShortcut { get { return _showShortcut; } set { _showShortcut = value; Root.Changed(); } }
+    public bool IsParent { get { return MenuItems.Count > 0; } }
+    public int Index { get { return Parent != null ? Parent.MenuItems.IndexOf(this) : -1; } }
+    internal bool IsSeparator { get { return _text == "-"; } }
+
+    public void PerformClick() { if (_enabled && Click != null) Click(this, EventArgs.Empty); }
+    public void PerformSelect() { }
+    internal void RaisePopup() { if (Popup != null) Popup(this, EventArgs.Empty); }
+
+    /// What the menu shows for a shortcut in its right-hand column.
+    internal static string ShortcutText(Shortcut s)
+    {
+        int v = (int)s;
+        string text = "";
+        if ((v & 0x20000) != 0) text = text + "Ctrl+";
+        if ((v & 0x10000) != 0) text = text + "Shift+";
+        if ((v & 0x40000) != 0) text = text + "Alt+";
+        int key = v & 0xFFFF;
+        if (key >= 0x110 && key <= 0x11B) return text + "F" + (key - 0x10F);
+        if (key == 0x105) return text + "Ins";
+        if (key == 0x106) return text + "Del";
+        if (key == 8) return text + "Bksp";
+        return text + (char)key;
+    }
+}
+
+/// A form's menu bar (.NET's MainMenu), drawn in its frame by the seat.
+public class MainMenu : Menu
+{
+    internal Form? Owner;
+    public MainMenu() { }
+    public MainMenu(MenuItem[] items) { MenuItems.AddRange(items); }
+    internal override MenuSource Root { get { return this; } }
+    public Form? GetForm() { return Owner; }
+
+}
+
+/// A menu opened where the pointer is (.NET's ContextMenu): a control's
+/// right click opens its ContextMenu, or its parent's.
+public class ContextMenu : Menu
+{
+    public event EventHandler? Popup;
+    public event EventHandler? Collapse;
+    public Control? SourceControl;
+
+    public ContextMenu() { }
+    public ContextMenu(MenuItem[] items) { MenuItems.AddRange(items); }
+    internal override MenuSource Root { get { return this; } }
+
+    /// Opened at `pos` in `control`'s coordinates.
+    public void Show(Control control, Point pos)
+    {
+        SourceControl = control;
+        Form? owner = control.FindForm();
+        if (owner == null) return;
+        Point at = control.PointToScreen(pos);
+        SystemMenus.Track(this, owner, at.X, at.Y);
+    }
+
+    internal override void Closed() { if (Collapse != null) Collapse(this, EventArgs.Empty); }
+    internal override void RootPopup() { if (Popup != null) Popup(this, EventArgs.Empty); }
+}
+
+/// An item of a ContextMenuStrip (.NET's ToolStripItem): its text, a
+/// picture, a check, a greyed state and the keys to show.
 public class ToolStripItem
 {
-    public string Text = "";
-    public Icon? Image;                // drawn in the gutter the text is already indented past
+    internal readonly int Id = SystemMenus.NewId();
+    string _text = "";
+    Icon? _image;
+    bool _enabled = true, _checked;
+    string _shortcutText = "";
     public event EventHandler? Click;
     internal ContextMenuStrip? Owner;
 
+    public ToolStripItem() { }
+    public ToolStripItem(string text) { _text = text; }
+
+    public string Text { get { return _text; } set { _text = value; Changed(); } }
+    /// The picture beside it, in the menu's check column.
+    public Icon? Image { get { return _image; } set { _image = value; _pixels = null; Changed(); } }
     /// A greyed-out command: still listed, still says what it is, and does
     /// nothing. Leaving it out instead would make the menu change shape.
-    public bool Enabled = true;
-
+    public bool Enabled { get { return _enabled; } set { _enabled = value; Changed(); } }
     /// A tick to the left of the name, for a command that is a setting.
-    public bool Checked;
+    public bool Checked { get { return _checked; } set { _checked = value; Changed(); } }
+    /// What to put in the right-hand column: "Ctrl+S", "F5".
+    public string ShortcutText { get { return _shortcutText; } set { _shortcutText = value; Changed(); } }
 
-    /// What to put in the right-hand column: "Ctrl+S", "F5". Not acted on
-    /// here -- the program's own key handling does that -- but a menu that
-    /// does not say so leaves the keys undiscoverable.
-    public string ShortcutText = "";
+    int[]? _pixels;
+    internal int[]? Pixels() { if (_pixels == null && _image != null) _pixels = _image.SmallPixels(); return _pixels; }
 
-    public ToolStripItem() { }
-    public ToolStripItem(string text) { Text = text; }
-    public void PerformClick() { if (Enabled && Click != null) Click(this, EventArgs.Empty); }
+    void Changed() { if (Owner != null) Owner.Changed(); }
+    public void PerformClick() { if (_enabled && Click != null) Click(this, EventArgs.Empty); }
 }
 
 public class ToolStripMenuItem : ToolStripItem
@@ -4577,202 +5053,52 @@ public class ToolStripItemCollection
     // menu. Both entry points go through the same private step now.
     public ToolStripMenuItem Add(string text) { ToolStripMenuItem item = new ToolStripMenuItem(text); Append(item); return item; }
     public void Add(ToolStripItem item) { Append(item); }
-    void Append(ToolStripItem item) { item.Owner = _owner; _items.Add(item); }
+    void Append(ToolStripItem item) { item.Owner = _owner; _items.Add(item); _owner.Changed(); }
+    public void Clear() { _items.Clear(); _owner.Changed(); }
 }
 
 /// <summary>
 /// A popup list of commands at a screen position: a right-click menu, a
-/// start menu. Its own top-level window above everything; it goes away
-/// when a command is chosen, when Escape is pressed, or when a click
-/// anywhere else takes the focus from it.
-///
-/// It is worked with the keyboard as well as the pointer: the arrows move
-/// the highlight, Enter chooses, Escape shuts it, and a letter chooses the
-/// command whose name carries that letter after an ampersand.
+/// start menu -- a system menu the seat runs, with a picture beside each
+/// command. It goes away when a command is chosen, when Escape is pressed,
+/// or on a click anywhere else; the arrows, Enter and the letters after an
+/// ampersand work it from the keyboard, as every menu is worked.
 /// </summary>
-public class ContextMenuStrip : Form
+public class ContextMenuStrip : MenuSource
 {
-    internal override string ClassName { get { return "ContextMenuStrip"; } }
     public ToolStripItemCollection Items;
-    int _hot = -1;
-    public const int ItemHeight = 19;
-    public const int SeparatorHeight = 9;
-
-    /// The band down the left that icons sit in. The text starts after it,
-    /// which is what lines every name in a menu up whether or not the
-    /// command beside it has a picture.
-    const int Gutter = 22;
-    const int Pad = 3;
-
-    public ContextMenuStrip()
-    {
-        Items = new ToolStripItemCollection(this);
-        FormBorderStyle = FormBorderStyle.None;
-        StartPosition = FormStartPosition.Manual;
-        TopMost = true;
-        ShowInTaskbar = false;
-        BackColor = SystemColors.Menu;
-    }
+    public ContextMenuStrip() { Items = new ToolStripItemCollection(this); }
 
     public void Show(Point screen) { Show(screen.X, screen.Y); }
 
+    /// Opened at (x, y) on the screen, for the program's active form (or
+    /// its first, if none is active).
     public void Show(int screenX, int screenY)
     {
-        int widest = 0, shortcut = 0;
-
-        for (int i = 0; i < Items.Count; i++)
-        {
-            int length = Font.TextWidth(ControlPaint.StripMnemonic(Items[i].Text));
-            if (length > widest) widest = length;
-            int keys = Font.TextWidth(Items[i].ShortcutText);
-            if (keys > shortcut) shortcut = keys;
-        }
-
-        int w = Gutter + widest + (shortcut > 0 ? shortcut + 16 : 0) + 24;
-        int h = Depth(Items.Count) + Pad * 2;
-        Seat seat = Seat.Current;
-
-        if (screenX + w > seat.Width) screenX = seat.Width - w;
-        if (screenY + h > seat.WorkAreaHeight()) screenY = screenY - h;
-        if (screenY < 0) screenY = 0;
-        if (screenX < 0) screenX = 0;
-
-        SetBounds(screenX, screenY, w, h);
-        _hot = -1;
-        Show();
-        Activate();
+        Form? owner = Application.ActiveForm ?? Application.AnyForm();
+        if (owner == null) return;
+        SystemMenus.Track(this, owner, screenX, screenY);
     }
 
-    /// How far down the menu the item at `index` starts, counting the
-    /// separators, which are shorter than commands.
-    int Depth(int index)
+    internal override void Write(MenuWriter w)
     {
-        int at = 0;
-        for (int i = 0; i < index && i < Items.Count; i++) at += Items[i] is ToolStripSeparator ? SeparatorHeight : ItemHeight;
-        return at;
-    }
-
-    int ItemAt(int y)
-    {
-        int at = Pad;
-        for (int i = 0; i < Items.Count; i++)
-        {
-            int high = Items[i] is ToolStripSeparator ? SeparatorHeight : ItemHeight;
-            if (y >= at && y < at + high) return i;
-            at += high;
-        }
-        return -1;
-    }
-
-    protected override void OnPaint(PaintEventArgs e)
-    {
-        Graphics g = e.Graphics;
-        g.FillRectangle(new SolidBrush(BackColor), 0, 0, Width, Height);
-        ControlPaint.DrawBorder3D(g, 0, 0, Width, Height, Border3DStyle.Raised);
-
+        w.Menu(RootId, Items.Count);
         for (int i = 0; i < Items.Count; i++)
         {
             ToolStripItem item = Items[i];
-            int y = Pad + Depth(i);
-
-            if (item is ToolStripSeparator)
-            {
-                // THE GROOVE, not a line: shadow with highlight under it,
-                // the same edge a group box wears.
-                int at = y + SeparatorHeight / 2 - 1;
-                g.DrawLine(new Pen(SystemColors.ControlDark), 3, at, Width - 4, at);
-                g.DrawLine(new Pen(SystemColors.ControlLightLight), 3, at + 1, Width - 4, at + 1);
-                continue;
-            }
-
-            bool hot = i == _hot && item.Enabled;
-
-            if (hot) g.FillRectangle(new SolidBrush(SystemColors.Highlight), 3, y, Width - 6, ItemHeight);
-
-            if (item.Checked) ControlPaint.DrawCheckMark(g, 7, y + (ItemHeight - 8) / 2, hot ? SystemColors.HighlightText : SystemColors.MenuText);
-            else if (item.Image != null) item.Image.Draw(g, 4, y + (ItemHeight - 16) / 2, 16);
-
-            int ty = y + (ItemHeight - Font.Height) / 2;
-            Color ink = !item.Enabled ? SystemColors.GrayText : hot ? SystemColors.HighlightText : SystemColors.MenuText;
-
-            if (!item.Enabled)
-                ControlPaint.DrawStringMnemonic(g, item.Text, Font, new SolidBrush(SystemColors.ControlLightLight), Gutter + 1, ty + 1, true);
-
-            ControlPaint.DrawStringMnemonic(g, item.Text, Font, new SolidBrush(ink), hot ? SystemColors.Highlight : BackColor, Gutter, ty, true);
-
-            if (item.ShortcutText.Length > 0)
-                g.DrawString(item.ShortcutText, Font, new SolidBrush(ink), hot ? SystemColors.Highlight : BackColor, Width - 8 - Font.TextWidth(item.ShortcutText), ty);
-        }
-        base.OnPaint(e);
-    }
-
-    protected override void OnMouseMove(MouseEventArgs e)
-    {
-        int at = ItemAt(e.Y);
-        if (at != _hot) { _hot = at; Invalidate(); }
-        base.OnMouseMove(e);
-    }
-
-    protected override void OnMouseUp(MouseEventArgs e)
-    {
-        int at = ItemAt(e.Y);
-        base.OnMouseUp(e);
-        if (at < 0 || !Items[at].Enabled) return;
-        Choose(at);
-    }
-
-    void Choose(int index)
-    {
-        ToolStripItem item = Items[index];
-        Close();
-        item.PerformClick();
-    }
-
-    /// The next command in `step`'s direction, skipping separators and
-    /// anything greyed out, wrapping at the ends.
-    void Step(int step)
-    {
-        if (Items.Count == 0) { return; }
-
-        int at = _hot;
-        for (int tried = 0; tried < Items.Count; tried++)
-        {
-            at = (at + step + Items.Count) % Items.Count;
-            if (Items[at].Enabled && !(Items[at] is ToolStripSeparator)) { _hot = at; Invalidate(); return; }
+            bool separator = item is ToolStripSeparator;
+            int state = (item.Enabled || separator ? 0 : SystemMenus.Grayed) | (item.Checked ? SystemMenus.Checked : 0);
+            string text = item.ShortcutText.Length > 0 ? item.Text + "\t" + item.ShortcutText : item.Text;
+            w.Item(separator ? SystemMenus.Separator : 0, state, item.Id, 0, text, separator ? null : item.Pixels());
         }
     }
 
-    protected override void OnKeyDown(KeyEventArgs e)
+    internal override void Chosen(int id)
     {
-        if (e.KeyCode == Keys.Down) { Step(1); e.Handled = true; }
-        else if (e.KeyCode == Keys.Up) { Step(-1); e.Handled = true; }
-        else if (e.KeyCode == Keys.Escape) { e.Handled = true; Close(); }
-        else if ((e.KeyCode == Keys.Enter || e.KeyCode == Keys.Space) && _hot >= 0 && Items[_hot].Enabled) { e.Handled = true; Choose(_hot); }
-        base.OnKeyDown(e);
+        for (int i = 0; i < Items.Count; i++) if (Items[i].Id == id) { Items[i].PerformClick(); return; }
     }
 
-    protected override void OnKeyPress(KeyPressEventArgs e)
-    {
-        if (e.KeyChar == (char)27) { e.Handled = true; Close(); return; }
-
-        // A LETTER PICKS THE COMMAND CARRYING IT. One match runs straight
-        // away; that is what a menu's underlined letters are for.
-        char key = e.KeyChar >= 'A' && e.KeyChar <= 'Z' ? (char)(e.KeyChar + 32) : e.KeyChar;
-
-        if (key > ' ' && key < (char)127)
-        {
-            for (int i = 0; i < Items.Count; i++)
-            {
-                if (!Items[i].Enabled || ControlPaint.MnemonicOf(Items[i].Text) != key) continue;
-                e.Handled = true;
-                Choose(i);
-                return;
-            }
-        }
-        base.OnKeyPress(e);
-    }
-
-    protected override void OnDeactivate(EventArgs e) { base.OnDeactivate(e); Close(); }
+    internal override void Closed() { }
 }
 
 // ---------------------------------------------------------------------------
@@ -5136,6 +5462,9 @@ public static class Application
 
     public static Control? FocusedControl { get { return _focus; } }
     public static Form? ActiveForm { get { return _active; } }
+    /// Any shown form of the program: what a menu with no control to come
+    /// from (a ContextMenuStrip shown at a point) is for.
+    internal static Form? AnyForm() { foreach (Form f in _forms) if (f.Handle != 0) return f; return null; }
     internal static Control? Captured;
 
     /// A mouse button is down somewhere: nothing pops up over a drag.
@@ -5353,7 +5682,8 @@ public static class Application
         // the screen changing size. Everything else names a window and is
         // dropped when that window has gone.
         if (f == null && m.Kind != 1 && m.Kind != 11 && m.Kind != 12 && m.Kind != 13
-            && m.Kind != 14 && m.Kind != 15 && m.Kind != 16 && m.Kind != 17) return;
+            && m.Kind != 14 && m.Kind != 15 && m.Kind != 16 && m.Kind != 17
+            && m.Kind != 23 && m.Kind != 24 && m.Kind != 25) return;
         switch (m.Kind)
         {
             case 1:
@@ -5383,6 +5713,16 @@ public static class Application
                 // KeyPress. Only what is left over becomes a dialog key,
                 // so a text box keeps its arrows and its Enter, and a form
                 // still gets Tab, Escape and Alt from everywhere else.
+                // A MENU'S SHORTCUT COMES FIRST, as ProcessCmdKey gives the
+                // form's menu the key before any control sees it. Ctrl and a
+                // letter arrives as the control character; it is the letter.
+                if (form != null && form.Menu != null)
+                {
+                    int letter = (mods & 2) != 0 && code >= 1 && code <= 26 ? 'A' + code - 1 : code >= 'a' && code <= 'z' ? code - 32 : code;
+                    int shortcut = letter | ((mods & 1) != 0 ? 0x10000 : 0) | ((mods & 2) != 0 ? 0x20000 : 0) | ((mods & 4) != 0 ? 0x40000 : 0);
+                    MenuItem? chosen = (mods & 7) != 0 || letter >= 0x100 ? form.Menu.ForShortcut((Shortcut)shortcut) : null;
+                    if (chosen != null) { chosen.PerformClick(); return; }
+                }
                 KeyEventArgs down = new KeyEventArgs((Keys)code, mods);
                 target.RaiseKeyDown(down);
                 bool handled = down.Handled;
@@ -5473,6 +5813,18 @@ public static class Application
             case 22:
                 // WM_SYSCOMMAND: a caption button, or the caption double-clicked.
                 if (f != null) f.SysCommand(m.A);
+                break;
+            case 23:
+                // WM_COMMAND from a menu the seat ran: the item chosen.
+                SystemMenus.Command(m.A, m.B);
+                break;
+            case 24:
+                // The menu is gone, chosen from or not.
+                SystemMenus.Closed(m.A);
+                break;
+            case 25:
+                // WM_INITMENUPOPUP: a popup about to open; its items set now.
+                SystemMenus.Popup(m.A, m.B);
                 break;
             case 20:
                 // WM_MOVE after the seat's move loop: the window is there

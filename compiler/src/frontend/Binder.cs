@@ -2188,6 +2188,28 @@ public sealed partial class Binder
 
                     _signature = null;
 
+                    // ONE SIGNATURE, ONE METHOD. C# refuses a second member of
+                    // the same name and parameter types whatever it returns
+                    // (CS0111); taken quietly, both reached the code generator
+                    // under one mangled name and the compiler died there with
+                    // a duplicate-key exception instead of saying where. A
+                    // partial method's declaration and its body are one
+                    // method; a declaration seen again (a retried pass) is
+                    // the same one.
+                    MethodSymbol? twin = sym.Methods.FirstOrDefault(had => had.Decl != md && had.Name == ms.Name
+                        && had.TypeParams.Count == ms.TypeParams.Count && had.Params.Count == ms.Params.Count
+                        && had.Params.Zip(ms.Params).All(pair => MethodSignatures.SameType(pair.First.Type, pair.Second.Type)
+                            && pair.First.ByRef == pair.Second.ByRef)
+                        && !(had.Decl is MethodDecl hd && hd.Mods.HasFlag(Mods.Partial)) && !md.Mods.HasFlag(Mods.Partial));
+                    if (twin != null)
+                    {
+                        Error(md, $"'{sym.Name}' already defines a member called '{md.Name}' with the same parameter types");
+                        // Its body is still checked (its own mistakes are
+                        // said too); it is only not a member of the type.
+                        _r.Methods[md] = ms;
+                        break;
+                    }
+
                     sym.Methods.Add(ms);
                     _r.Methods[md] = ms;
                     break;

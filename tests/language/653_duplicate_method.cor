@@ -1,0 +1,22 @@
+// test: duplicate_method
+// expect-compile-error: already defines a member called 'Key' with the same parameter types
+// Two methods of one name and the same parameter types, whatever they return,
+// are one member twice (C#'s CS0111), and the compiler says so -- across the
+// parts of a partial class too. It used to take both and die in the code
+// generator on the one mangled name they share.
+
+public static partial class Menus
+{
+    static long Key(long pid, long id) { return (pid << 24) | id; }
+}
+
+public static partial class Menus
+{
+    static void Key(long code, long mods) { }
+
+    public static int Main()
+    {
+        System.Console.WriteLine(Key(1, 2));
+        return 0;
+    }
+}
