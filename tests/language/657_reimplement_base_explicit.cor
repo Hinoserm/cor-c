@@ -1,0 +1,47 @@
+// test: reimplement_base_explicit
+// expect-exit: 0
+// expect-output:
+// sorted 3
+// through the interface 6
+// through the base 6
+//
+// A class that names an interface again -- directly or through one extending
+// it -- takes the base's explicit implementation of it where it declares
+// none (C# 18.6.6): OrderedList<T> : List<T>, IOrderedEnumerable<T> is
+// answered by List<T>'s IEnumerable<T>.GetEnumerator, whose public one
+// returns the struct List<T>.Enumerator and does not match.
+
+using System;
+using System.Collections.Generic;
+
+public interface ISorted<T> : IEnumerable<T>
+{
+}
+
+public class Sorted<T> : List<T>, ISorted<T>
+{
+}
+
+public static class Program
+{
+    static int Sum(IEnumerable<int> items)
+    {
+        int sum = 0;
+        foreach (int i in items) sum = sum + i;
+        return sum;
+    }
+
+    public static int Main()
+    {
+        Sorted<int> s = new Sorted<int>();
+        s.Add(1); s.Add(2); s.Add(3);
+        Console.WriteLine("sorted " + s.Count);
+        ISorted<int> sorted = s;
+        Console.WriteLine("through the interface " + Sum(sorted));
+        List<int> list = s;
+        int total = 0;
+        foreach (int i in list) total = total + i;
+        Console.WriteLine("through the base " + total);
+        return 0;
+    }
+}

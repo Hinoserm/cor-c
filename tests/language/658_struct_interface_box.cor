@@ -1,0 +1,46 @@
+// test: struct_interface_box
+// expect-exit: 0
+// expect-output:
+// plain 1
+// generic 2
+// nested 3
+// enumerator True 7
+// list 4 5
+// is True
+// back 1
+//
+// A struct converted to an interface it implements is boxed (C# 8.2.4), and
+// the call through the interface reaches the struct's member on the copy in
+// the box: List<T>.Enumerator returned as IEnumerator<T>. The box used to
+// have no interface slots, and the conversion did not box at all.
+
+using System;
+using System.Collections.Generic;
+
+public interface ICount { int Next(); }
+public struct Plain : ICount { int n; public int Next() { n = n + 1; return n; } }
+public struct Gen<T> : ICount { T v; int n; public int Next() { n = n + 2; return n; } }
+public class Outer<T> { public struct Inner : ICount { int n; public int Next() { n = n + 3; return n; } } }
+public struct Seven : IEnumerator<int> { int n; public int Current => 7; public bool MoveNext() { n = n + 1; return n < 3; } }
+
+public static class Program
+{
+    static IEnumerator<int> Walk(List<int> l) { return l.GetEnumerator(); }
+
+    public static int Main()
+    {
+        ICount a = new Plain(); Console.WriteLine("plain " + a.Next());
+        ICount b = new Gen<int>(); Console.WriteLine("generic " + b.Next());
+        ICount c = new Outer<int>.Inner(); Console.WriteLine("nested " + c.Next());
+        IEnumerator<int> d = new Seven(); Console.WriteLine("enumerator " + d.MoveNext() + " " + d.Current);
+        IEnumerator<int> e = Walk(new List<int> { 4, 5 });
+        string seen = "list";
+        while (e.MoveNext()) seen = seen + " " + e.Current;
+        Console.WriteLine(seen);
+        object o = a;
+        Console.WriteLine("is " + (o is ICount));
+        Plain p = (Plain)a;
+        Console.WriteLine("back " + p.Next().ToString().Length);
+        return 0;
+    }
+}

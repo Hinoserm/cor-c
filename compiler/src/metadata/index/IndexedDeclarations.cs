@@ -259,7 +259,15 @@ public sealed class IndexedDeclarations : IDisposable
                 if (wanted.Contains('\n')) wanted = wanted[(wanted.LastIndexOf('\n') + 1)..];
                 TypeDecl root = header.Types.FirstOrDefault(type => type.Name == wanted)
                     ?? header.Types.OrderBy(type => type.SourceFrom).First();
-                if (root.TypeParams.Count != 0 || root.Members.OfType<MethodDecl>().Any(method => method.TypeParams.Count != 0))
+                // A TYPE NESTED IN A GENERIC ONE takes the outer's parameters
+                // first (TypeDecl.OuterParams), which its own slice cannot
+                // say: `struct Enumerator { T Current; }` cut out of List<T>
+                // parses with none. Its key names the outer's arity
+                // (List`1+Enumerator`1), and the whole file parses it right.
+                string typeName = source.Key[(source.Key.LastIndexOf('\n') + 1)..];
+                int plus = typeName.LastIndexOf('+');
+                bool inGeneric = plus > 0 && typeName[..plus].Contains('`');
+                if (inGeneric || root.TypeParams.Count != 0 || root.Members.OfType<MethodDecl>().Any(method => method.TypeParams.Count != 0))
                 {
                     implementations.Add(key);
                     // Templates need implementations for specialization. Keep

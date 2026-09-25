@@ -5001,7 +5001,22 @@ class List<T> : IReadOnlyList<T>, IEnumerable<T> {
 
     public bool Contains(T value) { return IndexOf(value) >= 0; }
 
-    public IEnumerator<T> GetEnumerator() { return new ListEnumerator<T>(this); }
+    /// .NET's List<T>.Enumerator: a struct, so that walking a list with
+    /// foreach allocates nothing, moved on in place (foreach keeps one copy).
+    public struct Enumerator : IEnumerator<T>, IDisposable {
+        private readonly List<T> list;
+        private int at;
+        internal Enumerator(List<T> list) { this.list = list; at = -1; }
+        public T Current => list[at];
+        public bool MoveNext() { at = at + 1; return at < list.Count; }
+        public void Dispose() { }
+    }
+
+    public Enumerator GetEnumerator() { return new Enumerator(this); }
+
+    // Through the interface, as .NET's explicit implementation: an object,
+    // since an interface's enumerator is one.
+    IEnumerator<T> IEnumerable<T>.GetEnumerator() { return new ListEnumerator<T>(this); }
 
     // .NET's CopyTo, which writes the elements into something the caller owns
     // rather than allocating.

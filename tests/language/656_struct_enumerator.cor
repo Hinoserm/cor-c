@@ -1,0 +1,47 @@
+// test: struct_enumerator
+// expect-exit: 0
+// expect-output:
+// 1 2 3
+// 1 2 3
+// 6
+//
+// A struct enumerator, as .NET's List<T>.Enumerator is: foreach holds one
+// copy and moves THAT copy on (MoveNext changes it), and a local one does
+// the same by its variable. Moving a copy of it instead would loop forever
+// on the first element or stop at once.
+
+using System;
+using System.Collections.Generic;
+
+public class Bag
+{
+    readonly int[] _items = new int[] { 1, 2, 3 };
+    public struct Enumerator
+    {
+        readonly int[] _items;
+        int _at;
+        internal Enumerator(int[] items) { _items = items; _at = -1; }
+        public int Current => _items[_at];
+        public bool MoveNext() { _at++; return _at < _items.Length; }
+    }
+    public Enumerator GetEnumerator() { return new Enumerator(_items); }
+}
+
+public static class Program
+{
+    public static int Main()
+    {
+        Bag bag = new Bag();
+        string line = "";
+        foreach (int v in bag) line = line + (line.Length > 0 ? " " : "") + v;
+        Console.WriteLine(line);
+        Bag.Enumerator e = bag.GetEnumerator();
+        line = "";
+        while (e.MoveNext()) line = line + (line.Length > 0 ? " " : "") + e.Current;
+        Console.WriteLine(line);
+        int sum = 0;
+        foreach (int v in bag) sum += v;
+        Console.WriteLine(sum);
+        return 0;
+    }
+}

@@ -219,6 +219,15 @@ public sealed partial class Lowering
 
         int w = _t.WordSize;
         int slots = Math.Max(Math.Max(_b.ToStringSlot, _b.CompareSlot), Math.Max(_b.EqualsSlot, _b.HashSlot)) + 1;
+        // A STRUCT'S INTERFACES ARE ANSWERED BY ITS BOX: `IEnumerator<int> e =
+        // list.GetEnumerator()` boxes List<int>.Enumerator, and a call through
+        // the interface reaches the struct's own member through the box's
+        // table, with the value inside the box as its `this` (C# 8.2.4).
+        TypeSymbol? shape = BoxedBlock(of) ? of.Symbol : null;
+        if (shape is not null)
+        {
+            foreach (int interfaceSlot in shape.InterfaceImplementations.Keys) slots = Math.Max(slots, interfaceSlot + 1);
+        }
         byte[] block = new byte[_t.DescriptorBytes + slots * w];
         WriteWord(block, DescSize * w, _t.ObjectHeaderBytes + Math.Max(w, BoxPayload(of)));
         WriteWord(block, DescDepth * w, 0);
@@ -242,9 +251,28 @@ public sealed partial class Lowering
         _m.Data.Add(display);
         item.Relocs.Add(new DataReloc(DescDisplay * w, display.Name, 0));
 
-        DataItem faces = new("bf_" + Safe(name), new byte[w]) { ReadOnly = true, Exported = false };
+        // A boxed struct lists every interface it implements, so `is` and
+        // `as` find them; anything else implements none.
+        List<TypeSymbol> implemented = new();
+        if (shape is not null)
+        {
+            foreach (TypeSymbol i in shape.Interfaces) AddInterfaceClosure(i, implemented);
+            implemented.Sort((a, b) => string.CompareOrdinal(InterfaceDescriptor(a), InterfaceDescriptor(b)));
+        }
+        DataItem faces = new("bf_" + Safe(name), new byte[(implemented.Count + 1) * w]) { ReadOnly = true, Exported = false };
+        for (int i = 0; i < implemented.Count; i++) faces.Relocs.Add(new DataReloc(i * w, InterfaceDescriptor(implemented[i]), 0));
         _m.Data.Add(faces);
         item.Relocs.Add(new DataReloc(DescInterfaces * w, faces.Name, 0));
+
+        if (shape is not null)
+        {
+            foreach (var implementation in shape.InterfaceImplementations)
+            {
+                if (implementation.Value.Abstract) continue;
+                item.Relocs.Add(new DataReloc(_t.DescriptorBytes + implementation.Key * w,
+                    BoxInterfaceStub(implementation.Value, name), 0));
+            }
+        }
 
         // A BOXED STRUCT'S OWN POINTERS. The collector holds the box, not the
         // struct, so the map has to cover the whole object -- the header word
@@ -269,6 +297,39 @@ public sealed partial class Lowering
         item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.CompareSlot * w, ObjectCompareStub(), 0));
         return sym;
     }
+
+    /// <summary>
+    /// A struct's member called through an interface on its box: the same
+    /// parameters, with `this` moved past the box's header onto the value.
+    /// </summary>
+    private string BoxInterfaceStub(MethodSymbol m, string name)
+    {
+        string target = CallLabel(m);
+        string label = "__box_call_" + Safe(name) + "_" + target;
+        if (_boxStubs.Contains(label)) return label;
+        _boxStubs.Add(label);
+        Require(m);
+
+        IrType returns = IrTypes.Of(m.Returns);
+        Function f = new(label, returns) { Coalescible = true };
+        VReg self = f.NewReg(IrTypes.Word, "this");
+        f.Params.Add(self);
+        List<VReg> args = new();
+        foreach (ParamSymbol p in m.Params)
+        {
+            VReg a = f.NewReg(IrTypes.Of(p.Type), p.Name);
+            f.Params.Add(a);
+            args.Add(a);
+        }
+        Builder e = new(f, f.NewBlock("entry"));
+        args.Insert(0, e.Binary(Opcode.Add, self, _t.ObjectHeaderBytes));
+        VReg? result = e.Call(target, returns, args);
+        e.Ret(result is null ? null : new RegOperand(result));
+        _m.Functions.Add(f);
+        return label;
+    }
+
+    private readonly HashSet<string> _boxStubs = new(StringComparer.Ordinal);
 
     /// <summary>A boxed value rendered the way the library renders its type.</summary>
     private string BoxToString(Type of, string name)

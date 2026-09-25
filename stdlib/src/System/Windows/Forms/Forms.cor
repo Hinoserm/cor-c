@@ -4903,7 +4903,7 @@ public class MenuItemCollection
     public void RemoveAt(int index) { _items[index].Parent = null; _items.RemoveAt(index); _owner.Root.Changed(); }
     public void Clear() { foreach (MenuItem item in _items) item.Parent = null; _items.Clear(); _owner.Root.Changed(); }
     public int IndexOf(MenuItem item) { return _items.IndexOf(item); }
-    public IEnumerator<MenuItem> GetEnumerator() { return _items.GetEnumerator(); }
+    public List<MenuItem>.Enumerator GetEnumerator() { return _items.GetEnumerator(); }
 }
 
 /// An item of a menu (.NET's MenuItem): "-" for a separator, '&' before

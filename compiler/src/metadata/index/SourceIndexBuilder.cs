@@ -54,7 +54,10 @@ public static class SourceIndexBuilder
                 CompilationUnit unit = parser.ParseUnit();
                 string TypeName(TypeDecl type)
                 {
-                    string own = type.Name + (type.TypeParams.Count == 0 ? "" : "`" + type.TypeParams.Count);
+                    // Its own arity, as .NET's metadata names it: Box`1+Nested`1
+                    // for Box<T>.Nested<U>, whose parameters are T and U.
+                    int arity = type.TypeParams.Count - type.OuterParams;
+                    string own = type.Name + (arity == 0 ? "" : "`" + arity);
                     TypeDecl? parent = type.Outer is null ? null : unit.Types
                         .Where(candidate => candidate.SourceFrom < type.SourceFrom && candidate.SourceTo >= type.SourceTo)
                         .OrderBy(candidate => candidate.SourceTo - candidate.SourceFrom).FirstOrDefault();

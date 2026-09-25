@@ -2471,6 +2471,22 @@ public sealed partial class Binder
                         && m.ExplicitInterface == ifaceName && !m.Abstract && MethodSignatures.Implements(m, want))
                     ?? sym.FindMethods(want.Name).FirstOrDefault(m => !m.Abstract && MethodSignatures.Implements(m, want));
 
+                // A RE-IMPLEMENTED INTERFACE MAPS TO A BASE'S EXPLICIT
+                // IMPLEMENTATION TOO (C# 18.6.6): `class OrderedList<T> :
+                // List<T>, IOrderedEnumerable<T>` names IEnumerable<T> again,
+                // and List<T>'s IEnumerable<T>.GetEnumerator answers it, its
+                // public one returning the struct Enumerator not matching.
+                for (TypeSymbol? t = sym.Base; impl is null && t != null; t = t.Base)
+                {
+                    impl = t.Methods.FirstOrDefault(m => m.ExplicitMember == want.Name
+                        && m.ExplicitInterface == ifaceName && !m.Abstract && MethodSignatures.Implements(m, want));
+                }
+                if (impl is null && sym.Base is not null
+                    && sym.Base.InterfaceImplementations.TryGetValue(want.VtableSlot, out MethodSymbol? mapped))
+                {
+                    impl = mapped;
+                }
+
                 // AN ABSTRACT CLASS MAY IMPLEMENT AN INTERFACE MEMBER AND LEAVE
                 // THE BODY TO ITS DERIVED CLASSES: `abstract class C : ICounted
                 // { public abstract int Count { get; } }` is a complete C# type

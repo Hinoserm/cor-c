@@ -228,6 +228,16 @@ public sealed partial class Lowering
         {
             return Unbox(at, v, to);
         }
+        // A STRUCT OR ENUM TO AN INTERFACE IT IMPLEMENTS IS A BOX too, and an
+        // interface cast back to the struct an unboxing.
+        if (to.Symbol is { Kind: TypeKind.Interface } && Boxable(from))
+        {
+            return BoxValue(at, v, from);
+        }
+        if (from.Symbol is { Kind: TypeKind.Interface } && Boxable(to))
+        {
+            return Unbox(at, v, to);
+        }
 
         // AN ENUM CONVERTS AS ITS UNDERLYING TYPE, whatever that is: taken as
         // int, `(long)Status.Error` of a `: uint` enum sign-extended
