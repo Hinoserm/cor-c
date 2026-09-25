@@ -26,17 +26,43 @@ using Corsac.GUI;
 
 namespace System.Drawing;
 
-/// A picture in memory: 0xAARRGGBB, top row first, no padding.
-public class Bitmap
+/// .NET's Image: a picture of some size, the base of Bitmap -- what
+/// Clipboard.GetImage answers and PictureBox shows.
+public abstract class Image : IDisposable
 {
-    public int Width;
-    public int Height;
+    public abstract int Width { get; }
+    public abstract int Height { get; }
+    public Size Size { get { return new Size(Width, Height); } }
+    public virtual void Dispose() { }
+}
+
+/// A picture in memory: 0xAARRGGBB, top row first, no padding.
+public class Bitmap : Image
+{
+    int _width, _height;
+    public override int Width { get { return _width; } }
+    public override int Height { get { return _height; } }
     public byte[] Pixels;              // four bytes a pixel, blue first as the words are little-endian
 
     public Bitmap(int width, int height)
     {
-        Width = width; Height = height;
+        if (width <= 0 || height <= 0) throw new ArgumentException("Parameter is not valid.");
+        _width = width; _height = height;
         Pixels = new byte[width * height * 4];
+    }
+
+    /// .NET's GetPixel and SetPixel, by Color.
+    public Color GetPixel(int x, int y)
+    {
+        if (x < 0 || y < 0 || x >= _width || y >= _height) throw new ArgumentOutOfRangeException(x < 0 || x >= _width ? "x" : "y");
+        int at = (y * _width + x) * 4;
+        return Color.FromArgb(Pixels[at + 3], Pixels[at + 2], Pixels[at + 1], Pixels[at]);
+    }
+
+    public void SetPixel(int x, int y, Color color)
+    {
+        if (x < 0 || y < 0 || x >= _width || y >= _height) throw new ArgumentOutOfRangeException(x < 0 || x >= _width ? "x" : "y");
+        SetPixel(x, y, color.A, color.R, color.G, color.B);
     }
 
     public void SetPixel(int x, int y, int a, int r, int g, int b)

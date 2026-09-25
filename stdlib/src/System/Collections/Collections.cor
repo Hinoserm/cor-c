@@ -871,3 +871,38 @@ class ReadOnlyDictionary<K, V> : IReadOnlyDictionary<K, V> {
 
     public IEnumerator<KeyValuePair<K, V>> GetEnumerator() { return inner.GetEnumerator(); }
 }
+
+// ---- StringCollection -----------------------------------------------------
+//
+// System.Collections.Specialized's list of strings, what Clipboard's file
+// drop lists are: nulls allowed, duplicates kept, order as added.
+
+class StringCollection : IEnumerable<string> {
+    private List<string> items = new List<string>();
+
+    public int Count => items.Count;
+
+    public string this[int index] {
+        get { return items[index]; }
+        set { items[index] = value; }
+    }
+
+    public int Add(string value) { items.Add(value); return items.Count - 1; }
+
+    public void AddRange(string[] value) {
+        foreach (string s in value) { items.Add(s); }
+    }
+
+    public void Insert(int index, string value) { items.Insert(index, value); }
+    public void Remove(string value) { items.Remove(value); }
+    public void RemoveAt(int index) { items.RemoveAt(index); }
+    public void Clear() { items.Clear(); }
+    public bool Contains(string value) { return items.Contains(value); }
+    public int IndexOf(string value) { return items.IndexOf(value); }
+
+    public void CopyTo(string[] array, int index) {
+        for (int i = 0; i < items.Count; i++) { array[index + i] = items[i]; }
+    }
+
+    public IEnumerator<string> GetEnumerator() { return items.GetEnumerator(); }
+}

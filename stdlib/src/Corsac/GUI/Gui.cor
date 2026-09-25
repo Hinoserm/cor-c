@@ -61,6 +61,8 @@ public class Seat : IDrawingTarget
     const long CallRead = 16, CallWrite = 17, CallIoctl = 18;
     const long NoSys = 38, Io = 5;
     const long SeatStart = 0x4755002A, SeatWhoami = 0x4755002B, SeatCreateAs = 0x4755002C;
+    const long SeatClipboardRegister = 0x4755004A, SeatClipboardSet = 0x4755004B, SeatClipboardGet = 0x4755004C,
+               SeatClipboardHas = 0x4755004D, SeatClipboardClear = 0x4755004E, SeatClipboardSequence = 0x4755004F;
     const long SeatCursorAt = 0x4755002E, SeatCursorTo = 0x4755002F, SeatAnimateCursor = 0x47550036, SeatClipCursor = 0x47550037,
                SeatVanishPointer = 0x47550038;
 
@@ -534,6 +536,65 @@ public class Seat : IDrawingTarget
     /// A character was typed into a text box: the pointer is hidden until it
     /// next moves, if the user has "Hide pointer while typing" on.
     public void VanishPointer() { Ioctl(SeatVanishPointer, 0); }
+
+    // ---- the clipboard --------------------------------------------------------
+    //
+    // THE WINDOW STATION'S ONE, which Windows programs share: each call opens
+    // it, does one thing and closes it, as OpenClipboard(NULL) ...
+    // CloseClipboard would. Formats are Windows' numbers.
+
+    /// RegisterClipboardFormat: the number a named format has, the same in
+    /// every program; 0 on failure.
+    public int RegisterClipboardFormat(string name)
+    {
+        byte[] text = System.Text.Encoding.Unicode.GetBytes(name);
+        byte[] args = new byte[8];
+        PutWord(args, 0, Sys.ArrayData(text)); PutWord(args, 4, text.Length);
+        long answer = Ioctl(SeatClipboardRegister, Sys.ArrayData(args));
+        GC.KeepAlive(text);
+        return answer > 0 ? (int)answer : 0;
+    }
+
+    /// SetClipboardData with the bytes of a memory format, the clipboard
+    /// emptied first when `empty` (EmptyClipboard). False when another
+    /// program has it open.
+    public bool SetClipboardData(int format, byte[] data, bool empty)
+    {
+        byte[] args = new byte[16];
+        PutWord(args, 0, format); PutWord(args, 4, Sys.ArrayData(data)); PutWord(args, 8, data.Length); PutWord(args, 12, empty ? 1 : 0);
+        long answer = Ioctl(SeatClipboardSet, Sys.ArrayData(args));
+        GC.KeepAlive(data);
+        return answer == 0;
+    }
+
+    /// GetClipboardData: a format's bytes -- a picture or text format the
+    /// clipboard makes from another as Windows makes it -- or null.
+    public byte[]? GetClipboardData(int format)
+    {
+        byte[] args = new byte[12];
+        PutWord(args, 0, format);
+        long size = Ioctl(SeatClipboardGet, Sys.ArrayData(args));
+        while (size >= 0)
+        {
+            byte[] data = new byte[(int)size];
+            PutWord(args, 4, Sys.ArrayData(data)); PutWord(args, 8, data.Length);
+            long again = Ioctl(SeatClipboardGet, Sys.ArrayData(args));
+            GC.KeepAlive(data);
+            if (again == size) return data;
+            size = again;
+        }
+        return null;
+    }
+
+    public bool IsClipboardFormatAvailable(int format) { return Ioctl(SeatClipboardHas, format) == 1; }
+
+    /// EmptyClipboard; false when another program has it open.
+    public bool EmptyClipboard() { return Ioctl(SeatClipboardClear, 0) == 0; }
+
+    /// GetClipboardSequenceNumber: changes every time the clipboard does.
+    public long ClipboardSequenceNumber { get { return Ioctl(SeatClipboardSequence, 0); } }
+
+    static void PutWord(byte[] b, int at, long v) { b[at] = (byte)v; b[at + 1] = (byte)(v >> 8); b[at + 2] = (byte)(v >> 16); b[at + 3] = (byte)(v >> 24); }
 
     /// Put the pointer somewhere, as moving the mouse would: SetCursorPos.
     public void MoveCursorTo(int x, int y) { Ioctl(SeatCursorTo, (x & 0xFFFF) | ((y & 0xFFFF) << 16)); }

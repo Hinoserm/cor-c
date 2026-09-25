@@ -1,0 +1,59 @@
+// test: clipboard_types
+// expect-exit: 0
+// expect-output:
+// UnicodeText 13 / DeviceIndependentBitmap 8 / Text 1
+// Format1234
+// hello
+// hello
+// True False
+// UnicodeText,Text,OEMText,System.String
+// 3 b
+// 7 5 / 255 10 20 30
+// 2 1
+// ExternalException -2147467259
+// Win32Exception 5
+//
+// The types .NET's Clipboard is built from, apart from the clipboard itself:
+// DataFormats' predefined numbers and names, DataObject's text conversion
+// and format list, StringCollection, System.Drawing's Image and Bitmap with
+// .NET's GetPixel/SetPixel, and the two exceptions Clipboard throws.
+
+using System;
+using System.Collections.Specialized;
+using System.Drawing;
+using System.Windows.Forms;
+
+public static class Program
+{
+    public static int Main()
+    {
+        DataFormats.Format u = DataFormats.GetFormat(DataFormats.UnicodeText), d = DataFormats.GetFormat("deviceindependentbitmap"), t = DataFormats.GetFormat(1);
+        Console.WriteLine(u.Name + " " + u.Id + " / " + d.Name + " " + d.Id + " / " + t.Name + " " + t.Id);
+        Console.WriteLine(DataFormats.GetFormat(1234).Name);
+
+        DataObject o = new DataObject("hello");
+        Console.WriteLine(o.GetData(DataFormats.UnicodeText));
+        Console.WriteLine(o.GetText(TextDataFormat.Text));
+        Console.WriteLine(o.ContainsText() + " " + o.ContainsImage());
+        Console.WriteLine(string.Join(",", o.GetFormats()));
+
+        StringCollection files = new StringCollection();
+        files.Add("a"); files.Add("b"); files.AddRange(new string[] { "c" });
+        Console.WriteLine(files.Count + " " + files[1]);
+
+        Bitmap b = new Bitmap(7, 5);
+        Image image = b;
+        b.SetPixel(2, 3, Color.FromArgb(255, 10, 20, 30));
+        Color c = b.GetPixel(2, 3);
+        Console.WriteLine(image.Width + " " + image.Size.Height + " / " + c.A + " " + c.R + " " + c.G + " " + c.B);
+        DataObject p = new DataObject();
+        p.SetImage(b);
+        Console.WriteLine(p.GetFormats().Length + " " + (p.GetImage() == b ? 1 : 0));
+
+        try { throw new ExternalException("busy"); }
+        catch (ExternalException e) { Console.WriteLine(e.GetType().Name + " " + e.ErrorCode); }
+        try { throw new Win32Exception(5); }
+        catch (ExternalException e) { Console.WriteLine(e.GetType().Name + " " + ((Win32Exception)e).NativeErrorCode); }
+        return 0;
+    }
+}

@@ -6026,3 +6026,496 @@ public static class Application
 
     internal static Control? NextInOrder(Form f, Control from, int step) { return Step(f, from, step); }
 }
+
+// ---- the clipboard ----------------------------------------------------------
+//
+// .NET's Clipboard, DataFormats, IDataObject and DataObject, on the window
+// station's clipboard that Windows programs share (Seat's clipboard calls):
+// text copied here pastes into Notepad, and a bitmap WordPad copies comes
+// back as an Image. Each call replaces or reads the whole clipboard at once,
+// as .NET's static Clipboard does.
+
+public enum TextDataFormat { Text = 0, UnicodeText = 1, Rtf = 2, Html = 3, CommaSeparatedValue = 4 }
+
+public static class DataFormats
+{
+    /// A clipboard format's name and Windows number.
+    public class Format
+    {
+        readonly string _name;
+        readonly int _id;
+        public Format(string name, int id) { _name = name; _id = id; }
+        public string Name { get { return _name; } }
+        public int Id { get { return _id; } }
+    }
+
+    public static readonly string Text = "Text", Bitmap = "Bitmap", MetafilePict = "MetaFilePict", SymbolicLink = "SymbolicLink",
+        Dif = "DataInterchangeFormat", Tiff = "TaggedImageFileFormat", OemText = "OEMText", Dib = "DeviceIndependentBitmap",
+        Palette = "Palette", PenData = "PenData", Riff = "RiffAudio", WaveAudio = "WaveAudio", UnicodeText = "UnicodeText",
+        EnhancedMetafile = "EnhancedMetafile", FileDrop = "FileDrop", Locale = "Locale",
+        Rtf = "Rich Text Format", Html = "HTML Format", CommaSeparatedValue = "Csv",
+        Serializable = "WindowsForms10PersistentObject", StringFormat = "System.String";
+
+    // Windows' predefined formats by number: CF_TEXT 1 ... CF_LOCALE 16.
+    static readonly string[] Standard = { "", "Text", "Bitmap", "MetaFilePict", "SymbolicLink", "DataInterchangeFormat",
+        "TaggedImageFileFormat", "OEMText", "DeviceIndependentBitmap", "Palette", "PenData", "RiffAudio", "WaveAudio",
+        "UnicodeText", "EnhancedMetafile", "FileDrop", "Locale" };
+
+    /// A format by name: a predefined one's number, else the one
+    /// RegisterClipboardFormat gives the name (the same in every program).
+    public static Format GetFormat(string format)
+    {
+        if (format == null) throw new ArgumentNullException("format");
+        for (int i = 1; i < Standard.Length; i++) if (Standard[i] == format) return new Format(format, i);
+        for (int i = 1; i < Standard.Length; i++) if (string.Equals(Standard[i], format, StringComparison.OrdinalIgnoreCase)) return new Format(Standard[i], i);
+        int id = Seat.Current.RegisterClipboardFormat(format);
+        if (id == 0) throw new Win32Exception();
+        return new Format(format, id);
+    }
+
+    /// A format by number: a predefined one's name, else "Format" and the
+    /// number.
+    public static Format GetFormat(int id)
+    {
+        int n = id & 0xFFFF;
+        return new Format(n > 0 && n < Standard.Length ? Standard[n] : "Format" + n, n);
+    }
+}
+
+public interface IDataObject
+{
+    object? GetData(string format);
+    object? GetData(string format, bool autoConvert);
+    object? GetData(Type format);
+    bool GetDataPresent(string format);
+    bool GetDataPresent(string format, bool autoConvert);
+    bool GetDataPresent(Type format);
+    string[] GetFormats();
+    string[] GetFormats(bool autoConvert);
+    void SetData(object data);
+    void SetData(string format, object data);
+    void SetData(string format, bool autoConvert, object data);
+    void SetData(Type format, object data);
+}
+
+/// Data in any number of formats, by name, as .NET's DataObject keeps it:
+/// what SetDataObject puts on the clipboard, and what GetDataObject answers.
+/// Text asked for as another text format is converted (autoConvert), as a
+/// bitmap is between Bitmap and DeviceIndependentBitmap.
+public class DataObject : IDataObject
+{
+    readonly List<string> _names = new List<string>();
+    readonly List<object> _values = new List<object>();
+
+    public DataObject() { }
+    public DataObject(object data) { SetData(data); }
+    public DataObject(string format, object data) { SetData(format, data); }
+
+    static readonly string[] TextFormats = { "UnicodeText", "Text", "OEMText", "System.String" };
+
+    int Find(string format)
+    {
+        for (int i = 0; i < _names.Count; i++) if (_names[i] == format) return i;
+        return -1;
+    }
+
+    public virtual object? GetData(string format) { return GetData(format, true); }
+    public virtual object? GetData(Type format) { return GetData(format.FullName, true); }
+
+    public virtual object? GetData(string format, bool autoConvert)
+    {
+        int at = Find(format);
+        if (at >= 0) return _values[at];
+        if (!autoConvert) return null;
+        if (Array.IndexOf(TextFormats, format) >= 0)
+            foreach (string t in TextFormats) { int k = Find(t); if (k >= 0) return _values[k]; }
+        if (format == DataFormats.Bitmap || format == DataFormats.Dib)
+        {
+            int k = Find(format == DataFormats.Bitmap ? DataFormats.Dib : DataFormats.Bitmap);
+            if (k >= 0) return _values[k];
+        }
+        return null;
+    }
+
+    public virtual bool GetDataPresent(string format) { return GetData(format, true) != null; }
+    public virtual bool GetDataPresent(string format, bool autoConvert) { return GetData(format, autoConvert) != null; }
+    public virtual bool GetDataPresent(Type format) { return GetDataPresent(format.FullName); }
+
+    public virtual string[] GetFormats() { return GetFormats(true); }
+
+    public virtual string[] GetFormats(bool autoConvert)
+    {
+        List<string> all = new List<string>(_names);
+        if (autoConvert)
+        {
+            bool text = false, picture = false;
+            foreach (string n in _names) { if (Array.IndexOf(TextFormats, n) >= 0) text = true; if (n == DataFormats.Bitmap || n == DataFormats.Dib) picture = true; }
+            if (text) foreach (string t in TextFormats) if (!all.Contains(t)) all.Add(t);
+            if (picture) { if (!all.Contains(DataFormats.Bitmap)) all.Add(DataFormats.Bitmap); if (!all.Contains(DataFormats.Dib)) all.Add(DataFormats.Dib); }
+        }
+        return all.ToArray();
+    }
+
+    /// In the format its type says: a string as UnicodeText, a Bitmap as
+    /// Bitmap, a StringCollection as FileDrop, anything else by its type's
+    /// full name.
+    public virtual void SetData(object data)
+    {
+        if (data == null) throw new ArgumentNullException("data");
+        if (data is string) SetData(DataFormats.UnicodeText, data);
+        else if (data is System.Drawing.Image) SetData(DataFormats.Bitmap, data);
+        else if (data is StringCollection) SetData(DataFormats.FileDrop, data);
+        else SetData(data.GetType().FullName, data);
+    }
+
+    public virtual void SetData(string format, object data) { SetData(format, true, data); }
+    public virtual void SetData(Type format, object data) { SetData(format.FullName, true, data); }
+
+    public virtual void SetData(string format, bool autoConvert, object data)
+    {
+        if (format == null) throw new ArgumentNullException("format");
+        int at = Find(format);
+        if (at >= 0) _values[at] = data;
+        else { _names.Add(format); _values.Add(data); }
+    }
+
+    public virtual bool ContainsText() { return ContainsText(TextDataFormat.UnicodeText); }
+    public virtual bool ContainsText(TextDataFormat format) { return GetDataPresent(Clipboard.NameOf(format), false) || (format <= TextDataFormat.UnicodeText && GetDataPresent(DataFormats.UnicodeText)); }
+    public virtual string GetText() { return GetText(TextDataFormat.UnicodeText); }
+    public virtual string GetText(TextDataFormat format) { return GetData(Clipboard.NameOf(format), format <= TextDataFormat.UnicodeText) as string ?? ""; }
+    public virtual void SetText(string textData) { SetText(textData, TextDataFormat.UnicodeText); }
+    public virtual void SetText(string textData, TextDataFormat format)
+    {
+        if (string.IsNullOrEmpty(textData)) throw new ArgumentNullException("textData");
+        SetData(Clipboard.NameOf(format), false, textData);
+    }
+    public virtual bool ContainsImage() { return GetDataPresent(DataFormats.Bitmap, true); }
+    public virtual System.Drawing.Image? GetImage() { return GetData(DataFormats.Bitmap, true) as System.Drawing.Image; }
+    public virtual void SetImage(System.Drawing.Image image) { if (image == null) throw new ArgumentNullException("image"); SetData(DataFormats.Bitmap, true, image); }
+    public virtual bool ContainsFileDropList() { return GetDataPresent(DataFormats.FileDrop, false); }
+    public virtual StringCollection GetFileDropList()
+    {
+        object? d = GetData(DataFormats.FileDrop, true);
+        if (d is StringCollection c) return c;
+        StringCollection made = new StringCollection();
+        if (d is string[] files) made.AddRange(files);
+        return made;
+    }
+    public virtual void SetFileDropList(StringCollection filePaths) { if (filePaths == null) throw new ArgumentNullException("filePaths"); SetData(DataFormats.FileDrop, true, filePaths); }
+    public virtual bool ContainsAudio() { return GetDataPresent(DataFormats.WaveAudio, false); }
+    public virtual Stream? GetAudioStream() { return GetData(DataFormats.WaveAudio, false) as Stream; }
+    public virtual void SetAudio(byte[] audioBytes) { if (audioBytes == null) throw new ArgumentNullException("audioBytes"); SetAudio(new MemoryStream(audioBytes)); }
+    public virtual void SetAudio(Stream audioStream) { if (audioStream == null) throw new ArgumentNullException("audioStream"); SetData(DataFormats.WaveAudio, false, audioStream); }
+}
+
+/// .NET's Clipboard: the window station's clipboard, shared with every
+/// Windows program. Setting replaces everything on it; reading converts
+/// between text formats and between Bitmap and DeviceIndependentBitmap as
+/// Windows does. ExternalException when another program has it open.
+public static class Clipboard
+{
+    const int CfText = 1, CfBitmap = 2, CfOemText = 7, CfDib = 8, CfWave = 12, CfUnicodeText = 13, CfHdrop = 15;
+
+    internal static string NameOf(TextDataFormat format)
+    {
+        switch (format)
+        {
+            case TextDataFormat.Text: return DataFormats.Text;
+            case TextDataFormat.Rtf: return DataFormats.Rtf;
+            case TextDataFormat.Html: return DataFormats.Html;
+            case TextDataFormat.CommaSeparatedValue: return DataFormats.CommaSeparatedValue;
+        }
+        return DataFormats.UnicodeText;
+    }
+
+    static int IdOf(string format) { return DataFormats.GetFormat(format).Id; }
+
+    // ---- to and from the clipboard's bytes ----
+
+    /// A value as the bytes its format keeps on the clipboard: text in its
+    /// code page with its NUL -- UTF-16 for UnicodeText and System.String,
+    /// 437 for OEMText, UTF-8 for HTML Format, 1252 for the rest -- a picture
+    /// as a packed DIB, a file list as DROPFILES, a stream or array as it is.
+    static byte[] Encode(string format, object data)
+    {
+        if (data is byte[] raw) return raw;
+        if (data is MemoryStream ms) return ms.ToArray();
+        if (data is Stream stream)
+        {
+            MemoryStream copy = new MemoryStream();
+            stream.CopyTo(copy);
+            return copy.ToArray();
+        }
+        if (data is System.Drawing.Bitmap picture) return PackedDib(picture);
+        if (data is StringCollection files) { string[] all = new string[files.Count]; files.CopyTo(all, 0); return DropFiles(all); }
+        if (data is string[] list && format == DataFormats.FileDrop) return DropFiles(list);
+        if (data is string text)
+        {
+            System.Text.Encoding e = format == DataFormats.UnicodeText || format == DataFormats.StringFormat ? System.Text.Encoding.Unicode
+                                   : format == DataFormats.OemText ? System.Text.Encoding.GetEncoding(437)
+                                   : format == DataFormats.Html ? System.Text.Encoding.UTF8
+                                   : System.Text.Encoding.GetEncoding(1252);
+            byte[] body = e.GetBytes(text);
+            int nul = e == System.Text.Encoding.Unicode || format == DataFormats.UnicodeText || format == DataFormats.StringFormat ? 2 : 1;
+            byte[] ended = new byte[body.Length + nul];
+            Array.Copy(body, ended, body.Length);
+            return ended;
+        }
+        throw new ArgumentException("An object of type " + data.GetType().FullName + " cannot be put on the clipboard.", "data");
+    }
+
+    /// A format's bytes as .NET answers them: text formats as strings up to
+    /// their NUL, pictures as Bitmaps, FileDrop as a string array, the rest as
+    /// a MemoryStream.
+    static object? Decode(string format, byte[] bytes)
+    {
+        if (format == DataFormats.UnicodeText || format == DataFormats.StringFormat)
+        {
+            int n = 0;
+            while (n + 1 < bytes.Length && (bytes[n] | bytes[n + 1]) != 0) n += 2;
+            return System.Text.Encoding.Unicode.GetString(bytes, 0, n);
+        }
+        if (format == DataFormats.Text || format == DataFormats.OemText || format == DataFormats.Rtf || format == DataFormats.Html
+            || format == DataFormats.CommaSeparatedValue)
+        {
+            int n = 0;
+            while (n < bytes.Length && bytes[n] != 0) n++;
+            System.Text.Encoding e = format == DataFormats.OemText ? System.Text.Encoding.GetEncoding(437)
+                                   : format == DataFormats.Html ? System.Text.Encoding.UTF8 : System.Text.Encoding.GetEncoding(1252);
+            return e.GetString(bytes, 0, n);
+        }
+        if (format == DataFormats.Bitmap || format == DataFormats.Dib) return BitmapOf(bytes);
+        if (format == DataFormats.FileDrop) return FilesOf(bytes);
+        return new MemoryStream(bytes);
+    }
+
+    /// A Bitmap as a packed 24-bit DIB, bottom-up. Not 32 bits: Windows 2000
+    /// reads twelve bytes of masks after any 32-bit DIB's header when it makes
+    /// CF_BITMAP of it (0xA00F46C1), and every Windows program pasting would
+    /// see the picture shifted.
+    static byte[] PackedDib(System.Drawing.Bitmap b)
+    {
+        int w = b.Width, h = b.Height, stride = (w * 3 + 3) & ~3;
+        byte[] dib = new byte[40 + stride * h];
+        Put(dib, 0, 40); Put(dib, 4, w); Put(dib, 8, h);
+        dib[12] = 1; dib[14] = 24;
+        Put(dib, 20, stride * h);
+        for (int y = 0; y < h; y++)
+        {
+            int row = 40 + (h - 1 - y) * stride;
+            for (int x = 0; x < w; x++)
+            {
+                int at = (y * w + x) * 4;
+                dib[row + x * 3] = b.Pixels[at]; dib[row + x * 3 + 1] = b.Pixels[at + 1]; dib[row + x * 3 + 2] = b.Pixels[at + 2];
+            }
+        }
+        return dib;
+    }
+
+    /// A packed DIB as a Bitmap: 1, 4, 8, 16, 24 or 32 bits, BI_RGB or
+    /// BI_BITFIELDS, either way up; opaque. Null for anything else.
+    static System.Drawing.Bitmap? BitmapOf(byte[] dib)
+    {
+        if (dib.Length < 40 || BitConverter.ToInt32(dib, 0) < 40) return null;
+        int header = BitConverter.ToInt32(dib, 0);
+        int w = BitConverter.ToInt32(dib, 4), hs = BitConverter.ToInt32(dib, 8), h = Math.Abs(hs);
+        int bpp = BitConverter.ToUInt16(dib, 14), compression = BitConverter.ToInt32(dib, 16);
+        long used = BitConverter.ToUInt32(dib, 32);
+        if (w <= 0 || h <= 0 || (compression != 0 && compression != 3)) return null;
+        if (bpp != 1 && bpp != 4 && bpp != 8 && bpp != 16 && bpp != 24 && bpp != 32) return null;
+        // BI_BITFIELDS' masks: in the header past 40 bytes for a V4 or V5
+        // one, the twelve bytes after a BITMAPINFOHEADER else; then the
+        // colour table -- every entry at 8 bits and under unless biClrUsed
+        // says fewer, biClrUsed's alone above -- then the rows.
+        uint rMask = 0, gMask = 0, bMask = 0;
+        int colours = header + (compression == 3 && header == 40 ? 12 : 0);
+        if (compression == 3) { rMask = BitConverter.ToUInt32(dib, 40); gMask = BitConverter.ToUInt32(dib, 44); bMask = BitConverter.ToUInt32(dib, 48); }
+        else if (bpp == 16) { rMask = 0x7C00; gMask = 0x3E0; bMask = 0x1F; }
+        int entries = bpp <= 8 ? (used != 0 ? (int)Math.Min(used, 256) : 1 << bpp) : (int)Math.Min(used, 256);
+        int rows = colours + entries * 4;
+        int stride = ((w * bpp + 31) & ~31) / 8;
+        if (rows + (long)stride * h > dib.Length) return null;
+        System.Drawing.Bitmap made = new System.Drawing.Bitmap(w, h);
+        for (int y = 0; y < h; y++)
+        {
+            int row = rows + (hs > 0 ? h - 1 - y : y) * stride;
+            for (int x = 0; x < w; x++)
+            {
+                int r, g, bl;
+                if (bpp <= 8)
+                {
+                    int index = bpp == 8 ? dib[row + x] : bpp == 4 ? (dib[row + x / 2] >> (x % 2 == 0 ? 4 : 0)) & 15 : (dib[row + x / 8] >> (7 - x % 8)) & 1;
+                    int e = colours + index * 4;
+                    bl = e + 2 < dib.Length ? dib[e] : 0; g = e + 2 < dib.Length ? dib[e + 1] : 0; r = e + 2 < dib.Length ? dib[e + 2] : 0;
+                }
+                else if (bpp == 24) { bl = dib[row + x * 3]; g = dib[row + x * 3 + 1]; r = dib[row + x * 3 + 2]; }
+                else
+                {
+                    uint v = bpp == 16 ? (uint)(dib[row + x * 2] | (dib[row + x * 2 + 1] << 8)) : BitConverter.ToUInt32(dib, row + x * 4);
+                    if (bpp == 32 && compression == 0) { bl = (int)(v & 255); g = (int)((v >> 8) & 255); r = (int)((v >> 16) & 255); }
+                    else { r = Channel(v, rMask); g = Channel(v, gMask); bl = Channel(v, bMask); }
+                }
+                made.SetPixel(x, y, 255, r, g, bl);
+            }
+        }
+        return made;
+    }
+
+    /// A colour channel under a mask, scaled to eight bits.
+    static int Channel(uint v, uint mask)
+    {
+        if (mask == 0) return 0;
+        int shift = 0; while (((mask >> shift) & 1) == 0) shift++;
+        int width = 0; while (width + shift < 32 && ((mask >> (shift + width)) & 1) != 0) width++;
+        long c = (v & mask) >> shift, most = (1L << width) - 1;
+        return (int)((c * 255 + most / 2) / most);
+    }
+
+    /// DROPFILES: the list after its twenty bytes, wide, each path ended and
+    /// the list ended again.
+    static byte[] DropFiles(string[] files)
+    {
+        MemoryStream s = new MemoryStream();
+        byte[] head = new byte[20];
+        Put(head, 0, 20); Put(head, 16, 1);
+        s.Write(head, 0, 20);
+        foreach (string f in files) { byte[] b = System.Text.Encoding.Unicode.GetBytes(f); s.Write(b, 0, b.Length); s.WriteByte(0); s.WriteByte(0); }
+        s.WriteByte(0); s.WriteByte(0);
+        return s.ToArray();
+    }
+
+    static string[] FilesOf(byte[] drop)
+    {
+        List<string> files = new List<string>();
+        if (drop.Length < 20) return files.ToArray();
+        int at = BitConverter.ToInt32(drop, 0);
+        bool wide = BitConverter.ToInt32(drop, 16) != 0;
+        while (at < drop.Length)
+        {
+            int end = at;
+            if (wide) { while (end + 1 < drop.Length && (drop[end] | drop[end + 1]) != 0) end += 2; }
+            else { while (end < drop.Length && drop[end] != 0) end++; }
+            if (end == at) break;
+            files.Add(wide ? System.Text.Encoding.Unicode.GetString(drop, at, end - at) : System.Text.Encoding.GetEncoding(1252).GetString(drop, at, end - at));
+            at = end + (wide ? 2 : 1);
+        }
+        return files.ToArray();
+    }
+
+    static void Put(byte[] b, int at, int v) { b[at] = (byte)v; b[at + 1] = (byte)(v >> 8); b[at + 2] = (byte)(v >> 16); b[at + 3] = (byte)(v >> 24); }
+
+    static void Busy() { throw new ExternalException("Requested Clipboard operation did not succeed."); }
+
+    // ---- the whole clipboard ----
+
+    /// Everything off it.
+    public static void Clear() { if (!Seat.Current.EmptyClipboard()) Busy(); }
+
+    /// Everything on it replaced by `data` in `format`.
+    public static void SetData(string format, object data)
+    {
+        if (format == null) throw new ArgumentNullException("format");
+        if (data == null) throw new ArgumentNullException("data");
+        Put(new string[] { format }, new object[] { data });
+    }
+
+    /// Everything on it replaced by a data object's formats, or by the object
+    /// in the format its type says.
+    public static void SetDataObject(object data) { SetDataObject(data, false); }
+
+    public static void SetDataObject(object data, bool copy)
+    {
+        if (data == null) throw new ArgumentNullException("data");
+        IDataObject d = data as IDataObject ?? new DataObject(data);
+        string[] formats = d.GetFormats(false);
+        object[] values = new object[formats.Length];
+        for (int i = 0; i < formats.Length; i++) values[i] = d.GetData(formats[i], false)!;
+        Put(formats, values);
+    }
+
+    static void Put(string[] formats, object[] values)
+    {
+        for (int i = 0; i < formats.Length; i++)
+        {
+            string format = formats[i] == DataFormats.Bitmap ? DataFormats.Dib : formats[i];
+            if (values[i] == null) continue;
+            if (!Seat.Current.SetClipboardData(IdOf(format), Encode(format, values[i]), i == 0)) Busy();
+        }
+    }
+
+    /// A format's data, converted as the clipboard converts it; null when it
+    /// is not there.
+    public static object? GetData(string format)
+    {
+        if (format == null) throw new ArgumentNullException("format");
+        string asked = format == DataFormats.Bitmap ? DataFormats.Dib : format;
+        byte[]? bytes = Seat.Current.GetClipboardData(IdOf(asked));
+        return bytes == null ? null : Decode(format, bytes);
+    }
+
+    public static bool ContainsData(string format)
+    {
+        if (format == null) throw new ArgumentNullException("format");
+        return Seat.Current.IsClipboardFormatAvailable(IdOf(format));
+    }
+
+    /// What is on it now, as a DataObject with each common format there.
+    public static IDataObject? GetDataObject()
+    {
+        DataObject d = new DataObject();
+        foreach (string f in new string[] { DataFormats.UnicodeText, DataFormats.Text, DataFormats.OemText, DataFormats.Rtf, DataFormats.Html,
+                                            DataFormats.CommaSeparatedValue, DataFormats.Bitmap, DataFormats.FileDrop, DataFormats.WaveAudio })
+        {
+            if (!ContainsData(f)) continue;
+            object? v = GetData(f);
+            if (v != null) d.SetData(f, false, v);
+        }
+        return d;
+    }
+
+    // ---- text ----
+
+    public static bool ContainsText() { return ContainsText(TextDataFormat.UnicodeText); }
+    public static bool ContainsText(TextDataFormat format) { return ContainsData(NameOf(format)); }
+    public static string GetText() { return GetText(TextDataFormat.UnicodeText); }
+    public static string GetText(TextDataFormat format) { return GetData(NameOf(format)) as string ?? ""; }
+    public static void SetText(string text) { SetText(text, TextDataFormat.UnicodeText); }
+
+    public static void SetText(string text, TextDataFormat format)
+    {
+        if (string.IsNullOrEmpty(text)) throw new ArgumentNullException("text");
+        SetData(NameOf(format), text);
+    }
+
+    // ---- pictures, files, sound ----
+
+    public static bool ContainsImage() { return ContainsData(DataFormats.Bitmap) || ContainsData(DataFormats.Dib); }
+    public static System.Drawing.Image? GetImage() { return GetData(DataFormats.Bitmap) as System.Drawing.Image; }
+
+    public static void SetImage(System.Drawing.Image image)
+    {
+        if (image == null) throw new ArgumentNullException("image");
+        SetData(DataFormats.Bitmap, image);
+    }
+
+    public static bool ContainsFileDropList() { return ContainsData(DataFormats.FileDrop); }
+
+    public static StringCollection GetFileDropList()
+    {
+        StringCollection made = new StringCollection();
+        if (GetData(DataFormats.FileDrop) is string[] files) made.AddRange(files);
+        return made;
+    }
+
+    public static void SetFileDropList(StringCollection filePaths)
+    {
+        if (filePaths == null) throw new ArgumentNullException("filePaths");
+        if (filePaths.Count == 0) throw new ArgumentException("The collection is empty.", "filePaths");
+        SetData(DataFormats.FileDrop, filePaths);
+    }
+
+    public static bool ContainsAudio() { return ContainsData(DataFormats.WaveAudio); }
+    public static Stream? GetAudioStream() { return GetData(DataFormats.WaveAudio) as Stream; }
+    public static void SetAudio(byte[] audioBytes) { if (audioBytes == null) throw new ArgumentNullException("audioBytes"); SetData(DataFormats.WaveAudio, audioBytes); }
+    public static void SetAudio(Stream audioStream) { if (audioStream == null) throw new ArgumentNullException("audioStream"); SetData(DataFormats.WaveAudio, audioStream); }
+}

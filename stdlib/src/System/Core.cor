@@ -7964,6 +7964,30 @@ class SystemException : Exception
     public SystemException(string message, Exception? inner) : base(message, inner) { }
 }
 
+/// System.Runtime.InteropServices' ExternalException: a failure outside the
+/// runtime, with the error code it came with (an HRESULT, E_FAIL unless
+/// said) -- what Clipboard throws when another program holds it open.
+class ExternalException : SystemException
+{
+    private int _code;
+    public ExternalException() : base("External component has thrown an exception.") { _code = unchecked((int)0x80004005); }
+    public ExternalException(string message) : base(message) { _code = unchecked((int)0x80004005); }
+    public ExternalException(string message, Exception? inner) : base(message, inner) { _code = unchecked((int)0x80004005); }
+    public ExternalException(string message, int errorCode) : base(message) { _code = errorCode; }
+    public virtual int ErrorCode => _code;
+}
+
+/// System.ComponentModel's Win32Exception: a Windows error by its number.
+class Win32Exception : ExternalException
+{
+    private int _native;
+    public Win32Exception() : base("The operation completed with an error.") { _native = 0; }
+    public Win32Exception(int error) : base("Win32 error " + error + ".") { _native = error; }
+    public Win32Exception(int error, string message) : base(message) { _native = error; }
+    public Win32Exception(string message) : base(message) { _native = 0; }
+    public int NativeErrorCode => _native;
+}
+
 class TypeInitializationException : SystemException
 {
     private string _typeName;
