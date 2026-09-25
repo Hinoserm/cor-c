@@ -139,7 +139,9 @@ public sealed class Type : IEquatable<Type>
     /// see <see cref="IsNullableValue"/>, which is null-capable without being
     /// a reference in the source.
     /// </summary>
-    public bool IsReference => Prim is Prim.String or Prim.NullLiteral || Symbol is { Kind: TypeKind.Class or TypeKind.Interface } || IsArray;
+    // System.Type is a class, as .NET has it: `o?.GetType().Name` is a
+    // string, not a member asked of a nullable value type.
+    public bool IsReference => Prim is Prim.String or Prim.NullLiteral or Prim.Type || Symbol is { Kind: TypeKind.Class or TypeKind.Interface } || IsArray;
 
     /// <summary>
     /// Whether this is <c>Nullable&lt;T&gt;</c> -- `int?`, `BinOp?` and the rest.

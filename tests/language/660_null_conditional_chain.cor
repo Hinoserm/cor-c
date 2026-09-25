@@ -1,0 +1,40 @@
+// test: null_conditional_chain
+// expect-exit: 0
+// expect-output:
+// Box
+// none
+// 3
+// none
+// 5
+//
+// A null-conditional access applies to the whole chain after it (C# 12.8.8):
+// `o?.GetType().Name` reads Name from the non-null Type GetType returns, and
+// is null only when o is. The chain used to end at the first call, leaving
+// `.Name` asked of a 'Type?' as though it were a nullable value type.
+
+using System;
+
+public class Box
+{
+    public string Label = "abc";
+    public Box? Next;
+    public Box Self() { return this; }
+}
+
+public static class Program
+{
+    public static int Main()
+    {
+        object? some = new Box();
+        object? none = null;
+        Console.WriteLine(some?.GetType().Name ?? "none");
+        Console.WriteLine(none?.GetType().Name ?? "none");
+        Box? b = new Box();
+        Console.WriteLine(b?.Self().Label.Length);
+        Box? n = null;
+        Console.WriteLine(n?.Self().Label.Length?.ToString() ?? "none");
+        int? len = b?.Self().Label.Length;
+        Console.WriteLine((len ?? 0) + 2);
+        return 0;
+    }
+}

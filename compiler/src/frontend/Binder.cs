@@ -3964,10 +3964,20 @@ public sealed partial class Binder
     /// the expression and not only its type.
     /// </summary>
     private bool Fits(Type had, Type want, Expr? written)
-        => had.IsError || Convertible(had, want) || Variant(had, want)
+        => had.IsError || (!NullableIntoValue(had, want) && (Convertible(had, want) || Variant(had, want)))
         || (written is not null && MethodGroupFits(written, want))
         || (written is not null && had.IsInteger && want.IsInteger && !want.Nullable
             && ConstantValue(written, _thisType) is long value && Fits(value, want));
+
+    /// <summary>
+    /// A Nullable&lt;T&gt; where a plain value type is wanted: no implicit
+    /// conversion, so no overload that asks for one applies (C# 10.6.1 has
+    /// only the explicit one). `Console.WriteLine(s?.Length)` is
+    /// WriteLine(object), boxed or null -- not WriteLine(long) and an error.
+    /// </summary>
+    private static bool NullableIntoValue(Type had, Type want)
+        => had.IsNullableValue && !want.IsNullableValue && !want.Nullable && !want.IsReference
+        && want.Prim != Prim.Any && want.ParamName is null;
 
     private bool MethodGroupFits(Expr written, Type wanted)
     {
@@ -10840,8 +10850,10 @@ public sealed partial class Binder
 
     private Type CheckMemberCore(MemberExpr m, TypeSymbol? asType)
     {
-        bool ConditionalChain(Expr expression) => expression is MemberExpr member
-            && (member.NullConditional || ConditionalChain(member.Target));
+        // STILL IN A `?.` CHAIN past a call or an indexer: `n?.Self().Label`
+        // is null when n is, and its members are lifted and not warned of
+        // (C# 12.8.8), as HasConditionalMember walks it for calls.
+        bool ConditionalChain(Expr expression) => HasConditionalMember(expression);
 
         // A NAME THAT IS A MEMBER OF THE TYPE BEING COMPILED IS A VALUE, and
         // `value.Name` binds a MEMBER of that value. Locals and type names
@@ -11207,9 +11219,11 @@ public sealed partial class Binder
         {
             // Length works on arrays and strings alike, because both are a
             // length word followed by a payload.
+            // Lifted in a `?.` chain, as any member there is: `s?.Length` and
+            // `n?.Self().Label.Length` are int? (null when the chain is).
             if (m.Name == "Length" && (target.IsArray || target.Prim == Prim.String))
             {
-                return Type.I32;
+                return conditional ? Type.I32.AsNullable() : Type.I32;
             }
 
             // A TYPE'S NAME, which is the whole of reflection tier 1's surface
@@ -11760,6 +11774,7 @@ public sealed partial class Binder
         bool WrittenFits(Type had, Type want, Expr written)
         {
             if (written is NewExpr { Type.Name.Length: 0, Elements: null } && (want.Symbol is not null || (written is NewExpr { Collection: true } && want.IsArray))) return true;
+            if (NullableIntoValue(had, want)) return false;
             if (Convertible(had, want) || had.IsError || Unmade(want) || Variant(had, want))
             {
                 return true;
@@ -12033,6 +12048,7 @@ public sealed partial class Binder
                     return false;
                 }
 
+                if (NullableIntoValue(args[i], want)) return false;
                 if (Convertible(args[i], want) || args[i].IsError || Unmade(want)
                     || (variant && Variant(args[i], want)))
                 {

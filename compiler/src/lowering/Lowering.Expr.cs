@@ -224,6 +224,24 @@ public sealed partial class Lowering
         {
             return BoxValue(at, v, from);
         }
+        // A NULLABLE VALUE BOXED is its value boxed, or null when it has
+        // none (C# 10.2.9): the cell itself is no object, and handed over
+        // as one it was printed as though it were.
+        if (from.IsNullableValue && (to.Prim == Prim.Any || to.Symbol is { Kind: TypeKind.Interface })
+            && Boxable(from.Underlying))
+        {
+            VReg boxed = _f.NewReg(IrTypes.Word, "nbox");
+            Block some = _f.NewBlock("nbsome");
+            Block end = _f.NewBlock("nbend");
+            _e.CopyTo(boxed, Imm(0, IrTypes.Word));
+            _e.Branch(v, some, end);
+            _e.SetBlock(some);
+            VReg inside = LoadPlace(new MemPlace(R(v), 0, from.Underlying));
+            _e.CopyTo(boxed, R(BoxValue(at, inside, from.Underlying)));
+            _e.Jump(end);
+            _e.SetBlock(end);
+            return boxed;
+        }
         if (from.Prim == Prim.Any && Boxable(to))
         {
             return Unbox(at, v, to);
@@ -656,8 +674,9 @@ public sealed partial class Lowering
         // came to and handed back a plain number where a cell was promised --
         // and `!=` then read the count as though it were an address.
         if (InConditionalChain(m.Target) && !target.IsNullableValue && target.IsReference
-            && _b.Resolved.TryGetValue(m, out Sym? chained)
-            && chained is FieldSym { Field.Static: false } or PropertyGetSym { Getter.Static: false })
+            && ((_b.Resolved.TryGetValue(m, out Sym? chained)
+                 && chained is FieldSym { Field.Static: false } or PropertyGetSym { Getter.Static: false })
+                || IsIntrinsicMember(m, target)))
         {
             return EmitConditionalMember(m);
         }
@@ -689,25 +708,31 @@ public sealed partial class Lowering
             }
         }
 
-        if (m.Name == "Length" && (target.IsArray || target.Prim == Prim.String))
-        {
-            VReg seq = Eval(m.Target);
-            return target.IsArray ? _e.Unary(Opcode.ArrayLength, R(seq), IrType.I32) : _e.Load(IrType.I32, seq, _t.ArrayCountOffset);
-        }
-
-        // A TYPE'S NAME AND FULL NAME. The descriptor holds the name
-        // ToString answers -- `System.Object`, `System.Int32` -- and Name is
-        // its last part, as .NET's Type.Name is, where the library can say so.
-        if (m.Name is "Name" or "FullName" && target.Prim == Prim.Type)
-        {
-            VReg desc = Eval(m.Target);
-            VReg full = _e.Load(IrTypes.Word, desc, DescName * _t.WordSize);
-            if (m.Name == "FullName" || !HasStringMethod(Prelude.TypeNameMethod)) return full;
-            MethodSymbol? simple = StringMethod(m, Prelude.TypeNameMethod, 1, "a type's name");
-            return simple is null ? full : _e.Call(CallLabel(simple), IrTypes.Word, R(full))!;
-        }
+        if (IsIntrinsicMember(m, target)) return IntrinsicMember(m, target, Eval(m.Target));
 
         return Fail(m, $"'{m.Name}' cannot be read here yet");
+    }
+
+    /// <summary>A member the compiler answers itself: an array's or a string's Length, a type's Name and FullName.</summary>
+    private static bool IsIntrinsicMember(MemberExpr m, Type target)
+        => (m.Name == "Length" && (target.IsArray || target.Prim == Prim.String))
+        || (m.Name is "Name" or "FullName" && target.Prim == Prim.Type);
+
+    /// <summary>
+    /// Such a member of the value `obj` holds.
+    ///
+    /// A TYPE'S NAME AND FULL NAME: the descriptor holds the name ToString
+    /// answers -- `System.Object`, `System.Int32` -- and Name is its last
+    /// part, as .NET's Type.Name is, where the library can say so.
+    /// </summary>
+    private VReg IntrinsicMember(MemberExpr m, Type target, VReg obj)
+    {
+        if (m.Name == "Length")
+            return target.IsArray ? _e.Unary(Opcode.ArrayLength, R(obj), IrType.I32) : _e.Load(IrType.I32, obj, _t.ArrayCountOffset);
+        VReg full = _e.Load(IrTypes.Word, obj, DescName * _t.WordSize);
+        if (m.Name == "FullName" || !HasStringMethod(Prelude.TypeNameMethod)) return full;
+        MethodSymbol? simple = StringMethod(m, Prelude.TypeNameMethod, 1, "a type's name");
+        return simple is null ? full : _e.Call(CallLabel(simple), IrTypes.Word, R(full))!;
     }
 
     /// <summary>
@@ -728,9 +753,14 @@ public sealed partial class Lowering
     };
 
     /// <summary>`x?.Member`: the member when x is something, and null when it is not.</summary>
+    // THROUGH CALLS AND INDEXERS TOO, as the checker's HasConditionalMember
+    // walks it: `n?.Self().Label` is still in n's chain after the call, and
+    // read plainly it asked Label of the null the call came to.
     private static bool InConditionalChain(Expr e) => e switch
     {
         MemberExpr member => member.NullConditional || InConditionalChain(member.Target),
+        CallExpr call => InConditionalChain(call.Target),
+        IndexExpr index => InConditionalChain(index.Target),
         _ => false,
     };
 
@@ -758,6 +788,8 @@ public sealed partial class Lowering
                 => (LoadPlace(PlaceOfField(f.Field, obj, m)), f.Field.Type),
             PropertyGetSym { Getter.Static: false } p
                 => (CallAccessor(p.Getter, self: false, target: null, receiver: obj), p.Getter.Returns),
+            _ when IsIntrinsicMember(m, _b.TypeOf(m.Target))
+                => (IntrinsicMember(m, _b.TypeOf(m.Target), obj), m.Name == "Length" ? Type.I32 : Type.String),
             _ => ((VReg?)null, result),
         };
 
