@@ -701,6 +701,23 @@ public class Seat : IDrawingTarget
         Flush(); Select(handle); Must(Ioctl(0x47550015, (x & 0xFFFF) | (y << 16)), "moving a window");
         lock (_keep) { Kept? k = Find(handle); if (k != null) { k.X = x; k.Y = y; } }
     }
+    /// Where the seat's move loop put a window (the Moved event): kept, so
+    /// a restart of the GUI kernel puts it back there, with nothing asked.
+    public void NoteMoved(int handle, int x, int y) { lock (_keep) { Kept? k = Find(handle); if (k != null) { k.X = x; k.Y = y; } } }
+
+    /// Windows' move and size loop (SC_MOVE, SC_SIZE), run by the seat
+    /// from the main button's press on the window until it comes up: the
+    /// window, or an outline of it, follows the pointer in the GUI kernel,
+    /// and the owner is told where it ended (the Moved and Sized events).
+    /// Edges: 1 left, 2 right, 4 top, 8 bottom. False when the button is
+    /// already up, and nothing is tracked.
+    public bool TrackMove(int handle) { Flush(); Select(handle); return Ioctl(0x47550039, 0) >= 0; }
+    public bool TrackSize(int handle, int edges, int minimumWidth, int minimumHeight)
+    {
+        Flush(); Select(handle);
+        return Ioctl(0x4755003A, (edges & 0xF) | ((minimumWidth & 0x3FFF) << 4) | ((minimumHeight & 0x3FFF) << 18)) >= 0;
+    }
+
     public void ResizeWindow(int handle, int w, int h)
     {
         Flush(); Select(handle); Must(Ioctl(0x47550011, (w & 0xFFFF) | (h << 16)), "resizing a window");

@@ -1149,6 +1149,14 @@ public class Form : Control
         return max.IsEmpty ? max : new Rectangle(max.X - 16, max.Y, 16, max.Height);
     }
 
+    /// Where the seat's move loop left the window: the form's own record,
+    /// with nothing asked of the seat, which put it there.
+    internal void MovedBySeat(int x, int y)
+    {
+        if (x != Left || y != Top) Place(x, y);
+        if (_handle != 0) Seat.Current.NoteMoved(_handle, x, y);
+    }
+
     public override void SetBounds(int x, int y, int w, int h)
     {
         bool moved = x != Left || y != Top, resized = w != Width || h != Height;
@@ -5214,57 +5222,17 @@ public static class Application
     static int _exitCode;
     static Control? _focus;
     static Form? _active;
-    static Form? _dragging;
-    static int _dragX, _dragY;
-    static bool _dragPending;
-    static int _dragToX, _dragToY;
-    static int _resizeEdges;                // 0 while dragging; edges while resizing (see Form.ResizeEdges)
-    static Rectangle _resizeFrom;           // the window's bounds at the press
-    static int _resizeSX, _resizeSY;        // where on the screen the press was
-    static int _dragToW, _dragToH;
-
-    /// A press on a sizable edge: the bounds follow the pointer, applied
-    /// on release only, since every size is a new surface in the seat.
+    /// A press on a sizable edge: the seat's size loop takes it from here
+    /// (Seat.TrackSize), following the pointer with an outline in the GUI
+    /// kernel however busy this program is, and tells the form the size it
+    /// ended at (Sized), as win32k's loop does for SC_SIZE.
     internal static void BeginResize(Form f, int edges, int x, int y)
     {
-        _dragging = f; _resizeEdges = edges; _resizeFrom = f.Bounds;
-        _resizeSX = f.Left + x; _resizeSY = f.Top + y;
-        // The window itself does not move until the button comes up: every
-        // intermediate size would be a new surface, a full repaint and a
-        // composition, which is what made a resize crawl. The seat draws an
-        // outline instead, and the last one is the size that is applied.
+        if (f.Handle == 0) return;
         Cursor.WearShape(Form.CursorFor(edges));
-        Seat.Current.SetBand(f.Left, f.Top, f.Width, f.Height);
+        Seat.Current.TrackSize(f.Handle, edges, Form.MinimumWidth, Form.MinimumHeight);
     }
 
-    static void ResizeTo(int sx, int sy)
-    {
-        if (_dragging == null) return;
-        int dx = sx - _resizeSX, dy = sy - _resizeSY;
-        int x = _resizeFrom.X, y = _resizeFrom.Y, w = _resizeFrom.Width, h = _resizeFrom.Height;
-        if ((_resizeEdges & 1) != 0) { x += dx; w -= dx; }
-        if ((_resizeEdges & 2) != 0) { w += dx; }
-        if ((_resizeEdges & 4) != 0) { y += dy; h -= dy; }
-        if ((_resizeEdges & 8) != 0) { h += dy; }
-        if (w < Form.MinimumWidth) { if ((_resizeEdges & 1) != 0) x -= Form.MinimumWidth - w; w = Form.MinimumWidth; }
-        if (h < Form.MinimumHeight) { if ((_resizeEdges & 4) != 0) y -= Form.MinimumHeight - h; h = Form.MinimumHeight; }
-        _dragToX = x; _dragToY = y; _dragToW = w; _dragToH = h; _dragPending = true;
-        Seat.Current.SetBand(x, y, w, h);
-    }
-    static int _sinceDrag;                  // messages since the window last moved: bounded, or a busy tablet never lets it
-
-    /// The drag's latest position is applied once the queue is quiet, not
-    /// once per Move: a tablet sends hundreds a second and each move is a
-    /// window move and a repaint, so applying every one made the window
-    /// crawl behind the pointer.
-    static void SettleDrag()
-    {
-        if (!_dragPending || _dragging == null) { _dragPending = false; return; }
-        _dragPending = false;
-        _sinceDrag = 0;
-        if (_resizeEdges != 0) { Seat.Current.ClearBand(); Cursor.Wear(Cursors.Default); _dragging.SetBounds(_dragToX, _dragToY, _dragToW, _dragToH); }
-        else _dragging.SetBounds(_dragToX, _dragToY, _dragging.Width, _dragging.Height);
-    }
     static bool _paintPending;
     static List<int> _watchFds = new List<int>();
     static List<WatchHandler> _watchHandlers = new List<WatchHandler>();
@@ -5278,26 +5246,16 @@ public static class Application
     /// A mouse button is down somewhere: nothing pops up over a drag.
     internal static bool ButtonHeld;
     internal static void RegisterQuietly(Form f) { if (!_forms.Contains(f)) _forms.Add(f); }
-    internal static void Register(Form f) { if (!_forms.Contains(f)) _forms.Add(f); CancelDrag(f); _active = f; f.RaiseActivated(); }
+    internal static void Register(Form f) { if (!_forms.Contains(f)) _forms.Add(f); _active = f; f.RaiseActivated(); }
 
-    /// A drag ends when activation moves away from the window being
-    /// dragged: a dialog that opens mid-drag would otherwise be the thing
-    /// dragged, since the pointer's moves keep coming and the drag would
-    /// still be live. The outline, if one was up, comes off.
-    static void CancelDrag(Form? nowActive)
-    {
-        if (_dragging == null || _dragging == nowActive) return;
-        if (_resizeEdges != 0) { Seat.Current.ClearBand(); Cursor.Wear(Cursors.Default); }
-        _dragging = null; _dragPending = false; _resizeEdges = 0; _sinceDrag = 0;
-    }
     internal static void Unregister(Form f) { _forms.Remove(f); if (_active == f) _active = _forms.Count > 0 ? _forms[_forms.Count - 1] : null; if (_focus != null && _focus.FindForm() == f) _focus = null; }
     internal static void NeedsPaint(Control c) { _paintPending = true; }
-    /// x, y: where in the window the press was. The drag keeps that point
-    /// under the pointer using the pointer's SCREEN position from each Move,
-    /// never a delta against the window's last known place: moves queued
-    /// before the window moved were against the old place, and applying
-    /// their deltas again sent the window off the screen.
-    internal static void BeginDrag(Form f, int x, int y) { _dragging = f; _dragX = x; _dragY = y; }
+    /// A press on the caption: SC_MOVE. The seat's move loop takes the
+    /// window from here, in the GUI kernel, moving it on every report of
+    /// the pointer whatever this program is doing, and says where it ended
+    /// (Moved). x, y, where in the window the press was, are the seat's to
+    /// know: it keeps the press it is moving by.
+    internal static void BeginDrag(Form f, int x, int y) { if (f.Handle != 0) Seat.Current.TrackMove(f.Handle); }
 
     static Control? _hot;
 
@@ -5369,7 +5327,6 @@ public static class Application
             if (!Seat.Current.Next(out m)) break;
             Dispatch(ref m);
         }
-        SettleDrag();
         if (_paintPending) PaintNow();
     }
 
@@ -5447,7 +5404,6 @@ public static class Application
     static bool Iterate(Seat seat)
     {
         {
-            if (_dragPending && _resizeEdges == 0 && (!seat.Poll(0) || _sinceDrag >= 3)) SettleDrag();
             if (_paintPending) PaintNow();
             if (Idle != null) Idle(null!, EventArgs.Empty);
             int wait = TimerWait();
@@ -5478,7 +5434,6 @@ public static class Application
                         if (!seat.Next(out pending)) break;
                         Dispatch(ref pending);
                     }
-                    if (_dragPending && _resizeEdges == 0) SettleDrag();
                     if (_paintPending) PaintNow();
                     if (wait == 0) FireTimers();
                     _watchHandlers[which](fds[which]);
@@ -5571,8 +5526,6 @@ public static class Application
             {
                 int wx = Seat.LowSigned(m.A), wy = Seat.HighSigned(m.A);
                 int sx = Seat.LowSigned(m.B), sy = Seat.HighSigned(m.B);
-                if (_dragging != null && _resizeEdges != 0) { ResizeTo(sx, sy); break; }     // applied on release
-                if (_dragging != null) { _dragToX = sx - _dragX; _dragToY = sy - _dragY; _dragPending = true; _sinceDrag++; break; }
                 f!.WindowMouse(3, 0, wx, wy); break;
             }
             case 4:
@@ -5593,11 +5546,6 @@ public static class Application
             }
             case 5:
                 ButtonHeld = false;
-                SettleDrag();
-                // A press on an edge that never moved still put an outline
-                // on the screen: it goes when the button does, either way.
-                if (_resizeEdges != 0) { Seat.Current.ClearBand(); }
-                _dragging = null; _resizeEdges = 0;
                 // Signed: a release left of or above the window it was pressed
                 // in reports negative coordinates, and reading them unsigned
                 // put it out in the frame, where the control holding the
@@ -5612,8 +5560,8 @@ public static class Application
             }
             case 9:
                 if (m.A == 0 && AutoScroll.Active) AutoScroll.End();
-                if (m.A != 0) { CancelDrag(f); _active = f; f!.RaiseActivated(); }
-                else { if (_dragging == f) CancelDrag(null); if (_active == f) _active = null; f!.RaiseDeactivate(); }
+                if (m.A != 0) { _active = f; f!.RaiseActivated(); }
+                else { if (_active == f) _active = null; f!.RaiseDeactivate(); }
                 break;
             case 11:
                 Shell.RaiseWindowsChanged();
@@ -5633,6 +5581,20 @@ public static class Application
             case 19:
                 // Its taskbar button, pressed while it was the active window.
                 if (f != null && f.MinimizeBox) f.WindowState = FormWindowState.Minimized;
+                break;
+            case 20:
+                // WM_MOVE after the seat's move loop: the window is there
+                // already, and the form only learns where. The loop had the
+                // button's release: it is up.
+                ButtonHeld = false;
+                if (f != null) f.MovedBySeat(Seat.LowSigned(m.A), Seat.HighSigned(m.A));
+                break;
+            case 21:
+                // WM_SIZE after the seat's size loop: the outline is gone,
+                // and the window takes the size, a new surface painted.
+                ButtonHeld = false;
+                Cursor.Wear(Cursors.Default);
+                if (f != null) f.SetBounds(Seat.LowSigned(m.A), Seat.HighSigned(m.A), m.B & 0xFFFF, (m.B >> 16) & 0xFFFF);
                 break;
 
             // THE SCREEN IS A DIFFERENT SIZE NOW. The seat has thrown away
