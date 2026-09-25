@@ -1000,11 +1000,13 @@ public sealed partial class Lowering
     /// Whether an array of these holds nothing the collector need follow:
     /// elements too narrow to be an address, or floating point. Arrays of
     /// int, long and the pointer-sized types stay scanned -- this code keeps
-    /// addresses in them -- as do structs (each element is a block) and
-    /// every reference type.
+    /// addresses in them -- as do structs (each element is a block), every
+    /// reference type, and every NULLABLE one: a `bool?` or `double?` element
+    /// is the address of its cell, with the Prim of the value inside.
     /// </summary>
-    private static bool LeafElement(Type element) => element.Prim is Prim.U8 or Prim.I8 or Prim.Bool or Prim.Char
-        or Prim.I16 or Prim.U16 or Prim.F32 or Prim.F64;
+    private static bool LeafElement(Type element) => !element.IsNullableValue && !element.IsReference && !element.IsArray
+        && !element.IsPointer && element.Symbol is null
+        && element.Prim is Prim.U8 or Prim.I8 or Prim.Bool or Prim.Char or Prim.I16 or Prim.U16 or Prim.F32 or Prim.F64;
 
     /// <summary>The `{ A = 1, B = 2 }` after a constructor, and collection initialisers.</summary>
     private void EmitInitialiser(NewExpr nw, VReg obj) => EmitInitBody(nw.Body, obj);

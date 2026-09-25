@@ -424,6 +424,29 @@ public sealed partial class Binder
     private bool IsTypeName(string name) => FindType(name, out _);
 
     /// <summary>
+    /// Whether a pattern's bare name that is both a constant and a type is the
+    /// constant. C# looks through the enclosing types' members -- a constant
+    /// and a nested type alike -- before any namespace or using directive, so
+    /// a constant in scope beats a type reached only through a namespace:
+    /// `case Process:` over a class's own `const int Process` is 5, not a test
+    /// for System.Diagnostics.Process, and NtQuerySystemInformation's switch
+    /// took its `case Exception:` for a type test and read the class number as
+    /// an object. Between two members, the nearer enclosing type's wins.
+    /// </summary>
+    private bool ConstantHidesType(string name)
+    {
+        if (!FindType(name, out TypeSymbol? type) || type is null) return true;
+        int dot = type.Key.LastIndexOf('.');
+        string? container = dot < 0 ? null : type.Key.Substring(0, dot);
+        for (TypeSymbol? at = _scope ?? _thisType; at is not null; at = Outer(at))
+        {
+            if (container == at.Key) return false;
+            if (FindConstant(at, name) is not null) return true;
+        }
+        return true;
+    }
+
+    /// <summary>
     /// Whether a dotted name resolves as a type the way a written type does --
     /// the library's types included, which are declared without the namespace
     /// a program names them with (System.Text.StringBuilder).
@@ -9403,7 +9426,7 @@ public sealed partial class Binder
                                || _r.Rewrites.TryGetValue(possibleConstant, out Expr? possibleRewrite)
                                   && possibleRewrite is LiteralExpr;
 
-                if (isx.Binding is null && !IsTypeName(isx.Type.Name) && isConstant)
+                if (isx.Binding is null && isConstant && ConstantHidesType(isx.Type.Name))
                 {
                     BinaryExpr valuePattern = new()
                     {

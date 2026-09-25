@@ -1,0 +1,64 @@
+// test: switch_default_null
+// expect-exit: 0
+// expect-output:
+// 2:8 5:4 8:12 11:4 16:4 21:2 23:6 33:16 37:3 45:0
+// 0:null 1:null 44:null 46:null 99:null
+//
+// A switch over a narrowed long whose cases return arrays, some from
+// methods, some made in place, and whose default is the null after it --
+// NtQuerySystemInformation's shape (os/nt/system.cor). A class none of the
+// cases names must come back null, not be taken for an object.
+
+using System;
+using System.Text;
+
+static class Program
+{
+    const int Performance = 2, Process = 5, ProcessorPerformance = 8, Module = 11, Handle = 16, FileCache = 21;
+    const int Interrupt = 23, Exception = 33, RegistryQuota = 37, Lookaside = 45;
+
+    static byte[] Made(int n) { byte[] b = new byte[n]; if (n > 0) b[0] = (byte)n; return b; }
+    static byte[] Performances() { return Made(8); }
+    static byte[] Processes() { return Made(4); }
+    static byte[] Times() { return Made(12); }
+    static byte[] Caches() { return Made(2); }
+    static byte[] Interrupts() { return Made(6); }
+    static byte[] Quotas() { return Made(3); }
+
+    static byte[]? Information(long kind)
+    {
+        switch ((int)kind)
+        {
+            case Performance: return Performances();
+            case Process: return Processes();
+            case ProcessorPerformance: return Times();
+            case Module: return new byte[4];
+            case Handle: return new byte[4];
+            case FileCache: return Caches();
+            case Interrupt: return Interrupts();
+            case Exception: return new byte[0x10];
+            case RegistryQuota: return Quotas();
+            case Lookaside: return new byte[0];
+        }
+        return null;
+    }
+
+    static int Main()
+    {
+        StringBuilder a = new StringBuilder();
+        foreach (long k in new long[] { 2, 5, 8, 11, 16, 21, 23, 33, 37, 45 })
+        {
+            byte[]? r = Information(k);
+            a.Append(a.Length > 0 ? " " : "").Append(k).Append(':').Append(r == null ? "null" : r.Length.ToString());
+        }
+        Console.WriteLine(a.ToString());
+        StringBuilder b = new StringBuilder();
+        foreach (long k in new long[] { 0, 1, 44, 46, 99 })
+        {
+            byte[]? r = Information(k);
+            b.Append(b.Length > 0 ? " " : "").Append(k).Append(':').Append(r == null ? "null" : r.Length.ToString());
+        }
+        Console.WriteLine(b.ToString());
+        return 0;
+    }
+}
