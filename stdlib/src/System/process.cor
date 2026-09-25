@@ -262,6 +262,91 @@ class Process : IDisposable
         UnixProcess.Kill(_pid, 9);
     }
 
+    // ---- processes this one did not start ---------------------------------------
+    //
+    // Process.GetProcesses and GetProcessById, read from /proc as ps reads it:
+    // /proc/<pid>/stat is `pid (comm) state ppid ...`, proc(5)'s fields.
+
+    string _name = "";
+    long _rss, _cpuTicks;
+    int _threads = 1;
+    bool _listed;
+
+    /// The program's name, as /proc/<pid>/stat has it (comm).
+    public string ProcessName { get { return _listed ? _name : Refresh1(); } }
+
+    /// The memory it has in use, in bytes: its resident set.
+    public long WorkingSet64 { get { return _rss; } }
+
+    /// Its time on the processors, user and system together.
+    public TimeSpan TotalProcessorTime { get { return new TimeSpan(_cpuTicks * 100000); } }     // USER_HZ 100: a tick is 10 ms
+
+    /// How many threads it has (.NET's Threads.Count).
+    public int ThreadCount { get { return _threads; } }
+
+    string Refresh1() { Read(); return _name; }
+
+    /// Every process there is, in pid order.
+    public static Process[] GetProcesses()
+    {
+        List<Process> all = new List<Process>();
+        string[] dirs;
+        try { dirs = Directory.GetDirectories("/proc"); }
+        catch (IOException) { return new Process[0]; }
+        List<int> pids = new List<int>();
+        foreach (string d in dirs)
+        {
+            string name = Path.GetFileName(d);
+            int pid;
+            if (name.Length > 0 && char.IsDigit(name[0]) && int.TryParse(name, out pid)) pids.Add(pid);
+        }
+        pids.Sort();
+        foreach (int pid in pids)
+        {
+            Process p = new Process();
+            p._pid = pid;
+            if (p.Read()) all.Add(p);
+        }
+        return all.ToArray();
+    }
+
+    /// The process with this id; ArgumentException when there is none.
+    public static Process GetProcessById(int processId)
+    {
+        Process p = new Process();
+        p._pid = processId;
+        if (!p.Read()) throw new ArgumentException("Process with an Id of " + processId + " is not running.");
+        return p;
+    }
+
+    /// Its /proc/<pid>/stat read; false when it is gone.
+    bool Read()
+    {
+        string text;
+        try { text = File.ReadAllText("/proc/" + _pid + "/stat"); }
+        catch (IOException) { return false; }
+        int open = text.IndexOf('('), close = text.LastIndexOf(')');
+        if (open < 0 || close < open) return false;
+        _name = text.Substring(open + 1, close - open - 1);
+        string[] f = text.Substring(close + 1).Trim().Split(' ');
+        // After the name: state 0, ppid 1 ... utime 11, stime 12,
+        // num_threads 17, rss 21 (pages).
+        long utime = 0, stime = 0, rss = 0;
+        int threads = 1;
+        if (f.Length > 21)
+        {
+            long.TryParse(f[11], out utime);
+            long.TryParse(f[12], out stime);
+            int.TryParse(f[17], out threads);
+            long.TryParse(f[21], out rss);
+        }
+        _cpuTicks = utime + stime;
+        _threads = threads;
+        _rss = rss * 4096;
+        _listed = true;
+        return true;
+    }
+
     public void Dispose()
     {
     }

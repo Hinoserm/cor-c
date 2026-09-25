@@ -218,15 +218,18 @@ static class Environment
         return made;
     }
 
+    /// Milliseconds since the system started, as .NET's: the monotonic
+    /// clock, which nothing sets back. (The wall clock, which this was, is
+    /// milliseconds since 1970, and wrapped to a negative int at once.)
     public static long TickCount64
     {
-        get { return Os.Micros() / 1000; }
+        get { return Os.Nanos(ClockId.Monotonic) / 1000000; }
     }
 
-    /// Milliseconds since start, wrapping as .NET's does.
+    /// The same, wrapping every 49.7 days as .NET's does.
     public static int TickCount
     {
-        get { return (int)(Os.Micros() / 1000); }
+        get { return (int)(Os.Nanos(ClockId.Monotonic) / 1000000); }
     }
 
     /// Ends the process now, flushing the console first, as .NET does.

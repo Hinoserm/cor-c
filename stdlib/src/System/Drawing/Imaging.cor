@@ -490,6 +490,11 @@ public class Icon
         if (which < 0) return -1;
         Bitmap? picture = _file.Decode(which);
         if (picture == null) return -1;
+        // AT THE SIZE ASKED FOR. A file with no image of it -- a 32-pixel
+        // icon in a 16-pixel title bar -- is scaled, each pixel the average
+        // of those it covers, weighted by their alpha, as Windows shrinks an
+        // icon it has no small image of.
+        if (size > 0 && (picture.Width != size || picture.Height != size)) picture = Scaled(picture, size);
 
         int id = Seat.NextBitmapId();
         seat.DefineBitmap(id, picture.Width, picture.Height, picture.Pixels);
@@ -507,6 +512,31 @@ public class Icon
         int id = Prepared(size);
         if (id < 0) return;
         g.DrawBitmap(id, x, y, _lastWidth, _lastHeight);
+    }
+
+    static Bitmap Scaled(Bitmap from, int size)
+    {
+        Bitmap made = new Bitmap(size, size);
+        for (int y = 0; y < size; y++)
+        {
+            int y0 = y * from.Height / size, y1 = Math.Max(y0 + 1, (y + 1) * from.Height / size);
+            for (int x = 0; x < size; x++)
+            {
+                int x0 = x * from.Width / size, x1 = Math.Max(x0 + 1, (x + 1) * from.Width / size);
+                long a = 0, r = 0, g = 0, b = 0, n = 0;
+                for (int sy = y0; sy < y1; sy++)
+                    for (int sx = x0; sx < x1; sx++)
+                    {
+                        int at = (sy * from.Width + sx) * 4;
+                        long pa = from.Pixels[at + 3] & 255;
+                        b += (from.Pixels[at] & 255) * pa; g += (from.Pixels[at + 1] & 255) * pa; r += (from.Pixels[at + 2] & 255) * pa;
+                        a += pa; n++;
+                    }
+                if (a == 0) { made.SetPixel(x, y, 0, 0, 0, 0); continue; }
+                made.SetPixel(x, y, (int)(a / n), (int)(r / a), (int)(g / a), (int)(b / a));
+            }
+        }
+        return made;
     }
 
     int _lastWidth, _lastHeight;

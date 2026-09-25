@@ -1,0 +1,35 @@
+// test: Process.GetProcesses and GetProcessById read /proc; Environment.TickCount is time since start
+// expect-exit: 0
+// expect-output:
+// found myself
+// by id
+// ticks rise
+//
+// Process could only start programs: Task Manager needs every process there
+// is, by name, memory and processor time. TickCount was the wall clock in
+// milliseconds since 1970 cast to an int -- negative at once, and a program
+// that took -1 for "not yet" never measured an interval.
+
+using System.Diagnostics;
+
+class Program
+{
+    static int Main()
+    {
+        int me = Environment.ProcessId;
+        bool found = false;
+        foreach (Process p in Process.GetProcesses())
+            if (p.Id == me && p.ProcessName.Length > 0 && p.ThreadCount >= 1 && p.WorkingSet64 > 0) found = true;
+        if (found) Console.WriteLine("found myself");
+        Process own = Process.GetProcessById(me);
+        if (own.Id == me && own.TotalProcessorTime.Ticks >= 0) Console.WriteLine("by id");
+        bool threw = false;
+        try { Process.GetProcessById(0x7FFFFFF0); } catch (ArgumentException) { threw = true; }
+        long a = Environment.TickCount64;
+        long spin = 0;
+        for (int i = 0; i < 3000000; i++) spin += i;
+        long b = Environment.TickCount64;
+        if (a >= 0 && b >= a && Environment.TickCount >= 0 && spin > 0) Console.WriteLine("ticks rise");
+        return found && threw ? 0 : 1;
+    }
+}
