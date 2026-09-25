@@ -12395,7 +12395,12 @@ public sealed partial class Binder
     /// </summary>
     private void AdoptUnsignedConstant(Expr left, ref Type l, Expr right, ref Type r)
     {
-        if (l.Prim is Prim.U64 or Prim.U32 or Prim.NUInt && r.Prim is Prim.I8 or Prim.I16 or Prim.I32 or Prim.I64)
+        // C#'s implicit constant conversions (spec 10.2.11): an int constant
+        // becomes any unsigned type its value fits, a long constant only
+        // ulong. `uintValue == SomeLongConstant` is a comparison of longs --
+        // the constant made a uint here was lowered at its declared width,
+        // an i32 compared with an i64.
+        if (l.Prim is Prim.U64 or Prim.U32 or Prim.NUInt && Adoptable(r.Prim, l.Prim))
         {
             if (FitsUnsigned(right, l.Prim))
             {
@@ -12408,7 +12413,7 @@ public sealed partial class Binder
                 _r.ExprType[right] = r;
             }
         }
-        else if (r.Prim is Prim.U64 or Prim.U32 or Prim.NUInt && l.Prim is Prim.I8 or Prim.I16 or Prim.I32 or Prim.I64)
+        else if (r.Prim is Prim.U64 or Prim.U32 or Prim.NUInt && Adoptable(l.Prim, r.Prim))
         {
             if (FitsUnsigned(left, r.Prim))
             {
@@ -12417,6 +12422,10 @@ public sealed partial class Binder
             }
         }
     }
+
+    /// <summary>Whether a signed constant of type `signed` may convert to `unsigned` at all.</summary>
+    private static bool Adoptable(Prim signed, Prim unsigned)
+        => signed is Prim.I8 or Prim.I16 or Prim.I32 || signed == Prim.I64 && unsigned == Prim.U64;
 
     /// <summary>Whether a signed constant expression is non-negative and fits the unsigned width.</summary>
     private bool FitsUnsigned(Expr constant, Prim unsigned)

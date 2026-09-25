@@ -1,0 +1,53 @@
+// test: a uint compared with a long -- a constant, a field, an expression -- is compared as long
+// expect-exit: 0
+// flags: --experimental-batch
+// expect-output:
+// const at 4
+// masked at 0
+// big False
+// ordered True True
+// not equal True
+//
+// C# widens both operands of ==, != and the ordering operators to long when
+// one is uint and the other long (spec 12.12, binary numeric promotion).
+// The uint from BitConverter.ToUInt32 against a long constant reached the
+// IR as an i32 compared with an i64, and the kernel's hook code would not
+// compile ("operands 0 and 1 differ: I32 and I64").
+
+static class Thunk
+{
+    public const long Dispatch = 0x77E14735;
+}
+
+class Program
+{
+    static long Proc = 0x12345678;
+
+    static int Find(byte[] input, long proc)
+    {
+        for (int i = 0; i + 8 <= input.Length; i += 4)
+            if (BitConverter.ToUInt32(input, i) == (proc & 0xFFFFFFFF) && BitConverter.ToUInt32(input, i + 4) == Thunk.Dispatch) return i;
+        return -1;
+    }
+
+    static void Put(byte[] into, int at, long value)
+    {
+        into[at] = (byte)value; into[at + 1] = (byte)(value >> 8); into[at + 2] = (byte)(value >> 16); into[at + 3] = (byte)(value >> 24);
+    }
+
+    static int Main()
+    {
+        byte[] input = new byte[16];
+        Put(input, 4, Proc); Put(input, 8, Thunk.Dispatch);
+        Console.WriteLine("const at " + Find(input, Proc));
+        byte[] first = new byte[8];
+        Put(first, 0, Proc); Put(first, 4, Thunk.Dispatch);
+        Console.WriteLine("masked at " + Find(first, Proc | 0x100000000L));
+        uint all = BitConverter.ToUInt32(new byte[] { 0xFF, 0xFF, 0xFF, 0xFF }, 0);
+        Console.WriteLine("big " + (all == -1L));
+        long wide = 0x80000000L;
+        Console.WriteLine("ordered " + (all > wide) + " " + (wide <= all));
+        Console.WriteLine("not equal " + (BitConverter.ToUInt32(input, 0) != Thunk.Dispatch));
+        return 0;
+    }
+}

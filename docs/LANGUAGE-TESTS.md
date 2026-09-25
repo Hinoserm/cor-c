@@ -58,6 +58,9 @@ Every test starts with a comment block the runner reads:
 - `expect-exit` is the exit code `Main` must return. `nonzero` accepts any
   non-zero code, for tests of runtime failures (a bounds check, an uncaught
   exception) whose exact code is the runtime's choice.
+- `flags` is optional: compiler options this test is always compiled with,
+  on top of any the run was given -- `// flags: --experimental-batch` holds a
+  test about that optimiser's input to it on every run.
 - `expect-output` is optional. When present, stdout must match the listed
   lines exactly. When absent, stdout is not compared -- used together with
   `expect-exit: nonzero` where the runtime's failure message is not part of

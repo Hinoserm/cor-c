@@ -166,6 +166,11 @@ for f in "${tests[@]}"; do
         extra="$extra $root/$src"
     done
 
+    # A test may ask for compiler flags of its own with "// flags: ...":
+    # one about an optimiser mode holds that mode to what it states, whatever
+    # the run was asked for.
+    own_flags="$(header_value "$f" flags)"
+
     # WARNINGS ARE NOT ERRORS HERE, and that is deliberate. Warnings became
     # errors by default in this compiler because that is the right policy for
     # BUILDING THIS SYSTEM, and os/build-linux.sh and the kernel keep it. A
@@ -174,7 +179,7 @@ for f in "${tests[@]}"; do
     # are the specification). In C# a warning is not an error unless somebody
     # asks, and here nobody is asking.
     # shellcheck disable=SC2086
-    $CORC compile -Wno-error "${compiler_flags[@]}" $lib_paths $extra "$f" -o "$exe" >"$work/$name.compile" 2>&1
+    $CORC compile -Wno-error "${compiler_flags[@]}" $own_flags $lib_paths $extra "$f" -o "$exe" >"$work/$name.compile" 2>&1
     cc_status=$?
     if [ "$verbose" = 1 ] && [ -s "$work/$name.compile" ]; then
         sed "s/^/    [corc] /" "$work/$name.compile"
