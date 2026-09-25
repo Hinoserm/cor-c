@@ -62,7 +62,8 @@ public class Seat : IDrawingTarget
     const long NoSys = 38, Io = 5;
     const long SeatStart = 0x4755002A, SeatWhoami = 0x4755002B, SeatCreateAs = 0x4755002C;
     const long SeatClipboardRegister = 0x4755004A, SeatClipboardSet = 0x4755004B, SeatClipboardGet = 0x4755004C,
-               SeatClipboardHas = 0x4755004D, SeatClipboardClear = 0x4755004E, SeatClipboardSequence = 0x4755004F;
+               SeatClipboardHas = 0x4755004D, SeatClipboardClear = 0x4755004E, SeatClipboardSequence = 0x4755004F,
+               SeatClipboardFormats = 0x47550050, SeatClipboardFormatName = 0x47550051;
     const long SeatCursorAt = 0x4755002E, SeatCursorTo = 0x4755002F, SeatAnimateCursor = 0x47550036, SeatClipCursor = 0x47550037,
                SeatVanishPointer = 0x47550038;
 
@@ -593,6 +594,45 @@ public class Seat : IDrawingTarget
 
     /// GetClipboardSequenceNumber: changes every time the clipboard does.
     public long ClipboardSequenceNumber { get { return Ioctl(SeatClipboardSequence, 0); } }
+
+    /// The formats on the clipboard, in the order they came, as
+    /// EnumClipboardFormats walks them: every one a Windows program put there,
+    /// and the ones the clipboard makes from them.
+    public int[] GetClipboardFormats()
+    {
+        byte[] args = new byte[8];
+        long count = Ioctl(SeatClipboardFormats, Sys.ArrayData(args));
+        while (count >= 0)
+        {
+            byte[] list = new byte[(int)count * 4];
+            PutWord(args, 0, Sys.ArrayData(list)); PutWord(args, 4, count);
+            long again = Ioctl(SeatClipboardFormats, Sys.ArrayData(args));
+            GC.KeepAlive(list);
+            if (again == count)
+            {
+                int[] made = new int[(int)count];
+                for (int i = 0; i < made.Length; i++) made[i] = BitConverter.ToInt32(list, i * 4);
+                return made;
+            }
+            count = again;
+        }
+        return new int[0];
+    }
+
+    /// GetClipboardFormatName: a registered format's name; null for a
+    /// predefined format or a number no name has.
+    public string? GetClipboardFormatName(int format)
+    {
+        byte[] args = new byte[12];
+        PutWord(args, 0, format);
+        long length = Ioctl(SeatClipboardFormatName, Sys.ArrayData(args));
+        if (length <= 0) return null;
+        byte[] text = new byte[(int)length * 2];
+        PutWord(args, 4, Sys.ArrayData(text)); PutWord(args, 8, length);
+        long again = Ioctl(SeatClipboardFormatName, Sys.ArrayData(args));
+        GC.KeepAlive(text);
+        return again == length ? System.Text.Encoding.Unicode.GetString(text, 0, text.Length) : null;
+    }
 
     static void PutWord(byte[] b, int at, long v) { b[at] = (byte)v; b[at + 1] = (byte)(v >> 8); b[at + 2] = (byte)(v >> 16); b[at + 3] = (byte)(v >> 24); }
 

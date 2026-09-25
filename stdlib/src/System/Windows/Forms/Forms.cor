@@ -6073,12 +6073,14 @@ public static class DataFormats
         return new Format(format, id);
     }
 
-    /// A format by number: a predefined one's name, else "Format" and the
-    /// number.
+    /// A format by number: a predefined one's name, a registered one's
+    /// (GetClipboardFormatName), else "Format" and the number.
     public static Format GetFormat(int id)
     {
         int n = id & 0xFFFF;
-        return new Format(n > 0 && n < Standard.Length ? Standard[n] : "Format" + n, n);
+        if (n > 0 && n < Standard.Length) return new Format(Standard[n], n);
+        string? name = n >= 0xC000 ? Seat.Current.GetClipboardFormatName(n) : null;
+        return new Format(name ?? "Format" + n, n);
     }
 }
 
@@ -6206,6 +6208,41 @@ public class DataObject : IDataObject
     public virtual Stream? GetAudioStream() { return GetData(DataFormats.WaveAudio, false) as Stream; }
     public virtual void SetAudio(byte[] audioBytes) { if (audioBytes == null) throw new ArgumentNullException("audioBytes"); SetAudio(new MemoryStream(audioBytes)); }
     public virtual void SetAudio(Stream audioStream) { if (audioStream == null) throw new ArgumentNullException("audioStream"); SetData(DataFormats.WaveAudio, false, audioStream); }
+}
+
+/// The clipboard as a data object (Clipboard.GetDataObject): its formats and
+/// their data read from the clipboard each time they are asked for. Data
+/// set on it stays in the object, as on .NET's.
+sealed class ClipboardDataObject : DataObject
+{
+    public override object? GetData(string format, bool autoConvert)
+    {
+        object? mine = base.GetData(format, false);
+        if (mine != null) return mine;
+        if (format == DataFormats.StringFormat && autoConvert) format = DataFormats.UnicodeText;
+        return Clipboard.ContainsData(format) ? Clipboard.GetData(format) : null;
+    }
+
+    public override bool GetDataPresent(string format, bool autoConvert)
+    {
+        if (base.GetDataPresent(format, false)) return true;
+        if (format == DataFormats.StringFormat && autoConvert) format = DataFormats.UnicodeText;
+        return Clipboard.ContainsData(format);
+    }
+
+    /// The clipboard's formats by name, and -- converting -- System.String
+    /// where there is text, as .NET lists it.
+    public override string[] GetFormats(bool autoConvert)
+    {
+        List<string> all = new List<string>(base.GetFormats(false));
+        foreach (int id in Seat.Current.GetClipboardFormats())
+        {
+            string name = DataFormats.GetFormat(id).Name;
+            if (!all.Contains(name)) all.Add(name);
+        }
+        if (autoConvert && all.Contains(DataFormats.UnicodeText) && !all.Contains(DataFormats.StringFormat)) all.Add(DataFormats.StringFormat);
+        return all.ToArray();
+    }
 }
 
 /// .NET's Clipboard: the window station's clipboard, shared with every
@@ -6459,19 +6496,11 @@ public static class Clipboard
         return Seat.Current.IsClipboardFormatAvailable(IdOf(format));
     }
 
-    /// What is on it now, as a DataObject with each common format there.
-    public static IDataObject? GetDataObject()
-    {
-        DataObject d = new DataObject();
-        foreach (string f in new string[] { DataFormats.UnicodeText, DataFormats.Text, DataFormats.OemText, DataFormats.Rtf, DataFormats.Html,
-                                            DataFormats.CommaSeparatedValue, DataFormats.Bitmap, DataFormats.FileDrop, DataFormats.WaveAudio })
-        {
-            if (!ContainsData(f)) continue;
-            object? v = GetData(f);
-            if (v != null) d.SetData(f, false, v);
-        }
-        return d;
-    }
+    /// What is on it, as a data object that reads each format when it is
+    /// asked for, as .NET's answers the OLE clipboard's own: every format a
+    /// Windows program put there, registered ones by name, and nothing read
+    /// -- or rendered by its owner -- that is never asked for.
+    public static IDataObject? GetDataObject() { return new ClipboardDataObject(); }
 
     // ---- text ----
 
