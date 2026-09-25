@@ -1245,7 +1245,7 @@ public class SeatWindowInfo
 {
     public int Handle;
     public int Owner;
-    public int Flags;                        // 1 desktop, 2 top-most, 4 focused, 8 off the taskbar, 16 minimized
+    public int Flags;                        // 1 desktop, 2 top-most, 4 focused, 8 off the taskbar, 16 minimized, 32 flashing
     public Rectangle Bounds;                 // on the screen
     public string Title = "";
     public bool IsDesktop { get { return (Flags & 1) != 0; } }
@@ -1253,6 +1253,8 @@ public class SeatWindowInfo
     public bool IsFocused { get { return (Flags & 4) != 0; } }
     public bool OnTaskbar { get { return (Flags & 9) == 0; } }      // neither the desktop nor a window that opted out
     public bool IsMinimized { get { return (Flags & 16) != 0; } }
+    /// Its program asked for attention (FlashWindowEx): the taskbar lights its button.
+    public bool IsFlashing { get { return (Flags & 32) != 0; } }
 }
 
 
