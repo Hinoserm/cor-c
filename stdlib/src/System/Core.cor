@@ -3957,6 +3957,10 @@ static class Single {
 // .NET's shape is kept because source says Encoding.UTF8.GetBytes(s).
 
 class UTF8Encoding : Encoding {
+    public override int CodePage => 65001;
+    public override string WebName => "utf-8";
+    public override string EncodingName => "Unicode (UTF-8)";
+
     // Whether a file written in it starts with the byte-order mark (the
     // preamble), and whether bad bytes throw: .NET's two options. A string
     // here is its UTF-8 already, so decoding has nothing to reject.
@@ -4045,6 +4049,11 @@ class UTF8Encoding : Encoding {
 // detail -- a four-character section tag read as ASCII must be four characters
 // whatever the image holds, or a corrupt tag reads back as a valid one.
 class ASCIIEncoding : Encoding {
+    public override int CodePage => 20127;
+    public override string WebName => "us-ascii";
+    public override string EncodingName => "US-ASCII";
+    public override bool IsSingleByte => true;
+
     private const int Substitute = 63;              // '?'
 
     public override byte[] GetBytes(string s) {
@@ -4295,6 +4304,10 @@ struct Rune {
 /// The conversion is real work here, unlike UTF8Encoding's: a string on this
 /// machine is UTF-8, so GetBytes decodes and re-encodes rather than copying.
 class UnicodeEncoding : Encoding {
+    public override int CodePage => big ? 1201 : 1200;
+    public override string WebName => big ? "utf-16BE" : "utf-16";
+    public override string EncodingName => big ? "Unicode (Big-Endian)" : "Unicode";
+
     private bool big;
     private bool mark;
 
@@ -4419,6 +4432,10 @@ class UnicodeEncoding : Encoding {
 /// indexing looks like -- the nth character is at the nth position, which is
 /// true in neither of the other two.
 class UTF32Encoding : Encoding {
+    public override int CodePage => big ? 12001 : 12000;
+    public override string WebName => big ? "utf-32BE" : "utf-32";
+    public override string EncodingName => big ? "Unicode (UTF-32 Big-Endian)" : "Unicode (UTF-32)";
+
     private bool big;
 
     public UTF32Encoding() { big = false; }
@@ -4487,6 +4504,112 @@ class UTF32Encoding : Encoding {
     }
 }
 
+/// A single-byte code page: Latin-1 (28591), Windows' ANSI Western page
+/// (1252), and the IBM PC's OEM page (437), each byte from 0x80 up a table's
+/// character -- NT's c_1252.nls and c_437.nls, 1252's five undefined bytes
+/// mapping to themselves as they do there. A character the page has not
+/// becomes '?', .NET's replacement fallback.
+class CodePageEncoding : Encoding {
+    private const int Substitute = 63;              // '?'
+    private int page;
+    private int[] high;
+    private Dictionary<int, int>? back;
+
+    static readonly int[] Ansi = new int[] {
+        0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008D, 0x017D, 0x008F,
+        0x0090, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x009D, 0x017E, 0x0178,
+        0x00A0, 0x00A1, 0x00A2, 0x00A3, 0x00A4, 0x00A5, 0x00A6, 0x00A7, 0x00A8, 0x00A9, 0x00AA, 0x00AB, 0x00AC, 0x00AD, 0x00AE, 0x00AF,
+        0x00B0, 0x00B1, 0x00B2, 0x00B3, 0x00B4, 0x00B5, 0x00B6, 0x00B7, 0x00B8, 0x00B9, 0x00BA, 0x00BB, 0x00BC, 0x00BD, 0x00BE, 0x00BF,
+        0x00C0, 0x00C1, 0x00C2, 0x00C3, 0x00C4, 0x00C5, 0x00C6, 0x00C7, 0x00C8, 0x00C9, 0x00CA, 0x00CB, 0x00CC, 0x00CD, 0x00CE, 0x00CF,
+        0x00D0, 0x00D1, 0x00D2, 0x00D3, 0x00D4, 0x00D5, 0x00D6, 0x00D7, 0x00D8, 0x00D9, 0x00DA, 0x00DB, 0x00DC, 0x00DD, 0x00DE, 0x00DF,
+        0x00E0, 0x00E1, 0x00E2, 0x00E3, 0x00E4, 0x00E5, 0x00E6, 0x00E7, 0x00E8, 0x00E9, 0x00EA, 0x00EB, 0x00EC, 0x00ED, 0x00EE, 0x00EF,
+        0x00F0, 0x00F1, 0x00F2, 0x00F3, 0x00F4, 0x00F5, 0x00F6, 0x00F7, 0x00F8, 0x00F9, 0x00FA, 0x00FB, 0x00FC, 0x00FD, 0x00FE, 0x00FF,
+    };
+
+    static readonly int[] Oem = new int[] {
+        0x00C7, 0x00FC, 0x00E9, 0x00E2, 0x00E4, 0x00E0, 0x00E5, 0x00E7, 0x00EA, 0x00EB, 0x00E8, 0x00EF, 0x00EE, 0x00EC, 0x00C4, 0x00C5,
+        0x00C9, 0x00E6, 0x00C6, 0x00F4, 0x00F6, 0x00F2, 0x00FB, 0x00F9, 0x00FF, 0x00D6, 0x00DC, 0x00A2, 0x00A3, 0x00A5, 0x20A7, 0x0192,
+        0x00E1, 0x00ED, 0x00F3, 0x00FA, 0x00F1, 0x00D1, 0x00AA, 0x00BA, 0x00BF, 0x2310, 0x00AC, 0x00BD, 0x00BC, 0x00A1, 0x00AB, 0x00BB,
+        0x2591, 0x2592, 0x2593, 0x2502, 0x2524, 0x2561, 0x2562, 0x2556, 0x2555, 0x2563, 0x2551, 0x2557, 0x255D, 0x255C, 0x255B, 0x2510,
+        0x2514, 0x2534, 0x252C, 0x251C, 0x2500, 0x253C, 0x255E, 0x255F, 0x255A, 0x2554, 0x2569, 0x2566, 0x2560, 0x2550, 0x256C, 0x2567,
+        0x2568, 0x2564, 0x2565, 0x2559, 0x2558, 0x2552, 0x2553, 0x256B, 0x256A, 0x2518, 0x250C, 0x2588, 0x2584, 0x258C, 0x2590, 0x2580,
+        0x03B1, 0x00DF, 0x0393, 0x03C0, 0x03A3, 0x03C3, 0x00B5, 0x03C4, 0x03A6, 0x0398, 0x03A9, 0x03B4, 0x221E, 0x03C6, 0x03B5, 0x2229,
+        0x2261, 0x00B1, 0x2265, 0x2264, 0x2320, 0x2321, 0x00F7, 0x2248, 0x00B0, 0x2219, 0x00B7, 0x221A, 0x207F, 0x00B2, 0x25A0, 0x00A0,
+    };
+
+    public CodePageEncoding(int codepage) {
+        page = codepage;
+        high = new int[128];
+        for (int i = 0; i < 128; i++) { high[i] = codepage == 1252 ? Ansi[i] : codepage == 437 ? Oem[i] : 0x80 + i; }
+    }
+
+    public override int CodePage => page;
+    public override string WebName => page == 1252 ? "windows-1252" : page == 437 ? "IBM437" : "iso-8859-1";
+    public override string EncodingName => page == 1252 ? "Western European (Windows)" : page == 437 ? "OEM United States" : "Western European (ISO)";
+    public override bool IsSingleByte => true;
+
+    /// The byte a character is on this page, or -1.
+    int ByteOf(int character) {
+        if (character < 0x80) { return character; }
+        if (back == null) {
+            Dictionary<int, int> made = new Dictionary<int, int>();
+            for (int i = 0; i < 128; i++) { if (!made.ContainsKey(high[i])) { made[high[i]] = 0x80 + i; } }
+            back = made;
+        }
+        int b;
+        return back.TryGetValue(character, out b) ? b : -1;
+    }
+
+    /// The character a byte is on this page.
+    public int CharacterOf(int b) { b = b & 255; return b < 0x80 ? b : high[b - 0x80]; }
+
+    public override int GetByteCount(string s) {
+        int count = 0;
+        int at = 0;
+
+        while (at < s.Length) {
+            Rune one = Rune.ReplacementChar;
+            int used = 0;
+
+            Rune.TryDecodeFromUtf8(s, at, out one, out used);
+            if (used <= 0) { used = 1; }
+            count = count + 1;
+            at = at + used;
+        }
+        return count;
+    }
+
+    public override byte[] GetBytes(string s) {
+        byte[] made = new byte[GetByteCount(s)];
+        int at = 0;
+        int n = 0;
+
+        while (at < s.Length) {
+            Rune one = Rune.ReplacementChar;
+            int used = 0;
+
+            Rune.TryDecodeFromUtf8(s, at, out one, out used);
+            if (used <= 0) { used = 1; }
+            int b = ByteOf(one.Value);
+            made[n] = (byte)(b < 0 ? Substitute : b);
+            n = n + 1;
+            at = at + used;
+        }
+        return made;
+    }
+
+    public override string GetString(byte[] bytes, int index, int count) {
+        StringBuilder made = new StringBuilder();
+
+        for (int i = 0; i < count; i++) {
+            int c = CharacterOf(bytes[index + i]);
+
+            if (c < 0x80) { made.Append((char)c); } else { made.Append(new Rune(c).ToString()); }
+        }
+        return made.ToString();
+    }
+}
+
 /// .NET's Encoding: the abstract base every encoding derives from, and the
 /// static properties naming the common ones, typed Encoding as .NET types
 /// them. What a derived encoding must say is how text becomes bytes and bytes
@@ -4500,6 +4623,55 @@ abstract class Encoding {
     public static Encoding Unicode => new UnicodeEncoding();
     public static Encoding BigEndianUnicode => new UnicodeEncoding(true, true);
     public static Encoding UTF32 => new UTF32Encoding();
+
+    /// ISO 8859-1, each byte the character of the same number (.NET 5's
+    /// Encoding.Latin1).
+    public static Encoding Latin1 => new CodePageEncoding(28591);
+
+    /// The encoding a code page number names -- the Unicode forms, ASCII,
+    /// Latin-1, and the Windows code pages this system carries tables for:
+    /// 1252, the ANSI one, and 437, the OEM one. Any other is
+    /// NotSupportedException, as .NET answers a page it has no provider for.
+    public static Encoding GetEncoding(int codepage)
+    {
+        switch (codepage)
+        {
+            case 65001: return new UTF8Encoding(true);
+            case 20127: return new ASCIIEncoding();
+            case 1200: return new UnicodeEncoding();
+            case 1201: return new UnicodeEncoding(true, true);
+            case 12000: return new UTF32Encoding();
+            case 12001: return new UTF32Encoding(true, true);
+            case 28591: case 1252: case 437: return new CodePageEncoding(codepage);
+        }
+        throw new NotSupportedException("No data is available for encoding " + codepage + ".");
+    }
+
+    /// The encoding a web name names, as GetEncoding(int) does, case aside.
+    public static Encoding GetEncoding(string name)
+    {
+        switch (name.ToLowerInvariant())
+        {
+            case "utf-8": return GetEncoding(65001);
+            case "us-ascii": case "ascii": return GetEncoding(20127);
+            case "utf-16": case "unicode": case "utf-16le": return GetEncoding(1200);
+            case "utf-16be": case "unicodefffe": return GetEncoding(1201);
+            case "utf-32": case "utf-32le": return GetEncoding(12000);
+            case "utf-32be": return GetEncoding(12001);
+            case "iso-8859-1": case "latin1": return GetEncoding(28591);
+            case "windows-1252": return GetEncoding(1252);
+            case "ibm437": case "cp437": return GetEncoding(437);
+        }
+        throw new ArgumentException("'" + name + "' is not a supported encoding name.", "name");
+    }
+
+    /// Its code page number, name for the web, and name for people.
+    public virtual int CodePage => 0;
+    public virtual string WebName => "";
+    public virtual string EncodingName => "";
+
+    /// Whether every character is one byte.
+    public virtual bool IsSingleByte => false;
 
     public abstract byte[] GetBytes(string s);
     public abstract int GetByteCount(string s);

@@ -1,0 +1,48 @@
+// test: code_page_encodings
+// expect-exit: 0
+// expect-output:
+// 1252 windows-1252 True
+// 80 99 3F
+// €™
+// 437 IBM437
+// ╔═╗ ░▒▓
+// C9 CD BB
+// 28591 E9
+// é
+// 65001 utf-8
+// not supported: 850
+//
+// .NET's Encoding.GetEncoding and Encoding.Latin1 for the single-byte pages
+// this system carries (1252 and 437, the tables of NT's c_1252.nls and
+// c_437.nls), both ways, a character a page has not becoming '?'.
+
+using System;
+using System.Text;
+
+public static class Program
+{
+    static string Hex(byte[] b)
+    {
+        string s = "";
+        for (int i = 0; i < b.Length; i++) s = s + (i > 0 ? " " : "") + b[i].ToString("X2");
+        return s;
+    }
+
+    public static int Main()
+    {
+        Encoding ansi = Encoding.GetEncoding(1252);
+        Console.WriteLine(ansi.CodePage + " " + ansi.WebName + " " + ansi.IsSingleByte);
+        Console.WriteLine(Hex(ansi.GetBytes("€™Ā")));
+        Console.WriteLine(ansi.GetString(new byte[] { 0x80, 0x99 }));
+        Encoding oem = Encoding.GetEncoding("cp437");
+        Console.WriteLine(oem.CodePage + " " + oem.WebName);
+        Console.WriteLine(oem.GetString(new byte[] { 0xC9, 0xCD, 0xBB, 0x20, 0xB0, 0xB1, 0xB2 }));
+        Console.WriteLine(Hex(oem.GetBytes("╔═╗")));
+        Console.WriteLine(Encoding.Latin1.CodePage + " " + Hex(Encoding.Latin1.GetBytes("é")));
+        Console.WriteLine(Encoding.Latin1.GetString(new byte[] { 0xE9 }));
+        Console.WriteLine(Encoding.GetEncoding("UTF-8").CodePage + " " + Encoding.UTF8.WebName);
+        try { Encoding.GetEncoding(850); Console.WriteLine("850?"); }
+        catch (NotSupportedException) { Console.WriteLine("not supported: 850"); }
+        return 0;
+    }
+}
