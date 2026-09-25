@@ -151,10 +151,17 @@ static partial class Os
         return Lseek(fd, 0, Whence.Current);
     }
 
-    /// How long an open file is: to the end and back again. A pipe answers
-    /// -ESPIPE, which is the honest answer to "how long is a pipe".
+    /// How long an open file is. A regular file's is fstat's st_size, as
+    /// .NET's FileStream.Length on Unix answers -- a /proc file, which Linux
+    /// will not seek to the end of (EINVAL), is 0 bytes by it, and a reader
+    /// of it reads to its end. Anything else goes to its end and back again:
+    /// a disc's length, and a pipe's -ESPIPE, the honest answer to "how
+    /// long is a pipe".
     public static long SizeOf(int fd)
     {
+        byte[] st = StatBuf.Room();
+        if (Fstat(fd, st) >= 0 && (StatBuf.Mode(st) & 0xF000) == 0x8000) return StatBuf.Size(st);
+
         long here = Lseek(fd, 0, Whence.Current);
 
         if (here < 0)

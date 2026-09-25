@@ -1,0 +1,27 @@
+// test: read_all_bytes_unknown_length
+// expect-exit: 0
+// expect-output:
+// read
+// same
+//
+// File.ReadAllBytes of a file whose length reads as 0 -- /proc/self/stat
+// here, everything under /proc on CORSAC -- reads it to its end, as .NET's
+// does; it used to take the 0 at its word and answer an empty array.
+
+using System;
+using System.IO;
+using System.Text;
+
+public static class Program
+{
+    public static int Main()
+    {
+        byte[] stat = File.ReadAllBytes("/proc/self/stat");
+        Console.WriteLine(stat.Length > 0 && stat[0] >= (byte)'1' && stat[0] <= (byte)'9' ? "read" : "empty");
+        // Past one buffer's worth too: /proc/self/maps is often longer than 4 KiB.
+        byte[] maps = File.ReadAllBytes("/proc/self/maps");
+        string text = File.ReadAllText("/proc/self/maps");
+        Console.WriteLine(maps.Length > 0 && Encoding.ASCII.GetString(maps).Substring(0, 8) == text.Substring(0, 8) ? "same" : "different");
+        return 0;
+    }
+}

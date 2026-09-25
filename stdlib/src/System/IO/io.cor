@@ -872,6 +872,31 @@ partial static class File
     {
         FileStream f = new FileStream(path, FileMode.Open, FileAccess.Read);
         long size = f.Length;
+        // A FILE THAT GIVES NO LENGTH -- everything under /proc -- is read
+        // to its end, as .NET's ReadAllBytesUnknownLength reads it; taking
+        // the 0 at its word gave every such file back empty. (Less than 0 is
+        // a pipe or a device that would not say.)
+        if (size <= 0)
+        {
+            byte[] grown = new byte[4096];
+            int had = 0;
+            while (true)
+            {
+                if (had == grown.Length)
+                {
+                    byte[] bigger = new byte[grown.Length * 2];
+                    Array.Copy(grown, 0, bigger, 0, had);
+                    grown = bigger;
+                }
+                int n = f.Read(grown, had, grown.Length - had);
+                if (n <= 0) break;
+                had = had + n;
+            }
+            f.Dispose();
+            byte[] exact = new byte[had];
+            Array.Copy(grown, 0, exact, 0, had);
+            return exact;
+        }
         byte[] all = new byte[(int)size];
         int done = 0;
         while (done < all.Length)
