@@ -210,7 +210,9 @@ for f in "${tests[@]}"; do
         continue
     fi
 
-    run_with_timeout "$exe" >"$work/$name.out" 2>"$work/$name.err"
+    # "// args: WORDS" are the command line the program is run with.
+    read -r -a run_args <<< "$(header_value "$f" args)"
+    run_with_timeout "$exe" "${run_args[@]}" >"$work/$name.out" 2>"$work/$name.err"
     got_exit=$?
 
     ok=1

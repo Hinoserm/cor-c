@@ -39,6 +39,7 @@ public static class Program
             StaticContextTests.Run(work);
             ClosureOwnershipTests.Run(work);
             NestedGenericImportTests.Run(work);
+            EntryArgsImportTests.Run(work);
             StructuralOwnershipTests.Run(work);
             string path = Path.Combine(work, "declarations.idx");
             DeclarationRecord[] records = Enumerable.Range(0, 1000).Select(i =>

@@ -1,0 +1,24 @@
+// test: main_args
+// args: one two three
+// expect-exit: 3
+// expect-output:
+// 3
+// one|two|three
+//
+// `static int Main(string[] args)` is handed the command line after the
+// program's name, whether or not the program names Environment anywhere: the
+// entry builds the array from Environment.GetCommandLineArgs, and a program
+// that never mentioned Environment got an empty one, because the declaration
+// index had never loaded it.
+
+using System;
+
+public static class Program
+{
+    public static int Main(string[] args)
+    {
+        Console.WriteLine(args.Length);
+        Console.WriteLine(string.Join("|", args));
+        return args.Length;
+    }
+}

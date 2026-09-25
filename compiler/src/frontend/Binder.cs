@@ -2899,6 +2899,17 @@ public sealed partial class Binder
             }
 
             _method = _r.Methods[md];
+
+            // AN ENTRY TAKING ITS ARGUMENTS reads them through
+            // Environment.GetCommandLineArgs, which the entry stub calls
+            // though no source names it (Lowering.EntryArgs). Declarations
+            // come from the library's index as they are named, so a program
+            // that never wrote `Environment` got an empty array: asked for
+            // here, where Main is.
+            if (md.Name == "Main" && _method.Static && _method.Params.Count == 1 && _method.Params[0].Type.IsArray)
+            {
+                FindType("Environment", out _);
+            }
             _closureOwner = ClosureIdentity.Of(_method);
             _closures = 0;
             _nextSlot = 0;
