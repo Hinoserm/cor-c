@@ -1,0 +1,32 @@
+// test: is_qualified_type
+// expect-exit: 0
+// expect-output:
+// True
+// True
+// False
+// 0
+// qr 7 True
+//
+// A type named with its namespace in an `is` test, with and without a
+// pattern variable (C# 12.12.12): `o is System.Text.StringBuilder` is a
+// type test, not a read of a member called Text of something called System.
+// And .NET's names for the built-in types are the same types (C# 8.2.1):
+// `String` and `System.String` are `string`, `Int32` is `int`.
+
+using System;
+
+public static class Program
+{
+    public static int Main()
+    {
+        object o = new System.Text.StringBuilder();
+        Console.WriteLine(o is System.Text.StringBuilder);
+        object s = "x";
+        Console.WriteLine(s is System.String);
+        Console.WriteLine(s is System.Text.StringBuilder);
+        if (o is System.Text.StringBuilder sb) Console.WriteLine(sb.Length);
+        String t = "q"; System.String u = "r"; Int32 n = 7;
+        Console.WriteLine(t + u + " " + n + " " + (typeof(String) == typeof(string)));
+        return 0;
+    }
+}

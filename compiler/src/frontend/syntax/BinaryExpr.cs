@@ -18,4 +18,12 @@ public sealed class BinaryExpr : Expr
     /// not of the pattern.
     /// </summary>
     public bool PatternNullTest { get; init; }
+
+    /// <summary>
+    /// This equality is a CONSTANT PATTERN as the parser read it -- `x is A.B`
+    /// with nothing after the name. A dotted name there may be a type rather
+    /// than a constant, and only binding can say which: C# takes it as a type
+    /// when it names one, so `o is System.Text.StringBuilder` is a type test.
+    /// </summary>
+    public bool PatternConstant { get; init; }
 }

@@ -1835,7 +1835,7 @@ public sealed class Monomorphiser
                 return new BinaryExpr
                 {
                     Op = b.Op, Left = Rewrite(b.Left, map), Right = Rewrite(b.Right, map),
-                    PatternNullTest = b.PatternNullTest,
+                    PatternNullTest = b.PatternNullTest, PatternConstant = b.PatternConstant,
                     Line = b.Line, Col = b.Col,
                 };
 

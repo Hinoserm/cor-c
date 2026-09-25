@@ -424,6 +424,27 @@ public sealed partial class Binder
     private bool IsTypeName(string name) => FindType(name, out _);
 
     /// <summary>
+    /// Whether a dotted name resolves as a type the way a written type does --
+    /// the library's types included, which are declared without the namespace
+    /// a program names them with (System.Text.StringBuilder).
+    /// </summary>
+    private bool NamesType(string dotted, Expr at)
+    {
+        if (IsTypeName(dotted)) return true;
+        _quiet++;
+        try { return !Resolve(new TypeRef { Name = dotted, Line = at.Line, Col = at.Col }, _thisType).IsError; }
+        finally { _quiet--; }
+    }
+
+    /// <summary>A name or a chain of member names, written out with its dots; null for anything else.</summary>
+    private static string? Dotted(Expr e) => e switch
+    {
+        NameExpr n => n.Name,
+        MemberExpr { Guarded: false } m when Dotted(m.Target) is string left => left + "." + m.Name,
+        _ => null,
+    };
+
+    /// <summary>
     /// The type whose declaration is being read, when that is not the same as
     /// the type whose body is being checked -- a member's signature is written
     /// inside its type before <see cref="_thisType"/> means anything.
@@ -2678,6 +2699,29 @@ public sealed partial class Binder
             case "char":   return Type.Char;
             case "string": return Type.String;
             case "object": return Type.Any;
+
+            // .NET'S NAMES FOR THE SAME TYPES, bare or with their namespace:
+            // `string` is an alias for System.String and `int` for
+            // System.Int32 (C# 8.2.1), so `String s` and `s is System.String`
+            // mean exactly what `string` does. As types only -- in an
+            // expression `String.Join` still finds the library's static
+            // class of that name, which carries the members.
+            case "String" or "System.String": return Type.String;
+            case "Object" or "System.Object": return Type.Any;
+            case "Boolean" or "System.Boolean": return Type.Bool;
+            case "SByte" or "System.SByte": return Type.I8;
+            case "Byte" or "System.Byte": return Type.U8;
+            case "Int16" or "System.Int16": return Type.I16;
+            case "UInt16" or "System.UInt16": return Type.U16;
+            case "Int32" or "System.Int32": return Type.I32;
+            case "UInt32" or "System.UInt32": return Type.U32;
+            case "Int64" or "System.Int64": return Type.I64;
+            case "UInt64" or "System.UInt64": return Type.U64;
+            case "IntPtr" or "System.IntPtr": return Type.NInt;
+            case "UIntPtr" or "System.UIntPtr": return Type.NUInt;
+            case "Single" or "System.Single": return Type.F32;
+            case "Double" or "System.Double": return Type.F64;
+            case "Char" or "System.Char": return Type.Char;
 
             // THE SHARED SHAPE OF EVERY MACHINE WORD.
             //
@@ -7492,6 +7536,7 @@ public sealed partial class Binder
         BinaryExpr b => new BinaryExpr
         {
             Op = b.Op, Left = Spell(b.Left), Right = Spell(b.Right),
+            PatternNullTest = b.PatternNullTest, PatternConstant = b.PatternConstant,
             Line = b.Line, Col = b.Col, File = b.File,
         },
 
@@ -12634,6 +12679,26 @@ public sealed partial class Binder
 
     private Type CheckBinary(BinaryExpr b)
     {
+        // A DOTTED NAME IN A CONSTANT PATTERN THAT NAMES A TYPE IS A TYPE TEST.
+        // The parser cannot tell `t is Prim.I8` (a constant) from
+        // `o is System.Text.StringBuilder` (a type) -- both are a name with dots
+        // in it and nothing after -- so it reads both as constants, and here,
+        // with the symbols known, a name that is a type becomes the IsExpr it
+        // means, as C# binds `is` against a type first. The mirror of the bare
+        // name an IsExpr turns into a constant below.
+        if (b.PatternConstant && b.Op == BinOp.Eq && Dotted(b.Right) is string dotted && dotted.Contains('.') && NamesType(dotted, b.Right))
+        {
+            IsExpr typeTest = new()
+            {
+                Operand = b.Left,
+                Type = new TypeRef { Name = dotted, Line = b.Right.Line, Col = b.Right.Col },
+                Line = b.Line,
+                Col = b.Col,
+            };
+            _r.Rewrites[b] = typeTest;
+            return CheckExpr(typeTest);
+        }
+
         // THE RIGHT SIDE OF '&&' KNOWS WHAT THE LEFT SIDE PROVED.
         //
         // `x != null && x.Kind == K` is the commonest line in C# there is, and

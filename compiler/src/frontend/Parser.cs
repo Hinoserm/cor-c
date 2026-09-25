@@ -5179,6 +5179,7 @@ public sealed class Parser
         return new BinaryExpr
         {
             Op = op, Left = subject, Right = ParseUnary(),
+            PatternConstant = op == BinOp.Eq,
             Line = at.Line, Col = at.Col,
         };
     }
