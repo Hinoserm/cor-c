@@ -1,0 +1,29 @@
+// test: nested_generic_tuple
+// expect-exit: 0
+// expect-output:
+// 1a
+// 2b
+// named 3
+//
+// A type nested in a generic one, closed over a tuple: foreach over a
+// List<(int, string)> walks List<T>.Enumerator with T a tuple. The binder
+// re-derives a member's type from the template for a tuple-named receiver,
+// and looked the closed nested type up by its bare name, Enumerator, which
+// names nothing -- the template stood, and the link found no MoveNext.
+
+using System;
+using System.Collections.Generic;
+
+public static class Program
+{
+    public static int Main()
+    {
+        List<(int, string)> l = new List<(int, string)>();
+        l.Add((1, "a"));
+        l.Add((2, "b"));
+        foreach ((int n, string s) in l) Console.WriteLine(n + s);
+        List<(int Count, string Label)> named = new List<(int Count, string Label)> { (3, "c") };
+        foreach (var t in named) Console.WriteLine("named " + t.Count);
+        return 0;
+    }
+}

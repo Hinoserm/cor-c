@@ -6691,7 +6691,10 @@ public sealed partial class Binder
             args.Add(spelt);
         }
 
-        if (_r.Types.TryGetValue(Monomorphiser.MangledName(template.Name, args), out TypeSymbol? real))
+        // BY ITS KEY, which keeps a nested template's outer: List<T>.Enumerator
+        // closed over a tuple is List$Enumerator$ValueTuple_int_string, and
+        // its bare name found nothing and left the template standing.
+        if (_r.Types.TryGetValue(Monomorphiser.MangledName(Bare(template.Key), args), out TypeSymbol? real))
         {
             return new Type
             {
