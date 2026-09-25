@@ -6920,10 +6920,33 @@ static class Array {
     }
 
     public static int IndexOf<T>(T[] items, T value) {
-        for (int i = 0; i < items.Length; i++) {
-            if ((Sys.IsObject(items[i]) ? Sys.KeyEquals(items[i], value) : Sys.Word(items[i]) == Sys.Word(value))) { return i; }
+        return IndexOf(items, value, 0, items.Length);
+    }
+
+    /// From `startIndex` to the end.
+    public static int IndexOf<T>(T[] items, T value, int startIndex) {
+        if (items == null) throw new ArgumentNullException("array");
+        if (startIndex < 0 || startIndex > items.Length) throw new ArgumentOutOfRangeException("startIndex");
+        return IndexOf(items, value, startIndex, items.Length - startIndex);
+    }
+
+    /// The first of `count` elements from `startIndex` that equals `value`,
+    /// or -1: .NET's range rules, the start anywhere up to the end and the
+    /// range inside the array.
+    public static int IndexOf<T>(T[] items, T value, int startIndex, int count) {
+        if (items == null) throw new ArgumentNullException("array");
+        if (startIndex < 0 || startIndex > items.Length) throw new ArgumentOutOfRangeException("startIndex");
+        if (count < 0 || count > items.Length - startIndex) throw new ArgumentOutOfRangeException("count");
+        for (int i = startIndex; i < startIndex + count; i++) {
+            if (Same(items[i], value)) { return i; }
         }
-        return 0 - 1;
+        return -1;
+    }
+
+    /// Element equality as IndexOf and LastIndexOf use it: an object's
+    /// Equals, a value's bits.
+    static bool Same<T>(T a, T b) {
+        return Sys.IsObject(a) ? Sys.KeyEquals(a, b) : Sys.Word(a) == Sys.Word(b);
     }
 
     public static bool Contains<T>(this T[] items, T value) {
@@ -6966,8 +6989,31 @@ static class Array {
     }
 
     public static int LastIndexOf<T>(T[] items, T value) {
-        for (int i = items.Length - 1; i >= 0; i--) {
-            if ((Sys.IsObject(items[i]) ? Sys.KeyEquals(items[i], value) : Sys.Word(items[i]) == Sys.Word(value))) { return i; }
+        if (items == null) throw new ArgumentNullException("array");
+        return LastIndexOf(items, value, items.Length - 1, items.Length);
+    }
+
+    /// Backwards from `startIndex` to the beginning.
+    public static int LastIndexOf<T>(T[] items, T value, int startIndex) {
+        if (items == null) throw new ArgumentNullException("array");
+        return LastIndexOf(items, value, startIndex, items.Length == 0 ? 0 : startIndex + 1);
+    }
+
+    /// The last of `count` elements ending at `startIndex` that equals
+    /// `value`, or -1. .NET's rules: an empty array takes a start of -1 or
+    /// 0 and a count of 0; otherwise the start is an element and the range
+    /// does not run off the front.
+    public static int LastIndexOf<T>(T[] items, T value, int startIndex, int count) {
+        if (items == null) throw new ArgumentNullException("array");
+        if (items.Length == 0) {
+            if (startIndex != -1 && startIndex != 0) throw new ArgumentOutOfRangeException("startIndex");
+            if (count != 0) throw new ArgumentOutOfRangeException("count");
+            return -1;
+        }
+        if (startIndex < 0 || startIndex >= items.Length) throw new ArgumentOutOfRangeException("startIndex");
+        if (count < 0 || startIndex - count + 1 < 0) throw new ArgumentOutOfRangeException("count");
+        for (int i = startIndex; i > startIndex - count; i--) {
+            if (Same(items[i], value)) { return i; }
         }
         return -1;
     }

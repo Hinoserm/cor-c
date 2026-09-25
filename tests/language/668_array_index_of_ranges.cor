@@ -1,0 +1,32 @@
+// test: array_index_of_ranges
+// expect-exit: 0
+// expect-output:
+// 1 4 -1 4 -1 -1
+// 4 1 -1 1 -1
+// strings 2 0
+// out of range 3
+//
+// Array.IndexOf and LastIndexOf with a start and a count, as .NET has them:
+// grep looks for a NUL in only the part of its buffer a read filled.
+
+using System;
+
+static class Program
+{
+    static int Main()
+    {
+        byte[] b = { 7, 0, 3, 5, 0, 9 };
+        Console.WriteLine(Array.IndexOf(b, (byte)0) + " " + Array.IndexOf(b, (byte)0, 2) + " " + Array.IndexOf(b, (byte)0, 2, 2)
+            + " " + Array.IndexOf(b, (byte)0, 2, 3) + " " + Array.IndexOf(b, (byte)0, 6) + " " + Array.IndexOf(b, (byte)0, 0, 0));
+        Console.WriteLine(Array.LastIndexOf(b, (byte)0) + " " + Array.LastIndexOf(b, (byte)0, 3) + " " + Array.LastIndexOf(b, (byte)0, 3, 2)
+            + " " + Array.LastIndexOf(b, (byte)0, 3, 3) + " " + Array.LastIndexOf(new byte[0], (byte)0, -1, 0));
+        string[] s = { "a", "b", "c", "b" };
+        Console.WriteLine("strings " + Array.IndexOf(s, "c", 1, 3) + " " + Array.IndexOf(s, "a", 0, 1));
+        int thrown = 0;
+        try { Array.IndexOf(b, (byte)0, 7); } catch (ArgumentOutOfRangeException) { thrown++; }
+        try { Array.IndexOf(b, (byte)0, 4, 3); } catch (ArgumentOutOfRangeException) { thrown++; }
+        try { Array.LastIndexOf(b, (byte)0, 2, 4); } catch (ArgumentOutOfRangeException) { thrown++; }
+        Console.WriteLine("out of range " + thrown);
+        return 0;
+    }
+}
