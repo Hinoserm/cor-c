@@ -83,6 +83,19 @@ static class Gc
     const long FlagMask = 7;
     const long SizeMask = -8;
 
+    // THE HEADER'S SECOND WORD SAYS WHAT A LIVE BLOCK HOLDS. Free, it is the
+    // free list's link -- a block's address, a multiple of eight, or 0 --
+    // and every allocation writes it: 0 for a block that may hold
+    // references, KindLeaf for one that cannot (a string, an array of
+    // bytes or characters, Runtime.AllocLeaf). A leaf is marked and never
+    // scanned. Scanning every word of every live block was most of a
+    // collection's work: the kernel's registry, some twenty megabytes of
+    // names and values, cost two million pointer lookups a collection on a
+    // 233 MHz board. KindLeaf is not a multiple of eight, so no link left
+    // behind by a free block can be taken for it.
+    const long KindAt = 4;
+    const long KindLeaf = 0x4C454146;
+
     // The smallest block that can describe itself while free: header, two
     // links, footer. A remainder below this cannot be a block, so a split
     // that would leave one gives the caller the extra bytes instead.
@@ -707,6 +720,19 @@ static class Gc
     /// every place that reads it.
     public static long Alloc(long bytes)
     {
+        return AllocKind(bytes, 0);
+    }
+
+    /// The same for a block that will hold no references -- a string, an
+    /// array of bytes or characters: marked when reachable, never scanned
+    /// (KindLeaf).
+    public static long AllocLeaf(long bytes)
+    {
+        return AllocKind(bytes, KindLeaf);
+    }
+
+    static long AllocKind(long bytes, long kind)
+    {
         long tb = Sys.ThreadBlock();
         long need = (bytes + Overhead + 7) & SizeMask;
         // Not to be stopped from outside between here and the bump
@@ -721,11 +747,12 @@ static class Gc
             || HasReusableFree(need))
         {
             Sys.Poke(tb + Tls.InAlloc, 0);
-            return AllocSlow(bytes);
+            return AllocSlow(bytes, kind);
         }
 
         Sys.Poke(tb + Tls.AllocPtr, next);
         Sys.Poke(block, need);
+        Sys.Poke(block + KindAt, kind);
         Sys.Poke(next - FooterBytes, need);
         Sys.Poke(tb + Tls.InAlloc, 0);
         return block + HeaderBytes;
@@ -903,7 +930,7 @@ static class Gc
     ///
     /// THIS AND EVERYTHING IT CALLS ALLOCATES NOTHING: no `new`, no arrays, no
     /// strings. Every one of those is a call to this.
-    static long AllocSlow(long bytes)
+    static long AllocSlow(long bytes, long kind)
     {
         // The size checked BEFORE it is rounded, with a bound that leaves
         // room for the rounding: rounding first lets a huge request wrap
@@ -979,6 +1006,7 @@ static class Gc
 
             Sys.Poke(tb + Tls.AllocPtr, from + need);
             Sys.Poke(from, need);
+            Sys.Poke(from + KindAt, kind);
             Sys.Poke(from + need - FooterBytes, need);
             GcLock.Exit();
             return from + HeaderBytes;
@@ -1049,6 +1077,7 @@ static class Gc
 
         _since = _since + SizeOfBlock(block);
         Count(Sys.ThreadBlock(), SizeOfBlock(block));
+        Sys.Poke(block + KindAt, kind);
         GcLock.Exit();
         return block + HeaderBytes;
     }
@@ -1733,6 +1762,13 @@ static class Gc
             return;
         }
 
+        // Nothing in it to follow: scanned as soon as marked.
+        if (Sys.Peek(block + KindAt) == KindLeaf)
+        {
+            SetFlag(block, FlagScan);
+            return;
+        }
+
         Sys.AtomicAdd(GcLock.Words() + GcLock.Pushes, 1);
         PushGrey(block);
     }
@@ -1769,7 +1805,7 @@ static class Gc
                 break;
             }
 
-            if (SetFlag(block, FlagScan))
+            if (SetFlag(block, FlagScan) && Sys.Peek(block + KindAt) != KindLeaf)
             {
                 long size = Sys.Peek(block) & SizeMask;
                 ScanRange(block + HeaderBytes, block + size - FooterBytes);
@@ -2282,7 +2318,8 @@ static class Gc
                 {
                     long flags = Sys.Peek(block);
 
-                    if ((flags & FlagMark) != 0 && (flags & FlagScan) == 0 && SetFlag(block, FlagScan))
+                    if ((flags & FlagMark) != 0 && (flags & FlagScan) == 0 && SetFlag(block, FlagScan)
+                        && Sys.Peek(block + KindAt) != KindLeaf)
                     {
                         long extent = Sys.Peek(block) & SizeMask;
                         ScanRange(block + HeaderBytes, block + extent - FooterBytes);
@@ -2310,7 +2347,8 @@ static class Gc
                 }
                 else
                 {
-                    if ((word & FlagMark) != 0 && (word & FlagScan) == 0 && SetFlag(block, FlagScan))
+                    if ((word & FlagMark) != 0 && (word & FlagScan) == 0 && SetFlag(block, FlagScan)
+                        && Sys.Peek(block + KindAt) != KindLeaf)
                     {
                         ScanRange(block + HeaderBytes, block + size - FooterBytes);
                         Drain();
@@ -3014,6 +3052,16 @@ static class HeapChunks
     static long _snapCount;
     static long _snapCapacity;
 
+    // ONE BIT FOR EVERY 64 KiB OF ADDRESS SPACE A SNAPSHOT CHUNK TOUCHES.
+    // The marker asks OfSnapshot of every word it scans, and most of them --
+    // counts, characters, flags -- point nowhere near the heap: the bit
+    // turns those away with one load, where the search of the index cost a
+    // dozen 64-bit compares on a 32-bit processor. That search was a third
+    // of all the processor time of a 233 MHz board's boot.
+    static long _snapRegions;
+    const long RegionShift = 16;
+    const long RegionMapBytes = 8192;           // 2^32 >> 16 bits
+
     public static bool SnapshotIndex()
     {
         _snapCount = 0;
@@ -3030,6 +3078,22 @@ static class HeapChunks
 
         for (long i = 0; i < _indexCount; i++) Sys.Poke(_snap + i * 4, Sys.Peek(_index + i * 4));
         _snapCount = _indexCount;
+
+        if (_snapRegions == 0) _snapRegions = Platform.Map(RegionMapBytes);
+        if (_snapRegions != 0)
+        {
+            for (long i = 0; i < RegionMapBytes; i = i + 4) Sys.Poke(_snapRegions + i, 0);
+            for (long i = 0; i < _snapCount; i++)
+            {
+                long chunk = Sys.Peek(_snap + i * 4) & 0xFFFFFFFF;
+                long last = ((Sys.Peek(chunk + ChunkLimit) & 0xFFFFFFFF) - 1) >> RegionShift;
+                for (long r = chunk >> RegionShift; r <= last; r++)
+                {
+                    long at = _snapRegions + (r >> 3);
+                    Sys.PokeByte(at, Sys.PeekByte(at) | (1 << (int)(r & 7)));
+                }
+            }
+        }
         return true;
     }
 
@@ -3040,6 +3104,11 @@ static class HeapChunks
 
     public static long OfSnapshot(long at)
     {
+        if (_snapRegions != 0)
+        {
+            long region = (at & 0xFFFFFFFF) >> RegionShift;
+            if ((Sys.PeekByte(_snapRegions + (region >> 3)) & (1 << (int)(region & 7))) == 0) return 0;
+        }
         long low = 0, high = _snapCount;
         while (low < high)
         {

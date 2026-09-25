@@ -1,0 +1,61 @@
+// test: leaf_blocks
+// expect-exit: 0
+// expect-output:
+// kept 2000
+// intact
+//
+// Strings and arrays of bytes, characters and doubles are allocated as
+// leaves: the collector marks them and never scans them. What they hold
+// must survive collections all the same, and the objects that point AT
+// them must keep them alive; many collections run while they are live.
+
+using System;
+using System.Collections.Generic;
+
+class Holder
+{
+    public string Name = "";
+    public byte[] Bytes = new byte[0];
+    public char[] Chars = new char[0];
+    public double[] Numbers = new double[0];
+    public Holder? Next;
+}
+
+public static class Program
+{
+    public static int Main()
+    {
+        List<Holder> kept = new List<Holder>();
+        Holder? chain = null;
+        for (int i = 0; i < 2000; i++)
+        {
+            Holder h = new Holder();
+            h.Name = "holder-" + i;
+            h.Bytes = new byte[64 + i % 200];
+            for (int k = 0; k < h.Bytes.Length; k++) h.Bytes[k] = (byte)(i + k);
+            h.Chars = ("chars" + i).ToCharArray();
+            h.Numbers = new double[] { i, i * 0.5, -i };
+            h.Next = chain;
+            chain = h;
+            if (i % 2 == 0) kept.Add(h);
+            // Garbage between them, enough to collect many times over.
+            for (int g = 0; g < 20; g++) { string junk = new string('x', 100 + g) + i; byte[] waste = new byte[300]; waste[0] = (byte)junk.Length; }
+        }
+        GC.Collect();
+        int count = 0;
+        bool good = true;
+        for (Holder? h = chain; h != null; h = h.Next)
+        {
+            int i = 1999 - count;
+            count++;
+            if (h.Name != "holder-" + i) good = false;
+            if (h.Bytes.Length != 64 + i % 200) good = false;
+            for (int k = 0; k < h.Bytes.Length; k++) if (h.Bytes[k] != (byte)(i + k)) good = false;
+            if (new string(h.Chars) != "chars" + i) good = false;
+            if (h.Numbers[0] != i || h.Numbers[1] != i * 0.5 || h.Numbers[2] != -i) good = false;
+        }
+        Console.WriteLine("kept " + count);
+        Console.WriteLine(good && kept.Count == 1000 ? "intact" : "damaged");
+        return good ? 0 : 1;
+    }
+}

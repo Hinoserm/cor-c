@@ -415,6 +415,15 @@ static class Runtime
         return Gc.Alloc(bytes);
     }
 
+    /// The same for memory that will hold no references -- a string, an
+    /// array of bytes, characters or floating-point numbers: the collector
+    /// marks it when it is reachable and never reads what is in it. The
+    /// compiler calls this for those, and Alloc for everything else.
+    public static long AllocLeaf(long bytes)
+    {
+        return Gc.AllocLeaf(bytes);
+    }
+
     /// The heap for a program that needs no collector. When escape analysis
     /// proves that no allocation reachable from the entry outlives its
     /// function, the compiler retargets what allocation calls remain (error

@@ -123,7 +123,7 @@ public sealed partial class Lowering
             {
                 VReg count = ToI32(Arg(call, target, 0));
                 VReg total = _e.Binary(Opcode.Add, WordOf(count), _t.ArrayHeaderBytes);
-                VReg s = AllocateDynamic(call, total);
+                VReg s = AllocateDynamic(call, total, leaf: true);
                 _e.Store(R(s), new SymOperand(SequenceDescriptor("byte", 1, isString: true), _t.DescriptorBytes), 0, _t.WordSize);
                 _e.Store(R(s), R(count), _t.ArrayCountOffset, 4);
                 return s;

@@ -32,7 +32,7 @@ public sealed class ScalarObjects : IParallelModulePass
             int replaced = 0;
             foreach (Block block in f.Blocks)
                 foreach (Instr alloc in block.Instrs.ToArray())
-                    if (alloc.Op == Opcode.Call && alloc.Callee == Escape.Allocator
+                    if (alloc.Op == Opcode.Call && Escape.IsAllocator(alloc.Callee)
                         && alloc.Dest is not null && alloc.Operands.Count == 1
                         && alloc.Operands[0] is ImmOperand size && size.Value > 0 && size.Value <= 1024)
                         if (Replace(f, block, alloc, size.Value)) replaced++;

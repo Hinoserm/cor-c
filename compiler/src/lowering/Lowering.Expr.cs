@@ -823,9 +823,12 @@ public sealed partial class Lowering
         return AllocateDynamic(at, _e.Const(bytes, IrTypes.Word));
     }
 
-    private VReg AllocateDynamic(Node at, VReg bytes)
+    private VReg AllocateDynamic(Node at, VReg bytes, bool leaf = false)
     {
-        MethodSymbol? alloc = RuntimeMethod("Alloc", 1);
+        // Memory that can hold no reference -- a string, an array of bytes,
+        // characters or floating-point numbers -- comes from AllocLeaf where
+        // the runtime has it: the collector marks it and never scans it.
+        MethodSymbol? alloc = (leaf ? RuntimeMethod("AllocLeaf", 1) : null) ?? RuntimeMethod("Alloc", 1);
         if (alloc is null)
         {
             Error(at, $"allocation needs {RuntimeType}.Alloc, which no compiled source provides; compile with the system library");
@@ -961,7 +964,7 @@ public sealed partial class Lowering
         int stride = Math.Max(1, element.Size);
         VReg bytes = stride == 1 ? count : _e.Binary(Opcode.Mul, count, stride);
         VReg total = _e.Binary(Opcode.Add, WordOf(bytes), _t.ArrayHeaderBytes);
-        VReg array = AllocateDynamic(at, total);
+        VReg array = AllocateDynamic(at, total, LeafElement(element));
         string desc = SequenceDescriptor(ElementKey(element), stride, isString: false);
         _e.Store(R(array), new SymOperand(desc, _t.DescriptorBytes), 0, _t.WordSize);
         _e.Emit(Opcode.InitArrayLength, null, R(array), R(count));
@@ -992,6 +995,16 @@ public sealed partial class Lowering
         }
         return array;
     }
+
+    /// <summary>
+    /// Whether an array of these holds nothing the collector need follow:
+    /// elements too narrow to be an address, or floating point. Arrays of
+    /// int, long and the pointer-sized types stay scanned -- this code keeps
+    /// addresses in them -- as do structs (each element is a block) and
+    /// every reference type.
+    /// </summary>
+    private static bool LeafElement(Type element) => element.Prim is Prim.U8 or Prim.I8 or Prim.Bool or Prim.Char
+        or Prim.I16 or Prim.U16 or Prim.F32 or Prim.F64;
 
     /// <summary>The `{ A = 1, B = 2 }` after a constructor, and collection initialisers.</summary>
     private void EmitInitialiser(NewExpr nw, VReg obj) => EmitInitBody(nw.Body, obj);

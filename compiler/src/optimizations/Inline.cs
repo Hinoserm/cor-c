@@ -213,7 +213,7 @@ public sealed class Inline : IParallelModulePass
                     bool exposesChildren = ordinaryCost > smallBody && !single && !specializesBranch
                         && size + calleeSize <= Math.Max(GrowthLimit, FreshOwnerGrowthLimit)
                         && calleeSize <= FreshOwnerBody
-                        && callee.Blocks.Any(x => x.Instrs.Any(y => y.Op == Opcode.Call && y.Callee == Escape.Allocator))
+                        && callee.Blocks.Any(x => x.Instrs.Any(y => y.Op == Opcode.Call && Escape.IsAllocator(y.Callee)))
                         && FreshOwner(caller, b, i, call, ref callerDefs);
                     if (ordinaryCost > smallBody && !single && !specializesBranch && !exposesChildren)
                     {
@@ -324,7 +324,7 @@ public sealed class Inline : IParallelModulePass
             if (defs.Site(r.Reg) is not { } site || !ReferenceEquals(site.Block, block)
                 || site.Index >= index) return false;
             Instr definition = block.Instrs[site.Index];
-            if (definition.Op == Opcode.Call && definition.Callee == Escape.Allocator) return true;
+            if (definition.Op == Opcode.Call && Escape.IsAllocator(definition.Callee)) return true;
             if (definition.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32)
                 || definition.Operands.Count != 1) return false;
             value = definition.Operands[0];

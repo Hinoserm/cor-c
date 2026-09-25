@@ -43,6 +43,12 @@ public sealed class Escape : IModulePass
     /// <summary>The allocator every `new` calls. Its label is the runtime contract.</summary>
     public const string Allocator = "m_Runtime_Alloc_1_V$I64";
 
+    /// <summary>The allocator for memory that holds no references (strings, byte arrays).</summary>
+    public const string LeafAllocator = "m_Runtime_AllocLeaf_1_V$I64";
+
+    /// <summary>Either of the collecting allocators: every pass that follows an allocation follows both.</summary>
+    public static bool IsAllocator(string? callee) => callee == Allocator || callee == LeafAllocator;
+
     /// <summary>At most this many bytes of a frame go to promoted objects.</summary>
     public int FrameBudget { get; init; } = 4096;
 
@@ -104,7 +110,7 @@ public sealed class Escape : IModulePass
                         // is why nothing is retargeted when the module has
                         // owned an allocation anywhere.
                         string? to = null;
-                        if (i.Callee == Allocator && !_owned.Contains(i))
+                        if (IsAllocator(i.Callee) && !_owned.Contains(i))
                         {
                             to = BumpAllocator;
                         }
@@ -406,7 +412,7 @@ public sealed class Escape : IModulePass
             for (int k = 0; k < b.Instrs.Count; k++)
             {
                 Instr i = b.Instrs[k];
-                if (i.Op != Opcode.Call || i.Callee != Allocator || i.Dest is null || i.Operands.Count != 1
+                if (i.Op != Opcode.Call || !IsAllocator(i.Callee) || i.Dest is null || i.Operands.Count != 1
                     || _owned.Contains(i))
                 {
                     continue;
@@ -746,7 +752,7 @@ public sealed class Escape : IModulePass
             {
                 continue;
             }
-            if (name == Allocator)
+            if (IsAllocator(name))
             {
                 return true;
             }
