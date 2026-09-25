@@ -155,7 +155,7 @@ public class Seat : IDrawingTarget
         public int Handle, X, Y, W, H;
         public long Owner;               // the thread that made it: only it may make it again
         public long Start;               // the GUI kernel's start it was last made in
-        public bool Shown, Desktop, TopMost, NoTaskbar;
+        public bool Shown, Desktop, TopMost, NoTaskbar, Minimized;
         public string Title = "";
 
         public Kept Copy()
@@ -163,7 +163,7 @@ public class Seat : IDrawingTarget
             Kept made = new Kept();
             made.Handle = Handle; made.X = X; made.Y = Y; made.W = W; made.H = H;
             made.Owner = Owner; made.Start = Start;
-            made.Shown = Shown; made.Desktop = Desktop; made.TopMost = TopMost; made.NoTaskbar = NoTaskbar;
+            made.Shown = Shown; made.Desktop = Desktop; made.TopMost = TopMost; made.NoTaskbar = NoTaskbar; made.Minimized = Minimized;
             made.Title = Title;
             return made;
         }
@@ -265,6 +265,7 @@ public class Seat : IDrawingTarget
             if (w.Desktop) Ioctl(0x47550018, 0);
             if (w.TopMost) Ioctl(0x47550019, 1);
             if (w.NoTaskbar) Ioctl(0x47550024, 1);
+            if (w.Minimized) Ioctl(0x47550043, 1);
         }
         foreach (Kept w in mine)
         {
@@ -681,8 +682,19 @@ public class Seat : IDrawingTarget
         if (answer < 0) throw new InvalidOperationException("the seat refused " + what + " (" + (-answer) + ")");
     }
 
-    public void ShowWindow(int handle) { Flush(); Select(handle); Must(Ioctl(0x47550012, 0), "showing a window"); lock (_keep) { Kept? k = Find(handle); if (k != null) k.Shown = true; } }
-    public void HideWindow(int handle) { Flush(); Select(handle); Must(Ioctl(0x47550013, 0), "hiding a window"); lock (_keep) { Kept? k = Find(handle); if (k != null) k.Shown = false; } }
+    public void ShowWindow(int handle) { Flush(); Select(handle); Must(Ioctl(0x47550012, 0), "showing a window"); lock (_keep) { Kept? k = Find(handle); if (k != null) { k.Shown = true; k.Minimized = false; } } }
+    public void HideWindow(int handle) { Flush(); Select(handle); Must(Ioctl(0x47550013, 0), "hiding a window"); lock (_keep) { Kept? k = Find(handle); if (k != null) { k.Shown = false; k.Minimized = false; } } }
+    /// The window minimized -- off the screen, still on the taskbar, which
+    /// asks for it back with a Restore event -- or not any more (ShowWindow
+    /// puts it back on the screen).
+    public void MinimizeWindow(int handle, bool minimized)
+    {
+        Flush(); Select(handle); Ioctl(0x47550043, minimized ? 1 : 0);
+        lock (_keep) { Kept? k = Find(handle); if (k != null) { k.Minimized = minimized; if (minimized) k.Shown = false; } }
+    }
+    /// Ask any window's owner to minimize it (a taskbar button pressed
+    /// while its window is the active one).
+    public void RequestMinimize(int handle) { Flush(); Ioctl(0x47550044, handle); }
     public void RaiseWindow(int handle) { Flush(); Select(handle); Must(Ioctl(0x47550014, 0), "raising a window"); }
     public void MoveWindow(int handle, int x, int y)
     {
@@ -919,13 +931,14 @@ public class SeatWindowInfo
 {
     public int Handle;
     public int Owner;
-    public int Flags;                        // 1 desktop, 2 top-most, 4 focused
+    public int Flags;                        // 1 desktop, 2 top-most, 4 focused, 8 off the taskbar, 16 minimized
     public Rectangle Bounds;                 // on the screen
     public string Title = "";
     public bool IsDesktop { get { return (Flags & 1) != 0; } }
     public bool IsTopMost { get { return (Flags & 2) != 0; } }
     public bool IsFocused { get { return (Flags & 4) != 0; } }
     public bool OnTaskbar { get { return (Flags & 9) == 0; } }      // neither the desktop nor a window that opted out
+    public bool IsMinimized { get { return (Flags & 16) != 0; } }
 }
 
 

@@ -1003,7 +1003,58 @@ public class Form : Control
     public int Handle { get { return _handle; } }
     internal override string ClassName { get { return "Form"; } }
     public FormBorderStyle FormBorderStyle { get { return _border; } set { _border = value; Invalidate(); } }
-    public FormWindowState WindowState { get { return _state; } set { _state = value; if (value == FormWindowState.Maximized) SetBounds(0, 0, Seat.Current.Width, Seat.Current.Height); } }
+    /// <summary>
+    /// Normal, minimized -- off the screen, its taskbar button bringing it
+    /// back -- or maximized: a framed form over the work area with its
+    /// border just off the screen, as Windows maximizes one; a borderless
+    /// one (a desktop) over the whole screen. The normal bounds are kept
+    /// while it is either, and a form minimized from maximized comes back
+    /// maximized.
+    /// </summary>
+    public FormWindowState WindowState
+    {
+        get { return _state; }
+        set
+        {
+            FormWindowState was = _state;
+            if (was == value) { if (value == FormWindowState.Maximized) Maximize(); return; }
+            if (was == FormWindowState.Normal) _normalBounds = Bounds;
+            _state = value;
+            if (value == FormWindowState.Minimized)
+            {
+                _restoreState = was;
+                if (_handle != 0) Seat.Current.MinimizeWindow(_handle, true);
+                FrameChanged();
+                return;
+            }
+            if (was == FormWindowState.Minimized && _handle != 0) { Seat.Current.ShowWindow(_handle); Activate(); }
+            if (value == FormWindowState.Maximized) Maximize();
+            else if (!_normalBounds.IsEmpty) SetBounds(_normalBounds.X, _normalBounds.Y, _normalBounds.Width, _normalBounds.Height);
+            FrameChanged();
+        }
+    }
+
+    void Maximize()
+    {
+        Seat seat = Seat.Current;
+        if (!HasFrame) SetBounds(0, 0, seat.Width, seat.Height);
+        else SetBounds(-BorderWidth, -BorderWidth, seat.Width + 2 * BorderWidth, seat.WorkAreaHeight() + 2 * BorderWidth);
+    }
+
+    /// The bounds it goes back to from minimized or maximized, and the state
+    /// a minimized form comes back to (RestoreBounds, in .NET's name).
+    Rectangle _normalBounds = Rectangle.Empty;
+    FormWindowState _restoreState = FormWindowState.Normal;
+    public Rectangle RestoreBounds { get { return _state == FormWindowState.Normal ? Bounds : _normalBounds; } }
+
+    /// Its taskbar button asked for it back.
+    internal void RestoreFromTaskbar() { WindowState = _restoreState; }
+
+    /// The minimize and maximize buttons on the caption, beside the close
+    /// button: shown when either is wanted, the one that is not greyed.
+    public bool MinimizeBox { get { return _minimizeBox; } set { _minimizeBox = value; FrameChanged(); } }
+    public bool MaximizeBox { get { return _maximizeBox; } set { _maximizeBox = value; FrameChanged(); } }
+    bool _minimizeBox = true, _maximizeBox = true;
     public bool IsClosed { get { return _closed; } }
     /// What a dialog answered: set by the button that closed it (see
     /// Button.DialogResult) and read back by whoever called ShowDialog.
@@ -1082,6 +1133,22 @@ public class Form : Control
         return new Rectangle(Width - BorderWidth - 18, BorderWidth + 2, 16, CaptionHeight - 6);
     }
 
+    /// The maximize (or restore) and minimize buttons, left of the close
+    /// button with a gap before it, as Windows lays the three out; empty
+    /// when neither is wanted.
+    Rectangle MaximizeBoxBounds()
+    {
+        Rectangle close = CloseBox();
+        if (close.IsEmpty || !MinimizeBox && !MaximizeBox) return Rectangle.Empty;
+        return new Rectangle(close.X - 18, close.Y, 16, close.Height);
+    }
+
+    Rectangle MinimizeBoxBounds()
+    {
+        Rectangle max = MaximizeBoxBounds();
+        return max.IsEmpty ? max : new Rectangle(max.X - 16, max.Y, 16, max.Height);
+    }
+
     public override void SetBounds(int x, int y, int w, int h)
     {
         bool moved = x != Left || y != Top, resized = w != Width || h != Height;
@@ -1096,7 +1163,7 @@ public class Form : Control
     /// plus a couple of pixels, which is what a hand finds.
     int ResizeEdges(int x, int y)
     {
-        if (FormBorderStyle != FormBorderStyle.Sizable) return 0;
+        if (FormBorderStyle != FormBorderStyle.Sizable || _state != FormWindowState.Normal) return 0;
         const int Band = BorderWidth + 2;
         int edges = 0;
         if (x < Band) edges |= 1; else if (x >= Width - Band) edges |= 2;
@@ -1154,6 +1221,9 @@ public class Form : Control
 
         Application.Register(this);
         OnLoad(EventArgs.Empty);
+        // Made minimized: straight onto the taskbar, never on the screen.
+        if (_state == FormWindowState.Minimized) { seat.MinimizeWindow(_handle, true); return; }
+        if (_state == FormWindowState.Maximized) Maximize();
         seat.ShowWindow(_handle);
         Invalidate();
         Application.SetFocus(FirstFocusable(this) ?? this);
@@ -1302,6 +1372,8 @@ public class Form : Control
                 g.DrawLine(ink, lx, ly, lx + 6, ly + 6); g.DrawLine(ink, lx + 1, ly, lx + 7, ly + 6);
                 g.DrawLine(ink, lx, ly + 6, lx + 6, ly); g.DrawLine(ink, lx + 1, ly + 6, lx + 7, ly);
             }
+            PaintCaptionButton(g, MaximizeBoxBounds(), 2, MaximizeBox, face);
+            PaintCaptionButton(g, MinimizeBoxBounds(), 3, MinimizeBox, face);
         }
         Point co = ClientOffset();
         Rectangle client = new Rectangle(co.X, co.Y, ClientRectangle.Width, ClientRectangle.Height);
@@ -1309,8 +1381,38 @@ public class Form : Control
         AutoScroll.Overlay(this, seat);
     }
 
-    // The close box is held down, waiting to see where the button comes up.
-    bool _closeDown;
+    /// The maximize (2) or minimize (3) button: raised, or pushed in while
+    /// held with the pointer on it; its glyph -- the restore glyph when the
+    /// form is maximized -- grey when the button is not wanted.
+    void PaintCaptionButton(Graphics g, Rectangle box, int which, bool enabled, Color face)
+    {
+        if (box.IsEmpty) return;
+        bool held = _held == which && _closeHot;
+        ControlPaint.DrawButtonFace(g, box.X, box.Y, box.Width, box.Height, held, false, face);
+        int press = held ? 1 : 0;
+        int x = box.X + 3 + press, y = box.Y + 2 + press;
+        Color colour = enabled ? SystemColors.ControlText : SystemColors.GrayText;
+        SolidBrush ink = new SolidBrush(colour);
+        if (!enabled) { SolidBrush lit = new SolidBrush(SystemColors.ControlLightLight); Glyph(g, lit, which, x + 1, y + 1); }
+        Glyph(g, ink, which, x, y);
+    }
+
+    void Glyph(Graphics g, SolidBrush ink, int which, int x, int y)
+    {
+        if (which == 3) { g.FillRectangle(ink, x + 1, y + 7, 6, 2); return; }
+        if (_state == FormWindowState.Maximized)
+        {
+            g.FillRectangle(ink, x + 2, y, 6, 2); g.FillRectangle(ink, x + 7, y, 1, 6); g.FillRectangle(ink, x + 2, y, 1, 3); g.FillRectangle(ink, x + 6, y + 5, 2, 1);
+            g.FillRectangle(ink, x, y + 3, 6, 2); g.FillRectangle(ink, x, y + 8, 6, 1); g.FillRectangle(ink, x, y + 3, 1, 6); g.FillRectangle(ink, x + 5, y + 3, 1, 6);
+            return;
+        }
+        g.FillRectangle(ink, x, y, 9, 2); g.FillRectangle(ink, x, y + 8, 9, 1); g.FillRectangle(ink, x, y, 1, 9); g.FillRectangle(ink, x + 8, y, 1, 9);
+    }
+
+    // The caption button held down (1 close, 2 maximize, 3 minimize),
+    // waiting to see where the button comes up.
+    int _held;
+    bool _closeDown { get { return _held != 0; } }
 
     /// The close box, and the caption a drag starts on. Nothing acts on the
     /// press: a button pressed and released is a decision, a button pressed
@@ -1318,17 +1420,33 @@ public class Form : Control
     /// on the screen behaves and how Windows behaves.
     void FrameMouse(int kind, int button, int x, int y, Point co)
     {
-        Rectangle box = CloseBox();
-        bool over = !box.IsEmpty && box.Contains(x, y);
-        if (kind == 4 && button == 1 && over) { _closeDown = true; _closeHot = true; FrameChanged(); return; }
-        if (kind == 3 && _closeDown) { if (over != _closeHot) { _closeHot = over; FrameChanged(); } return; }
-        if (kind == 5 && _closeDown)
+        Rectangle close = CloseBox(), max = MaximizeBoxBounds(), min = MinimizeBoxBounds();
+        int under = !close.IsEmpty && close.Contains(x, y) ? 1
+                  : !max.IsEmpty && max.Contains(x, y) && MaximizeBox ? 2
+                  : !min.IsEmpty && min.Contains(x, y) && MinimizeBox ? 3 : 0;
+        if (kind == 4 && button == 1 && under != 0) { _held = under; _closeHot = true; FrameChanged(); return; }
+        if (kind == 3 && _held != 0) { bool over = under == _held; if (over != _closeHot) { _closeHot = over; FrameChanged(); } return; }
+        if (kind == 5 && _held != 0)
         {
-            _closeDown = false; FrameChanged();
-            if (over) Close();
+            int which = _held;
+            _held = 0; FrameChanged();
+            if (under != which) return;
+            if (which == 1) Close();
+            else if (which == 2) WindowState = _state == FormWindowState.Maximized ? FormWindowState.Normal : FormWindowState.Maximized;
+            else WindowState = FormWindowState.Minimized;
             return;
         }
-        if (kind == 4 && button == 1 && y < co.Y) Application.BeginDrag(this, x, y);
+        if (kind == 4 && button == 1 && y < co.Y)
+        {
+            // A double click on the caption maximizes or restores; a
+            // maximized form is not dragged by it.
+            if (Application.CountClick(this, MouseButtons.Left, x, y) >= 2 && MaximizeBox)
+            {
+                WindowState = _state == FormWindowState.Maximized ? FormWindowState.Normal : FormWindowState.Maximized;
+                return;
+            }
+            if (_state == FormWindowState.Normal) Application.BeginDrag(this, x, y);
+        }
     }
     bool _closeHot;
 
@@ -1731,6 +1849,8 @@ public static class MessageBox
         Form box = new Form();
         box.Text = caption;
         box.FormBorderStyle = FormBorderStyle.FixedDialog;
+        box.MinimizeBox = false;
+        box.MaximizeBox = false;
         box.StartPosition = FormStartPosition.CenterScreen;
         Font font = box.Font;
 
@@ -5505,6 +5625,14 @@ public static class Application
                 // WM_SETTINGCHANGE: every setting SystemInformation answers
                 // is asked of the seat again, and whoever cares is told.
                 SystemEvents.RaiseUserPreferenceChanged((UserPreferenceCategory)m.A);
+                break;
+            case 18:
+                // Its taskbar button: back from the taskbar, as it was.
+                if (f != null) f.RestoreFromTaskbar();
+                break;
+            case 19:
+                // Its taskbar button, pressed while it was the active window.
+                if (f != null && f.MinimizeBox) f.WindowState = FormWindowState.Minimized;
                 break;
 
             // THE SCREEN IS A DIFFERENT SIZE NOW. The seat has thrown away
