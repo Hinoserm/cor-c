@@ -241,7 +241,20 @@ internal sealed partial class Selector
             case SlotOperand s:
                 return MMem.Frame(_m.Frame.SlotOffset(s.Slot) + disp);
             case ImmOperand i:
-                return new MMem(null, checked((int)i.Value + disp));
+            {
+                // AN ABSOLUTE ADDRESS IS 32 BITS OF DISPLACEMENT, and on i386
+                // the top half of the space is as addressable as the bottom:
+                // the kernel is at 0xC0000000. The word is kept as its bits
+                // (0xBFFFFFF0 is disp32 0xBFFFFFF0, which reads as a negative
+                // int); only a value that is not 32 bits at all is refused.
+                long at = i.Value + disp;
+                if (at < int.MinValue || at > uint.MaxValue)
+                {
+                    Error($"the address 0x{at:X} does not fit in 32 bits");
+                    return new MMem(null, 0);
+                }
+                return new MMem(null, unchecked((int)at));
+            }
             default:
                 Error($"cannot address through {addr} of type {addr.Type}");
                 return new MMem(null, 0);

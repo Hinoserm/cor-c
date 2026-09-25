@@ -1,0 +1,27 @@
+// test: a load or store at a constant address in the top half of the space compiles
+// expect-exit: 0
+// expect-output:
+// compiled
+//
+// An absolute address is 32 bits of displacement, and on i386 an address at
+// or above 0x80000000 is as addressable as one below it -- a kernel lives
+// there. The selector once converted it to an int with overflow checking and
+// crashed the compiler on `Sys.PokeWord(0xBFFFFFF0, 0)`. The code is only
+// compiled here: running it in a program would fault.
+
+class Program
+{
+    static long Touch()
+    {
+        Sys.PokeWord(0xBFFFFFF0, 0);
+        Sys.PokeByte(0xFFFFFFFF, 1);
+        return Sys.PeekWord(0xC0000000);
+    }
+
+    static int Main()
+    {
+        if (Environment.ProcessorCount < 0) Touch();
+        Console.WriteLine("compiled");
+        return 0;
+    }
+}
