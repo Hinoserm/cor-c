@@ -1138,6 +1138,7 @@ public sealed class Monomorphiser
                     Auto = p.Auto, HasSetter = p.HasSetter,
                     Init = p.Init is null ? null : Rewrite(p.Init, map),
                     VtableSlotHint = p.VtableSlotHint,
+                    ExplicitInterface = p.ExplicitInterface,
                     Line = p.Line, Col = p.Col,
                 };
 
@@ -1183,6 +1184,7 @@ public sealed class Monomorphiser
                     Init = md.Init is null ? null : RewriteCtorInit(md.Init, map),
                     VtableSlotHint = md.VtableSlotHint,
                     NotNullIfNotNull = md.NotNullIfNotNull,
+                    ExplicitInterface = md.ExplicitInterface,
                     Line = md.Line, Col = md.Col,
                 };
 

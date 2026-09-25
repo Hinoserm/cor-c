@@ -28,6 +28,13 @@ public abstract class MemberDecl : Node
     public string Namespace { get; set; } = "";
 
     /// <summary>
+    /// The interface an explicit implementation is written for -- `IEnumerable`
+    /// in `IEnumerator<T> IEnumerable<T>.GetEnumerator()` -- or null. Such a
+    /// member fills that interface's slot and is not on the type's own surface.
+    /// </summary>
+    public string? ExplicitInterface { get; set; }
+
+    /// <summary>
     /// A specialised copy THIS compilation made for its own use, which is its
     /// code to compile whatever its owner is.
     ///

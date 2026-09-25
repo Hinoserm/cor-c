@@ -39,7 +39,7 @@ public sealed class TypeRef : Node
     /// </summary>
     public const string Anything = "__anything";
 
-    public required string Name { get; init; }
+    public required string Name { get; set; }
     public List<TypeRef> Args { get; init; } = new();
     // Use-site arguments retained after Args is folded into a specialization
     // name. These annotations do not request another runtime specialization.

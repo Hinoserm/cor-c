@@ -64,6 +64,15 @@ public sealed class TypeDecl : Node
     public string? Outer { get; set; }
 
     /// <summary>
+    /// How many of <see cref="TypeParams"/> are its outer types' own, written
+    /// first: a type nested in `Outer&lt;T&gt;` is `Outer.Inner&lt;T&gt;` here,
+    /// since everything it says may use T and every Outer&lt;X&gt; has an Inner
+    /// of its own. 0 for a type written at the top level or inside a type
+    /// with no type parameters.
+    /// </summary>
+    public int OuterParams { get; set; }
+
+    /// <summary>
     /// The namespace this was written in, or the empty string for the global
     /// one. Part of <see cref="Outer"/> as well -- which is what keeps
     /// `Corsac.Lang.Expr` and `Corsac.Asm.Expr` apart in the flat table -- and

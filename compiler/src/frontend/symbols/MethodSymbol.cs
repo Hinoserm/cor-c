@@ -14,6 +14,16 @@ public sealed class MethodSymbol
     public bool Async { get; init; }
     public bool IsCtor { get; init; }
     public MethodDecl? Decl { get; init; }
+
+    /// <summary>
+    /// An explicit interface implementation's interface (its simple name) and
+    /// the member of it this fills, which is the name without the qualifier;
+    /// <see cref="Name"/> is the two joined, so that no call by the plain
+    /// name finds it and it never meets a member of that name the type has
+    /// of its own.
+    /// </summary>
+    public string? ExplicitInterface { get; init; }
+    public string? ExplicitMember { get; init; }
     public List<string> TypeParams { get; } = new();
 
     /// <summary>Slot in the owner's vtable, or -1 when dispatch is static.</summary>

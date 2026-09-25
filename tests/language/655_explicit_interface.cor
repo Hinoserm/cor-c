@@ -1,0 +1,61 @@
+// test: explicit_interface
+// expect-exit: 0
+// expect-output:
+// own 3
+// through the interface 30
+// named Box
+// through the interface Shape
+// counted 2
+//
+// An explicit interface implementation -- `int IMeasure<int>.Size()`,
+// `string INamed.Name { get; }` -- fills the interface's member and is not on
+// the class's own surface, so the class may have a public member of the same
+// name and parameters beside it (C# gives each its own caller). A generic
+// interface's qualifier used to be read as the member's own type parameters.
+
+using System;
+using System.Collections.Generic;
+
+public interface IMeasure<T>
+{
+    T Size();
+}
+
+public interface INamed
+{
+    string Name { get; }
+}
+
+public class Box : IMeasure<int>, INamed
+{
+    int _size = 3;
+    public int Size() { return _size; }
+    int IMeasure<int>.Size() { return _size * 10; }
+    public string Name { get { return "Box"; } }
+    string INamed.Name { get { return "Shape"; } }
+}
+
+public class Pair : IEnumerable<int>
+{
+    readonly List<int> _items = new List<int> { 4, 5 };
+    public List<int> Items() { return _items; }
+    IEnumerator<int> IEnumerable<int>.GetEnumerator() { return _items.GetEnumerator(); }
+}
+
+public static class Program
+{
+    public static int Main()
+    {
+        Box box = new Box();
+        IMeasure<int> measure = box;
+        INamed named = box;
+        Console.WriteLine("own " + box.Size());
+        Console.WriteLine("through the interface " + measure.Size());
+        Console.WriteLine("named " + box.Name);
+        Console.WriteLine("through the interface " + named.Name);
+        int count = 0;
+        foreach (int v in (IEnumerable<int>)new Pair()) count++;
+        Console.WriteLine("counted " + count);
+        return 0;
+    }
+}

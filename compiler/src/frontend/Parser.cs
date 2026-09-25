@@ -20,6 +20,12 @@ public sealed class Parser
     private readonly bool _declarationsOnly;
     private readonly bool _includeTemplateBodies;
     private int _templateDepth;
+
+    /// <summary>
+    /// The type parameters of the types being parsed around this point, all of
+    /// them: what a type written inside takes first (TypeDecl.OuterParams).
+    /// </summary>
+    private List<string> _enclosingParams = new();
     private bool _templateMethod;
     private bool SkipImplementation => _declarationsOnly && !(_includeTemplateBodies && (_templateDepth > 0 || _templateMethod));
     /// <summary>Source ranges omitted by declaration-only parsing; end is exclusive.</summary>
@@ -723,9 +729,44 @@ public sealed class Parser
         }
     }
 
+    /// <summary>
+    /// Every use of a type nested in a generic one, written inside that
+    /// generic one or anything else nested in it, given the outer parameters
+    /// it takes (TypeDecl.OuterParams) as its first arguments: `Inner` inside
+    /// Outer&lt;T&gt; is Outer.Inner&lt;T&gt;. A use from outside is written with
+    /// them already -- `Outer&lt;int&gt;.Inner`, which ParseTypeRef joins into
+    /// Outer.Inner&lt;int&gt;.
+    /// </summary>
+    private static void FinishFamily(TypeDecl top, List<TypeDecl> nested)
+    {
+        List<TypeDecl> family = new() { top };
+        family.AddRange(nested);
+        static string PathOf(TypeDecl d) => d.Outer is null ? d.Name : d.Outer + "." + d.Name;
+        foreach (TypeDecl inner in family)
+        {
+            if (inner.OuterParams == 0 || inner.Outer is null) continue;
+            string outer = inner.Outer, path = PathOf(inner);
+            int own = inner.TypeParams.Count - inner.OuterParams;
+            foreach (TypeDecl within in family)
+            {
+                string at = PathOf(within);
+                if (at != outer && !at.StartsWith(outer + ".", StringComparison.Ordinal)) continue;
+                Corsac.Lang.Metadata.BodyTypeNames.Walk(within, reference =>
+                {
+                    if ((reference.Name != inner.Name && reference.Name != path) || reference.Args.Count != own) return;
+                    for (int k = inner.OuterParams - 1; k >= 0; k--)
+                        reference.Args.Insert(0, new TypeRef { Name = inner.TypeParams[k].Name, Line = reference.Line, Col = reference.Col });
+                    if (reference.Name == inner.Name) reference.Name = path;
+                });
+            }
+        }
+    }
+
     private void TakeTypeDecl(CompilationUnit unit)
     {
-        unit.Types.Add(ParseTypeDecl());
+        TypeDecl top = ParseTypeDecl();
+        unit.Types.Add(top);
+        FinishFamily(top, _nested);
 
         // Anything written INSIDE what was just parsed comes out here, at
         // the top level, under its own simple name.
@@ -1259,6 +1300,16 @@ public sealed class Parser
         _typePath = outer.Length == 0 ? name : outer + "." + name;
 
         ParseTypeParams(decl.TypeParams);
+        // A TYPE INSIDE A GENERIC ONE TAKES THE OUTER'S PARAMETERS FIRST:
+        // `class Outer<T> { class Inner { T Value; } }` makes Outer.Inner<T>,
+        // whose every use is given Outer's argument (FinishFamily).
+        List<string> enclosing = _enclosingParams;
+        if (enclosing.Count > 0)
+        {
+            for (int k = enclosing.Count - 1; k >= 0; k--) decl.TypeParams.Insert(0, new TypeParam { Name = enclosing[k], Line = start.Line, Col = start.Col });
+            decl.OuterParams = enclosing.Count;
+        }
+        _enclosingParams = decl.TypeParams.Select(p => p.Name).ToList();
         if (decl.TypeParams.Count > 0) _templateDepth++;
 
         // THE POSITIONAL PARAMETERS, which are the whole point of a record: a
@@ -1323,6 +1374,7 @@ public sealed class Parser
             decl.SourceFrom = start.Pos;
             decl.SourceTo = _t[_i - 1].Pos + 1;
             _typePath = outer;
+            _enclosingParams = enclosing;
             return decl;
         }
 
@@ -1421,6 +1473,7 @@ public sealed class Parser
         decl.SourceFrom = start.Pos;
         decl.SourceTo = close.Pos + 1;
         _typePath = outer;
+        _enclosingParams = enclosing;
         return decl;
     }
 
@@ -1438,6 +1491,11 @@ public sealed class Parser
         declaration.Attributes.AddRange(_attributes);
         declaration.AttributeParts.AddRange(CapturedAttributes());
         ParseTypeParams(declaration.TypeParams);
+        if (_enclosingParams.Count > 0)
+        {
+            for (int k = _enclosingParams.Count - 1; k >= 0; k--) declaration.TypeParams.Insert(0, new TypeParam { Name = _enclosingParams[k], Line = start.Line, Col = start.Col });
+            declaration.OuterParams = _enclosingParams.Count;
+        }
         MethodDecl invoke = new()
         {
             Name = "Invoke", Returns = returns, Mods = Mods.Public | Mods.Abstract,
@@ -2001,16 +2059,34 @@ public sealed class Parser
         // and reachable only through the interface; nothing here enforces
         // accessibility on any member yet, so what is kept is the name it fills
         // in and the interface it fills it in for.
+        string? explicitInterface = null;
         if (At(Tok.Dot) && Ahead().Kind == Tok.Ident)
         {
+            explicitInterface = name;
             _i++;
             name = _t[_i++].Text;
+        }
+        else if (At(Tok.Lt))
+        {
+            // A GENERIC ONE: `IEnumerable<T>.GetEnumerator`. The arguments are
+            // the interface's, not the member's type parameters, when a dot
+            // and a name follow them.
+            int save = _i;
+            if (TryInterfaceArgs() && At(Tok.Dot) && Ahead().Kind == Tok.Ident)
+            {
+                explicitInterface = name;
+                _i++;
+                name = _t[_i++].Text;
+            }
+            else _i = save;
         }
 
         // property
         if (At(Tok.LBrace))
         {
-            return ParseProperty(type, name, mods, start);
+            MemberDecl property = ParseProperty(type, name, mods, start);
+            property.ExplicitInterface = explicitInterface;
+            return property;
         }
 
         // Expression-bodied property: a getter and nothing else.
@@ -2027,6 +2103,7 @@ public sealed class Parser
             {
                 Name = name, Mods = mods, Type = type, Getter = getter,
                 Auto = false, HasSetter = false, Line = start.Line, Col = start.Col,
+                ExplicitInterface = explicitInterface,
             };
         }
 
@@ -2042,6 +2119,7 @@ public sealed class Parser
                 // clears the attributes it was read from.
                 NotNullIfNotNull = returnsNullOnlyWith,
                 Line = start.Line, Col = start.Col, Body = null,
+                ExplicitInterface = explicitInterface,
             };
             // `[DoesNotReturn]` and the rest, which the checker reads off the
             // declaration (Binder.NeverReturns).
@@ -2395,6 +2473,7 @@ public sealed class Parser
         {
             Name = m.Name, Mods = m.Mods, Returns = m.Returns, IsCtor = m.IsCtor,
             NotNullIfNotNull = m.NotNullIfNotNull,
+            ExplicitInterface = m.ExplicitInterface,
             Line = m.Line, Col = m.Col, Body = body, Init = init,
         }.CopyListsFrom(m);
     }
@@ -2721,6 +2800,21 @@ public sealed class Parser
             }
         }
 
+        // A TYPE NESTED IN A GENERIC ONE, named through it: `Outer<int>.Inner`
+        // is Outer.Inner with Outer's arguments first and its own after
+        // (TypeDecl.OuterParams).
+        while (args.Count > 0 && At(Tok.Dot) && Ahead().Kind == Tok.Ident)
+        {
+            _i++;
+            name += "." + _t[_i++].Text;
+            if (At(Tok.Lt))
+            {
+                int again = _i;
+                if (TryParseTypeArgs(out List<TypeRef> more)) args.AddRange(more);
+                else _i = again;
+            }
+        }
+
         TypeRef type = new() { Name = name, Line = at.Line, Col = at.Col };
 
         type.Args.AddRange(args);
@@ -2907,6 +3001,27 @@ public sealed class Parser
     /// could legally follow a generic name — the only way to tell type
     /// arguments from a chain of comparisons without a symbol table.
     /// </summary>
+    /// <summary>
+    /// An explicit implementation's interface arguments, `<int>` in
+    /// `IMeasure<int>.Size`: any types at all, keywords included, which the
+    /// expression-minded TryParseTypeArgs does not take. False, with nothing
+    /// consumed that the caller will not put back, when they are not there.
+    /// </summary>
+    private bool TryInterfaceArgs()
+    {
+        if (!Take(Tok.Lt)) return false;
+        int mark = _splits.Count;
+        try
+        {
+            do ParseTypeRef();
+            while (Take(Tok.Comma));
+            if (TakeAngle()) return true;
+        }
+        catch (CompileError) { }
+        Unsplit(mark);
+        return false;
+    }
+
     private bool TryParseTypeArgs(out List<TypeRef> args)
     {
         args = new List<TypeRef>();

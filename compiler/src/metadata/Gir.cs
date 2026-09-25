@@ -51,7 +51,7 @@ public static class Gir
     // its generic local functions.
     // 11: a method carries its attributes' targets and names, for
     // [DoesNotReturn], which the checker reads off the declaration.
-    public const ushort Major = 11;
+    public const ushort Major = 12;              // 12: members carry their explicit interface
 
     /// <summary>Bumped when something is APPENDED that an old reader can ignore.</summary>
     public const ushort Minor = 0;
@@ -415,6 +415,7 @@ public static class Gir
 
                     // The parameter this method's result is null only for.
                     Str(d.NotNullIfNotNull ?? "");
+                    Str(d.ExplicitInterface ?? "");
                     I32(d.Attributes.Count);
 
                     foreach (AttributeRef a in d.Attributes)
@@ -467,6 +468,7 @@ public static class Gir
                     Stmt(p2.Getter);
                     Stmt(p2.Setter);
                     Expr(p2.Init);
+                    Str(p2.ExplicitInterface ?? "");
                     I32(p2.Params.Count);
 
                     foreach (Param ip in p2.Params)
@@ -1213,6 +1215,7 @@ public static class Gir
                     TypeRef? returns = TypeOrNull();
                     bool ctor = Bool();
                     string onlyFor = Str();
+                    string explicitInterface = Str();
                     List<AttributeRef> attributes = new();
                     int na = Count();
 
@@ -1258,6 +1261,7 @@ public static class Gir
                         Name = name, Mods = mods, Returns = returns, IsCtor = ctor,
                         Body = body, Init = init, TemplateIndex = index,
                         NotNullIfNotNull = onlyFor.Length == 0 ? null : onlyFor,
+                        ExplicitInterface = explicitInterface.Length == 0 ? null : explicitInterface,
                     };
 
                     foreach (string one in typeParams)
@@ -1281,11 +1285,13 @@ public static class Gir
                     Block? getter = Stmt() as Block;
                     Block? setter = Stmt() as Block;
                     Expr? init = Expr();
+                    string propertyInterface = Str();
 
                     PropertyDecl p = new()
                     {
                         Name = name, Mods = mods, Type = type, Auto = auto, HasSetter = hasSetter,
                         Getter = getter, Setter = setter, Init = init, TemplateIndex = index,
+                        ExplicitInterface = propertyInterface.Length == 0 ? null : propertyInterface,
                     };
 
                     int np = Count();

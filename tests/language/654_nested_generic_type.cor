@@ -1,0 +1,34 @@
+// test: nested_generic_type
+// expect-exit: 0
+// expect-output:
+// 42
+// x
+//
+// A type declared inside a generic type is named through the generic one
+// with its arguments, Outer<int>.Inner, in any type position: a local, a
+// new, a return type. The parser stopped at the dot after the arguments.
+using System;
+using System.Collections.Generic;
+
+public class Outer<T>
+{
+    public class Inner
+    {
+        public T Value;
+        public Inner(T v) { Value = v; }
+    }
+    public Inner Make(T v) { return new Inner(v); }
+}
+
+public static class Program
+{
+    public static int Main()
+    {
+        Outer<int> o = new Outer<int>();
+        Outer<int>.Inner i = o.Make(41);
+        Console.WriteLine(i.Value + 1);
+        Outer<string>.Inner s = new Outer<string>.Inner("x");
+        Console.WriteLine(s.Value);
+        return 0;
+    }
+}

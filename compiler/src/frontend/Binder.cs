@@ -2089,7 +2089,10 @@ public sealed partial class Binder
 
                         MethodSymbol gs = new()
                         {
-                            Name = getter.Name, Returns = propType, Owner = sym,
+                            Name = p.ExplicitInterface is null ? getter.Name : p.ExplicitInterface + "." + getter.Name,
+                            ExplicitInterface = p.ExplicitInterface,
+                            ExplicitMember = p.ExplicitInterface is null ? null : getter.Name,
+                            Returns = propType, Owner = sym,
                             Static = p.Mods.HasFlag(Mods.Static), Decl = getter,
                             Virtual = aVirtual, Override = aOverride, Abstract = aAbstract,
                         };
@@ -2128,7 +2131,10 @@ public sealed partial class Binder
 
                         MethodSymbol ss = new()
                         {
-                            Name = setter.Name, Returns = Type.Void, Owner = sym,
+                            Name = p.ExplicitInterface is null ? setter.Name : p.ExplicitInterface + "." + setter.Name,
+                            ExplicitInterface = p.ExplicitInterface,
+                            ExplicitMember = p.ExplicitInterface is null ? null : setter.Name,
+                            Returns = Type.Void, Owner = sym,
                             Static = p.Mods.HasFlag(Mods.Static), Decl = setter,
                             Virtual = aVirtual, Override = aOverride, Abstract = aAbstract,
                         };
@@ -2161,7 +2167,9 @@ public sealed partial class Binder
 
                     MethodSymbol ms = new()
                     {
-                        Name = md.Name,
+                        Name = md.ExplicitInterface is null ? md.Name : md.ExplicitInterface + "." + md.Name,
+                        ExplicitInterface = md.ExplicitInterface,
+                        ExplicitMember = md.ExplicitInterface is null ? null : md.Name,
                         Returns = md.IsCtor ? Type.Void : Resolve(md.Returns!, sym),
                         Owner = sym,
                         Static = md.Mods.HasFlag(Mods.Static),
@@ -2407,6 +2415,19 @@ public sealed partial class Binder
     /// which is what lets a program agree with a library about a class the
     /// library owns.
     /// </summary>
+    /// <summary>
+    /// A type's name as source writes it bare: `IEnumerable` for the template
+    /// IEnumerable`1 and for a specialisation of it -- what an explicit
+    /// implementation's qualifier is compared with.
+    /// </summary>
+    private static string PlainName(string name)
+    {
+        int cut = name.IndexOfAny(new[] { '`', '$', '<' });
+        string bare = cut < 0 ? name : name[..cut];
+        int dot = bare.LastIndexOf('.');
+        return dot < 0 ? bare : bare[(dot + 1)..];
+    }
+
     private void AssignSlots(TypeSymbol sym)
     {
         if (sym.SlotsAssigned) return;
@@ -2443,8 +2464,12 @@ public sealed partial class Binder
                     sym.InterfaceImplementations[want.VtableSlot] = replacement ?? inherited;
                     continue;
                 }
-                MethodSymbol? impl = sym.FindMethods(want.Name)
-                    .FirstOrDefault(m => !m.Abstract && MethodSignatures.Implements(m, want));
+                // AN EXPLICIT IMPLEMENTATION FOR THIS INTERFACE FIRST, as C#
+                // takes one over a public member of the same name.
+                string ifaceName = PlainName(iface.Name);
+                MethodSymbol? impl = sym.Methods.FirstOrDefault(m => m.ExplicitMember == want.Name
+                        && m.ExplicitInterface == ifaceName && !m.Abstract && MethodSignatures.Implements(m, want))
+                    ?? sym.FindMethods(want.Name).FirstOrDefault(m => !m.Abstract && MethodSignatures.Implements(m, want));
 
                 // AN ABSTRACT CLASS MAY IMPLEMENT AN INTERFACE MEMBER AND LEAVE
                 // THE BODY TO ITS DERIVED CLASSES: `abstract class C : ICounted
