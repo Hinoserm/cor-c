@@ -6661,7 +6661,7 @@ public sealed class Parser
             case Tok.Ident:
             {
                 _i++;
-                NameExpr name = new() { Name = at.Text, Line = at.Line, Col = at.Col };
+                NameExpr name = new() { Name = at.Text, Global = at.Global, Line = at.Line, Col = at.Col };
 
                 if (At(Tok.Lt))
                 {

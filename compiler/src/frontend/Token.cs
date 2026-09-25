@@ -58,7 +58,9 @@ public enum Tok : byte
 /// character. Error quality is the first priority for this compiler, and a
 /// message that names a line but not a column is half a message.
 /// </summary>
-public readonly record struct Token(Tok Kind, string Text, int Line, int Col, int Pos)
+/// <param name="Global">The name was written after `global::`: it is looked
+/// up from the global namespace, past any local or member of the same name.</param>
+public readonly record struct Token(Tok Kind, string Text, int Line, int Col, int Pos, bool Global = false)
 {
     public override string ToString() => $"{Kind}('{Text}') at {Line}:{Col}";
 }

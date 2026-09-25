@@ -1,0 +1,61 @@
+// test: global:: names the type past a same-named method, local or parameter; DateTime file times
+// expect-exit: 0
+// expect-output:
+// method 7
+// type 40
+// local 3 type 41
+// parameter 9 type 42
+// 1601 0
+// 1970 116444736000000000
+// round 2026-09-24 12:34:56
+//
+// `global::` was read and dropped, so `global::Tally.Write` inside a class
+// with a method named Tally found the method, and the program would not
+// compile. C# resolves a name after `global::` from the global namespace:
+// no local, parameter or member of the enclosing types is meant.
+
+static class Tally
+{
+    public const long Write = 40;
+    public static long Read() { return 41; }
+    public static long Open = 42;
+}
+
+class Files
+{
+    static long Tally(long number) { return number + 3; }
+
+    public static void Run()
+    {
+        Console.WriteLine("method " + Tally(4));
+        Console.WriteLine("type " + global::Tally.Write);
+        Local();
+        Show(9);
+    }
+
+    static void Local()
+    {
+        long Tally = 3;
+        Console.WriteLine("local " + Tally + " type " + global::Tally.Read());
+    }
+
+    static void Show(long Tally)
+    {
+        Console.WriteLine("parameter " + Tally + " type " + global::Tally.Open);
+    }
+}
+
+class Program
+{
+    static int Main()
+    {
+        Files.Run();
+        DateTime first = DateTime.FromFileTimeUtc(0);
+        Console.WriteLine(first.Year + " " + first.ToFileTimeUtc());
+        Console.WriteLine(DateTime.UnixEpoch.Year + " " + DateTime.UnixEpoch.ToFileTimeUtc());
+        DateTime when = new DateTime(2026, 9, 24, 12, 34, 56, DateTimeKind.Utc);
+        DateTime back = DateTime.FromFileTimeUtc(when.ToFileTimeUtc());
+        Console.WriteLine("round " + back.Year + "-" + back.Month.ToString("D2") + "-" + back.Day + " " + back.Hour + ":" + back.Minute + ":" + back.Second);
+        return back.Ticks == when.Ticks ? 0 : 1;
+    }
+}

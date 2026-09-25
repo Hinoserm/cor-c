@@ -10276,6 +10276,17 @@ public sealed partial class Binder
             return Type.Void;
         }
 
+        // `global::Name`: a type, whatever a local or a member of the
+        // enclosing types is called. Not a type, it goes on as any name does
+        // -- the first part of a namespace-qualified one.
+        if (n.Global
+            && ((FindType(n.Name, out TypeSymbol? globalType) && globalType is not null)
+                || (Alias(n.Name) is string globalAlias && _r.Types.TryGetValue(globalAlias, out globalType))))
+        {
+            _r.Resolved[n] = new TypeNameSym(globalType);
+            return new Type { Prim = Prim.Void, Symbol = globalType };
+        }
+
         Sym? sym = Lookup(n.Name);
 
         if (sym != null)

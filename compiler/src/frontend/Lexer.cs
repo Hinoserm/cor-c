@@ -219,8 +219,12 @@ public sealed class Lexer
             // `global::` NAMES THE GLOBAL NAMESPACE, which is where a qualified
             // name already begins here: namespaces are not a tree, and a name
             // resolves from its last parts. So the qualifier is read and
-            // dropped, and what follows it is the name. Any other alias before
-            // `::` is an extern alias, which a program here cannot have.
+            // dropped, and what follows it is the name -- MARKED, because the
+            // one thing the qualifier still says is that no local, parameter
+            // or member of the same name is meant: `global::Call.Write` inside
+            // a class with a method called Call is the type Call. Any other
+            // alias before `::` is an extern alias, which a program here
+            // cannot have.
             if (word.Kind == Tok.Ident && Cur == ':' && Peek() == ':')
             {
                 if (word.Text != "global")
@@ -229,7 +233,8 @@ public sealed class Lexer
                 }
                 Advance();
                 Advance();
-                return Next();
+                Token named = Next();
+                return named.Kind == Tok.Ident ? named with { Global = true } : named;
             }
             return word;
         }

@@ -1562,11 +1562,11 @@ public sealed class Monomorphiser
                     // specialisations sharing one node means the second
                     // binding silently overwrites the first — which presents
                     // as one specialisation using another's field types.
-                    return new NameExpr { Name = n.Name, Line = n.Line, Col = n.Col };
+                    return new NameExpr { Name = n.Name, Global = n.Global, Line = n.Line, Col = n.Col };
                 }
 
                 List<TypeRef> args = n.TypeArgs.Select(a => Sub(a, map)).ToList();
-                return new NameExpr { Name = Instantiate(n.Name, args, n), Line = n.Line, Col = n.Col };
+                return new NameExpr { Name = Instantiate(n.Name, args, n), Global = n.Global, Line = n.Line, Col = n.Col };
             }
 
             case MemberExpr m:

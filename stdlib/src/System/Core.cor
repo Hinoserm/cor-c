@@ -9274,6 +9274,20 @@ partial struct DateTime {
     /// The epoch every wire protocol counts from, expressed in this one.
     public static DateTime UnixEpoch => new DateTime(621355968000000000);
 
+    /// Windows' file time: hundreds of nanoseconds since 1601-01-01 UTC,
+    /// which is this type's ticks less the ticks up to 1601.
+    const long FileTimeOffset = 504911232000000000;
+
+    public long ToFileTimeUtc() {
+        if (ticks < FileTimeOffset) { throw new ArgumentOutOfRangeException("this", "the date is before 1601"); }
+        return ticks - FileTimeOffset;
+    }
+
+    public static DateTime FromFileTimeUtc(long fileTime) {
+        if (fileTime < 0 || fileTime > 3155378975999999999 - FileTimeOffset) { throw new ArgumentOutOfRangeException("fileTime"); }
+        return new DateTime(fileTime + FileTimeOffset, DateTimeKind.Utc);
+    }
+
     public long Ticks => ticks;
 
     private long WholeDays => ticks / 864000000000;
