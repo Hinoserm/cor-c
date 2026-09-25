@@ -1,0 +1,32 @@
+// test: a delegate returning a non-nullable class compiles, and a multicast answers its last target
+// expect-exit: 0
+// expect-output:
+// one
+// two
+// last two
+//
+// The multicast Invoke the compiler writes for every delegate began with
+// `T last = default;`, which for a class return is null: a delegate
+// returning a non-nullable class did not compile.
+
+sealed class Shape
+{
+    public string Name = "";
+}
+
+delegate Shape Maker(string name);
+
+class Program
+{
+    static Shape One(string name) { Console.WriteLine("one"); return new Shape { Name = "one" }; }
+    static Shape Two(string name) { Console.WriteLine("two"); return new Shape { Name = name }; }
+
+    static int Main()
+    {
+        Maker m = One;
+        m += Two;
+        Shape got = m("two");
+        Console.WriteLine("last " + got.Name);
+        return got.Name == "two" ? 0 : 1;
+    }
+}

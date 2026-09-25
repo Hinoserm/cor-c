@@ -1,0 +1,18 @@
+// test: a ?? b of a nullable class and a call assigns a non-nullable local
+// expect-exit: 0
+// expect-output:
+// 5
+
+sealed class Shape { public int N; }
+class Dc { public Shape? Clip; }
+class Program
+{
+    static Shape Make() { return new Shape { N = 5 }; }
+    static int Main()
+    {
+        Dc d = new Dc();
+        Shape now = d.Clip ?? Make();
+        Console.WriteLine(now.N);
+        return 0;
+    }
+}

@@ -1506,8 +1506,12 @@ public sealed class Parser
             src.Append("        for (int i = 0; i < Items.Length; i++) Items[i].Invoke(").Append(args).Append(");\n");
         else
         {
-            src.Append("        ").Append(returns).Append(" last = default;\n");
-            src.Append("        for (int i = 0; i < Items.Length; i++) last = Items[i].Invoke(").Append(args).Append(");\n");
+            // The last target's answer. A multicast delegate always has at
+            // least two (only Combine makes one), so the first answer starts
+            // it: `default` would be null for a non-nullable class, which the
+            // declared return type does not allow.
+            src.Append("        ").Append(returns).Append(" last = Items[0].Invoke(").Append(args).Append(");\n");
+            src.Append("        for (int i = 1; i < Items.Length; i++) last = Items[i].Invoke(").Append(args).Append(");\n");
             src.Append("        return last;\n");
         }
         src.Append("    }\n");
