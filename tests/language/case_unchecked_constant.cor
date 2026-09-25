@@ -1,0 +1,46 @@
+// test: case_unchecked_constant
+// expect-exit: 0
+// expect-output:
+// high
+// low
+// plain
+// other
+// yes
+// no
+// yes
+
+// A case label may be any constant expression, `unchecked(...)` included:
+// `case unchecked((int)0x80000000):` is how C# writes a label whose value
+// only fits once reinterpreted. The parser used to read `unchecked` as a
+// type pattern's name and stop at the bracket. And a constant pattern over
+// an object compares the boxed value (object.Equals), not the reference.
+
+public static class Program
+{
+    static string Name(int v)
+    {
+        switch (v)
+        {
+            case unchecked((int)0x80000000): return "high";
+            case unchecked((int)0x80000002): return "low";
+            case 4: return "plain";
+        }
+        return "other";
+    }
+
+    public static int Main()
+    {
+        System.Console.WriteLine(Name(unchecked((int)0x80000000)));
+        System.Console.WriteLine(Name(unchecked((int)0x80000002)));
+        System.Console.WriteLine(Name(4));
+        System.Console.WriteLine(Name(7));
+        // A constant pattern over an object: the boxed value's type and value.
+        object o = unchecked((int)0x80000000);
+        System.Console.WriteLine(o is unchecked((int)0x80000000) ? "yes" : "no");
+        object l = 5L;
+        System.Console.WriteLine(l is 5 ? "yes" : "no");
+        object s = "abc";
+        System.Console.WriteLine(s is "abc" ? "yes" : "no");
+        return o is unchecked((int)0x80000000) ? 0 : 1;
+    }
+}

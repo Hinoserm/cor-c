@@ -12885,6 +12885,35 @@ public sealed partial class Binder
                     return CheckExpr(whole);
                 }
 
+                // A CONSTANT PATTERN OVER AN `object` asks whether the value IS
+                // the constant -- the same type and equal -- which for a boxed
+                // value is object.Equals of the two, not whether they are one
+                // reference. `object o = 5; o is 5` answered false, and so did
+                // every constant label switched over an object.
+                if (b.PatternConstant && l.Prim == Prim.Any && r.Prim is not (Prim.NullLiteral or Prim.Any))
+                {
+                    CallExpr same = new()
+                    {
+                        Target = new MemberExpr
+                        {
+                            Target = new NameExpr { Name = "object", Line = b.Line, Col = b.Col, File = b.File },
+                            Name = "Equals", Line = b.Line, Col = b.Col, File = b.File,
+                        },
+                        Line = b.Line, Col = b.Col, File = b.File,
+                    };
+                    same.Args.Add(b.Left);
+                    same.Args.Add(new CastExpr
+                    {
+                        Type = new TypeRef { Name = "object", Line = b.Right.Line, Col = b.Right.Col },
+                        Operand = b.Right, Line = b.Right.Line, Col = b.Right.Col, File = b.File,
+                    });
+                    Expr asked = b.Op == BinOp.Eq
+                               ? same
+                               : new UnaryExpr { Op = UnOp.Not, Operand = same, Line = b.Line, Col = b.Col, File = b.File };
+                    _r.Rewrites[b] = asked;
+                    return CheckExpr(asked);
+                }
+
                 if (l.Prim == Prim.NullLiteral || r.Prim == Prim.NullLiteral)
                 {
                     Type other = l.Prim == Prim.NullLiteral ? r : l;

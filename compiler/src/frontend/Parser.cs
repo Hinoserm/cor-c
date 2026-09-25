@@ -4842,7 +4842,10 @@ public sealed class Parser
            || At(Tok.LParen) || Cur.Kind is Tok.Lt or Tok.Gt or Tok.LtEq or Tok.GtEq
            or Tok.Int or Tok.Minus or Tok.Char or Tok.Real
            or Tok.KwTrue or Tok.KwFalse or Tok.Str
-           || (At(Tok.Ident) && Ahead().Kind == Tok.Dot && !QualifiedTypePattern());
+           || (At(Tok.Ident) && Ahead().Kind == Tok.Dot && !QualifiedTypePattern())
+           // `case unchecked((int)0x80000000):` is a constant, not a type
+           // named `unchecked` -- nor is `checked(...)` or `nameof(...)`.
+           || (At(Tok.Ident) && Cur.Text is "unchecked" or "checked" or "nameof" && Ahead().Kind == Tok.LParen);
 
     /// <summary>
     /// Whether a dotted name after `is` is a TYPE with a binding rather than a
