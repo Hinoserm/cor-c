@@ -1724,14 +1724,15 @@ public sealed partial class Lowering
         {
             VReg inside = _e.Binary(Opcode.Add, obj, _t.ObjectHeaderBytes);
 
-            _e.CopyTo(SlotReg(held, IrTypes.Word), R(CopyStruct(at, inside, boxed.Symbol!)));
+            // Into the cell when a lambda captures the binding (BindPattern).
+            BindPattern(at, held, boxed, CopyStruct(at, inside, boxed.Symbol!));
         }
         else
         {
-            _e.CopyTo(SlotReg(held, BoxSlot(boxed)),
-                      R(_e.Load(BoxSlot(boxed), obj, _t.ObjectHeaderBytes,
+            BindPattern(at, held, boxed,
+                        _e.Load(BoxSlot(boxed), obj, _t.ObjectHeaderBytes,
                                 Math.Max(1, boxed.Size),
-                                !boxed.IsUnsigned && boxed.Prim != Prim.Bool)));
+                                !boxed.IsUnsigned && boxed.Prim != Prim.Bool));
         }
         _e.Jump(after);
         _e.SetBlock(after);

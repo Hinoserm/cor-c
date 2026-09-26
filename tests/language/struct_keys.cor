@@ -1,0 +1,58 @@
+// test: struct_keys
+// expect-exit: 0
+// expect-output:
+// True
+// found 7
+// 1
+// 2
+// 1 2 3
+// True
+// found 5
+
+// A struct is compared by its value wherever .NET's default comparer does:
+// EqualityComparer<T>.Default, a Dictionary or HashSet key, List.IndexOf
+// and Contains, and the default sort order. Copies of an equal value are
+// equal; a declared Equals, GetHashCode or CompareTo is used, else the
+// fields are compared.
+
+using System.Collections.Generic;
+
+public struct Pair
+{
+    public int A, B;
+    public Pair(int a, int b) { A = a; B = b; }
+}
+
+public struct Money : System.IComparable<Money>
+{
+    public long Cents;
+    public string Currency;
+    public Money(long cents, string currency) { Cents = cents; Currency = currency; }
+    public int CompareTo(Money other) { return Cents < other.Cents ? -1 : Cents > other.Cents ? 1 : 0; }
+}
+
+public static class Program
+{
+    public static int Main()
+    {
+        Pair p = new Pair(1, 2);
+        Pair q = p;
+        System.Console.WriteLine(EqualityComparer<Pair>.Default.Equals(p, q));
+        Dictionary<Pair, int> d = new Dictionary<Pair, int>();
+        d[new Pair(3, 4)] = 7;
+        int v;
+        if (d.TryGetValue(new Pair(3, 4), out v)) System.Console.WriteLine("found " + v);
+        List<Pair> list = new List<Pair> { new Pair(0, 0), new Pair(5, 6) };
+        System.Console.WriteLine(list.IndexOf(new Pair(5, 6)));
+        HashSet<Pair> set = new HashSet<Pair> { new Pair(1, 1), new Pair(1, 1), new Pair(2, 2) };
+        System.Console.WriteLine(set.Count);
+        List<Money> money = new List<Money> { new Money(3, "EUR"), new Money(1, "EUR"), new Money(2, "EUR") };
+        money.Sort();
+        System.Console.WriteLine(money[0].Cents + " " + money[1].Cents + " " + money[2].Cents);
+        System.Console.WriteLine(list.Contains(new Pair(0, 0)));
+        Dictionary<Money, int> byMoney = new Dictionary<Money, int>();
+        byMoney[new Money(9, "USD")] = 5;
+        if (byMoney.TryGetValue(new Money(9, "USD"), out v)) System.Console.WriteLine("found " + v);
+        return 0;
+    }
+}

@@ -3543,6 +3543,9 @@ public sealed partial class Binder
                 LocalSym iteration = new(slot, element, fe.Name);
                 Declare(fe, fe.Name, iteration);
                 _assigned.Add(iteration);
+                // Recorded as a pattern's binding is: a lambda that captures
+                // it makes it a cell, and the lowering stores into the cell.
+                _r.PatternSym[fe] = iteration;
                 _loopDepth++;
                 CheckStmt(fe.Body);
                 _loopDepth--;
@@ -3791,6 +3794,7 @@ public sealed partial class Binder
                         LocalSym caughtLocal = new(slot, caught, c.Name);
                         Declare(c, c.Name, caughtLocal);
                         _assigned.Add(caughtLocal);
+                        _r.PatternSym[c] = caughtLocal;
                     }
                     // THE FILTER IS CHECKED WITH THE NAME IN SCOPE, which is
                     // the point of it: `catch (E e) when (e.Code == 2)`.

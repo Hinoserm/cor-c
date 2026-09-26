@@ -1,0 +1,50 @@
+// test: capture_binder_locals
+// expect-exit: 0
+// expect-output:
+// 10 20 30
+// caught: boom
+// pair 3
+// number 7
+
+// A name the binder makes without a declaration statement -- a foreach
+// cursor over an array, a catch clause's variable, a pattern's binding --
+// captured by a lambda is read through its cell, and so written there too.
+// A foreach cursor gets a cell of its own each time round, as C# 5 has it:
+// each lambda keeps its own iteration's value.
+
+using System;
+using System.Collections.Generic;
+
+public struct Pair { public int A, B; }
+
+public static class Program
+{
+    public static int Main()
+    {
+        int[] values = new int[] { 10, 20, 30 };
+        List<Func<int>> later = new List<Func<int>>();
+        foreach (int v in values) later.Add(() => v);
+        Console.WriteLine(later[0]() + " " + later[1]() + " " + later[2]());
+
+        try { throw new InvalidOperationException("boom"); }
+        catch (Exception e)
+        {
+            Func<string> said = () => e.Message;
+            Console.WriteLine("caught: " + said());
+        }
+
+        object boxed = new Pair { A = 3, B = 4 };
+        if (boxed is Pair p)
+        {
+            Func<int> a = () => p.A;
+            Console.WriteLine("pair " + a());
+        }
+        object n = 7;
+        if (n is int k)
+        {
+            Func<int> read = () => k;
+            Console.WriteLine("number " + read());
+        }
+        return 0;
+    }
+}

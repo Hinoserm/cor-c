@@ -414,8 +414,21 @@ public sealed partial class Lowering
         VReg scaled = stride == 1 ? index : _e.Binary(Opcode.Mul, index, stride);
         VReg addr = _e.Binary(Opcode.Add, seq, WordOf(scaled));
         VReg value = LoadPlace(new MemPlace(new RegOperand(addr), _t.ArrayHeaderBytes, stored));
-        VReg cursor = SlotReg(elem, IrTypes.Of(element));
-        _e.CopyTo(cursor, new RegOperand(value));
+        // A CURSOR A LAMBDA CAPTURES is read through its cell, so the element
+        // goes there -- a new cell each time round, as C# 5 has it, so each
+        // lambda keeps its own iteration's value. Written to the slot, the
+        // body and the lambdas read a cell nothing had filled.
+        if (_b.PatternSym.TryGetValue(fe, out LocalSym? named) && named.Boxed
+            && _symCells.TryGetValue(named, out VReg? cell) && cell is not null)
+        {
+            _e.CopyTo(cell, new RegOperand(Allocate(fe, Math.Max(_t.WordSize, Math.Max(1, element.Size)))));
+            _e.Store(new RegOperand(cell), new RegOperand(value), 0, LoadSize(element));
+        }
+        else
+        {
+            VReg cursor = SlotReg(elem, IrTypes.Of(element));
+            _e.CopyTo(cursor, new RegOperand(value));
+        }
 
         _loops.Add((end, step, _openHandlers.Count, _openHandlers.Count));
         EmitStmt(fe.Body);
@@ -796,7 +809,8 @@ public sealed partial class Lowering
             _e.SetBlock(body);
             if (_b.CatchSlot.TryGetValue(c, out int slot))
             {
-                _e.CopyTo(SlotReg(slot, IrTypes.Word), new RegOperand(obj));
+                // Into the cell when a lambda captures it (BindPattern).
+                BindPattern(c, slot, Type.Any, obj);
             }
 
             if (c.When is Expr filter)

@@ -441,18 +441,23 @@ public sealed partial class Lowering
                 break;
             case TryStmt ts:
                 yield return ts.Body;
+                // The clause itself, whose variable a lambda may capture
+                // (MakeCapturedCells finds it through PatternSym), then its parts.
                 foreach (CatchClause c in ts.Catches)
                 {
-                    if (c.When is not null)
-                    {
-                        yield return c.When;
-                    }
-                    yield return c.Body;
+                    yield return c;
                 }
                 if (ts.Finally is not null)
                 {
                     yield return ts.Finally;
                 }
+                break;
+            case CatchClause cc:
+                if (cc.When is not null)
+                {
+                    yield return cc.When;
+                }
+                yield return cc.Body;
                 break;
             case ThrowExpr te: yield return te.Value; break;
             case GotoCaseStmt gc:

@@ -276,6 +276,14 @@ public sealed partial class Lowering
             }
             case "IsObject":
             {
+                // A STRUCT IS ASKED as an object is -- KeyEquals, KeyHash and
+                // KeyCompare below compare its value -- so the collections'
+                // fallback to comparing words never takes its block's address.
+                if (IsStructValue(_b.TypeOf(call.Args[0])))
+                {
+                    Eval(call.Args[0]);
+                    return _e.Const(1, IrType.I32);
+                }
                 // Decided from the static type, as IsString is: a number is
                 // never an object, and nothing may be read through it.
                 if (!CouldBeObject(_b.TypeOf(call.Args[0])))
@@ -288,6 +296,11 @@ public sealed partial class Lowering
             }
             case "KeyEquals":
             {
+                if (IsStructValue(_b.TypeOf(call.Args[0])) && IsStructValue(_b.TypeOf(call.Args[1])))
+                {
+                    VReg x = ToWord(Arg(call, target, 0)), y = ToWord(Arg(call, target, 1));
+                    return _e.Call(StructEquals(_b.TypeOf(call.Args[0]).Symbol!), IrType.I32, R(x), R(y))!;
+                }
                 if (!CouldBeObject(_b.TypeOf(call.Args[0])) || !CouldBeObject(_b.TypeOf(call.Args[1])))
                 {
                     Eval(call.Args[0]);
@@ -300,6 +313,18 @@ public sealed partial class Lowering
             }
             case "KeyCompare":
             {
+                if (IsStructValue(_b.TypeOf(call.Args[0])) && IsStructValue(_b.TypeOf(call.Args[1])))
+                {
+                    TypeSymbol shape = _b.TypeOf(call.Args[0]).Symbol!;
+                    VReg x = ToWord(Arg(call, target, 0)), y = ToWord(Arg(call, target, 1));
+                    bool boxed;
+                    MethodSymbol? order = StructCompareTo(shape, out boxed);
+                    if (order is null) return _e.Const(0, IrType.I32);
+                    Require(order);
+                    VReg other = boxed ? Box(call, y, new Type { Symbol = shape }) : y;
+                    VReg said = CallDirect(order, IrTypes.Of(order.Returns), new List<Operand> { R(x), R(other) })!;
+                    return said.Type == IrType.I32 ? said : _e.Unary(Opcode.Trunc64, R(said), IrType.I32);
+                }
                 if (!CouldBeObject(_b.TypeOf(call.Args[0])) || !CouldBeObject(_b.TypeOf(call.Args[1])))
                 {
                     Eval(call.Args[0]);
@@ -312,6 +337,8 @@ public sealed partial class Lowering
             }
             case "KeyHash":
             {
+                if (IsStructValue(_b.TypeOf(call.Args[0])))
+                    return _e.Call(StructHash(_b.TypeOf(call.Args[0]).Symbol!), IrType.I32, R(ToWord(Arg(call, target, 0))))!;
                 if (!CouldBeObject(_b.TypeOf(call.Args[0])))
                 {
                     Eval(call.Args[0]);

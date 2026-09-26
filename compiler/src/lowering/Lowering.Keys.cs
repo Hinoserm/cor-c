@@ -208,6 +208,170 @@ public sealed partial class Lowering
         return found;
     }
 
+    // ---- a struct as a key -------------------------------------------------------------
+
+    /// <summary>
+    /// `__struct_equals$T(a, b)`: whether two T values are equal, as .NET's
+    /// EqualityComparer&lt;T&gt;.Default has it -- T's own Equals(T); else its
+    /// Equals(object), handed b boxed; else field by field (ValueType.Equals):
+    /// numbers by their bits, strings and objects as the key stub compares
+    /// them, a struct inside by its own. A struct is a block reached by
+    /// pointer, and comparing the pointers made two equal values unequal
+    /// after any copy: a Dictionary&lt;Guid, X&gt; never found a key again.
+    /// </summary>
+    private string StructEquals(TypeSymbol sym)
+    {
+        string name = "__struct_equals$" + TypeKey(sym);
+        if (!_structHelpers.Add(name))
+        {
+            return name;
+        }
+        Function f = new(name, IrType.I32) { Coalescible = true };
+        VReg a = f.NewReg(IrTypes.Word, "a"), b = f.NewReg(IrTypes.Word, "b");
+        f.Params.Add(a);
+        f.Params.Add(b);
+        Function savedFn = _f; Builder savedB = _e; Block? savedFail = _boundsFail;
+        _f = f; _e = new Builder(f, f.NewBlock("entry")); _boundsFail = null;
+        Node at = new MethodDecl { Name = name, Line = 0, Col = 0 };
+
+        MethodSymbol? typed = sym.Methods.FirstOrDefault(m => m.Name == "Equals" && !m.Static && m.Params.Count == 1
+                                                            && !m.Params[0].ByRef && m.Params[0].Type.Symbol == sym);
+        MethodSymbol? untyped = sym.Methods.FirstOrDefault(m => m.Name == "Equals" && !m.Static && m.Params.Count == 1
+                                                              && m.Params[0].Type.Prim == Prim.Any);
+        if (typed is not null || untyped is not null)
+        {
+            MethodSymbol eq = typed ?? untyped!;
+            Require(eq);
+            VReg other = typed is not null ? b : Box(at, b, new Type { Symbol = sym });
+            VReg said = CallDirect(eq, IrTypes.Of(eq.Returns), new List<Operand> { R(a), R(other) })!;
+            _e.Ret(R(_e.Binary(Opcode.Ne, R(said), Imm(0, said.Type), IrType.I32)));
+        }
+        else
+        {
+            Block differ = _f.NewBlock("sdiffer");
+            foreach (FieldSymbol field in sym.Fields)
+            {
+                if (field.Static || field.Boxed)
+                {
+                    continue;
+                }
+                VReg same = SameField(at, a, b, field);
+                Block next = _f.NewBlock("snext");
+                _e.Branch(same, next, differ);
+                _e.SetBlock(next);
+            }
+            _e.Ret(Imm(1, IrType.I32));
+            _e.SetBlock(differ);
+            _e.Ret(Imm(0, IrType.I32));
+        }
+
+        _m.Functions.Add(f);
+        _f = savedFn; _e = savedB; _boundsFail = savedFail;
+        return name;
+    }
+
+    /// <summary>One field of two structs compared: 1 when they are the same.</summary>
+    private VReg SameField(Node at, VReg a, VReg b, FieldSymbol field)
+    {
+        if (IsStructValue(field.Type))
+        {
+            VReg x = _e.Load(IrTypes.Word, a, field.Offset), y = _e.Load(IrTypes.Word, b, field.Offset);
+            return _e.Call(StructEquals(field.Type.Symbol!), IrType.I32, R(x), R(y))!;
+        }
+        if (CouldBeObject(field.Type) || field.Type.IsNullableValue)
+        {
+            VReg x = _e.Load(IrTypes.Word, a, field.Offset), y = _e.Load(IrTypes.Word, b, field.Offset);
+            return _e.Call(KeyEqualsStub(), IrType.I32, R(x), R(y))!;
+        }
+        // A number by its bits (a float's too, as ValueType.Equals compares
+        // a struct with no references), read at its own width.
+        Type raw = field.Type.Prim == Prim.F32 ? Type.I32 : field.Type.Prim == Prim.F64 ? Type.I64 : field.Type;
+        VReg p = LoadPlace(new MemPlace(R(a), field.Offset, raw)), q = LoadPlace(new MemPlace(R(b), field.Offset, raw));
+        return _e.Binary(Opcode.Eq, R(p), R(q), IrType.I32);
+    }
+
+    /// <summary>
+    /// `__struct_hash$T(a)`: T's own GetHashCode(), or its fields' hashes
+    /// combined -- the same fields StructEquals compares, so equal values
+    /// hash the same.
+    /// </summary>
+    private string StructHash(TypeSymbol sym)
+    {
+        string name = "__struct_hash$" + TypeKey(sym);
+        if (!_structHelpers.Add(name))
+        {
+            return name;
+        }
+        Function f = new(name, IrType.I32) { Coalescible = true };
+        VReg a = f.NewReg(IrTypes.Word, "a");
+        f.Params.Add(a);
+        Function savedFn = _f; Builder savedB = _e; Block? savedFail = _boundsFail;
+        _f = f; _e = new Builder(f, f.NewBlock("entry")); _boundsFail = null;
+
+        MethodSymbol? own = sym.Methods.FirstOrDefault(m => m.Name == "GetHashCode" && !m.Static && m.Params.Count == 0);
+        if (own is not null)
+        {
+            Require(own);
+            VReg said = CallDirect(own, IrTypes.Of(own.Returns), new List<Operand> { R(a) })!;
+            _e.Ret(R(said.Type == IrType.I32 ? said : _e.Unary(Opcode.Trunc64, R(said), IrType.I32)));
+        }
+        else
+        {
+            VReg h = _f.NewReg(IrType.I32, "h");
+            _e.CopyTo(h, Imm(17, IrType.I32));
+            foreach (FieldSymbol field in sym.Fields)
+            {
+                if (field.Static || field.Boxed)
+                {
+                    continue;
+                }
+                VReg v;
+                if (IsStructValue(field.Type))
+                {
+                    v = _e.Call(StructHash(field.Type.Symbol!), IrType.I32, R(_e.Load(IrTypes.Word, a, field.Offset)))!;
+                }
+                else if (CouldBeObject(field.Type) || field.Type.IsNullableValue)
+                {
+                    v = _e.Call(KeyHashStub(), IrType.I32, R(_e.Load(IrTypes.Word, a, field.Offset)))!;
+                }
+                else
+                {
+                    Type raw = field.Type.Prim == Prim.F32 ? Type.I32 : field.Type.Prim == Prim.F64 ? Type.I64 : field.Type;
+                    VReg w = LoadPlace(new MemPlace(R(a), field.Offset, raw));
+                    if (w.Type == IrType.I64)
+                    {
+                        VReg high = _e.Unary(Opcode.Trunc64, R(_e.Binary(Opcode.ShrU, R(w), Imm(32, IrType.I32), IrType.I64)), IrType.I32);
+                        v = _e.Binary(Opcode.Xor, R(_e.Unary(Opcode.Trunc64, R(w), IrType.I32)), R(high), IrType.I32);
+                    }
+                    else
+                    {
+                        v = w.Type == IrType.I32 ? w : _e.Unary(Opcode.Trunc64, R(w), IrType.I32);
+                    }
+                }
+                _e.CopyTo(h, R(_e.Binary(Opcode.Add, R(_e.Binary(Opcode.Mul, R(h), Imm(31, IrType.I32), IrType.I32)), R(v), IrType.I32)));
+            }
+            _e.Ret(R(h));
+        }
+
+        _m.Functions.Add(f);
+        _f = savedFn; _e = savedB; _boundsFail = savedFail;
+        return name;
+    }
+
+    /// <summary>
+    /// A struct's order for the default comparer: its own CompareTo(T), else
+    /// its CompareTo(object) handed b boxed; null when it has neither -- an
+    /// unordered struct sorts as all equal.
+    /// </summary>
+    private MethodSymbol? StructCompareTo(TypeSymbol sym, out bool boxed)
+    {
+        MethodSymbol? typed = sym.Methods.FirstOrDefault(m => m.Name == "CompareTo" && !m.Static && m.Params.Count == 1
+                                                            && !m.Params[0].ByRef && m.Params[0].Type.Symbol == sym);
+        boxed = typed is null;
+        return typed ?? sym.Methods.FirstOrDefault(m => m.Name == "CompareTo" && !m.Static && m.Params.Count == 1
+                                                     && m.Params[0].Type.Prim == Prim.Any);
+    }
+
     /// <summary>Whether a value of this type could be an object with slots to ask.</summary>
     private static bool CouldBeObject(Type t)
         => t.Prim is Prim.String or Prim.Any or Prim.NullLiteral || t.ParamName is not null
