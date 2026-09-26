@@ -122,6 +122,7 @@ public sealed partial class Lowering
             case "NewBytes":
             {
                 VReg count = ToI32(Arg(call, target, 0));
+                CheckArrayCount(count, 1);
                 VReg total = _e.Binary(Opcode.Add, WordOf(count), _t.ArrayHeaderBytes);
                 VReg s = AllocateDynamic(call, total, leaf: true);
                 _e.Store(R(s), new SymOperand(SequenceDescriptor("byte", 1, isString: true), _t.DescriptorBytes), 0, _t.WordSize);

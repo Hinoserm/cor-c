@@ -1429,6 +1429,16 @@ static class Runtime
         throw new OverflowException("Arithmetic operation resulted in an overflow.");
     }
 
+    /// `new T[count]` with a count no array can have: negative, which .NET
+    /// answers with OverflowException, or more bytes than any allocation can
+    /// be, OutOfMemoryException -- where the size wrapped and a tiny block
+    /// was given a length every index passed.
+    public static void ArraySize(int count)
+    {
+        if (count < 0) throw new OverflowException("Arithmetic operation resulted in an overflow.");
+        throw new OutOfMemoryException("Array dimensions exceeded supported range.");
+    }
+
     public static void InvalidCast(object o)
     {
         // Rendered through the object's own ToString, which for a class with

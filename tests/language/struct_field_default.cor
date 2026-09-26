@@ -1,0 +1,107 @@
+// test: struct_field_default
+// expect-exit: 0
+// expect-output:
+// True
+// 0
+// 7 0 0
+// 0 5
+// True
+// 0 9
+// 1 2
+// 0 3
+// 4 0
+// 6 0
+// 0 0
+// True 8
+
+// A struct-typed field is a VALUE, zero until written: an object's struct
+// fields that nothing assigns can be read, copied and called on at once,
+// whether the object came from `new C()` or from an object initialiser that
+// sets other fields, and a base class's are the same. A struct inside a
+// struct is copied with it, never shared with the copy -- by assignment, by
+// boxing and unboxing, and inside an array element. A struct local may be
+// written a field at a time before the whole is assigned, and a static
+// struct field that nothing initialises is zero as well.
+
+public struct Pair
+{
+    public int A, B;
+    public bool IsZero { get { return A == 0 && B == 0; } }
+}
+
+public struct Outer
+{
+    public Pair Inner;
+    public int Tag;
+}
+
+public class Base
+{
+    public Pair Inherited;
+}
+
+public class Holder : Base
+{
+    public Pair First, Second;
+    public int Tag;
+
+    public Holder Clone() { return new Holder { First = First, Second = Second, Tag = Tag }; }
+}
+
+public static class Clip
+{
+    public static Pair Bounds;
+}
+
+public static class Program
+{
+    public static int Main()
+    {
+        Holder h = new Holder { Tag = 7 };
+        System.Console.WriteLine(h.First.IsZero);
+        Pair copy = h.Second;
+        System.Console.WriteLine(copy.A + copy.B);
+        Holder c = h.Clone();
+        System.Console.WriteLine(c.Tag + " " + c.First.A + " " + c.Second.B);
+        Holder plain = new Holder();
+        plain.Second.B = 5;
+        System.Console.WriteLine(plain.First.A + " " + plain.Second.B);
+        Pair[] arr = new Pair[2];
+        System.Console.WriteLine(arr[1].IsZero);
+        plain.Inherited.B = 9;
+        System.Console.WriteLine(plain.Inherited.A + " " + plain.Inherited.B);
+
+        // Nested: the copy owns its inner struct.
+        Outer a = new Outer();
+        a.Inner.A = 1;
+        Outer b = a;
+        b.Inner.A = 2;
+        System.Console.WriteLine(a.Inner.A + " " + b.Inner.A);
+
+        // A default nested value, and one in an array element.
+        Outer d = default(Outer);
+        d.Inner.B = 3;
+        System.Console.WriteLine(d.Inner.A + " " + d.Inner.B);
+        Outer[] outers = new Outer[1];
+        outers[0].Inner.A = 4;
+        System.Console.WriteLine(outers[0].Inner.A + " " + outers[0].Inner.B);
+
+        // Boxing copies the inner struct too.
+        Outer e = new Outer();
+        object boxed = e;
+        e.Inner.A = 6;
+        Outer back = (Outer)boxed;
+        System.Console.WriteLine(e.Inner.A + " " + back.Inner.A);
+
+        // A struct local written a field at a time.
+        Pair local;
+        local.A = 0;
+        System.Console.WriteLine(local.A + " " + local.B);
+
+        // A static struct field that nothing initialises.
+        bool wasZero = Clip.Bounds.IsZero;
+        Clip.Bounds.B = 8;
+        System.Console.WriteLine(wasZero + " " + Clip.Bounds.B);
+        return 0;
+    }
+}

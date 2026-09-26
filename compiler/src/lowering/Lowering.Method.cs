@@ -821,7 +821,32 @@ public sealed partial class Lowering
             // the three things C# says runs its initialisers.
             TouchType(f.Owner);
             _statics.Add(f);
-            return new MemPlace(new SymOperand(StaticSymbol(f)), 0, f.Type, f.Volatile);
+            MemPlace place = new MemPlace(new SymOperand(StaticSymbol(f)), 0, f.Type, f.Volatile);
+
+            // A STATIC STRUCT FIELD IS A VALUE TOO, zero until written; static
+            // storage starts as zero bytes, which for a struct held by pointer
+            // is a null one. One its declaration gives a value is set by the
+            // type's StaticInit$ before anything can reach it; one without has
+            // its zero value made the first time anything does -- read,
+            // copied or written a field at a time -- as an instance field's is
+            // when its object is made (InitStructFields). Put there with a
+            // compare-and-swap, so that two processors touching it first agree
+            // on one block and a field written into the loser's is not lost.
+            if (!f.Boxed && !f.Initialised && IsStructValue(f.Type))
+            {
+                VReg at2 = _e.Address(StaticSymbol(f));
+                VReg held = _e.Load(IrTypes.Word, at2, 0);
+                Block make = _f.NewBlock("szmake");
+                Block made = _f.NewBlock("szdone");
+                _e.Branch(held, made, make);
+                _e.SetBlock(make);
+                VReg zero = NewStruct(at, f.Type.Symbol!);
+                VReg old = _e.Reg(IrTypes.Word);
+                _e.Emit(Opcode.AtomicCas, old, R(at2), R(_e.Const(0, IrTypes.Word)), R(zero));
+                _e.Jump(made);
+                _e.SetBlock(made);
+            }
+            return place;
         }
 
         VReg obj = instance ?? _this!;

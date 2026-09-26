@@ -8130,6 +8130,14 @@ class IndexOutOfRangeException : SystemException
     public IndexOutOfRangeException(string message) : base(message) { }
 }
 
+/// There is not enough memory for what was asked: an array larger than any
+/// allocation can be, as .NET throws it.
+class OutOfMemoryException : SystemException
+{
+    public OutOfMemoryException() : base("Insufficient memory to continue the execution of the program.") { }
+    public OutOfMemoryException(string message) : base(message) { }
+}
+
 /// The object is not in a state where that call makes sense.
 class InvalidOperationException : SystemException
 {

@@ -153,13 +153,132 @@ public sealed partial class Lowering
         return e is NewExpr or CallExpr or DefaultExpr or WithExpr or TupleExpr or ConditionalExpr or SwitchExpr;
     }
 
-    /// <summary>A new block holding the same bytes: the copy a value type's assignment means.</summary>
+    /// <summary>
+    /// A new block holding the same value: the copy a value type's assignment
+    /// means. A struct with a struct inside it is copied through its type's
+    /// copier (StructCopier), which copies the inner block too rather than
+    /// sharing it -- `b = a; b.Inner.X = 1;` must leave `a.Inner` alone. A
+    /// plain struct is its bytes, moved here in line, where escape analysis
+    /// can still put the copy on the stack.
+    /// </summary>
     private VReg CopyStruct(Node at, VReg src, TypeSymbol sym)
     {
+        if (HasStructFields(sym))
+        {
+            return _e.Call(StructCopier(at, sym), IrTypes.Word, R(src))!;
+        }
         int size = Math.Max(1, sym.InstanceSize);
         VReg made = Allocate(at, size);
         _e.Emit(Opcode.MemCopy, null, R(made), R(src), Imm(size, IrTypes.Word));
         return made;
+    }
+
+    /// <summary>
+    /// A struct's zero value, made: a zeroed block, and in each of its
+    /// struct-typed fields a zeroed block of that field's own. A field of a
+    /// struct type is a VALUE, and with structs as blocks reached by pointer
+    /// the value has to exist before anything reads it, copies it or writes
+    /// through it -- an unassigned one was a null pointer, and reading it
+    /// read address 0.
+    /// </summary>
+    private VReg NewStruct(Node at, TypeSymbol sym)
+    {
+        if (HasStructFields(sym))
+        {
+            return _e.Call(StructMaker(at, sym), IrTypes.Word)!;
+        }
+        return Allocate(at, Math.Max(1, sym.InstanceSize));
+    }
+
+    /// <summary>
+    /// Each struct-typed instance field of an object or struct block just
+    /// made, given its zero value (NewStruct): what C# says every field of a
+    /// new object is before a constructor or initialiser writes it. The
+    /// block is fresh, so the stores need no write barrier, as the elements
+    /// AllocateArray fills need none.
+    /// </summary>
+    private void InitStructFields(Node at, VReg obj, TypeSymbol sym)
+    {
+        for (TypeSymbol? t = sym; t is not null; t = t.Base)
+        {
+            foreach (FieldSymbol f in t.Fields)
+            {
+                if (f.Static || f.Boxed || !IsStructValue(f.Type))
+                {
+                    continue;
+                }
+                VReg inner = NewStruct(at, f.Type.Symbol!);
+                _e.Store(R(obj), R(inner), f.Offset, _t.WordSize);
+            }
+        }
+    }
+
+    /// <summary>Whether a struct holds a struct by value: then making or copying one is more than its bytes.</summary>
+    private static bool HasStructFields(TypeSymbol sym)
+        => sym.Fields.Any(f => !f.Static && !f.Boxed && IsStructValue(f.Type));
+
+    private readonly HashSet<string> _structHelpers = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// `__struct_new$T`: T's zero value (NewStruct), one function per struct
+    /// type that holds another, so that each site making one is a call.
+    /// </summary>
+    private string StructMaker(Node at, TypeSymbol sym)
+    {
+        string name = "__struct_new$" + TypeKey(sym);
+        if (!_structHelpers.Add(name))
+        {
+            return name;
+        }
+        Function f = new(name, IrTypes.Word) { Coalescible = true };
+        Function savedFn = _f; Builder savedB = _e; Block? savedFail = _boundsFail;
+        _f = f; _e = new Builder(f, f.NewBlock("entry")); _boundsFail = null;
+
+        VReg made = Allocate(at, Math.Max(1, sym.InstanceSize));
+        InitStructFields(at, made, sym);
+        _e.Ret(R(made));
+
+        _m.Functions.Add(f);
+        _f = savedFn; _e = savedB; _boundsFail = savedFail;
+        return name;
+    }
+
+    /// <summary>
+    /// `__struct_copy$T(src)`: a copy of a T that holds another struct -- the
+    /// bytes moved, then each struct field replaced by a copy of the block
+    /// it still shares with the source, all the way down.
+    /// </summary>
+    private string StructCopier(Node at, TypeSymbol sym)
+    {
+        string name = "__struct_copy$" + TypeKey(sym);
+        if (!_structHelpers.Add(name))
+        {
+            return name;
+        }
+        Function f = new(name, IrTypes.Word) { Coalescible = true };
+        VReg src = f.NewReg(IrTypes.Word, "src");
+        f.Params.Add(src);
+        Function savedFn = _f; Builder savedB = _e; Block? savedFail = _boundsFail;
+        _f = f; _e = new Builder(f, f.NewBlock("entry")); _boundsFail = null;
+
+        int size = Math.Max(1, sym.InstanceSize);
+        VReg made = Allocate(at, size);
+        _e.Emit(Opcode.MemCopy, null, R(made), R(src), Imm(size, IrTypes.Word));
+        foreach (FieldSymbol field in sym.Fields)
+        {
+            if (field.Static || field.Boxed || !IsStructValue(field.Type))
+            {
+                continue;
+            }
+            VReg shared = _e.Load(IrTypes.Word, made, field.Offset);
+            VReg own = CopyStruct(at, shared, field.Type.Symbol!);
+            _e.Store(R(made), R(own), field.Offset, _t.WordSize);
+        }
+        _e.Ret(R(made));
+
+        _m.Functions.Add(f);
+        _f = savedFn; _e = savedB; _boundsFail = savedFail;
+        return name;
     }
 
     /// <summary>
@@ -548,7 +667,7 @@ public sealed partial class Lowering
                 return _e.Const(0, IrTypes.Word);
 
             case DefaultExpr df when IsStructValue(_b.TypeOf(df)):
-                return Allocate(df, Math.Max(1, _b.TypeOf(df).Symbol!.InstanceSize));
+                return NewStruct(df, _b.TypeOf(df).Symbol!);
 
             case DefaultExpr df:
             {
@@ -904,6 +1023,11 @@ public sealed partial class Lowering
             _e.Store(R(obj), VtableOf(sym), 0, _t.WordSize);
         }
 
+        // ITS STRUCT FIELDS ARE ZERO VALUES, not null pointers, before the
+        // constructor or the initialiser runs: `new XformMatrix { M11 = one }`
+        // left M12 null and Clone read address 0 copying it.
+        InitStructFields(nw, obj, sym);
+
         MethodSymbol? ctor = _b.NewConstructors.TryGetValue(nw, out MethodSymbol? selected)
                            ? selected
                            : sym.Methods.FirstOrDefault(c => c.IsCtor && c.Params.Count == nw.Args.Count);
@@ -962,6 +1086,7 @@ public sealed partial class Lowering
     private VReg AllocateArray(Node at, VReg count, Type element)
     {
         int stride = Math.Max(1, element.Size);
+        CheckArrayCount(count, stride);
         VReg bytes = stride == 1 ? count : _e.Binary(Opcode.Mul, count, stride);
         VReg total = _e.Binary(Opcode.Add, WordOf(bytes), _t.ArrayHeaderBytes);
         VReg array = AllocateDynamic(at, total, LeafElement(element));
@@ -986,7 +1111,7 @@ public sealed partial class Lowering
             _e.SetBlock(top);
             _e.Branch(_e.Binary(Opcode.LtS, index, count), body, done);
             _e.SetBlock(body);
-            VReg block = Allocate(at, size);
+            VReg block = NewStruct(at, element.Symbol!);
             VReg slot = _e.Binary(Opcode.Add, array, WordOf(_e.Binary(Opcode.Mul, index, stride)));
             _e.Store(R(slot), R(block), _t.ArrayHeaderBytes, _t.WordSize);
             _e.CopyTo(index, R(_e.Binary(Opcode.Add, index, 1)));
@@ -994,6 +1119,33 @@ public sealed partial class Lowering
             _e.SetBlock(done);
         }
         return array;
+    }
+
+    /// <summary>
+    /// THE COUNT OF A NEW ARRAY, checked before its size is worked out: at
+    /// most as many elements as fit the largest allocation, compared unsigned
+    /// so that a negative count fails too. Unchecked, `new byte[-1]` asked for
+    /// fifteen bytes and got a length word every index passed, and a count
+    /// whose size wrapped 32 bits got a 16-byte block the same way -- and an
+    /// array of structs then had its element pointers written past the end.
+    /// A constant count in range folds the test away.
+    /// </summary>
+    private void CheckArrayCount(VReg count, int stride)
+    {
+        long limit = (0x7FFFFFF0L - _t.ArrayHeaderBytes) / stride;
+        Block ok = _f.NewBlock("acount");
+        Block bad = _f.NewBlock("abad");
+        _e.Branch(_e.Binary(Opcode.LeU, count, (int)limit), ok, bad);
+        _e.SetBlock(bad);
+        MethodSymbol? fail = RuntimeMethod("ArraySize", 1);
+        if (fail is not null)
+        {
+            Require(fail);
+            _e.Call(CallLabel(fail), IrType.Void, R(count));
+        }
+        _e.Emit(Opcode.Trap, null);
+        _e.Unreachable();
+        _e.SetBlock(ok);
     }
 
     /// <summary>
@@ -1160,6 +1312,11 @@ public sealed partial class Lowering
             foreach (FieldSymbol f in walk.Fields.Where(f => !f.Static))
             {
                 VReg v = LoadPlace(new MemPlace(R(src), f.Offset, f.Type));
+                // A struct field is copied, not shared with the source.
+                if (!f.Boxed && IsStructValue(f.Type))
+                {
+                    v = CopyStruct(copy, v, f.Type.Symbol!);
+                }
                 _e.Store(R(obj), R(v), f.Offset, LoadSize(f.Type));
             }
         }

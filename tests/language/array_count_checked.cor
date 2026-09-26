@@ -1,0 +1,33 @@
+// test: array_count_checked
+// expect-exit: 0
+// expect-output:
+// overflow
+// out of memory
+// out of memory
+// 3
+
+// A new array's count is checked before its size is worked out: a negative
+// one throws OverflowException, and one whose bytes cannot be allocated --
+// or whose size would wrap 32 bits -- OutOfMemoryException, as .NET throws
+// them. Neither leaves an array whose length every index passes.
+
+public struct Pair { public int A, B; }
+
+public static class Program
+{
+    static int Negative() { return -1; }
+    static int Huge() { return 0x40000000; }
+
+    public static int Main()
+    {
+        try { byte[] b = new byte[Negative()]; System.Console.WriteLine("made " + b.Length); }
+        catch (System.OverflowException) { System.Console.WriteLine("overflow"); }
+        try { int[] i = new int[Huge()]; System.Console.WriteLine("made " + i.Length); }
+        catch (System.OutOfMemoryException) { System.Console.WriteLine("out of memory"); }
+        try { Pair[] p = new Pair[Huge()]; System.Console.WriteLine("made " + p.Length); }
+        catch (System.OutOfMemoryException) { System.Console.WriteLine("out of memory"); }
+        int[] fine = new int[3];
+        System.Console.WriteLine(fine.Length);
+        return 0;
+    }
+}

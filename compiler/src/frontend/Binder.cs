@@ -2009,6 +2009,7 @@ public sealed partial class Binder
                         Static = f.Mods.HasFlag(Mods.Static),
                         Volatile = f.Mods.HasFlag(Mods.Volatile),
                         Required = f.Mods.HasFlag(Mods.Required),
+                        Initialised = f.DeclaredInit is not null || f.Init is not null,
                     });
                     break;
                 }
@@ -3276,6 +3277,14 @@ public sealed partial class Binder
                 _declOf[made] = d;
                 Declare(d, d.Name, made);
                 if (d.Init is not null) { _assigned.Add(made); }
+                // A STRUCT LOCAL MAY BE WRITTEN A FIELD AT A TIME (`Pair p;
+                // p.A = 1;`), which C# allows before the whole is assigned.
+                // The lowering makes its zero value at the declaration, so the
+                // local holds a value from there on and reading it is safe.
+                else if (type.Symbol is { Kind: TypeKind.Struct } && !type.IsPointer && !type.Nullable && !type.IsArray)
+                {
+                    _assigned.Add(made);
+                }
                 if (d.Init is not null)
                 {
                     Type initialState = _r.TypeOf(d.Init);

@@ -334,6 +334,25 @@ public sealed partial class Lowering
                 _e.CopyTo(LocalReg(d), new RegOperand(value));
             }
         }
+        else if (IsStructValue(type))
+        {
+            // A STRUCT LOCAL WITH NO INITIALISER IS A VALUE ALREADY, zero until
+            // written, and C# lets it be written a field at a time (`Pair p;
+            // p.A = 1;`): the block its fields live in is made here.
+            VReg zero = NewStruct(d, type.Symbol!);
+            if (boxed)
+            {
+                _e.Store(new RegOperand(LocalReg(d)), new RegOperand(zero), 0, LoadSize(type));
+            }
+            else if (_addressTakenLocals.Contains(d))
+            {
+                _e.Store(new SlotOperand(LocalSlot(d, type)), new RegOperand(zero), 0, LoadSize(type));
+            }
+            else
+            {
+                _e.CopyTo(LocalReg(d), new RegOperand(zero));
+            }
+        }
         else if (!boxed)
         {
             // Make the register exist so later reads have a definition,

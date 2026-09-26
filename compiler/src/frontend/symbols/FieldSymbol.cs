@@ -29,6 +29,14 @@ public sealed class FieldSymbol
     /// </summary>
     public bool Required { get; init; }
 
+    /// <summary>
+    /// A static field its declaration gave a value (`static readonly T X =
+    /// ...;`): the type's StaticInit$ sets it before anything can read it.
+    /// One without is zero until written -- which, for a struct held by
+    /// pointer, the lowering has to make on the first touch.
+    /// </summary>
+    public bool Initialised { get; init; }
+
     /// <summary>Byte offset within an instance, or within static storage.</summary>
     public int Offset { get; set; }
 }

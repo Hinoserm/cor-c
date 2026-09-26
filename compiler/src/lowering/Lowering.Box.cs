@@ -90,6 +90,17 @@ public sealed partial class Lowering
         {
             VReg into = _e.Binary(Opcode.Add, obj, payload);
             _e.Emit(Opcode.MemCopy, null, R(into), R(value), Imm(bytes, IrTypes.Word));
+            // A struct inside it is a block of its own: the box gets a copy,
+            // not the caller's.
+            foreach (FieldSymbol f in of.Symbol!.Fields)
+            {
+                if (f.Static || f.Boxed || !IsStructValue(f.Type))
+                {
+                    continue;
+                }
+                VReg own = CopyStruct(at, _e.Load(IrTypes.Word, into, f.Offset), f.Type.Symbol!);
+                _e.Store(R(into), R(own), f.Offset, _t.WordSize);
+            }
             return obj;
         }
 
