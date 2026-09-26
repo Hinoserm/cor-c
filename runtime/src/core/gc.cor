@@ -973,7 +973,14 @@ static class Gc
         // since the last collection is collected now, whether or not this
         // request would have fitted, so the heap tracks the live size rather
         // than the allocation rate.
-        if (_since + need >= _threshold && HeapChunks.Any())
+        bool due = _since + need >= _threshold;
+        if (!due && ShortHook != 0 && _since + need >= ShortThreshold() && HeapChunks.Any()
+            && Sys.Call(ShortHook, 0, 0, 0) != 0)
+        {
+            due = true;
+            ShortCollections = ShortCollections + 1;
+        }
+        if (due && HeapChunks.Any())
         {
             // A PLATFORM MAY SAY "NOT HERE". This collection is owed because
             // a quota was reached, not because memory ran out, so it can be
@@ -1987,6 +1994,21 @@ static class Gc
     /// nonzero puts it off. It must not allocate. See AllocSlow.
     public static long DeferHook;
     public static long Deferred;
+
+    /// Asked at every slow allocation: nonzero says the machine is short of
+    /// memory, and a collection is due after a quarter of the live size has
+    /// been allocated rather than all of it (ShortThreshold). A heap that may
+    /// double before it is collected is a heap that holds its live size in
+    /// garbage, which a machine with room to spare can afford and one without
+    /// cannot. It must not allocate. 0, a platform that never says so.
+    public static long ShortHook;
+    public static long ShortCollections;
+
+    static long ShortThreshold()
+    {
+        long quarter = _liveBytes / 4;
+        return quarter > MinThreshold ? quarter : MinThreshold;
+    }
 
     /// Collections given up half way -- a barrier report lost to a full
     /// ring -- and begun again later. Nothing is freed by one.
