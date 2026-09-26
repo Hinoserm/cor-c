@@ -3100,6 +3100,11 @@ class TrueTypeSize : SizedFace
     static List<TrueTypeSize>? _sharedHeld;
     static List<TrueTypeSize> _shared { get { if (_sharedHeld == null) { _sharedHeld = new List<TrueTypeSize>(); } return _sharedHeld; } }
 
+    /// How many sizes the shared list keeps: it is only a lookup, since
+    /// whoever holds a size keeps it, and every entry holds its face's whole
+    /// file, a hinter and two glyph caches.
+    const int MostShared = 64;
+
     public static TrueTypeSize For(TrueTypeFace face, int ppem)
     {
         for (int i = 0; i < _shared.Count; i++)
@@ -3108,8 +3113,28 @@ class TrueTypeSize : SizedFace
         }
 
         TrueTypeSize made = new TrueTypeSize(face, ppem, ppem * 64);
+        if (_shared.Count >= MostShared) { _shared.RemoveAt(0); }
         _shared.Add(made);
         return made;
+    }
+
+    /// <summary>
+    /// A face let go by whoever read it (a font store dropping the file's
+    /// bytes): its sizes leave the shared lists, which otherwise kept the
+    /// file's bytes, its hinters and caches alive for good -- and a face read
+    /// again is a new object, so each drop and reload added another copy.
+    /// A size something still holds stays with its holder.
+    /// </summary>
+    public static void Release(TrueTypeFace face)
+    {
+        if (_sharedHeld != null)
+        {
+            for (int i = _sharedHeld.Count - 1; i >= 0; i--) { if (_sharedHeld[i]._face == face) { _sharedHeld.RemoveAt(i); } }
+        }
+        if (_matrixHeld != null)
+        {
+            for (int i = _matrixHeld.Count - 1; i >= 0; i--) { if (_matrixHeld[i]._face == face) { _matrixHeld.RemoveAt(i); } }
+        }
     }
 
     public TrueTypeSize(TrueTypeFace face, int ppem, int pointSize) : this(face, ppem, pointSize, false, false) { }
