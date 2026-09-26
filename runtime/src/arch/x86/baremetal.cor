@@ -230,8 +230,16 @@ static class Platform
         }
     }
 
+    /// The other half, for the same kernel: a word a Wait may be sleeping
+    /// for has changed, and the sleeper is to be woken (WakeHook).
+    public static long WakeHook;
+
     public static void Wake(long at, long count)
     {
+        if (WakeHook != 0)
+        {
+            Sys.Call(WakeHook, at, count, 0);
+        }
     }
 
     /// Asks every thread still running to stop for a collection: nothing
