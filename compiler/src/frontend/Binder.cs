@@ -1766,8 +1766,11 @@ public sealed partial class Binder
     private static Expr Retarget(Expr init, TypeRef declared)
     {
         // A collection expression is made for its type by the checker, which
-        // knows what the type is (the assignment this becomes wants it).
-        if (init is not NewExpr nw || nw.Type.Name.Length != 0 || nw.Collection)
+        // knows what the type is (the assignment this becomes wants it). And
+        // `new[] { ... }` is not a target-typed `new()`: its type is its
+        // elements', and naming the declared type made it an array OF the
+        // declared type -- `string[] x = new[] { "a" }` a string[][].
+        if (init is not NewExpr nw || nw.Type.Name.Length != 0 || nw.Collection || nw.Elements is not null)
         {
             return init;
         }

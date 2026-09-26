@@ -1,0 +1,24 @@
+// test: implicit_array_field
+// expect-exit: 0
+// expect-output:
+// 5 HARDWARE SYSTEM 3 2 1
+
+// An implicitly typed array initialises a field, static or not: a static
+// one was retargeted to the declared type and became an array of arrays.
+class Holder
+{
+    public string[] Names = new[] { "one", "two" };
+}
+
+static class Program
+{
+    static readonly string[] Keys = new[] { "HARDWARE", "SAM", "SECURITY", "SOFTWARE", "SYSTEM" };
+    static int[] Numbers = new[] { 3, 2, 1 };
+
+    static int Main()
+    {
+        Holder h = new Holder();
+        Console.WriteLine(Keys.Length + " " + Keys[0] + " " + Keys[4] + " " + Numbers[0] + " " + Numbers[1] + " " + h.Names.Length / 2);
+        return 0;
+    }
+}
