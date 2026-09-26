@@ -887,19 +887,23 @@ static class String {
         return false;
     }
 
-    public static string TrimStart(string s, char[] any) {
+    // .NET's params forms: `s.TrimEnd('\r', '\n')`. No characters, or
+    // null, trims white space, as String.TrimEnd(params char[]?) does.
+    public static string TrimStart(string s, params char[]? any) {
+        if (any == null || any.Length == 0) { return TrimStart(s); }
         int at = 0;
         while (at < s.Length && IsIn(any, Sys.GetByte(s, at))) { at = at + 1; }
         return Substring(s, at, s.Length - at);
     }
 
-    public static string TrimEnd(string s, char[] any) {
+    public static string TrimEnd(string s, params char[]? any) {
+        if (any == null || any.Length == 0) { return TrimEnd(s); }
         int end = s.Length;
         while (end > 0 && IsIn(any, Sys.GetByte(s, end - 1))) { end = end - 1; }
         return Substring(s, 0, end);
     }
 
-    public static string Trim(string s, char[] any) { return TrimEnd(TrimStart(s, any), any); }
+    public static string Trim(string s, params char[]? any) { return TrimEnd(TrimStart(s, any), any); }
 
     public static string TrimStart(string s, char one) {
         int at = 0;

@@ -1,0 +1,26 @@
+// test: trim_params
+// expect-exit: 0
+// expect-output:
+// end [line]
+// start [line\r\n]
+// both [x]
+// none [a b]
+// one [ab]
+// array [c]
+using System;
+
+class Program
+{
+    static int Main()
+    {
+        string line = "\r\nline\r\n";
+        Console.WriteLine("end [" + "line\r\n\n".TrimEnd('\r', '\n') + "]");
+        Console.WriteLine("start [" + line.TrimStart('\r', '\n').Replace("\r", "\\r").Replace("\n", "\\n") + "]");
+        Console.WriteLine("both [" + "--x==".Trim('-', '=') + "]");
+        Console.WriteLine("none [" + "  a b \t".TrimEnd().TrimStart() + "]");
+        Console.WriteLine("one [" + "abbb".TrimEnd('b') + "b]");
+        char[] set = new char[] { 'a', 'b' };
+        Console.WriteLine("array [" + "abcab".Trim(set) + "]");
+        return 0;
+    }
+}
