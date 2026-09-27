@@ -263,6 +263,12 @@ static class Platform
         return 0;
     }
 
+    /// Unknown here too: a kernel's collector is paced by its cap (Gc).
+    public static long FreeMemoryQuietly()
+    {
+        return 0;
+    }
+
     // ---- what Monitor asks (core threading.cor) ----------------------------
 
     /// No identity: a kernel's thread block is a processor's, and a task

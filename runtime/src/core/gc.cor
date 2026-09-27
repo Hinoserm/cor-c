@@ -104,30 +104,25 @@ static class Gc
     const long Smallest = 4 * WordSize.Bytes;
 
     // Collect when this much has been allocated since the last collection:
-    // 256 KB to begin with, and thereafter TWICE the live size, so that a
-    // program with a large live heap is not collected every quarter megabyte
-    // and a small one never grows past a few chunks. The threshold is a
-    // function of the LIVE size after the last collection, which is the
-    // only measure of the program that the collector actually knows.
-    //
-    // Twice, not once: every collection marks the whole live heap, so the
-    // marking a program pays per byte it allocates is live / threshold.
-    // At one live size's worth the self-hosted compiler ran sixty full
-    // collections compiling hello.cs and spent most of its time marking.
-    // A heap that cannot grow that far is not refused by this: a chunk the
-    // system will not give is answered by a collection (AllocSlow).
+    // 256 KB to begin with, and thereafter between one and three times the
+    // live size, as the machine has room (NextThreshold). The live size
+    // after the last collection is the only measure of the program the
+    // collector really knows; the machine's free memory says how much of
+    // that measure it can afford to spend on garbage between collections.
     const long MinThreshold = 262144;
-    const long GrowthFactor = 2;
+    const long MaxGrowth = 3;
 
     // The mark queue: a block of the operating system's, not a heap block,
-    // taken once at start. A live graph wider than it finishes through the
-    // rescan path below, which needs no memory at all -- and walks the whole
-    // heap. At 32K entries the self-hosted compiler overflowed it in 46 of
-    // its 60 collections compiling hello.cs: 46 walks of a 380 MB heap. So
-    // eight megabytes of address space (a million entries on 32-bit), which
-    // costs only the pages marking actually reaches: the system commits a
-    // mapping as it is touched.
-    const long MarkBytes = 8388608;
+    // taken at start at MarkBytes. A live graph wider than it finishes
+    // through the rescan path below, which needs no memory at all -- and
+    // walks the whole heap: at 256 KB the self-hosted compiler overflowed it
+    // in 46 of its 60 collections compiling hello.cs, 46 walks of a 380 MB
+    // heap. So a cycle that overflows asks for four times the queue for the
+    // next one (FitMarkQueue), as far as a thirty-second of the heap: a
+    // program on a small machine keeps the small queue, and one with
+    // hundreds of megabytes live gets the megabytes of queue its graph needs.
+    const long MarkBytes = 262144;
+    const long MarkShare = 32;
 
     // Exact-size doubly linked lists through 256 bytes (31 bins), then an
     // AVL size/address tree per power-of-two range. Coarse bins alone were
@@ -158,6 +153,8 @@ static class Gc
 
     static long _markAt;        // the grey queue, or 0 (GcLock.GreyHead/GreyTail)
     static long _markCount;     // its capacity in entries, a power of two
+    static long _markBytes;     // its size, a power of two
+    static long _markWanted;    // the size an overflow asked the next cycle for, or 0
     static long _markPeak;
 
     // ---- a collection that lets the other threads run while it marks -----
@@ -1356,6 +1353,7 @@ static class Gc
 
         if (_markAt != 0)
         {
+            _markBytes = MarkBytes;
             _markCount = MarkBytes / GreyEntry;
         }
     }
@@ -2035,7 +2033,58 @@ static class Gc
     /// Whether a push found the queue full since this was last asked.
     static bool TakeOverflow()
     {
-        return Sys.AtomicSwap(GcLock.Words() + GcLock.Overflow, 0) != 0;
+        if (Sys.AtomicSwap(GcLock.Words() + GcLock.Overflow, 0) == 0)
+        {
+            return false;
+        }
+        AskForBiggerQueue();
+        return true;
+    }
+
+    /// AN OVERFLOW ASKS THE NEXT CYCLE FOR FOUR TIMES THE QUEUE, as far as a
+    /// thirty-second of the heap (a power of two, as the ring's index needs).
+    /// This cycle rescans as it always has; the queue is changed only between
+    /// cycles, when it is empty (FitMarkQueue). A small heap therefore never
+    /// grows past the queue it started with.
+    static void AskForBiggerQueue()
+    {
+        long share = HeapChunks.HeapBytes / MarkShare;
+        long bigger = _markBytes * 4;
+        while (bigger > _markBytes && bigger > share)
+        {
+            bigger = bigger / 2;
+        }
+        if (bigger > _markBytes && bigger > _markWanted)
+        {
+            _markWanted = bigger;
+        }
+    }
+
+    /// The queue an overflow asked for, taken now, while no mark is under
+    /// way and the ring is empty. The new ring reads as empty from its first
+    /// place, whatever the head and tail count: an unwritten place never
+    /// carries a signature (GreySignature sets the top bit). A system that
+    /// will not give the memory keeps the old queue, which still works.
+    static void FitMarkQueue()
+    {
+        long wanted = _markWanted;
+        _markWanted = 0;
+        if (wanted <= _markBytes)
+        {
+            return;
+        }
+        long fresh = Platform.Map(wanted);
+        if (fresh == 0)
+        {
+            return;
+        }
+        if (_markAt != 0)
+        {
+            Platform.Unmap(_markAt, _markBytes);
+        }
+        _markAt = fresh;
+        _markBytes = wanted;
+        _markCount = wanted / GreyEntry;
     }
 
     /// A ROOT RANGE REGISTERED WHILE A MARK IS UNDER WAY IS MARKED FROM NOW.
@@ -2223,6 +2272,7 @@ static class Gc
         // An indirect call answers a word, so the clock is read modulo 2^32
         // microseconds; the difference of two is exact for any collection
         // shorter than an hour and eleven minutes.
+        FitMarkQueue();
         long clock = PauseClock;
         long began = clock != 0 ? Sys.Call(clock, 0, 0, 0) : 0;
         try { CollectBoth(); }
@@ -2248,7 +2298,11 @@ static class Gc
         if (_markAt == 0)
         {
             _markAt = Platform.Map(MarkBytes);
-            if (_markAt != 0) _markCount = MarkBytes / GreyEntry;
+            if (_markAt != 0)
+            {
+                _markBytes = MarkBytes;
+                _markCount = MarkBytes / GreyEntry;
+            }
         }
         if (_barrier == 0 || _markAt == 0)
         {
@@ -2573,9 +2627,42 @@ static class Gc
         // What was allocated while the mark ran was not looked at by it and
         // still counts towards the next.
         _since = _since > _sinceAtStop ? _since - _sinceAtStop : Zero;
-        _threshold = _liveBytes * GrowthFactor > MinThreshold ? _liveBytes * GrowthFactor : MinThreshold;
+        _threshold = NextThreshold(_liveBytes);
         Collections = Collections + 1;
         _collecting = false;
+    }
+
+    /// HOW MUCH GARBAGE THE NEXT CYCLE MAY LET PILE UP: at least the live
+    /// size, which is what this collector has always allowed and all a small
+    /// machine can spare, and up to three times it where the room is there.
+    ///
+    /// Every collection marks the whole live heap, so the marking paid per
+    /// byte allocated is live / threshold: at once the live size the
+    /// self-hosted compiler ran sixty collections compiling hello.cs, most of
+    /// its time. The room is half of what the operating system says is free
+    /// -- the other half left to everything else on the machine -- or, under
+    /// a cap (a kernel's heap, SetLimit), half of what the cap has left. A
+    /// platform that cannot say keeps the old pace. A 32 MB board, where a
+    /// program's live size is most of what is free, gets exactly the old
+    /// threshold; a server with gigabytes free gets three times it.
+    ///
+    /// Called with the heap lock held: nothing here allocates.
+    static long NextThreshold(long live)
+    {
+        long floor = live > MinThreshold ? live : MinThreshold;
+        long room;
+        if (HeapChunks.Cap != 0)
+        {
+            long left = HeapChunks.Cap - live;
+            room = left > 0 ? left / 2 : 0;
+        }
+        else
+        {
+            room = Platform.FreeMemoryQuietly() / 2;
+        }
+        long most = floor * MaxGrowth;
+        long wanted = room < most ? room : most;
+        return wanted > floor ? wanted : floor;
     }
 
     /// With the world running and the heap lock NOT held between chunks.

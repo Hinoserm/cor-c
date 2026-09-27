@@ -360,23 +360,51 @@ static class Platform
     /// it).
     public static long TotalMemory()
     {
-        return SysinfoBytes(16);
+        return SysinfoBytes(SysinfoTotal);
     }
 
     public static long AvailableMemory()
     {
-        return SysinfoBytes(20);
+        return SysinfoBytes(SysinfoFree);
     }
+
+    /// Free memory as the collector may ask it: with the heap held, so without
+    /// allocating (SysinfoBytes answers into a page of the system's own).
+    public static long FreeMemoryQuietly()
+    {
+        return SysinfoBytes(SysinfoFree) + SysinfoBytes(SysinfoBuffers);
+    }
+
+    // struct sysinfo: the unsigned longs are words, so the offsets are the
+    // word size's -- i386 and x86-64 lay it out alike, one word apart.
+    const int SysinfoTotal = 4 * WordSize.Bytes;
+    const int SysinfoFree = 5 * WordSize.Bytes;
+    const int SysinfoBuffers = 7 * WordSize.Bytes;
+#if TARGET_64BIT
+    const int SysinfoUnit = 104;
+#else
+    const int SysinfoUnit = 52;
+#endif
+
+    // A PAGE OF THE SYSTEM'S, NOT A HEAP ARRAY: the collector reads the
+    // machine's free memory as it sets the next collection's pace, holding
+    // the heap, where a `new byte[]` would ask the heap for itself. Taken
+    // once; two callers at once write the same figures into it.
+    static long _sysinfo;
 
     static long SysinfoBytes(int field)
     {
-        byte[] info = new byte[64];                 // struct sysinfo, the i386 layout
-        if (Result(Sys.Syscall(116, Sys.ArrayData(info), 0, 0)) < 0)
+        if (_sysinfo == 0)
+        {
+            _sysinfo = Map(4096);
+            if (_sysinfo == 0) return 0;
+        }
+        if (Result(Sys.Syscall(116, _sysinfo, 0, 0)) < 0)
         {
             return 0;
         }
-        long unit = (long)BitConverter.ToUInt32(info, 52);
-        long count = (long)BitConverter.ToUInt32(info, field);
+        long unit = Sys.Peek(_sysinfo + SysinfoUnit) & 0xFFFFFFFF;
+        long count = Sys.Peek(_sysinfo + field) & WordSize.AddressMask;
         return count * (unit == 0 ? 1 : unit);
     }
 
