@@ -1,0 +1,81 @@
+// test: warning_codes
+// expect-exit: 0
+// expect-output:
+// bad-is-null=True
+// fromInit-is-null=True
+// fromAssign-is-null=True
+// takesString-arg-is-null=True
+// returnsMaybe-is-null=True
+// green
+// loud.Length=5
+// quiet.Length=5
+//
+// Every WARNING now carries Roslyn's own code for the condition, printed
+// .NET's way ("file(line,col): warning CS8602: message"), and `#pragma
+// warning disable/restore` suppresses by that code the way real C# does --
+// a specific code, the bare form (every code), and (below, through the
+// runner's own -Wno-error) a build that keeps going regardless. This
+// program's own compile prints, then this runner's harness discards without
+// checking (it only compares stdout and the exit code, never the compiler's
+// own diagnostics for a build that succeeds): CS8625 for `bad`'s null
+// literal, CS8600 for `fromInit`'s initialiser, CS8601 for `fromAssign`'s
+// plain assignment, CS8604 for the argument TakesString is handed, CS8603
+// for ReturnsMaybe's own return statement, CS8509 for Name's switch
+// expression (two arms, three colors), and CS8602 twice for a dereference
+// through a possibly-null reference -- once suppressed by its own code and
+// once by the bare form, both restored before Main ends. None of that
+// changes what runs: a warning is a diagnostic, not a rewrite, and every
+// value printed below is real and comes from ordinary control flow, not
+// from a compiler that quietly turned a maybe into a certainty.
+
+using System;
+
+class Program
+{
+    enum Color { Red, Green, Blue }
+
+    static string? MaybeNull() => null;
+
+    static void TakesString(string s) => Console.WriteLine("takesString-arg-is-null=" + (s == null));
+
+    static string ReturnsMaybe(string? maybe) => maybe;
+
+    static string Name(Color c) => c switch
+    {
+        Color.Red => "red",
+        Color.Green => "green",
+    };
+
+    static void Main()
+    {
+        string bad = null;
+        Console.WriteLine("bad-is-null=" + (bad == null));
+
+        string? maybe = MaybeNull();
+        string fromInit = maybe;
+        Console.WriteLine("fromInit-is-null=" + (fromInit == null));
+
+        string fromAssign;
+        fromAssign = maybe;
+        Console.WriteLine("fromAssign-is-null=" + (fromAssign == null));
+
+        TakesString(maybe);
+
+        Console.WriteLine("returnsMaybe-is-null=" + (ReturnsMaybe(maybe) == null));
+
+        Console.WriteLine(Name(Color.Green));
+
+        // A NON-NULL VALUE IN A NULLABLE-TYPED LOCAL: the declared type is
+        // still `string?`, so the dereference below is still checked and
+        // still warns, but there is nothing to crash into at run time.
+        string? loud = "hello";
+#pragma warning disable CS8602
+        Console.WriteLine("loud.Length=" + loud.Length);
+#pragma warning restore CS8602
+
+        string? quiet = "world";
+#pragma warning disable
+        Console.WriteLine("quiet.Length=" + quiet.Length);
+#pragma warning restore
+    }
+}

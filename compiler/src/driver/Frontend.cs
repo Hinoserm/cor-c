@@ -121,10 +121,22 @@ public static class Frontend
                 }
 
                 unit.Types.AddRange(one.Types);
+
+                // Retagged the same way decl.File is above: this loop's own
+                // `file` is the name a diagnostic will actually be stamped
+                // with, and stamping the pragma table with anything else
+                // would leave a `#pragma warning disable` unable to find the
+                // warnings it was written to silence.
+                foreach (PragmaWarning p in one.Pragmas)
+                {
+                    unit.Pragmas.Add(p with { File = file });
+                }
+
                 // Ownership has moved to unit. Do not keep the original
                 // compilation roots alive through a stale parser-array slot.
                 one.Types.Clear();
                 one.Usings.Clear();
+                one.Pragmas.Clear();
                 parsed[sourceIndex - 1] = null!;
             }
             sources.Clear();
@@ -219,7 +231,10 @@ public static class Frontend
         {
             if (WarningsAreErrors)
             {
-                Console.Error.WriteLine(warning.ToString().Replace("): warning: ", "): error: "));
+                // Every warning now carries a code -- "): warning CS8602: " --
+                // so the word alone, not the colon that used to sit right
+                // after it, is what marks where "error" replaces "warning".
+                Console.Error.WriteLine(warning.ToString().Replace("): warning ", "): error "));
             }
             else
             {

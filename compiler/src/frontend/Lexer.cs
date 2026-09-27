@@ -113,6 +113,13 @@ public sealed class Lexer
     /// <summary>One `#if` and the branches under it, innermost last.</summary>
     private readonly List<Conditional> _conditionals = new();
 
+    /// <summary>
+    /// Every `#pragma warning disable`/`restore` this file's directives ask
+    /// for, in the order they were read. See PragmaWarnings for how a later
+    /// reader turns this into "is this code suppressed at this line".
+    /// </summary>
+    public List<PragmaWarning> Pragmas { get; } = new();
+
     private sealed class Conditional
     {
         /// <summary>Whether the branch now open is the one being compiled.</summary>
@@ -164,7 +171,8 @@ public sealed class Lexer
     }
 
     public static List<Token> Tokenize(string source, string file = "<source>", int line = 1, int col = 1,
-                                       IReadOnlyCollection<string>? symbols = null)
+                                       IReadOnlyCollection<string>? symbols = null,
+                                       List<PragmaWarning>? pragmas = null)
     {
         Lexer lexer = new(source, file, line, col, symbols);
         List<Token> tokens = new(Math.Min(4096, source.Length / 4 + 1));
@@ -176,6 +184,11 @@ public sealed class Lexer
 
             if (t.Kind == Tok.End)
             {
+                // Handed back only when a caller asked (most do not: only
+                // the top-level parse of a real file cares, not the little
+                // sub-lexes this compiler runs over generated or
+                // interpolated text).
+                pragmas?.AddRange(lexer.Pragmas);
                 return tokens;
             }
         }
@@ -527,13 +540,25 @@ public sealed class Lexer
                 throw Error(rest.Length == 0 ? "#error" : rest, line, col);
 
             case "warning":
-                Console.Error.WriteLine($"{_file}({line},{col}): warning: {rest}");
+                // CS1030, C#'s own code for this directive. `#pragma warning
+                // disable CS1030` reaches it the same as any other warning,
+                // checked against what THIS FILE's own directives have said
+                // up to this exact line -- the only pragmas that can matter,
+                // since lexing is one pass forward and nothing later has
+                // been read yet.
+                if (!PragmaWarnings.IsSuppressed(Pragmas, _file, "CS1030", line))
+                {
+                    Console.Error.WriteLine($"{_file}({line},{col}): warning CS1030: {rest}");
+                }
+                return;
+
+            case "pragma":
+                Pragma(rest, line);
                 return;
 
             case "nullable":
             case "region":
             case "endregion":
-            case "pragma":
             case "line":
                 return;                         // nothing about meaning
 
@@ -695,6 +720,45 @@ public sealed class Lexer
         int comment = text.IndexOf("//", StringComparison.Ordinal);
 
         return (comment < 0 ? text : text[..comment]).Trim();
+    }
+
+    /// <summary>
+    /// `#pragma warning disable/restore`, the only pragma this compiler acts
+    /// on -- `checksum`, and anything else after `#pragma` it does not know,
+    /// is read for nothing, the same as before this existed.
+    /// </summary>
+    private void Pragma(string rest, int line)
+    {
+        string[] words = rest.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+
+        if (words.Length < 2 || words[0] != "warning" || (words[1] != "disable" && words[1] != "restore"))
+        {
+            return;
+        }
+
+        bool disabled = words[1] == "disable";
+        string codesText = words.Length > 2 ? string.Join(" ", words, 2, words.Length - 2) : "";
+        string[] codes = codesText.Split(new[] { ',', ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+
+        // THE BARE FORM, `#pragma warning disable` with no codes, means
+        // every code -- C# allows it, for a region that is wrong in more
+        // than one nameable way.
+        if (codes.Length == 0)
+        {
+            Pragmas.Add(new PragmaWarning(_file, line, null, disabled));
+            return;
+        }
+
+        foreach (string raw in codes)
+        {
+            // C# ALSO ACCEPTS THE BARE NUMBER, `#pragma warning disable
+            // 8602`, without the `CS`. Normalise both spellings to one so
+            // every later comparison is a plain string equality.
+            string code = raw.Length > 2 && (raw[0] is 'C' or 'c') && (raw[1] is 'S' or 's')
+                ? "CS" + raw[2..]
+                : "CS" + raw;
+            Pragmas.Add(new PragmaWarning(_file, line, code, disabled));
+        }
     }
 
     /// <summary>The one name `#define` and `#undef` take.</summary>

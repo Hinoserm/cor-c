@@ -38,4 +38,12 @@ public sealed class CompilationUnit : Node
     /// this is what it resolves it against.
     /// </summary>
     public Dictionary<string, string> RegistryKeys { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Every `#pragma warning disable`/`restore` this file's own lexer read,
+    /// carried through parsing untouched so the binder -- which is where a
+    /// warning is actually reported, long after this file is tokenized --
+    /// can still ask what was in force at a given line. See PragmaWarnings.
+    /// </summary>
+    public List<PragmaWarning> Pragmas { get; } = new();
 }

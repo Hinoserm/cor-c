@@ -431,6 +431,13 @@ public sealed class Monomorphiser
         output.TupleNamings.AddRange(unit.TupleNamings);
         output.RegistrySchemas.AddRange(unit.RegistrySchemas);
 
+        // Expansion builds a NEW unit rather than editing this one in place,
+        // and the binder that reads warnings out of it -- the only reader of
+        // Pragmas -- only ever sees the expanded copy. Left behind here, a
+        // `#pragma warning disable` would parse correctly and then silence
+        // nothing.
+        output.Pragmas.AddRange(unit.Pragmas);
+
         foreach ((string path, string key) in unit.RegistryKeys)
         {
             output.RegistryKeys[path] = key;
