@@ -29,7 +29,7 @@ class Program
         words.Add("blueberry");
         words.Add("cherry");
 
-        List<Grouping<char, string>> groups = words.GroupBy(w => (char)Sys.GetByte(w, 0));
+        List<Grouping<char, string>> groups = words.GroupBy(w => w[0]);
 
         foreach (Grouping<char, string> g in groups)
         {

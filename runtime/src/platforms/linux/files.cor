@@ -22,43 +22,25 @@
 
 static partial class Os
 {
-    /// The address of a string's or byte array's first byte.
-    private static long BytesOf(string s)
-    {
-        return Platform.Linear(Sys.ArrayData(s));
-    }
 
     private static long BytesOf(byte[] b)
     {
         return Platform.Linear(Sys.ArrayData(b));
     }
 
-    /// A copy of `s` with a zero byte after it, which is what the kernel
-    /// means by a path. The block from Sys.NewBytes is zeroed by the
-    /// allocator; the store is there so nothing depends on that.
-    ///
-    /// A byte loop rather than Sys.Copy: a path is short, and the block
-    /// copy the backend selects for Sys.Copy (rep movsb) mis-assigns its
-    /// registers as of this writing when an operand already sits in one of
-    /// them. The loop is correct on any backend and costs nothing here.
-    private static string CString(string s)
+    /// `s` as UTF-8 with a zero byte after it, which is what the kernel
+    /// means by a path: a string is UTF-16 code units, and a path a Unix
+    /// kernel is handed is bytes.
+    private static byte[] CString(string s)
     {
-        int n = s.Length;
-        string c = Sys.NewBytes(n + 1);
-
-        for (int i = 0; i < n; i++)
-        {
-            Sys.SetByte(c, i, Sys.GetByte(s, i));
-        }
-        Sys.SetByte(c, n, 0);
-        return c;
+        return Utf8Transcoder.EncodeTerminated(s);
     }
 
     /// open(2). The mode is what a file is CREATED with and is ignored
     /// otherwise, exactly as open(2)'s third argument is.
     public static int Open(string path, int flags, int mode)
     {
-        string c = CString(path);
+        byte[] c = CString(path);
         return (int)Err.Result(Sys.Syscall(Call.Open, BytesOf(c), flags, mode));
     }
 
@@ -118,9 +100,9 @@ static partial class Os
         return Platform.Linear(Sys.ArrayData(b));
     }
 
-    /// A copy of `s` with a zero byte after it, for the calls that take a
+    /// `s` as UTF-8 with a zero byte after it, for the calls that take a
     /// path. Public for the same reason AddressOf is.
-    public static string CStr(string s)
+    public static byte[] CStr(string s)
     {
         return CString(s);
     }
@@ -207,7 +189,7 @@ static partial class Os
     public static int Stat(string path, byte[] into)
     {
         StatBuf.Check(into);
-        string c = CString(path);
+        byte[] c = CString(path);
         return (int)Err.Result(Sys.Syscall(Call.Stat64, BytesOf(c), AddressOf(into), 0));
     }
 
@@ -215,7 +197,7 @@ static partial class Os
     public static int Lstat(string path, byte[] into)
     {
         StatBuf.Check(into);
-        string c = CString(path);
+        byte[] c = CString(path);
         return (int)Err.Result(Sys.Syscall(Call.Lstat64, BytesOf(c), AddressOf(into), 0));
     }
 
@@ -266,7 +248,7 @@ static partial class Os
 
     public static int Unlink(string path)
     {
-        string c = CString(path);
+        byte[] c = CString(path);
         return (int)Err.Result(Sys.Syscall(Call.Unlink, BytesOf(c), 0, 0));
     }
 
@@ -276,14 +258,14 @@ static partial class Os
     /// would find.
     public static int Rename(string from, string to)
     {
-        string a = CString(from);
-        string b = CString(to);
+        byte[] a = CString(from);
+        byte[] b = CString(to);
         return (int)Err.Result(Sys.Syscall(Call.Rename, BytesOf(a), BytesOf(b), 0));
     }
 
     public static int Mkdir(string path, int mode)
     {
-        string c = CString(path);
+        byte[] c = CString(path);
         return (int)Err.Result(Sys.Syscall(Call.Mkdir, BytesOf(c), mode, 0));
     }
 
@@ -295,13 +277,13 @@ static partial class Os
 
     public static int Rmdir(string path)
     {
-        string c = CString(path);
+        byte[] c = CString(path);
         return (int)Err.Result(Sys.Syscall(Call.Rmdir, BytesOf(c), 0, 0));
     }
 
     public static int Chmod(string path, int mode)
     {
-        string c = CString(path);
+        byte[] c = CString(path);
         return (int)Err.Result(Sys.Syscall(Call.Chmod, BytesOf(c), mode, 0));
     }
 
@@ -309,7 +291,7 @@ static partial class Os
     /// write and read.
     public static int Access(string path, int mode)
     {
-        string c = CString(path);
+        byte[] c = CString(path);
         return (int)Err.Result(Sys.Syscall(Call.Access, BytesOf(c), mode, 0));
     }
 
@@ -317,22 +299,22 @@ static partial class Os
     /// names. Not a copy -- the two names are the same file thereafter.
     public static int Link(string existing, string name)
     {
-        string a = CString(existing);
-        string b = CString(name);
+        byte[] a = CString(existing);
+        byte[] b = CString(name);
         return (int)Err.Result(Sys.Syscall(Call.Link, BytesOf(a), BytesOf(b), 0));
     }
 
     public static int Symlink(string target, string name)
     {
-        string a = CString(target);
-        string b = CString(name);
+        byte[] a = CString(target);
+        byte[] b = CString(name);
         return (int)Err.Result(Sys.Syscall(Call.Symlink, BytesOf(a), BytesOf(b), 0));
     }
 
     /// Where a symbolic link points, or null when it is not one.
     public static string? Readlink(string path)
     {
-        string c = CString(path);
+        byte[] c = CString(path);
         byte[] room = new byte[4096];
         int n = (int)Err.Result(Sys.Syscall(Call.Readlink, BytesOf(c), AddressOf(room), room.Length));
 
@@ -426,7 +408,7 @@ static partial class Os
     /// chown(2), by name, following symbolic links.
     public static int Chown(string path, int uid, int gid)
     {
-        string c = CString(path);
+        byte[] c = CString(path);
         return (int)Err.Result(Sys.Syscall(Call.Chown, BytesOf(c), uid, gid));
     }
 
@@ -434,7 +416,7 @@ static partial class Os
     public static int Statfs(string path, byte[] into)
     {
         StatFs.Check(into);
-        string c = CString(path);
+        byte[] c = CString(path);
         return (int)Err.Result(Sys.Syscall(Call.Statfs64, BytesOf(c),
                                                 StatFs.Bytes, BytesOf(into)));
     }
@@ -449,15 +431,6 @@ static partial class Os
     public static int Close(long fd)
     {
         return Close((int)fd);
-    }
-
-    public static long Read(long fd, string into, long count)
-    {
-        if (count < 0 || count > into.Length)
-        {
-            throw new IndexOutOfRangeException("read range is outside its buffer");
-        }
-        return Err.Result(Sys.Syscall(Call.Read, fd, BytesOf(into), count));
     }
 
     public static long Write(long fd, string s)

@@ -50,6 +50,12 @@ public sealed partial class Escape : IModulePass
     /// <summary>Either of the collecting allocators: every pass that follows an allocation follows both.</summary>
     public static bool IsAllocator(string? callee) => callee == Allocator || callee == LeafAllocator;
 
+    /// <summary>The write barrier compiled code calls with the slot being overwritten.</summary>
+    public const string Barrier = "m_Runtime_WriteBarrier_2_V$I64_V$I64";
+
+    /// <summary>The same told the overwritten reference itself (Runtime.WriteBarrierValues).</summary>
+    public const string ValueBarrier = "m_Runtime_WriteBarrierValues_2_V$I64_V$I64";
+
     /// <summary>At most this many bytes of a frame go to promoted objects.</summary>
     public int FrameBudget { get; init; } = 4096;
 

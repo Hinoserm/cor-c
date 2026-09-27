@@ -37,4 +37,15 @@ public sealed class CallExpr : Expr
     /// </summary>
     public bool ReceiverAdded { get; set; }
 
+    /// <summary>
+    /// Where the receiver and each argument were written, for
+    /// [CallerArgumentExpression]: pairs of offsets into <see cref="Source"/>,
+    /// start and end, the receiver's first (-1, -1 where there is none) and
+    /// then one pair per argument as written. Null when the text is unknown.
+    /// </summary>
+    public int[]? Spans { get; set; }
+
+    /// <summary>The text <see cref="Spans"/> index: the file, or the part of it a sub-parser read.</summary>
+    public string? Source { get; set; }
+
 }

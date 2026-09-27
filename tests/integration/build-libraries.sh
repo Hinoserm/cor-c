@@ -50,12 +50,12 @@ fi
 
 # ---- the sources, in the order every compilation must see them --------------
 
-SOURCES="stdlib/src/System/Core.cor stdlib/src/System/Runtime/ExceptionServices/ExceptionDispatchInfo.cor runtime/src/core/runtime.cor runtime/src/core/gc.cor runtime/src/core/threading.cor \
-runtime/src/platforms/linux/threading.cor runtime/src/platforms/linux/system.cor runtime/src/platforms/linux/abi.cor runtime/src/platforms/linux/files.cor stdlib/src/System/interop.cor stdlib/src/System/IO/io.cor \
-stdlib/src/System/Collections/Collections.cor stdlib/src/System/IO/io-streams.cor stdlib/src/System/IO/compression.cor stdlib/src/System/IO/tar.cor \
-stdlib/src/System/time.cor stdlib/src/System/values.cor stdlib/src/System/numerics.cor stdlib/src/System/Text/RegularExpressions.cor stdlib/src/System/console.cor \
-stdlib/src/System/environment.cor stdlib/src/System/Net/Net.cor stdlib/src/System/Security/Cryptography/Cryptography.cor stdlib/src/System/signals.cor stdlib/src/System/unix.cor \
-stdlib/src/System/process.cor stdlib/src/System/power.cor"
+# ASKED OF THE COMPILER, not kept in a list that has to match it: a
+# library's slots are numbered over every library source a program sees, so a
+# library built over fewer of them numbered its classes' virtuals differently
+# from the programs that link it, and a call through Console.Out's vtable
+# found a hole.
+SOURCES="$("$corc" library-sources | sed "s|^$root/||" | tr '\n' ' ')"
 
 # ---- what goes where, bottom of the stack first -----------------------------
 #
@@ -64,14 +64,14 @@ stdlib/src/System/process.cor stdlib/src/System/power.cor"
 # list, which is checked after every build.
 
 LIBRARIES="
-libcorsacrt.so|stdlib/src/System/Core.cor stdlib/src/System/Runtime/ExceptionServices/ExceptionDispatchInfo.cor runtime/src/core/runtime.cor runtime/src/core/gc.cor runtime/src/core/threading.cor runtime/src/platforms/linux/threading.cor runtime/src/platforms/linux/system.cor runtime/src/platforms/linux/abi.cor runtime/src/platforms/linux/files.cor stdlib/src/System/signals.cor
+libcorsacrt.so|stdlib/src/System/Core.cor stdlib/src/System/Runtime/ExceptionServices/ExceptionDispatchInfo.cor runtime/src/core/runtime.cor runtime/src/core/unicode.cor runtime/src/core/gc.cor runtime/src/core/threading.cor runtime/src/platforms/linux/threading.cor runtime/src/platforms/linux/system.cor runtime/src/platforms/linux/abi.cor runtime/src/platforms/linux/files.cor stdlib/src/System/signals.cor
 libSystem.Runtime.InteropServices.so|stdlib/src/System/interop.cor
 libSystem.Security.Cryptography.so|stdlib/src/System/Security/Cryptography/Cryptography.cor
 libSystem.Runtime.Extensions.so|stdlib/src/System/time.cor stdlib/src/System/values.cor stdlib/src/System/environment.cor
 libSystem.Runtime.Numerics.so|stdlib/src/System/numerics.cor
 libSystem.Collections.so|stdlib/src/System/Collections/Collections.cor
 libSystem.Text.RegularExpressions.so|stdlib/src/System/Text/RegularExpressions.cor
-libSystem.IO.so|stdlib/src/System/IO/io.cor stdlib/src/System/IO/io-streams.cor
+libSystem.IO.so|stdlib/src/System/IO/io.cor stdlib/src/System/IO/io-streams.cor stdlib/src/System/IO/timezone.cor
 libSystem.IO.Compression.so|stdlib/src/System/IO/compression.cor
 libSystem.Formats.Tar.so|stdlib/src/System/IO/tar.cor
 libSystem.Console.so|stdlib/src/System/console.cor

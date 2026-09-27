@@ -5,7 +5,7 @@ static class Environment
     static string[]? _args;
     static string[]? _env;
     public static int ExitCode;
-    public static string NewLine = "\n";
+    public static string NewLine => "\n";
 
     /// The processors this process may run on.
     public static int ProcessorCount { get { return Os.ProcessorCount(); } }
@@ -376,9 +376,9 @@ static class Environment
         {
             byte[] names = new byte[65 * 6];                  // struct utsname: six fields of 65
             if (Platform.Result(Sys.Syscall(122, Sys.ArrayData(names), 0, 0)) < 0) return "localhost";
-            string made = "";
-            for (int i = 65; i < 130 && names[i] != 0; i++) made = made + (char)names[i];
-            return made.Length > 0 ? made : "localhost";
+            int end = 65;
+            while (end < 130 && names[end] != 0) end++;
+            return end > 65 ? Utf8Transcoder.Decode(names, 65, end - 65) : "localhost";
         }
     }
 

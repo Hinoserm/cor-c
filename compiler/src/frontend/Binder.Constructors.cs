@@ -6,17 +6,17 @@ public sealed partial class Binder
     // Check supplied arguments before inserting defaults: a same-arity
     // overload with unrelated types must not suppress an applicable optional
     // overload. Named arguments retain their original evaluation order.
-    private void NormalizeConstructorArguments(NewExpr expression, TypeSymbol owner, List<Type> types)
+    private void NormalizeConstructorArguments(NewExpr expression, List<MethodSymbol> methods, List<Type> types)
     {
         bool named = expression.ArgNames.Any(n => n is not null);
-        if (!named && owner.Methods.Any(m => m.IsCtor && m.Params.Count == types.Count
+        if (!named && methods.Any(m => m.IsCtor && m.Params.Count == types.Count
             && types.Where((a, i) => !Fits(a, m.Params[i].Type, expression.Args[i])).Count() == 0))
             return;
         MethodSymbol? best = null;
         int[]? bestSlots = null;
         int bestExact = -1;
         int bestDefaults = int.MaxValue;
-        foreach (MethodSymbol candidate in owner.Methods)
+        foreach (MethodSymbol candidate in methods)
         {
             if (!candidate.IsCtor || candidate.Params.Count < types.Count) continue;
             int[] slots = new int[types.Count];
@@ -49,17 +49,22 @@ public sealed partial class Binder
         Expr?[] ordered = new Expr?[best.Params.Count];
         Type[] orderedTypes = new Type[best.Params.Count];
         List<int> evaluation = new();
+        int[] from = new int[best.Params.Count];
+        Array.Fill(from, -1);
         for (int i = 0; i < bestSlots.Length; i++)
         {
             int slot = bestSlots[i];
             ordered[slot] = expression.Args[i];
             orderedTypes[slot] = types[i];
             evaluation.Add(slot);
+            from[slot] = i;
         }
         for (int i = 0; i < ordered.Length; i++)
         {
             if (ordered[i] is not null) continue;
-            Expr value = Written(best, best.Decl!.Params[i]);
+            Expr value = CallerValue(best.Decl!.Params[i], best.Decl.Params, expression.Line,
+                             k => from[k] < 0 ? null : SpanText(expression.Spans, expression.Source, from[k] + 1))
+                         ?? Written(best, best.Decl.Params[i]);
             ordered[i] = value;
             orderedTypes[i] = CheckExpr(value);
             evaluation.Add(i);

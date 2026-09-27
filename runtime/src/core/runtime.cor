@@ -33,13 +33,16 @@
 class DivideByZeroException : ArithmeticException
 {
     public DivideByZeroException() : base("Attempted to divide by zero.") { }
-    public DivideByZeroException(string message) : base(message) { }
+    public DivideByZeroException(string? message) : base(message) { }
+    public DivideByZeroException(string? message, Exception? innerException) : base(message, innerException) { }
 }
 
 /// A cast to a class or interface the object is not.
 class InvalidCastException : SystemException
 {
-    public InvalidCastException(string message) : base(message) { }
+    public InvalidCastException(string? message) : base(message) { }
+    public InvalidCastException() : base("Specified cast is not valid.") { }
+    public InvalidCastException(string? message, Exception? innerException) : base(message, innerException) { }
 }
 
 /// A member was reached through null. The compiler does not yet raise this
@@ -48,20 +51,23 @@ class InvalidCastException : SystemException
 class NullReferenceException : SystemException
 {
     public NullReferenceException() : base("Object reference not set to an instance of an object.") { }
-    public NullReferenceException(string message) : base(message) { }
+    public NullReferenceException(string? message) : base(message) { }
+    public NullReferenceException(string? message, Exception? innerException) : base(message, innerException) { }
 }
 
 /// A member that cannot be reached: .NET's base for the missing-member family.
 class MemberAccessException : SystemException
 {
     public MemberAccessException() : base("Cannot access member.") { }
-    public MemberAccessException(string message) : base(message) { }
+    public MemberAccessException(string? message) : base(message) { }
+    public MemberAccessException(string? message, Exception? innerException) : base(message, innerException) { }
 }
 
 class MissingMemberException : MemberAccessException
 {
     public MissingMemberException() : base("Attempted to access a missing member.") { }
-    public MissingMemberException(string message) : base(message) { }
+    public MissingMemberException(string? message) : base(message) { }
+    public MissingMemberException(string? message, Exception? innerException) : base(message, innerException) { }
 }
 
 /// A method with no code to run. The compiler raises it for a generic virtual
@@ -71,7 +77,8 @@ class MissingMemberException : MemberAccessException
 class MissingMethodException : MissingMemberException
 {
     public MissingMethodException() : base("Attempted to access a missing method.") { }
-    public MissingMethodException(string message) : base(message) { }
+    public MissingMethodException(string? message) : base(message) { }
+    public MissingMethodException(string? message, Exception? innerException) : base(message, innerException) { }
 }
 
 /// The shape of a thread's block of runtime state.
@@ -584,6 +591,15 @@ static class Runtime
         Gc.Barrier(slot, value);
     }
 
+    /// The same, told the reference being overwritten rather than where it
+    /// is: what a barrier becomes when the object it guarded no longer lives
+    /// in memory -- the optimiser kept its fields in registers
+    /// (ScalarObjects), so the old reference is a register's value.
+    public static void WriteBarrierValues(long old, long value)
+    {
+        Gc.BarrierValues(old, value);
+    }
+
     /// Free for a program that links no collector, so that the optimiser can
     /// retarget Free the way it retargets Alloc and leave Gc unreachable.
     /// A bump region records no sizes and reclaims nothing, so there is
@@ -868,15 +884,10 @@ static class Runtime
     //
     // A string or array is a 16-byte header -- vtable, sync word, count, pad --
     // followed by the elements (docs/software/X86-BACKEND.md, "Arrays and
-    // strings"). Sys.Word(s) is the object's address, so its bytes start at
+    // strings"): a byte array's bytes, a string's UTF-16 code units.
+    // Sys.Word(s) is the object's address, so its elements start at
     // Sys.ArrayData(s): the header in front of them is the compiler's to
     // know, so nothing here hard-codes it.
-
-    /// The address of a string's (or byte array's) first byte.
-    public static long BytesOf(string s)
-    {
-        return Sys.ArrayData(s);
-    }
 
     // ---- printing --------------------------------------------------------
     //
@@ -887,9 +898,59 @@ static class Runtime
     const int StdOut = 1;
     const int StdErr = 2;
 
+    /// ASCII text to a descriptor WITHOUT ALLOCATING, for the paths that
+    /// report the allocator's own failure. A UTF-16 unit below 0x80 has its
+    /// ASCII byte first, little end first, so each is written from where it
+    /// lies in the string -- a byte at a time, which costs a system call per
+    /// character and is fine for a message that ends a program. A unit
+    /// outside ASCII is written as '?'.
+    public static void WriteLiteral(int fd, string text)
+    {
+        long units = Sys.StringData(text);
+        long question = Sys.StringData("?");
+
+        for (int i = 0; i < text.Length; i++)
+        {
+            long at = Sys.GetChar(text, i) < 0x80 ? units + 2 * i : question;
+            Platform.WriteBytes(fd, at, 1);
+        }
+    }
+
+    /// A string to a descriptor, as its UTF-8 -- through a fixed block that
+    /// escape analysis keeps in the frame, a chunk at a time, so that printing
+    /// allocates nothing and a program that only prints never meets the
+    /// collector. A chunk never ends between the two halves of a surrogate
+    /// pair, which are one character and one UTF-8 sequence.
+    public static void WriteText(int fd, string s)
+    {
+        byte[] block = new byte[WriteChunkBytes];
+        int at = 0;
+
+        while (at < s.Length)
+        {
+            int take = s.Length - at;
+            if (take > WriteChunkBytes / 3)
+            {
+                take = WriteChunkBytes / 3;
+                int last = Sys.GetChar(s, at + take - 1);
+                if (last >= 0xD800 && last <= 0xDBFF)
+                {
+                    take = take - 1;
+                }
+            }
+            int n = Utf8Transcoder.Encode(s, at, take, block, 0);
+            WriteBytes(fd, Sys.ArrayData(block), n);
+            at = at + take;
+        }
+    }
+
+    // Three bytes per unit at most (a pair is four bytes for two units), so a
+    // chunk of a third as many units always fits.
+    const int WriteChunkBytes = 384;
+
     public static void Print(string s)
     {
-        WriteBytes(StdOut, BytesOf(s), s.Length);
+        WriteText(StdOut, s);
     }
 
     public static void PrintLine()
@@ -899,16 +960,20 @@ static class Runtime
 
     // The printing routines build their text in a LOCAL block, never a
     // cached one: a static holding a buffer is an escape by definition, and
-    // escape analysis turns a local Sys.NewBytes into a frame slot, so a
-    // local costs nothing and keeps the collector out of programs that only
-    // print.
+    // escape analysis turns a local allocation into a frame slot, so a local
+    // costs nothing and keeps the collector out of programs that only print.
+    //
+    // WHAT GOES TO THE DESCRIPTOR IS UTF-8. A string is UTF-16 code units, as
+    // C#'s is, and a terminal, a pipe and a file all mean bytes; the encoding
+    // between the two is made here, once, on the way out (Utf8.Encode).
 
-    /// One byte.
+    /// One UTF-16 code unit, as its UTF-8. A lone surrogate has no UTF-8 of its
+    /// own and is written as U+FFFD, which is what .NET's encoder makes of one.
     public static void PrintChar(int c)
     {
-        string one = Sys.NewBytes(1);
-        Sys.SetByte(one, 0, c & 255);
-        WriteBytes(StdOut, BytesOf(one), 1);
+        string one = Sys.NewChars(1);
+        Sys.SetChar(one, 0, c);
+        Print(one);
     }
 
     /// Decimal, signed, with long.MinValue handled: the digits are produced
@@ -916,9 +981,11 @@ static class Runtime
     /// negating long.MinValue would.
     public static void PrintInt(long v)
     {
-        string text = Sys.NewBytes(DigitsBytes);
-        int n = FormatDecimal(text, 0, v, DigitsBytes);
-        WriteBytes(StdOut, BytesOf(text), n);
+        byte[] text = new byte[DigitsBytes];
+        string digits = Sys.NewChars(DigitsBytes);
+        int n = FormatDecimal(digits, 0, v, DigitsBytes);
+        for (int i = 0; i < n; i++) { text[i] = (byte)Sys.GetChar(digits, i); }
+        WriteBytes(StdOut, Sys.ArrayData(text), n);
     }
 
     /// Sixteen hex digits, zero padded, no prefix -- the shape a debugger
@@ -926,18 +993,18 @@ static class Runtime
     /// other.
     public static void PrintHex(long v)
     {
-        string text = Sys.NewBytes(16);
+        byte[] text = new byte[16];
         ulong bits = (ulong)v;
         int i = 15;
 
         while (i >= 0)
         {
             int nibble = (int)(bits & (ulong)15);
-            Sys.SetByte(text, i, nibble < 10 ? 48 + nibble : 87 + nibble);
+            text[i] = (byte)(nibble < 10 ? 48 + nibble : 87 + nibble);
             bits = bits >> 4;
             i = i - 1;
         }
-        WriteBytes(StdOut, BytesOf(text), 16);
+        WriteBytes(StdOut, Sys.ArrayData(text), 16);
     }
 
     // Twenty digits and a sign is the most a long ever needs.
@@ -977,14 +1044,14 @@ static class Runtime
         }
 
         // Digits into a local block, least first, from the top down.
-        string scratch = Sys.NewBytes(DigitsBytes);
+        byte[] scratch = new byte[DigitsBytes];
         int end = DigitsBytes;
         int begin = end;
 
         if (magnitude == (ulong)0)
         {
             begin = begin - 1;
-            Sys.SetByte(scratch, begin, 48);
+            scratch[begin] = 48;
         }
 
         while (magnitude != (ulong)0)
@@ -994,14 +1061,14 @@ static class Runtime
             ulong q = UDiv(magnitude, (ulong)10);
             int digit = (int)(magnitude - q * (ulong)10);
             begin = begin - 1;
-            Sys.SetByte(scratch, begin, 48 + digit);
+            scratch[begin] = (byte)(48 + digit);
             magnitude = q;
         }
 
         if (negative)
         {
             begin = begin - 1;
-            Sys.SetByte(scratch, begin, 45);
+            scratch[begin] = 45;
         }
 
         int length = end - begin;
@@ -1009,7 +1076,7 @@ static class Runtime
 
         for (int i = 0; i < take; i++)
         {
-            Sys.SetByte(dst, at + i, Sys.GetByte(scratch, begin + i));
+            Sys.SetChar(dst, at + i, scratch[begin + i]);
         }
         return take;
     }
@@ -1224,9 +1291,7 @@ static class Runtime
         int length = 0;
         while (Sys.PeekByte(at + length) != 0) { length = length + 1; }
 
-        string made = Sys.NewBytes(length);
-        for (int i = 0; i < length; i++) { Sys.SetByte(made, i, (int)Sys.PeekByte(at + i)); }
-        return made;
+        return Utf8Transcoder.Decode(at, length);
     }
 
     /// THE TABLE ENTRY AN ADDRESS FALLS IN: where its name and its source
@@ -1413,7 +1478,7 @@ static class Runtime
     /// A string the compiler laid out in the image, which is data and not an
     /// object this heap made: printing it allocates nothing.
     static void SayLiteral(int fd, string text) {
-        Platform.WriteBytes(fd, Sys.ArrayData(text), text.Length);
+        WriteLiteral(fd, text);
     }
 
     /// A zero-terminated run of bytes in the image, written where it lies.
@@ -1445,7 +1510,7 @@ static class Runtime
     {
         // Do not recursively retry an output buffer which caused the failure.
         _atExit = 0;
-        WriteBytes(StdErr, BytesOf("Unhandled exception. "), 21);
+        WriteText(StdErr, "Unhandled exception. ");
 
         // An Exception prints as its type name and its message, written
         // piece by piece: building `type + ": " + message` would drag
@@ -1457,16 +1522,16 @@ static class Runtime
             Exception e = (Exception)exception;
             string name = e.GetType().Name;
             string message = e.Message;
-            WriteBytes(StdErr, BytesOf(name), name.Length);
-            WriteBytes(StdErr, BytesOf(": "), 2);
-            WriteBytes(StdErr, BytesOf(message), message.Length);
+            WriteText(StdErr, name);
+            WriteText(StdErr, ": ");
+            WriteText(StdErr, message);
         }
         else
         {
             string text = "" + exception;
-            WriteBytes(StdErr, BytesOf(text), text.Length);
+            WriteText(StdErr, text);
         }
-        WriteBytes(StdErr, BytesOf("\n"), 1);
+        WriteText(StdErr, "\n");
 
         // AND WHERE IT CAME FROM, as it was at the throw. Walking now would
         // very nearly do -- nothing unwinds before this is called -- but the
@@ -1475,7 +1540,7 @@ static class Runtime
         string trace = "";
         if (exception is Exception) { trace = ((Exception)exception).StackTrace; }
         if (trace.Length == 0) { trace = Trace(Sys.FramePointer()); }
-        WriteBytes(StdErr, BytesOf(trace), trace.Length);
+        WriteText(StdErr, trace);
         // At once: an unhandled exception ends the process whatever threads
         // it has, as .NET's does.
         Platform.Exit(134);
@@ -2288,19 +2353,19 @@ static class Runtime
     // a long argument position is typed long and is correct -- verified
     // against the standard check values.
 
-    static string _crcTable;      // 256 x 4 bytes, little-endian, IEEE
-    static string _crcTableC;     // the same for Castagnoli
+    static uint[] _crcTable;      // 256 entries, IEEE
+    static uint[] _crcTableC;     // the same for Castagnoli
 
-    private static string CrcTable(long polynomial)
+    private static uint[] CrcTable(long polynomial)
     {
-        string table = polynomial == 0xEDB88320 ? _crcTable : _crcTableC;
+        uint[] table = polynomial == 0xEDB88320 ? _crcTable : _crcTableC;
 
         if (table != null)
         {
             return table;
         }
 
-        table = Sys.NewBytes(1024);
+        table = new uint[256];
 
         for (int n = 0; n < 256; n++)
         {
@@ -2317,7 +2382,7 @@ static class Runtime
                     crc = crc >> 1;
                 }
             }
-            PutWord(table, n * 4, crc);
+            table[n] = (uint)crc;
         }
 
         if (polynomial == 0xEDB88320)
@@ -2331,21 +2396,6 @@ static class Runtime
         return table;
     }
 
-    private static long GetWord(string s, int at)
-    {
-        return Sys.GetByte(s, at)
-             | (Sys.GetByte(s, at + 1) << 8)
-             | (Sys.GetByte(s, at + 2) << 16)
-             | ((long)Sys.GetByte(s, at + 3) << 24);
-    }
-
-    private static void PutWord(string s, int at, long v)
-    {
-        Sys.SetByte(s, at, (int)(v & 255));
-        Sys.SetByte(s, at + 1, (int)((v >> 8) & 255));
-        Sys.SetByte(s, at + 2, (int)((v >> 16) & 255));
-        Sys.SetByte(s, at + 3, (int)((v >> 24) & 255));
-    }
 
     public static long Checksum(long at, long bytes, int kind, long seed)
     {
@@ -2397,14 +2447,14 @@ static class Runtime
 
         if (selector == 2 || selector == 4)
         {
-            string table = CrcTable(selector == 2 ? 0x82F63B78 : 0xEDB88320);
+            uint[] table = CrcTable(selector == 2 ? 0x82F63B78 : 0xEDB88320);
             long crc = begun ? (seed & mask32) : ((~seed) & mask32);
             long i = 0;
 
             while (i < bytes)
             {
                 int index = (int)((crc ^ Sys.PeekByte(at + i)) & 255);
-                crc = (crc >> 8) ^ GetWord(table, index * 4);
+                crc = (crc >> 8) ^ (long)table[index];
                 i = i + 1;
             }
             return (~crc) & mask32;
@@ -2486,18 +2536,19 @@ static class Runtime
     //
     // The old machine had a string unit; std.cor reaches it through Sys.String*
     // and these are those operations in software. Each takes an exact span --
-    // a start and a count -- and does no checking of its own: String above
-    // checks, and a caller that comes straight here is a caller that asked to.
+    // a start and a count, in UTF-16 code units -- and does no checking of its
+    // own: String above checks, and a caller that comes straight here is a
+    // caller that asked to.
 
-    /// The index of the first byte equal to `value` in s[at, at + count), or -1.
+    /// The index of the first code unit equal to `value` in s[at, at + count), or -1.
     public static int StringFind(string s, int at, int value, int count)
     {
-        int v = value & 255;
+        int v = value & 0xFFFF;
         int end = at + count;
 
         for (int i = at; i < end; i++)
         {
-            if (Sys.GetByte(s, i) == v)
+            if (Sys.GetChar(s, i) == v)
             {
                 return i;
             }
@@ -2505,16 +2556,16 @@ static class Runtime
         return -1;
     }
 
-    /// The same walking DOWN from `at` for `count` bytes, so LastIndexOf
+    /// The same walking DOWN from `at` for `count` units, so LastIndexOf
     /// passes the last index and the length.
     public static int StringFindReverse(string s, int at, int value, int count)
     {
-        int v = value & 255;
+        int v = value & 0xFFFF;
         int i = at;
 
         while (count > 0 && i >= 0)
         {
-            if (Sys.GetByte(s, i) == v)
+            if (Sys.GetChar(s, i) == v)
             {
                 return i;
             }
@@ -2525,7 +2576,7 @@ static class Runtime
     }
 
     /// Where `what` (from whatAt to its end) first occurs in s within the
-    /// `count` bytes from `at`, or -1. An empty needle is found at `at`, as
+    /// `count` units from `at`, or -1. An empty needle is found at `at`, as
     /// the old unit answered and as String.IndexOf expects.
     public static int StringSearch(string s, int at, string what, int whatAt, int count)
     {
@@ -2540,19 +2591,19 @@ static class Runtime
             return -1;
         }
 
-        int first = Sys.GetByte(what, whatAt);
+        int first = Sys.GetChar(what, whatAt);
         int last = at + count - needle;
 
         for (int i = at; i <= last; i++)
         {
-            if (Sys.GetByte(s, i) != first)
+            if (Sys.GetChar(s, i) != first)
             {
                 continue;
             }
 
             int k = 1;
 
-            while (k < needle && Sys.GetByte(s, i + k) == Sys.GetByte(what, whatAt + k))
+            while (k < needle && Sys.GetChar(s, i + k) == Sys.GetChar(what, whatAt + k))
             {
                 k = k + 1;
             }
@@ -2564,45 +2615,72 @@ static class Runtime
         return -1;
     }
 
-    /// ASCII case, IN PLACE, over the span; answers the count. Only A-Z and
-    /// a-z move: strings are bytes here and anything above 127 is a piece of
-    /// a UTF-8 sequence that has no single-byte case.
-    public static int StringLower(string s, int at, int count)
+    /// ORDINAL ORDER of two spans of the same length: the first code unit that
+    /// differs decides, by its value, which is .NET's string.CompareOrdinal.
+    /// Answers the difference of those two units, or 0.
+    public static int StringCompare(string a, int aAt, string b, int bAt, int count)
     {
-        int end = at + count;
-
-        for (int i = at; i < end; i++)
+        for (int i = 0; i < count; i++)
         {
-            int c = Sys.GetByte(s, i);
+            int x = Sys.GetChar(a, aAt + i);
+            int y = Sys.GetChar(b, bAt + i);
 
-            if (c >= 65 && c <= 90)
+            if (x != y)
             {
-                Sys.SetByte(s, i, c + 32);
+                return x - y;
             }
         }
+        return 0;
+    }
+
+    /// Invariant case, IN PLACE, over the span; answers the count. Each
+    /// character is mapped as .NET's ToLowerInvariant maps a string: a unit
+    /// alone, or a surrogate pair as the one character it spells (its case
+    /// partner is always a pair too). An unpaired surrogate has no case.
+    public static int StringLower(string s, int at, int count)
+    {
+        MapCase(s, at, count, false);
         return count;
     }
 
     public static int StringUpper(string s, int at, int count)
     {
-        int end = at + count;
-
-        for (int i = at; i < end; i++)
-        {
-            int c = Sys.GetByte(s, i);
-
-            if (c >= 97 && c <= 122)
-            {
-                Sys.SetByte(s, i, c - 32);
-            }
-        }
+        MapCase(s, at, count, true);
         return count;
     }
 
-    /// FNV-1a over the bytes of the span, starting from `seed`: xor the byte
-    /// in, multiply by the 64-bit FNV prime. The old unit did exactly this,
-    /// and StringComparer's fold-to-lower path in std.cor repeats it by hand,
-    /// so the two must agree byte for byte.
+    private static void MapCase(string s, int at, int count, bool upper)
+    {
+        int end = at + count;
+        int i = at;
+
+        while (i < end)
+        {
+            int c = Sys.GetChar(s, i);
+
+            if (c >= 0xD800 && c <= 0xDBFF && i + 1 < end)
+            {
+                int d = Sys.GetChar(s, i + 1);
+
+                if (d >= 0xDC00 && d <= 0xDFFF)
+                {
+                    int point = 0x10000 + ((c - 0xD800) << 10) + (d - 0xDC00);
+                    int mapped = upper ? UnicodeCase.Upper(point) : UnicodeCase.Lower(point);
+                    Sys.SetChar(s, i, 0xD800 + ((mapped - 0x10000) >> 10));
+                    Sys.SetChar(s, i + 1, 0xDC00 + ((mapped - 0x10000) & 0x3FF));
+                    i = i + 2;
+                    continue;
+                }
+            }
+            Sys.SetChar(s, i, upper ? UnicodeCase.Upper(c) : UnicodeCase.Lower(c));
+            i = i + 1;
+        }
+    }
+
+    /// FNV-1a over the code units of the span, starting from `seed`: xor the
+    /// unit in, multiply by the 64-bit FNV prime. StringComparer's
+    /// fold-to-lower path in the standard library repeats it by hand, so the
+    /// two must agree unit for unit.
     public static long StringHash(string s, int at, int count, long seed)
     {
         long h = seed;
@@ -2610,25 +2688,25 @@ static class Runtime
 
         for (int i = at; i < end; i++)
         {
-            h = (h ^ Sys.GetByte(s, i)) * 0x100000001B3;
+            h = (h ^ Sys.GetChar(s, i)) * 0x100000001B3;
         }
         return h;
     }
 
-    /// Sets `count` bytes from dstAt to the low byte of `value`; answers count.
+    /// Sets `count` code units from dstAt to `value`; answers count.
     public static int StringFill(string dst, int dstAt, int value, int count)
     {
-        int v = value & 255;
+        int v = value & 0xFFFF;
         int end = dstAt + count;
 
         for (int i = dstAt; i < end; i++)
         {
-            Sys.SetByte(dst, i, v);
+            Sys.SetChar(dst, i, v);
         }
         return count;
     }
 
-    /// The decimal text of `value` into dst at `at`, up to `capacity` bytes;
+    /// The decimal text of `value` into dst at `at`, up to `capacity` units;
     /// answers how many were written. See FormatDecimal for the edges.
     public static int StringFormat(string dst, int at, long value, int capacity)
     {
@@ -2636,7 +2714,7 @@ static class Runtime
     }
 
     /// Parses an optional sign and decimal digits from the span and answers
-    /// the value; stops at the first byte that is not a digit. A sign with no
+    /// the value; stops at the first unit that is not a digit. A sign with no
     /// digit after it is zero. The old unit faulted on overflow; this one
     /// wraps, which is the unchecked C# result of the same multiply-and-add.
     public static long StringNumber(string s, int at, int count)
@@ -2647,7 +2725,7 @@ static class Runtime
 
         if (i < end)
         {
-            int c = Sys.GetByte(s, i);
+            int c = Sys.GetChar(s, i);
 
             if (c == 45)
             {
@@ -2664,7 +2742,7 @@ static class Runtime
 
         while (i < end)
         {
-            int c = Sys.GetByte(s, i);
+            int c = Sys.GetChar(s, i);
 
             if (c < 48 || c > 57)
             {
@@ -2683,9 +2761,9 @@ static class Runtime
         return 0 - value;
     }
 
-    /// Copies `count` bytes, correct when the two spans overlap in either
-    /// direction (a byte copy upward is safe when the destination is below
-    /// the source, and downward when it is above); answers count.
+    /// Copies `count` code units, correct when the two spans overlap in either
+    /// direction (a copy upward is safe when the destination is below the
+    /// source, and downward when it is above); answers count.
     public static int StringCopy(string dst, int dstAt, string src, int srcAt, int count)
     {
         if (count <= 0)
@@ -2697,14 +2775,14 @@ static class Runtime
         {
             for (int i = count - 1; i >= 0; i = i - 1)
             {
-                Sys.SetByte(dst, dstAt + i, Sys.GetByte(src, srcAt + i));
+                Sys.SetChar(dst, dstAt + i, Sys.GetChar(src, srcAt + i));
             }
             return count;
         }
 
         for (int i = 0; i < count; i++)
         {
-            Sys.SetByte(dst, dstAt + i, Sys.GetByte(src, srcAt + i));
+            Sys.SetChar(dst, dstAt + i, Sys.GetChar(src, srcAt + i));
         }
         return count;
     }

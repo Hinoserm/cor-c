@@ -282,6 +282,19 @@ public static class Gir
 
         public void F64(double v) => I64(BitConverter.DoubleToInt64Bits(v));
 
+        /// <summary>
+        /// Where a call's receiver and arguments were written, as their text:
+        /// a consumer that specialises the template fills in
+        /// [CallerArgumentExpression] from it. Null where there was none.
+        /// </summary>
+        public void Texts(int[]? spans, string? source)
+        {
+            int pairs = spans is null || source is null ? 0 : spans.Length / 2;
+            I32(pairs);
+            for (int i = 0; i < pairs; i++)
+                Str(spans![2 * i] < 0 ? null : source![spans[2 * i]..spans[2 * i + 1]]);
+        }
+
         /// <summary>A string, or null, as a length and its bytes. -1 is null.</summary>
         public void Str(string? s)
         {
@@ -337,6 +350,11 @@ public static class Gir
             // compile that wrote it did.
             Bool(p.NotNullWhen.HasValue);
             Bool(p.NotNullWhen ?? false);
+
+            // What a call that leaves it out passes instead: a consumer
+            // calling the library's method fills it in at its own call.
+            U8((byte)p.Caller);
+            Str(p.CallerArgument);
             Expr(p.Default);
         }
 
@@ -454,6 +472,9 @@ public static class Gir
                         {
                             Expr(a);
                         }
+                        I32(d.Init.ArgNames.Count);
+                        foreach (string? name in d.Init.ArgNames) Str(name ?? "");
+                        Texts(d.Init.Spans, d.Init.Source);
                     }
                     break;
 
@@ -779,6 +800,7 @@ public static class Gir
                     {
                         Expr(a);
                     }
+                    Texts(c.Spans, c.Source);
                     break;
 
                 case IndexExpr ix:
@@ -818,6 +840,7 @@ public static class Gir
                     {
                         Expr(a);
                     }
+                    Texts(nw.Spans, nw.Source);
 
                     // `new[] { a, b }`'s elements, and whether it was a
                     // collection expression: both are the expression.
@@ -926,6 +949,7 @@ public static class Gir
                 case SuppressExpr sup:
                     U8((byte)E.Suppress);
                     Expr(sup.Operand);
+                    Bool(sup.OpensCell);
                     break;
 
                 case TypeOfExpr ty:
@@ -984,8 +1008,9 @@ public static class Gir
                     Expr(pat.Test);
                     break;
 
-                case SubjectExpr:
+                case SubjectExpr subject:
                     U8((byte)E.Subject);
+                    U8((byte)subject.Outer);
                     break;
 
                 default:
@@ -1072,6 +1097,23 @@ public static class Gir
         }
 
         /// <summary>How many items a list claims, refused when it cannot be true.</summary>
+        /// <summary>What <see cref="Writer.Texts"/> wrote: the texts joined into one source, and spans into it.</summary>
+        private (int[]? Spans, string? Source) Texts()
+        {
+            int pairs = Count();
+            if (pairs == 0) return (null, null);
+            int[] spans = new int[2 * pairs];
+            StringBuilder joined = new();
+            for (int i = 0; i < pairs; i++)
+            {
+                string? text = StrOrNull();
+                spans[2 * i] = text is null ? -1 : joined.Length;
+                if (text is not null) joined.Append(text);
+                spans[2 * i + 1] = text is null ? -1 : joined.Length;
+            }
+            return (spans, joined.ToString());
+        }
+
         private int Count()
         {
             int n = I32();
@@ -1129,12 +1171,14 @@ public static class Gir
             bool receiver = Bool();
             bool proves = Bool();
             bool provedWhen = Bool();
+            CallerInfo caller = (CallerInfo)U8();
+            string? callerArgument = StrOrNull();
 
             return new Param
             {
                 Name = name, Type = type, IsRef = byRef, IsOut = isOut,
                 IsReadOnlyRef = readOnly, IsParams = variadic, IsThis = receiver,
-                NotNullWhen = proves ? provedWhen : null,
+                NotNullWhen = proves ? provedWhen : null, Caller = caller, CallerArgument = callerArgument,
                 Default = Expr(),
             };
         }
@@ -1254,6 +1298,13 @@ public static class Gir
                         {
                             init.Args.Add(Expr() ?? throw new AsmException(0, $"{_from}: a damaged constructor call"));
                         }
+                        int names = Count();
+                        for (int i = 0; i < names; i++)
+                        {
+                            string argName = Str();
+                            init.ArgNames.Add(argName.Length == 0 ? null : argName);
+                        }
+                        (init.Spans, init.Source) = Texts();
                     }
 
                     MethodDecl d = new()
@@ -1645,6 +1696,7 @@ public static class Gir
                     {
                         c.Args.Add(Need());
                     }
+                    (c.Spans, c.Source) = Texts();
                     return c;
                 }
 
@@ -1685,6 +1737,7 @@ public static class Gir
                     {
                         argList.Add(Need());
                     }
+                    (int[]? spans, string? source) = Texts();
                     List<Expr>? elements = null;
                     if (Bool())
                     {
@@ -1692,7 +1745,7 @@ public static class Gir
                         int count = Count();
                         for (int i = 0; i < count; i++) elements.Add(Need());
                     }
-                    NewExpr nw = new() { Type = type, ArraySize = size, Elements = elements, Collection = Bool() };
+                    NewExpr nw = new() { Type = type, ArraySize = size, Elements = elements, Collection = Bool(), Spans = spans, Source = source };
                     nw.ArgNames.AddRange(argNames);
                     nw.Args.AddRange(argList);
 
@@ -1811,7 +1864,10 @@ public static class Gir
                 }
 
                 case E.Suppress:
-                    return new SuppressExpr { Operand = Need() };
+                {
+                    Expr operand = Need();
+                    return new SuppressExpr { Operand = operand, OpensCell = Bool() };
+                }
 
                 case E.TypeOf:
                     return new TypeOfExpr { Type = Type() };
@@ -1864,7 +1920,7 @@ public static class Gir
                 }
 
                 case E.Subject:
-                    return new SubjectExpr();
+                    return new SubjectExpr { Outer = U8() };
 
                 default:
                     throw new AsmException(0, $"{_from}: unknown expression {(byte)kind} in a template");

@@ -264,18 +264,12 @@ static class Raw
         SetU32(b, at + 4, (value >> 32) & 0xFFFFFFFF);
     }
 
-    /// `count` bytes as text. The kernel's strings are bytes and this treats
-    /// them as bytes: no decoding, because a path is not necessarily UTF-8 and
-    /// a program that round-trips one must not change it.
+    /// `count` bytes as text: the kernel's strings are bytes, and they are
+    /// decoded as UTF-8, which is what .NET on Linux does with a file name, an
+    /// argument or a variable -- an ill-formed sequence becomes U+FFFD.
     public static string Text(byte[] b, int at, int count)
     {
-        string s = Sys.NewBytes(count);
-
-        for (int i = 0; i < count; i++)
-        {
-            Sys.SetByte(s, i, b[at + i]);
-        }
-        return s;
+        return Utf8Transcoder.Decode(b, at, count);
     }
 
     /// Text up to the first zero byte, which is how the kernel ends a name.

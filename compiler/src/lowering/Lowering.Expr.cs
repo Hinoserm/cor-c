@@ -394,8 +394,8 @@ public sealed partial class Lowering
         // AN ENUM CONVERTS AS ITS UNDERLYING TYPE, whatever that is: taken as
         // int, `(long)Status.Error` of a `: uint` enum sign-extended
         // 0xC0000001 into a negative number, which is not what C# gives.
-        Type f = from.Symbol is { Kind: TypeKind.Enum } enumFrom ? new Type { Prim = enumFrom.EnumUnderlying } : from;
-        Type t = to.Symbol is { Kind: TypeKind.Enum } enumTo ? new Type { Prim = enumTo.EnumUnderlying } : to;
+        Type f = from.IsEnumValue && from.Symbol is { } enumFrom ? new Type { Prim = enumFrom.EnumUnderlying } : from;
+        Type t = to.IsEnumValue && to.Symbol is { } enumTo ? new Type { Prim = enumTo.EnumUnderlying } : to;
 
         if (f.Prim == Prim.Bool)
             f = Type.I32;
@@ -886,6 +886,8 @@ public sealed partial class Lowering
         Prim.F32 => "System.Single", Prim.F64 => "System.Double",
         Prim.Char => "System.Char",  Prim.String => "System.String",
         Prim.Any => "System.Object",
+        Prim.NInt => "System.IntPtr", Prim.NUInt => "System.UIntPtr",
+        Prim.Void => "System.Void",
         _ => t.Symbol?.Key ?? t.ToString(),
     };
 
@@ -2858,8 +2860,8 @@ public sealed partial class Lowering
     /// <summary>The C# binary numeric promotion, with shifts taking their width from the left alone.</summary>
     private static Type OperandPromotion(BinOp op, Type left, Type right)
     {
-        Type l = left.Symbol is { Kind: TypeKind.Enum } enumLeft ? new Type { Prim = enumLeft.EnumUnderlying } : left;
-        Type r = right.Symbol is { Kind: TypeKind.Enum } enumRight ? new Type { Prim = enumRight.EnumUnderlying } : right;
+        Type l = left.IsEnumValue && left.Symbol is { } enumLeft ? new Type { Prim = enumLeft.EnumUnderlying } : left;
+        Type r = right.IsEnumValue && right.Symbol is { } enumRight ? new Type { Prim = enumRight.EnumUnderlying } : right;
         if (l.Prim == Prim.Bool)
             l = Type.I32;
         if (r.Prim == Prim.Bool)

@@ -180,7 +180,7 @@ static class Platform
             _traceDigits = Result(got) > 0 ? Result(got) : 0 - 1;
         }
 
-        WriteBytes(2, Sys.ArrayData(label), label.Length);
+        Runtime.WriteLiteral(2, label);
 
         if (_traceDigits > 0)
         {
@@ -209,8 +209,7 @@ static class Platform
             WriteBytes(2, _traceDigits + at, 24 - at);
         }
 
-        string end = "\n";
-        WriteBytes(2, Sys.ArrayData(end), 1);
+        Runtime.WriteLiteral(2, "\n");
     }
 
     /// Memory given back to the kernel: munmap(2). What the collector does
@@ -232,13 +231,13 @@ static class Platform
             // Said here, without allocating (this is the allocator's own
             // failure path): the kernel's log has the numbers.
             string text = "mmap refused by the kernel\n";
-            WriteBytes(2, Sys.ArrayData(text), text.Length);
+            Runtime.WriteLiteral(2, text);
             return 0;
         }
         if (answer == 0)
         {
             string zero = "mmap answered address 0\n";
-            WriteBytes(2, Sys.ArrayData(zero), zero.Length);
+            Runtime.WriteLiteral(2, zero);
         }
         return answer;
     }
@@ -278,7 +277,7 @@ static class Platform
         {
             string text = "set_thread_area failed: this kernel cannot give a thread its own block\n";
 
-            WriteBytes(2, Sys.ArrayData(text), text.Length);
+            Runtime.WriteLiteral(2, text);
             Exit(134);
         }
 
@@ -440,9 +439,10 @@ static partial class Os
     /// at all was written.
     public static int Write(int fd, string s)
     {
-        long at = BytesOf(s);
+        byte[] bytes = Utf8Transcoder.Encode(s, 0, s.Length);
+        long at = AddressOf(bytes);
         long done = 0;
-        long length = s.Length;
+        long length = bytes.Length;
 
         while (done < length)
         {
@@ -486,7 +486,7 @@ static partial class Os
 
     public static int Chdir(string path)
     {
-        string c = CString(path);
+        byte[] c = CString(path);
         return (int)Platform.Result(Sys.Syscall(Call.Chdir, BytesOf(c), 0, 0));
     }
 
@@ -749,13 +749,13 @@ static partial class Os
     public static int Mount(string source, string target, string type,
                             long flags, string? data)
     {
-        string from = CString(source);
-        string onto = CString(target);
-        string kind = CString(type);
+        byte[] from = CString(source);
+        byte[] onto = CString(target);
+        byte[] kind = CString(type);
         long options = 0;
         if (data != null)
         {
-            string extra = CString(data);
+            byte[] extra = CString(data);
             options = BytesOf(extra);
         }
         return (int)Platform.Result(Sys.Syscall(Call.Mount, BytesOf(from), BytesOf(onto),
@@ -765,7 +765,7 @@ static partial class Os
     /// umount2(2). The flags are MNT_FORCE, MNT_DETACH and the rest.
     public static int Umount(string target, int flags)
     {
-        string c = CString(target);
+        byte[] c = CString(target);
         return (int)Platform.Result(Sys.Syscall(Call.Umount2, BytesOf(c), flags, 0));
     }
 
@@ -775,13 +775,13 @@ static partial class Os
     ///
     /// The block is a byte[] rather than an int[] only because Raw writes
     /// words into byte[]; the kernel sees the same four bytes either way.
-    private static byte[] Vector(string[] items, string[] keep, int at)
+    private static byte[] Vector(string[] items, byte[][] keep, int at)
     {
         byte[] block = new byte[(items.Length + 1) * 4];
 
         for (int i = 0; i < items.Length; i++)
         {
-            string c = CString(items[i]);
+            byte[] c = CString(items[i]);
             keep[at + i] = c;
             Raw.SetU32(block, i * 4, BytesOf(c));
         }
@@ -797,9 +797,9 @@ static partial class Os
     /// straight through by address rather than copied out and back.
     public static int Exec(string path, string[] argv, string[]? envp)
     {
-        string c = CString(path);
+        byte[] c = CString(path);
         int room = argv.Length + (envp == null ? 0 : envp.Length);
-        string[] keep = new string[room];
+        byte[][] keep = new byte[room][];
 
         byte[] args = Vector(argv, keep, 0);
         long env;
@@ -1242,17 +1242,10 @@ static partial class Os
         return n;
     }
 
-    /// A COR-C# string from a C string.
+    /// A COR-C# string from a C string: its bytes decoded as UTF-8.
     private static string FromC(long at)
     {
-        int n = CLength(at);
-        string s = Sys.NewBytes(n);
-
-        for (int i = 0; i < n; i++)
-        {
-            Sys.SetByte(s, i, (int)Sys.PeekByte(at + i));
-        }
-        return s;
+        return Utf8Transcoder.Decode(at, CLength(at));
     }
 
     /// A COR-C# string from a NUL-terminated C string at an address. Public
@@ -1297,10 +1290,11 @@ static partial class Os
 
     // ---- standard input, a line at a time -----------------------------------------
 
-    static string _readAhead;      // bytes read and not yet handed out
+    static byte[] _readAhead;      // bytes read and not yet handed out
     static int _readAheadAt;
     static int _readAheadCount;
     static bool _ended;
+    static bool _afterReturn;      // the last line ended at a '\r'
 
     const int ReadAheadBytes = 1024;
 
@@ -1310,16 +1304,22 @@ static partial class Os
         return _ended;
     }
 
-    /// A line from standard input without its newline (a "\r\n" loses both),
-    /// or null when the input is finished and there is nothing left. The last
-    /// line of a file with no newline is a line.
+    /// A line from standard input without its line end, or null when the
+    /// input is finished and there is nothing left. The last line of a file
+    /// with no line end is a line.
+    ///
+    /// A LINE ENDS AT "\n", "\r" OR "\r\n", each once, as .NET's ReadLine
+    /// has it -- so a "\r" ends a line even when the "\n" that follows it
+    /// arrives in the next read. The line's bytes are UTF-8 and are decoded
+    /// as a whole, since one character may be several of them.
     ///
     /// Reads in blocks and keeps the tail, because a pipe or a file gives
     /// several lines per read and a byte-at-a-time read is a system call
     /// per character.
     public static string? ReadLine()
     {
-        StringBuilder line = new StringBuilder();
+        byte[] line = new byte[64];
+        int length = 0;
         bool any = false;
 
         while (true)
@@ -1328,18 +1328,18 @@ static partial class Os
             {
                 if (_ended)
                 {
-                    return any ? line.ToString() : null;
+                    return any ? Utf8Transcoder.Decode(line, 0, length) : null;
                 }
 
-                string buffer = _readAhead;
+                byte[] buffer = _readAhead;
 
                 if (buffer == null)
                 {
-                    buffer = Sys.NewBytes(ReadAheadBytes);
+                    buffer = new byte[ReadAheadBytes];
                     _readAhead = buffer;
                 }
 
-                long got = Read(Fd.In, BytesOf(buffer), ReadAheadBytes);
+                long got = Read(Fd.In, AddressOf(buffer), ReadAheadBytes);
 
                 if (got == 0 - Err.Intr)
                 {
@@ -1348,24 +1348,42 @@ static partial class Os
                 if (got <= 0)
                 {
                     _ended = true;
-                    return any ? line.ToString() : null;
+                    return any ? Utf8Transcoder.Decode(line, 0, length) : null;
                 }
                 _readAheadAt = 0;
                 _readAheadCount = (int)got;
             }
 
-            int ch = Sys.GetByte(_readAhead, _readAheadAt);
+            int ch = _readAhead[_readAheadAt];
             _readAheadAt = _readAheadAt + 1;
+
+            if (_afterReturn)
+            {
+                _afterReturn = false;
+                if (ch == 10)
+                {
+                    continue;
+                }
+            }
             any = true;
 
             if (ch == 10)
             {
-                return line.ToString();
+                return Utf8Transcoder.Decode(line, 0, length);
             }
-            if (ch != 13)
+            if (ch == 13)
             {
-                line.Append((char)ch);
+                _afterReturn = true;
+                return Utf8Transcoder.Decode(line, 0, length);
             }
+            if (length == line.Length)
+            {
+                byte[] wider = new byte[line.Length * 2];
+                Sys.Copy(wider, 0, line, 0, length);
+                line = wider;
+            }
+            line[length] = (byte)ch;
+            length = length + 1;
         }
     }
 }

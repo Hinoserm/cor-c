@@ -627,9 +627,23 @@ class MemoryStream : Stream
     }
 }
 
-/// .NET's TextWriter: characters out. UTF-8 here, as .NET's default is.
+/// .NET's TextWriter: characters out, in whatever encoding the writer
+/// underneath uses. A line ends with NewLine, "\n" on this system as on
+/// every Unix .NET runs on.
 abstract class TextWriter : IDisposable
 {
+    string _newLine = "\n";
+
+    /// The line end WriteLine writes.
+    public virtual string NewLine
+    {
+        get { return _newLine; }
+        set { _newLine = value ?? "\n"; }
+    }
+
+    /// The encoding the text is written in; UTF-8 unless a writer says.
+    public virtual Encoding Encoding => new UTF8Encoding(false);
+
     public virtual void Close()
     {
         Dispose();
@@ -644,9 +658,19 @@ abstract class TextWriter : IDisposable
 
     public virtual void Write(string value)
     {
+        if (value == null) return;
         for (int i = 0; i < value.Length; i++)
         {
-            Write((char)Sys.GetByte(value, i));
+            Write(value[i]);
+        }
+    }
+
+    public virtual void Write(char[]? buffer)
+    {
+        if (buffer == null) return;
+        for (int i = 0; i < buffer.Length; i++)
+        {
+            Write(buffer[i]);
         }
     }
 
@@ -664,7 +688,7 @@ abstract class TextWriter : IDisposable
 
     public virtual void WriteLine()
     {
-        Write('\n');
+        Write(NewLine);
     }
 
     public virtual void WriteLine(string value)
@@ -709,21 +733,24 @@ abstract class TextReader : IDisposable
         return -1;
     }
 
+    /// A line without its end, or null at the end of the text. A line ends at
+    /// "\n", "\r" or "\r\n", each once, as .NET's ReadLine has it.
     public virtual string? ReadLine()
     {
-        StringBuilder line = new StringBuilder();
         int c = Read();
         if (c < 0)
         {
             return null;
         }
-        while (c >= 0 && c != 10)
+        StringBuilder line = new StringBuilder();
+        while (c >= 0 && c != 10 && c != 13)
         {
-            if (c != 13)
-            {
-                line.Append((char)c);
-            }
+            line.Append((char)c);
             c = Read();
+        }
+        if (c == 13 && Peek() == 10)
+        {
+            Read();
         }
         return line.ToString();
     }
@@ -755,24 +782,51 @@ abstract class TextReader : IDisposable
     }
 }
 
+/// .NET's StreamWriter: text into a stream in an encoding -- UTF-8 without a
+/// byte-order mark unless told otherwise, which is .NET's default.
+///
+/// The characters are gathered and encoded a block at a time. A high surrogate
+/// at the end of a block waits for the low one that follows it, so a pair split
+/// across two writes is still one character in the bytes.
 class StreamWriter : TextWriter
 {
+    const int DefaultBufferSize = 1024;
+
     Stream _stream;
-    byte[] _buffer;
+    Encoding _encoding;
+    char[] _chars;
     int _used;
+    bool _leaveOpen;
+    bool _preambleDone;
+    bool _disposed;
     public bool AutoFlush;
 
-    public StreamWriter(Stream stream)
+    public StreamWriter(Stream stream) : this(stream, new UTF8Encoding(false), DefaultBufferSize, false) { }
+    public StreamWriter(Stream stream, Encoding encoding) : this(stream, encoding, DefaultBufferSize, false) { }
+    public StreamWriter(Stream stream, Encoding encoding, int bufferSize) : this(stream, encoding, bufferSize, false) { }
+
+    public StreamWriter(Stream stream, Encoding? encoding, int bufferSize, bool leaveOpen)
     {
+        if (stream == null) throw new ArgumentNullException("stream");
+        if (bufferSize == -1) bufferSize = DefaultBufferSize;
+        if (bufferSize <= 0) throw new ArgumentOutOfRangeException("bufferSize", "Positive number required.");
         _stream = stream;
-        _buffer = new byte[4096];
+        _encoding = encoding ?? new UTF8Encoding(false);
+        _chars = new char[bufferSize];
+        _leaveOpen = leaveOpen;
+        // A stream written from part way through already has its beginning:
+        // the byte-order mark belongs at the start of a file, not in the middle.
+        _preambleDone = stream.CanSeek && stream.Position > 0;
     }
 
-    public StreamWriter(string path, bool append) : this(new FileStream(path, append ? FileMode.Append : FileMode.Create, FileAccess.Write))
-    {
-    }
+    public StreamWriter(string path) : this(path, false) { }
 
-    public StreamWriter(string path) : this(new FileStream(path, FileMode.Create, FileAccess.Write))
+    public StreamWriter(string path, bool append) : this(path, append, new UTF8Encoding(false), DefaultBufferSize) { }
+
+    public StreamWriter(string path, bool append, Encoding encoding) : this(path, append, encoding, DefaultBufferSize) { }
+
+    public StreamWriter(string path, bool append, Encoding encoding, int bufferSize)
+        : this(new FileStream(path, append ? FileMode.Append : FileMode.Create, FileAccess.Write), encoding, bufferSize, false)
     {
     }
 
@@ -781,13 +835,15 @@ class StreamWriter : TextWriter
         get { return _stream; }
     }
 
+    public override Encoding Encoding => _encoding;
+
     public override void Write(char value)
     {
-        if (_used == _buffer.Length)
+        if (_used == _chars.Length)
         {
-            Flush();
+            Drain(false);
         }
-        _buffer[_used] = (byte)value;
+        _chars[_used] = value;
         _used = _used + 1;
         if (AutoFlush && value == '\n')
         {
@@ -795,37 +851,124 @@ class StreamWriter : TextWriter
         }
     }
 
+    public override void Write(string value)
+    {
+        if (value == null) return;
+        for (int i = 0; i < value.Length; i++)
+        {
+            if (_used == _chars.Length)
+            {
+                Drain(false);
+            }
+            _chars[_used] = value[i];
+            _used = _used + 1;
+        }
+        if (AutoFlush)
+        {
+            Flush();
+        }
+    }
+
+    /// The gathered characters encoded into the stream -- all of them when
+    /// `final`, else all but a trailing high surrogate, which waits for its
+    /// pair.
+    void Drain(bool final)
+    {
+        if (!_preambleDone)
+        {
+            _preambleDone = true;
+            byte[] preamble = _encoding.GetPreamble();
+            if (preamble.Length > 0)
+            {
+                _stream.Write(preamble, 0, preamble.Length);
+            }
+        }
+
+        int count = _used;
+        if (!final && count > 0 && Char.IsHighSurrogate(_chars[count - 1]))
+        {
+            count = count - 1;
+        }
+        if (count > 0)
+        {
+            byte[] bytes = _encoding.GetBytes(_chars, 0, count);
+            _stream.Write(bytes, 0, bytes.Length);
+        }
+        for (int i = count; i < _used; i++)
+        {
+            _chars[i - count] = _chars[i];
+        }
+        _used = _used - count;
+    }
+
+    /// Everything written so far into the stream, and the stream flushed. A
+    /// high surrogate at the very end still waits: Flush is not the end of the
+    /// text, and .NET's encoder keeps it too.
     public override void Flush()
     {
-        if (_used > 0)
-        {
-            _stream.Write(_buffer, 0, _used);
-            _used = 0;
-        }
+        Drain(false);
         _stream.Flush();
     }
 
     public override void Dispose()
     {
-        Flush();
-        _stream.Dispose();
+        if (_disposed) return;
+        _disposed = true;
+        Drain(true);
+        _stream.Flush();
+        if (!_leaveOpen)
+        {
+            _stream.Dispose();
+        }
     }
 }
 
+/// .NET's StreamReader: text out of a stream in an encoding -- UTF-8 unless
+/// told otherwise -- and, unless told not to, a byte-order mark at the start
+/// deciding the encoding instead (UTF-8, UTF-16 either way round, UTF-32
+/// either way round), as .NET's detectEncodingFromByteOrderMarks does.
+///
+/// Bytes are decoded a buffer at a time, and a sequence cut off by the end of
+/// one buffer waits for the rest of it in the next.
 class StreamReader : TextReader
 {
-    Stream _stream;
-    byte[] _buffer;
-    int _at;
-    int _end;
+    const int DefaultBufferSize = 1024;
 
-    public StreamReader(Stream stream)
+    Stream _stream;
+    Encoding _encoding;
+    bool _detect;
+    bool _started;
+    bool _leaveOpen;
+    byte[] _bytes;
+    int _byteCount;              // bytes read and not yet decoded
+    string _chars;               // decoded and not yet handed out
+    int _at;
+    bool _ended;
+
+    public StreamReader(Stream stream) : this(stream, new UTF8Encoding(true), true, DefaultBufferSize, false) { }
+    public StreamReader(Stream stream, bool detectEncodingFromByteOrderMarks) : this(stream, new UTF8Encoding(true), detectEncodingFromByteOrderMarks, DefaultBufferSize, false) { }
+    public StreamReader(Stream stream, Encoding encoding) : this(stream, encoding, true, DefaultBufferSize, false) { }
+    public StreamReader(Stream stream, Encoding encoding, bool detectEncodingFromByteOrderMarks) : this(stream, encoding, detectEncodingFromByteOrderMarks, DefaultBufferSize, false) { }
+    public StreamReader(Stream stream, Encoding encoding, bool detectEncodingFromByteOrderMarks, int bufferSize) : this(stream, encoding, detectEncodingFromByteOrderMarks, bufferSize, false) { }
+
+    public StreamReader(Stream stream, Encoding? encoding, bool detectEncodingFromByteOrderMarks, int bufferSize, bool leaveOpen)
     {
+        if (stream == null) throw new ArgumentNullException("stream");
+        if (bufferSize == -1) bufferSize = DefaultBufferSize;
+        if (bufferSize <= 0) throw new ArgumentOutOfRangeException("bufferSize", "Positive number required.");
         _stream = stream;
-        _buffer = new byte[4096];
+        _encoding = encoding ?? new UTF8Encoding(true);
+        _detect = detectEncodingFromByteOrderMarks;
+        _leaveOpen = leaveOpen;
+        _bytes = new byte[Math.Max(bufferSize, 4)];
+        _chars = "";
     }
 
-    public StreamReader(string path) : this(new FileStream(path, FileMode.Open, FileAccess.Read))
+    public StreamReader(string path) : this(path, true) { }
+    public StreamReader(string path, bool detectEncodingFromByteOrderMarks) : this(path, new UTF8Encoding(true), detectEncodingFromByteOrderMarks) { }
+    public StreamReader(string path, Encoding encoding) : this(path, encoding, true) { }
+    public StreamReader(string path, Encoding encoding, bool detectEncodingFromByteOrderMarks)
+        : this(new FileStream(path, FileMode.Open, FileAccess.Read), encoding, detectEncodingFromByteOrderMarks, DefaultBufferSize, false)
     {
     }
 
@@ -834,15 +977,162 @@ class StreamReader : TextReader
         get { return _stream; }
     }
 
+    /// The encoding being read -- the one a byte-order mark named, once the
+    /// first read has seen it.
+    public Encoding CurrentEncoding => _encoding;
+
+    /// Throws away what was read ahead, for a caller that moved the stream.
+    public void DiscardBufferedData()
+    {
+        _byteCount = 0;
+        _chars = "";
+        _at = 0;
+        _ended = false;
+    }
+
+    /// More characters decoded, answering whether there are any.
     bool Fill()
     {
-        if (_at < _end)
+        while (_at >= _chars.Length)
         {
-            return true;
+            if (_ended)
+            {
+                return false;
+            }
+
+            int n = _stream.Read(_bytes, _byteCount, _bytes.Length - _byteCount);
+            if (n <= 0)
+            {
+                _ended = true;
+                // A stream that ended while it could still have been a mark
+                // has its mark read now -- an empty UTF-16 file is its mark.
+                int lead = 0;
+                if (!_started)
+                {
+                    _started = true;
+                    lead = Preamble();
+                }
+                // What is left at the end is decoded as it is: a sequence
+                // the stream cut short becomes U+FFFD, as .NET's does.
+                _chars = _byteCount > lead ? _encoding.GetString(_bytes, lead, _byteCount - lead) : "";
+                _byteCount = 0;
+                _at = 0;
+                continue;
+            }
+            _byteCount = _byteCount + n;
+
+            int skip = 0;
+            if (!_started)
+            {
+                // Bytes that could still be the start of a byte-order mark wait
+                // for the rest of it -- and nothing else waits: an interactive
+                // pipe's first line must not sit unread for want of four bytes.
+                if (MarkPrefix())
+                {
+                    continue;
+                }
+                _started = true;
+                skip = Preamble();
+            }
+
+            int whole = Complete(skip, _byteCount);
+            _chars = _encoding.GetString(_bytes, skip, whole - skip);
+            _at = 0;
+            for (int i = whole; i < _byteCount; i++)
+            {
+                _bytes[i - whole] = _bytes[i];
+            }
+            _byteCount = _byteCount - whole;
         }
-        _end = _stream.Read(_buffer, 0, _buffer.Length);
-        _at = 0;
-        return _end > 0;
+        return true;
+    }
+
+    /// Whether the bytes so far are a proper beginning of some byte-order
+    /// mark this reader would act on, so that one more read could complete it.
+    bool MarkPrefix()
+    {
+        if (_byteCount >= 4) return false;
+        return (_detect && (Starts(new byte[] { 0xFF, 0xFE, 0, 0 }) || Starts(new byte[] { 0, 0, 0xFE, 0xFF })
+                         || Starts(new byte[] { 0xEF, 0xBB, 0xBF }) || Starts(new byte[] { 0xFE, 0xFF })))
+            || Starts(_encoding.GetPreamble());
+    }
+
+    /// Whether the bytes so far are a proper prefix of `mark`.
+    bool Starts(byte[] mark)
+    {
+        if (mark.Length == 0 || _byteCount >= mark.Length) return false;
+        for (int i = 0; i < _byteCount; i++)
+        {
+            if (_bytes[i] != mark[i]) return false;
+        }
+        return true;
+    }
+
+    /// The byte-order mark at the start, if there is one: the encoding it
+    /// names when detecting, and how many bytes it is.
+    int Preamble()
+    {
+        int b0 = _byteCount > 0 ? _bytes[0] : -1;
+        int b1 = _byteCount > 1 ? _bytes[1] : -1;
+        int b2 = _byteCount > 2 ? _bytes[2] : -1;
+        int b3 = _byteCount > 3 ? _bytes[3] : -1;
+
+        if (_detect)
+        {
+            if (b0 == 0xFF && b1 == 0xFE && b2 == 0 && b3 == 0) { _encoding = new UTF32Encoding(false, true); return 4; }
+            if (b0 == 0 && b1 == 0 && b2 == 0xFE && b3 == 0xFF) { _encoding = new UTF32Encoding(true, true); return 4; }
+            if (b0 == 0xEF && b1 == 0xBB && b2 == 0xBF) { _encoding = new UTF8Encoding(true); return 3; }
+            if (b0 == 0xFF && b1 == 0xFE) { _encoding = new UnicodeEncoding(false, true); return 2; }
+            if (b0 == 0xFE && b1 == 0xFF) { _encoding = new UnicodeEncoding(true, true); return 2; }
+        }
+
+        // THE ENCODING'S OWN MARK is skipped even when not detecting.
+        byte[] own = _encoding.GetPreamble();
+        if (own.Length == 0 || own.Length > _byteCount) return 0;
+        for (int i = 0; i < own.Length; i++)
+        {
+            if (_bytes[i] != own[i]) return 0;
+        }
+        return own.Length;
+    }
+
+    /// Where the last whole character in bytes[from, end) ends: a sequence
+    /// the buffer cut off is left for the next read.
+    int Complete(int from, int end)
+    {
+        if (_encoding is UTF32Encoding)
+        {
+            return end - (end - from) % 4;
+        }
+        if (_encoding is UnicodeEncoding)
+        {
+            int even = end - (end - from) % 2;
+            // A high surrogate at the end waits for its low half.
+            if (even - from >= 2)
+            {
+                bool big = _encoding.CodePage == 1201;
+                int unit = big ? (_bytes[even - 2] << 8) | _bytes[even - 1] : (_bytes[even - 1] << 8) | _bytes[even - 2];
+                if (unit >= 0xD800 && unit <= 0xDBFF) return even - 2;
+            }
+            return even;
+        }
+        if (_encoding is UTF8Encoding)
+        {
+            // Back from the end to the last lead byte; if the sequence it
+            // begins is longer than what follows it, it waits.
+            for (int back = 1; back <= 3 && end - back >= from; back++)
+            {
+                int b = _bytes[end - back];
+                if (b < 0x80) return end;
+                if (b >= 0xC0)
+                {
+                    int length = b >= 0xF0 ? 4 : b >= 0xE0 ? 3 : 2;
+                    return length > back ? end - back : end;
+                }
+            }
+            return end;
+        }
+        return end;
     }
 
     public override int Read()
@@ -851,14 +1141,53 @@ class StreamReader : TextReader
         {
             return -1;
         }
-        int c = _buffer[_at] & 255;
+        int c = _chars[_at];
         _at = _at + 1;
         return c;
     }
 
     public override int Peek()
     {
-        return Fill() ? _buffer[_at] & 255 : -1;
+        return Fill() ? _chars[_at] : -1;
+    }
+
+    public override string? ReadLine()
+    {
+        if (!Fill())
+        {
+            return null;
+        }
+        StringBuilder line = new StringBuilder();
+        while (Fill())
+        {
+            char c = _chars[_at];
+            _at = _at + 1;
+            if (c == '\n')
+            {
+                return line.ToString();
+            }
+            if (c == '\r')
+            {
+                if (Fill() && _chars[_at] == '\n')
+                {
+                    _at = _at + 1;
+                }
+                return line.ToString();
+            }
+            line.Append(c);
+        }
+        return line.ToString();
+    }
+
+    public override string ReadToEnd()
+    {
+        StringBuilder all = new StringBuilder();
+        while (Fill())
+        {
+            all.Append(_chars, _at, _chars.Length - _at);
+            _at = _chars.Length;
+        }
+        return all.ToString();
     }
 
     public bool EndOfStream
@@ -868,7 +1197,10 @@ class StreamReader : TextReader
 
     public override void Dispose()
     {
-        _stream.Dispose();
+        if (!_leaveOpen)
+        {
+            _stream.Dispose();
+        }
     }
 }
 

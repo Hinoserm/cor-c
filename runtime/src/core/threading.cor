@@ -897,8 +897,15 @@ class TaskAwaiter
 
     public bool IsCompleted => _task.IsCompleted;
 
+    /// The task's outcome, WAITING for it first as .NET's GetResult does when
+    /// it is called on a task that has not finished -- `t.GetAwaiter()
+    /// .GetResult()` is how synchronous code blocks on an async one.
     public void GetResult()
     {
+        if (!_task.IsCompleted)
+        {
+            Scheduler.RunUntil(_task);
+        }
         _task.ThrowIfNotSuccessful();
     }
 
@@ -926,6 +933,10 @@ class TaskAwaiter<T>
 
     public T GetResult()
     {
+        if (!_task.IsCompleted)
+        {
+            Scheduler.RunUntil(_task);
+        }
         _task.ThrowIfNotSuccessful();
         return _task.ResultWhenDone();
     }
@@ -1635,11 +1646,9 @@ class OperationCanceledException : SystemException
 {
     CancellationToken _token;
 
-    public OperationCanceledException() : base("The operation was canceled.")
-    {
-    }
+    public OperationCanceledException() : base("The operation was canceled.") { }
 
-    public OperationCanceledException(string message) : base(message)
+    public OperationCanceledException(string? message) : base(message)
     {
     }
 
@@ -1654,6 +1663,7 @@ class OperationCanceledException : SystemException
     }
 
     public CancellationToken CancellationToken => _token;
+    public OperationCanceledException(string? message, Exception? innerException) : base(message, innerException) { }
 }
 
 /// A task was canceled.
@@ -1661,11 +1671,9 @@ class TaskCanceledException : OperationCanceledException
 {
     Task? _task;
 
-    public TaskCanceledException() : base("A task was canceled.")
-    {
-    }
+    public TaskCanceledException() : base("A task was canceled.") { }
 
-    public TaskCanceledException(string message) : base(message)
+    public TaskCanceledException(string? message) : base(message)
     {
     }
 
@@ -1676,6 +1684,7 @@ class TaskCanceledException : OperationCanceledException
 
     /// The canceled task, when this was raised by awaiting one.
     public Task? Task => _task;
+    public TaskCanceledException(string? message, Exception? innerException) : base(message, innerException) { }
 }
 
 /// Timeout.Infinite, which Task.Delay accepts.
@@ -3000,7 +3009,7 @@ static class AsyncRuntime
     {
         string text = "Unhandled exception. " + e.ToString() + "\n";
 
-        Runtime.WriteBytes(2, Runtime.BytesOf(text), text.Length);
+        Runtime.WriteText(2, text);
         Platform.Exit(134);
     }
 
@@ -3115,6 +3124,10 @@ namespace System.Runtime.CompilerServices
 
         public void GetResult()
         {
+            if (!_task.IsCompleted)
+            {
+                Scheduler.RunUntil(_task);
+            }
             _task.ThrowIfNotSuccessful();
         }
 

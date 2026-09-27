@@ -1180,7 +1180,7 @@ static class Gc
 
     static void SayNumber(string label, long value)
     {
-        Platform.WriteBytes(2, Sys.ArrayData(label), label.Length);
+        Runtime.WriteLiteral(2, label);
 
         if (_digits == 0)
         {
@@ -1210,8 +1210,7 @@ static class Gc
         }
 
         Platform.WriteBytes(2, _digits + at, 24 - at);
-        string end = "\n";
-        Platform.WriteBytes(2, Sys.ArrayData(end), 1);
+        Runtime.WriteLiteral(2, "\n");
     }
 
     /// A block of `need` bytes from the free list or the bump pointer, stamped
@@ -1362,7 +1361,7 @@ static class Gc
     /// the heap that has just run out.
     static void OutOfMemory(string text)
     {
-        Platform.WriteBytes(2, Sys.ArrayData(text), text.Length);
+        Runtime.WriteLiteral(2, text);
         Runtime.SayTrace(2, Sys.FramePointer());
         Platform.Exit(137);
     }
@@ -2800,8 +2799,24 @@ static class Gc
         long tb = Sys.ThreadBlock();
         long was = Sys.Peek(tb + Tls.InAlloc);
         Sys.Poke(tb + Tls.InAlloc, 1);
-        long old = Sys.Peek(slot);
+        Note(Sys.Peek(slot), value);
+        Sys.Poke(tb + Tls.InAlloc, was);
+    }
 
+    /// Barrier, told the overwritten reference itself: for an object whose
+    /// fields the optimiser keeps in registers (Runtime.WriteBarrierValues).
+    public static void BarrierValues(long old, long value)
+    {
+        long tb = Sys.ThreadBlock();
+        long was = Sys.Peek(tb + Tls.InAlloc);
+        Sys.Poke(tb + Tls.InAlloc, 1);
+        Note(old, value);
+        Sys.Poke(tb + Tls.InAlloc, was);
+    }
+
+    /// The two references a barrier reports: marked on the spot, or logged.
+    static void Note(long old, long value)
+    {
         if (Runtime.Marking == 2)
         {
             if (old != 0)
@@ -2826,8 +2841,6 @@ static class Gc
                 Report(value);
             }
         }
-
-        Sys.Poke(tb + Tls.InAlloc, was);
     }
 
     static void Report(long value)
@@ -3661,7 +3674,7 @@ static class HeapChunks
         if (_cap != 0 && _heapBytes + ask > _cap)
         {
             string capped = "heap: the cap refused a chunk\n";
-            Platform.WriteBytes(2, Sys.ArrayData(capped), capped.Length);
+            Runtime.WriteLiteral(2, capped);
             return 0;
         }
 

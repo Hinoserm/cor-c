@@ -34,9 +34,9 @@ public static class Prelude
     // The block primitives. These are what let String live in the standard
     // library as ordinary source rather than being emitted by the compiler
     // behind the author's back.
-    public const string NewBytes = "NewBytes";
-    public const string GetByte = "GetByte";
-    public const string SetByte = "SetByte";
+    public const string NewChars = "NewChars";
+    public const string GetChar = "GetChar";
+    public const string SetChar = "SetChar";
     public const string Copy = "Copy";
     public const string CopyNoOverlap = "CopyNoOverlap";
     public const string CompareBytes = "CompareBytes";
@@ -433,22 +433,25 @@ public static class Prelude
             public static int SingleBits(float x) { return 0; }
             public static float FromSingleBits(int x) { return 0; }
 
-            // A string and a byte array are the same shape: a length word and
-            // that many bytes. These five are the whole of what the machine
-            // offers for building one, and String is written on top of them.
-            public static string NewBytes(int length) { return ""; }
-            public static int GetByte(string s, int at) { return 0; }
-            public static void SetByte(string s, int at, int value) { }
+            // A STRING IS UTF-16 CODE UNITS, as C#'s is: a length word counting
+            // them and that many two-byte units after it. These three are the
+            // whole of what the machine offers for building one, and String is
+            // written on top of them. What a string MEANS as bytes -- a path, a
+            // line on a terminal -- is an encoding, and System.Text makes it.
+            public static string NewChars(int length) { return ""; }
+            public static char GetChar(string s, int at) { return (char)0; }
+            public static void SetChar(string s, int at, int value) { }
             // AND WITH A MACHINE-WORD CURSOR. An index is an int in C# because
             // an array's length is, and String keeps to that; these are the
             // machine underneath, where an address is sixty-four bits and a
-            // walk over bytes counts in the width the registers are. System
+            // walk over a string counts in the width the registers are. System
             // .Array does the same thing for the same reason -- Copy has both
-            // an int and a long overload -- and without it every byte loop in a
+            // an int and a long overload -- and without it every loop in a
             // program that counts in words casts at each step, or keeps a
             // second cursor beside the first.
-            public static int GetByte(string s, long at) { return 0; }
-            public static void SetByte(string s, long at, int value) { }
+            public static char GetChar(string s, long at) { return (char)0; }
+            public static void SetChar(string s, long at, int value) { }
+            // A string's cursors and count are in chars; a byte array's, bytes.
             public static void Copy(string dst, int dstAt, string src, int srcAt, int count) { }
             public static void Copy(byte[] dst, int dstAt, byte[] src, int srcAt, int count) { }
             // Like Copy, but the two source ranges must not overlap.  It gives
@@ -457,7 +460,7 @@ public static class Prelude
             // memmove semantics.
             public static void CopyNoOverlap(string dst, int dstAt, string src, int srcAt, int count) { }
             public static void CopyNoOverlap(byte[] dst, int dstAt, byte[] src, int srcAt, int count) { }
-            public static int CompareBytes(string a, int aAt, string b, int bAt, int count) { return 0; }
+            public static int CompareBytes(byte[] a, int aAt, byte[] b, int bAt, int count) { return 0; }
 
             // Unit 0x0a. These are deliberately low-level: their cursor and
             // count arguments name an exact span, while String supplies the
@@ -1030,10 +1033,14 @@ public static class Prelude
             // Whether a reference is a string, read from its descriptor: what
             // lets a container compare string keys by their text without the
             // language having a root object type to ask.
-            // The address of the first element of an array or the first byte
-            // of a string. The header in front of it is the target's business;
-            // code that needs the raw bytes asks here instead of adding a number.
+            // The address of the first element of an array. The header in front
+            // of it is the target's business; code that needs the raw bytes asks
+            // here instead of adding a number. NOT OF A STRING: its elements are
+            // UTF-16 code units, and code that meant its bytes means an encoding.
             public static long ArrayData(object array) { return 0; }
+            // The address of a string's first UTF-16 code unit, for code that
+            // wants exactly those -- a Win32 W function's LPCWSTR.
+            public static long StringData(string s) { return 0; }
             // The address of an object's synchronisation word, for a monitor.
             public static long SyncWord(object o) { return 0; }
             public static bool IsString(object x) { return false; }

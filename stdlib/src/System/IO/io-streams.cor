@@ -10,13 +10,12 @@
 /// of the device precisely because it is its own type.
 class EndOfStreamException : IOException
 {
-    public EndOfStreamException() : base("Unable to read beyond the end of the stream.")
-    {
-    }
+    public EndOfStreamException() : base("Unable to read beyond the end of the stream.") { }
 
-    public EndOfStreamException(string message) : base(message)
+    public EndOfStreamException(string? message) : base(message)
     {
     }
+    public EndOfStreamException(string? message, Exception? innerException) : base(message, innerException) { }
 }
 
 /// The bytes were readable and did not mean what the format says they should.
@@ -24,11 +23,9 @@ class EndOfStreamException : IOException
 /// with the device, and .NET puts it under SystemException for that reason.
 class InvalidDataException : SystemException
 {
-    public InvalidDataException() : base("Found invalid data while decoding.")
-    {
-    }
+    public InvalidDataException() : base("Found invalid data while decoding.") { }
 
-    public InvalidDataException(string message) : base(message)
+    public InvalidDataException(string? message) : base(message)
     {
     }
 
@@ -106,14 +103,14 @@ class StringReader : TextReader
         {
             return -1;
         }
-        int c = Sys.GetByte(_text, _at);
+        int c = Sys.GetChar(_text, _at);
         _at = _at + 1;
         return c;
     }
 
     public override int Peek()
     {
-        return _at >= _text.Length ? -1 : Sys.GetByte(_text, _at);
+        return _at >= _text.Length ? -1 : Sys.GetChar(_text, _at);
     }
 
     /// The rest of the string, which the base class would assemble a character
@@ -322,22 +319,21 @@ class BinaryWriter : IDisposable
 {
     Stream _stream;
     bool _leaveOpen;
+    Encoding _encoding;
 
     public BinaryWriter(Stream output) : this(output, new UTF8Encoding(), false) { }
 
     public BinaryWriter(Stream output, Encoding encoding) : this(output, encoding, false) { }
 
-    /// With an encoding for its strings and chars -- UTF-8, or ASCII, which is
-    /// a part of it: a string here is its UTF-8 bytes, and those are what it
-    /// writes -- and whether Dispose leaves the stream open.
+    /// With an encoding for its strings and chars, and whether Dispose leaves
+    /// the stream open.
     public BinaryWriter(Stream output, Encoding encoding, bool leaveOpen)
     {
         if (output == null) throw new ArgumentNullException("output");
         if (encoding == null) throw new ArgumentNullException("encoding");
-        if (!(encoding is UTF8Encoding) && !(encoding is ASCIIEncoding))
-            throw new NotSupportedException("BinaryWriter writes strings as UTF-8 here; " + encoding.GetType().Name + " is not supported");
         _stream = output;
         _leaveOpen = leaveOpen;
+        _encoding = encoding;
     }
 
     public Stream BaseStream
@@ -395,9 +391,30 @@ class BinaryWriter : IDisposable
         Fixed(BitConverter.DoubleToInt64Bits(value), 8);
     }
 
+    /// A char as its bytes in the writer's encoding. A surrogate half alone is
+    /// no character and .NET refuses it.
     public void Write(char value)
     {
-        WriteRune((int)value);
+        if (Char.IsSurrogate(value))
+        {
+            throw new ArgumentException("Unicode surrogate characters must be written out as pairs together in the same call, not individually. Consider passing in a character array instead.");
+        }
+        byte[] bytes = _encoding.GetBytes(new char[] { value });
+        _stream.Write(bytes, 0, bytes.Length);
+    }
+
+    public void Write(char[] chars)
+    {
+        if (chars == null) throw new ArgumentNullException("chars");
+        byte[] bytes = _encoding.GetBytes(chars);
+        _stream.Write(bytes, 0, bytes.Length);
+    }
+
+    public void Write(char[] chars, int index, int count)
+    {
+        if (chars == null) throw new ArgumentNullException("chars");
+        byte[] bytes = _encoding.GetBytes(chars, index, count);
+        _stream.Write(bytes, 0, bytes.Length);
     }
 
     public void Write(byte[] buffer)
@@ -417,13 +434,11 @@ class BinaryWriter : IDisposable
             throw new ArgumentNullException("value");
         }
 
-        // The COUNT OF BYTES, not of characters, which is what .NET writes and
-        // is free here: a string already is its UTF-8 bytes.
-        Write7BitEncodedInt(value.Length);
-        for (int i = 0; i < value.Length; i++)
-        {
-            _stream.WriteByte((byte)Sys.GetByte(value, i));
-        }
+        // The COUNT OF BYTES, not of characters, which is what .NET writes:
+        // the encoded length, then the encoding.
+        byte[] bytes = _encoding.GetBytes(value);
+        Write7BitEncodedInt(bytes.Length);
+        _stream.Write(bytes, 0, bytes.Length);
     }
 
     public void Write7BitEncodedInt(int value)
@@ -463,45 +478,27 @@ class BinaryWriter : IDisposable
 
     // One character as UTF-8. A char is sixteen bits, so three bytes is the
     // most it can take.
-    void WriteRune(int c)
-    {
-        if (c < 0x80)
-        {
-            _stream.WriteByte((byte)c);
-        }
-        else if (c < 0x800)
-        {
-            _stream.WriteByte((byte)(0xC0 | (c >> 6)));
-            _stream.WriteByte((byte)(0x80 | (c & 0x3F)));
-        }
-        else
-        {
-            _stream.WriteByte((byte)(0xE0 | (c >> 12)));
-            _stream.WriteByte((byte)(0x80 | ((c >> 6) & 0x3F)));
-            _stream.WriteByte((byte)(0x80 | (c & 0x3F)));
-        }
-    }
 }
 
 class BinaryReader : IDisposable
 {
     Stream _stream;
     bool _leaveOpen;
+    Encoding _encoding;
 
     public BinaryReader(Stream input) : this(input, new UTF8Encoding(), false) { }
 
     public BinaryReader(Stream input, Encoding encoding) : this(input, encoding, false) { }
 
-    /// With an encoding for its strings and chars (UTF-8, or ASCII, a part of
-    /// it) and whether Dispose leaves the stream open.
+    /// With an encoding for its strings and chars, and whether Dispose leaves
+    /// the stream open.
     public BinaryReader(Stream input, Encoding encoding, bool leaveOpen)
     {
         if (input == null) throw new ArgumentNullException("input");
         if (encoding == null) throw new ArgumentNullException("encoding");
-        if (!(encoding is UTF8Encoding) && !(encoding is ASCIIEncoding))
-            throw new NotSupportedException("BinaryReader reads strings as UTF-8 here; " + encoding.GetType().Name + " is not supported");
         _stream = input;
         _leaveOpen = leaveOpen;
+        _encoding = encoding;
     }
 
     public Stream BaseStream
@@ -559,25 +556,30 @@ class BinaryReader : IDisposable
         return BitConverter.Int64BitsToDouble(Fixed(8));
     }
 
+    /// One char: the bytes one character takes in the reader's encoding --
+    /// a UTF-8 sequence by its lead byte, two bytes of UTF-16, four of
+    /// UTF-32, one of a single-byte page -- decoded. A character that needs a
+    /// surrogate pair cannot be one char, and .NET refuses it.
     public char ReadChar()
     {
         int lead = One();
+        int length = 1;
 
-        if (lead < 0x80)
+        if (_encoding is UnicodeEncoding) length = 2;
+        else if (_encoding is UTF32Encoding) length = 4;
+        else if (_encoding is UTF8Encoding)
+            length = lead < 0xC0 ? 1 : lead < 0xE0 ? 2 : lead < 0xF0 ? 3 : 4;
+
+        byte[] bytes = new byte[length];
+        bytes[0] = (byte)lead;
+        for (int i = 1; i < length; i++) bytes[i] = (byte)One();
+
+        string text = _encoding.GetString(bytes, 0, length);
+        if (text.Length != 1)
         {
-            return (char)lead;
+            throw new ArgumentException("The output char buffer is too small to contain the decoded characters, encoding '" + _encoding.EncodingName + "' fallback 'System.Text.DecoderReplacementFallback'.", "chars");
         }
-        if ((lead & 0xE0) == 0xC0)
-        {
-            return (char)(((lead & 0x1F) << 6) | (One() & 0x3F));
-        }
-        if ((lead & 0xF0) == 0xE0)
-        {
-            int b = One();
-            int c = One();
-            return (char)(((lead & 0x0F) << 12) | ((b & 0x3F) << 6) | (c & 0x3F));
-        }
-        throw new InvalidDataException("The stream does not hold valid UTF-8.");
+        return text[0];
     }
 
     /// FEWER BYTES THAN ASKED FOR IS NOT AN ERROR here, which is .NET's rule
@@ -624,12 +626,12 @@ class BinaryReader : IDisposable
             throw new InvalidDataException("The string length is negative.");
         }
 
-        string made = Sys.NewBytes(length);
+        byte[] bytes = new byte[length];
         for (int i = 0; i < length; i++)
         {
-            Sys.SetByte(made, i, One());
+            bytes[i] = (byte)One();
         }
-        return made;
+        return _encoding.GetString(bytes, 0, length);
     }
 
     public int Read7BitEncodedInt()

@@ -215,6 +215,13 @@ interface ConsoleCancelEventHandler
     void Invoke(object? sender, ConsoleCancelEventArgs e);
 }
 
+/// The sixteen console colours, numbered as .NET numbers them.
+enum ConsoleColor
+{
+    Black = 0, DarkBlue = 1, DarkGreen = 2, DarkCyan = 3, DarkRed = 4, DarkMagenta = 5, DarkYellow = 6, Gray = 7,
+    DarkGray = 8, Blue = 9, Green = 10, Cyan = 11, Red = 12, Magenta = 13, Yellow = 14, White = 15,
+}
+
 static class Console
 {
     static TextWriter? _out;
@@ -342,6 +349,70 @@ static class Console
             if (rows <= 0) { rows = Terminal.Rows(Fd.In); }
             return rows > 0 ? rows : 24;
         }
+    }
+
+    // ---- colour and the cursor -------------------------------------------------
+
+    /// COLOURS AND THE CURSOR ARE ESCAPE SEQUENCES, as .NET writes them on a
+    /// Unix terminal from its terminfo entry -- these are xterm's. Written
+    /// through Out, so they stay in order with text Out is still holding, and
+    /// only to a terminal: a redirected output gets the text alone, as it
+    /// does from .NET. A colour reads back as the last one set, and as -1
+    /// (.NET's unknown colour) before any is.
+    static ConsoleColor _foreground = (ConsoleColor)(-1);
+    static ConsoleColor _background = (ConsoleColor)(-1);
+
+    public static ConsoleColor ForegroundColor
+    {
+        get { return _foreground; }
+        set { Colour(value, 30, "ForegroundColor"); _foreground = value; }
+    }
+
+    public static ConsoleColor BackgroundColor
+    {
+        get { return _background; }
+        set { Colour(value, 40, "BackgroundColor"); _background = value; }
+    }
+
+    public static void ResetColor()
+    {
+        _foreground = (ConsoleColor)(-1);
+        _background = (ConsoleColor)(-1);
+        Escape("\u001b[39;49m");
+    }
+
+    public static void Clear() { Escape("\u001b[H\u001b[2J"); }
+
+    public static void SetCursorPosition(int left, int top)
+    {
+        if (left < 0 || left >= short.MaxValue) throw new ArgumentOutOfRangeException("left", left, "The value must be greater than or equal to zero and less than the console's buffer size in that dimension.");
+        if (top < 0 || top >= short.MaxValue) throw new ArgumentOutOfRangeException("top", top, "The value must be greater than or equal to zero and less than the console's buffer size in that dimension.");
+        Escape("\u001b[" + (top + 1) + ";" + (left + 1) + "H");
+    }
+
+    /// Settable only, as on .NET's Unix console: a terminal cannot be asked.
+    public static bool CursorVisible
+    {
+        get { throw new PlatformNotSupportedException("Operation is not supported on this platform."); }
+        set { Escape(value ? "\u001b[?25h" : "\u001b[?25l"); }
+    }
+
+    /// The ANSI colour index .NET's ConsoleColor maps to: dark colours are
+    /// 30-37 (40-47 behind), bright ones 90-97 (100-107).
+    static void Colour(ConsoleColor colour, int dark, string name)
+    {
+        int n = (int)colour;
+        if (n < 0 || n > 15) throw new ArgumentException("The ConsoleColor enum value was not defined on that enum. Please use a defined color from the enum.", name);
+        int[] ansi = { 0, 4, 2, 6, 1, 5, 3, 7 };
+        int code = n < 8 ? dark + ansi[n] : dark + 60 + ansi[n - 8];
+        Escape("\u001b[" + code + "m");
+    }
+
+    static void Escape(string sequence)
+    {
+        if (!Os.IsTty(Fd.Out)) return;
+        Out.Write(sequence);
+        Out.Flush();
     }
 
     // ---- writing --------------------------------------------------------------

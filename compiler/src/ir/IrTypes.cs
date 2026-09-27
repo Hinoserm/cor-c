@@ -25,7 +25,7 @@ public static class IrTypes
         // declaration said otherwise: `enum E : long` is carried in sixty-four
         // bits, and carrying it in thirty-two would drop the top half of every
         // member that needed them.
-        if (t.Symbol is { Kind: TypeKind.Enum } counted)
+        if (t.IsEnumValue && t.Symbol is { } counted)
         {
             return counted.EnumUnderlying is Prim.I64 or Prim.U64 ? IrType.I64 : IrType.I32;
         }

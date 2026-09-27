@@ -377,8 +377,9 @@ public delegate void ThreadStart();
 
 class ThreadStateException : SystemException
 {
-    public ThreadStateException() : base("Thread is in an invalid state.") { }
-    public ThreadStateException(string message) : base(message) { }
+    public ThreadStateException() : base("Thread was in an invalid state for the operation being executed.") { }
+    public ThreadStateException(string? message) : base(message) { }
+    public ThreadStateException(string? message, Exception? innerException) : base(message, innerException) { }
 }
 
 class Thread

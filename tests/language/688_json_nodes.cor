@@ -3,7 +3,7 @@
 // expect-output:
 // {"runtimeOptions":{"tfm":"net10.0","framework":{"name":"Microsoft.NETCore.App","version":"10.0"},"configProperties":{"System.GC.Server":true,"Count":7}}}
 // ["a",1,true,null,2.5]
-// "a<b&c'd+\né😀\\"
+// "a\u003Cb\u0026c\u0027d\u002B\n\u00E9\uD83D\uDE00\\"
 // {
 //   "x": [
 //     1,

@@ -85,7 +85,17 @@ public sealed partial class Lowering
                 return Void();
 
             case "Word":
-                return Widen(Arg(call, target, 0));
+            {
+                // THE WORD A VALUE IS HELD IN, whatever its type -- and a
+                // floating-point value is held in its bits. Handed through as
+                // it was, a double stayed a register of the other bank, and
+                // the library's comparers (List<double>.IndexOf) compared two
+                // of them with an integer instruction.
+                VReg held = Arg(call, target, 0);
+                if (held.Type == IrType.F64) return _e.Unary(Opcode.Bits, R(held), IrType.I64);
+                if (held.Type == IrType.F32) return Widen(_e.Unary(Opcode.Bits, R(held), IrType.I32));
+                return Widen(held);
+            }
             case "FromWord":
                 return ToWord(Arg(call, target, 0));
 
@@ -118,53 +128,62 @@ public sealed partial class Lowering
             case "Allocate":
                 return Widen(AllocateDynamic(call, ToWord(Arg(call, target, 0))));
 
-            // ---- strings and byte arrays: a count then the bytes ---------------
-            case "NewBytes":
+            // ---- strings: a count, then that many UTF-16 code units -------------
+            case "NewChars":
             {
                 VReg count = ToI32(Arg(call, target, 0));
-                CheckArrayCount(count, 1);
-                VReg total = _e.Binary(Opcode.Add, WordOf(count), _t.ArrayHeaderBytes);
+                CheckArrayCount(count, 2);
+                VReg total = _e.Binary(Opcode.Add, WordOf(_e.Binary(Opcode.Mul, count, 2)), _t.ArrayHeaderBytes);
                 VReg s = AllocateDynamic(call, total, leaf: true);
-                _e.Store(R(s), new SymOperand(SequenceDescriptor("byte", 1, isString: true), _t.DescriptorBytes), 0, _t.WordSize);
+                _e.Store(R(s), new SymOperand(StringDescriptor(), _t.DescriptorBytes), 0, _t.WordSize);
                 _e.Store(R(s), R(count), _t.ArrayCountOffset, 4);
                 return s;
             }
-            case "GetByte":
+            case "GetChar":
             {
                 VReg s = Arg(call, target, 0);
                 VReg at = WordOf(Arg(call, target, 1));
-                VReg p = _e.Binary(Opcode.Add, s, at);
-                return _e.Load(IrType.I32, p, _t.ArrayHeaderBytes, 1, signed: false);
+                VReg p = _e.Binary(Opcode.Add, s, _e.Binary(Opcode.Mul, at, 2));
+                return _e.Load(IrType.I32, p, _t.ArrayHeaderBytes, 2, signed: false);
             }
-            case "SetByte":
+            case "SetChar":
             {
                 VReg s = Arg(call, target, 0);
                 VReg at = WordOf(Arg(call, target, 1));
                 VReg v = ToI32(Arg(call, target, 2));
-                VReg p = _e.Binary(Opcode.Add, s, at);
-                _e.Store(R(p), R(v), _t.ArrayHeaderBytes, 1);
+                VReg p = _e.Binary(Opcode.Add, s, _e.Binary(Opcode.Mul, at, 2));
+                _e.Store(R(p), R(v), _t.ArrayHeaderBytes, 2);
                 return Void();
             }
+            // A STRING'S CURSORS AND COUNT ARE IN CHARS, a byte array's in
+            // bytes; the machine moves bytes either way.
             case "Copy":
             case "CopyNoOverlap":
             {
-                VReg dst = _e.Binary(Opcode.Add, Arg(call, target, 0), WordOf(Arg(call, target, 1)));
-                VReg src = _e.Binary(Opcode.Add, Arg(call, target, 2), WordOf(Arg(call, target, 3)));
-                VReg n = WordOf(Arg(call, target, 4));
+                int unit = target.Params[0].Type.Prim == Prim.String ? 2 : 1;
+                VReg Scaled(VReg v) => unit == 1 ? v : _e.Binary(Opcode.Mul, v, unit);
+                VReg dst = _e.Binary(Opcode.Add, Arg(call, target, 0), Scaled(WordOf(Arg(call, target, 1))));
+                VReg src = _e.Binary(Opcode.Add, Arg(call, target, 2), Scaled(WordOf(Arg(call, target, 3))));
+                VReg n = Scaled(WordOf(Arg(call, target, 4)));
                 _e.Emit(Opcode.MemCopy, null, R(_e.Binary(Opcode.Add, dst, _t.ArrayHeaderBytes)),
                         R(_e.Binary(Opcode.Add, src, _t.ArrayHeaderBytes)), R(n));
                 return Void();
             }
+            // Two byte ranges, or two ranges of a string's code units, equal or
+            // not. ORDER over a string is the order of its code units (.NET's
+            // ordinal comparison), which the bytes of a little-endian unit do
+            // not have; that is Runtime.StringCompare, reached as a fallback.
             case "CompareBytes":
-            case "StringCompare":
             case "StringEqual":
             {
                 MethodSymbol? cmp = RequireRuntime(call, "CompareBytes", 3, $"Sys.{name}");
                 if (cmp is null)
                     return Void();
-                VReg a = _e.Binary(Opcode.Add, _e.Binary(Opcode.Add, Arg(call, target, 0), WordOf(Arg(call, target, 1))), _t.ArrayHeaderBytes);
-                VReg b = _e.Binary(Opcode.Add, _e.Binary(Opcode.Add, Arg(call, target, 2), WordOf(Arg(call, target, 3))), _t.ArrayHeaderBytes);
-                VReg n = WordOf(Arg(call, target, 4));
+                int unit = name == "StringEqual" ? 2 : 1;
+                VReg Scaled(VReg v) => unit == 1 ? v : _e.Binary(Opcode.Mul, v, unit);
+                VReg a = _e.Binary(Opcode.Add, _e.Binary(Opcode.Add, Arg(call, target, 0), Scaled(WordOf(Arg(call, target, 1)))), _t.ArrayHeaderBytes);
+                VReg b = _e.Binary(Opcode.Add, _e.Binary(Opcode.Add, Arg(call, target, 2), Scaled(WordOf(Arg(call, target, 3)))), _t.ArrayHeaderBytes);
+                VReg n = Scaled(WordOf(Arg(call, target, 4)));
                 // The runtime declares these as longs; a word pushed where a
                 // long is read leaves the callee with half of the next slot.
                 VReg r = _e.Call(CallLabel(cmp), IrTypes.Of(cmp.Returns),
@@ -358,7 +377,18 @@ public sealed partial class Lowering
                 return _e.Call(KeyHashStub(), IrType.I32, R(ToWord(Arg(call, target, 0))))!;
             }
             case "ArrayData":
+            case "StringData":
             {
+                // A STRING IS NOT ITS BYTES. Its elements are UTF-16 code units,
+                // and every place that took a string's "array data" was handing
+                // bytes to something that reads bytes -- a path, a write. That is
+                // an encoding (Utf8Transcoder), or, for code that wants the units
+                // themselves, StringData, which says so.
+                if (name == "ArrayData" && _b.TypeOf(call.Args[0]).Prim == Prim.String)
+                {
+                    Error(call, "Sys.ArrayData of a string: its elements are UTF-16 code units, not bytes; "
+                              + "encode it (Utf8Transcoder.Encode) for bytes, or use Sys.StringData for the units");
+                }
                 VReg arr = ToWord(Arg(call, target, 0));
                 return Widen(_e.Binary(Opcode.Add, arr, _t.ArrayHeaderBytes));
             }

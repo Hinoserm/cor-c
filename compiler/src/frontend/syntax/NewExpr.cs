@@ -6,6 +6,12 @@ public sealed class NewExpr : Expr
     public required TypeRef Type { get; init; }
     public List<Expr> Args { get; } = new();
     public List<string?> ArgNames { get; } = new();
+
+    /// <summary>As <see cref="CallExpr.Spans"/>: -1, -1 for the receiver a constructor has not, then each argument.</summary>
+    public int[]? Spans { get; set; }
+
+    /// <summary>The text <see cref="Spans"/> index.</summary>
+    public string? Source { get; set; }
     /// <summary>Parameter slots in source evaluation order after named argument binding.</summary>
     public List<int> ArgumentOrder { get; } = new();
     /// <summary>Set for <c>new int[n]</c>.</summary>

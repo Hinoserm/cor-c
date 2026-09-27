@@ -41,6 +41,15 @@ public sealed class TypeDecl : Node
     /// before that constructor exists.
     /// </summary>
     public List<Expr> BaseArgs { get; } = new();
+
+    /// <summary>The names written before <see cref="BaseArgs"/>, as <see cref="CtorInit.ArgNames"/>.</summary>
+    public List<string?> BaseArgNames { get; } = new();
+
+    /// <summary>Where <see cref="BaseArgs"/> were written, as <see cref="CtorInit.Spans"/>.</summary>
+    public int[]? BaseSpans { get; set; }
+
+    /// <summary>The text <see cref="BaseSpans"/> index.</summary>
+    public string? BaseSource { get; set; }
     public List<MemberDecl> Members { get; } = new();
     /// <summary>Enum members, when this is an enum.</summary>
     public List<EnumMember> EnumMembers { get; } = new();

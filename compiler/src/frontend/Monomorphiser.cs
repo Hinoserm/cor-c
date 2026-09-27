@@ -1191,7 +1191,7 @@ public sealed class Monomorphiser
                     {
                         Name = ip.Name, Type = Sub(ip.Type, map),
                         IsRef = ip.IsRef, IsOut = ip.IsOut, IsReadOnlyRef = ip.IsReadOnlyRef,
-                        NotNullWhen = ip.NotNullWhen,
+                        NotNullWhen = ip.NotNullWhen, Caller = ip.Caller, CallerArgument = ip.CallerArgument,
                         Line = ip.Line, Col = ip.Col,
                     });
                 }
@@ -1240,7 +1240,7 @@ public sealed class Monomorphiser
                     {
                         Name = p.Name, Type = Sub(p.Type, map), IsRef = p.IsRef, IsOut = p.IsOut,
                         IsReadOnlyRef = p.IsReadOnlyRef, IsParams = p.IsParams, IsThis = p.IsThis,
-                        NotNullWhen = p.NotNullWhen,
+                        NotNullWhen = p.NotNullWhen, Caller = p.Caller, CallerArgument = p.CallerArgument,
                         Default = p.Default is null ? null : Rewrite(p.Default, map),
                         Line = p.Line, Col = p.Col,
                     });
@@ -1270,12 +1270,14 @@ public sealed class Monomorphiser
 
     private CtorInit RewriteCtorInit(CtorInit init, Dictionary<string, TypeRef> map)
     {
-        CtorInit made = new() { IsThis = init.IsThis, Line = init.Line, Col = init.Col };
+        CtorInit made = new() { IsThis = init.IsThis, Spans = init.Spans, Source = init.Source, Line = init.Line, Col = init.Col };
 
         foreach (Expr a in init.Args)
         {
             made.Args.Add(Rewrite(a, map));
         }
+        made.ArgNames.AddRange(init.ArgNames);
+        made.ArgumentOrder.AddRange(init.ArgumentOrder);
         return made;
     }
 
@@ -1654,6 +1656,8 @@ public sealed class Monomorphiser
                 // moment it is not.
                 made.ArgNames.AddRange(c.ArgNames);
                 made.LocalArgumentOrder.AddRange(c.LocalArgumentOrder);
+                made.Spans = c.Spans;
+                made.Source = c.Source;
                 made.ResultTupleNames = c.ResultTupleNames is null ? null : new List<string>(c.ResultTupleNames);
                 made.ResultTypeUse = c.ResultTypeUse is null ? null : Sub(c.ResultTypeUse, map);
                 if (c.ArgumentTypeUses is not null)
@@ -1747,7 +1751,7 @@ public sealed class Monomorphiser
                         Name = p.Name, Type = Sub(p.Type, map), IsRef = p.IsRef,
                         IsOut = p.IsOut, IsReadOnlyRef = p.IsReadOnlyRef,
                         IsParams = p.IsParams, IsThis = p.IsThis,
-                        NotNullWhen = p.NotNullWhen,
+                        NotNullWhen = p.NotNullWhen, Caller = p.Caller, CallerArgument = p.CallerArgument,
                         Default = p.Default is null ? null : Rewrite(p.Default, map),
                         Line = p.Line, Col = p.Col,
                     });
@@ -1786,6 +1790,8 @@ public sealed class Monomorphiser
                     made.Args.Add(Rewrite(a, map));
                 }
                 made.ArgNames.AddRange(nw.ArgNames);
+                made.Spans = nw.Spans;
+                made.Source = nw.Source;
                 made.ArgumentOrder.AddRange(nw.ArgumentOrder);
 
                 // AND THE ARRAY'S ELEMENTS. `new[] { a, b }` is the whole of
@@ -1826,7 +1832,7 @@ public sealed class Monomorphiser
             case SuppressExpr sure:
                 return new SuppressExpr
                 {
-                    Operand = Rewrite(sure.Operand, map), Line = sure.Line, Col = sure.Col,
+                    Operand = Rewrite(sure.Operand, map), OpensCell = sure.OpensCell, Line = sure.Line, Col = sure.Col,
                 };
 
             case ThrowExpr th:
@@ -1848,7 +1854,7 @@ public sealed class Monomorphiser
                 };
 
             case SubjectExpr subject:
-                return new SubjectExpr { Line = subject.Line, Col = subject.Col };
+                return new SubjectExpr { Outer = subject.Outer, Line = subject.Line, Col = subject.Col };
 
             case TupleExpr tup:
             {

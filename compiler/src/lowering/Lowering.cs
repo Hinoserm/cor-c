@@ -947,8 +947,8 @@ public sealed partial class Lowering
     // ---- strings, descriptors and vtables ---------------------------------------
 
     /// <summary>
-    /// A string literal as data: the array header and the bytes, interned by
-    /// content so two spellings of one text are one object.
+    /// A string literal as data: the array header and the UTF-16 code units,
+    /// interned by content so two spellings of one text are one object.
     /// </summary>
     private string InternString(string text)
     {
@@ -957,10 +957,13 @@ public sealed partial class Lowering
             return sym;
         }
 
-        byte[] bytes = Encoding.UTF8.GetBytes(text);
-        byte[] block = new byte[_t.ArrayHeaderBytes + bytes.Length];
-        WriteWord(block, _t.ArrayCountOffset, bytes.Length);
-        bytes.CopyTo(block, _t.ArrayHeaderBytes);
+        byte[] block = new byte[_t.ArrayHeaderBytes + 2 * text.Length];
+        WriteWord(block, _t.ArrayCountOffset, text.Length);
+        for (int i = 0; i < text.Length; i++)
+        {
+            block[_t.ArrayHeaderBytes + 2 * i] = (byte)text[i];
+            block[_t.ArrayHeaderBytes + 2 * i + 1] = (byte)(text[i] >> 8);
+        }
 
         // Named and registered BEFORE the descriptor is asked for, because the
         // descriptor's own name is a string and asking for it comes back here.
@@ -968,7 +971,7 @@ public sealed partial class Lowering
         _strings[text] = sym;
         DataItem item = new(sym, block) { ReadOnly = true, Align = _t.Align64, Exported = false };
         _m.Data.Add(item);
-        item.Relocs.Add(new DataReloc(0, SequenceDescriptor("byte", 1, isString: true), _t.DescriptorBytes));
+        item.Relocs.Add(new DataReloc(0, StringDescriptor(), _t.DescriptorBytes));
         return sym;
     }
 
@@ -1088,6 +1091,9 @@ public sealed partial class Lowering
     /// array's vtable holds only object's own virtuals; what matters most is
     /// that every array of bytes shares one, so `GetType` and the flags agree.
     /// </summary>
+    /// <summary>A string's descriptor: a sequence of two-byte UTF-16 code units.</summary>
+    private string StringDescriptor() => SequenceDescriptor("char", 2, isString: true);
+
     private string SequenceDescriptor(string element, int stride, bool isString, bool? elementsAreReferences = null)
     {
         string key = (isString ? "string" : element) + ":" + stride;
@@ -1150,7 +1156,22 @@ public sealed partial class Lowering
 
         if (prim == Prim.String)
         {
-            return SequenceDescriptor("byte", 1, isString: true);
+            return StringDescriptor();
+        }
+
+        // `typeof(object)` is what `new object().GetType()` reads.
+        if (prim == Prim.Any)
+        {
+            return ObjectDescriptor();
+        }
+
+        // A VALUE'S TYPE IS ITS BOX'S, which is what GetType() on one reads:
+        // `((object)5).GetType() == typeof(int)` holds, as it does in .NET,
+        // only if the two are one descriptor.
+        Type primitive = new() { Prim = prim };
+        if (Boxable(primitive))
+        {
+            return BoxDescriptor(primitive);
         }
 
         if (_primitiveDescriptors.TryGetValue(prim, out string? sym))
@@ -1170,7 +1191,7 @@ public sealed partial class Lowering
         DataItem item = new(sym, d) { ReadOnly = true, Align = _t.Align64, FromLibrary = true, Coalescible = true };
 
         _m.Data.Add(item);
-        item.Relocs.Add(new DataReloc(DescName * w, InternString(named), 0));
+        item.Relocs.Add(new DataReloc(DescName * w, InternString("System." + named), 0));
         item.Relocs.Add(new DataReloc(DescSelf * w, sym, 0));
         return sym;
     }
@@ -1193,6 +1214,8 @@ public sealed partial class Lowering
         Prim.F32 => "Single",
         Prim.F64 => "Double",
         Prim.Char => "Char",
+        Prim.Void => "Void",
+        Prim.Any => "Object",
         _ => "String",
     };
 

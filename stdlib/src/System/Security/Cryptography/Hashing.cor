@@ -8,7 +8,8 @@
 class CryptographicException : Exception
 {
     public CryptographicException() : base("Error occurred during a cryptographic operation.") { }
-    public CryptographicException(string message) : base(message) { }
+    public CryptographicException(string? message) : base(message) { }
+    public CryptographicException(string? message, Exception? innerException) : base(message, innerException) { }
 }
 
 /// A hash algorithm: data in, in as many pieces as it comes in, and a hash

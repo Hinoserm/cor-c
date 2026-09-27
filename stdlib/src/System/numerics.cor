@@ -232,15 +232,15 @@ struct BigInteger {
         int at = 0;
         int mark = 1;
 
-        if (Sys.GetByte(text, 0) == (int)'-') { mark = -1; at = 1; }
-        else if (Sys.GetByte(text, 0) == (int)'+') { at = 1; }
+        if (Sys.GetChar(text, 0) == (int)'-') { mark = -1; at = 1; }
+        else if (Sys.GetChar(text, 0) == (int)'+') { at = 1; }
 
         if (at >= text.Length) { return false; }
 
         uint[] magnitude = new uint[0];
 
         while (at < text.Length) {
-            int c = Sys.GetByte(text, at);
+            int c = Sys.GetChar(text, at);
 
             if (c < (int)'0' || c > (int)'9') { return false; }
 

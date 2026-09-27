@@ -343,7 +343,7 @@ public sealed partial class Binder
         => prim is Prim.Bool or Prim.I8 or Prim.I16 or Prim.I32 or Prim.I64
                 or Prim.U8 or Prim.U16 or Prim.U32 or Prim.U64
                 or Prim.NInt or Prim.NUInt or Prim.F32 or Prim.F64
-                or Prim.Char or Prim.String;
+                or Prim.Char or Prim.String or Prim.Any or Prim.Void;
 
     /// <summary>Whether the declaration being bound is somebody else's: an Elsewhere type's, or a member whose code another unit has.</summary>
     private bool BindingElsewhere => _thisType?.Decl?.Elsewhere == true || _member?.OwnedImplementation == false
@@ -3136,37 +3136,46 @@ public sealed partial class Binder
 
             // A constructor's chained call runs before its body, so its
             // arguments are checked in the same scope the parameters are in.
+            //
+            // CHECKED AS THE `new` IT AMOUNTS TO, so it resolves as one does:
+            // the closest overload, named arguments, defaults and caller
+            // information, and a `params` tail. Only its own constructor is
+            // out of reach of a `: this(...)`.
             if (md.Init != null)
             {
-                List<Type> given = new();
-
-                foreach (Expr a in md.Init.Args)
-                {
-                    given.Add(CheckExpr(a));
-                }
-
                 TypeSymbol? target = md.Init.IsThis ? sym : sym.Base;
-                List<MethodSymbol> others = (target?.Methods ?? new List<MethodSymbol>())
-                    .Where(c => c.IsCtor && !c.Static && c.Params.Count == given.Count
-                             && !ReferenceEquals(c.Decl, md)).ToList();
-                MethodSymbol? runs =
-                    others.FirstOrDefault(c => c.Params.Zip(given).All(p => p.First.Type.Equals(p.Second)))
-                    ?? others.FirstOrDefault(c => c.Params.Zip(given).All(
-                           p => p.Second.IsError || Convertible(p.Second, p.First.Type)))
-                    ?? others.FirstOrDefault();
-
-                if (runs is not null)
+                NewExpr chained = new()
                 {
-                    _r.Chained[md] = runs;
-                }
+                    Type = new TypeRef { Name = target?.Name ?? sym.Name, Line = md.Init.Line, Col = md.Init.Col },
+                    Spans = md.Init.Spans, Source = md.Init.Source, Line = md.Init.Line, Col = md.Init.Col,
+                };
+                chained.Args.AddRange(md.Init.Args);
+                chained.ArgNames.AddRange(md.Init.ArgNames);
+
+                Type? outerChain = _wanted;
+                _wanted = null;
+                List<Type> given = chained.Args.Select(argument =>
+                    argument is LambdaExpr or NewExpr { Type.Name.Length: 0, Elements: null } || HoldsLambda(argument) ? Type.Any : CheckExpr(argument)).ToList();
+                _wanted = outerChain;
 
                 if (target is null)
                 {
                     Error(md.Init, $"'{sym.Name}' has no base class to chain to");
                 }
-                else if (!target.Methods.Any(c => c.IsCtor && c.Params.Count == md.Init.Args.Count))
+                else if (ResolveConstructor(chained, target, given, md.Init.IsThis ? md : null) is MethodSymbol runs)
                 {
-                    Error(md.Init, $"'{target.Name}' has no constructor taking {md.Init.Args.Count} argument(s)");
+                    _r.Chained[md] = runs;
+                }
+
+                md.Init.Args.Clear();
+                md.Init.Args.AddRange(chained.Args);
+                md.Init.ArgNames.Clear();
+                // A later round finds the names already consumed and makes
+                // no order; the first round's stands.
+                if (chained.ArgumentOrder.Count != 0)
+                {
+                    md.Init.ArgumentOrder.Clear();
+                    md.Init.ArgumentOrder.AddRange(chained.ArgumentOrder);
                 }
             }
 
@@ -5296,6 +5305,8 @@ public sealed partial class Binder
         foreach (MethodSymbol m in group.Methods)
         {
             Expr?[] placed = new Expr?[m.Params.Count];
+            int[] from = new int[m.Params.Count];
+            Array.Fill(from, -1);
             bool fits = true;
 
             for (int i = 0; i < c.Args.Count && fits; i++)
@@ -5311,6 +5322,7 @@ public sealed partial class Binder
                 }
 
                 placed[at] = c.Args[i];
+                from[at] = i;
             }
 
             // A HOLE IS ONLY ALLOWED WHERE THE PARAMETER HAS A DEFAULT, which
@@ -5322,7 +5334,11 @@ public sealed partial class Binder
                 {
                     if (m.Decl?.Params.ElementAtOrDefault(i) is { Default: not null } spare)
                     {
-                        placed[i] = Written(m, spare);
+                        // Names are put in order before the receiver of an
+                        // extension joins the arguments: written argument k
+                        // is span pair k + 1.
+                        placed[i] = CallerValue(spare, m.Decl.Params, CallLine(c), k => from[k] < 0 ? null : SpanText(c.Spans, c.Source, from[k] + 1))
+                                    ?? Written(m, spare);
                     }
                     else
                     {
@@ -8112,6 +8128,12 @@ public sealed partial class Binder
         }
     }
 
+    /// <summary>The member a call is checking as its callee, for CheckMember.</summary>
+    private MemberExpr? _callee;
+
+    /// <summary>Nullable&lt;T&gt; methods CheckMember found being called, with the cell's type.</summary>
+    private readonly Dictionary<MemberExpr, Type> _cellMethods = new(ReferenceEqualityComparer.Instance);
+
     /// <summary>Body-context defaults; never overwrite shared parameter ASTs.</summary>
     private readonly Dictionary<Param, Expr> _writtenDefaults = new(ReferenceEqualityComparer.Instance);
 
@@ -8487,9 +8509,12 @@ public sealed partial class Binder
                 return answer;
             }
 
-            case SubjectExpr subject when _subject.Count > 0:
-                _r.Resolved[subject] = new LocalSym(_subject[^1].Slot, _subject[^1].Type, "");
-                return _subject[^1].Type;
+            case SubjectExpr subject when _subject.Count > subject.Outer:
+            {
+                var held = _subject[^(1 + subject.Outer)];
+                _r.Resolved[subject] = new LocalSym(held.Slot, held.Type, "");
+                return held.Type;
+            }
 
             // `x!` says it is not null, and the checker takes the author's
             // word: that is what the operator is for and what it costs.
@@ -8512,6 +8537,19 @@ public sealed partial class Binder
                 if (suppressed.IsArray && suppressed.Element is Type element)
                 {
                     return Type.ArrayOf(element.AsNonNullable(), suppressed.ArrayRank);
+                }
+                // `x!` OF A NULLABLE VALUE TYPE IS STILL A `T?`, as in C#: the
+                // operator changes the null state of a reference and nothing
+                // else, so `n!.Value` reads the cell and `int i = n!` is an
+                // error. Taking the '?' off here typed the cell's address as
+                // the value inside it. The receiver `x?.M()` was rewritten
+                // around is the one that means the value, and says so.
+                if (suppressed.IsNullableValue)
+                {
+                    if (!sure.OpensCell) return suppressed;
+                    MemberExpr inside = new() { Target = sure.Operand, Name = "Value", Guarded = true, Line = sure.Line, Col = sure.Col };
+                    _r.Rewrites[sure] = inside;
+                    return CheckExpr(inside);
                 }
                 return suppressed.AsNonNullable();
             }
@@ -8727,7 +8765,7 @@ public sealed partial class Binder
                 }
 
                 // A STRING INDEXES TO A CHARACTER, which is C#'s `s[i]` and is
-                // the same load Sys.GetByte does -- our own spelling of it, and
+                // the same load Sys.GetChar does -- our own spelling of it, and
                 // one this compiler's own source never uses because C# has this
                 // one. `text[0] is 'r' or 'R'` is how a register name is read.
                 if (target.Prim == Prim.String && ix.Args.Count == 1)
@@ -8903,139 +8941,9 @@ public sealed partial class Binder
 
                 if (type.Symbol is TypeSymbol constructed)
                 {
-                    NormalizeConstructorArguments(nw, constructed, constructorArgs);
-                    // A `params` CONSTRUCTOR HAS TWO FORMS, exactly as a
-                    // `params` method does: an array supplied in the final
-                    // position is an ordinary call, and anything else is
-                    // packed into a fresh array here so that nothing below
-                    // needs a second calling convention.
-                    //
-                    // `new MInstr(MOp.Mov, dest, source)` is how this
-                    // compiler's own instruction selector writes every
-                    // instruction it emits, and there were three hundred of
-                    // them that no constructor accepted.
-                    if (!constructed.Methods.Any(m => m.IsCtor && m.Params.Count == constructorArgs.Count
-                                                   && constructorArgs.Where((a, i) =>
-                                                        !Fits(a, m.Params[i].Type, nw.Args[i])).Count() == 0))
-                    {
-                        MethodSymbol? variadic = constructed.Methods.FirstOrDefault(
-                            m => m.IsCtor && m.Params.Count > 0 && m.Params[^1].IsParams
-                              && m.Params[^1].Type.Element is not null
-                              && constructorArgs.Count >= m.Params.Count - 1
-                              && Enumerable.Range(0, m.Params.Count - 1)
-                                           .All(i => constructorArgs[i].IsError
-                                                  || Convertible(constructorArgs[i], m.Params[i].Type)));
-
-                        if (variadic is not null && RefOf(variadic.Params[^1].Type.Element!) is TypeRef each)
-                        {
-                            int fixedCount = variadic.Params.Count - 1;
-                            NewExpr packed = new()
-                            {
-                                Type = each,
-                                Elements = nw.Args.Skip(fixedCount).ToList(),
-                                Line = nw.Line, Col = nw.Col,
-                            };
-
-                            nw.Args.RemoveRange(fixedCount, nw.Args.Count - fixedCount);
-                            nw.Args.Add(packed);
-                            constructorArgs.RemoveRange(fixedCount, constructorArgs.Count - fixedCount);
-                            constructorArgs.Add(CheckExpr(packed));
-                        }
-                    }
-
-                    // A CONSTRUCTOR PARAMETER WITH A DEFAULT NEED NOT BE
-                    // PASSED, exactly as a method's need not: `record
-                    // MemPlace(..., bool Volatile = false)` is written with
-                    // three arguments everywhere but once. Only exact arity was
-                    // tried, so no constructor was found, none was recorded,
-                    // and the object came back with every field still zero --
-                    // silently, because nothing had said the call was wrong.
-                    if (!constructed.Methods.Any(m => m.IsCtor && m.Params.Count == constructorArgs.Count
-                        && constructorArgs.Where((a, i) => !Fits(a, m.Params[i].Type, nw.Args[i])).Count() == 0))
-                    {
-                        MethodSymbol? shorter = constructed.Methods.FirstOrDefault(
-                            m => m.IsCtor && m.Params.Count > constructorArgs.Count
-                              && constructorArgs.Where((a, i) => !Fits(a, m.Params[i].Type, nw.Args[i])).Count() == 0
-                              && Enumerable.Range(constructorArgs.Count,
-                                                  m.Params.Count - constructorArgs.Count)
-                                           .All(i => m.Decl?.Params.ElementAtOrDefault(i)?.Default is not null));
-
-                        if (shorter != null)
-                        {
-                            for (int i = constructorArgs.Count; i < shorter.Params.Count; i++)
-                            {
-                                Expr fallback = Written(shorter, shorter.Decl!.Params[i]);
-
-                                nw.Args.Add(fallback);
-                                Type? outerWanted = _wanted;
-                                _wanted = shorter.Params[i].Type;
-                                constructorArgs.Add(CheckExpr(fallback));
-                                _wanted = outerWanted;
-                            }
-                        }
-                    }
-
-                    List<MethodSymbol> ctors = constructed.Methods
-                        .Where(m => m.IsCtor && m.Params.Count == constructorArgs.Count)
-                        .ToList();
-
-                    // THE CLOSEST FIT WINS, not the first one written. Every
-                    // constructor whose parameters the arguments convert to
-                    // is a candidate, and among those the one that matches
-                    // the most parameters EXACTLY is the one C# picks.
-                    //
-                    // Without that count, two constructors whose parameters
-                    // merely convert to each other are told apart by which
-                    // was declared first: `DeflateStream(Stream,
-                    // CompressionLevel, bool)` and `DeflateStream(Stream,
-                    // CompressionMode, bool)` are both int-shaped and both
-                    // convertible, so every call went to whichever came
-                    // first in the class -- and asking for a compression
-                    // level built a decompressor. A call still resolves as
-                    // it did whenever no candidate matches more exactly,
-                    // because the ordering is stable.
-                    MethodSymbol? ctor = ctors
-                        .Where(m => constructorArgs
-                            .Where((a, i) => !Fits(a, m.Params[i].Type, nw.Args[i])).Count() == 0)
-                        .OrderByDescending(m => constructorArgs
-                            .Where((a, i) => a.Equals(m.Params[i].Type)).Count())
-                        .FirstOrDefault();
-
-                    if (ctor != null)
+                    if (ResolveConstructor(nw, constructed, constructorArgs) is MethodSymbol ctor)
                     {
                         _r.NewConstructors[nw] = ctor;
-                        for (int i = 0; i < constructorArgs.Count; i++)
-                        {
-                            if (nw.Args[i] is LambdaExpr lambda)
-                            {
-                                constructorArgs[i] = CheckLambda(lambda, ctor.Params[i].Type);
-                                continue;
-                            }
-                            if (MethodGroupLambda(nw.Args[i], ctor.Params[i].Type) is LambdaExpr wrapper)
-                            {
-                                _r.Rewrites[nw.Args[i]] = wrapper;
-                                constructorArgs[i] = CheckLambda(wrapper, ctor.Params[i].Type);
-                                continue;
-                            }
-                            if (nw.Args[i] is NewExpr { Type.Name.Length: 0, Elements: null } || HoldsLambda(nw.Args[i]))
-                            {
-                                Type? saved = _wanted;
-                                _wanted = ctor.Params[i].Type;
-                                constructorArgs[i] = CheckExpr(nw.Args[i]);
-                                _wanted = saved;
-                            }
-                            constructorArgs[i] = Settle(nw.Args[i], ctor.Params[i].Type, constructorArgs[i]);
-                            CheckAssignable(constructorArgs[i], ctor.Params[i].Type,
-                                            nw.Args[i], $"constructor argument {i + 1}");
-                        }
-                    }
-                    else if (constructed.Methods.Any(m => m.IsCtor))
-                    {
-                        // NOTHING TO CALL IS AN ERROR, and was silence: the
-                        // object was allocated, no constructor ran, and every
-                        // field held its zero.
-                        Error(nw, $"no constructor of '{constructed.Name}' accepts "
-                                + $"({string.Join(", ", constructorArgs)})");
                     }
                 }
 
@@ -11918,7 +11826,16 @@ public sealed partial class Binder
                 return CheckExpr(once);
             }
 
-            Error(m, $"'{target}' has no member '{m.Name}'; a nullable value type has 'HasValue' and 'Value'");
+            // ITS METHODS, when this is the one being called: the call writes
+            // them out over HasValue and Value (NullableMemberCall).
+            if (ReferenceEquals(m, _callee) && m.Name is "GetValueOrDefault" or "ToString" or "GetHashCode" or "Equals")
+            {
+                _cellMethods[m] = target;
+                return Type.Void;
+            }
+
+            Error(m, $"'{target}' has no member '{m.Name}'; a nullable value type has 'HasValue', 'Value', "
+                   + "GetValueOrDefault, ToString, GetHashCode and Equals");
             return Type.Error;
         }
 
@@ -12176,6 +12093,304 @@ public sealed partial class Binder
         return Type.Error;
     }
 
+    /// <summary>
+    /// The constructor a `new` -- or a constructor's `: base(...)` or
+    /// `: this(...)`, checked as one -- calls, with its arguments put in
+    /// parameter order, defaults and caller information filled in, a `params`
+    /// tail packed, and each argument settled to its parameter's type. Null,
+    /// with an error, when none accepts them; <paramref name="except"/> is a
+    /// constructor that may not be chosen, the one a `: this(...)` is on.
+    /// </summary>
+    private MethodSymbol? ResolveConstructor(NewExpr nw, TypeSymbol constructed, List<Type> constructorArgs, MethodDecl? except = null)
+    {
+        List<MethodSymbol> methods = except is null ? constructed.Methods
+            : constructed.Methods.Where(m => !ReferenceEquals(m.Decl, except)).ToList();
+        NormalizeConstructorArguments(nw, methods, constructorArgs);
+        // A `params` CONSTRUCTOR HAS TWO FORMS, exactly as a
+        // `params` method does: an array supplied in the final
+        // position is an ordinary call, and anything else is
+        // packed into a fresh array here so that nothing below
+        // needs a second calling convention.
+        //
+        // `new MInstr(MOp.Mov, dest, source)` is how this
+        // compiler's own instruction selector writes every
+        // instruction it emits, and there were three hundred of
+        // them that no constructor accepted.
+        if (!methods.Any(m => m.IsCtor && m.Params.Count == constructorArgs.Count
+                                       && constructorArgs.Where((a, i) =>
+                                            !Fits(a, m.Params[i].Type, nw.Args[i])).Count() == 0))
+        {
+            MethodSymbol? variadic = methods.FirstOrDefault(
+                m => m.IsCtor && m.Params.Count > 0 && m.Params[^1].IsParams
+                  && m.Params[^1].Type.Element is not null
+                  && constructorArgs.Count >= m.Params.Count - 1
+                  && Enumerable.Range(0, m.Params.Count - 1)
+                               .All(i => constructorArgs[i].IsError
+                                      || Convertible(constructorArgs[i], m.Params[i].Type)));
+
+            if (variadic is not null && RefOf(variadic.Params[^1].Type.Element!) is TypeRef each)
+            {
+                int fixedCount = variadic.Params.Count - 1;
+                NewExpr packed = new()
+                {
+                    Type = each,
+                    Elements = nw.Args.Skip(fixedCount).ToList(),
+                    Line = nw.Line, Col = nw.Col,
+                };
+
+                nw.Args.RemoveRange(fixedCount, nw.Args.Count - fixedCount);
+                nw.Args.Add(packed);
+                constructorArgs.RemoveRange(fixedCount, constructorArgs.Count - fixedCount);
+                constructorArgs.Add(CheckExpr(packed));
+            }
+        }
+
+        // A CONSTRUCTOR PARAMETER WITH A DEFAULT NEED NOT BE
+        // PASSED, exactly as a method's need not: `record
+        // MemPlace(..., bool Volatile = false)` is written with
+        // three arguments everywhere but once. Only exact arity was
+        // tried, so no constructor was found, none was recorded,
+        // and the object came back with every field still zero --
+        // silently, because nothing had said the call was wrong.
+        if (!methods.Any(m => m.IsCtor && m.Params.Count == constructorArgs.Count
+            && constructorArgs.Where((a, i) => !Fits(a, m.Params[i].Type, nw.Args[i])).Count() == 0))
+        {
+            MethodSymbol? shorter = methods.FirstOrDefault(
+                m => m.IsCtor && m.Params.Count > constructorArgs.Count
+                  && constructorArgs.Where((a, i) => !Fits(a, m.Params[i].Type, nw.Args[i])).Count() == 0
+                  && Enumerable.Range(constructorArgs.Count,
+                                      m.Params.Count - constructorArgs.Count)
+                               .All(i => m.Decl?.Params.ElementAtOrDefault(i)?.Default is not null));
+
+            if (shorter != null)
+            {
+                int writtenCount = constructorArgs.Count;
+                for (int i = constructorArgs.Count; i < shorter.Params.Count; i++)
+                {
+                    Expr fallback = CallerValue(shorter.Decl!.Params[i], shorter.Decl.Params, nw.Line,
+                                        k => k >= writtenCount ? null : SpanText(nw.Spans, nw.Source, k + 1))
+                                    ?? Written(shorter, shorter.Decl.Params[i]);
+
+                    nw.Args.Add(fallback);
+                    Type? outerWanted = _wanted;
+                    _wanted = shorter.Params[i].Type;
+                    constructorArgs.Add(CheckExpr(fallback));
+                    _wanted = outerWanted;
+                }
+            }
+        }
+
+        List<MethodSymbol> ctors = methods
+            .Where(m => m.IsCtor && m.Params.Count == constructorArgs.Count)
+            .ToList();
+
+        // THE CLOSEST FIT WINS, not the first one written. Every
+        // constructor whose parameters the arguments convert to
+        // is a candidate, and among those the one that matches
+        // the most parameters EXACTLY is the one C# picks.
+        //
+        // Without that count, two constructors whose parameters
+        // merely convert to each other are told apart by which
+        // was declared first: `DeflateStream(Stream,
+        // CompressionLevel, bool)` and `DeflateStream(Stream,
+        // CompressionMode, bool)` are both int-shaped and both
+        // convertible, so every call went to whichever came
+        // first in the class -- and asking for a compression
+        // level built a decompressor. A call still resolves as
+        // it did whenever no candidate matches more exactly,
+        // because the ordering is stable.
+        MethodSymbol? ctor = ctors
+            .Where(m => constructorArgs
+                .Where((a, i) => !Fits(a, m.Params[i].Type, nw.Args[i])).Count() == 0)
+            .OrderByDescending(m => constructorArgs
+                .Where((a, i) => a.Equals(m.Params[i].Type)).Count())
+            .FirstOrDefault();
+
+        if (ctor != null)
+        {
+            for (int i = 0; i < constructorArgs.Count; i++)
+            {
+                if (nw.Args[i] is LambdaExpr lambda)
+                {
+                    constructorArgs[i] = CheckLambda(lambda, ctor.Params[i].Type);
+                    continue;
+                }
+                if (MethodGroupLambda(nw.Args[i], ctor.Params[i].Type) is LambdaExpr wrapper)
+                {
+                    _r.Rewrites[nw.Args[i]] = wrapper;
+                    constructorArgs[i] = CheckLambda(wrapper, ctor.Params[i].Type);
+                    continue;
+                }
+                if (nw.Args[i] is NewExpr { Type.Name.Length: 0, Elements: null } || HoldsLambda(nw.Args[i]))
+                {
+                    Type? saved = _wanted;
+                    _wanted = ctor.Params[i].Type;
+                    constructorArgs[i] = CheckExpr(nw.Args[i]);
+                    _wanted = saved;
+                }
+                constructorArgs[i] = Settle(nw.Args[i], ctor.Params[i].Type, constructorArgs[i]);
+                CheckAssignable(constructorArgs[i], ctor.Params[i].Type,
+                                nw.Args[i], $"constructor argument {i + 1}");
+            }
+        }
+        else if (methods.Any(m => m.IsCtor))
+        {
+            // NOTHING TO CALL IS AN ERROR, and was silence: the
+            // object was allocated, no constructor ran, and every
+            // field held its zero.
+            Error(nw, $"no constructor of '{constructed.Name}' accepts "
+                    + $"({string.Join(", ", constructorArgs)})");
+        }
+        return ctor;
+    }
+
+    /// <summary>
+    /// What a caller-information attribute on a parameter the call left out
+    /// passes, or null when it has none or there is nothing to pass -- a
+    /// [CallerArgumentExpression] whose argument was not written, a
+    /// [CallerMemberName] outside any member -- and the default is used.
+    /// <paramref name="textOf"/> gives the text written for a parameter's
+    /// argument, by the parameter's index.
+    /// </summary>
+    private Expr? CallerValue(Param p, IReadOnlyList<Param> parameters, int line, Func<int, string?> textOf)
+    {
+        string? text;
+        switch (p.Caller)
+        {
+            case CallerInfo.LineNumber:
+                return new LiteralExpr { Kind = Lit.Int, Text = line.ToString(), IntValue = line, Line = line, Col = p.Col };
+            case CallerInfo.FilePath:
+                text = Where() is { Length: > 0 } file ? System.IO.Path.GetFullPath(file) : null;
+                break;
+            case CallerInfo.MemberName:
+                text = CallerMemberName();
+                break;
+            case CallerInfo.ArgumentExpression:
+                text = null;
+                for (int i = 0; i < parameters.Count; i++)
+                    if (parameters[i].Name == p.CallerArgument) { text = textOf(i); break; }
+                break;
+            default:
+                return null;
+        }
+        return text is null ? null : new LiteralExpr { Kind = Lit.Str, Text = text, Line = line, Col = p.Col };
+    }
+
+    /// <summary>
+    /// The member a call is written in, named as [CallerMemberName] names it:
+    /// a method's name; the property's or event's for one of its accessors
+    /// (an indexer's is "Item"); ".ctor" and ".cctor" for constructors; a
+    /// field's or property's for its initialiser. A lambda or local function
+    /// is part of the member it is written in. Null outside any member.
+    /// </summary>
+    private string? CallerMemberName()
+    {
+        switch (_member)
+        {
+            case null:
+                return null;
+            case MethodDecl { IsCtor: true } ctor:
+                return ctor.Mods.HasFlag(Mods.Static) ? ".cctor" : ".ctor";
+            case MethodDecl method:
+                foreach (string prefix in new[] { "get_", "set_", "add_", "remove_" })
+                {
+                    if (!method.Name.StartsWith(prefix, StringComparison.Ordinal)) continue;
+                    string owner = method.Name[prefix.Length..];
+                    if ((_lexicalType ?? _thisType)?.Decl?.Members.Any(m => m is not MethodDecl && m.Name == owner) == true) return owner;
+                }
+                return method.Name;
+            default:
+                return _member.Name;
+        }
+    }
+
+    /// <summary>The text of span pair <paramref name="pair"/> -- 0 the receiver, then each argument as written -- or null.</summary>
+    private static string? SpanText(int[]? spans, string? source, int pair)
+        => spans is null || source is null || pair < 0 || 2 * pair + 1 >= spans.Length || spans[2 * pair] < 0
+            ? null : source[spans[2 * pair]..spans[2 * pair + 1]];
+
+    /// <summary>The line [CallerLineNumber] gives a call: where the method's name is.</summary>
+    private static int CallLine(CallExpr c) => c.Target is NameExpr or MemberExpr ? c.Target.Line : c.Line;
+
+    /// <summary>
+    /// NULLABLE&lt;T&gt;'S METHODS, as .NET declares them: GetValueOrDefault()
+    /// and GetValueOrDefault(T), and the three object members -- ToString is
+    /// "" and GetHashCode 0 when there is no value, and Equals(object) is true
+    /// of an empty cell only against null. Nothing declares them here, since a
+    /// cell is no class, so each is written out over HasValue and Value with
+    /// the receiver evaluated once, and GetValueOrDefault's argument evaluated
+    /// after it and always, as an argument is. Null when the receiver is not
+    /// a nullable value type or the call is not one of these.
+    /// </summary>
+    private Expr? NullableMemberCall(CallExpr c, MemberExpr m, Type on)
+    {
+        int wanted = m.Name switch { "Equals" => 1, "GetValueOrDefault" => c.Args.Count is 0 or 1 ? c.Args.Count : -1, _ => 0 };
+        // The one argument may be named as .NET names it.
+        string? named = c.ArgNames.Count > 0 ? c.ArgNames[0] : null;
+        if (c.Args.Count != wanted || m.TypeArgs.Count > 0
+            || (named is not null && named != (m.Name == "Equals" ? "other" : "defaultValue"))) return null;
+        c.ArgNames.Clear();
+        if (!on.IsNullableValue || RefOf(on.Underlying) is not TypeRef inner) return null;
+
+        int line = m.Line, col = m.Col;
+        MemberExpr Has(int outer) => new() { Target = new SubjectExpr { Outer = outer, Line = line, Col = col }, Name = "HasValue", Guarded = true, Line = line, Col = col };
+        MemberExpr Value(int outer) => new() { Target = new SubjectExpr { Outer = outer, Line = line, Col = col }, Name = "Value", Guarded = true, Line = line, Col = col };
+        Expr Called(string name, params Expr[] args)
+        {
+            CallExpr call = new() { Target = new MemberExpr { Target = Value(0), Name = name, Line = line, Col = col }, Line = line, Col = col };
+            call.Args.AddRange(args);
+            return call;
+        }
+
+        Expr test;
+        switch (m.Name)
+        {
+            case "GetValueOrDefault" when c.Args.Count == 0:
+                test = new ConditionalExpr { Cond = Has(0), Then = Value(0), Else = new DefaultExpr { Type = inner, Line = line, Col = col }, Line = line, Col = col };
+                break;
+
+            case "GetValueOrDefault":
+            {
+                // The argument converts to T as an argument would; the cast
+                // below only says so to the conditional, which would
+                // otherwise widen `b.GetValueOrDefault(5)` on a byte? to int.
+                Type given = _r.TypeOf(c.Args[0]);
+                CheckAssignable(given, on.Underlying, c.Args[0], "argument 1 of 'GetValueOrDefault'");
+                ConditionalExpr pick = new()
+                {
+                    Cond = Has(1), Then = Value(1),
+                    Else = new CastExpr { Type = inner, Operand = new SubjectExpr { Line = line, Col = col }, Line = line, Col = col },
+                    Line = line, Col = col,
+                };
+                test = new PatternExpr { Subject = c.Args[0], Test = pick, Line = line, Col = col };
+                break;
+            }
+
+            case "ToString":
+                test = new ConditionalExpr { Cond = Has(0), Then = Called("ToString"), Else = new LiteralExpr { Kind = Lit.Str, Text = "", Line = line, Col = col }, Line = line, Col = col };
+                break;
+
+            case "GetHashCode":
+                test = new ConditionalExpr { Cond = Has(0), Then = Called("GetHashCode"), Else = new LiteralExpr { Kind = Lit.Int, Text = "0", IntValue = 0, Line = line, Col = col }, Line = line, Col = col };
+                break;
+
+            default:
+            {
+                // Equals(object): the other side is an object, so a value
+                // there is boxed and is never null.
+                Expr other = new CastExpr { Type = new TypeRef { Name = "object", Line = line, Col = col }, Operand = c.Args[0], Line = line, Col = col };
+                test = new ConditionalExpr
+                {
+                    Cond = Has(0), Then = Called("Equals", other),
+                    Else = new BinaryExpr { Op = BinOp.Eq, Left = other, Right = new LiteralExpr { Kind = Lit.Null, Text = "null", Line = line, Col = col }, Line = line, Col = col },
+                    Line = line, Col = col,
+                };
+                break;
+            }
+        }
+        return new PatternExpr { Subject = m.Target, Test = test, Line = c.Line, Col = c.Col };
+    }
+
     private Type CheckCall(CallExpr c)
     {
         // `GetType()` WRITTEN BARE inside a class is this object's, as C#
@@ -12208,6 +12423,7 @@ public sealed partial class Binder
                 Target = new SuppressExpr
                 {
                     Operand = forCall,
+                    OpensCell = true,
                     Line = c.Line,
                     Col = c.Col,
                 },
@@ -12226,6 +12442,8 @@ public sealed partial class Binder
             };
             safeCall.Args.AddRange(c.Args);
             safeCall.ArgNames.AddRange(c.ArgNames);
+            safeCall.Spans = c.Spans;
+            safeCall.Source = c.Source;
 
             ConditionalExpr choose = new()
             {
@@ -12322,6 +12540,27 @@ public sealed partial class Binder
                 return Type.TypeHandle;
             }
 
+            // A VALUE IS BOXED AND THE BOX IS ASKED, which is what C# does:
+            // GetType is object's, not the value type's, so `5.GetType()` is
+            // `((object)5).GetType()` and says System.Int32. A `T?` boxes to
+            // its value or to null, and null throws, as it does in .NET.
+            Type held = on.AsNonNullable();
+            if (!on.IsError && !on.IsPointer && on.ParamName is null
+                && (held.Symbol is { Kind: TypeKind.Enum or TypeKind.Struct } || held.IsNumeric || held.Prim is Prim.Bool or Prim.Char))
+            {
+                CallExpr boxed = new()
+                {
+                    Target = new MemberExpr
+                    {
+                        Target = new CastExpr { Type = new TypeRef { Name = "object", Line = asked.Line, Col = asked.Col }, Operand = asked.Target, Line = asked.Line, Col = asked.Col },
+                        Name = "GetType", Line = asked.Line, Col = asked.Col,
+                    },
+                    Line = c.Line, Col = c.Col,
+                };
+                _r.Rewrites[c] = boxed;
+                return CheckExpr(boxed);
+            }
+
             if (!on.IsError)
             {
                 Error(c, $"GetType needs an object; '{on}' does not carry its type at run time");
@@ -12360,7 +12599,10 @@ public sealed partial class Binder
         // same answer whichever time they are asked.
         if (c.ArgNames.Any(n => n != null))
         {
+            MemberExpr? outerNamedCallee = _callee;
+            _callee = c.Target as MemberExpr;
             CheckExpr(c.Target);
+            _callee = outerNamedCallee;
             Reorder(c);
         }
 
@@ -12414,10 +12656,26 @@ public sealed partial class Binder
         }
         _wanted = outerTarget;
 
+        MemberExpr? outerCallee = _callee;
+        _callee = c.Target as MemberExpr;
         Type targetType = CheckExpr(c.Target);
+        _callee = outerCallee;
         if (movedReceiver is not null)
         {
             args[0] = _r.TypeOf(movedReceiver);
+        }
+
+        // ONE OF NULLABLE<T>'S METHODS, which CheckMember found on a cell and
+        // left for the call to write out; see NullableMemberCall.
+        if (c.Target is MemberExpr cellMember && _cellMethods.Remove(cellMember, out Type? cell))
+        {
+            if (NullableMemberCall(c, cellMember, cell) is Expr opened)
+            {
+                _r.Rewrites[c] = opened;
+                return CheckExpr(opened);
+            }
+            Error(c, $"no overload of Nullable<T>.{cellMember.Name} takes {c.Args.Count} argument(s)");
+            return Type.Error;
         }
 
         // A PROPERTY THAT IS BEING CALLED IS NOT THE PROPERTY. `list.Count` is
@@ -12702,9 +12960,14 @@ public sealed partial class Binder
 
             if (shorter != null)
             {
+                int writtenCount = args.Count;
                 for (int i = args.Count; i < shorter.Params.Count; i++)
                 {
-                    Expr fallback = Written(shorter, shorter.Decl!.Params[i]);
+                    // Argument k is span pair k + 1, or k once an extension's
+                    // receiver has become argument 0 (pair 0 is the receiver).
+                    Expr fallback = CallerValue(shorter.Decl!.Params[i], shorter.Decl.Params, CallLine(c),
+                                        k => k >= writtenCount ? null : SpanText(c.Spans, c.Source, c.ReceiverAdded ? k : k + 1))
+                                    ?? Written(shorter, shorter.Decl.Params[i]);
 
                     c.Args.Add(fallback);
                     // AS ITS PARAMETER'S TYPE, not the call's surroundings':

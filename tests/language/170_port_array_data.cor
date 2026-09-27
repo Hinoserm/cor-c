@@ -43,13 +43,14 @@ class Program
         }
         Console.WriteLine(same ? "payload matches" : "payload DIFFERS");
 
-        // A string is a byte array with a flag, and its payload is found the
-        // same way -- which is what Os.Write(fd, string) relies on.
-        string s = "abc";
-        long sat = Sys.ArrayData(s);
+        // A string is UTF-16 code units, as C#'s is, and its payload is found
+        // the same way, by Sys.StringData: two bytes a unit, little end first.
+        string s = "ab\u00E9";
+        long sat = Sys.StringData(s);
 
-        Console.WriteLine(Sys.PeekByte(sat) == 97 && Sys.PeekByte(sat + 1) == 98
-                       && Sys.PeekByte(sat + 2) == 99
+        Console.WriteLine(Sys.PeekByte(sat) == 97 && Sys.PeekByte(sat + 1) == 0
+                       && Sys.PeekByte(sat + 2) == 98 && Sys.PeekByte(sat + 4) == 0xE9
+                       && sat - Sys.Word(s) == Sys.ArrayData(b) - Sys.Word(b)
                         ? "string payload matches" : "string payload DIFFERS");
 
         // And an object's header is eight, not sixteen: the other half of the

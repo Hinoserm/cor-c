@@ -65,7 +65,8 @@ public sealed partial class Escape
     /// </summary>
     internal static bool IsCollectorNote(string? callee) =>
         callee is "m_Gc_MarkAt_1_V$I64" or "m_Gc_Report_1_V$I64"
-            or "m_Runtime_WriteBarrier_2_V$I64_V$I64" or "m_Gc_Barrier_2_V$I64_V$I64";
+            or "m_Runtime_WriteBarrier_2_V$I64_V$I64" or "m_Gc_Barrier_2_V$I64_V$I64"
+            or "m_Runtime_WriteBarrierValues_2_V$I64_V$I64" or "m_Gc_BarrierValues_2_V$I64_V$I64";
 
     /// <summary>How many fields this pass arranged to free with their owner.</summary>
     public int FieldsOwned { get; private set; }

@@ -409,8 +409,8 @@ public sealed partial class Lowering
 
         _e.SetBlock(body);
         // No bounds check: the loop's own test is the bound.
-        int stride = sequenceType.Prim == Prim.String ? 1 : Math.Max(1, element.Size);
-        Type stored = sequenceType.Prim == Prim.String ? Type.U8 : element;
+        int stride = sequenceType.Prim == Prim.String ? 2 : Math.Max(1, element.Size);
+        Type stored = sequenceType.Prim == Prim.String ? Type.Char : element;
         VReg scaled = stride == 1 ? index : _e.Binary(Opcode.Mul, index, stride);
         VReg addr = _e.Binary(Opcode.Add, seq, WordOf(scaled));
         VReg value = LoadPlace(new MemPlace(new RegOperand(addr), _t.ArrayHeaderBytes, stored));

@@ -1,0 +1,73 @@
+// test: enum_widths
+// expect-exit: 0
+// expect-output:
+// op:Add small:True sub:True mul:False none:True
+// big:Far 8589934592 null:True
+// arr:Sub,Mul,Add ptr:Mul big-ptr:Far
+// box:Far 8589934592 small-box:Sub
+// list:Add|Sub|Mul
+// gvod:42 0 7 5 byte str:[42][] hash:0 eq:True True False
+// cond:1 True bang:42 side:1 Mul
+//
+// An enum is carried as its underlying integer, and only a bare enum value
+// is: `E?` is a cell, `E*` an address and `E[]` an array, whatever width `E`
+// has. A `byte`-backed `E?` field was once sized as one byte, so reading it
+// read the low byte of the cell's address and used that as the address.
+//
+// And Nullable<T>'s own members: GetValueOrDefault with and without a
+// default (whose argument is evaluated whether or not it is needed), ToString,
+// GetHashCode and Equals, `x?.M()` reaching the value, and `x!` staying a T?.
+
+using System;
+using System.Collections.Generic;
+
+enum Op : byte { Add, Sub, Mul }
+enum Span : long { Near = 1, Far = 1L << 33 }
+
+sealed class Assign
+{
+    public Op? Op { get; init; }
+    public Span? Span;
+    public int After = 77;
+}
+
+static class Program
+{
+    static bool Small(Assign a) => a.Op is Op.Add or Op.Sub;
+    static int sides;
+    static Op Side() { sides++; return Op.Add; }
+
+    static unsafe int Main()
+    {
+        Assign add = new() { Op = Op.Add, Span = Span.Far };
+        Assign sub = new() { Op = Op.Sub };
+        Assign mul = new() { Op = Op.Mul };
+        Assign none = new();
+        Console.WriteLine($"op:{add.Op} small:{Small(add)} sub:{Small(sub)} mul:{Small(mul)} none:{none.Op is null && none.After == 77}");
+        Console.WriteLine($"big:{add.Span} {(long)add.Span!.Value} null:{sub.Span is null}");
+
+        Op[] ops = { Op.Sub, Op.Mul, Op.Add };
+        Op held = Op.Mul;
+        Op* at = &held;
+        Span far = Span.Far;
+        Span* farAt = &far;
+        Console.WriteLine($"arr:{string.Join(",", ops)} ptr:{*at} big-ptr:{*farAt}");
+
+        object boxed = Span.Far;
+        object smallBoxed = Op.Sub;
+        Console.WriteLine($"box:{(Span)boxed} {(long)(Span)boxed} small-box:{(Op)smallBoxed}");
+
+        List<Op> list = new() { Op.Add, Op.Sub, Op.Mul };
+        Console.WriteLine("list:" + string.Join("|", list));
+
+        int? n = 42;
+        int? empty = null;
+        byte? b = null;
+        var five = b.GetValueOrDefault(5);
+        Console.WriteLine($"gvod:{n.GetValueOrDefault()} {empty.GetValueOrDefault()} {empty.GetValueOrDefault(7)} {five} {five.GetType().Name == "Byte" ? "byte" : "int"}"
+            + $" str:[{n.ToString()}][{empty.ToString()}] hash:{empty.GetHashCode()} eq:{n.Equals(42)} {empty.Equals(null)} {n.Equals(null)}");
+        Op picked = mul.Op.GetValueOrDefault(Side());
+        Console.WriteLine($"cond:{n?.CompareTo(40)} {empty?.CompareTo(1) is null} bang:{n!.Value} side:{sides} {picked}");
+        return 0;
+    }
+}

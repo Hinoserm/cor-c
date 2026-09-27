@@ -188,10 +188,22 @@ public sealed partial class Lowering
 
             if (chained is not null)
             {
+                // Named arguments are evaluated where they were written and
+                // passed where they belong, as `new`'s are.
                 List<Operand> args = new() { new RegOperand(_this!) };
-                for (int i = 0; i < decl.Init.Args.Count; i++)
+                if (decl.Init.ArgumentOrder.Count != 0)
                 {
-                    args.Add(new RegOperand(EvalAs(decl.Init.Args[i], chained.Params[i])));
+                    Operand[] prepared = new Operand[decl.Init.Args.Count];
+                    foreach (int index in decl.Init.ArgumentOrder)
+                        prepared[index] = new RegOperand(EvalAs(decl.Init.Args[index], chained.Params[index]));
+                    args.AddRange(prepared);
+                }
+                else
+                {
+                    for (int i = 0; i < decl.Init.Args.Count; i++)
+                    {
+                        args.Add(new RegOperand(EvalAs(decl.Init.Args[i], chained.Params[i])));
+                    }
                 }
                 CallDirect(chained, IrType.Void, args);
             }
@@ -705,6 +717,12 @@ public sealed partial class Lowering
         }
 
         Require(barrier);
+        // AND ITS VALUE FORM, which the optimiser makes of a barrier whose
+        // object it keeps in registers (ScalarObjects); present, so that it can.
+        if (RuntimeMethod("WriteBarrierValues", 2) is MethodSymbol values)
+        {
+            Require(values);
+        }
         _statics.Add(flag);
 
         Block report = _f.NewBlock("barrier");
@@ -947,8 +965,8 @@ public sealed partial class Lowering
     /// </summary>
     private MemPlace ElementPlace(VReg basis, VReg index, Type sequence, Type element, Node at)
     {
-        int stride = Math.Max(1, sequence.Prim == Prim.String ? 1 : element.Size);
-        Type stored = sequence.Prim == Prim.String ? Type.U8 : element;
+        int stride = Math.Max(1, sequence.Prim == Prim.String ? 2 : element.Size);
+        Type stored = sequence.Prim == Prim.String ? Type.Char : element;
 
         if (sequence.IsPointer)
         {

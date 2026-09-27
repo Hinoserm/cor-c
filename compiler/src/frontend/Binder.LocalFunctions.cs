@@ -61,6 +61,8 @@ public sealed partial class Binder
         bool named = call.ArgNames.Any(name => name is not null);
         if (!named && call.Args.Count == lambda.Params.Count) return;
         Expr?[] placed = new Expr?[lambda.Params.Count];
+        int[] from = new int[lambda.Params.Count];
+        Array.Fill(from, -1);
         List<int> order = new();
         for (int n = 0; n < call.Args.Count; n++)
         {
@@ -71,7 +73,7 @@ public sealed partial class Binder
                 Error(call, $"invalid or duplicate argument for local function '{declaration.Name}'");
                 return;
             }
-            placed[index] = call.Args[n]; order.Add(index);
+            placed[index] = call.Args[n]; order.Add(index); from[index] = n;
         }
         for (int n = 0; n < placed.Length; n++)
         {
@@ -81,7 +83,9 @@ public sealed partial class Binder
                 Error(call, $"missing argument '{lambda.Params[n].Name}' for local function '{declaration.Name}'");
                 return;
             }
-            placed[n] = LocalDefault(declaration, lambda.Params[n]); order.Add(n);
+            placed[n] = CallerValue(lambda.Params[n], lambda.Params, CallLine(call), k => from[k] < 0 ? null : SpanText(call.Spans, call.Source, from[k] + 1))
+                        ?? LocalDefault(declaration, lambda.Params[n]);
+            order.Add(n);
         }
         call.Args.Clear(); call.Args.AddRange(placed!);
         call.ArgNames.Clear();

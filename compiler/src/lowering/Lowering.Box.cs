@@ -63,13 +63,17 @@ public sealed partial class Lowering
     private static int BoxPayload(Type t)
         => BoxedBlock(t) ? Math.Max(1, t.Symbol!.InstanceSize) : Math.Max(1, t.Size);
 
-    /// <summary>What a boxed value calls itself: the name C# would print for the type.</summary>
+    /// <summary>
+    /// What a boxed value calls itself. A primitive is named as .NET names
+    /// it, `System.Byte` rather than the `byte` C# spells it, so a boxed
+    /// value's GetType().Name is "Byte" and its FullName "System.Byte".
+    /// </summary>
     private static string BoxName(Type t)
-        => t.Symbol is { Kind: TypeKind.Enum or TypeKind.Struct } named ? named.Name : t.ToString();
+        => t.Symbol is { Kind: TypeKind.Enum or TypeKind.Struct } named ? named.Name : RuntimeName(t);
 
     /// <summary>The register width a boxed value is kept and compared in.</summary>
     private static IrType BoxSlot(Type t)
-        => t.Symbol is { Kind: TypeKind.Enum } ? IrType.I32
+        => t.IsEnumValue ? IrTypes.Of(t)
          : BoxedBlock(t) ? IrTypes.Word
          : IrTypes.Of(t);
 

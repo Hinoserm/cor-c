@@ -814,7 +814,11 @@ namespace System.Text.Json.Nodes
             {
                 Rune rune;
                 int used;
-                if (!Rune.TryDecodeFromUtf8(value, at, out rune, out used) || used <= 0)
+                if (Rune.TryGetRuneAt(value, at, out rune))
+                {
+                    used = rune.Utf16SequenceLength;
+                }
+                else
                 {
                     rune = Rune.ReplacementChar;
                     used = 1;

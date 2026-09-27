@@ -17,6 +17,16 @@ public sealed class Parser
 {
     private readonly ParserTokens _t;
     private readonly string _file;
+
+    /// <summary>
+    /// The text the tokens were read from, when there is one: each call keeps
+    /// where its receiver and arguments were written in it, which is what
+    /// [CallerArgumentExpression] passes.
+    /// </summary>
+    public string? Source { get; init; }
+
+    /// <summary>Spans of the calls being parsed, innermost last; see CallExpr.Spans.</summary>
+    private readonly List<int> _spans = new();
     private readonly bool _declarationsOnly;
     private readonly bool _includeTemplateBodies;
     private int _templateDepth;
@@ -77,9 +87,18 @@ public sealed class Parser
 
     public static CompilationUnit ParseText(string source, string file = "<source>",
                                             IReadOnlyCollection<string>? symbols = null, bool declarationsOnly = false, bool includeTemplateBodies = false)
-        => new Parser(Lexer.Tokenize(source, file, 1, 1, symbols), file, declarationsOnly, includeTemplateBodies).ParseUnit();
+        => new Parser(Lexer.Tokenize(source, file, 1, 1, symbols), file, declarationsOnly, includeTemplateBodies) { Source = source }.ParseUnit();
 
     // ---- token helpers --------------------------------------------------
+
+    /// <summary>Where token <paramref name="index"/> ends in <see cref="Source"/>.</summary>
+    private int End(int index) => Lexer.TokenEnd(Source!, _t[index].Pos);
+
+    /// <summary>
+    /// Where an argument's expression starts: after `ref`, `out` or `in`,
+    /// which C# leaves out of the argument's text.
+    /// </summary>
+    private int ArgumentStart() => At(Tok.KwOut) || At(Tok.KwRef) || At(Tok.KwIn) ? Ahead().Pos : Cur.Pos;
 
     private Token Cur => _t[Math.Min(_i, _t.Count - 1)];
     private Token Ahead(int n = 1) => _t[Math.Min(_i + n, _t.Count - 1)];
@@ -360,7 +379,7 @@ public sealed class Parser
             // column whenever the text before it held no escape -- and an
             // escape only ever shortens it, so this never overshoots the line.
             List<Token> tokens = Lexer.Tokenize(expression, _file, at.Line, at.Col + 2 + from);
-            Parser sub = new(tokens, _file);
+            Parser sub = new(tokens, _file) { Source = expression };
             Expr hole = sub.ParseExpr();
 
             if (format is not null)
@@ -1021,6 +1040,7 @@ public sealed class Parser
         while (At(Tok.LBracket))
         {
             int depth = 0;
+            string target = "";
 
             do
             {
@@ -1032,28 +1052,22 @@ public sealed class Parser
                     // attribute on the RESULT and not on the member, and C#
                     // writes the two the same way but for the word in front.
                     int j = _i + 1;
-                    string target = "";
+                    target = "";
 
-                    if (j + 1 < _t.Count && _t[j + 1].Kind == Tok.Colon
+                    if (depth == 1 && j + 1 < _t.Count && _t[j + 1].Kind == Tok.Colon
                         && _t[j].Kind is Tok.Ident or Tok.KwReturn)
                     {
                         target = _t[j].Kind == Tok.KwReturn ? "return" : _t[j].Text;
                         j += 2;
                     }
 
-                    if (j < _t.Count && _t[j].Kind == Tok.Ident
-                        && j + 1 < _t.Count
-                        && _t[j + 1].Kind is Tok.RBracket or Tok.LParen or Tok.Comma)
-                    {
-                        if (target.Length == 0)
-                        {
-                            _attributes.Add(_t[j].Text);
-                        }
-                        AttributeRef written = new() { Target = target, Name = _t[j].Text };
-
-                        written.Arguments.AddRange(Arguments(j + 1));
-                        _attributeParts.Add(written);
-                    }
+                    if (depth == 1) RecordAttribute(j, target);
+                }
+                // EVERY ATTRIBUTE IN THE SECTION: `[NotNull, CallerMemberName]`
+                // is two, and the second is as much the parameter's as the first.
+                else if (At(Tok.Comma) && depth == 1)
+                {
+                    RecordAttribute(_i + 1, target);
                 }
                 else if (At(Tok.RBracket))
                 {
@@ -1066,6 +1080,33 @@ public sealed class Parser
                 _i++;
             }
             while (depth > 0);
+        }
+    }
+
+    /// <summary>
+    /// The attribute whose name starts at token <paramref name="j"/>, by the
+    /// last part of its name: `System.Runtime.CompilerServices.CallerMemberName`
+    /// is CallerMemberName, as a `using` would have let it be written.
+    /// </summary>
+    private void RecordAttribute(int j, string target)
+    {
+        while (j + 2 < _t.Count && _t[j].Kind == Tok.Ident && _t[j + 1].Kind == Tok.Dot && _t[j + 2].Kind == Tok.Ident)
+        {
+            j += 2;
+        }
+
+        if (j < _t.Count && _t[j].Kind == Tok.Ident
+            && j + 1 < _t.Count
+            && _t[j + 1].Kind is Tok.RBracket or Tok.LParen or Tok.Comma)
+        {
+            if (target.Length == 0)
+            {
+                _attributes.Add(_t[j].Text);
+            }
+            AttributeRef written = new() { Target = target, Name = _t[j].Text };
+
+            written.Arguments.AddRange(Arguments(j + 1));
+            _attributeParts.Add(written);
         }
     }
 
@@ -1447,17 +1488,36 @@ public sealed class Parser
                 if (isRecord && At(Tok.LParen))
                 {
                     _i++;
+                    int spanMark = _spans.Count;
+                    if (Source is not null) { _spans.Add(-1); _spans.Add(-1); }
 
                     if (!At(Tok.RParen))
                     {
                         do
                         {
+                            if (At(Tok.Ident) && Ahead().Kind == Tok.Colon)
+                            {
+                                decl.BaseArgNames.Add(_t[_i++].Text);
+                                _i++;
+                            }
+                            else
+                            {
+                                decl.BaseArgNames.Add(null);
+                            }
+                            int argumentAt = ArgumentStart();
                             decl.BaseArgs.Add(ParseArg());
+                            if (Source is not null) { _spans.Add(argumentAt); _spans.Add(End(_i - 1)); }
                         }
                         while (Take(Tok.Comma));
                     }
 
                     Expect(Tok.RParen, "')' after the base constructor's arguments");
+                    if (Source is not null)
+                    {
+                        decl.BaseSpans = _spans.GetRange(spanMark, _spans.Count - spanMark).ToArray();
+                        decl.BaseSource = Source;
+                        _spans.RemoveRange(spanMark, _spans.Count - spanMark);
+                    }
                 }
             }
             while (Take(Tok.Comma));
@@ -1693,7 +1753,8 @@ public sealed class Parser
         src.Append("            for (int i = 0; i < ma.Items.Length; i++) { if (i != at) { rest[k] = ma.Items[i]; k++; } }\n");
         src.Append("            return new ").Append(m).Append("(rest);\n        }\n");
         src.Append("        return Runtime.SameClosure(a, b) ? null : a;\n    }\n}\n");
-        Parser sub = new(Lexer.Tokenize(src.ToString(), _file), _file, _declarationsOnly);
+        string generated = src.ToString();
+        Parser sub = new(Lexer.Tokenize(generated, _file), _file, _declarationsOnly) { Source = generated };
         CompilationUnit unit = sub.ParseUnit();
         if (unit.Types.Count != 1) return null;
         TypeDecl made = unit.Types[0];
@@ -1758,8 +1819,9 @@ public sealed class Parser
 
         if (decl.BaseArgs.Count > 0)
         {
-            chain = new CtorInit { IsThis = false, Line = start.Line, Col = start.Col };
+            chain = new CtorInit { IsThis = false, Spans = decl.BaseSpans, Source = decl.BaseSource, Line = start.Line, Col = start.Col };
             chain.Args.AddRange(decl.BaseArgs);
+            chain.ArgNames.AddRange(decl.BaseArgNames);
         }
 
         MethodDecl ctor = new()
@@ -1865,7 +1927,8 @@ public sealed class Parser
             src.Append("    public static bool operator !=(").Append(maybe).Append(" left, ").Append(maybe).Append(" right) { return !(left == right); }\n");
         }
         src.Append("}\n");
-        Parser sub = new(Lexer.Tokenize(src.ToString(), _file), _file, _declarationsOnly);
+        string generated = src.ToString();
+        Parser sub = new(Lexer.Tokenize(generated, _file), _file, _declarationsOnly) { Source = generated };
         CompilationUnit unit = sub.ParseUnit();
         if (unit.Types.Count != 1) return;
         Adopt(unit.Types[0].Members);
@@ -2123,15 +2186,34 @@ public sealed class Parser
                 chain = new CtorInit { IsThis = isThis, Line = initAt.Line, Col = initAt.Col };
                 Expect(Tok.LParen, "'(' after the constructor initialiser");
 
+                int spanMark = _spans.Count;
+                if (Source is not null) { _spans.Add(-1); _spans.Add(-1); }
                 if (!At(Tok.RParen))
                 {
                     do
                     {
+                        if (At(Tok.Ident) && Ahead().Kind == Tok.Colon)
+                        {
+                            chain.ArgNames.Add(_t[_i++].Text);
+                            _i++;
+                        }
+                        else
+                        {
+                            chain.ArgNames.Add(null);
+                        }
+                        int argumentAt = ArgumentStart();
                         chain.Args.Add(ParseArg());
+                        if (Source is not null) { _spans.Add(argumentAt); _spans.Add(End(_i - 1)); }
                     }
                     while (Take(Tok.Comma));
                 }
                 Expect(Tok.RParen, "')' after the constructor initialiser");
+                if (Source is not null)
+                {
+                    chain.Spans = _spans.GetRange(spanMark, _spans.Count - spanMark).ToArray();
+                    chain.Source = Source;
+                    _spans.RemoveRange(spanMark, _spans.Count - spanMark);
+                }
             }
 
             return FinishMethod(ctor, chain);
@@ -2899,13 +2981,26 @@ public sealed class Parser
             SkipAttributes();
 
             bool? whenProved = null;
+            CallerInfo caller = CallerInfo.None;
+            string? callerArgument = null;
 
+            // AND THE CALLER-INFORMATION ATTRIBUTES, which make the compiler
+            // pass what it knows at the call for an argument left out: the
+            // member it is in, the file, the line, or another argument's text.
             foreach (AttributeRef written in _attributeParts)
             {
-                if (written.Name == "NotNullWhen" && written.Argument is "true" or "false")
+                string named = written.Name.EndsWith("Attribute", StringComparison.Ordinal) ? written.Name[..^"Attribute".Length] : written.Name;
+                if (named == "NotNullWhen" && written.Argument is "true" or "false")
                 {
                     whenProved = written.Argument == "true";
-                    break;
+                }
+                else if (named == "CallerMemberName") caller = CallerInfo.MemberName;
+                else if (named == "CallerFilePath") caller = CallerInfo.FilePath;
+                else if (named == "CallerLineNumber") caller = CallerInfo.LineNumber;
+                else if (named == "CallerArgumentExpression" && written.Argument is { Length: > 0 } of)
+                {
+                    caller = CallerInfo.ArgumentExpression;
+                    callerArgument = of;
                 }
             }
 
@@ -2932,7 +3027,7 @@ public sealed class Parser
             {
                 Name = name, Type = type, IsRef = byRef || byIn, IsOut = byOut,
                 IsReadOnlyRef = byIn, IsParams = variadic, IsThis = receiver,
-                NotNullWhen = whenProved,
+                NotNullWhen = whenProved, Caller = caller, CallerArgument = callerArgument,
                 Default = def, Line = at.Line, Col = at.Col,
             });
 
@@ -6524,17 +6619,25 @@ public sealed class Parser
 
     private Expr ParsePostfix()
     {
+        int start = Cur.Pos;
         Expr e = ParsePrimary();
+
+        // Where the receiver of the member last read ends, for a call on it:
+        // `value.Guard()` passes "value" to a [CallerArgumentExpression]
+        // naming the extension's `this`.
+        int receiverLast = -1;
 
         while (true)
         {
             Token at = Cur;
 
             bool spacedConditional = At(Tok.Question) && Ahead().Kind == Tok.Dot;
+            int beforeDot = _i - 1;
 
             if (Take(Tok.Dot) || (At(Tok.QuestionDot) && Take(Tok.QuestionDot))
                               || spacedConditional)
             {
+                receiverLast = beforeDot;
                 bool nullCond = at.Kind == Tok.QuestionDot || spacedConditional;
 
                 if (spacedConditional)
@@ -6566,6 +6669,13 @@ public sealed class Parser
             {
                 _i++;
                 CallExpr call = new() { Target = e, Line = at.Line, Col = at.Col };
+                int spanMark = _spans.Count;
+                if (Source is not null)
+                {
+                    bool onMember = e is MemberExpr && receiverLast >= 0;
+                    _spans.Add(onMember ? start : -1);
+                    _spans.Add(onMember ? End(receiverLast) : -1);
+                }
 
                 if (!At(Tok.RParen))
                 {
@@ -6589,12 +6699,25 @@ public sealed class Parser
                             call.ArgNames.Add(null);
                         }
 
+                        int argumentAt = ArgumentStart();
                         call.Args.Add(ParseArg());
+                        if (Source is not null)
+                        {
+                            _spans.Add(argumentAt);
+                            _spans.Add(End(_i - 1));
+                        }
                     }
                     while (Take(Tok.Comma));
                 }
 
                 Expect(Tok.RParen, "')' to close the argument list");
+                if (Source is not null)
+                {
+                    call.Spans = _spans.GetRange(spanMark, _spans.Count - spanMark).ToArray();
+                    call.Source = Source;
+                    _spans.RemoveRange(spanMark, _spans.Count - spanMark);
+                }
+                receiverLast = -1;
                 e = call;
                 continue;
             }
@@ -6915,6 +7038,8 @@ public sealed class Parser
 
                 if (Take(Tok.LParen))
                 {
+                    int spanMark = _spans.Count;
+                    if (Source is not null) { _spans.Add(-1); _spans.Add(-1); }
                     if (!At(Tok.RParen))
                     {
                         do
@@ -6928,11 +7053,19 @@ public sealed class Parser
                             {
                                 n.ArgNames.Add(null);
                             }
+                            int argumentAt = ArgumentStart();
                             n.Args.Add(ParseArg());
+                            if (Source is not null) { _spans.Add(argumentAt); _spans.Add(End(_i - 1)); }
                         }
                         while (Take(Tok.Comma));
                     }
                     Expect(Tok.RParen, "')' after the constructor arguments");
+                    if (Source is not null)
+                    {
+                        n.Spans = _spans.GetRange(spanMark, _spans.Count - spanMark).ToArray();
+                        n.Source = Source;
+                        _spans.RemoveRange(spanMark, _spans.Count - spanMark);
+                    }
                 }
 
                 // AN INITIALISER, with or without a constructor before it:

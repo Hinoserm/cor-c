@@ -651,6 +651,15 @@ public static class Driver
                 provided.UnionWith(mine);
             }
             module.Provided(provided);
+            // WHAT ONLY THE LIBRARY'S CODE CALLED goes with it. A library body
+            // the optimiser worked on here -- a copy of one of its callees
+            // specialised for a constant argument -- has a name the shared
+            // object does not export, and outlived the caller it was made for:
+            // a program linked against libcorsacrt carried a piece of Gc.
+            if (module.Entry is not null)
+            {
+                Corsac.Lang.Opt.Inline.RemoveDeadFunctions(module, Corsac.Lang.Opt.Inline.AddressTaken(module));
+            }
             HashSet<string> defined = new(
                 module.Functions.Select(f => f.Name).Concat(module.Data.Select(d => d.Name)),
                 StringComparer.Ordinal);
@@ -991,6 +1000,7 @@ public static class Driver
             Path.Combine(root, "stdlib", "src", "System", "Core.cor"),
             Path.Combine(root, "stdlib", "src", "System", "Runtime", "ExceptionServices", "ExceptionDispatchInfo.cor"),
             Path.Combine(root, "runtime", "src", "core", "runtime.cor"),
+            Path.Combine(root, "runtime", "src", "core", "unicode.cor"),
             Path.Combine(root, "runtime", "src", "core", "gc.cor"),
             Path.Combine(root, "stdlib", "src", "System", "GC.cor"),
         };

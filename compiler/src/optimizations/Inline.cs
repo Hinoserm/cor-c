@@ -118,6 +118,8 @@ public sealed class Inline : IParallelModulePass
             addressTaken.Add(Escape.Freer);
             addressTaken.Add(Escape.FieldFreer);
             addressTaken.Add(Escape.ReplacedFreer);
+            // What a barrier on a replaced object becomes (ScalarObjects).
+            addressTaken.Add(Escape.ValueBarrier);
         }
         addressTaken.UnionWith(Keep);
         _keepCalls = m.KeepCalls;
@@ -295,6 +297,18 @@ public sealed class Inline : IParallelModulePass
     internal static bool Inlineable(Function callee, HashSet<string> addressTaken)
     {
         if (callee.Blocks.Count == 0 || addressTaken.Contains(callee.Name) || callee.Async is not null)
+        {
+            return false;
+        }
+
+        // A NOTE TO THE COLLECTOR STAYS A CALL: the write barrier's slow path
+        // and what it reports with (Escape.IsCollectorNote). Escape analysis
+        // knows such a call keeps no pointer the program can use; spliced in,
+        // its body is a store of the reference into the collector's log, and
+        // every object whose field a barrier guarded escaped. Whether that
+        // happened was the inliner's size arithmetic of the day. The fast path
+        // -- the Marking test -- is already inline at every store.
+        if (Escape.IsCollectorNote(callee.Name))
         {
             return false;
         }
@@ -602,7 +616,7 @@ public sealed class Inline : IParallelModulePass
     /// it everywhere it was wanted. Exported symbols a library must keep
     /// are not touched.
     /// </summary>
-    private static void RemoveDeadFunctions(Module m, HashSet<string> addressTaken)
+    internal static void RemoveDeadFunctions(Module m, HashSet<string> addressTaken)
     {
         bool changed = true;
         while (changed)

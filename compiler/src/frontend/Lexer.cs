@@ -151,6 +151,18 @@ public sealed class Lexer
                  : new HashSet<string>(symbols, StringComparer.Ordinal);
     }
 
+    /// <summary>
+    /// Where the token that starts at <paramref name="pos"/> ends: its raw
+    /// text, quotes and escapes and all, where a token's Text is its value.
+    /// </summary>
+    public static int TokenEnd(string source, int pos)
+    {
+        Lexer one = new(source);
+        one._pos = pos;
+        one.Next();
+        return one.Position;
+    }
+
     public static List<Token> Tokenize(string source, string file = "<source>", int line = 1, int col = 1,
                                        IReadOnlyCollection<string>? symbols = null)
     {
