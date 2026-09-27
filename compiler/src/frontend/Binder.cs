@@ -6997,6 +6997,12 @@ public sealed partial class Binder
     /// specialisation up, and because it is only the CALL SITE that wants it:
     /// inside the method, T stays T until the copy is made.
     /// </summary>
+    /// <summary>Whether what is being bound is a canonical copy: the one
+    /// specialisation of a type or method that every word argument shares.</summary>
+    private bool InCanonicalCopy
+        => _thisType?.Name.Contains("$" + Monomorphiser.CanonName, StringComparison.Ordinal) == true
+        || _member?.Name.Contains("$" + Monomorphiser.CanonName, StringComparison.Ordinal) == true;
+
     private Type Close(Type t, Dictionary<string, Type>? bound)
     {
         Type made = Substitute(t, bound);
@@ -7038,6 +7044,19 @@ public sealed partial class Binder
                 Prim = real.Kind == TypeKind.Enum ? Prim.I32 : Prim.Void,
                 Symbol = real, UseArgs = closed,
             };
+        }
+
+        // INSIDE A CANONICAL COPY, A WORD IS __canon. `ValueTask<R>.AsTask`
+        // returns `_task ?? Task.FromResult(_result)`, and in the copy every
+        // other library shares, R binds as the word it is -- which spells
+        // `object`, and `Task$object` is a type nothing in that body makes.
+        // What the body means is the shared copy: a template closed over
+        // nothing but words, there, is the template's canonical copy, the
+        // `Task$__canon` its own return type already names.
+        if (InCanonicalCopy && closed.All(a => a.Prim == Prim.Any && a.Symbol is null && a.Args.Count == 0)
+            && _r.Types.TryGetValue(Monomorphiser.CanonNameOf(Bare(template.Key), closed.Count), out TypeSymbol? shared))
+        {
+            return new Type { Prim = Prim.Void, Symbol = shared, UseArgs = closed };
         }
 
         // THE SPECIALISATION MAY NOT EXIST YET. `Repeat<T>` returning

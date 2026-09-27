@@ -34,6 +34,8 @@ if [ ${#tests[@]} = 0 ]; then
         18_classes record_equality struct_inline_fields
         # a constructor only the canonical copy of a generic has
         502_program_shadows_library 504_generic_indexer_type
+        # the library's shared copies: interface members every dictionary implements
+        682_readonly_dictionary_views
         # the overload completed from defaults, bound once
         608_overload_by_word
         # lifetimes across units

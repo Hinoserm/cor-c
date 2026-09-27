@@ -1387,6 +1387,19 @@ static class Gc
     /// must cost nothing worse than the memory it forgot to give back.
     public static void Free(long at)
     {
+        // NOT ON TOP OF THE ALLOCATOR, NOR OF THE HEAP LOCK'S HOLDER. A
+        // kernel's thread is a processor, and the compiler's frees reach
+        // interrupt handlers too: a handler that lets go of an owned field
+        // frees with nothing allocated. Landed inside the allocator's fast
+        // path (Tls.InAlloc), the top-of-buffer rewind below would move the
+        // bump pointer the code under it has read and not yet moved; landed
+        // on the lock's holder, GcLock.Enter would wait on itself for ever.
+        // The object is left to the collector, as a wrong proof's is.
+        if (Sys.Peek(Sys.ThreadBlock() + Tls.InAlloc) != 0 || GcLock.HeldByMe())
+        {
+            return;
+        }
+
         if (Verifying())
         {
             VerifyFree(at);

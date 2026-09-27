@@ -519,6 +519,8 @@ class SortedDictionary<K, V> : IReadOnlyDictionary<K, V>, IEnumerable<KeyValuePa
     public IComparer<K> Comparer => pairs.order;
     public List<K> Keys => pairs.keys;
     public List<V> Values => pairs.values;
+    IEnumerable<K> IReadOnlyDictionary<K, V>.Keys => Keys;
+    IEnumerable<V> IReadOnlyDictionary<K, V>.Values => Values;
 
     public void Add(K key, V value) {
         int at = pairs.Search(key);
@@ -864,6 +866,8 @@ class ReadOnlyDictionary<K, V> : IReadOnlyDictionary<K, V> {
 
     public List<K> Keys => inner.Keys;
     public List<V> Values => inner.Values;
+    IEnumerable<K> IReadOnlyDictionary<K, V>.Keys => Keys;
+    IEnumerable<V> IReadOnlyDictionary<K, V>.Values => Values;
 
     public bool ContainsKey(K key) { return inner.ContainsKey(key); }
 
