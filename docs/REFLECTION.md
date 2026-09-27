@@ -186,6 +186,23 @@ attributes costs no code. Attributes the compiler itself consumes (`[DoesNotRetu
 `[NotNullIfNotNull]`, `[UnmanagedCallersOnly]`, `[Flags]` is kept) are pseudo-attributes
 and are not written.
 
+### Self-relative, so the tables need no relocation
+
+Every reference inside `.rodata.reflect` -- to a string, a descriptor, another Member, a
+thunk, an attribute list -- is a signed 32-bit offset from the field that holds it, not an
+address; the layouts above give each such field one word for alignment, of which the low
+32 bits are the offset. The tables therefore carry no relocations at all: in a shared
+library their pages stay clean and shared between every process that maps it, the loader
+does nothing for them, and a process that never reflects never faults them in. Only
+descriptor word 10 holds a real address, and descriptors are relocated today. The library
+turns an offset into an address with one add (`Sys.SelfRelative(address)`, an intrinsic).
+
+This is also why the design needs nothing of the kernel: the tables are read-only data in
+an ordinary loadable segment (ELF) or in the image's existing read-only section (the
+CORSAC sectioned format), with no new section, relocation kind or loader duty. The
+descriptor flags change does mean the kernel, the ring-1 images and every program are
+rebuilt together, as any ABI change in a sealed system does.
+
 ### Name index
 
 With `__reflect_names` live, one sorted array of (full name, descriptor) for every
