@@ -1327,6 +1327,7 @@ static class Gc
 
     static void Start()
     {
+        _verify = Platform.VerifyFrees();
         _ready = true;
         _threshold = MinThreshold;
         _digits = Platform.Map(4096);
@@ -1386,6 +1387,12 @@ static class Gc
     /// must cost nothing worse than the memory it forgot to give back.
     public static void Free(long at)
     {
+        if (Verifying())
+        {
+            VerifyFree(at);
+            return;
+        }
+
         // NOTHING IS FREED WHILE A MARK IS UNDER WAY. The marker reads and
         // flags the objects of its snapshot with nothing held; an object
         // that went back to the free list under it, was merged with its
@@ -1524,6 +1531,63 @@ static class Gc
     /// How many calls to Free actually returned a block. A test reads it to
     /// tell a free that happened from one that was ignored.
     public static long Frees;
+
+    // CHECKED MODE FOR THE COMPILER'S FREES (Platform.VerifyFrees; on Linux,
+    // CORSAC_VERIFY_FREES=1 in the environment). A free is otherwise quiet
+    // about what it is handed and gives the bytes straight back, so a wrong
+    // one -- an object still in use, one freed twice -- reads as a working
+    // program until the bytes happen to be taken again. Checked, a freed
+    // block is never given back: its payload is filled with a pattern no
+    // pointer has and it becomes a leaf the collector reclaims once nothing
+    // reaches it. A read after the free finds the pattern (and a pointer read
+    // through it faults) instead of whatever came next; a second free of it
+    // is reported and ends the process with 97. A pointer that is not an
+    // object at all -- static data a reassigned variable held -- is ignored,
+    // as it always is.
+    //
+    // ASKED ONCE, IN Start, ON THE MAIN THREAD. The environment is found
+    // through the loader's stack, and Sys.EntryStack is the stack of the
+    // thread asking: a child thread's first free, asking itself, read its
+    // own stack as if it were the environment and faulted. Start runs at
+    // the first allocation, before any thread can exist.
+    static bool _verify;
+    const long Poison = 0xFEEEFEEE;
+
+    /// How many blocks the checked mode has taken back and filled.
+    public static long VerifiedFrees;
+
+    static bool Verifying()
+    {
+        return _verify;
+    }
+
+    static void VerifyFree(long at)
+    {
+        if (at == 0)
+        {
+            return;
+        }
+        long block = ValidAllocated(at);
+        if (block == 0)
+        {
+            return;
+        }
+        long end = block + SizeOfBlock(block) - FooterBytes;
+        if (Sys.Peek(block + KindAt) == KindLeaf && Sys.PeekWord(at) == Poison && (at + 4 >= end || Sys.PeekWord(at + 4) == Poison))
+        {
+            SayNumber("gc: checked free: freed twice, block ", at);
+            Platform.Exit(97);
+        }
+        long p = at;
+        while (p < end)
+        {
+            Sys.PokeWord(p, Poison);
+            p = p + 4;
+        }
+        Sys.Poke(block + KindAt, KindLeaf);
+        VerifiedFrees = VerifiedFrees + 1;
+        Frees = Frees + 1;
+    }
 
     /// The header of an exact, live allocation, or zero for anything foreign,
     /// interior, malformed or already free.

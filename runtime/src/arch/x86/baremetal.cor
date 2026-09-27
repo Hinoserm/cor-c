@@ -88,6 +88,13 @@ interface IConsole
 /// the same rule here.
 static class Platform
 {
+    /// The collector's checked mode for the compiler's frees (Gc.VerifyFree)
+    /// is a hosted test's: a machine without an environment never asks for it.
+    public static bool VerifyFrees()
+    {
+        return false;
+    }
+
     /// Where the bump region begins and ends. Zero means "not yet decided",
     /// and the first call to Map decides it.
     private static long _at;

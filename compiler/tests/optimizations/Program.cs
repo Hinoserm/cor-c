@@ -86,6 +86,7 @@ public static partial class Program
         Try("escape: a callee-filled field dies with its owner", CalleeFilledField);
         Try("escape: one liveness judges every allocation in a function", EscapeSharedLiveness);
         Try("escape: calls into other units become conditions for the link", EscapeLinkHints);
+        Try("escape: a variable fed by another unit's function waits for the link", OwnedVariableWaits);
         Try("local copies: reassignment, branches, joins and loops preserve values", LocalCopyBoundaries);
         Try("division reuse: signed results and redefinition barriers", DivisionReuseBoundaries);
         Try("integer chains: modular constants and mutable-source barriers", IntegerChainBoundaries);
@@ -615,6 +616,58 @@ public static partial class Program
         Assert(Escape.RunAtLink(lend, new Escape.LinkFacts(facts)) == 1, "with the link's answer the object is placed");
         Verifier.Check(lend, "lend at link");
         Assert(!lend.Blocks.SelectMany(x => x.Instrs).Any(i => i.Op == Opcode.Call && i.Callee == Escape.Allocator), "no allocation left");
+    }
+
+    private static void OwnedVariableWaits()
+    {
+        // s = next(s), again and again, where `next` is another unit's: this
+        // unit cannot tell that next hands over a fresh object or keeps
+        // nothing it is handed, so s is not owned here -- it is pending on
+        // exactly that. A call to an intrinsic never becomes a condition.
+        Module module = new("waits") { LeavesLinkHints = true };
+        (Function f, Builder b) = Fn(IrType.I32, IrType.I32);
+        f.Exported = true;
+        module.Functions.Add(f); module.Entry = f.Name;
+        Block loop = f.NewBlock("loop"), done = f.NewBlock("done");
+        VReg s = b.Reg(IrType.I32, "s");
+        VReg n = b.Reg(IrType.I32, "n");
+        b.CopyTo(s, new ImmOperand(0, IrType.I32));
+        b.CopyTo(n, new ImmOperand(0, IrType.I32));
+        b.Jump(loop);
+        b.SetBlock(loop);
+        VReg made = b.Call("next", IrType.I32, new RegOperand(s))!;
+        b.CopyTo(s, new RegOperand(made));
+        VReg block = b.Call("__x86.i.threadblock", IrType.I32)!;
+        b.Store(new RegOperand(block), new RegOperand(n), 0, 4);
+        b.CopyTo(n, new RegOperand(b.Binary(Opcode.Add, n, 1)));
+        b.Branch(b.Binary(Opcode.LtS, n, f.Params[0]), loop, done);
+        b.SetBlock(done);
+        b.Ret(new RegOperand(b.Load(IrType.I32, s, 0, 4)));
+        foreach (string helper in new[] { Escape.Freer, Escape.ReplacedFreer })
+        {
+            Function h = new(helper, IrType.Void);
+            h.Params.Add(h.NewReg(IrType.I64));
+            if (helper == Escape.ReplacedFreer) h.Params.Add(h.NewReg(IrType.I64));
+            new Builder(h, h.NewBlock("entry")).Ret();
+            module.Functions.Add(h);
+        }
+        Escape escape = new(); escape.Run(module);
+        Verifier.Check(f, "waiting variable");
+        Assert(!f.Blocks.SelectMany(x => x.Instrs).Any(i => i.Callee == Escape.ReplacedFreer), "not owned by this unit alone");
+        var pending = module.LifetimeHints!.Pending;
+        Assert(pending.Any(c => c.Fresh.Contains("next") && c.Stays.Contains(("next", 0))),
+            "pending on next handing over a fresh object and keeping its argument's");
+        Assert(pending.All(c => !c.Fresh.Any(Escape.IsIntrinsic) && !c.Stays.Any(x => Escape.IsIntrinsic(x.Callee))),
+            "no intrinsic is ever a condition");
+
+        // With the link's answer the same function owns s.
+        Corsac.Lang.Lto.LifetimeFacts facts = new();
+        facts.Escapes["next"] = new[] { false };
+        facts.Fresh.Add("next");
+        facts.Helpers.Add(Escape.Freer); facts.Helpers.Add(Escape.ReplacedFreer);
+        Assert(Escape.RunAtLink(f, new Escape.LinkFacts(facts)) >= 1, "owned once the link answers");
+        Verifier.Check(f, "waiting variable at link");
+        Assert(f.Blocks.SelectMany(x => x.Instrs).Any(i => i.Callee == Escape.ReplacedFreer), "the previous value is given back at each assignment");
     }
 
     private static void FreshReturnOwnership()

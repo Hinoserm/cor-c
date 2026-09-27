@@ -123,6 +123,36 @@ static class Platform
         return Err.Result(raw);
     }
 
+    /// Whether the process was started with CORSAC_VERIFY_FREES set to
+    /// anything but 0: the collector's checked mode for the compiler's frees
+    /// (Gc.VerifyFree). Read straight from the environment on the entry
+    /// stack, with nothing allocated -- so only on the MAIN thread, whose
+    /// entry stack is the loader's (the collector asks once, as it starts).
+    public static bool VerifyFrees()
+    {
+        const string key = "CORSAC_VERIFY_FREES=";
+        long env = Os.EnvironAddress();
+        while (true)
+        {
+            long text = Sys.PeekWord(env) & 0xFFFFFFFF;
+            if (text == 0)
+            {
+                return false;
+            }
+            int i = 0;
+            while (i < key.Length && Sys.PeekByte(text + i) == key[i])
+            {
+                i = i + 1;
+            }
+            if (i == key.Length)
+            {
+                long first = Sys.PeekByte(text + i);
+                return first != 0 && first != 48;
+            }
+            env = env + 4;
+        }
+    }
+
     /// The address the kernel is to be handed for `at`: a Linux process's
     /// memory is flat, so the same one.
     public static long Linear(long at)

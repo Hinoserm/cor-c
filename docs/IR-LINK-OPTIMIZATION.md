@@ -124,7 +124,9 @@ and functions that must return fresh objects. A condition is bounded to 32
 requirements; past that it is "never", a fixed bound that is the same on every
 machine. The unit also lists the conditions under which an object it left to the
 collector only because of such a call could have been placed in its frame or
-freed (at most 4096 per unit). The unit's own decisions use the same analysis
+freed, or a reassigned variable fed by another unit's function could have
+given back its previous value (at most 4096 per unit). Calls to the backend's
+intrinsics (`__x86.*`, `__exception`) and to field sites are never conditions. The unit's own decisions use the same analysis
 read pessimistically, so hints change nothing a unit compiles to by itself.
 
 Only an object that will carry hints leaves them, or anything that depends on
@@ -149,7 +151,8 @@ regenerated when one of its pending conditions now holds, and every regenerated
 unit gets its facts: the solved answers for its own functions and every function
 it or an imported body calls, and the frees it may call (which also join its
 import candidates). In the backend each function is inlined with its imports but
-not the allocators, cleaned up, given the lifetime rules again with those facts
+not the allocators or the functions the whole program found fresh (inlined,
+their results would be branches the rules cannot recognise), cleaned up, given the lifetime rules again with those facts
 (`Escape.RunAtLink`), then inlined again so the allocators and the new frees fold
 in as they do in a unit compile. The compile keeps a pending allocation a call to
 the allocator (`Module.KeepCalls`) so the link can still recognise it.

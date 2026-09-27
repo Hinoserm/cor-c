@@ -46,6 +46,7 @@ public sealed partial class Escape
 
         public bool Allow(string callee, int argument)
         {
+            if (IsIntrinsic(callee)) return false;
             if (!_pass._defined.Contains(callee))
             {
                 Condition.Stays.Add((callee, argument));
@@ -57,6 +58,7 @@ public sealed partial class Escape
 
         public bool AllowFresh(string callee)
         {
+            if (IsIntrinsic(callee)) return false;
             if (!_pass._defined.Contains(callee))
             {
                 Condition.Fresh.Add(callee);
@@ -66,6 +68,15 @@ public sealed partial class Escape
                 && condition is not null && Condition.Add(condition);
         }
     }
+
+    /// <summary>
+    /// A name the backend answers itself -- `__x86.i.threadblock`,
+    /// `__exception` -- or a field site's: no unit defines it, so no other
+    /// unit's summary can speak for it.
+    /// </summary>
+    public static bool IsIntrinsic(string callee)
+        => callee.StartsWith("__x86.", StringComparison.Ordinal) || callee == "__exception"
+           || callee.StartsWith(FieldSitePrefix, StringComparison.Ordinal);
 
     private readonly HashSet<string> _defined = new(StringComparer.Ordinal);
     private readonly Dictionary<string, LifetimeCondition?[]> _paramHints = new(StringComparer.Ordinal);
@@ -185,13 +196,19 @@ public sealed partial class Escape
         Flow flow = Analyse(f, new[] { made.Dest }, summaries, made, needs: needs);
         if (flow.Escapes || needs.Condition.IsTrue) return;
         if (!liveness.Tracks(made.Dest) || LiveAtSelf(liveness, pads, b, made, flow.Derived)) return;
-        if (_pendingSeen.Add(needs.Condition)) _pending.Add(needs.Condition);
+        AddPending(needs.Condition);
         // An allocation stays a call to the allocator, not to what the
         // allocator calls: the link recognises allocations by that name.
         if (freshCallee is null) _keep.Add(made);
     }
 
     private readonly HashSet<Instr> _keep = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>A condition the link is to check for this unit: once each, and no more than the fixed bound.</summary>
+    private void AddPending(LifetimeCondition condition)
+    {
+        if (_pending.Count < LifetimeHints.PendingLimit && _pendingSeen.Add(condition)) _pending.Add(condition);
+    }
 
     /// <summary>The unit's hints: every function's summary and every pending condition.</summary>
     private LifetimeHints Hints(Module m, Func<string, bool> provided)

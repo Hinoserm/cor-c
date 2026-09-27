@@ -53,6 +53,9 @@ public sealed partial class Escape
             if (list.Count < 2 || v.Type != IrTypes.Word || f.Params.Contains(v)) continue;
             // Every assignment a copy of null, static data, or a fresh object.
             List<Instr> origins = new();
+            // Origins made by functions whose answer waits on another unit:
+            // owned at the link if those are fresh (EscapeHints).
+            List<string> waiting = new();
             Dictionary<Instr, HashSet<VReg>> carried = new(ReferenceEqualityComparer.Instance);
             bool ok = true;
             foreach ((Block _, Instr d) in list)
@@ -71,6 +74,13 @@ public sealed partial class Escape
                         else origins.Add(from);
                         break;
                     }
+                    if (_hinting && from.Op == Opcode.Call && from.Callee is not null && from.Dest is not null
+                        && !IsCollectorNote(from.Callee) && !_bookkeeping.Contains(from))
+                    {
+                        if (_owned.Contains(from) || _ownedCalls.Contains(from)) ok = false;
+                        else { origins.Add(from); waiting.Add(from.Callee); }
+                        break;
+                    }
                     if (from.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) || from.Operands.Count != 1) { ok = false; break; }
                     o = from.Operands[0];
                 }
@@ -79,11 +89,17 @@ public sealed partial class Escape
             }
             if (!ok || origins.Count == 0) continue;
 
-            // Nothing it holds escapes.
+            // Nothing it holds escapes -- asked for the link as well, when the
+            // unit leaves hints: calls into other units become conditions.
+            Needs? needs = _hinting ? new(this) : null;
+            foreach (string callee in waiting)
+                if (needs is null || !needs.AllowFresh(callee)) { needs = null; break; }
+            if (waiting.Count > 0 && needs is null) continue;
             List<VReg> roots = new() { v };
             foreach (Instr origin in origins) roots.Add(origin.Dest!);
-            Flow flow = Analyse(f, roots, summaries, null, joinable: new HashSet<VReg> { v });
+            Flow flow = Analyse(f, roots, summaries, null, joinable: new HashSet<VReg> { v }, needs: needs);
             if (flow.Escapes) continue;
+            bool waits = needs is { Condition.IsTrue: false };
 
             // The previous value dead at every assignment -- and never read
             // by a handler, which an exception can reach from anywhere after
@@ -106,6 +122,13 @@ public sealed partial class Escape
                 if (live) break;
             }
             if (live) continue;
+            // Every proof this unit can give holds, but some of what it rests
+            // on is another unit's: the link decides.
+            if (waits)
+            {
+                AddPending(needs!.Condition);
+                continue;
+            }
 
             // The variable's shadow: what it held, for the free at the next
             // assignment and at every return.

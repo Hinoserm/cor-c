@@ -1,0 +1,18 @@
+// A block freed, read, and freed again: what the checked mode must catch.
+static class Program
+{
+    static int Main()
+    {
+        long at = Runtime.Alloc(32);
+        Sys.PokeWord(at, 7);
+        Runtime.Free(at);
+        // Checked, the payload is the pattern; otherwise it is whatever the
+        // allocator left there, never 7 read back as if nothing happened.
+        Sys.Print(Sys.PeekWord(at) == 0xFEEEFEEE ? "poisoned" : "reused");
+        Sys.PrintLine();
+        Runtime.Free(at);
+        Sys.Print("survived");
+        Sys.PrintLine();
+        return 0;
+    }
+}

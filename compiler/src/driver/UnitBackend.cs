@@ -68,7 +68,11 @@ public sealed class UnitBackend : IUnitBackend
             // (Escape.RunAtLink, one function at a time, as it is loaded);
             // the second round then folds them, and the frees just added, in
             // as a unit compile does.
-            string[] allocators = facts is null ? Array.Empty<string>() : new[] { Escape.Allocator, Escape.LeafAllocator };
+            // And the functions the whole program found fresh: inlined first,
+            // their results would be branches and no longer calls the rules
+            // can recognise.
+            string[] allocators = facts is null ? Array.Empty<string>()
+                : facts.Fresh.Append(Escape.Allocator).Append(Escape.LeafAllocator).Order(StringComparer.Ordinal).ToArray();
             new Inline { SmallBody = 40, GrowthLimit = 1024, ConstantBranchBody = 160, FreshOwnerBody = 0, Keep = allocators }.Run(local);
             cleanup.Run(local);
             if (facts is not null)
