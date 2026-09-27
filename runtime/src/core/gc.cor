@@ -898,6 +898,13 @@ static class Gc
             StampBuffer(block);
         }
 
+        // What Free left in place goes to the bins now that the buffer is
+        // heap again.
+        if (_inPlace > 0 && started != 0 && at > started)
+        {
+            LinkFreedInPlace(started, at);
+        }
+
         Sys.Poke(block + Tls.AllocSaved, Zero);
         Sys.Poke(block + Tls.AllocBase, Zero);
         Sys.Poke(block + Tls.AllocPtr, Zero);
@@ -914,6 +921,84 @@ static class Gc
         if (_since < 0) _since = Zero;
         Stamp(at, limit - at, FlagFree);
         Link(at);
+    }
+
+    // A BLOCK FREED IN PLACE (Free, above) is free and in no bin. Its link
+    // word -- a bin's next, a tree's left child, always a block address or
+    // zero -- holds InPlace instead, which no block address is.
+    const long InPlace = 1;
+
+    /// Blocks freed in place and not yet in a bin.
+    static long _inPlace;
+
+    static bool IsInPlace(long block)
+    {
+        return Sys.Peek(block + KindAt) == InPlace;
+    }
+
+    static void FreeInPlace(long block, long size)
+    {
+        Stamp(block, size, FlagFree);
+        Sys.Poke(block + KindAt, InPlace);
+        _inPlace = _inPlace + 1;
+    }
+
+    /// Every block freed in place in [from, to) linked into its bin, as its
+    /// buffer is retired: each as it is, not merged, because a collection
+    /// may be under way whose snapshot knows each one's start. The heap
+    /// lock is held and nobody else writes below the buffer's pointer.
+    static void LinkFreedInPlace(long from, long to)
+    {
+        long at = from;
+
+        while (at < to && _inPlace > 0)
+        {
+            long word = Sys.Peek(at);
+            long size = word & SizeMask;
+
+            if (size < Smallest || at + size > to)
+            {
+                return;
+            }
+            if ((word & FlagFree) != 0 && IsInPlace(at))
+            {
+                Link(at);
+                _inPlace = _inPlace - 1;
+            }
+            at = at + size;
+        }
+    }
+
+    /// The blocks a thread's buffer gave to the bins while it was the only
+    /// thread, taken back out and kept in place: a second thread is about to
+    /// run, and must not be handed them (Free). The heap lock is held; the
+    /// thread may be bumping above its pointer meanwhile, and may clear its
+    /// own top block (Free's fast path), where the walk stops.
+    public static void KeepBufferInPlace(long thread)
+    {
+        if (thread == 0 || _bins == 0)
+        {
+            return;
+        }
+        long at = Sys.Peek(thread + Tls.AllocBase);
+        long to = Sys.Peek(thread + Tls.AllocPtr);
+
+        while (at != 0 && at < to)
+        {
+            long word = Sys.Peek(at);
+            long size = word & SizeMask;
+
+            if (size < Smallest || at + size > to || Sys.Peek(at + size - FooterBytes) != word)
+            {
+                return;
+            }
+            if ((word & FlagFree) != 0 && !IsInPlace(at))
+            {
+                Unlink(at);
+                FreeInPlace(at, size);
+            }
+            at = at + size;
+        }
     }
 
     /// The current chunk's end word, brought up to the bump pointer.
@@ -1392,6 +1477,25 @@ static class Gc
             return;
         }
 
+        // A BLOCK INSIDE A LIVE ALLOCATION BUFFER, WITH OTHER THREADS RUNNING,
+        // IS FREED WHERE IT LIES: marked free and in place (InPlace), and left
+        // out of the bins until its buffer is retired (Retire links it then).
+        // A buffer is its thread's alone -- STAMP walks it as that thread's
+        // chain of blocks and the sweep steps over it whole -- and a block of
+        // it out of a bin, handed to another thread as an object or taken as
+        // that thread's whole buffer inside this one, broke both: the owner's
+        // objects went unstamped and were swept while still referenced. With
+        // one thread there is nobody to hand it to, and it goes to its bin at
+        // once, for the thread's own next allocation of its size.
+        long holder = GcThreads.BufferHolding(block);
+
+        if (holder != 0 && GcThreads.Others())
+        {
+            FreeInPlace(block, size);
+            GcLock.Exit();
+            return;
+        }
+
         // THE TOP BLOCK GOES BACK TO THE BUMP POINTER, not to a bin. A small
         // object allocated and freed in a loop -- the formatting buffer, the
         // enumerator, the closure the optimiser could not turn into a frame
@@ -1404,7 +1508,7 @@ static class Gc
         // nothing. The bytes are cleared here instead, which is why only
         // small blocks take this road -- clearing a megabyte on the way past
         // would be a worse bargain than a bin.
-        if (_current != 0 && block + size == _bump && size <= ExactLimit
+        if (holder == 0 && _current != 0 && block + size == _bump && size <= ExactLimit
             && block >= HeapChunks.First(_current))
         {
             ZeroWords(block, _bump);
@@ -1470,7 +1574,9 @@ static class Gc
         // Forward: the block after this one starts where this one ends.
         long next = block + size;
 
-        if (next < end && IsFree(next))
+        long holder = GcThreads.BufferHolding(block);
+
+        if (next < end && IsFree(next) && !IsInPlace(next) && GcThreads.BufferHolding(next) == holder)
         {
             Unlink(next);
             size = size + SizeOfBlock(next);
@@ -1482,9 +1588,10 @@ static class Gc
         {
             long back = Sys.Peek(block - FooterBytes);
 
-            if ((back & FlagFree) != 0)
+            long prev = block - (back & SizeMask);
+
+            if ((back & FlagFree) != 0 && !IsInPlace(prev) && GcThreads.BufferHolding(prev) == holder)
             {
-                long prev = block - (back & SizeMask);
 
                 Unlink(prev);
                 size = size + SizeOfBlock(prev);
@@ -3805,9 +3912,60 @@ static class GcThreads
             Add(_first);
             _first = 0;
         }
+
+        // FROM ONE THREAD TO TWO: what the one gave its bins from inside its
+        // buffer is taken back and kept in place (Gc.Free).
+        if (_count == 1)
+        {
+            Gc.KeepBufferInPlace(At(0));
+        }
         Sys.Poke(block + Tls.Epoch, Sys.Peek(GcLock.Words() + GcLock.Epoch));
         Add(block);
         GcLock.Exit();
+    }
+
+    /// The thread whose live allocation buffer holds `at`, or 0. The heap
+    /// lock is held, so no buffer is taken or retired meanwhile. The calling
+    /// thread's own is looked at first: it holds what that thread frees.
+    public static long BufferHolding(long at)
+    {
+        long self = Sys.ThreadBlock();
+
+        if (Holds(self, at))
+        {
+            return self;
+        }
+        if (_blocks == 0)
+        {
+            return _first != self && Holds(_first, at) ? _first : 0;
+        }
+        for (long i = 0; i < _count; i++)
+        {
+            long t = At(i);
+
+            if (t != self && Holds(t, at))
+            {
+                return t;
+            }
+        }
+        return 0;
+    }
+
+    static bool Holds(long thread, long at)
+    {
+        if (thread == 0)
+        {
+            return false;
+        }
+        long start = Sys.Peek(thread + Tls.AllocBase);
+        long limit = Sys.Peek(thread + Tls.AllocLimit);
+
+        // A thread asked to answer a handshake has its limit kept aside.
+        if (limit == 0)
+        {
+            limit = Sys.Peek(thread + Tls.AllocSaved);
+        }
+        return start != 0 && at >= start && at < limit;
     }
 
     /// Called with the lock held.

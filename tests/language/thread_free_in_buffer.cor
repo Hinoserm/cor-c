@@ -1,0 +1,151 @@
+// test: thread free in buffer
+// expect-exit: 0
+// expect-output:
+// rounds 12
+// nodes 480000
+// names True
+// freed True
+// collected True
+//
+// What the compiler frees by hand, while other threads allocate and collect.
+// A string made and dropped in a loop -- "waste " + i, i.ToString() inside a
+// concatenation -- is owned by its function and freed before the next is
+// made (Escape.Own, and ReturnsFresh for the ToString). Most such blocks lie
+// inside the freeing thread's own allocation buffer, below its bump pointer.
+//
+// Given to the shared free lists there, one of them could be handed to
+// another thread -- as an object, or as that thread's whole new buffer,
+// nested inside the first -- and the collector, which walks a live buffer as
+// its owner's chain alone and steps over it when sweeping, then missed the
+// owner's objects: a node still in a list was swept, and a string written
+// over it. Gc.Free now frees such a block in place and gives it to the free
+// lists when its buffer is retired.
+//
+// One round of this found the fault about half the time; twelve rounds, each
+// checking every node and every name, find it nearly always.
+
+class Node
+{
+    public int Value;
+    public string Name;
+    public Node Next;
+}
+
+class Builder : Action
+{
+    public const int Count = 10000;
+
+    public Node Head;
+    int _seed;
+
+    public Builder(int seed)
+    {
+        _seed = seed;
+    }
+
+    public void Invoke()
+    {
+        Node head = null;
+
+        for (int i = 0; i < Count; i++)
+        {
+            Node n = new Node();
+
+            n.Value = _seed * Count + i;
+            n.Name = "n" + i;
+            n.Next = head;
+            head = n;
+
+            string waste = "waste " + i;
+
+            if (waste.Length == 0)
+            {
+                return;
+            }
+        }
+        Head = head;
+    }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        int workers = 4;
+        int rounds = 12;
+        long nodes = 0;
+        bool names = true;
+
+        // Room for a round's lists and whatever a stale word on the stack
+        // keeps of the last; small enough that every round collects.
+        Gc.SetLimit(16777216);
+        long collectionsBefore = Gc.Collections;
+        long freesBefore = Gc.Frees;
+
+        for (int round = 0; round < rounds; round++)
+        {
+            Builder[] bodies = new Builder[workers];
+            Thread[] threads = new Thread[workers];
+
+            for (int i = 0; i < workers; i++)
+            {
+                bodies[i] = new Builder(i);
+                threads[i] = Thread.Start(bodies[i]);
+            }
+
+            // The main thread makes and drops strings meanwhile, freeing them
+            // by hand in its own buffer too.
+            long mine = 0;
+
+            for (int i = 0; i < 20000; i++)
+            {
+                string s = "main " + i;
+
+                mine = mine + s.Length;
+            }
+            if (mine == 0)
+            {
+                return 1;
+            }
+
+            for (int i = 0; i < workers; i++)
+            {
+                threads[i].Join();
+            }
+
+            for (int i = 0; i < workers; i++)
+            {
+                Node n = bodies[i].Head;
+                int expect = Builder.Count - 1;
+
+                while (n != null)
+                {
+                    nodes = nodes + 1;
+
+                    if (n.Value != i * Builder.Count + expect || n.Name != "n" + expect)
+                    {
+                        names = false;
+                    }
+                    expect = expect - 1;
+                    n = n.Next;
+                }
+                if (expect != -1)
+                {
+                    names = false;
+                }
+
+                // Let go of the round's list: a finished thread may still be
+                // held, and its body with it.
+                bodies[i].Head = null;
+            }
+        }
+
+        System.Console.WriteLine("rounds " + rounds);
+        System.Console.WriteLine("nodes " + nodes);
+        System.Console.WriteLine("names " + names);
+        System.Console.WriteLine("freed " + (Gc.Frees > freesBefore));
+        System.Console.WriteLine("collected " + (Gc.Collections - collectionsBefore >= rounds));
+        if (!Gc.CheckFreeIndex()) return 2;
+        return 0;
+    }
+}
