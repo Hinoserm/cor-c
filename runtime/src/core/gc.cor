@@ -2002,6 +2002,68 @@ static class Gc
         return Sys.AtomicSwap(GcLock.Words() + GcLock.Overflow, 0) != 0;
     }
 
+    /// A ROOT RANGE REGISTERED WHILE A MARK IS UNDER WAY IS MARKED FROM NOW.
+    /// The registered ranges are read once a collection, with the
+    /// collector's own roots (GcRoots.ScanAll, before the SCAN round); a
+    /// thread's stack is read when it answers SCAN, from wherever it stands
+    /// then. A kernel's thread is a processor, and a process parks its
+    /// kernel stack (a registered range, KernelContinuation) and goes to
+    /// the scheduler's: parked after the roots were read and before its
+    /// processor answered, the stack was neither -- the processor answered
+    /// from the scheduler's stack -- and an object only it held was swept
+    /// under a live frame. An exec's ElfLoader, held by its frame through
+    /// every disc read, became another exec's symbol names, and four
+    /// processors took page faults in Bind and Reach (2026-09-26).
+    ///
+    /// Marked here the way the barrier marks once pointers resolve
+    /// (Marking 2); in the stamping phase before it (Marking 1) the range
+    /// is read with the roots, which have not been yet. Not answered for in
+    /// the middle (Tls.InAlloc), as the barrier is not: a round that saw
+    /// this thread out would let the mark end with a push still to come.
+    ///
+    /// THE REGISTERS FIRST. The range is the stack this runs on, registered
+    /// before its owner's registers are spilled into it, so a reference
+    /// held only in EBX, ESI or EDI is not in it yet. Three longs live
+    /// across the scan are six halves in the three registers a call
+    /// preserves, and the prologue here pushes the caller's values of them
+    /// inside the range, as Platform.EnterCollection does for the collector.
+    public static void MarkRegistered(long start, long end)
+    {
+        // The range is published (GcRoots.Register) before this reads the
+        // phase, and the collector sets the phase before it reads the
+        // ranges: one of the two sees the other.
+        Sys.Fence();
+
+        if (Runtime.Marking == 0)
+        {
+            return;
+        }
+
+        long tb = Sys.ThreadBlock();
+        long was = Sys.Peek(tb + Tls.InAlloc);
+        Sys.Poke(tb + Tls.InAlloc, 1);
+        Sys.Fence();
+
+        if (Runtime.Marking == 2)
+        {
+            long a = _spill + 1;
+            long b = _spill + 2;
+            long c = _spill + 3;
+            ScanRange(start, end);
+            _spill = a + b + c;
+            RegisteredMidMark = RegisteredMidMark + 1;
+        }
+
+        Sys.Poke(tb + Tls.InAlloc, was);
+    }
+
+    /// Where MarkRegistered's register pressure is kept, so that nothing can
+    /// prove it dead. Never read for its value.
+    static long _spill;
+
+    /// Root ranges marked from as they were registered, a mark under way.
+    public static long RegisteredMidMark;
+
     /// Marks everything reachable from a range of memory, a word at a time.
     /// Public because GcRoots feeds the roots through it.
     public static void ScanRange(long from, long to)
@@ -2301,6 +2363,9 @@ static class Gc
         _stamping = false;
         GcLock.Exit();
         Runtime.Marking = 2;
+        // Before the ranges are read: a range registered from here on is
+        // marked by its registrar (MarkRegistered), one before is read below.
+        Sys.Fence();
         TakeBarrier(false);
         _rootsOnly = true;
         GcRoots.Enter();
@@ -3740,6 +3805,7 @@ static class GcRoots
             Sys.Poke(at + 4, end);
             Sys.Fence();                  // the end is there before the start says so
             Sys.Poke(at, start);
+            Gc.MarkRegistered(start, end);
             return true;
         }
 
