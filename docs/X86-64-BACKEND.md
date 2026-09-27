@@ -75,9 +75,49 @@ them (GcRoots.Enter in runtime/src/core/gc.cor).
 A long-mode object says so in its ABI note (`.corsac.abi`: eight-byte
 pointers, machine 0x8664, convention 2); the linker refuses to link it with
 an i386 one. `--obj` writes ELF64 ET_REL with RELA relocations
-(R_X86_64_64, _32, _PC32, _PLT32); the reader takes them back; GNU `ld -m
-elf_x86_64` links them too. Executables are ELF64 ET_EXEC loaded at 0x400000,
-the small code model: every symbol below 2 GiB.
+(R_X86_64_64, _32, _PC32, _PLT32, _REX_GOTPCRELX); the reader takes them
+back, and the GOTPCREL family besides; GNU `ld -m elf_x86_64` links them too.
+Executables are ELF64 ET_EXEC loaded at 0x400000, the small code model:
+every symbol of a program below 2 GiB.
+
+## Separate compilation and link-time optimisation
+
+As on i386: each source is its own unit, and a unit's object carries the IR
+archive and the lifetime hints beside its code. At the link the lifetime
+hints are solved over the whole program and every unit is regenerated from
+its IR by the backend the unit's ABI note names -- this one for a long-mode
+unit -- in memory-budgeted parallel batches. The link summary records
+direct calls with a 32-bit result, and a call to a function that returns a
+constant is patched to `mov eax, imm32`, the same five bytes on both
+machines. `corc project --target x86-64` (or the project property
+`CorCTarget`) builds a project this way for long mode.
+
+## Shared objects and dynamic linking
+
+`--shared`, `--pic`, `--link-shared` and `--dynamic` work as on i386, and the
+class library builds as seventeen shared objects
+(`TARGET=x86-64 tests/integration/build-libraries.sh`). A program names
+`/lib64/ld-linux-x86-64.so.2` and runs under the system's loader.
+
+Code is RIP-relative already, so a shared object's text needs no loader
+relocation. What another image defines -- everything this object does not,
+in a shared object; what a library supplies, in a program -- is reached
+through its GOT slot, `mov r, [rip + sym@GOTPCREL]`; when the link finds
+the symbol defined after all the load is relaxed to `lea r, [rip + sym]` and
+no slot is made. Calls are `call rel32` (PLT32): direct to a definition, to
+a PLT entry (`jmp [rip + slot]`) otherwise. Addresses held in data are
+RELATIVE or R_X86_64_64 relocations in `.data.rel.ro`. Binding is eager and
+symbolic, as on i386.
+
+The image is ELF64 throughout: RELA relocations with the addend in the
+entry, 24-byte symbols, 16-byte dynamic entries, eight-byte GOT slots; the
+SysV hash table keeps its 4-byte words.
+
+The frame table's base, the image directory's table addresses and the
+stack maps' base are 32-bit fields. In long mode they hold the distance
+from the field to what it names, so an image loaded anywhere in 64-bit space
+describes itself with no loader relocation; the runtime reads them back with
+`TableAddress`.
 
 ## The runtime
 
@@ -103,13 +143,15 @@ Everything runs natively on an x86-64 Linux host:
 
 - `tests/language/run.sh --target=x86-64` runs the language suite in long
   mode.
-- The linker tests (linker/tests) check ELF64 objects against binutils and ld
-  and run a statically linked program under the kernel.
+- The linker tests (linker/tests) check ELF64 objects against binutils and ld,
+  run a statically linked program under the kernel, and a shared object with
+  programs linked against it by this linker and by GNU ld under
+  ld-linux-x86-64.
+- `TARGET=x86-64 tests/integration/shared-libraries.sh` builds the class
+  library as shared objects, checks each image against what the loader
+  accepts, and runs the shared-library tests linked `--dynamic`.
 
 ## Not built yet
 
-Shared objects, position-independent code and dynamic linking, and
-freestanding (bare-metal) images: the driver and the link command refuse them
-for x86-64 with a message saying so. The IR archive that lets the linker
-regenerate a unit (IrUnitCodec) is not attached to long-mode objects, so link
-time optimisation regenerates nothing for them.
+Freestanding (bare-metal) images and flat output: the driver and the link
+command refuse them for x86-64 with a message saying so.
