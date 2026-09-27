@@ -270,12 +270,20 @@ public sealed partial class Lowering
         return name;
     }
 
+    /// <summary>
+    /// A struct field of the block at `a`, as the block its fields are read
+    /// from: where it is, for one held in line; the pointer stored there,
+    /// for one that is a block of its own.
+    /// </summary>
+    private VReg FieldStruct(VReg a, FieldSymbol field)
+        => field.Inline ? (field.Offset == 0 ? a : _e.Binary(Opcode.Add, a, field.Offset)) : _e.Load(IrTypes.Word, a, field.Offset);
+
     /// <summary>One field of two structs compared: 1 when they are the same.</summary>
     private VReg SameField(Node at, VReg a, VReg b, FieldSymbol field)
     {
         if (IsStructValue(field.Type))
         {
-            VReg x = _e.Load(IrTypes.Word, a, field.Offset), y = _e.Load(IrTypes.Word, b, field.Offset);
+            VReg x = FieldStruct(a, field), y = FieldStruct(b, field);
             return _e.Call(StructEquals(field.Type.Symbol!), IrType.I32, R(x), R(y))!;
         }
         if (CouldBeObject(field.Type) || field.Type.IsNullableValue)
@@ -328,7 +336,7 @@ public sealed partial class Lowering
                 VReg v;
                 if (IsStructValue(field.Type))
                 {
-                    v = _e.Call(StructHash(field.Type.Symbol!), IrType.I32, R(_e.Load(IrTypes.Word, a, field.Offset)))!;
+                    v = _e.Call(StructHash(field.Type.Symbol!), IrType.I32, R(FieldStruct(a, field)))!;
                 }
                 else if (CouldBeObject(field.Type) || field.Type.IsNullableValue)
                 {
@@ -492,7 +500,7 @@ public sealed partial class Lowering
                 // cell and is compared as the cell it is, which says equal for
                 // two empty ones and for the same one; two cells holding the
                 // same number are not yet the same key.
-                int bytes = of.IsNullableValue ? _t.WordSize : Math.Max(1, of.Size);
+                int bytes = of.IsNullableValue ? _t.WordSize : field.Inline ? Math.Max(1, of.Symbol!.InstanceSize) : Math.Max(1, of.Size);
 
                 for (int at = 0; at < bytes; at++)
                 {

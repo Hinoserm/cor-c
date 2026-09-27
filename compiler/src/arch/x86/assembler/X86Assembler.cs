@@ -1422,6 +1422,8 @@ public sealed partial class X86Assembler : ISymbols
 
             case "mov":  Mov(a); return;
             case "lea":  Lea(a); return;
+            case "movzx": MovExtend(a, false); return;
+            case "movsx": MovExtend(a, true); return;
             case "push": Push(a); return;
             case "pop":  Pop(a); return;
             case "xchg": Xchg(a); return;
@@ -1701,6 +1703,36 @@ public sealed partial class X86Assembler : ISymbols
         }
         Prefixes(d.Size, s);
         Emit(0x8D);
+        EmitRM(d.Reg, s);
+    }
+
+    /// MOVZX and MOVSX (0F B6/B7, 0F BE/BF): a 16- or 32-bit register from
+    /// a byte or word register or memory, zero- or sign-extended. A memory
+    /// source has to say its size (`byte [esi]`); the register says its own.
+    private void MovExtend(string[] a, bool signed)
+    {
+        string mn = signed ? "movsx" : "movzx";
+        Need(a, 2, mn);
+        Operand d = P(a[0]);
+        Operand s = P(a[1]);
+        if (d.Kind != OperandKind.Register || d.Size == 1)
+        {
+            throw Error($"{mn} loads a 16-bit or 32-bit register");
+        }
+        if (s.Kind is not (OperandKind.Register or OperandKind.Memory))
+        {
+            throw Error($"{mn} {d.Text}, {s.Text}: the second operand has to be a register or memory");
+        }
+        if (s.Size != 1 && s.Size != 2)
+        {
+            throw Error($"{mn} {d.Text}, {s.Text}: the source has to be a byte or a word (say `byte [...]` or `word [...]`)");
+        }
+        if (s.Size >= d.Size)
+        {
+            throw Error($"{mn} {d.Text}, {s.Text}: the source has to be narrower than the destination");
+        }
+        Prefixes(d.Size, s.Kind == OperandKind.Memory ? s : null);
+        Emit(0x0F, (byte)((signed ? 0xBE : 0xB6) + (s.Size == 2 ? 1 : 0)));
         EmitRM(d.Reg, s);
     }
 

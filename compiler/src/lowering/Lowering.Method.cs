@@ -593,8 +593,13 @@ public sealed partial class Lowering
     /// <summary>A value in a register: an ordinary local or parameter.</summary>
     private sealed record RegPlace(VReg Reg, Type Type) : Place(Type);
 
-    /// <summary>A value in memory at an address plus offset: a field, an element, a cell, a slot.</summary>
-    private sealed record MemPlace(Operand Address, long Offset, Type Type, bool Volatile = false) : Place(Type);
+    /// <summary>
+    /// A value in memory at an address plus offset: a field, an element, a
+    /// cell, a slot. `Inline`: a struct held in line (FieldSymbol.Inline) --
+    /// the bytes there ARE the struct, so its value is their address and a
+    /// store copies bytes in.
+    /// </summary>
+    private sealed record MemPlace(Operand Address, long Offset, Type Type, bool Volatile = false, bool Inline = false) : Place(Type);
 
     private VReg LoadPlace(Place p)
     {
@@ -602,6 +607,18 @@ public sealed partial class Lowering
         {
             case RegPlace r:
                 return r.Reg;
+            case MemPlace { Inline: true } held:
+            {
+                // A struct held in line: the value is where its bytes are.
+                // Every consumer that keeps it copies it (EvalAs, CopyStruct),
+                // as it copies any struct it did not just make.
+                if (held.Volatile)
+                {
+                    _e.Emit(Opcode.Fence, null);
+                }
+                VReg basis = RegOf(held.Address);
+                return held.Offset == 0 ? basis : _e.Binary(Opcode.Add, basis, held.Offset);
+            }
             case MemPlace m:
             {
                 IrType it = IrTypes.Of(m.Type);
@@ -624,6 +641,20 @@ public sealed partial class Lowering
             case RegPlace r:
                 _e.CopyTo(r.Reg, new RegOperand(value));
                 break;
+            case MemPlace { Inline: true } held:
+            {
+                // Its bytes copied in from the value's: no pointer stored, no
+                // barrier (nothing in it is a reference), nothing made.
+                if (held.Volatile)
+                {
+                    _e.Emit(Opcode.Fence, null);
+                }
+                VReg basis = RegOf(held.Address);
+                VReg into = held.Offset == 0 ? basis : _e.Binary(Opcode.Add, basis, held.Offset);
+                int bytes = Math.Max(1, held.Type.Symbol!.InstanceSize);
+                _e.Emit(Opcode.MemCopy, null, R(into), R(value), Imm(bytes, IrTypes.Word));
+                break;
+            }
             case MemPlace m:
                 if (m.Volatile)
                 {
@@ -779,7 +810,10 @@ public sealed partial class Lowering
             case ParamSym p:
                 if (p.ByRef)
                 {
-                    return new MemPlace(new RegOperand(_params[p.Index]), 0, p.Type);
+                    // A struct by reference is the address of its bytes
+                    // (StructReference): read as that address, written by a
+                    // copy into it, as a struct held in line is.
+                    return new MemPlace(new RegOperand(_params[p.Index]), 0, p.Type, false, IsStructValue(p.Type));
                 }
                 if (_paramSlots[p.Index] is FrameSlot ps)
                 {
@@ -863,7 +897,7 @@ public sealed partial class Lowering
             return new MemPlace(new RegOperand(cell), 0, f.Type, f.Volatile);
         }
 
-        return new MemPlace(new RegOperand(obj), f.Offset, f.Type, f.Volatile);
+        return new MemPlace(new RegOperand(obj), f.Offset, f.Type, f.Volatile, f.Inline);
     }
 
     /// <summary>The place an assignable expression denotes.</summary>

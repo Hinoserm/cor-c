@@ -103,6 +103,7 @@ public sealed partial class Lowering
             at += 8;
         }
         machine.InstanceSize = at;
+        machine.InlineDecided = true;                  // laid out here, nothing in line
 
         string size = "smsize_" + identity;
         byte[] initial = new byte[_t.WordSize];

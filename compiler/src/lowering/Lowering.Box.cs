@@ -94,7 +94,7 @@ public sealed partial class Lowering
             // not the caller's.
             foreach (FieldSymbol f in of.Symbol!.Fields)
             {
-                if (f.Static || f.Boxed || !IsStructValue(f.Type))
+                if (f.Static || f.Boxed || f.Inline || !IsStructValue(f.Type))
                 {
                     continue;
                 }

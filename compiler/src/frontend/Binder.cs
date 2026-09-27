@@ -2374,6 +2374,50 @@ public sealed partial class Binder
         return found;
     }
 
+    /// <summary>
+    /// Whether a field of type `t` is held in line (FieldSymbol.Inline): a
+    /// struct -- held by value, not a pointer to one or a nullable cell --
+    /// every instance field of which is a number, a bool, a char, an enum, a
+    /// pointer, or a struct held in line itself. No reference anywhere in it,
+    /// so the collector has nothing to find in its bytes and a copy of it is
+    /// its bytes.
+    /// </summary>
+    private bool InlineStruct(Type t)
+    {
+        if (t.IsPointer || t.IsArray || t.Nullable || t.IsNullableValue) return false;
+        if (t.Symbol is not { Kind: TypeKind.Struct } sym) return false;
+        if (t.ParamName != null) return false;
+        LayOut(sym);
+        if (sym.InlineDecided && sym.InstanceSize <= 0) return false;
+        foreach (FieldSymbol f in sym.Fields.Where(f => !f.Static))
+        {
+            if (f.Boxed) return false;
+            if (f.Inline) continue;
+            Type ft = f.Type;
+            if (ft.IsPointer) continue;
+            if (ft.Symbol is { Kind: TypeKind.Enum }) continue;
+            if (ft.Symbol != null || ft.IsArray || ft.IsNullableValue || ft.Nullable || ft.ParamName != null) return false;
+            if (ft.Prim is Prim.Bool or Prim.I8 or Prim.I16 or Prim.I32 or Prim.I64 or Prim.U8 or Prim.U16 or Prim.U32 or Prim.U64
+                or Prim.NInt or Prim.NUInt or Prim.F32 or Prim.F64 or Prim.Char) continue;
+            return false;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// A struct's alignment where it is held in line: its widest field's,
+    /// at most eight. Its size is left as it is -- a struct's bytes are what
+    /// sizeof and every copy of it say -- and each one held in line is put
+    /// at this alignment.
+    /// </summary>
+    private static int InlineAlignOf(TypeSymbol sym)
+    {
+        int widest = 1;
+        foreach (FieldSymbol f in sym.Fields.Where(f => !f.Static))
+            widest = Math.Max(widest, f.Inline ? Math.Max(1, f.Type.Symbol!.InlineAlign) : Math.Min(8, Math.Max(1, f.Type.Size)));
+        return Math.Min(8, widest);
+    }
+
     /// <summary>Assigns field offsets and vtable slots.</summary>
     private void LayOut(TypeSymbol sym)
     {
@@ -2387,6 +2431,14 @@ public sealed partial class Binder
         // over the wrong entries and the library's calls land on nothing.
         if (sym.InstanceSize > 0)
         {
+            // Its fields held in line are known by the same rule the library
+            // laid them out by (InlineStruct), from their types alone.
+            if (!sym.InlineDecided)
+            {
+                sym.InlineDecided = true;
+                foreach (FieldSymbol f in sym.Fields.Where(f => !f.Static)) f.Inline = !f.Boxed && InlineStruct(f.Type);
+                if (sym.Kind == TypeKind.Struct) sym.InlineAlign = InlineAlignOf(sym);
+            }
             if (!sym.SlotsAssigned)
             {
                 if (sym.Base != null) LayOut(sym.Base);
@@ -2438,6 +2490,7 @@ public sealed partial class Binder
             }
         }
 
+        sym.InlineDecided = true;
         foreach (FieldSymbol f in sym.Fields.Where(f => !f.Static))
         {
             int size = f.Type.Size;
@@ -2449,13 +2502,27 @@ public sealed partial class Binder
                     + $"(prim {(int)f.Type.Prim}, parameter '{f.Type.ParamName}', declared in {sym.Decl?.File})");
             }
 
-            at = (at + size - 1) / size * size;   // natural alignment
+            // A struct holding no reference is laid out in line: its own
+            // bytes, at its own alignment, rather than a word pointing at a
+            // block made for it (FieldSymbol.Inline).
+            f.Inline = !f.Boxed && InlineStruct(f.Type);
+            int align = size;
+            if (f.Inline)
+            {
+                TypeSymbol held = f.Type.Symbol!;
+                size = Math.Max(1, held.InstanceSize);
+                align = Math.Max(1, held.InlineAlign);
+            }
+
+            at = (at + align - 1) / align * align;   // natural alignment
             f.Offset = at;
             at += size;
         }
 
         sym.InstanceSize = Math.Max(at,
             sym.Kind == TypeKind.Class ? Target.Current.ObjectHeaderBytes : 1);
+
+        if (sym.Kind == TypeKind.Struct) sym.InlineAlign = InlineAlignOf(sym);
 
         if (sym.Kind == TypeKind.Interface)
         {
@@ -4765,6 +4832,7 @@ public sealed partial class Binder
         }
 
         closure.InstanceSize = Math.Max(Target.Current.ObjectHeaderBytes, at);
+        closure.InlineDecided = true;                    // laid out here, nothing in line
 
         Type closureReturns = ContextualMemberResult(wanted, invoke);
         MethodDecl body = new()
@@ -6042,6 +6110,7 @@ public sealed partial class Binder
         }
 
         tuple.InstanceSize = (at + 7) & ~7;
+        tuple.InlineDecided = true;                    // laid out here, nothing in line
         _r.Types[name] = tuple;
         Remember(tuple, names);
         return tuple;
@@ -6103,6 +6172,7 @@ public sealed partial class Binder
         }
 
         view.InstanceSize = Target.Current.ObjectHeaderBytes + Target.Current.WordSize;
+        view.InlineDecided = true;                    // laid out here, nothing in line
         view.Fields.Add(new FieldSymbol
         {
             Name = "items", Type = Type.ArrayOf(element), Owner = view,
@@ -6169,6 +6239,7 @@ public sealed partial class Binder
 
         walker.Interfaces.Add(face);
         walker.InstanceSize = header + word + 4;
+        walker.InlineDecided = true;                    // laid out here, nothing in line
         walker.Fields.Add(new FieldSymbol
         {
             Name = "items", Type = Type.ArrayOf(element), Owner = walker, Offset = header,

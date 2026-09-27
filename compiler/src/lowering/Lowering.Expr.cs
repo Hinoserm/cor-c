@@ -84,6 +84,18 @@ public sealed partial class Lowering
             // this frame and the temporary's address is what the callee gets.
             // `ref` and `out` have no such rule: what they point at is the
             // caller's, and a value has nowhere for the callee to write.
+            // A STRUCT BY REFERENCE IS THE ADDRESS OF ITS BYTES: the block a
+            // local, an element or a field of its own points at, or where one
+            // held in line in its object is (FieldSymbol.Inline). The callee
+            // reads and writes through it (PlaceOfSym's by-reference struct is
+            // an inline place), so every one of those is passed the same way,
+            // and `in` with a value passes a copy of it.
+            if (IsStructValue(target))
+            {
+                if (readOnly && !HasAddress(e)) return EvalAs(e, target);
+                return StructReference(e is RefArgExpr sra ? sra.Target : e, target);
+            }
+
             if (readOnly && !HasAddress(e))
             {
                 VReg value = EvalAs(e, target);
@@ -203,7 +215,7 @@ public sealed partial class Lowering
         {
             foreach (FieldSymbol f in t.Fields)
             {
-                if (f.Static || f.Boxed || !IsStructValue(f.Type))
+                if (f.Static || f.Boxed || f.Inline || !IsStructValue(f.Type))
                 {
                     continue;
                 }
@@ -215,7 +227,7 @@ public sealed partial class Lowering
 
     /// <summary>Whether a struct holds a struct by value: then making or copying one is more than its bytes.</summary>
     private static bool HasStructFields(TypeSymbol sym)
-        => sym.Fields.Any(f => !f.Static && !f.Boxed && IsStructValue(f.Type));
+        => sym.Fields.Any(f => !f.Static && !f.Boxed && !f.Inline && IsStructValue(f.Type));
 
     private readonly HashSet<string> _structHelpers = new(StringComparer.Ordinal);
 
@@ -266,7 +278,7 @@ public sealed partial class Lowering
         _e.Emit(Opcode.MemCopy, null, R(made), R(src), Imm(size, IrTypes.Word));
         foreach (FieldSymbol field in sym.Fields)
         {
-            if (field.Static || field.Boxed || !IsStructValue(field.Type))
+            if (field.Static || field.Boxed || field.Inline || !IsStructValue(field.Type))
             {
                 continue;
             }
@@ -1228,8 +1240,8 @@ public sealed partial class Lowering
 
             if (_b.InitField.TryGetValue(init, out FieldSymbol? field))
             {
-                VReg value = EvalAs(init.Value!, field.Type);
-                StorePlace(PlaceOfField(field, obj, init), value);
+                Place fieldPlace = PlaceOfField(field, obj, init);
+                StorePlace(fieldPlace, InlineValue(fieldPlace, init.Value!, field.Type));
                 continue;
             }
 
@@ -1311,6 +1323,14 @@ public sealed partial class Lowering
         {
             foreach (FieldSymbol f in walk.Fields.Where(f => !f.Static))
             {
+                // One held in line is its bytes, copied as they are.
+                if (f.Inline)
+                {
+                    VReg from = f.Offset == 0 ? src : _e.Binary(Opcode.Add, src, f.Offset);
+                    VReg to = f.Offset == 0 ? obj : _e.Binary(Opcode.Add, obj, f.Offset);
+                    _e.Emit(Opcode.MemCopy, null, R(to), R(from), Imm(Math.Max(1, f.Type.Symbol!.InstanceSize), IrTypes.Word));
+                    continue;
+                }
                 VReg v = LoadPlace(new MemPlace(R(src), f.Offset, f.Type));
                 // A struct field is copied, not shared with the source.
                 if (!f.Boxed && IsStructValue(f.Type))
@@ -1326,7 +1346,8 @@ public sealed partial class Lowering
             if (init.Value is Expr given && _b.InitField.TryGetValue(init, out FieldSymbol? field))
             {
                 VReg v = EvalAs(given, field.Type);
-                _e.Store(R(obj), R(v), field.Offset, LoadSize(field.Type));
+                if (field.Inline) StorePlace(new MemPlace(R(obj), field.Offset, field.Type, false, true), v);
+                else _e.Store(R(obj), R(v), field.Offset, LoadSize(field.Type));
             }
         }
         return obj;
@@ -1902,7 +1923,7 @@ public sealed partial class Lowering
             // the int was neither sign- nor zero-extended. The declared type
             // of the location is the one the conversion has to target.
             Type storedAs = place is not null && targetType.IsError ? place.Type : targetType;
-            VReg value = EvalAs(a.Value, storedAs);
+            VReg value = InlineValue(place, a.Value, storedAs);
             if (place is not null)
             {
                 StorePlace(place, value);
@@ -2333,11 +2354,69 @@ public sealed partial class Lowering
         return Fail(at, "only a local, a parameter, a field or an array element has an address");
     }
 
+    /// <summary>
+    /// A struct variable passed by reference: the address of its bytes. A
+    /// by-reference parameter passed on is one already. One held in line is
+    /// where it is; any other holds a pointer to its block, which is the
+    /// address -- made first, zero, for a variable that has none yet (an
+    /// `out` local not assigned).
+    /// </summary>
+    /// <summary>
+    /// The value to store into `place`: for a struct held in line, the
+    /// struct as it is -- StorePlace copies its bytes in, so the copy EvalAs
+    /// makes of a struct it did not just make would be made for nothing;
+    /// for anything else, EvalAs's.
+    /// </summary>
+    private VReg InlineValue(Place? place, Expr value, Type storedAs)
+    {
+        if (place is MemPlace { Inline: true } && IsStructValue(storedAs))
+        {
+            return Convert(value, Eval(value), _b.TypeOf(value), storedAs);
+        }
+        return EvalAs(value, storedAs);
+    }
+
+    private VReg StructReference(Expr target, Type type)
+    {
+        if (target is NameExpr n && _b.Resolved.TryGetValue(n, out Sym? s) && s is ParamSym { ByRef: true } passed)
+        {
+            return _params[passed.Index];
+        }
+        Place? place = PlaceOf(target);
+        if (place is null)
+        {
+            return _e.Const(0, IrTypes.Word);
+        }
+        if (place is MemPlace { Inline: true })
+        {
+            return LoadPlace(place);
+        }
+        VReg held = LoadPlace(place);
+        VReg result = _f.NewReg(IrTypes.Word, "sref");
+        Block make = _f.NewBlock("srefmake");
+        Block done = _f.NewBlock("srefdone");
+        _e.CopyTo(result, R(held));
+        _e.Branch(held, done, make);
+        _e.SetBlock(make);
+        // The parameter's struct type, not the argument's: an argument may
+        // name the variable through a type that carries no symbol of its own.
+        VReg zero = NewStruct(target, type.Symbol!);
+        StorePlace(place, zero);
+        _e.CopyTo(result, R(zero));
+        _e.Jump(done);
+        _e.SetBlock(done);
+        return result;
+    }
+
     private VReg AddressOfPlace(Place p, Node at)
     {
         if (p is not MemPlace m)
         {
             return Fail(at, "this value has no address");
+        }
+        if (m.Inline)
+        {
+            return Fail(at, "a struct field held in line in its object (FieldSymbol.Inline) has no pointer to it to pass by reference");
         }
         VReg basis = RegOf(m.Address);
         return m.Offset == 0 ? basis : _e.Binary(Opcode.Add, basis, m.Offset);
