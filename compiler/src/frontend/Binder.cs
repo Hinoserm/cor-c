@@ -12461,8 +12461,81 @@ public sealed partial class Binder
         return new PatternExpr { Subject = m.Target, Test = test, Line = c.Line, Col = c.Col };
     }
 
+    /// <summary>
+    /// `{value:format}` (Parser.Formatted) as C#'s interpolation formats it:
+    /// the call kept where the value's type takes a format -- a number's
+    /// ToString(format), a type's own ToString(string) -- or made
+    /// ToString(format, null) on an IFormattable; for a `T?`, its value's,
+    /// and "" when there is none; and anything else as it is, the format
+    /// ignored. Null to keep the call as written.
+    /// </summary>
+    private Expr? FormatHole(CallExpr c, MemberExpr hole, Type value)
+    {
+        int line = c.Line, col = c.Col;
+        if (value.IsError) return null;
+        if (value.IsNullableValue)
+        {
+            CallExpr inner = new()
+            {
+                Target = new MemberExpr
+                {
+                    Target = new MemberExpr { Target = new SubjectExpr { Line = line, Col = col }, Name = "Value", Guarded = true, Line = line, Col = col },
+                    Name = "ToString", Line = line, Col = col,
+                },
+                FormatHole = true, Line = line, Col = col,
+            };
+            inner.Args.AddRange(c.Args);
+            inner.ArgNames.Add(null);
+            return new PatternExpr
+            {
+                Subject = hole.Target,
+                Test = new ConditionalExpr
+                {
+                    Cond = new MemberExpr { Target = new SubjectExpr { Line = line, Col = col }, Name = "HasValue", Guarded = true, Line = line, Col = col },
+                    Then = inner,
+                    Else = new LiteralExpr { Kind = Lit.Str, Text = "", Line = line, Col = col },
+                    Line = line, Col = col,
+                },
+                Line = line, Col = col,
+            };
+        }
+
+        bool TakesFormat(MethodSymbol m, int at) => m.Params.Count == at + 1 && m.Params[at].Type.Prim == Prim.String;
+        if (Alias(value.ToString()) is { } primitive && _r.Types.TryGetValue(primitive, out TypeSymbol? numbers)
+            && numbers.FindMethods("ToString").Any(m => m.Static && TakesFormat(m, 1) && m.Params[0].Type.Prim == value.Prim))
+            return null;
+        if (value.Symbol is TypeSymbol shape)
+        {
+            if (Reachable(shape, "ToString").Any(m => !m.Static && TakesFormat(m, 0))) return null;
+            if (AllInterfaces(shape).Any(i => i.Name == "IFormattable"))
+            {
+                CallExpr formattable = new()
+                {
+                    Target = new MemberExpr { Target = hole.Target, Name = "ToString", Line = line, Col = col },
+                    Line = line, Col = col,
+                };
+                formattable.Args.AddRange(c.Args);
+                formattable.Args.Add(new LiteralExpr { Kind = Lit.Null, Text = "null", Line = line, Col = col });
+                return formattable;
+            }
+        }
+        return hole.Target;
+    }
+
     private Type CheckCall(CallExpr c)
     {
+        if (c.FormatHole && c.Target is MemberExpr { Name: "ToString" } hole && c.Args.Count == 1)
+        {
+            _quiet++;
+            Type formatted = CheckExpr(hole.Target);
+            _quiet--;
+            if (FormatHole(c, hole, formatted) is Expr formatting)
+            {
+                _r.Rewrites[c] = formatting;
+                return CheckExpr(formatting);
+            }
+        }
+
         // `GetType()` WRITTEN BARE inside a class is this object's, as C#
         // reads every inherited member of object: the call is `this.GetType()`.
         // Only when nothing in scope is called GetType.

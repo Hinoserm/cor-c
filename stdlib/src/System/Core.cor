@@ -8087,7 +8087,20 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
     private int[]? placeOf;
     private int ordered;
 
+    // AND A REMOVED ONE'S PLACE IS THE NEXT ADDED ONE'S, most recently freed
+    // first, as .NET's free list gives an entry back: add a, b, c, remove b,
+    // add d, and the walk is a, d, c there and here.
+    private int[]? vacant;
+    private int vacancies;
+
     private void Placed(int slot) {
+        if (vacancies > 0 && order != null && placeOf != null) {
+            vacancies = vacancies - 1;
+            int place = vacant![vacancies];
+            order[place] = slot;
+            placeOf[slot] = place;
+            return;
+        }
         int[]? list = order;
         int[]? places = placeOf;
 
@@ -8107,8 +8120,17 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
     private void Unplaced(int slot) {
         int[]? list = order;
         int[]? places = placeOf;
-
-        if (list != null && places != null && places.Length == mask + 1) { list[places[slot]] = -1; }
+        if (list != null && places != null && places.Length == mask + 1) {
+            int place = places[slot];
+            list[place] = -1;
+            if (vacant == null || vacancies == vacant.Length) {
+                int[] more = new int[vacant == null ? 8 : vacant.Length * 2];
+                for (int n = 0; n < vacancies; n++) { more[n] = vacant![n]; }
+                vacant = more;
+            }
+            vacant[vacancies] = place;
+            vacancies = vacancies + 1;
+        }
     }
 
     // The removed ones squeezed out, and room for as many again as the table
@@ -8275,7 +8297,7 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
                 if (state[i] == 1 && Same(keys[i], key)) { return values[i]; }
                 i = (i + 1) & mask;
             }
-            return default(V)!;
+            throw new KeyNotFoundException($"The given key '{key}' was not present in the dictionary.");
         }
         set {
             // Grow at three quarters: linear probing degrades sharply above.
@@ -8306,7 +8328,12 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         }
     }
 
-    public void Add(K key, V value) { this[key] = value; }
+    /// A key already there is an error, as in .NET: the indexer is how a value
+    /// is replaced.
+    public void Add(K key, V value) {
+        if (ContainsKey(key)) throw new ArgumentException($"An item with the same key has already been added. Key: {key}");
+        this[key] = value;
+    }
 
     /// TRUE WHEN IT WENT IN, false when the key was already there and the
     /// value it had was LEFT ALONE. .NET's TryAdd, and the difference from Add
@@ -8470,6 +8497,7 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         count = 0;
         filled = 0;
         ordered = 0;
+        vacancies = 0;
     }
 
     private void Grow() {
@@ -8489,16 +8517,28 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         mask = size - 1;
         count = 0;
         filled = 0;
-        order = null;
-        placeOf = null;
-        ordered = 0;
 
-        // Put back in the order they went in, so growing changes nothing a
-        // walk can see.
-        for (int n = 0; oldOrder != null && n < oldOrdered; n++) {
-            int i = oldOrder[n];
-            if (i >= 0 && oldState[i] == 1) { this[oldKeys[i]] = oldValues[i]; }
+        // EVERY ONE IN THE PLACE IT HAD, and the freed places still free, as
+        // .NET's resize copies its entries: growing changes nothing a walk,
+        // or the next add, can see.
+        int[] list = new int[oldOrder != null && oldOrder.Length > size * 2 ? oldOrder.Length : size * 2];
+        int[] places = new int[size];
+        for (int n = 0; n < oldOrdered; n++) {
+            int i = oldOrder![n];
+            if (i < 0 || oldState[i] != 1) { list[n] = -1; continue; }
+            int j = Hash(oldKeys[i]);
+            while (state[j] != 0) { j = (j + 1) & mask; }
+            keys[j] = oldKeys[i];
+            values[j] = oldValues[i];
+            state[j] = 1;
+            count = count + 1;
+            filled = filled + 1;
+            list[n] = j;
+            places[j] = n;
         }
+        order = list;
+        placeOf = places;
+        ordered = oldOrdered;
     }
 }
 
@@ -8779,6 +8819,13 @@ class TypeInitializationException : SystemException
         : base("The type initializer for '" + (fullTypeName ?? "") + "' threw an exception.", innerException)
     { _typeName = fullTypeName ?? ""; }
     public string TypeName => _typeName;
+}
+
+/// A value that formats itself by a format string, .NET's IFormattable: what
+/// `{value:format}` calls, and what string.Format hands a format to.
+interface IFormattable
+{
+    string ToString(string? format, IFormatProvider? formatProvider);
 }
 
 /// One of the arguments was not acceptable. C#'s, spelled C#'s way.
@@ -9661,7 +9708,19 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
     private int[]? placeOf;
     private int ordered;
 
+    // A removed one's place is the next added one's, most recently freed
+    // first, as .NET's free list gives an entry back (see Dictionary).
+    private int[]? vacant;
+    private int vacancies;
+
     private void Placed(int slot) {
+        if (vacancies > 0 && order != null && placeOf != null) {
+            vacancies = vacancies - 1;
+            int place = vacant![vacancies];
+            order[place] = slot;
+            placeOf[slot] = place;
+            return;
+        }
         int[]? list = order;
         int[]? places = placeOf;
 
@@ -9682,7 +9741,17 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
         int[]? list = order;
         int[]? places = placeOf;
 
-        if (list != null && places != null && places.Length == mask + 1) { list[places[slot]] = -1; }
+        if (list != null && places != null && places.Length == mask + 1) {
+            int place = places[slot];
+            list[place] = -1;
+            if (vacant == null || vacancies == vacant.Length) {
+                int[] more = new int[vacant == null ? 8 : vacant.Length * 2];
+                for (int n = 0; n < vacancies; n++) { more[n] = vacant![n]; }
+                vacant = more;
+            }
+            vacant[vacancies] = place;
+            vacancies = vacancies + 1;
+        }
     }
 
     // The removed ones squeezed out, and room for as many again as the table
@@ -9826,6 +9895,7 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
         count = 0;
         filled = 0;
         ordered = 0;
+        vacancies = 0;
     }
 
     /// .NET's UnionWith takes an IEnumerable<T>; the HashSet overload below is
@@ -9968,16 +10038,26 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
         count = 0;
         filled = 0;
 
-        order = null;
-        placeOf = null;
-        ordered = 0;
-
         // Tombstones do not survive a rehash, which is the other thing growth
-        // is for; and what is kept goes back in the order it went in.
-        for (int n = 0; oldOrder != null && n < oldOrdered; n++) {
-            int i = oldOrder[n];
-            if (i >= 0 && oldState[i] == 1) { Add(old[i]); }
+        // is for; every element keeps its place, and the freed places stay
+        // free, as .NET's resize copies its entries.
+        int[] list = new int[oldOrder != null && oldOrder.Length > size * 2 ? oldOrder.Length : size * 2];
+        int[] places = new int[size];
+        for (int n = 0; n < oldOrdered; n++) {
+            int i = oldOrder![n];
+            if (i < 0 || oldState[i] != 1) { list[n] = -1; continue; }
+            int j = Hash(old[i]);
+            while (state[j] != 0) { j = (j + 1) & mask; }
+            items[j] = old[i];
+            state[j] = 1;
+            count = count + 1;
+            filled = filled + 1;
+            list[n] = j;
+            places[j] = n;
         }
+        order = list;
+        placeOf = places;
+        ordered = oldOrdered;
     }
 }
 

@@ -38,6 +38,13 @@ public sealed class CallExpr : Expr
     public bool ReceiverAdded { get; set; }
 
     /// <summary>
+    /// `{value:format}` in an interpolated string, written as
+    /// value.ToString(format): the binder keeps the call where the value's type
+    /// takes a format and otherwise uses the value as it is, as C# does.
+    /// </summary>
+    public bool FormatHole { get; init; }
+
+    /// <summary>
     /// Where the receiver and each argument were written, for
     /// [CallerArgumentExpression]: pairs of offsets into <see cref="Source"/>,
     /// start and end, the receiver's first (-1, -1 where there is none) and

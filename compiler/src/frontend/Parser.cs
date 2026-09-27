@@ -541,83 +541,23 @@ public sealed class Parser
     }
 
     /// <summary>
-    /// `{x:x8}` and `{x:D4}` -- the value written in a base, padded with zeros
-    /// to the width the specifier asks for.
-    ///
-    /// The specifiers C# has that mean something without a culture are the ones
-    /// here. ANYTHING ELSE IS REFUSED rather than dropped: a format that is
-    /// ignored produces a string that is wrong, and a wrong string that
-    /// compiled is worse than one that did not.
+    /// `{value:format}` -- the value formatting itself, as C#'s interpolation
+    /// has it: `value.ToString("format")` where the value's type takes a format
+    /// (IFormattable: the numbers, DateTime, TimeSpan and the rest), and the
+    /// value as it is otherwise, the format ignored. Which of those it is
+    /// depends on the value's type, so the call is marked and the binder
+    /// decides (Binder.FormatHole).
     /// </summary>
     private Expr Formatted(Expr value, string format, Token at)
     {
-        char kind = format.Length > 0 ? format[0] : ' ';
-        string digits = format.Length > 1 ? format[1..] : "";
-        int width = 0;
-
-        if (digits.Length > 0 && !int.TryParse(digits, out width))
+        CallExpr call = new()
         {
-            throw Error($"'{format}' is not a format this understands");
-        }
-
-        Expr made;
-
-        switch (kind)
-        {
-            case 'x' or 'X':
-            {
-                CallExpr hex = Library("Convert", "ToString", at);
-
-                hex.Args.Add(value);
-                hex.ArgNames.Add(null);
-                hex.Args.Add(new LiteralExpr
-                {
-                    Kind = Lit.Int, Text = "16", IntValue = 16, Line = at.Line, Col = at.Col,
-                });
-                hex.ArgNames.Add(null);
-                made = hex;
-
-                if (kind == 'X')
-                {
-                    CallExpr upper = Library("String", "ToUpperInvariant", at);
-
-                    upper.Args.Add(made);
-                    upper.ArgNames.Add(null);
-                    made = upper;
-                }
-                break;
-            }
-
-            case 'd' or 'D':
-                made = Text(value, at);
-                break;
-
-            default:
-                throw Error($"'{format}' is not a format this understands: "
-                          + "only x, X, d and D, each with an optional width");
-        }
-
-        if (width > 0)
-        {
-            CallExpr pad = Library("String", "PadLeft", at);
-
-            pad.Args.Add(made);
-            pad.ArgNames.Add(null);
-            pad.Args.Add(new LiteralExpr
-            {
-                Kind = Lit.Int, Text = width.ToString(), IntValue = width,
-                Line = at.Line, Col = at.Col,
-            });
-            pad.ArgNames.Add(null);
-            pad.Args.Add(new LiteralExpr
-            {
-                Kind = Lit.Char, Text = "0", IntValue = '0', Line = at.Line, Col = at.Col,
-            });
-            pad.ArgNames.Add(null);
-            made = pad;
-        }
-
-        return made;
+            Target = new MemberExpr { Target = value, Name = "ToString", Line = at.Line, Col = at.Col },
+            FormatHole = true, Line = at.Line, Col = at.Col,
+        };
+        call.Args.Add(new LiteralExpr { Kind = Lit.Str, Text = format, Line = at.Line, Col = at.Col });
+        call.ArgNames.Add(null);
+        return call;
     }
 
     /// <summary>A call to `Type.Member(...)` in the standard library.</summary>

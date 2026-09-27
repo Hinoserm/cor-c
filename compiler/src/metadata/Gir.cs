@@ -777,6 +777,7 @@ public static class Gir
                 case CallExpr c:
                     U8((byte)E.Call);
                     Expr(c.Target);
+                    Bool(c.FormatHole);
 
                     // THE NAMES GO WITH THE ARGUMENTS. A template's bodies are
                     // never checked here -- the binder only sees the
@@ -1681,7 +1682,8 @@ public static class Gir
 
                 case E.Call:
                 {
-                    CallExpr c = new() { Target = Need() };
+                    Expr called = Need();
+                    CallExpr c = new() { Target = called, FormatHole = Bool() };
                     int names = Count();
 
                     for (int i = 0; i < names; i++)

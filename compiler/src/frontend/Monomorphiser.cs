@@ -1642,7 +1642,7 @@ public sealed class Monomorphiser
                     target = named;
                 }
                 else target = Rewrite(c.Target, map);
-                CallExpr made = new() { Target = target, Line = c.Line, Col = c.Col };
+                CallExpr made = new() { Target = target, FormatHole = c.FormatHole, Line = c.Line, Col = c.Col };
 
                 foreach (Expr a in c.Args)
                 {
