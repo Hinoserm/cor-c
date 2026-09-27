@@ -7196,7 +7196,10 @@ public sealed partial class Binder
             return null;
         }
 
-        return Resolve(made.TemplateArgs[0], _thisType).Equals(element) ? made : null;
+        // THE ELEMENT, its `?` aside: a `string[]` is the IEnumerable<string?>
+        // a parameter declares, the annotation being no type.
+        Type wantedElement = Resolve(made.TemplateArgs[0], _thisType);
+        return wantedElement.Equals(element) || MethodSignatures.SameType(wantedElement, element) ? made : null;
     }
 
     /// <summary>
@@ -14057,15 +14060,25 @@ public sealed partial class Binder
             if (from.IsError || Same(first, second)) return 0;
             bool isFirst = Same(from, first), isSecond = Same(from, second);
             if (isFirst != isSecond) return isFirst ? 1 : -1;
-            bool toSecond = Convertible(first, second), toFirst = Convertible(second, first);
+            // IMPLICITLY, as C# counts it: `object` reaches any type here (it
+            // is a machine word), but to C# object -> IEnumerable is a cast,
+            // so it says nothing about which of the two is more specific.
+            bool toSecond = Implicitly(first, second);
+            bool toFirst = Implicitly(second, first);
             if (toSecond != toFirst) return toSecond ? 1 : -1;
             if (SignedIntegral(first) && UnsignedIntegral(second)) return 1;
             if (SignedIntegral(second) && UnsignedIntegral(first)) return -1;
             return 0;
         }
 
+        // THE SAME TYPE, annotations aside: `IEnumerable<string>` is the
+        // `IEnumerable<string?>` a parameter declares, the `?` being no type.
         static bool Same(Type a, Type b)
-            => a.Equals(b) || (!a.IsNullableValue && !b.IsNullableValue && a.AsNonNullable().Equals(b.AsNonNullable()));
+            => a.Equals(b) || (!a.IsNullableValue && !b.IsNullableValue
+                               && (a.AsNonNullable().Equals(b.AsNonNullable()) || MethodSignatures.SameType(a, b)));
+
+        bool Implicitly(Type from, Type to)
+            => (from.Prim != Prim.Any || to.Prim == Prim.Any) && (Convertible(from, to) || Variant(from, to));
 
         static bool SignedIntegral(Type t)
             => t.Symbol is null && !t.IsNullableValue && t.Prim is Prim.I8 or Prim.I16 or Prim.I32 or Prim.I64 or Prim.NInt;
@@ -14178,12 +14191,14 @@ public sealed partial class Binder
                           // first declared: `Math.Min(long, int)` is
                           // Min(long, long) wherever Min(double, double)
                           // happens to be written.
-                          ?? BetterMember(byArity.Where(m => m.TypeParams.Count == 0 && Accepts(m, false)).ToList())
-                          // AND LAST, THROUGH A VARIANT INTERFACE. Only when
-                          // nothing fits without it: variance makes more things
-                          // convertible, and a rule that widens the candidate
-                          // set moves calls that resolve perfectly well today.
-                          ?? byArity.FirstOrDefault(m => m.TypeParams.Count == 0 && Accepts(m, variant: true));
+                          //
+                          // EVERY APPLICABLE ONE, a variant conversion being as
+                          // ordinary an implicit conversion as any (C# 10.2.8):
+                          // `Concat(IEnumerable<string?>)` beside
+                          // `Concat(object?)` takes a sequence of strings, and
+                          // leaving the variant one out until nothing else fit
+                          // handed the sequence to the object overload.
+                          ?? BetterMember(byArity.Where(m => m.TypeParams.Count == 0 && Accepts(m, variant: true)).ToList());
 
         // A GENERIC METHOD IS TRIED LAST, so an ordinary overload that fits
         // still wins -- which is what C# does, and what keeps adding a generic
