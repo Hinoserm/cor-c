@@ -589,6 +589,13 @@ public static class Driver
             Console.Write(module.Dump());
         }
 
+        // Whether this object will carry link-time hints (Escape's), decided
+        // before optimising as it is when the object is written: an object,
+        // position-dependent, with the link-time optimizer on, linked against
+        // no shared library. Only such an object may call symbols only the
+        // link defines (field sites).
+        module.LeavesLinkHints = (args.Contains("--obj") || library) && !args.Contains("--no-lto") && !args.Contains("--no-opt")
+            && sharedLibs.Count == 0 && !(shared || args.Contains("--pic"));
         if (!args.Contains("--no-opt"))
         {
 #if COR_SELFHOST_BENCHMARK
@@ -770,7 +777,7 @@ public static class Driver
             {
                 // The lifetime hints first: the IR archive's integrity hash
                 // covers every other section, these included.
-                if (module.LifetimeHints is { IsEmpty: false } hints) hints.Attach(obj);
+                if (module.LeavesLinkHints && module.LifetimeHints is { IsEmpty: false } hints) hints.Attach(obj);
                 IrUnitCodec.Attach(obj, module, x86Backend.StackMaps);
             }
             File.WriteAllBytes(output, ElfWriter.WriteObject(obj));

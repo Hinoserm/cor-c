@@ -127,6 +127,13 @@ collector only because of such a call could have been placed in its frame or
 freed (at most 4096 per unit). The unit's own decisions use the same analysis
 read pessimistically, so hints change nothing a unit compiles to by itself.
 
+Only an object that will carry hints leaves them, or anything that depends on
+the link: the driver decides before optimising (`Module.LeavesLinkHints`) that
+the output is an object or library unit, position-dependent, compiled with the
+link-time optimizer on and against no shared library -- the objects whose link
+runs this step. A shared library's position-independent objects, and a program
+compiled and linked in one step, get neither hints nor field sites.
+
 Magic `CLIF`, version 2, total length; a sorted name table; the runtime frees the
 unit may call; function records (name index, global flag, parameter conditions,
 fresh condition); pending conditions. A condition is a stays count (-1 for never)

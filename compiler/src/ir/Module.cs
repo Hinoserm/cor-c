@@ -44,6 +44,13 @@ public sealed class Module
     public Corsac.Lang.Lto.LifetimeHints? LifetimeHints { get; set; }
 
     /// <summary>
+    /// Whether the object this module becomes carries link-time hints: the
+    /// driver says so before optimising. Without them nothing may call a
+    /// symbol only the link defines, and there is nothing to leave hints for.
+    /// </summary>
+    public bool LeavesLinkHints { get; set; }
+
+    /// <summary>
     /// Call sites no inliner may fold away: the allocations the link may yet
     /// place or free (Escape's pending hints), which it must still be able
     /// to tell from any other call when it reads this module's IR back.

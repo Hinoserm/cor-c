@@ -48,10 +48,19 @@ internal static class Program
             Check(loads.All(count => count == 1) && shells.Functions.All(f => f.Blocks.Count == 0), "deferred bodies loaded once and not retained in module");
             Check(backend.PeakBatchBytes <= 200 && backend.PeakBatchFunctions <= 2, "deferred worker window respects budget");
         }
-        bool rejected = false;
-        try { new X86Backend { FunctionLoader = Load, FunctionLoadBytes = _ => 201, FunctionMemoryBudget = 200 }.Generate(shells, errors); }
-        catch (InvalidDataException) { rejected = true; }
-        Check(rejected && errors.Count == 0, "oversized deferred function rejected before loading");
+        // Bigger than the whole budget: compiled alone, never refused, and
+        // the same bytes -- memory sizes the work, not the code.
+        foreach (int workers in new[] { 1, 4 })
+        {
+            X86Backend alone = new()
+            {
+                Workers = workers, EmitLinkSummary = true, FunctionLoader = Load, FunctionLoadBytes = _ => 201, FunctionMemoryBudget = 200,
+            };
+            ObjectFile oversized = alone.Generate(shells, errors);
+            Check(errors.Count == 0 && ElfWriter.WriteObject(oversized).SequenceEqual(ElfWriter.WriteObject(expected)),
+                "oversized deferred function compiled alone to the same bytes");
+            Check(alone.PeakBatchFunctions == 1, "oversized deferred functions are batched one at a time");
+        }
     }
 
     private static int Main(string[] args)

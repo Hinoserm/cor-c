@@ -573,7 +573,7 @@ public static partial class Program
         // pass(p): hands its parameter to `ext` too. relay(): returns what
         // `make` returns, also another unit's. Nothing is decided here; the
         // link is told what would decide it.
-        Module module = new("hints");
+        Module module = new("hints") { LeavesLinkHints = true };
         (Function lend, Builder b) = Fn(IrType.I64);
         lend.Exported = true;
         module.Functions.Add(lend); module.Entry = lend.Name;
@@ -698,9 +698,43 @@ public static partial class Program
         Assert(pass.Owned == 1, "dynamic local allocation is owned");
         Verifier.Check(f, "owned allocation ABI");
         Instr[] calls = f.Blocks.SelectMany(x => x.Instrs).Where(i => i.Callee == Escape.Freer).ToArray();
-        Assert(calls.Length == 2, "free before replacement and at return");
+        // Dead within the block that made it: one free, right after the load
+        // that is its last use, and no slot.
+        Assert(calls.Length == 1, "an object dead in its own block is freed once");
+        List<Instr> body = f.Blocks[0].Instrs;
+        int freeAt = body.IndexOf(calls[0]), loadAt = body.FindIndex(i => i.Op == Opcode.Load);
+        Assert(freeAt > loadAt && freeAt < body.Count - 1, "the free follows the last use and precedes the return");
+        Assert(f.Slots.Count == 0, "no slot for an object freed at its last use");
         Assert(calls.All(i => i.Operands.Count == 1 && i.Operands[0].Type == IrType.I64),
             "every compiler-inserted free receives a complete long address");
+
+        // In a loop, used in the next block too: the slot, last time's object
+        // given back before the next is made, and the last at the return.
+        Module looped = new("owned-loop");
+        (Function g, Builder lb) = Fn(IrType.I64, IrType.I64);
+        looped.Functions.Add(g); looped.Entry = g.Name;
+        Block head = g.NewBlock("head"), next = g.NewBlock("next"), done = g.NewBlock("done");
+        VReg n = lb.Reg(IrType.I64, "n");
+        lb.CopyTo(n, new ImmOperand(0, IrType.I64));
+        lb.Jump(head);
+        lb.SetBlock(head);
+        VReg made = lb.Unary(Opcode.Trunc64, lb.Call(Escape.Allocator, IrType.I64, new RegOperand(g.Params[0]))!);
+        lb.Store(new RegOperand(made), new RegOperand(n), 0, 8);
+        lb.Jump(next);
+        lb.SetBlock(next);
+        lb.CopyTo(n, new RegOperand(lb.Binary(Opcode.Add, lb.Load(IrType.I64, made, 0, 8), 1)));
+        lb.Branch(lb.Binary(Opcode.LtS, n, 10), head, done);
+        lb.SetBlock(done);
+        lb.Ret(new RegOperand(n));
+        Function loopFree = new(Escape.Freer, IrType.Void);
+        loopFree.Params.Add(loopFree.NewReg(IrType.I64));
+        new Builder(loopFree, loopFree.NewBlock("entry")).Ret();
+        looped.Functions.Add(loopFree);
+        Escape loopPass = new(); loopPass.Run(looped);
+        Verifier.Check(g, "owned loop allocation");
+        Instr[] loopCalls = g.Blocks.SelectMany(x => x.Instrs).Where(i => i.Callee == Escape.Freer).ToArray();
+        Assert(loopPass.Owned == 1 && loopCalls.Length == 2, "a repeating site gives last time's back, and the last at the return");
+        Assert(loopCalls.All(i => i.Operands.Count == 1 && i.Operands[0].Type == IrType.I64), "loop frees receive a complete long address");
     }
 
     private static void ScalarObjectBoundaries()

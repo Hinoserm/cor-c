@@ -804,7 +804,9 @@ C-alike with a library bolted on; the collector is part of the toolchain.
 **The stack map table, as emitted today.** Its own section,
 `.corsac.stackmaps`, read-only data bracketed by the object-local symbols
 `__corsac_stackmaps` and `__corsac_stackmaps_end`. Each object owns one complete
-table, including its own relative bitmap offsets. The boundaries are not global
+table, including its own relative bitmap offsets; call sites whose frames hold
+the same slots share one bitmap, so an offset may be named by many entries (a
+reader follows it, never assumes the pool runs in entry order). The boundaries are not global
 definitions: independently compiled objects must not collide or bind to each
 other's table. The allocated bytes merge into `.rodata` in the final image.
 The current conservative collector does not consume these tables. A future

@@ -138,6 +138,43 @@ public static class LifetimeTests
         ObjectFile obj = new(); Section text = new(".text", SectionKind.Code); text.Bytes.Add(0xc3); obj.Sections.Add(text);
         a.Attach(obj);
         Check(LifetimeHints.Read(obj)!.Functions.Count == 5, "hints attached to an object");
-        Console.WriteLine("  lifetime hint format, whole-program solve, cycles, unknown callees, fields, field sites and backend facts passed");
+        // A closed image keeps the runtime's frees for the units the link
+        // regenerates: their new code calls them though the archived IR did not.
+        ObjectFile Unit(string[] functions, LifetimeHints? unitHints)
+        {
+            ObjectFile made = new(); Section code = new(".text", SectionKind.Code);
+            code.Bytes.AddRange(new byte[functions.Length]); made.Sections.Add(code);
+            for (int i = 0; i < functions.Length; i++)
+                made.Symbols.Add(new Symbol { Name = functions[i], IsFunction = true, Section = code, Offset = i, Size = 1 });
+            unitHints?.Attach(made);
+            IrArchive.Attach(made, functions.Select(name => new IrArchiveRecord("F:" + name, false, 1, Array.Empty<string>(), new byte[] { 1 })).ToArray());
+            return made;
+        }
+        LifetimeHints gaining = new();
+        gaining.Helpers.Add("helper");
+        gaining.Pending.Add(new LifetimeCondition());
+        List<(string Name, ObjectFile Object)> closed = new() { ("app", Unit(new[] { "entry" }, gaining)), ("rt", Unit(new[] { "helper", "other" }, null)) };
+        PruningBackend pruning = new();
+        IrLinkOptimizer.Run(closed, () => pruning, closedImageEntry: "entry");
+        Check(pruning.Retained.Any(kept => kept is not null && kept.Contains("F:helper") && !kept.Contains("F:other")),
+            "a closed image keeps the free a regenerated unit will call, and drops what nothing calls");
+
+        Console.WriteLine("  lifetime hint format, whole-program solve, cycles, unknown callees, fields, field sites, closed-image roots and backend facts passed");
+    }
+}
+
+/// <summary>Answers a regeneration with the unit cut down to what it was asked to keep, and remembers what that was.</summary>
+internal sealed class PruningBackend : IUnitBackend
+{
+    public List<IReadOnlySet<string>?> Retained { get; } = new();
+    public ObjectFile Recompile(ObjectFile original, IReadOnlyList<IrImport> imports, IReadOnlySet<string>? retained = null,
+        LifetimeFacts? facts = null)
+    {
+        Retained.Add(retained);
+        ObjectFile kept = new();
+        kept.Sections.AddRange(original.Sections.Where(section => section.Name != IrArchive.SectionName && section.Name != LifetimeHints.SectionName));
+        kept.Symbols.AddRange(original.Symbols.Where(symbol => !symbol.Global || retained is null
+            || retained.Contains("F:" + symbol.Name) || retained.Contains("D:" + symbol.Name)));
+        return kept;
     }
 }

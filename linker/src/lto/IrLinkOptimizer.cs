@@ -26,15 +26,19 @@ public static class IrLinkOptimizer
             foreach (Symbol symbol in input.Object.Symbols.Where(symbol => symbol.Global && symbol.IsDefined))
                 owners.TryAdd(symbol.Name, input.Object);
         }
-        // A closed image keeps only what is reached. The routines field sites
-        // become are reached through symbols the link defines at the end
-        // (DefineFieldSites), which no code names yet: rooted here.
-        string[] siteTargets = hints.Values.Any(unit => unit.FieldSites.Count > 0)
-            ? new[] { LifetimeHints.FieldFreer, LifetimeHints.FieldKeeper } : Array.Empty<string>();
-        Dictionary<ObjectFile, HashSet<string>>? reachability = enabled && closedImageEntry is not null
-            ? IrReachability.Find(inputs, archives, owners, closedImageEntry, siteTargets) : null;
         // Every unit's lifetime summaries, solved together (LifetimeSolver).
         LifetimeSolver? lifetimes = enabled && hints.Count > 0 ? new LifetimeSolver(hintOrder) : null;
+        // A closed image keeps only what is reached, and reaching is judged
+        // on the IR as the units left it. Two kinds of call are made later:
+        // those a regenerated unit gains when the lifetime rules run again
+        // (Escape.RunAtLink) -- the runtime's frees, which every unit's hints
+        // list -- and those field sites become, through symbols the link
+        // defines at the end (DefineFieldSites). Their targets are roots.
+        SortedSet<string> linkRoots = new(StringComparer.Ordinal);
+        if (lifetimes is not null) foreach (LifetimeHints unit in hints.Values) linkRoots.UnionWith(unit.Helpers);
+        if (hints.Values.Any(unit => unit.FieldSites.Count > 0)) { linkRoots.Add(LifetimeHints.FieldFreer); linkRoots.Add(LifetimeHints.FieldKeeper); }
+        Dictionary<ObjectFile, HashSet<string>>? reachability = enabled && closedImageEntry is not null
+            ? IrReachability.Find(inputs, archives, owners, closedImageEntry, linkRoots) : null;
         int lifetimeUnits = 0;
         List<(int Index, List<(string Symbol, IrArchive Archive, IrArchiveEntry Body)> Imports, HashSet<string>? Retained)> plans = new();
         if (enabled)

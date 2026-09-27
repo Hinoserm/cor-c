@@ -537,7 +537,8 @@ public sealed partial class Escape
     private void SlotFieldFrees(Function f, OwnedRecord r, List<(long Offset, string Callee)> frees)
     {
         int word = IrTypes.Word.Bytes();
-        int line = r.Origin.Line;
+        // Inserted code takes its neighbour's line (the line table's runs).
+        int line = EntryLine(f, r.Origin.Line);
         // On entry: the fields empty, so the first free finds nothing.
         List<Instr> entry = new();
         VReg entryAddr = f.NewReg(IrTypes.Word, "fieldsp");
@@ -553,9 +554,10 @@ public sealed partial class Escape
             int at = b.Instrs.IndexOf(r.Renew!);
             if (at < 0) continue;
             List<Instr> before = new();
+            int renewLine = b.Instrs[at].Line;
             VReg addr = f.NewReg(IrTypes.Word, "fieldsp");
-            before.Add(new Instr { Op = Opcode.Copy, Dest = addr, Operands = { new SlotOperand(r.Slot!) }, Line = line });
-            foreach ((long o, string callee) in frees) AppendFieldFree(f, before, addr, o, line, callee);
+            before.Add(new Instr { Op = Opcode.Copy, Dest = addr, Operands = { new SlotOperand(r.Slot!) }, Line = renewLine });
+            foreach ((long o, string callee) in frees) AppendFieldFree(f, before, addr, o, renewLine, callee);
             b.Instrs.InsertRange(at, before);
             _bookkeeping.UnionWith(before);
             break;
@@ -566,9 +568,10 @@ public sealed partial class Escape
         {
             if (b.Terminator is not { Op: Opcode.Ret }) continue;
             List<Instr> before = new();
+            int exitLine = b.Instrs[^1].Line;
             VReg addr = f.NewReg(IrTypes.Word, "fieldsp");
-            before.Add(new Instr { Op = Opcode.Copy, Dest = addr, Operands = { new SlotOperand(r.Slot!) }, Line = line });
-            foreach ((long o, string callee) in frees) AppendFieldFree(f, before, addr, o, line, callee);
+            before.Add(new Instr { Op = Opcode.Copy, Dest = addr, Operands = { new SlotOperand(r.Slot!) }, Line = exitLine });
+            foreach ((long o, string callee) in frees) AppendFieldFree(f, before, addr, o, exitLine, callee);
             b.Instrs.InsertRange(b.Instrs.Count - 1, before);
             _bookkeeping.UnionWith(before);
         }

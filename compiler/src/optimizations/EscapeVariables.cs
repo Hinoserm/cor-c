@@ -110,7 +110,7 @@ public sealed partial class Escape
             // The variable's shadow: what it held, for the free at the next
             // assignment and at every return.
             FrameSlot slot = f.NewSlot(word, word, "ownedvar");
-            int line = list[0].Def.Line;
+            int line = EntryLine(f, list[0].Def.Line);
             VReg entryAddr = f.NewReg(IrTypes.Word, "ownedvarp");
             List<Instr> entry = new()
             {
@@ -142,12 +142,13 @@ public sealed partial class Escape
                 if (b.Terminator is not { Op: Opcode.Ret }) continue;
                 VReg a = f.NewReg(IrTypes.Word, "ownedvarp");
                 VReg p = f.NewReg(IrTypes.Word, "ownedvar");
+                int exitLine = b.Instrs[^1].Line;
                 List<Instr> release = new()
                 {
-                    new Instr { Op = Opcode.Copy, Dest = a, Operands = { new SlotOperand(slot) }, Line = line },
-                    new Instr { Op = Opcode.Load, Size = word, Dest = p, Operands = { new RegOperand(a) }, Line = line },
+                    new Instr { Op = Opcode.Copy, Dest = a, Operands = { new SlotOperand(slot) }, Line = exitLine },
+                    new Instr { Op = Opcode.Load, Size = word, Dest = p, Operands = { new RegOperand(a) }, Line = exitLine },
                 };
-                AppendFree(f, release, p, line);
+                AppendFree(f, release, p, exitLine);
                 b.Instrs.InsertRange(b.Instrs.Count - 1, release);
                 _bookkeeping.UnionWith(release);
             }

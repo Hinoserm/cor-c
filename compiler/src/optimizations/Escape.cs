@@ -66,6 +66,7 @@ public sealed partial class Escape : IModulePass
             byName[f.Name] = f;
         }
         _defined.UnionWith(byName.Keys);
+        _hinting = m.LeavesLinkHints;
 
         // Which parameters of which functions escape: pessimistic until a
         // function has been analysed, bottom-up over the call graph so a
@@ -116,7 +117,7 @@ public sealed partial class Escape : IModulePass
             if (canFreeFields) OwnFields(f, summaries);
         }
 
-        m.LifetimeHints = Hints(m, Provided);
+        m.LifetimeHints = _hinting ? Hints(m, Provided) : null;
         m.NeedsHeap = AnyAllocationReachable(m, byName);
         LastRun = (Promoted, Owned, OwnedReturns, _fresh.Count, FieldsOwned, VariablesOwned);
 
@@ -715,6 +716,8 @@ public sealed partial class Escape : IModulePass
         Liveness? liveness = null;
         HashSet<VReg>? pads = null;
         Defs? defs = null;
+        UseIndex? uses = null;
+        HashSet<Block>? repeating = null;
         List<OwnedFieldEscape.Owner> owners = new();
 
         foreach (Block b in PromotionOrder(f))
@@ -816,7 +819,17 @@ public sealed partial class Escape : IModulePass
                     // as proved. Keep the allocation and free it on the way
                     // out -- and, in a loop, free last time's before making
                     // this one, so the function holds at most one at once.
-                    if (Own(f, b, i, ConstantSize(f, i.Operands[0], out long ownedBytes) ? ownedBytes : -1))
+                    long ownedBytes = ConstantSize(f, i.Operands[0], out long constant) ? constant : -1;
+                    // Dead within its own block: one free at its last use.
+                    uses ??= new UseIndex(f);
+                    if (FreeAtLastUse(f, b, i, flow.Derived, liveness, pads, uses, ownedBytes))
+                    {
+                        _owned.Add(i);
+                        Owned++;
+                        continue;
+                    }
+                    repeating ??= Repeating(f);
+                    if (Own(f, b, i, ownedBytes, repeating.Contains(b)))
                     {
                         _owned.Add(i);
                         Owned++;
@@ -878,9 +891,11 @@ public sealed partial class Escape : IModulePass
     /// site. And nothing is freed at a call that never returns; the process
     /// is ending there anyway.
     /// </summary>
-    private bool Own(Function f, Block block, Instr alloc, long bytes = -1)
+    private bool Own(Function f, Block block, Instr alloc, long bytes = -1, bool repeats = true)
     {
-        OwnedRecord record = new() { Origin = alloc, Root = alloc.Dest!, Renew = alloc, Bytes = bytes };
+        // Only a site that can run again has last time's object to give
+        // back; one on no cycle of the graph finds its slot empty.
+        OwnedRecord record = new() { Origin = alloc, Root = alloc.Dest!, Renew = repeats ? alloc : null, Bytes = bytes };
         List<(Block Block, int Index)> exits = new();
         foreach (Block b in f.Blocks)
         {
@@ -896,12 +911,14 @@ public sealed partial class Escape : IModulePass
         int word = IrTypes.Word.Bytes();
         FrameSlot slot = f.NewSlot(word, word, "owned");
 
-        // Entry: nothing owned yet.
+        // Entry: nothing owned yet. (Inserted code takes its neighbour's
+        // line, so the line table's runs are not split by it.)
         VReg entryAddr = f.NewReg(IrTypes.Word, "ownedp");
+        int entryLine = EntryLine(f, alloc.Line);
         f.Entry.Instrs.InsertRange(0, new List<Instr>
         {
-            new Instr { Op = Opcode.Copy, Dest = entryAddr, Operands = { new SlotOperand(slot) }, Line = alloc.Line },
-            new Instr { Op = Opcode.Store, Size = word, Operands = { new RegOperand(entryAddr), new ImmOperand(0, IrTypes.Word) }, Line = alloc.Line },
+            new Instr { Op = Opcode.Copy, Dest = entryAddr, Operands = { new SlotOperand(slot) }, Line = entryLine },
+            new Instr { Op = Opcode.Store, Size = word, Operands = { new RegOperand(entryAddr), new ImmOperand(0, IrTypes.Word) }, Line = entryLine },
         });
 
         int at = block.Instrs.IndexOf(alloc);
@@ -912,13 +929,16 @@ public sealed partial class Escape : IModulePass
 
         // Before the allocation: give back what the last one made.
         VReg addr = f.NewReg(IrTypes.Word, "ownedp");
-        VReg prev = f.NewReg(IrTypes.Word, "owned");
         List<Instr> releasePrevious = new()
         {
             new Instr { Op = Opcode.Copy, Dest = addr, Operands = { new SlotOperand(slot) }, Line = alloc.Line },
-            new Instr { Op = Opcode.Load, Size = word, Dest = prev, Operands = { new RegOperand(addr) }, Line = alloc.Line },
         };
-        record.Frees.Add((block, AppendFree(f, releasePrevious, prev, alloc.Line), prev));
+        if (repeats)
+        {
+            VReg prev = f.NewReg(IrTypes.Word, "owned");
+            releasePrevious.Add(new Instr { Op = Opcode.Load, Size = word, Dest = prev, Operands = { new RegOperand(addr) }, Line = alloc.Line });
+            record.Frees.Add((block, AppendFree(f, releasePrevious, prev, alloc.Line), prev));
+        }
         block.Instrs.InsertRange(at, releasePrevious);
         _bookkeeping.UnionWith(releasePrevious);
 
@@ -941,12 +961,13 @@ public sealed partial class Escape : IModulePass
             int r = b.Instrs.Count - 1;
             VReg a = f.NewReg(IrTypes.Word, "ownedp");
             VReg p = f.NewReg(IrTypes.Word, "owned");
+            int exitLine = b.Instrs[r].Line;
             List<Instr> releaseExit = new()
             {
-                new Instr { Op = Opcode.Copy, Dest = a, Operands = { new SlotOperand(slot) }, Line = alloc.Line },
-                new Instr { Op = Opcode.Load, Size = word, Dest = p, Operands = { new RegOperand(a) }, Line = alloc.Line },
+                new Instr { Op = Opcode.Copy, Dest = a, Operands = { new SlotOperand(slot) }, Line = exitLine },
+                new Instr { Op = Opcode.Load, Size = word, Dest = p, Operands = { new RegOperand(a) }, Line = exitLine },
             };
-            record.Frees.Add((b, AppendFree(f, releaseExit, p, alloc.Line), p));
+            record.Frees.Add((b, AppendFree(f, releaseExit, p, exitLine), p));
             b.Instrs.InsertRange(r, releaseExit);
             _bookkeeping.UnionWith(releaseExit);
         }
@@ -988,7 +1009,7 @@ public sealed partial class Escape : IModulePass
         waiting.RemoveAll(w => !defs.IsSingle(w.Call.Dest!) || !addresses!.Contains(w.Call.Dest!));
         Liveness? liveness = null;
         HashSet<VReg>? pads = null;
-        List<(Block Block, Instr Call, bool ReadsPrevious)> chosen = new();
+        List<(Block Block, Instr Call, bool ReadsPrevious, HashSet<VReg> Derived)> chosen = new();
         foreach ((Block b, Instr call) in calls)
         {
             if (!defs.IsSingle(call.Dest!)) continue;
@@ -1001,10 +1022,24 @@ public sealed partial class Escape : IModulePass
             bool readsPrevious = false;
             foreach (Operand o in call.Operands)
                 if (o is RegOperand arg && flow.Derived.Contains(arg.Reg)) readsPrevious = true;
-            chosen.Add((b, call, readsPrevious));
+            chosen.Add((b, call, readsPrevious, flow.Derived));
         }
-        foreach ((Block b, Instr call, bool readsPrevious) in chosen)
-            OwnFreshResult(f, b, call, readsPrevious);
+        UseIndex? uses = chosen.Count == 0 ? null : new UseIndex(f);
+        HashSet<Block>? repeating = null;
+        foreach ((Block b, Instr call, bool readsPrevious, HashSet<VReg> derived) in chosen)
+        {
+            // Dead within its own block: one free at its last use.
+            if (FreeAtLastUse(f, b, call, derived, liveness!, pads!, uses!, -1))
+            {
+                _records[f][^1].FreshCallee = call.Callee;
+                _ownedCalls.Add(call);
+                Owned++;
+                OwnedReturns++;
+                continue;
+            }
+            repeating ??= Repeating(f);
+            OwnFreshResult(f, b, call, readsPrevious, repeating.Contains(b));
+        }
 
         // A result from a function whose answer waits on another unit: owned
         // here if the link finds it fresh (EscapeHints). Judged against the
@@ -1050,7 +1085,7 @@ public sealed partial class Escape : IModulePass
         return used;
     }
 
-    private bool OwnFreshResult(Function f, Block b, Instr call, bool readsPrevious)
+    private bool OwnFreshResult(Function f, Block b, Instr call, bool readsPrevious, bool repeats = true)
     {
         // BEFORE THE CALL WHEN THE CALL CANNOT BE READING IT. The previous
         // result is reachable only through registers derived from it (it
@@ -1059,7 +1094,7 @@ public sealed partial class Escape : IModulePass
         // callee's own allocation lands on the same bytes through the
         // collector's lock-free top-of-buffer path. A call handed the old
         // object -- x = Grow(x) -- gives it back after instead.
-        if (readsPrevious ? !OwnAfter(f, b, call) : !Own(f, b, call)) return false;
+        if (readsPrevious ? !OwnAfter(f, b, call, repeats) : !Own(f, b, call, -1, repeats)) return false;
         // Own/OwnAfter recorded the object's frees; the callee is what filled its fields.
         _records[f][^1].FreshCallee = call.Callee;
         _ownedCalls.Add(call);
@@ -1076,19 +1111,20 @@ public sealed partial class Escape : IModulePass
     /// proof has already shown that nothing uses the old one once the call
     /// is made. Frees at every return as Own does.
     /// </summary>
-    private bool OwnAfter(Function f, Block block, Instr call)
+    private bool OwnAfter(Function f, Block block, Instr call, bool repeats = true)
     {
         int at = block.Instrs.IndexOf(call);
         if (at < 0) return false;
-        OwnedRecord record = new() { Origin = call, Root = call.Dest!, Renew = call, RenewAfter = true };
+        OwnedRecord record = new() { Origin = call, Root = call.Dest!, Renew = repeats ? call : null, RenewAfter = true };
         int word = IrTypes.Word.Bytes();
         FrameSlot slot = f.NewSlot(word, word, "owned");
 
         VReg entryAddr = f.NewReg(IrTypes.Word, "ownedp");
+        int entryLine = EntryLine(f, call.Line);
         f.Entry.Instrs.InsertRange(0, new List<Instr>
         {
-            new Instr { Op = Opcode.Copy, Dest = entryAddr, Operands = { new SlotOperand(slot) }, Line = call.Line },
-            new Instr { Op = Opcode.Store, Size = word, Operands = { new RegOperand(entryAddr), new ImmOperand(0, IrTypes.Word) }, Line = call.Line },
+            new Instr { Op = Opcode.Copy, Dest = entryAddr, Operands = { new SlotOperand(slot) }, Line = entryLine },
+            new Instr { Op = Opcode.Store, Size = word, Operands = { new RegOperand(entryAddr), new ImmOperand(0, IrTypes.Word) }, Line = entryLine },
         });
 
         at = block.Instrs.IndexOf(call);
@@ -1098,9 +1134,12 @@ public sealed partial class Escape : IModulePass
         List<Instr> after = new()
         {
             new Instr { Op = Opcode.Copy, Dest = addr, Operands = { new SlotOperand(slot) }, Line = call.Line },
-            new Instr { Op = Opcode.Load, Size = word, Dest = prev, Operands = { new RegOperand(addr) }, Line = call.Line },
         };
-        record.Frees.Add((block, AppendFree(f, after, prev, call.Line), prev));
+        if (repeats)
+        {
+            after.Add(new Instr { Op = Opcode.Load, Size = word, Dest = prev, Operands = { new RegOperand(addr) }, Line = call.Line });
+            record.Frees.Add((block, AppendFree(f, after, prev, call.Line), prev));
+        }
         after.Add(call.Dest!.Type == IrTypes.Word
             ? new Instr { Op = Opcode.Copy, Dest = made, Operands = { new RegOperand(call.Dest) }, Line = call.Line }
             : new Instr { Op = IrTypes.Word == IrType.I32 ? Opcode.Trunc64 : Opcode.ZExt32,
@@ -1115,18 +1154,131 @@ public sealed partial class Escape : IModulePass
             int r = b.Instrs.Count - 1;
             VReg a = f.NewReg(IrTypes.Word, "ownedp");
             VReg p = f.NewReg(IrTypes.Word, "owned");
+            int exitLine = b.Instrs[r].Line;
             List<Instr> releaseExit = new()
             {
-                new Instr { Op = Opcode.Copy, Dest = a, Operands = { new SlotOperand(slot) }, Line = call.Line },
-                new Instr { Op = Opcode.Load, Size = word, Dest = p, Operands = { new RegOperand(a) }, Line = call.Line },
+                new Instr { Op = Opcode.Copy, Dest = a, Operands = { new SlotOperand(slot) }, Line = exitLine },
+                new Instr { Op = Opcode.Load, Size = word, Dest = p, Operands = { new RegOperand(a) }, Line = exitLine },
             };
-            record.Frees.Add((b, AppendFree(f, releaseExit, p, call.Line), p));
+            record.Frees.Add((b, AppendFree(f, releaseExit, p, exitLine), p));
             b.Instrs.InsertRange(r, releaseExit);
             _bookkeeping.UnionWith(releaseExit);
         }
         Record(f, record);
         return true;
     }
+
+    /// <summary>
+    /// Where each register is read, and in which block, as the function
+    /// stood when asked: made once per function. The instructions the
+    /// lifetime passes add read only registers of their own, so it stays
+    /// right for every register a later candidate is judged on.
+    /// </summary>
+    private sealed class UseIndex
+    {
+        public readonly Dictionary<VReg, List<Instr>> Readers = new();
+        public readonly Dictionary<Instr, Block> Home = new(ReferenceEqualityComparer.Instance);
+        public UseIndex(Function f)
+        {
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                {
+                    Home[i] = b;
+                    foreach (VReg r in IrInfo.Uses(i))
+                    {
+                        if (!Readers.TryGetValue(r, out List<Instr>? list)) Readers[r] = list = new();
+                        list.Add(i);
+                    }
+                }
+        }
+    }
+
+    /// <summary>
+    /// FREED AT ITS LAST USE: an object whose every use, and every use of
+    /// what is derived from it, lies in the block that made it, after it, with
+    /// none of it live out of the block or read by a handler, is given back
+    /// right after the last of those uses. No slot, no frees at the returns,
+    /// no giving back of last time's before the next: one call. What most
+    /// temporaries are -- a string made and handed to the next concatenation
+    /// -- and, owned the slot way, each cost a slot and two frees.
+    /// </summary>
+    private bool FreeAtLastUse(Function f, Block b, Instr made, HashSet<VReg> derived, Liveness liveness,
+        HashSet<VReg> pads, UseIndex uses, long bytes)
+    {
+        if (made.Dest is null) return false;
+        foreach (VReg r in derived)
+            if (pads.Contains(r) || !liveness.Tracks(r) || liveness.IsLiveOut(b, r)) return false;
+        Instr? last = null;
+        int lastAt = b.Instrs.IndexOf(made);
+        if (lastAt < 0) return false;
+        int madeAt = lastAt;
+        foreach (VReg r in derived)
+        {
+            if (!uses.Readers.TryGetValue(r, out List<Instr>? readers)) continue;
+            foreach (Instr reader in readers)
+            {
+                if (ReferenceEquals(reader, made) || _bookkeeping.Contains(reader)) continue;
+                if (!uses.Home.TryGetValue(reader, out Block? home) || !ReferenceEquals(home, b)) return false;
+                int at = b.Instrs.IndexOf(reader);
+                if (at < madeAt) return false;
+                if (at > lastAt) { lastAt = at; last = reader; }
+            }
+        }
+        // A branch on it: there is no after in this block.
+        if (last is not null && ReferenceEquals(last, b.Terminator)) return false;
+        List<Instr> free = new();
+        Instr call = AppendFree(f, free, made.Dest, b.Instrs[lastAt].Line);
+        b.Instrs.InsertRange(lastAt + 1, free);
+        _bookkeeping.UnionWith(free);
+        // The owned field rules see it as dying at that free.
+        OwnedRecord record = new() { Origin = made, Root = made.Dest, Renew = call, Bytes = bytes };
+        record.Frees.Add((b, call, made.Dest));
+        Record(f, record);
+        return true;
+    }
+
+    /// <summary>The blocks on some cycle of the graph: the only places an allocation site runs twice in one call.</summary>
+    private static HashSet<Block> Repeating(Function f)
+    {
+        Cfg cfg = new(f);
+        // Kosaraju: finishing order on the graph, then components on its
+        // reverse; a block is on a cycle if its component has two blocks or
+        // it is its own successor.
+        List<Block> order = new();
+        HashSet<Block> seen = new(ReferenceEqualityComparer.Instance);
+        foreach (Block root in f.Blocks)
+        {
+            if (!seen.Add(root)) continue;
+            Stack<(Block Block, IEnumerator<Block> Next)> stack = new();
+            stack.Push((root, cfg.Succs(root).GetEnumerator()));
+            while (stack.Count > 0)
+            {
+                (Block block, IEnumerator<Block> next) = stack.Peek();
+                if (next.MoveNext())
+                {
+                    if (seen.Add(next.Current)) stack.Push((next.Current, cfg.Succs(next.Current).GetEnumerator()));
+                }
+                else { stack.Pop(); order.Add(block); }
+            }
+        }
+        HashSet<Block> repeating = new(ReferenceEqualityComparer.Instance);
+        HashSet<Block> assigned = new(ReferenceEqualityComparer.Instance);
+        for (int k = order.Count - 1; k >= 0; k--)
+        {
+            if (!assigned.Add(order[k])) continue;
+            List<Block> component = new() { order[k] };
+            Stack<Block> work = new();
+            work.Push(order[k]);
+            while (work.TryPop(out Block? block))
+                foreach (Block pred in cfg.Preds(block))
+                    if (assigned.Add(pred)) { component.Add(pred); work.Push(pred); }
+            if (component.Count > 1 || cfg.Succs(order[k]).Contains(order[k])) repeating.UnionWith(component);
+        }
+        return repeating;
+    }
+
+    /// <summary>The line the function's first instruction has: what code put before it is given.</summary>
+    internal static int EntryLine(Function f, int otherwise) => f.Entry.Instrs.Count > 0 ? f.Entry.Instrs[0].Line : otherwise;
 
     private static Instr AppendFree(Function f, List<Instr> output, VReg pointer, int line)
     {

@@ -553,7 +553,12 @@ public sealed class X86Backend : IBackend
 
         // The bitmaps are sized first so an entry can name where its own one
         // will land: the pool starts right after the fixed-size entries.
+        // ONE COPY OF EACH BITMAP. Most call sites of a function hold the
+        // same frame slots, and every entry names its bitmap by offset, so
+        // entries that agree share one: the reader follows the offset either
+        // way, and the table is the same format.
         List<uint[]> pool = new();
+        Dictionary<string, int> shared = new(StringComparer.Ordinal);
         int[] at = new int[maps.Count];
         int poolStart = 20 + maps.Count * 16;
         int poolWords = 0;
@@ -575,7 +580,14 @@ public sealed class X86Backend : IBackend
                 int bit = -off / 4 - 1;
                 bits[bit / 32] |= 1u << (bit % 32);
             }
+            string key = string.Join(',', bits);
+            if (shared.TryGetValue(key, out int existing))
+            {
+                at[i] = existing;
+                continue;
+            }
             at[i] = poolStart + poolWords * 4;
+            shared.Add(key, at[i]);
             poolWords += 1 + bits.Length;
             pool.Add(bits);
         }
