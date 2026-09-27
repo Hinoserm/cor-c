@@ -5172,6 +5172,18 @@ public sealed partial class Binder
         MethodSymbol? wasMethod = _method;
         int wasSlot = _nextSlot;
         List<LocalScope> wasScopes = new(_scopes);
+        // NO CAPTURE IS BEING DISCOVERED IN HERE: the body's own reads of
+        // what it captured are fields by now, and a lambda inside it runs a
+        // discovery of its own. Left as they were, an enclosing lambda's
+        // discovery -- its floor counted on the stack this replaces -- took
+        // this body's own locals for captures of the enclosing method's, and
+        // they went to cells the reads never looked in.
+        Dictionary<string, Type>? wasCaptured = _captured;
+        Dictionary<string, ConstSym>? wasCapturedConstants = _capturedConstants;
+        int wasFloor = _lambdaFloor;
+        _captured = null;
+        _capturedConstants = null;
+        _lambdaFloor = -1;
 
         _scopes.Clear();
         _thisType = closure;
@@ -5212,6 +5224,9 @@ public sealed partial class Binder
 
         _scopes.Clear();
         _scopes.AddRange(wasScopes);
+        _captured = wasCaptured;
+        _capturedConstants = wasCapturedConstants;
+        _lambdaFloor = wasFloor;
         _thisType = wasThis;
         _lexicalType = wasLexicalType;
         _capturedThisType = wasCapturedThis;
