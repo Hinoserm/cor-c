@@ -1430,8 +1430,13 @@ static class Runtime
 
             string? said = Frame(ret - 1);
             if (said == null) { break; }
-            made.Append(said);
-            made.Append('\n');
+
+            // ONLY METHODS, as .NET lists only managed frames: the entry stub
+            // and the runtime's assembly helpers are named without a type.
+            if (said.IndexOf('.') >= 0) {
+                if (made.Length > 0) { made.Append('\n'); }
+                made.Append(said);
+            }
             taken = taken + 1;
             frame = next;
         }
@@ -1497,7 +1502,8 @@ static class Runtime
     public static void Capture(object thrown, long frame, string site) {
         if (thrown is Exception) {
             Exception e = (Exception)thrown;
-            e.Trace$ = String.Concat(site, Trace(frame));
+            string callers = Trace(frame);
+            e.Trace$ = callers.Length == 0 ? site : String.Concat(site, String.Concat("\n", callers));
         }
     }
 

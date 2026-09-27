@@ -661,7 +661,7 @@ public sealed partial class Lowering
             string site = "   at " + (_f.Display ?? _f.Name);
             string file = _f.SourceFile ?? at.File;
             if (!string.IsNullOrEmpty(file)) site += " in " + file + ":line " + at.Line;
-            _e.Call(CallLabel(capture), IrType.Void, R(obj), R(Widen(frame)), new SymOperand(InternString(site + "\n")));
+            _e.Call(CallLabel(capture), IrType.Void, R(obj), R(Widen(frame)), new SymOperand(InternString(site)));
         }
 
         Rethrow(obj, at);

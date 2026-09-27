@@ -1,10 +1,10 @@
 // test: gettype
 // expect-exit: 0
 // expect-output:
-// string string
+// string String
 // object Leaf
 // interface Leaf
-// array int[]
+// array Int32[]
 // same True
 //
 // GetType() on every reference: a string, a user class held as object, one

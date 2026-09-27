@@ -8,9 +8,9 @@
 // c q
 // n 
 // L -7
-// type int
-// type double
-// type string
+// type Int32
+// type Double
+// type String
 // is int
 // not string
 // not short

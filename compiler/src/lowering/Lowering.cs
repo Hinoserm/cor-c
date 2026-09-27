@@ -228,8 +228,32 @@ public sealed partial class Lowering
     /// written, rather than the mangled label the linker knows it by. A
     /// constructor is spelled the way .NET spells one.
     /// </summary>
+    /// <summary>
+    /// A method as a .NET stack trace names it: `Program.Scale(Int32 by,
+    /// String[] names)`, `Point..ctor(Double x)`, parameters by their
+    /// runtime type's short name, `&amp;` after one passed by reference.
+    /// </summary>
     private static string Display(MethodSymbol m)
-        => m.IsCtor ? $"{m.Owner.Name}..ctor" : $"{m.Owner.Name}.{m.Name}";
+        => (m.IsCtor ? $"{m.Owner.Name}..ctor" : $"{m.Owner.Name}.{m.Name}")
+         + "(" + string.Join(", ", m.Params.Select(p => FrameTypeName(p.Type) + (p.ByRef ? "&" : "") + " " + p.Name)) + ")";
+
+    /// <summary>A parameter's type as a .NET frame writes it: Int32, String, List`1, Int32[], Nullable`1.</summary>
+    private static string FrameTypeName(Type t)
+    {
+        if (t.IsArray && t.Element is Type element) return FrameTypeName(element) + string.Concat(Enumerable.Repeat("[]", t.ArrayRank));
+        if (t.IsNullableValue) return "Nullable`1";
+        if (t.IsPointer) return FrameTypeName(t.Pointee ?? Type.Void) + "*";
+        if (t.Symbol is TypeSymbol named)
+        {
+            string name = named.Decl is { Template: string template, TemplateArgs.Count: > 0 } made
+                ? template + "`" + made.TemplateArgs.Count : named.Name;
+            int dot = name.LastIndexOf('.');
+            return dot < 0 ? name : name[(dot + 1)..];
+        }
+        if (t.ParamName is string generic) return generic;
+        string full = RuntimeName(t);
+        return full.StartsWith("System.", StringComparison.Ordinal) ? full["System.".Length..] : full;
+    }
 
     // ---- the thread block ------------------------------------------------------
     //
@@ -1073,6 +1097,26 @@ public sealed partial class Lowering
     /// </summary>
     private static string ElementKey(Type element) => Unannotated(element).ToString();
 
+    /// <summary>
+    /// An element key as .NET names the type: `System.Int32` for `int`, and
+    /// `System.Int32[]` for `int[]`, which is what an array's GetType() says.
+    /// A declared type's key is already its name.
+    /// </summary>
+    private static string DotNetName(string key)
+    {
+        if (key.EndsWith("[]", StringComparison.Ordinal)) return DotNetName(key[..^2]) + "[]";
+        return key switch
+        {
+            "bool" => "System.Boolean", "byte" => "System.Byte", "sbyte" => "System.SByte",
+            "short" => "System.Int16", "ushort" => "System.UInt16", "int" => "System.Int32",
+            "uint" => "System.UInt32", "long" => "System.Int64", "ulong" => "System.UInt64",
+            "nint" => "System.IntPtr", "nuint" => "System.UIntPtr", "float" => "System.Single",
+            "double" => "System.Double", "char" => "System.Char", "string" => "System.String",
+            "object" => "System.Object",
+            _ => key,
+        };
+    }
+
     private static Type Unannotated(Type t)
     {
         if (t.IsNullableValue)
@@ -1125,7 +1169,7 @@ public sealed partial class Lowering
         DataItem item = new(sym, d) { ReadOnly = true, Align = _t.Align64, FromLibrary = true, Coalescible = true };
         _sequenceDescriptors[key] = sym;
         _m.Data.Add(item);
-        item.Relocs.Add(new DataReloc(DescName * w, InternString(isString ? "string" : element + "[]"), 0));
+        item.Relocs.Add(new DataReloc(DescName * w, InternString(isString ? "System.String" : DotNetName(element) + "[]"), 0));
         item.Relocs.Add(new DataReloc(DescSelf * w, sym, 0));
         if (slots > 0)
         {

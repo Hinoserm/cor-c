@@ -669,8 +669,12 @@ public sealed partial class Lowering
             case SizeOfExpr so:
                 return _e.Const(_b.SizeOfType(so), IrType.I32);
 
+            // AN ENUM'S OR A STRUCT'S TYPE IS ITS BOX'S, as a primitive's is:
+            // what GetType() on one reads is the box, and typeof has to be
+            // that same descriptor for the two to compare equal.
             case TypeOfExpr to when _b.TypeOfs.TryGetValue(to, out TypeSymbol? named):
-                return _e.Address(DescriptorOf(named));
+                return _e.Address(named.Kind is TypeKind.Enum or TypeKind.Struct
+                    ? BoxDescriptor(new Type { Symbol = named }) : DescriptorOf(named));
 
             case TypeOfExpr to when _b.PrimitiveTypeOfs.TryGetValue(to, out Prim prim):
                 return _e.Address(PrimitiveDescriptor(prim));

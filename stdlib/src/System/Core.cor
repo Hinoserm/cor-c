@@ -8711,37 +8711,27 @@ class Exception
     /// from the type it caught. Zero when there was no such number.
     public int HResult;
 
-    /// `Type: message`, which is C#'s shape, and then the inner one indented
-    /// under it -- because an exception whose cause is not printed is half a
-    /// report and the half that is missing is the half that says why.
-    /// NOT `virtual`, AND IT SHOULD BE. In C# this overrides object.ToString
-    /// and a derived exception replaces it.
-    ///
-    /// It cannot be yet: a virtual method on a class that lives in a SHARED
-    /// LIBRARY faults the machine, and Exception is the first library class
-    /// ever to have had one, so nothing had exercised that path. Measured --
-    /// with `virtual` the machine takes a page fault in init before it reaches
-    /// a login prompt; without it everything runs. See the task list.
-    ///
-    /// The behaviour is less costly than it looks, because the name comes from
-    /// the DESCRIPTOR rather than from the declaration: this reads the actual
-    /// type, so `Boom` says "Boom: ..." without overriding anything. What is
-    /// missing is a derived class replacing the whole format.
-    public string ToString()
+    /// WHAT AN EXCEPTION SAYS OF ITSELF, overriding object.ToString as in
+    /// .NET, so a derived exception can replace it and one held as object
+    /// still says it. The full type name, ": " and the message when there is
+    /// one; the inner exception after " ---> " on the next line, closed by
+    /// "--- End of inner exception stack trace ---"; then the stack trace.
+    /// Lines end in "\n", Environment.NewLine on this platform, written out
+    /// because Environment is a library above this one.
+    public override string ToString()
     {
-        string head = String.Concat(this.GetType().Name, String.Concat(": ", Message));
+        string text = this.GetType().FullName;
+        string message = Message;
+        if (message.Length > 0) text = String.Concat(text, String.Concat(": ", message));
 
-        // COPIED TO A LOCAL to be tested, because the checker narrows a local
-        // and does not yet narrow a FIELD: `if (_inner == null) return;` proves
-        // nothing to it about the line after. C# narrows both, so that is a
-        // real difference and not a preference -- see the note in Binder.
         Exception? inner = _inner;
-
-        if (inner == null)
+        if (inner != null)
         {
-            return head;
+            text = String.Concat(text, String.Concat("\n", String.Concat(" ---> ", inner.ToString())));
+            text = String.Concat(text, String.Concat("\n", "   --- End of inner exception stack trace ---"));
         }
-        return String.Concat(head, String.Concat("\n ---> ", inner.ToString()));
+        if (_trace.Length > 0) text = String.Concat(text, String.Concat("\n", _trace));
+        return text;
     }
 }
 
@@ -8865,7 +8855,7 @@ class ArgumentOutOfRangeException : ArgumentException
         {
             string message = base.Message;
             if (!_hasActualValue || _actualValue == null) return message;
-            return String.Concat(message, String.Concat(Environment.NewLine, String.Concat("Actual value was ", String.Concat(_actualValue.ToString(), "."))));
+            return String.Concat(message, String.Concat("\n", String.Concat("Actual value was ", String.Concat(_actualValue.ToString(), "."))));
         }
     }
 
@@ -9100,7 +9090,7 @@ class ObjectDisposedException : InvalidOperationException
         {
             string message = base.Message;
             return string.IsNullOrEmpty(_objectName) ? message
-                : String.Concat(message, String.Concat(Environment.NewLine, String.Concat("Object name: '", String.Concat(_objectName, "'."))));
+                : String.Concat(message, String.Concat("\n", String.Concat("Object name: '", String.Concat(_objectName, "'."))));
         }
     }
 
