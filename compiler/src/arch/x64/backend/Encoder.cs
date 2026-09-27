@@ -24,7 +24,6 @@ internal sealed class Encoder
     private readonly Dictionary<MInstr, bool> _long = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<MInstr, (int End, MBlock Target)> _jumps = new(ReferenceEqualityComparer.Instance);
     private MFunction _m = null!;
-    private int _tableSerial;
     private int _frameBytes;
     private bool _final;
 
@@ -95,7 +94,6 @@ internal sealed class Encoder
         CallSites.Clear();
         Lines.Clear();
         Tables.Clear();
-        _tableSerial = 0;
         int line = 0;
         foreach (MBlock block in _m.Blocks)
         {
@@ -746,7 +744,7 @@ internal sealed class Encoder
     }
 
     /// <summary>
-    /// `lea tmp, [rip + table]; jmp [tmp + index*8]`. The table is eight-byte
+    /// `jmp [table + index*8]`, the table's address loaded before it. The table is eight-byte
     /// absolute addresses of the blocks, written by the backend beside the
     /// code with one R_X86_64_64 each.
     /// </summary>
@@ -754,10 +752,8 @@ internal sealed class Encoder
     {
         MReg index = i.Reg(0);
         MReg table = i.Reg(1);
-        string symbol = $"{_m.Source.Name}$table{_tableSerial++}";
-        Op(8, table.Hw, MMem.Rip(symbol, 0), 0, 0x8D);
         Op(4, 4, new MMem(table, 0) { Index = index, Scale = 8 }, 0, 0xFF);
-        Tables.Add((symbol, i.Table!));
+        Tables.Add((i.TableSymbol!, i.Table!));
     }
 
     // ---- the frame ---------------------------------------------------------------------

@@ -34,6 +34,7 @@ internal sealed class Selector
     private readonly Dictionary<int, long> _constants = new();
     private MBlock _cur = null!;
     private int _splits;
+    private int _tables;
     private int _line;
 
     internal static readonly Gpr[] IntArgRegs = { Gpr.Rdi, Gpr.Rsi, Gpr.Rdx, Gpr.Rcx, Gpr.R8, Gpr.R9 };
@@ -1490,7 +1491,13 @@ internal sealed class Selector
         EmitW(MOp.Cmp, 4, idx, Imm(i.Targets.Count));
         Jcc(Cond.Ae, _heads[i.Default!]);
         List<MBlock> table = i.Targets.Select(b => _heads[b]).ToList();
-        Emit(new MInstr(MOp.JmpTable, idx, Temp()) { Table = table });
+        // The table's address in a register of its own, loaded by an
+        // instruction before the jump: the jump reads both it and the index,
+        // so the allocator keeps them apart.
+        string symbol = $"{_f.Name}$table{_tables++}";
+        MReg at = Temp();
+        Emit(MOp.Lea, at, MMem.Rip(symbol, 0));
+        Emit(new MInstr(MOp.JmpTable, idx, at) { Table = table, TableSymbol = symbol });
     }
 
     /// <summary>

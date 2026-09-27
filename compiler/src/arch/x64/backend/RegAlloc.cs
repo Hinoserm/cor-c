@@ -58,9 +58,6 @@ internal static class Roles
                 return Role.UseDef;
             case MOp.Xadd:
                 return operand == 0 ? Role.Use : Role.UseDef;
-            case MOp.JmpTable:
-                // The index is read; the second operand is scratch for the table's address.
-                return operand == 0 ? Role.Use : Role.Def;
             default:
                 return Role.Use;
         }
@@ -985,7 +982,7 @@ internal sealed class Allocator
         HashSet<int> done = new();
         MInstr n = new(i.Op)
         {
-            Width = i.Width, SourceWidth = i.SourceWidth, Cond = i.Cond, Lock = i.Lock, Table = i.Table,
+            Width = i.Width, SourceWidth = i.SourceWidth, Cond = i.Cond, Lock = i.Lock, Table = i.Table, TableSymbol = i.TableSymbol,
             Line = i.Line, IntArgs = i.IntArgs, FloatArgs = i.FloatArgs,
         };
 

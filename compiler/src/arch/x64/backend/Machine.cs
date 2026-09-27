@@ -274,6 +274,9 @@ public sealed class MInstr
     public bool Lock { get; init; }
     public List<MBlock>? Table { get; init; }
 
+    /// <summary>For JmpTable: the symbol its table of block addresses is written under.</summary>
+    public string? TableSymbol { get; init; }
+
     /// <summary>For a call: the XMM registers holding arguments, so they count as read.</summary>
     public int FloatArgs { get; init; }
 
