@@ -812,10 +812,15 @@ public sealed partial class Lowering
                 Require(rooted);
             }
         }
-        // And the free of an owned object's field (Escape's owned fields).
+        // And the free of an owned object's field (Escape's owned fields),
+        // and of an owned variable's previous value (owned variables).
         if (RuntimeMethod("FreeField", 2) is MethodSymbol fieldFree)
         {
             Require(fieldFree);
+        }
+        if (RuntimeMethod("FreeReplaced", 2) is MethodSymbol replacedFree)
+        {
+            Require(replacedFree);
         }
 
         _m.Functions.Add(f);

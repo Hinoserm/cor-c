@@ -113,6 +113,7 @@ public sealed class Inline : IParallelModulePass
         {
             addressTaken.Add(Escape.Freer);
             addressTaken.Add(Escape.FieldFreer);
+            addressTaken.Add(Escape.ReplacedFreer);
         }
 
         // Bottom-up over the call graph: callees before callers, so a leaf

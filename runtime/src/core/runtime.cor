@@ -501,6 +501,18 @@ static class Runtime
         Gc.Free(at);
     }
 
+    /// Gives back what an owned variable held before it was assigned
+    /// `current` (Escape's owned variables): nothing when it is the same
+    /// object, which a variable assigned twice from one register holds; a
+    /// null or a string literal, which is no heap block, is ignored by Free.
+    public static void FreeReplaced(long old, long current)
+    {
+        if (old != current)
+        {
+            Gc.Free(old);
+        }
+    }
+
     /// Gives back what the reference field at `offset` of the object at `at`
     /// refers to, just before the object itself is given back: a field the
     /// optimiser has proved holds only objects made for it and reachable

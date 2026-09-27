@@ -1,0 +1,104 @@
+// test: owned variables
+// expect-exit: 0
+// expect-output:
+// string 400 106
+// grown 501 499
+// freed True
+// kept 3 5
+// given 9 3
+// carried 249 5
+// twice 11 6
+// built 41 39
+//
+// A variable assigned again and again gives back what it held at each
+// assignment when everything it is ever given is null, a literal or a fresh
+// object and nothing it holds escapes (Escape's owned variables). The string
+// built a character at a time and the array grown by x = Grow(x) are freed
+// as they go. What must not be freed is read back after churn that would
+// reuse it: a variable whose value is also kept in a static; one given a
+// parameter's object on some path; one whose previous value another register
+// still holds when it is assigned again; one assigned the same object twice
+// in a row; and one returned to the caller.
+
+static class Program
+{
+    static long[]? _kept;
+    static long _sink;
+
+    static long[] Grow(long[] old)
+    {
+        long[] g = new long[old.Length + 1];
+        for (int i = 0; i < old.Length; i++) g[i] = old[i];
+        g[old.Length] = old.Length;
+        return g;
+    }
+
+    static long[] Fresh(int n)
+    {
+        long[] f = new long[n];
+        f[0] = n;
+        return f;
+    }
+
+    static long[] Built(int n)
+    {
+        long[] x = new long[1];
+        for (int k = 0; k < n; k++) x = Grow(x);
+        return x;
+    }
+
+    static int Main()
+    {
+        long before = Gc.Frees;
+        string s = "";
+        for (int k = 0; k < 400; k++) s = s + (char)('a' + (k % 26));
+        long[] x = new long[1];
+        for (int k = 0; k < 500; k++) x = Grow(x);
+        long freed = Gc.Frees - before;
+
+        long[] kept = new long[2];
+        for (int k = 0; k < 50; k++) { kept = Fresh(3); kept[1] = 5; _kept = kept; }
+
+        long[] given = new long[4];
+        given[0] = 9;
+        long[] mixed = Fresh(2);
+        for (int k = 0; k < 50; k++) mixed = (k == 25) ? given : Fresh(3);
+
+        long[] held = Fresh(4);
+        long[] previous = held;
+        long carried = 0;
+        for (int k = 0; k < 50; k++)
+        {
+            previous = held;
+            held = Fresh(5);
+            carried = carried + previous[0];
+        }
+
+        long[] twice = Fresh(6);
+        long[] same = twice;
+        for (int k = 0; k < 3; k++) { same = twice; same[1] = 11; }
+
+        long[] built = Built(40);
+
+        long[][] junk = new long[400][];
+        for (int k = 0; k < 6000; k++)
+        {
+            long[] j = new long[(k % 48) + 1];
+            for (int i = 0; i < j.Length; i++) j[i] = -1;
+            junk[k % 400] = j;
+        }
+        _sink = _sink + junk[3][0];
+
+        Sys.Print("string "); Sys.PrintInt(s.Length); Sys.Print(" "); Sys.PrintInt(s[399]); Sys.PrintLine();
+        Sys.Print("grown "); Sys.PrintInt(x.Length); Sys.Print(" "); Sys.PrintInt(x[499]); Sys.PrintLine();
+        Sys.Print("freed ");
+        if (freed >= 850) Sys.Print("True"); else Sys.Print("False");
+        Sys.PrintLine();
+        Sys.Print("kept "); Sys.PrintInt(_kept![0]); Sys.Print(" "); Sys.PrintInt(_kept[1]); Sys.PrintLine();
+        Sys.Print("given "); Sys.PrintInt(given[0]); Sys.Print(" "); Sys.PrintInt(mixed[0]); Sys.PrintLine();
+        Sys.Print("carried "); Sys.PrintInt(carried); Sys.Print(" "); Sys.PrintInt(previous[0]); Sys.PrintLine();
+        Sys.Print("twice "); Sys.PrintInt(twice[1]); Sys.Print(" "); Sys.PrintInt(same[0]); Sys.PrintLine();
+        Sys.Print("built "); Sys.PrintInt(built.Length); Sys.Print(" "); Sys.PrintInt(built[39]); Sys.PrintLine();
+        return 0;
+    }
+}

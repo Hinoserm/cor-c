@@ -947,7 +947,13 @@ Tier 2 has two rules today, both in the same pass:
   and in a loop the previous result is given back *after* the call, since
   the call may read it (`x = Grow(x)`). Chains of helpers compose. A result
   assigned to a variable that has another definition too (the loop-carried
-  `x` of that example) is not followed and stays tier 3.
+  `x` of that example) is not followed by this rule; the next one takes it.
+- *Owned variables* (`EscapeVariables.cs`). A variable assigned again and
+  again (`s = s + part`, `x = Grow(x)`) whose every value is null, static
+  data or a fresh object, and nothing it holds escapes, owns what it holds:
+  each assignment gives back the previous value (`Runtime.FreeReplaced`,
+  which skips the same object assigned twice) provided nothing that could
+  still hold it is live there, and every return gives back the last.
 - *Owned fields* (`EscapeFields.cs`). A reference field of an owned object
   is freed with it (`Runtime.FreeField`, just before the object's own free)
   when every piece of code that touches the field -- the owner's function,
@@ -960,7 +966,7 @@ Tier 2 has two rules today, both in the same pass:
 
 `corc --stats` prints the counts: objects in frames, objects freed by the
 compiler and how many of those were fresh returns, fresh functions, and
-fields freed with their owner.
+fields freed with their owner, and reassigned variables owned.
 
 **The precise collector's tables.** The reference map of each class lives
 behind its descriptor and the array descriptor flags whether elements are

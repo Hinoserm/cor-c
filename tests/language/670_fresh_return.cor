@@ -22,9 +22,8 @@
 // reads the old object inside the call that makes the new one, so the old
 // one may only be given back after the call. Up to the check, nothing
 // needs the collector: every object is freed by the compiler. The grow loop
-// after it is checked for its values only: its result goes into a variable
-// the loop also assigns, which the analysis does not follow, so that
-// garbage is still the collector's.
+// after it is checked for its values: its result goes into a variable the
+// loop also assigns, which the owned-variables rule (674) takes over.
 
 class Box
 {

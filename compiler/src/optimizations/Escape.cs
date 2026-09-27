@@ -97,11 +97,12 @@ public sealed partial class Escape : IModulePass
         foreach (Function f in m.Functions)
         {
             PromoteIn(f, summaries, canFree, fields);
+            if (canFree && byName.ContainsKey(ReplacedFreer)) OwnVariables(f, summaries);
             if (canFreeFields) OwnFields(f, summaries);
         }
 
         m.NeedsHeap = AnyAllocationReachable(m, byName);
-        LastRun = (Promoted, Owned, OwnedReturns, _fresh.Count, FieldsOwned);
+        LastRun = (Promoted, Owned, OwnedReturns, _fresh.Count, FieldsOwned, VariablesOwned);
 
         // A program that needs no collector still allocates on its way to
         // dying -- the exception object, the message it prints -- and those
@@ -203,7 +204,7 @@ public sealed partial class Escape : IModulePass
     public int OwnedReturns { get; private set; }
 
     /// <summary>The last run's counts, for --stats: frame slots, owned allocations, of those fresh results, fresh functions.</summary>
-    public static (int Promoted, int Owned, int OwnedReturns, int Fresh, int Fields) LastRun { get; private set; }
+    public static (int Promoted, int Owned, int OwnedReturns, int Fresh, int Fields, int Variables) LastRun { get; private set; }
 
     /// <summary>How many functions were found to return a fresh object.</summary>
     public int FreshFunctions => _fresh.Count;
@@ -335,7 +336,7 @@ public sealed partial class Escape : IModulePass
     }
 
     internal static Flow Analyse(Function f, IEnumerable<VReg> roots, Dictionary<string, bool[]> summaries, Instr? source,
-        HashSet<Instr>? ownedStores = null, HashSet<VReg>? returnable = null)
+        HashSet<Instr>? ownedStores = null, HashSet<VReg>? returnable = null, HashSet<VReg>? joinable = null)
     {
         Flow flow = new() { Source = source };
         foreach (VReg r in roots)
@@ -524,7 +525,8 @@ public sealed partial class Escape : IModulePass
             {
                 return;
             }
-            if (defs.GetValueOrDefault(d) > 1 && (returnable is null || !returnable.Contains(d)))
+            if (defs.GetValueOrDefault(d) > 1 && (returnable is null || !returnable.Contains(d))
+                && (joinable is null || !joinable.Contains(d)))
             {
                 flow.Escapes = true;    // shared with another value; unknowable
                 return;
