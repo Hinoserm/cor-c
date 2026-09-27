@@ -187,6 +187,8 @@ class Task
     Exception? _exception;
     Action? _first;
     List<Action>? _more;
+    System.Threading.Tasks.TaskCreationOptions _options;
+    object? _asyncState;
 
     const int Incomplete = 0;
     const int Claimed = 1;
@@ -217,6 +219,69 @@ class Task
     }
 
     // ---- what a task is -----------------------------------------------------
+
+    /// The options it was made with (TaskCompletionSource's), as .NET
+    /// reports them. A continuation here is always posted to the scheduler,
+    /// never run inline in the completing call, so RunContinuationsAsynchronously
+    /// is already how every task behaves.
+    public System.Threading.Tasks.TaskCreationOptions CreationOptions => _options;
+
+    /// The state object it was made with, or null.
+    public object? AsyncState => _asyncState;
+
+    public void SetCreation(System.Threading.Tasks.TaskCreationOptions options, object? state)
+    {
+        _options = options;
+        _asyncState = state;
+    }
+
+    /// Takes the outcome of a finished task as this one's: its success, its
+    /// fault or its cancellation (and, for a Task<T>, its result).
+    public virtual void CopyOutcomeFrom(Task from)
+    {
+        new Propagate(from, this).Invoke();
+    }
+
+    // ---- WaitAsync -------------------------------------------------------------
+    //
+    // A task that completes as this one does, or faults with TimeoutException
+    // when the timeout passes first, or is canceled when the token is -- the
+    // task itself going on regardless, as .NET's does.
+
+    public Task WaitAsync(CancellationToken cancellationToken)
+    {
+        return WaitAsync(-1, cancellationToken);
+    }
+
+    public Task WaitAsync(TimeSpan timeout)
+    {
+        return WaitAsync(Timeouts.Milliseconds(timeout, "timeout"), default(CancellationToken));
+    }
+
+    public Task WaitAsync(TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        return WaitAsync(Timeouts.Milliseconds(timeout, "timeout"), cancellationToken);
+    }
+
+    Task WaitAsync(int milliseconds, CancellationToken cancellationToken)
+    {
+        if (IsCompleted || (milliseconds == -1 && !cancellationToken.CanBeCanceled))
+        {
+            return this;
+        }
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return Task.FromCanceled(cancellationToken);
+        }
+        if (milliseconds == 0)
+        {
+            return Task.FromException(new TimeoutException());
+        }
+        Task result = new Task();
+        WaitAsyncRace race = new WaitAsyncRace(this, result);
+        race.Arm(milliseconds, cancellationToken);
+        return result;
+    }
 
     public bool IsCompleted => _state >= RanToCompletion;
     public bool IsCompletedSuccessfully => _state == RanToCompletion;
@@ -667,6 +732,53 @@ class Task
 /// A task that completes with a value.
 class Task<T> : Task
 {
+    public override void CopyOutcomeFrom(Task from)
+    {
+        if (from is Task<T> typed)
+        {
+            new PropagateResult<T>(typed, this).Invoke();
+            return;
+        }
+        base.CopyOutcomeFrom(from);
+    }
+
+    public new Task<T> WaitAsync(CancellationToken cancellationToken)
+    {
+        return WaitAsyncOf(-1, cancellationToken);
+    }
+
+    public new Task<T> WaitAsync(TimeSpan timeout)
+    {
+        return WaitAsyncOf(Timeouts.Milliseconds(timeout, "timeout"), default(CancellationToken));
+    }
+
+    public new Task<T> WaitAsync(TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        return WaitAsyncOf(Timeouts.Milliseconds(timeout, "timeout"), cancellationToken);
+    }
+
+    Task<T> WaitAsyncOf(int milliseconds, CancellationToken cancellationToken)
+    {
+        if (IsCompleted || (milliseconds == -1 && !cancellationToken.CanBeCanceled))
+        {
+            return this;
+        }
+        Task<T> result = new Task<T>();
+        if (cancellationToken.IsCancellationRequested)
+        {
+            result.TrySetCanceled(new TaskCanceledException());
+            return result;
+        }
+        if (milliseconds == 0)
+        {
+            result.TrySetException(new TimeoutException());
+            return result;
+        }
+        WaitAsyncRace race = new WaitAsyncRace(this, result);
+        race.Arm(milliseconds, cancellationToken);
+        return result;
+    }
+
     T _result;
 
     public Task() : base()
@@ -1269,6 +1381,21 @@ class DelayCancellation : Action
 // ---- TaskCompletionSource ------------------------------------------------------
 
 /// A task whose completion is in the caller's hands.
+/// What a TaskCompletionSource may be made with, as .NET checks it: a task
+/// no delegate runs can only be attached to its parent or have its
+/// continuations run asynchronously.
+static class TaskCompletionOptions
+{
+    public static void Check(System.Threading.Tasks.TaskCreationOptions options)
+    {
+        if ((options & ~(System.Threading.Tasks.TaskCreationOptions.AttachedToParent
+                         | System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously)) != 0)
+        {
+            throw new ArgumentOutOfRangeException("creationOptions");
+        }
+    }
+}
+
 class TaskCompletionSource<T>
 {
     Task<T> _task;
@@ -1276,6 +1403,21 @@ class TaskCompletionSource<T>
     public TaskCompletionSource()
     {
         _task = new Task<T>();
+    }
+
+    public TaskCompletionSource(System.Threading.Tasks.TaskCreationOptions creationOptions) : this(null, creationOptions)
+    {
+    }
+
+    public TaskCompletionSource(object? state) : this(state, System.Threading.Tasks.TaskCreationOptions.None)
+    {
+    }
+
+    public TaskCompletionSource(object? state, System.Threading.Tasks.TaskCreationOptions creationOptions)
+    {
+        TaskCompletionOptions.Check(creationOptions);
+        _task = new Task<T>();
+        _task.SetCreation(creationOptions, state);
     }
 
     public Task<T> Task => _task;
@@ -1333,6 +1475,87 @@ class TaskCompletionSource<T>
     }
 }
 
+/// WaitAsync's three ways to finish: the source completing (its outcome
+/// copied over), the timeout (TimeoutException), or the token (canceled).
+/// Whichever comes first settles the result; the others find it settled.
+class WaitAsyncRace : Action
+{
+    Task _source;
+    Task _result;
+    TimerEntry? _timer;
+    CancellationTokenRegistration? _registration;
+
+    public WaitAsyncRace(Task source, Task result)
+    {
+        _source = source;
+        _result = result;
+    }
+
+    public void Arm(int milliseconds, CancellationToken token)
+    {
+        if (milliseconds > 0)
+        {
+            _timer = Scheduler.AddTimer(milliseconds, new WaitAsyncTimeout(this));
+        }
+        if (token.CanBeCanceled)
+        {
+            _registration = token.Register(new WaitAsyncCanceled(this));
+        }
+        _source.AddContinuation(this);
+    }
+
+    /// The source finished: its outcome is the result's.
+    public void Invoke()
+    {
+        Settled();
+        _result.CopyOutcomeFrom(_source);
+    }
+
+    public void TimedOut()
+    {
+        if (_result.TrySetException(new TimeoutException()))
+        {
+            Settled();
+        }
+    }
+
+    public void Canceled()
+    {
+        if (_result.TrySetCanceled(new TaskCanceledException()))
+        {
+            Settled();
+        }
+    }
+
+    void Settled()
+    {
+        TimerEntry? timer = _timer;
+        if (timer != null)
+        {
+            timer.Cancel();
+        }
+        CancellationTokenRegistration? registration = _registration;
+        if (registration != null)
+        {
+            registration.Dispose();
+        }
+    }
+}
+
+class WaitAsyncTimeout : Action
+{
+    WaitAsyncRace _race;
+    public WaitAsyncTimeout(WaitAsyncRace race) { _race = race; }
+    public void Invoke() { _race.TimedOut(); }
+}
+
+class WaitAsyncCanceled : Action
+{
+    WaitAsyncRace _race;
+    public WaitAsyncCanceled(WaitAsyncRace race) { _race = race; }
+    public void Invoke() { _race.Canceled(); }
+}
+
 /// The non-generic TaskCompletionSource of .NET 5.
 class TaskCompletionSource
 {
@@ -1341,6 +1564,21 @@ class TaskCompletionSource
     public TaskCompletionSource()
     {
         _task = new Task();
+    }
+
+    public TaskCompletionSource(System.Threading.Tasks.TaskCreationOptions creationOptions) : this(null, creationOptions)
+    {
+    }
+
+    public TaskCompletionSource(object? state) : this(state, System.Threading.Tasks.TaskCreationOptions.None)
+    {
+    }
+
+    public TaskCompletionSource(object? state, System.Threading.Tasks.TaskCreationOptions creationOptions)
+    {
+        TaskCompletionOptions.Check(creationOptions);
+        _task = new Task();
+        _task.SetCreation(creationOptions, state);
     }
 
     public Task Task => _task;
@@ -1459,11 +1697,18 @@ class CancellationTokenSource : IDisposable
 
     List<Action>? _callbacks;
     TimerEntry? _timer;
+    List<CancellationTokenRegistration>? _links;
 
     public CancellationTokenSource()
     {
         _canceled = 0;
         _lock = 0;
+    }
+
+    /// Cancels itself once `delay` has passed.
+    public CancellationTokenSource(TimeSpan delay) : this()
+    {
+        CancelAfter(Timeouts.Milliseconds(delay, "delay"));
     }
 
     /// Cancels itself after `millisecondsDelay`, once the scheduler runs.
@@ -1548,6 +1793,22 @@ class CancellationTokenSource : IDisposable
         _timer = Scheduler.AddTimer(millisecondsDelay, new CancelAction(this));
     }
 
+    public void CancelAfter(TimeSpan delay)
+    {
+        CancelAfter(Timeouts.Milliseconds(delay, "delay"));
+    }
+
+    /// Cancels, as Cancel does, and answers a task that is complete once it
+    /// has (.NET 8's CancelAsync).
+    public Task CancelAsync()
+    {
+        Cancel();
+        return Task.CompletedTask;
+    }
+
+    /// Stops its timer and, for a linked source, lets go of the tokens it
+    /// was following -- their sources keep no callback for a source that is
+    /// gone.
     public void Dispose()
     {
         TimerEntry? timer = _timer;
@@ -1555,6 +1816,17 @@ class CancellationTokenSource : IDisposable
         if (timer != null)
         {
             timer.Cancel();
+        }
+
+        List<CancellationTokenRegistration>? links = _links;
+        _links = null;
+
+        if (links != null)
+        {
+            for (int i = 0; i < links.Count; i++)
+            {
+                links[i].Dispose();
+            }
         }
     }
 
@@ -1621,14 +1893,46 @@ class CancellationTokenSource : IDisposable
         }
     }
 
+    /// A source canceled when any of the tokens is (or already canceled,
+    /// when one of them already is).
     public static CancellationTokenSource CreateLinkedTokenSource(CancellationToken first, CancellationToken second)
     {
         CancellationTokenSource linked = new CancellationTokenSource();
-        CancelAction cancel = new CancelAction(linked);
-
-        first.Register(cancel);
-        second.Register(cancel);
+        linked.Follow(first);
+        linked.Follow(second);
         return linked;
+    }
+
+    public static CancellationTokenSource CreateLinkedTokenSource(CancellationToken token)
+    {
+        CancellationTokenSource linked = new CancellationTokenSource();
+        linked.Follow(token);
+        return linked;
+    }
+
+    public static CancellationTokenSource CreateLinkedTokenSource(params CancellationToken[] tokens)
+    {
+        if (tokens == null)
+        {
+            throw new ArgumentNullException("tokens");
+        }
+        CancellationTokenSource linked = new CancellationTokenSource();
+        for (int i = 0; i < tokens.Length; i++)
+        {
+            linked.Follow(tokens[i]);
+        }
+        return linked;
+    }
+
+    void Follow(CancellationToken token)
+    {
+        if (!token.CanBeCanceled)
+        {
+            return;
+        }
+        CancellationTokenRegistration registration = token.Register(new CancelAction(this));
+        List<CancellationTokenRegistration> links = _links ??= new List<CancellationTokenRegistration>();
+        links.Add(registration);
     }
 }
 
@@ -2350,6 +2654,304 @@ static partial class Scheduler
 
 /// .NET's ThreadPool, as a facade over the scheduler. Work queued here runs
 /// on the event loop today and on pool threads when there are some.
+// ---- System.Threading.Monitor -------------------------------------------------
+//
+// What `lock (x) { ... }` expands to (Monitor.Enter, then Exit in a finally),
+// with .NET's contract: REENTRANT -- a thread that holds an object's lock may
+// lock it again, and must exit as many times -- owned, so an Exit by a thread
+// that does not hold it throws SynchronizationLockException, and waitable
+// (Monitor.Wait/Pulse, in the platform's half of this class).
+//
+// THE OBJECT'S SYNC WORD SAYS WHO HOLDS IT: 0 free, otherwise the owner the
+// platform names (Platform.MonitorOwner -- a hosted thread's thread block),
+// bit 0 set while somebody may be asleep waiting for it. A thread that locks
+// again is counted in a side table, since recursion is the exception.
+//
+// A PLATFORM WITH NO IDENTITY TO GIVE -- the bare-metal kernel, where a
+// "thread" is a processor and a task holding a lock can resume on another
+// one -- answers 0, and the lock is what it always was there: a spin on the
+// word, held or not, with no owner to check and nobody asleep on it.
+static partial class Monitor
+{
+    const long Held = 2;            // the owner written when there is no identity
+    const long Asleep = 1;          // bit 0: someone may be waiting on the word
+
+    static int _depthGate;
+    static Dictionary<long, int>? _depths;
+
+    static long Owner()
+    {
+        long me = Platform.MonitorOwner();
+        return me == 0 ? 0 : me & ~Asleep;
+    }
+
+    public static void Enter(object obj)
+    {
+        if (obj == null)
+        {
+            throw new ArgumentNullException("obj");
+        }
+        long word = Sys.SyncWord(obj);
+        long me = Owner();
+
+        if (me == 0)
+        {
+            while (Sys.Cas(word, 0, Held) != 0) { Sys.Pause(); }
+            return;
+        }
+
+        long seen = Sys.Cas(word, 0, me);
+
+        if (seen == 0)
+        {
+            return;
+        }
+        if ((seen & ~Asleep) == me)
+        {
+            Deepen(word, 1);
+            return;
+        }
+        Contend(word, me);
+    }
+
+    /// .NET's form: lockTaken says whether the lock was taken, and must be
+    /// false on the way in.
+    public static void Enter(object obj, ref bool lockTaken)
+    {
+        if (lockTaken)
+        {
+            throw new ArgumentException("The lockTaken argument must be set to false before calling this method.", "lockTaken");
+        }
+        Enter(obj);
+        lockTaken = true;
+    }
+
+    /// Takes the lock without waiting, or says it could not.
+    public static bool TryEnter(object obj)
+    {
+        return TryEnter(obj, 0);
+    }
+
+    public static void TryEnter(object obj, ref bool lockTaken)
+    {
+        if (lockTaken)
+        {
+            throw new ArgumentException("The lockTaken argument must be set to false before calling this method.", "lockTaken");
+        }
+        lockTaken = TryEnter(obj, 0);
+    }
+
+    public static bool TryEnter(object obj, TimeSpan timeout)
+    {
+        return TryEnter(obj, Timeouts.Milliseconds(timeout, "timeout"));
+    }
+
+    public static void TryEnter(object obj, int millisecondsTimeout, ref bool lockTaken)
+    {
+        if (lockTaken)
+        {
+            throw new ArgumentException("The lockTaken argument must be set to false before calling this method.", "lockTaken");
+        }
+        lockTaken = TryEnter(obj, millisecondsTimeout);
+    }
+
+    /// Takes the lock within the timeout (-1 for as long as it takes, 0 for
+    /// not at all), or says it could not.
+    public static bool TryEnter(object obj, int millisecondsTimeout)
+    {
+        if (obj == null)
+        {
+            throw new ArgumentNullException("obj");
+        }
+        if (millisecondsTimeout < -1)
+        {
+            throw new ArgumentOutOfRangeException("millisecondsTimeout");
+        }
+        if (millisecondsTimeout == -1)
+        {
+            Enter(obj);
+            return true;
+        }
+        long word = Sys.SyncWord(obj);
+        long me = Owner();
+        long mark = me == 0 ? Held : me;
+        long deadline = Clock.NowMilliseconds() + millisecondsTimeout;
+
+        while (true)
+        {
+            long seen = Sys.Cas(word, 0, mark);
+
+            if (seen == 0)
+            {
+                return true;
+            }
+            if (me != 0 && (seen & ~Asleep) == me)
+            {
+                Deepen(word, 1);
+                return true;
+            }
+            if (Clock.NowMilliseconds() >= deadline)
+            {
+                return false;
+            }
+            Sys.Pause();
+        }
+    }
+
+    public static void Exit(object obj)
+    {
+        if (obj == null)
+        {
+            throw new ArgumentNullException("obj");
+        }
+        long word = Sys.SyncWord(obj);
+        long me = Owner();
+
+        if (me == 0)
+        {
+            Sys.AtomicSwap(word, 0);
+            return;
+        }
+        if ((Sys.PeekWord(word) & ~Asleep) != me)
+        {
+            throw new SynchronizationLockException();
+        }
+        if (Deepen(word, -1))
+        {
+            return;
+        }
+        Release(word);
+    }
+
+    /// Whether this thread holds the object's lock. Where there is no
+    /// identity, whether anybody does.
+    public static bool IsEntered(object obj)
+    {
+        if (obj == null)
+        {
+            throw new ArgumentNullException("obj");
+        }
+        long me = Owner();
+        long seen = Sys.PeekWord(Sys.SyncWord(obj));
+        return me == 0 ? seen != 0 : (seen & ~Asleep) == me;
+    }
+
+    /// Lets the word go, waking one sleeper if the word said there might be one.
+    static void Release(long word)
+    {
+        if ((Sys.AtomicSwap(word, 0) & Asleep) != 0)
+        {
+            Platform.MonitorWake(word);
+        }
+    }
+
+    /// Waits for the word to come free and takes it, marked as possibly
+    /// waited on: the sleeper that took it cannot know it was the last.
+    static void Contend(long word, long me)
+    {
+        int spins = 0;
+
+        while (true)
+        {
+            long seen = Sys.PeekWord(word);
+
+            if (seen == 0)
+            {
+                if (Sys.Cas(word, 0, me | Asleep) == 0)
+                {
+                    return;
+                }
+                continue;
+            }
+            if (spins < 64)
+            {
+                spins = spins + 1;
+                Sys.Pause();
+                continue;
+            }
+            if ((seen & Asleep) == 0 && Sys.Cas(word, seen, seen | Asleep) != seen)
+            {
+                continue;
+            }
+            Platform.MonitorBlock(word, seen | Asleep);
+        }
+    }
+
+    /// Changes the extra depth a held word is counted at by `by`, saying,
+    /// for a decrease, whether there was depth to take (the lock is then
+    /// still held).
+    static bool Deepen(long word, int by)
+    {
+        long gate = Sys.AddressOf(ref _depthGate);
+
+        while (Sys.Cas(gate, 0, 1) != 0) { Sys.Pause(); }
+        bool had = false;
+        try
+        {
+            Dictionary<long, int> depths = _depths ??= new Dictionary<long, int>();
+            depths.TryGetValue(word, out int depth);
+            if (by > 0)
+            {
+                depths[word] = depth + by;
+                had = true;
+            }
+            else if (depth > 0)
+            {
+                if (depth == 1) depths.Remove(word);
+                else depths[word] = depth - 1;
+                had = true;
+            }
+        }
+        finally
+        {
+            Sys.AtomicSwap(gate, 0);
+        }
+        return had;
+    }
+
+    /// The extra depth, taken off the table whole (Monitor.Wait gives the
+    /// lock up entirely and must restore every level when it takes it back).
+    static int TakeDepth(long word)
+    {
+        long gate = Sys.AddressOf(ref _depthGate);
+
+        while (Sys.Cas(gate, 0, 1) != 0) { Sys.Pause(); }
+        int depth = 0;
+        try
+        {
+            if (_depths != null && _depths.TryGetValue(word, out depth)) _depths.Remove(word);
+        }
+        finally
+        {
+            Sys.AtomicSwap(gate, 0);
+        }
+        return depth;
+    }
+
+    static void RestoreDepth(long word, int depth)
+    {
+        if (depth > 0)
+        {
+            Deepen(word, depth);
+        }
+    }
+}
+
+/// Timeout arguments as .NET checks them: a TimeSpan in milliseconds, -1 for
+/// infinite, and anything else negative or past int.MaxValue refused.
+static class Timeouts
+{
+    public static int Milliseconds(TimeSpan timeout, string name)
+    {
+        long ms = (long)timeout.TotalMilliseconds;
+        if (ms < -1 || ms > int.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(name);
+        }
+        return (int)ms;
+    }
+}
+
 static class ThreadPool
 {
     public static bool QueueUserWorkItem(Action callBack)
@@ -2428,6 +3030,19 @@ static class AsyncRuntime
 
 namespace System.Threading.Tasks
 {
+    /// How a task is to be made and run, as .NET's flags.
+    [Flags]
+    enum TaskCreationOptions
+    {
+        None = 0,
+        PreferFairness = 1,
+        LongRunning = 2,
+        AttachedToParent = 4,
+        DenyChildAttach = 8,
+        HideScheduler = 16,
+        RunContinuationsAsynchronously = 64,
+    }
+
     readonly struct ValueTask
     {
         readonly Task? _task;
@@ -2547,3 +3162,285 @@ namespace System
         System.Threading.Tasks.ValueTask DisposeAsync();
     }
 }
+
+namespace System.Threading
+{
+    /// A count of permits for threads and awaits alike: Wait takes one, or
+    /// waits (with a timeout, or until a token is canceled) for a Release.
+    /// Waiters are served in the order they came. Every waiter, synchronous
+    /// or not, is a task in the queue; a synchronous Wait runs the scheduler
+    /// until its task is done, as Task.Wait does.
+    class SemaphoreSlim : IDisposable
+    {
+        // LAYOUT: these two must stay the first instance fields (see Atom).
+        int _count;
+        int _lock;
+
+        readonly int _max;
+        readonly List<SemaphoreWaiter> _waiters = new List<SemaphoreWaiter>();
+        bool _disposed;
+
+        public SemaphoreSlim(int initialCount) : this(initialCount, int.MaxValue)
+        {
+        }
+
+        public SemaphoreSlim(int initialCount, int maxCount)
+        {
+            if (initialCount < 0 || initialCount > maxCount)
+            {
+                throw new ArgumentOutOfRangeException("initialCount");
+            }
+            if (maxCount <= 0)
+            {
+                throw new ArgumentOutOfRangeException("maxCount");
+            }
+            _count = initialCount;
+            _lock = 0;
+            _max = maxCount;
+            Atom.CheckLayout();
+        }
+
+        public int CurrentCount => _count;
+
+        public void Wait()
+        {
+            Wait(-1, default(CancellationToken));
+        }
+
+        public void Wait(CancellationToken cancellationToken)
+        {
+            Wait(-1, cancellationToken);
+        }
+
+        public bool Wait(int millisecondsTimeout)
+        {
+            return Wait(millisecondsTimeout, default(CancellationToken));
+        }
+
+        public bool Wait(TimeSpan timeout)
+        {
+            return Wait(Timeouts.Milliseconds(timeout, "timeout"), default(CancellationToken));
+        }
+
+        public bool Wait(TimeSpan timeout, CancellationToken cancellationToken)
+        {
+            return Wait(Timeouts.Milliseconds(timeout, "timeout"), cancellationToken);
+        }
+
+        /// Throws OperationCanceledException when the token is canceled first.
+        public bool Wait(int millisecondsTimeout, CancellationToken cancellationToken)
+        {
+            return WaitAsync(millisecondsTimeout, cancellationToken).GetAwaiter().GetResult();
+        }
+
+        public Task WaitAsync()
+        {
+            return WaitAsync(-1, default(CancellationToken));
+        }
+
+        public Task WaitAsync(CancellationToken cancellationToken)
+        {
+            return WaitAsync(-1, cancellationToken);
+        }
+
+        public Task<bool> WaitAsync(int millisecondsTimeout)
+        {
+            return WaitAsync(millisecondsTimeout, default(CancellationToken));
+        }
+
+        public Task<bool> WaitAsync(TimeSpan timeout)
+        {
+            return WaitAsync(Timeouts.Milliseconds(timeout, "timeout"), default(CancellationToken));
+        }
+
+        public Task<bool> WaitAsync(TimeSpan timeout, CancellationToken cancellationToken)
+        {
+            return WaitAsync(Timeouts.Milliseconds(timeout, "timeout"), cancellationToken);
+        }
+
+        public Task<bool> WaitAsync(int millisecondsTimeout, CancellationToken cancellationToken)
+        {
+            CheckDisposed();
+            if (millisecondsTimeout < -1)
+            {
+                throw new ArgumentOutOfRangeException("millisecondsTimeout");
+            }
+            if (cancellationToken.IsCancellationRequested)
+            {
+                Task<bool> canceled = new Task<bool>();
+                canceled.TrySetCanceled(new TaskCanceledException());
+                return canceled;
+            }
+
+            SemaphoreWaiter waiter;
+            long gate = Atom.At(this, Atom.SecondWord);
+            Atom.Enter(gate);
+            if (_count > 0)
+            {
+                _count = _count - 1;
+                Atom.Exit(gate);
+                return Task.FromResult(true);
+            }
+            if (millisecondsTimeout == 0)
+            {
+                Atom.Exit(gate);
+                return Task.FromResult(false);
+            }
+            waiter = new SemaphoreWaiter(this);
+            _waiters.Add(waiter);
+            Atom.Exit(gate);
+
+            waiter.Arm(millisecondsTimeout, cancellationToken);
+            return waiter.Task;
+        }
+
+        public int Release()
+        {
+            return Release(1);
+        }
+
+        /// Gives back `releaseCount` permits -- to waiters first, in order --
+        /// and answers the count as it was before.
+        public int Release(int releaseCount)
+        {
+            CheckDisposed();
+            if (releaseCount < 1)
+            {
+                throw new ArgumentOutOfRangeException("releaseCount");
+            }
+
+            long gate = Atom.At(this, Atom.SecondWord);
+            Atom.Enter(gate);
+            int previous = _count;
+            if (_max - previous < releaseCount)
+            {
+                Atom.Exit(gate);
+                throw new SemaphoreFullException();
+            }
+            int left = releaseCount;
+            while (left > 0 && _waiters.Count > 0)
+            {
+                SemaphoreWaiter next = _waiters[0];
+                _waiters.RemoveAt(0);
+                if (next.Grant())
+                {
+                    left = left - 1;
+                }
+            }
+            _count = previous + left;
+            Atom.Exit(gate);
+            return previous;
+        }
+
+        /// Takes a waiter that gave up out of the queue, saying whether it was
+        /// still there (and so had not been granted a permit).
+        public bool Withdraw(SemaphoreWaiter waiter)
+        {
+            long gate = Atom.At(this, Atom.SecondWord);
+            Atom.Enter(gate);
+            bool had = _waiters.Remove(waiter);
+            Atom.Exit(gate);
+            return had;
+        }
+
+        public void Dispose()
+        {
+            _disposed = true;
+        }
+
+        void CheckDisposed()
+        {
+            if (_disposed)
+            {
+                throw new ObjectDisposedException("SemaphoreSlim");
+            }
+        }
+    }
+
+    /// One wait on a SemaphoreSlim: the task it completes, and what may end it
+    /// early -- its timeout, or its token.
+    class SemaphoreWaiter : Action
+    {
+        readonly SemaphoreSlim _owner;
+        readonly Task<bool> _task = new Task<bool>();
+        TimerEntry? _timer;
+        CancellationTokenRegistration? _registration;
+
+        public SemaphoreWaiter(SemaphoreSlim owner)
+        {
+            _owner = owner;
+        }
+
+        public Task<bool> Task => _task;
+
+        public void Arm(int milliseconds, CancellationToken token)
+        {
+            if (milliseconds > 0)
+            {
+                _timer = Scheduler.AddTimer(milliseconds, this);
+            }
+            if (token.CanBeCanceled)
+            {
+                _registration = token.Register(new SemaphoreWaitCanceled(this));
+            }
+        }
+
+        /// A permit: the wait succeeds, if nothing ended it first.
+        public bool Grant()
+        {
+            if (!_task.TrySetResult(true))
+            {
+                return false;
+            }
+            Disarm();
+            return true;
+        }
+
+        /// The timeout: false, if it was still waiting.
+        public void Invoke()
+        {
+            if (_owner.Withdraw(this) && _task.TrySetResult(false))
+            {
+                Disarm();
+            }
+        }
+
+        public void Canceled()
+        {
+            if (_owner.Withdraw(this) && _task.TrySetCanceled(new TaskCanceledException()))
+            {
+                Disarm();
+            }
+        }
+
+        void Disarm()
+        {
+            TimerEntry? timer = _timer;
+            if (timer != null)
+            {
+                timer.Cancel();
+            }
+            CancellationTokenRegistration? registration = _registration;
+            if (registration != null)
+            {
+                registration.Dispose();
+            }
+        }
+    }
+
+    class SemaphoreWaitCanceled : Action
+    {
+        readonly SemaphoreWaiter _waiter;
+        public SemaphoreWaitCanceled(SemaphoreWaiter waiter) { _waiter = waiter; }
+        public void Invoke() { _waiter.Canceled(); }
+    }
+
+    /// Release gave back more permits than the semaphore holds.
+    class SemaphoreFullException : SystemException
+    {
+        public SemaphoreFullException() : base("Adding the specified count to the semaphore would cause it to exceed its maximum count.") { }
+        public SemaphoreFullException(string message) : base(message) { }
+        public SemaphoreFullException(string message, Exception? inner) : base(message, inner) { }
+    }
+}
+

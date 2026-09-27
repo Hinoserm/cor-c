@@ -1173,6 +1173,9 @@ class RegexRunner
 // ---- Regex ------------------------------------------------------------------
 
 /// System.Text.RegularExpressions.Regex.
+/// What a match is to be replaced by (Regex.Replace).
+delegate string MatchEvaluator(Match match);
+
 class Regex
 {
     string _pattern;
@@ -1549,8 +1552,43 @@ class Regex
 
     public string Replace(string input, string replacement, int count)
     {
+        return Replace(input, replacement, count, 0);
+    }
+
+    public string Replace(string input, string replacement, int count, int startat)
+    {
+        if (input == null) throw new ArgumentNullException(nameof(input));
+        if (replacement == null) throw new ArgumentNullException(nameof(replacement));
+        return ReplaceWith(input, match => Substitution(replacement, match, input), count, startat);
+    }
+
+    /// Each match replaced by what the evaluator makes of it.
+    public string Replace(string input, MatchEvaluator evaluator)
+    {
+        return Replace(input, evaluator, -1, 0);
+    }
+
+    public string Replace(string input, MatchEvaluator evaluator, int count)
+    {
+        return Replace(input, evaluator, count, 0);
+    }
+
+    public string Replace(string input, MatchEvaluator evaluator, int count, int startat)
+    {
+        if (input == null) throw new ArgumentNullException(nameof(input));
+        if (evaluator == null) throw new ArgumentNullException(nameof(evaluator));
+        return ReplaceWith(input, evaluator, count, startat);
+    }
+
+    /// The text around the matches kept, each of up to `count` matches
+    /// (-1 for all) from `startat` on replaced by what `produce` makes of it.
+    string ReplaceWith(string input, MatchEvaluator produce, int count, int startat)
+    {
+        if (count < -1) throw new ArgumentOutOfRangeException(nameof(count));
+        if (startat < 0 || startat > input.Length) throw new ArgumentOutOfRangeException(nameof(startat));
         StringBuilder made = new StringBuilder();
-        int at = 0;
+        made.Append(input.Substring(0, startat));
+        int at = startat;
         int done = 0;
         while (at <= input.Length && (count < 0 || done < count))
         {
@@ -1560,7 +1598,7 @@ class Regex
                 break;
             }
             made.Append(input.Substring(at, one.Index - at));
-            made.Append(Substitution(replacement, one, input));
+            made.Append(produce(one));
             done = done + 1;
             if (one.Length == 0)
             {
@@ -1583,7 +1621,7 @@ class Regex
     }
 
     /// $1, ${name}, $&, $`, $', $_ and $$, as .NET reads a replacement.
-    string Substitution(string replacement, Match one, string input)
+    public string Substitution(string replacement, Match one, string input)
     {
         StringBuilder made = new StringBuilder();
         int i = 0;
@@ -1741,6 +1779,28 @@ class Regex
                                  RegexOptions options)
     {
         return new Regex(pattern, options).Replace(input, replacement);
+    }
+
+    public static string Replace(string input, string pattern, string replacement,
+                                 RegexOptions options, TimeSpan matchTimeout)
+    {
+        return new Regex(pattern, options).Replace(input, replacement);
+    }
+
+    public static string Replace(string input, string pattern, MatchEvaluator evaluator)
+    {
+        return new Regex(pattern).Replace(input, evaluator);
+    }
+
+    public static string Replace(string input, string pattern, MatchEvaluator evaluator, RegexOptions options)
+    {
+        return new Regex(pattern, options).Replace(input, evaluator);
+    }
+
+    public static string Replace(string input, string pattern, MatchEvaluator evaluator,
+                                 RegexOptions options, TimeSpan matchTimeout)
+    {
+        return new Regex(pattern, options).Replace(input, evaluator);
     }
 
     public static string[] Split(string input, string pattern)

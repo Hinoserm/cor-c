@@ -99,8 +99,31 @@ public sealed class TypeSymbol
     /// declares a class, and a library and its consumers must agree on the
     /// count. A depth is a property of the type and its own bases, so it is the
     /// same number whoever compiles it and whatever else is compiled with it.
+    ///
+    /// It is DERIVED, never stored: a specialisation made after the binder's
+    /// last pass (a tuple shape first needed while lowering one unit) has the
+    /// same depth as one made up front in another unit, or the two objects
+    /// disagree about the type's layout at link.
     /// </summary>
-    public int Depth { get; set; } = -1;
+    public int Depth
+    {
+        get
+        {
+            if (Kind != TypeKind.Class)
+            {
+                return -1;
+            }
+
+            int deep = 0;
+
+            for (TypeSymbol? a = Base; a != null; a = a.Base)
+            {
+                deep++;
+            }
+
+            return deep;
+        }
+    }
 
     /// <summary>
     /// For the class a TUPLE shape became: the element names, when every place

@@ -3944,6 +3944,25 @@ static class Double {
     public static bool IsFinite(double value) {
         return !DoubleFormat.IsNaN(value) && !DoubleFormat.IsInfinity(value);
     }
+
+    public static bool IsPositiveInfinity(double value) { return Sys.Bits(value) == 0x7FF0000000000000; }
+    public static bool IsNegativeInfinity(double value) { return Sys.Bits(value) == unchecked((long)0xFFF0000000000000); }
+
+    /// The sign bit, as .NET reads it: true for -0.0 and a negative NaN too.
+    public static bool IsNegative(double value) { return Sys.Bits(value) < 0; }
+
+    /// Neither zero, subnormal, infinite nor NaN.
+    public static bool IsNormal(double value) {
+        long exponent = (Sys.Bits(value) >> 52) & 0x7FF;
+        return exponent != 0 && exponent != 0x7FF;
+    }
+
+    public static bool IsSubnormal(double value) {
+        long bits = Sys.Bits(value);
+        return ((bits >> 52) & 0x7FF) == 0 && (bits & 0x000FFFFFFFFFFFFF) != 0;
+    }
+
+    public static bool IsRealNumber(double value) { return value == value; }
 }
 
 /// System.Single: float's statics, through double, which holds every float
@@ -4008,6 +4027,56 @@ static class Single {
     public static bool IsNaN(float value) { return value != value; }
     public static bool IsInfinity(float value) { return DoubleFormat.IsInfinity(value); }
     public static bool IsFinite(float value) { return !IsNaN(value) && !IsInfinity(value); }
+
+    // A float widened to double keeps its sign, its class and its value, so
+    // each is asked of the double.
+    public static bool IsPositiveInfinity(float value) { return Double.IsPositiveInfinity(value); }
+    public static bool IsNegativeInfinity(float value) { return Double.IsNegativeInfinity(value); }
+    public static bool IsNegative(float value) { return Double.IsNegative(value); }
+
+    public static bool IsNormal(float value) {
+        float magnitude = value < 0.0F ? -value : value;
+        return magnitude >= 1.17549435E-38F && magnitude <= MaxValue;
+    }
+
+    public static bool IsSubnormal(float value) {
+        float magnitude = value < 0.0F ? -value : value;
+        return magnitude > 0.0F && magnitude < 1.17549435E-38F;
+    }
+
+    public static bool IsRealNumber(float value) { return value == value; }
+}
+
+/// System.Boolean's statics: the text a bool is written as, and reading it
+/// back -- "True" or "False" in any case, with white space around it and null
+/// characters after it ignored, as .NET's parser has it.
+static class Boolean {
+    public static readonly string TrueString = "True";
+    public static readonly string FalseString = "False";
+
+    public static bool Parse(string value) {
+        if (value == null) { throw new ArgumentNullException("value"); }
+        if (TryParse(value, out bool result)) { return result; }
+        throw new FormatException("String '" + value + "' was not recognized as a valid Boolean.");
+    }
+
+    public static bool Parse(ReadOnlySpan<char> value) { return Parse(value.ToString()); }
+
+    public static bool TryParse(string? value, out bool result) {
+        result = false;
+        if (value == null) { return false; }
+        string text = value.Trim().TrimEnd('\0').Trim();
+        if (string.Equals(text, TrueString, StringComparison.OrdinalIgnoreCase)) {
+            result = true;
+            return true;
+        }
+        return string.Equals(text, FalseString, StringComparison.OrdinalIgnoreCase);
+    }
+
+    public static bool TryParse(ReadOnlySpan<char> value, out bool result) { return TryParse(value.ToString(), out result); }
+
+    /// False sorts before true.
+    public static int CompareTo(this bool value, bool other) { return value == other ? 0 : value ? 1 : -1; }
 }
 
 // ---- text as bytes ---------------------------------------------------------
@@ -4016,6 +4085,47 @@ static class Single {
 // after it -- so an encoding has nothing to convert and everything to name.
 // .NET's shape is kept because source says Encoding.UTF8.GetBytes(s).
 
+/// Well-formed UTF-8, as Unicode's table 3-7 has it: the length of the
+/// sequence at a position, or minus the length of its maximal ill-formed
+/// subpart -- the bytes one replacement character stands for.
+static class Utf8Scan {
+    public static int FirstInvalid(byte[] bytes, int at, int end) {
+        int p = at;
+        while (p < end) {
+            if (bytes[p] < 0x80) { p = p + 1; continue; }
+            int length = Sequence(bytes, p, end);
+            if (length < 0) { return p; }
+            p = p + length;
+        }
+        return -1;
+    }
+
+    public static int Sequence(byte[] bytes, int p, int end) {
+        int lead = bytes[p];
+        if (lead < 0x80) { return 1; }
+        int need;
+        int low = 0x80, high = 0xBF;
+        if (lead >= 0xC2 && lead <= 0xDF) { need = 1; }
+        else if (lead == 0xE0) { need = 2; low = 0xA0; }
+        else if (lead >= 0xE1 && lead <= 0xEC) { need = 2; }
+        else if (lead == 0xED) { need = 2; high = 0x9F; }
+        else if (lead >= 0xEE && lead <= 0xEF) { need = 2; }
+        else if (lead == 0xF0) { need = 3; low = 0x90; }
+        else if (lead >= 0xF1 && lead <= 0xF3) { need = 3; }
+        else if (lead == 0xF4) { need = 3; high = 0x8F; }
+        else { return -1; }
+
+        for (int i = 1; i <= need; i++) {
+            if (p + i >= end) { return -i; }
+            int b = bytes[p + i];
+            int lo = i == 1 ? low : 0x80;
+            int hi = i == 1 ? high : 0xBF;
+            if (b < lo || b > hi) { return -i; }
+        }
+        return need + 1;
+    }
+}
+
 class UTF8Encoding : Encoding {
     public override int CodePage => 65001;
     public override string WebName => "utf-8";
@@ -4023,7 +4133,10 @@ class UTF8Encoding : Encoding {
 
     // Whether a file written in it starts with the byte-order mark (the
     // preamble), and whether bad bytes throw: .NET's two options. A string
-    // here is its UTF-8 already, so decoding has nothing to reject.
+    // here is its UTF-8, so decoding valid input is a copy; INVALID input is
+    // what .NET's decoder makes of it -- each maximal ill-formed subsequence
+    // becomes one U+FFFD, or, when bad bytes throw, DecoderFallbackException
+    // with the bytes and where they were.
     private bool emitIdentifier;
     private bool throwOnInvalid;
 
@@ -4044,17 +4157,47 @@ class UTF8Encoding : Encoding {
     }
 
     public override string GetString(byte[] bytes) {
-        string made = Sys.NewBytes(bytes.Length);
-
-        for (int i = 0; i < bytes.Length; i++) { Sys.SetByte(made, i, bytes[i]); }
-        return made;
+        if (bytes == null) { throw new ArgumentNullException("bytes"); }
+        return Decode(bytes, 0, bytes.Length);
     }
 
     public override string GetString(ReadOnlySpan<byte> bytes) {
-        string made = Sys.NewBytes(bytes.Length);
+        byte[] copy = bytes.ToArray();
+        return Decode(copy, 0, copy.Length);
+    }
 
-        for (int i = 0; i < bytes.Length; i++) { Sys.SetByte(made, i, bytes[i]); }
-        return made;
+    /// Valid UTF-8 copied as it is; ill-formed input replaced or refused.
+    private string Decode(byte[] bytes, int at, int count) {
+        int end = at + count;
+        int first = Utf8Scan.FirstInvalid(bytes, at, end);
+
+        if (first < 0) {
+            string made = Sys.NewBytes(count);
+            for (int i = 0; i < count; i++) { Sys.SetByte(made, i, bytes[at + i]); }
+            return made;
+        }
+        if (throwOnInvalid) {
+            int bad = -Utf8Scan.Sequence(bytes, first, end);
+            byte[] unknown = new byte[bad];
+            Array.Copy(bytes, first, unknown, 0, bad);
+            throw new System.Text.DecoderFallbackException(unknown, first - at);
+        }
+
+        List<byte> fixedUp = new List<byte>(count + 8);
+        int p = at;
+        while (p < end) {
+            int length = Utf8Scan.Sequence(bytes, p, end);
+            if (length > 0) {
+                for (int i = 0; i < length; i++) { fixedUp.Add(bytes[p + i]); }
+                p = p + length;
+            } else {
+                fixedUp.Add(0xEF); fixedUp.Add(0xBF); fixedUp.Add(0xBD);
+                p = p - length;
+            }
+        }
+        string replaced = Sys.NewBytes(fixedUp.Count);
+        for (int i = 0; i < fixedUp.Count; i++) { Sys.SetByte(replaced, i, fixedUp[i]); }
+        return replaced;
     }
 
     public byte[] GetBytes(ReadOnlySpan<byte> bytes) { return bytes.ToArray(); }
@@ -4062,10 +4205,9 @@ class UTF8Encoding : Encoding {
     // .NET's overload that reads PART of a block, which is how a name table is
     // read out of an image a name at a time.
     public override string GetString(byte[] bytes, int at, int count) {
-        string made = Sys.NewBytes(count);
-
-        for (int i = 0; i < count; i++) { Sys.SetByte(made, i, bytes[at + i]); }
-        return made;
+        if (bytes == null) { throw new ArgumentNullException("bytes"); }
+        if (at < 0 || count < 0 || at > bytes.Length - count) { throw new ArgumentOutOfRangeException("index"); }
+        return Decode(bytes, at, count);
     }
 
     public override int GetByteCount(string s) { return s.Length; }
@@ -5291,7 +5433,9 @@ static class CollectionExpressionBuilder {
     }
 }
 
-class List<T> : IReadOnlyList<T>, IEnumerable<T> {
+class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
+    bool ICollection<T>.IsReadOnly => false;
+
     // An empty list owns no array. All element accesses are guarded by count;
     // only growth and an explicit request for Backing materialize storage.
     private T[] items = null!;
@@ -5745,7 +5889,7 @@ class QueueEnumerator<T> : IEnumerator<T> {
     }
 }
 
-class Queue<T> : IEnumerable<T> {
+class Queue<T> : IReadOnlyCollection<T>, IEnumerable<T> {
     private T[] items;
     private int head;
     private int count;
@@ -5933,6 +6077,58 @@ interface IReadOnlyList<out T> : IReadOnlyCollection<T> {
 /// A set, read only: what it holds and whether it holds a thing.
 interface IReadOnlySet<T> : IReadOnlyCollection<T> {
     bool Contains(T item);
+    bool IsProperSubsetOf(IEnumerable<T> other);
+    bool IsProperSupersetOf(IEnumerable<T> other);
+    bool IsSubsetOf(IEnumerable<T> other);
+    bool IsSupersetOf(IEnumerable<T> other);
+    bool Overlaps(IEnumerable<T> other);
+    bool SetEquals(IEnumerable<T> other);
+}
+
+// THE MUTABLE COLLECTION INTERFACES, as .NET has them (System.Collections.
+// Generic): what a method taking "any list", "any dictionary" or "any set"
+// is written against, and what List, Dictionary, HashSet and the rest say
+// they are. A read-only one answers IsReadOnly and refuses the mutators with
+// NotSupportedException, as ReadOnlyCollection does.
+interface ICollection<T> : IEnumerable<T> {
+    int Count { get; }
+    bool IsReadOnly { get; }
+    void Add(T item);
+    void Clear();
+    bool Contains(T item);
+    void CopyTo(T[] array, int arrayIndex);
+    bool Remove(T item);
+}
+
+interface IList<T> : ICollection<T> {
+    T this[int index] { get; set; }
+    int IndexOf(T item);
+    void Insert(int index, T item);
+    void RemoveAt(int index);
+}
+
+interface ISet<T> : ICollection<T> {
+    new bool Add(T item);
+    void UnionWith(IEnumerable<T> other);
+    void IntersectWith(IEnumerable<T> other);
+    void ExceptWith(IEnumerable<T> other);
+    void SymmetricExceptWith(IEnumerable<T> other);
+    bool IsSubsetOf(IEnumerable<T> other);
+    bool IsSupersetOf(IEnumerable<T> other);
+    bool IsProperSupersetOf(IEnumerable<T> other);
+    bool IsProperSubsetOf(IEnumerable<T> other);
+    bool Overlaps(IEnumerable<T> other);
+    bool SetEquals(IEnumerable<T> other);
+}
+
+interface IDictionary<K, V> : ICollection<KeyValuePair<K, V>> {
+    V this[K key] { get; set; }
+    ICollection<K> Keys { get; }
+    ICollection<V> Values { get; }
+    void Add(K key, V value);
+    bool ContainsKey(K key);
+    bool Remove(K key);
+    bool TryGetValue(K key, out V value);
 }
 
 // EXTENSION METHODS, which is how C# spells LINQ.
@@ -7657,7 +7853,7 @@ interface IReadOnlyDictionary<K, V> : IEnumerable<KeyValuePair<K, V>> {
     bool TryGetValue(K key, out V value);
 }
 
-class Dictionary<K, V> : IEnumerable<KeyValuePair<K, V>>, IReadOnlyDictionary<K, V> {
+class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerable<KeyValuePair<K, V>> {
     private K[] keys;
     private V[] values;
     private int[] state;      // 0 empty, 1 used, 2 erased
@@ -7955,6 +8151,50 @@ class Dictionary<K, V> : IEnumerable<KeyValuePair<K, V>>, IReadOnlyDictionary<K,
     IEnumerable<K> IReadOnlyDictionary<K, V>.Keys => Keys;
     IEnumerable<V> IReadOnlyDictionary<K, V>.Values => Values;
 
+    // AS IDictionary: the keys and values as read-only collections, which is
+    // what .NET's KeyCollection and ValueCollection are to a caller holding
+    // the interface -- adding to one throws, it does not add to a copy.
+    ICollection<K> IDictionary<K, V>.Keys => Keys.AsReadOnly();
+    ICollection<V> IDictionary<K, V>.Values => Values.AsReadOnly();
+    bool ICollection<KeyValuePair<K, V>>.IsReadOnly => false;
+
+    void ICollection<KeyValuePair<K, V>>.Add(KeyValuePair<K, V> item) {
+        Add(item.Key, item.Value);
+    }
+
+    /// The pair, which is the key AND its value, the value compared by
+    /// the default comparer as .NET's does.
+    bool ICollection<KeyValuePair<K, V>>.Contains(KeyValuePair<K, V> item) {
+        return TryGetValue(item.Key, out V found) && EqualityComparer<V>.Default.Equals(found, item.Value);
+    }
+
+    void ICollection<KeyValuePair<K, V>>.CopyTo(KeyValuePair<K, V>[] array, int arrayIndex) {
+        if (array == null) { throw new ArgumentNullException("array"); }
+        if (arrayIndex < 0 || arrayIndex > array.Length) { throw new ArgumentOutOfRangeException("arrayIndex"); }
+        if (array.Length - arrayIndex < Count) { throw new ArgumentException("Destination array is not long enough to copy all the items in the collection. Check array index and length."); }
+        foreach (KeyValuePair<K, V> pair in this) {
+            array[arrayIndex] = pair;
+            arrayIndex = arrayIndex + 1;
+        }
+    }
+
+    bool ICollection<KeyValuePair<K, V>>.Remove(KeyValuePair<K, V> item) {
+        if (TryGetValue(item.Key, out V found) && EqualityComparer<V>.Default.Equals(found, item.Value)) {
+            return Remove(item.Key);
+        }
+        return false;
+    }
+
+    /// Removes the key, handing back the value it had.
+    public bool Remove(K key, out V value) {
+        if (TryGetValue(key, out value)) {
+            Remove(key);
+            return true;
+        }
+        value = default!;
+        return false;
+    }
+
     public List<V> Values {
         get {
             List<V> found = new List<V>();
@@ -8157,15 +8397,13 @@ interface Predicate<A> {
 // object header. Acquire/release CAS makes writes inside the critical section
 // visible across CSCs; Pause lets another execution context make progress
 // while this one is contended.
-static class Monitor {
-    public static void Enter(object target) {
-        long word = Sys.SyncWord(target);
-        while (Sys.Cas(word, 0, 1) != 0) { Sys.Pause(); }
-    }
+// System.Threading.Monitor, which `lock` expands to, is in the runtime's
+// threading.cor: whose it is and how a waiter sleeps are the platform's.
 
-    public static void Exit(object target) {
-        Sys.AtomicSwap(Sys.SyncWord(target), 0);
-    }
+class SynchronizationLockException : SystemException {
+    public SynchronizationLockException() : base("Object synchronization method was called from an unsynchronized block of code.") { }
+    public SynchronizationLockException(string message) : base(message) { }
+    public SynchronizationLockException(string message, Exception? inner) : base(message, inner) { }
 }
 
 // ---- StringBuilder --------------------------------------------------------
@@ -9097,7 +9335,7 @@ class HashSetEnumerator<T> : IEnumerator<T> {
     }
 }
 
-class HashSet<T> : IReadOnlySet<T>, IEnumerable<T> {
+class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
     // The comparer this set was given, or null for the default: an object's
     // own Equals and hash, a number's word -- as Dictionary's.
     private IEqualityComparer<T>? by;
@@ -9303,7 +9541,7 @@ class HashSet<T> : IReadOnlySet<T>, IEnumerable<T> {
     }
 
     public bool IsSubsetOf(IEnumerable<T> other) {
-        HashSet<T> theirs = new HashSet<T>(other);
+        HashSet<T> theirs = new HashSet<T>(other, by);
 
         foreach (T each in this) {
             if (!theirs.Contains(each)) { return false; }
@@ -9312,7 +9550,7 @@ class HashSet<T> : IReadOnlySet<T>, IEnumerable<T> {
     }
 
     public bool SetEquals(IEnumerable<T> other) {
-        HashSet<T> theirs = new HashSet<T>(other);
+        HashSet<T> theirs = new HashSet<T>(other, by);
 
         return Count == theirs.Count && IsSubsetOf(theirs);
     }
@@ -9330,8 +9568,71 @@ class HashSet<T> : IReadOnlySet<T>, IEnumerable<T> {
     }
 
     public void IntersectWith(IEnumerable<T> other) {
-        HashSet<T> keep = new HashSet<T>(other);
+        HashSet<T> keep = new HashSet<T>(other, by);
         IntersectWith(keep);
+    }
+
+    bool ICollection<T>.IsReadOnly => false;
+
+    void ICollection<T>.Add(T item) { Add(item); }
+
+    /// What is in one of the two and not both, left here.
+    public void SymmetricExceptWith(IEnumerable<T> other) {
+        if (other == null) { throw new ArgumentNullException("other"); }
+        HashSet<T> theirs = new HashSet<T>(other, by);
+        foreach (T value in theirs) {
+            if (!Remove(value)) { Add(value); }
+        }
+    }
+
+    public bool IsSupersetOf(IEnumerable<T> other) {
+        if (other == null) { throw new ArgumentNullException("other"); }
+        foreach (T value in other) {
+            if (!Contains(value)) { return false; }
+        }
+        return true;
+    }
+
+    /// A subset with something of the other's left over.
+    public bool IsProperSubsetOf(IEnumerable<T> other) {
+        if (other == null) { throw new ArgumentNullException("other"); }
+        HashSet<T> theirs = new HashSet<T>(other, by);
+        return theirs.Count > Count && IsSubsetOf(theirs);
+    }
+
+    public bool IsProperSupersetOf(IEnumerable<T> other) {
+        if (other == null) { throw new ArgumentNullException("other"); }
+        HashSet<T> theirs = new HashSet<T>(other, by);
+        return Count > theirs.Count && IsSupersetOf(theirs);
+    }
+
+    /// The member equal to `equalValue`, which may not be the same object.
+    public bool TryGetValue(T equalValue, out T actualValue) {
+        foreach (T value in this) {
+            if (Comparer.Equals(value, equalValue)) {
+                actualValue = value;
+                return true;
+            }
+        }
+        actualValue = default!;
+        return false;
+    }
+
+    public void CopyTo(T[] array) { CopyTo(array, 0, Count); }
+
+    public void CopyTo(T[] array, int arrayIndex) { CopyTo(array, arrayIndex, Count); }
+
+    public void CopyTo(T[] array, int arrayIndex, int count) {
+        if (array == null) { throw new ArgumentNullException("array"); }
+        if (arrayIndex < 0) { throw new ArgumentOutOfRangeException("arrayIndex"); }
+        if (count < 0) { throw new ArgumentOutOfRangeException("count"); }
+        if (arrayIndex > array.Length || count > array.Length - arrayIndex) { throw new ArgumentException("Destination array is not long enough to copy all the items in the collection. Check array index and length."); }
+        int copied = 0;
+        foreach (T value in this) {
+            if (copied == count) { break; }
+            array[arrayIndex + copied] = value;
+            copied = copied + 1;
+        }
     }
 
     public int RemoveWhere(Predicate<T> match) {
@@ -9381,7 +9682,7 @@ class HashSet<T> : IReadOnlySet<T>, IEnumerable<T> {
 /// the element type's own order (text by its characters, a number by value).
 /// A sorted array searched by halving, rather than .NET's red-black tree: the
 /// same answers and the same order of enumeration.
-class SortedSet<T> : IReadOnlySet<T>, IEnumerable<T> {
+class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
     private List<T> items;
     private IComparer<T> by;
 
@@ -9486,6 +9787,55 @@ class SortedSet<T> : IReadOnlySet<T>, IEnumerable<T> {
             if (Contains(item)) { return true; }
         }
         return false;
+    }
+
+    bool ICollection<T>.IsReadOnly => false;
+
+    void ICollection<T>.Add(T item) { Add(item); }
+
+    public void SymmetricExceptWith(IEnumerable<T> other) {
+        if (other == null) { throw new ArgumentNullException("other"); }
+        SortedSet<T> theirs = new SortedSet<T>(other, by);
+        foreach (T value in theirs) {
+            if (!Remove(value)) { Add(value); }
+        }
+    }
+
+    public bool IsProperSubsetOf(IEnumerable<T> other) {
+        if (other == null) { throw new ArgumentNullException("other"); }
+        SortedSet<T> theirs = new SortedSet<T>(other, by);
+        return theirs.Count > Count && IsSubsetOf(theirs);
+    }
+
+    public bool IsProperSupersetOf(IEnumerable<T> other) {
+        if (other == null) { throw new ArgumentNullException("other"); }
+        SortedSet<T> theirs = new SortedSet<T>(other, by);
+        return Count > theirs.Count && IsSupersetOf(theirs);
+    }
+
+    /// The member equal to `equalValue` by the set's comparer.
+    public bool TryGetValue(T equalValue, out T actualValue) {
+        foreach (T value in this) {
+            if (by.Compare(value, equalValue) == 0) {
+                actualValue = value;
+                return true;
+            }
+        }
+        actualValue = default!;
+        return false;
+    }
+
+    public void CopyTo(T[] array, int index, int count) {
+        if (array == null) { throw new ArgumentNullException("array"); }
+        if (index < 0) { throw new ArgumentOutOfRangeException("index"); }
+        if (count < 0) { throw new ArgumentOutOfRangeException("count"); }
+        if (index > array.Length || count > array.Length - index) { throw new ArgumentException("Destination array is not long enough to copy all the items in the collection. Check array index and length."); }
+        int copied = 0;
+        foreach (T value in this) {
+            if (copied == count) { break; }
+            array[index + copied] = value;
+            copied = copied + 1;
+        }
     }
 
     public int RemoveWhere(Predicate<T> match) {
@@ -9801,6 +10151,15 @@ struct TimeSpan {
                 String.Concat(text, "' was not recognized as a valid TimeSpan.")));
         }
         return made;
+    }
+
+    /// The invariant format is the only one TimeSpan is written in here, so
+    /// the provider changes nothing.
+    public static TimeSpan Parse(string input, IFormatProvider? formatProvider) { return Parse(input); }
+
+    public static bool TryParse(string? input, IFormatProvider? formatProvider, out TimeSpan result) {
+        if (input == null) { result = TimeSpan.Zero; return false; }
+        return TryParse(input, out result);
     }
 
     public static bool TryParse(string text, out TimeSpan value) {
@@ -10913,12 +11272,15 @@ static class Math {
 
 namespace System.Collections.ObjectModel
 {
-    /// .NET's read-only wrapper: a view onto a list that cannot change it.
-    public class ReadOnlyCollection<T> : IReadOnlyList<T>, IEnumerable<T>
+    /// .NET's read-only wrapper: a view onto a list that cannot change it. It
+    /// reads through, so what the list gains afterwards is seen here; as an
+    /// IList it answers IsReadOnly and refuses every change with
+    /// NotSupportedException.
+    public class ReadOnlyCollection<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>
     {
-        private readonly IReadOnlyList<T> list;
+        private readonly IList<T> list;
 
-        public ReadOnlyCollection(IReadOnlyList<T> list)
+        public ReadOnlyCollection(IList<T> list)
         {
             ArgumentNullException.ThrowIfNull(list);
             this.list = list;
@@ -10930,29 +11292,88 @@ namespace System.Collections.ObjectModel
 
         public T this[int index] => list[index];
 
-        public bool Contains(T value)
-        {
-            for (int i = 0; i < list.Count; i++)
-            {
-                if (EqualityComparer<T>.Default.Equals(list[i], value)) { return true; }
-            }
-            return false;
-        }
+        /// The list it wraps.
+        protected IList<T> Items => list;
 
-        public int IndexOf(T value)
-        {
-            for (int i = 0; i < list.Count; i++)
-            {
-                if (EqualityComparer<T>.Default.Equals(list[i], value)) { return i; }
-            }
-            return -1;
-        }
+        public bool Contains(T value) { return list.Contains(value); }
 
-        public void CopyTo(T[] array, int index)
-        {
-            for (int i = 0; i < list.Count; i++) { array[index + i] = list[i]; }
-        }
+        public int IndexOf(T value) { return list.IndexOf(value); }
+
+        public void CopyTo(T[] array, int index) { list.CopyTo(array, index); }
 
         public IEnumerator<T> GetEnumerator() { return list.GetEnumerator(); }
+
+        bool ICollection<T>.IsReadOnly => true;
+
+        T IList<T>.this[int index]
+        {
+            get { return list[index]; }
+            set { throw ReadOnly(); }
+        }
+
+        void ICollection<T>.Add(T item) { throw ReadOnly(); }
+        void ICollection<T>.Clear() { throw ReadOnly(); }
+        bool ICollection<T>.Remove(T item) { throw ReadOnly(); }
+        void IList<T>.Insert(int index, T item) { throw ReadOnly(); }
+        void IList<T>.RemoveAt(int index) { throw ReadOnly(); }
+
+        static NotSupportedException ReadOnly() { return new NotSupportedException("Collection is read-only."); }
     }
 }
+
+namespace System.Text
+{
+    /// A decoder met bytes it could not turn into text, and was told to throw
+    /// rather than put in a replacement character.
+    public class DecoderFallbackException : ArgumentException
+    {
+        readonly byte[]? _bytesUnknown;
+        readonly int _index;
+
+        public DecoderFallbackException() : base("Value does not fall within the expected range.") { _index = -1; }
+
+        public DecoderFallbackException(string? message) : base(message ?? "Value does not fall within the expected range.") { _index = -1; }
+
+        public DecoderFallbackException(string? message, Exception? innerException)
+            : base(message ?? "Value does not fall within the expected range.", innerException!) { _index = -1; }
+
+        public DecoderFallbackException(string? message, byte[]? bytesUnknown, int index)
+            : base(message ?? "Value does not fall within the expected range.")
+        {
+            _bytesUnknown = bytesUnknown;
+            _index = index;
+        }
+
+        /// .NET's wording: the bytes in hex, in brackets, and where they were.
+        public DecoderFallbackException(byte[] bytesUnknown, int index)
+            : this(Describe(bytesUnknown, index), bytesUnknown, index)
+        {
+        }
+
+        public byte[]? BytesUnknown => _bytesUnknown;
+
+        public int Index => _index;
+
+        static string Describe(byte[] bytes, int index)
+        {
+            string hex = "";
+            for (int i = 0; i < bytes.Length; i++)
+            {
+                hex = hex + "[" + bytes[i].ToString("X2") + "]";
+            }
+            return "Unable to translate bytes " + hex + " at index " + index + " from specified code page to Unicode.";
+        }
+    }
+
+    /// An encoder met a character it could not write, and was told to throw.
+    public class EncoderFallbackException : ArgumentException
+    {
+        public EncoderFallbackException() : base("Value does not fall within the expected range.") { }
+
+        public EncoderFallbackException(string? message) : base(message ?? "Value does not fall within the expected range.") { }
+
+        public EncoderFallbackException(string? message, Exception? innerException)
+            : base(message ?? "Value does not fall within the expected range.", innerException!) { }
+    }
+}
+

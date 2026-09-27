@@ -1093,8 +1093,37 @@ public sealed class Lexer
                 return new Token(Tok.Str, sb.ToString(), line, col, start);
             }
 
+            if (Cur == '\\' && Peek() == 'U')
+            {
+                sb.Append(char.ConvertFromUtf32(LongEscape()));
+                continue;
+            }
             sb.Append(Cur == '\\' ? Escape() : ReadChar());
         }
+    }
+
+    /// `\U` and eight hexadecimal digits: a code point, which a string holds
+    /// as two UTF-16 units past the basic plane.
+    private int LongEscape()
+    {
+        int line = _line, col = _col;
+        Advance();
+        Advance();
+        int value = 0;
+        for (int i = 0; i < 8; i++)
+        {
+            if (Done || !Uri.IsHexDigit(Cur))
+            {
+                throw Error(@"\U needs exactly eight hexadecimal digits", line, col);
+            }
+            value = value * 16 + Convert.ToInt32(Cur.ToString(), 16);
+            Advance();
+        }
+        if (value > 0x10FFFF)
+        {
+            throw Error(@"\U names no character past U+10FFFF", line, col);
+        }
+        return value;
     }
 
     /// An interpolated string, kept RAW.
@@ -1203,7 +1232,22 @@ public sealed class Lexer
             throw Error("empty character literal", line, col);
         }
 
-        char value = Cur == '\\' ? Escape() : ReadChar();
+        char value;
+        if (Cur == '\\' && Peek() == 'U')
+        {
+            // A char holds one UTF-16 unit: \U names one only within the
+            // basic plane, as C# allows it in a character literal.
+            int point = LongEscape();
+            if (point > 0xFFFF)
+            {
+                throw Error("character literal holds more than one character", line, col);
+            }
+            value = (char)point;
+        }
+        else
+        {
+            value = Cur == '\\' ? Escape() : ReadChar();
+        }
 
         if (Cur != '\'')
         {

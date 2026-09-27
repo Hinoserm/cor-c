@@ -166,10 +166,13 @@ public sealed partial class Lowering
     /// so `corc syms` and every library header keep working.
     /// </summary>
     public static string Label(MethodSymbol m)
-        => m.Params.Count == 0
+        => (m.Params.Count == 0
          ? $"m_{Owner(m)}_{m.Name}_0"
          : $"m_{Owner(m)}_{m.Name}_{m.Params.Count}_"
-         + string.Join("_", m.Params.Select(p => (p.ByRef ? "R$" : "") + Mangle(p.Type)));
+         + string.Join("_", m.Params.Select(p => (p.ByRef ? "R$" : "") + Mangle(p.Type))))
+         // A CONVERSION OPERATOR IS ALSO WHAT IT MAKES: JsonNode's explicit
+         // operators to bool, int, long and double all take one JsonNode.
+         + (m.Name is "op_Implicit" or "op_Explicit" ? "_to_" + Mangle(m.Returns) : "");
 
     private static string Owner(MethodSymbol m) => m.Owner.Key.Replace('.', '$');
 

@@ -37,7 +37,7 @@ class StackEnumerator<T> : IEnumerator<T> {
     }
 }
 
-class Stack<T> : IEnumerable<T> {
+class Stack<T> : IReadOnlyCollection<T>, IEnumerable<T> {
     private T[] items;
     private int count;
 
@@ -188,7 +188,11 @@ class LinkedListEnumerator<T> : IEnumerator<T> {
     }
 }
 
-class LinkedList<T> : IEnumerable<T> {
+class LinkedList<T> : ICollection<T>, IReadOnlyCollection<T>, IEnumerable<T> {
+    bool ICollection<T>.IsReadOnly => false;
+
+    void ICollection<T>.Add(T item) { AddLast(item); }
+
     private LinkedListNode<T>? head;
     private LinkedListNode<T>? tail;
     private int count;
@@ -420,7 +424,34 @@ class SortedPairsEnumerator<K, V> : IEnumerator<KeyValuePair<K, V>> {
 /// .NET's array-backed ordered map: a lookup is a binary search, and the
 /// position of a key is part of the API -- IndexOfKey, GetKeyAtIndex,
 /// RemoveAt. That is the whole difference from SortedDictionary.
-class SortedList<K, V> : IEnumerable<KeyValuePair<K, V>> {
+class SortedList<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerable<KeyValuePair<K, V>> {
+    IEnumerable<K> IReadOnlyDictionary<K, V>.Keys => Keys;
+    IEnumerable<V> IReadOnlyDictionary<K, V>.Values => Values;
+
+    ICollection<K> IDictionary<K, V>.Keys => Keys.AsReadOnly();
+    ICollection<V> IDictionary<K, V>.Values => Values.AsReadOnly();
+    bool ICollection<KeyValuePair<K, V>>.IsReadOnly => false;
+
+    void ICollection<KeyValuePair<K, V>>.Add(KeyValuePair<K, V> item) { Add(item.Key, item.Value); }
+
+    bool ICollection<KeyValuePair<K, V>>.Contains(KeyValuePair<K, V> item) {
+        return TryGetValue(item.Key, out V found) && EqualityComparer<V>.Default.Equals(found, item.Value);
+    }
+
+    void ICollection<KeyValuePair<K, V>>.CopyTo(KeyValuePair<K, V>[] array, int arrayIndex) {
+        if (array == null) { throw new ArgumentNullException("array"); }
+        if (arrayIndex < 0 || arrayIndex > array.Length) { throw new ArgumentOutOfRangeException("arrayIndex"); }
+        if (array.Length - arrayIndex < Count) { throw new ArgumentException("Destination array is not long enough to copy all the items in the collection. Check array index and length."); }
+        foreach (KeyValuePair<K, V> pair in this) {
+            array[arrayIndex] = pair;
+            arrayIndex = arrayIndex + 1;
+        }
+    }
+
+    bool ICollection<KeyValuePair<K, V>>.Remove(KeyValuePair<K, V> item) {
+        if (TryGetValue(item.Key, out V found) && EqualityComparer<V>.Default.Equals(found, item.Value)) { return Remove(item.Key); }
+        return false;
+    }
     private SortedPairs<K, V> pairs;
 
     public SortedList() { pairs = new SortedPairs<K, V>(Comparer<K>.Default); }
@@ -509,7 +540,32 @@ class SortedList<K, V> : IEnumerable<KeyValuePair<K, V>> {
 /// The ordered map without the positions: a Dictionary whose enumeration is in
 /// key order. In .NET it is a tree and inserting is logarithmic; here it is the
 /// same store as SortedList, so the ANSWERS match and the insert cost does not.
-class SortedDictionary<K, V> : IReadOnlyDictionary<K, V>, IEnumerable<KeyValuePair<K, V>> {
+class SortedDictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerable<KeyValuePair<K, V>> {
+
+    ICollection<K> IDictionary<K, V>.Keys => Keys.AsReadOnly();
+    ICollection<V> IDictionary<K, V>.Values => Values.AsReadOnly();
+    bool ICollection<KeyValuePair<K, V>>.IsReadOnly => false;
+
+    void ICollection<KeyValuePair<K, V>>.Add(KeyValuePair<K, V> item) { Add(item.Key, item.Value); }
+
+    bool ICollection<KeyValuePair<K, V>>.Contains(KeyValuePair<K, V> item) {
+        return TryGetValue(item.Key, out V found) && EqualityComparer<V>.Default.Equals(found, item.Value);
+    }
+
+    void ICollection<KeyValuePair<K, V>>.CopyTo(KeyValuePair<K, V>[] array, int arrayIndex) {
+        if (array == null) { throw new ArgumentNullException("array"); }
+        if (arrayIndex < 0 || arrayIndex > array.Length) { throw new ArgumentOutOfRangeException("arrayIndex"); }
+        if (array.Length - arrayIndex < Count) { throw new ArgumentException("Destination array is not long enough to copy all the items in the collection. Check array index and length."); }
+        foreach (KeyValuePair<K, V> pair in this) {
+            array[arrayIndex] = pair;
+            arrayIndex = arrayIndex + 1;
+        }
+    }
+
+    bool ICollection<KeyValuePair<K, V>>.Remove(KeyValuePair<K, V> item) {
+        if (TryGetValue(item.Key, out V found) && EqualityComparer<V>.Default.Equals(found, item.Value)) { return Remove(item.Key); }
+        return false;
+    }
     private SortedPairs<K, V> pairs;
 
     public SortedDictionary() { pairs = new SortedPairs<K, V>(Comparer<K>.Default); }
@@ -828,35 +884,11 @@ class BitArray {
 // interface with no way to change it. What they promise is that the CALLER
 // cannot add or remove -- the owner still can, and the view shows it.
 
-class ReadOnlyCollection<T> : IReadOnlyList<T>, IEnumerable<T> {
-    private IReadOnlyList<T> inner;
+class ReadOnlyDictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerable<KeyValuePair<K, V>> {
+    private IDictionary<K, V> inner;
 
-    public ReadOnlyCollection(IReadOnlyList<T> list) {
-        if (list == null) { throw new ArgumentNullException("list"); }
-        inner = list;
-    }
-
-    public int Count => inner.Count;
-    public T this[int index] => inner[index];
-
-    public bool Contains(T value) { return IndexOf(value) >= 0; }
-
-    public int IndexOf(T value) {
-        IEqualityComparer<T> same = EqualityComparer<T>.Default;
-
-        for (int i = 0; i < inner.Count; i++) {
-            if (same.Equals(inner[i], value)) { return i; }
-        }
-        return -1;
-    }
-
-    public IEnumerator<T> GetEnumerator() { return new ListEnumerator<T>(inner); }
-}
-
-class ReadOnlyDictionary<K, V> : IReadOnlyDictionary<K, V> {
-    private Dictionary<K, V> inner;
-
-    public ReadOnlyDictionary(Dictionary<K, V> dictionary) {
+    /// A read-only view of `dictionary`, reading through to it.
+    public ReadOnlyDictionary(IDictionary<K, V> dictionary) {
         if (dictionary == null) { throw new ArgumentNullException("dictionary"); }
         inner = dictionary;
     }
@@ -864,16 +896,38 @@ class ReadOnlyDictionary<K, V> : IReadOnlyDictionary<K, V> {
     public int Count => inner.Count;
     public V this[K key] => inner[key];
 
-    public List<K> Keys => inner.Keys;
-    public List<V> Values => inner.Values;
+    /// The dictionary it wraps.
+    protected IDictionary<K, V> Dictionary => inner;
+
+    public ReadOnlyCollection<K> Keys => new ReadOnlyCollection<K>(new List<K>(inner.Keys));
+    public ReadOnlyCollection<V> Values => new ReadOnlyCollection<V>(new List<V>(inner.Values));
     IEnumerable<K> IReadOnlyDictionary<K, V>.Keys => Keys;
     IEnumerable<V> IReadOnlyDictionary<K, V>.Values => Values;
+    ICollection<K> IDictionary<K, V>.Keys => Keys;
+    ICollection<V> IDictionary<K, V>.Values => Values;
 
     public bool ContainsKey(K key) { return inner.ContainsKey(key); }
 
     public bool TryGetValue(K key, out V value) { return inner.TryGetValue(key, out value); }
 
     public IEnumerator<KeyValuePair<K, V>> GetEnumerator() { return inner.GetEnumerator(); }
+
+    bool ICollection<KeyValuePair<K, V>>.IsReadOnly => true;
+    bool ICollection<KeyValuePair<K, V>>.Contains(KeyValuePair<K, V> item) { return inner.Contains(item); }
+    void ICollection<KeyValuePair<K, V>>.CopyTo(KeyValuePair<K, V>[] array, int arrayIndex) { inner.CopyTo(array, arrayIndex); }
+
+    V IDictionary<K, V>.this[K key] {
+        get { return inner[key]; }
+        set { throw ReadOnly(); }
+    }
+
+    void IDictionary<K, V>.Add(K key, V value) { throw ReadOnly(); }
+    bool IDictionary<K, V>.Remove(K key) { throw ReadOnly(); }
+    void ICollection<KeyValuePair<K, V>>.Add(KeyValuePair<K, V> item) { throw ReadOnly(); }
+    void ICollection<KeyValuePair<K, V>>.Clear() { throw ReadOnly(); }
+    bool ICollection<KeyValuePair<K, V>>.Remove(KeyValuePair<K, V> item) { throw ReadOnly(); }
+
+    static NotSupportedException ReadOnly() { return new NotSupportedException("Collection is read-only."); }
 }
 
 // ---- StringCollection -----------------------------------------------------
@@ -910,3 +964,574 @@ class StringCollection : IEnumerable<string> {
 
     public IEnumerator<string> GetEnumerator() { return items.GetEnumerator(); }
 }
+
+// ---- System.Collections.Concurrent -------------------------------------------
+//
+// Collections many threads may use at once without a lock of their own. Each
+// guards itself with its own lock (Monitor); an enumeration is a snapshot
+// taken under it, which is what .NET documents for the bag, the queue and the
+// stack, and within what it promises for the dictionary -- an enumeration
+// that may see changes made while it runs, or not.
+namespace System.Collections.Concurrent
+{
+    /// A collection one thread can add to while another takes from it.
+    interface IProducerConsumerCollection<T> : IEnumerable<T>, IReadOnlyCollection<T>
+    {
+        bool TryAdd(T item);
+        bool TryTake(out T item);
+        T[] ToArray();
+        void CopyTo(T[] array, int index);
+    }
+
+    /// An unordered collection: what is taken is whatever the bag gives,
+    /// last added first here, as .NET's does for the thread that added it.
+    class ConcurrentBag<T> : IProducerConsumerCollection<T>, IReadOnlyCollection<T>, IEnumerable<T>
+    {
+        readonly List<T> _items;
+        readonly object _gate = new object();
+
+        public ConcurrentBag()
+        {
+            _items = new List<T>();
+        }
+
+        public ConcurrentBag(IEnumerable<T> collection)
+        {
+            if (collection == null) { throw new ArgumentNullException("collection"); }
+            _items = new List<T>(collection);
+        }
+
+        public int Count { get { lock (_gate) { return _items.Count; } } }
+
+        public bool IsEmpty { get { lock (_gate) { return _items.Count == 0; } } }
+
+        public void Add(T item)
+        {
+            lock (_gate) { _items.Add(item); }
+        }
+
+        public bool TryAdd(T item)
+        {
+            Add(item);
+            return true;
+        }
+
+        public bool TryTake(out T result)
+        {
+            lock (_gate)
+            {
+                int last = _items.Count - 1;
+                if (last < 0)
+                {
+                    result = default!;
+                    return false;
+                }
+                result = _items[last];
+                _items.RemoveAt(last);
+                return true;
+            }
+        }
+
+        public bool TryPeek(out T result)
+        {
+            lock (_gate)
+            {
+                int last = _items.Count - 1;
+                if (last < 0)
+                {
+                    result = default!;
+                    return false;
+                }
+                result = _items[last];
+                return true;
+            }
+        }
+
+        public void Clear()
+        {
+            lock (_gate) { _items.Clear(); }
+        }
+
+        public T[] ToArray()
+        {
+            lock (_gate) { return _items.ToArray(); }
+        }
+
+        public void CopyTo(T[] array, int index)
+        {
+            if (array == null) { throw new ArgumentNullException("array"); }
+            lock (_gate) { _items.CopyTo(array, index); }
+        }
+
+        public IEnumerator<T> GetEnumerator()
+        {
+            return ((IEnumerable<T>)ToArray()).GetEnumerator();
+        }
+    }
+
+    /// First in, first out, for many threads.
+    class ConcurrentQueue<T> : IProducerConsumerCollection<T>, IReadOnlyCollection<T>, IEnumerable<T>
+    {
+        readonly Queue<T> _items;
+        readonly object _gate = new object();
+
+        public ConcurrentQueue()
+        {
+            _items = new Queue<T>();
+        }
+
+        public ConcurrentQueue(IEnumerable<T> collection)
+        {
+            if (collection == null) { throw new ArgumentNullException("collection"); }
+            _items = new Queue<T>();
+            foreach (T item in collection) { _items.Enqueue(item); }
+        }
+
+        public int Count { get { lock (_gate) { return _items.Count; } } }
+
+        public bool IsEmpty { get { lock (_gate) { return _items.Count == 0; } } }
+
+        public void Enqueue(T item)
+        {
+            lock (_gate) { _items.Enqueue(item); }
+        }
+
+        public bool TryDequeue(out T result)
+        {
+            lock (_gate)
+            {
+                if (_items.Count == 0)
+                {
+                    result = default!;
+                    return false;
+                }
+                result = _items.Dequeue();
+                return true;
+            }
+        }
+
+        public bool TryPeek(out T result)
+        {
+            lock (_gate)
+            {
+                if (_items.Count == 0)
+                {
+                    result = default!;
+                    return false;
+                }
+                result = _items.Peek();
+                return true;
+            }
+        }
+
+        public void Clear()
+        {
+            lock (_gate) { _items.Clear(); }
+        }
+
+        bool IProducerConsumerCollection<T>.TryAdd(T item)
+        {
+            Enqueue(item);
+            return true;
+        }
+
+        bool IProducerConsumerCollection<T>.TryTake(out T item)
+        {
+            return TryDequeue(out item);
+        }
+
+        public T[] ToArray()
+        {
+            lock (_gate) { return _items.ToArray(); }
+        }
+
+        public void CopyTo(T[] array, int index)
+        {
+            if (array == null) { throw new ArgumentNullException("array"); }
+            T[] snapshot = ToArray();
+            if (index < 0 || index > array.Length) { throw new ArgumentOutOfRangeException("index"); }
+            if (array.Length - index < snapshot.Length) { throw new ArgumentException("Destination array is not long enough to copy all the items in the collection. Check array index and length."); }
+            for (int i = 0; i < snapshot.Length; i++) { array[index + i] = snapshot[i]; }
+        }
+
+        public IEnumerator<T> GetEnumerator()
+        {
+            return ((IEnumerable<T>)ToArray()).GetEnumerator();
+        }
+    }
+
+    /// Last in, first out, for many threads.
+    class ConcurrentStack<T> : IProducerConsumerCollection<T>, IReadOnlyCollection<T>, IEnumerable<T>
+    {
+        readonly List<T> _items;
+        readonly object _gate = new object();
+
+        public ConcurrentStack()
+        {
+            _items = new List<T>();
+        }
+
+        public ConcurrentStack(IEnumerable<T> collection)
+        {
+            if (collection == null) { throw new ArgumentNullException("collection"); }
+            _items = new List<T>(collection);
+        }
+
+        public int Count { get { lock (_gate) { return _items.Count; } } }
+
+        public bool IsEmpty { get { lock (_gate) { return _items.Count == 0; } } }
+
+        public void Push(T item)
+        {
+            lock (_gate) { _items.Add(item); }
+        }
+
+        /// Pushes them in order, as one step: the last of them ends on top.
+        public void PushRange(T[] items)
+        {
+            if (items == null) { throw new ArgumentNullException("items"); }
+            PushRange(items, 0, items.Length);
+        }
+
+        public void PushRange(T[] items, int startIndex, int count)
+        {
+            if (items == null) { throw new ArgumentNullException("items"); }
+            if (startIndex < 0 || count < 0 || startIndex > items.Length - count) { throw new ArgumentOutOfRangeException("startIndex"); }
+            lock (_gate)
+            {
+                for (int i = 0; i < count; i++) { _items.Add(items[startIndex + i]); }
+            }
+        }
+
+        public bool TryPop(out T result)
+        {
+            lock (_gate)
+            {
+                int top = _items.Count - 1;
+                if (top < 0)
+                {
+                    result = default!;
+                    return false;
+                }
+                result = _items[top];
+                _items.RemoveAt(top);
+                return true;
+            }
+        }
+
+        /// Pops up to items.Length, top first, answering how many it took.
+        public int TryPopRange(T[] items)
+        {
+            if (items == null) { throw new ArgumentNullException("items"); }
+            return TryPopRange(items, 0, items.Length);
+        }
+
+        public int TryPopRange(T[] items, int startIndex, int count)
+        {
+            if (items == null) { throw new ArgumentNullException("items"); }
+            if (startIndex < 0 || count < 0 || startIndex > items.Length - count) { throw new ArgumentOutOfRangeException("startIndex"); }
+            lock (_gate)
+            {
+                int taken = 0;
+                while (taken < count && _items.Count > 0)
+                {
+                    int top = _items.Count - 1;
+                    items[startIndex + taken] = _items[top];
+                    _items.RemoveAt(top);
+                    taken = taken + 1;
+                }
+                return taken;
+            }
+        }
+
+        public bool TryPeek(out T result)
+        {
+            lock (_gate)
+            {
+                int top = _items.Count - 1;
+                if (top < 0)
+                {
+                    result = default!;
+                    return false;
+                }
+                result = _items[top];
+                return true;
+            }
+        }
+
+        public void Clear()
+        {
+            lock (_gate) { _items.Clear(); }
+        }
+
+        bool IProducerConsumerCollection<T>.TryAdd(T item)
+        {
+            Push(item);
+            return true;
+        }
+
+        bool IProducerConsumerCollection<T>.TryTake(out T item)
+        {
+            return TryPop(out item);
+        }
+
+        /// Top first, as .NET's is.
+        public T[] ToArray()
+        {
+            lock (_gate)
+            {
+                T[] copy = new T[_items.Count];
+                for (int i = 0; i < copy.Length; i++) { copy[i] = _items[_items.Count - 1 - i]; }
+                return copy;
+            }
+        }
+
+        public void CopyTo(T[] array, int index)
+        {
+            if (array == null) { throw new ArgumentNullException("array"); }
+            T[] snapshot = ToArray();
+            if (index < 0 || index > array.Length) { throw new ArgumentOutOfRangeException("index"); }
+            if (array.Length - index < snapshot.Length) { throw new ArgumentException("Destination array is not long enough to copy all the items in the collection. Check array index and length."); }
+            for (int i = 0; i < snapshot.Length; i++) { array[index + i] = snapshot[i]; }
+        }
+
+        public IEnumerator<T> GetEnumerator()
+        {
+            return ((IEnumerable<T>)ToArray()).GetEnumerator();
+        }
+    }
+
+    /// A dictionary for many threads: every operation is one step, and the
+    /// Get-or-Add and Add-or-Update forms are what make read-then-write safe.
+    /// A value factory runs outside the lock, as .NET's does -- so it may run
+    /// more than once for a key when threads race, and only one result is kept.
+    class ConcurrentDictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerable<KeyValuePair<K, V>>
+    {
+        readonly Dictionary<K, V> _items;
+        readonly object _gate = new object();
+
+        public ConcurrentDictionary()
+        {
+            _items = new Dictionary<K, V>();
+        }
+
+        public ConcurrentDictionary(IEqualityComparer<K>? comparer)
+        {
+            _items = comparer == null ? new Dictionary<K, V>() : new Dictionary<K, V>(comparer);
+        }
+
+        public ConcurrentDictionary(IEnumerable<KeyValuePair<K, V>> collection) : this(collection, null)
+        {
+        }
+
+        public ConcurrentDictionary(IEnumerable<KeyValuePair<K, V>> collection, IEqualityComparer<K>? comparer) : this(comparer)
+        {
+            if (collection == null) { throw new ArgumentNullException("collection"); }
+            foreach (KeyValuePair<K, V> pair in collection)
+            {
+                if (!_items.TryAdd(pair.Key, pair.Value)) { throw new ArgumentException("The source argument contains duplicate keys."); }
+            }
+        }
+
+        public ConcurrentDictionary(int concurrencyLevel, int capacity) : this()
+        {
+            if (concurrencyLevel < 1 && concurrencyLevel != -1) { throw new ArgumentOutOfRangeException("concurrencyLevel"); }
+            if (capacity < 0) { throw new ArgumentOutOfRangeException("capacity"); }
+        }
+
+        public int Count { get { lock (_gate) { return _items.Count; } } }
+
+        public bool IsEmpty { get { lock (_gate) { return _items.Count == 0; } } }
+
+        public V this[K key]
+        {
+            get
+            {
+                if (TryGetValue(key, out V value)) { return value; }
+                throw new KeyNotFoundException("The given key '" + key + "' was not present in the dictionary.");
+            }
+            set
+            {
+                lock (_gate) { _items[key] = value; }
+            }
+        }
+
+        public ICollection<K> Keys { get { lock (_gate) { return new ReadOnlyCollection<K>(new List<K>(_items.Keys)); } } }
+
+        public ICollection<V> Values { get { lock (_gate) { return new ReadOnlyCollection<V>(new List<V>(_items.Values)); } } }
+
+        IEnumerable<K> IReadOnlyDictionary<K, V>.Keys => Keys;
+        IEnumerable<V> IReadOnlyDictionary<K, V>.Values => Values;
+
+        public bool ContainsKey(K key)
+        {
+            lock (_gate) { return _items.ContainsKey(key); }
+        }
+
+        public bool TryGetValue(K key, out V value)
+        {
+            lock (_gate) { return _items.TryGetValue(key, out value); }
+        }
+
+        public bool TryAdd(K key, V value)
+        {
+            lock (_gate) { return _items.TryAdd(key, value); }
+        }
+
+        public bool TryRemove(K key, out V value)
+        {
+            lock (_gate) { return _items.Remove(key, out value); }
+        }
+
+        /// Removes the pair only when the key still holds that value.
+        public bool TryRemove(KeyValuePair<K, V> item)
+        {
+            lock (_gate)
+            {
+                if (_items.TryGetValue(item.Key, out V held) && EqualityComparer<V>.Default.Equals(held, item.Value))
+                {
+                    return _items.Remove(item.Key);
+                }
+                return false;
+            }
+        }
+
+        /// Replaces the value only when it is still `comparisonValue`.
+        public bool TryUpdate(K key, V newValue, V comparisonValue)
+        {
+            lock (_gate)
+            {
+                if (_items.TryGetValue(key, out V held) && EqualityComparer<V>.Default.Equals(held, comparisonValue))
+                {
+                    _items[key] = newValue;
+                    return true;
+                }
+                return false;
+            }
+        }
+
+        public V GetOrAdd(K key, V value)
+        {
+            lock (_gate)
+            {
+                if (_items.TryGetValue(key, out V held)) { return held; }
+                _items.Add(key, value);
+                return value;
+            }
+        }
+
+        public V GetOrAdd(K key, Func<K, V> valueFactory)
+        {
+            if (valueFactory == null) { throw new ArgumentNullException("valueFactory"); }
+            if (TryGetValue(key, out V held)) { return held; }
+            V made = valueFactory(key);
+            return GetOrAdd(key, made);
+        }
+
+        public V GetOrAdd<TArg>(K key, Func<K, TArg, V> valueFactory, TArg factoryArgument)
+        {
+            if (valueFactory == null) { throw new ArgumentNullException("valueFactory"); }
+            if (TryGetValue(key, out V held)) { return held; }
+            V made = valueFactory(key, factoryArgument);
+            return GetOrAdd(key, made);
+        }
+
+        public V AddOrUpdate(K key, V addValue, Func<K, V, V> updateValueFactory)
+        {
+            if (updateValueFactory == null) { throw new ArgumentNullException("updateValueFactory"); }
+            while (true)
+            {
+                if (TryGetValue(key, out V held))
+                {
+                    V updated = updateValueFactory(key, held);
+                    if (TryUpdate(key, updated, held)) { return updated; }
+                }
+                else if (TryAdd(key, addValue))
+                {
+                    return addValue;
+                }
+            }
+        }
+
+        public V AddOrUpdate(K key, Func<K, V> addValueFactory, Func<K, V, V> updateValueFactory)
+        {
+            if (addValueFactory == null) { throw new ArgumentNullException("addValueFactory"); }
+            if (updateValueFactory == null) { throw new ArgumentNullException("updateValueFactory"); }
+            while (true)
+            {
+                if (TryGetValue(key, out V held))
+                {
+                    V updated = updateValueFactory(key, held);
+                    if (TryUpdate(key, updated, held)) { return updated; }
+                }
+                else
+                {
+                    V added = addValueFactory(key);
+                    if (TryAdd(key, added)) { return added; }
+                }
+            }
+        }
+
+        public void Clear()
+        {
+            lock (_gate) { _items.Clear(); }
+        }
+
+        public KeyValuePair<K, V>[] ToArray()
+        {
+            lock (_gate)
+            {
+                KeyValuePair<K, V>[] copy = new KeyValuePair<K, V>[_items.Count];
+                int i = 0;
+                foreach (KeyValuePair<K, V> pair in _items)
+                {
+                    copy[i] = pair;
+                    i = i + 1;
+                }
+                return copy;
+            }
+        }
+
+        public IEnumerator<KeyValuePair<K, V>> GetEnumerator()
+        {
+            return ((IEnumerable<KeyValuePair<K, V>>)ToArray()).GetEnumerator();
+        }
+
+        void IDictionary<K, V>.Add(K key, V value)
+        {
+            if (!TryAdd(key, value)) { throw new ArgumentException("An item with the same key has already been added. Key: " + key); }
+        }
+
+        bool IDictionary<K, V>.Remove(K key)
+        {
+            return TryRemove(key, out V _);
+        }
+
+        bool ICollection<KeyValuePair<K, V>>.IsReadOnly => false;
+
+        void ICollection<KeyValuePair<K, V>>.Add(KeyValuePair<K, V> item)
+        {
+            ((IDictionary<K, V>)this).Add(item.Key, item.Value);
+        }
+
+        bool ICollection<KeyValuePair<K, V>>.Contains(KeyValuePair<K, V> item)
+        {
+            return TryGetValue(item.Key, out V held) && EqualityComparer<V>.Default.Equals(held, item.Value);
+        }
+
+        void ICollection<KeyValuePair<K, V>>.CopyTo(KeyValuePair<K, V>[] array, int arrayIndex)
+        {
+            if (array == null) { throw new ArgumentNullException("array"); }
+            KeyValuePair<K, V>[] snapshot = ToArray();
+            if (arrayIndex < 0 || arrayIndex > array.Length) { throw new ArgumentOutOfRangeException("arrayIndex"); }
+            if (array.Length - arrayIndex < snapshot.Length) { throw new ArgumentException("Destination array is not long enough to copy all the items in the collection. Check array index and length."); }
+            for (int i = 0; i < snapshot.Length; i++) { array[arrayIndex + i] = snapshot[i]; }
+        }
+
+        bool ICollection<KeyValuePair<K, V>>.Remove(KeyValuePair<K, V> item)
+        {
+            return TryRemove(item);
+        }
+    }
+}
+

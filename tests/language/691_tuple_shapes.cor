@@ -1,0 +1,36 @@
+// test: tuple_shapes
+// expect-exit: 0
+// expect-output:
+// 3 700 5 9 none 2 x
+//
+// Tuples whose elements are arrays, nullable values and pointers are distinct
+// shapes, and a tuple literal with a null, a bare default, a new() or a lambda
+// takes its element types from the tuple it is passed as.
+
+using System;
+using System.Collections.Generic;
+
+class Box { public int V; }
+static class Program
+{
+    static int Take((string Name, int[] Values) pair) => pair.Values[1];
+    static int Apply((int Seed, Func<int, int> Step) job) => job.Step(job.Seed);
+    static unsafe int Main()
+    {
+        (string, byte[]) bytes = ("b", new byte[] { 1, 2, 3 });
+        (string, int[]) ints = ("i", new int[] { 100, 700, 300 });
+        (int?, int) maybe = (null, 5);
+        (int, int) plain = (4, 9);
+        List<(string Key, Box? Old)> undo = new();
+        undo.Add(("gone", null));
+        undo.Add(("kept", new() { V = 2 }));
+        Func<(string, int[]), int> via = Take;
+        int n = 7;
+        int* p = &n;
+        (int*, int) pointed = (p, 1);
+        Console.WriteLine(bytes.Item2.Length + " " + ints.Item2[1] + " " + maybe.Item2 + " " + plain.Item2
+            + " " + (undo[0].Old is null ? "none" : "some") + " " + undo[1].Old!.V
+            + " " + (Apply((6, x => x + 1)) == 7 && via(("s", new int[] { 0, 4 })) == 4 && *pointed.Item1 == 7 && maybe.Item1 is null ? "x" : "?"));
+        return 0;
+    }
+}

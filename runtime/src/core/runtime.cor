@@ -1813,49 +1813,91 @@ static class Runtime
     /// which is exact when the quotient is small and loses low bits when a is
     /// enormous relative to b; a loop of exact subtractions would fix that at
     /// a cost no caller here has asked for.
-    public static double Remainder(double a, double b)
+    public static double Remainder(double x, double y)
     {
-        if (IsNaN(a) || IsNaN(b) || IsInfinite(a) || b == 0.0)
+        // EXACTLY, as C#'s `%` and C's fmod are: x - n*y with n the quotient
+        // truncated, and no rounding anywhere -- the result is always
+        // representable. `x - Trunc(x / y) * y` is not that once the
+        // quotient passes 2^53: 1e300 % 3.0 came out as whatever the rounded
+        // product left behind. So the mantissas are divided the long way,
+        // one bit of the quotient per step, as a C library does it.
+        ulong ux = (ulong)Sys.Bits(x);
+        ulong uy = (ulong)Sys.Bits(y);
+        int ex = (int)((ux >> 52) & 0x7FF);
+        int ey = (int)((uy >> 52) & 0x7FF);
+        ulong sign = ux & 0x8000000000000000;
+
+        // y zero, y NaN, or x infinite or NaN: NaN (x NaN or y NaN propagate).
+        if ((uy << 1) == 0 || IsNaN(y) || ex == 0x7FF)
         {
-            return NaN();
+            return IsNaN(x) ? x : IsNaN(y) ? y : NaN();
         }
-        if (IsInfinite(b))
+        // |x| no greater than |y|: x itself, or a zero of x's sign.
+        if ((ux << 1) <= (uy << 1))
         {
-            return a;
+            return (ux << 1) == (uy << 1) ? 0.0 * x : x;
         }
 
-        double q = Trunc(a / b);
-        double r = a - q * b;
-
-        // Rounding in the quotient can push r one step past where it belongs;
-        // one correction puts it back in (-|b|, |b|) with the dividend's sign.
-        double mag = b < 0.0 ? 0.0 - b : b;
-
-        if (a >= 0.0)
+        // Both to a 53-bit integer mantissa with the implicit bit, a
+        // subnormal normalised by shifting and lowering its exponent.
+        ulong mx;
+        if (ex == 0)
         {
-            if (r < 0.0)
-            {
-                r = r + mag;
-            }
-            if (r >= mag)
-            {
-                r = r - mag;
-            }
+            for (ulong t = ux << 12; (t >> 63) == 0; t = t << 1) ex = ex - 1;
+            mx = ux << (1 - ex);
         }
         else
         {
-            if (r > 0.0)
-            {
-                r = r - mag;
-            }
-            if (r <= 0.0 - mag)
-            {
-                r = r + mag;
-            }
+            mx = (ux & 0x000FFFFFFFFFFFFF) | 0x0010000000000000;
         }
-        return r;
+        ulong my;
+        if (ey == 0)
+        {
+            for (ulong t = uy << 12; (t >> 63) == 0; t = t << 1) ey = ey - 1;
+            my = uy << (1 - ey);
+        }
+        else
+        {
+            my = (uy & 0x000FFFFFFFFFFFFF) | 0x0010000000000000;
+        }
+
+        // The remainder, one exponent step at a time.
+        for (; ex > ey; ex = ex - 1)
+        {
+            ulong d = mx - my;
+            if ((d >> 63) == 0)
+            {
+                if (d == 0) return 0.0 * x;
+                mx = d;
+            }
+            mx = mx << 1;
+        }
+        ulong last = mx - my;
+        if ((last >> 63) == 0)
+        {
+            if (last == 0) return 0.0 * x;
+            mx = last;
+        }
+        while ((mx >> 52) == 0)
+        {
+            mx = mx << 1;
+            ex = ex - 1;
+        }
+
+        // Back to a double: normal with its exponent, or subnormal shifted down.
+        if (ex > 0)
+        {
+            mx = (mx - 0x0010000000000000) | ((ulong)ex << 52);
+        }
+        else
+        {
+            mx = mx >> (1 - ex);
+        }
+        return Sys.FromBits((long)(mx | sign));
     }
 
+    /// Exact in single precision too: a float's remainder, taken exactly in
+    /// double, is exactly representable as a float.
     public static float RemainderSingle(float a, float b)
     {
         return (float)Remainder((double)a, (double)b);

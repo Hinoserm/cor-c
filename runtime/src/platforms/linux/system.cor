@@ -307,6 +307,55 @@ static class Platform
         Sys.Syscall(Call.Futex, at, 129, count, 0, 0, 0);
     }
 
+    // ---- the machine's memory, for GC.GetGCMemoryInfo ------------------------
+
+    /// sysinfo(2)'s totalram and freeram, in bytes: what the machine has and
+    /// what it has free (the kernel's view, which leaves out reclaimable
+    /// caches -- MemAvailable counts those, and is read where a caller wants
+    /// it).
+    public static long TotalMemory()
+    {
+        return SysinfoBytes(16);
+    }
+
+    public static long AvailableMemory()
+    {
+        return SysinfoBytes(20);
+    }
+
+    static long SysinfoBytes(int field)
+    {
+        byte[] info = new byte[64];                 // struct sysinfo, the i386 layout
+        if (Result(Sys.Syscall(116, Sys.ArrayData(info), 0, 0)) < 0)
+        {
+            return 0;
+        }
+        long unit = (long)BitConverter.ToUInt32(info, 52);
+        long count = (long)BitConverter.ToUInt32(info, field);
+        return count * (unit == 0 ? 1 : unit);
+    }
+
+    // ---- what Monitor asks (core threading.cor) ----------------------------
+
+    /// Who holds a lock: this thread, by its thread block (word-aligned, so
+    /// bit 0 is free for Monitor's "somebody is asleep" mark).
+    public static long MonitorOwner()
+    {
+        return Sys.ThreadBlock();
+    }
+
+    /// Sleeps while the lock word still reads `value`, as a blocking region:
+    /// the collector does not wait for a thread asleep on a lock.
+    public static void MonitorBlock(long at, long value)
+    {
+        Native.Wait(at, value);
+    }
+
+    public static void MonitorWake(long at)
+    {
+        Native.Wake(at, 1);
+    }
+
     /// Stops this thread at a safepoint, with every callee-saved register on
     /// the stack. The system call is the same trick EnterCollection uses and
     /// for the same reason: a reference the caller left in EBX, ESI or EDI is

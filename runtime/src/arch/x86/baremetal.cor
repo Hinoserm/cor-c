@@ -249,6 +249,39 @@ static class Platform
         }
     }
 
+    // ---- the machine's memory, for GC.GetGCMemoryInfo ------------------------
+
+    /// Unknown to the runtime: the kernel's own allocator owns the machine's
+    /// memory, and the collector's heap is what it was given (Gc's cap).
+    public static long TotalMemory()
+    {
+        return 0;
+    }
+
+    public static long AvailableMemory()
+    {
+        return 0;
+    }
+
+    // ---- what Monitor asks (core threading.cor) ----------------------------
+
+    /// No identity: a kernel's thread block is a processor's, and a task
+    /// holding a lock may resume on another. Monitor is then the spin lock it
+    /// always was here -- held or free, no owner, nobody asleep on it.
+    public static long MonitorOwner()
+    {
+        return 0;
+    }
+
+    public static void MonitorBlock(long at, long value)
+    {
+        Sys.Pause();
+    }
+
+    public static void MonitorWake(long at)
+    {
+    }
+
     /// Asks every thread still running to stop for a collection: nothing
     /// on one thread, and on a kernel an interrupt to every other processor
     /// that is running managed code (StopHook, installed by the kernel).

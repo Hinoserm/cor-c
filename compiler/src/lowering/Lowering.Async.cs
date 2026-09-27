@@ -80,7 +80,6 @@ public sealed partial class Lowering
             Key = name,
             Kind = TypeKind.Class,
             Decl = new TypeDecl { Name = name, Kind = TypeKind.Class, LocalOnly = true },
-            Depth = 0,
         };
         machine.Interfaces.Add(action);
 

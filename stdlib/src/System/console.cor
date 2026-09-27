@@ -187,10 +187,27 @@ class ConsoleKeyInfo
     }
 }
 
+/// Which key combination interrupted the process.
+enum ConsoleSpecialKey
+{
+    ControlC = 0,
+    ControlBreak = 1,
+}
+
+/// What a CancelKeyPress handler is told, and how it says the process is to
+/// go on: Cancel set keeps it running.
 class ConsoleCancelEventArgs
 {
-    public bool Cancel;
-    public PosixSignal SpecialKey;
+    readonly ConsoleSpecialKey _key;
+
+    public ConsoleCancelEventArgs(ConsoleSpecialKey specialKey)
+    {
+        _key = specialKey;
+    }
+
+    public bool Cancel { get; set; }
+
+    public ConsoleSpecialKey SpecialKey => _key;
 }
 
 interface ConsoleCancelEventHandler
@@ -631,23 +648,40 @@ static class Console
         set { _controlCAsInput = value; }
     }
 
-    /// .NET's event: raised on SIGINT. A handler that sets Cancel keeps
-    /// the process alive; otherwise it exits, as .NET's does.
-    public static void AddCancelKeyPress(ConsoleCancelEventHandler handler)
+    /// .NET's event: raised on Control-C (SIGINT). A handler that sets
+    /// Cancel keeps the process alive; otherwise it exits, as .NET's does.
+    /// The signal is taken only while there is a handler: with none, it
+    /// ends the process at once, as it would have without this.
+    public static event ConsoleCancelEventHandler? CancelKeyPress
     {
-        if (_cancel == null)
+        add
         {
-            _cancel = new List<ConsoleCancelEventHandler>();
-            _cancelRegistration = PosixSignalRegistration.Create(PosixSignal.SIGINT, new CancelRelay());
+            if (value == null)
+            {
+                return;
+            }
+            if (_cancel == null)
+            {
+                _cancel = new List<ConsoleCancelEventHandler>();
+            }
+            if (_cancelRegistration == null)
+            {
+                _cancelRegistration = PosixSignalRegistration.Create(PosixSignal.SIGINT, new CancelRelay());
+            }
+            _cancel.Add(value);
         }
-        _cancel.Add(handler);
-    }
-
-    public static void RemoveCancelKeyPress(ConsoleCancelEventHandler handler)
-    {
-        if (_cancel != null)
+        remove
         {
-            _cancel.Remove(handler);
+            if (value == null || _cancel == null)
+            {
+                return;
+            }
+            _cancel.Remove(value);
+            if (_cancel.Count == 0 && _cancelRegistration != null)
+            {
+                _cancelRegistration.Dispose();
+                _cancelRegistration = null;
+            }
         }
     }
 
@@ -655,8 +689,7 @@ static class Console
     {
         public void Invoke(PosixSignalContext context)
         {
-            ConsoleCancelEventArgs e = new ConsoleCancelEventArgs();
-            e.SpecialKey = context.Signal;
+            ConsoleCancelEventArgs e = new ConsoleCancelEventArgs(context.Signal == PosixSignal.SIGQUIT ? ConsoleSpecialKey.ControlBreak : ConsoleSpecialKey.ControlC);
             List<ConsoleCancelEventHandler>? handlers = _cancel;
             if (handlers != null)
             {

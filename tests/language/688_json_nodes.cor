@@ -1,0 +1,68 @@
+// test: json_nodes
+// expect-exit: 0
+// expect-output:
+// {"runtimeOptions":{"tfm":"net10.0","framework":{"name":"Microsoft.NETCore.App","version":"10.0"},"configProperties":{"System.GC.Server":true,"Count":7}}}
+// ["a",1,true,null,2.5]
+// "a<b&c'd+\né😀\\"
+// {
+//   "x": [
+//     1,
+//     2
+//   ],
+//   "y": {}
+// }
+// parsed 3 Microsoft.NETCore.App 10.0 True 7 $.runtimeOptions.framework.name
+// roundtrip True
+// deep True False
+// error True
+//
+// System.Text.Json.Nodes: objects built with indexer initialisers, arrays of
+// values, the default encoder's escaping, indented output, and parsing back.
+
+using System.Text.Json;
+using System.Text.Json.Nodes;
+
+static class Program
+{
+    static int Main()
+    {
+        JsonObject switches = new JsonObject();
+        switches["System.GC.Server"] = JsonValue.Create(true);
+        switches["Count"] = JsonValue.Create(7L);
+        JsonObject config = new JsonObject
+        {
+            ["runtimeOptions"] = new JsonObject
+            {
+                ["tfm"] = "net10.0",
+                ["framework"] = new JsonObject { ["name"] = "Microsoft.NETCore.App", ["version"] = "10.0" },
+                ["configProperties"] = switches,
+            },
+        };
+        string text = config.ToJsonString();
+        Console.WriteLine(text);
+
+        JsonArray array = new JsonArray(JsonValue.Create("a"), JsonValue.Create(1), JsonValue.Create(true), null, JsonValue.Create(2.5));
+        Console.WriteLine(array.ToJsonString());
+
+        Console.WriteLine(JsonValue.Create("a<b&c'd+\né\U0001F600\\")!.ToJsonString());
+
+        JsonSerializerOptions indented = new JsonSerializerOptions { WriteIndented = true };
+        JsonObject small = new JsonObject { ["x"] = new JsonArray(JsonValue.Create(1), JsonValue.Create(2)), ["y"] = new JsonObject() };
+        Console.WriteLine(small.ToJsonString(indented));
+
+        JsonNode parsed = JsonNode.Parse(text)!;
+        JsonNode name = parsed["runtimeOptions"]!["framework"]!["name"]!;
+        Console.WriteLine("parsed " + parsed["runtimeOptions"]!.AsObject().Count + " " + (string?)name + " "
+            + (string?)parsed["runtimeOptions"]!["framework"]!["version"] + " "
+            + (bool)parsed["runtimeOptions"]!["configProperties"]!["System.GC.Server"]! + " "
+            + (int)parsed["runtimeOptions"]!["configProperties"]!["Count"]! + " " + name.GetPath());
+
+        Console.WriteLine("roundtrip " + (JsonNode.Parse(text)!.ToJsonString() == text));
+        Console.WriteLine("deep " + JsonNode.DeepEquals(parsed, config) + " " + JsonNode.DeepEquals(parsed, small));
+
+        bool failed = false;
+        try { JsonNode.Parse("{\"a\":1,}"); } catch (JsonException) { failed = true; }
+        Console.WriteLine("error " + failed);
+        return 0;
+    }
+}

@@ -1,0 +1,91 @@
+// test: io_process_environment
+// expect-exit: 0
+// expect-output:
+// lines 3 a|b|c True
+// exactly 4 end
+// tempdir True True
+// directory True
+// folder True True
+// runtime X86 True
+// utf8 a?b True 1
+// regex x-1-y-22 [a][b]
+// process 0 True from-env
+// wait True 0
+// gc True True
+//
+// System.IO's File.ReadLines, WriteAllLines, Stream.ReadExactly and
+// Directory.CreateTempSubdirectory; Environment.GetFolderPath;
+// RuntimeInformation; UTF-8's replacement and DecoderFallbackException;
+// Regex.Replace with an evaluator; Process's environment and timed waits;
+// GC.GetGCMemoryInfo.
+
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Text.RegularExpressions;
+
+static class Program
+{
+    static int Main()
+    {
+        string root = Directory.CreateTempSubdirectory("corc-test-").FullName;
+        string file = Path.Combine(root, "lines.txt");
+        File.WriteAllLines(file, new List<string> { "a", "b", "c" });
+        int count = 0;
+        foreach (string line in File.ReadLines(file)) count++;
+        Console.WriteLine("lines " + count + " " + string.Join("|", File.ReadLines(file)) + " " + (File.ReadAllText(file) == "a\nb\nc\n"));
+
+        using (MemoryStream stream = new MemoryStream(new byte[] { 1, 2, 3, 4 }))
+        {
+            byte[] four = new byte[4];
+            stream.ReadExactly(four);
+            string end = "";
+            try { stream.ReadExactly(new byte[1], 0, 1); } catch (EndOfStreamException) { end = "end"; }
+            Console.WriteLine("exactly " + (four[0] + four[3] - 1) + " " + end);
+        }
+
+        Console.WriteLine("tempdir " + Directory.Exists(root) + " " + Path.GetFileName(root).StartsWith("corc-test-"));
+        DirectoryInfo made = Directory.CreateDirectory(Path.Combine(root, "x", "y"));
+        Console.WriteLine("directory " + made.Exists);
+
+        string home = Environment.GetEnvironmentVariable("HOME") ?? "/";
+        Console.WriteLine("folder " + (Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) == home)
+            + " " + (Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData, Environment.SpecialFolderOption.DoNotVerify) == "/usr/share"));
+
+        Console.WriteLine("runtime " + RuntimeInformation.ProcessArchitecture + " " + RuntimeInformation.IsOSPlatform(OSPlatform.Linux));
+
+        byte[] bad = new byte[] { (byte)'a', 0xFF, (byte)'b' };
+        string replaced = Encoding.UTF8.GetString(bad);
+        bool threw = false;
+        int index = -1;
+        try { new UTF8Encoding(false, true).GetString(bad); }
+        catch (DecoderFallbackException e) { threw = true; index = e.Index; }
+        Console.WriteLine("utf8 " + replaced.Replace("�", "?") + " " + threw + " " + index);
+
+        string numbered = Regex.Replace("x1y22", @"\d+", m => "-" + m.Value + "-").TrimEnd('-');
+        string bracketed = new Regex("[a-z]").Replace("ab", match => "[" + match.Value + "]");
+        Console.WriteLine("regex " + numbered + " " + bracketed);
+
+        ProcessStartInfo start = new ProcessStartInfo("/bin/sh") { RedirectStandardOutput = true, UseShellExecute = false };
+        start.ArgumentList.Add("-c");
+        start.ArgumentList.Add("printf %s \"$PROBE_VALUE\"");
+        start.Environment["PROBE_VALUE"] = "from-env";
+        using Process child = Process.Start(start)!;
+        string output = child.StandardOutput.ReadToEnd();
+        bool ended = child.WaitForExit(5000);
+        Console.WriteLine("process " + child.ExitCode + " " + ended + " " + output);
+
+        using Process sleeper = Process.Start("/bin/sleep", "0")!;
+        sleeper.WaitForExitAsync().GetAwaiter().GetResult();
+        Console.WriteLine("wait " + sleeper.HasExited + " " + sleeper.ExitCode);
+
+        GCMemoryInfo info = GC.GetGCMemoryInfo();
+        Console.WriteLine("gc " + (info.TotalAvailableMemoryBytes > 0) + " " + (info.HeapSizeBytes > 0));
+
+        File.Delete(file);
+        Directory.Delete(Path.Combine(root, "x", "y"));
+        Directory.Delete(Path.Combine(root, "x"));
+        Directory.Delete(root);
+        return 0;
+    }
+}

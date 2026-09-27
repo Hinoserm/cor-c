@@ -11,6 +11,52 @@ class ProcessStartInfo
     public bool RedirectStandardError;
     public string WorkingDirectory = "";
 
+    /// Whether the system opens the file, as a shell would, rather than it
+    /// being run: false by default, as .NET Core has it. On Unix an
+    /// executable is run either way; anything else is handed to xdg-open.
+    public bool UseShellExecute;
+
+    /// No window: nothing to do on Unix, where a child shares the terminal.
+    public bool CreateNoWindow;
+
+    Dictionary<string, string?>? _environment;
+
+    /// The child's environment: this process's, until changed. What is in
+    /// it when the process starts is exactly what the child gets.
+    public IDictionary<string, string?> Environment
+    {
+        get
+        {
+            if (_environment == null)
+            {
+                Dictionary<string, string?> made = new Dictionary<string, string?>();
+                foreach (string entry in System.Environment.EnvironmentBlock())
+                {
+                    int equals = entry.IndexOf('=');
+                    if (equals > 0) made[entry.Substring(0, equals)] = entry.Substring(equals + 1);
+                }
+                _environment = made;
+            }
+            return _environment;
+        }
+    }
+
+    /// The block the child is started with: the Environment dictionary as
+    /// it now stands when it was ever asked for, this process's otherwise.
+    public string[] EnvironmentBlock()
+    {
+        if (_environment == null)
+        {
+            return System.Environment.EnvironmentBlock();
+        }
+        List<string> block = new List<string>();
+        foreach (KeyValuePair<string, string?> pair in _environment)
+        {
+            if (pair.Value != null) block.Add(pair.Key + "=" + pair.Value);
+        }
+        return block.ToArray();
+    }
+
     public ProcessStartInfo()
     {
     }
@@ -146,6 +192,14 @@ class Process : IDisposable
 
     public bool Start()
     {
+        if (StartInfo.UseShellExecute && (StartInfo.RedirectStandardOutput || StartInfo.RedirectStandardInput || StartInfo.RedirectStandardError))
+        {
+            throw new InvalidOperationException("The Process object must have the UseShellExecute property set to false in order to redirect IO streams.");
+        }
+        if (StartInfo.FileName.Length == 0)
+        {
+            throw new InvalidOperationException("Cannot start process because a file name has not been provided.");
+        }
         List<string> args = new List<string>();
         args.Add(StartInfo.FileName);
         for (int i = 0; i < StartInfo.ArgumentList.Count; i++)
@@ -158,6 +212,13 @@ class Process : IDisposable
             args.Add(fromString[i]);
         }
         string program = Resolve(StartInfo.FileName);
+        // AS A SHELL WOULD OPEN IT: a file that is not a program is opened
+        // by the desktop's opener, as .NET Core does on Unix.
+        if (StartInfo.UseShellExecute && !UnixProcess.IsExecutable(program))
+        {
+            args.Insert(0, "xdg-open");
+            program = Resolve("xdg-open");
+        }
         int[] outPipe = new int[2];
         int[] errPipe = new int[2];
         int[] inPipe = new int[2];
@@ -202,7 +263,7 @@ class Process : IDisposable
             {
                 UnixProcess.ChangeDirectory(StartInfo.WorkingDirectory);
             }
-            UnixProcess.Exec(program, args.ToArray(), Environment.EnvironmentBlock());
+            UnixProcess.Exec(program, args.ToArray(), StartInfo.EnvironmentBlock());
             Environment.Exit(127);
         }
         _pid = pid;
@@ -257,9 +318,124 @@ class Process : IDisposable
         }
     }
 
+    /// Waits up to `milliseconds` (-1 for as long as it takes) for it to
+    /// end; whether it did.
+    public bool WaitForExit(int milliseconds)
+    {
+        if (milliseconds < -1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(milliseconds));
+        }
+        if (milliseconds == -1)
+        {
+            WaitForExit();
+            return true;
+        }
+        long deadline = Environment.TickCount64 + milliseconds;
+        int pause = 1;
+        while (!HasExited)
+        {
+            long left = deadline - Environment.TickCount64;
+            if (left <= 0)
+            {
+                return false;
+            }
+            Thread.Sleep((int)Math.Min(left, pause));
+            pause = Math.Min(pause * 2, 50);
+        }
+        return true;
+    }
+
+    public bool WaitForExit(TimeSpan timeout)
+    {
+        long ms = (long)timeout.TotalMilliseconds;
+        if (ms < -1 || ms > int.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(nameof(timeout));
+        }
+        return WaitForExit((int)ms);
+    }
+
+    /// A task that completes when the process has ended, or is canceled
+    /// with the token -- the process going on regardless, as .NET's does.
+    public async Task WaitForExitAsync(CancellationToken cancellationToken = default)
+    {
+        int pause = 1;
+        while (!HasExited)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await Task.Delay(pause, cancellationToken);
+            pause = Math.Min(pause * 2, 50);
+        }
+    }
+
     public void Kill()
     {
+        if (_exited)
+        {
+            return;
+        }
         UnixProcess.Kill(_pid, 9);
+    }
+
+    /// Kills it, and with entireProcessTree every process descended from it,
+    /// found through /proc as they stand now.
+    public void Kill(bool entireProcessTree)
+    {
+        if (!entireProcessTree)
+        {
+            Kill();
+            return;
+        }
+        if (_exited)
+        {
+            return;
+        }
+        List<int> tree = new List<int>();
+        tree.Add(_pid);
+        Dictionary<int, List<int>> children = ChildrenByParent();
+        for (int i = 0; i < tree.Count; i++)
+        {
+            if (children.TryGetValue(tree[i], out List<int>? under))
+            {
+                foreach (int child in under) tree.Add(child);
+            }
+        }
+        for (int i = 0; i < tree.Count; i++)
+        {
+            UnixProcess.Kill(tree[i], 9);
+        }
+    }
+
+    /// Every process's children, by its parent's id: the ppid field of
+    /// /proc/<pid>/stat.
+    static Dictionary<int, List<int>> ChildrenByParent()
+    {
+        Dictionary<int, List<int>> children = new Dictionary<int, List<int>>();
+        string[] dirs;
+        try { dirs = Directory.GetDirectories("/proc"); }
+        catch (IOException) { return children; }
+        foreach (string dir in dirs)
+        {
+            string name = Path.GetFileName(dir);
+            if (name.Length == 0 || !char.IsDigit(name[0]) || !int.TryParse(name, out int pid)) continue;
+            string text;
+            try { text = File.ReadAllText(dir + "/stat"); }
+            catch (IOException) { continue; }
+            int close = text.LastIndexOf(')');
+            if (close < 0) continue;
+            string[] fields = text.Substring(close + 2).Split(' ');
+            if (fields.Length > 1 && int.TryParse(fields[1], out int parent))
+            {
+                if (!children.TryGetValue(parent, out List<int>? list))
+                {
+                    list = new List<int>();
+                    children[parent] = list;
+                }
+                list.Add(pid);
+            }
+        }
+        return children;
     }
 
     // ---- processes this one did not start ---------------------------------------

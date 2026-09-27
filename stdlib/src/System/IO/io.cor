@@ -100,6 +100,77 @@ abstract class Stream : IDisposable, IAsyncDisposable
         return Read(buffer, 0, buffer.Length);
     }
 
+    /// Into a span, through an array as .NET's default does; a stream over
+    /// memory of its own does better by overriding it.
+    public virtual int Read(Span<byte> buffer)
+    {
+        byte[] through = new byte[buffer.Length];
+        int got = Read(through, 0, through.Length);
+        new ReadOnlySpan<byte>(through, 0, got).CopyTo(buffer);
+        return got;
+    }
+
+    public virtual void Write(ReadOnlySpan<byte> buffer)
+    {
+        byte[] through = buffer.ToArray();
+        Write(through, 0, through.Length);
+    }
+
+    /// Exactly `count` bytes, or EndOfStreamException: Read may hand back
+    /// fewer than asked, and this reads until it has them all.
+    public void ReadExactly(byte[] buffer, int offset, int count)
+    {
+        if (buffer == null)
+        {
+            throw new ArgumentNullException(nameof(buffer));
+        }
+        if (offset < 0 || count < 0 || offset > buffer.Length - count)
+        {
+            throw new ArgumentOutOfRangeException(nameof(offset));
+        }
+        int done = 0;
+        while (done < count)
+        {
+            int got = Read(buffer, offset + done, count - done);
+            if (got <= 0)
+            {
+                throw new EndOfStreamException("Unable to read beyond the end of the stream.");
+            }
+            done = done + got;
+        }
+    }
+
+    public void ReadExactly(Span<byte> buffer)
+    {
+        ReadAtLeast(buffer, buffer.Length, true);
+    }
+
+    /// At least `minimumBytes`, and as many more as fit and are there;
+    /// fewer only at the end of the stream, and then EndOfStreamException
+    /// unless told not to.
+    public int ReadAtLeast(Span<byte> buffer, int minimumBytes, bool throwOnEndOfStream = true)
+    {
+        if (minimumBytes < 0 || minimumBytes > buffer.Length)
+        {
+            throw new ArgumentOutOfRangeException(nameof(minimumBytes));
+        }
+        int done = 0;
+        while (done < minimumBytes)
+        {
+            int got = Read(buffer.Slice(done));
+            if (got <= 0)
+            {
+                if (throwOnEndOfStream)
+                {
+                    throw new EndOfStreamException("Unable to read beyond the end of the stream.");
+                }
+                break;
+            }
+            done = done + got;
+        }
+        return done;
+    }
+
     public void Write(byte[] buffer)
     {
         Write(buffer, 0, buffer.Length);
@@ -859,7 +930,21 @@ partial static class Directory
     /// EVERY MISSING COMPONENT, which is what .NET's own CreateDirectory
     /// does and what a caller writing Combine(a, b, c) expects: a path whose
     /// parent does not exist yet is created, not refused.
-    public static void CreateDirectory(string path)
+    public static DirectoryInfo CreateDirectory(string path)
+    {
+        if (path == null)
+        {
+            throw new ArgumentNullException(nameof(path));
+        }
+        if (path.Length == 0)
+        {
+            throw new ArgumentException("The path is empty.", nameof(path));
+        }
+        Make(path);
+        return new DirectoryInfo(path);
+    }
+
+    static void Make(string path)
     {
         if (path.Length == 0 || Exists(path))
         {
@@ -868,7 +953,7 @@ partial static class Directory
         string? parent = Path.GetDirectoryName(path);
         if (parent != null && parent.Length != 0 && parent != path && !Exists(parent))
         {
-            CreateDirectory(parent);
+            Make(parent);
         }
         int r = Os.Mkdir(path, 511);
         if (r < 0 && r != -Err.Exist)
@@ -994,6 +1079,27 @@ static partial class Path
 {
     /// Where temporary files go, as .NET answers on Unix: $TMPDIR when it is
     /// set and not empty, else /tmp/ -- always ending in the separator.
+    /// Eight random letters and digits, a dot, and three more: a name that
+    /// is not a file anywhere yet, as .NET's is.
+    public static string GetRandomFileName()
+    {
+        const string alphabet = "abcdefghijklmnopqrstuvwxyz012345";
+        byte[] bits = new byte[11];
+        TempNames.Fill(bits);
+        char[] name = new char[12];
+        int at = 0;
+        for (int i = 0; i < 12; i++)
+        {
+            if (i == 8)
+            {
+                name[i] = '.';
+                continue;
+            }
+            name[i] = alphabet[bits[at++] & 31];
+        }
+        return new string(name);
+    }
+
     public static string GetTempPath()
     {
         string? dir = Environment.GetEnvironmentVariable("TMPDIR");
@@ -1229,6 +1335,62 @@ partial static class File
         }
         r.Dispose();
         return lines.ToArray();
+    }
+
+    /// The lines of a file, read as they are enumerated. The file is opened
+    /// here, so a missing one throws now; each further enumeration opens it
+    /// again, as .NET's does.
+    public static IEnumerable<string> ReadLines(string path)
+    {
+        if (path == null)
+        {
+            throw new ArgumentNullException(nameof(path));
+        }
+        return new FileLines(path, new StreamReader(path));
+    }
+
+    public static void WriteAllLines(string path, string[] contents)
+    {
+        if (contents == null)
+        {
+            throw new ArgumentNullException(nameof(contents));
+        }
+        WriteAllLines(path, (IEnumerable<string>)contents);
+    }
+
+    /// Each line followed by a newline, the file replaced.
+    public static void WriteAllLines(string path, IEnumerable<string> contents)
+    {
+        if (path == null)
+        {
+            throw new ArgumentNullException(nameof(path));
+        }
+        if (contents == null)
+        {
+            throw new ArgumentNullException(nameof(contents));
+        }
+        using StreamWriter writer = new StreamWriter(path, false);
+        foreach (string line in contents)
+        {
+            writer.WriteLine(line);
+        }
+    }
+
+    public static void AppendAllLines(string path, IEnumerable<string> contents)
+    {
+        if (path == null)
+        {
+            throw new ArgumentNullException(nameof(path));
+        }
+        if (contents == null)
+        {
+            throw new ArgumentNullException(nameof(contents));
+        }
+        using StreamWriter writer = new StreamWriter(path, true);
+        foreach (string line in contents)
+        {
+            writer.WriteLine(line);
+        }
     }
 
     public static void WriteAllBytes(string path, byte[] bytes)
@@ -2184,10 +2346,30 @@ partial static class Directory
         return new DirectoryInfo(path).Parent;
     }
 
-    public static DirectoryInfo CreateDirectoryInfo(string path)
+    /// A new, uniquely named, empty directory under the temporary path, its
+    /// name the prefix and random characters, as .NET 7's makes it.
+    public static DirectoryInfo CreateTempSubdirectory(string? prefix = null)
     {
-        CreateDirectory(path);
-        return new DirectoryInfo(path);
+        if (prefix != null && prefix.IndexOf('/') >= 0)
+        {
+            throw new ArgumentException("The prefix must not contain a directory separator.", nameof(prefix));
+        }
+        string root = Path.GetTempPath();
+        for (int attempt = 0; attempt < 1000; attempt++)
+        {
+            string name = (prefix ?? "") + Path.GetRandomFileName().Replace(".", "");
+            string full = Path.Combine(root, name);
+            int r = Os.Mkdir(full, 448);                // 0700, as .NET makes it
+            if (r >= 0)
+            {
+                return new DirectoryInfo(full);
+            }
+            if (r != -Err.Exist)
+            {
+                throw Interop.GetExceptionForIoErrno(r, full, true);
+            }
+        }
+        throw new IOException("A unique directory could not be created in " + root);
     }
 
     public static void SetCurrentDirectory(string path)
@@ -2532,3 +2714,88 @@ class DriveInfo
         return made.ToString();
     }
 }
+
+/// File.ReadLines' sequence: the first enumeration reads through the reader
+/// opened when the sequence was made, each later one opens the file again.
+class FileLines : IEnumerable<string>
+{
+    readonly string _path;
+    StreamReader? _first;
+
+    public FileLines(string path, StreamReader first)
+    {
+        _path = path;
+        _first = first;
+    }
+
+    public IEnumerator<string> GetEnumerator()
+    {
+        StreamReader? reader = _first;
+        _first = null;
+        return new FileLinesEnumerator(reader ?? new StreamReader(_path));
+    }
+}
+
+class FileLinesEnumerator : IEnumerator<string>, IDisposable
+{
+    StreamReader? _reader;
+    string _current = "";
+
+    public FileLinesEnumerator(StreamReader reader)
+    {
+        _reader = reader;
+    }
+
+    public string Current => _current;
+
+    public bool MoveNext()
+    {
+        StreamReader? reader = _reader;
+        if (reader == null)
+        {
+            return false;
+        }
+        string? line = reader.ReadLine();
+        if (line == null)
+        {
+            Dispose();
+            return false;
+        }
+        _current = line;
+        return true;
+    }
+
+    public void Reset()
+    {
+        throw new NotSupportedException("Specified method is not supported.");
+    }
+
+    public void Dispose()
+    {
+        StreamReader? reader = _reader;
+        _reader = null;
+        if (reader != null)
+        {
+            reader.Dispose();
+        }
+    }
+}
+
+/// Random bytes for temporary names, from the system's generator when there
+/// is one (getrandom), else from a generator seeded by the clock.
+static class TempNames
+{
+    static Random? _fallback;
+
+    public static void Fill(byte[] into)
+    {
+        long got = Sys.Syscall(355, Sys.ArrayData(into), into.Length, 0);
+        if (got == into.Length)
+        {
+            return;
+        }
+        Random fallback = _fallback ??= new Random((int)(Os.Micros() ^ Sys.Syscall(Call.Getpid, 0, 0, 0)));
+        fallback.NextBytes(into);
+    }
+}
+

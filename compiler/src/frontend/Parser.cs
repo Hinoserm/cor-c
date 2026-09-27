@@ -249,8 +249,8 @@ public sealed class Parser
 
             if (c == '\\' && i + 1 < raw.Length)
             {
-                literal.Append(Unescape(raw[i + 1], at));
-                i += 2;
+                literal.Append(EscapeAt(raw, i, at, out int used));
+                i += used;
                 continue;
             }
 
@@ -419,12 +419,21 @@ public sealed class Parser
                     inString = true;
                     break;
 
-                case '(' or '[' or '{' or '<':
+                case '(' or '[' or '{':
                     depth++;
                     break;
 
-                case ')' or ']' or '}' or '>':
+                case ')' or ']' or '}':
                     depth--;
+                    break;
+
+                // A TYPE ARGUMENT LIST IS PASSED OVER WHOLE, its commas and
+                // all (`{Make<int, string>()}`); any other `<` or `>` is a
+                // comparison or a shift and brackets nothing. Counted as
+                // brackets, `{(n > 0 && m > 0 ? F(a, b) : 0)}` went below
+                // zero and the comma inside F's arguments became an alignment.
+                case '<' when TypeArgumentsEnd(inner, i) is int close:
+                    i = close;
                     break;
 
                 // A `?` THAT ASKS A QUESTION, which is the only kind that
@@ -447,6 +456,44 @@ public sealed class Parser
             }
         }
         return -1;
+    }
+
+    /// <summary>
+    /// Where the type argument list opened at `open` closes, when the `<` there
+    /// begins one: it follows a name, holds only what a type is written with,
+    /// and is followed by what may follow a generic name -- C#'s own test for
+    /// telling `F<A, B>(x)` from `a < b`. Null when it is an operator.
+    /// </summary>
+    private static int? TypeArgumentsEnd(string text, int open)
+    {
+        if (open == 0 || !(char.IsLetterOrDigit(text[open - 1]) || text[open - 1] == '_'))
+        {
+            return null;
+        }
+        int nesting = 0;
+        for (int i = open; i < text.Length; i++)
+        {
+            char c = text[i];
+            if (c == '<')
+            {
+                nesting++;
+                continue;
+            }
+            if (c == '>')
+            {
+                nesting--;
+                if (nesting > 0) continue;
+                int after = i + 1;
+                while (after < text.Length && text[after] == ' ') after++;
+                return after >= text.Length || text[after] is '(' or '.' or ')' or ',' or ']' or '}' or '>' or ':' or '?' or '['
+                     ? i : null;
+            }
+            if (!(char.IsLetterOrDigit(c) || c is '_' or '.' or ',' or ' ' or '?' or '[' or ']' or '(' or ')'))
+            {
+                return null;
+            }
+        }
+        return null;
     }
 
     /// <summary>
@@ -583,6 +630,48 @@ public sealed class Parser
     /// The escapes a literal piece of an interpolated string may carry. The
     /// lexer kept them whole because it could not know which pieces were
     /// literal until the braces had been matched.
+    /// <summary>
+    /// The escape at `at` of an interpolated string's raw text, as C# has
+    /// them all: the one-letter ones, \u and four digits, \x and one to four,
+    /// \U and eight (a code point, two UTF-16 units past the basic plane),
+    /// and \e. How many characters it took, backslash included.
+    /// </summary>
+    private string EscapeAt(string raw, int at, Token where, out int used)
+    {
+        char kind = raw[at + 1];
+        int Digits(int least, int most, out int value)
+        {
+            value = 0;
+            int count = 0;
+            while (count < most && at + 2 + count < raw.Length && Uri.IsHexDigit(raw[at + 2 + count]))
+            {
+                value = value * 16 + Convert.ToInt32(raw[at + 2 + count].ToString(), 16);
+                count++;
+            }
+            if (count < least) throw Error($"'\\{kind}' needs {(least == most ? least.ToString() : least + " to " + most)} hexadecimal digits");
+            return count;
+        }
+        switch (kind)
+        {
+            case 'u':
+                used = 2 + Digits(4, 4, out int unit);
+                return ((char)unit).ToString();
+            case 'x':
+                used = 2 + Digits(1, 4, out int shortUnit);
+                return ((char)shortUnit).ToString();
+            case 'U':
+                used = 2 + Digits(8, 8, out int point);
+                if (point > 0x10FFFF) throw Error("'\\U' names no character past U+10FFFF");
+                return char.ConvertFromUtf32(point);
+            case 'e':
+                used = 2;
+                return "\u001b";
+            default:
+                used = 2;
+                return Unescape(kind, where).ToString();
+        }
+    }
+
     private char Unescape(char c, Token at) => c switch
     {
         'a'  => '\a',
@@ -2122,6 +2211,14 @@ public sealed class Parser
             _i++;
             name = _t[_i++].Text;
         }
+        else if (At(Tok.Dot) && Ahead().Kind == Tok.KwThis && _t[_i + 2].Kind == Tok.LBracket)
+        {
+            // AN INDEXER OF AN INTERFACE: `T IList<T>.this[int index]`.
+            _i++;
+            PropertyDecl indexer = ParseIndexer(type, mods, start);
+            indexer.ExplicitInterface = name;
+            return indexer;
+        }
         else if (At(Tok.Lt))
         {
             // A GENERIC ONE: `IEnumerable<T>.GetEnumerator`. The arguments are
@@ -2134,7 +2231,24 @@ public sealed class Parser
                 _i++;
                 name = _t[_i++].Text;
             }
+            else if (_i != save && At(Tok.Dot) && Ahead().Kind == Tok.KwThis && _t[_i + 2].Kind == Tok.LBracket)
+            {
+                _i++;
+                PropertyDecl indexer = ParseIndexer(type, mods, start);
+                indexer.ExplicitInterface = name;
+                return indexer;
+            }
             else _i = save;
+        }
+
+        // AN EVENT WITH ACCESSORS: `event T Name { add { ... } remove { ... } }`,
+        // which is two methods, add_Name and remove_Name, each taking the
+        // handler as `value` -- what C# compiles one to. `x.Name += h` calls
+        // add_Name (Binder). The add method is the member returned; remove
+        // joins the type with the hoisted members.
+        if (isEvent && At(Tok.LBrace))
+        {
+            return ParseEventAccessors(type, name, mods, start, explicitInterface);
         }
 
         // property
@@ -2542,6 +2656,61 @@ public sealed class Parser
     /// produced. An indexer may never be auto-implemented -- there is no single
     /// field to back an arbitrary number of slots -- so both accessors need
     /// bodies and it says so rather than quietly generating a field.
+    private MethodDecl ParseEventAccessors(TypeRef type, string name, Mods mods, Token start, string? explicitInterface)
+    {
+        Expect(Tok.LBrace, "'{' before the event's accessors");
+        MethodDecl? add = null, remove = null;
+
+        while (!At(Tok.RBrace))
+        {
+            CapturedAttributes();
+            Token which = Expect(Tok.Ident, "'add' or 'remove'");
+            if (which.Text is not ("add" or "remove"))
+            {
+                throw Error($"an event's accessors are 'add' and 'remove', not '{which.Text}'");
+            }
+            if ((which.Text == "add" ? add : remove) is not null)
+            {
+                throw Error($"the event '{name}' has two '{which.Text}' accessors");
+            }
+
+            Block body;
+            if (Take(Tok.FatArrow))
+            {
+                Token bodyAt = Cur;
+                Expr done = ReadBodyExpression();
+                Expect(Tok.Semi, "';' after an expression-bodied accessor");
+                body = new Block { Line = bodyAt.Line, Col = bodyAt.Col };
+                body.Statements.Add(new ExprStmt { Expr = done, Line = bodyAt.Line, Col = bodyAt.Col });
+            }
+            else
+            {
+                body = ParseBlock();
+            }
+
+            MethodDecl accessor = new()
+            {
+                Name = (which.Text == "add" ? "add_" : "remove_") + name, Mods = mods,
+                Returns = new TypeRef { Name = "void", Line = which.Line, Col = which.Col },
+                Body = body, Line = which.Line, Col = which.Col,
+                ExplicitInterface = explicitInterface,
+            };
+            accessor.Params.Add(new Param { Name = "value", Type = type, Line = which.Line, Col = which.Col });
+
+            if (which.Text == "add") add = accessor;
+            else remove = accessor;
+        }
+        Expect(Tok.RBrace, "'}' after the event's accessors");
+
+        if (add is null || remove is null)
+        {
+            throw Error($"the event '{name}' needs both an 'add' and a 'remove' accessor");
+        }
+
+        _hoisted.Add(remove);
+        return add;
+    }
+
     private PropertyDecl ParseIndexer(TypeRef type, Mods mods, Token start)
     {
         _i++;                                   // 'this'
@@ -4182,18 +4351,20 @@ public sealed class Parser
     /// so the binder fills these in from the wanted type and nothing before
     /// the binder could.
     /// </summary>
-    private LambdaExpr Finish(LambdaExpr made, List<string> names)
+    private LambdaExpr Finish(LambdaExpr made, List<string> names, List<Tok>? modifiers = null)
     {
         LambdaExpr done = At(Tok.LBrace)
             ? new LambdaExpr { BlockBody = ParseBlock(), Line = made.Line, Col = made.Col, Async = made.Async }
             : new LambdaExpr { Body = ParseExpr(), Line = made.Line, Col = made.Col, Async = made.Async };
 
-        foreach (string n in names)
+        for (int k = 0; k < names.Count; k++)
         {
+            Tok modifier = modifiers is null ? Tok.End : modifiers[k];
             done.Params.Add(new Param
             {
-                Name = n,
+                Name = names[k],
                 Type = new TypeRef { Name = "", Line = made.Line, Col = made.Col },
+                IsRef = modifier == Tok.KwRef, IsOut = modifier == Tok.KwOut, IsReadOnlyRef = modifier == Tok.KwIn,
                 Line = made.Line, Col = made.Col,
             });
         }
@@ -4747,6 +4918,45 @@ public sealed class Parser
         return new Block { Line = at.Line, Col = at.Col };
     }
 
+    /// <summary>
+    /// The delegate a local function's signature needs when Func and Action
+    /// cannot say it: a parameter passed by ref, out or in, or more than eight.
+    /// Declared nested in the type being read, under a name no source can
+    /// write, with that type's own type parameters as a nested type has them.
+    /// </summary>
+    private TypeRef LocalFunctionDelegate(Token at, string name, TypeRef? returns, List<Param> parameters)
+    {
+        string delegateName = "LocalFunction$" + name + "$" + _hoistSerial++;
+        TypeDecl declaration = new()
+        {
+            Kind = TypeKind.Interface, IsDelegate = true, Name = delegateName, Mods = Mods.Private,
+            Namespace = _namespace, Scope = _fileScope, Outer = _typePath.Length == 0 ? null : _typePath,
+            File = _file, Line = at.Line, Col = at.Col, SourceFrom = at.Pos, SourceTo = at.Pos,
+        };
+        for (int k = _enclosingParams.Count - 1; k >= 0; k--)
+        {
+            declaration.TypeParams.Insert(0, new TypeParam { Name = _enclosingParams[k], Line = at.Line, Col = at.Col });
+        }
+        declaration.OuterParams = _enclosingParams.Count;
+        MethodDecl invoke = new()
+        {
+            Name = "Invoke", Returns = returns ?? new TypeRef { Name = "void", Line = at.Line, Col = at.Col },
+            Mods = Mods.Public | Mods.Abstract,
+            File = _file, Scope = _fileScope, Namespace = _namespace, Line = at.Line, Col = at.Col,
+        };
+        foreach (Param p in parameters)
+        {
+            invoke.Params.Add(new Param
+            {
+                Type = p.Type, Name = p.Name, IsRef = p.IsRef, IsOut = p.IsOut, IsReadOnlyRef = p.IsReadOnlyRef,
+                Line = p.Line, Col = p.Col,
+            });
+        }
+        declaration.Members.Add(invoke);
+        _nested.Add(declaration);
+        return new TypeRef { Name = delegateName, Line = at.Line, Col = at.Col };
+    }
+
     private Stmt ParseLocalFunction(Token at)
     {
         TypeRef? returns = Take(Tok.KwVoid)
@@ -4768,15 +4978,23 @@ public sealed class Parser
 
         LambdaExpr made = new() { BlockBody = null!, Line = at.Line, Col = at.Col };
         List<TypeRef> takes = new();
+        bool byReference = false;
 
         while (!At(Tok.RParen))
         {
+            Tok modifier = At(Tok.KwRef) || At(Tok.KwOut) || At(Tok.KwIn) ? _t[_i++].Kind : Tok.End;
             TypeRef pt = ParseTypeRef();
             string pn = Expect(Tok.Ident, "a parameter name").Text;
             Expr? fallback = Take(Tok.Assign) ? ParseExpr() : null;
 
+            byReference = byReference || modifier != Tok.End;
             takes.Add(pt);
-            made.Params.Add(new Param { Type = pt, Name = pn, Default = fallback, Line = at.Line, Col = at.Col });
+            made.Params.Add(new Param
+            {
+                Type = pt, Name = pn, Default = fallback,
+                IsRef = modifier == Tok.KwRef, IsOut = modifier == Tok.KwOut, IsReadOnlyRef = modifier == Tok.KwIn,
+                Line = at.Line, Col = at.Col,
+            });
 
             if (!Take(Tok.Comma))
             {
@@ -4806,26 +5024,30 @@ public sealed class Parser
 
         lam.Params.AddRange(made.Params);
 
-        // Action for no result, Func with the result last -- C#'s own spelling.
-        // The included delegate surface carries the arities the compiler uses.
-        // Keep the error at the syntax boundary when a larger one is requested
-        // rather than producing an obscure missing-generic-type diagnostic.
-        if (takes.Count > 8)
+        // Action for no result, Func with the result last -- C#'s own spelling
+        // -- when one fits: nothing passed by reference, and no more than the
+        // eight parameters those carry. Otherwise the local function's type is
+        // a delegate of its exact signature, as C# gives it one, declared
+        // beside the type it is written in.
+        TypeRef shape;
+        if (byReference || takes.Count > 8)
         {
-            throw Error($"a local function may take at most eight parameters, and '{name}' takes {takes.Count}");
+            shape = LocalFunctionDelegate(at, name, returns, made.Params);
         }
-
-        TypeRef shape = new()
+        else
         {
-            Name = returns is null ? "Action" : "Func",
-            Line = at.Line, Col = at.Col,
-        };
+            shape = new TypeRef
+            {
+                Name = returns is null ? "Action" : "Func",
+                Line = at.Line, Col = at.Col,
+            };
 
-        shape.Args.AddRange(takes);
+            shape.Args.AddRange(takes);
 
-        if (returns != null)
-        {
-            shape.Args.Add(returns);
+            if (returns != null)
+            {
+                shape.Args.Add(returns);
+            }
         }
 
         return new LocalDecl
@@ -6004,7 +6226,14 @@ public sealed class Parser
         }
 
         Token at = _t[_i++];
-        return new DefaultExpr { Type = declared, Line = at.Line, Col = at.Col };
+        Expr zero = new DefaultExpr { Type = declared, Line = at.Line, Col = at.Col };
+        // `T Item = default!;` -- forgiven, as any value may be.
+        while (At(Tok.Bang) && Ahead().Kind is not (Tok.Assign or Tok.End))
+        {
+            _i++;
+            zero = new SuppressExpr { Operand = zero, Line = at.Line, Col = at.Col };
+        }
+        return zero;
     }
 
     /// <summary>The elements of an array initialiser, however they are bracketed.</summary>
@@ -6201,19 +6430,27 @@ public sealed class Parser
                 _i++;
 
                 List<string> names = new();
+                List<Tok> modifiers = new();
 
                 while (!At(Tok.RParen))
                 {
-                    // `(int a, int b) => ...` is legal C# and says nothing this
-                    // does not already know -- the types come from what the
-                    // lambda is being passed to -- so a type before the name is
-                    // read and dropped.
-                    if (At(Tok.Ident) && Ahead().Kind == Tok.Ident)
+                    // `(string s, out int v) => ...`: the word says how the
+                    // argument is passed, and the delegate's Invoke must say
+                    // the same (C# 12.19.2). Kept for the binder.
+                    Tok modifier = At(Tok.KwRef) || At(Tok.KwOut) || At(Tok.KwIn) ? _t[_i++].Kind : Tok.End;
+
+                    // `(int a, List<string> b) => ...` is legal C# and says
+                    // nothing this does not already know -- the types come
+                    // from what the lambda is being passed to -- so a type
+                    // before the name is read and dropped: anything that is
+                    // not a lone name ending the parameter.
+                    if (!(At(Tok.Ident) && Ahead().Kind is Tok.Comma or Tok.RParen))
                     {
                         ParseTypeRef();
                     }
 
                     names.Add(Expect(Tok.Ident, "a lambda parameter name").Text);
+                    modifiers.Add(modifier);
 
                     if (!Take(Tok.Comma))
                     {
@@ -6223,7 +6460,7 @@ public sealed class Parser
 
                 Expect(Tok.RParen, "')' after the lambda parameters");
                 Expect(Tok.FatArrow, "'=>' after the lambda parameters");
-                return Finish(new LambdaExpr { Line = at.Line, Col = at.Col }, names);
+                return Finish(new LambdaExpr { Line = at.Line, Col = at.Col }, names, modifiers);
             }
 
             case Tok.LParen:

@@ -1,0 +1,1132 @@
+// System.Text.Json's node model, as .NET has it: JsonNode and its three
+// kinds -- JsonObject, JsonArray, JsonValue -- built by hand or parsed from
+// text (JsonNode.Parse), and written back (ToJsonString) the way .NET's
+// writer writes them: no insignificant white space unless asked to indent,
+// numbers in their shortest round-trip form, and strings escaped as .NET's
+// default encoder escapes them -- the HTML-sensitive characters and
+// everything outside ASCII as \uXXXX.
+
+namespace System.Text.Json
+{
+    /// What a JSON value is.
+    public enum JsonValueKind
+    {
+        Undefined = 0,
+        Object = 1,
+        Array = 2,
+        String = 3,
+        Number = 4,
+        True = 5,
+        False = 6,
+        Null = 7,
+    }
+
+    /// What JSON's grammar does not allow, or what a value cannot become.
+    public class JsonException : Exception
+    {
+        readonly string? _path;
+        readonly long? _line;
+        readonly long? _position;
+
+        public JsonException() : base("The JSON value could not be converted.") { }
+
+        public JsonException(string? message) : base(message ?? "The JSON value could not be converted.") { }
+
+        public JsonException(string? message, Exception? innerException) : base(message ?? "The JSON value could not be converted.", innerException!) { }
+
+        public JsonException(string? message, string? path, long? lineNumber, long? bytePositionInLine)
+            : base(message ?? "The JSON value could not be converted.")
+        {
+            _path = path;
+            _line = lineNumber;
+            _position = bytePositionInLine;
+        }
+
+        public string? Path => _path;
+        public long? LineNumber => _line;
+        public long? BytePositionInLine => _position;
+    }
+
+    /// Whether comments in JSON text are refused, skipped or kept.
+    public enum JsonCommentHandling
+    {
+        Disallow = 0,
+        Skip = 1,
+        Allow = 2,
+    }
+
+    /// How JsonNode.Parse reads text: comments, trailing commas, how deep.
+    public struct JsonDocumentOptions
+    {
+        public bool AllowTrailingCommas { get; set; }
+        public JsonCommentHandling CommentHandling { get; set; }
+        public int MaxDepth { get; set; }
+    }
+
+    /// How a node treats property names.
+    public struct JsonNodeOptions
+    {
+        public bool PropertyNameCaseInsensitive { get; set; }
+    }
+
+    /// The writing options ToJsonString takes: indentation, and what it is
+    /// made of.
+    public sealed class JsonSerializerOptions
+    {
+        public static JsonSerializerOptions Default => new JsonSerializerOptions();
+
+        public bool WriteIndented { get; set; }
+
+        /// A space, or a tab; two of them a level unless told otherwise.
+        public char IndentCharacter { get; set; } = ' ';
+
+        public int IndentSize { get; set; } = 2;
+
+        public string NewLine { get; set; } = "\n";
+
+        public int MaxDepth { get; set; }
+
+        public bool AllowTrailingCommas { get; set; }
+
+        public JsonCommentHandling ReadCommentHandling { get; set; }
+
+        public bool PropertyNameCaseInsensitive { get; set; }
+    }
+}
+
+namespace System.Text.Json.Nodes
+{
+    /// A JSON value that knows its parent: an object, an array, or a value.
+    public abstract class JsonNode
+    {
+        JsonNode? _parent;
+        JsonNodeOptions? _options;
+
+        protected JsonNode(JsonNodeOptions? options = null)
+        {
+            _options = options;
+        }
+
+        public JsonNodeOptions? Options => _options ?? (_parent == null ? null : _parent.Options);
+
+        /// The object or array this is in, or null.
+        public JsonNode? Parent => _parent;
+
+        public void SetParent(JsonNode? parent)
+        {
+            if (parent != null && _parent != null)
+            {
+                throw new InvalidOperationException("The node already has a parent.");
+            }
+            _parent = parent;
+        }
+
+        /// The node at the top of the tree this is in.
+        public JsonNode Root
+        {
+            get
+            {
+                JsonNode at = this;
+                while (at._parent != null) at = at._parent;
+                return at;
+            }
+        }
+
+        /// Where this is, from the root: `$`, `$.name`, `$.list[2]`, and
+        /// `$['odd name']` for a name that is not a plain identifier.
+        public string GetPath()
+        {
+            if (_parent == null)
+            {
+                return "$";
+            }
+            string above = _parent.GetPath();
+            if (_parent is JsonArray array)
+            {
+                return above + "[" + array.IndexOf(this) + "]";
+            }
+            if (_parent is JsonObject obj)
+            {
+                string name = obj.NameOf(this) ?? "";
+                return JsonText.PlainName(name) ? above + "." + name : above + "['" + name.Replace("'", "\\'") + "']";
+            }
+            return above;
+        }
+
+        public abstract JsonValueKind GetValueKind();
+
+        /// The element at `index` of an array.
+        public JsonNode? this[int index]
+        {
+            get { return AsArray()[index]; }
+            set { AsArray()[index] = value; }
+        }
+
+        /// The property called `propertyName` of an object, or null.
+        public JsonNode? this[string propertyName]
+        {
+            get { return AsObject()[propertyName]; }
+            set { AsObject()[propertyName] = value; }
+        }
+
+        public JsonArray AsArray()
+        {
+            if (this is JsonArray array) return array;
+            throw new InvalidOperationException("The node must be of type 'JsonArray'.");
+        }
+
+        public JsonObject AsObject()
+        {
+            if (this is JsonObject obj) return obj;
+            throw new InvalidOperationException("The node must be of type 'JsonObject'.");
+        }
+
+        public JsonValue AsValue()
+        {
+            if (this is JsonValue value) return value;
+            throw new InvalidOperationException("The node must be of type 'JsonValue'.");
+        }
+
+        /// The value as a T it holds or converts to.
+        public virtual T GetValue<T>()
+        {
+            throw new InvalidOperationException("An element of type '" + GetValueKind() + "' cannot be converted to the requested type.");
+        }
+
+        /// The JSON text of this node and everything under it.
+        public string ToJsonString(JsonSerializerOptions? options = null)
+        {
+            JsonWriter writer = new JsonWriter(options ?? new JsonSerializerOptions());
+            WriteTo(writer, 0);
+            return writer.ToString();
+        }
+
+        /// Indented JSON; a string value is its text, unquoted, as .NET's is.
+        public override string ToString()
+        {
+            if (this is JsonValue value && value.Kind == JsonValueKind.String)
+            {
+                return value.Text;
+            }
+            JsonSerializerOptions indented = new JsonSerializerOptions();
+            indented.WriteIndented = true;
+            return ToJsonString(indented);
+        }
+
+        public abstract void WriteTo(JsonWriter writer, int depth);
+
+        /// A copy of this node and everything under it, with no parent.
+        public abstract JsonNode DeepClone();
+
+        /// Whether the two are the same JSON: objects with the same properties
+        /// in any order, arrays element by element, values by what they are.
+        public static bool DeepEquals(JsonNode? node1, JsonNode? node2)
+        {
+            if (node1 == null || node2 == null)
+            {
+                return node1 == null && node2 == null
+                    || node1 is JsonValue { Kind: JsonValueKind.Null } || node2 is JsonValue { Kind: JsonValueKind.Null };
+            }
+            return node1.Same(node2);
+        }
+
+        public abstract bool Same(JsonNode other);
+
+        /// Puts `value` where this node is, in its parent.
+        public void ReplaceWith(JsonNode? value)
+        {
+            JsonNode? parent = _parent;
+            if (parent is JsonObject obj)
+            {
+                string name = obj.NameOf(this)!;
+                obj[name] = value;
+            }
+            else if (parent is JsonArray array)
+            {
+                array[array.IndexOf(this)] = value;
+            }
+        }
+
+        /// Reads JSON text into nodes: null for the literal `null`.
+        public static JsonNode? Parse(string json, JsonNodeOptions? nodeOptions = null, JsonDocumentOptions documentOptions = default)
+        {
+            if (json == null) throw new ArgumentNullException(nameof(json));
+            JsonReader reader = new JsonReader(json, documentOptions, nodeOptions);
+            return reader.ReadDocument();
+        }
+
+        // THE CONVERSIONS INTO JSON, which is what lets `obj["a"] = 1` and
+        // `new JsonObject { ["name"] = "x" }` be written without a Create.
+        public static implicit operator JsonNode(bool value) => JsonValue.Create(value);
+        public static implicit operator JsonNode(byte value) => JsonValue.Create(value);
+        public static implicit operator JsonNode(char value) => JsonValue.Create(value);
+        public static implicit operator JsonNode(double value) => JsonValue.Create(value);
+        public static implicit operator JsonNode(short value) => JsonValue.Create(value);
+        public static implicit operator JsonNode(int value) => JsonValue.Create(value);
+        public static implicit operator JsonNode(long value) => JsonValue.Create(value);
+        public static implicit operator JsonNode(sbyte value) => JsonValue.Create(value);
+        public static implicit operator JsonNode(float value) => JsonValue.Create(value);
+        public static implicit operator JsonNode(ushort value) => JsonValue.Create(value);
+        public static implicit operator JsonNode(uint value) => JsonValue.Create(value);
+        public static implicit operator JsonNode(ulong value) => JsonValue.Create(value);
+        public static implicit operator JsonNode?(string? value) => value == null ? null : JsonValue.Create(value);
+
+        // AND OUT OF IT: a value as the type it holds.
+        public static explicit operator bool(JsonNode value) => value.AsValue().Boolean();
+        public static explicit operator int(JsonNode value) => (int)value.AsValue().Integer();
+        public static explicit operator long(JsonNode value) => value.AsValue().Integer();
+        public static explicit operator double(JsonNode value) => value.AsValue().Real();
+        public static explicit operator string?(JsonNode? value) => value == null ? null : value.AsValue().Str();
+    }
+
+    /// JSON's object: named properties, in the order they were added.
+    public sealed class JsonObject : JsonNode, IDictionary<string, JsonNode?>, IEnumerable<KeyValuePair<string, JsonNode?>>
+    {
+        readonly List<string> _names = new List<string>();
+        readonly List<JsonNode?> _values = new List<JsonNode?>();
+
+        public JsonObject(JsonNodeOptions? options = null) : base(options)
+        {
+        }
+
+        public JsonObject(IEnumerable<KeyValuePair<string, JsonNode?>> properties, JsonNodeOptions? options = null) : base(options)
+        {
+            foreach (KeyValuePair<string, JsonNode?> property in properties)
+            {
+                Add(property.Key, property.Value);
+            }
+        }
+
+        public override JsonValueKind GetValueKind() => JsonValueKind.Object;
+
+        public int Count => _names.Count;
+
+        bool CaseInsensitive => Options is JsonNodeOptions options && options.PropertyNameCaseInsensitive;
+
+        int Find(string name)
+        {
+            for (int i = 0; i < _names.Count; i++)
+            {
+                if (CaseInsensitive ? string.Equals(_names[i], name, StringComparison.OrdinalIgnoreCase) : _names[i] == name) return i;
+            }
+            return -1;
+        }
+
+        public string? NameOf(JsonNode node)
+        {
+            for (int i = 0; i < _values.Count; i++)
+            {
+                if (ReferenceEquals(_values[i], node)) return _names[i];
+            }
+            return null;
+        }
+
+        /// The property, or null (also for one that is there and null);
+        /// setting one replaces it, or adds it last.
+        public new JsonNode? this[string propertyName]
+        {
+            get
+            {
+                if (propertyName == null) throw new ArgumentNullException(nameof(propertyName));
+                int at = Find(propertyName);
+                return at < 0 ? null : _values[at];
+            }
+            set
+            {
+                if (propertyName == null) throw new ArgumentNullException(nameof(propertyName));
+                int at = Find(propertyName);
+                if (value != null) value.SetParent(this);
+                if (at < 0)
+                {
+                    _names.Add(propertyName);
+                    _values.Add(value);
+                    return;
+                }
+                JsonNode? old = _values[at];
+                if (old != null && !ReferenceEquals(old, value)) old.SetParent(null);
+                _values[at] = value;
+            }
+        }
+
+        public void Add(string propertyName, JsonNode? value)
+        {
+            if (propertyName == null) throw new ArgumentNullException(nameof(propertyName));
+            if (Find(propertyName) >= 0) throw new ArgumentException("An item with the same key has already been added. Key: " + propertyName);
+            if (value != null) value.SetParent(this);
+            _names.Add(propertyName);
+            _values.Add(value);
+        }
+
+        public void Add(KeyValuePair<string, JsonNode?> property)
+        {
+            Add(property.Key, property.Value);
+        }
+
+        public bool TryAdd(string propertyName, JsonNode? value)
+        {
+            if (Find(propertyName) >= 0) return false;
+            Add(propertyName, value);
+            return true;
+        }
+
+        public bool ContainsKey(string propertyName) => Find(propertyName) >= 0;
+
+        public bool TryGetPropertyValue(string propertyName, out JsonNode? jsonNode)
+        {
+            int at = Find(propertyName);
+            jsonNode = at < 0 ? null : _values[at];
+            return at >= 0;
+        }
+
+        bool IDictionary<string, JsonNode?>.TryGetValue(string key, out JsonNode? value) => TryGetPropertyValue(key, out value);
+
+        public bool Remove(string propertyName)
+        {
+            int at = Find(propertyName);
+            if (at < 0) return false;
+            JsonNode? old = _values[at];
+            if (old != null) old.SetParent(null);
+            _names.RemoveAt(at);
+            _values.RemoveAt(at);
+            return true;
+        }
+
+        public void Clear()
+        {
+            foreach (JsonNode? value in _values)
+            {
+                if (value != null) value.SetParent(null);
+            }
+            _names.Clear();
+            _values.Clear();
+        }
+
+        public ICollection<string> Keys => new System.Collections.ObjectModel.ReadOnlyCollection<string>(new List<string>(_names));
+
+        public ICollection<JsonNode?> Values => new System.Collections.ObjectModel.ReadOnlyCollection<JsonNode?>(new List<JsonNode?>(_values));
+
+        bool ICollection<KeyValuePair<string, JsonNode?>>.IsReadOnly => false;
+
+        bool ICollection<KeyValuePair<string, JsonNode?>>.Contains(KeyValuePair<string, JsonNode?> item)
+        {
+            int at = Find(item.Key);
+            return at >= 0 && ReferenceEquals(_values[at], item.Value);
+        }
+
+        void ICollection<KeyValuePair<string, JsonNode?>>.CopyTo(KeyValuePair<string, JsonNode?>[] array, int arrayIndex)
+        {
+            if (array == null) throw new ArgumentNullException(nameof(array));
+            if (arrayIndex < 0 || array.Length - arrayIndex < Count) throw new ArgumentOutOfRangeException(nameof(arrayIndex));
+            for (int i = 0; i < _names.Count; i++) array[arrayIndex + i] = new KeyValuePair<string, JsonNode?>(_names[i], _values[i]);
+        }
+
+        bool ICollection<KeyValuePair<string, JsonNode?>>.Remove(KeyValuePair<string, JsonNode?> item)
+        {
+            int at = Find(item.Key);
+            if (at < 0 || !ReferenceEquals(_values[at], item.Value)) return false;
+            return Remove(item.Key);
+        }
+
+        public IEnumerator<KeyValuePair<string, JsonNode?>> GetEnumerator()
+        {
+            List<KeyValuePair<string, JsonNode?>> pairs = new List<KeyValuePair<string, JsonNode?>>();
+            for (int i = 0; i < _names.Count; i++) pairs.Add(new KeyValuePair<string, JsonNode?>(_names[i], _values[i]));
+            return pairs.GetEnumerator();
+        }
+
+        public override void WriteTo(JsonWriter writer, int depth)
+        {
+            writer.Depth(depth);
+            if (_names.Count == 0)
+            {
+                writer.Raw("{}");
+                return;
+            }
+            writer.Raw("{");
+            for (int i = 0; i < _names.Count; i++)
+            {
+                if (i > 0) writer.Raw(",");
+                writer.Break(depth + 1);
+                writer.Str(_names[i]);
+                writer.Raw(writer.Indented ? ": " : ":");
+                JsonNode? value = _values[i];
+                if (value == null) writer.Raw("null");
+                else value.WriteTo(writer, depth + 1);
+            }
+            writer.Break(depth);
+            writer.Raw("}");
+        }
+
+        public override JsonNode DeepClone()
+        {
+            JsonObject copy = new JsonObject(Options);
+            for (int i = 0; i < _names.Count; i++)
+            {
+                JsonNode? value = _values[i];
+                copy.Add(_names[i], value == null ? null : value.DeepClone());
+            }
+            return copy;
+        }
+
+        public override bool Same(JsonNode other)
+        {
+            if (other is not JsonObject them || them.Count != Count) return false;
+            for (int i = 0; i < _names.Count; i++)
+            {
+                if (!them.TryGetPropertyValue(_names[i], out JsonNode? theirs)) return false;
+                if (!DeepEquals(_values[i], theirs)) return false;
+            }
+            return true;
+        }
+    }
+
+    /// JSON's array: nodes in order.
+    public sealed class JsonArray : JsonNode, IList<JsonNode?>, IEnumerable<JsonNode?>
+    {
+        readonly List<JsonNode?> _items = new List<JsonNode?>();
+
+        public JsonArray(JsonNodeOptions? options = null) : base(options)
+        {
+        }
+
+        public JsonArray(params JsonNode?[] items) : base(null)
+        {
+            if (items == null) throw new ArgumentNullException(nameof(items));
+            foreach (JsonNode? item in items) Add(item);
+        }
+
+        public JsonArray(JsonNodeOptions options, params JsonNode?[] items) : base(options)
+        {
+            if (items == null) throw new ArgumentNullException(nameof(items));
+            foreach (JsonNode? item in items) Add(item);
+        }
+
+        public override JsonValueKind GetValueKind() => JsonValueKind.Array;
+
+        public int Count => _items.Count;
+
+        public new JsonNode? this[int index]
+        {
+            get { return _items[index]; }
+            set
+            {
+                JsonNode? old = _items[index];
+                if (value != null) value.SetParent(this);
+                if (old != null && !ReferenceEquals(old, value)) old.SetParent(null);
+                _items[index] = value;
+            }
+        }
+
+        public void Add(JsonNode? item)
+        {
+            if (item != null) item.SetParent(this);
+            _items.Add(item);
+        }
+
+        public void Insert(int index, JsonNode? item)
+        {
+            if (item != null) item.SetParent(this);
+            _items.Insert(index, item);
+        }
+
+        public void RemoveAt(int index)
+        {
+            JsonNode? old = _items[index];
+            if (old != null) old.SetParent(null);
+            _items.RemoveAt(index);
+        }
+
+        public bool Remove(JsonNode? item)
+        {
+            int at = IndexOf(item);
+            if (at < 0) return false;
+            RemoveAt(at);
+            return true;
+        }
+
+        public void Clear()
+        {
+            foreach (JsonNode? item in _items)
+            {
+                if (item != null) item.SetParent(null);
+            }
+            _items.Clear();
+        }
+
+        public bool Contains(JsonNode? item) => IndexOf(item) >= 0;
+
+        /// By identity, as .NET's is: the node itself, not an equal one.
+        public int IndexOf(JsonNode? item)
+        {
+            for (int i = 0; i < _items.Count; i++)
+            {
+                if (ReferenceEquals(_items[i], item)) return i;
+            }
+            return -1;
+        }
+
+        public void CopyTo(JsonNode?[] array, int index)
+        {
+            _items.CopyTo(array, index);
+        }
+
+        bool ICollection<JsonNode?>.IsReadOnly => false;
+
+        public IEnumerator<JsonNode?> GetEnumerator()
+        {
+            return new List<JsonNode?>(_items).GetEnumerator();
+        }
+
+        public override void WriteTo(JsonWriter writer, int depth)
+        {
+            writer.Depth(depth);
+            if (_items.Count == 0)
+            {
+                writer.Raw("[]");
+                return;
+            }
+            writer.Raw("[");
+            for (int i = 0; i < _items.Count; i++)
+            {
+                if (i > 0) writer.Raw(",");
+                writer.Break(depth + 1);
+                JsonNode? item = _items[i];
+                if (item == null) writer.Raw("null");
+                else item.WriteTo(writer, depth + 1);
+            }
+            writer.Break(depth);
+            writer.Raw("]");
+        }
+
+        public override JsonNode DeepClone()
+        {
+            JsonArray copy = new JsonArray(Options);
+            foreach (JsonNode? item in _items) copy.Add(item == null ? null : item.DeepClone());
+            return copy;
+        }
+
+        public override bool Same(JsonNode other)
+        {
+            if (other is not JsonArray them || them.Count != Count) return false;
+            for (int i = 0; i < _items.Count; i++)
+            {
+                if (!DeepEquals(_items[i], them[i])) return false;
+            }
+            return true;
+        }
+    }
+
+    /// A JSON string, number, true, false or null.
+    public abstract class JsonValue : JsonNode
+    {
+        protected JsonValue(JsonNodeOptions? options) : base(options)
+        {
+        }
+
+        public abstract JsonValueKind Kind { get; }
+
+        /// The text of a string, or the number as written.
+        public abstract string Text { get; }
+
+        public override JsonValueKind GetValueKind() => Kind;
+
+        public static JsonValue Create(bool value, JsonNodeOptions? options = null) => new JsonPrimitive(value ? JsonValueKind.True : JsonValueKind.False, value ? "true" : "false", options);
+        public static JsonValue Create(byte value, JsonNodeOptions? options = null) => Number(value.ToString(), options);
+        public static JsonValue Create(sbyte value, JsonNodeOptions? options = null) => Number(value.ToString(), options);
+        public static JsonValue Create(short value, JsonNodeOptions? options = null) => Number(value.ToString(), options);
+        public static JsonValue Create(ushort value, JsonNodeOptions? options = null) => Number(value.ToString(), options);
+        public static JsonValue Create(int value, JsonNodeOptions? options = null) => Number(value.ToString(), options);
+        public static JsonValue Create(uint value, JsonNodeOptions? options = null) => Number(value.ToString(), options);
+        public static JsonValue Create(long value, JsonNodeOptions? options = null) => Number(value.ToString(), options);
+        public static JsonValue Create(ulong value, JsonNodeOptions? options = null) => Number(value.ToString(), options);
+        public static JsonValue Create(char value, JsonNodeOptions? options = null) => new JsonPrimitive(JsonValueKind.String, value.ToString(), options);
+
+        /// A double as its shortest round-trip text. NaN and the infinities
+        /// have no JSON form, and are refused when written.
+        public static JsonValue Create(double value, JsonNodeOptions? options = null) => new JsonPrimitive(JsonValueKind.Number, JsonText.Real(value), options, value);
+        public static JsonValue Create(float value, JsonNodeOptions? options = null) => new JsonPrimitive(JsonValueKind.Number, JsonText.Real(value), options, value);
+
+        public static JsonValue? Create(string? value, JsonNodeOptions? options = null) => value == null ? null : new JsonPrimitive(JsonValueKind.String, value, options);
+
+        static JsonValue Number(string text, JsonNodeOptions? options) => new JsonPrimitive(JsonValueKind.Number, text, options);
+
+        public bool Boolean()
+        {
+            if (Kind == JsonValueKind.True) return true;
+            if (Kind == JsonValueKind.False) return false;
+            throw new InvalidOperationException("The requested operation requires an element of type 'Boolean', but the target element has type '" + Kind + "'.");
+        }
+
+        public long Integer()
+        {
+            if (Kind == JsonValueKind.Number && long.TryParse(Text, out long value)) return value;
+            throw new FormatException("The JSON value is not in a supported integer format.");
+        }
+
+        public double Real()
+        {
+            if (Kind == JsonValueKind.Number && double.TryParse(Text, NumberStyles.Float, CultureInfo.InvariantCulture, out double value)) return value;
+            throw new FormatException("The JSON value is not in a supported floating-point format.");
+        }
+
+        public string Str()
+        {
+            if (Kind == JsonValueKind.String) return Text;
+            throw new InvalidOperationException("The requested operation requires an element of type 'String', but the target element has type '" + Kind + "'.");
+        }
+
+        public override T GetValue<T>()
+        {
+            if (TryGetValue(out T value)) return value;
+            throw new InvalidOperationException("An element of type '" + Kind + "' cannot be converted to the requested type.");
+        }
+
+        /// The value as a T it is: a string as string, true or false as bool,
+        /// a number as the numeric type it fits.
+        public bool TryGetValue<T>(out T value)
+        {
+            object? boxed = null;
+            if (Kind == JsonValueKind.String) boxed = Text;
+            else if (Kind == JsonValueKind.True) boxed = true;
+            else if (Kind == JsonValueKind.False) boxed = false;
+            if (boxed is T typed)
+            {
+                value = typed;
+                return true;
+            }
+            value = default!;
+            return false;
+        }
+    }
+
+    /// The one kind of value there is here: what it is, and its text.
+    public sealed class JsonPrimitive : JsonValue
+    {
+        readonly JsonValueKind _kind;
+        readonly string _text;
+        readonly double _real;
+        readonly bool _isReal;
+
+        public JsonPrimitive(JsonValueKind kind, string text, JsonNodeOptions? options) : base(options)
+        {
+            _kind = kind;
+            _text = text;
+        }
+
+        public JsonPrimitive(JsonValueKind kind, string text, JsonNodeOptions? options, double real) : base(options)
+        {
+            _kind = kind;
+            _text = text;
+            _real = real;
+            _isReal = true;
+        }
+
+        public override JsonValueKind Kind => _kind;
+
+        public override string Text => _text;
+
+        public override void WriteTo(JsonWriter writer, int depth)
+        {
+            writer.Depth(depth);
+            switch (_kind)
+            {
+                case JsonValueKind.String: writer.Str(_text); break;
+                case JsonValueKind.Number:
+                    if (_isReal && (Double.IsNaN(_real) || Double.IsInfinity(_real)))
+                    {
+                        throw new ArgumentException(".NET number values such as positive and negative infinity cannot be written as valid JSON.");
+                    }
+                    writer.Raw(_text);
+                    break;
+                case JsonValueKind.Null: writer.Raw("null"); break;
+                default: writer.Raw(_text); break;
+            }
+        }
+
+        public override JsonNode DeepClone() => _isReal ? new JsonPrimitive(_kind, _text, Options, _real) : new JsonPrimitive(_kind, _text, Options);
+
+        public override bool Same(JsonNode other)
+        {
+            if (other is not JsonPrimitive them || them._kind != _kind) return false;
+            if (_kind == JsonValueKind.Number)
+            {
+                return double.TryParse(_text, NumberStyles.Float, CultureInfo.InvariantCulture, out double a)
+                    && double.TryParse(them._text, NumberStyles.Float, CultureInfo.InvariantCulture, out double b) ? a == b : _text == them._text;
+            }
+            return _text == them._text;
+        }
+    }
+
+    /// JSON text being written: compact, or indented as the options say.
+    public sealed class JsonWriter
+    {
+        readonly StringBuilder _text = new StringBuilder();
+        readonly JsonSerializerOptions _options;
+        readonly int _maxDepth;
+
+        public JsonWriter(JsonSerializerOptions options)
+        {
+            _options = options;
+            _maxDepth = options.MaxDepth > 0 ? options.MaxDepth : 64;
+        }
+
+        public bool Indented => _options.WriteIndented;
+
+        public void Depth(int depth)
+        {
+            if (depth > _maxDepth)
+            {
+                throw new JsonException("The maximum configured depth of " + _maxDepth + " has been exceeded.");
+            }
+        }
+
+        public void Raw(string text) { _text.Append(text); }
+
+        /// A new line and the indentation for `depth`, when indenting.
+        public void Break(int depth)
+        {
+            if (!_options.WriteIndented) return;
+            _text.Append(_options.NewLine);
+            for (int i = 0; i < depth * _options.IndentSize; i++) _text.Append(_options.IndentCharacter);
+        }
+
+        public void Str(string value) { _text.Append(JsonText.Quote(value)); }
+
+        public override string ToString() => _text.ToString();
+    }
+
+    /// Text in and out of JSON's form.
+    static class JsonText
+    {
+        const string Hex = "0123456789ABCDEF";
+
+        /// A string quoted and escaped as .NET's default encoder does it: the
+        /// short escapes for backspace, tab, new line, form feed, return and
+        /// backslash; \uXXXX for every other control character, for the
+        /// HTML-sensitive " & ' < > + and `, and for everything outside ASCII
+        /// (in UTF-16, so a character past the basic plane is two escapes).
+        public static string Quote(string value)
+        {
+            StringBuilder made = new StringBuilder();
+            made.Append('"');
+            int at = 0;
+            while (at < value.Length)
+            {
+                Rune rune;
+                int used;
+                if (!Rune.TryDecodeFromUtf8(value, at, out rune, out used) || used <= 0)
+                {
+                    rune = Rune.ReplacementChar;
+                    used = 1;
+                }
+                at = at + used;
+                int c = rune.Value;
+                switch (c)
+                {
+                    case 8: made.Append("\\b"); continue;
+                    case 9: made.Append("\\t"); continue;
+                    case 10: made.Append("\\n"); continue;
+                    case 12: made.Append("\\f"); continue;
+                    case 13: made.Append("\\r"); continue;
+                    case 92: made.Append("\\\\"); continue;
+                }
+                bool escape = c < 0x20 || c >= 0x7F || c == '"' || c == '&' || c == '\'' || c == '<' || c == '>' || c == '+' || c == '`';
+                if (!escape)
+                {
+                    made.Append((char)c);
+                    continue;
+                }
+                if (c >= 0x10000)
+                {
+                    int v = c - 0x10000;
+                    Unit(made, 0xD800 + (v >> 10));
+                    Unit(made, 0xDC00 + (v & 0x3FF));
+                }
+                else
+                {
+                    Unit(made, c);
+                }
+            }
+            made.Append('"');
+            return made.ToString();
+        }
+
+        static void Unit(StringBuilder made, int unit)
+        {
+            made.Append("\\u");
+            made.Append(Hex[(unit >> 12) & 15]);
+            made.Append(Hex[(unit >> 8) & 15]);
+            made.Append(Hex[(unit >> 4) & 15]);
+            made.Append(Hex[unit & 15]);
+        }
+
+        /// The shortest text that reads back as the same double.
+        public static string Real(double value)
+        {
+            if (Double.IsNaN(value) || Double.IsInfinity(value)) return value.ToString(CultureInfo.InvariantCulture);
+            return DoubleFormat.Shortest(value);
+        }
+
+        /// A name a path may write after a dot: letters, digits and _, not
+        /// starting with a digit.
+        public static bool PlainName(string name)
+        {
+            if (name.Length == 0 || char.IsDigit(name[0])) return false;
+            foreach (char c in name)
+            {
+                if (!char.IsLetterOrDigit(c) && c != '_') return false;
+            }
+            return true;
+        }
+    }
+
+    /// JSON text read into nodes, by RFC 8259's grammar and the document
+    /// options: comments and trailing commas only when allowed, and no deeper
+    /// than MaxDepth (64 when unset).
+    sealed class JsonReader
+    {
+        readonly string _text;
+        readonly JsonDocumentOptions _document;
+        readonly JsonNodeOptions? _nodeOptions;
+        readonly int _maxDepth;
+        int _at;
+
+        public JsonReader(string text, JsonDocumentOptions document, JsonNodeOptions? nodeOptions)
+        {
+            _text = text;
+            _document = document;
+            _nodeOptions = nodeOptions;
+            _maxDepth = document.MaxDepth > 0 ? document.MaxDepth : 64;
+            if (document.CommentHandling == JsonCommentHandling.Allow)
+            {
+                throw new ArgumentException("Comments cannot be stored when deserializing objects, only the Skip and Disallow comment handling modes are supported.");
+            }
+        }
+
+        public JsonNode? ReadDocument()
+        {
+            Space();
+            if (_at >= _text.Length) throw Fail("The input does not contain any JSON tokens.");
+            JsonNode? value = ReadValue(0);
+            Space();
+            if (_at < _text.Length) throw Fail("'" + _text[_at] + "' is invalid after a single JSON value. Expected end of data.");
+            return value;
+        }
+
+        JsonNode? ReadValue(int depth)
+        {
+            if (depth >= _maxDepth) throw Fail("The maximum configured depth of " + _maxDepth + " has been exceeded.");
+            Space();
+            if (_at >= _text.Length) throw Fail("Expected a JSON value, found the end of the data.");
+            char c = _text[_at];
+            if (c == '{') return ReadObject(depth);
+            if (c == '[') return ReadArray(depth);
+            if (c == '"') return new JsonPrimitive(JsonValueKind.String, ReadString(), _nodeOptions);
+            if (c == '-' || (c >= '0' && c <= '9')) return ReadNumber();
+            if (Word("true")) return new JsonPrimitive(JsonValueKind.True, "true", _nodeOptions);
+            if (Word("false")) return new JsonPrimitive(JsonValueKind.False, "false", _nodeOptions);
+            if (Word("null")) return null;
+            throw Fail("'" + c + "' is an invalid start of a value.");
+        }
+
+        JsonObject ReadObject(int depth)
+        {
+            _at++;
+            JsonObject made = new JsonObject(_nodeOptions);
+            Space();
+            if (Take('}')) return made;
+            while (true)
+            {
+                Space();
+                if (_at >= _text.Length || _text[_at] != '"') throw Fail("Expected a property name.");
+                string name = ReadString();
+                Space();
+                if (!Take(':')) throw Fail("Expected ':' after a property name.");
+                JsonNode? value = ReadValue(depth + 1);
+                if (made.ContainsKey(name)) throw Fail("Duplicate property '" + name + "'.");
+                made.Add(name, value);
+                Space();
+                if (Take('}')) return made;
+                if (!Take(',')) throw Fail("Expected ',' or '}' after a property value.");
+                Space();
+                if (_document.AllowTrailingCommas && Take('}')) return made;
+            }
+        }
+
+        JsonArray ReadArray(int depth)
+        {
+            _at++;
+            JsonArray made = new JsonArray(_nodeOptions);
+            Space();
+            if (Take(']')) return made;
+            while (true)
+            {
+                made.Add(ReadValue(depth + 1));
+                Space();
+                if (Take(']')) return made;
+                if (!Take(',')) throw Fail("Expected ',' or ']' after an array element.");
+                Space();
+                if (_document.AllowTrailingCommas && Take(']')) return made;
+            }
+        }
+
+        string ReadString()
+        {
+            _at++;
+            StringBuilder made = new StringBuilder();
+            while (true)
+            {
+                if (_at >= _text.Length) throw Fail("Expected end of string, but instead reached end of data.");
+                char c = _text[_at];
+                if (c == '"')
+                {
+                    _at++;
+                    return made.ToString();
+                }
+                if (c < ' ') throw Fail("A control character must be escaped in a string.");
+                if (c != '\\')
+                {
+                    // A RUN OF LITERAL TEXT, copied as it is: indexing a
+                    // string reads its UTF-8 a byte at a time, and a byte of
+                    // a character appended as a char would be re-encoded.
+                    int run = _at;
+                    while (_at < _text.Length && _text[_at] != '"' && _text[_at] != '\\' && _text[_at] >= ' ') _at++;
+                    made.Append(_text.Substring(run, _at - run));
+                    continue;
+                }
+                _at++;
+                if (_at >= _text.Length) throw Fail("Expected an escape, but instead reached end of data.");
+                char e = _text[_at++];
+                switch (e)
+                {
+                    case '"': made.Append('"'); break;
+                    case '\\': made.Append('\\'); break;
+                    case '/': made.Append('/'); break;
+                    case 'b': made.Append('\b'); break;
+                    case 'f': made.Append('\f'); break;
+                    case 'n': made.Append('\n'); break;
+                    case 'r': made.Append('\r'); break;
+                    case 't': made.Append('\t'); break;
+                    case 'u':
+                    {
+                        int unit = Hex4();
+                        if (unit >= 0xD800 && unit <= 0xDBFF && _at + 1 < _text.Length && _text[_at] == '\\' && _text[_at + 1] == 'u')
+                        {
+                            _at = _at + 2;
+                            int low = Hex4();
+                            if (low >= 0xDC00 && low <= 0xDFFF)
+                            {
+                                made.Append(new Rune(0x10000 + ((unit - 0xD800) << 10) + (low - 0xDC00)).ToString());
+                                break;
+                            }
+                            made.Append(Rune.ReplacementChar.ToString());
+                            unit = low;
+                        }
+                        if (unit >= 0xD800 && unit <= 0xDFFF) made.Append(Rune.ReplacementChar.ToString());
+                        else made.Append(new Rune(unit).ToString());
+                        break;
+                    }
+                    default: throw Fail("'" + e + "' is an invalid escapable character within a JSON string.");
+                }
+            }
+        }
+
+        int Hex4()
+        {
+            if (_at + 4 > _text.Length) throw Fail("Expected four hexadecimal digits after \\u.");
+            int value = 0;
+            for (int i = 0; i < 4; i++)
+            {
+                char h = _text[_at + i];
+                int digit = h >= '0' && h <= '9' ? h - '0' : h >= 'a' && h <= 'f' ? h - 'a' + 10 : h >= 'A' && h <= 'F' ? h - 'A' + 10 : -1;
+                if (digit < 0) throw Fail("'" + h + "' is not a hexadecimal digit.");
+                value = value * 16 + digit;
+            }
+            _at = _at + 4;
+            return value;
+        }
+
+        /// -? (0 | [1-9][0-9]*) (. [0-9]+)? ([eE] [+-]? [0-9]+)?, kept as written.
+        JsonValue ReadNumber()
+        {
+            int start = _at;
+            if (_text[_at] == '-') _at++;
+            if (_at >= _text.Length) throw Fail("Expected a digit.");
+            if (_text[_at] == '0') _at++;
+            else if (_text[_at] >= '1' && _text[_at] <= '9') { while (_at < _text.Length && char.IsAsciiDigit(_text[_at])) _at++; }
+            else throw Fail("Expected a digit.");
+            if (_at < _text.Length && _text[_at] == '.')
+            {
+                _at++;
+                if (_at >= _text.Length || !char.IsAsciiDigit(_text[_at])) throw Fail("Expected a digit after the decimal point.");
+                while (_at < _text.Length && char.IsAsciiDigit(_text[_at])) _at++;
+            }
+            if (_at < _text.Length && (_text[_at] == 'e' || _text[_at] == 'E'))
+            {
+                _at++;
+                if (_at < _text.Length && (_text[_at] == '+' || _text[_at] == '-')) _at++;
+                if (_at >= _text.Length || !char.IsAsciiDigit(_text[_at])) throw Fail("Expected a digit in the exponent.");
+                while (_at < _text.Length && char.IsAsciiDigit(_text[_at])) _at++;
+            }
+            return new JsonPrimitive(JsonValueKind.Number, _text.Substring(start, _at - start), _nodeOptions);
+        }
+
+        bool Word(string word)
+        {
+            if (string.CompareOrdinal(_text, _at, word, 0, word.Length) != 0) return false;
+            _at = _at + word.Length;
+            return true;
+        }
+
+        bool Take(char c)
+        {
+            if (_at < _text.Length && _text[_at] == c)
+            {
+                _at++;
+                return true;
+            }
+            return false;
+        }
+
+        /// White space, and comments when they are to be skipped.
+        void Space()
+        {
+            while (_at < _text.Length)
+            {
+                char c = _text[_at];
+                if (c == ' ' || c == '\t' || c == '\n' || c == '\r')
+                {
+                    _at++;
+                    continue;
+                }
+                if (c == '/' && _at + 1 < _text.Length && (_text[_at + 1] == '/' || _text[_at + 1] == '*'))
+                {
+                    if (_document.CommentHandling != JsonCommentHandling.Skip) throw Fail("'/' is invalid after a value; comments are not allowed.");
+                    if (_text[_at + 1] == '/')
+                    {
+                        while (_at < _text.Length && _text[_at] != '\n') _at++;
+                    }
+                    else
+                    {
+                        int end = _text.IndexOf("*/", _at + 2);
+                        if (end < 0) throw Fail("Expected end of comment, but instead reached end of data.");
+                        _at = end + 2;
+                    }
+                    continue;
+                }
+                return;
+            }
+        }
+
+        JsonException Fail(string message)
+        {
+            int line = 0, column = 0;
+            for (int i = 0; i < _at && i < _text.Length; i++)
+            {
+                if (_text[i] == '\n') { line++; column = 0; }
+                else column++;
+            }
+            return new JsonException(message + " LineNumber: " + line + " | BytePositionInLine: " + column + ".", "$", line, column);
+        }
+    }
+}

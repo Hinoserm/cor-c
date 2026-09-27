@@ -850,6 +850,7 @@ public sealed partial class Lowering
     /// <summary>A member the compiler answers itself: an array's or a string's Length, a type's Name and FullName.</summary>
     private static bool IsIntrinsicMember(MemberExpr m, Type target)
         => (m.Name == "Length" && (target.IsArray || target.Prim == Prim.String))
+        || (m.Name == "LongLength" && target.IsArray)
         || (m.Name is "Name" or "FullName" && target.Prim == Prim.Type);
 
     /// <summary>
@@ -863,6 +864,8 @@ public sealed partial class Lowering
     {
         if (m.Name == "Length")
             return target.IsArray ? _e.Unary(Opcode.ArrayLength, R(obj), IrType.I32) : _e.Load(IrType.I32, obj, _t.ArrayCountOffset);
+        if (m.Name == "LongLength")
+            return _e.Unary(Opcode.SExt32, R(_e.Unary(Opcode.ArrayLength, R(obj), IrType.I32)), IrType.I64);
         VReg full = _e.Load(IrTypes.Word, obj, DescName * _t.WordSize);
         if (m.Name == "FullName" || !HasStringMethod(Prelude.TypeNameMethod)) return full;
         MethodSymbol? simple = StringMethod(m, Prelude.TypeNameMethod, 1, "a type's name");
@@ -923,7 +926,7 @@ public sealed partial class Lowering
             PropertyGetSym { Getter.Static: false } p
                 => (CallAccessor(p.Getter, self: false, target: null, receiver: obj), p.Getter.Returns),
             _ when IsIntrinsicMember(m, _b.TypeOf(m.Target))
-                => (IntrinsicMember(m, _b.TypeOf(m.Target), obj), m.Name == "Length" ? Type.I32 : Type.String),
+                => (IntrinsicMember(m, _b.TypeOf(m.Target), obj), m.Name switch { "Length" => Type.I32, "LongLength" => Type.I64, _ => Type.String }),
             _ => ((VReg?)null, result),
         };
 

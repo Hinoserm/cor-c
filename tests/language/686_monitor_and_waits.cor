@@ -1,0 +1,120 @@
+// test: monitor_and_waits
+// expect-exit: 0
+// expect-output:
+// reentrant True 3
+// not-owner refused
+// wait-timeout False
+// pulsed True 42
+// trylock True False
+// semaphore 1 True False 2
+// semaphore-async True 0
+// cts True True
+// linked True
+// waitasync timeout ok
+// tcs RunContinuationsAsynchronously state
+//
+// System.Threading's Monitor as `lock` uses it -- reentrant, owned, with
+// Wait and Pulse -- SemaphoreSlim, and the cancellation and WaitAsync forms.
+
+using System.Threading;
+using System.Threading.Tasks;
+
+static class Program
+{
+    static readonly object Gate = new object();
+    static int _shared;
+
+    static int Depth(int n)
+    {
+        lock (Gate)
+        {
+            return n == 0 ? 0 : 1 + Depth(n - 1);
+        }
+    }
+
+    static async Task<string> Waits()
+    {
+        TaskCompletionSource never = new TaskCompletionSource();
+        try
+        {
+            await never.Task.WaitAsync(TimeSpan.FromMilliseconds(20));
+            return "no";
+        }
+        catch (TimeoutException)
+        {
+            return "timeout ok";
+        }
+    }
+
+    static int Main()
+    {
+        Console.WriteLine("reentrant " + !Monitor.IsEntered(Gate) + " " + Depth(3));
+
+        string refused = "";
+        try { Monitor.Exit(Gate); } catch (SynchronizationLockException) { refused = "refused"; }
+        Console.WriteLine("not-owner " + refused);
+
+        lock (Gate)
+        {
+            Console.WriteLine("wait-timeout " + Monitor.Wait(Gate, 10));
+        }
+
+        bool pulsed = false;
+        Thread waiter = Thread.Start(() =>
+        {
+            lock (Gate)
+            {
+                while (_shared == 0)
+                {
+                    pulsed = Monitor.Wait(Gate, 5000);
+                }
+            }
+        });
+        Thread.Sleep(20);
+        lock (Gate)
+        {
+            _shared = 42;
+            Monitor.PulseAll(Gate);
+        }
+        waiter.Join();
+        Console.WriteLine("pulsed " + pulsed + " " + _shared);
+
+        bool taken = Monitor.TryEnter(Gate);
+        bool other = false;
+        Thread.Start(() => { other = Monitor.TryEnter(Gate); }).Join();
+        Monitor.Exit(Gate);
+        Console.WriteLine("trylock " + taken + " " + other);
+
+        SemaphoreSlim slots = new SemaphoreSlim(2, 2);
+        slots.Wait();
+        int left = slots.CurrentCount;
+        bool second = slots.Wait(0);
+        bool third = slots.Wait(0);
+        slots.Release(2);
+        Console.WriteLine("semaphore " + left + " " + second + " " + third + " " + slots.CurrentCount);
+
+        SemaphoreSlim single = new SemaphoreSlim(0);
+        Task<bool> pending = single.WaitAsync(5000);
+        single.Release();
+        Console.WriteLine("semaphore-async " + pending.GetAwaiter().GetResult() + " " + single.CurrentCount);
+
+        CancellationTokenSource timed = new CancellationTokenSource(TimeSpan.FromMilliseconds(10));
+        Thread.Sleep(40);
+        Task.Delay(1).Wait();
+        CancellationTokenSource later = new CancellationTokenSource();
+        later.CancelAfter(TimeSpan.Zero);
+        Task.Delay(1).Wait();
+        Console.WriteLine("cts " + timed.IsCancellationRequested + " " + later.IsCancellationRequested);
+
+        CancellationTokenSource root = new CancellationTokenSource();
+        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(root.Token);
+        root.Cancel();
+        Console.WriteLine("linked " + linked.IsCancellationRequested);
+
+        Console.WriteLine("waitasync " + Waits().GetAwaiter().GetResult());
+
+        TaskCompletionSource made = new TaskCompletionSource("state", TaskCreationOptions.RunContinuationsAsynchronously);
+        Console.WriteLine("tcs " + made.Task.CreationOptions + " " + made.Task.AsyncState);
+        return 0;
+    }
+}

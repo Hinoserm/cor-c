@@ -13,13 +13,48 @@ class CryptographicException : Exception
 
 /// A hash algorithm: data in, in as many pieces as it comes in, and a hash
 /// out at the end.
-abstract class HashAlgorithm : IDisposable
+abstract class HashAlgorithm : ICryptoTransform, IDisposable
 {
     byte[]? _hash;
     bool _disposed;
 
     /// The size of the hash, in bits.
     public abstract int HashSize { get; }
+
+    // AS A TRANSFORM (ICryptoTransform): a byte at a time in and out, as
+    // many blocks at once as are given -- the data passes through unchanged
+    // and the hash is made on the side. What lets a CryptoStream hash what is
+    // written through it.
+    public virtual int InputBlockSize => 1;
+    public virtual int OutputBlockSize => 1;
+    public virtual bool CanTransformMultipleBlocks => true;
+    public virtual bool CanReuseTransform => true;
+
+    /// A copy in the same state, taking in the same data from here on:
+    /// what lets a hash be read part way (IncrementalHash.GetCurrentHash)
+    /// without ending the one being made.
+    public abstract HashAlgorithm Snapshot();
+
+    /// The hash of everything given so far, the algorithm left as it was.
+    public byte[] CurrentHash()
+    {
+        if (_disposed) throw new ObjectDisposedException(nameof(HashAlgorithm));
+        return Snapshot().HashFinal();
+    }
+
+    /// The hash of everything given so far, the algorithm then started again.
+    public byte[] HashAndReset()
+    {
+        if (_disposed) throw new ObjectDisposedException(nameof(HashAlgorithm));
+        return Finish();
+    }
+
+    /// More data, as TransformBlock without the copying.
+    public void Append(byte[] buffer, int offset, int count)
+    {
+        Check(buffer, offset, count);
+        HashCore(buffer, offset, count);
+    }
 
     /// The hash of everything given so far, once TransformFinalBlock has
     /// given the last of it.
@@ -169,6 +204,16 @@ sealed class Sha256Implementation : SHA256
 
     public Sha256Implementation() { Initialize(); }
 
+    public override HashAlgorithm Snapshot()
+    {
+        Sha256Implementation copy = new Sha256Implementation();
+        for (int i = 0; i < 8; i++) copy._state[i] = _state[i];
+        for (int i = 0; i < 64; i++) copy._block[i] = _block[i];
+        copy._filled = _filled;
+        copy._length = _length;
+        return copy;
+    }
+
     public override void Initialize()
     {
         _state[0] = 0x6a09e667; _state[1] = 0xbb67ae85; _state[2] = 0x3c6ef372; _state[3] = 0xa54ff53a;
@@ -263,3 +308,990 @@ sealed class Sha256Implementation : SHA256
         _state[4] = _state[4] + e; _state[5] = _state[5] + f; _state[6] = _state[6] + g; _state[7] = _state[7] + h;
     }
 }
+
+/// A transformation of data a block at a time: what a CryptoStream runs
+/// what passes through it through.
+interface ICryptoTransform : IDisposable
+{
+    int InputBlockSize { get; }
+    int OutputBlockSize { get; }
+    bool CanTransformMultipleBlocks { get; }
+    bool CanReuseTransform { get; }
+    int TransformBlock(byte[] inputBuffer, int inputOffset, int inputCount, byte[]? outputBuffer, int outputOffset);
+    byte[] TransformFinalBlock(byte[] inputBuffer, int inputOffset, int inputCount);
+}
+
+/// A hash algorithm by name, as .NET's APIs that make one are given it.
+readonly struct HashAlgorithmName : IEquatable<HashAlgorithmName>
+{
+    readonly string? _name;
+
+    public HashAlgorithmName(string? name)
+    {
+        _name = name;
+    }
+
+    public string? Name => _name;
+
+    public static HashAlgorithmName MD5 => new HashAlgorithmName("MD5");
+    public static HashAlgorithmName SHA1 => new HashAlgorithmName("SHA1");
+    public static HashAlgorithmName SHA256 => new HashAlgorithmName("SHA256");
+    public static HashAlgorithmName SHA384 => new HashAlgorithmName("SHA384");
+    public static HashAlgorithmName SHA512 => new HashAlgorithmName("SHA512");
+
+    public bool Equals(HashAlgorithmName other) { return _name == other._name; }
+
+    public override bool Equals(object? obj) { return obj is HashAlgorithmName other && Equals(other); }
+
+    public override int GetHashCode() { return _name == null ? 0 : _name.GetHashCode(); }
+
+    public override string ToString() { return _name ?? ""; }
+
+    public static bool operator ==(HashAlgorithmName left, HashAlgorithmName right) { return left.Equals(right); }
+
+    public static bool operator !=(HashAlgorithmName left, HashAlgorithmName right) { return !left.Equals(right); }
+
+    /// The algorithm the name stands for, new; CryptographicException for
+    /// a name this library does not implement.
+    public static HashAlgorithm Make(HashAlgorithmName name)
+    {
+        if (name.Name == null || name.Name.Length == 0)
+        {
+            throw new ArgumentException("The hash algorithm name cannot be null or empty.", "hashAlgorithm");
+        }
+        switch (name.Name)
+        {
+            case "MD5": return new Md5Implementation();
+            case "SHA1": return new Sha1Implementation();
+            case "SHA256": return new Sha256Implementation();
+            case "SHA384": return new Sha512Implementation(true);
+            case "SHA512": return new Sha512Implementation(false);
+        }
+        throw new CryptographicException("'" + name.Name + "' is not a known hash algorithm.");
+    }
+
+    /// How many bytes the algorithm works through at a time (HMAC's pad).
+    public static int BlockBytes(HashAlgorithmName name)
+    {
+        return name.Name == "SHA384" || name.Name == "SHA512" ? 128 : 64;
+    }
+}
+
+/// MD5 (RFC 1321): a 128-bit hash. For checksums, as .NET warns: it is not
+/// safe against someone making collisions on purpose.
+abstract class MD5 : HashAlgorithm
+{
+    public const int HashSizeInBits = 128;
+    public const int HashSizeInBytes = 16;
+
+    public override int HashSize => HashSizeInBits;
+
+    public static MD5 Create() { return new Md5Implementation(); }
+
+    public static byte[] HashData(byte[] source)
+    {
+        if (source == null) throw new ArgumentNullException(nameof(source));
+        return new Md5Implementation().ComputeHash(source);
+    }
+
+    public static byte[] HashData(Stream source)
+    {
+        if (source == null) throw new ArgumentNullException(nameof(source));
+        return new Md5Implementation().ComputeHash(source);
+    }
+}
+
+/// SHA-1 (FIPS 180-4): a 160-bit hash.
+abstract class SHA1 : HashAlgorithm
+{
+    public const int HashSizeInBits = 160;
+    public const int HashSizeInBytes = 20;
+
+    public override int HashSize => HashSizeInBits;
+
+    public static SHA1 Create() { return new Sha1Implementation(); }
+
+    public static byte[] HashData(byte[] source)
+    {
+        if (source == null) throw new ArgumentNullException(nameof(source));
+        return new Sha1Implementation().ComputeHash(source);
+    }
+
+    public static byte[] HashData(Stream source)
+    {
+        if (source == null) throw new ArgumentNullException(nameof(source));
+        return new Sha1Implementation().ComputeHash(source);
+    }
+}
+
+/// SHA-512 (FIPS 180-4): a 512-bit hash, over 128-byte blocks.
+abstract class SHA512 : HashAlgorithm
+{
+    public const int HashSizeInBits = 512;
+    public const int HashSizeInBytes = 64;
+
+    public override int HashSize => HashSizeInBits;
+
+    public static SHA512 Create() { return new Sha512Implementation(false); }
+
+    public static byte[] HashData(byte[] source)
+    {
+        if (source == null) throw new ArgumentNullException(nameof(source));
+        return new Sha512Implementation(false).ComputeHash(source);
+    }
+
+    public static byte[] HashData(Stream source)
+    {
+        if (source == null) throw new ArgumentNullException(nameof(source));
+        return new Sha512Implementation(false).ComputeHash(source);
+    }
+}
+
+/// SHA-384 (FIPS 180-4): SHA-512 from other initial values, cut to 384 bits.
+abstract class SHA384 : HashAlgorithm
+{
+    public const int HashSizeInBits = 384;
+    public const int HashSizeInBytes = 48;
+
+    public override int HashSize => HashSizeInBits;
+
+    public static SHA384 Create() { return new Sha384Implementation(); }
+
+    public static byte[] HashData(byte[] source)
+    {
+        if (source == null) throw new ArgumentNullException(nameof(source));
+        return new Sha512Implementation(true).ComputeHash(source);
+    }
+
+    public static byte[] HashData(Stream source)
+    {
+        if (source == null) throw new ArgumentNullException(nameof(source));
+        return new Sha512Implementation(true).ComputeHash(source);
+    }
+}
+
+/// The 64-byte-block framing MD5 and SHA-1 share with SHA-256: the data in
+/// blocks, then a one bit, zeros, and the length in bits -- little-endian for
+/// MD5, big-endian for SHA-1.
+abstract class Block64Hash
+{
+    public readonly byte[] Block = new byte[64];
+    public int Filled;
+    public long Length;
+
+    public abstract void Compress();
+
+    public void Take(byte[] array, int start, int size)
+    {
+        Length = Length + size;
+        int at = start;
+        int end = start + size;
+        while (at < end)
+        {
+            int take = 64 - Filled;
+            if (take > end - at) take = end - at;
+            for (int i = 0; i < take; i++) Block[Filled + i] = array[at + i];
+            Filled = Filled + take;
+            at = at + take;
+            if (Filled == 64)
+            {
+                Compress();
+                Filled = 0;
+            }
+        }
+    }
+
+    public void Pad(bool littleEndian)
+    {
+        long bits = Length * 8;
+        Block[Filled] = 0x80;
+        Filled = Filled + 1;
+        if (Filled > 56)
+        {
+            while (Filled < 64) { Block[Filled] = 0; Filled = Filled + 1; }
+            Compress();
+            Filled = 0;
+        }
+        while (Filled < 56) { Block[Filled] = 0; Filled = Filled + 1; }
+        for (int i = 0; i < 8; i++)
+        {
+            Block[56 + i] = littleEndian ? (byte)(bits >> (8 * i)) : (byte)(bits >> (56 - 8 * i));
+        }
+        Compress();
+    }
+
+    public void CopyInto(Block64Hash other)
+    {
+        for (int i = 0; i < 64; i++) other.Block[i] = Block[i];
+        other.Filled = Filled;
+        other.Length = Length;
+    }
+}
+
+sealed class Md5Implementation : MD5
+{
+    static readonly uint[] K = new uint[]
+    {
+        0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
+        0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
+        0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
+        0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed, 0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a,
+        0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70,
+        0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
+        0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
+        0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391,
+    };
+
+    static readonly int[] S = new int[]
+    {
+        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
+        5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
+        4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+        6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+    };
+
+    readonly uint[] _state = new uint[4];
+    readonly uint[] _m = new uint[16];
+    readonly Md5Blocks _blocks;
+
+    public Md5Implementation()
+    {
+        _blocks = new Md5Blocks(this);
+        Initialize();
+    }
+
+    public override void Initialize()
+    {
+        _state[0] = 0x67452301; _state[1] = 0xefcdab89; _state[2] = 0x98badcfe; _state[3] = 0x10325476;
+        _blocks.Filled = 0;
+        _blocks.Length = 0;
+    }
+
+    public override HashAlgorithm Snapshot()
+    {
+        Md5Implementation copy = new Md5Implementation();
+        for (int i = 0; i < 4; i++) copy._state[i] = _state[i];
+        _blocks.CopyInto(copy._blocks);
+        return copy;
+    }
+
+    protected override void HashCore(byte[] array, int ibStart, int cbSize) { _blocks.Take(array, ibStart, cbSize); }
+
+    protected override byte[] HashFinal()
+    {
+        _blocks.Pad(true);
+        byte[] made = new byte[16];
+        for (int i = 0; i < 4; i++)
+        {
+            uint v = _state[i];
+            made[i * 4] = (byte)v;
+            made[i * 4 + 1] = (byte)(v >> 8);
+            made[i * 4 + 2] = (byte)(v >> 16);
+            made[i * 4 + 3] = (byte)(v >> 24);
+        }
+        return made;
+    }
+
+    static uint Rotl(uint x, int n) { return (x << n) | (x >> (32 - n)); }
+
+    public void Compress(byte[] block)
+    {
+        uint[] m = _m;
+        for (int i = 0; i < 16; i++)
+        {
+            m[i] = (uint)block[i * 4] | ((uint)block[i * 4 + 1] << 8) | ((uint)block[i * 4 + 2] << 16) | ((uint)block[i * 4 + 3] << 24);
+        }
+        uint a = _state[0], b = _state[1], c = _state[2], d = _state[3];
+        for (int i = 0; i < 64; i++)
+        {
+            uint f;
+            int g;
+            if (i < 16) { f = (b & c) | (~b & d); g = i; }
+            else if (i < 32) { f = (d & b) | (~d & c); g = (5 * i + 1) % 16; }
+            else if (i < 48) { f = b ^ c ^ d; g = (3 * i + 5) % 16; }
+            else { f = c ^ (b | ~d); g = (7 * i) % 16; }
+            f = f + a + K[i] + m[g];
+            a = d;
+            d = c;
+            c = b;
+            b = b + Rotl(f, S[i]);
+        }
+        _state[0] = _state[0] + a; _state[1] = _state[1] + b; _state[2] = _state[2] + c; _state[3] = _state[3] + d;
+    }
+}
+
+sealed class Md5Blocks : Block64Hash
+{
+    readonly Md5Implementation _owner;
+    public Md5Blocks(Md5Implementation owner) { _owner = owner; }
+    public override void Compress() { _owner.Compress(Block); }
+}
+
+sealed class Sha1Implementation : SHA1
+{
+    readonly uint[] _state = new uint[5];
+    readonly uint[] _w = new uint[80];
+    readonly Sha1Blocks _blocks;
+
+    public Sha1Implementation()
+    {
+        _blocks = new Sha1Blocks(this);
+        Initialize();
+    }
+
+    public override void Initialize()
+    {
+        _state[0] = 0x67452301; _state[1] = 0xefcdab89; _state[2] = 0x98badcfe; _state[3] = 0x10325476; _state[4] = 0xc3d2e1f0;
+        _blocks.Filled = 0;
+        _blocks.Length = 0;
+    }
+
+    public override HashAlgorithm Snapshot()
+    {
+        Sha1Implementation copy = new Sha1Implementation();
+        for (int i = 0; i < 5; i++) copy._state[i] = _state[i];
+        _blocks.CopyInto(copy._blocks);
+        return copy;
+    }
+
+    protected override void HashCore(byte[] array, int ibStart, int cbSize) { _blocks.Take(array, ibStart, cbSize); }
+
+    protected override byte[] HashFinal()
+    {
+        _blocks.Pad(false);
+        byte[] made = new byte[20];
+        for (int i = 0; i < 5; i++)
+        {
+            uint v = _state[i];
+            made[i * 4] = (byte)(v >> 24);
+            made[i * 4 + 1] = (byte)(v >> 16);
+            made[i * 4 + 2] = (byte)(v >> 8);
+            made[i * 4 + 3] = (byte)v;
+        }
+        return made;
+    }
+
+    static uint Rotl(uint x, int n) { return (x << n) | (x >> (32 - n)); }
+
+    public void Compress(byte[] block)
+    {
+        uint[] w = _w;
+        for (int i = 0; i < 16; i++)
+        {
+            w[i] = ((uint)block[i * 4] << 24) | ((uint)block[i * 4 + 1] << 16) | ((uint)block[i * 4 + 2] << 8) | block[i * 4 + 3];
+        }
+        for (int i = 16; i < 80; i++) w[i] = Rotl(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
+
+        uint a = _state[0], b = _state[1], c = _state[2], d = _state[3], e = _state[4];
+        for (int i = 0; i < 80; i++)
+        {
+            uint f, k;
+            if (i < 20) { f = (b & c) | (~b & d); k = 0x5a827999; }
+            else if (i < 40) { f = b ^ c ^ d; k = 0x6ed9eba1; }
+            else if (i < 60) { f = (b & c) | (b & d) | (c & d); k = 0x8f1bbcdc; }
+            else { f = b ^ c ^ d; k = 0xca62c1d6; }
+            uint t = Rotl(a, 5) + f + e + k + w[i];
+            e = d;
+            d = c;
+            c = Rotl(b, 30);
+            b = a;
+            a = t;
+        }
+        _state[0] = _state[0] + a; _state[1] = _state[1] + b; _state[2] = _state[2] + c;
+        _state[3] = _state[3] + d; _state[4] = _state[4] + e;
+    }
+}
+
+sealed class Sha1Blocks : Block64Hash
+{
+    readonly Sha1Implementation _owner;
+    public Sha1Blocks(Sha1Implementation owner) { _owner = owner; }
+    public override void Compress() { _owner.Compress(Block); }
+}
+
+/// SHA-512 and SHA-384, which differ only in where they start and how much
+/// of the result they keep: 128-byte blocks, a 128-bit length.
+sealed class Sha512Implementation : SHA512
+{
+    static readonly ulong[] K = new ulong[]
+    {
+        0x428a2f98d728ae22, 0x7137449123ef65cd, 0xb5c0fbcfec4d3b2f, 0xe9b5dba58189dbbc,
+        0x3956c25bf348b538, 0x59f111f1b605d019, 0x923f82a4af194f9b, 0xab1c5ed5da6d8118,
+        0xd807aa98a3030242, 0x12835b0145706fbe, 0x243185be4ee4b28c, 0x550c7dc3d5ffb4e2,
+        0x72be5d74f27b896f, 0x80deb1fe3b1696b1, 0x9bdc06a725c71235, 0xc19bf174cf692694,
+        0xe49b69c19ef14ad2, 0xefbe4786384f25e3, 0x0fc19dc68b8cd5b5, 0x240ca1cc77ac9c65,
+        0x2de92c6f592b0275, 0x4a7484aa6ea6e483, 0x5cb0a9dcbd41fbd4, 0x76f988da831153b5,
+        0x983e5152ee66dfab, 0xa831c66d2db43210, 0xb00327c898fb213f, 0xbf597fc7beef0ee4,
+        0xc6e00bf33da88fc2, 0xd5a79147930aa725, 0x06ca6351e003826f, 0x142929670a0e6e70,
+        0x27b70a8546d22ffc, 0x2e1b21385c26c926, 0x4d2c6dfc5ac42aed, 0x53380d139d95b3df,
+        0x650a73548baf63de, 0x766a0abb3c77b2a8, 0x81c2c92e47edaee6, 0x92722c851482353b,
+        0xa2bfe8a14cf10364, 0xa81a664bbc423001, 0xc24b8b70d0f89791, 0xc76c51a30654be30,
+        0xd192e819d6ef5218, 0xd69906245565a910, 0xf40e35855771202a, 0x106aa07032bbd1b8,
+        0x19a4c116b8d2d0c8, 0x1e376c085141ab53, 0x2748774cdf8eeb99, 0x34b0bcb5e19b48a8,
+        0x391c0cb3c5c95a63, 0x4ed8aa4ae3418acb, 0x5b9cca4f7763e373, 0x682e6ff3d6b2b8a3,
+        0x748f82ee5defb2fc, 0x78a5636f43172f60, 0x84c87814a1f0ab72, 0x8cc702081a6439ec,
+        0x90befffa23631e28, 0xa4506cebde82bde9, 0xbef9a3f7b2c67915, 0xc67178f2e372532b,
+        0xca273eceea26619c, 0xd186b8c721c0c207, 0xeada7dd6cde0eb1e, 0xf57d4f7fee6ed178,
+        0x06f067aa72176fba, 0x0a637dc5a2c898a6, 0x113f9804bef90dae, 0x1b710b35131c471b,
+        0x28db77f523047d84, 0x32caab7b40c72493, 0x3c9ebe0a15c9bebc, 0x431d67c49c100d4c,
+        0x4cc5d4becb3e42b6, 0x597f299cfc657e2a, 0x5fcb6fab3ad6faec, 0x6c44198c4a475817,
+    };
+
+    readonly bool _short;
+    readonly ulong[] _state = new ulong[8];
+    readonly ulong[] _w = new ulong[80];
+    readonly byte[] _block = new byte[128];
+    int _filled;
+    long _length;
+
+    /// `asSha384`: SHA-384's initial values, and 48 bytes of the result.
+    public Sha512Implementation(bool asSha384)
+    {
+        _short = asSha384;
+        Initialize();
+    }
+
+    public override int HashSize => _short ? 384 : 512;
+
+    public override void Initialize()
+    {
+        if (_short)
+        {
+            _state[0] = 0xcbbb9d5dc1059ed8; _state[1] = 0x629a292a367cd507; _state[2] = 0x9159015a3070dd17; _state[3] = 0x152fecd8f70e5939;
+            _state[4] = 0x67332667ffc00b31; _state[5] = 0x8eb44a8768581511; _state[6] = 0xdb0c2e0d64f98fa7; _state[7] = 0x47b5481dbefa4fa4;
+        }
+        else
+        {
+            _state[0] = 0x6a09e667f3bcc908; _state[1] = 0xbb67ae8584caa73b; _state[2] = 0x3c6ef372fe94f82b; _state[3] = 0xa54ff53a5f1d36f1;
+            _state[4] = 0x510e527fade682d1; _state[5] = 0x9b05688c2b3e6c1f; _state[6] = 0x1f83d9abfb41bd6b; _state[7] = 0x5be0cd19137e2179;
+        }
+        _filled = 0;
+        _length = 0;
+    }
+
+    public override HashAlgorithm Snapshot()
+    {
+        Sha512Implementation copy = new Sha512Implementation(_short);
+        for (int i = 0; i < 8; i++) copy._state[i] = _state[i];
+        for (int i = 0; i < 128; i++) copy._block[i] = _block[i];
+        copy._filled = _filled;
+        copy._length = _length;
+        return copy;
+    }
+
+    protected override void HashCore(byte[] array, int ibStart, int cbSize)
+    {
+        _length = _length + cbSize;
+        int at = ibStart;
+        int end = ibStart + cbSize;
+        while (at < end)
+        {
+            int take = 128 - _filled;
+            if (take > end - at) take = end - at;
+            for (int i = 0; i < take; i++) _block[_filled + i] = array[at + i];
+            _filled = _filled + take;
+            at = at + take;
+            if (_filled == 128)
+            {
+                Compress();
+                _filled = 0;
+            }
+        }
+    }
+
+    protected override byte[] HashFinal()
+    {
+        long bits = _length * 8;
+        _block[_filled] = 0x80;
+        _filled = _filled + 1;
+        if (_filled > 112)
+        {
+            while (_filled < 128) { _block[_filled] = 0; _filled = _filled + 1; }
+            Compress();
+            _filled = 0;
+        }
+        while (_filled < 120) { _block[_filled] = 0; _filled = _filled + 1; }
+        for (int i = 0; i < 8; i++) _block[120 + i] = (byte)(bits >> (56 - 8 * i));
+        Compress();
+
+        int words = _short ? 6 : 8;
+        byte[] made = new byte[words * 8];
+        for (int i = 0; i < words; i++)
+        {
+            ulong v = _state[i];
+            for (int j = 0; j < 8; j++) made[i * 8 + j] = (byte)(v >> (56 - 8 * j));
+        }
+        return made;
+    }
+
+    static ulong Rotr(ulong x, int n) { return (x >> n) | (x << (64 - n)); }
+
+    void Compress()
+    {
+        ulong[] w = _w;
+        for (int i = 0; i < 16; i++)
+        {
+            ulong v = 0;
+            for (int j = 0; j < 8; j++) v = (v << 8) | _block[i * 8 + j];
+            w[i] = v;
+        }
+        for (int i = 16; i < 80; i++)
+        {
+            ulong s0 = Rotr(w[i - 15], 1) ^ Rotr(w[i - 15], 8) ^ (w[i - 15] >> 7);
+            ulong s1 = Rotr(w[i - 2], 19) ^ Rotr(w[i - 2], 61) ^ (w[i - 2] >> 6);
+            w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+        }
+
+        ulong a = _state[0], b = _state[1], c = _state[2], d = _state[3];
+        ulong e = _state[4], f = _state[5], g = _state[6], h = _state[7];
+        for (int i = 0; i < 80; i++)
+        {
+            ulong big1 = Rotr(e, 14) ^ Rotr(e, 18) ^ Rotr(e, 41);
+            ulong choose = (e & f) ^ (~e & g);
+            ulong t1 = h + big1 + choose + K[i] + w[i];
+            ulong big0 = Rotr(a, 28) ^ Rotr(a, 34) ^ Rotr(a, 39);
+            ulong majority = (a & b) ^ (a & c) ^ (b & c);
+            ulong t2 = big0 + majority;
+            h = g;
+            g = f;
+            f = e;
+            e = d + t1;
+            d = c;
+            c = b;
+            b = a;
+            a = t1 + t2;
+        }
+        _state[0] = _state[0] + a; _state[1] = _state[1] + b; _state[2] = _state[2] + c; _state[3] = _state[3] + d;
+        _state[4] = _state[4] + e; _state[5] = _state[5] + f; _state[6] = _state[6] + g; _state[7] = _state[7] + h;
+    }
+}
+
+/// SHA384.Create()'s object: SHA-384 as a SHA384, run by the SHA-512 engine.
+sealed class Sha384Implementation : SHA384
+{
+    Sha512Implementation _engine = new Sha512Implementation(true);
+
+    public override void Initialize() { _engine.Initialize(); }
+
+    public override HashAlgorithm Snapshot()
+    {
+        Sha384Implementation copy = new Sha384Implementation();
+        copy._engine = (Sha512Implementation)_engine.Snapshot();
+        return copy;
+    }
+
+    protected override void HashCore(byte[] array, int ibStart, int cbSize) { _engine.Append(array, ibStart, cbSize); }
+
+    protected override byte[] HashFinal() { return _engine.HashAndReset(); }
+}
+
+/// A hash with a key (System.Security.Cryptography.KeyedHashAlgorithm).
+abstract class KeyedHashAlgorithm : HashAlgorithm
+{
+    protected byte[] KeyValue = new byte[0];
+
+    public virtual byte[] Key
+    {
+        get
+        {
+            byte[] copy = new byte[KeyValue.Length];
+            for (int i = 0; i < copy.Length; i++) copy[i] = KeyValue[i];
+            return copy;
+        }
+        set
+        {
+            if (value == null) throw new ArgumentNullException(nameof(value));
+            byte[] copy = new byte[value.Length];
+            for (int i = 0; i < copy.Length; i++) copy[i] = value[i];
+            KeyValue = copy;
+        }
+    }
+}
+
+/// HMAC (RFC 2104) over any of the hashes: H(K ^ opad, H(K ^ ipad, data)),
+/// a key longer than a block hashed first, a shorter one padded with zeros.
+class HMAC : KeyedHashAlgorithm
+{
+    readonly HashAlgorithmName _algorithm;
+    HashAlgorithm _inner;
+    byte[] _inPad = new byte[0];
+    byte[] _outPad = new byte[0];
+
+    public HMAC(HashAlgorithmName algorithm, byte[] key)
+    {
+        _algorithm = algorithm;
+        _inner = HashAlgorithmName.Make(algorithm);
+        Key = key;
+    }
+
+    public string HashName => _algorithm.Name ?? "";
+
+    public override int HashSize => _inner.HashSize;
+
+    public override byte[] Key
+    {
+        get { return base.Key; }
+        set
+        {
+            base.Key = value;
+            int block = HashAlgorithmName.BlockBytes(_algorithm);
+            byte[] key = KeyValue;
+            if (key.Length > block) key = HashAlgorithmName.Make(_algorithm).ComputeHash(key);
+            _inPad = new byte[block];
+            _outPad = new byte[block];
+            for (int i = 0; i < block; i++)
+            {
+                byte k = i < key.Length ? key[i] : (byte)0;
+                _inPad[i] = (byte)(k ^ 0x36);
+                _outPad[i] = (byte)(k ^ 0x5c);
+            }
+            Initialize();
+        }
+    }
+
+    public override void Initialize()
+    {
+        _inner.Initialize();
+        if (_inPad.Length > 0) _inner.Append(_inPad, 0, _inPad.Length);
+    }
+
+    public override HashAlgorithm Snapshot()
+    {
+        HMAC copy = new HMAC(_algorithm, KeyValue);
+        copy._inner = _inner.Snapshot();
+        return copy;
+    }
+
+    protected override void HashCore(byte[] array, int ibStart, int cbSize) { _inner.Append(array, ibStart, cbSize); }
+
+    protected override byte[] HashFinal()
+    {
+        byte[] inside = _inner.HashAndReset();
+        HashAlgorithm outer = HashAlgorithmName.Make(_algorithm);
+        outer.Append(_outPad, 0, _outPad.Length);
+        outer.Append(inside, 0, inside.Length);
+        return outer.HashAndReset();
+    }
+}
+
+class HMACMD5 : HMAC
+{
+    public HMACMD5() : base(HashAlgorithmName.MD5, RandomNumberGenerator.GetBytes(64)) { }
+    public HMACMD5(byte[] key) : base(HashAlgorithmName.MD5, key) { }
+    public static byte[] HashData(byte[] key, byte[] source) { return new HMACMD5(key).ComputeHash(source); }
+}
+
+class HMACSHA1 : HMAC
+{
+    public HMACSHA1() : base(HashAlgorithmName.SHA1, RandomNumberGenerator.GetBytes(64)) { }
+    public HMACSHA1(byte[] key) : base(HashAlgorithmName.SHA1, key) { }
+    public static byte[] HashData(byte[] key, byte[] source) { return new HMACSHA1(key).ComputeHash(source); }
+}
+
+class HMACSHA256 : HMAC
+{
+    public HMACSHA256() : base(HashAlgorithmName.SHA256, RandomNumberGenerator.GetBytes(64)) { }
+    public HMACSHA256(byte[] key) : base(HashAlgorithmName.SHA256, key) { }
+    public static byte[] HashData(byte[] key, byte[] source) { return new HMACSHA256(key).ComputeHash(source); }
+}
+
+class HMACSHA384 : HMAC
+{
+    public HMACSHA384() : base(HashAlgorithmName.SHA384, RandomNumberGenerator.GetBytes(128)) { }
+    public HMACSHA384(byte[] key) : base(HashAlgorithmName.SHA384, key) { }
+    public static byte[] HashData(byte[] key, byte[] source) { return new HMACSHA384(key).ComputeHash(source); }
+}
+
+class HMACSHA512 : HMAC
+{
+    public HMACSHA512() : base(HashAlgorithmName.SHA512, RandomNumberGenerator.GetBytes(128)) { }
+    public HMACSHA512(byte[] key) : base(HashAlgorithmName.SHA512, key) { }
+    public static byte[] HashData(byte[] key, byte[] source) { return new HMACSHA512(key).ComputeHash(source); }
+}
+
+/// A hash, or an HMAC, made a piece at a time and read when wanted: after
+/// everything (GetHashAndReset, which starts it again) or part way
+/// (GetCurrentHash, which does not).
+sealed class IncrementalHash : IDisposable
+{
+    readonly HashAlgorithm _algorithm;
+    readonly HashAlgorithmName _name;
+    bool _disposed;
+
+    IncrementalHash(HashAlgorithmName name, HashAlgorithm algorithm)
+    {
+        _name = name;
+        _algorithm = algorithm;
+    }
+
+    public static IncrementalHash CreateHash(HashAlgorithmName hashAlgorithm)
+    {
+        return new IncrementalHash(hashAlgorithm, HashAlgorithmName.Make(hashAlgorithm));
+    }
+
+    public static IncrementalHash CreateHMAC(HashAlgorithmName hashAlgorithm, byte[] key)
+    {
+        if (key == null) throw new ArgumentNullException(nameof(key));
+        return new IncrementalHash(hashAlgorithm, new HMAC(hashAlgorithm, key));
+    }
+
+    public HashAlgorithmName AlgorithmName => _name;
+
+    public int HashLengthInBytes => _algorithm.HashSize / 8;
+
+    public void AppendData(byte[] data)
+    {
+        if (data == null) throw new ArgumentNullException(nameof(data));
+        AppendData(data, 0, data.Length);
+    }
+
+    public void AppendData(byte[] data, int offset, int count)
+    {
+        CheckDisposed();
+        _algorithm.Append(data, offset, count);
+    }
+
+    public void AppendData(ReadOnlySpan<byte> data)
+    {
+        byte[] copy = data.ToArray();
+        AppendData(copy, 0, copy.Length);
+    }
+
+    public byte[] GetHashAndReset()
+    {
+        CheckDisposed();
+        return _algorithm.HashAndReset();
+    }
+
+    public int GetHashAndReset(Span<byte> destination)
+    {
+        byte[] made = GetHashAndReset();
+        if (destination.Length < made.Length) throw new ArgumentException("Destination is too short.", nameof(destination));
+        new ReadOnlySpan<byte>(made).CopyTo(destination);
+        return made.Length;
+    }
+
+    public bool TryGetHashAndReset(Span<byte> destination, out int bytesWritten)
+    {
+        if (destination.Length < HashLengthInBytes)
+        {
+            bytesWritten = 0;
+            return false;
+        }
+        bytesWritten = GetHashAndReset(destination);
+        return true;
+    }
+
+    public byte[] GetCurrentHash()
+    {
+        CheckDisposed();
+        return _algorithm.CurrentHash();
+    }
+
+    public void Dispose()
+    {
+        if (!_disposed)
+        {
+            _disposed = true;
+            _algorithm.Dispose();
+        }
+    }
+
+    void CheckDisposed()
+    {
+        if (_disposed) throw new ObjectDisposedException(nameof(IncrementalHash));
+    }
+}
+
+enum CryptoStreamMode
+{
+    Read = 0,
+    Write = 1,
+}
+
+/// A stream through a transform: what is written is transformed and written
+/// on (Write mode), what is read is read and transformed (Read mode). The
+/// last block is transformed by FlushFinalBlock, or on disposal. Run over a
+/// hash, it hashes everything that passes through.
+class CryptoStream : Stream
+{
+    readonly Stream _stream;
+    readonly ICryptoTransform _transform;
+    readonly CryptoStreamMode _mode;
+    readonly bool _leaveOpen;
+    readonly byte[] _input;
+    int _inputFilled;
+    byte[] _output = new byte[0];
+    int _outputAt;
+    bool _finalDone;
+    bool _ended;
+
+    public CryptoStream(Stream stream, ICryptoTransform transform, CryptoStreamMode mode) : this(stream, transform, mode, false)
+    {
+    }
+
+    public CryptoStream(Stream stream, ICryptoTransform transform, CryptoStreamMode mode, bool leaveOpen)
+    {
+        if (stream == null) throw new ArgumentNullException(nameof(stream));
+        if (transform == null) throw new ArgumentNullException(nameof(transform));
+        if (mode == CryptoStreamMode.Read && !stream.CanRead) throw new ArgumentException("Stream was not readable.", nameof(stream));
+        if (mode == CryptoStreamMode.Write && !stream.CanWrite) throw new ArgumentException("Stream was not writable.", nameof(stream));
+        _stream = stream;
+        _transform = transform;
+        _mode = mode;
+        _leaveOpen = leaveOpen;
+        _input = new byte[transform.InputBlockSize];
+    }
+
+    public override bool CanRead => _mode == CryptoStreamMode.Read;
+    public override bool CanWrite => _mode == CryptoStreamMode.Write;
+    public override bool CanSeek => false;
+
+    public bool HasFlushedFinalBlock => _finalDone;
+
+    public override void Write(byte[] buffer, int offset, int count)
+    {
+        if (_mode != CryptoStreamMode.Write) throw new NotSupportedException("Stream does not support writing.");
+        if (buffer == null) throw new ArgumentNullException(nameof(buffer));
+        if (offset < 0 || count < 0 || offset > buffer.Length - count) throw new ArgumentOutOfRangeException(nameof(offset));
+        int block = _input.Length;
+        int at = offset;
+        int end = offset + count;
+
+        // A part block already waiting is filled first.
+        if (_inputFilled > 0)
+        {
+            while (_inputFilled < block && at < end) { _input[_inputFilled] = buffer[at]; _inputFilled = _inputFilled + 1; at = at + 1; }
+            if (_inputFilled == block)
+            {
+                WriteTransformed(_input, 0, block);
+                _inputFilled = 0;
+            }
+        }
+        // Then whole blocks straight from the caller's buffer.
+        int whole = (end - at) / block * block;
+        if (whole > 0)
+        {
+            if (_transform.CanTransformMultipleBlocks)
+            {
+                WriteTransformed(buffer, at, whole);
+            }
+            else
+            {
+                for (int i = 0; i < whole; i = i + block) WriteTransformed(buffer, at + i, block);
+            }
+            at = at + whole;
+        }
+        // And what is left waits for the rest of its block.
+        while (at < end) { _input[_inputFilled] = buffer[at]; _inputFilled = _inputFilled + 1; at = at + 1; }
+    }
+
+    void WriteTransformed(byte[] buffer, int offset, int count)
+    {
+        byte[] output = new byte[count / _input.Length * _transform.OutputBlockSize];
+        int made = _transform.TransformBlock(buffer, offset, count, output, 0);
+        if (made > 0) _stream.Write(output, 0, made);
+    }
+
+    /// Transforms what is left, writes it on, and lets the stream under it
+    /// finish too (a CryptoStream under this one finishes its own last block).
+    public void FlushFinalBlock()
+    {
+        if (_finalDone) throw new NotSupportedException("FlushFinalBlock() method was called twice on a CryptoStream. It can only be called once.");
+        if (_mode != CryptoStreamMode.Write) throw new NotSupportedException("Stream does not support writing.");
+        _finalDone = true;
+        byte[] last = _transform.TransformFinalBlock(_input, 0, _inputFilled);
+        _inputFilled = 0;
+        if (last.Length > 0) _stream.Write(last, 0, last.Length);
+        if (_stream is CryptoStream inner)
+        {
+            if (!inner.HasFlushedFinalBlock) inner.FlushFinalBlock();
+        }
+        else
+        {
+            _stream.Flush();
+        }
+    }
+
+    public override void Flush()
+    {
+    }
+
+    public override int Read(byte[] buffer, int offset, int count)
+    {
+        if (_mode != CryptoStreamMode.Read) throw new NotSupportedException("Stream does not support reading.");
+        if (buffer == null) throw new ArgumentNullException(nameof(buffer));
+        if (offset < 0 || count < 0 || offset > buffer.Length - count) throw new ArgumentOutOfRangeException(nameof(offset));
+        int done = 0;
+        while (done < count)
+        {
+            if (_outputAt < _output.Length)
+            {
+                int take = _output.Length - _outputAt;
+                if (take > count - done) take = count - done;
+                for (int i = 0; i < take; i++) buffer[offset + done + i] = _output[_outputAt + i];
+                _outputAt = _outputAt + take;
+                done = done + take;
+                continue;
+            }
+            if (_ended)
+            {
+                break;
+            }
+            Refill();
+        }
+        return done;
+    }
+
+    /// The next transformed piece: a block (or several) read and
+    /// transformed, or, at the end of the stream under it, the last one.
+    void Refill()
+    {
+        int block = _input.Length;
+        while (_inputFilled < block)
+        {
+            int got = _stream.Read(_input, _inputFilled, block - _inputFilled);
+            if (got <= 0)
+            {
+                _output = _transform.TransformFinalBlock(_input, 0, _inputFilled);
+                _outputAt = 0;
+                _inputFilled = 0;
+                _ended = true;
+                _finalDone = true;
+                return;
+            }
+            _inputFilled = _inputFilled + got;
+        }
+        byte[] output = new byte[_transform.OutputBlockSize];
+        int made = _transform.TransformBlock(_input, 0, block, output, 0);
+        _inputFilled = 0;
+        if (made < output.Length)
+        {
+            byte[] trimmed = new byte[made];
+            for (int i = 0; i < made; i++) trimmed[i] = output[i];
+            output = trimmed;
+        }
+        _output = output;
+        _outputAt = 0;
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        try
+        {
+            if (disposing && _mode == CryptoStreamMode.Write && !_finalDone)
+            {
+                FlushFinalBlock();
+            }
+        }
+        finally
+        {
+            if (disposing && !_leaveOpen)
+            {
+                _stream.Dispose();
+            }
+            base.Dispose(disposing);
+        }
+    }
+}
+

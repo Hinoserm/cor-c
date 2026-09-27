@@ -88,8 +88,20 @@ public static class ManagedLayouts
                         + " depth=" + type.Depth + " base=" + (type.Base?.Key ?? "")
                         + " interfaces=[" + string.Join(",", type.Interfaces.OrderBy(f => f.Key, StringComparer.Ordinal).Select(f => f.Key)) + "]"
                         + " impls=[" + string.Join(",", type.InterfaceImplementations.OrderBy(pair => pair.Key).Select(pair => pair.Key + "=>" + Lowering.Label(pair.Value))) + "]");
-                    foreach (MethodSymbol method in type.Methods.Where(m => m.VtableSlot >= 0).OrderBy(m => m.VtableSlot))
-                        Console.Error.WriteLine("  slot " + method.VtableSlot + " " + method.Name + "/" + method.Params.Count);
+                    Console.Error.WriteLine("  delegate=" + (type.Decl?.IsDelegate == true) + " mods=" + (int)(type.Decl?.Mods ?? Mods.None));
+                    foreach (FieldSymbol field in type.Fields.Where(field => !field.Static).OrderBy(field => field.Name, StringComparer.Ordinal))
+                        Console.Error.WriteLine("  field " + field.Name + " " + field.Type + "|" + (field.Type.Symbol?.Key ?? "") + " @" + field.Offset
+                            + " boxed=" + field.Boxed + " volatile=" + field.Volatile + " required=" + field.Required + " inline=" + field.Inline);
+                    foreach (MethodSymbol method in type.Methods.Where(m => m.VtableSlot >= 0 && m.Decl?.LocalCopy != true).OrderBy(m => m.VtableSlot))
+                        Console.Error.WriteLine("  slot " + method.VtableSlot + " " + method.Name + " " + method.Returns + "|" + (method.Returns.Symbol?.Key ?? "")
+                            + " static=" + method.Static + " ctor=" + method.IsCtor + " abstract=" + method.Abstract + " ("
+                            + string.Join(", ", method.Params.Select(p => p.Type + "|" + (p.Type.Symbol?.Key ?? "") + (p.ByRef ? " ref" : "") + (p.ReadOnly ? " in" : ""))) + ")");
+                    foreach (FieldSymbol field in type.Fields.Where(field => field.Static))
+                        Console.Error.WriteLine("  static " + field.Name + " " + field.Type + "|" + (field.Type.Symbol?.Key ?? ""));
+                    foreach (MethodSymbol method in type.Methods.Where(m => m.Decl?.LocalCopy != true && m.TypeParams.Count == 0))
+                        Console.Error.WriteLine("  method " + Lowering.Label(method) + " " + method.Returns + "|" + (method.Returns.Symbol?.Key ?? "")
+                            + " mods=" + (int)(method.Decl?.Mods ?? Mods.None) + " ("
+                            + string.Join(", ", method.Params.Select(p => p.Type + "|" + (p.Type.Symbol?.Key ?? "") + (p.ByRef ? " ref" : "") + (p.ReadOnly ? " in" : ""))) + ")");
                 }
                 yield return new ManagedTypeLayout("type:" + type.Key, SHA256.HashData(stream.ToArray()));
                 foreach (FieldSymbol field in type.Fields.Where(field => field.Static))

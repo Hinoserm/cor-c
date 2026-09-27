@@ -120,26 +120,47 @@ public static class ProjectCommand
         if (!Compile(runtimeArgs, runtime, ProjectState.Digest(settings), index)) return 1;
         List<string> objects = new() { runtime };
         int changed = 0;
+
+        // THE SOURCES IN PARALLEL, through compile-project -- the unit
+        // compiler the OS build uses: one process, a worker per unit, the
+        // declaration index and lexed headers shared between them, and a
+        // unit skipped when its receipt and stamp (its source, its options,
+        // this compiler) say its object is current. Units are handed over in
+        // groups that share their options: a project's defines and warning
+        // mode, and the entry unit, which names the program's Main.
+        Dictionary<string, (List<string> Args, List<(string Source, string Object)> Units, bool Entry)> groups = new(StringComparer.Ordinal);
         foreach (var owned in owners.OrderBy(pair => pair.Key, StringComparer.Ordinal))
         {
             string source = owned.Key; EvaluatedProject owner = owned.Value;
-            string destination = Path.Combine(work, ProjectState.Digest(source)[..24] + ".o");
             if (ProjectState.FileIdentity(source) != generation[source]) throw new InvalidDataException("Source changed during project compilation: " + source);
-            string signature = ProjectState.Digest(settings + "\n" + generation[source] + "\n" + string.Join(";", owner.Defines)
-                + "\n" + owner.WarningsAsErrors + "\n" + entries[0].Type);
-            List<string> args = new() { "compile", "--nostdlib", "--obj", "--jobs", workers.ToString(), "--decl-index", index,
-                "--assembly", project.AssemblyName, source };
-            args.AddRange(cpuArguments);
-            if (source != entries[0].Path) args.Add("--lib");
-            else { args.Add("--main-type"); args.Add(entries[0].Type); }
-            if (!owner.WarningsAsErrors) args.Add("-Wno-error");
-            foreach (string define in owner.Defines) { args.Add("--define"); args.Add(define); }
-            foreach (string use in owner.Usings) { args.Add("--using"); args.Add(use); }
-            foreach (string library in libraries) { args.Add("--ref"); args.Add(library); }
-            bool current = Current(destination, signature, index);
-            if (!Compile(args, destination, signature, index)) return 1;
-            if (!current) changed++;
+            string destination = Path.Combine(work, ProjectState.Digest(source)[..24] + ".o");
+            bool entry = source == entries[0].Path;
+            List<string> options = new() { "--nostdlib", "--obj", "--decl-index", index, "--assembly", project.AssemblyName };
+            options.AddRange(cpuArguments);
+            if (entry) { options.Add("--main-type"); options.Add(entries[0].Type); }
+            if (!owner.WarningsAsErrors) options.Add("-Wno-error");
+            foreach (string define in owner.Defines) { options.Add("--define"); options.Add(define); }
+            foreach (string use in owner.Usings) { options.Add("--using"); options.Add(use); }
+            foreach (string library in libraries) { options.Add("--ref"); options.Add(library); }
+            string key = (entry ? "entry\n" : "lib\n") + string.Join("\n", options);
+            if (!groups.TryGetValue(key, out var group))
+            {
+                group = (options, new List<(string, string)>(), entry);
+                groups[key] = group;
+            }
+            group.Units.Add((source, destination));
             objects.Add(destination);
+        }
+        foreach (var group in groups.Values)
+        {
+            string list = Path.Combine(work, "units-" + ProjectState.Digest(string.Join("\n", group.Args))[..16] + ".tsv");
+            File.WriteAllLines(list, group.Units.Select(unit => unit.Source + "\t" + unit.Object + "\t" + unit.Object + ".deps\t" + (group.Entry ? "entry" : "lib")));
+            Dictionary<string, DateTime> before = group.Units.ToDictionary(unit => unit.Object,
+                unit => File.Exists(unit.Object) ? File.GetLastWriteTimeUtc(unit.Object) : DateTime.MinValue, StringComparer.Ordinal);
+            List<string> args = new() { "--units", list, "--jobs", workers.ToString() };
+            args.AddRange(group.Args);
+            if (ProjectCompile.Run(args.ToArray()) != 0) return 1;
+            changed += group.Units.Count(unit => File.GetLastWriteTimeUtc(unit.Object) != before[unit.Object]);
         }
         foreach (var source in generation)
             if (ProjectState.FileIdentity(source.Key) != source.Value) throw new InvalidDataException("Source changed during project compilation: " + source.Key);

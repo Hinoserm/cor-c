@@ -1,0 +1,103 @@
+// test: collection_interfaces
+// expect-exit: 0
+// expect-output:
+// ilist 3 1 True False
+// icollection 4 True
+// idictionary 2 True x readonly-keys
+// pairs a=1 True
+// readonly 2 True refused
+// set 3 True True False True
+// setcase True
+// sorted 1,5 True
+// linked 3
+// concurrent-bag 2 2
+// concurrent-queue 1 2 True
+// concurrent-stack 3,2,1 3
+// concurrent-dict 1 2 5 True 10
+//
+// System.Collections.Generic's mutable interfaces and what implements them,
+// the read-only views that refuse to change, and System.Collections.Concurrent.
+
+using System.Collections.Concurrent;
+using System.Collections.ObjectModel;
+
+static class Program
+{
+    static int Total(ICollection<int> items)
+    {
+        int sum = 0;
+        foreach (int item in items) sum = sum + item;
+        return sum;
+    }
+
+    static int Main()
+    {
+        IList<string> list = new List<string> { "a", "b" };
+        list.Insert(1, "x");
+        Console.WriteLine("ilist " + list.Count + " " + list.IndexOf("x") + " " + list.Contains("b") + " " + list.IsReadOnly);
+
+        ICollection<int> numbers = new List<int> { 1, 3 };
+        numbers.Add(0);
+        numbers.Remove(0);
+        Console.WriteLine("icollection " + Total(numbers) + " " + numbers.Contains(3));
+
+        IDictionary<string, string> map = new Dictionary<string, string>();
+        map.Add("k", "x");
+        map["j"] = "y";
+        string refused = "";
+        try { map.Keys.Add("nope"); } catch (NotSupportedException) { refused = "readonly-keys"; }
+        Console.WriteLine("idictionary " + map.Count + " " + map.ContainsKey("j") + " " + map["k"] + " " + refused);
+
+        ICollection<KeyValuePair<string, int>> pairs = new Dictionary<string, int>();
+        pairs.Add(new KeyValuePair<string, int>("a", 1));
+        KeyValuePair<string, int>[] copied = new KeyValuePair<string, int>[1];
+        pairs.CopyTo(copied, 0);
+        Console.WriteLine("pairs " + copied[0].Key + "=" + copied[0].Value + " " + pairs.Contains(new KeyValuePair<string, int>("a", 1)));
+
+        ReadOnlyCollection<int> view = new List<int> { 4, 5 }.AsReadOnly();
+        IList<int> asList = view;
+        string blocked = "";
+        try { asList.Add(6); } catch (NotSupportedException) { blocked = "refused"; }
+        Console.WriteLine("readonly " + view.Count + " " + asList.IsReadOnly + " " + blocked);
+
+        ISet<int> set = new HashSet<int> { 1, 2 };
+        bool added = set.Add(3);
+        set.SymmetricExceptWith(new[] { 4, 1 });
+        Console.WriteLine("set " + set.Count + " " + added + " " + set.IsSupersetOf(new[] { 2, 3 }) + " " + set.IsProperSubsetOf(new[] { 2, 3, 4 }) + " " + set.Overlaps(new[] { 9, 4 }));
+
+        HashSet<string> words = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Alpha", "beta" };
+        Console.WriteLine("setcase " + words.IsSubsetOf(new[] { "ALPHA", "BETA", "gamma" }));
+
+        SortedSet<int> sorted = new SortedSet<int> { 5, 1, 3 };
+        sorted.SymmetricExceptWith(new[] { 3 });
+        Console.WriteLine("sorted " + string.Join(",", sorted) + " " + sorted.IsProperSupersetOf(new[] { 1 }));
+
+        ICollection<string> linked = new LinkedList<string>();
+        linked.Add("a"); linked.Add("b"); linked.Add("c");
+        Console.WriteLine("linked " + linked.Count);
+
+        ConcurrentBag<int> bag = new ConcurrentBag<int>();
+        bag.Add(1); bag.Add(2);
+        bag.TryTake(out int took);
+        bag.Add(took);
+        Console.WriteLine("concurrent-bag " + bag.Count + " " + took);
+
+        ConcurrentQueue<int> queue = new ConcurrentQueue<int>();
+        queue.Enqueue(1); queue.Enqueue(2);
+        queue.TryDequeue(out int first);
+        queue.TryPeek(out int next);
+        Console.WriteLine("concurrent-queue " + first + " " + next + " " + !queue.IsEmpty);
+
+        ConcurrentStack<int> stack = new ConcurrentStack<int>();
+        stack.PushRange(new[] { 1, 2, 3 });
+        Console.WriteLine("concurrent-stack " + string.Join(",", stack.ToArray()) + " " + stack.Count);
+
+        ConcurrentDictionary<string, int> counts = new ConcurrentDictionary<string, int>();
+        int one = counts.GetOrAdd("a", 1);
+        int two = counts.AddOrUpdate("a", 0, (key, old) => old + 1);
+        counts.TryAdd("b", 5);
+        bool updated = counts.TryUpdate("b", 10, 5);
+        Console.WriteLine("concurrent-dict " + one + " " + two + " " + 5 + " " + updated + " " + counts["b"]);
+        return 0;
+    }
+}

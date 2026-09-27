@@ -877,7 +877,15 @@ public sealed class Monomorphiser
             _tupleNamings.Add(named);
         }
 
-        ArrayIsASequence(r);
+        // AN ARRAY'S SEQUENCES OVER THE ARGUMENTS IT HAS NOW. The reference as
+        // written names the template's own parameters: `KeyValuePair<K, V>[]`
+        // in Dictionary<K, V>, copied for int and long, is an array of
+        // KeyValuePair<int, long> -- asked with the written K and V, it made
+        // IEnumerable<KeyValuePair<K, V>> for parameters no scope has.
+        if (!open)
+        {
+            ArrayIsASequence(r, args);
+        }
 
         string name = args.Count > 0 && !open ? Instantiate(r.Name, args, r) : r.Name;
 
@@ -915,7 +923,7 @@ public sealed class Monomorphiser
     /// Only the interface, which is a descriptor and no code. What answers its
     /// members is the view the checker writes over the array itself.
     /// </summary>
-    private void ArrayIsASequence(TypeRef r)
+    private void ArrayIsASequence(TypeRef r, List<TypeRef> args)
     {
         if (r.ArrayRank != 1 || r.Name.Length == 0 || _methodParams.Contains(r.Name))
         {
@@ -924,7 +932,7 @@ public sealed class Monomorphiser
 
         TypeRef element = new()
         {
-            Name = r.Name, Args = r.Args, Nullable = r.ElementNullable,
+            Name = r.Name, Args = args, Nullable = r.ElementNullable,
             PointerDepth = r.PointerDepth, TupleNames = r.TupleNames,
             Line = r.Line, Col = r.Col,
         };

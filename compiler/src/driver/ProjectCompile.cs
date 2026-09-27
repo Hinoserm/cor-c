@@ -187,18 +187,87 @@ public static class ProjectCompile
         // simply what was asked for.
         //
         // AND MEMORY, which the budget does not see. A worker the budget
-        // allows is still not started while the machine has less to spare
-        // than a unit needs, unless no other unit is running: on a small
-        // machine the units then go through one at a time, slower and the
-        // same. What each unit compiles to never depends on it.
+        // allows is still not started while the machine cannot hold it beside
+        // the units already running, unless no other unit is running: on a
+        // small machine the units then go through one at a time, slower and
+        // the same. What each unit compiles to never depends on it.
+        //
+        // WHAT A UNIT NEEDS IS MEASURED, not assumed, and it is measured PER
+        // BYTE OF SOURCE. One figure for every unit fits nothing: Binder.cs
+        // needs eight hundred megabytes and a two-kilobyte enum a sliver of
+        // it, so a flat reserve either runs the big ones out of memory or runs
+        // the small ones one at a time. Each collection's figure for what is
+        // live (the heap less its free fragments), above what was live with
+        // no unit running, is divided by the source bytes then being compiled;
+        // the largest rate seen, times a unit's own size, is what it is taken
+        // to need, and it is reserved with half as much again on top.
+        //
+        // AND IT IS RESERVED FOR AS LONG AS THE UNIT RUNS. Asking only whether
+        // there is room for one more NOW admits a dozen units at the start of
+        // their lives, when each holds a fraction of its peak, and they reach
+        // their peaks together: that ran a two-gigabyte heap out of memory
+        // within a minute of a clean build. So the test is whether what the
+        // process can hold -- what is still free, plus what the running units
+        // already hold -- covers every running unit's reservation and the new
+        // one's.
+        long Size(Unit unit) { try { return new FileInfo(unit.Source).Length; } catch (IOException) { return 0L; } }
         int compiling = 0;
+        long runningBytes = 0;
+        List<long> holding = new();
         object admit = new();
+        long baselineLive = LiveHeap();
+        long perByte = 0;
+        long seenCollection = -1;
+        static long LiveHeap()
+        {
+            GCMemoryInfo info = GC.GetGCMemoryInfo();
+            return info.HeapSizeBytes - info.FragmentedBytes;
+        }
+        bool measured = false;
+        long startCollection = GC.GetGCMemoryInfo().Index;
+        void Observe()
+        {
+            GCMemoryInfo info = GC.GetGCMemoryInfo();
+            if (compiling > 0 && runningBytes > 0 && info.Index != seenCollection && info.Index != startCollection)
+            {
+                seenCollection = info.Index;
+                long rate = (info.HeapSizeBytes - info.FragmentedBytes - baselineLive) / runningBytes;
+                if (rate > perByte) perByte = rate;
+            }
+        }
+        long Needed(long bytes)
+        {
+            long need = Math.Max(UnitReserve, perByte * bytes);
+            return need + need / 2;
+        }
+        long Capacity() => MachineMemory.Available() + Math.Max(0, GC.GetTotalMemory(false) - baselineLive);
+        // At the rate known NOW: a rate that rose after a unit was admitted
+        // raises what that unit holds, rather than leaving it booked at the
+        // figure from before anyone knew better.
+        long Reserved()
+        {
+            long sum = 0;
+            foreach (long held in holding) sum += Needed(held);
+            return sum;
+        }
+        // UNTIL A UNIT HAS BEEN SEEN THROUGH, ONE AT A TIME: a collection
+        // early in a unit sees it long before its peak, and the first dozen
+        // admitted on that were what ran out. The biggest source goes first,
+        // so the first unit measured whole is the largest there is.
         int Gated(Unit unit)
         {
+            long bytes = Math.Max(1, Size(unit));
             lock (admit)
             {
-                while (compiling > 0 && MachineMemory.Available() < UnitReserve) Monitor.Wait(admit, 15);
+                while (true)
+                {
+                    Observe();
+                    if (compiling == 0 || (measured && Capacity() >= Reserved() + Needed(bytes))) break;
+                    Monitor.Wait(admit, 15);
+                }
                 compiling++;
+                runningBytes += bytes;
+                holding.Add(bytes);
             }
             try
             {
@@ -207,7 +276,18 @@ public static class ProjectCompile
                 try { return One(unit); }
                 finally { pool.Give(); }
             }
-            finally { lock (admit) { compiling--; Monitor.PulseAll(admit); } }
+            finally
+            {
+                lock (admit)
+                {
+                    Observe();
+                    measured = measured || seenCollection != -1;
+                    compiling--;
+                    runningBytes -= bytes;
+                    holding.Remove(bytes);
+                    Monitor.PulseAll(admit);
+                }
+            }
         }
 
         // THE ENTRY SOURCE JOINS THE QUEUE LIKE THE REST. It used to be
@@ -235,7 +315,6 @@ public static class ProjectCompile
         // the largest unit threads of its own was tried and made things
         // worse: the collector, not the scheduler, is what the last two
         // seconds are spent on, and more concurrency means more of it.
-        long Size(Unit unit) { try { return new FileInfo(unit.Source).Length; } catch (IOException) { return 0L; } }
         Unit[] rest = units.Where(unit => !unit.Entry || !dynamic)
             .OrderByDescending(Size).ThenBy(unit => unit.Source, StringComparer.Ordinal).ToArray();
         int next = -1;

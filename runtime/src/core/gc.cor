@@ -3498,6 +3498,12 @@ static class HeapChunks
         _cap = bytes;
     }
 
+    /// The cap SetLimit put on the heap, or 0 for none.
+    public static long Cap
+    {
+        get { return _cap; }
+    }
+
     public static bool Any()
     {
         return _chunks != 0;
