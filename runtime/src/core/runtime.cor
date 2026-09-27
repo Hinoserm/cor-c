@@ -3191,6 +3191,15 @@ static class Runtime
 
     const long StringHashAt = 2 * WordSize.Bytes + 4;
 
+    /// Whether two strings' hashes are both already known and are different
+    /// -- then they differ, whatever their units. Neither is worked out here.
+    public static bool KnownHashesDiffer(string a, string b)
+    {
+        long x = Sys.PeekWord(Sys.Word(a) + StringHashAt);
+        long y = Sys.PeekWord(Sys.Word(b) + StringHashAt);
+        return x != 0 && y != 0 && x != y;
+    }
+
     /// Sets `count` code units from dstAt to `value`; answers count.
     public static int StringFill(string dst, int dstAt, int value, int count)
     {

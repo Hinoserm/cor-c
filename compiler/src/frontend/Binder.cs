@@ -4596,6 +4596,16 @@ public sealed partial class Binder
             {
                 _r.Views[viewed] = ArrayView(from.Element!, wantedFace);
             }
+            // AND A COVARIANT ONE THE HELPER OF WHAT IS WANTED: a string[] as
+            // an IEnumerable<object> is read through the view that answers
+            // IEnumerable<object>, which reads each element as the word it is
+            // -- the same words, taken as the wider type, which is what array
+            // covariance means. A view is one per element size and interface.
+            else if (from.IsArray && at is Expr covariant && !Convertible(from, to)
+                     && to.AsNonNullable().Symbol is { Kind: TypeKind.Interface } wider)
+            {
+                _r.Views[covariant] = ArrayView(from.Element!, wider);
+            }
             return;
         }
         Error(at, $"{what}: cannot convert '{from}' to '{to}'");
@@ -4857,6 +4867,18 @@ public sealed partial class Binder
         // convert 'byte[]?[]' to 'byte[][]?'". The warning for the unsafe
         // direction is CheckAssignable's, after the conversion is allowed.
         if (from.IsArray && to.IsArray && SameUnannotated(from, to))
+        {
+            return true;
+        }
+
+        // ARRAY COVARIANCE (C# 10.2.8): a T[] is a U[] when T and U are
+        // references and T reaches U by a reference conversion -- the same
+        // words, read as the wider type. `RegOperand[]` handed to a `params
+        // Operand[]`, `string[]` to `object[]`; never `int[]` to `object[]`,
+        // nor `object[]` to `string[]`.
+        if (from.IsArray && to.IsArray && from.Element is Type fromElement && to.Element is Type toElement
+            && Carried(fromElement) && Carried(toElement) && !fromElement.IsNullableValue && !toElement.IsNullableValue
+            && ReferenceConvertible(fromElement, toElement))
         {
             return true;
         }
@@ -7678,6 +7700,13 @@ public sealed partial class Binder
                 given = OpenAs(openFrom, faceName, wantedArguments.Count, mine, 0);
             }
         }
+        else if (from.IsArray && from.Element is Type arrayElement && wantedArguments.Count == 1
+                 && faceName is "IEnumerable" or "IReadOnlyList" or "IReadOnlyCollection")
+        {
+            // AN ARRAY IS A SEQUENCE OF ITS ELEMENT (ArrayFace), and those
+            // three are declared `out T`: a string[] is an IEnumerable<object>.
+            given = new List<Type> { arrayElement };
+        }
         else if (Instance(from.Symbol, faceName, wantedArguments.Count) is { } implemented)
         {
             given = implemented.TemplateArgs.Select(a => Resolve(a, _thisType)).ToList();
@@ -9913,7 +9942,22 @@ public sealed partial class Binder
 
                     for (int i = 0; i < written.Count; i++)
                     {
-                        Type one = nw.Type.Name.Length == 0 ? had[i] : CheckExpr(written[i]);
+                        // AN ELEMENT IS CONVERTED TO THE ELEMENT TYPE, so it is
+                        // checked with that as what is wanted: `RegOperand[] r =
+                        // { new() { N = 1 } }` makes RegOperands, and a lambda or
+                        // a tuple in a typed array takes its shape from it.
+                        Type one;
+                        if (nw.Type.Name.Length == 0)
+                        {
+                            one = had[i];
+                        }
+                        else
+                        {
+                            Type? outer = _wanted;
+                            _wanted = element;
+                            one = CheckExpr(written[i]);
+                            _wanted = outer;
+                        }
 
                         CheckAssignable(one, element, written[i], $"element {i}");
                     }

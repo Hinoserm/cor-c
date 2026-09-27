@@ -110,9 +110,14 @@ static class String {
     }
 
     public static bool Equals(string? a, string? b) {
-        if (a == null) { return b == null; }
-        if (b == null) { return false; }
+        // THE SAME STRING is equal without a look: every literal is one object
+        // (interned), and a table's key is very often the string it was given.
+        if ((object?)a == (object?)b) { return true; }
+        if (a == null || b == null) { return false; }
         if (a.Length != b.Length) { return false; }
+        // Two strings whose hashes are both known (Runtime.StringHashCode) and
+        // differ cannot be equal: two loads instead of reading every unit.
+        if (Runtime.KnownHashesDiffer(a, b)) { return false; }
         return Sys.StringEqual(a, 0, b, 0, a.Length);
     }
 

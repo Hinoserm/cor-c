@@ -1,0 +1,50 @@
+// test: array_covariance
+// expect-exit: 0
+// expect-output:
+// r1 r2 2
+// r2 2
+// 3 c array
+// abc
+// x
+//
+// Array covariance (C# 10.2.8): a T[] is a U[] when both are references and T
+// reaches U by a reference conversion -- RegOperand[] handed to params
+// Operand[], string[] as object[] -- and an array of references is a sequence
+// of any wider reference type. Elements of a typed array are checked against
+// the element type, so new() in one makes that type. Expected output is real
+// .NET's.
+
+using System;
+using System.Collections.Generic;
+
+class Operand { public virtual string Show() => "op"; }
+class RegOperand : Operand { public int N; public override string Show() => "r" + N; }
+
+static class Program
+{
+    static string All(params Operand[] items)
+    {
+        string s = "";
+        foreach (Operand o in items) s += o.Show() + " ";
+        return s + items.Length;
+    }
+    static int Count(object[] items) => items.Length;
+    static string Kind(object[] items) => "array";
+    static string Kind(object item) => "object";
+
+    static void Main()
+    {
+        RegOperand[] regs = { new() { N = 1 }, new() { N = 2 } };
+        Console.WriteLine(All(regs));
+        Operand[] view = regs;
+        Console.WriteLine(view[1].Show() + " " + view.Length);
+        string[] words = { "a", "b", "c" };
+        object[] objects = words;
+        Console.WriteLine(Count(words) + " " + objects[2] + " " + Kind(words));
+        IEnumerable<object> seq = words;
+        foreach (object o in seq) Console.Write(o);
+        Console.WriteLine();
+        object[][] nested = new string[][] { new[] { "x" } };
+        Console.WriteLine(nested[0][0]);
+    }
+}
