@@ -81,6 +81,9 @@ public static partial class Program
         Try("inline: constant branch budget preserves runtime calls and growth limits", ConstantBranchInlining);
         Try("scalar objects: widths, initialization and conservative escape barriers", ScalarObjectBoundaries);
         Try("escape: owned allocations preserve long free-call ABI", OwnedFreeAbi);
+        Try("escape: recursion cycles solved to their least fixed point", EscapeCycles);
+        Try("escape: a fresh function's result is owned by its caller", FreshReturnOwnership);
+        Try("escape: a callee-filled field dies with its owner", CalleeFilledField);
         Try("local copies: reassignment, branches, joins and loops preserve values", LocalCopyBoundaries);
         Try("division reuse: signed results and redefinition barriers", DivisionReuseBoundaries);
         Try("integer chains: modular constants and mutable-source barriers", IntegerChainBoundaries);
@@ -479,6 +482,113 @@ public static partial class Program
         SameResults(Fib, Inputs, new LocalCopies());
         SameResults(Swap, Inputs, new LocalCopies());
         SameResults(SwitchLoop, Inputs, new LocalCopies());
+    }
+
+    // The free helpers the escape pass needs to see in a module before it
+    // frees anything itself.
+    private static void AddFreeHelpers(Module module)
+    {
+        Function free = new(Escape.Freer, IrType.Void);
+        free.Params.Add(free.NewReg(IrType.I64));
+        new Builder(free, free.NewBlock("entry")).Ret();
+        module.Functions.Add(free);
+        Function field = new(Escape.FieldFreer, IrType.Void);
+        field.Params.Add(field.NewReg(IrType.I64)); field.Params.Add(field.NewReg(IrType.I64));
+        new Builder(field, field.NewBlock("entry")).Ret();
+        module.Functions.Add(field);
+    }
+
+    private static void EscapeCycles()
+    {
+        // walk(p, n) -> step(p, n) -> walk(p, n): a two-function cycle that
+        // hands the caller's object round. Read-only, the object stays in the
+        // caller's frame; stored anywhere on the cycle, it stays on the heap.
+        foreach (string mode in new[] { "read", "retain" })
+        {
+            Module module = new("cycle-" + mode);
+            (Function f, Builder b) = Fn(IrType.I32);
+            module.Functions.Add(f); module.Entry = f.Name;
+            VReg obj = b.Unary(Opcode.Trunc64, b.Call(Escape.Allocator, IrType.I64, new ImmOperand(24, IrType.I64))!);
+            b.Ret(new RegOperand(b.Call("walk", IrType.I32, new RegOperand(obj))!));
+            foreach ((string name, string next) in new[] { ("walk", "step"), ("step", "walk") })
+            {
+                Function g = new(name, IrType.I32);
+                VReg p = g.NewReg(IrType.I32); g.Params.Add(p);
+                Builder gb = new(g, g.NewBlock("entry"));
+                if (mode == "retain" && name == "step") gb.Store(new SymOperand("kept-object"), new RegOperand(p), 0, 4);
+                VReg read = gb.Load(IrType.I32, p, 8, 4, false);
+                VReg deeper = gb.Call(next, IrType.I32, new RegOperand(p))!;
+                gb.Ret(new RegOperand(gb.Binary(Opcode.Add, read, deeper)));
+                module.Functions.Add(g);
+            }
+            Escape pass = new(); pass.Run(module);
+            Verifier.Check(f, "cycle caller " + mode);
+            Assert(pass.Promoted == (mode == "read" ? 1 : 0), mode + ": the cycle's summary decides the object's place");
+        }
+    }
+
+    private static void FreshReturnOwnership()
+    {
+        // make(n) allocates n bytes and returns them; the caller reads one word.
+        // Fresh, the caller owns and frees the result; kept in a static by make,
+        // it is neither fresh nor freed.
+        foreach (string mode in new[] { "fresh", "kept" })
+        {
+            Module module = new("fresh-" + mode);
+            (Function f, Builder b) = Fn(IrType.I64, IrType.I64);
+            module.Functions.Add(f); module.Entry = f.Name;
+            VReg made = b.Call("make", IrType.I32, new RegOperand(f.Params[0]))!;
+            b.Ret(new RegOperand(b.Load(IrType.I64, made, 16, 8)));
+            Function make = new("make", IrType.I32);
+            VReg n = make.NewReg(IrType.I64); make.Params.Add(n);
+            Builder mb = new(make, make.NewBlock("entry"));
+            VReg at = mb.Unary(Opcode.Trunc64, mb.Call(Escape.Allocator, IrType.I64, new RegOperand(n))!);
+            mb.Store(new RegOperand(at), new ImmOperand(7, IrType.I64), 16, 8);
+            if (mode == "kept") mb.Store(new SymOperand("kept-array"), new RegOperand(at), 0, 4);
+            mb.Ret(new RegOperand(at));
+            module.Functions.Add(make);
+            AddFreeHelpers(module);
+            Escape pass = new(); pass.Run(module);
+            Verifier.Check(f, "fresh caller " + mode); Verifier.Check(make, "fresh callee " + mode);
+            Assert(pass.FreshFunctions == (mode == "fresh" ? 1 : 0), mode + ": make is summarised as it is");
+            Assert(pass.OwnedReturns == (mode == "fresh" ? 1 : 0), mode + ": the caller owns only a fresh result");
+            int frees = f.Blocks.SelectMany(x => x.Instrs).Count(i => i.Callee == Escape.Freer);
+            Assert(mode == "fresh" ? frees >= 1 : frees == 0, mode + ": frees placed only for an owned result");
+        }
+    }
+
+    private static void CalleeFilledField()
+    {
+        // fill(o) makes a child array and stores it at o+8. The caller's owner
+        // is a frame slot; with fill keeping nothing else the field is freed
+        // with the owner, and with fill also keeping the child it is not.
+        foreach (string mode in new[] { "owned", "leaked" })
+        {
+            Module module = new("fields-" + mode);
+            (Function f, Builder b) = Fn(IrType.I64, IrType.I64);
+            module.Functions.Add(f); module.Entry = f.Name;
+            VReg owner = b.Unary(Opcode.Trunc64, b.Call(Escape.Allocator, IrType.I64, new ImmOperand(16, IrType.I64))!);
+            b.Call("fill", IrType.Void, new RegOperand(owner), new RegOperand(f.Params[0]));
+            VReg child = b.Load(IrType.I32, owner, 8, 4, false);
+            b.Ret(new RegOperand(b.Load(IrType.I64, child, 16, 8)));
+            Function fill = new("fill", IrType.Void);
+            VReg o = fill.NewReg(IrType.I32); fill.Params.Add(o);
+            VReg size = fill.NewReg(IrType.I64); fill.Params.Add(size);
+            Builder fb = new(fill, fill.NewBlock("entry"));
+            VReg made = fb.Unary(Opcode.Trunc64, fb.Call(Escape.Allocator, IrType.I64, new RegOperand(size))!);
+            fb.Store(new RegOperand(made), new ImmOperand(5, IrType.I64), 16, 8);
+            fb.Store(new RegOperand(o), new RegOperand(made), 8, 4);
+            if (mode == "leaked") fb.Store(new SymOperand("kept-child"), new RegOperand(made), 0, 4);
+            fb.Ret();
+            module.Functions.Add(fill);
+            AddFreeHelpers(module);
+            Escape pass = new(); pass.Run(module);
+            Verifier.Check(f, "field owner " + mode); Verifier.Check(fill, "field filler " + mode);
+            Assert(pass.Promoted == 1, mode + ": the owner is a frame slot either way");
+            Assert(pass.FieldsOwned == (mode == "owned" ? 1 : 0), mode + ": the field is freed only when nothing else keeps it");
+            int fieldFrees = f.Blocks.SelectMany(x => x.Instrs).Count(i => i.Callee == Escape.FieldFreer);
+            Assert(mode == "owned" ? fieldFrees >= 1 : fieldFrees == 0, mode + ": field frees placed accordingly");
+        }
     }
 
     private static void OwnedFreeAbi()
