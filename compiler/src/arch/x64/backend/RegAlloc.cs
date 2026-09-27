@@ -869,11 +869,15 @@ internal sealed class Allocator
             return false;
         }
         MImm imm = _remat[vreg]!;
+        // Only a constant an instruction can carry whatever its other operand
+        // turns out to be: a 64-bit one folded into a move whose destination
+        // is later spilled would ask for `mov m64, imm64`, which x86-64 does
+        // not have. A wider constant is made in a register of its own.
         bool fits = i.Width == 4 || imm.FitsInt32;
         switch (i.Op)
         {
             case MOp.Mov:
-                return o.Operand == 1 && (fits || i.Operands[0] is MReg);
+                return o.Operand == 1 && fits;
             case MOp.Add:
             case MOp.Sub:
             case MOp.And:
