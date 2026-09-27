@@ -42,7 +42,10 @@ public static class IrTypes
             Prim.NInt or Prim.NUInt => Word,
             Prim.F32 => IrType.F32,
             Prim.F64 => IrType.F64,
-            Prim.String or Prim.Type or Prim.Any or Prim.NullLiteral => Word,
+            // An unresolved type is a word as Target.SizeOf says it is, so a
+            // tuple shape made while binding speculatively still loads and
+            // stores what it lays out.
+            Prim.String or Prim.Type or Prim.Any or Prim.NullLiteral or Prim.Error => Word,
             _ => IrType.I32,
         };
     }

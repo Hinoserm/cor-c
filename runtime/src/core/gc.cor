@@ -40,20 +40,22 @@
 // the flags. Offsets are in bytes; a word is four.
 //
 //   +0          size | flags                    (the header word)
-//   +4          the next free block             while it is free
-//   +8          the payload, the address handed out; 8-aligned
-//   +8          the PREVIOUS free block          while it is free
-//   +size-4     size | flags again               (the footer word)
-// Large free blocks instead use +4/+8 for AVL children, +12 for their parent,
-// +16 for height and +20 for largest size. Those words are payload again once
-// the block is allocated.
+//   +W          the next free block             while it is free
+//   +2W         the payload, the address handed out; 8-aligned
+//   +2W         the PREVIOUS free block          while it is free
+//   +size-W     size | flags again               (the footer word)
+// Large free blocks instead use +W/+2W for AVL children, +3W for their
+// parent, +4W for height and +5W for largest size. Those words are payload
+// again once the block is allocated. W is the machine word (WordSize.Bytes):
+// four on i386, where every offset here is the one the collector was written
+// with, and eight in long mode.
 //
 // The size is at BOTH ENDS on purpose, and that is what makes coalescing
 // possible: the block after this one is at +size, and the one BEFORE it can
 // only be found by reading backwards, through its footer. Removing a neighbour
 // uses its links in an exact-size list or its parent in a large-bin AVL tree.
 //
-// A payload is 8-aligned because the block is and the header is 8 bytes,
+// A payload is 8-aligned because the block is and the header is two words,
 // which is what a long or a double field in an object needs.
 
 // ---- what a chunk looks like ------------------------------------------------
@@ -64,18 +66,18 @@
 // heap cannot allocate anything:
 //
 //   +0    next chunk, or 0
-//   +4    end: one past the last block laid down (the bump pointer's floor)
-//   +8    limit: one past the chunk's memory
-//   +12   raw page-anchor table, or 0 when not allocated
-//   +16   the first block
+//   +W    end: one past the last block laid down (the bump pointer's floor)
+//   +2W   limit: one past the chunk's memory
+//   +3W   raw page-anchor table, or 0 when not allocated
+//   +4W   the first block
 //
 // The record is not a block and is never swept.
 
 static class Gc
 {
-    const long HeaderBytes = 8;
-    const long FooterBytes = 4;
-    const long Overhead = 12;
+    const long HeaderBytes = 2 * WordSize.Bytes;
+    const long FooterBytes = WordSize.Bytes;
+    const long Overhead = 3 * WordSize.Bytes;
 
     const long FlagFree = 1;
     const long FlagMark = 2;
@@ -93,13 +95,13 @@ static class Gc
     // names and values, cost two million pointer lookups a collection on a
     // 233 MHz board. KindLeaf is not a multiple of eight, so no link left
     // behind by a free block can be taken for it.
-    const long KindAt = 4;
+    const long KindAt = WordSize.Bytes;
     const long KindLeaf = 0x4C454146;
 
     // The smallest block that can describe itself while free: header, two
     // links, footer. A remainder below this cannot be a block, so a split
     // that would leave one gives the caller the extra bytes instead.
-    const long Smallest = 16;
+    const long Smallest = 4 * WordSize.Bytes;
 
     // Collect when this much has been allocated since the last collection:
     // 256 KB to begin with, and thereafter the live size, so that a program
@@ -120,7 +122,7 @@ static class Gc
     // in one range and billions of first-fit probes. Tree lower bounds keep
     // searches logarithmic without external nodes or a bigger block header.
     const long Bins = 64;
-    const long BinsBytes = 512; // roots followed by per-bin largest-size hints
+    const long BinsBytes = 2 * Bins * WordSize.Bytes; // roots followed by per-bin largest-size hints
     const long ExactLimit = 256;
 
     // A long zero and one, named: assigning an int literal to a long local
@@ -172,8 +174,8 @@ static class Gc
     static bool _snapshots;         // every chunk has its table for this cycle
     static bool _concurrent;        // this cycle lets the world run while marking
     static long _barrier;           // the barrier's ring, or 0
-    const long BarrierBytes = 131072;
     const long BarrierCount = 16384;        // places, two words each
+    const long BarrierBytes = BarrierCount * (2 * WordSize.Bytes);
 
     public static long ConcurrentCycles;
     public static long BarrierTaken;
@@ -242,7 +244,7 @@ static class Gc
             long block = Sys.ThreadBlock();
             if (block == 0) return Allocated;
             return (Sys.Peek(block + Tls.Allocated) & 0xFFFFFFFF)
-                 + ((Sys.Peek(block + Tls.Allocated + 4) & 0xFFFFFFFF) << 32)
+                 + ((Sys.Peek(block + Tls.Allocated + WordSize.Bytes) & 0xFFFFFFFF) << 32)
                  + InBuffer(block);
         }
     }
@@ -263,9 +265,9 @@ static class Gc
         _allocated = _allocated + bytes;
         if (block == 0) return;
         long total = (Sys.Peek(block + Tls.Allocated) & 0xFFFFFFFF)
-                   + ((Sys.Peek(block + Tls.Allocated + 4) & 0xFFFFFFFF) << 32) + bytes;
+                   + ((Sys.Peek(block + Tls.Allocated + WordSize.Bytes) & 0xFFFFFFFF) << 32) + bytes;
         Sys.Poke(block + Tls.Allocated, total & 0xFFFFFFFF);
-        Sys.Poke(block + Tls.Allocated + 4, total >> 32);
+        Sys.Poke(block + Tls.Allocated + WordSize.Bytes, total >> 32);
     }
 
     public static long Threshold
@@ -326,23 +328,23 @@ static class Gc
 
     static long BinHead(long bin)
     {
-        return Sys.Peek(_bins + bin * 4);
+        return Sys.Peek(_bins + bin * WordSize.Bytes);
     }
 
     static void SetBinHead(long bin, long block)
     {
-        Sys.Poke(_bins + bin * 4, block);
+        Sys.Poke(_bins + bin * WordSize.Bytes, block);
     }
 
     // Large free blocks are AVL nodes ordered by (size, address). Their
     // otherwise-unused payload holds the extra metadata; allocated layout,
     // boundary tags and the smallest allocation are unchanged. Exact-size
     // small bins retain their doubly linked lists.
-    const long TreeLeft = 4;
-    const long TreeRight = 8;
-    const long TreeParent = 12;
-    const long TreeHeight = 16;
-    const long TreeMaxSize = 20;
+    const long TreeLeft = WordSize.Bytes;
+    const long TreeRight = 2 * WordSize.Bytes;
+    const long TreeParent = 3 * WordSize.Bytes;
+    const long TreeHeight = 4 * WordSize.Bytes;
+    const long TreeMaxSize = 5 * WordSize.Bytes;
 
     static long Height(long node)
     {
@@ -361,7 +363,7 @@ static class Gc
     static void PublishLargest(long bin)
     {
         long root = BinHead(bin);
-        Sys.Poke(_bins + Bins * 4 + bin * 4, root == 0 ? Zero : Sys.Peek(root + TreeMaxSize));
+        Sys.Poke(_bins + Bins * WordSize.Bytes + bin * WordSize.Bytes, root == 0 ? Zero : Sys.Peek(root + TreeMaxSize));
     }
 
     static void TreeReplace(long bin, long old, long replacement)
@@ -566,7 +568,7 @@ static class Gc
                 {
                     okay = CheckTree(node, Zero, bin, Zero, Zero, Zero, Zero, 0) >= 0;
                     long largest = node == 0 ? Zero : Sys.Peek(node + TreeMaxSize);
-                    if (okay && Sys.Peek(_bins + Bins * 4 + bin * 4) != largest)
+                    if (okay && Sys.Peek(_bins + Bins * WordSize.Bytes + bin * WordSize.Bytes) != largest)
                     { BadIndex(node, 8); okay = false; }
                 }
                 else
@@ -578,7 +580,7 @@ static class Gc
                         if (small > HeapChunks.HeapBytes / Smallest || !IndexBlock(node, bin)
                             || Sys.Peek(node + HeaderBytes) != previous)
                         { BadIndex(node, 6); okay = false; }
-                        else { previous = node; node = Sys.Peek(node + 4); }
+                        else { previous = node; node = Sys.Peek(node + KindAt); }
                     }
                 }
                 bin = bin + 1;
@@ -601,7 +603,7 @@ static class Gc
             _smallFree = _smallFree + 1;
         }
 
-        Sys.Poke(block + 4, head);
+        Sys.Poke(block + KindAt, head);
         Sys.Poke(block + HeaderBytes, Zero);
 
         if (head != 0)
@@ -621,7 +623,7 @@ static class Gc
             PublishLargest(bin);
             return;
         }
-        long next = Sys.Peek(block + 4);
+        long next = Sys.Peek(block + KindAt);
         long prev = Sys.Peek(block + HeaderBytes);
 
         if (size <= ExactLimit)
@@ -635,7 +637,7 @@ static class Gc
         }
         else
         {
-            Sys.Poke(prev + 4, next);
+            Sys.Poke(prev + KindAt, next);
         }
 
         if (next != 0)
@@ -653,7 +655,7 @@ static class Gc
         while (bin < Bins)
         {
             SetBinHead(bin, Zero);
-            Sys.Poke(_bins + Bins * 4 + bin * 4, Zero);
+            Sys.Poke(_bins + Bins * WordSize.Bytes + bin * WordSize.Bytes, Zero);
             bin = bin + 1;
         }
     }
@@ -792,7 +794,7 @@ static class Gc
             return _smallFree != 0 && BinHead((need >> 3) - 2) != 0;
         // Never walk a concurrently rotating tree. Only the published size
         // hint is read here; the locked allocation path resolves stale hints.
-        return Sys.Peek(_bins + Bins * 4 + BinOf(need) * 4) >= need;
+        return Sys.Peek(_bins + Bins * WordSize.Bytes + BinOf(need) * WordSize.Bytes) >= need;
     }
 
     /// A fresh allocation buffer for the thread whose block is `block`, big
@@ -1320,7 +1322,7 @@ static class Gc
         while (p < to)
         {
             Sys.Poke(p, Zero);
-            p = p + 4;
+            p = p + WordSize.Bytes;
         }
     }
 
@@ -1821,7 +1823,7 @@ static class Gc
     // mark and the Overflow word says so; a rescan pass (RescanMarked) finds
     // every block marked and not yet scanned, and scans it.
 
-    const long GreyEntry = 8;       // a signature and a block
+    const long GreyEntry = 2 * WordSize.Bytes;       // a signature and a block
 
     static long GreySignature(long place)
     {
@@ -1835,10 +1837,10 @@ static class Gc
 
         while (true)
         {
-            long tail = Sys.Peek(ctl + GcLock.GreyTail) & 0xFFFFFFFF;
-            long head = Sys.Peek(ctl + GcLock.GreyHead) & 0xFFFFFFFF;
+            long tail = Sys.Peek(ctl + GcLock.GreyTail) & WordSize.AddressMask;
+            long head = Sys.Peek(ctl + GcLock.GreyHead) & WordSize.AddressMask;
 
-            if (_markAt == 0 || ((tail - head) & 0xFFFFFFFF) >= _markCount)
+            if (_markAt == 0 || ((tail - head) & WordSize.AddressMask) >= _markCount)
             {
                 Sys.AtomicSwap(ctl + GcLock.Overflow, 1);
                 return;
@@ -1848,16 +1850,16 @@ static class Gc
             // is only ever claimed when it is free: an add past a full ring
             // would leave a claim nobody fills, and every taker would stop at
             // it for good.
-            if ((Sys.Cas(ctl + GcLock.GreyTail, tail, (tail + 1) & 0xFFFFFFFF) & 0xFFFFFFFF) != tail)
+            if ((Sys.Cas(ctl + GcLock.GreyTail, tail, (tail + 1) & WordSize.AddressMask) & WordSize.AddressMask) != tail)
             {
                 continue;
             }
 
             long at = _markAt + (tail & (_markCount - 1)) * GreyEntry;
-            Sys.Poke(at + 4, block);
+            Sys.Poke(at + WordSize.Bytes, block);
             Sys.AtomicSwap(at, GreySignature(tail));
 
-            long depth = (tail + 1 - head) & 0xFFFFFFFF;
+            long depth = (tail + 1 - head) & WordSize.AddressMask;
             if (depth > _markPeak) _markPeak = depth;
             return;
         }
@@ -1872,8 +1874,8 @@ static class Gc
 
         while (true)
         {
-            long head = Sys.Peek(ctl + GcLock.GreyHead) & 0xFFFFFFFF;
-            long tail = Sys.Peek(ctl + GcLock.GreyTail) & 0xFFFFFFFF;
+            long head = Sys.Peek(ctl + GcLock.GreyHead) & WordSize.AddressMask;
+            long tail = Sys.Peek(ctl + GcLock.GreyTail) & WordSize.AddressMask;
 
             if (head == tail || _markAt == 0)
             {
@@ -1882,16 +1884,16 @@ static class Gc
 
             long at = _markAt + (head & (_markCount - 1)) * GreyEntry;
 
-            if ((Sys.Peek(at) & 0xFFFFFFFF) != GreySignature(head))
+            if ((Sys.Peek(at) & WordSize.AddressMask) != GreySignature(head))
             {
                 return 0;
             }
 
             // Read before the take: once the head has moved past this place a
             // pusher may claim it again and write over the block.
-            long block = Sys.Peek(at + 4);
+            long block = Sys.Peek(at + WordSize.Bytes);
 
-            if ((Sys.Cas(ctl + GcLock.GreyHead, head, (head + 1) & 0xFFFFFFFF) & 0xFFFFFFFF) == head)
+            if ((Sys.Cas(ctl + GcLock.GreyHead, head, (head + 1) & WordSize.AddressMask) & WordSize.AddressMask) == head)
             {
                 return block;
             }
@@ -1904,8 +1906,8 @@ static class Gc
     static bool GreyIdle()
     {
         long ctl = GcLock.Words();
-        long head = Sys.Peek(ctl + GcLock.GreyHead) & 0xFFFFFFFF;
-        long tail = Sys.Peek(ctl + GcLock.GreyTail) & 0xFFFFFFFF;
+        long head = Sys.Peek(ctl + GcLock.GreyHead) & WordSize.AddressMask;
+        long tail = Sys.Peek(ctl + GcLock.GreyTail) & WordSize.AddressMask;
         return head == tail && Sys.Peek(ctl + GcLock.Active) == 0;
     }
 
@@ -1916,14 +1918,14 @@ static class Gc
     {
         while (true)
         {
-            long word = Sys.Peek(block) & 0xFFFFFFFF;
+            long word = Sys.Peek(block) & WordSize.AddressMask;
 
             if ((word & FlagFree) != 0 || (word & flag) != 0)
             {
                 return false;
             }
 
-            if ((Sys.Cas(block, word, word | flag) & 0xFFFFFFFF) == word)
+            if ((Sys.Cas(block, word, word | flag) & WordSize.AddressMask) == word)
             {
                 SyncFooter(block);
                 return true;
@@ -2089,12 +2091,12 @@ static class Gc
     /// Public because GcRoots feeds the roots through it.
     public static void ScanRange(long from, long to)
     {
-        long p = (from + 3) & -4;
+        long p = (from + WordSize.Bytes - 1) & -WordSize.Bytes;
 
         while (p < to)
         {
             MarkAt(Sys.Peek(p));
-            p = p + 4;
+            p = p + WordSize.Bytes;
         }
     }
 
@@ -2852,17 +2854,17 @@ static class Gc
             return;
         }
 
-        long place = Sys.AtomicAdd(ctl + GcLock.BarrierTail, 1) & 0xFFFFFFFF;
-        long head = Sys.Peek(ctl + GcLock.BarrierHead) & 0xFFFFFFFF;
+        long place = Sys.AtomicAdd(ctl + GcLock.BarrierTail, 1) & WordSize.AddressMask;
+        long head = Sys.Peek(ctl + GcLock.BarrierHead) & WordSize.AddressMask;
 
-        if (((place - head) & 0xFFFFFFFF) >= BarrierCount)
+        if (((place - head) & WordSize.AddressMask) >= BarrierCount)
         {
             Sys.AtomicSwap(ctl + GcLock.BarrierLost, 1);
             return;
         }
 
-        long at = _barrier + (place & (BarrierCount - 1)) * 8;
-        Sys.Poke(at + 4, value);
+        long at = _barrier + (place & (BarrierCount - 1)) * (2 * WordSize.Bytes);
+        Sys.Poke(at + WordSize.Bytes, value);
         Sys.AtomicSwap(at, Signature(place));
     }
 
@@ -2879,14 +2881,14 @@ static class Gc
             return false;
         }
 
-        long head = Sys.Peek(ctl + GcLock.BarrierHead) & 0xFFFFFFFF;
-        long tail = Sys.Peek(ctl + GcLock.BarrierTail) & 0xFFFFFFFF;
+        long head = Sys.Peek(ctl + GcLock.BarrierHead) & WordSize.AddressMask;
+        long tail = Sys.Peek(ctl + GcLock.BarrierTail) & WordSize.AddressMask;
 
         while (head != tail)
         {
-            long at = _barrier + (head & (BarrierCount - 1)) * 8;
+            long at = _barrier + (head & (BarrierCount - 1)) * (2 * WordSize.Bytes);
 
-            if ((Sys.Peek(at) & 0xFFFFFFFF) != Signature(head))
+            if ((Sys.Peek(at) & WordSize.AddressMask) != Signature(head))
             {
                 // Claimed, not signed. With the world running its writer is
                 // a few instructions away: come back. At a stop there is no
@@ -2900,13 +2902,13 @@ static class Gc
             }
             else
             {
-                long value = Sys.Peek(at + 4);
+                long value = Sys.Peek(at + WordSize.Bytes);
                 Sys.AtomicSwap(at, 0);
                 BarrierTaken = BarrierTaken + 1;
                 MarkAt(value);
             }
 
-            head = (head + 1) & 0xFFFFFFFF;
+            head = (head + 1) & WordSize.AddressMask;
         }
 
         Sys.AtomicSwap(ctl + GcLock.BarrierHead, head);
@@ -2933,7 +2935,7 @@ static class Gc
             if (anchors != 0)
             {
                 long pages = HeapChunks.BlockAnchorCount(chunk);
-                for (long i = 0; i < pages; i++) Sys.Poke(anchors + i * 4, Zero);
+                for (long i = 0; i < pages; i++) Sys.Poke(anchors + i * WordSize.Bytes, Zero);
                 HeapChunks.ClearStarts(chunk, _cycle);
                 long block = HeapChunks.First(chunk);
                 long end = HeapChunks.End(chunk);
@@ -2962,7 +2964,7 @@ static class Gc
                     long last = (block + size - 1 - chunk) / 4096;
                     while (page <= last)
                     {
-                        Sys.Poke(anchors + page * 4, block);
+                        Sys.Poke(anchors + page * WordSize.Bytes, block);
                         page = page + 1;
                     }
                     // WHERE EVERY OBJECT STARTS, as of this stop: what the
@@ -3179,10 +3181,10 @@ static class Gc
 // matters because a chunk is taken exactly when the heap cannot allocate:
 //
 //   +0    next chunk, or 0
-//   +4    end: one past the last block laid down (the bump pointer's floor)
-//   +8    limit: one past the chunk's memory
-//   +12   raw page-anchor table, or 0 when not allocated
-//   +16   the first block
+//   +W    end: one past the last block laid down (the bump pointer's floor)
+//   +2W   limit: one past the chunk's memory
+//   +3W   raw page-anchor table, or 0 when not allocated
+//   +4W   the first block
 //
 // The record is not a block and is never swept. This class knows nothing
 // about blocks; it is the part of the heap a precise collector keeps.
@@ -3190,10 +3192,10 @@ static class Gc
 static class HeapChunks
 {
     const long ChunkNext = 0;
-    const long ChunkEnd = 4;
-    const long ChunkLimit = 8;
-    const long ChunkAnchors = 12;
-    const long ChunkBytes = 16;
+    const long ChunkEnd = WordSize.Bytes;
+    const long ChunkLimit = 2 * WordSize.Bytes;
+    const long ChunkAnchors = 3 * WordSize.Bytes;
+    const long ChunkBytes = 4 * WordSize.Bytes;
 
     // What a chunk is normally: a megabyte, so the operating system is asked
     // rarely and the chunk list stays short for the collector to walk. A
@@ -3208,7 +3210,7 @@ static class HeapChunks
     static long _cap;           // the most to take from the OS; 0 = no cap
     // Raw metadata, not managed objects: allocating it must not recurse into
     // the collector. Mutations, like the chunk list, hold the heap lock.
-    // Four bytes per chunk; one initial page covers a 1 GiB ordinary heap.
+    // One word per chunk; one initial page covers a 1 GiB ordinary heap.
     static long _index;
     static long _indexCount;
     static long _indexCapacity;
@@ -3225,21 +3227,26 @@ static class HeapChunks
 
     // After the anchors, in the same mapping: the cycle the start bits are
     // of, and the start bits -- one for every eight bytes of the chunk, set
-    // where an allocated block began at that cycle's first stop.
+    // where an allocated block began at that cycle's first stop. A bitmap
+    // word is a machine word, so a compare-and-swap of one touches nothing
+    // but its own bits.
+    const long StartBits = 8 * WordSize.Bytes;
+    const long StartBitMask = StartBits - 1;
+
     static long StartWords(long chunk)
     {
-        return ((Limit(chunk) - chunk) / 8 + 31) / 32;
+        return ((Limit(chunk) - chunk) / 8 + StartBits - 1) / StartBits;
     }
 
     static long AnchorBytes(long chunk)
     {
-        return (BlockAnchorCount(chunk) * 4 + 4 + StartWords(chunk) * 4 + 4095) & -4096;
+        return (BlockAnchorCount(chunk) * WordSize.Bytes + WordSize.Bytes + StartWords(chunk) * WordSize.Bytes + 4095) & -4096;
     }
 
     static long Starts(long chunk)
     {
         long anchors = Sys.Peek(chunk + ChunkAnchors);
-        return anchors == 0 ? 0 : anchors + BlockAnchorCount(chunk) * 4;
+        return anchors == 0 ? 0 : anchors + BlockAnchorCount(chunk) * WordSize.Bytes;
     }
 
     public static long StartsCycle(long chunk)
@@ -3253,7 +3260,7 @@ static class HeapChunks
         long starts = Starts(chunk);
         if (starts == 0) return;
         long words = StartWords(chunk);
-        for (long i = 0; i < words; i++) Sys.Poke(starts + 4 + i * 4, 0);
+        for (long i = 0; i < words; i++) Sys.Poke(starts + WordSize.Bytes + i * WordSize.Bytes, 0);
         Sys.Poke(starts, cycle);
     }
 
@@ -3262,8 +3269,8 @@ static class HeapChunks
         long starts = Starts(chunk);
         if (starts == 0) return;
         long bit = (block - chunk) / 8;
-        long at = starts + 4 + (bit / 32) * 4;
-        Sys.Poke(at, Sys.Peek(at) | (1L << (int)(bit & 31)));
+        long at = starts + WordSize.Bytes + (bit / StartBits) * WordSize.Bytes;
+        Sys.Poke(at, Sys.Peek(at) | (1L << (int)(bit & StartBitMask)));
     }
 
     /// SetStart when other threads are writing starts into the same table
@@ -3274,14 +3281,14 @@ static class HeapChunks
         long starts = Starts(chunk);
         if (starts == 0) return;
         long bit = (block - chunk) / 8;
-        long at = starts + 4 + (bit / 32) * 4;
-        long mask = 1L << (int)(bit & 31);
+        long at = starts + WordSize.Bytes + (bit / StartBits) * WordSize.Bytes;
+        long mask = 1L << (int)(bit & StartBitMask);
 
         while (true)
         {
-            long word = Sys.Peek(at) & 0xFFFFFFFF;
+            long word = Sys.Peek(at) & WordSize.AddressMask;
             if ((word & mask) != 0) return;
-            if ((Sys.Cas(at, word, (word | mask) & 0xFFFFFFFF) & 0xFFFFFFFF) == word) return;
+            if ((Sys.Cas(at, word, (word | mask) & WordSize.AddressMask) & WordSize.AddressMask) == word) return;
         }
     }
 
@@ -3290,7 +3297,7 @@ static class HeapChunks
         long starts = Starts(chunk);
         if (starts == 0) return false;
         long bit = (block - chunk) / 8;
-        return (Sys.Peek(starts + 4 + (bit / 32) * 4) & (1L << (int)(bit & 31))) != 0;
+        return (Sys.Peek(starts + WordSize.Bytes + (bit / StartBits) * WordSize.Bytes) & (1L << (int)(bit & StartBitMask))) != 0;
     }
 
     /// The highest start at or below `address`, or 0.
@@ -3299,21 +3306,21 @@ static class HeapChunks
         long starts = Starts(chunk);
         if (starts == 0) return 0;
         long bit = (address - chunk) / 8;
-        long word = bit / 32;
-        long bits = Sys.Peek(starts + 4 + word * 4) & 0xFFFFFFFF;
-        long keep = bit & 31;
-        if (keep != 31) bits = bits & ((1L << (int)(keep + 1)) - 1);
+        long word = bit / StartBits;
+        long bits = Sys.Peek(starts + WordSize.Bytes + word * WordSize.Bytes) & WordSize.AddressMask;
+        long keep = bit & StartBitMask;
+        if (keep != StartBitMask) bits = bits & ((1L << (int)(keep + 1)) - 1);
 
         while (bits == 0)
         {
             if (word == 0) return 0;
             word = word - 1;
-            bits = Sys.Peek(starts + 4 + word * 4) & 0xFFFFFFFF;
+            bits = Sys.Peek(starts + WordSize.Bytes + word * WordSize.Bytes) & WordSize.AddressMask;
         }
 
-        long top = 31;
+        long top = StartBitMask;
         while ((bits & (1L << (int)top)) == 0) top = top - 1;
-        return chunk + (word * 32 + top) * 8;
+        return chunk + (word * StartBits + top) * 8;
     }
 
     /// The lowest start at or above `address`, or 0.
@@ -3323,20 +3330,20 @@ static class HeapChunks
         if (starts == 0) return 0;
         long words = StartWords(chunk);
         long bit = (address - chunk + 7) / 8;
-        long word = bit / 32;
+        long word = bit / StartBits;
         if (word >= words) return 0;
-        long bits = (Sys.Peek(starts + 4 + word * 4) & 0xFFFFFFFF) & ~((1L << (int)(bit & 31)) - 1);
+        long bits = (Sys.Peek(starts + WordSize.Bytes + word * WordSize.Bytes) & WordSize.AddressMask) & ~((1L << (int)(bit & StartBitMask)) - 1);
 
         while (bits == 0)
         {
             word = word + 1;
             if (word >= words) return 0;
-            bits = Sys.Peek(starts + 4 + word * 4) & 0xFFFFFFFF;
+            bits = Sys.Peek(starts + WordSize.Bytes + word * WordSize.Bytes) & WordSize.AddressMask;
         }
 
         long low = 0;
         while ((bits & (1L << (int)low)) == 0) low = low + 1;
-        return chunk + (word * 32 + low) * 8;
+        return chunk + (word * StartBits + low) * 8;
     }
 
     // THE CHUNK INDEX AS IT WAS AT THE STOP. The live one is edited in
@@ -3353,7 +3360,36 @@ static class HeapChunks
     // of all the processor time of a 233 MHz board's boot.
     static long _snapRegions;
     const long RegionShift = 16;
+#if TARGET_64BIT
+    // LONG MODE HAS 2^47 BYTES OF USER ADDRESS SPACE, and a flat bit per 64
+    // KiB of it would be two gigabytes of map. So the bits are two-level: a
+    // top table of one word per 4 GiB -- 2^15 of them, whose pages the kernel
+    // commits only as words are written -- each naming an 8 KiB bitmap for
+    // its 4 GiB, made the first time a chunk lands there. A heap is a handful
+    // of them, and clearing those is what a snapshot costs, not the whole top
+    // table. A bitmap the system would not give turns the filter off for the
+    // cycle, and the index search answers alone, as it did before the filter.
+    const long RegionTops = 32768;
+    const long RegionTopShift = 32;
+    const long RegionMapBytes = 8192;           // 2^32 >> 16 bits, per 4 GiB
+    static long _snapRegionUsed;                // top slots holding a bitmap, one word each
+    static long _snapRegionUsedCount;
+    static bool _snapFilterOff;
+
+    static long RegionBitmap(long top)
+    {
+        long bitmap = Sys.Peek(_snapRegions + top * WordSize.Bytes);
+        if (bitmap != 0) return bitmap;
+        bitmap = Platform.Map(RegionMapBytes);
+        if (bitmap == 0) return 0;
+        Sys.Poke(_snapRegions + top * WordSize.Bytes, bitmap);
+        Sys.Poke(_snapRegionUsed + _snapRegionUsedCount * WordSize.Bytes, top);
+        _snapRegionUsedCount = _snapRegionUsedCount + 1;
+        return bitmap;
+    }
+#else
     const long RegionMapBytes = 8192;           // 2^32 >> 16 bits
+#endif
 
     public static bool SnapshotIndex()
     {
@@ -3362,24 +3398,55 @@ static class HeapChunks
 
         if (_snapCapacity < _indexCount)
         {
-            if (_snap != 0) Platform.Unmap(_snap, _snapCapacity * 4);
+            if (_snap != 0) Platform.Unmap(_snap, _snapCapacity * WordSize.Bytes);
             _snapCapacity = 0;
-            _snap = Platform.Map(_indexCapacity * 4);
+            _snap = Platform.Map(_indexCapacity * WordSize.Bytes);
             if (_snap == 0) return false;
             _snapCapacity = _indexCapacity;
         }
 
-        for (long i = 0; i < _indexCount; i++) Sys.Poke(_snap + i * 4, Sys.Peek(_index + i * 4));
+        for (long i = 0; i < _indexCount; i++) Sys.Poke(_snap + i * WordSize.Bytes, Sys.Peek(_index + i * WordSize.Bytes));
         _snapCount = _indexCount;
 
+#if TARGET_64BIT
+        if (_snapRegions == 0)
+        {
+            _snapRegions = Platform.Map(RegionTops * WordSize.Bytes);
+            _snapRegionUsed = _snapRegions == 0 ? 0 : Platform.Map(RegionTops * WordSize.Bytes);
+            if (_snapRegionUsed == 0) _snapRegions = 0;
+        }
+        _snapFilterOff = _snapRegions == 0;
+        if (_snapRegions != 0)
+        {
+            for (long k = 0; k < _snapRegionUsedCount; k++)
+            {
+                long bitmap = Sys.Peek(_snapRegions + Sys.Peek(_snapRegionUsed + k * WordSize.Bytes) * WordSize.Bytes);
+                for (long i = 0; i < RegionMapBytes; i = i + WordSize.Bytes) Sys.Poke(bitmap + i, 0);
+            }
+            for (long i = 0; i < _snapCount && !_snapFilterOff; i++)
+            {
+                long chunk = Sys.Peek(_snap + i * WordSize.Bytes);
+                long last = (Sys.Peek(chunk + ChunkLimit) - 1) >> RegionShift;
+                for (long r = chunk >> RegionShift; r <= last; r++)
+                {
+                    long top = r >> (RegionTopShift - RegionShift);
+                    long bitmap = top >= 0 && top < RegionTops ? RegionBitmap(top) : 0;
+                    if (bitmap == 0) { _snapFilterOff = true; break; }
+                    long within = r & ((1L << (RegionTopShift - RegionShift)) - 1);
+                    long at = bitmap + (within >> 3);
+                    Sys.PokeByte(at, Sys.PeekByte(at) | (1 << (int)(within & 7)));
+                }
+            }
+        }
+#else
         if (_snapRegions == 0) _snapRegions = Platform.Map(RegionMapBytes);
         if (_snapRegions != 0)
         {
-            for (long i = 0; i < RegionMapBytes; i = i + 4) Sys.Poke(_snapRegions + i, 0);
+            for (long i = 0; i < RegionMapBytes; i = i + WordSize.Bytes) Sys.Poke(_snapRegions + i, 0);
             for (long i = 0; i < _snapCount; i++)
             {
-                long chunk = Sys.Peek(_snap + i * 4) & 0xFFFFFFFF;
-                long last = ((Sys.Peek(chunk + ChunkLimit) & 0xFFFFFFFF) - 1) >> RegionShift;
+                long chunk = Sys.Peek(_snap + i * WordSize.Bytes) & WordSize.AddressMask;
+                long last = ((Sys.Peek(chunk + ChunkLimit) & WordSize.AddressMask) - 1) >> RegionShift;
                 for (long r = chunk >> RegionShift; r <= last; r++)
                 {
                     long at = _snapRegions + (r >> 3);
@@ -3387,31 +3454,44 @@ static class HeapChunks
                 }
             }
         }
+#endif
         return true;
     }
 
     public static long SnapshotChunk(long i)
     {
-        return i < _snapCount ? Sys.Peek(_snap + i * 4) : 0;
+        return i < _snapCount ? Sys.Peek(_snap + i * WordSize.Bytes) : 0;
     }
 
     public static long OfSnapshot(long at)
     {
+#if TARGET_64BIT
+        if (!_snapFilterOff && _snapRegions != 0)
+        {
+            long top = at >> RegionTopShift;
+            if (top < 0 || top >= RegionTops) return 0;
+            long bitmap = Sys.Peek(_snapRegions + top * WordSize.Bytes);
+            if (bitmap == 0) return 0;
+            long within = (at >> RegionShift) & ((1L << (RegionTopShift - RegionShift)) - 1);
+            if ((Sys.PeekByte(bitmap + (within >> 3)) & (1 << (int)(within & 7))) == 0) return 0;
+        }
+#else
         if (_snapRegions != 0)
         {
-            long region = (at & 0xFFFFFFFF) >> RegionShift;
+            long region = (at & WordSize.AddressMask) >> RegionShift;
             if ((Sys.PeekByte(_snapRegions + (region >> 3)) & (1 << (int)(region & 7))) == 0) return 0;
         }
+#endif
         long low = 0, high = _snapCount;
         while (low < high)
         {
             long middle = low + (high - low) / 2;
-            if ((Sys.Peek(_snap + middle * 4) & 0xFFFFFFFF) <= (at & 0xFFFFFFFF)) low = middle + 1;
+            if ((Sys.Peek(_snap + middle * WordSize.Bytes) & WordSize.AddressMask) <= (at & WordSize.AddressMask)) low = middle + 1;
             else high = middle;
         }
         if (low == 0) return 0;
-        long candidate = Sys.Peek(_snap + (low - 1) * 4);
-        return (at & 0xFFFFFFFF) < (Sys.Peek(candidate + ChunkLimit) & 0xFFFFFFFF) ? candidate : 0;
+        long candidate = Sys.Peek(_snap + (low - 1) * WordSize.Bytes);
+        return (at & WordSize.AddressMask) < (Sys.Peek(candidate + ChunkLimit) & WordSize.AddressMask) ? candidate : 0;
     }
 
     public static long PrepareBlockAnchors(long chunk)
@@ -3439,7 +3519,7 @@ static class HeapChunks
             long anchors = Sys.Peek(chunk + ChunkAnchors);
             if (anchors != 0)
             {
-                long block = Sys.Peek(anchors + ((address - chunk) / 4096) * 4);
+                long block = Sys.Peek(anchors + ((address - chunk) / 4096) * WordSize.Bytes);
                 if (block != 0) return block;
             }
         }
@@ -3453,7 +3533,7 @@ static class HeapChunks
         while (low < high)
         {
             long middle = low + (high - low) / 2;
-            if (Sys.Peek(_index + middle * 4) < address) low = middle + 1;
+            if (Sys.Peek(_index + middle * WordSize.Bytes) < address) low = middle + 1;
             else high = middle;
         }
         return low;
@@ -3465,28 +3545,28 @@ static class HeapChunks
         if (_indexCount == _indexCapacity)
         {
             long capacity = _indexCapacity == 0 ? 1024 : _indexCapacity * 2;
-            long grown = Platform.Map(capacity * 4);
+            long grown = Platform.Map(capacity * WordSize.Bytes);
             if (grown == 0)
             {
                 // Never publish an incomplete index. The authoritative list
                 // still contains every chunk and remains a correct fallback.
                 _indexFailed = true;
-                if (_index != 0) Platform.Unmap(_index, _indexCapacity * 4);
+                if (_index != 0) Platform.Unmap(_index, _indexCapacity * WordSize.Bytes);
                 _index = 0;
                 _indexCount = 0;
                 _indexCapacity = 0;
                 return;
             }
             for (long i = 0; i < _indexCount; i++)
-                Sys.Poke(grown + i * 4, Sys.Peek(_index + i * 4));
-            if (_index != 0) Platform.Unmap(_index, _indexCapacity * 4);
+                Sys.Poke(grown + i * WordSize.Bytes, Sys.Peek(_index + i * WordSize.Bytes));
+            if (_index != 0) Platform.Unmap(_index, _indexCapacity * WordSize.Bytes);
             _index = grown;
             _indexCapacity = capacity;
         }
         long at = IndexLowerBound(chunk);
         for (long i = _indexCount; i > at; i--)
-            Sys.Poke(_index + i * 4, Sys.Peek(_index + (i - 1) * 4));
-        Sys.Poke(_index + at * 4, chunk);
+            Sys.Poke(_index + i * WordSize.Bytes, Sys.Peek(_index + (i - 1) * WordSize.Bytes));
+        Sys.Poke(_index + at * WordSize.Bytes, chunk);
         _indexCount++;
     }
 
@@ -3494,11 +3574,11 @@ static class HeapChunks
     {
         if (_indexFailed || _indexCount == 0) return;
         long at = IndexLowerBound(chunk);
-        if (at == _indexCount || Sys.Peek(_index + at * 4) != chunk) return;
+        if (at == _indexCount || Sys.Peek(_index + at * WordSize.Bytes) != chunk) return;
         for (long i = at + 1; i < _indexCount; i++)
-            Sys.Poke(_index + (i - 1) * 4, Sys.Peek(_index + i * 4));
+            Sys.Poke(_index + (i - 1) * WordSize.Bytes, Sys.Peek(_index + i * WordSize.Bytes));
         _indexCount--;
-        Sys.Poke(_index + _indexCount * 4, 0);
+        Sys.Poke(_index + _indexCount * WordSize.Bytes, 0);
     }
 
     public static long HeapBytes
@@ -3632,11 +3712,11 @@ static class HeapChunks
             while (low < high)
             {
                 long middle = low + (high - low) / 2;
-                if (Sys.Peek(_index + middle * 4) <= at) low = middle + 1;
+                if (Sys.Peek(_index + middle * WordSize.Bytes) <= at) low = middle + 1;
                 else high = middle;
             }
             if (low == 0) return 0;
-            long candidate = Sys.Peek(_index + (low - 1) * 4);
+            long candidate = Sys.Peek(_index + (low - 1) * WordSize.Bytes);
             if (at >= candidate + ChunkBytes && at < Sys.Peek(candidate + ChunkEnd))
             {
                 _memo = candidate;
@@ -3770,12 +3850,12 @@ static class GcRoots
 
         while (_extra != 0 && i < ExtraMax)
         {
-            long start = Sys.Peek(_extra + i * 8);
+            long start = Sys.Peek(_extra + i * (2 * WordSize.Bytes));
             // A slot whose start is the claim mark is one a thread is filling
             // in: its end is not written yet and there is nothing to scan.
             if (start != 0 && start != Claiming)
             {
-                Gc.ScanRange(start, Sys.Peek(_extra + i * 8 + 4));
+                Gc.ScanRange(start, Sys.Peek(_extra + i * (2 * WordSize.Bytes) + WordSize.Bytes));
             }
             i = i + 1;
         }
@@ -3797,7 +3877,7 @@ static class GcRoots
     // collector has to keep alive forever.
 
     const long ExtraMax = 128;
-    const long ExtraBytes = ExtraMax * 8;
+    const long ExtraBytes = ExtraMax * (2 * WordSize.Bytes);
 
     // A slot's start word is also how it is owned: zero is free, this is
     // taken but not yet filled in, anything else is a range being scanned.
@@ -3836,14 +3916,14 @@ static class GcRoots
         // the slot until it belongs to this thread.
         for (long i = 0; i < ExtraMax; i++)
         {
-            long at = _extra + i * 8;
+            long at = _extra + i * (2 * WordSize.Bytes);
 
             if (Sys.Cas(at, 0, Claiming) != 0)
             {
                 continue;
             }
 
-            Sys.Poke(at + 4, end);
+            Sys.Poke(at + WordSize.Bytes, end);
             Sys.Fence();                  // the end is there before the start says so
             Sys.Poke(at, start);
             Gc.MarkRegistered(start, end);
@@ -3858,13 +3938,13 @@ static class GcRoots
     {
         for (long i = 0; _extra != 0 && i < ExtraMax; i++)
         {
-            long at = _extra + i * 8;
-            if (start == 0 || Sys.Peek(at) != start || Sys.Peek(at + 4) != end) continue;
+            long at = _extra + i * (2 * WordSize.Bytes);
+            if (start == 0 || Sys.Peek(at) != start || Sys.Peek(at + WordSize.Bytes) != end) continue;
             // The start goes first, and atomically: a slot whose start is
             // zero is free, and it must not become free while its end still
             // names this stack.
             Sys.AtomicSwap(at, 0);
-            Sys.Poke(at + 4, 0);
+            Sys.Poke(at + WordSize.Bytes, 0);
             return true;
         }
         return false;
@@ -3911,31 +3991,31 @@ static class GcRoots
 /// futex needs an address, and a static field has none the language can take.
 static class GcLock
 {
-    public const long Collecting = 0;   // 1 while a collection is running
-    public const long Held = 4;         // the heap lock: 0 free, else the thread block of its holder
-    public const long Collector = 8;    // the thread block of whoever is collecting
-    public const long Cycling = 12;     // 1 from a collection's first stop to the end of its last
-    public const long BarrierTail = 16; // the barrier's ring: places claimed,
-    public const long BarrierHead = 20; //   places taken,
-    public const long BarrierLost = 24; //   and whether a report was dropped
+    public const long Collecting = 0 * WordSize.Bytes;   // 1 while a collection is running
+    public const long Held = 1 * WordSize.Bytes;         // the heap lock: 0 free, else the thread block of its holder
+    public const long Collector = 2 * WordSize.Bytes;    // the thread block of whoever is collecting
+    public const long Cycling = 3 * WordSize.Bytes;     // 1 from a collection's first stop to the end of its last
+    public const long BarrierTail = 4 * WordSize.Bytes; // the barrier's ring: places claimed,
+    public const long BarrierHead = 5 * WordSize.Bytes; //   places taken,
+    public const long BarrierLost = 6 * WordSize.Bytes; //   and whether a report was dropped
     // HANDSHAKES (GcThreads): what the collector is asking every thread to
     // do, which round of asking this is, and how many have not done it yet.
-    public const long Epoch = 28;       // the round; a thread's Tls.Epoch says which it has done
-    public const long Request = 32;     // what the round asks: GcThreads.Stamp, Scan or Ack
-    public const long Pending = 36;     // threads that still owe this round
+    public const long Epoch = 7 * WordSize.Bytes;       // the round; a thread's Tls.Epoch says which it has done
+    public const long Request = 8 * WordSize.Bytes;     // what the round asks: GcThreads.Stamp, Scan or Ack
+    public const long Pending = 9 * WordSize.Bytes;     // threads that still owe this round
     // THE GREY QUEUE (Gc.PushGrey): blocks marked and not yet scanned, many
     // pushers and many takers, nothing held.
-    public const long GreyTail = 40;    // places claimed
-    public const long GreyHead = 44;    // places taken
-    public const long Pushes = 48;      // blocks ever marked: termination looks for no change
-    public const long Active = 52;      // threads scanning a block they took off the queue
-    public const long Overflow = 56;    // a push found the queue full: the rescan finds it
-    public const long Abort = 60;       // this cycle is being given up (a lost barrier report)
+    public const long GreyTail = 10 * WordSize.Bytes;    // places claimed
+    public const long GreyHead = 11 * WordSize.Bytes;    // places taken
+    public const long Pushes = 12 * WordSize.Bytes;      // blocks ever marked: termination looks for no change
+    public const long Active = 13 * WordSize.Bytes;      // threads scanning a block they took off the queue
+    public const long Overflow = 14 * WordSize.Bytes;    // a push found the queue full: the rescan finds it
+    public const long Abort = 15 * WordSize.Bytes;       // this cycle is being given up (a lost barrier report)
     // What the collector sleeps on while it waits for a round: moved on by
     // everything that could let the round finish -- an answer, a thread
     // blocking, a thread leaving -- so that a wake sent before the collector
     // went to sleep is never lost (the futex sleeps only while it is unmoved).
-    public const long Stirs = 64;
+    public const long Stirs = 16 * WordSize.Bytes;
 
     static long _words;
 
@@ -4051,7 +4131,7 @@ static class GcThreads
 
     static long At(long i)
     {
-        return Sys.Peek(_blocks + i * 4);
+        return Sys.Peek(_blocks + i * WordSize.Bytes);
     }
 
     /// Adds a thread. The first one is only written down, because a program
@@ -4087,7 +4167,7 @@ static class GcThreads
         // fourth at once would otherwise both make the table.
         if (_blocks == 0)
         {
-            _blocks = Platform.Map(Max * 4);
+            _blocks = Platform.Map(Max * WordSize.Bytes);
             Add(_first);
             _first = 0;
         }
@@ -4152,7 +4232,7 @@ static class GcThreads
     {
         if (_blocks != 0 && _count < Max && block != 0)
         {
-            Sys.Poke(_blocks + _count * 4, block);
+            Sys.Poke(_blocks + _count * WordSize.Bytes, block);
             _count = _count + 1;
         }
     }
@@ -4177,7 +4257,7 @@ static class GcThreads
         {
             long state = Sys.Peek(block + Tls.State);
 
-            if (state != Busy && (Sys.Cas(block + Tls.State, state, Gone) & 0xFFFFFFFF) == state)
+            if (state != Busy && (Sys.Cas(block + Tls.State, state, Gone) & WordSize.AddressMask) == state)
             {
                 break;
             }
@@ -4195,7 +4275,7 @@ static class GcThreads
         {
             if (At(i) == block)
             {
-                Sys.Poke(_blocks + i * 4, At(_count - 1));
+                Sys.Poke(_blocks + i * WordSize.Bytes, At(_count - 1));
                 _count = _count - 1;
                 i = _count;
             }
@@ -4351,7 +4431,7 @@ static class GcThreads
             long block = At(i);
 
             if (block != self && Sys.Peek(block + Tls.Epoch) != epoch
-                && (Sys.Cas(block + Tls.State, Stopped, Busy) & 0xFFFFFFFF) == Stopped)
+                && (Sys.Cas(block + Tls.State, Stopped, Busy) & WordSize.AddressMask) == Stopped)
             {
                 if (Sys.Peek(block + Tls.Epoch) != epoch)
                 {
@@ -4359,7 +4439,7 @@ static class GcThreads
                     // registers it stopped with (Tls.Spill).
                     if (request == Scan)
                     {
-                        Gc.ScanRange(block + Tls.Spill, block + Tls.Spill + Sys.Peek(block + Tls.SpillCount) * 4);
+                        Gc.ScanRange(block + Tls.Spill, block + Tls.Spill + Sys.Peek(block + Tls.SpillCount) * WordSize.Bytes);
                     }
                     Work(block, request, Sys.Peek(block + Tls.StackLimit));
                     Sys.Poke(block + Tls.Epoch, epoch);
@@ -4506,7 +4586,7 @@ static class GcThreads
                 break;
             }
 
-            if (state == Stopped && (Sys.Cas(block + Tls.State, Stopped, Running) & 0xFFFFFFFF) == Stopped)
+            if (state == Stopped && (Sys.Cas(block + Tls.State, Stopped, Running) & WordSize.AddressMask) == Stopped)
             {
                 break;
             }
@@ -4543,7 +4623,7 @@ static class GcThreads
                 return;
             }
 
-            if (state == Stopped && (Sys.Cas(block + Tls.State, Stopped, Busy) & 0xFFFFFFFF) == Stopped)
+            if (state == Stopped && (Sys.Cas(block + Tls.State, Stopped, Busy) & WordSize.AddressMask) == Stopped)
             {
                 Sys.Poke(block + Tls.StackLimit, limit);
                 Sys.Poke(block + Tls.StackBase, top);
@@ -4573,7 +4653,7 @@ static class GcThreads
         }
 
         long block = Sys.ThreadBlock();
-        long words = to > from ? (to - from) / 4 : 0;
+        long words = to > from ? (to - from) / WordSize.Bytes : 0;
 
         if (words > Tls.SpillMax)
         {
@@ -4582,7 +4662,7 @@ static class GcThreads
 
         for (long i = 0; i < words; i++)
         {
-            Sys.Poke(block + Tls.Spill + i * 4, Sys.Peek(from + i * 4));
+            Sys.Poke(block + Tls.Spill + i * WordSize.Bytes, Sys.Peek(from + i * WordSize.Bytes));
         }
 
         Sys.Poke(block + Tls.SpillCount, words);
@@ -4628,7 +4708,7 @@ static class GcThreads
 
         if (_buffers == 0)
         {
-            _buffers = Platform.Map(BufferMax * 8);
+            _buffers = Platform.Map(BufferMax * (2 * WordSize.Bytes));
 
             if (_buffers == 0)
             {
@@ -4654,15 +4734,15 @@ static class GcThreads
                 // Insertion by base: a few entries, captured twice a collection.
                 long at = _bufferCount;
 
-                while (at > 0 && Sys.Peek(_buffers + (at - 1) * 8) > from)
+                while (at > 0 && Sys.Peek(_buffers + (at - 1) * (2 * WordSize.Bytes)) > from)
                 {
-                    Sys.Poke(_buffers + at * 8, Sys.Peek(_buffers + (at - 1) * 8));
-                    Sys.Poke(_buffers + at * 8 + 4, Sys.Peek(_buffers + (at - 1) * 8 + 4));
+                    Sys.Poke(_buffers + at * (2 * WordSize.Bytes), Sys.Peek(_buffers + (at - 1) * (2 * WordSize.Bytes)));
+                    Sys.Poke(_buffers + at * (2 * WordSize.Bytes) + WordSize.Bytes, Sys.Peek(_buffers + (at - 1) * (2 * WordSize.Bytes) + WordSize.Bytes));
                     at = at - 1;
                 }
 
-                Sys.Poke(_buffers + at * 8, from);
-                Sys.Poke(_buffers + at * 8 + 4, limit);
+                Sys.Poke(_buffers + at * (2 * WordSize.Bytes), from);
+                Sys.Poke(_buffers + at * (2 * WordSize.Bytes) + WordSize.Bytes, limit);
                 _bufferCount = _bufferCount + 1;
             }
 
@@ -4697,12 +4777,12 @@ static class GcThreads
 
     public static long BufferBase(long i)
     {
-        return Sys.Peek(_buffers + i * 8);
+        return Sys.Peek(_buffers + i * (2 * WordSize.Bytes));
     }
 
     public static long BufferLimit(long i)
     {
-        return Sys.Peek(_buffers + i * 8 + 4);
+        return Sys.Peek(_buffers + i * (2 * WordSize.Bytes) + WordSize.Bytes);
     }
 
     /// The first captured buffer beginning at or above `address`.

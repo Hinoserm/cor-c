@@ -476,7 +476,7 @@ public sealed partial class Lowering
 
         if (TryDenseSwitch(sw, bodies, fallback, out long minimum, out Block[] table))
         {
-            VReg key = of.Prim is Prim.I64 or Prim.U64 ? _e.Unary(Opcode.Trunc64, held) : held;
+            VReg key = IsWideInteger(of) ? _e.Unary(Opcode.Trunc64, held) : held;
             if (minimum != 0)
             {
                 key = _e.Binary(Opcode.Sub, key, minimum);

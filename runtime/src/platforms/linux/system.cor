@@ -1,11 +1,13 @@
 // The Linux system-call library: the ONLY file that knows the program is a
-// Linux i386 process.
+// Linux process, i386 or x86-64.
 //
-// Everything here is an `int 0x80` through Sys.Syscall, the one intrinsic the
+// Everything here is a system call through Sys.Syscall, the one intrinsic the
 // compiler provides for reaching the kernel (docs/software/X86-BACKEND.md,
-// "Linux is a target, not a model"). The number goes in EAX and the arguments
-// in EBX, ECX, EDX, ESI, EDI, EBP -- the backend does that; this file only
-// says which number and what to pass.
+// "Linux is a target, not a model"): `int 0x80` with the number in EAX and
+// the arguments in EBX, ECX, EDX, ESI, EDI, EBP on i386, `syscall` with them
+// in RAX and RDI, RSI, RDX, R10, R8, R9 in long mode. The backend does that;
+// this file only says which number and what to pass, and where the two ABIs
+// ask for different shapes it says so under TARGET_AMD64.
 //
 //   corc compile lib/std.cor lib/rt/runtime.cor lib/sys/linux.cor program.cor -o program
 //
@@ -61,7 +63,16 @@ static class SockCall
 /// somebody turns on a second option.
 static class Cmsg
 {
+    // struct cmsghdr: a size_t length, then two ints, padded to a word.
+#if TARGET_64BIT
+    public const int HeaderBytes = 16;
+    const int LevelAt = 8;
+    const int Align = 7;
+#else
     public const int HeaderBytes = 12;
+    const int LevelAt = 4;
+    const int Align = 3;
+#endif
 
     // The levels and types a program on this machine actually reads.
     public const int LevelIp = 0;               // SOL_IP
@@ -84,23 +95,23 @@ static class Cmsg
             return -1;
         }
 
-        int next = at + (int)((length + 3) & ~3);
+        int next = at + (int)((length + Align) & ~Align);
         return next + HeaderBytes <= controlBytes ? next : -1;
     }
 
     public static long Length(byte[] control, int at)
     {
-        return Raw.U32(control, at);
+        return Raw.Word(control, at);
     }
 
     public static int Level(byte[] control, int at)
     {
-        return (int)Raw.I32(control, at + 4);
+        return (int)Raw.I32(control, at + LevelAt);
     }
 
     public static int Type(byte[] control, int at)
     {
-        return (int)Raw.I32(control, at + 8);
+        return (int)Raw.I32(control, at + LevelAt + 4);
     }
 
     /// Where this header's data starts.
@@ -134,7 +145,7 @@ static class Platform
         long env = Os.EnvironAddress();
         while (true)
         {
-            long text = Sys.PeekWord(env) & 0xFFFFFFFF;
+            long text = Sys.Peek(env) & WordSize.AddressMask;
             if (text == 0)
             {
                 return false;
@@ -149,7 +160,7 @@ static class Platform
                 long first = Sys.PeekByte(text + i);
                 return first != 0 && first != 48;
             }
-            env = env + 4;
+            env = env + WordSize.Bytes;
         }
     }
 
@@ -176,7 +187,7 @@ static class Platform
     {
         if (_traceDigits == 0)
         {
-            long got = Sys.Syscall(Call.Mmap2, 0, 4096, 3, 0x22, 0 - 1, 0);
+            long got = Sys.Syscall(Call.Mmap, 0, 4096, 3, 0x22, 0 - 1, 0);
             _traceDigits = Result(got) > 0 ? Result(got) : 0 - 1;
         }
 
@@ -223,7 +234,7 @@ static class Platform
     {
         // PROT_READ | PROT_WRITE = 3; MAP_PRIVATE | MAP_ANONYMOUS = 0x22;
         // no file (-1), offset 0.
-        long got = Sys.Syscall(Call.Mmap2, 0, bytes, 3, 0x22, 0 - 1, 0);
+        long got = Sys.Syscall(Call.Mmap, 0, bytes, 3, 0x22, 0 - 1, 0);
         long answer = Result(got);
 
         if (answer < 0)
@@ -262,11 +273,43 @@ static class Platform
     {
         // The collector times its pauses by this system's clock.
         Gc.PauseClock = Sys.AddressOf(Clock.NowMicroseconds);
-        Sys.PokeWord(block + Tls.Self, block);
+        Sys.Poke(block + Tls.Self, block);
+
+#if TARGET_AMD64
+        // LONG MODE KEEPS A BASE REGISTER PER THREAD FOR THIS: GS, set with
+        // arch_prctl(ARCH_SET_GS), saved and restored by the kernel on every
+        // switch. Not FS, which is glibc's thread pointer: a program that
+        // calls into C (a [DllImport]) runs C code on this thread, and that
+        // code finds errno, its allocator's caches and its stack canary
+        // through FS. No descriptor, no selector: the block's own first word
+        // is still its address, so gs:[0] answers it.
+        if (Result(Sys.Syscall(Call.ArchPrctl, Call.ArchSetGs, block, 0)) < 0)
+        {
+            Runtime.WriteLiteral(2, "arch_prctl(ARCH_SET_GS) failed: this kernel cannot give a thread its own block\n");
+            Exit(134);
+        }
+#else
 
         long desc = block + Tls.Scratch;
 
-        Sys.PokeWord(desc, 0 - 1);              // entry_number: any free one
+        // THE C LIBRARY'S SELECTOR, taken before this replaces it: under
+        // ld-linux, GS already names glibc's thread pointer, and a call into
+        // C puts it back for the length of the call (Runtime.EnterNative).
+        // Only the first time -- a later thread starts with the runtime's.
+        long entry = 0 - 1;                     // entry_number: any free one
+        if (Runtime.ManagedGs == 0)
+        {
+            Runtime.NativeGs = Sys.GetGs();
+        }
+        else
+        {
+            // The same slot in every thread, so one selector means each
+            // thread's own block: a thread made by pthread_create inherits
+            // the slot as its creator left it, and asking for "any" would
+            // give it another.
+            entry = Runtime.ManagedGs >> 3;
+        }
+        Sys.PokeWord(desc, entry);
         Sys.PokeWord(desc + 4, block);          // base_addr
         Sys.PokeWord(desc + 8, 0xFFFFF);        // limit: the whole space, in pages
         // seg_32bit | limit_in_pages | useable; a writable data segment that
@@ -281,7 +324,10 @@ static class Platform
             Exit(134);
         }
 
-        Sys.SetGs((Sys.PeekWord(desc) << 3) | 3);
+        long selector = (Sys.PeekWord(desc) << 3) | 3;
+        Runtime.ManagedGs = selector;
+        Sys.SetGs(selector);
+#endif
     }
 
     // ---- waiting ---------------------------------------------------------------
@@ -391,6 +437,14 @@ static class Platform
         // with the runtime by whoever buffered it: this library is below the
         // class library and may not name Console.
         Runtime.AtExit();
+        // And C's, when a C library is loaded: exit(3) flushes what printf
+        // buffered and runs its atexit handlers and its libraries'
+        // finalisers, then ends the process itself.
+        long cExit = Runtime.NativeSymbol("exit");
+        if (cExit != 0)
+        {
+            Runtime.CallC(cExit, code, 0, 0, 0);
+        }
         Sys.Syscall(Call.ExitGroup, code, 0, 0);
         // The kernel does not return from that; if it somehow did, the plain
         // exit is the next best thing, and after that there is nothing.
@@ -481,7 +535,7 @@ static partial class Os
     public static long EnvironAddress()
     {
         long sp = Sys.EntryStack();
-        return sp + 4 + 4 * Sys.PeekWord(sp) + 4;
+        return sp + WordSize.Bytes + WordSize.Bytes * Sys.Peek(sp) + WordSize.Bytes;
     }
 
     public static int Chdir(string path)
@@ -659,7 +713,7 @@ static partial class Os
     public static long MapExecutable(long bytes)
     {
         // PROT_READ | PROT_WRITE | PROT_EXEC = 7; MAP_PRIVATE | MAP_ANONYMOUS.
-        long got = Platform.Result(Sys.Syscall(Call.Mmap2, 0, bytes, 7, 0x22, 0 - 1, 0));
+        long got = Platform.Result(Sys.Syscall(Call.Mmap, 0, bytes, 7, 0x22, 0 - 1, 0));
         return got < 0 ? 0 : got;
     }
 
@@ -777,15 +831,15 @@ static partial class Os
     /// words into byte[]; the kernel sees the same four bytes either way.
     private static byte[] Vector(string[] items, byte[][] keep, int at)
     {
-        byte[] block = new byte[(items.Length + 1) * 4];
+        byte[] block = new byte[(items.Length + 1) * (int)WordSize.Bytes];
 
         for (int i = 0; i < items.Length; i++)
         {
             byte[] c = CString(items[i]);
             keep[at + i] = c;
-            Raw.SetU32(block, i * 4, BytesOf(c));
+            Raw.SetWord(block, i * (int)WordSize.Bytes, BytesOf(c));
         }
-        Raw.SetU32(block, items.Length * 4, 0);
+        Raw.SetWord(block, items.Length * (int)WordSize.Bytes, 0);
         return block;
     }
 
@@ -831,7 +885,12 @@ static partial class Os
         {
             throw new IndexOutOfRangeException("waitpid needs somewhere for the status");
         }
+#if TARGET_AMD64
+        // wait4(2), the only form long mode has: no resource usage wanted.
+        return (int)Platform.Result(Sys.Syscall(Call.Wait4, pid, Sys.ArrayData(status), options, 0, 0, 0));
+#else
         return (int)Platform.Result(Sys.Syscall(Call.Waitpid, pid, Sys.ArrayData(status), options));
+#endif
     }
 
     /// Waits for one child and answers the way a shell reports it: its exit
@@ -995,7 +1054,7 @@ static partial class Os
 
     public static long Mmap(long address, long length, long protection, long flags, long fd, long pages)
     {
-        return Platform.Result(Sys.Syscall(Call.Mmap2, address, length, protection, flags, fd, pages));
+        return Platform.Result(Sys.Syscall(Call.Mmap, address, length, protection, flags, fd, pages << Call.MmapOffsetShift));
     }
 
     public static int Munmap(long address, long length)
@@ -1016,6 +1075,10 @@ static partial class Os
     {
         long got = Platform.Result(Sys.Syscall(direct, a, b, c, d, e, f));
 
+#if TARGET_AMD64
+        // Long mode has always had a call per operation, and no socketcall.
+        return got;
+#else
         if (got != 0 - Err.NoSys)
         {
             return got;
@@ -1032,6 +1095,7 @@ static partial class Os
         Raw.SetU32(block, 16, e);
         Raw.SetU32(block, 20, f);
         return Platform.Result(Sys.Syscall(Call.SocketCall, which, AddressOf(block), 0));
+#endif
     }
 
     public static int Socket(int family, int kind, int protocol)
@@ -1154,6 +1218,31 @@ static partial class Os
             throw new IndexOutOfRangeException("recvmsg range is outside its buffer");
         }
 
+#if TARGET_64BIT
+        // The structures are the kernel's, laid out as x86-64 lays them out:
+        // an iovec of two words, and a msghdr whose name length is an int
+        // padded to the pointer after it and whose counts are words.
+        byte[] iov = new byte[16];
+        byte[] message = new byte[56];
+
+        Raw.SetI64(iov, 0, AddressOf(buffer) + at);
+        Raw.SetI64(iov, 8, count);
+
+        Raw.SetI64(message, 0, address == null ? 0 : AddressOf(address));
+        Raw.SetU32(message, 8, address == null ? 0 : address.Length);
+        Raw.SetI64(message, 16, AddressOf(iov));
+        Raw.SetI64(message, 24, 1);
+        Raw.SetI64(message, 32, control == null ? 0 : AddressOf(control));
+        Raw.SetI64(message, 40, control == null ? 0 : control.Length);
+        Raw.SetU32(message, 48, 0);
+
+        int got = (int)Sock(Call.RecvMsg, SockCall.RecvMsg, fd, AddressOf(message), flags, 0, 0, 0);
+
+        if (got >= 0)
+        {
+            controlBytes = (int)Raw.I64(message, 40);
+        }
+#else
         // The structures are the kernel's, laid out as a 32-bit machine
         // lays them out: a msghdr of seven words, and an iovec of two.
         byte[] iov = new byte[8];
@@ -1176,6 +1265,7 @@ static partial class Os
         {
             controlBytes = (int)Raw.U32(message, 20);
         }
+#endif
 
         return got;
     }
@@ -1271,7 +1361,7 @@ static partial class Os
         // EntryStack is ESP exactly as the kernel handed it over, before
         // _start's own prologue: argc at [sp], then the argv pointers.
         long sp = Sys.EntryStack();
-        int argc = (int)Sys.PeekWord(sp);
+        int argc = (int)Sys.Peek(sp);
 
         if (argc < 0)
         {
@@ -1282,7 +1372,7 @@ static partial class Os
 
         for (int i = 0; i < argc; i++)
         {
-            args[i] = FromC(Sys.PeekWord(sp + 4 + 4 * i));
+            args[i] = FromC(Sys.Peek(sp + WordSize.Bytes + WordSize.Bytes * i));
         }
         _args = args;
         return args;

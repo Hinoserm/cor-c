@@ -36,4 +36,28 @@ public enum RelocKind : byte
     /// cost the shared text segment).
     /// </summary>
     GotAddr,
+
+    /// <summary>
+    /// The 64-bit word at Offset gets the absolute address of Symbol plus
+    /// Addend: R_X86_64_64. An address held in data -- a vtable slot, a
+    /// descriptor's pointer, a jump table entry -- in a long-mode image.
+    /// </summary>
+    Abs64,
+
+    /// <summary>
+    /// R_X86_64_GOTPCREL: the 32-bit displacement from the end of the field
+    /// (Addend -4) to Symbol's GOT slot -- `mov r, [rip + sym@GOTPCREL]`,
+    /// how long-mode code reaches what another image defines. When the link
+    /// finds the symbol defined after all, the load becomes `lea r, [rip +
+    /// sym]` (the GOTPCRELX relaxation) and no slot is made.
+    /// </summary>
+    GotPcRel,
+
+    /// <summary>
+    /// R_X86_64_32S: the 32-bit field holds Symbol plus Addend, which the
+    /// processor sign-extends -- a disp32 or an imm32 in 64-bit code. What
+    /// reaches a kernel linked into the top two gigabytes
+    /// (0xFFFFFFFF80000000 and up) from code that is not RIP-relative.
+    /// </summary>
+    Abs32S,
 }

@@ -261,6 +261,10 @@ public sealed partial class Lowering
                 // word that ThreadBlock reads when there is no GS.
                 _e.Store(new SymOperand(ThreadBlockSelf), R(ToWord(Arg(call, target, 0))));
                 return Void();
+            case "GetGs":
+                // The selector GS holds now: on Linux, before the runtime
+                // takes it, the C library's thread pointer.
+                return Widen(_e.Call(MachineIntrinsics.GetGs, IrType.I32)!);
             case "SetGs":
                 // The selector of the descriptor whose base is the block. Only
                 // an operating system that made that descriptor may say this.
@@ -461,16 +465,37 @@ public sealed partial class Lowering
                 return Void();
             }
             case "ReadCr":
-                // A control register is 32 bits wide and none of them is a
-                // signed quantity, so the long the language sees is the
-                // zero-extension and not a sign-extension.
-                return Widen(_e.Call(MachineIntrinsics.ReadCr, IrType.I32, R(ToI32(Arg(call, target, 0))))!);
+                // A control register is a word wide -- 32 bits on i386, 64 in
+                // long mode, where CR3 holds a physical address above 4 GiB --
+                // and none of them is a signed quantity, so the long the
+                // language sees is the zero-extension.
+                return Widen(_e.Call(MachineIntrinsics.ReadCr, IrTypes.Word, R(ToI32(Arg(call, target, 0))))!);
             case "WriteCr":
                 _e.Call(MachineIntrinsics.WriteCr, IrType.Void,
-                        R(ToI32(Arg(call, target, 0))), R(ToI32(Arg(call, target, 1))));
+                        R(ToI32(Arg(call, target, 0))), R(ToWord(Arg(call, target, 1))));
                 return Void();
             case "LoadSegments":
                 _e.Call(MachineIntrinsics.LoadSegments, IrType.Void, R(ToI32(Arg(call, target, 0))));
+                return Void();
+            case "LoadCodeSegment":
+                _e.Call(MachineIntrinsics.LoadCodeSegment, IrType.Void, R(ToI32(Arg(call, target, 0))));
+                return Void();
+            case "LoadTaskRegister":
+                _e.Call(MachineIntrinsics.LoadTaskRegister, IrType.Void, R(ToI32(Arg(call, target, 0))));
+                return Void();
+            case "ReadMsr":
+                return _e.Call(MachineIntrinsics.ReadMsr, IrType.I64, R(ToI32(Arg(call, target, 0))))!;
+            case "WriteMsr":
+                _e.Call(MachineIntrinsics.WriteMsr, IrType.Void, R(ToI32(Arg(call, target, 0))), R(Arg(call, target, 1)));
+                return Void();
+            case "Cpuid":
+                _e.Call(MachineIntrinsics.Cpuid, IrType.Void, R(ToI32(Arg(call, target, 0))), R(ToI32(Arg(call, target, 1))),
+                        R(ToWord(Arg(call, target, 2))));
+                return Void();
+            case "ReadTsc":
+                return _e.Call(MachineIntrinsics.ReadTsc, IrType.I64)!;
+            case "SwapGs":
+                _e.Call(MachineIntrinsics.SwapGs, IrType.Void);
                 return Void();
 
             // ---- the operating system and function pointers --------------------
@@ -505,6 +530,16 @@ public sealed partial class Lowering
                     args.Add(R(ToWord(Arg(call, target, i))));
                 }
                 return Widen(_e.CallIndirect(R(fn), word, args)!);
+            }
+            case "CallNative":
+            {
+                VReg fn = Address(call, target, 0);
+                List<Operand> args = new();
+                for (int i = 1; i < target.Params.Count; i++)
+                {
+                    args.Add(R(ToWord(Arg(call, target, i))));
+                }
+                return Widen(_e.CallIndirect(R(fn), word, args, NativeCall.Indirect)!);
             }
             case "AddressOf":
                 return Widen(Arg(call, target, 0));

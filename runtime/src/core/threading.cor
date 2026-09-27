@@ -39,18 +39,19 @@
 
 /// Where the words that atomic operations work on live, and a spin lock.
 ///
-/// THE LAYOUT ASSUMPTION, in one place. On x86 an object is an 8-byte header
+/// THE LAYOUT ASSUMPTION, in one place. An object is a two-word header
 /// (vtable, sync word) followed by its fields in declaration order, each
 /// aligned to its size, base-class fields first (X86-BACKEND.md, "Object
 /// layout"; Binder.LayOut). So a class whose FIRST two declared instance
-/// fields are `int` -- and whose base declares none -- has them at +8 and
-/// +12. Task, CancellationTokenSource, AtomicCell and WhenAllState are
-/// written that way, and CheckLayout below proves it on first use of the
-/// scheduler rather than trusting this comment.
+/// fields are `nint` -- and whose base declares none -- has them at two and
+/// three words: +8 and +12 on i386, +16 and +24 in long mode. Task,
+/// CancellationTokenSource, AtomicCell and WhenAllState are written that way,
+/// and CheckLayout below proves it on first use of the scheduler rather than
+/// trusting this comment.
 ///
-/// `int`, not `long`: the 486 atomics are 32-bit (Select.SelectAtomic refuses
-/// a 64-bit one), and a 32-bit CAS on the low half of a long would leave the
-/// high half unguarded.
+/// `nint`, a machine word, because Sys.Cas, Sys.AtomicSwap and Sys.AtomicAdd
+/// are word operations: on i386 that is 32 bits, as `int` was, and in long
+/// mode a CAS on a 32-bit field would take its neighbour with it.
 ///
 /// The address is taken afresh on every operation (Sys.Word(o) + offset) and
 /// never stored, so a future moving collector that updates references keeps
@@ -58,8 +59,8 @@
 /// instruction.
 static class Atom
 {
-    public const long FirstWord = 8;
-    public const long SecondWord = 12;
+    public const long FirstWord = 2 * WordSize.Bytes;
+    public const long SecondWord = 3 * WordSize.Bytes;
 
     public static long At(object o, long offset)
     {
@@ -118,12 +119,12 @@ static class Atom
 class AtomicCell
 {
     // LAYOUT: Value at Atom.FirstWord, Lock at Atom.SecondWord. Keep first.
-    public int Value;
-    public int Lock;
+    public nint Value;
+    public nint Lock;
 
     public int Read()
     {
-        return Value;
+        return (int)Value;
     }
 
     /// Answers what was there; the swap happened when that equals `expect`.
@@ -181,8 +182,8 @@ enum TaskStatus
 class Task
 {
     // LAYOUT: these two must stay the first instance fields (see Atom).
-    int _state;
-    int _lock;
+    nint _state;
+    nint _lock;
 
     Exception? _exception;
     Action? _first;
@@ -305,7 +306,7 @@ class Task
     {
         get
         {
-            int s = _state;
+            int s = (int)_state;
 
             if (s == RanToCompletion)
             {
@@ -347,7 +348,7 @@ class Task
     /// TaskCanceledException when there was none.
     public void ThrowIfNotSuccessful()
     {
-        int s = _state;
+        int s = (int)_state;
 
         if (s == RanToCompletion)
         {
@@ -1249,7 +1250,7 @@ class Propagate : Action
 class WhenAllState : Action
 {
     // LAYOUT: Remaining must stay the first instance field (see Atom).
-    int _remaining;
+    nint _remaining;
     Task[] _tasks;
     Task _all;
 
@@ -1701,8 +1702,8 @@ static class Timeout
 class CancellationTokenSource : IDisposable
 {
     // LAYOUT: these two must stay the first instance fields (see Atom).
-    int _canceled;
-    int _lock;
+    nint _canceled;
+    nint _lock;
 
     List<Action>? _callbacks;
     TimerEntry? _timer;

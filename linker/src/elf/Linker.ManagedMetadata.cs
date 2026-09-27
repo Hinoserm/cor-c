@@ -40,7 +40,9 @@ public static partial class Linker
                 { errors.Add("Reserved metadata alias collision: " + alias); return; }
                 int offset = ManagedDirectory.HeaderBytes + i * ManagedDirectory.RecordBytes + member;
                 BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(offset + 4), checked((uint)symbol.Size));
-                data.Relocs.Add(new(offset, alias, 0, RelocKind.Abs32));
+                // In long mode the distance from the word to the table: an
+                // image loaded anywhere describes itself without the loader.
+                data.Relocs.Add(new(offset, alias, 0, layout.LongMode ? RelocKind.Rel32 : RelocKind.Abs32));
                 layout.MetadataBindings.Add((unit.Input, alias, symbol));
                 layout.NotExported.Add(alias);
             }

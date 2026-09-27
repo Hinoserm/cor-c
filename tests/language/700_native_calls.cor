@@ -1,0 +1,60 @@
+// test: calls into C through [DllImport]
+// expect-exit: 0
+// expect-output:
+// strlen 12
+// abs 42
+// llabs 12345678901
+// sin 0.841471
+// pow 1024
+// snprintf 10 value=1234
+// isdigit True False
+// errno 2
+// hglobal from the C heap
+// printf 7 3.25 1234567890123
+//
+// The C library, called the way .NET calls it: a string goes as a
+// NUL-terminated copy, an array of bytes as its first element's address, a
+// bool comes back from an int, errno comes back through SetLastError, and a
+// variadic function (printf, snprintf) is called with doubles as well as
+// integers. The C library's own buffered output (printf) reaches the
+// terminal because the program ends through its exit(3).
+
+using System;
+using System.Runtime.InteropServices;
+
+static class C
+{
+    [DllImport("libc.so.6")] public static extern nint strlen(string s);
+    [DllImport("libc.so.6")] public static extern int abs(int x);
+    [DllImport("c")] public static extern long llabs(long x);
+    [DllImport("libm.so.6")] public static extern double sin(double x);
+    [DllImport("m", EntryPoint = "pow")] public static extern double Power(double x, double y);
+    [DllImport("libc.so.6")] public static extern int snprintf(byte[] buffer, nint size, string format, int value);
+    [DllImport("libc.so.6")] public static extern int isdigit(int c);
+    [DllImport("libc.so.6", SetLastError = true)] public static extern int open(string path, int flags);
+    [DllImport("libc.so.6")] public static extern int printf(string format, int a, double b, long c);
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Console.WriteLine("strlen " + C.strlen("hello, world"));
+        Console.WriteLine("abs " + C.abs(-42));
+        Console.WriteLine("llabs " + C.llabs(-12345678901L));
+        Console.WriteLine("sin " + Math.Round(C.sin(1.0), 6));
+        Console.WriteLine("pow " + C.Power(2.0, 10.0));
+        byte[] buffer = new byte[32];
+        int n = C.snprintf(buffer, 32, "value=%d", 1234);
+        Console.WriteLine("snprintf " + n + " " + System.Text.Encoding.UTF8.GetString(buffer, 0, n));
+        Console.WriteLine("isdigit " + (C.isdigit('7') != 0) + " " + (C.isdigit('x') != 0));
+        C.open("/nonexistent/at/all", 0);
+        Console.WriteLine("errno " + Marshal.GetLastPInvokeError());
+        nint block = Marshal.StringToHGlobalUTF8("from the C heap");
+        Console.WriteLine("hglobal " + Marshal.PtrToStringUTF8(block));
+        Marshal.FreeHGlobal(block);
+        Console.Out.Flush();
+        C.printf("printf %d %.2f %lld\n", 7, 3.25, 1234567890123L);
+        return 0;
+    }
+}

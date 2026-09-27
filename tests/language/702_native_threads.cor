@@ -1,0 +1,63 @@
+// test: threads that call into C each have the C library's own per-thread state
+// expect-exit: 0
+// expect-output:
+// total 400000
+// errno per thread True
+// environment True
+//
+// With a C library loaded a thread is made by pthread_create, so C code on it
+// has its own errno and allocator caches: four threads call strlen and
+// malloc/free concurrently, and each sees only its own errno. getenv works
+// because the program was entered through __libc_start_main, which gives the
+// C library its environment.
+
+using System;
+using System.Runtime.InteropServices;
+using System.Threading;
+
+static class C
+{
+    [DllImport("libc.so.6")] public static extern nint strlen(string s);
+    [DllImport("libc.so.6", SetLastError = true)] public static extern int open(string path, int flags);
+    [DllImport("libc.so.6", SetLastError = true)] public static extern int close(int fd);
+    [DllImport("libc.so.6")] public static extern nint getenv(string name);
+}
+
+static class Program
+{
+    static long _total;
+    static int _mismatches;
+
+    static int Main()
+    {
+        Thread[] threads = new Thread[4];
+        for (int t = 0; t < threads.Length; t++)
+        {
+            int which = t;
+            threads[t] = new Thread(() =>
+            {
+                long mine = 0;
+                for (int i = 0; i < 25000; i++)
+                {
+                    mine += (long)C.strlen("four");
+                    nint block = Marshal.AllocHGlobal(16 + i % 64);
+                    Marshal.FreeHGlobal(block);
+                }
+                // ENOENT on two threads, EBADF on the others, at once.
+                for (int i = 0; i < 200; i++)
+                {
+                    int want = which % 2 == 0 ? 2 : 9;
+                    if (which % 2 == 0) C.open("/nonexistent/" + which, 0); else C.close(-1);
+                    if (Marshal.GetLastPInvokeError() != want) Interlocked.Increment(ref _mismatches);
+                }
+                Interlocked.Add(ref _total, mine);
+            });
+            threads[t].Start();
+        }
+        foreach (Thread t in threads) t.Join();
+        Console.WriteLine("total " + _total);
+        Console.WriteLine("errno per thread " + (_mismatches == 0));
+        Console.WriteLine("environment " + (Marshal.PtrToStringUTF8(C.getenv("PATH")) != null));
+        return 0;
+    }
+}

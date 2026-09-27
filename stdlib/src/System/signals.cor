@@ -131,7 +131,8 @@ class PosixSignalRegistration : IDisposable
         }
     }
 
-    /// The kernel's sigaction: handler, flags, restorer, mask (64 bits).
+    /// The kernel's sigaction: handler, flags, restorer, mask (64 bits) --
+    /// four words on x86-64, where the first three are eight bytes each.
     ///
     /// SA_RESTORER names the few bytes the kernel returns THROUGH when a
     /// handler finishes, and two things about them are easy to get wrong and
@@ -162,6 +163,17 @@ class PosixSignalRegistration : IDisposable
             {
                 return;
             }
+#if TARGET_AMD64
+            // Long mode's: rt_sigreturn is 15 and is made with `syscall`. The
+            // kernel refuses a handler without a restorer on this ABI.
+            Sys.PokeByte(page, 0xB8);                                 // mov eax,
+            Sys.PokeByte(page + 1, 15);                               //   15 (rt_sigreturn)
+            Sys.PokeByte(page + 2, 0);
+            Sys.PokeByte(page + 3, 0);
+            Sys.PokeByte(page + 4, 0);
+            Sys.PokeByte(page + 5, 0x0F);                             // syscall
+            Sys.PokeByte(page + 6, 0x05);
+#else
             Sys.PokeByte(page, 0xB8);                                 // mov eax,
             Sys.PokeByte(page + 1, 173);                              //   173 (rt_sigreturn)
             Sys.PokeByte(page + 2, 0);
@@ -169,10 +181,18 @@ class PosixSignalRegistration : IDisposable
             Sys.PokeByte(page + 4, 0);
             Sys.PokeByte(page + 5, 0xCD);                             // int
             Sys.PokeByte(page + 6, 0x80);                             //   0x80
+#endif
             _restorer = page;
         }
+#if TARGET_64BIT
+        // x86-64's kernel sigaction: handler, flags, restorer and mask, a
+        // word each.
+        byte[] act = new byte[32];
+        Raw.SetI64(act, 0, handler);
+#else
         byte[] act = new byte[20];
         Raw.SetU32(act, 0, handler);
+#endif
         long flags = 0x04000000;                                      // SA_RESTORER
         if (handler > 1)
         {
@@ -184,8 +204,13 @@ class PosixSignalRegistration : IDisposable
             // restores a context of rubbish.
             flags = flags | 0x10000000 | 0x00000004;                  // SA_RESTART|SA_SIGINFO
         }
+#if TARGET_64BIT
+        Raw.SetI64(act, 8, flags);
+        Raw.SetI64(act, 16, _restorer);
+#else
         Raw.SetU32(act, 4, flags);
         Raw.SetU32(act, 8, _restorer);
+#endif
         Os.SigAction(signal, act);
     }
 }

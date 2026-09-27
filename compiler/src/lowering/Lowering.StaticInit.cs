@@ -91,9 +91,9 @@ public sealed partial class Lowering
 
         Block run = _f.NewBlock("ctorun");
         Block on = _f.NewBlock("ctdone");
-        if (ready.Type.Prim != Prim.I32)
+        if (ready.Type.Prim != Prim.NInt)
             throw new InvalidOperationException("obsolete static initializer state; rebuild the library/header");
-        VReg state = _e.Load(IrType.I32, new SymOperand(StaticSymbol(ready)), 0, 4, false);
+        VReg state = _e.Load(IrTypes.Word, new SymOperand(StaticSymbol(ready)), 0, _t.WordSize, false);
         _e.Emit(Opcode.Fence, null);
         VReg done = _e.Binary(Opcode.Eq, state, 1);
         _e.Branch(done, on, run);

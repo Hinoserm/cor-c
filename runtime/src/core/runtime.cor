@@ -81,6 +81,31 @@ class MissingMethodException : MissingMemberException
     public MissingMethodException(string? message, Exception? innerException) : base(message, innerException) { }
 }
 
+/// THE MACHINE WORD, for every layout the runtime keeps itself: a pointer, a
+/// length, a slot of the thread block, a word of the collector's headers.
+/// Sys.Peek and Sys.Poke move exactly one of these; Sys.PeekWord and
+/// Sys.PokeWord move 32 bits whatever the machine, and are for data that is
+/// 32 bits by its own definition. Chosen by the target's conditional symbol,
+/// as .NET's CoreLib chooses its own pointer-sized layouts.
+static class WordSize
+{
+#if TARGET_64BIT
+    public const long Bytes = 8;
+    public const int Shift = 3;
+
+    /// What an address is, as a number: the whole word.
+    public const long AddressMask = -1;
+#else
+    public const long Bytes = 4;
+    public const int Shift = 2;
+
+    /// What an address is, as a number: the low 32 bits, unsigned. Sys.Peek
+    /// sign-extends a 32-bit word, and an address above 2 GiB must not
+    /// compare below one under it.
+    public const long AddressMask = 0xFFFFFFFF;
+#endif
+}
+
 /// The shape of a thread's block of runtime state.
 ///
 /// ONE OF THESE PER THREAD, and everything in it used to be one word of .bss
@@ -97,44 +122,46 @@ class MissingMethodException : MissingMemberException
 /// thread and nothing to switch.
 static class Tls
 {
+    // Every field is a word slot, numbered as lowering numbers them (its Tls*
+    // constants are these slots times four, scaled by the word): 34 slots.
     /// The block's own address. First, because gs:[0] is how it is found.
-    public const long Self = 0;
+    public const long Self = 0 * WordSize.Bytes;
 
     /// The innermost handler record on this thread, or 0.
-    public const long Handler = 4;
+    public const long Handler = 1 * WordSize.Bytes;
 
     /// The top of this thread's stack: where a stack scan ends.
-    public const long StackBase = 8;
+    public const long StackBase = 2 * WordSize.Bytes;
 
     /// The stack pointer this thread stopped at; only meaningful while
     /// State says it is stopped.
-    public const long StackLimit = 12;
+    public const long StackLimit = 3 * WordSize.Bytes;
 
     /// This thread's allocation buffer: where it bumps, and where it may not.
-    public const long AllocPtr = 16;
-    public const long AllocLimit = 20;
+    public const long AllocPtr = 4 * WordSize.Bytes;
+    public const long AllocLimit = 5 * WordSize.Bytes;
 
     /// What the kernel calls this thread.
-    public const long ThreadId = 24;
+    public const long ThreadId = 6 * WordSize.Bytes;
 
     /// 0 while the thread is running, 1 while it is stopped for a collection
     /// or waiting on something only another thread can answer.
-    public const long State = 28;
+    public const long State = 7 * WordSize.Bytes;
 
     /// The first byte of the buffer, so that a free of the block on top of it
     /// can tell its own buffer from somebody else's memory.
-    public const long AllocBase = 32;
+    public const long AllocBase = 8 * WordSize.Bytes;
 
     /// The limit the collector took away, so that the buffer's tail can still
     /// be found and given back when the thread has stopped.
-    public const long AllocSaved = 36;
+    public const long AllocSaved = 9 * WordSize.Bytes;
 
     /// Sixteen bytes a system call can be handed a structure in, without an
     /// allocation: a thread sets its own block up before it may allocate.
-    public const long Scratch = 40;
+    public const long Scratch = 10 * WordSize.Bytes;
 
     /// Type-initialization record this thread is currently waiting on, or 0.
-    public const long TypeInitWait = 56;
+    public const long TypeInitWait = 14 * WordSize.Bytes;
 
     /// Nonzero while this thread is inside the allocator's fast path: the
     /// few instructions between reading its buffer's limit and bumping its
@@ -142,19 +169,19 @@ static class Tls
     /// kernel's processors) may not stop one HERE -- it has passed the
     /// limit check and is about to write an object into a buffer the
     /// collector is about to retire -- and asks again a moment later.
-    public const long InAlloc = 64;
+    public const long InAlloc = 16 * WordSize.Bytes;
 
     /// The collector's last handshake round this thread has answered
     /// (GcThreads): a thread whose number is behind the collector's owes it
     /// a piece of work -- the objects of its own allocation buffer, or its
     /// own stack -- which it does at its next safepoint, or which the
     /// collector does for it while it is blocked. Never a stop.
-    public const long Epoch = 68;
+    public const long Epoch = 17 * WordSize.Bytes;
 
     /// Set by a kernel that has arranged for this thread to answer a
     /// handshake the moment it resumes (an interrupted GUI kernel thread),
     /// so that it is not arranged twice; cleared by the answer.
-    public const long HandshakeArmed = 72;
+    public const long HandshakeArmed = 18 * WordSize.Bytes;
 
     /// The registers of a thread that went blocked. Platform.SafePoint pushes
     /// every callee-saved register in its own frame -- and then returns,
@@ -163,18 +190,22 @@ static class Tls
     /// wait would be nowhere the collector reads. So the frame is copied
     /// here as the thread says it is stopped (GcThreads.Spill), and read with
     /// its stack while it is (Gc.ScanStack). SpillCount words from Spill.
-    public const long SpillCount = 76;
-    public const long Spill = 80;
+    public const long SpillCount = 19 * WordSize.Bytes;
+    public const long Spill = 20 * WordSize.Bytes;
     public const long SpillMax = 12;
 
     /// The bytes this thread has allocated, as two words, low then high: its
     /// retired allocation buffers' used parts and its large blocks. What is
     /// in its current buffer is AllocPtr - AllocBase on top
     /// (GC.GetAllocatedBytesForCurrentThread).
-    public const long Allocated = 128;
+    public const long Allocated = 32 * WordSize.Bytes;
+
+    /// errno as the last [DllImport] with SetLastError = true left it: .NET's
+    /// Marshal.GetLastPInvokeError, which is per thread.
+    public const long LastError = 34 * WordSize.Bytes;
 
     /// The size of the block. The compiler lays the first one down in .bss.
-    public const long Bytes = 136;
+    public const long Bytes = 35 * WordSize.Bytes;
 }
 
 /// What stops a suspended iterator from inside when it is disposed; never
@@ -192,7 +223,7 @@ static class Runtime
     /// the same captured words, which for an instance method is the target.
     /// The object's size is the second word of its descriptor, and the
     /// descriptor sits DescriptorBytes before the vtable the object points
-    /// at. 32-bit layout, like the collector.
+    /// at: twelve words before it, the size in the second.
     public static bool SameClosure(object? a, object? b)
     {
         long pa = Sys.Word(a);
@@ -201,8 +232,8 @@ static class Runtime
         if (pa == 0 || pb == 0) return false;
         long vt = Sys.Peek(pa);
         if (vt != Sys.Peek(pb)) return false;
-        long size = Sys.Peek(vt - 48 + 4);
-        for (long at = 8; at + 4 <= size; at += 4)
+        long size = Sys.Peek(vt - 12 * WordSize.Bytes + WordSize.Bytes);
+        for (long at = 2 * WordSize.Bytes; at + WordSize.Bytes <= size; at += WordSize.Bytes)
         {
             if (Sys.Peek(pa + at) != Sys.Peek(pb + at)) return false;
         }
@@ -316,13 +347,13 @@ static class Runtime
     /// says it is running, with EndBlocking, once its block is its own.
     public static void RegisterThread(long block, long stackTop)
     {
-        Sys.PokeWord(block + Tls.Self, block);
-        Sys.PokeWord(block + Tls.StackBase, stackTop);
-        Sys.PokeWord(block + Tls.StackLimit, stackTop);
-        Sys.PokeWord(block + Tls.SpillCount, 0);
-        Sys.PokeWord(block + Tls.Allocated, 0);
-        Sys.PokeWord(block + Tls.Allocated + 4, 0);
-        Sys.PokeWord(block + Tls.State, 1);
+        Sys.Poke(block + Tls.Self, block);
+        Sys.Poke(block + Tls.StackBase, stackTop);
+        Sys.Poke(block + Tls.StackLimit, stackTop);
+        Sys.Poke(block + Tls.SpillCount, 0);
+        Sys.Poke(block + Tls.Allocated, 0);
+        Sys.Poke(block + Tls.Allocated + WordSize.Bytes, 0);
+        Sys.Poke(block + Tls.State, 1);
         GcThreads.Register(block);
     }
 
@@ -336,8 +367,8 @@ static class Runtime
     {
         long block = Sys.ThreadBlock();
 
-        Sys.PokeWord(block + Tls.StackLimit, Sys.PeekWord(block + Tls.StackBase));
-        Sys.PokeWord(block + Tls.SpillCount, 0);
+        Sys.Poke(block + Tls.StackLimit, Sys.Peek(block + Tls.StackBase));
+        Sys.Poke(block + Tls.SpillCount, 0);
         Sys.AtomicSwap(block + Tls.State, 1);
     }
 
@@ -404,7 +435,7 @@ static class Runtime
     public static bool AnswerOwed()
     {
         long block = Sys.ThreadBlock();
-        return Sys.PeekWord(block + Tls.State) == 0 && Sys.PeekWord(block + Tls.InAlloc) == 0
+        return Sys.Peek(block + Tls.State) == 0 && Sys.Peek(block + Tls.InAlloc) == 0
             && !GcLock.HeldByMe() && GcThreads.Owes(block);
     }
 
@@ -420,7 +451,7 @@ static class Runtime
     /// stop hook has to interrupt.
     public static bool ThreadOwes(long block)
     {
-        return Sys.PeekWord(block + Tls.State) == 0 && GcThreads.Owes(block);
+        return Sys.Peek(block + Tls.State) == 0 && GcThreads.Owes(block);
     }
 
     /// A safepoint: the open round answered, if this thread owes it.
@@ -440,7 +471,7 @@ static class Runtime
     /// collector sees it: the ones a stop hook has to interrupt.
     public static bool ThreadRunning(long block)
     {
-        return Sys.PeekWord(block + Tls.State) == 0;
+        return Sys.Peek(block + Tls.State) == 0;
     }
 
     /// The heap: the garbage-collected one in lib/rt/gc.cor. This is the
@@ -682,7 +713,10 @@ static class Runtime
     /// this library could not name -- its own _DYNAMIC is its own.
     public static void StartImages(long dynamic)
     {
-        if (_imagesBegun != 0 || dynamic == 0)
+        // Kept whoever runs the initialisers: it is where NativeSymbol finds
+        // the link map later.
+        _programDynamic = dynamic;
+        if (_imagesBegun != 0 || dynamic == 0 || Interpreted())
         {
             return;
         }
@@ -694,15 +728,51 @@ static class Runtime
             return;
         }
 
-        // struct r_debug { int r_version; struct link_map *r_map; ... }
-        long image = Sys.PeekWord(debug + 4);
+        // struct r_debug { int r_version; struct link_map *r_map; ... }: the
+        // map is the second word, the int padded to one where words are 8.
+        long image = Sys.Peek(debug + WordSize.Bytes);
 
         while (image != 0)
         {
-            // struct link_map { Elf32_Addr l_addr; char *l_name;
-            //                   Elf32_Dyn *l_ld; link_map *l_next, *l_prev; }
-            RunInitialiser(Sys.PeekWord(image + 8), Sys.PeekWord(image));
-            image = Sys.PeekWord(image + 12);
+            // struct link_map { ElfN_Addr l_addr; char *l_name;
+            //                   ElfN_Dyn *l_ld; link_map *l_next, *l_prev; }
+            RunInitialiser(Sys.Peek(image + 2 * WordSize.Bytes), Sys.Peek(image));
+            image = Sys.Peek(image + 3 * WordSize.Bytes);
+        }
+    }
+
+    /// Whether an interpreter (ld-linux) loaded this program, and so ran
+    /// every library's initialisers before the entry stub: AT_BASE, the
+    /// interpreter's address, in the auxiliary vector above the environment.
+    /// No image having introduced itself is not enough to say otherwise --
+    /// a program linked only against the C library has none of this
+    /// runtime's images, and running the C library's initialiser a second
+    /// time, with no arguments, clears its environment.
+    static bool Interpreted()
+    {
+        long stack = Sys.Peek(Sys.ThreadBlock() + Tls.StackBase);
+        if (stack == 0)
+        {
+            return false;
+        }
+        long at = stack + (Sys.Peek(stack) + 2) * WordSize.Bytes;     // past argc, argv and its NULL
+        while (Sys.Peek(at) != 0)
+        {
+            at = at + WordSize.Bytes;                                  // the environment
+        }
+        at = at + WordSize.Bytes;
+        while (true)
+        {
+            long type = Sys.Peek(at);
+            if (type == 0)
+            {
+                return false;
+            }
+            if (type == 7)                                             // AT_BASE
+            {
+                return Sys.Peek(at + WordSize.Bytes) != 0;
+            }
+            at = at + 2 * WordSize.Bytes;
         }
     }
 
@@ -713,7 +783,8 @@ static class Runtime
 
         while (true)
         {
-            long tag = Sys.PeekWord(at);
+            // ElfN_Dyn: a tag word and a value word.
+            long tag = Sys.Peek(at);
 
             if (tag == DtNull)
             {
@@ -722,9 +793,9 @@ static class Runtime
 
             if (tag == want)
             {
-                return Sys.PeekWord(at + 4);
+                return Sys.Peek(at + WordSize.Bytes);
             }
-            at = at + 8;
+            at = at + 2 * WordSize.Bytes;
         }
     }
 
@@ -748,15 +819,327 @@ static class Runtime
         long array = Tag(dynamic, DtInitArray);
         long bytes = Tag(dynamic, DtInitArraySize);
 
-        for (long i = 0; i < bytes; i = i + 4)
+        for (long i = 0; i < bytes; i = i + WordSize.Bytes)
         {
-            long one = Sys.PeekWord(array + bias + i);
+            long one = Sys.Peek(array + bias + i);
 
             if (one != 0)
             {
                 Sys.Call(one, 0, 0, 0);
             }
         }
+    }
+
+    // ---- calls into C -----------------------------------------------------
+    //
+    // A [DllImport] method's body (Lowering.Native) calls EnterNative, the C
+    // function, and LeaveNative. Between the two the thread counts as
+    // stopped, exactly as a thread waiting in a system call does: C does not
+    // allocate from this heap, so a collection has no reason to wait for it,
+    // and its callee-saved registers -- which C preserves -- were copied into
+    // its block as it said so.
+    //
+    // ON i386, GS TOO. The C library's thread pointer is GS on i386, as the
+    // runtime's is; the kernel keeps one base per thread per GDT slot, so each
+    // of the two is a selector that means the right thing in every thread,
+    // and swapping them is one segment load each way. On x86-64 the runtime's
+    // is GS and C's is FS, and nothing moves.
+
+    static long _programDynamic;
+
+    /// i386: the selector GS held when the process began -- the C library's
+    /// thread pointer under ld-linux, zero in a program nobody else set up.
+    public static long NativeGs;
+
+    /// i386: the selector of the runtime's own thread blocks.
+    public static long ManagedGs;
+
+    public static void EnterNative()
+    {
+        BeginBlocking();
+#if !TARGET_64BIT
+        if (NativeGs != 0)
+        {
+            Sys.SetGs(NativeGs);
+        }
+#endif
+    }
+
+    public static void LeaveNative()
+    {
+#if !TARGET_64BIT
+        if (NativeGs != 0)
+        {
+            Sys.SetGs(ManagedGs);
+        }
+#endif
+        EndBlocking();
+    }
+
+    /// THE PROGRAM, ENTERED THROUGH THE C LIBRARY when one is loaded (see
+    /// the entry stub): __libc_start_main(main, argc, argv, init, fini,
+    /// rtld_fini, stack_end) sets up C's environment, streams and program
+    /// name, registers the loader's finaliser, and calls `main` -- which is
+    /// the entry stub's own continuation -- and never comes back here. With
+    /// no C library loaded this returns and the entry stub carries on.
+    public static void StartC(long loaderFini, long stack, long main)
+    {
+        long start = NativeSymbol("__libc_start_main");
+        if (start == 0)
+        {
+            return;
+        }
+        EnterNative();
+        Sys.CallNative(start, main, Sys.Peek(stack), stack + WordSize.Bytes, 0, 0, loaderFini, stack);
+    }
+
+    /// The first thing a function C calls does: GS back to the runtime's on
+    /// i386, and running again, as far as a collection is concerned.
+    public static void ReturnFromC()
+    {
+#if !TARGET_64BIT
+        if (NativeGs != 0)
+        {
+            Sys.SetGs(ManagedGs);
+        }
+#endif
+        EndBlocking();
+    }
+
+    /// A C function the runtime found for itself (NativeSymbol), called with
+    /// C's rules and the same handshake a [DllImport] makes.
+    public static long CallC(long fn, long a, long b, long c, long d)
+    {
+        EnterNative();
+        long r = Sys.CallNative(fn, a, b, c, d);
+        LeaveNative();
+        return r;
+    }
+
+    /// A string as C reads one: its UTF-8 bytes and a NUL, in an array of its
+    /// own that the caller keeps alive for the length of the call.
+    public static byte[]? NativeString(string? s)
+    {
+        if (s == null)
+        {
+            return null;
+        }
+        return Utf8Transcoder.EncodeTerminated(s);
+    }
+
+    /// The address of an array's first element, or zero for null: what C's
+    /// pointer to it is.
+    public static long NativeData(object? array)
+    {
+        if (array == null)
+        {
+            return 0;
+        }
+        return Sys.ArrayData(array);
+    }
+
+    /// errno, as a SetLastError import left it, for Marshal.GetLastPInvokeError.
+    public static void SetNativeError(int error)
+    {
+        Sys.Poke(Sys.ThreadBlock() + Tls.LastError, error);
+    }
+
+    public static int NativeError()
+    {
+        return (int)Sys.Peek(Sys.ThreadBlock() + Tls.LastError);
+    }
+
+    // FINDING A C FUNCTION AT RUN TIME. The link map (StartImages) lists every
+    // image the loader mapped; each has a dynamic section with its symbol
+    // table and a hash table over it -- GNU's, which is all current C
+    // libraries build, or SysV's, which this linker writes. Addresses in the
+    // dynamic sections are relocated in place by ld-linux and not by a
+    // kernel's loader, so one smaller than the image's bias is an offset.
+
+    const long DtHash = 4;
+    const long DtStrTab = 5;
+    const long DtSymTab = 6;
+    const long DtGnuHash = 0x6ffffef5;
+    const long DtVersym = 0x6ffffff0;
+
+    /// The address of the C symbol `name` in the images the loader mapped,
+    /// or zero: none, or a program linked statically.
+    public static long NativeSymbol(string name)
+    {
+        if (_programDynamic == 0)
+        {
+            return 0;
+        }
+        long debug = Tag(_programDynamic, DtDebug);
+        if (debug == 0)
+        {
+            return 0;
+        }
+        long image = Sys.Peek(debug + WordSize.Bytes);
+        while (image != 0)
+        {
+            long found = SymbolIn(Sys.Peek(image + 2 * WordSize.Bytes), Sys.Peek(image), name);
+            if (found != 0)
+            {
+                return found;
+            }
+            image = Sys.Peek(image + 3 * WordSize.Bytes);
+        }
+        return 0;
+    }
+
+    static long Located(long value, long bias)
+    {
+        return value != 0 && value < bias ? value + bias : value;
+    }
+
+    static long SymbolIn(long dynamic, long bias, string name)
+    {
+        if (dynamic == 0)
+        {
+            return 0;
+        }
+        long strings = Located(Tag(dynamic, DtStrTab), bias);
+        long symbols = Located(Tag(dynamic, DtSymTab), bias);
+        if (strings == 0 || symbols == 0)
+        {
+            return 0;
+        }
+        long versions = Located(Tag(dynamic, DtVersym), bias);
+        long gnu = Located(Tag(dynamic, DtGnuHash), bias);
+        if (gnu != 0)
+        {
+            return GnuLookup(gnu, symbols, strings, versions, bias, name);
+        }
+        long sysv = Located(Tag(dynamic, DtHash), bias);
+        if (sysv != 0)
+        {
+            return SysvLookup(sysv, symbols, strings, versions, bias, name);
+        }
+        return 0;
+    }
+
+    /// GNU's hash: h * 33 + c from 5381, a bucket per hash, and a chain whose
+    /// entries hold the hash with the low bit set on the last one.
+    static long GnuLookup(long table, long symbols, long strings, long versions, long bias, string name)
+    {
+        // OVER THE NAME'S UTF-8, which is what the symbol table holds.
+        byte[] bytes = Utf8Transcoder.Encode(name, 0, name.Length);
+        long h = 5381;
+        for (int i = 0; i < bytes.Length; i++)
+        {
+            h = (h * 33 + bytes[i]) & 0xFFFFFFFF;
+        }
+        long buckets = Sys.PeekWord(table);
+        long first = Sys.PeekWord(table + 4);
+        long bloom = Sys.PeekWord(table + 8);
+        if (buckets == 0)
+        {
+            return 0;
+        }
+        long bucketAt = table + 16 + bloom * WordSize.Bytes;
+        long chainAt = bucketAt + buckets * 4;
+        long index = Sys.PeekWord(bucketAt + (h % buckets) * 4);
+        if (index < first)
+        {
+            return 0;
+        }
+        while (true)
+        {
+            long link = Sys.PeekWord(chainAt + (index - first) * 4);
+            if ((link | 1) == (h | 1))
+            {
+                long found = Matching(symbols, strings, versions, bias, index, name);
+                if (found != 0)
+                {
+                    return found;
+                }
+            }
+            if ((link & 1) != 0)
+            {
+                return 0;
+            }
+            index = index + 1;
+        }
+    }
+
+    /// SysV's: buckets and chains of symbol indices under the ELF hash.
+    static long SysvLookup(long table, long symbols, long strings, long versions, long bias, string name)
+    {
+        byte[] bytes = Utf8Transcoder.Encode(name, 0, name.Length);
+        long h = 0;
+        for (int i = 0; i < bytes.Length; i++)
+        {
+            h = ((h << 4) + bytes[i]) & 0xFFFFFFFF;
+            long g = h & 0xF0000000;
+            if (g != 0)
+            {
+                h = h ^ (g >> 24);
+            }
+            h = h & ~g & 0xFFFFFFFF;
+        }
+        long buckets = Sys.PeekWord(table);
+        if (buckets == 0)
+        {
+            return 0;
+        }
+        long chainAt = table + 8 + buckets * 4;
+        long index = Sys.PeekWord(table + 8 + (h % buckets) * 4);
+        while (index != 0)
+        {
+            long found = Matching(symbols, strings, versions, bias, index, name);
+            if (found != 0)
+            {
+                return found;
+            }
+            index = Sys.PeekWord(chainAt + index * 4);
+        }
+        return 0;
+    }
+
+    /// Symbol `index`'s address when it is `name`, defined, and the default
+    /// version of it; an IFUNC's resolver is asked for the real one.
+    static long Matching(long symbols, long strings, long versions, long bias, long index, string name)
+    {
+#if TARGET_64BIT
+        long symbol = symbols + index * 24;
+        long info = Sys.PeekByte(symbol + 4);
+        long section = Sys.PeekHalf(symbol + 6);
+        long value = Sys.Peek(symbol + 8);
+#else
+        long symbol = symbols + index * 16;
+        long info = Sys.PeekByte(symbol + 12);
+        long section = Sys.PeekHalf(symbol + 14);
+        long value = Sys.Peek(symbol + 4);
+#endif
+        if (section == 0 || value == 0)
+        {
+            return 0;
+        }
+        long text = strings + Sys.PeekWord(symbol);
+        byte[] bytes = Utf8Transcoder.Encode(name, 0, name.Length);
+        for (int i = 0; i < bytes.Length; i++)
+        {
+            if (Sys.PeekByte(text + i) != bytes[i])
+            {
+                return 0;
+            }
+        }
+        if (Sys.PeekByte(text + bytes.Length) != 0)
+        {
+            return 0;
+        }
+        // A hidden version (bit 15) is an old one kept for old programs.
+        if (versions != 0 && (Sys.PeekHalf(versions + index * 2) & 0x8000) != 0)
+        {
+            return 0;
+        }
+        long address = value + bias;
+        if ((info & 15) == 10)                  // STT_GNU_IFUNC
+        {
+            address = CallC(address, 0, 0, 0, 0);
+        }
+        return address;
     }
 
     // ---- the frame tables of the other images -----------------------------
@@ -790,7 +1173,7 @@ static class Runtime
         if (Sys.PeekWord(table) != TableMagic && Sys.PeekWord(table) != DirectoryMagic) { return false; }
         for (long i = 0; i < _tableCount; i++)
         {
-            if (Sys.PeekWord(_tables + i * 4) == table) { return true; }
+            if (Sys.Peek(_tables + i * WordSize.Bytes) == table) { return true; }
         }
 
         if (_tables == 0)
@@ -807,7 +1190,7 @@ static class Runtime
         {
             return false;
         }
-        Sys.Poke(_tables + _tableCount * 4, table);
+        Sys.Poke(_tables + _tableCount * WordSize.Bytes, table);
         _tableCount = _tableCount + 1;
         return true;
     }
@@ -1313,7 +1696,7 @@ static class Runtime
         if (LookupMetadata(Sys.FrameDirectory(), address, out name, out file, out program, out offset)) { return true; }
 
         for (long i = 0; i < _tableCount; i++) {
-            if (LookupMetadata(Sys.PeekWord(_tables + i * 4), address, out name, out file, out program, out offset)) { return true; }
+            if (LookupMetadata(Sys.Peek(_tables + i * WordSize.Bytes), address, out name, out file, out program, out offset)) { return true; }
         }
         return false;
     }
@@ -1329,10 +1712,24 @@ static class Runtime
         if (count > 100000) { return false; }
         for (long i = 0; i < count; i++) {
             long record = metadata + 16 + i * 16;
-            long table = Sys.PeekWord(record);
+            long table = TableAddress(record);
             if (table != 0 && Sys.PeekWord(record + 4) >= 20 && LookupIn(table, address, out name, out file, out program, out offset)) { return true; }
         }
         return false;
+    }
+
+    /// AN ADDRESS THE LINK WROTE INTO A TABLE: on i386 the address itself;
+    /// in long mode the distance from the word to it, signed, so a shared
+    /// object loaded anywhere in 64-bit space needs no loader relocation to
+    /// describe its own code. Zero is none either way.
+    static long TableAddress(long at) {
+        long held = Sys.PeekWord(at);
+#if TARGET_64BIT
+        if (held == 0) { return 0; }
+        return at + (long)(int)held;
+#else
+        return held;
+#endif
     }
 
     /// The same, in one table. The line program is an absolute address into
@@ -1347,7 +1744,7 @@ static class Runtime
         if (Sys.PeekWord(table) != TableMagic) { return false; }
 
         long count = Sys.PeekWord(table + 4);
-        long walk = Sys.PeekWord(table + 8);
+        long walk = TableAddress(table + 8);
         long strings = table + Sys.PeekWord(table + 12);
         long at = table + 20;
 
@@ -1426,8 +1823,10 @@ static class Runtime
         int taken = 0;
 
         while (frame != 0 && taken < TraceDepth) {
-            long next = Sys.PeekWord(frame);
-            long ret = Sys.PeekWord(frame + 4);
+            // [frame] is the caller's frame pointer, the word after it the
+            // return address: the chain every prologue here builds.
+            long next = Sys.Peek(frame);
+            long ret = Sys.Peek(frame + WordSize.Bytes);
             if (ret == 0) { break; }
 
             // The chain runs towards the top of the stack. Anything else is a
@@ -1466,8 +1865,10 @@ static class Runtime
         int taken = 0;
 
         while (frame != 0 && taken < TraceDepth) {
-            long next = Sys.PeekWord(frame);
-            long ret = Sys.PeekWord(frame + 4);
+            // [frame] is the caller's frame pointer, the word after it the
+            // return address: the chain every prologue here builds.
+            long next = Sys.Peek(frame);
+            long ret = Sys.Peek(frame + WordSize.Bytes);
             if (ret == 0) { break; }
             if (next != 0 && next <= frame) { break; }
 

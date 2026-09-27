@@ -20,13 +20,19 @@ public sealed class UnitBackend : IUnitBackend
     {
         _lifetimes = 0;
         Escape.LinkFacts? link = facts is null ? null : new(facts);
-        Target.Current = Target.X86;
+        // The unit says which machine it was compiled for (its ABI note):
+        // every pass below reads the word size from Target.Current.
+        bool longMode = TargetContract.IsLongMode(original);
+        Target.Current = longMode ? Target.X86_64 : Target.X86;
         // Each invocation must restore its own permissions; a previous unit may
         // have selected a newer CPU or explicitly disabled an extension.
         X86CodeGenerationContract cpu = X86CodeGenerationContract.Read(original)
             ?? throw new InvalidDataException("IR unit has no CPU/FPU contract; rebuild the unit before LTO");
-        Target.X86.X86Profile = X86Cpu.Parse(cpu.Arguments());
-        Target.X86.Cpu = Target.X86.X86Profile.Name;
+        if (!longMode)
+        {
+            Target.X86.X86Profile = X86Cpu.Parse(cpu.Arguments());
+            Target.X86.Cpu = Target.X86.X86Profile.Name;
+        }
         IrArchive archive = IrArchive.Read(original) ?? throw new InvalidDataException("Backend input has no IR archive");
         var visibility = original.Symbols.Where(symbol => symbol.IsDefined && symbol.IsFunction)
             .ToDictionary(symbol => symbol.Name, symbol => symbol.Global, StringComparer.Ordinal);
@@ -85,24 +91,42 @@ public sealed class UnitBackend : IUnitBackend
             LandingPadHomes.Run(local);
             return function;
         }
-        X86Backend backend = new()
-        {
-            AutomaticPacked = cpu.AutomaticPacked,
-            StackMaps = unit.StackMaps, EmitLinkSummary = true, Workers = Math.Max(1, Math.Min(64, Environment.ProcessorCount)),
-            // As much as the machine can spare (MachineMemory), less what
-            // the unit's own headers took; a function bigger than that is
-            // compiled alone. The same object either way.
-            FunctionLoader = Load, FunctionLoadBytes = Cost,
-            FunctionMemoryBudget = Math.Max(1, MachineMemory.WorkBudget(8L * 1024 * 1024, 512L * 1024 * 1024) - unit.AccountedBytes),
-        };
+        int workers = Math.Max(1, Math.Min(64, Environment.ProcessorCount));
+        // As much as the machine can spare (MachineMemory), less what the
+        // unit's own headers took; a function bigger than that is compiled
+        // alone. The same object either way.
+        long budget = Math.Max(1, MachineMemory.WorkBudget(8L * 1024 * 1024, 512L * 1024 * 1024) - unit.AccountedBytes);
         List<string> errors = new();
-        ObjectFile result = backend.Generate(module, errors);
-        Console.Error.WriteLine("IR backend: peak batch functions=" + backend.PeakBatchFunctions
-            + ", accounted working allowance=" + backend.PeakBatchBytes
+        ObjectFile result;
+        int peakFunctions;
+        long peakBytes;
+        if (longMode)
+        {
+            Corsac.Lang.X64.X64Backend backend = new()
+            {
+                StackMaps = unit.StackMaps, EmitLinkSummary = true, Workers = workers,
+                FunctionLoader = Load, FunctionLoadBytes = Cost, FunctionMemoryBudget = budget,
+            };
+            result = backend.Generate(module, errors);
+            (peakFunctions, peakBytes) = (backend.PeakBatchFunctions, backend.PeakBatchBytes);
+        }
+        else
+        {
+            X86Backend backend = new()
+            {
+                AutomaticPacked = cpu.AutomaticPacked,
+                StackMaps = unit.StackMaps, EmitLinkSummary = true, Workers = workers,
+                FunctionLoader = Load, FunctionLoadBytes = Cost, FunctionMemoryBudget = budget,
+            };
+            result = backend.Generate(module, errors);
+            (peakFunctions, peakBytes) = (backend.PeakBatchFunctions, backend.PeakBatchBytes);
+        }
+        Console.Error.WriteLine("IR backend: peak batch functions=" + peakFunctions
+            + ", accounted working allowance=" + peakBytes
             + (facts is null ? "" : ", lifetimes placed or freed=" + _lifetimes));
         if (errors.Count > 0) throw new InvalidDataException("IR backend: " + string.Join("; ", errors));
         foreach (Section section in original.Sections.Where(section => section.Name is TargetContract.SectionName or ManagedLayoutContract.SectionName
-                       or ".corsac.tag" or RegistrySchema.SectionName))
+                       or ".corsac.tag" or RegistrySchema.SectionName or NativeLibraries.SectionName))
         {
             Section copy = new(section.Name, section.Kind) { Align = section.Align };
             copy.Bytes.AddRange(section.Bytes); copy.Relocs.AddRange(section.Relocs); result.Sections.Add(copy);

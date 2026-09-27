@@ -7,7 +7,7 @@ namespace Corsac.Lang.Elf;
 
 internal readonly record struct SymbolEntry(
     uint Name,
-    uint Value,
+    ulong Value,
     uint Size,
     byte Info,
     byte Other,
@@ -24,7 +24,7 @@ internal readonly record struct SymbolEntry(
     public void WriteTo(ElfBuffer b)
     {
         b.U32(Name);
-        b.U32(Value);
+        b.U32(checked((uint)Value));
         b.U32(Size);
         b.U8(Info);
         b.U8(Other);

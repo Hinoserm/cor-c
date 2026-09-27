@@ -144,10 +144,10 @@ public sealed class Builder
     public VReg? Call(string callee, IrType returns, IEnumerable<VReg> args)
         => Call(callee, returns, args.Select(a => (Operand)R(a)).ToArray());
 
-    public VReg? CallIndirect(Operand target, IrType returns, IEnumerable<Operand> args)
+    public VReg? CallIndirect(Operand target, IrType returns, IEnumerable<Operand> args, string? marker = null)
     {
         VReg? d = returns == IrType.Void ? null : Function.NewReg(returns);
-        Instr i = new() { Op = Opcode.CallIndirect, Dest = d };
+        Instr i = new() { Op = Opcode.CallIndirect, Dest = d, Callee = marker };
         i.Operands.Add(target);
         i.Operands.AddRange(args);
         Append(i);
@@ -183,7 +183,16 @@ public sealed class Builder
     public void Branch(Operand cond, Block ifTrue, Block ifFalse)
         => Append(new Instr { Op = Opcode.Branch, Operands = { cond }, Targets = { ifTrue, ifFalse } });
 
-    public void Branch(VReg cond, Block ifTrue, Block ifFalse) => Branch(R(cond), ifTrue, ifFalse);
+    /// <summary>
+    /// A branch tests a 32-bit condition; a wider value (a pointer in long
+    /// mode) is compared with zero first.
+    /// </summary>
+    public void Branch(VReg cond, Block ifTrue, Block ifFalse)
+    {
+        if (cond.Type == IrType.I64)
+            cond = Binary(Opcode.Ne, R(cond), new ImmOperand(0, IrType.I64), IrType.I32);
+        Branch(R(cond), ifTrue, ifFalse);
+    }
 
     public void Switch(Operand index, IReadOnlyList<Block> targets, Block fallback)
     {

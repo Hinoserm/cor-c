@@ -44,6 +44,13 @@ internal sealed class ElfBuffer
         Bytes(s);
     }
 
+    public void U64(ulong v)
+    {
+        Span<byte> s = stackalloc byte[8];
+        BinaryPrimitives.WriteUInt64LittleEndian(s, v);
+        Bytes(s);
+    }
+
     public void U32(uint v)
     {
         Span<byte> s = stackalloc byte[4];

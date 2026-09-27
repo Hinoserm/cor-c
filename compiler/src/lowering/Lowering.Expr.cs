@@ -428,7 +428,7 @@ public sealed partial class Lowering
             // Truncates toward zero, as C# specifies, whatever the FPU's
             // rounding mode says. To a 64-bit register for the wide types and
             // to 32 for the rest, then narrowed to canonical.
-            bool wide = t.Prim is Prim.I64 or Prim.U64;
+            bool wide = IsWideInteger(t);
             Opcode op = t.IsUnsigned ? Opcode.FToU : Opcode.FToI;
             VReg i = _e.Unary(op, R(v), wide ? IrType.I64 : IrType.I32);
             return wide ? i : Narrow(_e, i, t.IsUnsigned ? Type.U32 : Type.I32, t);
@@ -442,7 +442,7 @@ public sealed partial class Lowering
     private static VReg Narrow(Builder e, VReg v, Type from, Type to)
     {
         bool fromWide = v.Type == IrType.I64;
-        bool toWide = to.Prim is Prim.I64 or Prim.U64;
+        bool toWide = IsWideInteger(to);
 
         if (toWide)
         {
@@ -465,6 +465,10 @@ public sealed partial class Lowering
             default: return v;
         }
     }
+
+    /// <summary>An integer held in a 64-bit register: long, ulong, and nint and nuint in long mode.</summary>
+    internal static bool IsWideInteger(Type t) =>
+        t.Prim is Prim.I64 or Prim.U64 || (t.IsNative && Target.Current.WordSize == 8);
 
     /// <summary>The address to which a narrowing must return after arithmetic: the operand type's own width.</summary>
     private VReg Canonical(VReg v, Type t) => Narrow(_e, v, t, t);
@@ -2194,6 +2198,11 @@ public sealed partial class Lowering
                 VReg addr = Eval(u.Operand);
                 return LoadPlace(new MemPlace(R(addr), 0, type));
             }
+
+            case UnOp.AddressOf when _b.MethodAddresses.TryGetValue(u, out MethodSymbol? addressed):
+                // `&Method`: the function pointer is the method's address.
+                Require(addressed);
+                return _e.Address(CallLabel(addressed));
 
             case UnOp.AddressOf:
                 return AddressOf(u, u.Operand);

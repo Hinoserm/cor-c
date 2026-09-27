@@ -3074,6 +3074,44 @@ public sealed class Parser
             return VoidType();
         }
 
+        // A FUNCTION POINTER: `delegate* <A, R>`, `delegate* unmanaged<A, R>`,
+        // `delegate* unmanaged[Cdecl]<A, R>`. The last type is the result.
+        if (At(Tok.KwDelegate) && Ahead().Kind == Tok.Star)
+        {
+            _i += 2;
+            bool unmanaged = false;
+            if (At(Tok.Ident) && Cur.Text is "unmanaged" or "managed")
+            {
+                unmanaged = Cur.Text == "unmanaged";
+                _i++;
+                // The calling convention in brackets: C's is the only one
+                // either target has, so it is read and not kept.
+                if (Take(Tok.LBracket))
+                {
+                    while (!At(Tok.RBracket) && !At(Tok.End))
+                    {
+                        _i++;
+                    }
+                    Expect(Tok.RBracket, "']' to close the calling convention");
+                }
+            }
+            Expect(Tok.Lt, "'<' after 'delegate*'");
+            List<TypeRef> parts = new();
+            do
+            {
+                parts.Add(ParseTypeRef());
+            }
+            while (Take(Tok.Comma));
+            Expect(Tok.Gt, "'>' to close the function pointer's types");
+            TypeRef pointer = new()
+            {
+                Name = unmanaged ? TypeRef.UnmanagedFunction : TypeRef.ManagedFunction,
+                Line = at.Line, Col = at.Col,
+            };
+            pointer.Args.AddRange(parts);
+            return Suffixes(pointer, !pattern);
+        }
+
         // A TUPLE TYPE: `(int, string)`, `(int At, string Label)`.
         //
         // It is written like nothing else and so needs no speculation: a type
@@ -4946,7 +4984,7 @@ public sealed class Parser
         {
             _i++;
 
-            if (!At(Tok.Ident) && !At(Tok.KwVoid))
+            if (!At(Tok.Ident) && !At(Tok.KwVoid) && !(At(Tok.KwDelegate) && Ahead().Kind == Tok.Star))
             {
                 return false;
             }
@@ -6229,7 +6267,7 @@ public sealed class Parser
         // `(int, string) t = Two();` is a declaration and `(a, b)` is an
         // expression, and only what follows the closing bracket tells them
         // apart -- which is exactly what trying and falling back does.
-        if (At(Tok.Ident) || At(Tok.KwConst) || At(Tok.LParen))
+        if (At(Tok.Ident) || At(Tok.KwConst) || At(Tok.LParen) || (At(Tok.KwDelegate) && Ahead().Kind == Tok.Star))
         {
             int save = _i;
             bool constant = Take(Tok.KwConst);
@@ -6967,7 +7005,7 @@ public sealed class Parser
                 int save = _i;
                 _i++;
 
-                if (At(Tok.Ident) || At(Tok.KwVoid))
+                if (At(Tok.Ident) || At(Tok.KwVoid) || (At(Tok.KwDelegate) && Ahead().Kind == Tok.Star))
                 {
                     try
                     {

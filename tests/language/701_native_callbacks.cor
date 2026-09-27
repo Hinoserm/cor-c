@@ -1,0 +1,58 @@
+// test: C calls back into managed code; managed code calls C function pointers
+// expect-exit: 0
+// expect-output:
+// sorted 1,2,3,5,7,8,9
+// compared True
+// llabs 77
+// managed 5
+// caught inside Callback failed
+//
+// qsort is handed a pointer to an [UnmanagedCallersOnly] method, which C
+// calls with two pointers into the array; the method allocates as it goes,
+// so the collector must be able to run while C is on the stack beneath it.
+// A C function found at run time (dlsym) is called through a
+// `delegate* unmanaged`, and a managed method through a `delegate*`. An
+// exception thrown inside the callback and caught inside it is ordinary.
+
+using System;
+using System.Runtime.InteropServices;
+
+static unsafe class Program
+{
+    static int _calls;
+
+    [UnmanagedCallersOnly]
+    static int Compare(nint a, nint b)
+    {
+        _calls++;
+        string noise = "compare " + _calls + " " + new string('x', _calls % 50);
+        if (_calls == 3)
+        {
+            try { throw new InvalidOperationException("Callback failed"); }
+            catch (InvalidOperationException e) { _caught = e.Message; }
+        }
+        return Marshal.ReadInt32(a) - Marshal.ReadInt32(b);
+    }
+
+    static string _caught = "";
+
+    [DllImport("libc.so.6")] static extern void qsort(int[] items, nint count, nint size, delegate* unmanaged<nint, nint, int> compare);
+    [DllImport("libc.so.6")] static extern nint dlsym(nint handle, string name);
+
+    static int Add(int a, int b) { return a + b; }
+
+    static int Main()
+    {
+        int[] items = new int[] { 5, 3, 9, 1, 7, 2, 8 };
+        qsort(items, items.Length, 4, &Compare);
+        Console.WriteLine("sorted " + string.Join(",", items));
+        Console.WriteLine("compared " + (_calls > 0));
+
+        delegate* unmanaged<long, long> llabs = (delegate* unmanaged<long, long>)dlsym(0, "llabs");
+        Console.WriteLine("llabs " + llabs(-77));
+        delegate*<int, int, int> add = &Add;
+        Console.WriteLine("managed " + add(2, 3));
+        Console.WriteLine("caught inside " + _caught);
+        return 0;
+    }
+}

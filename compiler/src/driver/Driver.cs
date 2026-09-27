@@ -229,18 +229,20 @@ public static class Driver
     }
 
     /// <summary>An address on the command line: hexadecimal with 0x, else decimal.</summary>
-    private static uint? Address(string text)
+    private static ulong? Address(string text)
     {
+        // 64 bits, for a long-mode kernel linked into the top of the address
+        // space; an i386 image refuses one that does not fit when it is written.
         string digits = text.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? text[2..] : text;
         if (text.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
         {
-            return uint.TryParse(digits, System.Globalization.NumberStyles.HexNumber, null, out uint hex) ? hex : null;
+            return ulong.TryParse(digits, System.Globalization.NumberStyles.HexNumber, null, out ulong hex) ? hex : null;
         }
-        if (uint.TryParse(text, out uint dec))
+        if (ulong.TryParse(text, out ulong dec))
         {
             return dec;
         }
-        return uint.TryParse(digits, System.Globalization.NumberStyles.HexNumber, null, out uint fallback) ? fallback : null;
+        return ulong.TryParse(digits, System.Globalization.NumberStyles.HexNumber, null, out ulong fallback) ? fallback : null;
     }
 
     internal static string? Value(string[] args, string name)
@@ -291,7 +293,7 @@ public static class Driver
         }
 
         string targetName = Value(args, "--target") ?? "x86-16";
-        if (targetName is not ("x86-16" or "x86_16" or "x86-32"))
+        if (targetName is not ("x86-16" or "x86_16" or "x86-32" or "x86-64" or "x86_64"))
         {
             return Fail($"unknown build target '{targetName}'");
         }
@@ -299,7 +301,7 @@ public static class Driver
         // --target names the assembler's default mode, which `.bits` in the
         // source still overrides: x86-16 for a boot sector, x86-32 for the
         // kernel's own assembly, which has no real mode left to speak of.
-        int bits = targetName == "x86-32" ? 32 : 16;
+        int bits = targetName == "x86-32" ? 32 : targetName is "x86-64" or "x86_64" ? 64 : 16;
         bool asObject = args.Contains("--obj");
         string output = Value(args, "-o") ?? Path.ChangeExtension(files[0], asObject ? ".o" : ".bin");
         Corsac.Asm.X86Assembler.Result result = Corsac.Asm.X86Assembler.AssembleFile(files[0], bits, asObject, X86Cpu.Parse(args));
@@ -394,11 +396,27 @@ public static class Driver
         }
         Target.Current = target;
 
-        X86Cpu profile = X86Cpu.Parse(args);
-        if (profile.Fpu == "none") return Fail("Software floating-point lowering is not yet complete; --fpu=none native compilation is not available yet");
-        if (profile.Name == "386") return Fail("The 386 backend instruction/runtime audit is not yet complete");
-        target.Cpu = profile.Name;
-        target.X86Profile = profile;
+        // LONG MODE IS ONE PROCESSOR BASELINE: the K8, the first AMD64. Every
+        // x86-64 processor since runs what it runs, and the 32-bit profiles'
+        // choices -- an FPU or none, MMX, 3DNow! -- do not apply.
+        bool longMode = target == Target.X86_64;
+        if (longMode)
+        {
+            string? cpuName = Value(args, "--cpu");
+            if (cpuName is not null && cpuName is not ("k8" or "x86-64"))
+            {
+                return Fail($"--cpu {cpuName}: the x86-64 target's processor is k8 (the first AMD64)");
+            }
+            target.Cpu = "k8";
+        }
+        else
+        {
+            X86Cpu profile = X86Cpu.Parse(args);
+            if (profile.Fpu == "none") return Fail("Software floating-point lowering is not yet complete; --fpu=none native compilation is not available yet");
+            if (profile.Name == "386") return Fail("The 386 backend instruction/runtime audit is not yet complete");
+            target.Cpu = profile.Name;
+            target.X86Profile = profile;
+        }
 
         // Bare metal: no operating system under the program, and therefore a
         // different platform library, no thread scheduler, and an entry stub
@@ -416,7 +434,7 @@ public static class Driver
         Corsac.Lang.Lower.Lowering.EntryClearsBss = asmEntry is null;
         Corsac.Lang.Lower.Lowering.StartupObject = Value(args, "--main-type");
 
-        uint? loadBase = null;
+        ulong? loadBase = null;
         if (Value(args, "--base") is { } baseText)
         {
             if (Address(baseText) is not { } parsed)
@@ -429,7 +447,7 @@ public static class Driver
         // --load (or --paddr) is where the loader PUTS the image; --base is
         // where it will RUN. They differ only for a kernel linked into the
         // higher half and loaded low, and the difference shows up as p_paddr.
-        uint? physicalBase = null;
+        ulong? physicalBase = null;
         string? physText = Value(args, "--load") ?? Value(args, "--paddr");
         if (physText is not null)
         {
@@ -511,6 +529,7 @@ public static class Driver
         {
             symbols.AddRange(given.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries));
         }
+        symbols.AddRange(TargetSymbols(target));
 
         // THE PROJECT'S USINGS, in every file (Parser.ProjectUsings).
         Parser.ProjectUsings = Values(args, "--using").ToList();
@@ -572,6 +591,7 @@ public static class Driver
         Program.BenchmarkStage("lower");
 #endif
         Module module = Lowering.Lower(front.Value.bound, front.Value.unit, name, library, errors, entries);
+        module.LibraryCodeIsShared = Corsac.Lang.Lower.Lowering.Dynamic;
         Phase("lower");
 
         if (errors.Count > 0)
@@ -687,9 +707,21 @@ public static class Driver
         {
             x86Backend.Imported.Add(symbol);
         }
+        Corsac.Lang.X64.X64Backend x64Backend = new()
+        {
+            PositionIndependent = x86Backend.PositionIndependent,
+            Workers = workers,
+            EmitLinkSummary = x86Backend.EmitLinkSummary,
+            StackMaps = !args.Contains("--no-stackmaps"),
+        };
+        foreach (string symbol in imported)
+        {
+            x64Backend.Imported.Add(symbol);
+        }
         IBackend backend = target.Name switch
         {
             "x86" => x86Backend,
+            "x86-64" => x64Backend,
             _ => throw new NotSupportedException($"no backend for target '{target.Name}'"),
         };
 
@@ -713,7 +745,9 @@ public static class Driver
         ObjectFile obj = backend.Generate(module, backendErrors);
         Phase("codegen");
         Corsac.Lang.Opt.Pipeline.ReportAccounts();
-        new TargetContract(freestanding ? (Lowering.TlsGs ? 2u : 1u) : 0u, requiresManagedLayouts: true, requiresCodeGenerationContract: true).Attach(obj);
+        new TargetContract(freestanding ? (Lowering.TlsGs ? 2u : 1u) : 0u, requiresManagedLayouts: true, requiresCodeGenerationContract: true, longMode: longMode).Attach(obj);
+        // The C libraries its [DllImport]s call, for the link to need.
+        NativeLibraries.Attach(obj, module.NativeLibraries);
         ManagedLayouts.Attach(obj, front.Value.bound, library);
 
         // WHAT THIS PROGRAM'S SETTINGS ARE, for the kernel to read out of the
@@ -753,6 +787,10 @@ public static class Driver
             if (backend is X86Backend x86)
             {
                 Console.Error.Write(x86.Statistics());
+            }
+            else if (backend is Corsac.Lang.X64.X64Backend x64)
+            {
+                Console.Error.Write(x64.Statistics());
             }
         }
         if (backendErrors.Count > 0)
@@ -823,7 +861,7 @@ public static class Driver
             // --flat --obj. Keep the original metadata and --with objects.
             TargetContract.Validate(link);
             Corsac.Lang.Lto.LinkTimeOptimizer.Run(link, !args.Contains("--no-lto") && !args.Contains("--no-opt"));
-            Linker.FlatImage image = Linker.LinkFlat(link, entry, loadBase ?? 0x10000);
+            Linker.FlatImage image = Linker.LinkFlat(link, entry, checked((uint)(loadBase ?? 0x10000)));
             File.WriteAllBytes(output, image.Bytes);
             Console.Error.WriteLine(
                 $"{output}: flat image at 0x{image.Base:x}, {image.Bytes.Length} bytes "
@@ -875,6 +913,35 @@ public static class Driver
         }
         Console.Error.WriteLine($"{output}: {obj.Section(".text").Size} bytes of code, {exe.Length} bytes");
         return 0;
+    }
+
+    /// <summary>
+    /// THE TARGET'S OWN CONDITIONAL SYMBOLS, the names .NET's own class library
+    /// is written against: TARGET_64BIT or TARGET_32BIT for the width of a
+    /// word, TARGET_AMD64 or TARGET_X86 for the instruction set. The runtime
+    /// reads its pointer-sized layouts through them -- `#if TARGET_64BIT` --
+    /// exactly as CoreLib does, so one source serves both machines.
+    /// </summary>
+    internal static IEnumerable<string> TargetSymbols(Target target)
+    {
+        if (target == Target.X86_64)
+        {
+            yield return "TARGET_64BIT";
+            yield return "TARGET_AMD64";
+        }
+        else if (target == Target.X86)
+        {
+            yield return "TARGET_32BIT";
+            yield return "TARGET_X86";
+        }
+        else if (target.WordSize == 8)
+        {
+            yield return "TARGET_64BIT";
+        }
+        else
+        {
+            yield return "TARGET_32BIT";
+        }
     }
 
     /// <summary>

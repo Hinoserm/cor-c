@@ -872,7 +872,7 @@ internal sealed class Allocator
         List<MInstr> before = new();
         List<MInstr> after = new();
         HashSet<int> done = new();
-        MInstr n = new(i.Op) { Width = i.Width, Cond = i.Cond, Lock = i.Lock, Table = i.Table, CallReloc = i.CallReloc, Line = i.Line };
+        MInstr n = new(i.Op) { Width = i.Width, Cond = i.Cond, Lock = i.Lock, Table = i.Table, CallReloc = i.CallReloc, Line = i.Line, Native = i.Native };
 
         if (_liveAtCall.TryGetValue(index, out List<int>? live))
         {

@@ -40,6 +40,17 @@ public sealed class TypeRef : Node
     public const string Anything = "__anything";
 
     public required string Name { get; set; }
+
+    /// <summary>
+    /// The name a function pointer, `delegate* [unmanaged]<A, B, R>`, is
+    /// written under: its types are the Args, the parameters and then the
+    /// result, so every pass that copies a type reference carries them as it
+    /// carries a generic's arguments.
+    /// </summary>
+    public const string UnmanagedFunction = "__fnptr$unmanaged";
+    public const string ManagedFunction = "__fnptr$managed";
+
+    public bool IsFunctionPointer => Name is UnmanagedFunction or ManagedFunction;
     public List<TypeRef> Args { get; init; } = new();
     // Use-site arguments retained after Args is folded into a specialization
     // name. These annotations do not request another runtime specialization.

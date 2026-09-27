@@ -43,7 +43,9 @@ public static class AsyncTransform
                 {
                     for (int i = 0; i < wordSize; i++)
                     {
-                        item.Bytes[i] = (byte)(size >> (8 * i));
+                        // As a long: an int's shift count is taken mod 32, and
+                        // an eight-byte word's top half would repeat its bottom.
+                        item.Bytes[i] = (byte)((long)size >> (8 * i));
                     }
                 }
             }

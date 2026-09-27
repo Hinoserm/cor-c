@@ -40,13 +40,13 @@ static class Program
         large = Runtime.Alloc(50000);
         if (Gc.ProbeSteps == probes || Gc.ProbeSteps - probes > 128)
         { Sys.Print("excessive free-index probes: " + (Gc.ProbeSteps - probes) + "\n"); return 1; }
-        for (int i = 0; i < 50000; i += 4)
+        for (long i = 0; i + WordSize.Bytes <= 50000; i += WordSize.Bytes)
             if (Sys.Peek(large + i) != 0) return 2;
         Check(2);
         for (int i = 0; i < count; i++)
         {
             blocks[i] = Runtime.Alloc(40000);
-            if (Sys.Peek(blocks[i]) != 0 || Sys.Peek(blocks[i] + 39996) != 0) return 3;
+            if (Sys.Peek(blocks[i]) != 0 || Sys.Peek(blocks[i] + 40000 - WordSize.Bytes) != 0) return 3;
             Sys.Poke(blocks[i], i + 1);
             if ((i & 31) == 31) Check(2000 + i);
         }

@@ -21,7 +21,7 @@ public static class ProjectCommand
 
     public static int Run(string[] arguments)
     {
-        string? path = null, output = null, framework = null;
+        string? path = null, output = null, framework = null, targetName = null;
         string configuration = "Release";
         int workers = Environment.ProcessorCount;
         List<string> profileArguments = new();
@@ -34,6 +34,7 @@ public static class ProjectCommand
                 case "--configuration": configuration = Value(); break;
                 case "--framework": framework = Value(); break;
                 case "--jobs": workers = int.Parse(Value()); break;
+                case "--target": targetName = Value(); break;
                 case "--cpu": case "--tune": case "--fpu":
                     profileArguments.Add(arguments[i]); profileArguments.Add(Value()); break;
                 case "--enable-mmx": case "--disable-mmx": case "--enable-3dnow": case "--disable-3dnow":
@@ -55,7 +56,19 @@ public static class ProjectCommand
         foreach (var property in new[] { ("CorCCpu", "--cpu="), ("CorCTune", "--tune="), ("CorCFpu", "--fpu=") })
             if (project.Properties.TryGetValue(property.Item1, out string? value) && value.Length != 0) defaults.Add(property.Item2 + value);
         defaults.AddRange(profileArguments);
-        string[] cpuArguments = global::Corsac.Lang.X86.X86Cpu.Parse(defaults).Contract.Arguments();
+        if (targetName is null && project.Properties.TryGetValue("CorCTarget", out string? projectTarget) && projectTarget.Length != 0)
+            targetName = projectTarget;
+        Target target = targetName is null ? Target.X86
+            : Target.ByName(targetName) ?? throw new ArgumentException("unknown target '" + targetName + "'");
+        // Every unit is compiled for the target; in long mode the one CPU is
+        // the K8 and the i386 profile options do not apply.
+        string[] cpuArguments = target == Target.X86_64
+            ? (profileArguments.Count == 0 ? new[] { "--target", "x86-64", "--cpu", "k8" }
+                : throw new ArgumentException("--cpu/--tune/--fpu and the MMX/3DNow! switches are for the i386 target"))
+            : global::Corsac.Lang.X86.X86Cpu.Parse(defaults).Contract.Arguments();
+        // The link validates each object's CPU contract against the i386
+        // profile; a long-mode object carries its own (k8/sse2).
+        string[] linkArguments = target == Target.X86_64 ? Array.Empty<string>() : cpuArguments;
         if (project.OutputType is not ("Exe" or "WinExe")) throw new InvalidDataException("Standalone native library packaging is not yet implemented");
         string directory = Path.GetDirectoryName(project.Path)!;
         string work = Path.Combine(directory, "obj", "cor-c", configuration, project.Framework);
@@ -104,7 +117,7 @@ public static class ProjectCommand
                 throw new InvalidDataException("Referenced projects with different global usings are not yet supported: " + node.Path);
         Parser.ProjectUsings = project.Usings;
         SourceIndexBuilder.Write(index, owners.Keys, project.AssemblyName, fileSymbols: symbols);
-        string[] libraries = Driver.DefaultLibraries(Target.X86).ToArray();
+        string[] libraries = Driver.DefaultLibraries(target).ToArray();
         if (libraries.Length == 0) throw new InvalidDataException("The native runtime sources were not found");
         string toolchain = ProjectState.Digest(ToolIdentity(typeof(Driver).Assembly) + "\n" + ToolIdentity(typeof(ObjectLinkCommand).Assembly));
         string libraryState = ProjectState.Digest(string.Join("\n", libraries.Select(ProjectState.FileIdentity)));
@@ -172,7 +185,7 @@ public static class ProjectCommand
         {
             string temporary = output + "." + Guid.NewGuid().ToString("N");
             List<string> link = new() { "link" }; link.AddRange(objects); link.Add("-o"); link.Add(temporary);
-            link.AddRange(cpuArguments);
+            link.AddRange(linkArguments);
             try
             {
                 if (Driver.Run(link.ToArray()) != 0) return 1;

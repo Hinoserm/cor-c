@@ -18,8 +18,10 @@ public sealed partial class Binder
 
         type.Members.Add(new FieldDecl
         {
+            // A WORD: the runtime compares and swaps the initialising thread's
+            // block address into it (Runtime.EnterTypeInitialization).
             Name = BindResult.ReadyField, Mods = Mods.Static | Mods.Private | Mods.Volatile,
-            Type = new TypeRef { Name = "int" }, File = type.File, Line = type.Line, Col = type.Col,
+            Type = new TypeRef { Name = "nint" }, File = type.File, Line = type.Line, Col = type.Col,
         });
         type.Members.Add(new FieldDecl
         {

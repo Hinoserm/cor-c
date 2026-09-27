@@ -21,6 +21,11 @@ public static class ElfWriter
     public static byte[] WriteObject(ObjectFile obj)
     {
         ArgumentNullException.ThrowIfNull(obj);
+        // Long-mode code is an ELF64 object with RELA relocations.
+        if (TargetContract.IsLongMode(obj))
+        {
+            return Elf64Object.Write(obj);
+        }
 
         // Section header indices: the object's sections in the order given,
         // from 1, so a section symbol's index is its section's index.

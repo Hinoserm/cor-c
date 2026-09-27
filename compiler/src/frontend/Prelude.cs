@@ -826,6 +826,18 @@ public static class Prelude
             // table, a card's driver ROM -- are not methods this program
             // declared.
             public static long Call(long fn, long a, long b, long c) { return 0; }
+            // A C function by its address, with C's rules for the call: the
+            // stack sixteen-aligned on i386, the vector count in AL on
+            // x86-64. What the runtime uses for what it finds in the C
+            // library at run time -- pthread_create, exit.
+            public static long CallNative(long fn) { return 0; }
+            public static long CallNative(long fn, long a) { return 0; }
+            public static long CallNative(long fn, long a, long b) { return 0; }
+            public static long CallNative(long fn, long a, long b, long c) { return 0; }
+            public static long CallNative(long fn, long a, long b, long c, long d) { return 0; }
+            public static long CallNative(long fn, long a, long b, long c, long d, long e) { return 0; }
+            public static long CallNative(long fn, long a, long b, long c, long d, long e, long f) { return 0; }
+            public static long CallNative(long fn, long a, long b, long c, long d, long e, long f, long g) { return 0; }
 
             // Five arguments, for calling a routine somebody else designed --
             // a card driver takes slot, block, address, count and position.
@@ -950,6 +962,21 @@ public static class Prelude
             // protected-mode entry does immediately after the far jump that
             // set CS.
             public static void LoadSegments(int dataSelector) { }
+            // CS, which no mov can load: a far return to the next instruction.
+            public static void LoadCodeSegment(int codeSelector) { }
+            // The task register (ltr): the TSS a privilege change finds its stack in.
+            public static void LoadTaskRegister(int selector) { }
+            // rdmsr / wrmsr: a model-specific register, all 64 bits of it --
+            // on x86-64 how a kernel reaches EFER, the GS base and the
+            // syscall entry.
+            public static long ReadMsr(int msr) { return 0; }
+            public static void WriteMsr(int msr, long value) { }
+            // cpuid: EAX, EBX, ECX and EDX of the leaf, as four ints at `into`.
+            public static void Cpuid(int leaf, int subleaf, long into) { }
+            // rdtsc: the time-stamp counter.
+            public static long ReadTsc() { return 0; }
+            // swapgs: the kernel's GS base for the user's, on x86-64.
+            public static void SwapGs() { }
 
             // Stops this processor until an interrupt arrives.
             //
@@ -1028,6 +1055,7 @@ public static class Prelude
             // instead, after making the descriptor.
             public static void SetThreadBlock(long block) { }
             public static void SetGs(long selector) { }
+            public static long GetGs() { return 0; }
             // The bounds of the program's static data, for a collector that
             // scans statics as roots: the linker defines the symbols.
             // Whether a reference is a string, read from its descriptor: what

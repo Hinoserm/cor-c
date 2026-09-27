@@ -1569,6 +1569,35 @@ class Socket : IDisposable
         }
     }
 
+    int _receiveTimeout;
+    int _sendTimeout;
+
+    /// How long a receive waits, in milliseconds, before it fails with a
+    /// timeout (SocketError.TimedOut); zero or less waits for ever, as .NET's
+    /// does. SO_RCVTIMEO carries a struct timeval, whose layout is the
+    /// machine's (TimeVal).
+    public int ReceiveTimeout
+    {
+        get { return _receiveTimeout; }
+        set { SetTimeout(20, value); _receiveTimeout = value <= 0 ? 0 : value; }      // SO_RCVTIMEO
+    }
+
+    /// The same for a send (SO_SNDTIMEO).
+    public int SendTimeout
+    {
+        get { return _sendTimeout; }
+        set { SetTimeout(21, value); _sendTimeout = value <= 0 ? 0 : value; }         // SO_SNDTIMEO
+    }
+
+    void SetTimeout(int option, int milliseconds)
+    {
+        if (milliseconds < -1) throw new ArgumentOutOfRangeException("value");
+        long ms = milliseconds <= 0 ? 0 : milliseconds;
+        byte[] tv = TimeVal.Room();
+        TimeVal.Set(tv, ms / 1000, (ms % 1000) * 1000);
+        SetSocketOption(1, option, tv);                                              // SOL_SOCKET
+    }
+
     /// Bytes that can be read without blocking (FIONREAD).
     public int Available
     {

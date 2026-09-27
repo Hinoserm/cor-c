@@ -81,6 +81,28 @@ public sealed class Target
     };
 
     /// <summary>
+    /// x86-64 in long mode, from the first AMD64 processors on (K8): eight-byte
+    /// words and native 64-bit integers, SSE2 floating point, the System V
+    /// AMD64 calling convention. The layout numbers are the 64-bit ones the
+    /// front half already scales by the word: a sixteen-byte object header
+    /// (vtable and synchronisation word), a twenty-four-byte array header with
+    /// the count at sixteen, a twelve-word descriptor before each vtable.
+    /// </summary>
+    public static readonly Target X86_64 = new()
+    {
+        Name = "x86-64",
+        Cpu = "k8",
+        WordSize = 8,
+        NativeI64 = true,
+        ObjectHeaderBytes = 16,
+        ArrayHeaderBytes = 24,
+        ArrayCountOffset = 16,
+        DescriptorBytes = 96,
+        StaticBase = 16,
+        Align64 = 8,
+    };
+
+    /// <summary>
     /// The original 64-bit CORSAC machine, kept so a backend for it can be
     /// added back without changing anything above it.
     /// </summary>
@@ -110,6 +132,7 @@ public sealed class Target
     public static Target? ByName(string name) => name switch
     {
         "x86" or "i386" or "i486" => X86,
+        "x86-64" or "x86_64" or "amd64" or "x64" => X86_64,
         "corsac" => Corsac,
         _ => null,
     };

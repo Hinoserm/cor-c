@@ -123,7 +123,7 @@ internal static class Pic
                 // Bound to this object's own definition by the linker, so the
                 // relative call reaches it whatever address the object is
                 // loaded at: both ends move together.
-                outList.Add(new MInstr(MOp.Call, callee) { Width = i.Width, CallReloc = RelocKind.Rel32 });
+                outList.Add(new MInstr(MOp.Call, callee) { Width = i.Width, CallReloc = RelocKind.Rel32, Native = i.Native });
                 return;
             }
             // Imported. Eager binding means the slot is filled before this
@@ -131,7 +131,7 @@ internal static class Pic
             // stub and no register pinned for one.
             MReg target = m.NewReg();
             Address(outList, got, target, callee.Symbol!, callee.Value, isPrivate);
-            outList.Add(new MInstr(MOp.CallInd, target) { Width = i.Width });
+            outList.Add(new MInstr(MOp.CallInd, target) { Width = i.Width, Native = i.Native });
             return;
         }
 

@@ -51,7 +51,7 @@ public static class LinkTimeOptimizer
             {
                 Relocation[] matches = text.Relocs.Where(r => r.Offset == call.Offset).ToArray();
                 if (call.Offset > text.Bytes.Count - 4 || text.Bytes[call.Offset - 1] != 0xe8
-                    || matches.Length != 1 || matches[0].Kind != RelocKind.Rel32 || matches[0].Addend != -4
+                    || matches.Length != 1 || matches[0].Kind is not (RelocKind.Rel32 or RelocKind.Plt32) || matches[0].Addend != -4
                     || matches[0].Symbol != call.Symbol
                     || text.Relocs.Any(r => r.Offset != call.Offset && r.Offset < call.Offset + 4 && r.Offset + 4 > call.Offset - 1))
                     throw new ElfFormatException(input.Name + ": invalid LTO direct call " + call.Symbol);

@@ -38,11 +38,11 @@ static class Environment
             return have;
         }
         long sp = Sys.EntryStack();
-        int argc = (int)Sys.PeekWord(sp);
+        int argc = (int)Sys.Peek(sp);
         string[] args = new string[argc];
         for (int i = 0; i < argc; i++)
         {
-            args[i] = Os.StringAt(Sys.PeekWord(sp + 4 + 4 * i));
+            args[i] = Os.StringAt(Sys.Peek(sp + WordSize.Bytes + WordSize.Bytes * i));
         }
         _args = args;
         return args;
@@ -56,17 +56,17 @@ static class Environment
             return have;
         }
         long sp = Sys.EntryStack();
-        long argc = Sys.PeekWord(sp);
-        long at = sp + 4 + 4 * argc + 4;
+        long argc = Sys.Peek(sp);
+        long at = sp + WordSize.Bytes + WordSize.Bytes * argc + WordSize.Bytes;
         int n = 0;
-        while (Sys.PeekWord(at + 4 * n) != 0)
+        while (Sys.Peek(at + WordSize.Bytes * n) != 0)
         {
             n = n + 1;
         }
         string[] all = new string[n];
         for (int i = 0; i < n; i++)
         {
-            all[i] = Os.StringAt(Sys.PeekWord(at + 4 * i));
+            all[i] = Os.StringAt(Sys.Peek(at + WordSize.Bytes * i));
         }
         _env = all;
         return all;
@@ -375,7 +375,7 @@ static class Environment
         get
         {
             byte[] names = new byte[65 * 6];                  // struct utsname: six fields of 65
-            if (Platform.Result(Sys.Syscall(122, Sys.ArrayData(names), 0, 0)) < 0) return "localhost";
+            if (Platform.Result(Sys.Syscall(Call.Uname, Sys.ArrayData(names), 0, 0)) < 0) return "localhost";
             int end = 65;
             while (end < 130 && names[end] != 0) end++;
             return end > 65 ? Utf8Transcoder.Decode(names, 65, end - 65) : "localhost";

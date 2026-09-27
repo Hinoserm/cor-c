@@ -200,6 +200,21 @@ internal static class AsmText
             case MOp.SetGs:
                 yield return $"mov gs, {Op(i.Operands[0], 2, false)}";
                 yield break;
+            case MOp.Rdmsr: yield return "rdmsr"; yield break;
+            case MOp.Wrmsr: yield return "wrmsr"; yield break;
+            case MOp.Cpuid: yield return "cpuid"; yield break;
+            case MOp.Rdtsc: yield return "rdtsc"; yield break;
+            case MOp.Ltr: yield return $"ltr {Op(i.Operands[0], 2, false)}"; yield break;
+            case MOp.LoadCs:
+                yield return $"push {Op(i.Operands[0], 4, false)}";
+                yield return "call .+5";
+                yield return "add dword [esp], 5";
+                yield return "retf";
+                yield break;
+            case MOp.GetGs:
+                yield return $"xor {Op(i.Operands[0], 4, false)}, {Op(i.Operands[0], 4, false)}";
+                yield return $"mov {Op(i.Operands[0], 2, false)}, gs";
+                yield break;
             case MOp.LoadSegments:
                 yield return "mov ds, ax";
                 yield return "mov es, ax";
