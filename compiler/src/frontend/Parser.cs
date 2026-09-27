@@ -2529,20 +2529,6 @@ public sealed class Parser
     }
 
     /// <summary>
-    /// A body that may be an ITERATOR: one with `yield return` in it.
-    ///
-    /// C# turns such a body into a state machine; this turns it into a hidden
-    /// List&lt;T&gt; the body fills in and returns, which offers the same
-    /// IEnumerable&lt;T&gt; and keeps yield out of the binder, the GIR and the
-    /// backend.
-    ///
-    /// A PROPERTY'S GETTER IS AN ITERATOR ON THE SAME TERMS AS A METHOD.
-    /// `public IEnumerable&lt;Block&gt; Successors { get { … yield return b; … } }`
-    /// is an ordinary line in this compiler's own IR, and was a syntax error
-    /// here only because the iterator was set up where a method's body is read
-    /// and nowhere else; both go through this now.
-    /// </summary>
-    /// <summary>
     /// Whether the bracketed thing the parser is on is followed by `=` and
     /// holds a comma: what tells a deconstructing ASSIGNMENT from a
     /// parenthesised expression that happens to be assigned to.
