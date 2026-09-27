@@ -89,6 +89,13 @@ public sealed partial class Escape
         public readonly HashSet<long> FreshStored = new();
         /// <summary>The owner's own loads of each field, for the liveness check where it dies.</summary>
         public readonly List<(long Offset, VReg Value)> Loads = new();
+        /// <summary>
+        /// The fresh objects the owner's own function stored in each field,
+        /// for the same check: one made once and stored in every owner a loop
+        /// makes -- the list a foreach's enumerator holds -- outlives each of
+        /// them, and freeing it with the first freed it under the rest.
+        /// </summary>
+        public readonly List<(long Offset, VReg Value)> Stored = new();
 
         public void Merge(FieldSummary? other)
         {
@@ -378,6 +385,7 @@ public sealed partial class Escape
         }
         foreach ((long at, Instr origin, LifetimeCondition? condition) in fresh)
         {
+            fs.Stored.Add((at, origin.Dest!));
             // One object in two fields would be freed twice.
             if (condition is null)
             {
@@ -493,15 +501,17 @@ public sealed partial class Escape
             if (clean.Count == 0 && later.Count == 0) continue;
 
             // Where the previous object dies inside the function, nothing
-            // loaded from its fields may still be in use.
+            // loaded from its fields may still be in use -- nor anything this
+            // function stored there, which it may hold on to as well.
             if (r.Renew is not null)
             {
                 liveness ??= new Liveness(f);
                 pads ??= PadLive(liveness);
-                bool LoadedLive(List<long> offsets) => offsets.Count > 0 && LiveAt(f, liveness, pads, r.Renew,
-                    Derivations(f, fs.Loads.Where(l => offsets.Contains(l.Offset)).Select(l => l.Value)));
-                if (LoadedLive(clean)) clean.Clear();
-                if (LoadedLive(later)) later.Clear();
+                // Field by field: a live one keeps its own object, not the others'.
+                bool HeldLive(long offset) => LiveAt(f, liveness, pads, r.Renew,
+                    Derivations(f, fs.Loads.Concat(fs.Stored).Where(l => l.Offset == offset).Select(l => l.Value)));
+                clean.RemoveAll(HeldLive);
+                later.RemoveAll(HeldLive);
             }
             if (clean.Count == 0 && later.Count == 0) continue;
 

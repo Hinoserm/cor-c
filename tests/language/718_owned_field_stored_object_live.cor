@@ -1,0 +1,53 @@
+// test: owned_field_stored_object_live
+// expect-exit: 0
+// expect-output:
+// 176
+// 80600
+//
+// An owned object's field is freed with it only if the function no longer
+// holds what it stored there. A list made once before a loop and walked by a
+// new enumerator each time round sits in every enumerator's field; freeing it
+// with the first enumerator freed it under the rest, and the self-hosted
+// compiler's escape pass crashed adding to its own owners list. Expected
+// output is real .NET's.
+
+using System;
+using System.Collections.Generic;
+
+class Owner
+{
+    public int Value;
+    public Owner(int value) { Value = value; }
+}
+
+static class Program
+{
+    // One list, made before the loop and walked by a fresh enumerator every
+    // time round: the enumerator's field holds the list, and the list lives on.
+    static int Walk(int[] items)
+    {
+        List<Owner> owners = new();
+        int total = 0;
+        foreach (int x in items)
+        {
+            for (int attempt = 0; attempt < 2; attempt++)
+            {
+                foreach (Owner o in owners)
+                {
+                    total += o.Value;
+                }
+            }
+            int[] filler = new[] { x, x };
+            owners.Add(new Owner(filler[0]));
+        }
+        return total + owners.Count;
+    }
+
+    static void Main()
+    {
+        Console.WriteLine(Walk(new[] { 1, 2, 3, 4, 5, 6, 7, 8 }));
+        int sum = 0;
+        for (int round = 0; round < 200; round++) sum += Walk(new[] { round, 1, 2 });
+        Console.WriteLine(sum);
+    }
+}
