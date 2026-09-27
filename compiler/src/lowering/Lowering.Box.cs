@@ -84,7 +84,7 @@ public sealed partial class Lowering
     {
         int payload = _t.ObjectHeaderBytes;
         int bytes = BoxPayload(of);
-        VReg obj = Allocate(at, payload + Math.Max(_t.WordSize, bytes));
+        VReg obj = Allocate(at, payload + Math.Max(_t.WordSize, bytes), described: true);
         _e.Store(R(obj), new SymOperand(BoxDescriptor(of), _t.DescriptorBytes), 0, _t.WordSize);
 
         // A STRUCT IS A BLOCK, and the register holding one holds its address:

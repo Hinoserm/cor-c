@@ -576,6 +576,21 @@ public sealed partial class BindResult
     }
 }
 
+/// <summary>
+/// A static array of constants (FieldDecl.StaticData): its element type,
+/// by keyword, and its values -- whole numbers (bool, char and the integers,
+/// as their bits), doubles (float and double), or strings, null for a null
+/// element.
+/// </summary>
+public sealed class StaticArray
+{
+    public required string Element { get; init; }
+    public List<long> Integers { get; } = new();
+    public List<double> Reals { get; } = new();
+    public List<string?> Strings { get; } = new();
+    public int Count => Element == "string" ? Strings.Count : Element is "float" or "double" ? Reals.Count : Integers.Count;
+}
+
 /// <summary>Where a generic virtual call may land. See BindResult.GenericDispatches.</summary>
 public sealed class GenericDispatch
 {

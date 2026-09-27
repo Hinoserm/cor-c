@@ -86,7 +86,23 @@ public sealed class ReadOnlyFold : IParallelModulePass
                     int relocBytes = IrTypes.Word.Bytes();
                     if (item.Relocs.Any(rel => rel.Offset < at + i.Size && rel.Offset + relocBytes > at))
                     {
-                        continue;       // the linker fills this word; its value is not here
+                        // THE LINKER FILLS THIS WORD, so its value is not here --
+                        // but WHAT it fills it with is: a whole word read at a
+                        // relocation is that symbol's address, as Builder.Address
+                        // would make it. A `static readonly` table's field
+                        // (Lowering.StaticArrayData) becomes the table itself,
+                        // and a descriptor's own words the symbols they name.
+                        if (i.Size == relocBytes && i.Dest.Type == IrTypes.Word
+                            && item.Relocs.FirstOrDefault(rel => rel.Offset == at) is { Symbol: { } named } exact
+                            && item.Relocs.Count(rel => rel.Offset < at + i.Size && rel.Offset + relocBytes > at) == 1)
+                        {
+                            b.Instrs[k] = new Instr
+                            {
+                                Op = Opcode.Copy, Dest = i.Dest, Line = i.Line,
+                                Operands = { new SymOperand(named, exact.Addend) },
+                            };
+                        }
+                        continue;
                     }
 
                     long value = 0;

@@ -106,7 +106,7 @@ static class String {
     // The hash the tables use for a string key, reached by the routine that
     // hashes a key it knows only as a word.
     public static int KeyHash(string s) {
-        return (int)Sys.StringHash(s, 0, s.Length, 2166136261);
+        return Runtime.StringHashCode(s);
     }
 
     public static bool Equals(string? a, string? b) {
@@ -926,7 +926,7 @@ static class String {
 
     /// The same hash StringComparer.Ordinal gives, so a string and its
     /// comparer agree.
-    public static int GetHashCode(string s) { return (int)Sys.StringHash(s, 0, s.Length, 2166136261); }
+    public static int GetHashCode(string s) { return Runtime.StringHashCode(s); }
 
     // ---- cutting and splicing ---------------------------------------------
 
@@ -8734,8 +8734,9 @@ class StringComparer : IEqualityComparer<string>, IComparer<string> {
     // at all: the same characters hash the same wherever they came from.
     public int GetHashCode(string value) {
         if (value == null) { throw new ArgumentNullException("obj"); }
-        string folded = fold ? String.ToUpperInvariant(value) : value;
-        return (int)Sys.StringHash(folded, 0, folded.Length, 2166136261);
+        // The folded copy is a new string whose hash is kept on it for nothing;
+        // the ordinal one is the string's own, worked out once (Runtime).
+        return Runtime.StringHashCode(fold ? String.ToUpperInvariant(value) : value);
     }
 }
 

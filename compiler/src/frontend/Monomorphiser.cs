@@ -1178,6 +1178,7 @@ public sealed class Monomorphiser
                     Name = f.Name, Mods = f.Mods, Type = Sub(f.Type, map),
                     Init = f.Init is null ? null : Rewrite(f.Init, map),
                     DeclaredInit = f.DeclaredInit is null ? null : Rewrite(f.DeclaredInit, map),
+                    StaticData = f.StaticData,
                     VtableSlotHint = f.VtableSlotHint,
                     Line = f.Line, Col = f.Col,
                 };

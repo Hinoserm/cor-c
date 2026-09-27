@@ -58,7 +58,7 @@ public sealed partial class Lowering
             _e.Branch(v, wrap, done);
             _e.SetBlock(wrap);
 
-            VReg made = Allocate(e, view.InstanceSize);
+            VReg made = Allocate(e, view.InstanceSize, described: true);
             _e.Store(R(made), VtableOf(view), 0, _t.WordSize);
             _e.Store(R(made), R(v), _t.ObjectHeaderBytes, _t.WordSize);
             _e.CopyTo(held, R(made));
@@ -971,17 +971,26 @@ public sealed partial class Lowering
     /// allocator: every field of a new object is its default, which the
     /// language promises and the code generator relies on.
     /// </summary>
-    private VReg Allocate(Node at, long bytes)
+    private VReg Allocate(Node at, long bytes, bool described = false)
     {
-        return AllocateDynamic(at, _e.Const(bytes, IrTypes.Word));
+        return AllocateDynamic(at, _e.Const(bytes, IrTypes.Word), described: described);
     }
 
-    private VReg AllocateDynamic(Node at, VReg bytes, bool leaf = false)
+    private VReg AllocateDynamic(Node at, VReg bytes, bool leaf = false, bool described = false)
     {
         // Memory that can hold no reference -- a string, an array of bytes,
         // characters or floating-point numbers -- comes from AllocLeaf where
         // the runtime has it: the collector marks it and never scans it.
-        MethodSymbol? alloc = (leaf ? RuntimeMethod("AllocLeaf", 1) : null) ?? RuntimeMethod("Alloc", 1);
+        //
+        // AN OBJECT WHOSE VTABLE IS STORED NEXT comes from AllocObject: the
+        // collector finds its references through the descriptor that vtable
+        // names, not by trying every word (Gc.KindObject). Only where the
+        // vtable really is the first thing written -- a class instance, a box,
+        // a closure, an array -- and never a struct's block, a cell or a
+        // coroutine's frame, whose words no descriptor describes.
+        MethodSymbol? alloc = (leaf ? RuntimeMethod("AllocLeaf", 1) : null)
+                           ?? (described ? RuntimeMethod("AllocObject", 1) : null)
+                           ?? RuntimeMethod("Alloc", 1);
         if (alloc is null)
         {
             Error(at, $"allocation needs {RuntimeType}.Alloc, which no compiled source provides; compile with the system library");
@@ -1035,7 +1044,7 @@ public sealed partial class Lowering
         // `new object()`: a header and nothing else, the thing to lock on.
         if (sym is null && type.Prim == Prim.Any && nw.Args.Count == 0)
         {
-            VReg bare = Allocate(nw, _t.ObjectHeaderBytes);
+            VReg bare = Allocate(nw, _t.ObjectHeaderBytes, described: true);
             _e.Store(R(bare), new SymOperand(ObjectDescriptor(), _t.DescriptorBytes), 0, _t.WordSize);
             return bare;
         }
@@ -1050,7 +1059,7 @@ public sealed partial class Lowering
         TouchType(sym);
 
         int size = Math.Max(sym.Kind == TypeKind.Class ? _t.ObjectHeaderBytes : 1, sym.InstanceSize);
-        VReg obj = Allocate(nw, size);
+        VReg obj = Allocate(nw, size, described: sym.Kind == TypeKind.Class);
 
         if (sym.Kind == TypeKind.Class)
         {
@@ -1123,7 +1132,7 @@ public sealed partial class Lowering
         CheckArrayCount(count, stride);
         VReg bytes = stride == 1 ? count : _e.Binary(Opcode.Mul, count, stride);
         VReg total = _e.Binary(Opcode.Add, WordOf(bytes), _t.ArrayHeaderBytes);
-        VReg array = AllocateDynamic(at, total, LeafElement(element));
+        VReg array = AllocateDynamic(at, total, LeafElement(element), described: true);
         string desc = SequenceDescriptor(ElementKey(element), stride, isString: false);
         _e.Store(R(array), new SymOperand(desc, _t.DescriptorBytes), 0, _t.WordSize);
         _e.Emit(Opcode.InitArrayLength, null, R(array), R(count));
@@ -1280,7 +1289,7 @@ public sealed partial class Lowering
     /// <summary>A lambda is an object made where it was written, holding what it captured.</summary>
     private VReg EmitLambda(LambdaExpr lam, ClosureInfo made)
     {
-        VReg obj = Allocate(lam, Math.Max(_t.ObjectHeaderBytes, made.Type.InstanceSize));
+        VReg obj = Allocate(lam, Math.Max(_t.ObjectHeaderBytes, made.Type.InstanceSize), described: true);
         _e.Store(R(obj), VtableOf(made.Type), 0, _t.WordSize);
 
         foreach ((FieldSymbol f, Sym from) in made.Captures)
@@ -1335,7 +1344,7 @@ public sealed partial class Lowering
     private VReg EmitWith(WithExpr copy, TypeSymbol shape)
     {
         VReg src = Eval(copy.Source);
-        VReg obj = Allocate(copy, Math.Max(_t.ObjectHeaderBytes, shape.InstanceSize));
+        VReg obj = Allocate(copy, Math.Max(_t.ObjectHeaderBytes, shape.InstanceSize), described: shape.Kind == TypeKind.Class);
         if (shape.Kind == TypeKind.Class)
         {
             _e.Store(R(obj), VtableOf(shape), 0, _t.WordSize);

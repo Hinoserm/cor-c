@@ -188,7 +188,7 @@ public sealed partial class Lowering
             Error(at, $"'{type}' is not a type an async method can return");
             return null;
         }
-        VReg obj = Allocate(at, Math.Max(_t.ObjectHeaderBytes, sym.InstanceSize));
+        VReg obj = Allocate(at, Math.Max(_t.ObjectHeaderBytes, sym.InstanceSize), described: true);
         _e.Store(R(obj), VtableOf(sym), 0, _t.WordSize);
         MethodSymbol? ctor = sym.Methods.FirstOrDefault(c => c.IsCtor && c.Params.Count == 0);
         if (ctor is not null)

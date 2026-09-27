@@ -1,0 +1,102 @@
+// test: static_constant_arrays
+// expect-exit: 0
+// expect-output:
+// 0,1,127,128,255
+// -128,-1,0,127
+// -32768,32767
+// 0,1,65535
+// -2147483647,-1,0,1,2147483647
+// 0,4294967295
+// -9223372036854775807,9223372036854775807
+// 0,18446744073709551615,9223372036854775808
+// 97,10,233,65535
+// 65,122
+// True,False,True
+// 1.5,-0.25,3
+// 1E+300,-2.5,7,120
+// alpha|||über True
+// True x
+// 7 set 20
+// 0 Int32[] True
+// Dark,Light 1,5,5
+// 9
+// set 20 20000 0
+// 5 2147483647 True
+//
+// A static array of literals is data, not code: laid down in the image as an
+// array object with the field holding its address, so it exists before any
+// code runs and the heap never holds it (a deliberate departure from .NET,
+// which builds it at run time). Every keyword element type, negative and
+// extreme values, strings and nulls; still writable, as a C# array is;
+// reassigned by a static constructor; and the forms that are not literals --
+// enum members, an expression -- initialised at run time as before. Expected
+// output is real .NET's.
+
+using System;
+using System.Collections.Generic;
+
+enum Shade { Light, Dark }
+
+static class Tables
+{
+    public static readonly byte[] Bytes = { 0, 1, 127, 128, 255 };
+    public static readonly sbyte[] Signed = { -128, -1, 0, 127 };
+    public static readonly short[] Shorts = new short[] { -32768, 32767 };
+    public static readonly ushort[] Unsigned = new ushort[3] { 0, 1, 65535 };
+    public static readonly int[] Ints = { int.MinValue + 1, -1, 0, 1, 0x7FFFFFFF };
+    public static readonly uint[] Uints = { 0, 0xFFFFFFFF };
+    public static readonly long[] Longs = { -9223372036854775807, 9223372036854775807 };
+    public static readonly ulong[] Ulongs = { 0, 18446744073709551615, 0x8000000000000000 };
+    public static readonly char[] Chars = { 'a', '\n', 'é', '￿' };
+    public static readonly int[] FromChars = { 'A', 'z' };
+    public static readonly bool[] Flags = { true, false, true };
+    public static readonly float[] Floats = { 1.5f, -0.25f, 3 };
+    public static readonly double[] Doubles = { 1e300, -2.5, 7, 'x' };
+    public static readonly string[] Words = { "alpha", "", null!, "über" };
+    public static readonly string?[] Maybe = { null, "x" };
+    public static int[] Mutable = { 1, 2, 3 };
+    public static readonly int[] Empty = { };
+    public static readonly Shade[] Shades = { Shade.Dark, Shade.Light };
+    public static readonly int[] Computed = { 1, 2 + 3, Ints.Length };
+}
+
+static class Reassigned
+{
+    public static readonly int[] Table = { 1, 2, 3 };
+    static Reassigned() { Table = new int[] { 9 }; }
+}
+
+static class Program
+{
+    static void Main()
+    {
+        Console.WriteLine(string.Join(",", Tables.Bytes));
+        Console.WriteLine(string.Join(",", Tables.Signed));
+        Console.WriteLine(string.Join(",", Tables.Shorts));
+        Console.WriteLine(string.Join(",", Tables.Unsigned));
+        Console.WriteLine(string.Join(",", Tables.Ints));
+        Console.WriteLine(string.Join(",", Tables.Uints));
+        Console.WriteLine(string.Join(",", Tables.Longs));
+        Console.WriteLine(string.Join(",", Tables.Ulongs));
+        Console.WriteLine(string.Join(",", Array.ConvertAll(Tables.Chars, c => (int)c)));
+        Console.WriteLine(string.Join(",", Tables.FromChars));
+        Console.WriteLine(string.Join(",", Tables.Flags));
+        Console.WriteLine(string.Join(",", Tables.Floats));
+        Console.WriteLine(string.Join(",", Tables.Doubles));
+        Console.WriteLine(string.Join("|", Tables.Words) + " " + (Tables.Words[2] == null));
+        Console.WriteLine((Tables.Maybe[0] == null) + " " + Tables.Maybe[1]);
+        Tables.Mutable[1] = 20;
+        Tables.Words[1] = "set " + Tables.Mutable[1];
+        Tables.Mutable = new[] { 7 };
+        Console.WriteLine(string.Join(",", Tables.Mutable) + " " + Tables.Words[1]);
+        Console.WriteLine(Tables.Empty.Length + " " + Tables.Ints.GetType().Name + " " + (Tables.Bytes is byte[]));
+        Console.WriteLine(string.Join(",", Tables.Shades) + " " + string.Join(",", Tables.Computed));
+        Console.WriteLine(string.Join(",", Reassigned.Table));
+        List<string> kept = new();
+        for (int i = 0; i < 20000; i++) kept.Add(new string('k', i % 7));
+        GC.Collect();
+        Console.WriteLine(Tables.Words[1] + " " + kept.Count + " " + Array.IndexOf(Tables.Words, "alpha"));
+        IReadOnlyList<int> view = Tables.Ints;
+        Console.WriteLine(view.Count + " " + view[4] + " " + ((IEnumerable<char>)Tables.Chars).GetEnumerator().MoveNext());
+    }
+}

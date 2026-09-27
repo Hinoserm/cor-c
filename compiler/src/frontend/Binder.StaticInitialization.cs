@@ -3,6 +3,133 @@ namespace Corsac.Lang;
 
 public sealed partial class Binder
 {
+    /// <summary>
+    /// A STATIC ARRAY OF CONSTANTS, read off the declaration before anything is
+    /// declared: a one-dimensional array of a keyword type -- bool, char, the
+    /// integers, float, double, string -- initialised with literals only, each
+    /// in range for the element. Such a field is laid down in the image as an
+    /// array object with its address in the field (Lowering), so a lookup
+    /// table costs no code at startup, no type initialiser at every touch, and
+    /// nothing on the heap: one of COR-C's deliberate departures from .NET,
+    /// which builds it at run time. The array is still writable, as a C#
+    /// array is; the collector reads the data section as roots, so a
+    /// reference stored into a string table later is still seen.
+    ///
+    /// Null for anything else -- an enum, a named constant, an expression --
+    /// which is initialised at run time as before, and checked there.
+    /// </summary>
+    private static StaticArray? StaticArrayOf(FieldDecl f)
+    {
+        if (f.Init is not NewExpr { Elements: { } elements, Body.Inits.Count: 0, Body.Adds.Count: 0, Body.Indexes.Count: 0 } made
+            || f.Type is not { ArrayRank: 1, PointerDepth: 0, Args.Count: 0 } declared)
+        {
+            return null;
+        }
+        string element = declared.Name;
+        if (made.Type.Name.Length > 0 && (made.Type.Name != element || made.Type.ArrayRank != 0))
+        {
+            return null;
+        }
+        if (made.ArraySize is not null
+            && (made.ArraySize is not LiteralExpr { Kind: Lit.Int } size || size.IntValue != elements.Count))
+        {
+            return null;
+        }
+        if (declared.ElementNullable && element != "string")
+        {
+            return null;
+        }
+
+        StaticArray table = new() { Element = element };
+        foreach (Expr e in elements)
+        {
+            bool negative = false;
+            Expr at = e;
+            if (at is UnaryExpr { Op: UnOp.Neg, Operand: LiteralExpr negated })
+            {
+                negative = true;
+                at = negated;
+            }
+            if (at is not LiteralExpr lit)
+            {
+                return null;
+            }
+            switch (element)
+            {
+                case "string":
+                    if (negative) return null;
+                    if (lit.Kind == Lit.Str) table.Strings.Add(lit.Text);
+                    else if (lit.Kind == Lit.Null) table.Strings.Add(null);
+                    else return null;
+                    break;
+                case "float" or "double":
+                    if (lit.Kind is not (Lit.Real or Lit.Int or Lit.Char)) return null;
+                    if (lit.Kind == Lit.Real && element == "double" && lit.Text.EndsWith("m", StringComparison.OrdinalIgnoreCase)) return null;
+                    if (lit.Kind == Lit.Real && element == "float" && !lit.Text.EndsWith("f", StringComparison.OrdinalIgnoreCase)) return null;
+                    double real = lit.Kind == Lit.Real ? lit.RealValue : lit.IntValue;
+                    table.Reals.Add(negative ? -real : real);
+                    break;
+                case "bool":
+                    if (negative || lit.Kind != Lit.Bool) return null;
+                    table.Integers.Add(lit.IntValue != 0 ? 1 : 0);
+                    break;
+                default:
+                    if (!IntegerElement(element, lit, negative, out long bits)) return null;
+                    table.Integers.Add(bits);
+                    break;
+            }
+        }
+        return table;
+    }
+
+    /// <summary>
+    /// A literal as an element of an integer (or char) array, when C# would
+    /// take it there without a cast: in range, a char only where char widens.
+    /// </summary>
+    private static bool IntegerElement(string element, LiteralExpr lit, bool negative, out long bits)
+    {
+        bits = 0;
+        if (lit.Kind == Lit.Char)
+        {
+            if (negative || element is "byte" or "sbyte" or "short") return false;
+            bits = lit.IntValue;
+            return element is "char" or "ushort" or "int" or "uint" or "long" or "ulong";
+        }
+        if (lit.Kind != Lit.Int || element == "char")
+        {
+            return false;
+        }
+        // A LITERAL PAST long.MaxValue is a ulong's, and only a ulong takes it.
+        bool unsignedBig = lit.IntValue < 0;
+        if (unsignedBig && (negative || element != "ulong"))
+        {
+            return false;
+        }
+        long value = negative ? -lit.IntValue : lit.IntValue;
+        (long low, long high) = element switch
+        {
+            "byte" => (0L, 255L),
+            "sbyte" => (-128L, 127L),
+            "short" => (-32768L, 32767L),
+            "ushort" => (0L, 65535L),
+            "int" => (int.MinValue, int.MaxValue),
+            "uint" => (0L, uint.MaxValue),
+            "long" => (long.MinValue, long.MaxValue),
+            "ulong" => (0L, long.MaxValue),
+            _ => (1L, 0L),
+        };
+        if (low > high)
+        {
+            return false;
+        }
+        if (!unsignedBig && (value < low || value > high))
+        {
+            return false;
+        }
+        bits = value;
+        return true;
+    }
+
     private static void AddSynchronizedInitializer(TypeDecl type, List<Stmt> statements)
     {
         const string failure = "StaticFailure$";

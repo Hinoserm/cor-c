@@ -501,6 +501,15 @@ static class Runtime
         return Gc.AllocLeaf(bytes);
     }
 
+    /// The same for an object whose vtable the compiler stores next -- a class
+    /// instance, a box, a closure, an array: the collector reads its
+    /// references from its descriptor instead of guessing them from every word.
+    public static long AllocObject(long bytes)
+    {
+        if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes, 0);
+        return Gc.AllocObject(bytes);
+    }
+
     /// The heap for a program that needs no collector. When escape analysis
     /// proves that no allocation reachable from the entry outlives its
     /// function, the compiler retargets what allocation calls remain (error
@@ -3143,6 +3152,44 @@ static class Runtime
         }
         return h;
     }
+
+    /// A WHOLE STRING'S HASH, worked out once and kept: a string cannot
+    /// change, so the hash it had it has for ever, and a compiler asks the
+    /// same names for theirs thousands of times over. It is kept in the four
+    /// bytes after the count, which the header pads to eight-byte elements
+    /// and nothing else uses; 0 there means not yet worked out, so a hash
+    /// that comes out 0 is kept as 1. A literal's is written in by the
+    /// compiler (Lowering.InternString), because a literal lives in read-only
+    /// data and must never be written here.
+    ///
+    /// 32-bit FNV-1a over the code units: one 32-bit multiply a unit where
+    /// the 64-bit one was three on this processor, for a hash that is an int
+    /// all the same. Every hash of a whole string -- string.GetHashCode,
+    /// StringComparer.Ordinal, the tables' KeyHash -- is this one, so they
+    /// agree; nothing the compiler writes depends on its value.
+    public static int StringHashCode(string s)
+    {
+        long at = Sys.Word(s) + StringHashAt;
+        long cached = Sys.PeekWord(at);
+        if (cached != 0)
+        {
+            return (int)cached;
+        }
+        uint h = 2166136261;
+        int n = s.Length;
+        for (int i = 0; i < n; i++)
+        {
+            h = (h ^ (uint)Sys.GetChar(s, i)) * 16777619;
+        }
+        if (h == 0)
+        {
+            h = 1;
+        }
+        Sys.PokeWord(at, h);
+        return (int)h;
+    }
+
+    const long StringHashAt = 2 * WordSize.Bytes + 4;
 
     /// Sets `count` code units from dstAt to `value`; answers count.
     public static int StringFill(string dst, int dstAt, int value, int count)

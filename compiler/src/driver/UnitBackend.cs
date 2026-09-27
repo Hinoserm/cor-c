@@ -78,7 +78,7 @@ public sealed class UnitBackend : IUnitBackend
             // their results would be branches and no longer calls the rules
             // can recognise.
             string[] allocators = facts is null ? Array.Empty<string>()
-                : facts.Fresh.Append(Escape.Allocator).Append(Escape.LeafAllocator).Order(StringComparer.Ordinal).ToArray();
+                : facts.Fresh.Append(Escape.Allocator).Append(Escape.LeafAllocator).Append(Escape.ObjectAllocator).Order(StringComparer.Ordinal).ToArray();
             new Inline { SmallBody = 40, GrowthLimit = 1024, ConstantBranchBody = 160, FreshOwnerBody = 0, Keep = allocators }.Run(local);
             cleanup.Run(local);
             if (facts is not null)

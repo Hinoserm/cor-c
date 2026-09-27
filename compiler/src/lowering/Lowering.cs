@@ -428,12 +428,88 @@ public sealed partial class Lowering
                 continue;
             }
             int size = Math.Max(1, f.Type.Size);
+            if (StaticArrayData(f) is string table)
+            {
+                // A `static readonly` table's field is never written again, so
+                // its word is read-only data and every load of it folds to the
+                // table's address (ReadOnlyFold). Unless the type has a static
+                // constructor: C# lets that assign a readonly static even when
+                // it has an initialiser, and the word must stay writable.
+                bool fixedField = f.Owner.Decl is TypeDecl declaring
+                    && declaring.Members.OfType<FieldDecl>().Any(d => d.Name == f.Name && d.Mods.HasFlag(Mods.Readonly))
+                    && !declaring.Members.OfType<MethodDecl>().Any(m => (m.IsCtor && m.Mods.HasFlag(Mods.Static))
+                                                                     || m.Name == "StaticConstructorBody$");
+                DataItem holder = new(StaticSymbol(f), new byte[size])
+                {
+                    Align = AlignFor(size, _t.Align64), FromLibrary = IsLibrary(f.Owner), ReadOnly = fixedField,
+                };
+                holder.Relocs.Add(new DataReloc(0, table, 0));
+                _m.Data.Add(holder);
+                continue;
+            }
             _m.Data.Add(new DataItem(StaticSymbol(f), new byte[size])
             {
                 Zero = true, Align = AlignFor(size, _t.Align64), FromLibrary = IsLibrary(f.Owner),
                 Coalescible = f.Owner.Decl?.Specialised == true,
             });
         }
+    }
+
+    /// <summary>
+    /// A STATIC ARRAY OF CONSTANTS AS DATA (FieldDecl.StaticData): the array
+    /// object laid down exactly as the heap would hold it -- the vtable of its
+    /// sequence descriptor, the count, the elements -- in the writable data
+    /// section, since a C# array may be written. Answers its symbol, or null
+    /// when the field is not one. The collector never frees it: it is not in
+    /// the heap, and a pointer outside the heap is no block (Gc.BlockForPointer);
+    /// the data section is read as roots, so what a program stores into a
+    /// string table later is kept.
+    /// </summary>
+    private string? StaticArrayData(FieldSymbol f)
+    {
+        if (f.Owner.Decl is not TypeDecl owner
+            || owner.Members.OfType<FieldDecl>().FirstOrDefault(d => d.Name == f.Name && d.StaticData is not null) is not { StaticData: { } table }
+            || f.Type.Element is not Type element)
+        {
+            return null;
+        }
+        int w = _t.WordSize;
+        int stride = Math.Max(1, element.Size);
+        int count = table.Count;
+        int bytes = _t.ArrayHeaderBytes + stride * count;
+        bytes = (bytes + w - 1) / w * w;
+        byte[] block = new byte[Math.Max(bytes, _t.ArrayHeaderBytes + w)];
+        WriteWord(block, _t.ArrayCountOffset, count);
+        string sym = "sa_" + StaticSymbol(f);
+        DataItem item = new(sym, block) { Align = _t.Align64, FromLibrary = IsLibrary(f.Owner), Exported = false };
+        item.Relocs.Add(new DataReloc(0, SequenceDescriptor(ElementKey(element), stride, isString: false), _t.DescriptorBytes));
+        for (int i = 0; i < count; i++)
+        {
+            int at = _t.ArrayHeaderBytes + i * stride;
+            switch (table.Element)
+            {
+                case "string":
+                    if (table.Strings[i] is string text)
+                    {
+                        item.Relocs.Add(new DataReloc(at, InternString(text), 0));
+                    }
+                    break;
+                case "float":
+                    BitConverter.TryWriteBytes(block.AsSpan(at, 4), (float)table.Reals[i]);
+                    break;
+                case "double":
+                    BitConverter.TryWriteBytes(block.AsSpan(at, 8), table.Reals[i]);
+                    break;
+                default:
+                    for (int b = 0; b < stride; b++)
+                    {
+                        block[at + b] = (byte)(table.Integers[i] >> (8 * b));
+                    }
+                    break;
+            }
+        }
+        _m.Data.Add(item);
+        return sym;
     }
 
     /// <summary>
@@ -1045,6 +1121,13 @@ public sealed partial class Lowering
 
         byte[] block = new byte[_t.ArrayHeaderBytes + 2 * text.Length];
         WriteWord(block, _t.ArrayCountOffset, text.Length);
+        // ITS HASH, WRITTEN IN NOW: a literal is read-only data, and the
+        // runtime keeps a string's hash in these four bytes the first time it
+        // is asked (Runtime.StringHashCode) -- which must find it already here.
+        uint hash = 2166136261;
+        foreach (char unit in text) hash = (hash ^ unit) * 16777619;
+        if (hash == 0) hash = 1;
+        for (int i = 0; i < 4; i++) block[_t.ArrayCountOffset + 4 + i] = (byte)(hash >> (8 * i));
         for (int i = 0; i < text.Length; i++)
         {
             block[_t.ArrayHeaderBytes + 2 * i] = (byte)text[i];
@@ -1741,7 +1824,7 @@ public sealed partial class Lowering
             // is an IEnumerator as well as the IEnumerator<T> it was made for.
             MethodSymbol typed = view.Methods.First(x => x.Name == "GetEnumerator" && x.Params.Count == 0);
             TypeSymbol walker = _b.Types[$"ArrayEnumerator${typed.Returns.Symbol!.Name}"];
-            VReg made = Allocate(At(m), Math.Max(_t.ObjectHeaderBytes, walker.InstanceSize));
+            VReg made = Allocate(At(m), Math.Max(_t.ObjectHeaderBytes, walker.InstanceSize), described: true);
 
             e.Store(new RegOperand(made), VtableOf(walker), 0, _t.WordSize);
             e.Store(new RegOperand(made), new RegOperand(items), walker.Fields[0].Offset, _t.WordSize);

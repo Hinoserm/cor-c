@@ -47,8 +47,11 @@ public sealed partial class Escape : IModulePass
     /// <summary>The allocator for memory that holds no references (strings, byte arrays).</summary>
     public const string LeafAllocator = "m_Runtime_AllocLeaf_1_V$I64";
 
-    /// <summary>Either of the collecting allocators: every pass that follows an allocation follows both.</summary>
-    public static bool IsAllocator(string? callee) => callee == Allocator || callee == LeafAllocator;
+    /// <summary>Runtime.AllocObject: an object the caller gives its vtable next, scanned by its descriptor.</summary>
+    public const string ObjectAllocator = "m_Runtime_AllocObject_1_V$I64";
+
+    /// <summary>Any of the collecting allocators: every pass that follows an allocation follows all three.</summary>
+    public static bool IsAllocator(string? callee) => callee == Allocator || callee == LeafAllocator || callee == ObjectAllocator;
 
     /// <summary>The write barrier compiled code calls with the slot being overwritten.</summary>
     public const string Barrier = "m_Runtime_WriteBarrier_2_V$I64_V$I64";

@@ -112,6 +112,10 @@ public static class GC
         long physical = Platform.TotalMemory();
         long cap = HeapChunks.Cap;
         long total = cap != 0 && (physical == 0 || cap < physical) ? cap : physical;
+        // A 32-bit process can hold no more than its address space leaves the
+        // heap, whatever the machine has: that is the limit .NET reports for a
+        // process, and what a build admitting work by it must see.
+        if (Gc.HeapCeiling != 0 && (total == 0 || Gc.HeapCeiling < total)) total = Gc.HeapCeiling;
         long available = Platform.AvailableMemory();
         long load = physical != 0 && available != 0 ? physical - available : Gc.HeapBytes;
         long heap = Gc.HeapBytes;

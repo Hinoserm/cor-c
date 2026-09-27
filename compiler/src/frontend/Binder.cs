@@ -1873,6 +1873,14 @@ public sealed partial class Binder
             string field;
             if (m is FieldDecl f && f.Init is not null && f.Mods.HasFlag(Mods.Static) && !f.Mods.HasFlag(Mods.Const))
             {
+                // A TABLE OF CONSTANTS IS DATA, not code: laid down in the
+                // image and never built (FieldDecl.StaticData).
+                if (d.TypeParams.Count == 0 && !d.Specialised && StaticArrayOf(f) is StaticArray table)
+                {
+                    f.StaticData = table;
+                    f.Init = null;
+                    continue;
+                }
                 initial = f.Init; type = f.Type; field = f.Name; f.Init = null;
             }
             else if (m is PropertyDecl p && p.Init is not null && p.Auto && p.Mods.HasFlag(Mods.Static))

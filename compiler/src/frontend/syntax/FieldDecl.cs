@@ -18,6 +18,16 @@ public sealed class FieldDecl : MemberDecl
     public Expr? Init { get; set; }
 
     /// <summary>
+    /// A STATIC ARRAY OF CONSTANTS, laid down in the image instead of built at
+    /// run time (Binder.StaticArrayOf): lowering writes the array as an object
+    /// in the data section and this field as its address, so the table exists
+    /// before any code runs and the heap never holds it. Set in place of Init,
+    /// which is then null; kept on the declaration because binding runs more
+    /// than once and only the first pass sees the initialiser.
+    /// </summary>
+    public StaticArray? StaticData { get; set; }
+
+    /// <summary>
     /// What it was WRITTEN as, which is not the same question as what code
     /// runs. <see cref="Init"/> is moved into a constructor or a StaticInit$
     /// and then cleared, so anything asking about the declaration rather than
