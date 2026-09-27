@@ -964,6 +964,13 @@ Tier 2 has two rules today, both in the same pass:
   dies with the `List`. What a field held before it was overwritten (the
   arrays a `List` grew out of) is still the collector's.
 
+Every one of these lifetime proofs asks liveness whether anything still
+holds an object where it dies. A landing pad has no predecessors in the
+control-flow graph -- an exception reaches its catch from anywhere in the
+try -- so a register a handler reads before writing is taken to be live at
+every point of the function, and an object a handler may read is never
+freed early.
+
 `corc --stats` prints the counts: objects in frames, objects freed by the
 compiler and how many of those were fresh returns, fresh functions, and
 fields freed with their owner, and reassigned variables owned.
