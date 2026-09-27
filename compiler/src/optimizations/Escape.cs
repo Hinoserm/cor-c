@@ -600,7 +600,10 @@ public sealed partial class Escape : IModulePass
                     // freed at its last use here, as a dynamic allocation is.
                     if (OwnFreshResult(f, b, i, summaries, ref liveness))
                     {
-                        k = b.Instrs.IndexOf(i) + 5;
+                        // Instructions went in before the call; carry on
+                        // just after it (what went in after is bookkeeping,
+                        // no allocation or call to own).
+                        k = b.Instrs.IndexOf(i);
                     }
                     continue;
                 }
@@ -844,8 +847,18 @@ public sealed partial class Escape : IModulePass
         if (flow.Escapes) return false;
         liveness ??= new Liveness(f);
         if (LiveAtSelf(liveness, b, call, flow.Derived)) return false;
-        if (!OwnAfter(f, b, call)) return false;
-        // OwnAfter recorded the object's frees; the callee is what filled its fields.
+        // BEFORE THE CALL WHEN THE CALL CANNOT BE READING IT. The previous
+        // result is reachable only through registers derived from it (it
+        // does not escape), so a call that is handed none of them cannot
+        // see it: give it back first, as Own does for an allocation, and the
+        // callee's own allocation lands on the same bytes through the
+        // collector's lock-free top-of-buffer path. A call handed the old
+        // object -- x = Grow(x) -- gives it back after instead.
+        bool readsPrevious = false;
+        foreach (Operand o in call.Operands)
+            if (o is RegOperand arg && flow.Derived.Contains(arg.Reg)) readsPrevious = true;
+        if (readsPrevious ? !OwnAfter(f, b, call) : !Own(f, b, call)) return false;
+        // Own/OwnAfter recorded the object's frees; the callee is what filled its fields.
         _records[f][^1].FreshCallee = call.Callee;
         _ownedCalls.Add(call);
         Owned++;
