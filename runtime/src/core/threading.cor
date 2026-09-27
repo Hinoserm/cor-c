@@ -670,6 +670,21 @@ class Task
         return WhenAll(tasks.ToArray());
     }
 
+    /// Any sequence of tasks, as .NET takes it: read once, then waited on.
+    public static Task WhenAll(IEnumerable<Task> tasks)
+    {
+        if (tasks == null)
+        {
+            throw new ArgumentNullException("tasks");
+        }
+        List<Task> taken = new List<Task>();
+        foreach (Task one in tasks)
+        {
+            taken.Add(one);
+        }
+        return WhenAll(taken.ToArray());
+    }
+
     /// Completes with the first of `tasks` to complete (which may itself have
     /// faulted: WhenAny never faults).
     public static Task<Task> WhenAny(params Task[] tasks)
@@ -697,6 +712,20 @@ class Task
     public static Task<Task> WhenAny(List<Task> tasks)
     {
         return WhenAny(tasks.ToArray());
+    }
+
+    public static Task<Task> WhenAny(IEnumerable<Task> tasks)
+    {
+        if (tasks == null)
+        {
+            throw new ArgumentNullException("tasks");
+        }
+        List<Task> taken = new List<Task>();
+        foreach (Task one in tasks)
+        {
+            taken.Add(one);
+        }
+        return WhenAny(taken.ToArray());
     }
 
     // ---- the .NET generic factories ---------------------------------------
