@@ -7579,8 +7579,18 @@ public sealed partial class Binder
         bool sawNull = types.Any(t => t.Prim == Prim.NullLiteral);
         foreach (Type candidate in values)
         {
-            if (values.All(other => other.Equals(candidate) || Convertible(other, candidate)))
-                return sawNull && candidate.IsReference ? candidate.AsNullable() : candidate;
+            // IMPLICITLY, as C# counts it: an object is no string, however a
+            // machine word may be read. And a null among values of a value
+            // type has no best type (CS0826) -- `new[] { 1, null }` is not an
+            // int?[] to C#.
+            if (values.All(other => other.Equals(candidate)
+                                    || (other.Prim != Prim.Any || candidate.Prim == Prim.Any) && Convertible(other, candidate)))
+            {
+                if (!sawNull) return candidate;
+                if (candidate.IsReference || candidate.Prim == Prim.Any) return candidate.AsNullable();
+                if (candidate.IsNullableValue) return candidate;
+                return null;
+            }
         }
         return null;
     }
@@ -9521,26 +9531,41 @@ public sealed partial class Binder
 
                 if (nw.Elements is { } written)
                 {
-                    // `new[] { a, b }` takes its element from the FIRST one
-                    // written, which is what C# does; `new Op[] { ... }` was
-                    // told. Every other element is then checked against it, so
-                    // a list whose members disagree says so at the member that
-                    // disagrees.
-                    Type element = nw.Type.Name.Length == 0
-                                 ? (written.Count > 0 ? CheckExpr(written[0]) : Type.Error)
-                                 : type;
-
+                    // `new[] { a, b }` TAKES THE BEST COMMON TYPE of what is
+                    // written (C# 12.8.17.5): `new[] { "a", null }` is a
+                    // string?[] and `new[] { 1, 2L }` a long[]; `new Op[] {
+                    // ... }` was told. Every element is then checked against
+                    // it, so one that fits nothing says so where it is.
                     if (written.Count == 0 && nw.Type.Name.Length == 0)
                     {
                         Error(nw, "an implicitly-typed array needs at least one element to take its type from");
                         return Type.Error;
                     }
 
+                    List<Type> had = new(written.Count);
+                    foreach (Expr one in written)
+                    {
+                        had.Add(nw.Type.Name.Length == 0 ? CheckExpr(one) : Type.Error);
+                    }
+                    Type element = type;
+                    if (nw.Type.Name.Length == 0)
+                    {
+                        if (BestCommonType(had) is not Type best)
+                        {
+                            if (had.All(t => !t.IsError))
+                            {
+                                Error(nw, "no best type found for the implicitly-typed array");
+                            }
+                            return Type.Error;
+                        }
+                        element = best;
+                    }
+
                     for (int i = 0; i < written.Count; i++)
                     {
-                        Type had = i == 0 && nw.Type.Name.Length == 0 ? element : CheckExpr(written[i]);
+                        Type one = nw.Type.Name.Length == 0 ? had[i] : CheckExpr(written[i]);
 
-                        CheckAssignable(had, element, written[i], $"element {i}");
+                        CheckAssignable(one, element, written[i], $"element {i}");
                     }
 
                     if (nw.ArraySize != null)
