@@ -179,6 +179,35 @@ public sealed class DeclarationCatalog : IDisposable
         return result;
     }
 
+    /// <summary>
+    /// The one declaration whose simple name this is, among those keyed by a
+    /// qualified name (a namespace or an outer type), or null when none is or
+    /// more than one is -- ambiguous is no answer, as in Binder.Sole.
+    /// </summary>
+    public string? SoleKey(string assembly, string simpleName)
+    {
+        string query = "S:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + simpleName;
+        lock (bindingGate)
+        {
+            if (bindingKeys.TryGetValue(query, out string? known)) return known;
+        }
+        string? result = null;
+        bool ambiguous = false;
+        lock (gate)
+        {
+            if (disposed) throw new ObjectDisposedException(nameof(DeclarationCatalog));
+            foreach (DeclarationRecord record in index.Find(query))
+            {
+                string found = DeclarationIndex.Utf8.GetString(record.Payload);
+                if (result is not null && result != found) ambiguous = true;
+                result = found;
+            }
+        }
+        if (ambiguous) result = null;
+        lock (bindingGate) bindingKeys[query] = result;
+        return result;
+    }
+
     public byte[] QueryFingerprint(string key)
     {
         lock (gate)

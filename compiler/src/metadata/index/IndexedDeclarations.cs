@@ -53,8 +53,27 @@ public sealed class IndexedDeclarations : IDisposable
     public void Require(string bindingName)
     {
         queries.Add("B:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + bindingName);
-        string? key = catalog.BindingKey(assembly, bindingName);
+        string? key = catalog.BindingKey(assembly, bindingName) ?? Sole(bindingName);
         if (key is not null && !loaded.Contains(key)) throw new DeclarationDemand(key);
+    }
+
+    /// <summary>
+    /// A bare name that only a type inside a namespace or another type
+    /// carries: the one declaration of that simple name in the index, or null
+    /// when there is none or more than one. The binder's last resort
+    /// (Binder.Sole) does this over the whole program in one compile, and is
+    /// how a file with no namespace names System.IAsyncDisposable -- keyed
+    /// `System.IAsyncDisposable`, no binding record answers the bare name,
+    /// and a unit compiled against the index refused what the same source
+    /// compiled whole accepted. Recorded as a query, so a second type of the
+    /// name, which makes it ambiguous, makes the receipt stale.
+    /// </summary>
+    private string? Sole(string name, bool asked = true)
+    {
+        if (name.Length == 0 || name.Contains('.') || name.Contains('`')) return null;
+        // Only what the binder asks is a dependency; a prefetch is a guess.
+        if (asked) queries.Add("S:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + name);
+        return catalog.SoleKey(assembly, name);
     }
 
     public void Include(string key)
@@ -113,6 +132,7 @@ public sealed class IndexedDeclarations : IDisposable
                 int cut = simple.LastIndexOf('.');
                 key = cut < 0 ? null : catalog.BindingKey(assembly, simple[(cut + 1)..]);
             }
+            key ??= arity == 0 ? Sole(name, asked: false) : null;
         }
         catch (InvalidDataException) { key = null; }
         if (session is not null) session.Speculate((name, arity), key);

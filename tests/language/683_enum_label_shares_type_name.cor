@@ -1,0 +1,39 @@
+// test: enum_label_shares_type_name
+// expect-exit: 0
+// expect-output:
+// 10 20 30 20
+//
+// `case Req.Watch:` is the enum's Watch, however many types elsewhere are
+// called Watch: behind a qualifier that is a type, a name is that type's
+// member or a type nested in it. Trimmed to a bare name, it found the nested
+// class below and tested the enum value as an object.
+
+enum Req : long { Insert = 1, Watch = 2, Close = 3 }
+
+class Registry
+{
+    public class Watch
+    {
+        public int Key;
+    }
+}
+
+static class Program
+{
+    static long Ask(Req op)
+    {
+        switch (op)
+        {
+            case Req.Insert: return 10;
+            case Req.Watch: return 20;
+            case Req.Close: return 30;
+        }
+        return 0;
+    }
+
+    static int Main()
+    {
+        Console.WriteLine(Ask(Req.Insert) + " " + Ask(Req.Watch) + " " + Ask(Req.Close) + " " + (Req.Watch is Req.Watch ? 20 : 0));
+        return 0;
+    }
+}

@@ -106,6 +106,11 @@ public static class SourceIndexBuilder
                         ConditionalSymbols = (activeSymbols ?? Array.Empty<string>()).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray(),
                     }.Encode();
                     yield return new DeclarationRecord("B:" + identity + "\n" + Binder.TypeKey(type), Encoding.UTF8.GetBytes(key));
+                    // AND BY ITS SIMPLE NAME, when its key is qualified -- by a
+                    // namespace or an outer type -- for the bare mention that
+                    // only the binder's Sole answers (IndexedDeclarations.Sole).
+                    if (type.Outer is not null)
+                        yield return new DeclarationRecord("S:" + identity + "\n" + type.Name, Encoding.UTF8.GetBytes(key));
                     foreach (string method in type.Members.OfType<MethodDecl>()
                         .Where(method => method.Mods.HasFlag(Mods.Static) && method.Params.FirstOrDefault()?.IsThis == true)
                         .Select(method => method.Name).Distinct(StringComparer.Ordinal))

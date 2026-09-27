@@ -473,6 +473,14 @@ public sealed partial class Binder
     private bool NamesType(string dotted, Expr at)
     {
         if (IsTypeName(dotted)) return true;
+        // A MEMBER OF A TYPE IS NOT A TYPE. Behind a qualifier that is itself
+        // a type, the name is that type's member or a type nested in it, and
+        // the lookup above has answered for the nested one. Resolving it as
+        // written trims the qualifier -- namespaces are not a tree here -- and
+        // `case NtObjectRequest.Watch:` became a type test for the registry's
+        // nested class Watch, reading an enum value as an object's header.
+        int dot = dotted.LastIndexOf('.');
+        if (dot > 0 && IsTypeName(dotted[..dot])) return false;
         _quiet++;
         try { return !Resolve(new TypeRef { Name = dotted, Line = at.Line, Col = at.Col }, _thisType).IsError; }
         finally { _quiet--; }

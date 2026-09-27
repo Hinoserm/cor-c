@@ -10,7 +10,7 @@ mkdir -p build
 work=$(mktemp -d "$root/build/indexed.XXXXXX")
 "$corc" index --assembly Indexed tests/integration/indexed/Value.cor tests/integration/indexed/Unused.cor -o "$work/declarations.idx"
 "$corc" compile --nostdlib --lib tests/integration/indexed/Value.cor --obj -o "$work/value.o"
-for source in Caller AliasCaller QualifiedCaller; do
+for source in Caller AliasCaller QualifiedCaller BareCaller; do
     "$corc" compile --nostdlib --decl-index "$work/declarations.idx" --assembly Indexed \
         "tests/integration/indexed/$source.cor" --obj -o "$work/$source.o" 2> "$work/$source.compile.log"
     grep -q 'indexed declaration payloads loaded=1' "$work/$source.compile.log"
@@ -59,4 +59,11 @@ for family in Partial Cycle; do
     "$work/$family" || status=$?
     test "$status" = 42
 done
-printf 'PASS indexed namespace/alias/qualified consumers and separate linking: %s\n' "$work"
+"$corc" index --assembly Marks tests/integration/indexed/Mark.cor tests/integration/indexed/Marked.cor -o "$work/marks.idx"
+"$corc" compile --nostdlib --decl-index "$work/marks.idx" --assembly Marks \
+    tests/integration/indexed/MarkedCaller.cor --obj -o "$work/MarkedCaller.o" 2> "$work/MarkedCaller.compile.log"
+corlink "$work/MarkedCaller.o" -o "$work/marked" 2> "$work/marked.link.log"
+status=0
+"$work/marked" || status=$?
+test "$status" = 42
+printf 'PASS indexed namespace/alias/qualified/bare consumers and separate linking: %s\n' "$work"

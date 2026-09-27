@@ -1010,8 +1010,13 @@ static partial class Path
         string directory = GetTempPath();
         for (int attempt = 0; attempt < 1000; attempt++)
         {
-            long serial = Interlocked.Increment(ref _tempSerial);
-            long mix = (Environment.TickCount64 * 31 + Environment.ProcessId) * 1000003 + serial * 7919 + attempt;
+            // From what every build of this file has -- the Linux ABI's own
+            // calls and the Sys intrinsics -- not Interlocked or Environment's
+            // clock and process id: a ring-1 kernel compiles System.IO over
+            // its own small Environment, and has neither.
+            long serial = Sys.AtomicAdd(Sys.AddressOf(ref _tempSerial), 1) + 1;
+            long pid = Sys.Syscall(Call.Getpid, 0, 0, 0);
+            long mix = (Os.Micros() * 31 + pid) * 1000003 + serial * 7919 + attempt;
             string name = "tmp" + ((mix & 0x7FFFFFFFFFFF) % 0xFFFFFF).ToString("X6") + ".tmp";
             string full = directory + name;
             try
