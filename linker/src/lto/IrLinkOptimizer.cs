@@ -26,8 +26,13 @@ public static class IrLinkOptimizer
             foreach (Symbol symbol in input.Object.Symbols.Where(symbol => symbol.Global && symbol.IsDefined))
                 owners.TryAdd(symbol.Name, input.Object);
         }
+        // A closed image keeps only what is reached. The routines field sites
+        // become are reached through symbols the link defines at the end
+        // (DefineFieldSites), which no code names yet: rooted here.
+        string[] siteTargets = hints.Values.Any(unit => unit.FieldSites.Count > 0)
+            ? new[] { LifetimeHints.FieldFreer, LifetimeHints.FieldKeeper } : Array.Empty<string>();
         Dictionary<ObjectFile, HashSet<string>>? reachability = enabled && closedImageEntry is not null
-            ? IrReachability.Find(inputs, archives, owners, closedImageEntry) : null;
+            ? IrReachability.Find(inputs, archives, owners, closedImageEntry, siteTargets) : null;
         // Every unit's lifetime summaries, solved together (LifetimeSolver).
         LifetimeSolver? lifetimes = enabled && hints.Count > 0 ? new LifetimeSolver(hintOrder) : null;
         int lifetimeUnits = 0;
