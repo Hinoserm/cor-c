@@ -3644,7 +3644,9 @@ static class SByte {
     public static sbyte MaxValue => sbyte.MaxValue;
     public static sbyte MinValue => sbyte.MinValue;
 
-    public static bool TryParse(string s, out sbyte value) {
+    public static bool TryParse(string? s, out sbyte value) {
+        // .NET's answer for no string at all: false, and the default.
+        if (s is null) { value = default; return false; }
         long wide = 0;
         bool ok = NumberParse.TrySigned(s, 10, 8, out wide);
         value = (sbyte)wide;
@@ -3677,7 +3679,9 @@ static class Int16 {
     public static short MaxValue => short.MaxValue;
     public static short MinValue => short.MinValue;
 
-    public static bool TryParse(string s, out short value) {
+    public static bool TryParse(string? s, out short value) {
+        // .NET's answer for no string at all: false, and the default.
+        if (s is null) { value = default; return false; }
         long wide = 0;
         bool ok = NumberParse.TrySigned(s, 10, 16, out wide);
         value = (short)wide;
@@ -3710,7 +3714,9 @@ static class UInt16 {
     public static ushort MaxValue => ushort.MaxValue;
     public static ushort MinValue => 0;
 
-    public static bool TryParse(string s, out ushort value) {
+    public static bool TryParse(string? s, out ushort value) {
+        // .NET's answer for no string at all: false, and the default.
+        if (s is null) { value = default; return false; }
         ulong wide = 0;
         bool ok = NumberParse.TryUnsigned(s, 10, out wide) && wide <= 65535;
         value = (ushort)wide;
@@ -3743,14 +3749,18 @@ static class UInt32 {
     public static uint MaxValue => uint.MaxValue;
     public static uint MinValue => 0;
 
-    public static bool TryParse(string s, out uint value) {
+    public static bool TryParse(string? s, out uint value) {
+        // .NET's answer for no string at all: false, and the default.
+        if (s is null) { value = default; return false; }
         ulong wide = 0;
         bool ok = NumberParse.TryUnsigned(s, 10, out wide) && wide <= 4294967295;
         value = (uint)wide;
         return ok;
     }
 
-    public static bool TryParse(string s, NumberStyles style, IFormatProvider? provider, out uint value) {
+    public static bool TryParse(string? s, NumberStyles style, IFormatProvider? provider, out uint value) {
+        // .NET's answer for no string at all: false, and the default.
+        if (s is null) { value = default; return false; }
         ulong wide = 0;
         bool ok = NumberParse.TryUnsigned(s, (style & NumberStyles.AllowHexSpecifier) != 0 ? 16 : 10, out wide)
                && wide <= 4294967295;
@@ -3805,7 +3815,9 @@ static class Int64 {
     // TRUE WHEN IT PARSED, and the value is only meaningful then -- .NET's
     // contract, and the reason this exists beside Parse: a number that might
     // not be one is ordinary input, not an exceptional case.
-    public static bool TryParse(string s, out long value) {
+    public static bool TryParse(string? s, out long value) {
+        // .NET's answer for no string at all: false, and the default.
+        if (s is null) { value = default; return false; }
         value = 0;
 
         if (s.Length == 0) { return false; }
@@ -3851,7 +3863,9 @@ static class Int64 {
         return NumberFormat.Of(value, 64, format);
     }
 
-    public static bool TryParse(string s, NumberStyles style, IFormatProvider? provider, out long value) {
+    public static bool TryParse(string? s, NumberStyles style, IFormatProvider? provider, out long value) {
+        // .NET's answer for no string at all: false, and the default.
+        if (s is null) { value = default; return false; }
         return NumberParse.TrySigned(s, (style & NumberStyles.AllowHexSpecifier) != 0 ? 16 : 10, 64, out value);
     }
 
@@ -3897,7 +3911,9 @@ static class Int32 {
     public static int MaxValue => int.MaxValue;
     public static int MinValue => int.MinValue;
 
-    public static bool TryParse(string s, out int value) {
+    public static bool TryParse(string? s, out int value) {
+        // .NET's answer for no string at all: false, and the default.
+        if (s is null) { value = default; return false; }
         long wide = 0;
         bool ok = Int64.TryParse(s, out wide);
 
@@ -3943,7 +3959,9 @@ static class Int32 {
         return NumberFormat.Of(value, 32, format);
     }
 
-    public static bool TryParse(string s, NumberStyles style, IFormatProvider? provider, out int value) {
+    public static bool TryParse(string? s, NumberStyles style, IFormatProvider? provider, out int value) {
+        // .NET's answer for no string at all: false, and the default.
+        if (s is null) { value = default; return false; }
         long wide = 0;
         bool ok = NumberParse.TrySigned(s, (style & NumberStyles.AllowHexSpecifier) != 0 ? 16 : 10, 32, out wide);
         value = (int)wide;
@@ -4010,7 +4028,9 @@ static class UInt64 {
     public static ulong MaxValue => ulong.MaxValue;
     public static ulong MinValue => 0;
 
-    public static bool TryParse(string s, out ulong value) {
+    public static bool TryParse(string? s, out ulong value) {
+        // .NET's answer for no string at all: false, and the default.
+        if (s is null) { value = default; return false; }
         return TryParse(s.AsSpan(), NumberStyles.Integer, CultureInfo.InvariantCulture, out value);
     }
 
@@ -4087,14 +4107,18 @@ static class Byte {
         return NumberFormat.OfUnsigned((ulong)value, format);
     }
 
-    public static bool TryParse(string s, out byte value) {
+    public static bool TryParse(string? s, out byte value) {
+        // .NET's answer for no string at all: false, and the default.
+        if (s is null) { value = default; return false; }
         ulong wide = 0;
         bool ok = NumberParse.TryUnsigned(s, 10, out wide) && wide <= 255;
         value = (byte)wide;
         return ok;
     }
 
-    public static bool TryParse(string s, NumberStyles style, IFormatProvider? provider, out byte value) {
+    public static bool TryParse(string? s, NumberStyles style, IFormatProvider? provider, out byte value) {
+        // .NET's answer for no string at all: false, and the default.
+        if (s is null) { value = default; return false; }
         ulong wide = 0;
         bool ok = NumberParse.TryUnsigned(s, (style & NumberStyles.AllowHexSpecifier) != 0 ? 16 : 10, out wide)
                && wide <= 255;
@@ -4164,7 +4188,9 @@ static class Double {
     // .NET's contract: false rather than a throw, and the value is only
     // meaningful when it answered true. The parse above reports its refusals
     // by throwing, so this is where that becomes an answer.
-    public static bool TryParse(string s, out double value) {
+    public static bool TryParse(string? s, out double value) {
+        // .NET's answer for no string at all: false, and the default.
+        if (s is null) { value = default; return false; }
         if (s == null) {
             value = 0.0;
             return false;
@@ -4172,7 +4198,9 @@ static class Double {
         return Read(s, out value);
     }
 
-    public static bool TryParse(string s, NumberStyles style, IFormatProvider? provider, out double value) {
+    public static bool TryParse(string? s, NumberStyles style, IFormatProvider? provider, out double value) {
+        // .NET's answer for no string at all: false, and the default.
+        if (s is null) { value = default; return false; }
         return TryParse(s, out value);
     }
 
@@ -4265,7 +4293,9 @@ static class Single {
         return value;
     }
 
-    public static bool TryParse(string s, out float value) {
+    public static bool TryParse(string? s, out float value) {
+        // .NET's answer for no string at all: false, and the default.
+        if (s is null) { value = default; return false; }
         if (s == null) {
             value = 0.0F;
             return false;
@@ -11447,7 +11477,9 @@ struct TimeSpan {
         return TryParse(input, out result);
     }
 
-    public static bool TryParse(string text, out TimeSpan value) {
+    public static bool TryParse(string? text, out TimeSpan value) {
+        // .NET's answer for no string at all: false, and the default.
+        if (text is null) { value = default; return false; }
         value = TimeSpan.Zero;
         if (text == null) { return false; }
 
@@ -11703,7 +11735,9 @@ partial struct DateTime {
         return made;
     }
 
-    public static bool TryParse(string text, out DateTime value) {
+    public static bool TryParse(string? text, out DateTime value) {
+        // .NET's answer for no string at all: false, and the default.
+        if (text is null) { value = default; return false; }
         value = DateTime.MinValue;
         if (text == null) { return false; }
 

@@ -225,7 +225,9 @@ struct BigInteger {
         return made;
     }
 
-    public static bool TryParse(string text, out BigInteger value) {
+    public static bool TryParse(string? text, out BigInteger value) {
+        // .NET's answer for no string at all: false, and the default.
+        if (text is null) { value = default; return false; }
         value = Zero;
         if (text == null || text.Length == 0) { return false; }
 

@@ -157,7 +157,9 @@ struct Guid {
         return made;
     }
 
-    public static bool TryParse(string text, out Guid value) {
+    public static bool TryParse(string? text, out Guid value) {
+        // .NET's answer for no string at all: false, and the default.
+        if (text is null) { value = default; return false; }
         value = Empty;
         if (text == null) { return false; }
 
@@ -282,7 +284,9 @@ namespace System
 
         /// NULL WHEN IT FAILS, which is why the out parameter is nullable: .NET
         /// declares this one `out Version? result` for the same reason.
-        public static bool TryParse(string text, out Version? value) {
+        public static bool TryParse(string? text, out Version? value) {
+            // .NET's answer for no string at all: false, and the default.
+            if (text is null) { value = default; return false; }
             value = null;
             if (text == null || text.Length == 0) { return false; }
 
