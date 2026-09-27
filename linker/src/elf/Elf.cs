@@ -174,6 +174,15 @@ internal static class Elf
     /// </summary>
     public const string GnuStackNote = ".note.GNU-stack";
 
+    public static ulong AlignUp(ulong value, ulong align)
+    {
+        if (align <= 1)
+        {
+            return value;
+        }
+        return checked((value + align - 1) / align * align);
+    }
+
     public static uint AlignUp(uint value, uint align)
     {
         if (align <= 1)

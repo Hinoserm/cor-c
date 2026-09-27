@@ -360,6 +360,12 @@ public sealed partial class X86Assembler : ISymbols
     /// <summary>The next four-byte field is a displacement from its own end, not an address.</summary>
     private bool _pcRelative;
 
+    /// <summary>
+    /// The next four-byte field is sign-extended by the processor (a disp32,
+    /// or the imm32 of a 64-bit operation): R_X86_64_32S rather than _32.
+    /// </summary>
+    private bool _signExtended;
+
     // ---- long mode: the REX prefix -------------------------------------------
     //
     // A REX byte goes between the legacy prefixes and the opcode, and what it
@@ -375,6 +381,9 @@ public sealed partial class X86Assembler : ISymbols
 
     /// <summary>A RIP-relative displacement written as a placeholder: its field, its target, and what the target names.</summary>
     private (int At, long Target, List<string> Refs)? _rip;
+
+    /// <summary>What EmitImm decided about the field it is relocating: sign-extended.</summary>
+    private bool _relocSigned;
 
     private void BeginInstruction()
     {
@@ -1114,7 +1123,10 @@ public sealed partial class X86Assembler : ISymbols
     private void EmitImm(long value, int size, List<string> refs)
     {
         bool pcRelative = _pcRelative;
+        bool signExtended = _signExtended;
         _pcRelative = false;
+        _signExtended = false;
+        _relocSigned = signExtended;
 
         if (_object && refs.Count > 0)
         {
@@ -1195,7 +1207,7 @@ public sealed partial class X86Assembler : ISymbols
         // 32-bit addend the word can actually hold.
         long addend = unchecked((int)(pcRelative ? value + _sec.Size : value));
         _sec.Relocs.Add(new Relocation(_sec.Size, external ? name : section, addend,
-                                       pcRelative ? RelocKind.Rel32 : RelocKind.Abs32));
+                                       pcRelative ? RelocKind.Rel32 : _relocSigned ? RelocKind.Abs32S : RelocKind.Abs32));
     }
 
     /// <summary>A value that must be known by the time bytes are written for real.</summary>
@@ -1419,6 +1431,7 @@ public sealed partial class X86Assembler : ISymbols
                 // there, so the SIB's "no base, no index" says disp32 instead.
                 Emit((byte)(((reg & 7) << 3) | 4));
                 Emit(0x25);
+                _signExtended = true;
                 EmitImm(disp, 4);
                 return;
             }
@@ -1450,6 +1463,7 @@ public sealed partial class X86Assembler : ISymbols
         }
         else if (form == 2)
         {
+            _signExtended = _bits == 64;
             EmitImm(disp, 4);
         }
     }
@@ -1846,6 +1860,13 @@ public sealed partial class X86Assembler : ISymbols
 
     private int WordSize => _bits / 8;
 
+    /// <summary>A qword operation's immediate: four bytes, which the processor sign-extends.</summary>
+    private int SignedImm32()
+    {
+        _signExtended = true;
+        return 4;
+    }
+
     /// <summary>A near branch's displacement: 16 bits in 16-bit code, and 32 otherwise -- long mode's too.</summary>
     private int BranchSize => _bits == 16 ? 2 : 4;
 
@@ -1931,7 +1952,7 @@ public sealed partial class X86Assembler : ISymbols
             Emit(size == 1 ? (byte)0xC6 : (byte)0xC7);
             EmitRM(0, d);
             // A qword store's immediate is four bytes, sign-extended.
-            EmitImm(v, size == 8 ? 4 : size, named);
+            EmitImm(v, size == 8 ? SignedImm32() : size, named);
             return;
         }
 
@@ -2202,14 +2223,14 @@ public sealed partial class X86Assembler : ISymbols
             {
                 Prefixes(size, null);
                 Emit((byte)(b + (size == 1 ? 4 : 5)));
-                EmitImm(v, size == 8 ? 4 : size, named);
+                EmitImm(v, size == 8 ? SignedImm32() : size, named);
                 return;
             }
 
             Prefixes(size, MemOf(d));
             Emit(size == 1 ? (byte)0x80 : (byte)0x81);
             EmitRM(op, d);
-            EmitImm(v, size == 8 ? 4 : size, named);
+            EmitImm(v, size == 8 ? SignedImm32() : size, named);
             return;
         }
 
@@ -2250,14 +2271,14 @@ public sealed partial class X86Assembler : ISymbols
             {
                 Prefixes(size, null);
                 Emit(size == 1 ? (byte)0xA8 : (byte)0xA9);
-                EmitImm(v, size == 8 ? 4 : size);
+                EmitImm(v, size == 8 ? SignedImm32() : size);
                 return;
             }
 
             Prefixes(size, MemOf(d));
             Emit(size == 1 ? (byte)0xF6 : (byte)0xF7);
             EmitRM(0, d);
-            EmitImm(v, size == 8 ? 4 : size);
+            EmitImm(v, size == 8 ? SignedImm32() : size);
             return;
         }
 

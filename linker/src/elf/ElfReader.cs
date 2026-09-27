@@ -361,7 +361,7 @@ public static class ElfReader
                 {
                     Name = name,
                     Section = section,
-                    Offset = e.Value,
+                    Offset = (long)e.Value,
                     Size = e.Size,
                     IsFunction = e.Type == Elf.SttFunc,
                     Global = e.Bind != Elf.StbLocal,

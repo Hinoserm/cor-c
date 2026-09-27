@@ -15,6 +15,9 @@
 #   // expect-exit: N            the exit status (default 0)
 #   // expect-output:            then the lines, each after "// "
 #   // flags: ...                extra compiler flags
+#   // flags-<target>: ...       the same, for one target (instead of flags)
+#   // expect-readelf-<target>: text
+#                                readelf -hl of the image shows this text
 #   // run: no                   compile and read, do not run
 #   // with-asm: NAME             assemble NAME.<target>.asm (corc asm --obj)
 #                                and link it in (--with)
@@ -42,13 +45,15 @@ header() { sed -n "s|^// $2: *||p" "$1" | head -n 1; }
 for source in "$here"/[0-9]*.cor; do
     name="$(basename "$source" .cor)"
     if [ -n "$filter" ] && [[ "$name" != *"$filter"* ]]; then continue; fi
-    flags="$(header "$source" flags)"
+    common_flags="$(header "$source" flags)"
     run="$(header "$source" run)"
     want_exit="$(header "$source" expect-exit)"; want_exit="${want_exit:-0}"
     awk '/^\/\/ expect-output:/{on=1;next} on&&/^\/\/ [a-z0-9-]+:/{exit} on&&/^\/\/ /{print substr($0,4);next} on{exit}' "$source" > "$work/$name.want"
 
     for target in $targets; do
         label="$name ($target)"
+        flags="$(header "$source" "flags-$target")"
+        [ -n "$flags" ] || flags="$common_flags"
         exe="$work/$name.$target"
         with=""
         asm="$(header "$source" with-asm)"
@@ -90,6 +95,11 @@ for source in "$here"/[0-9]*.cor; do
                 done
                 [ -n "$wrong" ] && wrong="$function lacks:$wrong"
             fi
+        fi
+
+        readelf_want="$(header "$source" "expect-readelf-$target")"
+        if [ -z "$wrong" ] && [ -n "$readelf_want" ] && ! readelf -hlW "$exe" | grep -qF -- "$readelf_want"; then
+            wrong="readelf does not show '$readelf_want'"
         fi
 
         if [ -z "$wrong" ] && [ "$run" != no ]; then

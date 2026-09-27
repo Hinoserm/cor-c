@@ -1,0 +1,27 @@
+// test: a kernel linked into the higher half and loaded low
+// with-asm: 05_higher_half
+// flags-x86-64: --base 0xffffffff80100000 --load 0x100000 --asm-entry corc_start --entry _start
+// flags-x86: --base 0xc0100000 --load 0x100000 --asm-entry corc_start --entry _start
+// run: no
+// expect-readelf-x86-64: 0xffffffff80100000 0x0000000000100000
+// expect-readelf-x86: 0xc0100000 0x00100000
+// expect-asm-x86-64: Main: 0xffffffff8
+// expect-asm-x86: Main: 0xc01
+//
+// Where a kernel lives: linked at the top of the address space (x86-64's
+// kernel code model, 0xFFFFFFFF80000000 and up; i386's 0xC0000000) and
+// loaded at a megabyte, the difference showing as each segment's physical
+// address. The stub reaches a COR-C# static by absolute address -- a
+// sign-extended 32-bit field in long mode (R_X86_64_32S), and a 64-bit one --
+// as well as RIP-relative. Not run: an image at those addresses is a kernel's.
+
+static class Program
+{
+    public static long FromAsm;
+
+    static int Main()
+    {
+        string s = "higher half " + FromAsm;
+        return s.Length;
+    }
+}

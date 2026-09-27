@@ -52,4 +52,12 @@ public enum RelocKind : byte
     /// sym]` (the GOTPCRELX relaxation) and no slot is made.
     /// </summary>
     GotPcRel,
+
+    /// <summary>
+    /// R_X86_64_32S: the 32-bit field holds Symbol plus Addend, which the
+    /// processor sign-extends -- a disp32 or an imm32 in 64-bit code. What
+    /// reaches a kernel linked into the top two gigabytes
+    /// (0xFFFFFFFF80000000 and up) from code that is not RIP-relative.
+    /// </summary>
+    Abs32S,
 }

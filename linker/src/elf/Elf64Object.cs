@@ -19,7 +19,7 @@ internal static class Elf64Object
     public const int RelaSize = 24;
 
     // The x86-64 relocation types the object model has.
-    public const uint R64 = 1, Pc32 = 2, Plt32 = 4, GlobDat = 6, JumpSlot = 7, Relative = 8, GotPcRel = 9, R32 = 10,
+    public const uint R64 = 1, Pc32 = 2, Plt32 = 4, GlobDat = 6, JumpSlot = 7, Relative = 8, GotPcRel = 9, R32 = 10, R32S = 11,
         GotPcRelX = 41, RexGotPcRelX = 42;
 
     /// <summary>The x86-64 number of a relocation the loader performs, in a dynamic image's RELA tables.</summary>
@@ -39,6 +39,7 @@ internal static class Elf64Object
         RelocKind.Plt32 => Plt32,
         RelocKind.Abs32 => R32,
         RelocKind.GotPcRel => RexGotPcRelX,
+        RelocKind.Abs32S => R32S,
         _ => throw new ElfFormatException($"{kind} has no x86-64 relocation in a static object"),
     };
 
@@ -49,6 +50,7 @@ internal static class Elf64Object
         Plt32 => RelocKind.Plt32,
         R32 => RelocKind.Abs32,
         GotPcRel or GotPcRelX or RexGotPcRelX => RelocKind.GotPcRel,
+        R32S => RelocKind.Abs32S,
         _ => null,
     };
 

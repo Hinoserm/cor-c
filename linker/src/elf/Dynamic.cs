@@ -204,7 +204,7 @@ public static partial class Linker
         Relocate(inputs, layout, errors);
         FillDynamic(layout, dyn, errors);
 
-        uint entry = 0;
+        ulong entry = 0;
         if (entrySymbol is not null)
         {
             if (!layout.Globals.TryGetValue(entrySymbol, out Definition e))
@@ -222,7 +222,7 @@ public static partial class Linker
         }
         return layout.LongMode
             ? Emit64(inputs, layout, entry, dyn.Shared ? Elf.TypeDyn : Elf.TypeExec)
-            : Emit(inputs, layout, entry, dyn.Shared ? Elf.TypeDyn : Elf.TypeExec);
+            : Emit(inputs, layout, checked((uint)entry), dyn.Shared ? Elf.TypeDyn : Elf.TypeExec);
     }
 
     // ---- the state a dynamic link carries -------------------------------
@@ -422,6 +422,7 @@ public static partial class Linker
                 }
                 break;
             case RelocKind.Abs32:
+            case RelocKind.Abs32S:
                 // A 32-bit absolute address: sound in an executable, which
                 // loads where it was linked, and nowhere else.
                 if (d is null || dyn.Shared)
@@ -529,7 +530,7 @@ public static partial class Linker
         {
             if (s.Name.Length == 0 || s.Definition is null) continue;
             foreach (byte b in System.Text.Encoding.UTF8.GetBytes(s.Name)) Mix(b);
-            uint a = s.Definition.Value.Address;
+            uint a = unchecked((uint)s.Definition.Value.Address);
             Mix((byte)a); Mix((byte)(a >> 8)); Mix((byte)(a >> 16)); Mix((byte)(a >> 24));
         }
         return h == 0 ? 1u : h;
@@ -713,25 +714,26 @@ public static partial class Linker
         Dyn dyn = layout.Dyn!;
         value = 0;
         Definition? d = Lookup(input, layout, r.Symbol);
-        uint gotBase = dyn.Got.Addr;
+        long gotBase = (long)dyn.Got.Addr;
         switch (r.Kind)
         {
             case RelocKind.Abs64:
                 // As Abs32: the address here, the addend for an import --
                 // and in RELA the loader writes the entry's addend, not this.
-                value = d is null ? r.Addend : d.Value.Address + r.Addend;
+                value = d is null ? r.Addend : (long)d.Value.Address + r.Addend;
                 return true;
             case RelocKind.GotPcRel:
                 if (d is not null && RelaxableGotLoad(p, r))
                 {
                     // mov r, [rip + slot]  ->  lea r, [rip + symbol]
                     p.Bytes[r.Offset - 2] = 0x8D;
-                    value = d.Value.Address + r.Addend - place;
+                    value = (long)d.Value.Address + r.Addend - place;
                     return true;
                 }
-                value = GotAddress(dyn, r.Symbol) + r.Addend - place;
+                value = (long)GotAddress(dyn, r.Symbol) + r.Addend - place;
                 return true;
             case RelocKind.Abs32:
+            case RelocKind.Abs32S:
                 // An imported symbol's address is not known until load, and
                 // the loader adds it to whatever is in the word. Left as the
                 // addend even when the import was prebound: the loader ADDS
@@ -739,16 +741,16 @@ public static partial class Linker
                 // twice the day it has to bind after all. Only GOT slots,
                 // which the loader SETS, are prebound; the few of these an
                 // image has are bound at every exec.
-                value = d is null ? r.Addend : d.Value.Address + r.Addend;
+                value = d is null ? r.Addend : (long)d.Value.Address + r.Addend;
                 return true;
             case RelocKind.Rel32:
             case RelocKind.Plt32:
                 if (d is not null)
                 {
-                    value = d.Value.Address + r.Addend - place;
+                    value = (long)d.Value.Address + r.Addend - place;
                     return true;
                 }
-                value = PltAddress(dyn, r.Symbol) + r.Addend - place;
+                value = (long)PltAddress(dyn, r.Symbol) + r.Addend - place;
                 return true;
             case RelocKind.Got32:
                 // The slot's offset from the GOT base: what GOT-relative code adds.
@@ -756,7 +758,7 @@ public static partial class Linker
                 return true;
             case RelocKind.GotAddr:
                 // The slot itself, at the address this link gave it.
-                value = GotAddress(dyn, r.Symbol) + r.Addend;
+                value = (long)GotAddress(dyn, r.Symbol) + r.Addend;
                 return true;
             case RelocKind.GotOff:
                 if (d is null)
@@ -764,7 +766,7 @@ public static partial class Linker
                     errors.Add($"undefined symbol '{r.Symbol}' referenced from {where}");
                     return false;
                 }
-                value = d.Value.Address + r.Addend - gotBase;
+                value = (long)d.Value.Address + r.Addend - gotBase;
                 return true;
             case RelocKind.GotPc:
                 value = gotBase + r.Addend - place;
@@ -775,7 +777,7 @@ public static partial class Linker
         }
     }
 
-    private static uint PltAddress(Dyn dyn, string symbol)
+    private static ulong PltAddress(Dyn dyn, string symbol)
     {
         return dyn.Plt.Addr + (uint)(dyn.PltEntry[symbol] * PltEntrySize);
     }
@@ -828,9 +830,9 @@ public static partial class Linker
         // this object's own definition where there is one and zero where
         // the loader will write.
         ElfBuffer got = new();
-        void Slot(uint value)
+        void Slot(ulong value)
         {
-            if (dyn.LongMode) got.U64(value); else got.U32(value);
+            if (dyn.LongMode) got.U64(value); else got.U32(checked((uint)value));
         }
         Slot(dyn.Dynamic.Addr);
         Slot(0);
@@ -855,15 +857,15 @@ public static partial class Linker
         ElfBuffer plt = new();
         foreach (string name in dyn.PltOrder)
         {
-            uint slot = GotAddress(dyn, name);
+            ulong slot = GotAddress(dyn, name);
             if (dyn.LongMode)
             {
                 // jmp [rip + disp32]: RIP-relative, so the same stub in a
                 // program and in a library, wherever either is loaded.
-                uint entry = PltAddress(dyn, name);
+                ulong entry = PltAddress(dyn, name);
                 plt.U8(0xFF);
                 plt.U8(0x25);
-                plt.U32(unchecked(slot - (entry + 6)));
+                plt.U32(unchecked((uint)(slot - (entry + 6))));
             }
             else if (dyn.Shared)
             {
@@ -871,14 +873,14 @@ public static partial class Linker
                 // which is the whole reason PIC reserves it.
                 plt.U8(0xFF);
                 plt.U8(0xA3);
-                plt.U32(slot - dyn.Got.Addr);
+                plt.U32(checked((uint)(slot - dyn.Got.Addr)));
             }
             else
             {
                 // jmp *disp32: an executable knows where its own GOT is.
                 plt.U8(0xFF);
                 plt.U8(0x25);
-                plt.U32(slot);
+                plt.U32(checked((uint)slot));
             }
             plt.U8(0x90);
             plt.U8(0x90);
@@ -889,7 +891,7 @@ public static partial class Linker
         ElfBuffer relPlt = new();
         foreach (DynReloc r in dyn.Relocations)
         {
-            uint at = r.Section == dyn.Got ? GotAddress(dyn, r.Symbol) : r.Section.Addr + r.Offset;
+            ulong at = r.Section == dyn.Got ? GotAddress(dyn, r.Symbol) : r.Section.Addr + r.Offset;
             uint index = r.Kind == RelocKind.Relative ? 0 : (uint)dyn.SymbolIndex.GetValueOrDefault(r.Symbol, 0);
             if (index == 0 && r.Kind != RelocKind.Relative)
             {
@@ -910,14 +912,14 @@ public static partial class Linker
                 into.U64(unchecked((ulong)addend));
                 continue;
             }
-            into.U32(at);
+            into.U32(checked((uint)at));
             into.U32((index << 8) | Elf.RelocType(r.Kind));
         }
         dyn.RelDyn.Content = relDyn.ToArray();
         dyn.RelPlt.Content = relPlt.ToArray();
 
         ElfBuffer dynamic = new();
-        foreach ((int tag, uint value) in DynamicEntries(layout, dyn))
+        foreach ((int tag, ulong value) in DynamicEntries(layout, dyn))
         {
             if (dyn.LongMode)
             {
@@ -927,7 +929,7 @@ public static partial class Linker
             else
             {
                 dynamic.U32(unchecked((uint)tag));
-                dynamic.U32(value);
+                dynamic.U32(checked((uint)value));
             }
         }
         dyn.Dynamic.Content = dynamic.ToArray();
@@ -956,7 +958,7 @@ public static partial class Linker
         throw new InvalidOperationException($"{section.Name}+0x{offset:x} is in no part of the section");
     }
 
-    private static uint GotAddress(Dyn dyn, string symbol)
+    private static ulong GotAddress(Dyn dyn, string symbol)
     {
         return dyn.Got.Addr + (uint)((ReservedGotWords + dyn.GotSlot[symbol]) * dyn.Word);
     }
@@ -993,7 +995,7 @@ public static partial class Linker
     /// addresses exist, once to write them, which is why it reads addresses
     /// that are zero the first time and never depends on them for its length.
     /// </summary>
-    private static List<(int Tag, uint Value)> DynamicEntries(Layout layout, Dyn dyn)
+    private static List<(int Tag, ulong Value)> DynamicEntries(Layout layout, Dyn dyn)
     {
         StringTable str = new();
         foreach (DynSymbol s in dyn.Symbols)
@@ -1001,7 +1003,7 @@ public static partial class Linker
             str.Add(s.Name);
         }
 
-        List<(int, uint)> d = new();
+        List<(int, ulong)> d = new();
         foreach (string n in dyn.Needed)
         {
             d.Add((Elf.DtNeeded, str.Add(n)));
@@ -1038,7 +1040,7 @@ public static partial class Linker
         {
             d.Add((Elf.DtPltGot, dyn.Got.Addr));
             d.Add((Elf.DtPltRelSz, dyn.RelPlt.Size));
-            d.Add((Elf.DtPltRel, (uint)(dyn.LongMode ? Elf.DtRela : Elf.DtRel)));
+            d.Add((Elf.DtPltRel, (ulong)(dyn.LongMode ? Elf.DtRela : Elf.DtRel)));
             d.Add((Elf.DtJmpRel, dyn.RelPlt.Addr));
         }
         if (dyn.TextRel)

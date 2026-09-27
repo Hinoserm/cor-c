@@ -69,7 +69,7 @@ public static partial class Linker
     /// Link objects that have names -- file names, usually -- so an error
     /// can say which one it means.
     /// </summary>
-    public static byte[] Link(IEnumerable<(string Name, ObjectFile Object)> objects, string entrySymbol, uint loadAddress = DefaultLoadAddress, uint? physicalAddress = null, ProgramInfo? program = null, bool? longMode = null)
+    public static byte[] Link(IEnumerable<(string Name, ObjectFile Object)> objects, string entrySymbol, ulong loadAddress = DefaultLoadAddress, ulong? physicalAddress = null, ProgramInfo? program = null, bool? longMode = null)
     {
         ArgumentNullException.ThrowIfNull(objects);
         ArgumentNullException.ThrowIfNull(entrySymbol);
@@ -153,7 +153,7 @@ public static partial class Linker
         // reason. Without a bias the two are the same address anyway.
         return layout.LongMode
             ? Emit64(inputs, layout, entry.Address - layout.LoadBias)
-            : Emit(inputs, layout, entry.Address - layout.LoadBias, Elf.TypeExec);
+            : Emit(inputs, layout, checked((uint)(entry.Address - layout.LoadBias)), Elf.TypeExec);
     }
 
     /// <summary>
@@ -243,9 +243,9 @@ public static partial class Linker
         }
 
         // .bss carries no bytes, so the file ends where .data does.
-        uint size = layout.Data.Size != 0 ? layout.Data.Addr + layout.Data.Size - baseAddress
+        uint size = checked((uint)(layout.Data.Size != 0 ? layout.Data.Addr + layout.Data.Size - baseAddress
                   : layout.ReadOnlyData.Size != 0 ? layout.ReadOnlyData.Addr + layout.ReadOnlyData.Size - baseAddress
-                  : layout.Text.Size;
+                  : layout.Text.Size));
         byte[] image = new byte[size];
         foreach (OutputSection s in new[] { layout.Text, layout.ReadOnlyData, layout.Data })
         {
@@ -255,20 +255,20 @@ public static partial class Linker
             }
             if (s.Content is not null)
             {
-                Array.Copy(s.Content, 0, image, s.Addr - baseAddress, s.Content.Length);
+                Array.Copy(s.Content, 0, image, checked((long)(s.Addr - baseAddress)), s.Content.Length);
                 continue;
             }
             foreach (Placed part in s.Parts)
             {
-                Array.Copy(part.Bytes, 0, image, s.Addr - baseAddress + part.Offset, part.Bytes.Length);
+                Array.Copy(part.Bytes, 0, image, checked((long)(s.Addr - baseAddress + part.Offset)), part.Bytes.Length);
             }
         }
 
         // Startup zeroes from the first byte after the file, so its range
         // includes any alignment gap before the BSS section itself.
-        uint zeroBytes = layout.Bss.Size == 0 ? 0
-            : checked(layout.Bss.Addr + layout.Bss.Size - baseAddress - size);
-        return new FlatImage(image, baseAddress, entry.Address,
+        uint zeroBytes = checked((uint)(layout.Bss.Size == 0 ? 0
+            : checked(layout.Bss.Addr + layout.Bss.Size - baseAddress - size)));
+        return new FlatImage(image, baseAddress, checked((uint)entry.Address),
                              layout.Text.Size, layout.ReadOnlyData.Size, layout.Data.Size, zeroBytes);
     }
 
@@ -281,7 +281,7 @@ public static partial class Linker
     private static void AssignFlatAddresses(Layout layout)
     {
         layout.HeaderBytes = 0;
-        uint at = layout.LoadAddress;
+        ulong at = layout.LoadAddress;
         foreach (OutputSection s in layout.ReadOnly.Concat(layout.Writable))
         {
             if (s.Size == 0)
@@ -290,7 +290,7 @@ public static partial class Linker
             }
             at = Elf.AlignUp(at, s.Align);
             s.Addr = at;
-            s.FileOffset = at - layout.LoadAddress;
+            s.FileOffset = checked((uint)(at - layout.LoadAddress));
             at = checked(at + s.Size);
         }
         // A note section is not loaded and has no address; it has no place in
@@ -300,7 +300,7 @@ public static partial class Linker
             n.Addr = 0;
             n.FileOffset = 0;
         }
-        layout.FileEnd = at - layout.LoadAddress;
+        layout.FileEnd = checked((uint)(at - layout.LoadAddress));
     }
 
     // ---- The model -------------------------------------------------------
@@ -358,7 +358,7 @@ public static partial class Linker
         public string? LinkTo { get; set; }
         public uint Align { get; set; } = 1;
         public uint Size { get; set; }
-        public uint Addr { get; set; }
+        public ulong Addr { get; set; }
         public uint FileOffset { get; set; }
         /// <summary>Index in the output's section header table; 0 until emitted.</summary>
         public int Index { get; set; }
@@ -378,9 +378,9 @@ public static partial class Linker
     /// Where a name resolves to. A null section is an absolute value, used
     /// for the symbols the linker itself defines.
     /// </summary>
-    private readonly record struct Definition(string Object, OutputSection? Section, uint Offset, Symbol? Symbol)
+    private readonly record struct Definition(string Object, OutputSection? Section, ulong Offset, Symbol? Symbol)
     {
-        public uint Address => (Section?.Addr ?? 0) + Offset;
+        public ulong Address => (Section?.Addr ?? 0) + Offset;
     }
 
     [ThreadStatic] private static ProgramInfo? _program;
@@ -404,14 +404,14 @@ public static partial class Linker
     private sealed class Layout
     {
         public List<(Input Input, string Alias, Symbol Symbol)> MetadataBindings { get; } = new();
-        public uint LoadAddress { get; }
+        public ulong LoadAddress { get; }
 
         /// <summary>
         /// How far the link address runs ahead of the load address, so that
         /// a segment's p_paddr can differ from its p_vaddr. Zero for every
         /// hosted program; 0xC0000000 for a kernel linked high and loaded low.
         /// </summary>
-        public uint LoadBias { get; set; }
+        public ulong LoadBias { get; set; }
         public OutputSection Text { get; } = new(".text", SectionKind.Code);
         public OutputSection ReadOnlyData { get; } = new(".rodata", SectionKind.ReadOnlyData);
         public OutputSection Data { get; } = new(".data", SectionKind.Data);
@@ -451,7 +451,7 @@ public static partial class Linker
         /// <summary>Where the last laid-out byte of section content is; the tables go after it.</summary>
         public uint FileEnd { get; set; }
 
-        public Layout(uint loadAddress)
+        public Layout(ulong loadAddress)
         {
             LoadAddress = loadAddress;
         }
@@ -691,9 +691,9 @@ public static partial class Linker
                 align = Math.Max(align, s.Align);
             }
             off = Elf.AlignUp(off, align);
-            uint addr = checked(Elf.AlignUp(layout.LoadAddress + rxEnd, Elf.PageSize) + off % Elf.PageSize);
+            ulong addr = checked(Elf.AlignUp(layout.LoadAddress + rxEnd, Elf.PageSize) + off % Elf.PageSize);
             uint rwOffset = off;
-            uint rwAddr = addr;
+            ulong rwAddr = addr;
             uint fileEndOfRw = off;
             foreach (OutputSection s in layout.Writable)
             {
@@ -713,7 +713,7 @@ public static partial class Linker
                 }
             }
             off = fileEndOfRw;
-            layout.Segments.Add(new ProgramHeader(Elf.PtLoad, rwOffset, rwAddr, fileEndOfRw - rwOffset, addr - rwAddr, Elf.PfR | Elf.PfW, Elf.PageSize));
+            layout.Segments.Add(new ProgramHeader(Elf.PtLoad, rwOffset, rwAddr, fileEndOfRw - rwOffset, checked((uint)(addr - rwAddr)), Elf.PfR | Elf.PfW, Elf.PageSize));
         }
 
         // A CORSAC program's resources: their own read-only, non-executable
@@ -723,14 +723,14 @@ public static partial class Linker
         if (_program is { Resources: { Length: > 0 } resources })
         {
             off = Elf.AlignUp(off, Elf.PageSize);
-            uint addr = Elf.AlignUp(layout.LoadAddress + off, Elf.PageSize);
+            ulong addr = Elf.AlignUp(layout.LoadAddress + off, Elf.PageSize);
             // Keep offset and address congruent modulo the page, as every
             // loadable segment must be.
             addr = checked(Elf.AlignUp(addr, Elf.PageSize) + off % Elf.PageSize);
             OutputSection res = new(".corsac.resources", SectionKind.ReadOnlyData) { Content = resources, Size = (uint)resources.Length, Align = Elf.PageSize, Addr = addr, FileOffset = off };
             layout.Extra.Add(res);
             layout.Segments.Add(new ProgramHeader(Elf.PtLoad, off, addr, res.Size, res.Size, Elf.PfR, Elf.PageSize));
-            resourcesAddr = addr; resourcesSize = res.Size;
+            resourcesAddr = checked((uint)addr); resourcesSize = res.Size;
             off = checked(off + res.Size);
         }
         if (_program is { } info)
@@ -798,15 +798,15 @@ public static partial class Linker
 
     private static void DefineLinkerSymbols(Layout layout)
     {
-        uint textStart = layout.Text.Size != 0 ? layout.Text.Addr : layout.LoadAddress;
-        uint textEnd = textStart + layout.Text.Size;
+        ulong textStart = layout.Text.Size != 0 ? layout.Text.Addr : layout.LoadAddress;
+        ulong textEnd = textStart + layout.Text.Size;
         // With no .data, the RW segment begins at .bss; with neither, the
         // statics range is empty and the collector scans nothing.
-        uint dataStart = layout.Data.Size != 0 ? layout.Data.Addr : layout.Bss.Size != 0 ? layout.Bss.Addr : textEnd;
-        uint dataEnd = layout.Data.Size != 0 ? layout.Data.Addr + layout.Data.Size : dataStart;
-        uint bssStart = layout.Bss.Size != 0 ? layout.Bss.Addr : dataEnd;
-        uint end = layout.Bss.Size != 0 ? layout.Bss.Addr + layout.Bss.Size : dataEnd;
-        (string Name, uint Value)[] provided =
+        ulong dataStart = layout.Data.Size != 0 ? layout.Data.Addr : layout.Bss.Size != 0 ? layout.Bss.Addr : textEnd;
+        ulong dataEnd = layout.Data.Size != 0 ? layout.Data.Addr + layout.Data.Size : dataStart;
+        ulong bssStart = layout.Bss.Size != 0 ? layout.Bss.Addr : dataEnd;
+        ulong end = layout.Bss.Size != 0 ? layout.Bss.Addr + layout.Bss.Size : dataEnd;
+        (string Name, ulong Value)[] provided =
         {
             ("__text_start", textStart),
             ("_etext", textEnd),
@@ -815,7 +815,7 @@ public static partial class Linker
             ("__bss_start", bssStart),
             ("_end", end),
         };
-        foreach ((string name, uint value) in provided)
+        foreach ((string name, ulong value) in provided)
         {
             if (layout.Globals.TryAdd(name, new Definition("the linker", null, value, null)))
             {
@@ -852,7 +852,7 @@ public static partial class Linker
                         continue;
                     }
                     long value;
-                    long place = p.Output.Addr + p.Offset + (uint)r.Offset;
+                    long place = (long)(p.Output.Addr + p.Offset + (uint)r.Offset);
                     if (layout.Dyn is not null)
                     {
                         if (!DynamicValue(input, layout, p, r, place, where, errors, out value))
@@ -894,7 +894,7 @@ public static partial class Linker
                             errors.Add($"undefined symbol '{r.Symbol}' referenced from {where}");
                             continue;
                         }
-                        value = d.Value.Address + r.Addend;
+                        value = (long)d.Value.Address + r.Addend;
                         switch (r.Kind)
                         {
                             case RelocKind.Abs64:
@@ -907,6 +907,15 @@ public static partial class Linker
                                     continue;
                                 }
                                 BinaryPrimitives.WriteUInt32LittleEndian(p.Bytes.AsSpan(r.Offset), (uint)value);
+                                continue;
+                            case RelocKind.Abs32S:
+                                // Sign-extended: the bottom 2 GiB or the top 2 GiB.
+                                if (value < int.MinValue || value > int.MaxValue)
+                                {
+                                    errors.Add($"relocation overflow: '{r.Symbol}' is neither in the bottom nor the top 2 GiB, for {where}'s sign-extended field");
+                                    continue;
+                                }
+                                BinaryPrimitives.WriteInt32LittleEndian(p.Bytes.AsSpan(r.Offset), (int)value);
                                 continue;
                             case RelocKind.Rel32:
                             case RelocKind.Plt32:
@@ -939,7 +948,7 @@ public static partial class Linker
                                 }
                                 // Statically, a PLT call is a direct call: there
                                 // is no other object for the PLT to reach.
-                                value = d.Value.Address + r.Addend;
+                                value = (long)d.Value.Address + r.Addend;
                                 if (r.Kind != RelocKind.Abs32)
                                 {
                                     value -= place;
@@ -1004,7 +1013,7 @@ public static partial class Linker
             // sh_info of .dynsym is the index of its first global, which for
             // a table with only the null symbol local is always one.
             uint info = s.Name == ".dynsym" ? 1u : 0u;
-            headers.Add(new SectionHeader(shstrtab.Add(s.Name), s.TypeOverride ?? type, flags, s.Addr, s.FileOffset, s.Size, link, info, s.Align, s.EntSize));
+            headers.Add(new SectionHeader(shstrtab.Add(s.Name), s.TypeOverride ?? type, flags, checked((uint)s.Addr), s.FileOffset, s.Size, link, info, s.Align, s.EntSize));
         }
         uint symtabName = shstrtab.Add(".symtab");
         uint strtabName = shstrtab.Add(".strtab");
@@ -1080,7 +1089,7 @@ public static partial class Linker
     /// section headers and symbols at their 64-bit sizes, everything else --
     /// the layout, the section contents, the tables' order -- as Emit writes it.
     /// </summary>
-    private static byte[] Emit64(List<Input> inputs, Layout layout, uint entry, ushort fileType = Elf.TypeExec)
+    private static byte[] Emit64(List<Input> inputs, Layout layout, ulong entry, ushort fileType = Elf.TypeExec)
     {
         List<OutputSection> present = Present(layout);
 

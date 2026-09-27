@@ -13,8 +13,8 @@ public static class ObjectLinkCommand
     {
         string? output = null;
         string entry = "_start";
-        uint? baseAddress = null;
-        uint? physicalAddress = null;
+        ulong? baseAddress = null;
+        ulong? physicalAddress = null;
         bool flat = false;
         bool shared = false;
         bool noUndefined = false;
@@ -57,8 +57,8 @@ public static class ObjectLinkCommand
                 {
                     string number = args[i];
                     bool hex = number.StartsWith("0x", StringComparison.OrdinalIgnoreCase);
-                    if (!uint.TryParse(hex ? number[2..] : number, hex ? NumberStyles.HexNumber : NumberStyles.None,
-                        CultureInfo.InvariantCulture, out uint address)) return Fail("invalid address " + number);
+                    if (!ulong.TryParse(hex ? number[2..] : number, hex ? NumberStyles.HexNumber : NumberStyles.None,
+                        CultureInfo.InvariantCulture, out ulong address)) return Fail("invalid address " + number);
                     if (arg == "--base") baseAddress = address;
                     else physicalAddress = address;
                 }
@@ -114,7 +114,7 @@ public static class ObjectLinkCommand
         byte[] image;
         if (flat)
         {
-            Linker.FlatImage linked = Linker.LinkFlat(inputs, entry, baseAddress ?? 0x10000, longMode);
+            Linker.FlatImage linked = Linker.LinkFlat(inputs, entry, checked((uint)(baseAddress ?? 0x10000)), longMode);
             image = linked.Bytes;
             Console.Error.WriteLine($"flat: entry=0x{linked.Entry:x} base=0x{linked.Base:x} bss={linked.BssSize} memory={linked.MemorySize}");
         }
@@ -123,7 +123,7 @@ public static class ObjectLinkCommand
             HashSet<string> defined = new(inputs.SelectMany(x => x.Item2.Symbols).Where(s => s.IsDefined).Select(s => s.Name), StringComparer.Ordinal);
             HashSet<string> unresolved = new(inputs.SelectMany(x => x.Item2.Symbols).Where(s => !s.IsDefined && !defined.Contains(s.Name)).Select(s => s.Name), StringComparer.Ordinal);
             List<string> needed = sharedLibraries.Distinct(StringComparer.Ordinal).Where(path => ElfReader.ExportsOf(File.ReadAllBytes(path)).Any(unresolved.Contains)).ToList();
-            image = shared ? Linker.LinkShared(inputs, Path.GetFileName(output), needed, runpath, baseAddress ?? 0, sharedLibraries, longMode: longMode)
+            image = shared ? Linker.LinkShared(inputs, Path.GetFileName(output), needed, runpath, checked((uint)(baseAddress ?? 0)), sharedLibraries, longMode: longMode)
                 : Linker.Link(inputs, entry, needed, runpath, libraries: sharedLibraries, longMode: longMode);
         }
         else image = Linker.Link(inputs, entry, baseAddress ?? Linker.DefaultLoadAddress, physicalAddress, longMode: longMode);

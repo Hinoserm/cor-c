@@ -229,18 +229,20 @@ public static class Driver
     }
 
     /// <summary>An address on the command line: hexadecimal with 0x, else decimal.</summary>
-    private static uint? Address(string text)
+    private static ulong? Address(string text)
     {
+        // 64 bits, for a long-mode kernel linked into the top of the address
+        // space; an i386 image refuses one that does not fit when it is written.
         string digits = text.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? text[2..] : text;
         if (text.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
         {
-            return uint.TryParse(digits, System.Globalization.NumberStyles.HexNumber, null, out uint hex) ? hex : null;
+            return ulong.TryParse(digits, System.Globalization.NumberStyles.HexNumber, null, out ulong hex) ? hex : null;
         }
-        if (uint.TryParse(text, out uint dec))
+        if (ulong.TryParse(text, out ulong dec))
         {
             return dec;
         }
-        return uint.TryParse(digits, System.Globalization.NumberStyles.HexNumber, null, out uint fallback) ? fallback : null;
+        return ulong.TryParse(digits, System.Globalization.NumberStyles.HexNumber, null, out ulong fallback) ? fallback : null;
     }
 
     internal static string? Value(string[] args, string name)
@@ -432,7 +434,7 @@ public static class Driver
         Corsac.Lang.Lower.Lowering.EntryClearsBss = asmEntry is null;
         Corsac.Lang.Lower.Lowering.StartupObject = Value(args, "--main-type");
 
-        uint? loadBase = null;
+        ulong? loadBase = null;
         if (Value(args, "--base") is { } baseText)
         {
             if (Address(baseText) is not { } parsed)
@@ -445,7 +447,7 @@ public static class Driver
         // --load (or --paddr) is where the loader PUTS the image; --base is
         // where it will RUN. They differ only for a kernel linked into the
         // higher half and loaded low, and the difference shows up as p_paddr.
-        uint? physicalBase = null;
+        ulong? physicalBase = null;
         string? physText = Value(args, "--load") ?? Value(args, "--paddr");
         if (physText is not null)
         {
@@ -850,7 +852,7 @@ public static class Driver
             // --flat --obj. Keep the original metadata and --with objects.
             TargetContract.Validate(link);
             Corsac.Lang.Lto.LinkTimeOptimizer.Run(link, !args.Contains("--no-lto") && !args.Contains("--no-opt"));
-            Linker.FlatImage image = Linker.LinkFlat(link, entry, loadBase ?? 0x10000);
+            Linker.FlatImage image = Linker.LinkFlat(link, entry, checked((uint)(loadBase ?? 0x10000)));
             File.WriteAllBytes(output, image.Bytes);
             Console.Error.WriteLine(
                 $"{output}: flat image at 0x{image.Base:x}, {image.Bytes.Length} bytes "
