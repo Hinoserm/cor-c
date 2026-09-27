@@ -1908,6 +1908,8 @@ static class Runtime
     /// frame pointer and source site. The frame chain begins with its callers;
     /// the explicit site preserves the leaf even when Capture is inlined.
     public static void Capture(object thrown, long frame, string site) {
+        // The iterator stop signal has no reader to show a trace to.
+        if (thrown is IteratorStopSignal) { return; }
         if (thrown is Exception) {
             Exception e = (Exception)thrown;
             string callers = Trace(frame);
@@ -1980,9 +1982,23 @@ static class Runtime
     /// The signal Dispose resumes a suspended iterator with: thrown at the
     /// yield it stopped at, it runs the finally blocks around it and is
     /// caught by MoveNext itself (IteratorStopping).
+    /// ONE SIGNAL, made once and thrown each time: an iterator stopped early
+    /// is routine -- every Any, All and First over a lazy sequence disposes
+    /// one mid-way -- and a fresh exception each time, with the trace Capture
+    /// walks for it, made that the most expensive thing the compiler did.
+    /// Nothing ever sees it but the finally blocks it runs and MoveNext's
+    /// own handler: C# allows no catch around a yield.
+    static IteratorStopSignal? _stopSignal;
+
     public static void IteratorStop()
     {
-        throw new IteratorStopSignal();
+        IteratorStopSignal? signal = _stopSignal;
+        if (signal is null)
+        {
+            signal = new IteratorStopSignal();
+            _stopSignal = signal;
+        }
+        throw signal;
     }
 
     public static bool IteratorStopping(object thrown)
