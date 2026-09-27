@@ -1481,6 +1481,11 @@ public sealed partial class Lowering
             // address at link time, which lowering cannot know); a symbol
             // is the closest stand-in available here, and it is what makes
             // the layout deterministic across a rebuild.
+            // Named first, in closure order, and then sorted by the names: a
+            // descriptor is MADE the first time it is named, so naming them
+            // inside the comparison made them in whatever order the sort
+            // happened to compare in.
+            foreach (TypeSymbol face in faces) InterfaceDescriptor(face);
             faces.Sort((a, b) => string.CompareOrdinal(InterfaceDescriptor(a), InterfaceDescriptor(b)));
             byte[] arr = new byte[(faces.Count + 1) * w];
             DataItem ifc = new("f_" + TypeKey(t), arr) { ReadOnly = true, Exported = false };

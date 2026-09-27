@@ -5984,68 +5984,122 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
 
     public void Sort(int index, int howMany, IComparer<T> by) { SortRange(index, howMany, by); }
 
-    /// THE MERGE SORT, WRITTEN HERE rather than called in Sorting, and not by
-    /// preference: List<T> is compiled ONCE over the machine word, so its T is
-    /// the canonical one, and handing that to a generic method that is
-    /// compiled per type argument is a conversion the checker refuses --
-    /// "cannot convert 'IComparer$__canon' to 'IComparer<object>'". Array's
-    /// sort, whose methods are themselves per-argument, does call Sorting.
-    ///
-    /// MERGE RATHER THAN QUICK: it is STABLE, so equal elements keep the order
-    /// they arrived in and sorting a table by one column and then another
-    /// means what it looks like; and it has no worst case to be provoked into
-    /// by data that came off a network.
+    /// .NET'S INTROSPECTIVE SORT, WRITTEN HERE rather than called in Sorting,
+    /// and not by preference: List<T> is compiled ONCE over the machine word,
+    /// so its T is the canonical one, and handing that to a generic method
+    /// that is compiled per type argument is a conversion the checker refuses
+    /// -- "cannot convert 'IComparer$__canon' to 'IComparer<object>'". Array's
+    /// sort, whose methods are themselves per-argument, calls
+    /// Sorting.Introspective, and this is the same algorithm step for step:
+    /// not stable, as .NET's is not, so equal elements come out where .NET
+    /// puts them.
     private void SortRange(int from, int howMany, IComparer<T> by) {
-        if (howMany < 2) { return; }
+        if (howMany > 1) {
+            int log = 0;
+            for (int n = howMany; n > 1; n = n >> 1) { log = log + 1; }
+            IntroSortRange(from, howMany, 2 * (log + 1), by);
+        }
+    }
 
-        T[] scratch = new T[howMany];
-        int width = 1;
-
-        // BOTTOM UP, doubling the run length, so there is no recursion to run
-        // out of stack on and no pivot to choose badly.
-        while (width < howMany) {
-            int at = 0;
-
-            while (at < howMany) {
-                int leftEnd = at + width;
-                int rightEnd = at + width * 2;
-
-                if (leftEnd > howMany) { leftEnd = howMany; }
-                if (rightEnd > howMany) { rightEnd = howMany; }
-
-                int i = at;
-                int j = leftEnd;
-                int into = at;
-
-                while (i < leftEnd && j < rightEnd) {
-                    // `<= 0` AND NOT `< 0` is what makes it stable: a tie goes
-                    // to the left run, which is the earlier one.
-                    if (by.Compare(items[from + i], items[from + j]) <= 0) {
-                        scratch[into] = items[from + i];
-                        i = i + 1;
-                    } else {
-                        scratch[into] = items[from + j];
-                        j = j + 1;
-                    }
-                    into = into + 1;
+    private void IntroSortRange(int lo, int size, int depthLimit, IComparer<T> by) {
+        int partitionSize = size;
+        while (partitionSize > 1) {
+            if (partitionSize <= 16) {
+                if (partitionSize == 2) {
+                    SwapIfGreater(lo, lo + 1, by);
+                    return;
                 }
-
-                while (i < leftEnd) {
-                    scratch[into] = items[from + i];
-                    i = i + 1;
-                    into = into + 1;
+                if (partitionSize == 3) {
+                    SwapIfGreater(lo, lo + 1, by);
+                    SwapIfGreater(lo, lo + 2, by);
+                    SwapIfGreater(lo + 1, lo + 2, by);
+                    return;
                 }
-                while (j < rightEnd) {
-                    scratch[into] = items[from + j];
-                    j = j + 1;
-                    into = into + 1;
-                }
-
-                at = at + width * 2;
+                InsertionSortRange(lo, partitionSize, by);
+                return;
             }
+            if (depthLimit == 0) {
+                HeapSortRange(lo, partitionSize, by);
+                return;
+            }
+            depthLimit = depthLimit - 1;
+            int p = PivotAndPartition(lo, partitionSize, by);
+            IntroSortRange(lo + p + 1, partitionSize - (p + 1), depthLimit, by);
+            partitionSize = p;
+        }
+    }
 
-            for (int k = 0; k < howMany; k++) { items[from + k] = scratch[k]; }
-            width = width * 2;
+    private void SwapIfGreater(int i, int j, IComparer<T> by) {
+        if (by.Compare(items[i], items[j]) > 0) {
+            T key = items[i];
+            items[i] = items[j];
+            items[j] = key;
+        }
+    }
+
+    private void SwapAt(int i, int j) {
+        T t = items[i];
+        items[i] = items[j];
+        items[j] = t;
+    }
+
+    private int PivotAndPartition(int lo, int size, IComparer<T> by) {
+        int hi = size - 1;
+        int middle = hi >> 1;
+        SwapIfGreater(lo, lo + middle, by);
+        SwapIfGreater(lo, lo + hi, by);
+        SwapIfGreater(lo + middle, lo + hi, by);
+        T pivot = items[lo + middle];
+        SwapAt(lo + middle, lo + hi - 1);
+        int left = 0;
+        int right = hi - 1;
+        while (left < right) {
+            left = left + 1;
+            while (by.Compare(items[lo + left], pivot) < 0) { left = left + 1; }
+            right = right - 1;
+            while (by.Compare(pivot, items[lo + right]) < 0) { right = right - 1; }
+            if (left >= right) { break; }
+            SwapAt(lo + left, lo + right);
+        }
+        if (left != hi - 1) {
+            SwapAt(lo + left, lo + hi - 1);
+        }
+        return left;
+    }
+
+    private void HeapSortRange(int lo, int n, IComparer<T> by) {
+        for (int i = n >> 1; i >= 1; i--) {
+            DownHeapRange(lo, i, n, by);
+        }
+        for (int i = n; i > 1; i--) {
+            SwapAt(lo, lo + i - 1);
+            DownHeapRange(lo, 1, i - 1, by);
+        }
+    }
+
+    private void DownHeapRange(int lo, int i, int n, IComparer<T> by) {
+        T d = items[lo + i - 1];
+        while (i <= n >> 1) {
+            int child = 2 * i;
+            if (child < n && by.Compare(items[lo + child - 1], items[lo + child]) < 0) {
+                child = child + 1;
+            }
+            if (!(by.Compare(d, items[lo + child - 1]) < 0)) { break; }
+            items[lo + i - 1] = items[lo + child - 1];
+            i = child;
+        }
+        items[lo + i - 1] = d;
+    }
+
+    private void InsertionSortRange(int lo, int size, IComparer<T> by) {
+        for (int i = 0; i < size - 1; i++) {
+            T t = items[lo + i + 1];
+            int j = i;
+            while (j >= 0 && by.Compare(t, items[lo + j]) < 0) {
+                items[lo + j + 1] = items[lo + j];
+                j = j - 1;
+            }
+            items[lo + j + 1] = t;
         }
     }
 
@@ -7707,19 +7761,19 @@ static class Array {
     }
 
     public static void Sort<T>(T[] items) {
-        Sorting.Sort<T>(items, 0, items.Length, new DefaultComparer<T>());
+        Sorting.Introspective<T>(items, 0, items.Length, new DefaultComparer<T>());
     }
 
     public static void Sort<T>(T[] items, IComparer<T> by) {
-        Sorting.Sort<T>(items, 0, items.Length, by);
+        Sorting.Introspective<T>(items, 0, items.Length, by);
     }
 
     public static void Sort<T>(T[] items, Comparison<T> by) {
-        Sorting.Sort<T>(items, 0, items.Length, new ComparisonComparer<T>(by));
+        Sorting.Introspective<T>(items, 0, items.Length, new ComparisonComparer<T>(by));
     }
 
     public static void Sort<T>(T[] items, int index, int howMany, IComparer<T> by) {
-        Sorting.Sort<T>(items, index, howMany, by);
+        Sorting.Introspective<T>(items, index, howMany, by);
     }
 
     public static void Reverse<T>(T[] items) { Reverse(items, 0, items.Length); }
@@ -10334,6 +10388,129 @@ class EqualityComparer<T> {
 /// has no worst case to be provoked into, which matters when the thing being
 /// sorted came off a network.
 static class Sorting {
+    // ---- Array.Sort and List.Sort: .NET's introspective sort ----------------
+    //
+    // THE SAME ALGORITHM .NET'S ArraySortHelper RUNS, step for step: insertion
+    // sort below sixteen, a median-of-three pivot above, heapsort once the
+    // depth limit is spent. It is not stable, and neither is .NET's -- which
+    // is why it has to be this one: equal elements come out in the order
+    // .NET's leaves them in, and a program that sorts ties and writes them
+    // out (this compiler, sorting its output) writes what it writes on .NET.
+    public static void Introspective<T>(T[] items, int from, int count, IComparer<T> by) {
+        if (count > 1) {
+            IntroSort(items, from, count, 2 * (Log2(count) + 1), by);
+        }
+    }
+
+    private static int Log2(int n) {
+        int log = 0;
+        while (n > 1) { n = n >> 1; log = log + 1; }
+        return log;
+    }
+
+    private static void IntroSort<T>(T[] keys, int lo, int size, int depthLimit, IComparer<T> by) {
+        int partitionSize = size;
+        while (partitionSize > 1) {
+            if (partitionSize <= 16) {
+                if (partitionSize == 2) {
+                    SwapIfGreater(keys, lo, lo + 1, by);
+                    return;
+                }
+                if (partitionSize == 3) {
+                    SwapIfGreater(keys, lo, lo + 1, by);
+                    SwapIfGreater(keys, lo, lo + 2, by);
+                    SwapIfGreater(keys, lo + 1, lo + 2, by);
+                    return;
+                }
+                InsertionSort(keys, lo, partitionSize, by);
+                return;
+            }
+            if (depthLimit == 0) {
+                HeapSort(keys, lo, partitionSize, by);
+                return;
+            }
+            depthLimit = depthLimit - 1;
+            int p = PickPivotAndPartition(keys, lo, partitionSize, by);
+            IntroSort(keys, lo + p + 1, partitionSize - (p + 1), depthLimit, by);
+            partitionSize = p;
+        }
+    }
+
+    private static void SwapIfGreater<T>(T[] keys, int i, int j, IComparer<T> by) {
+        if (by.Compare(keys[i], keys[j]) > 0) {
+            T key = keys[i];
+            keys[i] = keys[j];
+            keys[j] = key;
+        }
+    }
+
+    private static void Swap<T>(T[] keys, int i, int j) {
+        T t = keys[i];
+        keys[i] = keys[j];
+        keys[j] = t;
+    }
+
+    private static int PickPivotAndPartition<T>(T[] keys, int lo, int size, IComparer<T> by) {
+        int hi = size - 1;
+        int middle = hi >> 1;
+        SwapIfGreater(keys, lo, lo + middle, by);
+        SwapIfGreater(keys, lo, lo + hi, by);
+        SwapIfGreater(keys, lo + middle, lo + hi, by);
+        T pivot = keys[lo + middle];
+        Swap(keys, lo + middle, lo + hi - 1);
+        int left = 0;
+        int right = hi - 1;
+        while (left < right) {
+            left = left + 1;
+            while (by.Compare(keys[lo + left], pivot) < 0) { left = left + 1; }
+            right = right - 1;
+            while (by.Compare(pivot, keys[lo + right]) < 0) { right = right - 1; }
+            if (left >= right) { break; }
+            Swap(keys, lo + left, lo + right);
+        }
+        if (left != hi - 1) {
+            Swap(keys, lo + left, lo + hi - 1);
+        }
+        return left;
+    }
+
+    private static void HeapSort<T>(T[] keys, int lo, int n, IComparer<T> by) {
+        for (int i = n >> 1; i >= 1; i--) {
+            DownHeap(keys, lo, i, n, by);
+        }
+        for (int i = n; i > 1; i--) {
+            Swap(keys, lo, lo + i - 1);
+            DownHeap(keys, lo, 1, i - 1, by);
+        }
+    }
+
+    private static void DownHeap<T>(T[] keys, int lo, int i, int n, IComparer<T> by) {
+        T d = keys[lo + i - 1];
+        while (i <= n >> 1) {
+            int child = 2 * i;
+            if (child < n && by.Compare(keys[lo + child - 1], keys[lo + child]) < 0) {
+                child = child + 1;
+            }
+            if (!(by.Compare(d, keys[lo + child - 1]) < 0)) { break; }
+            keys[lo + i - 1] = keys[lo + child - 1];
+            i = child;
+        }
+        keys[lo + i - 1] = d;
+    }
+
+    private static void InsertionSort<T>(T[] keys, int lo, int size, IComparer<T> by) {
+        for (int i = 0; i < size - 1; i++) {
+            T t = keys[lo + i + 1];
+            int j = i;
+            while (j >= 0 && by.Compare(t, keys[lo + j]) < 0) {
+                keys[lo + j + 1] = keys[lo + j];
+                j = j - 1;
+            }
+            keys[lo + j + 1] = t;
+        }
+    }
+
+    // ---- OrderBy: stable, as .NET's is ---------------------------------------
     public static void Sort<T>(T[] items, int from, int count, IComparer<T> by) {
         if (count < 2) { return; }
 

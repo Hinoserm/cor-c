@@ -274,6 +274,7 @@ public sealed partial class Lowering
         if (shape is not null)
         {
             foreach (TypeSymbol i in shape.Interfaces) AddInterfaceClosure(i, implemented);
+            foreach (TypeSymbol face in implemented) InterfaceDescriptor(face);
             implemented.Sort((a, b) => string.CompareOrdinal(InterfaceDescriptor(a), InterfaceDescriptor(b)));
         }
         DataItem faces = new("bf_" + Safe(name), new byte[(implemented.Count + 1) * w]) { ReadOnly = true, Exported = false };

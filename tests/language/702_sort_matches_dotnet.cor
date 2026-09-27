@@ -1,0 +1,36 @@
+// test: sort_matches_dotnet
+// expect-exit: 0
+// expect-output:
+// 0,238,235,230,222,52,219,55,57,208,126,198,69,241,189,177,86,164,99,157,105,151,143,136,134,128,127,74,251,202,125,1,15,12,21,257,268,264,18,22
+// 153,287,259,193,158,194,277,188,187,185,179,220,175,226,229,170,168,232,282,161,160,234,156,186,299,110,17,20,103,63,66,24,25,111,101,59,107,4,6,30
+// 0,1,5,4,6,8,10,11,2,3,9,7
+// 0,1,12,15,18,21,22,52,55,57,69,74,86,99,105,125,126,127,128,134
+//
+// Array.Sort and List.Sort are .NET's introspective sort, step for step, so
+// elements that compare equal come out where .NET puts them -- this output is
+// what .NET 10 prints for this program. OrderBy stays stable, as .NET's is.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+static class P
+{
+    static int Main()
+    {
+        var rng = new List<(int Key, int Tag)>();
+        uint seed = 12345;
+        for (int i = 0; i < 300; i++) { seed = seed * 1103515245 + 12345; rng.Add(((int)((seed >> 16) % 7), i)); }
+        var list = new List<(int Key, int Tag)>(rng);
+        list.Sort((a, b) => a.Key.CompareTo(b.Key));
+        var arr = rng.ToArray();
+        Array.Sort(arr, (a, b) => a.Key.CompareTo(b.Key));
+        var small = rng.GetRange(0, 12).ToArray();
+        Array.Sort(small, (a, b) => a.Key.CompareTo(b.Key));
+        var ordered = rng.OrderBy(x => x.Key).Take(20);
+        Console.WriteLine(string.Join(",", list.Take(40).Select(x => x.Tag)));
+        Console.WriteLine(string.Join(",", arr.Skip(100).Take(40).Select(x => x.Tag)));
+        Console.WriteLine(string.Join(",", small.Select(x => x.Tag)));
+        Console.WriteLine(string.Join(",", ordered.Select(x => x.Tag)));
+        return 0;
+    }
+}
