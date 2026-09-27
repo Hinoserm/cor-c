@@ -1615,7 +1615,7 @@ public sealed partial class Binder
                                                    && m.Mods.HasFlag(Mods.Static)))
         {
             FieldDecl? state = d.Members.OfType<FieldDecl>().FirstOrDefault(f => f.Name == BindResult.ReadyField);
-            if (state?.Type.Name != "int")
+            if (state?.Type.Name != "nint")
                 Error(d, $"'{d.Name}' has an obsolete static-initialization state; rebuild its library/header");
             _r.StaticInits.Add(d.Name);
             return;

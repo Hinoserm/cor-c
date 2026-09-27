@@ -282,18 +282,14 @@ public sealed class Monomorphiser
             return false;
         }
 
-        // nint and nuint are a machine word BY DEFINITION, whatever the word is.
-        if (r.Name is "nint" or "nuint")
+        // A NUMBER THE SIZE OF A WORD IS STILL A NUMBER. The one compiled copy
+        // treats its T as a reference -- `held + " "` reads the vtable and calls
+        // ToString through it -- so nint, nuint, and long where the word is 64
+        // bits, get copies of their own as int does. Sharing theirs with the
+        // references ran a long's value as an object's address.
+        if (r.Name is "nint" or "nuint" or "long" or "ulong")
         {
-            return true;
-        }
-
-        // A long is word-shaped only where the word is 64 bits. On a 32-bit
-        // target it is a register pair, and code compiled over one word
-        // cannot carry it.
-        if (r.Name is "long" or "ulong")
-        {
-            return Target.Current.NativeI64;
+            return false;
         }
 
         return r.Name is "string" or "object" or CanonName
