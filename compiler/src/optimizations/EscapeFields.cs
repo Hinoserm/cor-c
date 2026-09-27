@@ -340,7 +340,10 @@ public sealed partial class Escape
     {
         if (!_records.TryGetValue(f, out List<OwnedRecord>? records)) return;
         int word = IrTypes.Word.Bytes();
+        // One analysis for all the records, as in PromoteIn: freeing a
+        // record's fields adds only registers and calls of its own.
         Liveness? liveness = null;
+        HashSet<VReg>? pads = null;
         foreach (OwnedRecord r in records)
         {
             VReg[] roots = r.SlotAddress is null ? new[] { r.Root } : new[] { r.Root, r.SlotAddress };
@@ -355,7 +358,8 @@ public sealed partial class Escape
             {
                 HashSet<VReg> loaded = Derivations(f, fs.Loads.Where(l => clean.Contains(l.Offset)).Select(l => l.Value));
                 liveness ??= new Liveness(f);
-                if (LiveAt(f, liveness, r.Renew, loaded)) continue;
+                pads ??= PadLive(liveness);
+                if (LiveAt(f, liveness, pads, r.Renew, loaded)) continue;
             }
 
             if (r.Slot is not null && r.SlotAddress is not null)
@@ -375,7 +379,6 @@ public sealed partial class Escape
                 }
             }
             FieldsOwned += clean.Count;
-            liveness = null;
         }
     }
 
@@ -452,16 +455,16 @@ public sealed partial class Escape
     }
 
     /// <summary>Whether any of `regs` is live just after `at` (and so just before it, since `at` defines none of them).</summary>
-    private static bool LiveAt(Function f, Liveness liveness, Instr at, HashSet<VReg> regs)
+    private static bool LiveAt(Function f, Liveness liveness, HashSet<VReg> pads, Instr at, HashSet<VReg> regs)
     {
         if (regs.Count == 0) return false;
-        // A handler's reads are live everywhere (Escape.PadLive).
-        HashSet<VReg> pads = PadLive(liveness);
-        foreach (VReg r in regs) if (pads.Contains(r)) return true;
+        // A handler's reads are live everywhere (Escape.PadLive); a register
+        // newer than the analysis has no answer and is taken to be live.
+        foreach (VReg r in regs) if (pads.Contains(r) || !liveness.Tracks(r)) return true;
         foreach (Block b in f.Blocks)
         {
             if (!b.Instrs.Contains(at)) continue;
-            foreach ((Instr i, ulong[] liveAfter) in liveness.WalkBackwards(b))
+            foreach ((Instr i, ulong[] liveAfter) in liveness.WalkBackwards(b, skipNewer: true))
             {
                 if (!ReferenceEquals(i, at)) continue;
                 foreach (VReg r in regs)

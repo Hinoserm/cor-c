@@ -84,6 +84,7 @@ public static partial class Program
         Try("escape: recursion cycles solved to their least fixed point", EscapeCycles);
         Try("escape: a fresh function's result is owned by its caller", FreshReturnOwnership);
         Try("escape: a callee-filled field dies with its owner", CalleeFilledField);
+        Try("escape: one liveness judges every allocation in a function", EscapeSharedLiveness);
         Try("local copies: reassignment, branches, joins and loops preserve values", LocalCopyBoundaries);
         Try("division reuse: signed results and redefinition barriers", DivisionReuseBoundaries);
         Try("integer chains: modular constants and mutable-source barriers", IntegerChainBoundaries);
@@ -117,6 +118,7 @@ public static partial class Program
         Try("peephole: compare inversion refused across a redefinition", CompareInversionRefused);
         Try("verify: missing terminator and bad types are reported", VerifierCatches);
         Try("liveness: loop-carried register is live around the loop", LivenessLoop);
+        Try("liveness: registers made after the analysis are skipped, older answers kept", LivenessNewerRegisters);
         Try("cfg: dominators and reverse postorder", CfgQueries);
         Try("pipeline: trace hook fires per pass", PipelineTrace);
         Try("ssa: loop gets header phis and every register one definition", SsaLoop);
@@ -525,6 +527,43 @@ public static partial class Program
             Verifier.Check(f, "cycle caller " + mode);
             Assert(pass.Promoted == (mode == "read" ? 1 : 0), mode + ": the cycle's summary decides the object's place");
         }
+    }
+
+    private static void EscapeSharedLiveness()
+    {
+        // In one loop: a scratch object, dead before the loop comes round, and
+        // a second object the next iteration still reads through `held`. The
+        // scratch one is promoted first; the second is then judged against
+        // the analysis made before that promotion and must still be refused.
+        Module module = new("shared-liveness");
+        (Function f, Builder b) = Fn(IrType.I64, IrType.I32);
+        module.Functions.Add(f); module.Entry = f.Name;
+        Block body = f.NewBlock("body");
+        Block exit = f.NewBlock("exit");
+        VReg n = b.Reg(IrType.I32, "n");
+        VReg held = b.Reg(IrType.I32, "held");
+        VReg sum = b.Reg(IrType.I64, "sum");
+        b.CopyTo(n, new ImmOperand(0, IrType.I32));
+        b.CopyTo(held, new ImmOperand(0, IrType.I32));
+        b.CopyTo(sum, new ImmOperand(0, IrType.I64));
+        b.Jump(body);
+        b.SetBlock(body);
+        VReg scratch = b.Unary(Opcode.Trunc64, b.Call(Escape.Allocator, IrType.I64, new ImmOperand(16, IrType.I64))!);
+        b.Store(new RegOperand(scratch), new RegOperand(sum), 0, 8);
+        VReg kept = b.Unary(Opcode.Trunc64, b.Call(Escape.Allocator, IrType.I64, new ImmOperand(16, IrType.I64))!);
+        b.Store(new RegOperand(kept), new RegOperand(b.Load(IrType.I64, scratch, 0, 8)), 0, 8);
+        b.CopyTo(sum, new RegOperand(b.Load(IrType.I64, held, 0, 8)));   // last iteration's object, read after this one is made
+        b.CopyTo(held, new RegOperand(kept));
+        b.CopyTo(n, new RegOperand(b.Binary(Opcode.Add, n, 1)));
+        b.Branch(b.Binary(Opcode.LtS, n, f.Params[0]), body, exit);
+        b.SetBlock(exit);
+        b.Ret(new RegOperand(sum));
+
+        Escape pass = new(); pass.Run(module);
+        Verifier.Check(f, "shared liveness");
+        Assert(pass.Promoted == 1, "the scratch object is promoted, the carried one is not");
+        int allocations = f.Blocks.SelectMany(x => x.Instrs).Count(x => x.Op == Opcode.Call && x.Callee == Escape.Allocator);
+        Assert(allocations == 1, "the carried object stays an allocation");
     }
 
     private static void FreshReturnOwnership()
@@ -1463,6 +1502,35 @@ public static partial class Program
         Assert(!live.IsLiveIn(f.Entry, i), "i is defined before use in entry");
         Assert(live.LiveOut(exit).Count() == 0, "nothing live after ret");
         Assert(live.LiveIn(body).Count() == 3, "body live-in count");
+    }
+
+    private static void LivenessNewerRegisters()
+    {
+        // A pass that adds bookkeeping of its own keeps asking the analysis it
+        // made first; the new registers must neither throw nor change it.
+        (Function f, Builder b) = Fn(IrType.I32, IrType.I32);
+        Block body = f.NewBlock("body");
+        Block exit = f.NewBlock("exit");
+        VReg i = b.Reg(IrType.I32, "i");
+        b.CopyTo(i, new ImmOperand(0, IrType.I32));
+        b.Jump(body);
+        b.SetBlock(body);
+        b.CopyTo(i, new RegOperand(b.Binary(Opcode.Add, i, 1)));
+        b.Branch(b.Binary(Opcode.LtS, i, f.Params[0]), body, exit);
+        b.SetBlock(exit);
+        b.Ret(new RegOperand(i));
+
+        Liveness live = new(f);
+        VReg late = f.NewReg(IrType.I32, "late");
+        for (int k = 0; k < 200; k++) f.NewReg(IrType.I32, "pad");  // past the analysis's last bit-vector word
+        VReg later = f.NewReg(IrType.I32, "later");
+        body.Instrs.Insert(0, new Instr { Op = Opcode.Copy, Dest = late, Operands = { new RegOperand(i) } });
+        body.Instrs.Insert(1, new Instr { Op = Opcode.Add, Dest = later, Operands = { new RegOperand(late), new RegOperand(i) } });
+        Assert(live.Tracks(i) && !live.Tracks(late) && !live.Tracks(later), "only registers from before the analysis are tracked");
+        bool iLive = false;
+        foreach ((Instr instr, ulong[] after) in live.WalkBackwards(body, skipNewer: true))
+            if (ReferenceEquals(instr, body.Instrs[1])) iLive = Liveness.Test(after, i.Id);
+        Assert(iLive, "an older register keeps its answer past the new instructions");
     }
 
     private static void CfgQueries()

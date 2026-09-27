@@ -26,6 +26,17 @@ public sealed class Module
     public HashSet<string> Imports { get; } = new(StringComparer.Ordinal);
 
     /// <summary>
+    /// Runtime routines the program provides that the optimiser may add calls
+    /// to -- the frees an owned object's lifetime ends in -- whether this
+    /// module defines them or another unit of the program does. A source
+    /// compiled on its own has the runtime's declarations but not its bodies,
+    /// and asking only whether the body is here said no in every unit but
+    /// the runtime's own: nothing was ever freed by the compiler in a
+    /// separately compiled project.
+    /// </summary>
+    public HashSet<string> RuntimeHelpers { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>
     /// Drops everything a shared object already contains, so that a program
     /// linked against one carries no second copy of it. Answers how many
     /// definitions went.

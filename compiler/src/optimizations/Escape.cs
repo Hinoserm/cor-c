@@ -91,13 +91,14 @@ public sealed partial class Escape : IModulePass
             }
         }
 
-        bool canFree = byName.ContainsKey(Freer);
-        bool canFreeFields = canFree && byName.ContainsKey(FieldFreer);
+        bool Provided(string helper) => byName.ContainsKey(helper) || m.RuntimeHelpers.Contains(helper);
+        bool canFree = Provided(Freer);
+        bool canFreeFields = canFree && Provided(FieldFreer);
         OwnedFieldEscape fields = new(byName, summaries);
         foreach (Function f in m.Functions)
         {
             PromoteIn(f, summaries, canFree, fields);
-            if (canFree && byName.ContainsKey(ReplacedFreer)) OwnVariables(f, summaries);
+            if (canFree && Provided(ReplacedFreer)) OwnVariables(f, summaries);
             if (canFreeFields) OwnFields(f, summaries);
         }
 
@@ -712,7 +713,19 @@ public sealed partial class Escape : IModulePass
         if (canFree) OwnFreshResults(f, summaries);
 
         int budget = FrameBudget;
+        // ONE ANALYSIS FOR THE WHOLE FUNCTION. Promoting an allocation or
+        // owning one adds registers, slots and frees of its own and takes
+        // away the allocator call's read of its size; no block is added, no
+        // older register gains a definition, and the only older register
+        // gaining a read is the owned object's own, just after it is made,
+        // which no other allocation derives from. So what liveness
+        // and the definition counts said before stays right, or errs toward
+        // live, for every register a later candidate is judged on. Made again
+        // after each promotion, a whole kernel in one module spent its build
+        // solving liveness once per object.
         Liveness? liveness = null;
+        HashSet<VReg>? pads = null;
+        Defs? defs = null;
         List<OwnedFieldEscape.Owner> owners = new();
 
         foreach (Block b in PromotionOrder(f))
@@ -737,11 +750,12 @@ public sealed partial class Escape : IModulePass
                 OwnedFieldEscape.Owner promotedOwner = new() { Block = b, Root = i.Dest, Bytes = size };
                 promotedOwner.Aliases.Add(i.Dest);
                 bool canAnchor = true;
-                if (flow.Escapes && sized && owners.Count != 0 && new Defs(f).IsSingle(i.Dest))
+                defs ??= flow.Escapes && sized && owners.Count != 0 ? new Defs(f) : null;
+                if (flow.Escapes && sized && owners.Count != 0 && defs!.IsSingle(i.Dest))
                 {
                     HashSet<VReg> roots = new() { i.Dest };
                     HashSet<Instr> stores = new();
-                    Defs fieldDefs = new(f);
+                    Defs fieldDefs = defs;
                     for (int attempt = 0; attempt < 16 && flow.Escapes; attempt++)
                     {
                         bool added = false;
@@ -792,7 +806,8 @@ public sealed partial class Escape : IModulePass
                 // round, so the previous object must be dead by the time this
                 // runs again.
                 liveness ??= new Liveness(f);
-                if (LiveAtSelf(liveness, b, i, flow.Derived))
+                pads ??= PadLive(liveness);
+                if (LiveAtSelf(liveness, pads, b, i, flow.Derived))
                 {
                     continue;
                 }
@@ -809,7 +824,6 @@ public sealed partial class Escape : IModulePass
                     {
                         _owned.Add(i);
                         Owned++;
-                        liveness = null;
                         // The allocation moved: instructions went in before it,
                         // and two after it that must not be scanned again.
                         k = b.Instrs.IndexOf(i) + 2;
@@ -845,7 +859,6 @@ public sealed partial class Escape : IModulePass
                 // Only base references may anchor another generation: an
                 // interior reference would need a translated descendant path.
                 if (canAnchor) owners.Add(promotedOwner);
-                liveness = null;        // the block changed; recompute if asked again
             }
         }
     }
@@ -1100,13 +1113,21 @@ public sealed partial class Escape : IModulePass
     }
 
     internal static bool LiveAtSelf(Liveness liveness, Block b, Instr alloc, HashSet<VReg> derived)
+        => LiveAtSelf(liveness, PadLive(liveness), b, alloc, derived);
+
+    /// <summary>
+    /// The same, with the pads' live registers given: a caller asking about
+    /// many allocations works them out once. The analysis may be older than
+    /// the function (see <see cref="Liveness.WalkBackwards"/>); a derived
+    /// register it does not know is taken to be live.
+    /// </summary>
+    internal static bool LiveAtSelf(Liveness liveness, HashSet<VReg> pads, Block b, Instr alloc, HashSet<VReg> derived)
     {
-        HashSet<VReg> pads = PadLive(liveness);
         foreach (VReg r in derived)
         {
-            if (pads.Contains(r)) return true;
+            if (pads.Contains(r) || !liveness.Tracks(r)) return true;
         }
-        foreach ((Instr i, ulong[] liveAfter) in liveness.WalkBackwards(b))
+        foreach ((Instr i, ulong[] liveAfter) in liveness.WalkBackwards(b, skipNewer: true))
         {
             if (!ReferenceEquals(i, alloc))
             {
