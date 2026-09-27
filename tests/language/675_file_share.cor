@@ -1,0 +1,55 @@
+// test: file share
+// expect-exit: 0
+// expect-output:
+// exclusive held
+// second refused True
+// released reopened True
+// shared twice True
+// writer beside readers refused True
+//
+// FileShare as .NET implements it on Unix: an advisory flock(2) taken at the
+// open, exclusive for FileShare.None and shared otherwise, and a sharing
+// violation (IOException) when another stream's lock is in the way. What
+// the compiler's own worker pool uses to hand out one worker per lock file.
+
+using System;
+using System.IO;
+
+static class Program
+{
+    static bool Refused(string path, FileAccess access, FileShare share)
+    {
+        try
+        {
+            FileStream s = new FileStream(path, FileMode.Open, access, share);
+            s.Dispose();
+            return false;
+        }
+        catch (IOException) { return true; }
+    }
+
+    static int Main()
+    {
+        string path = Path.Combine(Path.GetTempPath(), "corc-share-" + Environment.ProcessId + ".lock");
+        File.WriteAllBytes(path, new byte[] { 1 });
+
+        FileStream first = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        Console.WriteLine("exclusive held");
+        Console.WriteLine("second refused " + Refused(path, FileAccess.ReadWrite, FileShare.None));
+        first.Dispose();
+
+        FileStream again = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        Console.WriteLine("released reopened True");
+        again.Dispose();
+
+        FileStream r1 = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        FileStream r2 = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        Console.WriteLine("shared twice True");
+        Console.WriteLine("writer beside readers refused " + Refused(path, FileAccess.ReadWrite, FileShare.None));
+        r1.Dispose();
+        r2.Dispose();
+
+        File.Delete(path);
+        return 0;
+    }
+}

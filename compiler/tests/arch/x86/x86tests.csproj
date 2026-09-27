@@ -29,6 +29,8 @@
     <Compile Include="../../../src/frontend/Token.cs" />
     <Compile Include="../../../src/arch/x86/MachineAbi.cs" />
     <Compile Include="../../../src/arch/corsac/assembler/Isa.cs" />
+    <!-- A compilation unit keeps the registry schemas its sources declare. -->
+    <Compile Include="../../../src/metadata/RegistrySchema.cs" />
   </ItemGroup>
 
 </Project>

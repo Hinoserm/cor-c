@@ -184,6 +184,14 @@ static partial class Os
         return (int)Err.Result(Sys.Syscall(Call.Ftruncate, fd, length, 0));
     }
 
+    /// flock(2): an advisory lock on the whole file (LOCK_SH 1, LOCK_EX 2,
+    /// LOCK_UN 8, LOCK_NB 4 not to wait). 0, or a negative errno -- EAGAIN
+    /// when LOCK_NB and somebody else holds a conflicting lock.
+    public static int Flock(int fd, int operation)
+    {
+        return (int)Err.Result(Sys.Syscall(Call.Flock, fd, operation, 0));
+    }
+
     public static int Stat(string path, byte[] into)
     {
         StatBuf.Check(into);

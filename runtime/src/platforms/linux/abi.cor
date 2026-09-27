@@ -76,6 +76,7 @@ static class Call
     public const long Utimensat = 320;
     public const long Sync = 36;
     public const long Fsync = 118;
+    public const long Flock = 143;     // (fd, operation): LOCK_SH 1, LOCK_EX 2, LOCK_NB 4
     public const long Fdatasync = 148;
     public const long Mount = 21;       // (source, target, type, flags, data)
     public const long Umount2 = 52;     // (target, flags)

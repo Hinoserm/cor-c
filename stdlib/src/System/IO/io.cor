@@ -21,6 +21,22 @@ enum FileAccess
     ReadWrite = 3
 }
 
+/// What other openers of the same file may do while this stream has it.
+/// On Unix, as .NET does it there: an advisory flock(2) taken at the open --
+/// exclusive for None, shared otherwise -- and a sharing violation
+/// (IOException) when another stream's lock is in the way. The other bits
+/// are .NET's and are accepted.
+[Flags]
+enum FileShare
+{
+    None = 0,
+    Read = 1,
+    Write = 2,
+    ReadWrite = 3,
+    Delete = 4,
+    Inheritable = 16
+}
+
 enum SeekOrigin
 {
     Begin = 0,
@@ -172,6 +188,28 @@ class FileStream : Stream
         _canRead = access != FileAccess.Write;
         _canWrite = access != FileAccess.Read;
         _owns = true;
+    }
+
+    /// The same with what others may do meanwhile (FileShare). .NET on Unix
+    /// takes flock(LOCK_EX | LOCK_NB) for None and flock(LOCK_SH | LOCK_NB)
+    /// otherwise -- the shared one only when this stream does not write --
+    /// and turns EWOULDBLOCK into a sharing violation; any other failure
+    /// (a file system with no locks, a kernel without flock) opens anyway.
+    public FileStream(string path, FileMode mode, FileAccess access, FileShare share) : this(path, mode, access)
+    {
+        bool exclusive = share == FileShare.None;
+        if (!exclusive && access != FileAccess.Read) return;
+        int result = Os.Flock(_fd, (exclusive ? 2 : 1) | 4);
+        if (result == -(int)Err.Again)
+        {
+            Os.Close(_fd);
+            _fd = -1;
+            throw new IOException("The process cannot access the file '" + path + "' because it is being used by another process.");
+        }
+    }
+
+    public FileStream(string path, FileMode mode, FileAccess access, FileShare share, int bufferSize) : this(path, mode, access, share)
+    {
     }
 
     /// Over a descriptor the program already has. Closing the stream closes
@@ -764,6 +802,15 @@ partial static class Directory
 /// operating system has no answer.
 static partial class Path
 {
+    /// Where temporary files go, as .NET answers on Unix: $TMPDIR when it is
+    /// set and not empty, else /tmp/ -- always ending in the separator.
+    public static string GetTempPath()
+    {
+        string? dir = Environment.GetEnvironmentVariable("TMPDIR");
+        if (dir == null || dir.Length == 0) return "/tmp/";
+        return dir.EndsWith("/") ? dir : dir + "/";
+    }
+
     /// The absolute path this one names, with `.` and `..` resolved. .NET
     /// promises nothing about the file existing; this is a question about the
     /// TEXT, answered against the current directory.
