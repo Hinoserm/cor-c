@@ -545,6 +545,40 @@ internal sealed class Encoder
             case MOp.Cli: Byte(0xFA); break;
             case MOp.Sti: Byte(0xFB); break;
             case MOp.Hlt: Byte(0xF4); break;
+            case MOp.RepInsw: Byte(0x66); Byte(0xF3); Byte(0x6D); break;
+            case MOp.RepOutsw: Byte(0x66); Byte(0xF3); Byte(0x6F); break;
+            case MOp.Lgdt: Op(4, 2, new MMem((MReg)i.Operands[0], 0), 0, 0x0F, 0x01); break;
+            case MOp.Lidt: Op(4, 3, new MMem((MReg)i.Operands[0], 0), 0, 0x0F, 0x01); break;
+            case MOp.Invlpg: Op(4, 7, new MMem((MReg)i.Operands[0], 0), 0, 0x0F, 0x01); break;
+            case MOp.Ltr: Op(4, 3, i.Operands[0], 0, 0x0F, 0x00); break;
+            case MOp.MovFromCr:
+                // 0F 20 /r: the control register in the reg field (REX.R for
+                // CR8), the general register in r/m; always 64 bits here.
+                Op(4, (int)((MImm)i.Operands[1]).Value, i.Operands[0], 0, 0x0F, 0x20);
+                break;
+            case MOp.MovToCr:
+                Op(4, (int)((MImm)i.Operands[0]).Value, i.Operands[1], 0, 0x0F, 0x22);
+                break;
+            case MOp.LoadSegments:
+                // mov ds, es, fs, gs, ss <- ax. In long mode loading FS or GS
+                // clears its base; a kernel sets GS's through its MSR after.
+                Byte(0x8E); Byte(0xD8); Byte(0x8E); Byte(0xC0); Byte(0x8E); Byte(0xE0);
+                Byte(0x8E); Byte(0xE8); Byte(0x8E); Byte(0xD0);
+                break;
+            case MOp.LoadCs:
+                // push sel; lea rax, [rip + 3]; push rax; retfq -- a far
+                // return to the instruction after it, under the new CS.
+                Op(4, 6, i.Operands[0], 0, 0xFF);                        // push r/m64
+                Byte(0x48); Byte(0x8D); Byte(0x05); Imm32(3);           // lea rax, [rip+3]
+                Byte(0x50);                                             // push rax
+                Byte(0x48); Byte(0xCB);                                 // retfq
+                break;
+            case MOp.Rdmsr: Byte(0x0F); Byte(0x32); break;
+            case MOp.Wrmsr: Byte(0x0F); Byte(0x30); break;
+            case MOp.Cpuid: Byte(0x0F); Byte(0xA2); break;
+            case MOp.Rdtsc: Byte(0x0F); Byte(0x31); break;
+            case MOp.Swapgs: Byte(0x0F); Byte(0x01); Byte(0xF8); break;
+            case MOp.SoftInt: Byte(0xCD); Byte((int)((MImm)i.Operands[0]).Value); break;
             case MOp.Prologue:
                 Prologue();
                 break;

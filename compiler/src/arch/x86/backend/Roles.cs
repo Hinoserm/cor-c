@@ -70,6 +70,18 @@ public static class Roles
     {
         switch (i.Op)
         {
+            case MOp.Rdmsr:
+                yield return Gpr.Ecx;
+                break;
+            case MOp.Wrmsr:
+                yield return Gpr.Ecx;
+                yield return Gpr.Eax;
+                yield return Gpr.Edx;
+                break;
+            case MOp.Cpuid:
+                yield return Gpr.Eax;
+                yield return Gpr.Ecx;
+                break;
             case MOp.Cdq:
                 yield return Gpr.Eax;
                 break;
@@ -144,6 +156,20 @@ public static class Roles
     {
         switch (i.Op)
         {
+            case MOp.Rdmsr:
+            case MOp.Rdtsc:
+                yield return Gpr.Eax;
+                yield return Gpr.Edx;
+                break;
+            case MOp.Cpuid:
+                yield return Gpr.Eax;
+                yield return Gpr.Ebx;
+                yield return Gpr.Ecx;
+                yield return Gpr.Edx;
+                break;
+            case MOp.LoadCs:
+                yield return Gpr.Eax;
+                break;
             case MOp.Cdq:
                 yield return Gpr.Edx;
                 break;

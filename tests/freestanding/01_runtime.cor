@@ -1,0 +1,94 @@
+// test: the bare-metal runtime -- heap, collector, exceptions, generics, delegates
+// expect-exit: 0
+// expect-output:
+// sum 499500
+// text 12345 kernel
+// caught Overflow finally
+// virtual Square 16
+// generic 3 10
+// delegate 42
+// long 12345678901234567
+// double 2.5
+// collected True
+// alive 100000
+
+using System;
+
+abstract class Shape
+{
+    public abstract int Area();
+    public virtual string Name() { return "Shape"; }
+}
+
+class Square : Shape
+{
+    int _side;
+    public Square(int side) { _side = side; }
+    public override int Area() { return _side * _side; }
+    public override string Name() { return "Square"; }
+}
+
+class Box<T>
+{
+    public T[] Items = new T[4];
+    public int Count;
+    public void Add(T item) { Items[Count] = item; Count++; }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Host.Start(8 * 1024 * 1024);
+
+        long sum = 0;
+        for (int i = 0; i < 1000; i++) sum += i;
+        Host.Line("sum " + sum);
+
+        Host.Line("text " + 12345 + " " + "kernel".ToLower());
+
+        string trail = "";
+        try
+        {
+            try { throw new OverflowException("Overflow"); }
+            finally { trail = " finally"; }
+        }
+        catch (OverflowException e) { Host.Line("caught " + e.Message + trail); }
+
+        Shape s = new Square(4);
+        Host.Line("virtual " + s.Name() + " " + s.Area());
+
+        Box<int> box = new Box<int>();
+        box.Add(1); box.Add(2); box.Add(7);
+        Host.Line("generic " + box.Count + " " + (box.Items[0] + box.Items[1] + box.Items[2]));
+
+        Func<int, int> twice = x => x * 2;
+        Host.Line("delegate " + twice(21));
+
+        long big = 12345678901234567L;
+        Host.Line("long " + big);
+        Host.Line("double " + (5.0 / 2.0));
+
+        // Enough garbage to make the collector run in an 8 MB heap, with
+        // one list of survivors it must not take.
+        object[] keep = new object[100];
+        int made = 0;
+        for (int round = 0; round < 1000; round++)
+        {
+            for (int i = 0; i < 100; i++)
+            {
+                byte[] junk = new byte[500];
+                junk[0] = (byte)i;
+                made++;
+                if (round == 999) keep[i] = junk;
+            }
+        }
+        int alive = 0;
+        for (int i = 0; i < 100; i++) if (keep[i] != null && ((byte[])keep[i])[0] == i) alive++;
+        Host.Line("collected " + (GC.CollectionCount(0) > 0));
+        Host.Line("alive " + made);
+
+        Host.Done(alive == 100 ? 0 : 1);
+        return 0;
+    }
+}

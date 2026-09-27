@@ -194,7 +194,7 @@ public static partial class Linker
     /// binary is a thing the processor would try to execute. The driver puts
     /// the entry function first for this reason.
     /// </summary>
-    public static FlatImage LinkFlat(IEnumerable<(string Name, ObjectFile Object)> objects, string entrySymbol, uint baseAddress)
+    public static FlatImage LinkFlat(IEnumerable<(string Name, ObjectFile Object)> objects, string entrySymbol, uint baseAddress, bool? longMode = null)
     {
         ArgumentNullException.ThrowIfNull(objects);
         ArgumentNullException.ThrowIfNull(entrySymbol);
@@ -213,7 +213,10 @@ public static partial class Linker
         ManagedLayoutContract.Validate(inputs.Select(i => (i.Name, i.Object)));
         Corsac.Lang.Lto.DefinitionCoalescer.Run(inputs.Select(i => (i.Name, i.Object)).ToArray());
         List<string> errors = new();
-        Layout layout = new(baseAddress);
+        // A long-mode image is flat the same way: its eight-byte addresses
+        // relocate as R_X86_64_64 and its code RIP-relative, all within the
+        // run from the base.
+        Layout layout = new(baseAddress) { LongMode = longMode ?? inputs.Any(i => TargetContract.IsLongMode(i.Object)) };
         layout.ArrangeStatic();
         AddManagedMetadata(inputs, layout, errors);
         Merge(inputs, layout, errors);

@@ -270,9 +270,18 @@ static class Platform
         long a = _spill + 1;
         long b = _spill + 2;
         long c = _spill + 3;
+#if TARGET_64BIT
+        long d = _spill + 4;
+        long e = _spill + 5;
+        long f = _spill + 6;
+#endif
         GcThreads.Spill(mode, Sys.Stack(), Sys.FramePointer());
         GcThreads.SafePoint(mode);
+#if TARGET_64BIT
+        _spill = a + b + c + d + e + f;
+#else
         _spill = a + b + c;
+#endif
     }
 
     /// Enters a collection with every callee-saved register on the stack.
@@ -296,8 +305,18 @@ static class Platform
         long a = _spill + 1;
         long b = _spill + 2;
         long c = _spill + 3;
+#if TARGET_64BIT
+        // Long mode keeps five callee-saved registers (RBX, R12-R15) and a
+        // long fits one, so six values across the call are what fills them.
+        long d = _spill + 4;
+        long e = _spill + 5;
+        long f = _spill + 6;
+        Gc.CollectInner();
+        _spill = a + b + c + d + e + f;
+#else
         Gc.CollectInner();
         _spill = a + b + c;
+#endif
     }
 
     /// Ends the program. There is nothing to return to, so this stops.

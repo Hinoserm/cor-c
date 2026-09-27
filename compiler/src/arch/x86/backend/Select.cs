@@ -2222,8 +2222,69 @@ internal sealed partial class Selector
                     Emit(MOp.GsSelf, Lo(i.Dest));
                 }
                 return;
+            case MachineIntrinsics.ReadMsr:
+            case MachineIntrinsics.ReadTsc:
+                if (name == MachineIntrinsics.ReadMsr)
+                {
+                    Mov(Ecx, R(i.Operands[0]));
+                    Emit(MOp.Rdmsr);
+                }
+                else
+                {
+                    Emit(MOp.Rdtsc);
+                }
+                if (i.Dest is not null)
+                {
+                    Mov(Lo(i.Dest), Eax);
+                    Mov(Hi(i.Dest), Edx);
+                }
+                return;
+            case MachineIntrinsics.WriteMsr:
+            {
+                MReg msr = R(i.Operands[0]);
+                (MOperand lo, MOperand hi) = PairRM(i.Operands[1]);
+                Mov(Eax, lo);
+                Mov(Edx, hi);
+                Mov(Ecx, msr);
+                Emit(MOp.Wrmsr);
+                return;
+            }
+            case MachineIntrinsics.Cpuid:
+            {
+                MReg leaf = R(i.Operands[0]);
+                MReg subleaf = R(i.Operands[1]);
+                MReg into = R(i.Operands[2]);
+                MReg keep = _m.NewReg();
+                Mov(keep, into);
+                Mov(Eax, leaf);
+                Mov(Ecx, subleaf);
+                Emit(MOp.Cpuid);
+                MReg a = _m.NewReg(), b = _m.NewReg(), c = _m.NewReg(), d = _m.NewReg();
+                Mov(a, Eax);
+                Mov(b, MReg.Of(Gpr.Ebx));
+                Mov(c, Ecx);
+                Mov(d, Edx);
+                Mov(new MMem(keep, 0), a);
+                Mov(new MMem(keep, 4), b);
+                Mov(new MMem(keep, 8), c);
+                Mov(new MMem(keep, 12), d);
+                return;
+            }
+            case MachineIntrinsics.LoadTaskRegister:
+                Emit(MOp.Ltr, R(i.Operands[0]));
+                return;
+            case MachineIntrinsics.LoadCodeSegment:
+                Emit(MOp.LoadCs, R(i.Operands[0]));
+                return;
+            case MachineIntrinsics.SwapGs:
+                Error("swapgs is a long-mode instruction; i386 has no GS base to swap");
+                return;
             case MachineIntrinsics.LoaderFini:
-                Mov(Lo(i.Dest!), Edx);
+                // Unused when no C library is started: nothing to read.
+                if (i.Dest is not null)
+                {
+                    Mov(Lo(i.Dest), Edx);
+                }
                 return;
             case MachineIntrinsics.KeepAlive:
             {

@@ -265,6 +265,20 @@ public enum MOp : byte
 
     // ---- what only a driver and a kernel may execute ---------------------------------
     In, Out, Cli, Sti, Hlt,
+
+    // ---- a kernel's --------------------------------------------------------------------------
+    RepInsw, RepOutsw,  // rep insw / outsw: RDI or RSI, RCX words, port DX
+    Lidt, Lgdt, Invlpg, // [r]
+    Ltr,                // r16: the task register
+    MovFromCr,          // r64, crN (the number an immediate)
+    MovToCr,            // crN, r64
+    LoadSegments,       // ds, es, fs, gs, ss <- ax
+    LoadCs,             // cs <- r (a far return to the next instruction; RAX destroyed)
+    Rdmsr, Wrmsr,       // ECX the MSR, EDX:EAX the value
+    Cpuid,              // EAX, ECX in; EAX, EBX, ECX, EDX out
+    Rdtsc,              // EDX:EAX
+    Swapgs,
+    SoftInt,            // int imm8: a trap gate other than Linux's, with syscall's registers
 }
 
 public sealed class MInstr

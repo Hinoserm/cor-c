@@ -959,6 +959,21 @@ public static class Prelude
             // protected-mode entry does immediately after the far jump that
             // set CS.
             public static void LoadSegments(int dataSelector) { }
+            // CS, which no mov can load: a far return to the next instruction.
+            public static void LoadCodeSegment(int codeSelector) { }
+            // The task register (ltr): the TSS a privilege change finds its stack in.
+            public static void LoadTaskRegister(int selector) { }
+            // rdmsr / wrmsr: a model-specific register, all 64 bits of it --
+            // on x86-64 how a kernel reaches EFER, the GS base and the
+            // syscall entry.
+            public static long ReadMsr(int msr) { return 0; }
+            public static void WriteMsr(int msr, long value) { }
+            // cpuid: EAX, EBX, ECX and EDX of the leaf, as four ints at `into`.
+            public static void Cpuid(int leaf, int subleaf, long into) { }
+            // rdtsc: the time-stamp counter.
+            public static long ReadTsc() { return 0; }
+            // swapgs: the kernel's GS base for the user's, on x86-64.
+            public static void SwapGs() { }
 
             // Stops this processor until an interrupt arrives.
             //

@@ -30,6 +30,7 @@ internal static class Roles
             case MOp.CvtFToInt:
             case MOp.CvtFToF:
             case MOp.SqrtF:
+            case MOp.MovFromCr:
                 return operand == 0 ? Role.Def : Role.Use;
             case MOp.Add:
             case MOp.Sub:
@@ -109,6 +110,31 @@ internal static class Roles
                 yield return (int)Gpr.Rdx;
                 yield return (int)Gpr.Rax;
                 break;
+            case MOp.RepInsw:
+                yield return (int)Gpr.Rdi;
+                yield return (int)Gpr.Rcx;
+                yield return (int)Gpr.Rdx;
+                break;
+            case MOp.RepOutsw:
+                yield return (int)Gpr.Rsi;
+                yield return (int)Gpr.Rcx;
+                yield return (int)Gpr.Rdx;
+                break;
+            case MOp.LoadSegments:
+                yield return (int)Gpr.Rax;
+                break;
+            case MOp.Rdmsr:
+                yield return (int)Gpr.Rcx;
+                break;
+            case MOp.Wrmsr:
+                yield return (int)Gpr.Rcx;
+                yield return (int)Gpr.Rax;
+                yield return (int)Gpr.Rdx;
+                break;
+            case MOp.Cpuid:
+                yield return (int)Gpr.Rax;
+                yield return (int)Gpr.Rcx;
+                break;
             case MOp.Call:
             case MOp.CallInd:
                 if (i.NativeAl)
@@ -125,6 +151,7 @@ internal static class Roles
                 }
                 break;
             case MOp.Syscall:
+            case MOp.SoftInt:
                 yield return (int)Gpr.Rax;
                 for (int k = 0; k < i.IntArgs; k++)
                 {
@@ -153,6 +180,28 @@ internal static class Roles
     {
         switch (i.Op)
         {
+            case MOp.RepInsw:
+                yield return (int)Gpr.Rdi;
+                yield return (int)Gpr.Rcx;
+                break;
+            case MOp.RepOutsw:
+                yield return (int)Gpr.Rsi;
+                yield return (int)Gpr.Rcx;
+                break;
+            case MOp.LoadCs:
+                yield return (int)Gpr.Rax;
+                break;
+            case MOp.Rdmsr:
+            case MOp.Rdtsc:
+                yield return (int)Gpr.Rax;
+                yield return (int)Gpr.Rdx;
+                break;
+            case MOp.Cpuid:
+                yield return (int)Gpr.Rax;
+                yield return (int)Gpr.Rbx;
+                yield return (int)Gpr.Rcx;
+                yield return (int)Gpr.Rdx;
+                break;
             case MOp.Cwd:
                 yield return (int)Gpr.Rdx;
                 break;
@@ -192,6 +241,7 @@ internal static class Roles
                 }
                 break;
             case MOp.Syscall:
+            case MOp.SoftInt:
                 yield return (int)Gpr.Rax;
                 yield return (int)Gpr.Rcx;
                 yield return (int)Gpr.R11;

@@ -103,10 +103,7 @@ public static class ObjectLinkCommand
         if (selected is not null) X86CodeGenerationContract.ValidateTarget(inputs, selected);
         // Long mode is read before the notes that say so go.
         bool longMode = inputs.Any(input => TargetContract.IsLongMode(input.Item2));
-        if (longMode && flat)
-        {
-            throw new LinkException(new[] { "x86-64: a flat image is not built yet; link an ELF" });
-        }
+
         // These contracts have been consumed by validation. Concatenating one
         // copy per input into an executable is neither a valid contract nor
         // runtime metadata, and can dwarf a small kernel's actual load image.
@@ -117,7 +114,7 @@ public static class ObjectLinkCommand
         byte[] image;
         if (flat)
         {
-            Linker.FlatImage linked = Linker.LinkFlat(inputs, entry, baseAddress ?? 0x10000);
+            Linker.FlatImage linked = Linker.LinkFlat(inputs, entry, baseAddress ?? 0x10000, longMode);
             image = linked.Bytes;
             Console.Error.WriteLine($"flat: entry=0x{linked.Entry:x} base=0x{linked.Base:x} bss={linked.BssSize} memory={linked.MemorySize}");
         }

@@ -714,6 +714,25 @@ internal sealed class Encoder
             case MOp.RepInsw:
                 B(0xF3, 0x66, 0x6D);
                 break;
+            case MOp.Rdmsr: B(0x0F, 0x32); break;
+            case MOp.Wrmsr: B(0x0F, 0x30); break;
+            case MOp.Cpuid: B(0x0F, 0xA2); break;
+            case MOp.Rdtsc: B(0x0F, 0x31); break;
+            case MOp.Ltr:
+                B(0x0F, 0x00);
+                ModRM(3, i.Operands[0]);
+                break;
+            case MOp.LoadCs:
+            {
+                // push r; call $+5; add dword [esp], 5; retf -- the far
+                // return lands on the instruction after the retf.
+                int r = ((MReg)i.Operands[0]).Id;
+                _out.Add((byte)(0x50 + r));                 // push r
+                B(0xE8, 0x00, 0x00, 0x00, 0x00);            // call $+5
+                B(0x83, 0x04, 0x24, 0x05);                  // add dword [esp], 5
+                B(0xCB);                                    // retf
+                break;
+            }
             case MOp.RepOutsw:
                 B(0xF3, 0x66, 0x6F);
                 break;

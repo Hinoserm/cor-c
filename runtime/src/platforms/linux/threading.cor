@@ -720,6 +720,15 @@ class Thread
         {
             t.BeginNative(Sys.FramePointer());
         }
+#if !TARGET_64BIT
+        // Back to the C library it goes, which finds its thread through GS
+        // as it tears the thread down (on i386; x86-64's runtime is in GS
+        // and C's in FS, and neither moved).
+        if (Runtime.NativeGs != 0)
+        {
+            Sys.SetGs(Runtime.NativeGs);
+        }
+#endif
         return 0;
     }
 

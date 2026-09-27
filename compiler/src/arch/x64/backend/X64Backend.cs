@@ -393,7 +393,7 @@ public sealed class X64Backend : IBackend
         // A function that makes a system call saves every callee-saved
         // register: the collector is entered through one, and a caller's
         // reference may be only in one of them (GcRoots.Enter).
-        m.SavesEverything = m.Blocks.Any(b => b.Instrs.Any(i => i.Op == MOp.Syscall));
+        m.SavesEverything = m.Blocks.Any(b => b.Instrs.Any(i => i.Op is MOp.Syscall or MOp.SoftInt));
         try
         {
             Allocator.Run(m);

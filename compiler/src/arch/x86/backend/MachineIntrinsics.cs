@@ -48,6 +48,13 @@ internal static class MachineIntrinsics
     /// object C was given a pointer into alive until the C call is over.
     /// </summary>
     public const string KeepAlive = Prefix + "keepalive";
+    public const string ReadMsr = Prefix + "rdmsr";
+    public const string WriteMsr = Prefix + "wrmsr";
+    public const string Cpuid = Prefix + "cpuid";
+    public const string ReadTsc = Prefix + "rdtsc";
+    public const string SwapGs = Prefix + "swapgs";
+    public const string LoadTaskRegister = Prefix + "ltr";
+    public const string LoadCodeSegment = Prefix + "loadcs";
     /// <summary>
     /// At the process entry, the loader's finaliser the System V ABI passes
     /// in EDX (i386) or RDX (x86-64); zero from a kernel that loaded a static

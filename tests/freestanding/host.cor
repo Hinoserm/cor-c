@@ -1,0 +1,39 @@
+// The one thing a freestanding test is given that a bare-metal image is not:
+// three Linux system calls. Everything else the test uses -- the heap, the
+// collector, exceptions, strings, the entry stub -- is the bare-metal
+// runtime's (runtime/src/arch/x86/baremetal.cor), exactly as a kernel gets it.
+// The image runs as an ordinary process, so it can be run here and checked,
+// rather than booted.
+
+static class Host
+{
+#if TARGET_64BIT
+    const long Write = 1;
+    const long Exit = 60;
+    const long Mmap = 9;
+#else
+    const long Write = 4;
+    const long Exit = 1;
+    const long Mmap = 192;              // mmap2: the offset in pages
+#endif
+
+    /// The heap the bare-metal runtime bumps through, which a kernel would
+    /// take from its memory map: here, anonymous pages.
+    public static void Start(long bytes)
+    {
+        long memory = Sys.Syscall(Mmap, 0, bytes, 3, 0x22, -1, 0);    // PROT_READ|WRITE, MAP_PRIVATE|ANONYMOUS
+        Platform.SetHeap(memory, memory + bytes);
+    }
+
+    public static void Line(string text)
+    {
+        Sys.Syscall(Write, 1, Sys.ArrayData(text), text.Length);
+        string newline = "\n";
+        Sys.Syscall(Write, 1, Sys.ArrayData(newline), 1);
+    }
+
+    public static void Done(int code)
+    {
+        Sys.Syscall(Exit, code, 0, 0);
+    }
+}

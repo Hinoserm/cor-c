@@ -1838,11 +1838,27 @@ internal sealed class Selector
             Mov(regs[k], values[k]);
         }
         Mov(Rax, number);
-        Emit(new MInstr(MOp.Syscall) { IntArgs = args });
+        // Linux's system call is the syscall instruction; any other gate --
+        // a kernel's own, CORSAC's ring 1 -- is a software interrupt taking
+        // the same registers.
+        Emit(i.Offset == 0 ? new MInstr(MOp.Syscall) { IntArgs = args }
+                           : new MInstr(MOp.SoftInt, Imm(i.Offset)) { IntArgs = args });
         if (i.Dest is not null)
         {
             Mov(V(i.Dest), Rax, Width(i.Dest.Type));
         }
+    }
+
+    /// <summary>The control register a ReadCr or WriteCr names, which has to be a constant: CR0, CR2, CR3, CR4 or CR8.</summary>
+    private long ControlRegister(Operand o)
+    {
+        long n = o is ImmOperand imm ? imm.Value : -1;
+        if (n is not (0 or 2 or 3 or 4 or 8))
+        {
+            Error($"CR{n}: the control register must be a constant 0, 2, 3, 4 or 8");
+            return 0;
+        }
+        return n;
     }
 
     private void SelectMachineIntrinsic(string name, Instr i)
@@ -1858,7 +1874,11 @@ internal sealed class Selector
                 }
                 return;
             case Corsac.Lang.X86.MachineIntrinsics.LoaderFini:
-                Mov(V(i.Dest!), Rdx);
+                // Unused when no C library is started: nothing to read.
+                if (i.Dest is not null)
+                {
+                    Mov(V(i.Dest), Rdx);
+                }
                 return;
             case Corsac.Lang.X86.MachineIntrinsics.KeepAlive:
             {
@@ -1903,6 +1923,114 @@ internal sealed class Selector
                 return;
             case Corsac.Lang.X86.MachineIntrinsics.Hlt:
                 Emit(MOp.Hlt);
+                return;
+            case Corsac.Lang.X86.MachineIntrinsics.InString16:
+            case Corsac.Lang.X86.MachineIntrinsics.OutString16:
+            {
+                // (port, address, count): rep insw into [RDI] or rep outsw from [RSI].
+                bool reading = name == Corsac.Lang.X86.MachineIntrinsics.InString16;
+                MReg port = R(i.Operands[0]);
+                MReg address = R(i.Operands[1]);
+                MReg count = R(i.Operands[2]);
+                Mov(Rdx, port, 4);
+                Mov(reading ? Rdi : Rsi, address, 8);
+                Mov(Rcx, count, 4);
+                Emit(reading ? MOp.RepInsw : MOp.RepOutsw);
+                return;
+            }
+            case Corsac.Lang.X86.MachineIntrinsics.Lidt:
+                Emit(MOp.Lidt, R(i.Operands[0]));
+                return;
+            case Corsac.Lang.X86.MachineIntrinsics.Lgdt:
+                Emit(MOp.Lgdt, R(i.Operands[0]));
+                return;
+            case Corsac.Lang.X86.MachineIntrinsics.Invlpg:
+                Emit(MOp.Invlpg, R(i.Operands[0]));
+                return;
+            case Corsac.Lang.X86.MachineIntrinsics.ReadCr:
+            {
+                long number = ControlRegister(i.Operands[0]);
+                MReg into = i.Dest is not null ? V(i.Dest) : Temp();
+                Emit(MOp.MovFromCr, into, Imm(number));
+                return;
+            }
+            case Corsac.Lang.X86.MachineIntrinsics.WriteCr:
+            {
+                long number = ControlRegister(i.Operands[0]);
+                Emit(MOp.MovToCr, Imm(number), R(i.Operands[1]));
+                return;
+            }
+            case Corsac.Lang.X86.MachineIntrinsics.LoadSegments:
+                Mov(Rax, R(i.Operands[0]), 4);
+                Emit(MOp.LoadSegments);
+                return;
+            case Corsac.Lang.X86.MachineIntrinsics.LoadCodeSegment:
+                Emit(MOp.LoadCs, R(i.Operands[0]));
+                return;
+            case Corsac.Lang.X86.MachineIntrinsics.LoadTaskRegister:
+                Emit(MOp.Ltr, R(i.Operands[0]));
+                return;
+            case Corsac.Lang.X86.MachineIntrinsics.ReadMsr:
+            case Corsac.Lang.X86.MachineIntrinsics.ReadTsc:
+            {
+                if (name == Corsac.Lang.X86.MachineIntrinsics.ReadMsr)
+                {
+                    Mov(Rcx, R(i.Operands[0]), 4);
+                    Emit(MOp.Rdmsr);
+                }
+                else
+                {
+                    Emit(MOp.Rdtsc);
+                }
+                if (i.Dest is not null)
+                {
+                    // EDX:EAX into one register.
+                    MReg high = Temp();
+                    MReg low = Temp();
+                    Mov(high, Rdx, 4);
+                    Mov(low, Rax, 4);
+                    EmitW(MOp.Shl, 8, high, Imm(32));
+                    EmitW(MOp.Or, 8, high, low);
+                    Mov(V(i.Dest), high, 8);
+                }
+                return;
+            }
+            case Corsac.Lang.X86.MachineIntrinsics.WriteMsr:
+            {
+                MReg msr = R(i.Operands[0]);
+                MReg value = R(i.Operands[1]);
+                MReg high = Temp();
+                Mov(high, value, 8);
+                EmitW(MOp.Shr, 8, high, Imm(32));
+                Mov(Rcx, msr, 4);
+                Mov(Rax, value, 4);
+                Mov(Rdx, high, 4);
+                Emit(MOp.Wrmsr);
+                return;
+            }
+            case Corsac.Lang.X86.MachineIntrinsics.Cpuid:
+            {
+                MReg leaf = R(i.Operands[0]);
+                MReg subleaf = R(i.Operands[1]);
+                MReg into = R(i.Operands[2]);
+                MReg keep = Temp();
+                Mov(keep, into, 8);
+                Mov(Rax, leaf, 4);
+                Mov(Rcx, subleaf, 4);
+                Emit(MOp.Cpuid);
+                MReg a = Temp(), b = Temp(), c = Temp(), d = Temp();
+                Mov(a, Rax, 4);
+                Mov(b, MReg.Of(Gpr.Rbx), 4);
+                Mov(c, Rcx, 4);
+                Mov(d, Rdx, 4);
+                Mov(new MMem(keep, 0), a, 4);
+                Mov(new MMem(keep, 4), b, 4);
+                Mov(new MMem(keep, 8), c, 4);
+                Mov(new MMem(keep, 12), d, 4);
+                return;
+            }
+            case Corsac.Lang.X86.MachineIntrinsics.SwapGs:
+                Emit(MOp.Swapgs);
                 return;
             default:
                 Error($"the machine intrinsic {name} has no x86-64 form");

@@ -707,10 +707,6 @@ public static class Driver
         {
             x64Backend.Imported.Add(symbol);
         }
-        if (longMode && freestanding)
-        {
-            return Fail("x86-64: a freestanding (bare-metal) image is not built yet; the target is a Linux program");
-        }
         IBackend backend = target.Name switch
         {
             "x86" => x86Backend,
