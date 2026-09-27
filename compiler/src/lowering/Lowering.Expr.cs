@@ -903,7 +903,7 @@ public sealed partial class Lowering
     {
         MemberExpr member => member.NullConditional || InConditionalChain(member.Target),
         CallExpr call => InConditionalChain(call.Target),
-        IndexExpr index => InConditionalChain(index.Target),
+        IndexExpr index => index.NullConditional || InConditionalChain(index.Target),
         _ => false,
     };
 

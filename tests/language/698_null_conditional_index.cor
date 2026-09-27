@@ -1,0 +1,34 @@
+// test: null_conditional_index
+// expect-exit: 0
+// expect-output:
+// [] [a]
+// [] [1]
+// [] [1]
+// [] [end]
+// [] [7] [-1]
+// True
+//
+// A `?.` chain runs through an indexer as it does through a member or a
+// call: `none?.Items[0].Name` is null, not an index into null. And `a?[i]`,
+// the null-conditional index, with a value-typed element lifted to T?.
+
+using System;
+using System.Collections.Generic;
+class Holder { public List<Item> Items = new() { new Item { Name = "a" } }; public string[] Names = { "x" }; public Dictionary<string, int> Map = new() { ["k"] = 1 }; }
+class Item { public string Name = ""; public Item? Next; }
+static class P
+{
+    static int Main()
+    {
+        Holder? none = null, some = new();
+        Console.WriteLine($"[{none?.Items[0].Name}] [{some?.Items[0].Name}]");
+        Console.WriteLine($"[{none?.Names[0].Length}] [{some?.Names[0].Length}]");
+        Console.WriteLine($"[{none?.Map["k"]}] [{some?.Map["k"]}]");
+        Console.WriteLine($"[{none?.Items[0].Next?.Name}] [{some?.Items[0].Next?.Name ?? "end"}]");
+        int[]? arr = null; int[] full = { 7 };
+        Console.WriteLine($"[{arr?[0]}] [{full?[0]}] [{(arr?[0] ?? -1)}]");
+        int? count = none?.Items.Count;
+        Console.WriteLine(count is null);
+        return 0;
+    }
+}

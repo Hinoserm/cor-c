@@ -806,6 +806,7 @@ public static class Gir
                 case IndexExpr ix:
                     U8((byte)E.Index);
                     Expr(ix.Target);
+                    Bool(ix.NullConditional);
                     I32(ix.Args.Count);
 
                     foreach (Expr a in ix.Args)
@@ -1702,7 +1703,8 @@ public static class Gir
 
                 case E.Index:
                 {
-                    IndexExpr ix = new() { Target = Need() };
+                    Expr indexed = Need();
+                    IndexExpr ix = new() { Target = indexed, NullConditional = Bool() };
                     int args = Count();
 
                     for (int i = 0; i < args; i++)

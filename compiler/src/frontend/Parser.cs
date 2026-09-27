@@ -5069,35 +5069,12 @@ public sealed class Parser
             return ParseGenericLocalFunction(at, returns, name);
         }
 
-        Expect(Tok.LParen, "'(' to open the parameters");
-
+        // THE SAME PARAMETER LIST A METHOD HAS: attributes (caller
+        // information among them), `params`, ref, out and in, and defaults.
         LambdaExpr made = new() { BlockBody = null!, Line = at.Line, Col = at.Col };
-        List<TypeRef> takes = new();
-        bool byReference = false;
-
-        while (!At(Tok.RParen))
-        {
-            Tok modifier = At(Tok.KwRef) || At(Tok.KwOut) || At(Tok.KwIn) ? _t[_i++].Kind : Tok.End;
-            TypeRef pt = ParseTypeRef();
-            string pn = Expect(Tok.Ident, "a parameter name").Text;
-            Expr? fallback = Take(Tok.Assign) ? ParseExpr() : null;
-
-            byReference = byReference || modifier != Tok.End;
-            takes.Add(pt);
-            made.Params.Add(new Param
-            {
-                Type = pt, Name = pn, Default = fallback,
-                IsRef = modifier == Tok.KwRef, IsOut = modifier == Tok.KwOut, IsReadOnlyRef = modifier == Tok.KwIn,
-                Line = at.Line, Col = at.Col,
-            });
-
-            if (!Take(Tok.Comma))
-            {
-                break;
-            }
-        }
-
-        Expect(Tok.RParen, "')' after the parameters");
+        ParseParams(made.Params);
+        List<TypeRef> takes = made.Params.Select(p => p.Type).ToList();
+        bool byReference = made.Params.Any(p => p.IsRef || p.IsOut);
 
         // EXPRESSION-BODIED, which is how the short ones are written:
         // `long Twice(long n) => n * 2;` -- and that form DOES end with a
@@ -6722,10 +6699,14 @@ public sealed class Parser
                 continue;
             }
 
-            if (At(Tok.LBracket))
+            // `a?[i]`, THE NULL-CONDITIONAL INDEX: the '?' written against the
+            // '[', which is how it is told from a conditional whose result is
+            // a collection expression, `a ? [x] : y`.
+            bool conditionalIndex = At(Tok.Question) && Ahead().Kind == Tok.LBracket && Ahead().Pos == Cur.Pos + 1;
+            if (conditionalIndex || At(Tok.LBracket))
             {
-                _i++;
-                IndexExpr idx = new() { Target = e, Line = at.Line, Col = at.Col };
+                _i += conditionalIndex ? 2 : 1;
+                IndexExpr idx = new() { Target = e, NullConditional = conditionalIndex, Line = at.Line, Col = at.Col };
 
                 do
                 {

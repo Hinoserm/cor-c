@@ -1676,7 +1676,7 @@ public sealed class Monomorphiser
 
             case IndexExpr ix:
             {
-                IndexExpr made = new() { Target = Rewrite(ix.Target, map), Line = ix.Line, Col = ix.Col };
+                IndexExpr made = new() { Target = Rewrite(ix.Target, map), NullConditional = ix.NullConditional, Line = ix.Line, Col = ix.Col };
 
                 foreach (Expr a in ix.Args)
                 {

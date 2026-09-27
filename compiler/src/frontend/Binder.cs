@@ -8695,6 +8695,57 @@ public sealed partial class Binder
                 return CheckExpr(cut);
             }
 
+            // AN INDEX IN A `?.` CHAIN, or written `a?[i]`: null when what is
+            // indexed is, and the element otherwise -- the target evaluated
+            // once, as the call in a chain is (CheckCall). A value-typed
+            // element comes out as its T?, as C# lifts it.
+            case IndexExpr ix when ix.NullConditional || HasConditionalMember(ix.Target):
+            {
+                SubjectExpr forTest = new() { Line = ix.Line, Col = ix.Col };
+                IndexExpr safe = new()
+                {
+                    Target = new SuppressExpr { Operand = new SubjectExpr { Line = ix.Line, Col = ix.Col }, OpensCell = true, Line = ix.Line, Col = ix.Col },
+                    Line = ix.Line, Col = ix.Col,
+                };
+                safe.Args.AddRange(ix.Args);
+                ConditionalExpr choose = new()
+                {
+                    Cond = new BinaryExpr
+                    {
+                        Op = BinOp.Eq, Left = forTest,
+                        Right = new LiteralExpr { Kind = Lit.Null, Text = "null", Line = ix.Line, Col = ix.Col },
+                        Line = ix.Line, Col = ix.Col,
+                    },
+                    Then = new LiteralExpr { Kind = Lit.Null, Text = "null", Line = ix.Line, Col = ix.Col },
+                    Else = safe, Line = ix.Line, Col = ix.Col,
+                };
+                PatternExpr once = new() { Subject = ix.Target, Test = choose, Line = ix.Line, Col = ix.Col };
+
+                // The arms have to agree, and one is null: a value-typed
+                // element needs its cell said out loud. Asked quietly first,
+                // because asking is how its type is learnt.
+                _quiet++;
+                Type element = CheckExpr(once);
+                _quiet--;
+                if (!element.IsError && !element.IsReference && !element.IsNullableValue
+                    && RefOf(element) is TypeRef cell)
+                {
+                    choose.Else = new CastExpr
+                    {
+                        Type = new TypeRef
+                        {
+                            Name = cell.Name, Args = cell.Args, ArrayRank = cell.ArrayRank,
+                            PointerDepth = cell.PointerDepth, TupleNames = cell.TupleNames,
+                            Nullable = true, Line = ix.Line, Col = ix.Col,
+                        },
+                        Operand = safe, Line = ix.Line, Col = ix.Col,
+                    };
+                }
+
+                _r.Rewrites[ix] = once;
+                return CheckExpr(once);
+            }
+
             case IndexExpr ix:
             {
                 Type target = CheckExpr(ix.Target);
@@ -13694,7 +13745,7 @@ public sealed partial class Binder
     {
         MemberExpr member => member.NullConditional || HasConditionalMember(member.Target),
         CallExpr call => HasConditionalMember(call.Target),
-        IndexExpr index => HasConditionalMember(index.Target),
+        IndexExpr index => index.NullConditional || HasConditionalMember(index.Target),
         _ => false,
     };
 
