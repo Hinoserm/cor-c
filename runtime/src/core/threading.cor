@@ -714,6 +714,75 @@ class Task
         return WhenAny(tasks.ToArray());
     }
 
+    /// Every task's result, in the order the tasks were given, once all have
+    /// completed -- or the first fault, or a cancellation, as .NET's is.
+    public static Task<T[]> WhenAll<T>(params Task<T>[] tasks)
+    {
+        if (tasks == null)
+        {
+            throw new ArgumentNullException("tasks");
+        }
+        Task[] plain = new Task[tasks.Length];
+        for (int i = 0; i < tasks.Length; i++)
+        {
+            if (tasks[i] == null)
+            {
+                throw new ArgumentException("The tasks argument included a null value.");
+            }
+            plain[i] = tasks[i];
+        }
+        Task<T[]> made = new Task<T[]>();
+        Task all = WhenAll(plain);
+        all.AddContinuation(new WhenAllResults<T>(all, tasks, made));
+        return made;
+    }
+
+    public static Task<T[]> WhenAll<T>(IEnumerable<Task<T>> tasks)
+    {
+        if (tasks == null)
+        {
+            throw new ArgumentNullException("tasks");
+        }
+        List<Task<T>> taken = new List<Task<T>>();
+        foreach (Task<T> one in tasks)
+        {
+            taken.Add(one);
+        }
+        return WhenAll(taken.ToArray());
+    }
+
+    /// The first of `tasks` to complete, as the Task<T> it is.
+    public static Task<Task<T>> WhenAny<T>(params Task<T>[] tasks)
+    {
+        if (tasks == null)
+        {
+            throw new ArgumentNullException("tasks");
+        }
+        Task[] plain = new Task[tasks.Length];
+        for (int i = 0; i < tasks.Length; i++)
+        {
+            plain[i] = tasks[i];
+        }
+        Task<Task<T>> made = new Task<Task<T>>();
+        Task<Task> any = WhenAny(plain);
+        any.AddContinuation(new WhenAnyTyped<T>(any, made));
+        return made;
+    }
+
+    public static Task<Task<T>> WhenAny<T>(IEnumerable<Task<T>> tasks)
+    {
+        if (tasks == null)
+        {
+            throw new ArgumentNullException("tasks");
+        }
+        List<Task<T>> taken = new List<Task<T>>();
+        foreach (Task<T> one in tasks)
+        {
+            taken.Add(one);
+        }
+        return WhenAny(taken.ToArray());
+    }
+
     public static Task<Task> WhenAny(IEnumerable<Task> tasks)
     {
         if (tasks == null)
@@ -1276,6 +1345,72 @@ class Propagate : Action
 
 /// One object shared by every task in a WhenAll: a countdown, and the result
 /// task. Registered as the continuation of each.
+/// WhenAll<T>'s last step: the results collected once every task is done,
+/// or the fault or cancellation WhenAll carried.
+class WhenAllResults<T> : Action
+{
+    Task _all;
+    Task<T>[] _tasks;
+    Task<T[]> _made;
+
+    public WhenAllResults(Task all, Task<T>[] tasks, Task<T[]> made)
+    {
+        _all = all;
+        _tasks = tasks;
+        _made = made;
+    }
+
+    public void Invoke()
+    {
+        if (_all.IsFaulted && _all.Exception is Exception fault)
+        {
+            _made.TrySetException(fault);
+            return;
+        }
+        if (_all.IsCanceled)
+        {
+            try
+            {
+                _all.ThrowIfNotSuccessful();
+            }
+            catch (OperationCanceledException oce)
+            {
+                _made.TrySetCanceled(oce);
+                return;
+            }
+            catch (Exception)
+            {
+            }
+            _made.TrySetCanceled();
+            return;
+        }
+        T[] results = new T[_tasks.Length];
+        for (int i = 0; i < _tasks.Length; i++)
+        {
+            results[i] = _tasks[i].Result;
+        }
+        _made.TrySetResult(results);
+    }
+}
+
+/// WhenAny<T>'s last step: the winner handed on as the Task<T> it is.
+class WhenAnyTyped<T> : Action
+{
+    Task<Task> _any;
+    Task<Task<T>> _made;
+
+    public WhenAnyTyped(Task<Task> any, Task<Task<T>> made)
+    {
+        _any = any;
+        _made = made;
+    }
+
+    public void Invoke()
+    {
+        _made.TrySetResult((Task<T>)_any.Result);
+    }
+}
+
 class WhenAllState : Action
 {
     // LAYOUT: Remaining must stay the first instance field (see Atom).

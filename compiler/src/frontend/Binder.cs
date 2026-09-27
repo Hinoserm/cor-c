@@ -7471,13 +7471,43 @@ public sealed partial class Binder
             || (variantFace.Decl?.Template ?? Bare(variantFace.Name)) is not { Length: > 0 } faceName
             || Arguments(to) is not { Count: > 0 } wantedArguments
             || Variances(faceName, wantedArguments.Count) is not { } varies
-            || !varies.Any(v => v != Variance.None)
-            || Instance(from.Symbol, faceName, wantedArguments.Count) is not { } implemented)
+            || !varies.Any(v => v != Variance.None))
         {
             return false;
         }
 
-        List<Type> given = implemented.TemplateArgs.Select(a => Resolve(a, _thisType)).ToList();
+        List<Type>? given = null;
+
+        // AN UNMADE SPECIALISATION varies as the one it will be: an
+        // `IEnumerable<string>` inferred this round, before any copy spells
+        // it, is an IEnumerable<object> as surely as the made one is -- and
+        // `Seq(list)` beside Seq(IEnumerable<object>) and Seq<T>(IEnumerable<T>)
+        // is the generic one only if that is known.
+        if (Unmade(from.AsNonNullable()) && from.Symbol?.Decl is { } openFrom)
+        {
+            if ((openFrom.Template ?? Bare(from.Symbol.Name)) == faceName && from.Args.Count == wantedArguments.Count)
+            {
+                given = from.Args.ToList();
+            }
+            else
+            {
+                Dictionary<string, Type> mine = new(StringComparer.Ordinal);
+                for (int i = 0; i < from.Args.Count; i++)
+                {
+                    mine[openFrom.TypeParams[i].Name] = from.Args[i];
+                }
+                given = OpenAs(openFrom, faceName, wantedArguments.Count, mine, 0);
+            }
+        }
+        else if (Instance(from.Symbol, faceName, wantedArguments.Count) is { } implemented)
+        {
+            given = implemented.TemplateArgs.Select(a => Resolve(a, _thisType)).ToList();
+        }
+
+        if (given is null)
+        {
+            return false;
+        }
 
         if (given.Count != wantedArguments.Count)
         {
@@ -7492,9 +7522,9 @@ public sealed partial class Binder
             bool fits = varies[i] switch
             {
                 Variance.Out => Carried(given[i]) && Carried(wantedArguments[i])
-                             && Convertible(given[i], wantedArguments[i]),
+                             && ReferenceConvertible(given[i], wantedArguments[i]),
                 Variance.In => Carried(given[i]) && Carried(wantedArguments[i])
-                            && Convertible(wantedArguments[i], given[i]),
+                            && ReferenceConvertible(wantedArguments[i], given[i]),
                 _ => given[i].Equals(wantedArguments[i]),
             };
 
@@ -7505,6 +7535,16 @@ public sealed partial class Binder
         }
         return true;
     }
+
+    /// <summary>
+    /// An implicit REFERENCE conversion, which is all variance carries (C#
+    /// 18.2.3.3): not `object` to string, which a machine word allows and C#
+    /// does not -- with it, an IEnumerable&lt;object&gt; was an
+    /// IEnumerable&lt;string&gt;, and no overload over the two could be told
+    /// better than the other. Through variance again for nested arguments.
+    /// </summary>
+    private bool ReferenceConvertible(Type from, Type to)
+        => (from.Prim != Prim.Any || to.Prim == Prim.Any) && (Convertible(from, to) || Variant(from, to));
 
     /// <summary>
     /// Whether a type argument is carried in ONE MACHINE WORD, which is what
@@ -13942,6 +13982,47 @@ public sealed partial class Binder
 
         MethodSymbol? expandedParams = null;
 
+        // The type arguments of a generic method called in expanded form:
+        // the fixed parameters against their arguments, the params array's
+        // element against each argument it gathers.
+        bool InferExpanded(MethodSymbol m, Type element, out Dictionary<string, Type> got)
+        {
+            got = new Dictionary<string, Type>(StringComparer.Ordinal);
+            int fixedCount = m.Params.Count - 1;
+            for (int i = 0; i < args.Count; i++)
+            {
+                if (i < c.Args.Count && (IsFunctionSource(c.Args[i]) || c.Args[i] is RefArgExpr)) return false;
+                Type want = i < fixedCount ? m.Params[i].Type : element;
+                if (fromReceiver is not null) want = Close(want, fromReceiver);
+                if (!Unify(m, want, args[i], got)) return false;
+            }
+            if (!got.Values.All(IsWord)) return false;
+            Type closedElement = Close(fromReceiver is null ? element : Close(element, fromReceiver), got);
+            for (int i = 0; i < args.Count; i++)
+            {
+                Type want = i < fixedCount ? Close(Wants(m, i), got) : closedElement;
+                if (Unmade(want) || !WrittenFits(args[i], want, c.Args[i])) return false;
+            }
+            return true;
+        }
+
+        // Whether one expanded form takes every argument better than another
+        // does, or as well and some better (C# 12.6.4.3).
+        bool ExpandedBetter(MethodSymbol one, Dictionary<string, Type> oneBound, Type oneElement,
+                            MethodSymbol other, Type otherElement)
+        {
+            bool better = false;
+            for (int i = 0; i < args.Count; i++)
+            {
+                Type a = i < one.Params.Count - 1 ? Close(Wants(one, i), oneBound) : oneElement;
+                Type b = i < other.Params.Count - 1 ? Wants(other, i) : otherElement;
+                int said = BetterConversion(args[i], a, b);
+                if (said < 0) return false;
+                if (said > 0) better = true;
+            }
+            return better;
+        }
+
         if (!group.Methods.Any(OrdinaryFits))
         {
             expandedParams = group.Methods.FirstOrDefault(m =>
@@ -13956,10 +14037,37 @@ public sealed partial class Binder
                 && Enumerable.Range(m.Params.Count - 1, args.Count - (m.Params.Count - 1))
                              .All(i => WrittenFits(args[i], element, c.Args[i])));
 
+            // A GENERIC METHOD'S PARAMS ARRAY EXPANDS TOO, its element type
+            // inferred from the arguments it gathers: `Task.WhenAll(a, b)`
+            // over two Task<int> is WhenAll<int>(params Task<int>[]), whose
+            // result is the int[] of both, where WhenAll(params Task[]) has
+            // none. The two expanded forms compete as any two overloads do,
+            // and the ordinary one wins a tie (C# 12.6.4.3).
+            Type? expandedElement = expandedParams?.Params[^1].Type.Element;
+            foreach (MethodSymbol m in group.Methods)
+            {
+                if (m.TypeParams.Count == 0 || m.Params.Count == 0 || !m.Params[^1].IsParams
+                    || m.Params[^1].Type is not { IsArray: true, Element: Type open }
+                    || args.Count < m.Params.Count - 1
+                    || !InferExpanded(m, open, out Dictionary<string, Type> got))
+                {
+                    continue;
+                }
+
+                Type closedElement = Close(fromReceiver is null ? open : Close(open, fromReceiver), got);
+                if (Unmade(closedElement) || RefOf(closedElement) is null) continue;
+
+                if (expandedParams is null || ExpandedBetter(m, got, closedElement, expandedParams, expandedElement!))
+                {
+                    expandedParams = m;
+                    expandedElement = closedElement;
+                }
+            }
+
             if (expandedParams is { } variadic)
             {
                 int fixedCount = variadic.Params.Count - 1;
-                Type element = variadic.Params[^1].Type.Element!;
+                Type element = expandedElement!;
                 TypeRef? elementRef = RefOf(element);
 
                 if (elementRef is null)
@@ -14335,12 +14443,19 @@ public sealed partial class Binder
                           // handed the sequence to the object overload.
                           ?? BetterMember(byArity.Where(m => m.TypeParams.Count == 0 && Accepts(m, variant: true)).ToList());
 
-        // A GENERIC METHOD IS TRIED LAST, so an ordinary overload that fits
-        // still wins -- which is what C# does, and what keeps adding a generic
-        // overload from changing where existing calls go.
+        // A GENERIC METHOD COMPETES ON THE SAME TERMS (C# 12.6.4.3), and loses
+        // only a tie: `One(5)` beside One(object) and One<T>(T) is One<int>,
+        // an int being better served by an int than by an object, while
+        // `Three(dog)` beside Three(Dog) is Three(Dog), neither being better
+        // and the non-generic one winning the tie. Tried last, the generic was
+        // chosen only when nothing else fit at all -- and
+        // `Task.WhenAll(tasks<int>)` became the plain WhenAll(Task[]) whose
+        // result carries no values.
         Dictionary<string, Type>? bound = fromReceiver;
+        MethodSymbol? plain = best;
+        best = null;
 
-        if (best is null)
+        if (byArity.Any(m => m.TypeParams.Count > 0))
         {
             foreach (MethodSymbol candidate in byArity.Where(m => m.TypeParams.Count > 0))
             {
@@ -14400,6 +14515,42 @@ public sealed partial class Binder
                     }
                 }
             }
+        }
+
+        // TYPE ARGUMENTS WRITTEN AT THE CALL name a generic method; an
+        // ordinary one is no candidate at all then.
+        bool typeArgsWritten = c.Target switch
+        {
+            MemberExpr { TypeArgs.Count: > 0 } => true,
+            NameExpr { TypeArgs.Count: > 0 } => true,
+            _ => false,
+        };
+
+        if (plain is not null && (best is null || (!typeArgsWritten && !GenericBetter(best, bound, plain))))
+        {
+            best = plain;
+            bound = fromReceiver;
+        }
+
+        // Whether the generic method, at the type arguments inferred for it,
+        // takes every argument and takes some better than the ordinary one
+        // does. A lambda or a method group decides nothing here: both
+        // overloads were already chosen for its arity.
+        bool GenericBetter(MethodSymbol generic, Dictionary<string, Type>? inferred, MethodSymbol ordinary)
+        {
+            bool better = false;
+            for (int i = 0; i < args.Count && i < generic.Params.Count && i < ordinary.Params.Count; i++)
+            {
+                if (i < c.Args.Count && IsFunctionSource(c.Args[i])) continue;
+                Type closed = inferred is null ? Wants(generic, i) : Close(Wants(generic, i), inferred);
+                // An unmade parameter takes what it was inferred from, as
+                // Accepts has it.
+                if (!Unmade(closed) && !WrittenFits(args[i], closed, c.Args[i])) return false;
+                int said = BetterConversion(args[i], closed, Wants(ordinary, i));
+                if (said < 0) return false;
+                if (said > 0) better = true;
+            }
+            return better;
         }
 
         if (best is null)
