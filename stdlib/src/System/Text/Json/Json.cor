@@ -282,6 +282,9 @@ namespace System.Text.Json.Nodes
     /// JSON's object: named properties, in the order they were added.
     public sealed class JsonObject : JsonNode, IDictionary<string, JsonNode?>, IEnumerable<KeyValuePair<string, JsonNode?>>
     {
+    // The non-generic IEnumerable's, as .NET's collections have it.
+    IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+
         readonly List<string> _names = new List<string>();
         readonly List<JsonNode?> _values = new List<JsonNode?>();
 
@@ -483,6 +486,9 @@ namespace System.Text.Json.Nodes
     /// JSON's array: nodes in order.
     public sealed class JsonArray : JsonNode, IList<JsonNode?>, IEnumerable<JsonNode?>
     {
+    // The non-generic IEnumerable's, as .NET's collections have it.
+    IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+
         readonly List<JsonNode?> _items = new List<JsonNode?>();
 
         public JsonArray(JsonNodeOptions? options = null) : base(options)

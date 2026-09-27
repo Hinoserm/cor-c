@@ -69,7 +69,7 @@ class StringWriter : TextWriter
     /// The whole string at once, rather than the base class's loop over its
     /// characters: appending to a StringBuilder is what this writer does, and
     /// it can do it in one.
-    public override void Write(string value)
+    public override void Write(string? value)
     {
         _text.Append(value);
     }

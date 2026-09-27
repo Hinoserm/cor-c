@@ -21,6 +21,13 @@
 // what Pop would hand back, in that sequence.
 
 class StackEnumerator<T> : IEnumerator<T> {
+    // The non-generic IEnumerator's members, as .NET's enumerators have them.
+    object? IEnumerator.Current => Current;
+    public void Reset() { at = over.Count; }
+
+    // IEnumerator<T> is an IDisposable; walking holds nothing to let go of.
+    public void Dispose() { }
+
     private Stack<T> over;
     private int at;
 
@@ -38,6 +45,9 @@ class StackEnumerator<T> : IEnumerator<T> {
 }
 
 class Stack<T> : IReadOnlyCollection<T>, IEnumerable<T> {
+    // The non-generic IEnumerable's, as .NET's collections have it.
+    IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+
     private T[] items;
     private int count;
 
@@ -163,6 +173,13 @@ class LinkedListNode<T> {
 }
 
 class LinkedListEnumerator<T> : IEnumerator<T> {
+    // The non-generic IEnumerator's members, as .NET's enumerators have them.
+    object? IEnumerator.Current => Current;
+    public void Reset() { at = null; started = false; }
+
+    // IEnumerator<T> is an IDisposable; walking holds nothing to let go of.
+    public void Dispose() { }
+
     private LinkedList<T> over;
     private LinkedListNode<T>? at;
     private bool started;
@@ -189,6 +206,9 @@ class LinkedListEnumerator<T> : IEnumerator<T> {
 }
 
 class LinkedList<T> : ICollection<T>, IReadOnlyCollection<T>, IEnumerable<T> {
+    // The non-generic IEnumerable's, as .NET's collections have it.
+    IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+
     bool ICollection<T>.IsReadOnly => false;
 
     void ICollection<T>.Add(T item) { AddLast(item); }
@@ -405,6 +425,13 @@ class SortedPairs<K, V> {
 }
 
 class SortedPairsEnumerator<K, V> : IEnumerator<KeyValuePair<K, V>> {
+    // The non-generic IEnumerator's members, as .NET's enumerators have them.
+    object? IEnumerator.Current => Current;
+    public void Reset() { at = -1; }
+
+    // IEnumerator<T> is an IDisposable; walking holds nothing to let go of.
+    public void Dispose() { }
+
     private SortedPairs<K, V> over;
     private int at;
 
@@ -425,6 +452,9 @@ class SortedPairsEnumerator<K, V> : IEnumerator<KeyValuePair<K, V>> {
 /// position of a key is part of the API -- IndexOfKey, GetKeyAtIndex,
 /// RemoveAt. That is the whole difference from SortedDictionary.
 class SortedList<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerable<KeyValuePair<K, V>> {
+    // The non-generic IEnumerable's, as .NET's collections have it.
+    IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+
     IEnumerable<K> IReadOnlyDictionary<K, V>.Keys => Keys;
     IEnumerable<V> IReadOnlyDictionary<K, V>.Values => Values;
 
@@ -541,6 +571,9 @@ class SortedList<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
 /// key order. In .NET it is a tree and inserting is logarithmic; here it is the
 /// same store as SortedList, so the ANSWERS match and the insert cost does not.
 class SortedDictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerable<KeyValuePair<K, V>> {
+    // The non-generic IEnumerable's, as .NET's collections have it.
+    IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+
 
     ICollection<K> IDictionary<K, V>.Keys => Keys.AsReadOnly();
     ICollection<V> IDictionary<K, V>.Values => Values.AsReadOnly();
@@ -885,6 +918,9 @@ class BitArray {
 // cannot add or remove -- the owner still can, and the view shows it.
 
 class ReadOnlyDictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerable<KeyValuePair<K, V>> {
+    // The non-generic IEnumerable's, as .NET's collections have it.
+    IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+
     private IDictionary<K, V> inner;
 
     /// A read-only view of `dictionary`, reading through to it.
@@ -936,6 +972,9 @@ class ReadOnlyDictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, I
 // drop lists are: nulls allowed, duplicates kept, order as added.
 
 class StringCollection : IEnumerable<string> {
+    // The non-generic IEnumerable's, as .NET's collections have it.
+    IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+
     private List<string> items = new List<string>();
 
     public int Count => items.Count;
@@ -987,6 +1026,9 @@ namespace System.Collections.Concurrent
     /// last added first here, as .NET's does for the thread that added it.
     class ConcurrentBag<T> : IProducerConsumerCollection<T>, IReadOnlyCollection<T>, IEnumerable<T>
     {
+    // The non-generic IEnumerable's, as .NET's collections have it.
+    IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+
         readonly List<T> _items;
         readonly object _gate = new object();
 
@@ -1072,6 +1114,9 @@ namespace System.Collections.Concurrent
     /// First in, first out, for many threads.
     class ConcurrentQueue<T> : IProducerConsumerCollection<T>, IReadOnlyCollection<T>, IEnumerable<T>
     {
+    // The non-generic IEnumerable's, as .NET's collections have it.
+    IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+
         readonly Queue<T> _items;
         readonly object _gate = new object();
 
@@ -1163,6 +1208,9 @@ namespace System.Collections.Concurrent
     /// Last in, first out, for many threads.
     class ConcurrentStack<T> : IProducerConsumerCollection<T>, IReadOnlyCollection<T>, IEnumerable<T>
     {
+    // The non-generic IEnumerable's, as .NET's collections have it.
+    IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+
         readonly List<T> _items;
         readonly object _gate = new object();
 
@@ -1307,6 +1355,9 @@ namespace System.Collections.Concurrent
     /// more than once for a key when threads race, and only one result is kept.
     class ConcurrentDictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerable<KeyValuePair<K, V>>
     {
+    // The non-generic IEnumerable's, as .NET's collections have it.
+    IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+
         readonly Dictionary<K, V> _items;
         readonly object _gate = new object();
 

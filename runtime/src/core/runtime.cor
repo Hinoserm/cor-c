@@ -177,6 +177,13 @@ static class Tls
     public const long Bytes = 136;
 }
 
+/// What stops a suspended iterator from inside when it is disposed; never
+/// seen outside MoveNext.
+sealed class IteratorStopSignal : Exception
+{
+    public IteratorStopSignal() : base("The iterator was disposed.") { }
+}
+
 static class Runtime
 {
     /// Delegate equality. Two closures are the same delegate when they are
@@ -1559,6 +1566,27 @@ static class Runtime
     public static void IndexOutOfRange()
     {
         throw new IndexOutOfRangeException("Index was outside the bounds of the array.");
+    }
+
+    // ---- iterators (Lowering.Iterator) -----------------------------------
+
+    /// An iterator's Reset, which C# iterators do not support.
+    public static void IteratorReset()
+    {
+        throw new NotSupportedException("Specified method is not supported.");
+    }
+
+    /// The signal Dispose resumes a suspended iterator with: thrown at the
+    /// yield it stopped at, it runs the finally blocks around it and is
+    /// caught by MoveNext itself (IteratorStopping).
+    public static void IteratorStop()
+    {
+        throw new IteratorStopSignal();
+    }
+
+    public static bool IteratorStopping(object thrown)
+    {
+        return thrown is IteratorStopSignal;
     }
 
     public static void DivideByZero()

@@ -664,7 +664,7 @@ public sealed partial class Binder
             return;
         }
 
-        _r.Errors.Add(new CompileError(Where(), at.Line, at.Col, message));
+        _r.Errors.Add(new CompileError(Where(at), at.Line, at.Col, message));
     }
 
     /// <summary>
@@ -676,15 +676,20 @@ public sealed partial class Binder
     /// another part then sends the reader to a line of the wrong file, which is
     /// worse than no file at all.
     /// </summary>
-    private string Where()
-        => _member?.File is { Length: > 0 } written ? written
+    ///
+    /// THE NODE'S OWN FIRST, when it knows it: a type is checked against its
+    /// interfaces outside any member, where the file last read -- the
+    /// library's, often -- put a test's line 38 in Core.cor.
+    private string Where(Node? at = null)
+        => at?.File is { Length: > 0 } own ? own
+         : _member?.File is { Length: > 0 } written ? written
          : _in.Length > 0 ? _in
          : _file;
 
     private void Warning(Node at, string message)
     {
         if (_quiet > 0) return;
-        _r.Warnings.Add(new CompileError(Where(), at.Line, at.Col, message, warning: true));
+        _r.Warnings.Add(new CompileError(Where(at), at.Line, at.Col, message, warning: true));
     }
 
     private int _quiet;
@@ -1003,6 +1008,82 @@ public sealed partial class Binder
             default:
                 return null;
         }
+    }
+
+    /// <summary>
+    /// The methods a name means on a type, as C#'s member lookup finds them:
+    /// on an interface that includes what its base interfaces declare, so a
+    /// default body in ILoud can say `Name` for IGreeter's.
+    /// </summary>
+    private static List<MethodSymbol> Members(TypeSymbol t, string name)
+        => t.Kind == TypeKind.Interface ? Reachable(t, name) : t.FindMethods(name);
+
+    private static bool IsIndexType(Type t)
+        => t.Symbol is { Kind: TypeKind.Struct, Name: "Index" } s && Reachable(s, "GetOffset").Any();
+
+    private static bool IsRangeType(Type t)
+        => t.Symbol is { Kind: TypeKind.Struct, Name: "Range" } s && Reachable(s, "GetOffsetAndLength").Any();
+
+    /// <summary>
+    /// `target[index]` where the index is an Index or a Range held in a value,
+    /// as C# lowers it: the target evaluated once, then the index, then what
+    /// they say together. `list[i]` is `list[i.GetOffset(list.Count)]`;
+    /// `s[r]` is `s.Substring(start, end - start)` with each end's offset
+    /// taken against the length, and a span's is the same through Slice; an
+    /// array's is RuntimeHelpers.GetSubArray, which copies.
+    /// </summary>
+    private Expr ThroughIndexValue(IndexExpr ix, Type indexed, bool range)
+    {
+        int line = ix.Line, col = ix.Col;
+        SubjectExpr Held(int outer) => new() { Outer = outer, Line = line, Col = col };
+        MemberExpr Member(Expr on, string name) => new() { Target = on, Name = name, Line = line, Col = col };
+        CallExpr Invoke(Expr on, string name, params Expr[] args)
+        {
+            CallExpr call = new() { Target = Member(on, name), Line = line, Col = col };
+            foreach (Expr a in args)
+            {
+                call.Args.Add(a);
+                call.ArgNames.Add(null);
+            }
+            return call;
+        }
+        Expr Length(Expr on) => new MemberExpr
+        {
+            Target = on, Name = "Length", Else = "Count", Line = line, Col = col,
+        };
+        PatternExpr Once(Expr subject, Expr test) => new() { Subject = subject, Test = test, Line = line, Col = col };
+
+        if (range && indexed.IsArray)
+        {
+            CallExpr sub = new()
+            {
+                Target = Member(new NameExpr { Name = "RuntimeHelpers", Line = line, Col = col }, "GetSubArray"),
+                Line = line, Col = col,
+            };
+            sub.Args.Add(ix.Target);
+            sub.ArgNames.Add(null);
+            sub.Args.Add(ix.Args[0]);
+            sub.ArgNames.Add(null);
+            return sub;
+        }
+
+        // Inside both patterns: the index or range is the inner subject (0)
+        // and the target the outer one (1).
+        if (!range)
+        {
+            IndexExpr at = new() { Target = Held(1), Line = line, Col = col };
+            at.Args.Add(Invoke(Held(0), "GetOffset", Length(Held(1))));
+            return Once(ix.Target, Once(ix.Args[0], at));
+        }
+
+        Expr Start() => Invoke(Member(Held(0), "Start"), "GetOffset", Length(Held(1)));
+        Expr size = new BinaryExpr
+        {
+            Op = BinOp.Sub, Left = Invoke(Member(Held(0), "End"), "GetOffset", Length(Held(1))), Right = Start(),
+            Line = line, Col = col,
+        };
+        string slicer = indexed.Prim == Prim.String ? "Substring" : "Slice";
+        return Once(ix.Target, Once(ix.Args[0], Invoke(Held(1), slicer, Start(), size)));
     }
 
     /// <summary>
@@ -1919,13 +2000,23 @@ public sealed partial class Binder
         return false;
     }
 
+    /// <summary>
+    /// The type a base list names. WITH TYPE ARGUMENTS WRITTEN IT IS THE
+    /// TEMPLATE OF THAT ARITY first: `IEnumerable<T>` is IEnumerable`1, and
+    /// the bare name IEnumerable is the non-generic interface -- a different
+    /// type, which the bare name tried first found instead.
+    /// </summary>
+    private bool FindBase(TypeRef b, out TypeSymbol? based)
+        => b.Args.Count > 0
+            ? FindType(Arity(b.Name, b.Args.Count), out based) || FindType(b.Name, out based)
+            : FindType(b.Name, out based);
+
     /// <summary>The declaration of a type's base class, or null for an interface or nothing.</summary>
     private TypeDecl? BaseDeclOf(TypeDecl d)
     {
         foreach (TypeRef b in d.Bases)
         {
-            if ((FindType(b.Name, out TypeSymbol? based)
-                 || b.Args.Count > 0 && FindType(Arity(b.Name, b.Args.Count), out based))
+            if (FindBase(b, out TypeSymbol? based)
                 && based is not null && based.Kind != TypeKind.Interface)
             {
                 return based.Decl;
@@ -1981,10 +2072,8 @@ public sealed partial class Binder
             // namespace is reached through the using that imported it.
             //
             // A GENERIC BASE IS KEYED BY ARITY, like any other template:
-            // `List<T> : IReadOnlyList<T>` names IReadOnlyList`1. The bare
-            // name is tried first, because a base is usually a plain class.
-            if (!FindType(b.Name, out TypeSymbol? based)
-                && !(b.Args.Count > 0 && FindType(Arity(b.Name, b.Args.Count), out based)))
+            // `List<T> : IReadOnlyList<T>` names IReadOnlyList`1 (FindBase).
+            if (!FindBase(b, out TypeSymbol? based))
             {
                 Error(b, $"'{b.Name}' is not a known type");
                 continue;
@@ -2206,7 +2295,12 @@ public sealed partial class Binder
                     // and a call through the base type went to the abstract one.
                     bool aVirtual = p.Mods.HasFlag(Mods.Virtual);
                     bool aOverride = p.Mods.HasFlag(Mods.Override);
-                    bool aAbstract = p.Mods.HasFlag(Mods.Abstract) || sym.Kind == TypeKind.Interface;
+                    // An interface's accessor is abstract when it has no body to
+                    // run; one with a body is a default implementation (C# 8).
+                    bool aAbstract = p.Mods.HasFlag(Mods.Abstract)
+                        || sym.Kind == TypeKind.Interface && !p.Mods.HasFlag(Mods.Static) && getBody is null;
+                    bool setAbstract = p.Mods.HasFlag(Mods.Abstract)
+                        || sym.Kind == TypeKind.Interface && !p.Mods.HasFlag(Mods.Static) && setBody is null;
 
                     if (getBody != null || declared)
                     {
@@ -2278,7 +2372,7 @@ public sealed partial class Binder
                             ExplicitMember = p.ExplicitInterface is null ? null : setter.Name,
                             Returns = Type.Void, Owner = sym,
                             Static = p.Mods.HasFlag(Mods.Static), Decl = setter,
-                            Virtual = aVirtual, Override = aOverride, Abstract = aAbstract,
+                            Virtual = aVirtual, Override = aOverride, Abstract = setAbstract,
                         };
 
                         foreach (Param ip in p.Params)
@@ -2317,7 +2411,11 @@ public sealed partial class Binder
                         Static = md.Mods.HasFlag(Mods.Static),
                         Virtual = md.Mods.HasFlag(Mods.Virtual),
                         Override = md.Mods.HasFlag(Mods.Override),
-                        Abstract = md.Mods.HasFlag(Mods.Abstract) || d.Kind == TypeKind.Interface,
+                        // IN AN INTERFACE, abstract unless it has a body: one with a
+                        // body is a default implementation (C# 8), and a static
+                        // one is an ordinary static method.
+                        Abstract = md.Mods.HasFlag(Mods.Abstract)
+                            || d.Kind == TypeKind.Interface && !md.Mods.HasFlag(Mods.Static) && md.Body is null,
                         Async = md.Mods.HasFlag(Mods.Async),
                         IsCtor = md.IsCtor,
                         Decl = md,
@@ -2634,6 +2732,35 @@ public sealed partial class Binder
     /// IEnumerable`1 and for a specialisation of it -- what an explicit
     /// implementation's qualifier is compared with.
     /// </summary>
+    /// <summary>
+    /// What an iterator returning this type yields: the T of IEnumerable&lt;T&gt;
+    /// or IEnumerator&lt;T&gt;, object for the non-generic IEnumerable and
+    /// IEnumerator, and null for anything else -- which cannot be an iterator.
+    /// Read off the type's own members, so a specialisation answers with its
+    /// argument in: IEnumerator&lt;T&gt;'s Current, or GetEnumerator's.
+    /// </summary>
+    internal static Type? IteratorElement(Type sequence)
+    {
+        if (sequence.Symbol is not TypeSymbol shape || shape.Kind != TypeKind.Interface) return null;
+        string name = PlainName(shape.Decl?.Template ?? shape.Name);
+        if (name is not ("IEnumerable" or "IEnumerator")) return null;
+        TypeSymbol? enumerator = name == "IEnumerator" ? shape
+            : shape.Methods.FirstOrDefault(m => m.Name == "GetEnumerator" && m.Params.Count == 0)?.Returns.Symbol;
+        return enumerator?.Methods.FirstOrDefault(m => m.Name == "get_Current" && m.Params.Count == 0)?.Returns;
+    }
+
+    /// <summary>
+    /// How an explicit implementation names this interface: its plain name
+    /// and, when generic, its arity -- IEnumerable`1 for IEnumerable&lt;T&gt;, told
+    /// apart from IEnumerable (Parser, explicit implementations).
+    /// </summary>
+    private static string ExplicitName(TypeSymbol iface)
+    {
+        int arity = iface.Decl is { TemplateArgs.Count: > 0 } made ? made.TemplateArgs.Count : iface.Decl?.TypeParams.Count ?? 0;
+        string plain = PlainName(iface.Decl?.Template ?? iface.Name);
+        return arity == 0 ? plain : plain + "`" + arity;
+    }
+
     private static string PlainName(string name)
     {
         int cut = name.IndexOfAny(new[] { '`', '$', '<' });
@@ -2688,7 +2815,7 @@ public sealed partial class Binder
                 // namespaced interface is called `System$Collections$Concurrent$
                 // IProducerConsumerCollection$__canon`, whose plain name cut at
                 // the first '$' is "System".
-                string ifaceName = PlainName(iface.Decl?.Template ?? iface.Name);
+                string ifaceName = ExplicitName(iface);
                 MethodSymbol? impl = sym.Methods.FirstOrDefault(m => m.ExplicitMember == want.Name
                         && m.ExplicitInterface == ifaceName && !m.Abstract && MethodSignatures.Implements(m, want))
                     ?? sym.FindMethods(want.Name).FirstOrDefault(m => !m.Abstract && MethodSignatures.Implements(m, want));
@@ -2719,6 +2846,20 @@ public sealed partial class Binder
                 {
                     impl = sym.FindMethods(want.Name)
                         .FirstOrDefault(m => m.Abstract && MethodSignatures.Implements(m, want));
+                }
+
+                // A DEFAULT IMPLEMENTATION (C# 8): the interface's own body,
+                // when nothing on the class answers -- the most specific one,
+                // so an interface that re-implements the member explicitly
+                // (`string IGreeter.Greet() => …` in a derived interface) is
+                // taken before the one that declared it.
+                if (impl is null && !sym.Kind.Equals(TypeKind.Interface))
+                {
+                    impl = AllInterfaces(sym).Select(face => face.Methods.FirstOrDefault(m => m.ExplicitMember == want.Name
+                                   && m.ExplicitInterface == ifaceName && m.Decl?.Body is not null
+                                   && MethodSignatures.Implements(m, want)))
+                               .FirstOrDefault(found => found is not null)
+                        ?? (want.Decl?.Body is not null ? want : null);
                 }
 
                 if (impl is null)
@@ -2792,8 +2933,13 @@ public sealed partial class Binder
             // cannot get wrong -- a single candidate -- because an override
             // whose parameter was substituted through a type argument does not
             // compare equal to the one it overrides.
+            //
+            // A REFERENCE TYPE'S `?` IS NO PART OF THE SIGNATURE: C# lets
+            // `override Write(string value)` override `Write(string? value)`,
+            // with a nullability warning at most (MethodSignatures.SameType).
             MethodSymbol? overridden = sameArity
-                .FirstOrDefault(b => b.Params.Zip(m.Params).All(p => p.First.Type.Equals(p.Second.Type)));
+                .FirstOrDefault(b => b.Params.Zip(m.Params).All(p => p.First.Type.Equals(p.Second.Type)
+                    || MethodSignatures.SameType(p.First.Type, p.Second.Type)));
             overridden ??= sameArity.Count == 1 ? sameArity[0] : null;
 
             m.VtableSlot = overridden is { VtableSlot: >= 0 } ? overridden.VtableSlot : slot++;
@@ -3736,6 +3882,27 @@ public sealed partial class Binder
                 break;
             }
 
+            case YieldStmt y:
+            {
+                Type sequence = _method?.Returns ?? Type.Void;
+                Type? element = IteratorElement(sequence);
+                if (element is null)
+                {
+                    Error(y, $"'yield' needs a method that returns IEnumerable<T>, IEnumerator<T>, IEnumerable or IEnumerator, not '{sequence}'");
+                    if (y.Value is not null) CheckExpr(y.Value);
+                    break;
+                }
+                if (y.Value is not null)
+                {
+                    Type? outerWanted = _wanted;
+                    _wanted = element;
+                    Type produced = CheckExpr(y.Value);
+                    _wanted = outerWanted;
+                    CheckAssignable(produced, element, y.Value, "yield return value");
+                }
+                break;
+            }
+
             case ReturnStmt r:
             {
                 // INFERRING A BLOCK LAMBDA'S RESULT: what is returned is the
@@ -3750,6 +3917,15 @@ public sealed partial class Binder
                 }
 
                 Type want = _method is { Async: true } running ? AsyncResult(running, r) : _method?.Returns ?? Type.Void;
+
+                // AN ITERATOR RETURNS NOTHING: what it produces is what it
+                // yields, and it ends with `yield break` (C# CS1622).
+                if (_method?.Decl is MethodDecl { Body.Iterator: true })
+                {
+                    Error(r, "an iterator cannot return a value; use 'yield return' to produce one and 'yield break' to stop");
+                    if (r.Value is not null) CheckExpr(r.Value);
+                    break;
+                }
 
                 if (r.Value is null)
                 {
@@ -3992,6 +4168,10 @@ public sealed partial class Binder
                     }
                     // THE FILTER IS CHECKED WITH THE NAME IN SCOPE, which is
                     // the point of it: `catch (E e) when (e.Code == 2)`.
+                    // AND WHAT IT PROVED HOLDS IN THE BODY, which runs only when
+                    // it was true: `when (e.InnerException is not null)` lets the
+                    // handler read e.InnerException.Message, as C# lets it.
+                    List<Sym> filtered = new();
                     if (c.When != null)
                     {
                         Type filter = CheckExpr(c.When);
@@ -4000,9 +4180,14 @@ public sealed partial class Binder
                         {
                             Error(c.When, $"an exception filter must be a bool, not '{filter}'");
                         }
+                        else
+                        {
+                            filtered = Assume(c.When, true);
+                        }
                     }
 
                     CheckBlock(c.Body);
+                    Forget(filtered);
                     PopScope();
                 }
 
@@ -5772,6 +5957,104 @@ public sealed partial class Binder
     /// some type. Everything else the checker records is keyed by the node and
     /// is simply written again with the same answer.
     /// </summary>
+    /// <summary>
+    /// Which lengths of a countable subject a set of list patterns admits: one
+    /// flag per length up to a bound, and one for every length past it.
+    /// </summary>
+    private sealed class Coverage
+    {
+        private const int Bound = 64;
+        private readonly bool[] _each = new bool[Bound];
+        private bool _beyond;
+
+        public static Coverage Everything()
+        {
+            Coverage c = new();
+            Array.Fill(c._each, true);
+            c._beyond = true;
+            return c;
+        }
+
+        public static Coverage Exactly(long n)
+        {
+            Coverage c = new();
+            if (n >= 0 && n < Bound) c._each[n] = true;
+            return c;
+        }
+
+        public static Coverage AtLeast(long n)
+        {
+            Coverage c = new();
+            for (long i = Math.Max(0, n); i < Bound; i++) c._each[i] = true;
+            c._beyond = n <= Bound;
+            return c;
+        }
+
+        public bool All => _beyond && _each.All(x => x);
+
+        public void Union(Coverage other)
+        {
+            for (int i = 0; i < Bound; i++) _each[i] |= other._each[i];
+            _beyond |= other._beyond;
+        }
+
+        public Coverage Intersect(Coverage other)
+        {
+            Coverage c = new();
+            for (int i = 0; i < Bound; i++) c._each[i] = _each[i] && other._each[i];
+            c._beyond = _beyond && other._beyond;
+            return c;
+        }
+    }
+
+    /// <summary>
+    /// The lengths a pattern's test is sure to accept, when LENGTH is the only
+    /// thing it can fail on; null when anything else about it might fail.
+    /// Reads the tests the parser writes for a list pattern (ParseListPattern):
+    /// a null test of a subject that cannot be null, a count compared with a
+    /// number, and element tests that are discards or var patterns.
+    /// </summary>
+    private Coverage? Lengths(Expr test)
+    {
+        switch (test)
+        {
+            case LiteralExpr { Kind: Lit.Bool, IntValue: 1 }:
+                return Coverage.Everything();
+            case SequenceExpr seq:
+                return Lengths(seq.Value);
+            case PatternExpr pat:
+                return Lengths(pat.Test);
+            case IsExpr { Binding: not null } named when named.Type.Name == TypeRef.Anything:
+                return Coverage.Everything();
+            case IsExpr named when named.Type.Name == TypeRef.Same:
+                return NeverNull(named.Operand) ? Coverage.Everything() : null;
+            case BinaryExpr { Op: BinOp.Ne, PatternNullTest: true } nonNull:
+                return NeverNull(nonNull.Left) ? Coverage.Everything() : null;
+            case BinaryExpr { Op: BinOp.Eq or BinOp.Ge, Left: MemberExpr { Else: not null }, Right: LiteralExpr { Kind: Lit.Int } n } count:
+                return count.Op == BinOp.Eq ? Coverage.Exactly(n.IntValue) : Coverage.AtLeast(n.IntValue);
+            case BinaryExpr { Op: BinOp.AndAlso } both:
+                return Lengths(both.Left) is { } first && Lengths(both.Right) is { } second ? first.Intersect(second) : null;
+            case BinaryExpr { Op: BinOp.OrElse } either:
+            {
+                Coverage? l = Lengths(either.Left), r = Lengths(either.Right);
+                if (l is null) return r;
+                if (r is not null) l.Union(r);
+                return l;
+            }
+            default:
+                return null;
+        }
+    }
+
+    /// <summary>Whether what an expression was checked to be cannot hold null.</summary>
+    private bool NeverNull(Expr e)
+        => _r.ExprType.TryGetValue(e, out Type? t) && !t.Nullable && !t.IsNullableValue && t.Prim != Prim.NullLiteral;
+
+    /// <summary>Whether a type has a readable member of this name: an array or a string its Length.</summary>
+    private static bool Countable(Type t, string name)
+        => (t.IsArray || t.Prim == Prim.String) ? name == "Length"
+         : t.Symbol is { } sym && (Reachable(sym, "get_" + name).Any(g => g.Params.Count == 0) || sym.FindField(name) is not null);
+
     private Type Peek(Expr e)
     {
         int errors = _r.Errors.Count;
@@ -5922,7 +6205,7 @@ public sealed partial class Binder
                 // thing that says which T. It shows whenever the sequence is
                 // an inferred one -- `d.OrderBy(p => p.Key).ToList()` -- whose
                 // specialisation the round after this one writes.
-                Type walked = Close(walk.Returns, Received(seq, had));
+                Type walked = Close(walk.Returns, Received(seq, walk.Owner ?? had));
 
                 Type each = walked.Symbol is TypeSymbol e
                           ? Close(Reachable(e, "get_Current").FirstOrDefault()?.Returns ?? Type.Error,
@@ -5952,11 +6235,70 @@ public sealed partial class Binder
                 Name = walker, Init = Called(fe.Sequence, "GetEnumerator"),
                 Line = fe.Line, Col = fe.Col,
             });
-            outer.Statements.Add(new WhileStmt
+            WhileStmt stepping = new()
             {
                 Cond = Called(Named(walker), "MoveNext"), Body = body,
                 Line = fe.Line, Col = fe.Col,
-            });
+            };
+
+            // AND THE ENUMERATOR IS DISPOSED however the loop ends -- run out,
+            // broken out of, or thrown out of -- as C# disposes it (15.8.4): a
+            // disposable one directly, a class one only when it is there, and
+            // an unsealed class that is not known to be disposable when it
+            // turns out to be. A struct whose Dispose does nothing is left
+            // alone, which is the same as calling it; List<T>'s is one, and
+            // a list loop keeps no handler for it.
+            Type enumeratorType = Close(walk.Returns, Received(seq, walk.Owner ?? had));
+            Stmt? release = null;
+            if (enumeratorType.Symbol is TypeSymbol walking)
+            {
+                MethodSymbol? dispose = Reachable(walking, "Dispose").FirstOrDefault(m => m.Params.Count == 0 && !m.Static);
+                bool disposable = dispose is not null
+                    && (walking.Kind == TypeKind.Struct || AllInterfaces(walking).Any(i => i.Name == "IDisposable") || walking.Name == "IDisposable");
+                bool empty = walking.Kind == TypeKind.Struct && dispose?.Decl is MethodDecl { Body.Statements.Count: 0 };
+                if (disposable && !empty)
+                {
+                    Stmt call = new ExprStmt { Expr = Called(Named(walker), "Dispose"), Line = fe.Line, Col = fe.Col };
+                    release = walking.Kind == TypeKind.Struct ? call : new IfStmt
+                    {
+                        Cond = new BinaryExpr
+                        {
+                            Op = BinOp.Ne, Left = Named(walker),
+                            Right = new LiteralExpr { Kind = Lit.Null, Text = "null", Line = fe.Line, Col = fe.Col },
+                            Line = fe.Line, Col = fe.Col,
+                        },
+                        Then = call, Line = fe.Line, Col = fe.Col,
+                    };
+                }
+                else if (!disposable && walking.Kind == TypeKind.Class && walking.Decl?.Mods.HasFlag(Mods.Sealed) != true
+                         && _r.Types.ContainsKey("IDisposable"))
+                {
+                    string maybe = $"$disposable${n}";
+                    release = new IfStmt
+                    {
+                        Cond = new IsExpr
+                        {
+                            Operand = Named(walker), Type = new TypeRef { Name = "IDisposable", Line = fe.Line, Col = fe.Col },
+                            Binding = maybe, Line = fe.Line, Col = fe.Col,
+                        },
+                        Then = new ExprStmt { Expr = Called(Named(maybe), "Dispose"), Line = fe.Line, Col = fe.Col },
+                        Line = fe.Line, Col = fe.Col,
+                    };
+                }
+            }
+
+            if (release is null)
+            {
+                outer.Statements.Add(stepping);
+            }
+            else
+            {
+                Block guarded = new() { Line = fe.Line, Col = fe.Col };
+                guarded.Statements.Add(stepping);
+                Block finish = new() { Line = fe.Line, Col = fe.Col };
+                finish.Statements.Add(release);
+                outer.Statements.Add(new TryStmt { Body = guarded, Finally = finish, Line = fe.Line, Col = fe.Col });
+            }
             return outer;
         }
 
@@ -6620,6 +6962,41 @@ public sealed partial class Binder
         }
     }
 
+    /// <summary>
+    /// A method on a compiler-made class for every slot of these interfaces
+    /// and of every interface they extend, the generic ones first. One whose
+    /// name and arity a method already has takes the explicit form --
+    /// `IEnumerator.get_Current` beside IEnumerator&lt;T&gt;'s get_Current --
+    /// as a class written in C# would implement it (Lowering.ArrayViewMethod).
+    /// </summary>
+    internal static void ImplementSlots(TypeSymbol made, List<TypeSymbol> faces)
+    {
+        List<TypeSymbol> all = new();
+        foreach (TypeSymbol face in faces)
+            foreach (TypeSymbol one in new[] { face }.Concat(AllInterfaces(face)))
+                if (!all.Contains(one)) all.Add(one);
+        foreach (TypeSymbol face in all)
+        {
+            foreach (MethodSymbol want in face.Methods)
+            {
+                if (made.Methods.Any(had => had.VtableSlot == want.VtableSlot)) continue;
+                bool clash = made.Methods.Any(had => had.Name == want.Name && had.Params.Count == want.Params.Count);
+                MethodSymbol method = new()
+                {
+                    Name = clash ? ExplicitName(face) + "." + want.Name : want.Name,
+                    ExplicitInterface = clash ? ExplicitName(face) : null,
+                    ExplicitMember = clash ? want.Name : null,
+                    Returns = want.Returns, Owner = made, VtableSlot = want.VtableSlot,
+                };
+                foreach (ParamSymbol p in want.Params)
+                {
+                    method.Params.Add(new ParamSymbol { Name = p.Name, Type = p.Type });
+                }
+                made.Methods.Add(method);
+            }
+        }
+    }
+
     private TypeSymbol ArrayView(Type element, TypeSymbol face)
     {
         string name = $"ArrayView${face.Name}";
@@ -6656,30 +7033,7 @@ public sealed partial class Binder
 
         // THE INTERFACES' OWN SLOTS, so a caller that has only one of them
         // reaches these without knowing what it is holding.
-        foreach (TypeSymbol implemented in view.Interfaces)
-        {
-            foreach (MethodSymbol want in implemented.Methods)
-            {
-                if (view.Methods.Any(had => had.Name == want.Name
-                                         && had.Params.Count == want.Params.Count))
-                {
-                    continue;
-                }
-
-                MethodSymbol made = new()
-                {
-                    Name = want.Name, Returns = want.Returns, Owner = view,
-                    VtableSlot = want.VtableSlot,
-                };
-
-                foreach (ParamSymbol p in want.Params)
-                {
-                    made.Params.Add(new ParamSymbol { Name = p.Name, Type = p.Type });
-                }
-
-                view.Methods.Add(made);
-            }
-        }
+        ImplementSlots(view, view.Interfaces.ToList());
 
         _r.Types[name] = view;
         _r.ArrayViews.Add(view);
@@ -6724,21 +7078,9 @@ public sealed partial class Binder
             Name = "at", Type = Type.I32, Owner = walker, Offset = header + word,
         });
 
-        foreach (MethodSymbol want in face.Methods)
-        {
-            MethodSymbol made = new()
-            {
-                Name = want.Name, Returns = want.Returns, Owner = walker,
-                VtableSlot = want.VtableSlot,
-            };
-
-            foreach (ParamSymbol p in want.Params)
-            {
-                made.Params.Add(new ParamSymbol { Name = p.Name, Type = p.Type });
-            }
-
-            walker.Methods.Add(made);
-        }
+        // EVERY METHOD OF THE INTERFACE AND OF THOSE IT EXTENDS: IEnumerator<T>
+        // is an IDisposable and an IEnumerator, as .NET's is.
+        ImplementSlots(walker, new List<TypeSymbol> { face });
 
         _r.Types[name] = walker;
         _r.ArrayViews.Add(walker);
@@ -6786,6 +7128,18 @@ public sealed partial class Binder
         // arrives that way when a generic method's own T has just been
         // inferred, and the specialisation it means is the one the flat table
         // is keyed by.
+        // THE NON-GENERIC IEnumerable, which every array is too: the view made
+        // for IEnumerable<T> of its element answers it, IEnumerable<T>
+        // extending it. `objects.OfType<string>()` is called on exactly this.
+        if (face.Decl is { Template: null, TypeParams.Count: 0 } && Bare(face.Name) == "IEnumerable"
+            && to.Args.Count == 0 && RefOf(element) is TypeRef each
+            && _r.Types.TryGetValue(Monomorphiser.MangledName("IEnumerable", new List<TypeRef> { each }),
+                                    out TypeSymbol? generic)
+            && generic.Decl is { Template: not null } sequence)
+        {
+            return sequence;
+        }
+
         if (face.Decl is not { Template: not null } made)
         {
             if (to.Args is not { Count: 1 } open
@@ -6850,6 +7204,58 @@ public sealed partial class Binder
     /// ones, because the parameter in `IReadOnlyList&lt;T&gt;` is the
     /// template's own T and means nothing anywhere the call was written.
     /// </summary>
+    /// <summary>
+    /// A written type argument of a template's base, with the template's own
+    /// parameters put in: `IGrouping&lt;K, E&gt;` in `ILookup&lt;K, E&gt; :
+    /// IEnumerable&lt;IGrouping&lt;K, E&gt;&gt;` is an IGrouping&lt;char, string&gt;
+    /// for an ILookup&lt;char, string&gt; -- the specialisation when one exists,
+    /// the template with its arguments beside it when it does not yet. Null
+    /// when some part of it names nothing.
+    /// </summary>
+    private Type? Opened(TypeRef a, Dictionary<string, Type> mine, int depth)
+    {
+        if (depth > 8)
+        {
+            return null;
+        }
+
+        Type? made;
+        if (a.Args.Count == 0 && mine.TryGetValue(a.Name, out Type? bound))
+        {
+            made = bound;
+        }
+        else if (a.Args.Count == 0)
+        {
+            // A CLOSED ONE -- `IComparable<string>` -- is what it names. Asked
+            // quietly: a name that means nothing here is no match, not an error
+            // in the code that asked.
+            _quiet++;
+            made = Resolve(new TypeRef { Name = a.Name, Line = a.Line, Col = a.Col }, _thisType);
+            _quiet--;
+        }
+        else
+        {
+            List<Type> args = new();
+            foreach (TypeRef inner in a.Args)
+            {
+                if (Opened(inner, mine, depth + 1) is not { } one) return null;
+                args.Add(one);
+            }
+            if (!FindType(Arity(a.Name, args.Count), out TypeSymbol? generic) || generic?.Decl is not { } decl
+                || decl.TypeParams.Count != args.Count)
+            {
+                return null;
+            }
+            made = Close(WithArgs(new Type { Prim = Prim.Void, Symbol = generic }, args), new Dictionary<string, Type>());
+        }
+
+        if (made is null || made.IsError) return null;
+        if (a.PointerDepth > 0) return null;
+        if (a.ArrayRank > 0) made = Type.ArrayOf(made, a.ArrayRank);
+        return a.Nullable ? made.AsNullable() : made;
+    }
+
+
     private List<Type>? OpenAs(TypeDecl template, string face, int arity,
                                Dictionary<string, Type> mine, int depth)
     {
@@ -6865,8 +7271,7 @@ public sealed partial class Binder
 
             foreach (TypeRef a in b.Args)
             {
-                if (a.Args.Count == 0 && a.ArrayRank == 0 && !a.Nullable
-                    && mine.TryGetValue(a.Name, out Type? bound))
+                if (Opened(a, mine, depth) is { } bound)
                 {
                     args.Add(bound);
                 }
@@ -6887,8 +7292,7 @@ public sealed partial class Binder
                 return args;
             }
 
-            if (!(FindType(b.Name, out TypeSymbol? holder)
-                  || FindType(Arity(b.Name, b.Args.Count), out holder))
+            if (!FindBase(b, out TypeSymbol? holder)
                 || holder?.Decl is not { } deeper
                 || deeper.TypeParams.Count != args.Count)
             {
@@ -7070,7 +7474,11 @@ public sealed partial class Binder
 
         foreach (ParamSymbol p in invoke.Params)
         {
-            Type filled = Substitute(Substitute(p.Type, applied), bound);
+            // CLOSED, not merely substituted: the second parameter of
+            // GroupBy's resultSelector is `IEnumerable<T>`, and a bare
+            // Substitute only replaces a T standing alone or as an array's
+            // element, so `ps.First()` was asked of an open IEnumerable<T>.
+            Type filled = Close(Substitute(p.Type, applied), bound);
 
             if (filled.ParamName != null)
             {
@@ -7422,13 +7830,18 @@ public sealed partial class Binder
         // BY ITS KEY, which keeps a nested template's outer: List<T>.Enumerator
         // closed over a tuple is List$Enumerator$ValueTuple_int_string, and
         // its bare name found nothing and left the template standing.
+        //
+        // KEEPING ITS `?`: `IComparer<K>? comparer` closed over string is an
+        // IComparer$string that may be null, and dropping the annotation had
+        // every null a caller passed for it refused.
         if (_r.Types.TryGetValue(Monomorphiser.MangledName(Bare(template.Key), args), out TypeSymbol? real))
         {
-            return new Type
+            Type specialised = new()
             {
                 Prim = real.Kind == TypeKind.Enum ? Prim.I32 : Prim.Void,
                 Symbol = real, UseArgs = closed,
             };
+            return made.Nullable ? specialised.AsNullable() : specialised;
         }
 
         // INSIDE A CANONICAL COPY, A WORD IS __canon. `ValueTask<R>.AsTask`
@@ -7441,7 +7854,8 @@ public sealed partial class Binder
         if (InCanonicalCopy && closed.All(a => a.Prim == Prim.Any && a.Symbol is null && a.Args.Count == 0)
             && _r.Types.TryGetValue(Monomorphiser.CanonNameOf(Bare(template.Key), closed.Count), out TypeSymbol? shared))
         {
-            return new Type { Prim = Prim.Void, Symbol = shared, UseArgs = closed };
+            Type canonical = new() { Prim = Prim.Void, Symbol = shared, UseArgs = closed };
+            return made.Nullable ? canonical.AsNullable() : canonical;
         }
 
         // THE SPECIALISATION MAY NOT EXIST YET. `Repeat<T>` returning
@@ -7489,11 +7903,42 @@ public sealed partial class Binder
         return null;
     }
 
-    private static Dictionary<string, Type>? Received(Type target, TypeSymbol owner)
+    private Dictionary<string, Type>? Received(Type target, TypeSymbol owner)
     {
         List<TypeParam>? parameters = owner.Decl?.TypeParams;
 
-        if (parameters is null || parameters.Count == 0 || target.Args.Count != parameters.Count)
+        if (parameters is null || parameters.Count == 0)
+        {
+            return null;
+        }
+
+        // A MEMBER OF A BASE: the receiver's arguments are its OWN template's,
+        // and reach the declaring type through the base list. An ILookup<K, E>
+        // walked by foreach has the GetEnumerator of IEnumerable<IGrouping<K,
+        // E>>, whose T is not ILookup's K -- matching by count alone bound the
+        // wrong parameters, or (as here) none and left the element a bare T.
+        Type on = target.AsNonNullable();
+        if (on.Symbol is { } held && !ReferenceEquals(held, owner)
+            && held.Decl is { TypeParams.Count: > 0 } template && on.Args.Count == template.TypeParams.Count)
+        {
+            Dictionary<string, Type> mine = new(StringComparer.Ordinal);
+            for (int i = 0; i < template.TypeParams.Count; i++)
+            {
+                mine[template.TypeParams[i].Name] = on.Args[i];
+            }
+            if (OpenAs(template, Bare(owner.Name), parameters.Count, mine, 0) is not { } through)
+            {
+                return null;
+            }
+            Dictionary<string, Type> theirs = new(StringComparer.Ordinal);
+            for (int i = 0; i < parameters.Count; i++)
+            {
+                theirs[parameters[i].Name] = through[i];
+            }
+            return theirs;
+        }
+
+        if (target.Args.Count != parameters.Count)
         {
             return null;
         }
@@ -8143,12 +8588,14 @@ public sealed partial class Binder
 
             for (int i = 0; i < index.Count; i++)
             {
-                index[i] = Settle(one.Args[i], setter.Params[i].Type, index[i]);
-                CheckAssignable(index[i], setter.Params[i].Type, one.Args[i], "index");
+                Type key = ThroughUnmade(type, setter, setter.Params[i].Type);
+                index[i] = Settle(one.Args[i], key, index[i]);
+                CheckAssignable(index[i], key, one.Args[i], "index");
             }
 
-            value = Settle(one.Value, setter.Params[index.Count].Type, value);
-            CheckAssignable(value, setter.Params[index.Count].Type, one.Value, "the value");
+            Type stored = ThroughUnmade(type, setter, setter.Params[index.Count].Type);
+            value = Settle(one.Value, stored, value);
+            CheckAssignable(value, stored, one.Value, "the value");
             _r.InitIndexer[one] = setter;
         }
     }
@@ -8425,6 +8872,15 @@ public sealed partial class Binder
                 return CheckName(n);
 
             case MemberExpr m:
+                // `Length`, OR `Count` when that is what the type has.
+                if (m.Else is not null)
+                {
+                    Type on = Peek(m.Target).AsNonNullable();
+                    if (!Countable(on, m.Name) && Countable(on, m.Else))
+                    {
+                        m.Name = m.Else;
+                    }
+                }
                 return CheckMember(m);
 
             // `x.ToString()` ON SOMETHING THAT IS NOT AN OBJECT.
@@ -8533,6 +8989,12 @@ public sealed partial class Binder
                 _subject.RemoveAt(_subject.Count - 1);
                 return answer;
             }
+
+            // The statement's names belong to the scope the expression is in,
+            // as a pattern's own bindings do.
+            case SequenceExpr seq:
+                CheckStmt(seq.Effect);
+                return CheckExpr(seq.Value);
 
             case SubjectExpr subject when _subject.Count > subject.Outer:
             {
@@ -8771,6 +9233,62 @@ public sealed partial class Binder
                 return CheckExpr(once);
             }
 
+            // AN INDEX OR A RANGE HELD IN A VALUE: `arr[r]` with `Range r`,
+            // `list[i]` with `Index i`. C# gives every countable type both
+            // (C# 12.8.12.3's implicit Index and Range support): an Index is
+            // turned into the offset it names, and a Range becomes a call of
+            // the type's slicing member -- GetSubArray for an array, Substring
+            // for a string, Slice for anything that has one. Only when the
+            // type has no indexer taking the Index or Range itself.
+            case IndexExpr { Args.Count: 1, NullConditional: false } valued
+                when valued.Args[0] is not (RangeExpr or FromEndExpr or LiteralExpr)
+                     && Peek(valued.Args[0]).AsNonNullable() is { } held && (IsIndexType(held) || IsRangeType(held))
+                     && Peek(valued.Target).AsNonNullable() is { IsError: false } indexed
+                     && !(indexed.Symbol is { } owner && Reachable(owner, "get_Item").Any(g => g.Params.Count == 1
+                          && MethodSignatures.SameType(g.Params[0].Type.AsNonNullable(), held))):
+            {
+                Expr made = ThroughIndexValue(valued, indexed, IsRangeType(held));
+                _r.Rewrites[valued] = made;
+                return CheckExpr(made);
+            }
+
+            // `^1` AND `1..^1` AS VALUES, a System.Index and a System.Range,
+            // made the way C# makes them.
+            case FromEndExpr end:
+            {
+                NewExpr index = new()
+                {
+                    Type = new TypeRef { Name = "Index", Line = end.Line, Col = end.Col },
+                    Line = end.Line, Col = end.Col,
+                };
+                index.Args.Add(end.Offset);
+                index.ArgNames.Add(null);
+                index.Args.Add(new LiteralExpr { Kind = Lit.Bool, Text = "true", IntValue = 1, Line = end.Line, Col = end.Col });
+                index.ArgNames.Add(null);
+                _r.Rewrites[end] = index;
+                return CheckExpr(index);
+            }
+
+            case RangeExpr range:
+            {
+                Expr Bound(Expr? given, string otherwise) => given ?? new MemberExpr
+                {
+                    Target = new NameExpr { Name = "Index", Line = range.Line, Col = range.Col },
+                    Name = otherwise, Line = range.Line, Col = range.Col,
+                };
+                NewExpr made = new()
+                {
+                    Type = new TypeRef { Name = "Range", Line = range.Line, Col = range.Col },
+                    Line = range.Line, Col = range.Col,
+                };
+                made.Args.Add(Bound(range.From, "Start"));
+                made.ArgNames.Add(null);
+                made.Args.Add(Bound(range.To, "End"));
+                made.ArgNames.Add(null);
+                _r.Rewrites[range] = made;
+                return CheckExpr(made);
+            }
+
             case IndexExpr ix:
             {
                 Type target = CheckExpr(ix.Target);
@@ -8808,12 +9326,15 @@ public sealed partial class Binder
                     {
                         for (int i = 0; i < ix.Args.Count; i++)
                         {
-                            CheckAssignable(index[i], getter.Params[i].Type, ix.Args[i], "index");
+                            CheckAssignable(index[i], ThroughUnmade(target, getter, getter.Params[i].Type),
+                                            ix.Args[i], "index");
                         }
 
                         RequireNonNull(target, ix.Target, "index into");
                         _r.Indexers[ix] = getter;
-                        return ContextualMemberResult(target, getter);
+                        return Unmade(target.AsNonNullable())
+                            ? ThroughUnmade(target, getter, getter.Returns)
+                            : ContextualMemberResult(target, getter);
                     }
                 }
 
@@ -9457,14 +9978,22 @@ public sealed partial class Binder
                     if (a.Op is BinOp.Add or BinOp.Sub && target.Symbol?.Decl is { IsDelegate: true } delegateDecl)
                     {
                         ok = true;
-                        Expr qualified = new NameExpr { Name = delegateDecl.Name + "__Multicast", Line = a.Line, Col = a.Col };
+                        // A GENERIC DELEGATE'S COPY COMBINES THROUGH ITS OWN
+                        // STATICS (Parser.ParseDelegateDeclaration): the copy
+                        // `EventHandler$int` exists, and its Combine names the
+                        // multicast copy made with it. Any other delegate
+                        // through the multicast written beside it.
+                        bool generic = delegateDecl.Template is not null
+                            && target.Symbol!.FindMethods("Combine").Any(m => m.Static);
+                        string holder = generic ? delegateDecl.Name : delegateDecl.Name + "__Multicast";
+                        Expr qualified = new NameExpr { Name = holder, Line = a.Line, Col = a.Col };
                         if (!string.IsNullOrEmpty(delegateDecl.Namespace))
                         {
                             string[] parts = delegateDecl.Namespace.Split('.');
                             Expr chain = new NameExpr { Name = parts[0], Line = a.Line, Col = a.Col };
                             for (int i = 1; i < parts.Length; i++)
                                 chain = new MemberExpr { Target = chain, Name = parts[i], Line = a.Line, Col = a.Col };
-                            qualified = new MemberExpr { Target = chain, Name = delegateDecl.Name + "__Multicast", Line = a.Line, Col = a.Col };
+                            qualified = new MemberExpr { Target = chain, Name = holder, Line = a.Line, Col = a.Col };
                         }
                         CallExpr synthesised = new()
                         {
@@ -9724,6 +10253,9 @@ public sealed partial class Binder
                 Type result = Type.Error;
                 bool first = true;
                 bool exhaustive = false;
+                Coverage covered = new();
+                bool sawTrue = false, sawFalse = false;
+                List<Sym> pastNull = new();
 
                 foreach (SwitchArm arm in sx.Arms)
                 {
@@ -9860,11 +10392,47 @@ public sealed partial class Binder
                         armProof = Assume(arm.When, true);
                     }
 
+                    // PAST A `null =>` ARM THE SUBJECT IS NOT NULL: every later
+                    // arm is only reached by a value that arm did not take, and
+                    // C#'s flow analysis knows it -- `null => "none", _ =>
+                    // o.GetType().Name` reads o without a check.
+                    if (arm.When is BinaryExpr { Op: BinOp.Eq, Left: SubjectExpr { Outer: 0 }, Right: LiteralExpr { Kind: Lit.Null } }
+                        || arm.Value is LiteralExpr { Kind: Lit.Null } && arm.When is null)
+                    {
+                        pastNull.AddRange(Assume(new BinaryExpr
+                        {
+                            Op = BinOp.Ne, Left = sx.Subject,
+                            Right = new LiteralExpr { Kind = Lit.Null, Text = "null", Line = arm.Line, Col = arm.Col },
+                            Line = arm.Line, Col = arm.Col,
+                        }, true));
+                    }
+
                     // `_` WITH NO GUARD IS THE ONE THAT MAKES IT EXHAUSTIVE.
                     // One behind a guard matches only sometimes, so it settles
                     // nothing -- and a switch expression that falls off the end
                     // has no value to be.
-                    exhaustive = exhaustive || (arm.Discard && arm.When is null);
+                    if (!arm.Fallback)
+                    {
+                        exhaustive = exhaustive || (arm.Discard && arm.When is null);
+
+                        // A PATTERN THAT CAN ONLY FAIL ON LENGTH -- `[]`, `[var
+                        // x]`, `[_, _, ..]` -- covers those lengths, and
+                        // together they may cover them all.
+                        if (arm.Discard && arm.When is not null && Lengths(arm.When) is { } lengths)
+                        {
+                            covered.Union(lengths);
+                            exhaustive = exhaustive || covered.All;
+                        }
+
+                        // AND `true` WITH `false` IS EVERY bool.
+                        if (arm.Value is not null && arm.When is null && subject.Prim == Prim.Bool && !subject.Nullable
+                            && ConstantValue(arm.Value, _thisType) is long truth)
+                        {
+                            sawTrue |= truth != 0;
+                            sawFalse |= truth == 0;
+                            exhaustive = exhaustive || sawTrue && sawFalse;
+                        }
+                    }
 
                     Type value = CheckExpr(arm.Result);
 
@@ -9913,6 +10481,7 @@ public sealed partial class Binder
                 }
 
                 _subject.RemoveAt(_subject.Count - 1);
+                Forget(pastNull);
 
                 if (sx.Arms.Count == 0)
                 {
@@ -9941,9 +10510,11 @@ public sealed partial class Binder
                 // path, and there is nothing sensible to produce when nothing
                 // matched -- C# throws, and throwing here would mean inventing
                 // an exception type and a control-flow path nobody asked for.
+                // A WARNING, AS C#'s CS8509 IS: the arm the parser added throws
+                // SwitchExpressionException for a value no written arm took.
                 if (!exhaustive)
                 {
-                    Error(sx, "this switch expression has no '_' arm, so there is a value it cannot produce");
+                    Warning(sx, "the switch expression does not handle all possible values of its input type (it is not exhaustive)");
                 }
                 return result;
             }
@@ -10351,6 +10922,22 @@ public sealed partial class Binder
     private static bool Unmade(Type t)
         => t.Symbol?.Decl is { TypeParams.Count: > 0 } template
         && t.Args.Count == template.TypeParams.Count;
+
+    /// <summary>
+    /// A member's declared type as seen through an UNMADE receiver: the
+    /// template's parameters replaced by the arguments beside it, through the
+    /// base list when the member is an interface's the template extends.
+    /// `people.ToLookup(p => p.City)["Rome"]` indexes an ILookup&lt;string,
+    /// Person&gt; no copy spells yet, whose indexer takes a K and hands back an
+    /// IEnumerable&lt;E&gt; -- a string and an IEnumerable&lt;Person&gt; here, or the
+    /// Select after it is asked of an open sequence. Any other receiver: the
+    /// declared type unchanged.
+    /// </summary>
+    private Type ThroughUnmade(Type receiver, MethodSymbol member, Type declared)
+        => Unmade(receiver.AsNonNullable()) && member.Owner is { } owner
+            && Received(receiver, owner) is { } bound
+            ? Close(declared, bound)
+            : declared;
 
     private static bool Open(Type t)
     {
@@ -11259,7 +11846,7 @@ public sealed partial class Binder
                      : f.Type;
             }
 
-            List<MethodSymbol> methods = _thisType.FindMethods(n.Name);
+            List<MethodSymbol> methods = Members(_thisType, n.Name);
 
             // From a static method only the static overloads are callable
             // without a receiver; a group with none is CS0120.
@@ -11280,7 +11867,7 @@ public sealed partial class Binder
                 return Type.Void;
             }
 
-            MethodSymbol? getter = _thisType.FindMethods("get_" + n.Name).FirstOrDefault();
+            MethodSymbol? getter = Members(_thisType, "get_" + n.Name).FirstOrDefault();
 
             if (getter is { Static: false } && InStaticContext)
             {
@@ -11475,6 +12062,22 @@ public sealed partial class Binder
         {
             _r.Resolved[n] = new MethodGroupSym(rooted.Where(m => m.Static).ToList());
             return Type.Void;
+        }
+
+        // A GENERIC TYPE NAMED WITH ITS ARGUMENTS, `Comparer<int>` of
+        // `Comparer<int>.Default`: resolved as a written type is, which asks for
+        // the specialisation. A generic method's copy leaves it so, its type
+        // parameters bound only in the copy (Monomorphiser, NameExpr).
+        if (n.TypeArgs.Count > 0)
+        {
+            TypeRef written = new() { Name = n.Name, Line = n.Line, Col = n.Col };
+            written.Args.AddRange(n.TypeArgs);
+            Type made = Resolve(written, _thisType);
+            if (!made.IsError && made.Symbol is TypeSymbol generic)
+            {
+                _r.Resolved[n] = new TypeNameSym(generic);
+                return made;
+            }
         }
 
         // A TYPE NAME, either written out or spelled with its keyword.
@@ -13810,7 +14413,7 @@ public sealed partial class Binder
                 // As AssignSlots maps an interface member: an explicit
                 // implementation for this interface first, then a public one
                 // of the name -- on this class or inherited.
-                string ifaceName = PlainName(home.Decl?.Template ?? home.Name);
+                string ifaceName = ExplicitName(home);
                 own = t.Methods.FirstOrDefault(m => m.ExplicitMember == best.Name && m.ExplicitInterface == ifaceName
                           && !m.Abstract && m.TypeParams.Count == best.TypeParams.Count && MethodSignatures.Implements(m, best))
                    ?? t.FindMethods(best.Name).FirstOrDefault(m => !m.Static && !m.Abstract
@@ -14046,6 +14649,7 @@ public sealed partial class Binder
             BinOp.Xor => "op_ExclusiveOr",
             BinOp.Shl => "op_LeftShift",
             BinOp.Shr => "op_RightShift",
+            BinOp.UShr => "op_UnsignedRightShift",
             BinOp.Eq => "op_Equality",
             BinOp.Ne => "op_Inequality",
             BinOp.Lt => "op_LessThan",
@@ -14380,6 +14984,7 @@ public sealed partial class Binder
 
             case BinOp.Shl:
             case BinOp.Shr:
+            case BinOp.UShr:
                 if (!l.IsInteger || !r.IsInteger)
                 {
                     Error(b, $"shifts need integers, not '{l}' and '{r}'");

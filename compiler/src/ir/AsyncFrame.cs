@@ -18,6 +18,13 @@ public sealed class AsyncFrame
     public required string SizeSymbol { get; init; }
 
     /// <summary>
+    /// What the body returns when it suspends: nothing for an async method's
+    /// Invoke, and true for an iterator's MoveNext, which suspends at each
+    /// `yield return` having produced an element.
+    /// </summary>
+    public Operand? SuspendResult { get; init; }
+
+    /// <summary>
     /// Set once AsyncTransform has made the body a state machine: no marker is
     /// left in it and it may be written to an object's IR archive. What stays
     /// is the record that it was async, which later passes read (a frame

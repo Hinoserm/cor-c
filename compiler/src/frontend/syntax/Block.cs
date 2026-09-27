@@ -14,4 +14,11 @@ public sealed class Block : Stmt
     /// method, visible under its own name throughout the block.
     /// </summary>
     public List<(string Name, string Method)> GenericLocals { get; } = new();
+
+    /// <summary>
+    /// The body of an iterator: it holds a `yield`, so the method, lambda or
+    /// local function it belongs to returns an enumerator that runs it a step
+    /// at a time, as C# runs one -- nothing until the first MoveNext.
+    /// </summary>
+    public bool Iterator { get; set; }
 }

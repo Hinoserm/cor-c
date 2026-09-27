@@ -245,6 +245,10 @@ public sealed partial class Lowering
                 EmitSwitch(sw);
                 break;
 
+            case YieldStmt y:
+                EmitYield(y);
+                break;
+
             case ReturnStmt r:
             {
                 if (r.Value is not null && _method is not null && _returnValue is not null)

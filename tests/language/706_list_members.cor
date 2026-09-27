@@ -1,0 +1,60 @@
+// test: list_members
+// expect-exit: 0
+// expect-output:
+// v5,v3,v8,v3,v9,v1
+// 3 2 3 1
+// 3 -1 1 3
+// 5,3,8,3,9,1
+// 3 -4 4
+// a,b,a,b b,a
+// 4 8 8
+// 1
+// 29
+// Collection was modified; enumeration operation may not execute.
+// Collection was modified; enumeration operation may not execute.
+// set: Collection was modified; enumeration operation may not execute.
+// Index was out of range. Must be non-negative and less than the size of the collection. (Parameter 'index')
+// 5 5
+// threw
+//
+// The rest of .NET's List<T>: ConvertAll, FindIndex/FindLastIndex/IndexOf/
+// LastIndexOf with ranges, Reverse and BinarySearch over a range, Slice,
+// EnsureCapacity and TrimExcess, ForEach, AddRange of itself; a change under
+// a foreach, a ForEach or an enumerator is an InvalidOperationException, and
+// Current stays what MoveNext took. Expected output is what .NET 10 prints.
+
+using System;
+using System.Collections.Generic;
+static class P
+{
+    static int Main()
+    {
+        var list = new List<int> { 5, 3, 8, 3, 9, 1 };
+        Console.WriteLine(string.Join(",", list.ConvertAll(x => "v" + x)));
+        Console.WriteLine($"{list.FindIndex(2, x => x == 3)} {list.FindIndex(1, 2, x => x > 7)} {list.FindLastIndex(4, x => x == 3)} {list.FindLastIndex(2, 2, x => x < 4)}");
+        Console.WriteLine($"{list.IndexOf(3, 2)} {list.IndexOf(3, 2, 1)} {list.LastIndexOf(3, 2)} {list.LastIndexOf(3, 5, 3)}");
+        list.Reverse(1, 3);
+        Console.WriteLine(string.Join(",", list));
+        var sorted = new List<int> { 1, 3, 5, 7, 9, 11 };
+        Console.WriteLine($"{sorted.BinarySearch(2, 3, 7, null)} {sorted.BinarySearch(2, 3, 6, null)} {sorted.BinarySearch(9)}");
+        var self = new List<string> { "a", "b" };
+        self.AddRange(self);
+        Console.WriteLine(string.Join(",", self) + " " + string.Join(",", self.Slice(1, 2)));
+        var cap = new List<int>();
+        Console.WriteLine($"{cap.EnsureCapacity(3)} {cap.EnsureCapacity(5)} {cap.Capacity}");
+        cap.Add(1); cap.TrimExcess();
+        Console.WriteLine(cap.Capacity);
+        int total = 0; list.ForEach(x => total += x);
+        Console.WriteLine(total);
+        try { list.ForEach(x => { if (x == 8) list.Add(0); }); } catch (InvalidOperationException e) { Console.WriteLine(e.Message); }
+        try { foreach (int x in list) if (x == 9) list.Remove(x); } catch (InvalidOperationException e) { Console.WriteLine(e.Message); }
+        try { foreach (int x in list) list[0] = x; } catch (InvalidOperationException e) { Console.WriteLine("set: " + e.Message); }
+        try { int y = list[99]; } catch (ArgumentOutOfRangeException e) { Console.WriteLine(e.Message); }
+        IEnumerable<int> seq = list;
+        using var en = seq.GetEnumerator();
+        en.MoveNext(); int first = en.Current; list.Clear();
+        Console.WriteLine($"{first} {en.Current}");
+        try { en.MoveNext(); } catch (InvalidOperationException) { Console.WriteLine("threw"); }
+        return 0;
+    }
+}

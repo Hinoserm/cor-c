@@ -712,6 +712,12 @@ public sealed partial class Lowering
                 return Eval(pat.Test);
             }
 
+            // A STATEMENT, THEN A VALUE: a positional pattern taking its subject
+            // apart before its elements are tested.
+            case SequenceExpr seq:
+                EmitStmt(seq.Effect);
+                return Eval(seq.Value);
+
             case SubjectExpr subject when _b.Resolved.TryGetValue(subject, out Sym? where):
             {
                 Place? p = PlaceOfSym(where, subject);
@@ -2548,7 +2554,7 @@ public sealed partial class Lowering
         // AND ARITHMETIC IS LIFTED: `a + b` over an `int?` is null when either
         // side is, and the sum, in a new cell, when both have a value.
         if (b.Op is BinOp.Add or BinOp.Sub or BinOp.Mul or BinOp.Div or BinOp.Rem
-                or BinOp.And or BinOp.Or or BinOp.Xor or BinOp.Shl or BinOp.Shr
+                or BinOp.And or BinOp.Or or BinOp.Xor or BinOp.Shl or BinOp.Shr or BinOp.UShr
             && (left.IsNullableValue || right.IsNullableValue)
             && left.Prim != Prim.NullLiteral && right.Prim != Prim.NullLiteral
             && !(left.Prim == Prim.String || right.Prim == Prim.String))
@@ -2884,7 +2890,7 @@ public sealed partial class Lowering
         if (r.Prim == Prim.Bool)
             r = Type.I32;
 
-        if (op is BinOp.Shl or BinOp.Shr)
+        if (op is BinOp.Shl or BinOp.Shr or BinOp.UShr)
         {
             return NumericRules.Unary(l);
         }
@@ -2898,7 +2904,7 @@ public sealed partial class Lowering
     }
 
     private static Type RightOperandPromotion(BinOp op, Type right, Type promoted)
-        => op is BinOp.Shl or BinOp.Shr ? Type.I32 : promoted;
+        => op is BinOp.Shl or BinOp.Shr or BinOp.UShr ? Type.I32 : promoted;
 
     private static Type ResultTypeOf(BinOp op, Type promoted)
         => op is BinOp.Eq or BinOp.Ne or BinOp.Lt or BinOp.Gt or BinOp.Le or BinOp.Ge ? Type.Bool : promoted;
@@ -2949,6 +2955,7 @@ public sealed partial class Lowering
             case BinOp.Xor: return _e.Binary(Opcode.Xor, l, r);
             case BinOp.Shl: return Canonical(_e.Binary(Opcode.Shl, R(l), R(r), l.Type), operand);
             case BinOp.Shr: return _e.Binary(un ? Opcode.ShrU : Opcode.ShrS, R(l), R(r), l.Type);
+            case BinOp.UShr: return _e.Binary(Opcode.ShrU, R(l), R(r), l.Type);
 
             case BinOp.Div:
             case BinOp.Rem:
@@ -3173,8 +3180,13 @@ public sealed partial class Lowering
     {
         if (_b.Types.TryGetValue(Prelude.StringType, out TypeSymbol? type))
         {
-            MethodSymbol? found = type.Methods
-                .FirstOrDefault(m => m.Name == method && m.Static && m.Params.Count == argCount);
+            // THE ALL-STRING OVERLOAD when there are several of the arity:
+            // Concat has (string, string) beside (object?, object?) and a
+            // span pair, and `a + b` means the first.
+            List<MethodSymbol> named = type.Methods
+                .Where(m => m.Name == method && m.Static && m.Params.Count == argCount).ToList();
+            MethodSymbol? found = named.FirstOrDefault(m => m.Params.All(p => p.Type.Prim == Prim.String))
+                                  ?? named.FirstOrDefault();
             if (found is not null)
             {
                 Require(found);

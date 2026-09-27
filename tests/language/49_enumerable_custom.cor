@@ -24,6 +24,9 @@ class Countdown : IEnumerable<int>
     {
         return new CountdownEnumerator(from);
     }
+
+    // What C# requires of an IEnumerable<T>: it is an IEnumerable as well.
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
 }
 
 class CountdownEnumerator : IEnumerator<int>
@@ -38,6 +41,11 @@ class CountdownEnumerator : IEnumerator<int>
     }
 
     public int Current => current;
+
+    // And of an IEnumerator<T>: an IEnumerator and an IDisposable as well.
+    object System.Collections.IEnumerator.Current => current;
+    public void Reset() { }
+    public void Dispose() { }
 
     public bool MoveNext()
     {

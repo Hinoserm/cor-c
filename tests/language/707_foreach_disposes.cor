@@ -1,0 +1,61 @@
+// test: foreach_disposes
+// expect-exit: 0
+// expect-output:
+// 1
+// 2
+// 3
+// disposed at 4
+// disposed at 2
+// disposed at 1
+// boom
+// p1
+// p2
+// plain disposed
+// 7
+//
+// A foreach disposes its enumerator however the loop ends -- run out, broken
+// out of, thrown out of -- a struct enumerator's too; and IEnumerable<T> and
+// IEnumerator<T> are the non-generic IEnumerable and IEnumerator as well, as
+// .NET's are. Expected output is what .NET 10 prints.
+
+using System;
+using System.Collections;
+using System.Collections.Generic;
+class Counter : IEnumerable<int>
+{
+    public IEnumerator<int> GetEnumerator() => new Walk();
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+    class Walk : IEnumerator<int>
+    {
+        int at;
+        public int Current => at;
+        public bool MoveNext() => ++at <= 3;
+        public void Dispose() => Console.WriteLine("disposed at " + at);
+        object IEnumerator.Current => at;
+        public void Reset() => at = 0;
+    }
+}
+struct Plain
+{
+    public PlainWalk GetEnumerator() => new PlainWalk();
+}
+struct PlainWalk : IDisposable
+{
+    int at;
+    public int Current => at;
+    public bool MoveNext() => ++at <= 2;
+    public void Dispose() => Console.WriteLine("plain disposed");
+}
+static class P
+{
+    static int Main()
+    {
+        foreach (int x in new Counter()) Console.WriteLine(x);
+        foreach (int x in new Counter()) { if (x == 2) break; }
+        try { foreach (int x in new Counter()) { if (x == 1) throw new Exception("boom"); } } catch (Exception e) { Console.WriteLine(e.Message); }
+        foreach (int x in new Plain()) Console.WriteLine("p" + x);
+        IEnumerable<int> seq = new List<int> { 7 };
+        foreach (int x in seq) Console.WriteLine(x);
+        return 0;
+    }
+}

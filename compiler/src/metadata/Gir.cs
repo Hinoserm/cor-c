@@ -225,7 +225,7 @@ public static class Gir
         Null = 0,
         Block = 1, Local = 2, ExprStmt = 3, If = 4, While = 5, Do = 6, For = 7,
         Foreach = 8, Return = 9, Break = 10, Continue = 11, Throw = 12,
-        Switch = 13, Try = 14, GotoCase = 15, Deconstruct = 16, UsingDecl = 17,
+        Switch = 13, Try = 14, GotoCase = 15, Deconstruct = 16, UsingDecl = 17, Yield = 18,
     }
 
     private enum E : byte
@@ -236,7 +236,7 @@ public static class Gir
         Assign = 13, Conditional = 14, Cast = 15, RefArg = 16, Is = 17, As = 18,
         Await = 19, Lambda = 20, SwitchExpr = 21, Suppress = 22, TypeOf = 23,
         Throw = 24, Tuple = 25, Range = 26, FromEnd = 27, With = 28,
-        Pattern = 29, Subject = 30,
+        Pattern = 29, Subject = 30, Sequence = 31,
     }
 
     private enum M : byte
@@ -514,6 +514,7 @@ public static class Gir
                 case Block b:
                     U8((byte)S.Block);
                     U8(b.ArithmeticContext);
+                    Bool(b.Iterator);
                     I32(b.GenericLocals.Count);
                     foreach ((string name, string method) in b.GenericLocals) { Str(name); Str(method); }
                     I32(b.Statements.Count);
@@ -590,6 +591,11 @@ public static class Gir
                 case ReturnStmt r:
                     U8((byte)S.Return);
                     Expr(r.Value);
+                    break;
+
+                case YieldStmt y:
+                    U8((byte)S.Yield);
+                    Expr(y.Value);
                     break;
 
                 case BreakStmt:
@@ -766,6 +772,8 @@ public static class Gir
                     Expr(m.Target);
                     Str(m.Name);
                     Bool(m.NullConditional);
+                    Bool(m.Guarded);
+                    Str(m.Else ?? "");
                     I32(m.TypeArgs.Count);
 
                     foreach (TypeRef a in m.TypeArgs)
@@ -944,6 +952,7 @@ public static class Gir
                         Str(arm.Binding);
                         Expr(arm.When);
                         Bool(arm.Discard);
+                        Bool(arm.Fallback);
                         Expr(arm.Result);
                     }
                     break;
@@ -1008,6 +1017,12 @@ public static class Gir
                     U8((byte)E.Pattern);
                     Expr(pat.Subject);
                     Expr(pat.Test);
+                    break;
+
+                case SequenceExpr seq:
+                    U8((byte)E.Sequence);
+                    Stmt(seq.Effect);
+                    Expr(seq.Value);
                     break;
 
                 case SubjectExpr subject:
@@ -1374,7 +1389,7 @@ public static class Gir
                 {
                     byte arithmetic = U8();
                     if (arithmetic > 2) throw new AsmException(0, "invalid block arithmetic context");
-                    Block b = new() { ArithmeticContext = arithmetic };
+                    Block b = new() { ArithmeticContext = arithmetic, Iterator = Bool() };
                     int locals = Count();
                     for (int i = 0; i < locals; i++) { string name = Str(); b.GenericLocals.Add((name, Str())); }
                     int n = Count();
@@ -1467,6 +1482,9 @@ public static class Gir
 
                 case S.Return:
                     return new ReturnStmt { Value = Expr() };
+
+                case S.Yield:
+                    return new YieldStmt { Value = Expr() };
 
                 case S.Break:
                     return new BreakStmt();
@@ -1670,7 +1688,13 @@ public static class Gir
                     Expr target = Need();
                     string name = Str();
                     bool conditional = Bool();
-                    MemberExpr m = new() { Target = target, Name = name, NullConditional = conditional };
+                    bool guarded = Bool();
+                    string orElse = Str();
+                    MemberExpr m = new()
+                    {
+                        Target = target, Name = name, NullConditional = conditional, Guarded = guarded,
+                        Else = orElse.Length == 0 ? null : orElse,
+                    };
                     int args = Count();
 
                     for (int i = 0; i < args; i++)
@@ -1857,11 +1881,12 @@ public static class Gir
                         string? binding = StrOrNull();
                         Expr? when = Expr();
                         bool discard = Bool();
+                        bool fallback = Bool();
 
                         se.Arms.Add(new SwitchArm
                         {
                             Value = value, Type = type, Binding = binding,
-                            When = when, Discard = discard, Result = Need(),
+                            When = when, Discard = discard, Fallback = fallback, Result = Need(),
                         });
                     }
                     return se;
@@ -1925,6 +1950,13 @@ public static class Gir
 
                 case E.Subject:
                     return new SubjectExpr { Outer = U8() };
+
+                case E.Sequence:
+                {
+                    Stmt effect = NeedStmt();
+
+                    return new SequenceExpr { Effect = effect, Value = Need() };
+                }
 
                 default:
                     throw new AsmException(0, $"{_from}: unknown expression {(byte)kind} in a template");

@@ -173,6 +173,14 @@ public static class Fold
                 value = x >> (int)y;
                 return true;
 
+            // Unsigned only differs from signed for a negative left side, and
+            // how many zeros come in then depends on its width, which a folded
+            // number no longer carries: that one is left to run time.
+            case BinOp.UShr:
+                if (y is < 0 or > 63 || x < 0) { return false; }
+                value = x >> (int)y;
+                return true;
+
             case BinOp.And: value = x & y; return true;
             case BinOp.Or:  value = x | y; return true;
             case BinOp.Xor: value = x ^ y; return true;

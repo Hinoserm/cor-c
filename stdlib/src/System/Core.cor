@@ -81,7 +81,12 @@ static class String {
     // Called by: a == b, a != b, a < b, and the rest. Ordinal, and the shared
     // prefix decides before the lengths do, so a prefix sorts before what
     // extends it. Culture-aware collation needs tables nobody in this world has.
-    public static int Compare(string a, string b) {
+    /// Ordinal, by UTF-16 code unit, as .NET's String.CompareOrdinal: null
+    /// before every string, and two nulls equal.
+    public static int Compare(string? a, string? b) {
+        if ((object?)a == (object?)b) { return 0; }
+        if (a == null) { return 0 - 1; }
+        if (b == null) { return 1; }
         int la = a.Length;
         int lb = b.Length;
         int n = la;
@@ -241,8 +246,13 @@ static class String {
     // FormatException, in .NET's words, rather than a blank -- a message with
     // a hole in it is worse than one that failed.
 
-    public static string Format(string format, params object[] args) {
+    public static string Format(string format, params object?[] args) {
+        return Format((IFormatProvider?)null, format, args);
+    }
+
+    public static string Format(IFormatProvider? provider, string format, params object?[] args) {
         if (format == null) { throw new ArgumentNullException("format"); }
+        if (args == null) { throw new ArgumentNullException("args"); }
 
         StringBuilder made = new StringBuilder();
         int at = 0;
@@ -304,21 +314,33 @@ static class String {
             if (alignText.Length > 0 && !Int32.TryParse(String.Trim(alignText), out width)) {
                 throw new FormatException("Input string was not in a correct format.");
             }
-            made.Append(Padded(Formatted(args[index], formatText), width));
+            made.Append(Padded(Formatted(args[index], formatText, provider), width));
         }
         return made.ToString();
     }
 
-    public static string Format(string format, object one) {
-        return Format(format, new object[] { one });
+    public static string Format(string format, object? arg0) {
+        return Format((IFormatProvider?)null, format, new object?[] { arg0 });
     }
 
-    public static string Format(string format, object one, object two) {
-        return Format(format, new object[] { one, two });
+    public static string Format(string format, object? arg0, object? arg1) {
+        return Format((IFormatProvider?)null, format, new object?[] { arg0, arg1 });
     }
 
-    public static string Format(string format, object one, object two, object three) {
-        return Format(format, new object[] { one, two, three });
+    public static string Format(string format, object? arg0, object? arg1, object? arg2) {
+        return Format((IFormatProvider?)null, format, new object?[] { arg0, arg1, arg2 });
+    }
+
+    public static string Format(IFormatProvider? provider, string format, object? arg0) {
+        return Format(provider, format, new object?[] { arg0 });
+    }
+
+    public static string Format(IFormatProvider? provider, string format, object? arg0, object? arg1) {
+        return Format(provider, format, new object?[] { arg0, arg1 });
+    }
+
+    public static string Format(IFormatProvider? provider, string format, object? arg0, object? arg1, object? arg2) {
+        return Format(provider, format, new object?[] { arg0, arg1, arg2 });
     }
 
     /// ONE ARGUMENT, WRITTEN. The format string after the colon belongs to the
@@ -326,12 +348,22 @@ static class String {
     /// what IFormattable means in .NET; here the type is asked for directly,
     /// because a boxed value knows what it is and there is no interface
     /// dispatch to do it through.
-    private static string Formatted(object value, string format) {
+    /// A null argument is nothing at all, as .NET writes it.
+    private static string Formatted(object? value, string format, IFormatProvider? provider) {
+        if (value == null) { return ""; }
         if (format.Length == 0) { return "" + value; }
-        if (value is int) { return ((int)value).ToString(format); }
-        if (value is long) { return ((long)value).ToString(format); }
-        if (value is double) { return ((double)value).ToString(format); }
-        if (value is DateTime) { return ((DateTime)value).ToString(format); }
+        if (value is int i32) { return i32.ToString(format); }
+        if (value is long i64) { return i64.ToString(format); }
+        if (value is double f64) { return f64.ToString(format, provider); }
+        if (value is float f32) { return f32.ToString(format, provider); }
+        if (value is uint u32) { return u32.ToString(format); }
+        if (value is ulong u64) { return u64.ToString(format); }
+        if (value is short i16) { return i16.ToString(format); }
+        if (value is ushort u16) { return u16.ToString(format); }
+        if (value is byte u8) { return u8.ToString(format); }
+        if (value is sbyte i8) { return i8.ToString(format); }
+        if (value is DateTime date) { return date.ToString(format); }
+        if (value is IFormattable formattable) { return formattable.ToString(format, provider); }
         return "" + value;
     }
 
@@ -643,6 +675,18 @@ static class String {
         return made;
     }
 
+    /// `a.CompareTo(b)`, IComparable<string>'s: the order String.Compare
+    /// gives, with every string after null.
+    public static int CompareTo(string s, string? other) {
+        return Compare(s, other);
+    }
+
+    public static int CompareTo(string s, object? other) {
+        if (other == null) { return 1; }
+        if (other is string text) { return Compare(s, text); }
+        throw new ArgumentException("Object must be of type String.");
+    }
+
     public static bool StartsWith(string s, string prefix) {
         if (prefix.Length > s.Length) { return false; }
         return Sys.StringEqual(s, 0, prefix, 0, prefix.Length);
@@ -662,16 +706,58 @@ static class String {
     // says `string.Empty` would still fail to compile, which is the point.
     public static string Empty => "";
 
-    public static string Concat(string a, string b, string c) {
-        return Concat(Concat(a, b), c);
+    // .NET's Concat family: a null is nothing, and an object is what its
+    // ToString says.
+    public static string Concat(string? a, string? b, string? c) {
+        return Concat(Concat(a ?? "", b ?? ""), c ?? "");
     }
 
-    public static string Concat(string a, string b, string c, string d) {
-        return Concat(Concat(a, b), Concat(c, d));
+    public static string Concat(string? a, string? b, string? c, string? d) {
+        return Concat(Concat(a ?? "", b ?? ""), Concat(c ?? "", d ?? ""));
     }
 
-    public static string Concat(string[] values) {
-        return Join("", values);
+    public static string Concat(params string?[] values) {
+        if (values == null) { throw new ArgumentNullException("values"); }
+        StringBuilder made = new StringBuilder();
+        for (int i = 0; i < values.Length; i++) { made.Append(values[i]); }
+        return made.ToString();
+    }
+
+    public static string Concat(IEnumerable<string?> values) {
+        if (values == null) { throw new ArgumentNullException("values"); }
+        StringBuilder made = new StringBuilder();
+        foreach (string? one in values) { made.Append(one); }
+        return made.ToString();
+    }
+
+    public static string Concat<T>(IEnumerable<T> values) {
+        if (values == null) { throw new ArgumentNullException("values"); }
+        StringBuilder made = new StringBuilder();
+        foreach (T one in values) { if (one != null) { made.Append(one.ToString()); } }
+        return made.ToString();
+    }
+
+    public static string Concat(object? arg0) {
+        return arg0 == null ? "" : "" + arg0;
+    }
+
+    public static string Concat(object? arg0, object? arg1) {
+        return Concat(Concat(arg0), Concat(arg1));
+    }
+
+    public static string Concat(object? arg0, object? arg1, object? arg2) {
+        return Concat(Concat(arg0), Concat(arg1), Concat(arg2));
+    }
+
+    public static string Concat(params object?[] args) {
+        if (args == null) { throw new ArgumentNullException("args"); }
+        StringBuilder made = new StringBuilder();
+        for (int i = 0; i < args.Length; i++) { made.Append(Concat(args[i])); }
+        return made.ToString();
+    }
+
+    public static string Concat(ReadOnlySpan<char> str0, ReadOnlySpan<char> str1) {
+        return Concat(str0.ToString(), str1.ToString());
     }
 
     // WALKED RATHER THAN INDEXED, which is what .NET's Join over a sequence
@@ -805,12 +891,14 @@ static class String {
 
     // ---- comparing, the overloads whose extra argument is the whole point --
 
-    public static int Compare(string a, string b, bool ignoreCase) {
+    public static int Compare(string? a, string? b, bool ignoreCase) {
+        if (a == null || b == null) { return Compare(a, b); }
         if (ignoreCase) { return Compare(ToUpperInvariant(a), ToUpperInvariant(b)); }
         return Compare(a, b);
     }
 
-    public static int Compare(string a, string b, StringComparison kind) {
+    public static int Compare(string? a, string? b, StringComparison kind) {
+        if (a == null || b == null) { return Compare(a, b); }
         if (kind == StringComparison.OrdinalIgnoreCase
          || kind == StringComparison.InvariantCultureIgnoreCase
          || kind == StringComparison.CurrentCultureIgnoreCase) {
@@ -819,7 +907,7 @@ static class String {
         return Compare(a, b);
     }
 
-    public static int CompareOrdinal(string a, string b) { return Compare(a, b); }
+    public static int CompareOrdinal(string? a, string? b) { return Compare(a, b); }
 
     /// At most length characters of each, from those indices, compared by
     /// code unit; a shorter remainder sorts first, as .NET has it.
@@ -5532,19 +5620,37 @@ static class Memory {
 
 /// `out T`, as .NET declares it: an enumerator only ever hands its element
 /// OUT, so an enumerator of a derived type is one of the base.
-interface IEnumerator<out T> {
-    T Current { get; }
+/// .NET's non-generic IEnumerator (System.Collections): what IEnumerator<T>
+/// also is, its Current an object.
+interface IEnumerator {
+    object? Current { get; }
     bool MoveNext();
+    void Reset();
+}
+
+/// .NET's non-generic IEnumerable (System.Collections): what IEnumerable<T>
+/// also is.
+interface IEnumerable {
+    IEnumerator GetEnumerator();
+}
+
+/// .NET's IEnumerator<T>, which is an IDisposable and an IEnumerator: a
+/// foreach disposes the enumerator it walked, however the loop ended.
+interface IEnumerator<out T> : IDisposable, IEnumerator {
+    T Current { get; }
 }
 
 /// `out T`. Everything read from a sequence is a T, so a sequence of
 /// FieldDecl IS a sequence of MemberDecl -- which is what lets
 /// `decl.Members.AddRange(several.More)` be written at all.
-interface IEnumerable<out T> {
+interface IEnumerable<out T> : IEnumerable {
     IEnumerator<T> GetEnumerator();
 }
 
 class SelectManySequence<T, R> : IEnumerable<R> {
+    // The non-generic IEnumerable's, as .NET's collections have it.
+    IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+
     private IEnumerable<T> source;
     private Func<T, IEnumerable<R>> selector;
     public SelectManySequence(IEnumerable<T> source, Func<T, IEnumerable<R>> selector) {
@@ -5555,6 +5661,10 @@ class SelectManySequence<T, R> : IEnumerable<R> {
 }
 
 class SelectManyEnumerator<T, R> : IEnumerator<R>, IDisposable {
+    // The non-generic IEnumerator's members, as .NET's enumerators have them.
+    object? IEnumerator.Current => Current;
+    public void Reset() { throw new NotSupportedException("Specified method is not supported."); }
+
     private IEnumerable<T> source;
     private Func<T, IEnumerable<R>> selector;
     private IEnumerator<T>? outer;
@@ -5602,6 +5712,13 @@ class SelectManyEnumerator<T, R> : IEnumerator<R>, IDisposable {
 // out to the top level here, and a hoisted one cannot inherit the outer's type
 // parameters -- so it takes its own and carries the outer's name instead.
 class ListEnumerator<T> : IEnumerator<T> {
+    // The non-generic IEnumerator's members, as .NET's enumerators have them.
+    object? IEnumerator.Current => Current;
+    public void Reset() { at = -1; }
+
+    // IEnumerator<T> is an IDisposable; walking holds nothing to let go of.
+    public void Dispose() { }
+
     private IReadOnlyList<T> over;
     private int at;
 
@@ -5654,12 +5771,18 @@ static class CollectionExpressionBuilder {
 }
 
 class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
+    // The non-generic IEnumerable's, as .NET's collections have it.
+    IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+
     bool ICollection<T>.IsReadOnly => false;
 
     // An empty list owns no array. All element accesses are guarded by count;
     // only growth and an explicit request for Backing materialize storage.
     private T[] items = null!;
     private int count;
+    // WHAT CHANGED IT LAST, counted: every change moves it on, and an
+    // enumerator that finds it moved throws, as .NET's does.
+    internal int version;
 
     public List() {
         count = 0;
@@ -5668,6 +5791,7 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
     public int Count => count;
 
     public void Add(T value) {
+        version = version + 1;
         if (items == null || count == items.Length) { Grow(); }
         items[count] = value;
         count = count + 1;
@@ -5678,12 +5802,13 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
     // source would have to be rewritten to compile here.
     public T this[int index] {
         get {
-            if (index < 0 || index >= count) { throw new ArgumentOutOfRangeException("index"); }
+            if (index < 0 || index >= count) { throw new ArgumentOutOfRangeException("index", "Index was out of range. Must be non-negative and less than the size of the collection."); }
             return items[index];
         }
         set {
-            if (index < 0 || index >= count) { throw new ArgumentOutOfRangeException("index"); }
+            if (index < 0 || index >= count) { throw new ArgumentOutOfRangeException("index", "Index was out of range. Must be non-negative and less than the size of the collection."); }
             items[index] = value;
+            version = version + 1;
         }
     }
 
@@ -5693,14 +5818,16 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
     // reordering. Shifting is what List<T>.RemoveAt does and what anybody
     // reading the name expects.
     public void RemoveAt(int index) {
-        if (index < 0 || index >= count) { throw new ArgumentOutOfRangeException("index"); }
+        if (index < 0 || index >= count) { throw new ArgumentOutOfRangeException("index", "Index was out of range. Must be non-negative and less than the size of the collection."); }
+        version = version + 1;
         for (int i = index; i < count - 1; i++) { items[i] = items[i + 1]; }
         count = count - 1;
         items[count] = default(T)!;
     }
 
     public void Insert(int index, T value) {
-        if (index < 0 || index > count) { throw new ArgumentOutOfRangeException("index"); }
+        if (index < 0 || index > count) { throw new ArgumentOutOfRangeException("index", "Index must be within the bounds of the List."); }
+        version = version + 1;
         if (items == null || count == items.Length) { Grow(); }
         for (int i = count; i > index; i--) { items[i] = items[i - 1]; }
         items[index] = value;
@@ -5725,20 +5852,44 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
 
     /// .NET's List<T>.Enumerator: a struct, so that walking a list with
     /// foreach allocates nothing, moved on in place (foreach keeps one copy).
+    /// As .NET's: Current is the element taken by the last MoveNext, and a
+    /// list changed since the walk began is an InvalidOperationException.
     public struct Enumerator : IEnumerator<T>, IDisposable {
         private readonly List<T> list;
-        private int at;
-        internal Enumerator(List<T> list) { this.list = list; at = -1; }
-        public T Current => list[at];
-        public bool MoveNext() { at = at + 1; return at < list.Count; }
+        private int index;
+        private readonly int version;
+        private T current;
+        internal Enumerator(List<T> list) { this.list = list; index = 0; version = list.version; current = default(T)!; }
+        public T Current => current;
+        public bool MoveNext() {
+            if (version == list.version && index < list.count) {
+                current = list.items[index];
+                index = index + 1;
+                return true;
+            }
+            if (version != list.version) {
+                throw new InvalidOperationException("Collection was modified; enumeration operation may not execute.");
+            }
+            index = list.count + 1;
+            current = default(T)!;
+            return false;
+        }
         public void Dispose() { }
+        object? IEnumerator.Current => current;
+        public void Reset() {
+            if (version != list.version) {
+                throw new InvalidOperationException("Collection was modified; enumeration operation may not execute.");
+            }
+            index = 0;
+            current = default(T)!;
+        }
     }
 
     public Enumerator GetEnumerator() { return new Enumerator(this); }
 
     // Through the interface, as .NET's explicit implementation: an object,
     // since an interface's enumerator is one.
-    IEnumerator<T> IEnumerable<T>.GetEnumerator() { return new ListEnumerator<T>(this); }
+    IEnumerator<T> IEnumerable<T>.GetEnumerator() { return GetEnumerator(); }
 
     // .NET's CopyTo, which writes the elements into something the caller owns
     // rather than allocating.
@@ -5768,14 +5919,14 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
     // FirstOrDefault; they are the same shape and this machine has no delegate
     // types yet, so both are the one interface. Answers default(T) when nothing
     // matches, which is .NET's contract.
-    public T? Find(Func<T, bool> match) {
+    public T? Find(Predicate<T> match) {
         for (int i = 0; i < count; i++) {
             if (match(items[i])) { return items[i]; }
         }
         return default(T);
     }
 
-    public int FindIndex(Func<T, bool> match) {
+    public int FindIndex(Predicate<T> match) {
         for (int i = 0; i < count; i++) {
             if (match(items[i])) { return i; }
         }
@@ -5792,6 +5943,10 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
     }
 
     public void AddRange(IEnumerable<T> more) {
+        if (more == null) { throw new ArgumentNullException("collection"); }
+        // ITSELF IS COPIED FIRST, as .NET copies a collection: walking the
+        // list while adding to it is a change under the walk.
+        if ((object)more == (object)this) { AddRange(ToArray()); return; }
         foreach (T one in more) { Add(one); }
     }
 
@@ -5800,7 +5955,8 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
     }
 
     public void AddRange(List<T> more) {
-        for (int i = 0; i < more.Count; i++) { Add(more[i]); }
+        int howMany = more.Count;
+        for (int i = 0; i < howMany; i++) { Add(more[i]); }
     }
 
     public void AddRange(T[] more) {
@@ -5831,11 +5987,13 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
     }
 
     public void Clear() {
+        version = version + 1;
         for (int i = 0; i < count; i++) { items[i] = default(T)!; }
         count = 0;
     }
 
     public void Reverse() {
+        version = version + 1;
         int left = 0;
         int right = count - 1;
         while (left < right) {
@@ -5847,18 +6005,6 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
         }
     }
 
-    // System.Linq.OfType<TResult> is declared on non-generic IEnumerable in
-    // .NET. This runtime's enumerable interface is generic, so List carries
-    // the same operation directly and preserves the one explicit type argument
-    // used by C# call sites.
-    public List<R> OfType<R>() {
-        List<R> made = new List<R>();
-        for (int i = 0; i < count; i++) {
-            if (items[i] is R value) { made.Add(value); }
-        }
-        return made;
-    }
-
     public void RemoveRange(int index, int countToRemove) {
         if (index < 0) { throw new ArgumentOutOfRangeException("index"); }
         if (countToRemove < 0) { throw new ArgumentOutOfRangeException("count"); }
@@ -5868,6 +6014,7 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
         }
         for (int i = count - countToRemove; i < count; i++) { items[i] = default(T)!; }
         count = count - countToRemove;
+        if (countToRemove > 0) { version = version + 1; }
     }
 
     // ---- the rest of what List<T> answers to in C# ---------------------
@@ -5911,16 +6058,16 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
         return -1;
     }
 
-    public bool Exists(Func<T, bool> match) { return FindIndex(match) >= 0; }
+    public bool Exists(Predicate<T> match) { return FindIndex(match) >= 0; }
 
-    public bool TrueForAll(Func<T, bool> match) {
+    public bool TrueForAll(Predicate<T> match) {
         for (int i = 0; i < count; i++) {
             if (!match(items[i])) { return false; }
         }
         return true;
     }
 
-    public List<T> FindAll(Func<T, bool> match) {
+    public List<T> FindAll(Predicate<T> match) {
         List<T> found = new List<T>();
         for (int i = 0; i < count; i++) {
             if (match(items[i])) { found.Add(items[i]); }
@@ -5928,14 +6075,14 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
         return found;
     }
 
-    public T? FindLast(Func<T, bool> match) {
+    public T? FindLast(Predicate<T> match) {
         for (int i = count - 1; i >= 0; i--) {
             if (match(items[i])) { return items[i]; }
         }
         return default(T);
     }
 
-    public int FindLastIndex(Func<T, bool> match) {
+    public int FindLastIndex(Predicate<T> match) {
         for (int i = count - 1; i >= 0; i--) {
             if (match(items[i])) { return i; }
         }
@@ -5947,7 +6094,7 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
     /// ONE PASS, compacting in place: removing one at a time from the front
     /// would shift the tail once per removal and make clearing a list of n
     /// quadratic.
-    public int RemoveAll(Func<T, bool> match) {
+    public int RemoveAll(Predicate<T> match) {
         int into = 0;
 
         for (int i = 0; i < count; i++) {
@@ -5959,6 +6106,7 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
         int removed = count - into;
         for (int i = into; i < count; i++) { items[i] = default(T)!; }
         count = into;
+        if (removed > 0) { version = version + 1; }
         return removed;
     }
 
@@ -5994,6 +6142,7 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
     /// not stable, as .NET's is not, so equal elements come out where .NET
     /// puts them.
     private void SortRange(int from, int howMany, IComparer<T> by) {
+        version = version + 1;
         if (howMany > 1) {
             int log = 0;
             for (int n = howMany; n > 1; n = n >> 1) { log = log + 1; }
@@ -6132,6 +6281,134 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
         for (int i = 0; i < count; i++) { bigger[i] = items[i]; }
         items = bigger;
     }
+    // ---- the rest of .NET's List<T> ---------------------------------------
+
+    private static bool Matches(T a, T b) {
+        return Sys.IsObject(a) ? Sys.KeyEquals(a, b) : Sys.Word(a) == Sys.Word(b);
+    }
+
+    private void CheckRange(int index, int howMany) {
+        if (index < 0) { throw new ArgumentOutOfRangeException("index", "Non-negative number required."); }
+        if (howMany < 0) { throw new ArgumentOutOfRangeException("count", "Non-negative number required."); }
+        if (count - index < howMany) { throw new ArgumentException("Offset and length were out of bounds for the array or count is greater than the number of elements from index to the end of the source collection."); }
+    }
+
+    public List<TOutput> ConvertAll<TOutput>(Converter<T, TOutput> converter) {
+        if (converter == null) { throw new ArgumentNullException("converter"); }
+        List<TOutput> made = new List<TOutput>(count);
+        for (int i = 0; i < count; i++) { made.Add(converter(items[i])); }
+        return made;
+    }
+
+    /// At least that much room, growing as Add grows (double, or four from
+    /// nothing, or the amount asked if that is more). The capacity after.
+    public int EnsureCapacity(int capacity) {
+        if (capacity < 0) { throw new ArgumentOutOfRangeException("capacity", "Non-negative number required."); }
+        if (Capacity < capacity) {
+            int grown = Capacity == 0 ? 4 : Capacity * 2;
+            if (grown > 0x7FFFFFC7) { grown = 0x7FFFFFC7; }
+            if (grown < capacity) { grown = capacity; }
+            Capacity = grown;
+        }
+        return Capacity;
+    }
+
+    public void ForEach(Action<T> action) {
+        if (action == null) { throw new ArgumentNullException("action"); }
+        int was = version;
+        for (int i = 0; i < count; i++) {
+            if (was != version) { break; }
+            action(items[i]);
+        }
+        if (was != version) { throw new InvalidOperationException("Collection was modified; enumeration operation may not execute."); }
+    }
+
+    public List<T> Slice(int start, int length) { return GetRange(start, length); }
+
+    /// Down to the count when less than nine tenths of the room is in use.
+    public void TrimExcess() {
+        int threshold = (int)(Capacity * 0.9);
+        if (count < threshold) { Capacity = count; }
+    }
+
+    public int FindIndex(int startIndex, Predicate<T> match) { return FindIndex(startIndex, count - startIndex, match); }
+
+    public int FindIndex(int startIndex, int howMany, Predicate<T> match) {
+        if ((uint)startIndex > (uint)count) { throw new ArgumentOutOfRangeException("startIndex", "Index was out of range. Must be non-negative and less than or equal to the size of the collection."); }
+        if (howMany < 0 || startIndex > count - howMany) { throw new ArgumentOutOfRangeException("count", "Count must be positive and count must refer to a location within the string/array/collection."); }
+        if (match == null) { throw new ArgumentNullException("match"); }
+        for (int i = startIndex; i < startIndex + howMany; i++) {
+            if (match(items[i])) { return i; }
+        }
+        return -1;
+    }
+
+    public int FindLastIndex(int startIndex, Predicate<T> match) { return FindLastIndex(startIndex, startIndex + 1, match); }
+
+    public int FindLastIndex(int startIndex, int howMany, Predicate<T> match) {
+        if (match == null) { throw new ArgumentNullException("match"); }
+        if (count == 0) {
+            if (startIndex != -1) { throw new ArgumentOutOfRangeException("startIndex", "Index was out of range. Must be non-negative and less than the size of the collection."); }
+        } else if ((uint)startIndex >= (uint)count) {
+            throw new ArgumentOutOfRangeException("startIndex", "Index was out of range. Must be non-negative and less than the size of the collection.");
+        }
+        if (howMany < 0 || startIndex - howMany + 1 < 0) { throw new ArgumentOutOfRangeException("count", "Count must be positive and count must refer to a location within the string/array/collection."); }
+        for (int i = startIndex; i > startIndex - howMany; i--) {
+            if (match(items[i])) { return i; }
+        }
+        return -1;
+    }
+
+    public int IndexOf(T value, int index) { return IndexOf(value, index, count - index); }
+
+    public int IndexOf(T value, int index, int howMany) {
+        if ((uint)index > (uint)count) { throw new ArgumentOutOfRangeException("index", "Index was out of range. Must be non-negative and less than or equal to the size of the collection."); }
+        if (howMany < 0 || index > count - howMany) { throw new ArgumentOutOfRangeException("count", "Count must be positive and count must refer to a location within the string/array/collection."); }
+        for (int i = index; i < index + howMany; i++) {
+            if (Matches(items[i], value)) { return i; }
+        }
+        return -1;
+    }
+
+    public int LastIndexOf(T value, int index) { return LastIndexOf(value, index, index + 1); }
+
+    public int LastIndexOf(T value, int index, int howMany) {
+        if (count == 0) { return -1; }
+        if (index < 0 || index >= count) { throw new ArgumentOutOfRangeException("index", "Index was out of range. Must be non-negative and less than the size of the collection."); }
+        if (howMany < 0 || index - howMany + 1 < 0) { throw new ArgumentOutOfRangeException("count", "Count must be positive and count must refer to a location within the string/array/collection."); }
+        for (int i = index; i > index - howMany; i--) {
+            if (Matches(items[i], value)) { return i; }
+        }
+        return -1;
+    }
+
+    public void Reverse(int index, int howMany) {
+        CheckRange(index, howMany);
+        int left = index;
+        int right = index + howMany - 1;
+        while (left < right) {
+            T held = items[left];
+            items[left] = items[right];
+            items[right] = held;
+            left = left + 1;
+            right = right - 1;
+        }
+        version = version + 1;
+    }
+
+    public int BinarySearch(int index, int howMany, T item, IComparer<T>? comparer) {
+        CheckRange(index, howMany);
+        IComparer<T> by = comparer ?? new DefaultComparer<T>();
+        int lo = index;
+        int hi = index + howMany - 1;
+        while (lo <= hi) {
+            int mid = lo + ((hi - lo) >> 1);
+            int order = by.Compare(items[mid], item);
+            if (order == 0) { return mid; }
+            if (order < 0) { lo = mid + 1; } else { hi = mid - 1; }
+        }
+        return ~lo;
+    }
 }
 
 // A FIRST-IN, FIRST-OUT QUEUE, on a growable ring.
@@ -6147,6 +6424,13 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
 /// .NET spells this Queue<T>.Enumerator. HEAD FIRST, which is the order the
 /// queue hands things out in and not the order the ring stores them in.
 class QueueEnumerator<T> : IEnumerator<T> {
+    // The non-generic IEnumerator's members, as .NET's enumerators have them.
+    object? IEnumerator.Current => Current;
+    public void Reset() { at = -1; }
+
+    // IEnumerator<T> is an IDisposable; walking holds nothing to let go of.
+    public void Dispose() { }
+
     private Queue<T> over;
     private int at;
 
@@ -6164,6 +6448,9 @@ class QueueEnumerator<T> : IEnumerator<T> {
 }
 
 class Queue<T> : IReadOnlyCollection<T>, IEnumerable<T> {
+    // The non-generic IEnumerable's, as .NET's collections have it.
+    IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+
     private T[] items;
     private int head;
     private int count;
@@ -6419,6 +6706,17 @@ interface IDictionary<K, V> : ICollection<KeyValuePair<K, V>> {
 // operators had to sit on List<T> where monomorphisation kept the types. They
 // moved here the day that landed, and not one call site changed.
 // ONE GROUP: a key and the elements that had it. .NET's IGrouping is an
+// ---- System.Linq ------------------------------------------------------------
+//
+// LINQ TO OBJECTS, AS .NET'S IS: an operator that produces a sequence is
+// DEFERRED -- it checks its arguments at once and runs nothing until the
+// sequence is walked, a step at a time, so `Naturals().Where(odd).Take(3)`
+// ends and a source's side effects interleave with the consumer's. An
+// operator that produces a value (Count, First, Sum, ToList) runs at once.
+// The deferred ones are iterators (Lowering.Iterator), each split as .NET
+// splits them: the public method checks, a private iterator walks. The
+// messages are .NET's.
+
 // IEnumerable with a Key on it, which is what lets `foreach (var g in
 // items.GroupBy(...))` walk the group itself and ask what it is at the same
 // time.
@@ -6426,7 +6724,23 @@ interface IGrouping<K, T> : IEnumerable<T> {
     K Key { get; }
 }
 
+/// .NET's ILookup: groups by key, each asked for by its key -- an empty
+/// sequence for a key that is not there, where a Dictionary would throw.
+interface ILookup<K, T> : IEnumerable<IGrouping<K, T>> {
+    int Count { get; }
+    IEnumerable<T> this[K key] { get; }
+    bool Contains(K key);
+}
+
+/// .NET's IOrderedEnumerable: a sorted sequence that a ThenBy sorts further.
+interface IOrderedEnumerable<T> : IEnumerable<T> {
+    IOrderedEnumerable<T> CreateOrderedEnumerable<K>(Func<T, K> keySelector, IComparer<K>? comparer, bool descending);
+}
+
 class Grouping<K, T> : IGrouping<K, T>, IReadOnlyList<T>, IEnumerable<T> {
+    // The non-generic IEnumerable's, as .NET's collections have it.
+    IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+
     private K key;
     private List<T> items;
 
@@ -6439,1119 +6753,89 @@ class Grouping<K, T> : IGrouping<K, T>, IReadOnlyList<T>, IEnumerable<T> {
     public int Count => items.Count;
     public T this[int index] => items[index];
 
-    /// Not a .NET member: GroupBy fills the group as it walks the source, and
-    /// a group built from outside has no other way in.
-    public void Add(T value) { items.Add(value); }
+    internal void Add(T value) { items.Add(value); }
 
     public IEnumerator<T> GetEnumerator() { return new ListEnumerator<T>(items); }
 }
 
-/// THE WHOLE GROUPING, KEPT: a Lookup is what GroupBy produces, stored so it
-/// can be asked about a key more than once. The difference from a Dictionary
-/// is the one every program that has written `dict[key].Add(...)` wants: a key
-/// that is not there answers an EMPTY sequence rather than throwing.
-class Lookup<K, T> {
+/// THE WHOLE GROUPING, KEPT: what ToLookup makes, and what GroupBy walks.
+/// The groups in the order their keys were first seen, each group's elements
+/// in source order, which is .NET's promise.
+class Lookup<K, T> : ILookup<K, T>, IEnumerable<IGrouping<K, T>> {
+    IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+
     private List<Grouping<K, T>> groups;
     private Dictionary<K, Grouping<K, T>> byKey;
 
-    public Lookup() {
+    internal Lookup(IEqualityComparer<K>? comparer) {
         groups = new List<Grouping<K, T>>();
-        byKey = new Dictionary<K, Grouping<K, T>>();
+        byKey = comparer == null ? new Dictionary<K, Grouping<K, T>>() : new Dictionary<K, Grouping<K, T>>(comparer);
     }
 
     public int Count => groups.Count;
 
-    public IReadOnlyList<T> this[K key] {
+    public IEnumerable<T> this[K key] {
         get {
-            Grouping<K, T>? found = null;
-
-            if (byKey.TryGetValue(key, out found) && found != null) { return found; }
-            return new List<T>();
+            if (byKey.TryGetValue(key, out Grouping<K, T>? found) && found != null) { return found; }
+            return Array.Empty<T>();
         }
     }
 
     public bool Contains(K key) { return byKey.ContainsKey(key); }
 
-    /// Not a .NET member: ToLookup and GroupBy fill it, and nothing else can.
-    public void Add(K key, T value) {
-        Grouping<K, T>? found = null;
-
-        if (!byKey.TryGetValue(key, out found) || found == null) {
+    internal void Add(K key, T value) {
+        if (!byKey.TryGetValue(key, out Grouping<K, T>? found) || found == null) {
             found = new Grouping<K, T>(key);
-            byKey[key] = found;
+            byKey.Add(key, found);
             groups.Add(found);
         }
         found.Add(value);
     }
 
-    /// The groups in the order their keys were first seen, which is the order
-    /// .NET's GroupBy yields them in.
-    public List<Grouping<K, T>> Groups => groups;
-}
-
-static class Enumerable {
-    /// .NET's CollectionExtensions.GetValueOrDefault, over any read-only
-    /// dictionary: the value, or the type's zero where the key is not there.
-    public static V? GetValueOrDefault<K, V>(this IReadOnlyDictionary<K, V> source, K key) {
-        V? found = default(V);
-
-        return source.TryGetValue(key, out found) ? found : default(V);
-    }
-
-    public static V GetValueOrDefault<K, V>(this IReadOnlyDictionary<K, V> source, K key, V fallback) {
-        V found = fallback;
-
-        return source.TryGetValue(key, out found) ? found : fallback;
-    }
-
-    public static T[] Empty<T>() { return new T[0]; }
-
-    /// THE SEQUENCE AS A LIST, without copying one that already is.
-    ///
-    /// The operators below take an IEnumerable<T>, which is what .NET's take
-    /// and the reason a Dictionary, a HashSet and an array can all be asked.
-    /// The ones that count or index need somewhere to count and index, and
-    /// .NET does exactly this inside them -- it asks whether the sequence is
-    /// already a collection before it walks one.
-    private static IReadOnlyList<T> AsList<T>(IEnumerable<T> source) {
-        if (source is IReadOnlyList<T> already) { return already; }
-
-        List<T> made = new List<T>();
-
-        foreach (T each in source) { made.Add(each); }
-        return made;
-    }
-
-    // ---- grouping ---------------------------------------------------------
-
-    /// THE ELEMENTS BY WHAT THEY HAVE IN COMMON. The groups come out in the
-    /// order their keys were FIRST SEEN and each group's elements in source
-    /// order, which is .NET's promise and the reason a grouped report reads
-    /// the same way twice.
-    public static List<Grouping<K, T>> GroupBy<T, K>(this IEnumerable<T> source, Func<T, K> key) {
-        IReadOnlyList<T> items = AsList(source);
-
-        Lookup<K, T> made = new Lookup<K, T>();
-
-        for (int i = 0; i < items.Count; i++) { made.Add(key(items[i]), items[i]); }
-        return made.Groups;
-    }
-
-    /// The same, with the elements themselves replaced by something taken from
-    /// them -- `people.GroupBy(p => p.Town, p => p.Name)`.
-    public static List<Grouping<K, R>> GroupBy<T, K, R>(this IEnumerable<T> source, Func<T, K> key, Func<T, R> pick) {
-        IReadOnlyList<T> items = AsList(source);
-
-        Lookup<K, R> made = new Lookup<K, R>();
-
-        for (int i = 0; i < items.Count; i++) { made.Add(key(items[i]), pick(items[i])); }
-        return made.Groups;
-    }
-
-    public static Lookup<K, T> ToLookup<T, K>(this IEnumerable<T> source, Func<T, K> key) {
-        IReadOnlyList<T> items = AsList(source);
-
-        Lookup<K, T> made = new Lookup<K, T>();
-
-        for (int i = 0; i < items.Count; i++) { made.Add(key(items[i]), items[i]); }
-        return made;
-    }
-
-    // ---- the rest ---------------------------------------------------------
-
-    /// THE ELEMENT WITH THE SMALLEST KEY, not the smallest key -- which is the
-    /// difference from Min, and the one that makes `people.MinBy(p => p.Age)`
-    /// answer a person rather than a number.
-    public static T MinBy<T, K>(this IEnumerable<T> source, Func<T, K> key) {
-        IReadOnlyList<T> items = AsList(source);
-
-        if (items.Count == 0) { throw new InvalidOperationException("Sequence contains no elements"); }
-
-        IComparer<T> by = new KeyComparer<T, K>(key, false);
-        T best = items[0];
-
-        for (int i = 1; i < items.Count; i++) {
-            if (by.Compare(items[i], best) < 0) { best = items[i]; }
-        }
-        return best;
-    }
-
-    public static T MaxBy<T, K>(this IEnumerable<T> source, Func<T, K> key) {
-        IReadOnlyList<T> items = AsList(source);
-
-        if (items.Count == 0) { throw new InvalidOperationException("Sequence contains no elements"); }
-
-        IComparer<T> by = new KeyComparer<T, K>(key, false);
-        T best = items[0];
-
-        for (int i = 1; i < items.Count; i++) {
-            if (by.Compare(items[i], best) > 0) { best = items[i]; }
-        }
-        return best;
-    }
-
-    /// A SEQUENCE THAT IS NEVER EMPTY: the one value, where there were none.
-    /// It is what keeps an aggregate from throwing on an empty items.
-    public static List<T> DefaultIfEmpty<T>(this IEnumerable<T> source, T value) {
-        IReadOnlyList<T> items = AsList(source);
-
-        List<T> made = new List<T>();
-
-        if (items.Count == 0) {
-            made.Add(value);
-            return made;
-        }
-        for (int i = 0; i < items.Count; i++) { made.Add(items[i]); }
-        return made;
-    }
-
-    public static List<T> TakeLast<T>(this IEnumerable<T> source, int count) {
-        IReadOnlyList<T> items = AsList(source);
-
-        List<T> made = new List<T>();
-        int from = items.Count - count;
-
-        if (from < 0) { from = 0; }
-        for (int i = from; i < items.Count; i++) { made.Add(items[i]); }
-        return made;
-    }
-
-    public static List<T> SkipLast<T>(this IEnumerable<T> source, int count) {
-        IReadOnlyList<T> items = AsList(source);
-
-        List<T> made = new List<T>();
-        int end = items.Count - count;
-
-        for (int i = 0; i < end; i++) { made.Add(items[i]); }
-        return made;
-    }
-
-    public static long LongCount<T>(this IEnumerable<T> source) {
-        IReadOnlyList<T> items = AsList(source);
- return (long)items.Count; }
-
-    public static List<R> Select<T, R>(this IEnumerable<T> source, Func<T, int, R> pick) {
-        IReadOnlyList<T> items = AsList(source);
-
-        List<R> made = new List<R>();
-
-        for (int i = 0; i < items.Count; i++) { made.Add(pick(items[i], i)); }
-        return made;
-    }
-
-    /// The pairs, joined by a function of the two -- .NET's other Zip, and the
-    /// one that does not need a tuple to be written down.
-    public static List<R> Zip<T, U, R>(this IEnumerable<T> first, IEnumerable<U> second, Func<T, U, R> join) {
-        IReadOnlyList<T> left = AsList(first);
-        IReadOnlyList<U> right = AsList(second);
-
-        List<R> made = new List<R>();
-        int count = left.Count < right.Count ? left.Count : right.Count;
-
-        for (int i = 0; i < count; i++) { made.Add(join(left[i], right[i])); }
-        return made;
-    }
-
-    // The real-number aggregates. Sum over longs cannot stand in for these:
-    // adding prices as whole numbers is how a total ends up a penny out.
-
-    public static double Sum(this IEnumerable<double> source) {
-        IReadOnlyList<double> items = AsList(source);
-
-        double total = 0.0;
-
-        for (int i = 0; i < items.Count; i++) { total = total + items[i]; }
-        return total;
-    }
-
-    public static int Sum<T>(this IEnumerable<T> source, Func<T, int> value) {
-        if (source == null) throw new ArgumentNullException("source");
-        if (value == null) throw new ArgumentNullException("value");
-        int total = 0;
-        foreach (T item in source) total = checked(total + value(item));
-        return total;
-    }
-
-    public static double Sum<T>(this IEnumerable<T> source, Func<T, double> value) {
-        IReadOnlyList<T> items = AsList(source);
-
-        double total = 0.0;
-
-        for (int i = 0; i < items.Count; i++) { total = total + value(items[i]); }
-        return total;
-    }
-
-    public static double Min(this IEnumerable<double> source) {
-        IReadOnlyList<double> items = AsList(source);
-
-        if (items.Count == 0) { throw new InvalidOperationException("Sequence contains no elements"); }
-
-        double least = items[0];
-
-        for (int i = 1; i < items.Count; i++) {
-            if (items[i] < least) { least = items[i]; }
-        }
-        return least;
-    }
-
-    public static double Max(this IEnumerable<double> source) {
-        IReadOnlyList<double> items = AsList(source);
-
-        if (items.Count == 0) { throw new InvalidOperationException("Sequence contains no elements"); }
-
-        double most = items[0];
-
-        for (int i = 1; i < items.Count; i++) {
-            if (items[i] > most) { most = items[i]; }
-        }
-        return most;
-    }
-
-    public static double Average(this IEnumerable<double> source) {
-        IReadOnlyList<double> items = AsList(source);
-
-        if (items.Count == 0) { throw new InvalidOperationException("Sequence contains no elements"); }
-        return items.Sum() / (double)items.Count;
-    }
-
-    public static double Average<T>(this IEnumerable<T> source, Func<T, double> value) {
-        IReadOnlyList<T> items = AsList(source);
-
-        if (items.Count == 0) { throw new InvalidOperationException("Sequence contains no elements"); }
-        return items.Sum(value) / (double)items.Count;
-    }
-
-
-    public static List<int> Range(int start, int count) {
-        List<int> made = new List<int>();
-        for (int i = 0; i < count; i++) { made.Add(start + i); }
-        return made;
-    }
-    public static List<T> Where<T>(this IEnumerable<T> source, Func<T, bool> keep) {
-        IReadOnlyList<T> items = AsList(source);
-
-        List<T> kept = new List<T>();
-        int i = 0;
-        while (i < items.Count) {
-            if (keep(items[i])) { kept.Add(items[i]); }
-            i = i + 1;
-        }
-        return kept;
-    }
-
-    /// The overload that also passes the position, which C# has and which this
-    /// compiler's own Types.cs uses to compare two argument lists.
-    public static List<T> Where<T>(this IEnumerable<T> source, Func<T, int, bool> keep) {
-        IReadOnlyList<T> items = AsList(source);
-
-        List<T> kept = new List<T>();
-        int i = 0;
-        while (i < items.Count) {
-            if (keep(items[i], i)) { kept.Add(items[i]); }
-            i = i + 1;
-        }
-        return kept;
-    }
-
-    /// The one that needs a SECOND type parameter, and so could not exist at
-    /// all until a generic method could be compiled per type argument.
-    public static List<R> Select<T, R>(this IEnumerable<T> source, Func<T, R> pick) {
-        IReadOnlyList<T> items = AsList(source);
-
-        List<R> made = new List<R>();
-        int i = 0;
-        while (i < items.Count) {
-            made.Add(pick(items[i]));
-            i = i + 1;
-        }
-        return made;
-    }
-
-    public static bool Any<T>(this IEnumerable<T> source) {
-        IReadOnlyList<T> items = AsList(source);
- return items.Count > 0; }
-
-    public static bool Any<T>(this IEnumerable<T> source, Func<T, bool> test) {
-        IReadOnlyList<T> items = AsList(source);
-
-        int i = 0;
-        while (i < items.Count) {
-            if (test(items[i])) { return true; }
-            i = i + 1;
-        }
-        return false;
-    }
-
-    public static bool All<T>(this IEnumerable<T> source, Func<T, bool> test) {
-        IReadOnlyList<T> items = AsList(source);
-
-        int i = 0;
-        while (i < items.Count) {
-            if (!test(items[i])) { return false; }
-            i = i + 1;
-        }
-        return true;
-    }
-
-    /// `Count` with a predicate, which lives here rather than on List because
-    /// List already has a Count PROPERTY -- exactly as in .NET, where the two
-    /// coexist because one of them is an extension.
-    public static int Count<T>(this IEnumerable<T> source, Func<T, bool> test) {
-        IReadOnlyList<T> items = AsList(source);
-
-        int n = 0;
-        int i = 0;
-        while (i < items.Count) {
-            if (test(items[i])) { n = n + 1; }
-            i = i + 1;
-        }
-        return n;
-    }
-
-    public static int Count<T>(this IEnumerable<T> source) {
-        IReadOnlyList<T> items = AsList(source);
- return items.Count; }
-
-    public static T First<T>(this IEnumerable<T> source, Func<T, bool> test) {
-        IReadOnlyList<T> items = AsList(source);
-
-        int i = 0;
-        while (i < items.Count) {
-            if (test(items[i])) { return items[i]; }
-            i = i + 1;
-        }
-        throw new InvalidOperationException("no element matched");
-    }
-
-    /// Null when nothing matches, which is what the name says and is why it is
-    /// spelt differently from First.
-    public static T? FirstOrDefault<T>(this IEnumerable<T> source, Func<T, bool> test) {
-        IReadOnlyList<T> items = AsList(source);
-
-        int i = 0;
-        while (i < items.Count) {
-            if (test(items[i])) { return items[i]; }
-            i = i + 1;
-        }
-        return null;
-    }
-
-    public static T? FirstOrDefault<T>(this IEnumerable<T> source) {
-        IReadOnlyList<T> items = AsList(source);
-
-        if (items.Count == 0) { return default(T); }
-        return items[0];
-    }
-
-    public static long Sum<T>(this IEnumerable<T> source, Func<T, long> value) {
-        IReadOnlyList<T> items = AsList(source);
-
-        long total = 0;
-        int i = 0;
-        while (i < items.Count) {
-            total = total + value(items[i]);
-            i = i + 1;
-        }
-        return total;
-    }
-
-    public static List<T> ToList<T>(this IEnumerable<T> source) {
-        IReadOnlyList<T> items = AsList(source);
-
-        List<T> copy = new List<T>();
-        int i = 0;
-        while (i < items.Count) {
-            copy.Add(items[i]);
-            i = i + 1;
-        }
-        return copy;
-    }
-
-    public static T[] ToArray<T>(this IEnumerable<T> source) {
-        IReadOnlyList<T> items = AsList(source);
-
-        T[] copy = new T[items.Count];
-        for (int i = 0; i < items.Count; i++) { copy[i] = items[i]; }
-        return copy;
-    }
-
-    public static T? ElementAtOrDefault<T>(this IEnumerable<T> source, int index) {
-        IReadOnlyList<T> items = AsList(source);
-
-        if (index < 0 || index >= items.Count) { return default(T); }
-        return items[index];
-    }
-
-    public static bool SequenceEqual<T>(this IEnumerable<T> first, IEnumerable<T> second) {
-        IReadOnlyList<T> left = AsList(first);
-        IReadOnlyList<T> right = AsList(second);
-
-        if (left.Count != right.Count) { return false; }
-        for (int i = 0; i < left.Count; i++) {
-            if (!(Sys.IsObject(left[i]) ? Sys.KeyEquals(left[i], right[i]) : Sys.Word(left[i]) == Sys.Word(right[i]))) { return false; }
-        }
-        return true;
-    }
-
-    public static List<T> Skip<T>(this IEnumerable<T> source, int count) {
-        IReadOnlyList<T> items = AsList(source);
-
-        List<T> made = new List<T>();
-        for (int i = count; i < items.Count; i++) { made.Add(items[i]); }
-        return made;
-    }
-
-    public static List<T> Take<T>(this IEnumerable<T> source, int count) {
-        IReadOnlyList<T> items = AsList(source);
-
-        List<T> made = new List<T>();
-        int end = count < items.Count ? count : items.Count;
-        for (int i = 0; i < end; i++) { made.Add(items[i]); }
-        return made;
-    }
-
-    /// The source as a sequence, which it already is: what .NET's does.
-    public static IEnumerable<T> AsEnumerable<T>(this IEnumerable<T> source) { return source; }
-
-    /// DISTINCT BY A COMPARER, first occurrence kept.
-    public static List<T> Distinct<T>(this IEnumerable<T> source, IEqualityComparer<T>? comparer) {
-        IReadOnlyList<T> items = AsList(source);
-
-        List<T> made = new List<T>();
-        HashSet<T> seen = new HashSet<T>(comparer);
-        for (int i = 0; i < items.Count; i++) {
-            if (seen.Add(items[i])) { made.Add(items[i]); }
-        }
-        return made;
-    }
-
-    public static bool Contains<T>(this IEnumerable<T> source, T value, IEqualityComparer<T>? comparer) {
-        if (comparer == null) { return Contains(source, value); }
-        foreach (T item in source) {
-            if (comparer.Equals(item, value)) { return true; }
-        }
-        return false;
-    }
-
-    public static List<T> Intersect<T>(this IEnumerable<T> first, IEnumerable<T> second, IEqualityComparer<T>? comparer) {
-        HashSet<T> keep = new HashSet<T>(second, comparer);
-        HashSet<T> seen = new HashSet<T>(comparer);
-        List<T> made = new List<T>();
-        foreach (T item in first) {
-            if (keep.Contains(item) && seen.Add(item)) { made.Add(item); }
-        }
-        return made;
-    }
-
-    public static OrderedList<T> Order<T>(this IEnumerable<T> source, IComparer<T>? comparer) {
-        return Ordered(source, comparer ?? new DefaultComparer<T>());
-    }
-
-    public static OrderedList<T> OrderDescending<T>(this IEnumerable<T> source, IComparer<T>? comparer) {
-        return Ordered(source, new ReverseComparer<T>(comparer ?? new DefaultComparer<T>()));
-    }
-
-    /// THE LEAST, by the element type's own order: what `dates.Min()` is.
-    public static T Min<T>(this IEnumerable<T> source) {
-        IComparer<T> by = new DefaultComparer<T>();
-        bool any = false;
-        T least = default(T)!;
-        foreach (T item in source) {
-            if (!any || by.Compare(item, least) < 0) { least = item; }
-            any = true;
-        }
-        if (!any) { throw new InvalidOperationException("Sequence contains no elements"); }
-        return least;
-    }
-
-    public static T Max<T>(this IEnumerable<T> source) {
-        IComparer<T> by = new DefaultComparer<T>();
-        bool any = false;
-        T most = default(T)!;
-        foreach (T item in source) {
-            if (!any || by.Compare(item, most) > 0) { most = item; }
-            any = true;
-        }
-        if (!any) { throw new InvalidOperationException("Sequence contains no elements"); }
-        return most;
-    }
-
-    public static List<T> Distinct<T>(this IEnumerable<T> source) {
-        IReadOnlyList<T> items = AsList(source);
-
-        List<T> made = new List<T>();
-        HashSet<T> seen = new HashSet<T>();
-        for (int i = 0; i < items.Count; i++) {
-            if (seen.Add(items[i])) { made.Add(items[i]); }
-        }
-        return made;
-    }
-
-    /// THE PAIRS, AND .NET NAMES THEM. Its signature is
-    /// `IEnumerable<(TFirst First, TSecond Second)>`, so `a.Zip(b).All(p =>
-    /// p.First == p.Second)` is how the result is read -- the names are part
-    /// of the type and a caller written against .NET uses them.
-    public static List<(T First, U Second)> Zip<T, U>(this IEnumerable<T> first, IEnumerable<U> second) {
-        IReadOnlyList<T> left = AsList(first);
-        IReadOnlyList<U> right = AsList(second);
-
-        List<(T First, U Second)> made = new List<(T First, U Second)>();
-        int count = left.Count < right.Count ? left.Count : right.Count;
-        for (int i = 0; i < count; i++) { made.Add((left[i], right[i])); }
-        return made;
-    }
-
-    public static List<R> OfType<R>(this IEnumerable<object> source) {
-        IReadOnlyList<object> items = AsList(source);
-
-        List<R> made = new List<R>();
-        for (int i = 0; i < items.Count; i++) {
-            if (items[i] is R value) { made.Add(value); }
-        }
-        return made;
-    }
-
-    public static bool IsEmpty<T>(this IEnumerable<T> source) {
-        IReadOnlyList<T> items = AsList(source);
- return items.Count == 0; }
-
-    /// The same value, that many times. Not an extension -- it makes a
-    /// sequence rather than reading one -- which is how .NET has it too.
-    public static List<T> Repeat<T>(T value, int count) {
-        List<T> made = new List<T>();
-        int i = 0;
-        while (i < count) {
-            made.Add(value);
-            i = i + 1;
-        }
-        return made;
-    }
-
-    // ---- the rest of LINQ to objects --------------------------------------
-    //
-    // Most operators here still materialize a List rather than a deferred
-    // sequence. This differs from System.Linq in side-effect timing, allocation
-    // and support for unbounded inputs. SelectMany below streams through an
-    // explicit enumerator; arbitrary yield bodies still need state-machine
-    // lowering instead of the compiler's eager list transformation.
-
-    public static T Last<T>(this IEnumerable<T> source) {
-        IReadOnlyList<T> items = AsList(source);
-
-        if (items.Count == 0) { throw new InvalidOperationException("the sequence is empty"); }
-        return items[items.Count - 1];
-    }
-
-    public static T Last<T>(this IEnumerable<T> source, Func<T, bool> test) {
-        IReadOnlyList<T> items = AsList(source);
-
-        for (int i = items.Count - 1; i >= 0; i--) {
-            if (test(items[i])) { return items[i]; }
-        }
-        throw new InvalidOperationException("no element matched");
-    }
-
-    public static T? LastOrDefault<T>(this IEnumerable<T> source) {
-        IReadOnlyList<T> items = AsList(source);
-
-        if (items.Count == 0) { return default(T); }
-        return items[items.Count - 1];
-    }
-
-    public static T? LastOrDefault<T>(this IEnumerable<T> source, Func<T, bool> test) {
-        IReadOnlyList<T> items = AsList(source);
-
-        for (int i = items.Count - 1; i >= 0; i--) {
-            if (test(items[i])) { return items[i]; }
-        }
-        return default(T);
-    }
-
-    public static T First<T>(this IEnumerable<T> source) {
-        IReadOnlyList<T> items = AsList(source);
-
-        if (items.Count == 0) { throw new InvalidOperationException("the sequence is empty"); }
-        return items[0];
-    }
-
-    /// EXACTLY ONE, and it throws when there are two -- which is the whole
-    /// difference from First and the reason to write it: it asserts that the
-    /// thing being looked up is unique.
-    public static T Single<T>(this IEnumerable<T> source, Func<T, bool> test) {
-        IReadOnlyList<T> items = AsList(source);
-
-        T found = default(T)!;
-        bool any = false;
-
-        for (int i = 0; i < items.Count; i++) {
-            if (!test(items[i])) { continue; }
-            if (any) { throw new InvalidOperationException("more than one element matched"); }
-            found = items[i];
-            any = true;
-        }
-
-        if (!any) { throw new InvalidOperationException("no element matched"); }
-        return found;
-    }
-
-    public static T Single<T>(this IEnumerable<T> source) {
-        IReadOnlyList<T> items = AsList(source);
-
-        if (items.Count != 1) {
-            throw new InvalidOperationException("the sequence does not hold exactly one element");
-        }
-        return items[0];
-    }
-
-    public static T? SingleOrDefault<T>(this IEnumerable<T> source, Func<T, bool> test) {
-        IReadOnlyList<T> items = AsList(source);
-
-        T found = default(T)!;
-        bool any = false;
-
-        for (int i = 0; i < items.Count; i++) {
-            if (!test(items[i])) { continue; }
-            if (any) { throw new InvalidOperationException("more than one element matched"); }
-            found = items[i];
-            any = true;
-        }
-        return found;
-    }
-
-    public static T ElementAt<T>(this IEnumerable<T> source, int index) {
-        IReadOnlyList<T> items = AsList(source);
-
-        if (index < 0 || index >= items.Count) {
-            throw new ArgumentOutOfRangeException("index");
-        }
-        return items[index];
-    }
-
-    public static bool Contains<T>(this IEnumerable<T> source, T value) {
-        IReadOnlyList<T> items = AsList(source);
-
-        for (int i = 0; i < items.Count; i++) {
-            if ((Sys.IsObject(items[i]) ? Sys.KeyEquals(items[i], value) : Sys.Word(items[i]) == Sys.Word(value))) { return true; }
-        }
-        return false;
-    }
-
-    public static List<T> Reverse<T>(this IEnumerable<T> source) {
-        IReadOnlyList<T> items = AsList(source);
-
-        List<T> made = new List<T>(items.Count);
-        for (int i = items.Count - 1; i >= 0; i--) { made.Add(items[i]); }
-        return made;
-    }
-
-    public static List<T> Concat<T>(this IEnumerable<T> first, IEnumerable<T> second) {
-        IReadOnlyList<T> left = AsList(first);
-        IReadOnlyList<T> right = AsList(second);
-
-        List<T> made = new List<T>(left.Count + right.Count);
-        for (int i = 0; i < left.Count; i++) { made.Add(left[i]); }
-        for (int i = 0; i < right.Count; i++) { made.Add(right[i]); }
-        return made;
-    }
-
-    public static List<T> Append<T>(this IEnumerable<T> source, T value) {
-        IReadOnlyList<T> items = AsList(source);
-
-        List<T> made = new List<T>(items.Count + 1);
-        for (int i = 0; i < items.Count; i++) { made.Add(items[i]); }
-        made.Add(value);
-        return made;
-    }
-
-    public static List<T> Prepend<T>(this IEnumerable<T> source, T value) {
-        IReadOnlyList<T> items = AsList(source);
-
-        List<T> made = new List<T>(items.Count + 1);
-        made.Add(value);
-        for (int i = 0; i < items.Count; i++) { made.Add(items[i]); }
-        return made;
-    }
-
-    /// STOPS AT THE FIRST ONE THAT FAILS, which is what makes it different
-    /// from Where: a sorted list can be cut short without reading the tail.
-    public static List<T> TakeWhile<T>(this IEnumerable<T> source, Func<T, bool> test) {
-        IReadOnlyList<T> items = AsList(source);
-
-        List<T> made = new List<T>();
-        for (int i = 0; i < items.Count; i++) {
-            if (!test(items[i])) { break; }
-            made.Add(items[i]);
-        }
-        return made;
-    }
-
-    public static List<T> SkipWhile<T>(this IEnumerable<T> source, Func<T, bool> test) {
-        IReadOnlyList<T> items = AsList(source);
-
-        List<T> made = new List<T>();
-        int at = 0;
-
-        while (at < items.Count && test(items[at])) { at = at + 1; }
-        for (int i = at; i < items.Count; i++) { made.Add(items[i]); }
-        return made;
-    }
-
-    public static IEnumerable<R> SelectMany<T, R>(this IEnumerable<T> source, Func<T, IEnumerable<R>> selector) {
-        if (source == null) throw new ArgumentNullException("source");
-        if (selector == null) throw new ArgumentNullException("selector");
-        return new SelectManySequence<T, R>(source, selector);
-    }
-
-    /// FOLD, under .NET's name for it. The seeded overload is the one that
-    /// works on an empty sequence, which is why .NET has both.
-    public static R Aggregate<T, R>(this IEnumerable<T> source, R seed, Func<R, T, R> fold) {
-        IReadOnlyList<T> items = AsList(source);
-
-        R total = seed;
-        for (int i = 0; i < items.Count; i++) { total = fold(total, items[i]); }
-        return total;
-    }
-
-    public static T Aggregate<T>(this IEnumerable<T> source, Func<T, T, T> fold) {
-        IReadOnlyList<T> items = AsList(source);
-
-        if (items.Count == 0) { throw new InvalidOperationException("the sequence is empty"); }
-
-        T total = items[0];
-        for (int i = 1; i < items.Count; i++) { total = fold(total, items[i]); }
-        return total;
-    }
-
-    // ---- ordering ---------------------------------------------------------
-
-    /// The sorted array as a list. Not `new List<T>(array)`: an array offered
-    /// where an IEnumerable is also accepted goes through the compiler's array
-    /// view, which has no enumerator to give -- see the note above
-    /// IEnumerator.
-    private static List<T> Listed<T>(T[] items) {
-        List<T> made = new List<T>(items.Length);
-        for (int i = 0; i < items.Length; i++) { made.Add(items[i]); }
-        return made;
-    }
-
-    /// The elements in the order `by` says, stably: equal keys keep the
-    /// order they came in, as .NET's OrderBy does.
-    private static OrderedList<T> Ordered<T>(IEnumerable<T> source, IComparer<T> by) {
-        T[] made = source.ToArray();
-        Sorting.Sort<T>(made, 0, made.Length, by);
-        return new OrderedList<T>(made, by);
-    }
-
-    public static OrderedList<T> OrderBy<T, K>(this IEnumerable<T> source, Func<T, K> key) {
-        return Ordered(source, new KeyComparer<T, K>(key, false));
-    }
-
-    /// THE ORDER A COMPARER SAYS, which is .NET's second overload and the one
-    /// a program reaches for when the key's own ordering is not the question:
-    /// `names.OrderBy(n => n, StringComparer.Ordinal)`.
-    public static OrderedList<T> OrderBy<T, K>(this IEnumerable<T> source, Func<T, K> key, IComparer<K> comparer) {
-        return Ordered(source, new KeyComparer<T, K>(key, false, comparer));
-    }
-
-    public static OrderedList<T> OrderByDescending<T, K>(this IEnumerable<T> source, Func<T, K> key, IComparer<K> comparer) {
-        return Ordered(source, new KeyComparer<T, K>(key, true, comparer));
-    }
-
-    public static OrderedList<T> OrderByDescending<T, K>(this IEnumerable<T> source, Func<T, K> key) {
-        return Ordered(source, new KeyComparer<T, K>(key, true));
-    }
-
-    public static OrderedList<T> Order<T>(this IEnumerable<T> source) {
-        return Ordered(source, new DefaultComparer<T>());
-    }
-
-    public static OrderedList<T> OrderDescending<T>(this IEnumerable<T> source) {
-        return Ordered(source, new ReverseComparer<T>(new DefaultComparer<T>()));
-    }
-
-    /// THE NEXT KEY, among elements the order so far calls equal: the
-    /// order's comparer and this key's, one after the other, over the same
-    /// elements again -- stably, so what was ordered stays ordered.
-    public static OrderedList<T> ThenBy<T, K>(this IOrderedEnumerable<T> source, Func<T, K> key) {
-        return Then(source, new KeyComparer<T, K>(key, false));
-    }
-
-    public static OrderedList<T> ThenBy<T, K>(this IOrderedEnumerable<T> source, Func<T, K> key, IComparer<K> comparer) {
-        return Then(source, new KeyComparer<T, K>(key, false, comparer));
-    }
-
-    public static OrderedList<T> ThenByDescending<T, K>(this IOrderedEnumerable<T> source, Func<T, K> key) {
-        return Then(source, new KeyComparer<T, K>(key, true));
-    }
-
-    public static OrderedList<T> ThenByDescending<T, K>(this IOrderedEnumerable<T> source, Func<T, K> key, IComparer<K> comparer) {
-        return Then(source, new KeyComparer<T, K>(key, true, comparer));
-    }
-
-    private static OrderedList<T> Then<T>(IOrderedEnumerable<T> source, IComparer<T> next) {
-        if (source == null) { throw new ArgumentNullException(nameof(source)); }
-        if (source is not OrderedList<T> ordered) {
-            throw new ArgumentException("ThenBy continues an order OrderBy made", nameof(source));
-        }
-        return Ordered(ordered, new ThenComparer<T>(ordered.Order, next));
-    }
-
-    // ---- the aggregates ---------------------------------------------------
-    //
-    // .NET declares one of each per numeric type. These are the two widths
-    // this machine computes in, plus the selector forms, which is what call
-    // sites actually use.
-
-    public static long Min<T>(this IEnumerable<T> source, Func<T, long> value) {
-        IReadOnlyList<T> items = AsList(source);
-
-        if (items.Count == 0) { throw new InvalidOperationException("the sequence is empty"); }
-
-        long least = value(items[0]);
-        for (int i = 1; i < items.Count; i++) {
-            long one = value(items[i]);
-            if (one < least) { least = one; }
-        }
-        return least;
-    }
-
-    public static long Max<T>(this IEnumerable<T> source, Func<T, long> value) {
-        IReadOnlyList<T> items = AsList(source);
-
-        if (items.Count == 0) { throw new InvalidOperationException("the sequence is empty"); }
-
-        long most = value(items[0]);
-        for (int i = 1; i < items.Count; i++) {
-            long one = value(items[i]);
-            if (one > most) { most = one; }
-        }
-        return most;
-    }
-
-    public static double Average<T>(this IEnumerable<T> source, Func<T, long> value) {
-        IReadOnlyList<T> items = AsList(source);
-
-        if (items.Count == 0) { throw new InvalidOperationException("the sequence is empty"); }
-        return (double)Sum(items, value) / (double)items.Count;
-    }
-
-    public static long Sum(this IEnumerable<long> source) {
-        IReadOnlyList<long> items = AsList(source);
-
-        long total = 0;
-        for (int i = 0; i < items.Count; i++) { total = total + items[i]; }
-        return total;
-    }
-
-    public static int Sum(this IEnumerable<int> source) {
-        IReadOnlyList<int> items = AsList(source);
-
-        int total = 0;
-        for (int i = 0; i < items.Count; i++) { total = total + items[i]; }
-        return total;
-    }
-
-    public static int Min(this IEnumerable<int> source) {
-        IReadOnlyList<int> items = AsList(source);
-
-        if (items.Count == 0) { throw new InvalidOperationException("the sequence is empty"); }
-
-        int least = items[0];
-        for (int i = 1; i < items.Count; i++) {
-            if (items[i] < least) { least = items[i]; }
-        }
-        return least;
-    }
-
-    public static int Max(this IEnumerable<int> source) {
-        IReadOnlyList<int> items = AsList(source);
-
-        if (items.Count == 0) { throw new InvalidOperationException("the sequence is empty"); }
-
-        int most = items[0];
-        for (int i = 1; i < items.Count; i++) {
-            if (items[i] > most) { most = items[i]; }
-        }
-        return most;
-    }
-
-    public static double Average(this IEnumerable<int> source) {
-        IReadOnlyList<int> items = AsList(source);
-
-        if (items.Count == 0) { throw new InvalidOperationException("the sequence is empty"); }
-        return (double)Sum(source) / (double)items.Count;
-    }
-
-    // ---- the set operations ------------------------------------------------
-
-    public static List<T> Except<T>(this IEnumerable<T> first, IEnumerable<T> second) {
-        IReadOnlyList<T> left = AsList(first);
-        IReadOnlyList<T> right = AsList(second);
-
-        HashSet<T> drop = new HashSet<T>();
-        for (int i = 0; i < right.Count; i++) { drop.Add(right[i]); }
-
-        List<T> made = new List<T>();
-        HashSet<T> seen = new HashSet<T>();
-
-        for (int i = 0; i < left.Count; i++) {
-            if (drop.Contains(left[i])) { continue; }
-            if (seen.Add(left[i])) { made.Add(left[i]); }
-        }
-        return made;
-    }
-
-    public static List<T> Union<T>(this IEnumerable<T> first, IEnumerable<T> second) {
-        IReadOnlyList<T> left = AsList(first);
-        IReadOnlyList<T> right = AsList(second);
-
-        List<T> made = new List<T>();
-        HashSet<T> seen = new HashSet<T>();
-
-        for (int i = 0; i < left.Count; i++) {
-            if (seen.Add(left[i])) { made.Add(left[i]); }
-        }
-        for (int i = 0; i < right.Count; i++) {
-            if (seen.Add(right[i])) { made.Add(right[i]); }
-        }
-        return made;
-    }
-
-    public static List<T> Intersect<T>(this IEnumerable<T> first, IEnumerable<T> second) {
-        IReadOnlyList<T> left = AsList(first);
-        IReadOnlyList<T> right = AsList(second);
-
-        HashSet<T> keep = new HashSet<T>();
-        for (int i = 0; i < right.Count; i++) { keep.Add(right[i]); }
-
-        List<T> made = new List<T>();
-        HashSet<T> seen = new HashSet<T>();
-
-        for (int i = 0; i < left.Count; i++) {
-            if (!keep.Contains(left[i])) { continue; }
-            if (seen.Add(left[i])) { made.Add(left[i]); }
-        }
-        return made;
+    public IEnumerator<IGrouping<K, T>> GetEnumerator() {
+        for (int i = 0; i < groups.Count; i++) { yield return groups[i]; }
     }
-
-    public static HashSet<T> ToHashSet<T>(this IEnumerable<T> source) {
-        IReadOnlyList<T> items = AsList(source);
-
-        HashSet<T> made = new HashSet<T>();
-        for (int i = 0; i < items.Count; i++) { made.Add(items[i]); }
-        return made;
-    }
-
-    public static HashSet<T> ToHashSet<T>(this IEnumerable<T> source, IEqualityComparer<T>? comparer) {
-        if (source == null) throw new ArgumentNullException(nameof(source));
-        HashSet<T> made = comparer == null ? new HashSet<T>() : new HashSet<T>(comparer);
-        foreach (T item in source) { made.Add(item); }
-        return made;
-    }
-
-    public static Dictionary<K, T> ToDictionary<T, K>(this IEnumerable<T> source, Func<T, K> key) {
-        IReadOnlyList<T> items = AsList(source);
-
-        Dictionary<K, T> made = new Dictionary<K, T>(items.Count);
-        for (int i = 0; i < items.Count; i++) { made[key(items[i])] = items[i]; }
-        return made;
-    }
-
-    public static Dictionary<K, T> ToDictionary<T, K>(this IEnumerable<T> source,
-                                                         Func<T, K> key, IEqualityComparer<K>? comparer) {
-        if (source == null) throw new ArgumentNullException("source");
-        if (key == null) throw new ArgumentNullException("key");
-        Dictionary<K, T> made = comparer == null ? new Dictionary<K, T>() : new Dictionary<K, T>(comparer);
-        foreach (T item in source) {
-            K selected = key(item);
-            if ((object)selected == null) throw new ArgumentNullException("key");
-            if (!made.TryAdd(selected, item)) throw new ArgumentException("duplicate key");
-        }
-        return made;
-    }
-
-    public static Dictionary<K, V> ToDictionary<T, K, V>(this IEnumerable<T> source,
-                                                         Func<T, K> key, Func<T, V> value) {
-        IReadOnlyList<T> items = AsList(source);
-
-        Dictionary<K, V> made = new Dictionary<K, V>(items.Count);
-        for (int i = 0; i < items.Count; i++) { made[key(items[i])] = value(items[i]); }
-        return made;
-    }
-
-    /// With the key's own equality, as .NET's fourth overload: a duplicate
-    /// key is refused, as it is by every ToDictionary.
-    public static Dictionary<K, V> ToDictionary<T, K, V>(this IEnumerable<T> source,
-                                                         Func<T, K> key, Func<T, V> value, IEqualityComparer<K>? comparer) {
-        if (source == null) throw new ArgumentNullException(nameof(source));
-        if (key == null) throw new ArgumentNullException(nameof(key));
-        if (value == null) throw new ArgumentNullException(nameof(value));
-        Dictionary<K, V> made = comparer == null ? new Dictionary<K, V>() : new Dictionary<K, V>(comparer);
-        foreach (T item in source) {
-            K selected = key(item);
-            if ((object)selected == null) throw new ArgumentNullException("key");
-            if (!made.TryAdd(selected, value(item))) throw new ArgumentException("An item with the same key has already been added.");
-        }
-        return made;
-    }
-
-    /// FIXED-SIZE PIECES, the last of which is whatever is left over. .NET's
-    /// Chunk, which is how a batch job turns a list into requests.
-    public static List<List<T>> Chunk<T>(this IEnumerable<T> source, int size) {
-        IReadOnlyList<T> items = AsList(source);
-
-        if (size < 1) { throw new ArgumentOutOfRangeException("size"); }
-
-        List<List<T>> made = new List<List<T>>();
-        int at = 0;
-
-        while (at < items.Count) {
-            List<T> piece = new List<T>(size);
-            int end = at + size;
-
-            if (end > items.Count) { end = items.Count; }
-            for (int i = at; i < end; i++) { piece.Add(items[i]); }
 
-            made.Add(piece);
-            at = end;
-        }
-        return made;
+    /// Each group made into one result, as GroupBy with a result selector.
+    public IEnumerable<R> ApplyResultSelector<R>(Func<K, IEnumerable<T>, R> resultSelector) {
+        for (int i = 0; i < groups.Count; i++) { yield return resultSelector(groups[i].Key, groups[i]); }
     }
 }
 
-/// An order by something COMPUTED FROM the element -- OrderBy's key selector
-/// -- rather than by the element itself.
-///
-/// The comparison is written out here rather than delegating to
-/// DefaultComparer<K>, because a generic class instantiated with another
-/// class's type parameter is the shape the binder refuses; see the note on
-/// Comparer.
-/// What OrderBy and ThenBy answer, as .NET names it: a sequence in an order
-/// that ThenBy may refine.
-interface IOrderedEnumerable<T> : IEnumerable<T> {
-}
+/// A SORT NOT YET DONE: the source and the keys it sorts by, the sort run
+/// when the sequence is walked. Stable, as .NET's OrderBy is, so ThenBy
+/// orders what its predecessors left equal and equal elements keep their
+/// source order.
+class OrderedSequence<T> : IOrderedEnumerable<T>, IEnumerable<T> {
+    IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
 
-/// The ordered elements, and the order that put them so. A List as well, so
-/// what a program does with a sorted list it may still do.
-class OrderedList<T> : List<T>, IOrderedEnumerable<T> {
+    private IEnumerable<T> source;
     private IComparer<T> order;
 
-    public OrderedList(T[] items, IComparer<T> by) : base(items.Length) {
-        for (int i = 0; i < items.Length; i++) { Add(items[i]); }
-        order = by;
+    internal OrderedSequence(IEnumerable<T> source, IComparer<T> order) {
+        this.source = source;
+        this.order = order;
     }
 
-    public IComparer<T> Order => order;
+    public IOrderedEnumerable<T> CreateOrderedEnumerable<K>(Func<T, K> keySelector, IComparer<K>? comparer, bool descending) {
+        if (keySelector == null) { throw new ArgumentNullException("keySelector"); }
+        return new OrderedSequence<T>(source, new ThenComparer<T>(order, new KeyComparer<T, K>(keySelector, descending, comparer)));
+    }
+
+    public IEnumerator<T> GetEnumerator() {
+        T[] items = Enumerable.ToArray(source);
+        Sorting.Sort<T>(items, 0, items.Length, order);
+        for (int i = 0; i < items.Length; i++) { yield return items[i]; }
+    }
 }
 
-/// One order, then another among what the first calls equal.
 class ThenComparer<T> : IComparer<T> {
     private IComparer<T> first;
     private IComparer<T> second;
 
-    public ThenComparer(IComparer<T> a, IComparer<T> b) {
-        first = a;
-        second = b;
+    public ThenComparer(IComparer<T> first, IComparer<T> second) {
+        this.first = first;
+        this.second = second;
     }
 
     public int Compare(T a, T b) {
@@ -7560,65 +6844,1216 @@ class ThenComparer<T> : IComparer<T> {
     }
 }
 
-/// The opposite of an order.
-class ReverseComparer<T> : IComparer<T> {
-    private IComparer<T> by;
-
-    public ReverseComparer(IComparer<T> of) { by = of; }
-
-    public int Compare(T a, T b) { return by.Compare(b, a); }
-}
-
+/// Two elements in the order of what `of` takes from them, by the comparer
+/// named or the key's own order (Comparer<K>.Default), reversed when
+/// descending.
 class KeyComparer<T, K> : IComparer<T> {
     private Func<T, K> of;
     private bool down;
+    private IComparer<K> by;
 
-    /// The ordering to use on the keys, when the caller named one. Null means
-    /// the one below: a string by its text and anything else by its word.
-    private IComparer<K>? by;
-
-    public KeyComparer(Func<T, K> key, bool descending) {
+    public KeyComparer(Func<T, K> key, bool descending, IComparer<K>? comparer) {
         of = key;
         down = descending;
-        by = null;
-    }
-
-    public KeyComparer(Func<T, K> key, bool descending, IComparer<K> comparer) {
-        of = key;
-        down = descending;
-        by = comparer;
+        by = comparer ?? Comparer<K>.Default;
     }
 
     public int Compare(T a, T b) {
-        K left = of(a);
-        K right = of(b);
-        int sign = 0;
+        int sign = by.Compare(of(a), of(b));
+        return down ? 0 - sign : sign;
+    }
+}
 
-        if (by != null) {
-            sign = by.Compare(left, right);
-        } else if (Sys.IsString(left)) {
-            sign = String.Compare(Sys.AsString(left), Sys.AsString(right));
-        } else {
-            long x = Sys.Word(left);
-            long y = Sys.Word(right);
-            sign = x < y ? -1 : (x > y ? 1 : 0);
+static class Enumerable {
+    // ---- the checks every operator starts with ---------------------------
+
+    private static void NotNull(object? argument, string name) {
+        if (argument == null) { throw new ArgumentNullException(name); }
+    }
+
+    private static InvalidOperationException NoElements() {
+        return new InvalidOperationException("Sequence contains no elements");
+    }
+
+    private static InvalidOperationException NoMatch() {
+        return new InvalidOperationException("Sequence contains no matching element");
+    }
+
+    private static InvalidOperationException MoreThanOne() {
+        return new InvalidOperationException("Sequence contains more than one element");
+    }
+
+    private static InvalidOperationException MoreThanOneMatch() {
+        return new InvalidOperationException("Sequence contains more than one matching element");
+    }
+
+    // ---- CollectionExtensions, which lived here -------------------------
+
+    /// .NET's CollectionExtensions.GetValueOrDefault, over any read-only
+    /// dictionary: the value, or the type's zero where the key is not there.
+    public static V? GetValueOrDefault<K, V>(this IReadOnlyDictionary<K, V> source, K key) {
+        return source.TryGetValue(key, out V? found) ? found : default(V);
+    }
+
+    public static V GetValueOrDefault<K, V>(this IReadOnlyDictionary<K, V> source, K key, V fallback) {
+        return source.TryGetValue(key, out V? found) ? found! : fallback;
+    }
+
+    // ---- making sequences --------------------------------------------------
+
+    public static IEnumerable<T> Empty<T>() { return Array.Empty<T>(); }
+
+    public static IEnumerable<int> Range(int start, int count) {
+        if (count < 0 || (long)start + count - 1 > int.MaxValue) { throw new ArgumentOutOfRangeException("count"); }
+        return RangeIterator(start, count);
+    }
+
+    private static IEnumerable<int> RangeIterator(int start, int count) {
+        for (int i = 0; i < count; i++) { yield return start + i; }
+    }
+
+    public static IEnumerable<T> Repeat<T>(T element, int count) {
+        if (count < 0) { throw new ArgumentOutOfRangeException("count"); }
+        return RepeatIterator(element, count);
+    }
+
+    private static IEnumerable<T> RepeatIterator<T>(T element, int count) {
+        for (int i = 0; i < count; i++) { yield return element; }
+    }
+
+    public static IEnumerable<T> AsEnumerable<T>(this IEnumerable<T> source) { return source; }
+
+    // ---- filtering and projecting (deferred) ----------------------------
+
+    public static IEnumerable<T> Where<T>(this IEnumerable<T> source, Func<T, bool> predicate) {
+        NotNull(source, "source"); NotNull(predicate, "predicate");
+        return WhereIterator(source, predicate);
+    }
+
+    private static IEnumerable<T> WhereIterator<T>(IEnumerable<T> source, Func<T, bool> predicate) {
+        foreach (T item in source) { if (predicate(item)) { yield return item; } }
+    }
+
+    public static IEnumerable<T> Where<T>(this IEnumerable<T> source, Func<T, int, bool> predicate) {
+        NotNull(source, "source"); NotNull(predicate, "predicate");
+        return WhereIndexed(source, predicate);
+    }
+
+    private static IEnumerable<T> WhereIndexed<T>(IEnumerable<T> source, Func<T, int, bool> predicate) {
+        int index = -1;
+        foreach (T item in source) {
+            index = checked(index + 1);
+            if (predicate(item, index)) { yield return item; }
         }
-        return down ? -sign : sign;
+    }
+
+    public static IEnumerable<R> Select<T, R>(this IEnumerable<T> source, Func<T, R> selector) {
+        NotNull(source, "source"); NotNull(selector, "selector");
+        return SelectIterator(source, selector);
+    }
+
+    private static IEnumerable<R> SelectIterator<T, R>(IEnumerable<T> source, Func<T, R> selector) {
+        foreach (T item in source) { yield return selector(item); }
+    }
+
+    public static IEnumerable<R> Select<T, R>(this IEnumerable<T> source, Func<T, int, R> selector) {
+        NotNull(source, "source"); NotNull(selector, "selector");
+        return SelectIndexed(source, selector);
+    }
+
+    private static IEnumerable<R> SelectIndexed<T, R>(IEnumerable<T> source, Func<T, int, R> selector) {
+        int index = -1;
+        foreach (T item in source) {
+            index = checked(index + 1);
+            yield return selector(item, index);
+        }
+    }
+
+    public static IEnumerable<R> SelectMany<T, R>(this IEnumerable<T> source, Func<T, IEnumerable<R>> selector) {
+        NotNull(source, "source"); NotNull(selector, "selector");
+        return SelectManyIterator(source, selector);
+    }
+
+    private static IEnumerable<R> SelectManyIterator<T, R>(IEnumerable<T> source, Func<T, IEnumerable<R>> selector) {
+        foreach (T item in source) { foreach (R each in selector(item)) { yield return each; } }
+    }
+
+    public static IEnumerable<R> SelectMany<T, R>(this IEnumerable<T> source, Func<T, int, IEnumerable<R>> selector) {
+        NotNull(source, "source"); NotNull(selector, "selector");
+        return SelectManyIndexed(source, selector);
+    }
+
+    private static IEnumerable<R> SelectManyIndexed<T, R>(IEnumerable<T> source, Func<T, int, IEnumerable<R>> selector) {
+        int index = -1;
+        foreach (T item in source) {
+            index = checked(index + 1);
+            foreach (R each in selector(item, index)) { yield return each; }
+        }
+    }
+
+    public static IEnumerable<R> SelectMany<T, C, R>(this IEnumerable<T> source, Func<T, IEnumerable<C>> collectionSelector, Func<T, C, R> resultSelector) {
+        NotNull(source, "source"); NotNull(collectionSelector, "collectionSelector"); NotNull(resultSelector, "resultSelector");
+        return SelectManyResults(source, collectionSelector, resultSelector);
+    }
+
+    private static IEnumerable<R> SelectManyResults<T, C, R>(IEnumerable<T> source, Func<T, IEnumerable<C>> collectionSelector, Func<T, C, R> resultSelector) {
+        foreach (T item in source) { foreach (C each in collectionSelector(item)) { yield return resultSelector(item, each); } }
+    }
+
+    public static IEnumerable<R> OfType<R>(this IEnumerable source) {
+        NotNull(source, "source");
+        return OfTypeIterator<R>(source);
+    }
+
+    private static IEnumerable<R> OfTypeIterator<R>(IEnumerable source) {
+        foreach (object? item in source) { if (item is R typed) { yield return typed; } }
+    }
+
+    public static IEnumerable<R> Cast<R>(this IEnumerable source) {
+        NotNull(source, "source");
+        if (source is IEnumerable<R> already) { return already; }
+        return CastIterator<R>(source);
+    }
+
+    private static IEnumerable<R> CastIterator<R>(IEnumerable source) {
+        foreach (object? item in source) { yield return (R)item!; }
+    }
+
+    // ---- partitioning (deferred) --------------------------------------------
+
+    public static IEnumerable<T> Take<T>(this IEnumerable<T> source, int count) {
+        NotNull(source, "source");
+        return count <= 0 ? Empty<T>() : TakeIterator(source, count);
+    }
+
+    private static IEnumerable<T> TakeIterator<T>(IEnumerable<T> source, int count) {
+        foreach (T item in source) {
+            yield return item;
+            count = count - 1;
+            if (count == 0) { yield break; }
+        }
+    }
+
+    public static IEnumerable<T> Skip<T>(this IEnumerable<T> source, int count) {
+        NotNull(source, "source");
+        return SkipIterator(source, count);
+    }
+
+    private static IEnumerable<T> SkipIterator<T>(IEnumerable<T> source, int count) {
+        foreach (T item in source) {
+            if (count > 0) { count = count - 1; continue; }
+            yield return item;
+        }
+    }
+
+    public static IEnumerable<T> TakeWhile<T>(this IEnumerable<T> source, Func<T, bool> predicate) {
+        NotNull(source, "source"); NotNull(predicate, "predicate");
+        return TakeWhileIterator(source, predicate);
+    }
+
+    private static IEnumerable<T> TakeWhileIterator<T>(IEnumerable<T> source, Func<T, bool> predicate) {
+        foreach (T item in source) {
+            if (!predicate(item)) { yield break; }
+            yield return item;
+        }
+    }
+
+    public static IEnumerable<T> TakeWhile<T>(this IEnumerable<T> source, Func<T, int, bool> predicate) {
+        NotNull(source, "source"); NotNull(predicate, "predicate");
+        return TakeWhileIndexed(source, predicate);
+    }
+
+    private static IEnumerable<T> TakeWhileIndexed<T>(IEnumerable<T> source, Func<T, int, bool> predicate) {
+        int index = -1;
+        foreach (T item in source) {
+            index = checked(index + 1);
+            if (!predicate(item, index)) { yield break; }
+            yield return item;
+        }
+    }
+
+    public static IEnumerable<T> SkipWhile<T>(this IEnumerable<T> source, Func<T, bool> predicate) {
+        NotNull(source, "source"); NotNull(predicate, "predicate");
+        return SkipWhileIterator(source, predicate);
+    }
+
+    private static IEnumerable<T> SkipWhileIterator<T>(IEnumerable<T> source, Func<T, bool> predicate) {
+        bool yielding = false;
+        foreach (T item in source) {
+            if (!yielding && !predicate(item)) { yielding = true; }
+            if (yielding) { yield return item; }
+        }
+    }
+
+    public static IEnumerable<T> SkipWhile<T>(this IEnumerable<T> source, Func<T, int, bool> predicate) {
+        NotNull(source, "source"); NotNull(predicate, "predicate");
+        return SkipWhileIndexed(source, predicate);
+    }
+
+    private static IEnumerable<T> SkipWhileIndexed<T>(IEnumerable<T> source, Func<T, int, bool> predicate) {
+        int index = -1;
+        bool yielding = false;
+        foreach (T item in source) {
+            index = checked(index + 1);
+            if (!yielding && !predicate(item, index)) { yielding = true; }
+            if (yielding) { yield return item; }
+        }
+    }
+
+    public static IEnumerable<T> TakeLast<T>(this IEnumerable<T> source, int count) {
+        NotNull(source, "source");
+        return count <= 0 ? Empty<T>() : TakeLastIterator(source, count);
+    }
+
+    private static IEnumerable<T> TakeLastIterator<T>(IEnumerable<T> source, int count) {
+        Queue<T> kept = new Queue<T>();
+        foreach (T item in source) {
+            if (kept.Count == count) { kept.Dequeue(); }
+            kept.Enqueue(item);
+        }
+        while (kept.Count > 0) { yield return kept.Dequeue(); }
+    }
+
+    public static IEnumerable<T> SkipLast<T>(this IEnumerable<T> source, int count) {
+        NotNull(source, "source");
+        return count <= 0 ? source.Skip(0) : SkipLastIterator(source, count);
+    }
+
+    private static IEnumerable<T> SkipLastIterator<T>(IEnumerable<T> source, int count) {
+        Queue<T> held = new Queue<T>();
+        foreach (T item in source) {
+            if (held.Count == count) { yield return held.Dequeue(); }
+            held.Enqueue(item);
+        }
+    }
+
+    public static IEnumerable<T[]> Chunk<T>(this IEnumerable<T> source, int size) {
+        NotNull(source, "source");
+        if (size < 1) { throw new ArgumentOutOfRangeException("size"); }
+        return ChunkIterator(source, size);
+    }
+
+    private static IEnumerable<T[]> ChunkIterator<T>(IEnumerable<T> source, int size) {
+        List<T> chunk = new List<T>(size);
+        foreach (T item in source) {
+            chunk.Add(item);
+            if (chunk.Count == size) {
+                yield return chunk.ToArray();
+                chunk = new List<T>(size);
+            }
+        }
+        if (chunk.Count > 0) { yield return chunk.ToArray(); }
+    }
+
+    // ---- joining sequences (deferred) --------------------------------------
+
+    public static IEnumerable<T> Concat<T>(this IEnumerable<T> first, IEnumerable<T> second) {
+        NotNull(first, "first"); NotNull(second, "second");
+        return ConcatIterator(first, second);
+    }
+
+    private static IEnumerable<T> ConcatIterator<T>(IEnumerable<T> first, IEnumerable<T> second) {
+        foreach (T item in first) { yield return item; }
+        foreach (T item in second) { yield return item; }
+    }
+
+    public static IEnumerable<T> Append<T>(this IEnumerable<T> source, T element) {
+        NotNull(source, "source");
+        return AppendIterator(source, element);
+    }
+
+    private static IEnumerable<T> AppendIterator<T>(IEnumerable<T> source, T element) {
+        foreach (T item in source) { yield return item; }
+        yield return element;
+    }
+
+    public static IEnumerable<T> Prepend<T>(this IEnumerable<T> source, T element) {
+        NotNull(source, "source");
+        return PrependIterator(source, element);
+    }
+
+    private static IEnumerable<T> PrependIterator<T>(IEnumerable<T> source, T element) {
+        yield return element;
+        foreach (T item in source) { yield return item; }
+    }
+
+    public static IEnumerable<(T First, U Second)> Zip<T, U>(this IEnumerable<T> first, IEnumerable<U> second) {
+        NotNull(first, "first"); NotNull(second, "second");
+        return ZipPairs(first, second);
+    }
+
+    private static IEnumerable<(T First, U Second)> ZipPairs<T, U>(IEnumerable<T> first, IEnumerable<U> second) {
+        using (IEnumerator<T> left = first.GetEnumerator())
+        using (IEnumerator<U> right = second.GetEnumerator()) {
+            while (left.MoveNext() && right.MoveNext()) { yield return (left.Current, right.Current); }
+        }
+    }
+
+    public static IEnumerable<R> Zip<T, U, R>(this IEnumerable<T> first, IEnumerable<U> second, Func<T, U, R> resultSelector) {
+        NotNull(first, "first"); NotNull(second, "second"); NotNull(resultSelector, "resultSelector");
+        return ZipResults(first, second, resultSelector);
+    }
+
+    private static IEnumerable<R> ZipResults<T, U, R>(IEnumerable<T> first, IEnumerable<U> second, Func<T, U, R> resultSelector) {
+        using (IEnumerator<T> left = first.GetEnumerator())
+        using (IEnumerator<U> right = second.GetEnumerator()) {
+            while (left.MoveNext() && right.MoveNext()) { yield return resultSelector(left.Current, right.Current); }
+        }
+    }
+
+    public static IEnumerable<T> DefaultIfEmpty<T>(this IEnumerable<T> source) {
+        return DefaultIfEmpty(source, default(T)!);
+    }
+
+    public static IEnumerable<T> DefaultIfEmpty<T>(this IEnumerable<T> source, T defaultValue) {
+        NotNull(source, "source");
+        return DefaultIfEmptyIterator(source, defaultValue);
+    }
+
+    private static IEnumerable<T> DefaultIfEmptyIterator<T>(IEnumerable<T> source, T defaultValue) {
+        bool any = false;
+        foreach (T item in source) {
+            any = true;
+            yield return item;
+        }
+        if (!any) { yield return defaultValue; }
+    }
+
+    public static IEnumerable<T> Reverse<T>(this IEnumerable<T> source) {
+        NotNull(source, "source");
+        return ReverseIterator(source);
+    }
+
+    private static IEnumerable<T> ReverseIterator<T>(IEnumerable<T> source) {
+        T[] items = source.ToArray();
+        for (int i = items.Length - 1; i >= 0; i--) { yield return items[i]; }
+    }
+
+    // ---- sets (deferred) ----------------------------------------------------
+
+    public static IEnumerable<T> Distinct<T>(this IEnumerable<T> source) { return Distinct(source, null); }
+
+    public static IEnumerable<T> Distinct<T>(this IEnumerable<T> source, IEqualityComparer<T>? comparer) {
+        NotNull(source, "source");
+        return DistinctIterator(source, comparer);
+    }
+
+    private static IEnumerable<T> DistinctIterator<T>(IEnumerable<T> source, IEqualityComparer<T>? comparer) {
+        HashSet<T> seen = comparer == null ? new HashSet<T>() : new HashSet<T>(comparer);
+        foreach (T item in source) { if (seen.Add(item)) { yield return item; } }
+    }
+
+    public static IEnumerable<T> DistinctBy<T, K>(this IEnumerable<T> source, Func<T, K> keySelector) { return DistinctBy(source, keySelector, null); }
+
+    public static IEnumerable<T> DistinctBy<T, K>(this IEnumerable<T> source, Func<T, K> keySelector, IEqualityComparer<K>? comparer) {
+        NotNull(source, "source"); NotNull(keySelector, "keySelector");
+        return DistinctByIterator(source, keySelector, comparer);
+    }
+
+    private static IEnumerable<T> DistinctByIterator<T, K>(IEnumerable<T> source, Func<T, K> keySelector, IEqualityComparer<K>? comparer) {
+        HashSet<K> seen = comparer == null ? new HashSet<K>() : new HashSet<K>(comparer);
+        foreach (T item in source) { if (seen.Add(keySelector(item))) { yield return item; } }
+    }
+
+    public static IEnumerable<T> Union<T>(this IEnumerable<T> first, IEnumerable<T> second) { return Union(first, second, null); }
+
+    public static IEnumerable<T> Union<T>(this IEnumerable<T> first, IEnumerable<T> second, IEqualityComparer<T>? comparer) {
+        NotNull(first, "first"); NotNull(second, "second");
+        return UnionIterator(first, second, comparer);
+    }
+
+    private static IEnumerable<T> UnionIterator<T>(IEnumerable<T> first, IEnumerable<T> second, IEqualityComparer<T>? comparer) {
+        HashSet<T> seen = comparer == null ? new HashSet<T>() : new HashSet<T>(comparer);
+        foreach (T item in first) { if (seen.Add(item)) { yield return item; } }
+        foreach (T item in second) { if (seen.Add(item)) { yield return item; } }
+    }
+
+    public static IEnumerable<T> Intersect<T>(this IEnumerable<T> first, IEnumerable<T> second) { return Intersect(first, second, null); }
+
+    public static IEnumerable<T> Intersect<T>(this IEnumerable<T> first, IEnumerable<T> second, IEqualityComparer<T>? comparer) {
+        NotNull(first, "first"); NotNull(second, "second");
+        return IntersectIterator(first, second, comparer);
+    }
+
+    private static IEnumerable<T> IntersectIterator<T>(IEnumerable<T> first, IEnumerable<T> second, IEqualityComparer<T>? comparer) {
+        HashSet<T> other = comparer == null ? new HashSet<T>(second) : new HashSet<T>(second, comparer);
+        foreach (T item in first) { if (other.Remove(item)) { yield return item; } }
+    }
+
+    public static IEnumerable<T> Except<T>(this IEnumerable<T> first, IEnumerable<T> second) { return Except(first, second, null); }
+
+    public static IEnumerable<T> Except<T>(this IEnumerable<T> first, IEnumerable<T> second, IEqualityComparer<T>? comparer) {
+        NotNull(first, "first"); NotNull(second, "second");
+        return ExceptIterator(first, second, comparer);
+    }
+
+    private static IEnumerable<T> ExceptIterator<T>(IEnumerable<T> first, IEnumerable<T> second, IEqualityComparer<T>? comparer) {
+        HashSet<T> seen = comparer == null ? new HashSet<T>(second) : new HashSet<T>(second, comparer);
+        foreach (T item in first) { if (seen.Add(item)) { yield return item; } }
+    }
+
+    // ---- ordering (deferred) ------------------------------------------------
+
+    public static IOrderedEnumerable<T> OrderBy<T, K>(this IEnumerable<T> source, Func<T, K> keySelector) { return OrderBy(source, keySelector, null); }
+
+    public static IOrderedEnumerable<T> OrderBy<T, K>(this IEnumerable<T> source, Func<T, K> keySelector, IComparer<K>? comparer) {
+        NotNull(source, "source"); NotNull(keySelector, "keySelector");
+        return new OrderedSequence<T>(source, new KeyComparer<T, K>(keySelector, false, comparer));
+    }
+
+    public static IOrderedEnumerable<T> OrderByDescending<T, K>(this IEnumerable<T> source, Func<T, K> keySelector) { return OrderByDescending(source, keySelector, null); }
+
+    public static IOrderedEnumerable<T> OrderByDescending<T, K>(this IEnumerable<T> source, Func<T, K> keySelector, IComparer<K>? comparer) {
+        NotNull(source, "source"); NotNull(keySelector, "keySelector");
+        return new OrderedSequence<T>(source, new KeyComparer<T, K>(keySelector, true, comparer));
+    }
+
+    public static IOrderedEnumerable<T> Order<T>(this IEnumerable<T> source) { return Order(source, null); }
+
+    public static IOrderedEnumerable<T> Order<T>(this IEnumerable<T> source, IComparer<T>? comparer) {
+        NotNull(source, "source");
+        return new OrderedSequence<T>(source, comparer ?? Comparer<T>.Default);
+    }
+
+    public static IOrderedEnumerable<T> OrderDescending<T>(this IEnumerable<T> source) { return OrderDescending(source, null); }
+
+    public static IOrderedEnumerable<T> OrderDescending<T>(this IEnumerable<T> source, IComparer<T>? comparer) {
+        NotNull(source, "source");
+        return new OrderedSequence<T>(source, new KeyComparer<T, T>(x => x, true, comparer));
+    }
+
+    public static IOrderedEnumerable<T> ThenBy<T, K>(this IOrderedEnumerable<T> source, Func<T, K> keySelector) { return ThenBy(source, keySelector, null); }
+
+    public static IOrderedEnumerable<T> ThenBy<T, K>(this IOrderedEnumerable<T> source, Func<T, K> keySelector, IComparer<K>? comparer) {
+        NotNull(source, "source");
+        return source.CreateOrderedEnumerable(keySelector, comparer, false);
+    }
+
+    public static IOrderedEnumerable<T> ThenByDescending<T, K>(this IOrderedEnumerable<T> source, Func<T, K> keySelector) { return ThenByDescending(source, keySelector, null); }
+
+    public static IOrderedEnumerable<T> ThenByDescending<T, K>(this IOrderedEnumerable<T> source, Func<T, K> keySelector, IComparer<K>? comparer) {
+        NotNull(source, "source");
+        return source.CreateOrderedEnumerable(keySelector, comparer, true);
+    }
+
+    // ---- grouping and joining -----------------------------------------------
+
+    public static IEnumerable<IGrouping<K, T>> GroupBy<T, K>(this IEnumerable<T> source, Func<T, K> keySelector) { return GroupBy(source, keySelector, (IEqualityComparer<K>?)null); }
+
+    public static IEnumerable<IGrouping<K, T>> GroupBy<T, K>(this IEnumerable<T> source, Func<T, K> keySelector, IEqualityComparer<K>? comparer) {
+        NotNull(source, "source"); NotNull(keySelector, "keySelector");
+        return GroupByIterator(source, keySelector, comparer);
+    }
+
+    private static IEnumerable<IGrouping<K, T>> GroupByIterator<T, K>(IEnumerable<T> source, Func<T, K> keySelector, IEqualityComparer<K>? comparer) {
+        foreach (IGrouping<K, T> group in ToLookup(source, keySelector, comparer)) { yield return group; }
+    }
+
+    public static IEnumerable<IGrouping<K, E>> GroupBy<T, K, E>(this IEnumerable<T> source, Func<T, K> keySelector, Func<T, E> elementSelector) { return GroupBy(source, keySelector, elementSelector, (IEqualityComparer<K>?)null); }
+
+    public static IEnumerable<IGrouping<K, E>> GroupBy<T, K, E>(this IEnumerable<T> source, Func<T, K> keySelector, Func<T, E> elementSelector, IEqualityComparer<K>? comparer) {
+        NotNull(source, "source"); NotNull(keySelector, "keySelector"); NotNull(elementSelector, "elementSelector");
+        return GroupByElements(source, keySelector, elementSelector, comparer);
+    }
+
+    private static IEnumerable<IGrouping<K, E>> GroupByElements<T, K, E>(IEnumerable<T> source, Func<T, K> keySelector, Func<T, E> elementSelector, IEqualityComparer<K>? comparer) {
+        foreach (IGrouping<K, E> group in ToLookup(source, keySelector, elementSelector, comparer)) { yield return group; }
+    }
+
+    public static IEnumerable<R> GroupBy<T, K, R>(this IEnumerable<T> source, Func<T, K> keySelector, Func<K, IEnumerable<T>, R> resultSelector) {
+        NotNull(source, "source"); NotNull(keySelector, "keySelector"); NotNull(resultSelector, "resultSelector");
+        return GroupByResults(source, keySelector, resultSelector);
+    }
+
+    private static IEnumerable<R> GroupByResults<T, K, R>(IEnumerable<T> source, Func<T, K> keySelector, Func<K, IEnumerable<T>, R> resultSelector) {
+        foreach (R result in ((Lookup<K, T>)ToLookup(source, keySelector, null)).ApplyResultSelector(resultSelector)) { yield return result; }
+    }
+
+    public static ILookup<K, T> ToLookup<T, K>(this IEnumerable<T> source, Func<T, K> keySelector) { return ToLookup(source, keySelector, (IEqualityComparer<K>?)null); }
+
+    public static ILookup<K, T> ToLookup<T, K>(this IEnumerable<T> source, Func<T, K> keySelector, IEqualityComparer<K>? comparer) {
+        NotNull(source, "source"); NotNull(keySelector, "keySelector");
+        Lookup<K, T> made = new Lookup<K, T>(comparer);
+        foreach (T item in source) { made.Add(keySelector(item), item); }
+        return made;
+    }
+
+    public static ILookup<K, E> ToLookup<T, K, E>(this IEnumerable<T> source, Func<T, K> keySelector, Func<T, E> elementSelector) { return ToLookup(source, keySelector, elementSelector, null); }
+
+    public static ILookup<K, E> ToLookup<T, K, E>(this IEnumerable<T> source, Func<T, K> keySelector, Func<T, E> elementSelector, IEqualityComparer<K>? comparer) {
+        NotNull(source, "source"); NotNull(keySelector, "keySelector"); NotNull(elementSelector, "elementSelector");
+        Lookup<K, E> made = new Lookup<K, E>(comparer);
+        foreach (T item in source) { made.Add(keySelector(item), elementSelector(item)); }
+        return made;
+    }
+
+    public static IEnumerable<R> Join<T, U, K, R>(this IEnumerable<T> outer, IEnumerable<U> inner, Func<T, K> outerKeySelector, Func<U, K> innerKeySelector, Func<T, U, R> resultSelector) {
+        NotNull(outer, "outer"); NotNull(inner, "inner"); NotNull(outerKeySelector, "outerKeySelector");
+        NotNull(innerKeySelector, "innerKeySelector"); NotNull(resultSelector, "resultSelector");
+        return JoinIterator(outer, inner, outerKeySelector, innerKeySelector, resultSelector);
+    }
+
+    private static IEnumerable<R> JoinIterator<T, U, K, R>(IEnumerable<T> outer, IEnumerable<U> inner, Func<T, K> outerKeySelector, Func<U, K> innerKeySelector, Func<T, U, R> resultSelector) {
+        ILookup<K, U> matches = ToLookup(inner, innerKeySelector, (IEqualityComparer<K>?)null);
+        foreach (T item in outer) {
+            foreach (U match in matches[outerKeySelector(item)]) { yield return resultSelector(item, match); }
+        }
+    }
+
+    public static IEnumerable<R> GroupJoin<T, U, K, R>(this IEnumerable<T> outer, IEnumerable<U> inner, Func<T, K> outerKeySelector, Func<U, K> innerKeySelector, Func<T, IEnumerable<U>, R> resultSelector) {
+        NotNull(outer, "outer"); NotNull(inner, "inner"); NotNull(outerKeySelector, "outerKeySelector");
+        NotNull(innerKeySelector, "innerKeySelector"); NotNull(resultSelector, "resultSelector");
+        return GroupJoinIterator(outer, inner, outerKeySelector, innerKeySelector, resultSelector);
+    }
+
+    private static IEnumerable<R> GroupJoinIterator<T, U, K, R>(IEnumerable<T> outer, IEnumerable<U> inner, Func<T, K> outerKeySelector, Func<U, K> innerKeySelector, Func<T, IEnumerable<U>, R> resultSelector) {
+        ILookup<K, U> matches = ToLookup(inner, innerKeySelector, (IEqualityComparer<K>?)null);
+        foreach (T item in outer) { yield return resultSelector(item, matches[outerKeySelector(item)]); }
+    }
+
+    // ---- conversions (immediate) -------------------------------------------
+
+    public static List<T> ToList<T>(this IEnumerable<T> source) {
+        NotNull(source, "source");
+        return new List<T>(source);
+    }
+
+    public static T[] ToArray<T>(this IEnumerable<T> source) {
+        NotNull(source, "source");
+        List<T> made = new List<T>(source);
+        return made.ToArray();
+    }
+
+    public static HashSet<T> ToHashSet<T>(this IEnumerable<T> source) { return ToHashSet(source, null); }
+
+    public static HashSet<T> ToHashSet<T>(this IEnumerable<T> source, IEqualityComparer<T>? comparer) {
+        NotNull(source, "source");
+        return comparer == null ? new HashSet<T>(source) : new HashSet<T>(source, comparer);
+    }
+
+    public static Dictionary<K, T> ToDictionary<T, K>(this IEnumerable<T> source, Func<T, K> keySelector) { return ToDictionary(source, keySelector, (IEqualityComparer<K>?)null); }
+
+    public static Dictionary<K, T> ToDictionary<T, K>(this IEnumerable<T> source, Func<T, K> keySelector, IEqualityComparer<K>? comparer) {
+        NotNull(source, "source"); NotNull(keySelector, "keySelector");
+        Dictionary<K, T> made = comparer == null ? new Dictionary<K, T>() : new Dictionary<K, T>(comparer);
+        foreach (T item in source) { made.Add(keySelector(item), item); }
+        return made;
+    }
+
+    public static Dictionary<K, V> ToDictionary<T, K, V>(this IEnumerable<T> source, Func<T, K> keySelector, Func<T, V> elementSelector) { return ToDictionary(source, keySelector, elementSelector, null); }
+
+    public static Dictionary<K, V> ToDictionary<T, K, V>(this IEnumerable<T> source, Func<T, K> keySelector, Func<T, V> elementSelector, IEqualityComparer<K>? comparer) {
+        NotNull(source, "source"); NotNull(keySelector, "keySelector"); NotNull(elementSelector, "elementSelector");
+        Dictionary<K, V> made = comparer == null ? new Dictionary<K, V>() : new Dictionary<K, V>(comparer);
+        foreach (T item in source) { made.Add(keySelector(item), elementSelector(item)); }
+        return made;
+    }
+
+    public static Dictionary<K, V> ToDictionary<K, V>(this IEnumerable<KeyValuePair<K, V>> source) {
+        NotNull(source, "source");
+        Dictionary<K, V> made = new Dictionary<K, V>();
+        foreach (KeyValuePair<K, V> pair in source) { made.Add(pair.Key, pair.Value); }
+        return made;
+    }
+
+    // ---- elements (immediate) -----------------------------------------------
+
+    public static T First<T>(this IEnumerable<T> source) {
+        NotNull(source, "source");
+        foreach (T item in source) { return item; }
+        throw NoElements();
+    }
+
+    public static T First<T>(this IEnumerable<T> source, Func<T, bool> predicate) {
+        NotNull(source, "source"); NotNull(predicate, "predicate");
+        foreach (T item in source) { if (predicate(item)) { return item; } }
+        throw NoMatch();
+    }
+
+    public static T? FirstOrDefault<T>(this IEnumerable<T> source) { return FirstOrDefault(source, default(T)!); }
+
+    public static T FirstOrDefault<T>(this IEnumerable<T> source, T defaultValue) {
+        NotNull(source, "source");
+        foreach (T item in source) { return item; }
+        return defaultValue;
+    }
+
+    public static T? FirstOrDefault<T>(this IEnumerable<T> source, Func<T, bool> predicate) { return FirstOrDefault(source, predicate, default(T)!); }
+
+    public static T FirstOrDefault<T>(this IEnumerable<T> source, Func<T, bool> predicate, T defaultValue) {
+        NotNull(source, "source"); NotNull(predicate, "predicate");
+        foreach (T item in source) { if (predicate(item)) { return item; } }
+        return defaultValue;
+    }
+
+    public static T Last<T>(this IEnumerable<T> source) {
+        NotNull(source, "source");
+        bool found = false;
+        T last = default(T)!;
+        foreach (T item in source) { found = true; last = item; }
+        if (!found) { throw NoElements(); }
+        return last;
+    }
+
+    public static T Last<T>(this IEnumerable<T> source, Func<T, bool> predicate) {
+        NotNull(source, "source"); NotNull(predicate, "predicate");
+        bool found = false;
+        T last = default(T)!;
+        foreach (T item in source) { if (predicate(item)) { found = true; last = item; } }
+        if (!found) { throw NoMatch(); }
+        return last;
+    }
+
+    public static T? LastOrDefault<T>(this IEnumerable<T> source) { return LastOrDefault(source, default(T)!); }
+
+    public static T LastOrDefault<T>(this IEnumerable<T> source, T defaultValue) {
+        NotNull(source, "source");
+        T last = defaultValue;
+        foreach (T item in source) { last = item; }
+        return last;
+    }
+
+    public static T? LastOrDefault<T>(this IEnumerable<T> source, Func<T, bool> predicate) { return LastOrDefault(source, predicate, default(T)!); }
+
+    public static T LastOrDefault<T>(this IEnumerable<T> source, Func<T, bool> predicate, T defaultValue) {
+        NotNull(source, "source"); NotNull(predicate, "predicate");
+        T last = defaultValue;
+        foreach (T item in source) { if (predicate(item)) { last = item; } }
+        return last;
+    }
+
+    public static T Single<T>(this IEnumerable<T> source) {
+        NotNull(source, "source");
+        using (IEnumerator<T> walk = source.GetEnumerator()) {
+            if (!walk.MoveNext()) { throw NoElements(); }
+            T only = walk.Current;
+            if (walk.MoveNext()) { throw MoreThanOne(); }
+            return only;
+        }
+    }
+
+    public static T Single<T>(this IEnumerable<T> source, Func<T, bool> predicate) {
+        NotNull(source, "source"); NotNull(predicate, "predicate");
+        bool found = false;
+        T only = default(T)!;
+        foreach (T item in source) {
+            if (!predicate(item)) { continue; }
+            if (found) { throw MoreThanOneMatch(); }
+            found = true;
+            only = item;
+        }
+        if (!found) { throw NoMatch(); }
+        return only;
+    }
+
+    public static T? SingleOrDefault<T>(this IEnumerable<T> source) { return SingleOrDefault(source, default(T)!); }
+
+    public static T SingleOrDefault<T>(this IEnumerable<T> source, T defaultValue) {
+        NotNull(source, "source");
+        using (IEnumerator<T> walk = source.GetEnumerator()) {
+            if (!walk.MoveNext()) { return defaultValue; }
+            T only = walk.Current;
+            if (walk.MoveNext()) { throw MoreThanOne(); }
+            return only;
+        }
+    }
+
+    public static T? SingleOrDefault<T>(this IEnumerable<T> source, Func<T, bool> predicate) { return SingleOrDefault(source, predicate, default(T)!); }
+
+    public static T SingleOrDefault<T>(this IEnumerable<T> source, Func<T, bool> predicate, T defaultValue) {
+        NotNull(source, "source"); NotNull(predicate, "predicate");
+        bool found = false;
+        T only = defaultValue;
+        foreach (T item in source) {
+            if (!predicate(item)) { continue; }
+            if (found) { throw MoreThanOneMatch(); }
+            found = true;
+            only = item;
+        }
+        return only;
+    }
+
+    public static T ElementAt<T>(this IEnumerable<T> source, int index) {
+        NotNull(source, "source");
+        if (source is IReadOnlyList<T> list) {
+            if (index < 0 || index >= list.Count) { throw new ArgumentOutOfRangeException("index", "Index was out of range. Must be non-negative and less than the size of the collection."); }
+            return list[index];
+        }
+        if (index >= 0) {
+            foreach (T item in source) {
+                if (index == 0) { return item; }
+                index = index - 1;
+            }
+        }
+        throw new ArgumentOutOfRangeException("index", "Index was out of range. Must be non-negative and less than the size of the collection.");
+    }
+
+    public static T? ElementAtOrDefault<T>(this IEnumerable<T> source, int index) {
+        NotNull(source, "source");
+        if (index < 0) { return default(T); }
+        if (source is IReadOnlyList<T> list) { return index < list.Count ? list[index] : default(T); }
+        foreach (T item in source) {
+            if (index == 0) { return item; }
+            index = index - 1;
+        }
+        return default(T);
+    }
+
+    // ---- questions (immediate) ----------------------------------------------
+
+    public static bool Any<T>(this IEnumerable<T> source) {
+        NotNull(source, "source");
+        if (source is IReadOnlyCollection<T> collection) { return collection.Count != 0; }
+        using (IEnumerator<T> walk = source.GetEnumerator()) { return walk.MoveNext(); }
+    }
+
+    public static bool Any<T>(this IEnumerable<T> source, Func<T, bool> predicate) {
+        NotNull(source, "source"); NotNull(predicate, "predicate");
+        foreach (T item in source) { if (predicate(item)) { return true; } }
+        return false;
+    }
+
+    public static bool All<T>(this IEnumerable<T> source, Func<T, bool> predicate) {
+        NotNull(source, "source"); NotNull(predicate, "predicate");
+        foreach (T item in source) { if (!predicate(item)) { return false; } }
+        return true;
+    }
+
+    public static bool Contains<T>(this IEnumerable<T> source, T value) { return Contains(source, value, null); }
+
+    public static bool Contains<T>(this IEnumerable<T> source, T value, IEqualityComparer<T>? comparer) {
+        NotNull(source, "source");
+        IEqualityComparer<T> same = comparer ?? EqualityComparer<T>.Default;
+        foreach (T item in source) { if (same.Equals(item, value)) { return true; } }
+        return false;
+    }
+
+    public static bool SequenceEqual<T>(this IEnumerable<T> first, IEnumerable<T> second) { return SequenceEqual(first, second, null); }
+
+    public static bool SequenceEqual<T>(this IEnumerable<T> first, IEnumerable<T> second, IEqualityComparer<T>? comparer) {
+        NotNull(first, "first"); NotNull(second, "second");
+        IEqualityComparer<T> same = comparer ?? EqualityComparer<T>.Default;
+        using (IEnumerator<T> left = first.GetEnumerator())
+        using (IEnumerator<T> right = second.GetEnumerator()) {
+            while (left.MoveNext()) {
+                if (!right.MoveNext() || !same.Equals(left.Current, right.Current)) { return false; }
+            }
+            return !right.MoveNext();
+        }
+    }
+
+    public static int Count<T>(this IEnumerable<T> source) {
+        NotNull(source, "source");
+        if (source is IReadOnlyCollection<T> collection) { return collection.Count; }
+        int count = 0;
+        using (IEnumerator<T> walk = source.GetEnumerator()) { while (walk.MoveNext()) { count = checked(count + 1); } }
+        return count;
+    }
+
+    public static int Count<T>(this IEnumerable<T> source, Func<T, bool> predicate) {
+        NotNull(source, "source"); NotNull(predicate, "predicate");
+        int count = 0;
+        foreach (T item in source) { if (predicate(item)) { count = checked(count + 1); } }
+        return count;
+    }
+
+    public static long LongCount<T>(this IEnumerable<T> source) {
+        NotNull(source, "source");
+        long count = 0;
+        using (IEnumerator<T> walk = source.GetEnumerator()) { while (walk.MoveNext()) { count = checked(count + 1); } }
+        return count;
+    }
+
+    public static long LongCount<T>(this IEnumerable<T> source, Func<T, bool> predicate) {
+        NotNull(source, "source"); NotNull(predicate, "predicate");
+        long count = 0;
+        foreach (T item in source) { if (predicate(item)) { count = checked(count + 1); } }
+        return count;
+    }
+
+    public static bool TryGetNonEnumeratedCount<T>(this IEnumerable<T> source, out int count) {
+        NotNull(source, "source");
+        if (source is IReadOnlyCollection<T> collection) { count = collection.Count; return true; }
+        count = 0;
+        return false;
+    }
+
+    // ---- aggregates (immediate) --------------------------------------------
+
+    public static T Aggregate<T>(this IEnumerable<T> source, Func<T, T, T> func) {
+        NotNull(source, "source"); NotNull(func, "func");
+        using (IEnumerator<T> walk = source.GetEnumerator()) {
+            if (!walk.MoveNext()) { throw NoElements(); }
+            T result = walk.Current;
+            while (walk.MoveNext()) { result = func(result, walk.Current); }
+            return result;
+        }
+    }
+
+    public static A Aggregate<T, A>(this IEnumerable<T> source, A seed, Func<A, T, A> func) {
+        NotNull(source, "source"); NotNull(func, "func");
+        A result = seed;
+        foreach (T item in source) { result = func(result, item); }
+        return result;
+    }
+
+    public static R Aggregate<T, A, R>(this IEnumerable<T> source, A seed, Func<A, T, A> func, Func<A, R> resultSelector) {
+        NotNull(source, "source"); NotNull(func, "func"); NotNull(resultSelector, "resultSelector");
+        A result = seed;
+        foreach (T item in source) { result = func(result, item); }
+        return resultSelector(result);
+    }
+
+    public static int Sum(this IEnumerable<int> source) {
+        NotNull(source, "source");
+        int total = 0;
+        foreach (int item in source) { total = checked(total + item); }
+        return total;
+    }
+
+    public static long Sum(this IEnumerable<long> source) {
+        NotNull(source, "source");
+        long total = 0;
+        foreach (long item in source) { total = checked(total + item); }
+        return total;
+    }
+
+    public static float Sum(this IEnumerable<float> source) {
+        NotNull(source, "source");
+        double total = 0;
+        foreach (float item in source) { total = total + item; }
+        return (float)total;
+    }
+
+    public static double Sum(this IEnumerable<double> source) {
+        NotNull(source, "source");
+        double total = 0;
+        foreach (double item in source) { total = total + item; }
+        return total;
+    }
+
+    public static int Sum<T>(this IEnumerable<T> source, Func<T, int> selector) {
+        NotNull(source, "source"); NotNull(selector, "selector");
+        int total = 0;
+        foreach (T item in source) { total = checked(total + selector(item)); }
+        return total;
+    }
+
+    public static long Sum<T>(this IEnumerable<T> source, Func<T, long> selector) {
+        NotNull(source, "source"); NotNull(selector, "selector");
+        long total = 0;
+        foreach (T item in source) { total = checked(total + selector(item)); }
+        return total;
+    }
+
+    public static float Sum<T>(this IEnumerable<T> source, Func<T, float> selector) {
+        NotNull(source, "source"); NotNull(selector, "selector");
+        double total = 0;
+        foreach (T item in source) { total = total + selector(item); }
+        return (float)total;
+    }
+
+    public static double Sum<T>(this IEnumerable<T> source, Func<T, double> selector) {
+        NotNull(source, "source"); NotNull(selector, "selector");
+        double total = 0;
+        foreach (T item in source) { total = total + selector(item); }
+        return total;
+    }
+
+    public static double Average(this IEnumerable<int> source) {
+        NotNull(source, "source");
+        long total = 0;
+        long count = 0;
+        foreach (int item in source) { total = checked(total + item); count = count + 1; }
+        if (count == 0) { throw NoElements(); }
+        return (double)total / count;
+    }
+
+    public static double Average(this IEnumerable<long> source) {
+        NotNull(source, "source");
+        long total = 0;
+        long count = 0;
+        foreach (long item in source) { total = checked(total + item); count = count + 1; }
+        if (count == 0) { throw NoElements(); }
+        return (double)total / count;
+    }
+
+    public static float Average(this IEnumerable<float> source) {
+        NotNull(source, "source");
+        double total = 0;
+        long count = 0;
+        foreach (float item in source) { total = total + item; count = count + 1; }
+        if (count == 0) { throw NoElements(); }
+        return (float)(total / count);
+    }
+
+    public static double Average(this IEnumerable<double> source) {
+        NotNull(source, "source");
+        double total = 0;
+        long count = 0;
+        foreach (double item in source) { total = total + item; count = count + 1; }
+        if (count == 0) { throw NoElements(); }
+        return total / count;
+    }
+
+    public static double Average<T>(this IEnumerable<T> source, Func<T, int> selector) {
+        NotNull(source, "source"); NotNull(selector, "selector");
+        return Average(Select(source, selector));
+    }
+
+    public static double Average<T>(this IEnumerable<T> source, Func<T, long> selector) {
+        NotNull(source, "source"); NotNull(selector, "selector");
+        return Average(Select(source, selector));
+    }
+
+    public static float Average<T>(this IEnumerable<T> source, Func<T, float> selector) {
+        NotNull(source, "source"); NotNull(selector, "selector");
+        return Average(Select(source, selector));
+    }
+
+    public static double Average<T>(this IEnumerable<T> source, Func<T, double> selector) {
+        NotNull(source, "source"); NotNull(selector, "selector");
+        return Average(Select(source, selector));
+    }
+
+    public static int Min(this IEnumerable<int> source) {
+        NotNull(source, "source");
+        using (IEnumerator<int> walk = source.GetEnumerator()) {
+            if (!walk.MoveNext()) { throw NoElements(); }
+            int least = walk.Current;
+            while (walk.MoveNext()) { if (walk.Current < least) { least = walk.Current; } }
+            return least;
+        }
+    }
+
+    public static long Min(this IEnumerable<long> source) {
+        NotNull(source, "source");
+        using (IEnumerator<long> walk = source.GetEnumerator()) {
+            if (!walk.MoveNext()) { throw NoElements(); }
+            long least = walk.Current;
+            while (walk.MoveNext()) { if (walk.Current < least) { least = walk.Current; } }
+            return least;
+        }
+    }
+
+    /// NaN is less than every number, as .NET's Min takes it: a NaN anywhere
+    /// is the answer.
+    public static double Min(this IEnumerable<double> source) {
+        NotNull(source, "source");
+        using (IEnumerator<double> walk = source.GetEnumerator()) {
+            if (!walk.MoveNext()) { throw NoElements(); }
+            double least = walk.Current;
+            if (double.IsNaN(least)) { return least; }
+            while (walk.MoveNext()) {
+                double item = walk.Current;
+                if (double.IsNaN(item)) { return item; }
+                if (item < least) { least = item; }
+            }
+            return least;
+        }
+    }
+
+    public static int Max(this IEnumerable<int> source) {
+        NotNull(source, "source");
+        using (IEnumerator<int> walk = source.GetEnumerator()) {
+            if (!walk.MoveNext()) { throw NoElements(); }
+            int most = walk.Current;
+            while (walk.MoveNext()) { if (walk.Current > most) { most = walk.Current; } }
+            return most;
+        }
+    }
+
+    public static long Max(this IEnumerable<long> source) {
+        NotNull(source, "source");
+        using (IEnumerator<long> walk = source.GetEnumerator()) {
+            if (!walk.MoveNext()) { throw NoElements(); }
+            long most = walk.Current;
+            while (walk.MoveNext()) { if (walk.Current > most) { most = walk.Current; } }
+            return most;
+        }
+    }
+
+    /// NaN is less than every number, as .NET's Max takes it: one only if
+    /// every element is NaN.
+    public static double Max(this IEnumerable<double> source) {
+        NotNull(source, "source");
+        using (IEnumerator<double> walk = source.GetEnumerator()) {
+            if (!walk.MoveNext()) { throw NoElements(); }
+            double most = walk.Current;
+            while (double.IsNaN(most)) {
+                if (!walk.MoveNext()) { return most; }
+                most = walk.Current;
+            }
+            while (walk.MoveNext()) { if (walk.Current > most) { most = walk.Current; } }
+            return most;
+        }
+    }
+
+    public static int Min<T>(this IEnumerable<T> source, Func<T, int> selector) { NotNull(selector, "selector"); return Min(Select(source, selector)); }
+    public static long Min<T>(this IEnumerable<T> source, Func<T, long> selector) { NotNull(selector, "selector"); return Min(Select(source, selector)); }
+    public static double Min<T>(this IEnumerable<T> source, Func<T, double> selector) { NotNull(selector, "selector"); return Min(Select(source, selector)); }
+    public static int Max<T>(this IEnumerable<T> source, Func<T, int> selector) { NotNull(selector, "selector"); return Max(Select(source, selector)); }
+    public static long Max<T>(this IEnumerable<T> source, Func<T, long> selector) { NotNull(selector, "selector"); return Max(Select(source, selector)); }
+    public static double Max<T>(this IEnumerable<T> source, Func<T, double> selector) { NotNull(selector, "selector"); return Max(Select(source, selector)); }
+
+    /// By the elements' own order. A null is no candidate, and a sequence of
+    /// nothing but nulls answers null, as .NET's generic Min does; an empty
+    /// one throws only when null is no answer the type has.
+    public static T? Min<T>(this IEnumerable<T> source) { return Min(source, (IComparer<T>?)null); }
+
+    public static T? Min<T>(this IEnumerable<T> source, IComparer<T>? comparer) {
+        NotNull(source, "source");
+        IComparer<T> by = comparer ?? Comparer<T>.Default;
+        bool found = false;
+        T least = default(T)!;
+        foreach (T item in source) {
+            if (item == null) { continue; }
+            if (!found || by.Compare(item, least) < 0) { least = item; found = true; }
+        }
+        if (!found && default(T) != null) { throw NoElements(); }
+        return least;
+    }
+
+    public static T? Max<T>(this IEnumerable<T> source) { return Max(source, (IComparer<T>?)null); }
+
+    public static T? Max<T>(this IEnumerable<T> source, IComparer<T>? comparer) {
+        NotNull(source, "source");
+        IComparer<T> by = comparer ?? Comparer<T>.Default;
+        bool found = false;
+        T most = default(T)!;
+        foreach (T item in source) {
+            if (item == null) { continue; }
+            if (!found || by.Compare(item, most) > 0) { most = item; found = true; }
+        }
+        if (!found && default(T) != null) { throw NoElements(); }
+        return most;
+    }
+
+    public static R? Min<T, R>(this IEnumerable<T> source, Func<T, R> selector) { NotNull(selector, "selector"); return Min(Select(source, selector)); }
+    public static R? Max<T, R>(this IEnumerable<T> source, Func<T, R> selector) { NotNull(selector, "selector"); return Max(Select(source, selector)); }
+
+    public static T? MinBy<T, K>(this IEnumerable<T> source, Func<T, K> keySelector) { return MinBy(source, keySelector, null); }
+
+    public static T? MinBy<T, K>(this IEnumerable<T> source, Func<T, K> keySelector, IComparer<K>? comparer) {
+        NotNull(source, "source"); NotNull(keySelector, "keySelector");
+        IComparer<K> by = comparer ?? Comparer<K>.Default;
+        using (IEnumerator<T> walk = source.GetEnumerator()) {
+            if (!walk.MoveNext()) {
+                if (default(T) == null) { return default(T); }
+                throw NoElements();
+            }
+            T best = walk.Current;
+            K bestKey = keySelector(best);
+            while (walk.MoveNext()) {
+                K key = keySelector(walk.Current);
+                if (by.Compare(key, bestKey) < 0) { best = walk.Current; bestKey = key; }
+            }
+            return best;
+        }
+    }
+
+    public static T? MaxBy<T, K>(this IEnumerable<T> source, Func<T, K> keySelector) { return MaxBy(source, keySelector, null); }
+
+    public static T? MaxBy<T, K>(this IEnumerable<T> source, Func<T, K> keySelector, IComparer<K>? comparer) {
+        NotNull(source, "source"); NotNull(keySelector, "keySelector");
+        IComparer<K> by = comparer ?? Comparer<K>.Default;
+        using (IEnumerator<T> walk = source.GetEnumerator()) {
+            if (!walk.MoveNext()) {
+                if (default(T) == null) { return default(T); }
+                throw NoElements();
+            }
+            T best = walk.Current;
+            K bestKey = keySelector(best);
+            while (walk.MoveNext()) {
+                K key = keySelector(walk.Current);
+                if (by.Compare(key, bestKey) > 0) { best = walk.Current; bestKey = key; }
+            }
+            return best;
+        }
     }
 }
 
 
+/// A POSITION IN A SEQUENCE, counted from its start or from its end: `3`,
+/// `^1`. What C#'s `^` makes, and what an index of a countable type may be.
+/// Held as .NET holds it: one int, complemented when counted from the end.
+readonly struct Index : IEquatable<Index> {
+    readonly int _value;
+
+    public Index(int value, bool fromEnd = false) {
+        if (value < 0) { throw new ArgumentOutOfRangeException("value", "Non-negative number required."); }
+        _value = fromEnd ? ~value : value;
+    }
+
+    public static Index Start => new Index(0);
+    public static Index End => new Index(0, true);
+
+    public static Index FromStart(int value) { return new Index(value); }
+    public static Index FromEnd(int value) { return new Index(value, true); }
+
+    public int Value => _value < 0 ? ~_value : _value;
+    public bool IsFromEnd => _value < 0;
+
+    /// Where this is in a sequence of that length, counted from its start.
+    public int GetOffset(int length) {
+        int offset = _value;
+        if (IsFromEnd) { offset += length + 1; }
+        return offset;
+    }
+
+    public override bool Equals(object? value) { return value is Index other && _value == other._value; }
+    public bool Equals(Index other) { return _value == other._value; }
+    public override int GetHashCode() { return _value; }
+
+    public static implicit operator Index(int value) { return FromStart(value); }
+
+    public override string ToString() { return IsFromEnd ? "^" + Value.ToString() : Value.ToString(); }
+}
+
+/// A SLICE OF A SEQUENCE: where it starts and where it stops, each an Index.
+/// What C#'s `..` makes.
+readonly struct Range : IEquatable<Range> {
+    public Index Start { get; }
+    public Index End { get; }
+
+    public Range(Index start, Index end) { Start = start; End = end; }
+
+    public static Range StartAt(Index start) { return new Range(start, Index.End); }
+    public static Range EndAt(Index end) { return new Range(Index.Start, end); }
+    public static Range All => new Range(Index.Start, Index.End);
+
+    /// Where the slice starts and how long it is, in a sequence of that length.
+    public (int Offset, int Length) GetOffsetAndLength(int length) {
+        int start = Start.GetOffset(length);
+        int end = End.GetOffset(length);
+        if ((uint)end > (uint)length || (uint)start > (uint)end) {
+            throw new ArgumentOutOfRangeException("length");
+        }
+        return (start, end - start);
+    }
+
+    public override bool Equals(object? value) { return value is Range other && Start.Equals(other.Start) && End.Equals(other.End); }
+    public bool Equals(Range other) { return Start.Equals(other.Start) && End.Equals(other.End); }
+    public override int GetHashCode() { return HashCode.Combine(Start.GetHashCode(), End.GetHashCode()); }
+
+    public override string ToString() { return Start.ToString() + ".." + End.ToString(); }
+}
+
 /// WHAT `a[1..4]` COMPILES TO, under the name the C# compiler uses for it.
 ///
-/// .NET's member takes a Range, which is a type this machine does not have
-/// yet, so the range is passed as the two numbers it holds. The name and the
-/// job are the real ones: a range applied to an array COPIES, unlike the same
-/// syntax on a span, and code that slices an image header depends on the copy
-/// being independent of the bytes it came from.
+/// A range applied to an array COPIES, unlike the same syntax on a span, and
+/// code that slices an image header depends on the copy being independent of
+/// the bytes it came from. The two-number form is what the compiler calls for
+/// a range written in the brackets, where the numbers are at hand.
 static class RuntimeHelpers {
+    public static T[] GetSubArray<T>(T[] array, Range range) {
+        (int offset, int length) = range.GetOffsetAndLength(array.Length);
+        return GetSubArray(array, offset, length);
+    }
+
     public static T[] GetSubArray<T>(T[] source, int start, int length) {
         if (start < 0 || length < 0 || start + length > source.Length) {
-            throw new IndexOutOfRangeException("slice is outside its array");
+            throw new ArgumentOutOfRangeException("length");
         }
 
         T[] made = new T[length];
@@ -8036,7 +8471,8 @@ class StringComparer : IEqualityComparer<string>, IComparer<string> {
     // IGNORING CASE IS COMPARING UPPER CASE, which is .NET's OrdinalIgnoreCase:
     // Equals, Compare and GetHashCode all fold the same way, or a table keyed
     // by this comparer finds a key its Equals says is there under another hash.
-    public bool Equals(string a, string b) {
+    public bool Equals(string? a, string? b) {
+        if (a == null || b == null) { return (object?)a == (object?)b; }
         if (fold) { return String.Compare(String.ToUpperInvariant(a), String.ToUpperInvariant(b)) == 0; }
         return String.Compare(a, b) == 0;
     }
@@ -8044,7 +8480,9 @@ class StringComparer : IEqualityComparer<string>, IComparer<string> {
     /// .NET's StringComparer is an IComparer<string> as well as an equality
     /// comparer, which is what makes `names.OrderBy(n => n, StringComparer
     /// .Ordinal)` an ordinary line.
-    public int Compare(string a, string b) {
+    /// Null before every string, as .NET's comparers put it.
+    public int Compare(string? a, string? b) {
+        if (a == null || b == null) { return String.Compare(a, b); }
         if (fold) { return String.Compare(String.ToUpperInvariant(a), String.ToUpperInvariant(b)); }
         return String.Compare(a, b);
     }
@@ -8052,6 +8490,7 @@ class StringComparer : IEqualityComparer<string>, IComparer<string> {
     // FNV-1a over the code units, which is what makes a table of strings work
     // at all: the same characters hash the same wherever they came from.
     public int GetHashCode(string value) {
+        if (value == null) { throw new ArgumentNullException("obj"); }
         string folded = fold ? String.ToUpperInvariant(value) : value;
         return (int)Sys.StringHash(folded, 0, folded.Length, 2166136261);
     }
@@ -8085,6 +8524,13 @@ struct KeyValuePair<K, V> {
 // rather than copying it out, which is why it reads the private arrays: in C#
 // it is written inside the class and does exactly the same thing.
 class DictionaryEnumerator<K, V> : IEnumerator<KeyValuePair<K, V>> {
+    // The non-generic IEnumerator's members, as .NET's enumerators have them.
+    object? IEnumerator.Current => Current;
+    public void Reset() { at = -1; }
+
+    // IEnumerator<T> is an IDisposable; walking holds nothing to let go of.
+    public void Dispose() { }
+
     private Dictionary<K, V> over;
     private int at;
     private int slot;
@@ -8119,6 +8565,9 @@ interface IReadOnlyDictionary<K, V> : IEnumerable<KeyValuePair<K, V>> {
 }
 
 class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerable<KeyValuePair<K, V>> {
+    // The non-generic IEnumerable's, as .NET's collections have it.
+    IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+
     private K[] keys;
     private V[] values;
     private int[] state;      // 0 empty, 1 used, 2 erased
@@ -8698,6 +9147,12 @@ interface Predicate<A> {
     bool Invoke(A a);
 }
 
+/// .NET's Converter<TInput, TOutput>: what List<T>.ConvertAll and
+/// Array.ConvertAll turn each element into.
+interface Converter<TInput, TOutput> {
+    TOutput Invoke(TInput input);
+}
+
 // C# lock's monitor, stored in the synchronization word present in every
 // object header. Acquire/release CAS makes writes inside the critical section
 // visible across CSCs; Pause lets another execution context make progress
@@ -9202,6 +9657,44 @@ class ObjectDisposedException : InvalidOperationException
     }
 }
 
+/// What an event hands its handlers besides the sender: nothing, for an event
+/// that has nothing to say, and the base of everything that does.
+public class EventArgs
+{
+    public static readonly EventArgs Empty = new EventArgs();
+}
+
+/// An event's handler, .NET's pair: the sender and what happened.
+public delegate void EventHandler(object? sender, EventArgs e);
+public delegate void EventHandler<TEventArgs>(object? sender, TEventArgs e);
+
+/// What a switch expression throws when no arm matched its value (C# 12.11).
+/// System.Runtime.CompilerServices in .NET.
+sealed class SwitchExpressionException : InvalidOperationException
+{
+    readonly object? _unmatched;
+
+    public SwitchExpressionException() : base("Non-exhaustive switch expression failed to match its input.") { }
+    public SwitchExpressionException(Exception? innerException) : base("Non-exhaustive switch expression failed to match its input.", innerException) { }
+    public SwitchExpressionException(object? unmatchedValue) : base("Non-exhaustive switch expression failed to match its input.") { _unmatched = unmatchedValue; }
+    public SwitchExpressionException(string? message) : base(message) { }
+    public SwitchExpressionException(string? message, Exception? innerException) : base(message, innerException) { }
+
+    /// The value no arm matched.
+    public object? UnmatchedValue => _unmatched;
+
+    /// The message, and the unmatched value on a line of its own, as .NET says it.
+    public override string Message
+    {
+        get
+        {
+            string message = base.Message;
+            return _unmatched is null ? message
+                : String.Concat(message, String.Concat("\n", String.Concat("Unmatched value was ", String.Concat(_unmatched.ToString(), "."))));
+        }
+    }
+}
+
 class ArithmeticException : SystemException
 {
     public ArithmeticException(string? message) : base(message) { }
@@ -9472,7 +9965,9 @@ class StringBuilder {
         }
     }
 
-    public StringBuilder Append(string s) {
+    /// Nothing for null, as .NET's Append(string?).
+    public StringBuilder Append(string? s) {
+        if (s == null) { return this; }
         int n = s.Length;
         Reserve(used + n);
         // buffer and s are distinct owned blocks. Restartable block copy
@@ -9721,6 +10216,13 @@ class StringBuilder {
 // .NET spells this HashSet<T>.Enumerator; see ListEnumerator for why it is not
 // written inside the class.
 class HashSetEnumerator<T> : IEnumerator<T> {
+    // The non-generic IEnumerator's members, as .NET's enumerators have them.
+    object? IEnumerator.Current => Current;
+    public void Reset() { at = -1; }
+
+    // IEnumerator<T> is an IDisposable; walking holds nothing to let go of.
+    public void Dispose() { }
+
     private HashSet<T> over;
     private int at;
     private int slot;
@@ -9744,6 +10246,9 @@ class HashSetEnumerator<T> : IEnumerator<T> {
 }
 
 class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
+    // The non-generic IEnumerable's, as .NET's collections have it.
+    IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+
     // The comparer this set was given, or null for the default: an object's
     // own Equals and hash, a number's word -- as Dictionary's.
     private IEqualityComparer<T>? by;
@@ -10124,6 +10629,9 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
 /// A sorted array searched by halving, rather than .NET's red-black tree: the
 /// same answers and the same order of enumeration.
 class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
+    // The non-generic IEnumerable's, as .NET's collections have it.
+    IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+
     private List<T> items;
     private IComparer<T> by;
 
@@ -11842,6 +12350,9 @@ namespace System.Collections.ObjectModel
     /// NotSupportedException.
     public class ReadOnlyCollection<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>
     {
+    // The non-generic IEnumerable's, as .NET's collections have it.
+    IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+
         private readonly IList<T> list;
 
         public ReadOnlyCollection(IList<T> list)

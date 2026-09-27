@@ -103,6 +103,7 @@ public static class BodyTypeNames
                     Init(e.Body);
                     return;
                 case PatternExpr e: Expression(e.Subject); Expression(e.Test); return;
+                case SequenceExpr e: Statement(e.Effect); Expression(e.Value); return;
                 case RangeExpr e: Expression(e.From); Expression(e.To); return;
                 case RefArgExpr e: Expression(e.Target); Type(e.Declare); return;
                 case SizeOfExpr e: Type(e.Type); return;
@@ -154,6 +155,7 @@ public static class BodyTypeNames
                     foreach (LocalDecl also in s.Also) Statement(also);
                     return;
                 case ReturnStmt s: Expression(s.Value); return;
+                case YieldStmt s: Expression(s.Value); return;
                 case SwitchStmt s:
                     Expression(s.Subject);
                     foreach (SwitchCase branch in s.Cases)

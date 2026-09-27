@@ -749,6 +749,10 @@ public sealed class Monomorphiser
          ? new TypeRef { Name = CanonName, Nullable = r.Nullable, Line = r.Line, Col = r.Col }
          : r;
 
+    /// <summary>Whether a type mentions a type parameter of the method being copied.</summary>
+    private bool MentionsMethodParameter(TypeRef a)
+        => (a.Args.Count == 0 && _methodParams.Contains(a.Name)) || a.Args.Any(MentionsMethodParameter);
+
     private TypeRef Sub(TypeRef r, Dictionary<string, TypeRef> map)
     {
         // A bare type parameter becomes whatever it was bound to, keeping any
@@ -1308,7 +1312,7 @@ public sealed class Monomorphiser
         {
             case Block b:
             {
-                Block made = new() { Line = b.Line, Col = b.Col, ArithmeticContext = b.ArithmeticContext };
+                Block made = new() { Line = b.Line, Col = b.Col, ArithmeticContext = b.ArithmeticContext, Iterator = b.Iterator };
                 made.GenericLocals.AddRange(b.GenericLocals);
 
                 foreach (Stmt inner in b.Statements)
@@ -1396,6 +1400,9 @@ public sealed class Monomorphiser
 
             case ReturnStmt r:
                 return new ReturnStmt { Value = r.Value is null ? null : Rewrite(r.Value, map), Line = r.Line, Col = r.Col };
+
+            case YieldStmt y:
+                return new YieldStmt { Value = y.Value is null ? null : Rewrite(y.Value, map), Line = y.Line, Col = y.Col };
 
             case ThrowStmt t:
                 return new ThrowStmt { Value = Rewrite(t.Value, map), IsRethrow = t.IsRethrow, Line = t.Line, Col = t.Col };
@@ -1605,7 +1612,30 @@ public sealed class Monomorphiser
                 }
 
                 List<TypeRef> args = n.TypeArgs.Select(a => Sub(a, map)).ToList();
-                return new NameExpr { Name = Instantiate(n.Name, args, n), Global = n.Global, Line = n.Line, Col = n.Col };
+
+                // OPEN WHILE THE METHOD'S OWN TYPE PARAMETERS ARE IN IT, as Sub
+                // keeps a type open: `Comparer<T>.Default` inside a generic
+                // method is instantiated in each copy of the method, where T is
+                // bound. Instantiated here, it made a Comparer$T whose T nothing
+                // declares.
+                if (args.Any(MentionsMethodParameter))
+                {
+                    NameExpr open = new() { Name = n.Name, Global = n.Global, Line = n.Line, Col = n.Col };
+                    open.TypeArgs.AddRange(args);
+                    return open;
+                }
+                // AND KEPT WITH ITS ARGUMENTS WHERE NO TEMPLATE IS HERE TO
+                // MAKE IT: a generic method's copy for one call is made without
+                // the templates, and the checker resolves the name there
+                // (Binder.CheckName) as it would a written type.
+                string made = Instantiate(n.Name, args, n);
+                if (made == n.Name)
+                {
+                    NameExpr kept = new() { Name = n.Name, Global = n.Global, Line = n.Line, Col = n.Col };
+                    kept.TypeArgs.AddRange(args);
+                    return kept;
+                }
+                return new NameExpr { Name = made, Global = n.Global, Line = n.Line, Col = n.Col };
             }
 
             case MemberExpr m:
@@ -1613,7 +1643,7 @@ public sealed class Monomorphiser
                 MemberExpr made = new()
                 {
                     Target = Rewrite(m.Target, map), Name = m.Name,
-                    NullConditional = m.NullConditional,
+                    NullConditional = m.NullConditional, Else = m.Else,
 
                     // AND THE GUARD, which says the null test protecting this
                     // read has already been made -- by the property pattern
@@ -1730,7 +1760,7 @@ public sealed class Monomorphiser
                         Binding = arm.Binding,
                         When = arm.When is null ? null : Rewrite(arm.When, map),
                         Discard = arm.Discard, Result = Rewrite(arm.Result, map),
-                        Line = arm.Line, Col = arm.Col,
+                        Fallback = arm.Fallback, Line = arm.Line, Col = arm.Col,
                     });
                 }
                 return made;
@@ -1851,6 +1881,13 @@ public sealed class Monomorphiser
                 {
                     Subject = Rewrite(pat.Subject, map), Test = Rewrite(pat.Test, map),
                     Line = pat.Line, Col = pat.Col,
+                };
+
+            case SequenceExpr seq:
+                return new SequenceExpr
+                {
+                    Effect = Rewrite(seq.Effect, map), Value = Rewrite(seq.Value, map),
+                    Line = seq.Line, Col = seq.Col,
                 };
 
             case SubjectExpr subject:

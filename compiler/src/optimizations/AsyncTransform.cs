@@ -223,7 +223,9 @@ public static class AsyncTransform
             (Block rb, int r) = Locate(f, resume.Instr);
             List<Instr> after = rb.Instrs.GetRange(r + 1, rb.Instrs.Count - r - 1);
             rb.Instrs.RemoveRange(r, rb.Instrs.Count - r);
-            rb.Instrs.Add(new Instr { Op = Opcode.Ret });
+            Instr leave = new() { Op = Opcode.Ret };
+            if (frame.SuspendResult is Operand produced) leave.Operands.Add(produced);
+            rb.Instrs.Add(leave);
 
             Block resumeBlock = f.NewBlock($"resume{state}_");
             foreach (VReg v in resume.Live)

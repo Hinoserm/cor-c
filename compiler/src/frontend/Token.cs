@@ -51,6 +51,9 @@ public enum Tok : byte
     /// <summary>A UTF-8 string literal: `"META"u8`, which is BYTES.</summary>
     Utf8Str,
     KwDelegate,
+
+    /// <summary>`>>>` and `>>>=`, C# 11's unsigned right shift.</summary>
+    UShr, UShrEq,
 }
 
 /// <summary>

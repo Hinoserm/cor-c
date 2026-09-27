@@ -117,6 +117,18 @@ public sealed partial class Lowering
             return;
         }
 
+        if (_iterators.TryGetValue(m, out IteratorMethod? iterating))
+        {
+            EmitIteratorMoveNext(iterating);
+            return;
+        }
+
+        if (decl.Body is { Iterator: true })
+        {
+            EmitIteratorKickoff(m, decl);
+            return;
+        }
+
         if (m.Async)
         {
             EmitKickoff(m, decl);
@@ -439,6 +451,12 @@ public sealed partial class Lowering
                     yield return r.Value;
                 }
                 break;
+            case YieldStmt y:
+                if (y.Value is not null)
+                {
+                    yield return y.Value;
+                }
+                break;
             case ThrowStmt t: yield return t.Value; break;
             case SwitchStmt sw:
                 yield return sw.Subject;
@@ -491,6 +509,7 @@ public sealed partial class Lowering
                 break;
             case FromEndExpr fe2: yield return fe2.Offset; break;
             case PatternExpr p: yield return p.Subject; yield return p.Test; break;
+            case SequenceExpr q: yield return q.Effect; yield return q.Value; break;
             case SuppressExpr s: yield return s.Operand; break;
             case MemberExpr m: yield return m.Target; break;
             case CallExpr c: yield return c.Target; foreach (Expr a in c.Args) yield return a; break;

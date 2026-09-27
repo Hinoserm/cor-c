@@ -1352,7 +1352,21 @@ public sealed class Lexer
         char n = Peek();
         char n2 = Peek(2);
 
-        // Longest match first, so >>= does not lex as >> then =.
+        // Longest match first, so >>= does not lex as >> then =, and `>>>=`
+        // is the one four-character operator.
+        if (c == '>' && n == '>' && n2 == '>')
+        {
+            Advance();
+            Advance();
+            Advance();
+            if (Cur == '=')
+            {
+                Advance();
+                return new Token(Tok.UShrEq, ">>>=", line, col, start);
+            }
+            return new Token(Tok.UShr, ">>>", line, col, start);
+        }
+
         foreach ((string text, Tok kind) in ThreePunctuation)
         {
             if (c == text[0] && n == text[1] && n2 == text[2])

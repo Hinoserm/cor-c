@@ -1603,10 +1603,35 @@ public sealed class Parser
         ParseParams(invoke.Params); ParseConstraints(declaration.TypeParams);
         declaration.Members.Add(invoke);
         declaration.SourceTo = Expect(Tok.Semi, "';' after delegate declaration").Pos + 1;
-        if (declaration.TypeParams.Count == 0)
+        TypeDecl? multicast = Multicast(declaration, firstToken, _i - 1);
+        if (multicast is not null)
         {
-            TypeDecl? multicast = Multicast(declaration, firstToken, _i - 1);
-            if (multicast is not null) _nested.Add(multicast);
+            _nested.Add(multicast);
+
+            // A GENERIC DELEGATE COMBINES THROUGH ITSELF. The binder cannot
+            // name `D__Multicast<int>` for `+=` on a `D<int>`: specialisations
+            // are made from what the source names, before binding. The
+            // delegate's own copy is made because the program names it, and
+            // these two statics carry the multicast's name into that copy.
+            if (declaration.TypeParams.Count > 0)
+            {
+                string own = string.Join(", ", declaration.TypeParams.Skip(declaration.OuterParams).Select(tp => tp.Name));
+                string args = own.Length == 0 ? "" : "<" + own + ">";
+                string self = name + args;
+                string helper = name + "__Multicast" + args;
+                string forward =
+                    "public static " + self + "? Combine(" + self + "? a, " + self + "? b) { return " + helper + ".Combine(a, b); }\n"
+                  + "public static " + self + "? Remove(" + self + "? a, " + self + "? b) { return " + helper + ".Remove(a, b); }\n";
+                Parser sub = new(Lexer.Tokenize("interface __Forward { " + forward + " }", _file), _file, _declarationsOnly);
+                CompilationUnit wrapped = sub.ParseUnit();
+                List<MemberDecl> statics = wrapped.Types[0].Members;
+                foreach (MemberDecl member in statics)
+                {
+                    member.File = _file;
+                }
+                Adopt(statics);
+                declaration.Members.AddRange(statics);
+            }
         }
         return declaration;
     }
@@ -1632,10 +1657,32 @@ public sealed class Parser
         string decl = head.ToString();
         if (decl.Contains(" ref ") || decl.Contains(" out ") || decl.Contains("(ref ") || decl.Contains("(out ")) return null;
         int open = decl.IndexOf('(');
-        int close = decl.LastIndexOf(')');
-        if (open < 0 || close < open) return null;
+        if (open < 0) return null;
+        // THE BRACKET THAT CLOSES THE PARAMETERS, not the last one: a
+        // `where T : new()` constraint after them has one of its own.
+        int close = -1;
+        for (int k = open, depth = 0; k < decl.Length; k++)
+        {
+            if (decl[k] == '(') depth++;
+            else if (decl[k] == ')' && --depth == 0) { close = k; break; }
+        }
+        if (close < open) return null;
         string before = decl[..open].Trim();
         string name = delegateDecl.Name;
+        // A GENERIC DELEGATE HAS A GENERIC MULTICAST: `EventHandler<TEventArgs>`
+        // is combined by `EventHandler__Multicast<TEventArgs>`, specialised
+        // with it. Where a TYPE is meant the parameters go with the name.
+        // ITS OWN, not those of a generic type it is written inside: the
+        // multicast is written inside that type too, where they are in scope.
+        List<TypeParam> own = delegateDecl.TypeParams.Skip(delegateDecl.OuterParams).ToList();
+        string typeParams = own.Count == 0 ? ""
+            : "<" + string.Join(", ", own.Select(tp => tp.Name)) + ">";
+        if (typeParams.Length > 0)
+        {
+            int angle = before.LastIndexOf('<');
+            if (angle < 0) return null;
+            before = before[..angle].TrimEnd();
+        }
         if (!before.EndsWith(name)) return null;
         string returns = before[..^name.Length].Trim();
         string parameters = decl[(open + 1)..close].Trim();
@@ -1652,12 +1699,14 @@ public sealed class Parser
         }
         bool isVoid = returns == "void";
         string args = string.Join(", ", names);
-        string m = name + "__Multicast";
+        string ctor = name + "__Multicast";
+        string m = ctor + typeParams;
+        name = name + typeParams;
         System.Text.StringBuilder src = new();
         if (!string.IsNullOrEmpty(_namespace)) src.Append("namespace ").Append(_namespace).Append(";\n");
         src.Append("public sealed class ").Append(m).Append(" : ").Append(name).Append("\n{\n");
         src.Append("    public ").Append(name).Append("[] Items;\n");
-        src.Append("    public ").Append(m).Append("(").Append(name).Append("[] items) { Items = items; }\n");
+        src.Append("    public ").Append(ctor).Append("(").Append(name).Append("[] items) { Items = items; }\n");
         src.Append("    public ").Append(returns).Append(" Invoke(").Append(parameters).Append(")\n    {\n");
         if (isVoid)
             src.Append("        for (int i = 0; i < Items.Length; i++) Items[i].Invoke(").Append(args).Append(");\n");
@@ -2227,6 +2276,33 @@ public sealed class Parser
         // accessibility on any member yet, so what is kept is the name it fills
         // in and the interface it fills it in for.
         string? explicitInterface = null;
+
+        // A QUALIFIED INTERFACE: `object System.Collections.IEnumerator.Current`.
+        // The namespaces are stepped over to the interface's own name, which is
+        // what an explicit implementation is matched by (Binder.ExplicitName).
+        // A segment followed by `<` is a qualifier only when its arguments are
+        // followed by `.Name` or `.this[`; otherwise it is a generic method.
+        while (At(Tok.Dot) && Ahead().Kind == Tok.Ident)
+        {
+            Tok after = _t[_i + 2].Kind;
+            if (after == Tok.Dot)
+            {
+                _i++;
+                name = _t[_i++].Text;
+                continue;
+            }
+            if (after != Tok.Lt) break;
+            int back = _i;
+            _i += 2;
+            bool qualifier = TryInterfaceArgs() && At(Tok.Dot)
+                && (Ahead().Kind == Tok.Ident || Ahead().Kind == Tok.KwThis);
+            _i = back;
+            if (!qualifier) break;
+            _i++;
+            name = _t[_i++].Text;
+            break;
+        }
+
         if (At(Tok.Dot) && Ahead().Kind == Tok.Ident)
         {
             explicitInterface = name;
@@ -2246,10 +2322,14 @@ public sealed class Parser
             // A GENERIC ONE: `IEnumerable<T>.GetEnumerator`. The arguments are
             // the interface's, not the member's type parameters, when a dot
             // and a name follow them.
+            //
+            // NAMED WITH ITS ARITY, as .NET's metadata names it: IEnumerable`1
+            // is not IEnumerable, and a class implementing both explicitly has
+            // two GetEnumerators that are not the same method.
             int save = _i;
-            if (TryInterfaceArgs() && At(Tok.Dot) && Ahead().Kind == Tok.Ident)
+            if (TryInterfaceArgs(out int arity) && At(Tok.Dot) && Ahead().Kind == Tok.Ident)
             {
-                explicitInterface = name;
+                explicitInterface = name + "`" + arity;
                 _i++;
                 name = _t[_i++].Text;
             }
@@ -2257,7 +2337,7 @@ public sealed class Parser
             {
                 _i++;
                 PropertyDecl indexer = ParseIndexer(type, mods, start);
-                indexer.ExplicitInterface = name;
+                indexer.ExplicitInterface = name + "`" + arity;
                 return indexer;
             }
             else _i = save;
@@ -2414,6 +2494,7 @@ public sealed class Parser
             Tok.Caret => "op_ExclusiveOr",
             Tok.Shl => "op_LeftShift",
             Tok.Shr => "op_RightShift",
+            Tok.UShr => "op_UnsignedRightShift",
             Tok.Eq => "op_Equality",
             Tok.NotEq => "op_Inequality",
             Tok.Lt => "op_LessThan",
@@ -2559,9 +2640,13 @@ public sealed class Parser
         bool savedYield = _iteratorSawYield;
 
         _iteratorTarget = "__yield" + _iteratorSerial++;
+        // WHAT IT ENUMERATES, when it is an iterator: the T of IEnumerable<T> or
+        // IEnumerator<T>, object for the non-generic two.
         _iteratorElement = produces is { Args.Count: 1 } sequence
-                         && sequence.Name is "IEnumerable" or "IEnumerable`1"
+                         && sequence.Name is "IEnumerable" or "IEnumerable`1" or "IEnumerator" or "IEnumerator`1"
                          ? sequence.Args[0]
+                         : produces is { Args.Count: 0, Name: "IEnumerable" or "IEnumerator" or "System.Collections.IEnumerable" or "System.Collections.IEnumerator" }
+                         ? new TypeRef { Name = "object", Line = line, Col = col }
                          : null;
         _iteratorSawYield = false;
 
@@ -2572,25 +2657,9 @@ public sealed class Parser
             if (_iteratorElement is null)
             {
                 throw new CompileError(_file, line, col,
-                    "a method using 'yield return' must return IEnumerable<T>");
+                    "a method using 'yield return' must return IEnumerable<T>, IEnumerator<T>, IEnumerable or IEnumerator");
             }
-
-            TypeRef list = new() { Name = "List", Line = line, Col = col };
-
-            list.Args.Add(_iteratorElement);
-
-            NewExpr made = new() { Type = list, Line = line, Col = col };
-
-            body.Statements.Insert(0, new LocalDecl
-            {
-                Type = list, Name = _iteratorTarget!, Init = made,
-                Line = line, Col = col,
-            });
-            body.Statements.Add(new ReturnStmt
-            {
-                Value = new NameExpr { Name = _iteratorTarget!, Line = line, Col = col },
-                Line = line, Col = col,
-            });
+            body.Iterator = true;
         }
 
         _iteratorTarget = savedTarget;
@@ -3267,13 +3336,17 @@ public sealed class Parser
     /// expression-minded TryParseTypeArgs does not take. False, with nothing
     /// consumed that the caller will not put back, when they are not there.
     /// </summary>
-    private bool TryInterfaceArgs()
+    private bool TryInterfaceArgs() => TryInterfaceArgs(out _);
+
+    /// <summary>The `&lt;...&gt;` after an interface's name, and how many arguments it held.</summary>
+    private bool TryInterfaceArgs(out int arity)
     {
+        arity = 0;
         if (!Take(Tok.Lt)) return false;
         int mark = _splits.Count;
         try
         {
-            do ParseTypeRef();
+            do { ParseTypeRef(); arity++; }
             while (Take(Tok.Comma));
             if (TakeAngle()) return true;
         }
@@ -3328,12 +3401,16 @@ public sealed class Parser
         // reported as a member with no name.
         if (Cur.Kind is Tok.LParen or Tok.RParen or Tok.RBracket or Tok.RBrace
                      or Tok.Comma or Tok.Semi or Tok.Dot or Tok.Colon
-                     or Tok.Ident or Tok.Gt or Tok.Eq or Tok.NotEq or Tok.LBrace
+                     or Tok.Ident or Tok.Gt or Tok.Shr or Tok.Eq or Tok.NotEq or Tok.LBrace
                      or Tok.Question or Tok.Star or Tok.LBracket
                      // A MEMBER'S TYPE, where the member is not named by an
                      // identifier: `public IReadOnlyList<T> this[K key]` and
                      // `public static Vec<T> operator +(...)`.
                      or Tok.KwThis or Tok.KwOperator
+                     // AND WHAT MAY FOLLOW A TYPE IN AN EXPRESSION OR CLAUSE:
+                     // `where T : IComparable<T> => …`, `x is List<int> && ok`,
+                     // `o as List<int> ?? fallback`, `List<int> => …` in an arm.
+                     or Tok.FatArrow or Tok.AndAnd or Tok.OrOr or Tok.QuestionQuestion
                      or Tok.End)
         {
             return true;
@@ -3360,15 +3437,19 @@ public sealed class Parser
             return true;
         }
 
-        if (!At(Tok.Shr))
+        if (!At(Tok.Shr) && !At(Tok.UShr))
         {
             return false;
         }
 
+        // `>>>` CLOSING GENERICS is a `>` and a `>>`, the second split again
+        // by the list outside this one: `A<B<C<int>>>`.
         Token was = _t[_i];
         Token half = was with { Kind = Tok.Gt, Text = ">" };
 
-        _t[_i] = half with { Col = was.Col + 1, Pos = was.Pos + 1 };
+        _t[_i] = was.Kind == Tok.UShr
+            ? was with { Kind = Tok.Shr, Text = ">>", Col = was.Col + 1, Pos = was.Pos + 1 }
+            : half with { Col = was.Col + 1, Pos = was.Pos + 1 };
         _t.Insert(_i, half);
         _splits.Add((_i, was));
         _i++;
@@ -3850,22 +3931,7 @@ public sealed class Parser
                 Expr value = ParseExpr();
                 Expect(Tok.Semi, "';' after 'yield return'");
                 _iteratorSawYield = true;
-
-                CallExpr add = new()
-                {
-                    Target = new MemberExpr
-                    {
-                        Target = new NameExpr
-                        {
-                            Name = _iteratorTarget, Line = at.Line, Col = at.Col,
-                        },
-                        Name = "Add", Line = at.Line, Col = at.Col,
-                    },
-                    Line = at.Line,
-                    Col = at.Col,
-                };
-                add.Args.Add(value);
-                return new ExprStmt { Expr = add, Line = at.Line, Col = at.Col };
+                return new YieldStmt { Value = value, Line = at.Line, Col = at.Col };
             }
 
             case Tok.Ident when Cur.Text == "yield" && Ahead().Kind == Tok.KwBreak:
@@ -3878,15 +3944,7 @@ public sealed class Parser
                 _i += 2;
                 Expect(Tok.Semi, "';' after 'yield break'");
                 _iteratorSawYield = true;
-                return new ReturnStmt
-                {
-                    Value = new NameExpr
-                    {
-                        Name = _iteratorTarget, Line = at.Line, Col = at.Col,
-                    },
-                    Line = at.Line,
-                    Col = at.Col,
-                };
+                return new YieldStmt { Line = at.Line, Col = at.Col };
             }
 
             case Tok.KwReturn:
@@ -4025,6 +4083,7 @@ public sealed class Parser
         while (!At(Tok.RBrace) && !At(Tok.End))
         {
             Token armAt = Cur;
+            int armStart = _i;
             Expr? value = null;
             TypeRef? type = null;
             string? binding = null;
@@ -4083,7 +4142,10 @@ public sealed class Parser
             else if (Cur.Kind is Tok.Lt or Tok.Gt or Tok.LtEq or Tok.GtEq or Tok.KwNull
                      || (At(Tok.Ident) && Cur.Text == "not")
                      || At(Tok.LBrace)
-                     || (At(Tok.LParen) && PositionalPatternAhead()))
+                     || (At(Tok.LParen) && PositionalPatternAhead())
+                     || (At(Tok.KwVar) && Ahead().Kind == Tok.LParen)
+                     || At(Tok.LBracket)
+                     || TypeThenParen())
             {
                 discard = true;
                 guard = ParseIsPattern(new SubjectExpr { Line = armAt.Line, Col = armAt.Col }, armAt);
@@ -4192,6 +4254,21 @@ public sealed class Parser
                 }
             }
 
+            // A COMBINATOR AFTER A SIMPLE ARM -- `int i and (< 0 or > 100)`,
+            // `Circle or Rect(_, 1)`, `1 or > 5` -- makes it a whole pattern,
+            // which the shared pattern parser reads with its `and`/`or`
+            // precedence, as `is` does: read again from the arm's start.
+            if (AtPatternCombinator())
+            {
+                _i = armStart;
+                value = null;
+                type = null;
+                binding = null;
+                typeAlternatives.Clear();
+                discard = true;
+                guard = ParseIsPattern(new SubjectExpr { Line = armAt.Line, Col = armAt.Col }, armAt);
+            }
+
             // `Prim.Bool or Prim.I8 or Prim.U8 => 1`.
             //
             // ONE ARM EACH, sharing the result. Arms are tried in order and
@@ -4220,7 +4297,22 @@ public sealed class Parser
 
                 // A property pattern already put a test here; `when` on top of
                 // it means both must hold, which is what C# means too.
-                Expr written = ParseExpr();
+                //
+                // THE ARM'S OWN ARROW ENDS THE GUARD. `when w == h => …` is
+                // not `h => …`, a lambda: the first `=>` outside any bracket
+                // belongs to the arm, and a lambda inside the guard -- `when
+                // xs.Any(x => x > 1)` -- is inside brackets.
+                int wasArrow = _armArrow;
+                _armArrow = ArmArrow();
+                Expr written;
+                try
+                {
+                    written = ParseExpr();
+                }
+                finally
+                {
+                    _armArrow = wasArrow;
+                }
 
                 guard = guard is null
                       ? written
@@ -4270,6 +4362,32 @@ public sealed class Parser
         }
 
         Expect(Tok.RBrace, "'}' to close the switch arms");
+
+        // NOTHING MATCHED: C# throws SwitchExpressionException, handing it the
+        // value (C# 12.11). Unless the last arm already takes everything.
+        if (sw.Arms.Count > 0 && sw.Arms[^1] is not { Discard: true, When: null })
+        {
+            NewExpr thrown = new()
+            {
+                Type = new TypeRef { Name = "SwitchExpressionException", Line = at.Line, Col = at.Col },
+                Line = at.Line, Col = at.Col,
+            };
+            // AS AN OBJECT, whatever it is: a string subject would otherwise
+            // reach the (string? message) constructor.
+            thrown.Args.Add(new CastExpr
+            {
+                Type = new TypeRef { Name = "object", Nullable = true, Line = at.Line, Col = at.Col },
+                Operand = new SubjectExpr { Line = at.Line, Col = at.Col },
+                Line = at.Line, Col = at.Col,
+            });
+            thrown.ArgNames.Add(null);
+            sw.Arms.Add(new SwitchArm
+            {
+                Discard = true, Fallback = true,
+                Result = new ThrowExpr { Value = thrown, Line = at.Line, Col = at.Col },
+                Line = at.Line, Col = at.Col,
+            });
+        }
         return sw;
     }
 
@@ -4350,6 +4468,26 @@ public sealed class Parser
     /// </summary>
     private bool IsLambdaHead() => IsLambdaHeadAt(_i);
 
+    /// <summary>Where the switch arm being guarded has its `=>`, or -1. See the `when` in a switch expression.</summary>
+    private int _armArrow = -1;
+
+    /// <summary>The first `=>` from the cursor outside any bracket.</summary>
+    private int ArmArrow()
+    {
+        int depth = 0;
+        for (int j = _i; j < _t.Count; j++)
+        {
+            switch (_t[j].Kind)
+            {
+                case Tok.LParen or Tok.LBracket or Tok.LBrace: depth++; break;
+                case Tok.RParen or Tok.RBracket or Tok.RBrace: if (--depth < 0) return -1; break;
+                case Tok.FatArrow when depth == 0: return j;
+                case Tok.End: return -1;
+            }
+        }
+        return -1;
+    }
+
     private bool IsLambdaHeadAt(int from)
     {
         int depth = 0;
@@ -4366,7 +4504,7 @@ public sealed class Parser
 
                 if (depth == 0)
                 {
-                    return i + 1 < _t.Count && _t[i + 1].Kind == Tok.FatArrow;
+                    return i + 1 < _t.Count && _t[i + 1].Kind == Tok.FatArrow && i + 1 != _armArrow;
                 }
             }
             else if (_t[i].Kind == Tok.End)
@@ -4657,9 +4795,16 @@ public sealed class Parser
         // `x.Foo() is Bar b` in a PatternExpr the code generator has no case
         // for. It reads the subject once; leave it alone.
         bool simple = Rereadable(subject);
-        bool repeats = StartsValuePattern();
+        bool repeats = StartsValuePattern() || At(Tok.LBracket);
         Expr stands = simple || !repeats ? subject : new SubjectExpr { Line = at.Line, Col = at.Col };
         Expr built = ParsePrimaryPattern(stands, at);
+
+        // WHAT `and` TESTS NEXT IS WHAT THE LEFT NARROWED TO (C# 11.2.12):
+        // `o is int i and (< 0 or > 100)` compares the int, not the object.
+        // A type test binds the narrowed value (a hidden name when none was
+        // written), and the pattern after `and` reads that. `or` starts again
+        // from the subject itself.
+        Expr narrowed = Narrowed(built) ?? stands;
 
         // `and` BINDS TIGHTER THAN `or`, as it does everywhere else in C#. Read
         // left to right with one precedence, `a or b and c` would mean
@@ -4670,25 +4815,37 @@ public sealed class Parser
 
             _i++;
 
-            Expr right = ParsePrimaryPattern(stands, at);
+            if (!any)
+            {
+                Expr next = ParsePrimaryPattern(narrowed, at);
+                built = new BinaryExpr
+                {
+                    Op = BinOp.AndAlso, Left = built, Right = next, Line = at.Line, Col = at.Col,
+                };
+                narrowed = Narrowed(next) ?? narrowed;
+                continue;
+            }
 
-            while (any && AtPatternCombinator() && Cur.Text == "and")
+            Expr right = ParsePrimaryPattern(stands, at);
+            Expr rightNarrowed = Narrowed(right) ?? stands;
+
+            while (AtPatternCombinator() && Cur.Text == "and")
             {
                 _i++;
 
+                Expr next = ParsePrimaryPattern(rightNarrowed, at);
                 right = new BinaryExpr
                 {
-                    Op = BinOp.AndAlso, Left = right, Right = ParsePrimaryPattern(stands, at),
-                    Line = at.Line, Col = at.Col,
+                    Op = BinOp.AndAlso, Left = right, Right = next, Line = at.Line, Col = at.Col,
                 };
+                rightNarrowed = Narrowed(next) ?? rightNarrowed;
             }
 
             built = new BinaryExpr
             {
-                Op = any ? BinOp.OrElse : BinOp.AndAlso,
-                Left = built, Right = right,
-                Line = at.Line, Col = at.Col,
+                Op = BinOp.OrElse, Left = built, Right = right, Line = at.Line, Col = at.Col,
             };
+            narrowed = stands;
         }
 
         return ReferenceEquals(stands, subject)
@@ -4766,7 +4923,7 @@ public sealed class Parser
     /// </summary>
     private static bool StartsPattern(Tok k)
         => k is Tok.Ident or Tok.Int or Tok.Real or Tok.Char or Tok.Str or Tok.Minus
-             or Tok.LParen or Tok.LBrace or Tok.KwNull or Tok.KwTrue or Tok.KwFalse
+             or Tok.LParen or Tok.LBrace or Tok.LBracket or Tok.KwVar or Tok.KwNull or Tok.KwTrue or Tok.KwFalse
              or Tok.Lt or Tok.Gt or Tok.LtEq or Tok.GtEq;
 
     /// <summary>Whether the parser is on an `and` or `or` that joins two patterns.</summary>
@@ -5180,7 +5337,7 @@ public sealed class Parser
             return false;
         }
 
-        if (j + 1 < _t.Count && _t[j + 1].Kind == Tok.LBrace)
+        if (j + 1 < _t.Count && _t[j + 1].Kind is Tok.LBrace or Tok.LParen)
         {
             return true;
         }
@@ -5264,53 +5421,23 @@ public sealed class Parser
             };
         }
 
-        // A POSITIONAL TUPLE PATTERN. Tuple values in this runtime expose the
-        // ordinary Item1, Item2, ... fields, so the positional spelling lowers
-        // to guarded member patterns after one null test. ParseIsPattern has
-        // already hoisted a non-trivial subject, preserving C#'s evaluate-once
-        // rule.
-        if (At(Tok.LParen) && PositionalPatternAhead())
+        // A LIST PATTERN: `[1, .., var last]`. See ParseListPattern.
+        if (At(Tok.LBracket))
+        {
+            return ParseListPattern(subject, at);
+        }
+
+        // `var (a, b)`, which takes the subject apart into names.
+        if (At(Tok.KwVar) && Ahead().Kind == Tok.LParen)
         {
             _i++;
-            int item = 1;
-            Expr built = new BinaryExpr
-            {
-                Op = BinOp.Ne,
-                Left = subject,
-                PatternNullTest = true,
-                Right = new LiteralExpr
-                {
-                    Kind = Lit.Null, Text = "null", Line = at.Line, Col = at.Col,
-                },
-                Line = at.Line,
-                Col = at.Col,
-            };
+            return ParsePositional(subject, null, at, designations: true);
+        }
 
-            do
-            {
-                MemberExpr member = new()
-                {
-                    Target = subject,
-                    Name = "Item" + item++,
-                    Guarded = true,
-                    Line = at.Line,
-                    Col = at.Col,
-                };
-                // EACH ELEMENT IS A WHOLE PATTERN, `or` and `and` and all:
-                // `("fldcw", 0 or 2)` is as good C# as `x is 0 or 2`.
-                built = new BinaryExpr
-                {
-                    Op = BinOp.AndAlso,
-                    Left = built,
-                    Right = ParseIsPattern(member, at),
-                    Line = at.Line,
-                    Col = at.Col,
-                };
-            }
-            while (Take(Tok.Comma));
-
-            Expect(Tok.RParen, "')' to close the positional pattern");
-            return built;
+        // A POSITIONAL PATTERN WITH NO TYPE: `t is (1, _)`. See ParsePositional.
+        if (At(Tok.LParen) && PositionalPatternAhead())
+        {
+            return ParsePositional(subject, null, at);
         }
 
         // ONE PREDICATE, asked here and by the hoisting decision above. Two
@@ -5374,6 +5501,12 @@ public sealed class Parser
 
         TypeRef type = ParseTypeRef(pattern: true);
 
+        // A TYPE FOLLOWED BY A POSITIONAL PATTERN: `s is Rect(var w, var h)`.
+        if (At(Tok.LParen))
+        {
+            return ParsePositional(subject, type, at);
+        }
+
         // A TYPE FOLLOWED BY A PROPERTY PATTERN: `x is Foo { Bar: 1 }`, which
         // asks two things -- that x is a Foo, and that the Foo's Bar is 1.
         //
@@ -5427,7 +5560,333 @@ public sealed class Parser
             _i++;
         }
 
+        // A TYPE TEST THAT `and` FOLLOWS names what it narrowed to, so the
+        // pattern after it can test that (ParseIsPattern).
+        if (bound is null && AtPatternCombinator() && Cur.Text == "and")
+        {
+            bound = $"__pat{_hidden++}";
+        }
+
         return new IsExpr { Operand = subject, Type = type, Binding = bound, Line = at.Line, Col = at.Col };
+    }
+
+    /// <summary>
+    /// The name a pattern bound the narrowed subject to, when it narrowed it:
+    /// a type test with a binding, or a typed positional or property pattern
+    /// (an `and` whose left is that test). Null when it narrowed nothing.
+    /// </summary>
+    private static NameExpr? Narrowed(Expr pattern) => pattern switch
+    {
+        IsExpr { Binding: string name } test when test.Type.Name != TypeRef.Anything
+            => new NameExpr { Name = name, Line = test.Line, Col = test.Col },
+        BinaryExpr { Op: BinOp.AndAlso } both => Narrowed(both.Left),
+        _ => null,
+    };
+
+    /// <summary>
+    /// A POSITIONAL PATTERN (C# 11.2.6): `Rect(var w, var h)`, `(1, _)`,
+    /// `Point(X: 0, Y: var y) { Length: > 1 } p`.
+    ///
+    /// The subject is tested for the type when one is written (or for null
+    /// when not), then TAKEN APART ONCE -- by its items when it is a tuple and
+    /// through its Deconstruct otherwise, exactly as a deconstructing
+    /// declaration is -- into hidden locals, and each element's pattern tests
+    /// its own. It used to read Item1, Item2 ... straight off the subject,
+    /// which is right for a tuple and names nothing on a record.
+    /// </summary>
+    private Expr ParsePositional(Expr subject, TypeRef? type, Token at, bool designations = false)
+    {
+        LiteralExpr True() => new() { Kind = Lit.Bool, Text = "true", IntValue = 1, Line = at.Line, Col = at.Col };
+        NameExpr Named(string name) => new() { Name = name, Line = at.Line, Col = at.Col };
+        Expr And(Expr left, Expr right) => new BinaryExpr
+        {
+            Op = BinOp.AndAlso, Left = left, Right = right, Line = at.Line, Col = at.Col,
+        };
+
+        // THE DESIGNATION COMES LAST -- after the brackets and after any
+        // property pattern -- and names the matched value, so it is found
+        // first: the type test binds it, and everything after reads it.
+        int after = SkipBalanced(_i, Tok.LParen, Tok.RParen);
+        bool members = after < _t.Count && _t[after].Kind == Tok.LBrace;
+        int end = members ? SkipBalanced(after, Tok.LBrace, Tok.RBrace) : after;
+        string? designation = end < _t.Count && _t[end].Kind == Tok.Ident
+            && (_t[end].Text is not ("or" or "and" or "when")
+                || _t[end].Text is "or" or "and" && end + 1 < _t.Count && !StartsPattern(_t[end + 1].Kind))
+            ? _t[end].Text : null;
+
+        Expr built;
+        Expr source;
+        string? held = null;
+        if (type is not null || members || designation is not null)
+        {
+            held = designation ?? $"__pat{_hidden++}";
+            built = new IsExpr
+            {
+                Operand = subject,
+                Type = type ?? new TypeRef { Name = TypeRef.Same, Line = at.Line, Col = at.Col },
+                Binding = held, Line = at.Line, Col = at.Col,
+            };
+            source = Named(held);
+        }
+        else
+        {
+            built = new BinaryExpr
+            {
+                Op = BinOp.Ne, Left = subject, PatternNullTest = true,
+                Right = new LiteralExpr { Kind = Lit.Null, Text = "null", Line = at.Line, Col = at.Col },
+                Line = at.Line, Col = at.Col,
+            };
+            source = subject;
+        }
+
+        Expect(Tok.LParen, "'(' to open the positional pattern");
+        List<Binding> names = new();
+        List<Expr> tests = new();
+        if (!At(Tok.RParen))
+        {
+            do
+            {
+                // `Y: var y` NAMES THE ELEMENT, which C# checks against the
+                // tuple's or the Deconstruct's own name; the position says
+                // which element it is either way.
+                if (At(Tok.Ident) && Ahead().Kind == Tok.Colon)
+                {
+                    _i += 2;
+                }
+
+                Token where = Cur;
+                string part = $"$part${_hidden++}";
+                names.Add(new Binding { Name = part, Line = where.Line, Col = where.Col });
+                if (designations)
+                {
+                    // `var (a, (b, _))`: names, discards and nested lists of
+                    // them, every one a var pattern.
+                    if (At(Tok.LParen))
+                    {
+                        tests.Add(ParsePositional(Named(part), null, at, designations: true));
+                    }
+                    else if (At(Tok.Ident) && Cur.Text == "_")
+                    {
+                        _i++;
+                        tests.Add(True());
+                    }
+                    else
+                    {
+                        Token name = Expect(Tok.Ident, "a name in the var pattern");
+                        tests.Add(new IsExpr
+                        {
+                            Operand = Named(part),
+                            Type = new TypeRef { Name = TypeRef.Anything, Line = name.Line, Col = name.Col },
+                            Binding = name.Text, Line = at.Line, Col = at.Col,
+                        });
+                    }
+                    continue;
+                }
+                // EACH ELEMENT IS A WHOLE PATTERN, `or` and `and` and all:
+                // `("fldcw", 0 or 2)` is as good C# as `x is 0 or 2`.
+                tests.Add(ParseIsPattern(Named(part), at));
+            }
+            while (Take(Tok.Comma));
+        }
+        Expect(Tok.RParen, "')' to close the positional pattern");
+
+        if (names.Count > 0)
+        {
+            DeconstructStmt apart = new() { Value = source, Line = at.Line, Col = at.Col };
+            apart.Names.AddRange(names);
+            built = And(built, new SequenceExpr { Effect = apart, Value = True(), Line = at.Line, Col = at.Col });
+            foreach (Expr test in tests)
+            {
+                built = And(built, test);
+            }
+        }
+
+        if (members)
+        {
+            built = And(built, ParseMemberPattern(Named(held!), at, designates: false));
+        }
+
+        if (designation is not null)
+        {
+            _i++;
+        }
+        return built;
+    }
+
+    /// <summary>
+    /// Whether a type name followed by `(` is next -- `Rect(var w, var h)`,
+    /// `Shapes.Pair<int, string>(1, _)` -- which in a pattern can only be a
+    /// positional pattern: no call is a constant. Except the three operators
+    /// that look like calls and are: `nameof(...)`, `checked(...)`,
+    /// `unchecked(...)`.
+    /// </summary>
+    private bool TypeThenParen()
+    {
+        int j = _i;
+        if (j >= _t.Count || _t[j].Kind != Tok.Ident || _t[j].Text is "nameof" or "checked" or "unchecked")
+        {
+            return false;
+        }
+        j++;
+        while (j + 1 < _t.Count && _t[j].Kind == Tok.Dot && _t[j + 1].Kind == Tok.Ident)
+        {
+            j += 2;
+        }
+        if (j < _t.Count && _t[j].Kind == Tok.Lt)
+        {
+            int depth = 0;
+            for (; j < _t.Count; j++)
+            {
+                Tok k = _t[j].Kind;
+                if (k == Tok.Lt) depth++;
+                else if (k == Tok.Gt) depth--;
+                else if (k == Tok.Shr) depth -= 2;
+                else if (k == Tok.UShr) depth -= 3;
+                else if (k is not (Tok.Ident or Tok.Comma or Tok.Dot or Tok.Question or Tok.LBracket or Tok.RBracket
+                         or Tok.LParen or Tok.RParen)
+                         && !_t[j].Text.All(char.IsLetter))
+                {
+                    return false;
+                }
+                if (depth <= 0) { j++; break; }
+            }
+            if (depth != 0) return false;
+        }
+        return j < _t.Count && _t[j].Kind == Tok.LParen;
+    }
+
+    /// <summary>
+    /// A LIST PATTERN (C# 11.2.11): `[]`, `[var x]`, `[1, .., var last]`,
+    /// `[_, .. var middle, _] all`.
+    ///
+    /// The subject is tested for null, then its count -- `Length`, or `Count`
+    /// when that is what it has -- against the number of elements (at least
+    /// that many when a slice `..` is among them), then each element's pattern
+    /// against the item in its place: counted from the front before the
+    /// slice and from the back after it. A slice with a pattern of its own
+    /// tests the range between, `subject[before..^after]`. The subject is
+    /// read more than once, so ParseIsPattern hoists anything that is not
+    /// cheap to read again.
+    /// </summary>
+    private Expr ParseListPattern(Expr subject, Token at)
+    {
+        LiteralExpr Number(long n) => new()
+        {
+            Kind = Lit.Int, Text = n.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            IntValue = n, Line = at.Line, Col = at.Col,
+        };
+        Expr And(Expr left, Expr right) => new BinaryExpr
+        {
+            Op = BinOp.AndAlso, Left = left, Right = right, Line = at.Line, Col = at.Col,
+        };
+        MemberExpr Count() => new()
+        {
+            Target = subject, Name = "Length", Else = "Count", Guarded = true, Line = at.Line, Col = at.Col,
+        };
+
+        // THE SHAPE FIRST: how many elements, and where the slice is.
+        int elements = 0, slice = -1, depth = 0;
+        bool empty = _i + 1 < _t.Count && _t[_i + 1].Kind == Tok.RBracket;
+        for (int j = _i; j < _t.Count && !empty; j++)
+        {
+            Tok k = _t[j].Kind;
+            if (k is Tok.LParen or Tok.LBracket or Tok.LBrace)
+            {
+                if (depth++ == 0 && k == Tok.LBracket) { elements = 1; }
+                if (depth == 1 && _t[j + 1].Kind == Tok.DotDot) slice = 0;
+            }
+            else if (k is Tok.RParen or Tok.RBracket or Tok.RBrace)
+            {
+                if (--depth == 0) break;
+            }
+            else if (k == Tok.Comma && depth == 1)
+            {
+                if (_t[j + 1].Kind == Tok.DotDot) slice = elements;
+                elements++;
+            }
+        }
+        int fixedCount = slice >= 0 ? elements - 1 : elements;
+
+        Expr built = new BinaryExpr
+        {
+            Op = BinOp.Ne, Left = subject, PatternNullTest = true,
+            Right = new LiteralExpr { Kind = Lit.Null, Text = "null", Line = at.Line, Col = at.Col },
+            Line = at.Line, Col = at.Col,
+        };
+        built = And(built, new BinaryExpr
+        {
+            Op = slice >= 0 ? BinOp.Ge : BinOp.Eq, Left = Count(), Right = Number(fixedCount),
+            Line = at.Line, Col = at.Col,
+        });
+
+        Expect(Tok.LBracket, "'[' to open the list pattern");
+        for (int position = 0; position < elements; position++)
+        {
+            if (position > 0)
+            {
+                Expect(Tok.Comma, "',' between the elements of the list pattern");
+            }
+
+            if (position == slice)
+            {
+                Expect(Tok.DotDot, "'..'");
+                if (At(Tok.Comma) || At(Tok.RBracket))
+                {
+                    continue;
+                }
+                IndexExpr between = new()
+                {
+                    Target = subject, Line = at.Line, Col = at.Col,
+                };
+                between.Args.Add(new RangeExpr
+                {
+                    From = Number(slice),
+                    To = new FromEndExpr { Offset = Number(elements - 1 - slice), Line = at.Line, Col = at.Col },
+                    Line = at.Line, Col = at.Col,
+                });
+                built = And(built, ParseIsPattern(between, at));
+                continue;
+            }
+
+            // FROM THE FRONT before the slice, FROM THE BACK after it --
+            // `subject[Count - n]`, which is what `^n` means and needs no
+            // Index support from the type.
+            Expr place = slice >= 0 && position > slice
+                ? new BinaryExpr
+                  {
+                      Op = BinOp.Sub, Left = Count(), Right = Number(elements - position),
+                      Line = at.Line, Col = at.Col,
+                  }
+                : Number(position);
+            IndexExpr item = new() { Target = subject, Line = at.Line, Col = at.Col };
+            item.Args.Add(place);
+            built = And(built, ParseIsPattern(item, at));
+        }
+        Expect(Tok.RBracket, "']' to close the list pattern");
+
+        // `[1, ..] all` names the whole list.
+        if (PeekBinding() is string name)
+        {
+            _i++;
+            built = And(built, new IsExpr
+            {
+                Operand = subject, Type = new TypeRef { Name = TypeRef.Same, Line = at.Line, Col = at.Col },
+                Binding = name, Line = at.Line, Col = at.Col,
+            });
+        }
+        return built;
+    }
+
+    /// <summary>The index just past the bracket that closes the one at <paramref name="j"/>.</summary>
+    private int SkipBalanced(int j, Tok open, Tok close)
+    {
+        int depth = 0;
+        for (; j < _t.Count; j++)
+        {
+            if (_t[j].Kind == open) depth++;
+            else if (_t[j].Kind == close && --depth == 0) return j + 1;
+        }
+        return j;
     }
 
     private bool PositionalPatternAhead()
@@ -5879,6 +6338,7 @@ public sealed class Parser
             Tok.CaretEq   => BinOp.Xor,
             Tok.ShlEq     => BinOp.Shl,
             Tok.ShrEq     => BinOp.Shr,
+            Tok.UShrEq    => BinOp.UShr,
             _             => Not(out isAssignment),
         };
 
@@ -5914,6 +6374,35 @@ public sealed class Parser
         return new ConditionalExpr { Cond = cond, Then = then, Else = ParseExpr(), Line = at.Line, Col = at.Col };
     }
 
+    /// <summary>
+    /// A RANGE, `a..b`, which binds tighter than any binary operator and
+    /// looser than a unary one (C# 12.10): its bounds are unary expressions,
+    /// and either may be left out -- `..`, `2..`, `..^1`.
+    /// </summary>
+    private Expr ParseRange()
+    {
+        Token at = Cur;
+        Expr? first = At(Tok.DotDot) ? null : ParseUnary();
+        if (!At(Tok.DotDot))
+        {
+            return first!;
+        }
+        _i++;
+        return new RangeExpr
+        {
+            From = first, To = StartsOperand(Cur.Kind) ? ParseUnary() : null,
+            Line = at.Line, Col = at.Col,
+        };
+    }
+
+    /// <summary>Whether a token can begin a unary expression.</summary>
+    private static bool StartsOperand(Tok k)
+        => k is Tok.Ident or Tok.Int or Tok.Real or Tok.Str or Tok.InterpStr or Tok.Char or Tok.Utf8Str
+             or Tok.LParen or Tok.Minus or Tok.Plus or Tok.Bang or Tok.Tilde or Tok.Caret
+             or Tok.PlusPlus or Tok.MinusMinus or Tok.Star or Tok.Amp
+             or Tok.KwNew or Tok.KwThis or Tok.KwBase or Tok.KwTrue or Tok.KwFalse or Tok.KwNull
+             or Tok.KwDefault or Tok.KwAwait;
+
     private static int Precedence(Tok k) => k switch
     {
         Tok.QuestionQuestion => 1,
@@ -5924,7 +6413,7 @@ public sealed class Parser
         Tok.Amp    => 6,
         Tok.Eq or Tok.NotEq => 7,
         Tok.Lt or Tok.Gt or Tok.LtEq or Tok.GtEq or Tok.KwIs or Tok.KwAs => 8,
-        Tok.Shl or Tok.Shr => 9,
+        Tok.Shl or Tok.Shr or Tok.UShr => 9,
         Tok.Plus or Tok.Minus => 10,
         Tok.Star or Tok.Slash or Tok.Percent => 11,
         _ => 0,
@@ -5932,7 +6421,7 @@ public sealed class Parser
 
     private Expr ParseBinary(int minPrec)
     {
-        Expr left = ParseUnary();
+        Expr left = ParseRange();
 
         // `subject switch { ... }` binds tighter than any operator, which is
         // why it is taken here rather than given a precedence: the subject is
@@ -6049,6 +6538,7 @@ public sealed class Parser
                 Tok.GtEq   => BinOp.Ge,
                 Tok.Shl    => BinOp.Shl,
                 Tok.Shr    => BinOp.Shr,
+                Tok.UShr   => BinOp.UShr,
                 Tok.Plus   => BinOp.Add,
                 Tok.Minus  => BinOp.Sub,
                 Tok.Star   => BinOp.Mul,
@@ -6315,7 +6805,7 @@ public sealed class Parser
 
         Expr first = End();
 
-        if (!Take(Tok.DotDot))
+        if (first is RangeExpr || !Take(Tok.DotDot))
         {
             return first;
         }
@@ -6332,17 +6822,7 @@ public sealed class Parser
     /// One end of an index or a range, which may be counted from the END:
     /// `s[^1]`, `s[1..^1]`.
     /// </summary>
-    private Expr End()
-    {
-        if (!At(Tok.Caret))
-        {
-            return ParseExpr();
-        }
-
-        Token hat = _t[_i++];
-
-        return new FromEndExpr { Offset = ParseExpr(), Line = hat.Line, Col = hat.Col };
-    }
+    private Expr End() => ParseExpr();
 
     private Expr ParseUnary()
     {
@@ -6366,6 +6846,12 @@ public sealed class Parser
             case Tok.Minus:
                 _i++;
                 return new UnaryExpr { Op = UnOp.Neg, Operand = ParseUnary(), Line = at.Line, Col = at.Col };
+
+            // `^1`, AN INDEX FROM THE END: a System.Index anywhere, and a
+            // position counted back from the end inside an index.
+            case Tok.Caret:
+                _i++;
+                return new FromEndExpr { Offset = ParseUnary(), Line = at.Line, Col = at.Col };
 
             case Tok.Bang:
                 _i++;
@@ -6415,7 +6901,7 @@ public sealed class Parser
             // `async x => ...` and `async (a, b) => ...`: the word is a
             // modifier here and nowhere else in an expression.
             case Tok.Ident when Cur.Text == "async"
-                && (Ahead().Kind == Tok.Ident && _t[_i + 2].Kind == Tok.FatArrow
+                && (Ahead().Kind == Tok.Ident && _t[_i + 2].Kind == Tok.FatArrow && _i + 2 != _armArrow
                     || Ahead().Kind == Tok.LParen && IsLambdaHeadAt(_i + 1)):
             {
                 _i++;
@@ -6429,7 +6915,7 @@ public sealed class Parser
                 return made;
             }
 
-            case Tok.Ident when Ahead().Kind == Tok.FatArrow:
+            case Tok.Ident when Ahead().Kind == Tok.FatArrow && _i + 1 != _armArrow:
             {
                 List<string> one = new() { _t[_i++].Text };
 

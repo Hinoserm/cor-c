@@ -342,6 +342,9 @@ class Match : Group
 /// Every match in one input.
 class MatchCollection : IReadOnlyList<Match>
 {
+    // The non-generic IEnumerable's, as .NET's collections have it.
+    IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+
     List<Match> _matches;
 
     public MatchCollection(List<Match> matches)

@@ -1521,7 +1521,7 @@ public sealed partial class Lowering
             }
             else if (i == _b.ToStringSlot && t.Kind == TypeKind.Class)
             {
-                target = ObjectToStringStub();
+                target = IsTupleShape(t) ? TupleToString(t) : ObjectToStringStub();
             }
             else
             {
@@ -1631,7 +1631,22 @@ public sealed partial class Lowering
         {
             FieldSymbol cursor = view.Fields[1];
 
-            if (m.Name == "MoveNext")
+            if (m.Name == "Dispose")
+            {
+                e.Ret(null);
+            }
+            else if (m.Name == "Reset")
+            {
+                e.Store(new RegOperand(self), Imm(-1, IrType.I32), cursor.Offset, 4);
+                e.Ret(null);
+            }
+            else if (m.ExplicitMember == "get_Current")
+            {
+                // IEnumerator's Current, an object: the element boxed.
+                VReg value = LoadElement(items, e.Load(IrType.I32, self, cursor.Offset), of, At(m));
+                e.Ret(new RegOperand(Boxable(of) ? BoxValue(At(m), value, of) : value));
+            }
+            else if (m.Name == "MoveNext")
             {
                 VReg next = e.Binary(Opcode.Add, e.Load(IrType.I32, self, cursor.Offset), 1);
 
@@ -1658,9 +1673,12 @@ public sealed partial class Lowering
         // way this view is. An array borrows nothing from a list: the standard
         // library's ListEnumerator belongs to a List<T> this program may never
         // have made.
-        if (m.Name == "GetEnumerator" && m.Params.Count == 0)
+        if ((m.ExplicitMember ?? m.Name) == "GetEnumerator" && m.Params.Count == 0)
         {
-            TypeSymbol walker = _b.Types[$"ArrayEnumerator${m.Returns.Symbol!.Name}"];
+            // The non-generic GetEnumerator hands back the same walker, which
+            // is an IEnumerator as well as the IEnumerator<T> it was made for.
+            MethodSymbol typed = view.Methods.First(x => x.Name == "GetEnumerator" && x.Params.Count == 0);
+            TypeSymbol walker = _b.Types[$"ArrayEnumerator${typed.Returns.Symbol!.Name}"];
             VReg made = Allocate(At(m), Math.Max(_t.ObjectHeaderBytes, walker.InstanceSize));
 
             e.Store(new RegOperand(made), VtableOf(walker), 0, _t.WordSize);

@@ -649,29 +649,53 @@ abstract class TextWriter : IDisposable
         Dispose();
     }
 
+    /// The provider numbers and dates are written with.
+    public virtual IFormatProvider FormatProvider => CultureInfo.CurrentCulture;
+
+    /// A writer that keeps nothing: what .NET's TextWriter.Null is.
+    public static readonly TextWriter Null = new NullTextWriter();
+
     public abstract void Write(char value);
-
-    public virtual void Write(object? value)
-    {
-        if (value != null) Write(value.ToString());
-    }
-
-    public virtual void Write(string value)
-    {
-        if (value == null) return;
-        for (int i = 0; i < value.Length; i++)
-        {
-            Write(value[i]);
-        }
-    }
 
     public virtual void Write(char[]? buffer)
     {
         if (buffer == null) return;
+        Write(buffer, 0, buffer.Length);
+    }
+
+    public virtual void Write(char[] buffer, int index, int count)
+    {
+        if (buffer == null) throw new ArgumentNullException("buffer", "Buffer cannot be null.");
+        if (index < 0) throw new ArgumentOutOfRangeException("index", "Non-negative number required.");
+        if (count < 0) throw new ArgumentOutOfRangeException("count", "Non-negative number required.");
+        if (buffer.Length - index < count) throw new ArgumentException("Offset and length were out of bounds for the array or count is greater than the number of elements from index to the end of the source collection.");
+        for (int i = 0; i < count; i++)
+        {
+            Write(buffer[index + i]);
+        }
+    }
+
+    public virtual void Write(ReadOnlySpan<char> buffer)
+    {
         for (int i = 0; i < buffer.Length; i++)
         {
             Write(buffer[i]);
         }
+    }
+
+    public virtual void Write(bool value)
+    {
+        Write(value ? "True" : "False");
+    }
+
+    public virtual void Write(int value)
+    {
+        Write(value.ToString());
+    }
+
+    public virtual void Write(uint value)
+    {
+        Write(value.ToString());
     }
 
     public virtual void Write(long value)
@@ -686,12 +710,105 @@ abstract class TextWriter : IDisposable
         Write(String.FromUInt(value));
     }
 
+    public virtual void Write(float value)
+    {
+        Write(value.ToString());
+    }
+
+    public virtual void Write(double value)
+    {
+        Write(value.ToString());
+    }
+
+    public virtual void Write(string? value)
+    {
+        if (value == null) return;
+        for (int i = 0; i < value.Length; i++)
+        {
+            Write(value[i]);
+        }
+    }
+
+    /// What it says of itself -- by its format provider when it takes one --
+    /// and nothing at all for null.
+    public virtual void Write(object? value)
+    {
+        if (value == null) return;
+        if (value is IFormattable formattable)
+        {
+            Write(formattable.ToString(null, FormatProvider));
+            return;
+        }
+        Write("" + value);
+    }
+
+    public virtual void Write(StringBuilder? value)
+    {
+        if (value != null) Write(value.ToString());
+    }
+
+    public virtual void Write(string format, object? arg0)
+    {
+        Write(String.Format(FormatProvider, format, arg0));
+    }
+
+    public virtual void Write(string format, object? arg0, object? arg1)
+    {
+        Write(String.Format(FormatProvider, format, arg0, arg1));
+    }
+
+    public virtual void Write(string format, object? arg0, object? arg1, object? arg2)
+    {
+        Write(String.Format(FormatProvider, format, arg0, arg1, arg2));
+    }
+
+    public virtual void Write(string format, params object?[] arg)
+    {
+        Write(String.Format(FormatProvider, format, arg));
+    }
+
     public virtual void WriteLine()
     {
         Write(NewLine);
     }
 
-    public virtual void WriteLine(string value)
+    public virtual void WriteLine(char value)
+    {
+        Write(value);
+        WriteLine();
+    }
+
+    public virtual void WriteLine(char[]? buffer)
+    {
+        Write(buffer);
+        WriteLine();
+    }
+
+    public virtual void WriteLine(char[] buffer, int index, int count)
+    {
+        Write(buffer, index, count);
+        WriteLine();
+    }
+
+    public virtual void WriteLine(ReadOnlySpan<char> buffer)
+    {
+        Write(buffer);
+        WriteLine();
+    }
+
+    public virtual void WriteLine(bool value)
+    {
+        Write(value);
+        WriteLine();
+    }
+
+    public virtual void WriteLine(int value)
+    {
+        Write(value);
+        WriteLine();
+    }
+
+    public virtual void WriteLine(uint value)
     {
         Write(value);
         WriteLine();
@@ -709,6 +826,56 @@ abstract class TextWriter : IDisposable
         WriteLine();
     }
 
+    public virtual void WriteLine(float value)
+    {
+        Write(value);
+        WriteLine();
+    }
+
+    public virtual void WriteLine(double value)
+    {
+        Write(value);
+        WriteLine();
+    }
+
+    public virtual void WriteLine(string? value)
+    {
+        Write(value);
+        WriteLine();
+    }
+
+    public virtual void WriteLine(object? value)
+    {
+        Write(value);
+        WriteLine();
+    }
+
+    public virtual void WriteLine(StringBuilder? value)
+    {
+        Write(value);
+        WriteLine();
+    }
+
+    public virtual void WriteLine(string format, object? arg0)
+    {
+        WriteLine(String.Format(FormatProvider, format, arg0));
+    }
+
+    public virtual void WriteLine(string format, object? arg0, object? arg1)
+    {
+        WriteLine(String.Format(FormatProvider, format, arg0, arg1));
+    }
+
+    public virtual void WriteLine(string format, object? arg0, object? arg1, object? arg2)
+    {
+        WriteLine(String.Format(FormatProvider, format, arg0, arg1, arg2));
+    }
+
+    public virtual void WriteLine(string format, params object?[] arg)
+    {
+        WriteLine(String.Format(FormatProvider, format, arg));
+    }
+
     public virtual void Flush()
     {
     }
@@ -717,6 +884,14 @@ abstract class TextWriter : IDisposable
     {
         Flush();
     }
+}
+
+/// TextWriter.Null: every write kept nowhere.
+sealed class NullTextWriter : TextWriter
+{
+    public override void Write(char value) { }
+    public override void Write(string? value) { }
+    public override void Write(char[] buffer, int index, int count) { }
 }
 
 abstract class TextReader : IDisposable
@@ -799,7 +974,22 @@ class StreamWriter : TextWriter
     bool _leaveOpen;
     bool _preambleDone;
     bool _disposed;
-    public bool AutoFlush;
+    bool _autoFlush;
+
+    /// Whether every write is flushed to the stream when it returns, as .NET's
+    /// is; turning it on flushes what is already gathered.
+    public virtual bool AutoFlush
+    {
+        get { return _autoFlush; }
+        set
+        {
+            _autoFlush = value;
+            if (value)
+            {
+                Flush();
+            }
+        }
+    }
 
     public StreamWriter(Stream stream) : this(stream, new UTF8Encoding(false), DefaultBufferSize, false) { }
     public StreamWriter(Stream stream, Encoding encoding) : this(stream, encoding, DefaultBufferSize, false) { }
@@ -845,13 +1035,72 @@ class StreamWriter : TextWriter
         }
         _chars[_used] = value;
         _used = _used + 1;
-        if (AutoFlush && value == '\n')
+        if (_autoFlush)
         {
             Flush();
         }
     }
 
-    public override void Write(string value)
+    /// One gathering and at most one flush per call, however many characters.
+    public override void Write(char[] buffer, int index, int count)
+    {
+        if (buffer == null) throw new ArgumentNullException("buffer", "Buffer cannot be null.");
+        if (index < 0) throw new ArgumentOutOfRangeException("index", "Non-negative number required.");
+        if (count < 0) throw new ArgumentOutOfRangeException("count", "Non-negative number required.");
+        if (buffer.Length - index < count) throw new ArgumentException("Offset and length were out of bounds for the array or count is greater than the number of elements from index to the end of the source collection.");
+        for (int i = 0; i < count; i++)
+        {
+            Gather(buffer[index + i]);
+        }
+        if (_autoFlush)
+        {
+            Flush();
+        }
+    }
+
+    public override void Write(ReadOnlySpan<char> buffer)
+    {
+        for (int i = 0; i < buffer.Length; i++)
+        {
+            Gather(buffer[i]);
+        }
+        if (_autoFlush)
+        {
+            Flush();
+        }
+    }
+
+    public override void WriteLine(string? value)
+    {
+        if (value != null)
+        {
+            for (int i = 0; i < value.Length; i++)
+            {
+                Gather(value[i]);
+            }
+        }
+        string end = NewLine;
+        for (int i = 0; i < end.Length; i++)
+        {
+            Gather(end[i]);
+        }
+        if (_autoFlush)
+        {
+            Flush();
+        }
+    }
+
+    void Gather(char value)
+    {
+        if (_used == _chars.Length)
+        {
+            Drain(false);
+        }
+        _chars[_used] = value;
+        _used = _used + 1;
+    }
+
+    public override void Write(string? value)
     {
         if (value == null) return;
         for (int i = 0; i < value.Length; i++)
@@ -863,7 +1112,7 @@ class StreamWriter : TextWriter
             _chars[_used] = value[i];
             _used = _used + 1;
         }
-        if (AutoFlush)
+        if (_autoFlush)
         {
             Flush();
         }
@@ -3051,6 +3300,9 @@ class DriveInfo
 /// opened when the sequence was made, each later one opens the file again.
 class FileLines : IEnumerable<string>
 {
+    // The non-generic IEnumerable's, as .NET's collections have it.
+    IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+
     readonly string _path;
     StreamReader? _first;
 
@@ -3070,6 +3322,9 @@ class FileLines : IEnumerable<string>
 
 class FileLinesEnumerator : IEnumerator<string>, IDisposable
 {
+    // The non-generic IEnumerator's members, as .NET's enumerators have them.
+    object? IEnumerator.Current => Current;
+
     StreamReader? _reader;
     string _current = "";
 
