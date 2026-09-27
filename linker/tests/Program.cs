@@ -48,6 +48,7 @@ public static partial class Program
         Try("x86-64 objects: ELF64 RELA, accepted by binutils", LongModeObjects);
         Try("x86-64 static link runs under the kernel", LongModeLink);
         Try("32-bit and 64-bit objects do not link together", LongModeMixture);
+        Try("x86-64 shared object and dynamic program run under ld-linux-x86-64", LongModeDynamic);
 
         Console.WriteLine($"{_passes} passed, {_failures} failed");
         return _failures == 0 ? 0 : 1;

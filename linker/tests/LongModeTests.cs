@@ -93,6 +93,66 @@ public static partial class Program
         Check(Exec(again) == 42, "the same objects read back from ELF64 link and exit 42");
     }
 
+    /// <summary>
+    /// The library: f adds msg[0] read through an address held in .data
+    /// (R_X86_64_64, a RELATIVE for the loader) to msg[0] read through its
+    /// GOT slot (GOTPCREL, which this linker relaxes to a lea since the
+    /// library defines msg) -- 42 + 42.
+    ///
+    ///   mov rax, [rip + pmsg]           48 8b 05 d32
+    ///   movzx ecx, byte [rax]           0f b6 08
+    ///   mov rax, [rip + msg@GOTPCREL]   48 8b 05 d32
+    ///   movzx eax, byte [rax]           0f b6 00
+    ///   add eax, ecx                    01 c8
+    ///   ret                             c3
+    /// </summary>
+    private static ObjectFile Library64()
+    {
+        ObjectFile o = new();
+        Section text = new(".text", SectionKind.Code) { Align = 16 };
+        text.Bytes.AddRange(new byte[] { 0x48, 0x8b, 0x05, 0, 0, 0, 0, 0x0f, 0xb6, 0x08, 0x48, 0x8b, 0x05, 0, 0, 0, 0, 0x0f, 0xb6, 0x00, 0x01, 0xc8, 0xc3 });
+        text.Relocs.Add(new Relocation(3, "pmsg", -4, RelocKind.Rel32));
+        text.Relocs.Add(new Relocation(13, "msg", -4, RelocKind.GotPcRel));
+        Section rodata = new(".rodata", SectionKind.ReadOnlyData) { Align = 8 };
+        rodata.Bytes.AddRange(new byte[] { 42, (byte)'h', (byte)'i', 0 });
+        Section data = new(".data", SectionKind.Data) { Align = 8 };
+        data.Bytes.AddRange(new byte[8]);
+        data.Relocs.Add(new Relocation(0, "msg", 0, RelocKind.Abs64));
+        o.Sections.Add(text);
+        o.Sections.Add(rodata);
+        o.Sections.Add(data);
+        o.Symbols.Add(new Symbol { Name = "msg", Section = rodata, Offset = 0, Size = 4 });
+        o.Symbols.Add(new Symbol { Name = "f", Section = text, Offset = 0, Size = text.Bytes.Count, IsFunction = true });
+        o.Symbols.Add(new Symbol { Name = "pmsg", Section = data, Offset = 0, Size = 8, Global = false });
+        new TargetContract(0, longMode: true).Attach(o);
+        return o;
+    }
+
+    private static void LongModeDynamic()
+    {
+        string lib = Write("libf64.so", Linker.LinkShared(new[] { ("library64", Library64()) }, "libf64.so"));
+        (int code, string output) = Run("readelf", "-hdrW", lib);
+        Check(code == 0 && !output.Contains("Warning") && !output.Contains("Error"), "readelf reads the shared object without complaint", output);
+        Check(output.Contains("ELF64") && output.Contains("DYN (Shared object file)"), "an ELF64 shared object", output);
+        Check(output.Contains("(SONAME)") && output.Contains("(RELA)") && output.Contains("BIND_NOW"), "SONAME, RELA and eager binding", output);
+        Check(output.Contains("R_X86_64_RELATIVE") && !output.Contains("TEXTREL"), "the address in .data is RELATIVE; the text has none", output);
+        Check(!output.Contains("R_X86_64_GLOB_DAT"), "msg's GOT load was relaxed: no slot for a symbol the library defines", output);
+
+        // Our program against our library.
+        string exe = Write("dyn84-64", Linker.Link(new[] { ("caller64", Caller64()) }, "_start", new[] { lib }));
+        (code, output) = Run("readelf", "-lW", exe);
+        Check(code == 0 && output.Contains("/lib64/ld-linux-x86-64.so.2"), "the program names the x86-64 loader", output);
+        Check(Exec(exe) == 84, "the loader binds f from the library and the program exits 84");
+
+        // GNU ld's program against our library: the .so is an ordinary one.
+        string caller = Write("caller64-dyn.o", ElfWriter.WriteObject(Caller64()));
+        string ldExe = Path.Combine(_dir, "dyn84-64-ld");
+        (code, output) = Run("ld", "-m", "elf_x86_64", "-o", ldExe, "--dynamic-linker", "/lib64/ld-linux-x86-64.so.2",
+            "-rpath", _dir, caller, lib);
+        Check(code == 0, "GNU ld links a program against it", output);
+        Check(Exec(ldExe) == 84, "and that program exits 84 too");
+    }
+
     private static void LongModeMixture()
     {
         ObjectFile i386 = Callee();
