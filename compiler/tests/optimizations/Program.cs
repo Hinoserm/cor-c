@@ -85,6 +85,7 @@ public static partial class Program
         Try("escape: a fresh function's result is owned by its caller", FreshReturnOwnership);
         Try("escape: a callee-filled field dies with its owner", CalleeFilledField);
         Try("escape: one liveness judges every allocation in a function", EscapeSharedLiveness);
+        Try("escape: calls into other units become conditions for the link", EscapeLinkHints);
         Try("local copies: reassignment, branches, joins and loops preserve values", LocalCopyBoundaries);
         Try("division reuse: signed results and redefinition barriers", DivisionReuseBoundaries);
         Try("integer chains: modular constants and mutable-source barriers", IntegerChainBoundaries);
@@ -564,6 +565,56 @@ public static partial class Program
         Assert(pass.Promoted == 1, "the scratch object is promoted, the carried one is not");
         int allocations = f.Blocks.SelectMany(x => x.Instrs).Count(x => x.Op == Opcode.Call && x.Callee == Escape.Allocator);
         Assert(allocations == 1, "the carried object stays an allocation");
+    }
+
+    private static void EscapeLinkHints()
+    {
+        // lend: an object handed to `ext`, which this unit does not define.
+        // pass(p): hands its parameter to `ext` too. relay(): returns what
+        // `make` returns, also another unit's. Nothing is decided here; the
+        // link is told what would decide it.
+        Module module = new("hints");
+        (Function lend, Builder b) = Fn(IrType.I64);
+        lend.Exported = true;
+        module.Functions.Add(lend); module.Entry = lend.Name;
+        Instr? alloc = null;
+        VReg obj = b.Unary(Opcode.Trunc64, b.Call(Escape.Allocator, IrType.I64, new ImmOperand(24, IrType.I64))!);
+        foreach (Block block in lend.Blocks) foreach (Instr i in block.Instrs) if (i.Op == Opcode.Call) alloc = i;
+        b.Call("ext", IrType.Void, new RegOperand(obj));
+        b.Ret(new RegOperand(b.Load(IrType.I64, obj, 8, 8)));
+
+        Function pass = new("pass", IrType.Void) { Exported = true };
+        VReg p = pass.NewReg(IrType.I32); pass.Params.Add(p);
+        Builder pb = new(pass, pass.NewBlock("entry"));
+        pb.Call("ext", IrType.Void, new RegOperand(p));
+        pb.Ret();
+        module.Functions.Add(pass);
+
+        Function relay = new("relay", IrType.I32) { Exported = true };
+        Builder rb = new(relay, relay.NewBlock("entry"));
+        VReg made = rb.Call("make", IrType.I32)!;
+        rb.Ret(new RegOperand(made));
+        module.Functions.Add(relay);
+
+        Escape escape = new(); escape.Run(module);
+        Verifier.Check(lend, "hinted lend");
+        Assert(escape.Promoted == 0, "an object lent to another unit stays on the heap in this unit");
+        Corsac.Lang.Lto.LifetimeHints hints = module.LifetimeHints!;
+        Assert(hints.Pending.Count == 1 && hints.Pending[0].Stays.Single() == ("ext", 0) && hints.Pending[0].Fresh.Count == 0,
+            "the lent object's pending condition names ext's parameter");
+        Assert(alloc is not null && module.KeepCalls.Contains(alloc), "the pending allocation is kept from the inliner");
+        var passHint = hints.Functions.Single(f => f.Name == "pass");
+        Assert(passHint.Parameters.Single() is { } c && c.Stays.Single() == ("ext", 0), "a parameter handed on is a condition, not an escape");
+        var relayHint = hints.Functions.Single(f => f.Name == "relay");
+        Assert(relayHint.Fresh is { } fresh && fresh.Fresh.Single() == "make" && fresh.Stays.Count == 0, "a result from another unit is fresh if its maker is");
+        Assert(escape.FreshFunctions == 0, "nothing is fresh in this unit alone");
+
+        // The link says ext keeps nothing: lend's object goes in its frame.
+        Corsac.Lang.Lto.LifetimeFacts facts = new();
+        facts.Escapes["ext"] = new[] { false };
+        Assert(Escape.RunAtLink(lend, facts) == 1, "with the link's answer the object is placed");
+        Verifier.Check(lend, "lend at link");
+        Assert(!lend.Blocks.SelectMany(x => x.Instrs).Any(i => i.Op == Opcode.Call && i.Callee == Escape.Allocator), "no allocation left");
     }
 
     private static void FreshReturnOwnership()

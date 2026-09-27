@@ -215,10 +215,14 @@ public sealed class X86Backend : IBackend
                         {
                             long cost = FunctionLoadBytes?.Invoke(first + count)
                                 ?? throw new InvalidOperationException("Deferred functions require memory costs");
-                            if (cost <= 0 || cost > FunctionMemoryBudget)
-                                throw new InvalidDataException("Function exceeds backend working budget: " + module.Functions[first + count].Name);
-                            if (cost > FunctionMemoryBudget - bytes) break;
+                            if (cost <= 0)
+                                throw new InvalidDataException("Function has no backend working cost: " + module.Functions[first + count].Name);
+                            if (count > 0 && cost > FunctionMemoryBudget - bytes) break;
                             bytes += cost; count++;
+                            // Bigger than the whole budget: compiled alone, as
+                            // slowly as it must be, never refused. The batch
+                            // sizes the work, not the code.
+                            if (cost > FunctionMemoryBudget) break;
                         }
                     }
                     batchStart = first; batchEnd = first + count;

@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 #nullable enable
 using Corsac.Lang.Metadata;
+using Corsac.Lang.Lto;
 
 namespace Corsac;
 
@@ -24,6 +25,9 @@ public static class ProjectCompile
 {
     /// <summary>One line of the work list: what to compile and where it goes.</summary>
     private readonly record struct Unit(string Source, string Object, string Receipt, bool Entry);
+
+    /// <summary>What one more unit may need before it is started beside others (see Gated).</summary>
+    private const long UnitReserve = 64L * 1024 * 1024;
 
     public static int Run(string[] argv)
     {
@@ -181,12 +185,29 @@ public static class ProjectCompile
         //
         // Without a budget -- a compiler run by hand -- the thread count is
         // simply what was asked for.
+        //
+        // AND MEMORY, which the budget does not see. A worker the budget
+        // allows is still not started while the machine has less to spare
+        // than a unit needs, unless no other unit is running: on a small
+        // machine the units then go through one at a time, slower and the
+        // same. What each unit compiles to never depends on it.
+        int compiling = 0;
+        object admit = new();
         int Gated(Unit unit)
         {
-            if (pool is null) return One(unit);
-            while (!pool.TryTake()) Thread.Sleep(15);
-            try { return One(unit); }
-            finally { pool.Give(); }
+            lock (admit)
+            {
+                while (compiling > 0 && MachineMemory.Available() < UnitReserve) Monitor.Wait(admit, 15);
+                compiling++;
+            }
+            try
+            {
+                if (pool is null) return One(unit);
+                while (!pool.TryTake()) Thread.Sleep(15);
+                try { return One(unit); }
+                finally { pool.Give(); }
+            }
+            finally { lock (admit) { compiling--; Monitor.PulseAll(admit); } }
         }
 
         // THE ENTRY SOURCE JOINS THE QUEUE LIKE THE REST. It used to be

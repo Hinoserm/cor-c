@@ -1,5 +1,6 @@
 #nullable enable
 using Corsac.Lang.Ir;
+using Corsac.Lang.Lto;
 
 namespace Corsac.Lang.Opt;
 
@@ -64,6 +65,7 @@ public sealed partial class Escape : IModulePass
         {
             byName[f.Name] = f;
         }
+        _defined.UnionWith(byName.Keys);
 
         // Which parameters of which functions escape: pessimistic until a
         // function has been analysed, bottom-up over the call graph so a
@@ -79,7 +81,11 @@ public sealed partial class Escape : IModulePass
             // here (or by a callee that hands it over in turn), never stored
             // anywhere and never let go of any other way. Its caller then
             // owns the object as if it had made it (Fresh, PromoteIn).
-            if (ReturnsFresh(f, summaries, _fresh, out List<Instr>? origins, out HashSet<VReg>? chain))
+            // As a condition on other units (EscapeHints); fresh here and
+            // now when the condition is already true.
+            LifetimeCondition? freshHint = FreshHint(f, summaries, out List<Instr>? origins, out HashSet<VReg>? chain);
+            _freshHints[f.Name] = freshHint;
+            if (freshHint is { IsTrue: true })
             {
                 _fresh.Add(f.Name);
                 _freshFields[f.Name] = FreshFields(f, summaries, origins!, chain!);
@@ -102,6 +108,7 @@ public sealed partial class Escape : IModulePass
             if (canFreeFields) OwnFields(f, summaries);
         }
 
+        m.LifetimeHints = Hints(m, Provided);
         m.NeedsHeap = AnyAllocationReachable(m, byName);
         LastRun = (Promoted, Owned, OwnedReturns, _fresh.Count, FieldsOwned, VariablesOwned);
 
@@ -196,7 +203,7 @@ public sealed partial class Escape : IModulePass
     // unchanged is itself fresh.
 
     /// <summary>Functions whose every return hands over a fresh object.</summary>
-    private readonly HashSet<string> _fresh = new(StringComparer.Ordinal);
+    private HashSet<string> _fresh = new(StringComparer.Ordinal);
 
     /// <summary>Calls to fresh-returning functions whose result this pass took ownership of.</summary>
     private readonly HashSet<Instr> _ownedCalls = new(ReferenceEqualityComparer.Instance);
@@ -223,7 +230,7 @@ public sealed partial class Escape : IModulePass
     /// a field address.
     /// </summary>
     private static bool ReturnsFresh(Function f, Dictionary<string, bool[]> summaries, HashSet<string> fresh,
-        out List<Instr>? found, out HashSet<VReg>? returned)
+        out List<Instr>? found, out HashSet<VReg>? returned, Needs? needs = null)
     {
         found = null;
         returned = null;
@@ -292,6 +299,12 @@ public sealed partial class Escape : IModulePass
                     origins.Add(d);
                     continue;
                 }
+                // Made by a function whose answer waits on another unit.
+                if (d.Op == Opcode.Call && d.Callee is not null && needs is not null && needs.AllowFresh(d.Callee))
+                {
+                    origins.Add(d);
+                    continue;
+                }
                 if (d.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.SExt32 or Opcode.Phi)
                 {
                     if (d.Operands.Count == 0 || (d.Op != Opcode.Phi && d.Operands.Count != 1)) return false;
@@ -313,7 +326,7 @@ public sealed partial class Escape : IModulePass
 
         foreach (Instr origin in origins)
         {
-            Flow flow = Analyse(f, new[] { origin.Dest! }, summaries, origin, returnable: chain);
+            Flow flow = Analyse(f, new[] { origin.Dest! }, summaries, origin, returnable: chain, needs: needs);
             if (flow.Escapes) return false;
         }
         found = origins;
@@ -337,7 +350,8 @@ public sealed partial class Escape : IModulePass
     }
 
     internal static Flow Analyse(Function f, IEnumerable<VReg> roots, Dictionary<string, bool[]> summaries, Instr? source,
-        HashSet<Instr>? ownedStores = null, HashSet<VReg>? returnable = null, HashSet<VReg>? joinable = null)
+        HashSet<Instr>? ownedStores = null, HashSet<VReg>? returnable = null, HashSet<VReg>? joinable = null,
+        Needs? needs = null)
     {
         Flow flow = new() { Source = source };
         foreach (VReg r in roots)
@@ -479,18 +493,22 @@ public sealed partial class Escape : IModulePass
 
                         case Opcode.Call:
                         {
-                            if (i.Callee is null || !summaries.TryGetValue(i.Callee, out bool[]? summary))
+                            if (i.Callee is null)
                             {
                                 flow.Escapes = true;
                                 break;
                             }
+                            summaries.TryGetValue(i.Callee, out bool[]? summary);
                             for (int a = 0; a < i.Operands.Count; a++)
                             {
-                                if (i.Operands[a] is RegOperand arg && flow.Derived.Contains(arg.Reg)
-                                    && (a >= summary.Length || summary[a]))
-                                {
-                                    flow.Escapes = true;
-                                }
+                                if (i.Operands[a] is not RegOperand arg || !flow.Derived.Contains(arg.Reg)) continue;
+                                if (summary is not null && a < summary.Length && !summary[a]) continue;
+                                // Asked for the link (EscapeHints): another
+                                // unit's function, or one of this unit's whose
+                                // own answer waits on another unit, is a
+                                // condition rather than an escape.
+                                if (needs is not null && needs.Allow(i.Callee, a)) continue;
+                                flow.Escapes = true;
                             }
                             // The result of a call that took the pointer is
                             // not assumed to be the pointer: a callee that
@@ -560,27 +578,6 @@ public sealed partial class Escape : IModulePass
     // old answer, everything escaping.
 
     private const int CycleRounds = 64;
-
-    private static void SummariseCycle(List<Function> cycle, Dictionary<string, bool[]> summaries)
-    {
-        if (cycle.Count == 1 && !CallsItself(cycle[0]))
-        {
-            summaries[cycle[0].Name] = ParameterSummary(cycle[0], summaries);
-            return;
-        }
-        foreach (Function f in cycle) summaries[f.Name] = new bool[f.Params.Count];
-        for (int round = 0; round < CycleRounds; round++)
-        {
-            bool changed = false;
-            foreach (Function f in cycle)
-            {
-                bool[] again = ParameterSummary(f, summaries);
-                if (!again.AsSpan().SequenceEqual(summaries[f.Name])) { summaries[f.Name] = again; changed = true; }
-            }
-            if (!changed) return;
-        }
-        foreach (Function f in cycle) summaries[f.Name] = Enumerable.Repeat(true, f.Params.Count).ToArray();
-    }
 
     private static bool CallsItself(Function f)
     {
@@ -660,22 +657,6 @@ public sealed partial class Escape : IModulePass
     }
 
     /// <summary>For each parameter: whether the function lets it escape. Returning it counts.</summary>
-    private static bool[] ParameterSummary(Function f, Dictionary<string, bool[]> summaries)
-    {
-        bool[] result = new bool[f.Params.Count];
-        for (int p = 0; p < f.Params.Count; p++)
-        {
-            VReg param = f.Params[p];
-            if (param.Type is not (IrType.I32 or IrType.I64))
-            {
-                continue;
-            }
-            Flow flow = Analyse(f, new[] { param }, summaries, null);
-            result[p] = flow.Escapes;
-        }
-        return result;
-    }
-
     // ---- promotion -----------------------------------------------------------------
 
     private static List<Block> PromotionOrder(Function f)
@@ -798,6 +779,13 @@ public sealed partial class Escape : IModulePass
                 }
                 if (flow.Escapes)
                 {
+                    // Left to the collector: say why, for the link (EscapeHints).
+                    if (_hinting)
+                    {
+                        liveness ??= new Liveness(f);
+                        pads ??= PadLive(liveness);
+                        Pending(f, b, i, summaries, liveness, pads, null);
+                    }
                     continue;
                 }
 
@@ -977,12 +965,20 @@ public sealed partial class Escape : IModulePass
     {
         if (f.Async is not null) return;
         List<(Block Block, Instr Call)> calls = new();
+        List<(Block Block, Instr Call)> waiting = new();
         foreach (Block b in f.Blocks)
             foreach (Instr i in b.Instrs)
+            {
                 if (IsFreshCall(i) && i.Dest is not null && !_ownedCalls.Contains(i)) calls.Add((b, i));
-        if (calls.Count == 0) return;
+                else if (_hinting && i.Op == Opcode.Call && i.Callee is not null && i.Dest is { Type: IrType.I32 or IrType.I64 }
+                         && !IsAllocator(i.Callee) && !IsCollectorNote(i.Callee) && !_bookkeeping.Contains(i))
+                    waiting.Add((b, i));
+            }
+        if (calls.Count == 0 && waiting.Count == 0) return;
         Defs defs = new(f, buildCfg: false);
+        waiting.RemoveAll(w => !defs.IsSingle(w.Call.Dest!) || !Dereferenced(f, w.Call.Dest!));
         Liveness? liveness = null;
+        HashSet<VReg>? pads = null;
         List<(Block Block, Instr Call, bool ReadsPrevious)> chosen = new();
         foreach ((Block b, Instr call) in calls)
         {
@@ -990,7 +986,8 @@ public sealed partial class Escape : IModulePass
             Flow flow = Analyse(f, new[] { call.Dest! }, summaries, call);
             if (flow.Escapes) continue;
             liveness ??= new Liveness(f);
-            if (LiveAtSelf(liveness, b, call, flow.Derived)) continue;
+            pads ??= PadLive(liveness);
+            if (LiveAtSelf(liveness, pads, b, call, flow.Derived)) continue;
             // BEFORE THE CALL WHEN THE CALL CANNOT BE READING IT (see below).
             bool readsPrevious = false;
             foreach (Operand o in call.Operands)
@@ -999,6 +996,44 @@ public sealed partial class Escape : IModulePass
         }
         foreach ((Block b, Instr call, bool readsPrevious) in chosen)
             OwnFreshResult(f, b, call, readsPrevious);
+
+        // A result from a function whose answer waits on another unit: owned
+        // here if the link finds it fresh (EscapeHints). Judged against the
+        // same analysis, before anything above changed the function.
+        if (!_hinting) return;
+        foreach ((Block b, Instr call) in waiting)
+        {
+            liveness ??= new Liveness(f);
+            pads ??= PadLive(liveness);
+            Pending(f, b, call, summaries, liveness, pads, call.Callee);
+        }
+    }
+
+    /// <summary>
+    /// Whether a register is used as the address of the memory it points at
+    /// -- read through, written through, its length taken. What tells a
+    /// call's object result from a number: the IR types do not.
+    /// </summary>
+    private static bool Dereferenced(Function f, VReg r)
+    {
+        // Through copies and width changes: a call's 64-bit result is often
+        // narrowed before it is used.
+        HashSet<VReg> same = new() { r };
+        for (bool grew = true; grew;)
+        {
+            grew = false;
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                {
+                    if (i.Op is Opcode.Load or Opcode.Store or Opcode.ArrayLength or Opcode.InitArrayLength
+                        && i.Operands.Count > 0 && i.Operands[0] is RegOperand address && same.Contains(address.Reg))
+                        return true;
+                    if (i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.SExt32 && i.Dest is not null
+                        && i.Operands.Count == 1 && i.Operands[0] is RegOperand from && same.Contains(from.Reg) && same.Add(i.Dest))
+                        grew = true;
+                }
+        }
+        return false;
     }
 
     private bool OwnFreshResult(Function f, Block b, Instr call, bool readsPrevious)

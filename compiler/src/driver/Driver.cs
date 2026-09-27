@@ -767,7 +767,12 @@ public static class Driver
         if (args.Contains("--obj") || library)
         {
             if (x86Backend.EmitLinkSummary && !x86Backend.PositionIndependent && sharedLibs.Count == 0)
+            {
+                // The lifetime hints first: the IR archive's integrity hash
+                // covers every other section, these included.
+                if (module.LifetimeHints is { IsEmpty: false } hints) hints.Attach(obj);
                 IrUnitCodec.Attach(obj, module, x86Backend.StackMaps);
+            }
             File.WriteAllBytes(output, ElfWriter.WriteObject(obj));
             if (Value(args, "--dependency-file") is string dependencyFile) declarations!.WriteDependencies(dependencyFile);
             Console.Error.WriteLine($"{output}: {obj.Section(".text").Size} bytes of code");

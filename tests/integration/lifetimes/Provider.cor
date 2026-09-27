@@ -1,0 +1,28 @@
+namespace Lifetimes;
+
+// Compiled on its own, with the runtime: the caller sees only declarations.
+public static class Provider
+{
+    // Read, not folded: sizes the caller cannot know when it is compiled.
+    public static int Size = 24;
+    public static byte[] Held;
+
+    // Reads what it is handed and keeps nothing.
+    public static int Sum(byte[] data)
+    {
+        int total = 0;
+        for (int i = 0; i < data.Length; i++) total += data[i];
+        return total;
+    }
+
+    // Hands over an array it made: the caller owns it.
+    public static byte[] Make(int length, byte first)
+    {
+        byte[] made = new byte[length];
+        made[0] = first;
+        return made;
+    }
+
+    // Keeps what it is handed: never the caller's to free.
+    public static void Keep(byte[] data) => Held = data;
+}

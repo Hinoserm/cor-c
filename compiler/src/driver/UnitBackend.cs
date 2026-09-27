@@ -11,8 +11,14 @@ namespace Corsac;
 /// <summary>IR-only compiler backend. Does not parse or bind source files.</summary>
 public sealed class UnitBackend : IUnitBackend
 {
-    public ObjectFile Recompile(ObjectFile original, IReadOnlyList<IrImport> imports, IReadOnlySet<string>? retained = null)
+    /// <summary>Objects the last recompile placed in frames or freed with the link's lifetime answers.</summary>
+    public int LifetimesTaken => _lifetimes;
+    private int _lifetimes;
+
+    public ObjectFile Recompile(ObjectFile original, IReadOnlyList<IrImport> imports, IReadOnlySet<string>? retained = null,
+        LifetimeFacts? facts = null)
     {
+        _lifetimes = 0;
         Target.Current = Target.X86;
         // Each invocation must restore its own permissions; a previous unit may
         // have selected a newer CPU or explicitly disabled an extension.
@@ -53,12 +59,24 @@ public sealed class UnitBackend : IUnitBackend
                 if (body.Name != import.Symbol) throw new InvalidDataException("Conflicting IR import identity");
                 local.Functions.Add(body);
             }
-            new Inline { SmallBody = 40, GrowthLimit = 1024, ConstantBranchBody = 160, FreshOwnerBody = 0 }.Run(local);
-            local.Functions.RemoveAll(body => !ReferenceEquals(body, function));
             Pipeline cleanup = new() { Rounds = 3, Workers = 1 };
             cleanup.Passes.Add(new ConstantFold()); cleanup.Passes.Add(new ConstantAndCopyPropagation());
             cleanup.Passes.Add(new DeadCodeElimination()); cleanup.Passes.Add(new BranchSimplify());
+            // With the link's lifetime answers the allocator calls stay calls
+            // through the first round, so the lifetime rules can tell them
+            // (Escape.RunAtLink, one function at a time, as it is loaded);
+            // the second round then folds them, and the frees just added, in
+            // as a unit compile does.
+            string[] allocators = facts is null ? Array.Empty<string>() : new[] { Escape.Allocator, Escape.LeafAllocator };
+            new Inline { SmallBody = 40, GrowthLimit = 1024, ConstantBranchBody = 160, FreshOwnerBody = 0, Keep = allocators }.Run(local);
             cleanup.Run(local);
+            if (facts is not null)
+            {
+                Interlocked.Add(ref _lifetimes, Escape.RunAtLink(function, facts));
+                new Inline { SmallBody = 40, GrowthLimit = 1024, ConstantBranchBody = 160, FreshOwnerBody = 0 }.Run(local);
+                cleanup.Run(local);
+            }
+            local.Functions.RemoveAll(body => !ReferenceEquals(body, function));
             LandingPadHomes.Run(local);
             return function;
         }
@@ -66,12 +84,17 @@ public sealed class UnitBackend : IUnitBackend
         {
             AutomaticPacked = cpu.AutomaticPacked,
             StackMaps = unit.StackMaps, EmitLinkSummary = true, Workers = Math.Max(1, Math.Min(64, Environment.ProcessorCount)),
-            FunctionLoader = Load, FunctionLoadBytes = Cost, FunctionMemoryBudget = 64L * 1024 * 1024 - unit.AccountedBytes,
+            // As much as the machine can spare (MachineMemory), less what
+            // the unit's own headers took; a function bigger than that is
+            // compiled alone. The same object either way.
+            FunctionLoader = Load, FunctionLoadBytes = Cost,
+            FunctionMemoryBudget = Math.Max(1, MachineMemory.WorkBudget(8L * 1024 * 1024, 512L * 1024 * 1024) - unit.AccountedBytes),
         };
         List<string> errors = new();
         ObjectFile result = backend.Generate(module, errors);
         Console.Error.WriteLine("IR backend: peak batch functions=" + backend.PeakBatchFunctions
-            + ", accounted working allowance=" + backend.PeakBatchBytes);
+            + ", accounted working allowance=" + backend.PeakBatchBytes
+            + (facts is null ? "" : ", lifetimes placed or freed=" + _lifetimes));
         if (errors.Count > 0) throw new InvalidDataException("IR backend: " + string.Join("; ", errors));
         foreach (Section section in original.Sections.Where(section => section.Name is TargetContract.SectionName or ManagedLayoutContract.SectionName
                        or ".corsac.tag" or RegistrySchema.SectionName))

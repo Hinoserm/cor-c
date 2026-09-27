@@ -80,6 +80,10 @@ public sealed class Inline : IParallelModulePass
     /// still carries none of it.
     /// </summary>
     public bool KeepFreeHelper { get; init; }
+
+    /// <summary>Functions never inlined in this run, by label (the link's first round keeps the allocators).</summary>
+    public IReadOnlyCollection<string> Keep { get; init; } = Array.Empty<string>();
+
     public int Workers { get; set; } = 1;
 
     public void Run(Module m)
@@ -115,6 +119,8 @@ public sealed class Inline : IParallelModulePass
             addressTaken.Add(Escape.FieldFreer);
             addressTaken.Add(Escape.ReplacedFreer);
         }
+        addressTaken.UnionWith(Keep);
+        _keepCalls = m.KeepCalls;
 
         // Bottom-up over the call graph: callees before callers, so a leaf
         // reaches its caller's caller already folded in. Functions in a
@@ -132,6 +138,8 @@ public sealed class Inline : IParallelModulePass
 
         RemoveDeadFunctions(m, addressTaken);
     }
+
+    private IReadOnlySet<Instr> _keepCalls = new HashSet<Instr>();
 
     private sealed class Analyses
     {
@@ -185,7 +193,7 @@ public sealed class Inline : IParallelModulePass
                 for (int i = 0; i < b.Instrs.Count; i++)
                 {
                     Instr call = b.Instrs[i];
-                    if (call.Op != Opcode.Call || call.Callee is null)
+                    if (call.Op != Opcode.Call || call.Callee is null || _keepCalls.Contains(call))
                     {
                         continue;
                     }

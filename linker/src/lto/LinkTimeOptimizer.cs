@@ -72,7 +72,8 @@ public static class LinkTimeOptimizer
             change.Text.Relocs.Remove(change.Relocation);
         }
         // Summaries describe pre-link code. Do not leave stale summaries in output objects.
-        foreach (var input in inputs) input.Object.Sections.RemoveAll(s => s.Name == OptimizationSummary.SectionName || s.Name == IrArchive.SectionName);
+        foreach (var input in inputs) input.Object.Sections.RemoveAll(s => s.Name == OptimizationSummary.SectionName || s.Name == IrArchive.SectionName
+            || s.Name == LifetimeHints.SectionName);
         return enabled ? changes.Count : 0;
     }
 }

@@ -1,0 +1,59 @@
+using Lifetimes;
+
+static class Program
+{
+    // Dies inside each iteration and never leaves this unit: freed by the
+    // compiler when this unit is compiled, with no help from the link.
+    static int Local(int length)
+    {
+        int total = 0;
+        for (int i = 0; i < 200; i++)
+        {
+            byte[] scratch = new byte[length];
+            scratch[1] = (byte)i;
+            total += scratch[1];
+        }
+        return total;
+    }
+
+    // Handed to another unit's function that only reads it: whether it can be
+    // freed is known once the link has every unit's hints.
+    static int Lent(int length)
+    {
+        int total = 0;
+        for (int i = 0; i < 200; i++)
+        {
+            byte[] lent = new byte[length];
+            lent[2] = 1;
+            total += Provider.Sum(lent);
+        }
+        return total;
+    }
+
+    // Made by another unit and handed over.
+    static int Received(int length)
+    {
+        int total = 0;
+        for (int i = 0; i < 200; i++)
+        {
+            byte[] got = Provider.Make(length, 3);
+            total += got[0];
+        }
+        return total;
+    }
+
+    static int Main()
+    {
+        int length = Provider.Size;
+        byte[] kept = new byte[length];
+        kept[5] = 77;
+        Provider.Keep(kept);
+        if (Local(length) != 19900) return 21;
+        if (Lent(length) != 200) return 22;
+        if (Received(length) != 600) return 23;
+        // Everything above was freed or collected; what was kept is intact.
+        Gc.Collect();
+        if (Provider.Held[5] != 77 || Provider.Held.Length != length) return 24;
+        return 42;
+    }
+}

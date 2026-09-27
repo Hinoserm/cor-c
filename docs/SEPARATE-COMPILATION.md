@@ -76,6 +76,12 @@ silently loading the whole project. One-worker execution uses the same index
 and ownership rules. The initial implementation may still have a minimum unit
 size; streaming an arbitrarily large method is a separate capability.
 
+As built, `compile-project` starts a unit beside running ones only while the
+machine has at least 64 MiB available (`MachineMemory`), and always when no
+other unit is running: a small machine compiles its units one at a time. What a
+unit compiles to never depends on memory; every limit that shapes code is a
+fixed constant, so a small machine builds the same objects, more slowly.
+
 ## Artifact division
 
 The exchange container is ELF32 ET_REL on x86. Native code and relocations

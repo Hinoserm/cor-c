@@ -37,6 +37,20 @@ public sealed class Module
     public HashSet<string> RuntimeHelpers { get; } = new(StringComparer.Ordinal);
 
     /// <summary>
+    /// What the escape pass could not decide without the other units, for
+    /// the link to finish (Escape's hints; Lto.LifetimeHints). Written into
+    /// the object beside its IR.
+    /// </summary>
+    public Corsac.Lang.Lto.LifetimeHints? LifetimeHints { get; set; }
+
+    /// <summary>
+    /// Call sites no inliner may fold away: the allocations the link may yet
+    /// place or free (Escape's pending hints), which it must still be able
+    /// to tell from any other call when it reads this module's IR back.
+    /// </summary>
+    public HashSet<Instr> KeepCalls { get; } = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>
     /// Drops everything a shared object already contains, so that a program
     /// linked against one carries no second copy of it. Answers how many
     /// definitions went.
