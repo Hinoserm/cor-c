@@ -151,7 +151,37 @@ Everything runs natively on an x86-64 Linux host:
   library as shared objects, checks each image against what the loader
   accepts, and runs the shared-library tests linked `--dynamic`.
 
-## Not built yet
+## Bare metal
 
-Freestanding (bare-metal) images and flat output: the driver and the link
-command refuse them for x86-64 with a message saying so.
+`--freestanding` builds for long mode as for i386: the runtime is
+`runtime/src/arch/x86/baremetal.cor`, the thread block is a word of `.bss`
+(or `gs:[0]` with `--tls-gs`, a kernel's per-processor block with its base
+in `IA32_GS_BASE`), and `--flat` writes a flat image. A system call through
+a gate other than Linux's (`--ring1-syscalls`, `int 0x83`) is `int N` with
+`syscall`'s registers.
+
+The machine intrinsics are the i386 backend's -- port I/O and its string
+forms, `Lgdt`, `Lidt`, `Invlpg`, `ReadCr`/`WriteCr` (a word wide, so CR3 and
+CR8 are whole), `LoadSegments` -- and what a long-mode kernel needs besides:
+`ReadMsr`/`WriteMsr`, `Cpuid`, `ReadTsc`, `LoadTaskRegister`,
+`LoadCodeSegment` (a far return, `retfq`) and `SwapGs`.
+
+The linker's addresses are 64 bits, so a kernel may be linked in the top two
+gigabytes (`--base 0xffffffff80100000 --load 0x100000`): the code the
+compiler writes is RIP-relative, data holds eight-byte addresses, and the
+assembler's absolute 32-bit fields in long mode are `R_X86_64_32S`.
+
+The assembler writes 64-bit code (`.bits 64`, `corc asm --target x86-64`):
+REX prefixes, r8-r15 in every width, RIP-relative `[rip + x]`, CR8, `movabs`,
+`dq`, and long mode's own instructions. An object with 64-bit code in it is
+a long-mode object; a boot stub that switches modes is one file.
+
+`tests/freestanding/run.sh` runs bare-metal images as processes on both
+targets: `host.cor` hands each a heap, a write and an exit, and everything
+else is the bare-metal runtime. Privileged instructions are checked in the
+disassembly, and the assembler's long mode against objdump.
+
+## Calling C
+
+See [NATIVE-CALLS.md](NATIVE-CALLS.md). The runtime's thread block is in GS
+on x86-64, because FS is the C library's thread pointer.
