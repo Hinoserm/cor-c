@@ -1,0 +1,44 @@
+// test: record fields named through a using
+// expect-exit: 0
+// expect-output:
+// True False True
+//
+// A record's equality is written for it, over each field's type as the
+// record's file names that type. Two types called Operand, in two
+// namespaces, and a record in a third namespace that imports one of them:
+// the generated members must read `Operand` the way the record's own file
+// does, not as if no using directive had been written. (This compiler's
+// optimiser has exactly that: records over the IR's Operand, with the
+// assembler's Operand in another namespace.)
+
+using System;
+using First;
+
+namespace First
+{
+    public abstract class Operand { public int V; }
+    public sealed class Reg : Operand { }
+}
+namespace Second.Deep
+{
+    internal sealed class Operand { public string S = "other"; }
+}
+namespace Use
+{
+    public sealed class Pass
+    {
+        private sealed record Available(int Q, Operand Numerator, Operand Divisor);
+
+        public static int Run()
+        {
+            Operand a = new Reg { V = 1 }, b = new Reg { V = 2 };
+            Available x = new(7, a, b), y = new(7, a, b), z = new(7, b, a);
+            Console.WriteLine((x == y) + " " + x.Equals(z) + " " + (x.GetHashCode() == y.GetHashCode()));
+            return 0;
+        }
+    }
+    static class Program
+    {
+        static int Main() => Pass.Run();
+    }
+}

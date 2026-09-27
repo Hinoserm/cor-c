@@ -1615,7 +1615,26 @@ public sealed class Parser
         made.SourceTo = delegateDecl.SourceTo;
         made.File = _file;
         made.Scope = _fileScope;
+        Adopt(made.Members);
         return made;
+    }
+
+    /// <summary>
+    /// MEMBERS MADE FROM GENERATED SOURCE READ NAMES FROM THE FILE THEY ARE
+    /// FOR. A sub-parser has no using directives and no namespace of its own,
+    /// and each member carries the scope it was parsed in: a record's
+    /// equality over a field of type `Operand` then found `Operand` only while
+    /// one type in the whole program had that name, and with a second one --
+    /// this compiler has an IR Operand and an assembler Operand -- the record
+    /// did not compile at all.
+    /// </summary>
+    private void Adopt(IEnumerable<MemberDecl> members)
+    {
+        foreach (MemberDecl member in members)
+        {
+            member.Scope = _fileScope;
+            member.Namespace = _namespace;
+        }
     }
 
     /// Turns a record's positional parameters into members.
@@ -1760,6 +1779,7 @@ public sealed class Parser
         Parser sub = new(Lexer.Tokenize(src.ToString(), _file), _file, _declarationsOnly);
         CompilationUnit unit = sub.ParseUnit();
         if (unit.Types.Count != 1) return;
+        Adopt(unit.Types[0].Members);
         decl.Members.AddRange(unit.Types[0].Members);
     }
 
