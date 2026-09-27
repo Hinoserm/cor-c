@@ -3248,15 +3248,19 @@ public sealed class Parser
         {
             Name = marker.Declaration.Name, Line = marker.Line, Col = marker.Col,
         };
-        CallExpr dispose = new()
+        // `await using` gives the resource back by awaiting its DisposeAsync
+        // (IAsyncDisposable), everything else the same.
+        Expr dispose = new CallExpr
         {
             Target = new MemberExpr
             {
-                Target = resource, Name = "Dispose", Line = marker.Line, Col = marker.Col,
+                Target = resource, Name = marker.Async ? "DisposeAsync" : "Dispose", Line = marker.Line, Col = marker.Col,
             },
             Line = marker.Line,
             Col = marker.Col,
         };
+        if (marker.Async)
+            dispose = new AwaitExpr { Operand = dispose, Line = marker.Line, Col = marker.Col };
         Block cleanup = new() { Line = marker.Line, Col = marker.Col };
         cleanup.Statements.Add(new IfStmt
         {
@@ -3289,6 +3293,90 @@ public sealed class Parser
         return result;
     }
 
+    /// <summary>
+    /// A using, at `using` (after any `await`). THE STATEMENT FORM:
+    /// `using (Res r = new Res()) body`, or `using (expression) body`. It is
+    /// the declaration form with the body as the rest of the block, so it is
+    /// built as exactly that and lowered by the same code -- one try/finally
+    /// per resource, disposed in reverse order, on every way out. THE
+    /// DECLARATION FORM, `using var r = ...;`, is lowered by the block that
+    /// holds it. `await using` (async) gives each resource back by awaiting
+    /// its DisposeAsync rather than calling Dispose.
+    /// </summary>
+    private Stmt ParseUsing(Token at, bool async)
+    {
+        Expect(Tok.KwUsing, "'using'");
+        if (Take(Tok.LParen))
+        {
+            Stmt resource = ParseSimpleStmt();
+            Expect(Tok.RParen, "')' after the resource");
+            Stmt body = ParseStmt();
+
+            Block built = new() { Line = at.Line, Col = at.Col };
+
+            if (resource is LocalDecl first)
+            {
+                List<LocalDecl> each = new() { first };
+                each.AddRange(first.Also);
+                foreach (LocalDecl d in each)
+                {
+                    built.Statements.Add(new UsingDeclStmt
+                    {
+                        Declaration = new LocalDecl
+                        {
+                            Type = d.Type ?? first.Type, Name = d.Name, Init = d.Init,
+                            Line = d.Line, Col = d.Col,
+                        },
+                        Async = async,
+                        Line = d.Line,
+                        Col = d.Col,
+                    });
+                }
+            }
+            else if (resource is ExprStmt held)
+            {
+                // No name was given, so one is made: the resource still has
+                // to be held somewhere the finally can reach.
+                built.Statements.Add(new UsingDeclStmt
+                {
+                    Declaration = new LocalDecl
+                    {
+                        Type = null, Name = "$using$" + _lockSerial++, Init = held.Expr,
+                        Line = at.Line, Col = at.Col,
+                    },
+                    Async = async,
+                    Line = at.Line,
+                    Col = at.Col,
+                });
+            }
+            else
+            {
+                throw new CompileError(_file, at.Line, at.Col, "a using statement needs a declaration or an expression");
+            }
+
+            built.Statements.Add(body);
+            return LowerUsings(built);
+        }
+
+        TypeRef? type = Take(Tok.KwVar) ? null : ParseTypeRef();
+        string name = Expect(Tok.Ident, "a resource name").Text;
+        Expect(Tok.Assign, "'=' in a using declaration");
+        Expr init = ParseExpr();
+        Expect(Tok.Semi, "';' after the using declaration");
+
+        return new UsingDeclStmt
+        {
+            Declaration = new LocalDecl
+            {
+                Type = type, Name = name, Init = init,
+                Line = at.Line, Col = at.Col,
+            },
+            Async = async,
+            Line = at.Line,
+            Col = at.Col,
+        };
+    }
+
     private Stmt ParseStmt()
     {
         Token at = Cur;
@@ -3309,93 +3397,15 @@ public sealed class Parser
                 _i++;
                 return new Block { Line = at.Line, Col = at.Col };
 
-            // THE STATEMENT FORM: `using (Res r = new Res()) body`, or
-            // `using (expression) body`. It is the declaration form with the
-            // body as the rest of the block, so it is built as exactly that and
-            // lowered by the same code -- one try/finally per resource,
-            // disposed in reverse order, on every way out.
-            case Tok.KwUsing when Ahead().Kind == Tok.LParen:
+            // Both using forms (ParseUsing), and `await using`.
+            case Tok.KwAwait when Ahead().Kind == Tok.KwUsing:
             {
                 _i++;
-                Expect(Tok.LParen, "'(' after 'using'");
-                Stmt resource = ParseSimpleStmt();
-                Expect(Tok.RParen, "')' after the resource");
-                Stmt body = ParseStmt();
-
-                Block built = new() { Line = at.Line, Col = at.Col };
-
-                if (resource is LocalDecl first)
-                {
-                    List<LocalDecl> each = new() { first };
-                    each.AddRange(first.Also);
-                    foreach (LocalDecl d in each)
-                    {
-                        built.Statements.Add(new UsingDeclStmt
-                        {
-                            Declaration = new LocalDecl
-                            {
-                                Type = d.Type ?? first.Type, Name = d.Name, Init = d.Init,
-                                Line = d.Line, Col = d.Col,
-                            },
-                            Line = d.Line,
-                            Col = d.Col,
-                        });
-                    }
-                }
-                else if (resource is ExprStmt held)
-                {
-                    // No name was given, so one is made: the resource still has
-                    // to be held somewhere the finally can reach.
-                    built.Statements.Add(new UsingDeclStmt
-                    {
-                        Declaration = new LocalDecl
-                        {
-                            Type = null, Name = "$using$" + _lockSerial++, Init = held.Expr,
-                            Line = at.Line, Col = at.Col,
-                        },
-                        Line = at.Line,
-                        Col = at.Col,
-                    });
-                }
-                else
-                {
-                    throw new CompileError(_file, at.Line, at.Col, "a using statement needs a declaration or an expression");
-                }
-
-                built.Statements.Add(body);
-                return LowerUsings(built);
+                return ParseUsing(at, async: true);
             }
 
             case Tok.KwUsing:
-            {
-                _i++;
-                TypeRef? type = null;
-
-                if (Take(Tok.KwVar))
-                {
-                    type = null;
-                }
-                else
-                {
-                    type = ParseTypeRef();
-                }
-
-                string name = Expect(Tok.Ident, "a resource name").Text;
-                Expect(Tok.Assign, "'=' in a using declaration");
-                Expr init = ParseExpr();
-                Expect(Tok.Semi, "';' after the using declaration");
-
-                return new UsingDeclStmt
-                {
-                    Declaration = new LocalDecl
-                    {
-                        Type = type, Name = name, Init = init,
-                        Line = at.Line, Col = at.Col,
-                    },
-                    Line = at.Line,
-                    Col = at.Col,
-                };
-            }
+                return ParseUsing(at, async: false);
 
             case Tok.Ident when Cur.Text == "lock" && Ahead().Kind == Tok.LParen:
             {

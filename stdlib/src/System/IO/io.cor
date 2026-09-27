@@ -49,7 +49,7 @@ enum SeekOrigin
 /// single-threaded and the descriptors block -- which is legal for a
 /// Stream and what .NET's base class does for a stream that does not
 /// override them.
-abstract class Stream : IDisposable
+abstract class Stream : IDisposable, IAsyncDisposable
 {
     public abstract bool CanRead { get; }
     public abstract bool CanWrite { get; }
@@ -133,6 +133,14 @@ abstract class Stream : IDisposable
     public virtual void Dispose()
     {
         Dispose(true);
+    }
+
+    /// .NET's: disposes synchronously and hands back a completed ValueTask
+    /// (what `await using` over a stream awaits).
+    public virtual System.Threading.Tasks.ValueTask DisposeAsync()
+    {
+        Dispose();
+        return default;
     }
 
     protected virtual void Dispose(bool disposing)
