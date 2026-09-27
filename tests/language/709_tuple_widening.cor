@@ -1,0 +1,26 @@
+// test: tuple_widening
+// expect-exit: 0
+// expect-output:
+// (1, 2) (7, -3) (5, 1.5) 3 -3
+// (1, 2);(3, 4)
+//
+// A tuple converted to a shape with other elements is a new tuple of the
+// converted items (C# 10.2.13), not the same object read at another layout.
+// Expected output is real .NET's.
+
+using System;
+using System.Collections.Generic;
+static class Program
+{
+    static (long, double) Widen((int, float) t) => t;
+    static void Main()
+    {
+        (int, int) a = (1, 2);
+        (long, long) b = a;
+        (int X, int Y) p = (7, -3);
+        (long X, double Y) q = p;
+        Console.WriteLine(b + " " + q + " " + Widen((5, 1.5f)) + " " + (b.Item1 + b.Item2) + " " + q.Y);
+        var list = new List<(long, long)> { a, (3, 4) };
+        Console.WriteLine(string.Join(";", list));
+    }
+}

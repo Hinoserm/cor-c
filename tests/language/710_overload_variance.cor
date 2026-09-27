@@ -1,0 +1,30 @@
+// test: overload_variance
+// expect-exit: 0
+// expect-output:
+// strings strings strings object
+// objects objects object
+// long double abab True
+//
+// Every applicable overload, variant conversions included, is ranked by C#'s
+// better-conversion rule: a sequence of strings takes IEnumerable<string?>
+// over object. Expected output is real .NET's.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+static class Program
+{
+    static string F(object? o) => "object";
+    static string F(IEnumerable<string?> s) => "strings";
+    static string G(object o) => "object";
+    static string G(IEnumerable<object> s) => "objects";
+    static string H(long x) => "long";
+    static string H(double x) => "double";
+    static void Main()
+    {
+        IEnumerable<string> e = new List<string> { "a" };
+        Console.WriteLine(F(e) + " " + F(new[] { "x" }) + " " + F(Enumerable.Repeat("y", 2)) + " " + F(3));
+        Console.WriteLine(G(e) + " " + G(new List<string>()) + " " + G(5));
+        Console.WriteLine(H(1) + " " + H(1.5f) + " " + string.Concat(Enumerable.Repeat("ab", 2)) + " " + (1, "a") .Equals((1, "a")));
+    }
+}
