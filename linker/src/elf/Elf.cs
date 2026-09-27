@@ -13,6 +13,15 @@ namespace Corsac.Lang.Elf;
 internal static class Elf
 {
     public const int HeaderSize = 52;
+    // ELF64: the header, a program header, a section header and a symbol.
+    public const int Header64Size = 64;
+    public const int ProgramHeader64Size = 56;
+    public const int SectionHeader64Size = 64;
+    public const int Symbol64Size = 24;
+    public const byte Class64 = 2;
+    public const ushort MachineX86_64 = 62;
+    /// <summary>Where a non-PIE x86-64 executable is loaded, as GNU ld puts it.</summary>
+    public const uint DefaultLoadAddress64 = 0x400000;
     public const int ProgramHeaderSize = 32;
     public const int SectionHeaderSize = 40;
     public const int SymbolSize = 16;

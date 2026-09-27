@@ -36,4 +36,11 @@ public enum RelocKind : byte
     /// cost the shared text segment).
     /// </summary>
     GotAddr,
+
+    /// <summary>
+    /// The 64-bit word at Offset gets the absolute address of Symbol plus
+    /// Addend: R_X86_64_64. An address held in data -- a vtable slot, a
+    /// descriptor's pointer, a jump table entry -- in a long-mode image.
+    /// </summary>
+    Abs64,
 }

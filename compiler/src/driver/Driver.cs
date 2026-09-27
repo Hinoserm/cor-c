@@ -394,11 +394,27 @@ public static class Driver
         }
         Target.Current = target;
 
-        X86Cpu profile = X86Cpu.Parse(args);
-        if (profile.Fpu == "none") return Fail("Software floating-point lowering is not yet complete; --fpu=none native compilation is not available yet");
-        if (profile.Name == "386") return Fail("The 386 backend instruction/runtime audit is not yet complete");
-        target.Cpu = profile.Name;
-        target.X86Profile = profile;
+        // LONG MODE IS ONE PROCESSOR BASELINE: the K8, the first AMD64. Every
+        // x86-64 processor since runs what it runs, and the 32-bit profiles'
+        // choices -- an FPU or none, MMX, 3DNow! -- do not apply.
+        bool longMode = target == Target.X86_64;
+        if (longMode)
+        {
+            string? cpuName = Value(args, "--cpu");
+            if (cpuName is not null && cpuName is not ("k8" or "x86-64"))
+            {
+                return Fail($"--cpu {cpuName}: the x86-64 target's processor is k8 (the first AMD64)");
+            }
+            target.Cpu = "k8";
+        }
+        else
+        {
+            X86Cpu profile = X86Cpu.Parse(args);
+            if (profile.Fpu == "none") return Fail("Software floating-point lowering is not yet complete; --fpu=none native compilation is not available yet");
+            if (profile.Name == "386") return Fail("The 386 backend instruction/runtime audit is not yet complete");
+            target.Cpu = profile.Name;
+            target.X86Profile = profile;
+        }
 
         // Bare metal: no operating system under the program, and therefore a
         // different platform library, no thread scheduler, and an entry stub
@@ -511,6 +527,7 @@ public static class Driver
         {
             symbols.AddRange(given.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries));
         }
+        symbols.AddRange(TargetSymbols(target));
 
         // THE PROJECT'S USINGS, in every file (Parser.ProjectUsings).
         Parser.ProjectUsings = Values(args, "--using").ToList();
@@ -678,9 +695,22 @@ public static class Driver
         {
             x86Backend.Imported.Add(symbol);
         }
+        Corsac.Lang.X64.X64Backend x64Backend = new()
+        {
+            StackMaps = !args.Contains("--no-stackmaps"),
+        };
+        if (longMode && (shared || args.Contains("--pic") || sharedLibs.Count > 0))
+        {
+            return Fail("x86-64: shared objects and dynamic linking are not built yet; link statically");
+        }
+        if (longMode && freestanding)
+        {
+            return Fail("x86-64: a freestanding (bare-metal) image is not built yet; the target is a Linux program");
+        }
         IBackend backend = target.Name switch
         {
             "x86" => x86Backend,
+            "x86-64" => x64Backend,
             _ => throw new NotSupportedException($"no backend for target '{target.Name}'"),
         };
 
@@ -704,7 +734,7 @@ public static class Driver
         ObjectFile obj = backend.Generate(module, backendErrors);
         Phase("codegen");
         Corsac.Lang.Opt.Pipeline.ReportAccounts();
-        new TargetContract(freestanding ? (Lowering.TlsGs ? 2u : 1u) : 0u, requiresManagedLayouts: true, requiresCodeGenerationContract: true).Attach(obj);
+        new TargetContract(freestanding ? (Lowering.TlsGs ? 2u : 1u) : 0u, requiresManagedLayouts: true, requiresCodeGenerationContract: true, longMode: longMode).Attach(obj);
         ManagedLayouts.Attach(obj, front.Value.bound, library);
 
         // WHAT THIS PROGRAM'S SETTINGS ARE, for the kernel to read out of the
@@ -745,6 +775,10 @@ public static class Driver
             {
                 Console.Error.Write(x86.Statistics());
             }
+            else if (backend is Corsac.Lang.X64.X64Backend x64)
+            {
+                Console.Error.Write(x64.Statistics());
+            }
         }
         if (backendErrors.Count > 0)
         {
@@ -773,7 +807,7 @@ public static class Driver
 
         if (args.Contains("--obj") || library)
         {
-            if (x86Backend.EmitLinkSummary && !x86Backend.PositionIndependent && sharedLibs.Count == 0)
+            if (!longMode && x86Backend.EmitLinkSummary && !x86Backend.PositionIndependent && sharedLibs.Count == 0)
             {
                 // The lifetime hints first: the IR archive's integrity hash
                 // covers every other section, these included.
@@ -866,6 +900,35 @@ public static class Driver
         }
         Console.Error.WriteLine($"{output}: {obj.Section(".text").Size} bytes of code, {exe.Length} bytes");
         return 0;
+    }
+
+    /// <summary>
+    /// THE TARGET'S OWN CONDITIONAL SYMBOLS, the names .NET's own class library
+    /// is written against: TARGET_64BIT or TARGET_32BIT for the width of a
+    /// word, TARGET_AMD64 or TARGET_X86 for the instruction set. The runtime
+    /// reads its pointer-sized layouts through them -- `#if TARGET_64BIT` --
+    /// exactly as CoreLib does, so one source serves both machines.
+    /// </summary>
+    internal static IEnumerable<string> TargetSymbols(Target target)
+    {
+        if (target == Target.X86_64)
+        {
+            yield return "TARGET_64BIT";
+            yield return "TARGET_AMD64";
+        }
+        else if (target == Target.X86)
+        {
+            yield return "TARGET_32BIT";
+            yield return "TARGET_X86";
+        }
+        else if (target.WordSize == 8)
+        {
+            yield return "TARGET_64BIT";
+        }
+        else
+        {
+            yield return "TARGET_32BIT";
+        }
     }
 
     /// <summary>

@@ -8,11 +8,14 @@ public sealed record X86CodeGenerationContract(string Cpu, string Tune, string F
 {
     public const string SectionName = ".corsac.cpu";
     private static readonly HashSet<string> Models = new(StringComparer.Ordinal)
-        { "386", "486", "pentium", "pentium-mmx", "686", "k6", "k6-2", "k6-3", "k6-2+", "k6-3+" };
+        { "386", "486", "pentium", "pentium-mmx", "686", "k6", "k6-2", "k6-3", "k6-2+", "k6-3+", "k8" };
 
     private void Validate()
     {
-        if (!Models.Contains(Cpu) || !Models.Contains(Tune) || Fpu is not ("none" or "387" or "x87")
+        // K8 is long mode: SSE2 is its floating point, and nothing older mixes with it.
+        if ((Cpu == "k8") != (Fpu == "sse2") || (Cpu == "k8" && (Tune != "k8" || Mmx || ThreeDNow || Extended)))
+            throw new ElfFormatException("invalid x86 code-generation contract");
+        if (!Models.Contains(Cpu) || !Models.Contains(Tune) || Fpu is not ("none" or "387" or "x87" or "sse2")
             || (Fpu == "none" && (Mmx || ThreeDNow)) || (ThreeDNow && !Mmx)
             || (Extended && (!ThreeDNow || Cpu is not ("k6-2+" or "k6-3+"))))
             throw new ElfFormatException("invalid x86 code-generation contract");
@@ -47,7 +50,7 @@ public sealed record X86CodeGenerationContract(string Cpu, string Tune, string F
     public static void ValidateTarget(IEnumerable<(string Name, ObjectFile Object)> inputs, X86CodeGenerationContract target)
     {
         target.Validate();
-        static int Generation(string cpu) => cpu switch { "386" => 3, "486" => 4, "686" => 6, _ => 5 };
+        static int Generation(string cpu) => cpu switch { "386" => 3, "486" => 4, "686" => 6, "k8" => 8, _ => 5 };
         foreach (var input in inputs)
         {
             X86CodeGenerationContract? required = Read(input.Object);
