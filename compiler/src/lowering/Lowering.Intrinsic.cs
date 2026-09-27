@@ -276,6 +276,14 @@ public sealed partial class Lowering
             }
             case "IsObject":
             {
+                // A T? IS AN OBJECT WHEN IT HAS A VALUE (NullableKey): the
+                // comparers then ask the key questions below, which look at
+                // the value inside.
+                if (_b.TypeOf(call.Args[0]).IsNullableValue)
+                {
+                    VReg cell = ToWord(Eval(call.Args[0]));
+                    return _e.Binary(Opcode.Ne, R(cell), Imm(0, cell.Type), IrType.I32);
+                }
                 // A STRUCT IS ASKED as an object is -- KeyEquals, KeyHash and
                 // KeyCompare below compare its value -- so the collections'
                 // fallback to comparing words never takes its block's address.
@@ -296,6 +304,7 @@ public sealed partial class Lowering
             }
             case "KeyEquals":
             {
+                if (NullableKey(call, "KeyEquals") is VReg nullableKey) return nullableKey;
                 if (IsStructValue(_b.TypeOf(call.Args[0])) && IsStructValue(_b.TypeOf(call.Args[1])))
                 {
                     VReg x = ToWord(Arg(call, target, 0)), y = ToWord(Arg(call, target, 1));
@@ -313,6 +322,7 @@ public sealed partial class Lowering
             }
             case "KeyCompare":
             {
+                if (NullableKey(call, "KeyCompare") is VReg nullableKey) return nullableKey;
                 if (IsStructValue(_b.TypeOf(call.Args[0])) && IsStructValue(_b.TypeOf(call.Args[1])))
                 {
                     TypeSymbol shape = _b.TypeOf(call.Args[0]).Symbol!;
@@ -337,6 +347,7 @@ public sealed partial class Lowering
             }
             case "KeyHash":
             {
+                if (NullableKey(call, "KeyHash") is VReg nullableKey) return nullableKey;
                 if (IsStructValue(_b.TypeOf(call.Args[0])))
                     return _e.Call(StructHash(_b.TypeOf(call.Args[0]).Symbol!), IrType.I32, R(ToWord(Arg(call, target, 0))))!;
                 if (!CouldBeObject(_b.TypeOf(call.Args[0])))
@@ -594,6 +605,108 @@ public sealed partial class Lowering
             return _e.Unary(Opcode.Trunc64, v);
         }
         return v;
+    }
+
+    /// <summary>
+    /// THE KEY QUESTIONS ASKED OF A T?, as .NET's comparers answer them: no
+    /// value equals no value and nothing else, hashes to zero and sorts first;
+    /// two values are compared as T would be. The cell's own address -- which
+    /// is what the word of a T? is -- was what these compared, so two equal
+    /// nullable structs were two keys, and the linker's records, which hold a
+    /// Definition?, never equalled their copies. Null when the arguments are
+    /// not nullable values.
+    /// </summary>
+    private VReg? NullableKey(CallExpr call, string question)
+    {
+        Type held = _b.TypeOf(call.Args[0]);
+        bool pair = question != "KeyHash";
+        if (!held.IsNullableValue || pair && !_b.TypeOf(call.Args[1]).IsNullableValue) return null;
+        Type value = held.Underlying;
+        VReg a = ToWord(Eval(call.Args[0]));
+        VReg? b = pair ? ToWord(Eval(call.Args[1])) : null;
+        VReg result = _f.NewReg(IrType.I32, "nkey");
+        Block both = _f.NewBlock("nkboth"), end = _f.NewBlock("nkend");
+
+        if (!pair)
+        {
+            _e.CopyTo(result, Imm(0, IrType.I32));
+            _e.Branch(a, both, end);
+            _e.SetBlock(both);
+            VReg one = LoadPlace(new MemPlace(R(a), 0, value));
+            _e.CopyTo(result, R(KeyOfValue("KeyHash", one, null, value)));
+            _e.Jump(end);
+            _e.SetBlock(end);
+            return result;
+        }
+
+        // Which of the two have a value: 0 for neither, and the answer when
+        // only one has is decided without looking any further.
+        VReg hasA = _e.Binary(Opcode.Ne, R(a), Imm(0, a.Type), IrType.I32);
+        VReg hasB = _e.Binary(Opcode.Ne, R(b!), Imm(0, b!.Type), IrType.I32);
+        Block oneSide = _f.NewBlock("nkone");
+        _e.CopyTo(result, Imm(question == "KeyEquals" ? 1 : 0, IrType.I32));
+        VReg eitherHas = _e.Binary(Opcode.Or, R(hasA), R(hasB), IrType.I32);
+        Block some = _f.NewBlock("nksome");
+        _e.Branch(eitherHas, some, end);
+        _e.SetBlock(some);
+        VReg bothHave = _e.Binary(Opcode.And, R(hasA), R(hasB), IrType.I32);
+        _e.Branch(bothHave, both, oneSide);
+        _e.SetBlock(oneSide);
+        // One has no value: not equal; the one without sorts first.
+        if (question == "KeyEquals") _e.CopyTo(result, Imm(0, IrType.I32));
+        else _e.CopyTo(result, R(_e.Binary(Opcode.Sub, R(hasA), R(hasB), IrType.I32)));
+        _e.Jump(end);
+        _e.SetBlock(both);
+        VReg x = LoadPlace(new MemPlace(R(a), 0, value));
+        VReg y = LoadPlace(new MemPlace(R(b), 0, value));
+        _e.CopyTo(result, R(KeyOfValue(question, x, y, value)));
+        _e.Jump(end);
+        _e.SetBlock(end);
+        return result;
+    }
+
+    /// <summary>A key question asked of two values (one for a hash) of a type that is not nullable.</summary>
+    private VReg KeyOfValue(string question, VReg x, VReg? y, Type value)
+    {
+        if (IsStructValue(value))
+        {
+            TypeSymbol shape = value.Symbol!;
+            switch (question)
+            {
+                case "KeyEquals":
+                    return _e.Call(StructEquals(shape), IrType.I32, R(ToWord(x)), R(ToWord(y!)))!;
+                case "KeyHash":
+                    return _e.Call(StructHash(shape), IrType.I32, R(ToWord(x)))!;
+                default:
+                {
+                    MethodSymbol? order = StructCompareTo(shape, out bool boxed);
+                    if (order is null) return _e.Const(0, IrType.I32);
+                    Require(order);
+                    VReg other = boxed ? Box(null!, ToWord(y!), new Type { Symbol = shape }) : ToWord(y!);
+                    VReg said = CallDirect(order, IrTypes.Of(order.Returns), new List<Operand> { R(ToWord(x)), R(other) })!;
+                    return said.Type == IrType.I32 ? said : _e.Unary(Opcode.Trunc64, R(said), IrType.I32);
+                }
+            }
+        }
+        if (CouldBeObject(value))
+        {
+            return question switch
+            {
+                "KeyEquals" => _e.Call(KeyEqualsStub(), IrType.I32, R(ToWord(x)), R(ToWord(y!)))!,
+                "KeyHash" => _e.Call(KeyHashStub(), IrType.I32, R(ToWord(x)))!,
+                _ => _e.Call(KeyCompareStub(), IrType.I32, R(ToWord(x)), R(ToWord(y!)))!,
+            };
+        }
+        // A number (or an enum, a bool, a char): its value, as the comparers
+        // treat a plain T -- equal words, the word as the hash, and the order
+        // of the values.
+        VReg wx = x.Type == IrType.I64 ? x : _e.Unary((!value.IsUnsigned && value.Prim != Prim.Bool) ? Opcode.SExt32 : Opcode.ZExt32, R(x), IrType.I64);
+        if (question == "KeyHash") return wx.Type == IrType.I32 ? wx : _e.Unary(Opcode.Trunc64, R(wx), IrType.I32);
+        VReg wy = y!.Type == IrType.I64 ? y : _e.Unary((!value.IsUnsigned && value.Prim != Prim.Bool) ? Opcode.SExt32 : Opcode.ZExt32, R(y), IrType.I64);
+        if (question == "KeyEquals") return _e.Binary(Opcode.Eq, R(wx), R(wy), IrType.I32);
+        VReg less = _e.Binary((!value.IsUnsigned && value.Prim != Prim.Bool) ? Opcode.LtS : Opcode.LtU, R(wx), R(wy), IrType.I32);
+        VReg more = _e.Binary((!value.IsUnsigned && value.Prim != Prim.Bool) ? Opcode.GtS : Opcode.GtU, R(wx), R(wy), IrType.I32);
+        return _e.Binary(Opcode.Sub, R(more), R(less), IrType.I32);
     }
 
     /// <summary>An intrinsic's argument, converted to the declared parameter type.</summary>

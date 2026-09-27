@@ -4062,8 +4062,11 @@ public sealed partial class Binder
 
         // A Nullable<T> WHERE A T IS WANTED is not a conversion the compiler
         // may make on its own -- it can fail, and C# makes you write .Value or
-        // a cast so the place it can fail is visible.
-        if (from.IsNullableValue && !to.IsNullableValue && !to.Nullable
+        // a cast so the place it can fail is visible. Where an OBJECT or an
+        // interface is wanted it is boxing, which C# does implicitly: no value
+        // boxes to null, a value to the boxed T (the library's comparers are
+        // handed a T? this way whenever T is a nullable struct).
+        if (from.IsNullableValue && !to.IsNullableValue && !to.Nullable && !to.IsReference && to.Prim != Prim.Any
             && Convertible(from.Underlying, to))
         {
             Error(at, $"{what}: '{from}' may have no value; use '.Value' or cast it to '{to}'");
