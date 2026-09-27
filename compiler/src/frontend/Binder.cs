@@ -607,6 +607,13 @@ public sealed partial class Binder
 
     /// <summary>Names the lambda being looked over reads from outside itself.</summary>
     private Dictionary<string, Type>? _captured;
+
+    /// <summary>
+    /// The enclosing method's constants a lambda reads, found alongside the
+    /// captures. A constant is not captured -- it has no storage to share --
+    /// so the lambda's body declares the same constant (pass two).
+    /// </summary>
+    private Dictionary<string, ConstSym>? _capturedConstants;
     private TypeSymbol? _capturedThisType;
     private FieldSymbol? _capturedThisField;
 
@@ -3146,6 +3153,10 @@ public sealed partial class Binder
                 // here.
                 if (_captured != null && i < _lambdaFloor)
                 {
+                    if (s is ConstSym constant && _capturedConstants is not null)
+                    {
+                        _capturedConstants[name] = constant;
+                    }
                     Type held = s switch
                     {
                         LocalSym l => l.Type,
@@ -4650,10 +4661,13 @@ public sealed partial class Binder
 
         // ---- pass one: which of the enclosing locals does it read? ----------
         Dictionary<string, Type>? outerCaptured = _captured;
+        Dictionary<string, ConstSym>? outerConstants = _capturedConstants;
         int outerFloor = _lambdaFloor;
         Dictionary<string, Type> captured = new(StringComparer.Ordinal);
+        Dictionary<string, ConstSym> constants = new(StringComparer.Ordinal);
 
         _captured = captured;
+        _capturedConstants = constants;
         _quiet++;
         // C# 8+ permits a nested function's parameters and locals to shadow
         // enclosing names. Its own ordinary blocks still cannot shadow its
@@ -4671,7 +4685,17 @@ public sealed partial class Binder
         PopScope();
         _quiet--;
         _captured = outerCaptured;
+        _capturedConstants = outerConstants;
         _lambdaFloor = outerFloor;
+        // And a lambda inside a lambda reads its constants through the outer
+        // one's declarations of them.
+        if (outerConstants != null)
+        {
+            foreach ((string name, ConstSym constant) in constants)
+            {
+                outerConstants[name] = constant;
+            }
+        }
 
         // A lambda inside a lambda captures through the outer one, so anything
         // the inner one reached for has to be captured by the outer one too.
@@ -4911,6 +4935,15 @@ public sealed partial class Binder
         _capturedThisField = thisField;
         _method = run;
         _nextSlot = 0;
+        // THE ENCLOSING METHOD'S CONSTANTS THE BODY READS, declared again
+        // here, outside the parameters so a parameter may shadow one as C#
+        // lets it: `const string rid = ...; names.Where(n => n.EndsWith(rid))`
+        // said rid was not declared.
+        PushScope(functionBoundary: true);
+        foreach ((string name, ConstSym constant) in constants)
+        {
+            Declare(lam, name, constant);
+        }
         PushScope(functionBoundary: true);
 
         for (int i = 0; i < lam.Params.Count; i++)
@@ -4925,6 +4958,7 @@ public sealed partial class Binder
 
         Look(lam, closureReturns);
         _r.FrameSize[body] = _nextSlot;
+        PopScope();
         PopScope();
 
         _scopes.Clear();
@@ -5375,8 +5409,24 @@ public sealed partial class Binder
         int errors = _r.Errors.Count;
         int warnings = _r.Warnings.Count;
         int wanted = _r.Wanted.Count;
+        // WHAT THE LOOK DECLARED IS TAKEN BACK TOO. An `out var` or a pattern
+        // variable in the expression declares a name in the scope it is
+        // checked in, and the real check that follows declares it again: a
+        // `foreach` over `(t.TryGetValue(k, out string? v) ? v : "")` said v
+        // was already declared.
+        LocalScope scope = _scopes[^1];
+        HashSet<string> names = new(scope.Keys, StringComparer.Ordinal);
+        HashSet<string> nested = new(scope.NestedNames, StringComparer.Ordinal);
+        int slot = _nextSlot;
         Type had = CheckExpr(e);
 
+        foreach (string name in scope.Keys.Where(name => !names.Contains(name)).ToList())
+        {
+            if (scope[name] is LocalSym local) _assigned.Remove(local);
+            scope.Remove(name);
+        }
+        scope.NestedNames.IntersectWith(nested);
+        _nextSlot = slot;
         _r.Errors.RemoveRange(errors, _r.Errors.Count - errors);
         _r.Warnings.RemoveRange(warnings, _r.Warnings.Count - warnings);
         _r.Wanted.RemoveRange(wanted, _r.Wanted.Count - wanted);
@@ -11789,10 +11839,24 @@ public sealed partial class Binder
         // from them), so the receiver chain's `!`s are applied ahead of them.
         ProveReceivers((c.Target as MemberExpr)?.Target);
 
+        // A RECEIVER ALREADY MOVED INTO THE ARGUMENTS (a string's method,
+        // below) is still the member's target too, and is checked there: a
+        // call checked a second time -- the next round, a generic
+        // instantiation -- checked it twice, and an `out` or pattern variable
+        // inside it was declared twice. A body copied for the next round
+        // copies the two separately, so the argument is made the target's
+        // node again first: one expression, checked and lowered once.
+        Expr? movedReceiver = null;
+        if (c.ReceiverAdded && c.Target is MemberExpr moved && c.Args.Count > 0)
+        {
+            c.Args[0] = moved.Target;
+            movedReceiver = moved.Target;
+        }
         List<Type> args = new();
         foreach (Expr argument in c.Args)
         {
-            if (argument is LambdaExpr or NewExpr { Type.Name.Length: 0, Elements: null })
+            if (argument is LambdaExpr or NewExpr { Type.Name.Length: 0, Elements: null }
+                || ReferenceEquals(argument, movedReceiver))
             {
                 args.Add(Type.Any);
                 continue;
@@ -11804,6 +11868,10 @@ public sealed partial class Binder
         _wanted = outerTarget;
 
         Type targetType = CheckExpr(c.Target);
+        if (movedReceiver is not null)
+        {
+            args[0] = _r.TypeOf(movedReceiver);
+        }
 
         // A PROPERTY THAT IS BEING CALLED IS NOT THE PROPERTY. `list.Count` is
         // how many there are; `list.Count(x => x.Ready)` is how many match, and

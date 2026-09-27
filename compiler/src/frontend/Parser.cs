@@ -3912,7 +3912,7 @@ public sealed class Parser
                         string held = At(Tok.Ident) ? "" : $"$matched${_patterns++}";
                         Expr test = ParseMemberPattern(
                             new NameExpr { Name = "$held$", Line = braceAt.Line, Col = braceAt.Col },
-                            braceAt);
+                            braceAt, designates: false);
 
                         binding = At(Tok.Ident) && Cur.Text is not ("when" or "or" or "and")
                                 ? _t[_i++].Text
@@ -4177,7 +4177,10 @@ public sealed class Parser
     /// <summary>
     /// `is { Prop: a or b }` -- not null, and Prop is one of these.
     /// </summary>
-    private Expr ParseMemberPattern(Expr subject, Token at)
+    /// <param name="designates">Whether a name after the braces is this
+    /// pattern's to bind (`x is { } y`). A type in front (`x is Foo { } y`)
+    /// binds that name itself, in its type test, and passes false.</param>
+    private Expr ParseMemberPattern(Expr subject, Token at, bool designates = true)
     {
         // NO REFUSAL HERE ANY MORE. This threw for a subject that was not a
         // bare name, on the grounds that a property pattern reads the subject
@@ -4210,7 +4213,7 @@ public sealed class Parser
             // written and the parser cannot invent one -- only the checker
             // knows what x is -- so it writes the sentinel and the binder
             // resolves it against the operand.
-            if (PeekBinding() is string bound)
+            if (designates && PeekBinding() is string bound)
             {
                 _i++;
 
@@ -5083,7 +5086,7 @@ public sealed class Parser
                 };
 
                 Expr tested = ParseMemberPattern(
-                    new NameExpr { Name = also, Line = at.Line, Col = at.Col }, at);
+                    new NameExpr { Name = also, Line = at.Line, Col = at.Col }, at, designates: false);
 
                 _i++;                           // the designation
 
@@ -5134,8 +5137,11 @@ public sealed class Parser
                 Line = at.Line, Col = at.Col,
             };
 
+            // The designation is the type test's (above), so the member
+            // pattern must not bind it a second time -- which an empty
+            // `{ }` in front of it did: `x is Foo { } y` declared y twice.
             Expr members = ParseMemberPattern(
-                new NameExpr { Name = held, Line = at.Line, Col = at.Col }, at);
+                new NameExpr { Name = held, Line = at.Line, Col = at.Col }, at, designates: false);
 
             // Consume the designation the lookahead found.
             if (PeekBinding() != null)
