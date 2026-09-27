@@ -697,8 +697,15 @@ public static class Driver
         }
         Corsac.Lang.X64.X64Backend x64Backend = new()
         {
+            PositionIndependent = x86Backend.PositionIndependent,
+            Workers = workers,
+            EmitLinkSummary = x86Backend.EmitLinkSummary,
             StackMaps = !args.Contains("--no-stackmaps"),
         };
+        foreach (string symbol in imported)
+        {
+            x64Backend.Imported.Add(symbol);
+        }
         if (longMode && (shared || args.Contains("--pic") || sharedLibs.Count > 0))
         {
             return Fail("x86-64: shared objects and dynamic linking are not built yet; link statically");
@@ -807,7 +814,7 @@ public static class Driver
 
         if (args.Contains("--obj") || library)
         {
-            if (!longMode && x86Backend.EmitLinkSummary && !x86Backend.PositionIndependent && sharedLibs.Count == 0)
+            if (x86Backend.EmitLinkSummary && !x86Backend.PositionIndependent && sharedLibs.Count == 0)
             {
                 // The lifetime hints first: the IR archive's integrity hash
                 // covers every other section, these included.

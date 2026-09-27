@@ -1,6 +1,7 @@
 #nullable enable
 using System.Text;
 using Corsac.Lang.Ir;
+using Corsac.Lang.Lto;
 
 namespace Corsac.Lang.X64;
 
@@ -28,6 +29,42 @@ public sealed class X64Backend : IBackend
     public int FunctionAlign { get; set; } = 16;
 
     public bool StackMaps { get; set; } = true;
+
+    /// <summary>
+    /// Record what the link-time optimizer patches without the IR: direct
+    /// calls with no arguments and a 32-bit result, and functions that
+    /// return a constant (OptimizationSummary). A `call rel32` and the
+    /// `mov eax, imm32` that replaces it are both five bytes, and the move
+    /// zero-extends, so the patch is the i386 one.
+    /// </summary>
+    public bool EmitLinkSummary { get; set; }
+
+    /// <summary>
+    /// Position-independent code, for a shared object: what another image
+    /// may define is reached through the GOT, calls go through the PLT, and
+    /// every address held in data is one the loader relocates.
+    /// </summary>
+    public bool PositionIndependent { get; set; }
+
+    /// <summary>
+    /// Names a shared library supplies at load time, which a dynamically
+    /// linked executable reaches through its GOT rather than by a copy.
+    /// </summary>
+    public HashSet<string> Imported { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>Functions compiled at once, each on its own thread; encoding stays serial.</summary>
+    public int Workers { get; set; } = 1;
+
+    /// <summary>
+    /// Loads a function's body on demand, by index, for the link-time
+    /// backend, which holds only headers until a batch is compiled; with
+    /// its working cost, batches are sized to FunctionMemoryBudget.
+    /// </summary>
+    public Func<int, Function>? FunctionLoader { get; set; }
+    public Func<int, long>? FunctionLoadBytes { get; set; }
+    public long FunctionMemoryBudget { get; set; } = 64L * 1024 * 1024;
+    public long PeakBatchBytes { get; private set; }
+    public int PeakBatchFunctions { get; private set; }
 
     public const string StackMapSection = ".corsac.stackmaps";
     public const string StackMapStart = "__corsac_stackmaps";
@@ -67,13 +104,80 @@ public sealed class X64Backend : IBackend
         List<(string Function, int Return, int At, Safepoint? Map, int FrameSize)> maps = new();
         FunctionSizes.Clear();
 
-        foreach (Function f in module.Functions)
+        if (Workers < 1 || Workers > 64) throw new ArgumentOutOfRangeException(nameof(Workers));
+        OptimizationSummary summary = new();
+
+        // A bounded window, as the i386 backend keeps: workers select and
+        // allocate disjoint functions; encoding and layout stay serial, so
+        // the object is the same whatever the worker count.
+        int workers = Workers;
+        int window = FunctionLoader is null ? workers * 4 : workers;
+        MFunction?[] compiled = new MFunction?[window];
+        List<string>?[] diagnostics = new List<string>?[window];
+        int batchStart = 0, batchEnd = 0;
+        PeakBatchBytes = 0; PeakBatchFunctions = 0;
+        for (int functionIndex = 0; functionIndex < module.Functions.Count; functionIndex++)
         {
-            MFunction? m = Compile(f, errors, f.Name == module.Entry);
+            MFunction? m;
+            if (workers == 1 && FunctionLoader is null)
+            {
+                Function only = module.Functions[functionIndex];
+                m = Compile(only, errors, only.Name == module.Entry);
+            }
+            else
+            {
+                if (functionIndex == batchEnd)
+                {
+                    int first = functionIndex;
+                    int count = Math.Min(window, module.Functions.Count - first);
+                    long bytes = 0;
+                    if (FunctionLoader is not null)
+                    {
+                        count = 0;
+                        while (count < window && first + count < module.Functions.Count)
+                        {
+                            long cost = FunctionLoadBytes?.Invoke(first + count)
+                                ?? throw new InvalidOperationException("Deferred functions require memory costs");
+                            if (cost <= 0)
+                                throw new InvalidDataException("Function has no backend working cost: " + module.Functions[first + count].Name);
+                            if (count > 0 && cost > FunctionMemoryBudget - bytes) break;
+                            bytes += cost; count++;
+                            // Bigger than the whole budget: compiled alone, never refused.
+                            if (cost > FunctionMemoryBudget) break;
+                        }
+                    }
+                    batchStart = first; batchEnd = first + count;
+                    PeakBatchBytes = Math.Max(PeakBatchBytes, bytes);
+                    PeakBatchFunctions = Math.Max(PeakBatchFunctions, count);
+                    int active = Math.Min(workers, count);
+                    Task[] tasks = new Task[active];
+                    for (int worker = 0; worker < active; worker++)
+                    {
+                        int lane = worker;
+                        tasks[worker] = Task.Run(() =>
+                        {
+                            for (int item = lane; item < count; item += active)
+                            {
+                                List<string> localErrors = new();
+                                Function body = FunctionLoader?.Invoke(first + item) ?? module.Functions[first + item];
+                                compiled[item] = Compile(body, localErrors, body.Name == module.Entry);
+                                diagnostics[item] = localErrors;
+                            }
+                        });
+                    }
+                    Task.WhenAll(tasks).Wait();
+                }
+                int slot = functionIndex - batchStart;
+                errors.AddRange(diagnostics[slot]!);
+                m = compiled[slot];
+                compiled[slot] = null;
+                diagnostics[slot] = null;
+            }
             if (m is null)
             {
                 continue;
             }
+            Function f = m.Source;
             int gap = (FunctionAlign - text.Bytes.Count % FunctionAlign) % FunctionAlign;
             Encoder.Nops(text.Bytes, gap);
             int start = text.Bytes.Count;
@@ -88,12 +192,23 @@ public sealed class X64Backend : IBackend
                 encoder.ReleaseFunction();
                 continue;
             }
+            if (EmitLinkSummary)
+            {
+                HashSet<string> eligible = new(f.Blocks.SelectMany(b => b.Instrs)
+                    .Where(i => i.Op == Opcode.Call && i.Operands.Count == 0 && i.Dest?.Type == IrType.I32 && i.Callee is not null)
+                    .Select(i => i.Callee!), StringComparer.Ordinal);
+                foreach ((MInstr call, int ret) in encoder.CallSites)
+                    if (call.Op == MOp.Call && call.Operands[0] is MImm { Symbol: { } callee, Value: 0 } && eligible.Contains(callee))
+                        summary.Calls.Add(new DirectCall(start + ret - 4, callee));
+            }
             FunctionSizes.Add((f.Name, size));
             obj.Symbols.Add(new Symbol
             {
                 Name = f.Name, Section = text, Offset = start, Size = size, IsFunction = true, Global = f.Exported,
             });
             defined.Add(f.Name);
+            if (EmitLinkSummary)
+                Corsac.Lang.Opt.LinkSummary.AddConstantReturns(new[] { f }, obj, summary);
 
             frames.Add(new Corsac.Lang.X86.FrameTable.Entry(
                 f.Name, f.Display ?? f.Name, f.SourceFile ?? "", start, size,
@@ -187,6 +302,10 @@ public sealed class X64Backend : IBackend
             {
                 obj.Symbols.Add(new Symbol { Name = name });
             }
+        }
+        if (EmitLinkSummary)
+        {
+            summary.Attach(obj);
         }
         return obj;
     }

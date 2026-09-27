@@ -50,35 +50,42 @@ fi
 
 # ---- the sources, in the order every compilation must see them --------------
 
-SOURCES="stdlib/src/System/Core.cor stdlib/src/System/Runtime/ExceptionServices/ExceptionDispatchInfo.cor runtime/src/core/runtime.cor runtime/src/core/gc.cor runtime/src/core/threading.cor \
-runtime/src/platforms/linux/threading.cor runtime/src/platforms/linux/system.cor runtime/src/platforms/linux/abi.cor runtime/src/platforms/linux/files.cor stdlib/src/System/interop.cor stdlib/src/System/IO/io.cor \
-stdlib/src/System/Collections/Collections.cor stdlib/src/System/IO/io-streams.cor stdlib/src/System/IO/compression.cor stdlib/src/System/IO/tar.cor \
-stdlib/src/System/time.cor stdlib/src/System/values.cor stdlib/src/System/numerics.cor stdlib/src/System/Text/RegularExpressions.cor stdlib/src/System/console.cor \
-stdlib/src/System/environment.cor stdlib/src/System/Net/Net.cor stdlib/src/System/Security/Cryptography/Cryptography.cor stdlib/src/System/signals.cor stdlib/src/System/unix.cor \
-stdlib/src/System/process.cor stdlib/src/System/power.cor"
+# The compiler's own list (Driver.DefaultLibraries), so a source added to
+# the class library is seen here without anyone remembering this file.
+SOURCES="$("$corc" library-sources | sed "s|^$root/||" | tr '\n' ' ')"
 
-# ---- what goes where, bottom of the stack first -----------------------------
-#
-# Each line is: <soname> <sources it owns>. The order is the build order and
-# the dependency order: a library may only need the ones above it in this
-# list, which is checked after every build.
-
+# Which library owns each source. Every source is owned by exactly one of
+# them, checked below, and a library may use only those listed before it.
+# Drawing, the GUI seat and Forms call each other, so they are one image.
 LIBRARIES="
-libcorsacrt.so|stdlib/src/System/Core.cor stdlib/src/System/Runtime/ExceptionServices/ExceptionDispatchInfo.cor runtime/src/core/runtime.cor runtime/src/core/gc.cor runtime/src/core/threading.cor runtime/src/platforms/linux/threading.cor runtime/src/platforms/linux/system.cor runtime/src/platforms/linux/abi.cor runtime/src/platforms/linux/files.cor stdlib/src/System/signals.cor
+libcorsacrt.so|stdlib/src/System/Core.cor stdlib/src/System/Runtime/ExceptionServices/ExceptionDispatchInfo.cor runtime/src/core/runtime.cor runtime/src/core/gc.cor stdlib/src/System/GC.cor runtime/src/core/threading.cor runtime/src/platforms/linux/threading.cor runtime/src/platforms/linux/system.cor runtime/src/platforms/linux/abi.cor runtime/src/platforms/linux/files.cor stdlib/src/System/signals.cor stdlib/src/System/Threading/interlocked.cor
 libSystem.Runtime.InteropServices.so|stdlib/src/System/interop.cor
-libSystem.Security.Cryptography.so|stdlib/src/System/Security/Cryptography/Cryptography.cor
-libSystem.Runtime.Extensions.so|stdlib/src/System/time.cor stdlib/src/System/values.cor stdlib/src/System/environment.cor
+libSystem.Security.Cryptography.so|stdlib/src/System/Security/Cryptography/Cryptography.cor stdlib/src/System/Security/Cryptography/Hashing.cor
+libSystem.Runtime.Extensions.so|stdlib/src/System/time.cor stdlib/src/System/values.cor stdlib/src/System/environment.cor stdlib/src/System/Reflection/Assembly.cor
 libSystem.Runtime.Numerics.so|stdlib/src/System/numerics.cor
 libSystem.Collections.so|stdlib/src/System/Collections/Collections.cor
 libSystem.Text.RegularExpressions.so|stdlib/src/System/Text/RegularExpressions.cor
-libSystem.IO.so|stdlib/src/System/IO/io.cor stdlib/src/System/IO/io-streams.cor
+libSystem.IO.so|stdlib/src/System/IO/io.cor stdlib/src/System/IO/io-streams.cor stdlib/src/System/IO/timezone.cor
 libSystem.IO.Compression.so|stdlib/src/System/IO/compression.cor
 libSystem.Formats.Tar.so|stdlib/src/System/IO/tar.cor
 libSystem.Console.so|stdlib/src/System/console.cor
 libSystem.Net.so|stdlib/src/System/Net/Net.cor
 libMono.Posix.so|stdlib/src/System/unix.cor stdlib/src/System/power.cor
 libSystem.Diagnostics.Process.so|stdlib/src/System/process.cor
+libSystem.Xml.so|stdlib/src/System/Xml/Xml.cor
+libMicrosoft.Win32.Registry.so|stdlib/src/Microsoft/Win32/Registry.cor
+libSystem.Windows.Forms.so|stdlib/src/System/Drawing/Drawing.cor stdlib/src/System/Drawing/FontEngine.cor stdlib/src/System/Drawing/TrueType.cor stdlib/src/System/Drawing/BitmapFont.cor stdlib/src/System/Drawing/Text.cor stdlib/src/System/Drawing/Imaging.cor stdlib/src/Corsac/GUI/Gui.cor stdlib/src/System/Windows/Forms/Forms.cor stdlib/src/Microsoft/Win32/SystemEvents.cor
 "
+
+owned_all=" $(printf '%s\n' "$LIBRARIES" | cut -s -d'|' -f2 | tr '\n' ' ') "
+unowned=""
+for src in $SOURCES; do
+    [[ "$owned_all" == *" $src "* ]] || unowned="$unowned $src"
+done
+if [ -n "$unowned" ]; then
+    echo "no shared library owns:$unowned (add each to LIBRARIES in $0)" >&2
+    exit 2
+fi
 
 mkdir -p "$out"
 
