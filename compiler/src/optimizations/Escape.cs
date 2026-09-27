@@ -1070,8 +1070,28 @@ public sealed partial class Escape : IModulePass
     }
 
     /// <summary>Whether any register derived from the allocation is live just before it: a loop carrying last time's object.</summary>
+    // LANDING PADS HAVE NO PREDECESSORS in the control-flow graph: an
+    // exception arrives at a catch from anywhere in its try, and nothing
+    // the handler reads is live anywhere else as the graph sees it. For a
+    // lifetime that is exactly wrong -- an object freed inside a try and
+    // read in its catch was read after it was given back. So a register a
+    // handler reads before writing is taken to be live at every point in
+    // the function, wherever the try that reaches it is.
+    internal static HashSet<VReg> PadLive(Liveness liveness)
+    {
+        HashSet<VReg> live = new();
+        foreach (Block b in liveness.Cfg.Function.Blocks)
+            if (b.IsLandingPad) live.UnionWith(liveness.LiveIn(b));
+        return live;
+    }
+
     internal static bool LiveAtSelf(Liveness liveness, Block b, Instr alloc, HashSet<VReg> derived)
     {
+        HashSet<VReg> pads = PadLive(liveness);
+        foreach (VReg r in derived)
+        {
+            if (pads.Contains(r)) return true;
+        }
         foreach ((Instr i, ulong[] liveAfter) in liveness.WalkBackwards(b))
         {
             if (!ReferenceEquals(i, alloc))

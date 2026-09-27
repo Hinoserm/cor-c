@@ -85,9 +85,14 @@ public sealed partial class Escape
             Flow flow = Analyse(f, roots, summaries, null, joinable: new HashSet<VReg> { v });
             if (flow.Escapes) continue;
 
-            // The previous value dead at every assignment.
+            // The previous value dead at every assignment -- and never read
+            // by a handler, which an exception can reach from anywhere after
+            // the assignment (Escape.PadLive).
             liveness ??= new Liveness(f);
+            HashSet<VReg> pads = PadLive(liveness);
             bool live = false;
+            foreach (VReg r in flow.Derived)
+                if (pads.Contains(r) && !ReferenceEquals(r, v)) { live = true; break; }
             foreach ((Block b, Instr d) in list)
             {
                 HashSet<VReg> allowed = carried[d];

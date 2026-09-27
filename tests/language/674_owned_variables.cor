@@ -8,6 +8,7 @@
 // given 9 3
 // carried 249 5
 // twice 11 6
+// caught 24170
 // built 41 39
 //
 // A variable assigned again and again gives back what it held at each
@@ -18,7 +19,12 @@
 // reuse it: a variable whose value is also kept in a static; one given a
 // parameter's object on some path; one whose previous value another register
 // still holds when it is assigned again; one assigned the same object twice
-// in a row; and one returned to the caller.
+// in a row; one returned to the caller; and one whose previous value a catch
+// block reads after an exception thrown past the assignment -- a landing pad
+// has no predecessors in the control-flow graph, so what a handler reads is
+// taken to be live everywhere.
+
+using System;
 
 static class Program
 {
@@ -39,6 +45,8 @@ static class Program
         f[0] = n;
         return f;
     }
+
+    static void MaybeThrow(int k) { if ((k % 7) == 3) throw new InvalidOperationException("x"); }
 
     static long[] Built(int n)
     {
@@ -80,6 +88,24 @@ static class Program
 
         long[] built = Built(40);
 
+        long caught = 0;
+        for (int k = 0; k < 40; k++)
+        {
+            long[] v = Fresh(4);
+            long[] old = v;
+            try
+            {
+                v = Fresh(5);
+                MaybeThrow(k);
+                caught = caught + v[0];
+            }
+            catch (InvalidOperationException)
+            {
+                for (int j = 0; j < 50; j++) { long[] junk2 = new long[4]; junk2[0] = -1; junk2[1] = -1; _sink = _sink + junk2[1]; }
+                caught = caught + old[0] * 1000;
+            }
+        }
+
         long[][] junk = new long[400][];
         for (int k = 0; k < 6000; k++)
         {
@@ -98,6 +124,7 @@ static class Program
         Sys.Print("given "); Sys.PrintInt(given[0]); Sys.Print(" "); Sys.PrintInt(mixed[0]); Sys.PrintLine();
         Sys.Print("carried "); Sys.PrintInt(carried); Sys.Print(" "); Sys.PrintInt(previous[0]); Sys.PrintLine();
         Sys.Print("twice "); Sys.PrintInt(twice[1]); Sys.Print(" "); Sys.PrintInt(same[0]); Sys.PrintLine();
+        Sys.Print("caught "); Sys.PrintInt(caught); Sys.PrintLine();
         Sys.Print("built "); Sys.PrintInt(built.Length); Sys.Print(" "); Sys.PrintInt(built[39]); Sys.PrintLine();
         return 0;
     }

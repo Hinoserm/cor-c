@@ -455,6 +455,9 @@ public sealed partial class Escape
     private static bool LiveAt(Function f, Liveness liveness, Instr at, HashSet<VReg> regs)
     {
         if (regs.Count == 0) return false;
+        // A handler's reads are live everywhere (Escape.PadLive).
+        HashSet<VReg> pads = PadLive(liveness);
+        foreach (VReg r in regs) if (pads.Contains(r)) return true;
         foreach (Block b in f.Blocks)
         {
             if (!b.Instrs.Contains(at)) continue;
