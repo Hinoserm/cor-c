@@ -932,9 +932,31 @@ address never escapes (stored, returned, passed to a callee whose parameter
 escapes, or passed to an indirect callee) becomes a frame slot; one whose
 size is dynamic becomes `Alloc` paired with `Free` on every exit path.
 Callees are summarised bottom-up over the call graph so an object handed
-to `Runtime.Print` or a helper that only reads it does not escape. Tier 2
-is the next step: an object that escapes only into a tier-1 owner, or
-whose last use is findable, is freed there.
+to `Runtime.Print` or a helper that only reads it does not escape.
+
+Tier 2 has two rules today, both in the same pass:
+
+- *Fresh returns.* A function whose every return hands over an object it
+  made -- or one a fresh callee handed it, or null -- and which lets that
+  object go no other way is summarised as returning fresh. At a call to it
+  the result is an owned allocation of the caller: `Free` at its last use,
+  and in a loop the previous result is given back *after* the call, since
+  the call may read it (`x = Grow(x)`). Chains of helpers compose. A result
+  assigned to a variable that has another definition too (the loop-carried
+  `x` of that example) is not followed and stays tier 3.
+- *Owned fields* (`EscapeFields.cs`). A reference field of an owned object
+  is freed with it (`Runtime.FreeField`, just before the object's own free)
+  when every piece of code that touches the field -- the owner's function,
+  each callee the object reaches (a per-parameter field summary), and the
+  fresh function that filled it -- stores only fresh objects there, null,
+  or what it just loaded from the same field; lets nothing loaded from it
+  escape; and uses the object only at constant offsets. A `List`'s array
+  dies with the `List`. What a field held before it was overwritten (the
+  arrays a `List` grew out of) is still the collector's.
+
+`corc --stats` prints the counts: objects in frames, objects freed by the
+compiler and how many of those were fresh returns, fresh functions, and
+fields freed with their owner.
 
 **The precise collector's tables.** The reference map of each class lives
 behind its descriptor and the array descriptor flags whether elements are
