@@ -53,6 +53,7 @@ operator variants to inflate the count. All x86 changes target 486+x87.
 | 032 | Fold proven promoted-frame pointer chains into in-bounds stack memory operands | Opt/FrameAddressFold.cs | Candidate: X25519 about 10% faster and crypto text 4.6% smaller; bounds/mutation checks pass, retained-buffer timing regression and broad acceptance remain open |
 | 033 | Own a fresh function's returned object in the caller; free it at its last use | Opt/Escape.cs, ReturnsFresh/OwnFreshResult | 670_fresh_return: chains, null returns, kept and caller-kept objects not freed, `x = Grow(x)` frees after the call; loop-carried variables not followed |
 | 034 | Free an owned object's clean reference fields with it | Opt/EscapeFields.cs, Runtime.FreeField | 671_owned_fields: List arrays, fresh-filled fields; shared, leaked, doubly stored and still-loaded children not freed after reuse churn; overwritten field values stay tier 3 |
+| 035 | Solve escape summaries of recursive call cycles to their least fixed point | Opt/Escape.cs, CallCycles/SummariseCycle | 673_escape_cycles: values that only travel round a cycle stay off the heap; one kept three calls round still escapes; unsettled cycles fall back to everything escaping |
 
 These are grouped transformations, not a claim that each row improves every
 workload. Broad correctness and per-transformation emitted-code evidence

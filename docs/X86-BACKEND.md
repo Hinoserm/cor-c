@@ -932,7 +932,11 @@ address never escapes (stored, returned, passed to a callee whose parameter
 escapes, or passed to an indirect callee) becomes a frame slot; one whose
 size is dynamic becomes `Alloc` paired with `Free` on every exit path.
 Callees are summarised bottom-up over the call graph so an object handed
-to `Runtime.Print` or a helper that only reads it does not escape.
+to `Runtime.Print` or a helper that only reads it does not escape. A cycle
+of calls (a recursive family) is summarised as a whole, to the least fixed
+point: every parameter on the cycle starts as staying put, and the members
+are summarised again until nothing changes, so a value that only travels
+round the cycle does not escape and one kept anywhere on it does.
 
 Tier 2 has two rules today, both in the same pass:
 
