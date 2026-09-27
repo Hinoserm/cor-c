@@ -686,11 +686,95 @@ public sealed partial class Binder
          : _in.Length > 0 ? _in
          : _file;
 
-    private void Warning(Node at, string message)
+    /// <summary>
+    /// This unit's own `#pragma warning` directives, replayed by
+    /// PragmaWarnings against a warning's file, code and line whenever one
+    /// is about to be reported. Empty outside Run(), same as before a
+    /// pragma table existed at all.
+    /// </summary>
+    private IReadOnlyList<PragmaWarning> _pragmas = Array.Empty<PragmaWarning>();
+
+    /// <summary>
+    /// Records a warning under Roslyn's own code for the same condition, in
+    /// its own format: "file(line,col): warning CS8602: message". Silent
+    /// when a `#pragma warning disable` covers this exact code at this exact
+    /// line -- the caller does not have to know that, any more than it knows
+    /// whether -Wno-error is set.
+    /// </summary>
+    private void Warning(Node at, string code, string message)
     {
         if (_quiet > 0) return;
-        _r.Warnings.Add(new CompileError(Where(at), at.Line, at.Col, message, warning: true));
+
+        string file = Where(at);
+
+        if (PragmaWarnings.IsSuppressed(_pragmas, file, code, at.Line)) return;
+
+        _r.Warnings.Add(new CompileError(file, at.Line, at.Col, message, warning: true, code: code));
     }
+
+    /// <summary>
+    /// Which of Roslyn's four "a possibly-null value went somewhere it
+    /// should not have" codes applies, read off the same `what` text the
+    /// message itself is built from. `what` is not a code, it is prose
+    /// written for a human ("argument 2 of 'Foo'", "return value", "the
+    /// value a lambda produces", "'Name'" for an initialiser member) -- so
+    /// this is pattern matching on that prose, not a lookup table, and a
+    /// caller that invents a new `what` string outside these patterns falls
+    /// through to CONVERSION, the same bucket real C# uses for a cast.
+    /// </summary>
+    private enum NullContext { Assignment, Return, Argument, Conversion }
+
+    private static NullContext ClassifyNullContext(string what)
+    {
+        // ARGUMENTS: a value flowing into a method's, constructor's,
+        // indexer's or Add's formal parameter -- CS8604 alongside it, or
+        // CS8620 for the element-nullability mismatch.
+        if (what.Contains("argument") || what is "index" or "the value")
+        {
+            return NullContext.Argument;
+        }
+
+        // RETURNS: an ordinary return, a yield return, and a lambda's
+        // expression body all hand a value back out of a method -- CS8603.
+        if (what.Contains("return") || what == "the value a lambda produces")
+        {
+            return NullContext.Return;
+        }
+
+        // ASSIGNMENTS: a plain `x = y`, an object- or `with`-initialiser
+        // member (built as `'Name'`), and an array/collection initialiser
+        // element (`element 3`) all store a value into a place that already
+        // has a declared type -- CS8601.
+        if (what == "assignment" || what.StartsWith("element ", StringComparison.Ordinal)
+            || (what.Length > 1 && what[0] == '\'' && what[^1] == '\''))
+        {
+            return NullContext.Assignment;
+        }
+
+        // EVERYTHING ELSE IS A CONVERSION: a local's own `= expr`, where C#
+        // reports the general code rather than the assignment-specific one,
+        // and a method-group-to-delegate conversion, which is not a "place"
+        // that is assigned to at all.
+        return NullContext.Conversion;
+    }
+
+    /// <summary>A possibly-null value where a non-nullable one was wanted: CS8600/8601/8603/8604.</summary>
+    private static string NullCode(string what) => ClassifyNullContext(what) switch
+    {
+        NullContext.Argument => "CS8604",
+        NullContext.Return => "CS8603",
+        NullContext.Assignment => "CS8601",
+        _ => "CS8600",
+    };
+
+    /// <summary>
+    /// An element's (or type argument's) nullability not matching: CS8619 in
+    /// general, or CS8620 specifically when the mismatched value is an
+    /// argument -- the same argument/other split as NullCode, because that
+    /// is the one distinction Roslyn itself draws here.
+    /// </summary>
+    private static string ElementNullCode(string what)
+        => ClassifyNullContext(what) == NullContext.Argument ? "CS8620" : "CS8619";
 
     private int _quiet;
 
@@ -1161,6 +1245,7 @@ public sealed partial class Binder
     private void Run(CompilationUnit unit)
     {
         _registryKeys = unit.RegistryKeys;
+        _pragmas = unit.Pragmas;
 
         // WHAT EVERY TUPLE SHAPE HAS BEEN CALLED, before any of it is checked.
         //
@@ -4399,7 +4484,11 @@ public sealed partial class Binder
             }
             else if (!to.Nullable)
             {
-                Warning(at, $"{what}: '{to}' is not nullable; declare it as '{to}?' to allow null");
+                // CS8625: a null LITERAL into a non-nullable reference. Real
+                // C# gives the literal its own code rather than the general
+                // "possibly null" one below, because a literal null is not
+                // possibly anything -- it is certainly null, every time.
+                Warning(at, "CS8625", $"{what}: '{to}' is not nullable; declare it as '{to}?' to allow null");
             }
             return;
         }
@@ -4408,11 +4497,11 @@ public sealed partial class Binder
         // conversion check. A nullable Foo is still not an unrelated Bar.
         if (from.Nullable && !to.Nullable && to.IsReference)
         {
-            Warning(at, $"{what}: '{from}' may be null but '{to}' may not");
+            Warning(at, NullCode(what), $"{what}: '{from}' may be null but '{to}' may not");
         }
         else if (WeakensPromise(from, to))
         {
-            Warning(at, $"{what}: an element of '{from}' may be null but '{to}' says its elements may not");
+            Warning(at, ElementNullCode(what), $"{what}: an element of '{from}' may be null but '{to}' says its elements may not");
         }
 
         // A Nullable<T> WHERE A T IS WANTED is not a conversion the compiler
@@ -10854,7 +10943,7 @@ public sealed partial class Binder
                 // SwitchExpressionException for a value no written arm took.
                 if (!exhaustive)
                 {
-                    Warning(sx, "the switch expression does not handle all possible values of its input type (it is not exhaustive)");
+                    Warning(sx, "CS8509", "the switch expression does not handle all possible values of its input type (it is not exhaustive)");
                 }
                 return result;
             }
@@ -11530,7 +11619,11 @@ public sealed partial class Binder
 
         string message = $"'{t}' may be null; use '?.' or check it before you {what} it";
 
-        if (t.IsReference) Warning(at, message);
+        // CS8602: dereference of a possibly null reference, whatever shape
+        // the dereference takes -- a member read, a call, an index. A value
+        // type has no null representation to check for at run time, so the
+        // same condition is an ERROR there rather than a warning.
+        if (t.IsReference) Warning(at, "CS8602", message);
         else Error(at, message);
 
         // AND AFTER A DEREFERENCE IT IS NOT NULL. That is C#'s rule and the

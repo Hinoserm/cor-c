@@ -87,7 +87,14 @@ public sealed class Parser
 
     public static CompilationUnit ParseText(string source, string file = "<source>",
                                             IReadOnlyCollection<string>? symbols = null, bool declarationsOnly = false, bool includeTemplateBodies = false)
-        => new Parser(Lexer.Tokenize(source, file, 1, 1, symbols), file, declarationsOnly, includeTemplateBodies) { Source = source }.ParseUnit();
+    {
+        List<PragmaWarning> pragmas = new();
+        List<Token> tokens = Lexer.Tokenize(source, file, 1, 1, symbols, pragmas);
+        CompilationUnit unit = new Parser(tokens, file, declarationsOnly, includeTemplateBodies) { Source = source }.ParseUnit();
+
+        unit.Pragmas.AddRange(pragmas);
+        return unit;
+    }
 
     // ---- token helpers --------------------------------------------------
 

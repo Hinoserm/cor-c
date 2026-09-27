@@ -76,15 +76,31 @@ public sealed class CompileError : Exception
     public int Col { get; }
     public bool Warning { get; }
 
+    /// <summary>
+    /// The Roslyn diagnostic code this condition shares with real C#, such
+    /// as "CS8602" -- null for an error, since this compiler does not give
+    /// its errors codes today, only its warnings, which `#pragma warning`
+    /// needs one to name.
+    /// </summary>
+    public string? Code { get; }
+
     public CompileError(string file, int line, int col, string message,
-                        bool warning = false) : base(message)
+                        bool warning = false, string? code = null) : base(message)
     {
         File = file;
         Line = line;
         Col = col;
         Warning = warning;
+        Code = code;
     }
 
+    /// <summary>
+    /// `file(line,col): warning CS8602: message`, .NET's own format, with a
+    /// code when there is one. WITH NO CODE, the colon sits right after the
+    /// word the way it always did -- kept for errors, which carry none.
+    /// </summary>
     public override string ToString()
-        => $"{File}({Line},{Col}): {(Warning ? "warning" : "error")}: {Message}";
+        => Code is null
+         ? $"{File}({Line},{Col}): {(Warning ? "warning" : "error")}: {Message}"
+         : $"{File}({Line},{Col}): {(Warning ? "warning" : "error")} {Code}: {Message}";
 }
