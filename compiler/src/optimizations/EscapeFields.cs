@@ -207,8 +207,11 @@ public sealed partial class Escape
                         long at = off + i.Offset;
                         if (i.Size == word && ((at % word) + word) % word == 0 && i.Dest is not null && defs.IsSingle(i.Dest))
                             loads.Add((at, i.Dest, i));
-                        else if (i.Dest is not null && i.Dest.Type.IsInt() && i.Size >= word)
-                            DirtyRange(at, i.Size);    // a pointer read at another width goes unwatched
+                        else if (i.Size >= word)
+                            // A pointer read into a register that is written
+                            // elsewhere too, or at another width: where it
+                            // goes cannot be followed.
+                            DirtyRange(at, i.Size);
                         break;
                     }
                     case Opcode.Store:
