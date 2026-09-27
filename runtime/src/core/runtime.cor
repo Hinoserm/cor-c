@@ -501,6 +501,24 @@ static class Runtime
         Gc.Free(at);
     }
 
+    /// Gives back what the reference field at `offset` of the object at `at`
+    /// refers to, just before the object itself is given back: a field the
+    /// optimiser has proved holds only objects made for it and reachable
+    /// through it alone (Escape's owned fields) -- a List's array, freed with
+    /// the List. Nothing for a null object or an empty field.
+    public static void FreeField(long at, long offset)
+    {
+        if (at == 0)
+        {
+            return;
+        }
+        long held = Sys.Peek(at + offset);
+        if (held != 0)
+        {
+            Gc.Free(held);
+        }
+    }
+
     /// Nonzero while a collection marks with the other threads running. The
     /// compiler reads it, inline, before every store of a reference into
     /// the heap or a static, and calls WriteBarrier when it is set.

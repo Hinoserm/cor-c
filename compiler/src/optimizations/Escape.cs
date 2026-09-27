@@ -36,7 +36,7 @@ using Block = Corsac.Lang.Ir.Block;
 /// After promotion, if no allocation is reachable from the entry, the
 /// program needs no collector, and Module.NeedsHeap says so.
 /// </summary>
-public sealed class Escape : IModulePass
+public sealed partial class Escape : IModulePass
 {
     public string Name => "escape";
 
@@ -73,16 +73,32 @@ public sealed class Escape : IModulePass
         foreach (Function f in BottomUp(m, byName))
         {
             summaries[f.Name] = ParameterSummary(f, summaries);
+            // Whether what it returns is a fresh object it hands over: made
+            // here (or by a callee that hands it over in turn), never stored
+            // anywhere and never let go of any other way. Its caller then
+            // owns the object as if it had made it (Fresh, PromoteIn).
+            if (ReturnsFresh(f, summaries, _fresh, out List<Instr>? origins, out HashSet<VReg>? chain))
+            {
+                _fresh.Add(f.Name);
+                _freshFields[f.Name] = FreshFields(f, summaries, origins!, chain!);
+            }
+            // What it does to each field of every object it is handed
+            // (EscapeFields): the reference fields that hold only objects
+            // made for them may be freed with an owner that dies.
+            _paramFields[f.Name] = ParameterFields(f, summaries);
         }
 
         bool canFree = byName.ContainsKey(Freer);
+        bool canFreeFields = canFree && byName.ContainsKey(FieldFreer);
         OwnedFieldEscape fields = new(byName, summaries);
         foreach (Function f in m.Functions)
         {
             PromoteIn(f, summaries, canFree, fields);
+            if (canFreeFields) OwnFields(f, summaries);
         }
 
         m.NeedsHeap = AnyAllocationReachable(m, byName);
+        LastRun = (Promoted, Owned, OwnedReturns, _fresh.Count, FieldsOwned);
 
         // A program that needs no collector still allocates on its way to
         // dying -- the exception object, the message it prints -- and those
@@ -157,6 +173,149 @@ public sealed class Escape : IModulePass
     /// </summary>
     private readonly HashSet<Instr> _owned = new(ReferenceEqualityComparer.Instance);
 
+    // ---- fresh returns ----------------------------------------------------------------
+    //
+    // AN OBJECT HANDED OVER IS OWNED BY WHOEVER TAKES IT. A helper that makes
+    // an object and returns it -- the value array a blit is built in, a list
+    // of clip rectangles, a string made of pieces -- lets it escape by
+    // returning it, and on that ground alone every such object used to be the
+    // collector's, however short its life in the caller. But a return is not
+    // a store: the helper keeps nothing, and the caller receives the only
+    // reference there is. So a function whose every return is an object it
+    // made (or received from a callee that hands its object over in turn, or
+    // null), and which lets that object go no other way, is summarised as
+    // RETURNING FRESH; and at a call to such a function the result is an
+    // owned allocation of the caller, with the caller's escape and liveness
+    // proofs, freed at its last use like any other (Own). Chains of helpers
+    // compose, because a function that returns a fresh call's result
+    // unchanged is itself fresh.
+
+    /// <summary>Functions whose every return hands over a fresh object.</summary>
+    private readonly HashSet<string> _fresh = new(StringComparer.Ordinal);
+
+    /// <summary>Calls to fresh-returning functions whose result this pass took ownership of.</summary>
+    private readonly HashSet<Instr> _ownedCalls = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>How many of the owned allocations were a fresh function's result.</summary>
+    public int OwnedReturns { get; private set; }
+
+    /// <summary>The last run's counts, for --stats: frame slots, owned allocations, of those fresh results, fresh functions.</summary>
+    public static (int Promoted, int Owned, int OwnedReturns, int Fresh, int Fields) LastRun { get; private set; }
+
+    /// <summary>How many functions were found to return a fresh object.</summary>
+    public int FreshFunctions => _fresh.Count;
+
+    /// <summary>Whether a call's result is an object its callee hands over.</summary>
+    public bool IsFreshCall(Instr i) => i.Op == Opcode.Call && i.Callee is not null && _fresh.Contains(i.Callee);
+
+    /// <summary>
+    /// Whether every return of `f` hands over a fresh object. The returned
+    /// register is followed back through copies, width changes and phis to
+    /// its origins, each of which must be an allocation or a call to a
+    /// function already found fresh (callees are summarised first); a null
+    /// on some path is allowed. Each origin must then not escape in any way
+    /// but the return itself -- and only the object's base goes back, never
+    /// a field address.
+    /// </summary>
+    private static bool ReturnsFresh(Function f, Dictionary<string, bool[]> summaries, HashSet<string> fresh,
+        out List<Instr>? found, out HashSet<VReg>? returned)
+    {
+        found = null;
+        returned = null;
+        if (f.Async is not null || f.Returns is not (IrType.I32 or IrType.I64))
+        {
+            return false;
+        }
+
+        // Every definition of every register, since the returned one may be
+        // written on more than one path.
+        Dictionary<VReg, List<Instr>> defs = new();
+        List<Instr> returns = new();
+        foreach (Block b in f.Blocks)
+        {
+            foreach (Instr i in b.Instrs)
+            {
+                if (i.Dest is not null)
+                {
+                    if (!defs.TryGetValue(i.Dest, out List<Instr>? list)) defs[i.Dest] = list = new();
+                    list.Add(i);
+                }
+                if (i.Op == Opcode.Ret)
+                {
+                    returns.Add(i);
+                }
+            }
+        }
+        if (returns.Count == 0)
+        {
+            return false;
+        }
+
+        HashSet<VReg> chain = new();
+        List<Instr> origins = new();
+        Stack<VReg> work = new();
+        bool any = false;
+        foreach (Instr ret in returns)
+        {
+            if (ret.Operands.Count != 1) return false;
+            switch (ret.Operands[0])
+            {
+                case ImmOperand { Value: 0 }:
+                    continue;
+                case RegOperand r:
+                    work.Push(r.Reg);
+                    any = true;
+                    break;
+                default:
+                    return false;
+            }
+        }
+        if (!any)
+        {
+            return false;
+        }
+
+        while (work.TryPop(out VReg? reg))
+        {
+            if (!chain.Add(reg)) continue;
+            if (chain.Count > 64) return false;
+            if (f.Params.Contains(reg) || !defs.TryGetValue(reg, out List<Instr>? writers)) return false;
+            foreach (Instr d in writers)
+            {
+                if (d.Op == Opcode.Call && (IsAllocator(d.Callee) || (d.Callee is not null && fresh.Contains(d.Callee))))
+                {
+                    origins.Add(d);
+                    continue;
+                }
+                if (d.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.SExt32 or Opcode.Phi)
+                {
+                    if (d.Operands.Count == 0 || (d.Op != Opcode.Phi && d.Operands.Count != 1)) return false;
+                    foreach (Operand o in d.Operands)
+                    {
+                        if (o is ImmOperand { Value: 0 }) continue;
+                        if (o is not RegOperand from) return false;
+                        work.Push(from.Reg);
+                    }
+                    continue;
+                }
+                return false;
+            }
+        }
+        if (origins.Count == 0)
+        {
+            return false;
+        }
+
+        foreach (Instr origin in origins)
+        {
+            Flow flow = Analyse(f, new[] { origin.Dest! }, summaries, origin, returnable: chain);
+            if (flow.Escapes) return false;
+        }
+        found = origins;
+        returned = chain;
+        return true;
+    }
+
     // ---- the escape question ------------------------------------------------------
 
     /// <summary>
@@ -173,7 +332,7 @@ public sealed class Escape : IModulePass
     }
 
     internal static Flow Analyse(Function f, IEnumerable<VReg> roots, Dictionary<string, bool[]> summaries, Instr? source,
-        HashSet<Instr>? ownedStores = null)
+        HashSet<Instr>? ownedStores = null, HashSet<VReg>? returnable = null)
     {
         Flow flow = new() { Source = source };
         foreach (VReg r in roots)
@@ -291,6 +450,28 @@ public sealed class Escape : IModulePass
                             // pointer: the runtime's contract with this pass.
                             break;
 
+                        case Opcode.Ret when returnable is not null:
+                            // Handing the object back: not an escape when it
+                            // is the object's base, by a register of the
+                            // returned chain (ReturnsFresh).
+                            if (i.Operands.Count != 1 || i.Operands[0] is not RegOperand back || !returnable.Contains(back.Reg))
+                            {
+                                flow.Escapes = true;
+                            }
+                            break;
+
+                        case Opcode.Phi when returnable is not null && i.Dest is not null && returnable.Contains(i.Dest):
+                            // Joining it with another of the returned origins,
+                            // or with null, on the way to the return.
+                            Derive(i.Dest);
+                            break;
+
+                        case Opcode.Call when IsCollectorNote(i.Callee):
+                            // The collector told of a reference (a write
+                            // barrier): it keeps no pointer the program can
+                            // use, and refuses to mark a block given back.
+                            break;
+
                         case Opcode.Call:
                         {
                             if (i.Callee is null || !summaries.TryGetValue(i.Callee, out bool[]? summary))
@@ -340,7 +521,7 @@ public sealed class Escape : IModulePass
             {
                 return;
             }
-            if (defs.GetValueOrDefault(d) > 1)
+            if (defs.GetValueOrDefault(d) > 1 && (returnable is null || !returnable.Contains(d)))
             {
                 flow.Escapes = true;    // shared with another value; unknowable
                 return;
@@ -412,6 +593,17 @@ public sealed class Escape : IModulePass
             for (int k = 0; k < b.Instrs.Count; k++)
             {
                 Instr i = b.Instrs[k];
+                if (canFree && IsFreshCall(i) && i.Dest is not null && !_ownedCalls.Contains(i))
+                {
+                    // A fresh function's result: the caller owns it. Never a
+                    // frame slot -- the callee made it on the heap -- but
+                    // freed at its last use here, as a dynamic allocation is.
+                    if (OwnFreshResult(f, b, i, summaries, ref liveness))
+                    {
+                        k = b.Instrs.IndexOf(i) + 5;
+                    }
+                    continue;
+                }
                 if (i.Op != Opcode.Call || !IsAllocator(i.Callee) || i.Dest is null || i.Operands.Count != 1
                     || _owned.Contains(i))
                 {
@@ -497,7 +689,7 @@ public sealed class Escape : IModulePass
                     // as proved. Keep the allocation and free it on the way
                     // out -- and, in a loop, free last time's before making
                     // this one, so the function holds at most one at once.
-                    if (Own(f, b, i))
+                    if (Own(f, b, i, ConstantSize(f, i.Operands[0], out long ownedBytes) ? ownedBytes : -1))
                     {
                         _owned.Add(i);
                         Owned++;
@@ -530,6 +722,7 @@ public sealed class Escape : IModulePass
 
                 b.Instrs.RemoveAt(k);
                 b.Instrs.InsertRange(k, replacement);
+                Record(f, new OwnedRecord { Origin = replacement[1], Root = i.Dest, SlotAddress = addr, Slot = slot, Renew = replacement[1], Bytes = bytes });
                 k += replacement.Count - 1;
                 budget -= bytes;
                 Promoted++;
@@ -560,8 +753,9 @@ public sealed class Escape : IModulePass
     /// site. And nothing is freed at a call that never returns; the process
     /// is ending there anyway.
     /// </summary>
-    private static bool Own(Function f, Block block, Instr alloc)
+    private bool Own(Function f, Block block, Instr alloc, long bytes = -1)
     {
+        OwnedRecord record = new() { Origin = alloc, Root = alloc.Dest!, Renew = alloc, Bytes = bytes };
         List<(Block Block, int Index)> exits = new();
         foreach (Block b in f.Blocks)
         {
@@ -599,8 +793,9 @@ public sealed class Escape : IModulePass
             new Instr { Op = Opcode.Copy, Dest = addr, Operands = { new SlotOperand(slot) }, Line = alloc.Line },
             new Instr { Op = Opcode.Load, Size = word, Dest = prev, Operands = { new RegOperand(addr) }, Line = alloc.Line },
         };
-        AppendFree(f, releasePrevious, prev, alloc.Line);
+        record.Frees.Add((block, AppendFree(f, releasePrevious, prev, alloc.Line), prev));
         block.Instrs.InsertRange(at, releasePrevious);
+        _bookkeeping.UnionWith(releasePrevious);
 
         // After it: remember the new one.
         VReg made = f.NewReg(IrTypes.Word, "owned");
@@ -608,11 +803,13 @@ public sealed class Escape : IModulePass
             ? new Instr { Op = Opcode.Copy, Dest = made, Operands = { new RegOperand(alloc.Dest) }, Line = alloc.Line }
             : new Instr { Op = IrTypes.Word == IrType.I32 ? Opcode.Trunc64 : Opcode.ZExt32,
                 Dest = made, Operands = { new RegOperand(alloc.Dest) }, Line = alloc.Line };
-        block.Instrs.InsertRange(block.Instrs.IndexOf(alloc) + 1, new List<Instr>
+        List<Instr> remember = new()
         {
             resize,
             new Instr { Op = Opcode.Store, Size = word, Operands = { new RegOperand(addr), new RegOperand(made) }, Line = alloc.Line },
-        });
+        };
+        block.Instrs.InsertRange(block.Instrs.IndexOf(alloc) + 1, remember);
+        _bookkeeping.UnionWith(remember);
 
         foreach ((Block b, int _) in exits)
         {
@@ -624,14 +821,100 @@ public sealed class Escape : IModulePass
                 new Instr { Op = Opcode.Copy, Dest = a, Operands = { new SlotOperand(slot) }, Line = alloc.Line },
                 new Instr { Op = Opcode.Load, Size = word, Dest = p, Operands = { new RegOperand(a) }, Line = alloc.Line },
             };
-            AppendFree(f, releaseExit, p, alloc.Line);
+            record.Frees.Add((b, AppendFree(f, releaseExit, p, alloc.Line), p));
             b.Instrs.InsertRange(r, releaseExit);
+            _bookkeeping.UnionWith(releaseExit);
         }
 
+        Record(f, record);
         return true;
     }
 
-    private static void AppendFree(Function f, List<Instr> output, VReg pointer, int line)
+    /// <summary>
+    /// A fresh call's result owned by `f` if it does not escape here either
+    /// and no earlier result from the same call is still in use when it runs
+    /// again. True if ownership was taken (five instructions follow the call).
+    /// </summary>
+    private bool OwnFreshResult(Function f, Block b, Instr call, Dictionary<string, bool[]> summaries, ref Liveness? liveness)
+    {
+        if (f.Async is not null) return false;
+        Defs defs = new(f, buildCfg: false);
+        if (!defs.IsSingle(call.Dest!)) return false;
+        Flow flow = Analyse(f, new[] { call.Dest! }, summaries, call);
+        if (flow.Escapes) return false;
+        liveness ??= new Liveness(f);
+        if (LiveAtSelf(liveness, b, call, flow.Derived)) return false;
+        if (!OwnAfter(f, b, call)) return false;
+        // OwnAfter recorded the object's frees; the callee is what filled its fields.
+        _records[f][^1].FreshCallee = call.Callee;
+        _ownedCalls.Add(call);
+        Owned++;
+        OwnedReturns++;
+        liveness = null;
+        return true;
+    }
+
+    /// <summary>
+    /// Own's shape for an object that arrives from a call rather than an
+    /// allocation: the slot's previous object is given back AFTER the call,
+    /// not before it, since the call may be reading that object -- `x =
+    /// Grow(x)` hands the old one in to make the new one -- and the liveness
+    /// proof has already shown that nothing uses the old one once the call
+    /// is made. Frees at every return as Own does.
+    /// </summary>
+    private bool OwnAfter(Function f, Block block, Instr call)
+    {
+        int at = block.Instrs.IndexOf(call);
+        if (at < 0) return false;
+        OwnedRecord record = new() { Origin = call, Root = call.Dest!, Renew = call, RenewAfter = true };
+        int word = IrTypes.Word.Bytes();
+        FrameSlot slot = f.NewSlot(word, word, "owned");
+
+        VReg entryAddr = f.NewReg(IrTypes.Word, "ownedp");
+        f.Entry.Instrs.InsertRange(0, new List<Instr>
+        {
+            new Instr { Op = Opcode.Copy, Dest = entryAddr, Operands = { new SlotOperand(slot) }, Line = call.Line },
+            new Instr { Op = Opcode.Store, Size = word, Operands = { new RegOperand(entryAddr), new ImmOperand(0, IrTypes.Word) }, Line = call.Line },
+        });
+
+        at = block.Instrs.IndexOf(call);
+        VReg addr = f.NewReg(IrTypes.Word, "ownedp");
+        VReg prev = f.NewReg(IrTypes.Word, "owned");
+        VReg made = f.NewReg(IrTypes.Word, "owned");
+        List<Instr> after = new()
+        {
+            new Instr { Op = Opcode.Copy, Dest = addr, Operands = { new SlotOperand(slot) }, Line = call.Line },
+            new Instr { Op = Opcode.Load, Size = word, Dest = prev, Operands = { new RegOperand(addr) }, Line = call.Line },
+        };
+        record.Frees.Add((block, AppendFree(f, after, prev, call.Line), prev));
+        after.Add(call.Dest!.Type == IrTypes.Word
+            ? new Instr { Op = Opcode.Copy, Dest = made, Operands = { new RegOperand(call.Dest) }, Line = call.Line }
+            : new Instr { Op = IrTypes.Word == IrType.I32 ? Opcode.Trunc64 : Opcode.ZExt32,
+                Dest = made, Operands = { new RegOperand(call.Dest) }, Line = call.Line });
+        after.Add(new Instr { Op = Opcode.Store, Size = word, Operands = { new RegOperand(addr), new RegOperand(made) }, Line = call.Line });
+        block.Instrs.InsertRange(at + 1, after);
+        _bookkeeping.UnionWith(after);
+
+        foreach (Block b in f.Blocks)
+        {
+            if (b.Terminator is not { Op: Opcode.Ret }) continue;
+            int r = b.Instrs.Count - 1;
+            VReg a = f.NewReg(IrTypes.Word, "ownedp");
+            VReg p = f.NewReg(IrTypes.Word, "owned");
+            List<Instr> releaseExit = new()
+            {
+                new Instr { Op = Opcode.Copy, Dest = a, Operands = { new SlotOperand(slot) }, Line = call.Line },
+                new Instr { Op = Opcode.Load, Size = word, Dest = p, Operands = { new RegOperand(a) }, Line = call.Line },
+            };
+            record.Frees.Add((b, AppendFree(f, releaseExit, p, call.Line), p));
+            b.Instrs.InsertRange(r, releaseExit);
+            _bookkeeping.UnionWith(releaseExit);
+        }
+        Record(f, record);
+        return true;
+    }
+
+    private static Instr AppendFree(Function f, List<Instr> output, VReg pointer, int line)
     {
         // Ownership slots are machine words, but Runtime.Free(long) has a
         // language-level 64-bit ABI on every target. Never omit the high word.
@@ -642,8 +925,10 @@ public sealed class Escape : IModulePass
             output.Add(new Instr { Op = Opcode.ZExt32, Dest = argument,
                 Operands = { new RegOperand(pointer) }, Line = line });
         }
-        output.Add(new Instr { Op = Opcode.Call, Callee = Freer,
-            Operands = { new RegOperand(argument) }, Line = line });
+        Instr free = new Instr { Op = Opcode.Call, Callee = Freer,
+            Operands = { new RegOperand(argument) }, Line = line };
+        output.Add(free);
+        return free;
     }
 
     /// <summary>Whether any register derived from the allocation is live just before it: a loop carrying last time's object.</summary>

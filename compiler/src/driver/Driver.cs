@@ -732,6 +732,8 @@ public static class Driver
         if (args.Contains("--stats"))
         {
             Console.Error.WriteLine($"heap: {(module.NeedsHeap ? "needed (collector linked)" : "not needed (no collector)")}");
+            var lifetimes = Corsac.Lang.Opt.Escape.LastRun;
+            Console.Error.WriteLine($"lifetimes: {lifetimes.Promoted} objects in frames, {lifetimes.Owned} freed by the compiler ({lifetimes.OwnedReturns} of them handed over by a fresh return), {lifetimes.Fresh} functions return fresh objects, {lifetimes.Fields} fields freed with their owner");
             if (backend is X86Backend x86)
             {
                 Console.Error.Write(x86.Statistics());

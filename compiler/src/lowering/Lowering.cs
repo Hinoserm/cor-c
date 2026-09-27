@@ -812,6 +812,11 @@ public sealed partial class Lowering
                 Require(rooted);
             }
         }
+        // And the free of an owned object's field (Escape's owned fields).
+        if (RuntimeMethod("FreeField", 2) is MethodSymbol fieldFree)
+        {
+            Require(fieldFree);
+        }
 
         _m.Functions.Add(f);
         _m.Entry = EntryName;
