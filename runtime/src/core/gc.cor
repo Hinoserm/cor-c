@@ -104,17 +104,30 @@ static class Gc
     const long Smallest = 4 * WordSize.Bytes;
 
     // Collect when this much has been allocated since the last collection:
-    // 256 KB to begin with, and thereafter the live size, so that a program
-    // with a large live heap is not collected every quarter megabyte and a
-    // small one never grows past a couple of chunks. The threshold is a
+    // 256 KB to begin with, and thereafter TWICE the live size, so that a
+    // program with a large live heap is not collected every quarter megabyte
+    // and a small one never grows past a few chunks. The threshold is a
     // function of the LIVE size after the last collection, which is the
     // only measure of the program that the collector actually knows.
+    //
+    // Twice, not once: every collection marks the whole live heap, so the
+    // marking a program pays per byte it allocates is live / threshold.
+    // At one live size's worth the self-hosted compiler ran sixty full
+    // collections compiling hello.cs and spent most of its time marking.
+    // A heap that cannot grow that far is not refused by this: a chunk the
+    // system will not give is answered by a collection (AllocSlow).
     const long MinThreshold = 262144;
+    const long GrowthFactor = 2;
 
     // The mark queue: a block of the operating system's, not a heap block,
-    // taken once at start. 64K entries; a live graph wider than that
-    // finishes through the rescan path below, which needs no memory at all.
-    const long MarkBytes = 262144;
+    // taken once at start. A live graph wider than it finishes through the
+    // rescan path below, which needs no memory at all -- and walks the whole
+    // heap. At 32K entries the self-hosted compiler overflowed it in 46 of
+    // its 60 collections compiling hello.cs: 46 walks of a 380 MB heap. So
+    // eight megabytes of address space (a million entries on 32-bit), which
+    // costs only the pages marking actually reaches: the system commits a
+    // mapping as it is touched.
+    const long MarkBytes = 8388608;
 
     // Exact-size doubly linked lists through 256 bytes (31 bins), then an
     // AVL size/address tree per power-of-two range. Coarse bins alone were
@@ -2560,7 +2573,7 @@ static class Gc
         // What was allocated while the mark ran was not looked at by it and
         // still counts towards the next.
         _since = _since > _sinceAtStop ? _since - _sinceAtStop : Zero;
-        _threshold = _liveBytes > MinThreshold ? _liveBytes : MinThreshold;
+        _threshold = _liveBytes * GrowthFactor > MinThreshold ? _liveBytes * GrowthFactor : MinThreshold;
         Collections = Collections + 1;
         _collecting = false;
     }

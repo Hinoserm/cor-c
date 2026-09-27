@@ -24,7 +24,7 @@ public static class ProjectCommand
         string? path = null, output = null, framework = null, targetName = null;
         string configuration = "Release";
         int workers = Environment.ProcessorCount;
-        bool linkOnly = false;
+        bool linkOnly = false, runtimeOnly = false;
         List<string> profileArguments = new();
         for (int i = 0; i < arguments.Length; i++)
         {
@@ -41,6 +41,13 @@ public static class ProjectCommand
                 // to try one link. This links what was last compiled and
                 // compiles nothing; an object that is missing is an error.
                 case "--link-only": linkOnly = true; break;
+                // AND THE RUNTIME WITH IT: runtime.o compiled again when its
+                // sources changed, the units kept. Sound for a change to the
+                // runtime's own non-generic code -- the collector, the
+                // scheduler -- which no unit copies; a change to a library
+                // generic, whose body every unit using it holds, needs the
+                // units too.
+                case "--runtime-only": linkOnly = runtimeOnly = true; break;
                 case "--target": targetName = Value(); break;
                 case "--cpu": case "--tune": case "--fpu":
                     profileArguments.Add(arguments[i]); profileArguments.Add(Value()); break;
@@ -137,7 +144,7 @@ public static class ProjectCommand
         List<string> runtimeArgs = new() { "compile", "--nostdlib", "--lib", "--obj", "--jobs", workers.ToString(), "--decl-index", index, "--assembly", project.AssemblyName };
         runtimeArgs.AddRange(libraries);
         runtimeArgs.AddRange(cpuArguments);
-        if (linkOnly)
+        if (linkOnly && !runtimeOnly)
         {
             if (!File.Exists(runtime)) throw new InvalidDataException("--link-only: the runtime object was never compiled: " + runtime);
         }
