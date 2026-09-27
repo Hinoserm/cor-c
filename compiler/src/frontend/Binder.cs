@@ -14979,6 +14979,28 @@ public sealed partial class Binder
 
         List<(TypeSymbol Class, MethodSymbol Copy)> targets = new();
 
+        // ONE TYPE BY TWO NAMES. A word-shaped specialisation and its canonical
+        // copy run the same code, but an object is made with the descriptor
+        // of whichever code made it: OrderBy's canonical copy makes an
+        // OrderedSequence$__canon, and ThenBy<MethodSymbol, string> asks it
+        // for CreateOrderedEnumerable through IOrderedEnumerable$MethodSymbol
+        // -- an interface the canonical class implements under its other
+        // name. Every class implementing either name is a target, matched
+        // against the member of the name it really has.
+        static string CanonKey(TypeSymbol t) => t.Decl?.Canon ?? t.Name;
+        string homeKey = CanonKey(home);
+
+        // The member `best` is on `twin`, one name of home: by its place in
+        // the template where it has one, else by its signature.
+        MethodSymbol? OnTwin(TypeSymbol twin)
+        {
+            if (ReferenceEquals(twin, home)) return best;
+            int place = best.Decl?.TemplateIndex ?? -1;
+            return twin.Methods.FirstOrDefault(m => m.Name == best.Name && m.TypeParams.Count == best.TypeParams.Count
+                                                  && m.Params.Count == best.Params.Count
+                                                  && (place < 0 || m.Decl?.TemplateIndex == place));
+        }
+
         // A STRUCT TOO, for an interface's method: a boxed value is reached
         // through the interface like any object, and the dispatch knows its
         // box (Lowering.GenericVirtualDispatch). A struct derives from nothing,
@@ -14990,7 +15012,9 @@ public sealed partial class Binder
 
             if (contract)
             {
-                if (!AllInterfaces(t).Contains(home))
+                TypeSymbol? face = AllInterfaces(t).Contains(home) ? home
+                                 : AllInterfaces(t).FirstOrDefault(i => CanonKey(i) == homeKey);
+                if (face is null || OnTwin(face) is not MethodSymbol wanted)
                 {
                     continue;
                 }
@@ -14998,22 +15022,22 @@ public sealed partial class Binder
                 // As AssignSlots maps an interface member: an explicit
                 // implementation for this interface first, then a public one
                 // of the name -- on this class or inherited.
-                string ifaceName = ExplicitName(home);
+                string ifaceName = ExplicitName(face);
                 own = t.Methods.FirstOrDefault(m => m.ExplicitMember == best.Name && m.ExplicitInterface == ifaceName
-                          && !m.Abstract && m.TypeParams.Count == best.TypeParams.Count && MethodSignatures.Implements(m, best))
+                          && !m.Abstract && m.TypeParams.Count == best.TypeParams.Count && MethodSignatures.Implements(m, wanted))
                    ?? t.FindMethods(best.Name).FirstOrDefault(m => !m.Static && !m.Abstract
-                          && m.TypeParams.Count == best.TypeParams.Count && MethodSignatures.Implements(m, best));
+                          && m.TypeParams.Count == best.TypeParams.Count && MethodSignatures.Implements(m, wanted));
             }
             else
             {
-                bool below = false;
+                TypeSymbol? under = null;
 
-                for (TypeSymbol? a = t; a != null && !below; a = a.Base)
+                for (TypeSymbol? a = t; a != null && under is null; a = a.Base)
                 {
-                    below = ReferenceEquals(a, home);
+                    if (ReferenceEquals(a, home) || CanonKey(a) == homeKey) under = a;
                 }
 
-                if (!below)
+                if (under is null || OnTwin(under) is not MethodSymbol wanted)
                 {
                     continue;
                 }
@@ -15022,7 +15046,7 @@ public sealed partial class Binder
                 // is matched by the class it inherits it from, further down
                 // the list.
                 own = t.Methods.FirstOrDefault(m => ReferenceEquals(m.Owner, t) && m.Name == best.Name && !m.Abstract
-                    && (m.Override || ReferenceEquals(m, best)) && MethodSignatures.Implements(m, best));
+                    && (m.Override || ReferenceEquals(m, wanted)) && MethodSignatures.Implements(m, wanted));
             }
 
             if (own is null)

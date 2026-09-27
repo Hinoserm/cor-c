@@ -1,0 +1,49 @@
+// test: generic_virtual_canonical_twin
+// expect-exit: 0
+// expect-output:
+// 1 z a
+// 2 a p
+// 2 a q
+// 2 b y
+// gone,b,a,a,z
+// a,c,ab,bb
+//
+// A generic virtual call reaches an object made by canonical code: OrderBy's
+// shared copy makes an OrderedSequence$__canon, and ThenBy<Member, string>
+// asks it for CreateOrderedEnumerable through IOrderedEnumerable$Member, an
+// interface the canonical class implements under its other name. The dispatch
+// lists every class implementing either name. Expected output is real .NET's.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+class Member
+{
+    public int Slot;
+    public string Name = "";
+    public string Signature = "";
+}
+
+static class Program
+{
+    static List<Member> Order(IEnumerable<Member> members)
+        => members.Where(m => m.Slot >= 0)
+                  .OrderBy(m => m.Slot).ThenBy(m => m.Name, StringComparer.Ordinal)
+                  .ThenBy(m => m.Signature, StringComparer.Ordinal).ToList();
+
+    static void Main()
+    {
+        List<Member> all = new()
+        {
+            new Member { Slot = 2, Name = "b", Signature = "y" },
+            new Member { Slot = 1, Name = "z", Signature = "a" },
+            new Member { Slot = 2, Name = "a", Signature = "q" },
+            new Member { Slot = 2, Name = "a", Signature = "p" },
+            new Member { Slot = -1, Name = "gone", Signature = "" },
+        };
+        foreach (Member m in Order(all)) Console.WriteLine(m.Slot + " " + m.Name + " " + m.Signature);
+        Console.WriteLine(string.Join(",", all.OrderByDescending(m => m.Name.Length).ThenByDescending(m => m.Signature).Select(m => m.Name)));
+        Console.WriteLine(string.Join(",", new[] { "bb", "a", "ab", "c" }.OrderBy(s => s.Length).ThenBy(s => s)));
+    }
+}

@@ -24,6 +24,7 @@ public static class ProjectCommand
         string? path = null, output = null, framework = null, targetName = null;
         string configuration = "Release";
         int workers = Environment.ProcessorCount;
+        bool linkOnly = false;
         List<string> profileArguments = new();
         for (int i = 0; i < arguments.Length; i++)
         {
@@ -34,6 +35,12 @@ public static class ProjectCommand
                 case "--configuration": configuration = Value(); break;
                 case "--framework": framework = Value(); break;
                 case "--jobs": workers = int.Parse(Value()); break;
+                // THE OBJECTS AS THEY ARE, LINKED AGAIN. A fix in the linker
+                // changes the compiler's identity, which every unit's stamp
+                // carries, so an ordinary build recompiles the whole project
+                // to try one link. This links what was last compiled and
+                // compiles nothing; an object that is missing is an error.
+                case "--link-only": linkOnly = true; break;
                 case "--target": targetName = Value(); break;
                 case "--cpu": case "--tune": case "--fpu":
                     profileArguments.Add(arguments[i]); profileArguments.Add(Value()); break;
@@ -116,7 +123,7 @@ public static class ProjectCommand
             if (!node.Usings.SequenceEqual(project.Usings))
                 throw new InvalidDataException("Referenced projects with different global usings are not yet supported: " + node.Path);
         Parser.ProjectUsings = project.Usings;
-        SourceIndexBuilder.Write(index, owners.Keys, project.AssemblyName, fileSymbols: symbols);
+        if (!linkOnly || !File.Exists(index)) SourceIndexBuilder.Write(index, owners.Keys, project.AssemblyName, fileSymbols: symbols);
         string[] libraries = Driver.DefaultLibraries(target).ToArray();
         if (libraries.Length == 0) throw new InvalidDataException("The native runtime sources were not found");
         string toolchain = ProjectState.Digest(ToolIdentity(typeof(Driver).Assembly) + "\n" + ToolIdentity(typeof(ObjectLinkCommand).Assembly));
@@ -130,7 +137,11 @@ public static class ProjectCommand
         List<string> runtimeArgs = new() { "compile", "--nostdlib", "--lib", "--obj", "--jobs", workers.ToString(), "--decl-index", index, "--assembly", project.AssemblyName };
         runtimeArgs.AddRange(libraries);
         runtimeArgs.AddRange(cpuArguments);
-        if (!Compile(runtimeArgs, runtime, ProjectState.Digest(settings), index)) return 1;
+        if (linkOnly)
+        {
+            if (!File.Exists(runtime)) throw new InvalidDataException("--link-only: the runtime object was never compiled: " + runtime);
+        }
+        else if (!Compile(runtimeArgs, runtime, ProjectState.Digest(settings), index)) return 1;
         List<string> objects = new() { runtime };
         int changed = 0;
 
@@ -166,6 +177,12 @@ public static class ProjectCommand
         }
         foreach (var group in groups.Values)
         {
+            if (linkOnly)
+            {
+                foreach ((string Source, string Object) unit in group.Units)
+                    if (!File.Exists(unit.Object)) throw new InvalidDataException("--link-only: " + unit.Source + " was never compiled (" + unit.Object + ")");
+                continue;
+            }
             string list = Path.Combine(work, "units-" + ProjectState.Digest(string.Join("\n", group.Args))[..16] + ".tsv");
             File.WriteAllLines(list, group.Units.Select(unit => unit.Source + "\t" + unit.Object + "\t" + unit.Object + ".deps\t" + (group.Entry ? "entry" : "lib")));
             Dictionary<string, DateTime> before = group.Units.ToDictionary(unit => unit.Object,
