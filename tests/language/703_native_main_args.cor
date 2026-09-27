@@ -1,0 +1,27 @@
+// test: a program that calls into C and takes Main's arguments
+// args: first second
+// expect-exit: 0
+// expect-output:
+// 2 first second
+// strlen 6
+//
+// With a C library the entry stub is written twice -- once as the C
+// library's main, once as the path with no C library -- and Main's argument
+// array, which is bounds-checked as it is copied, is built in both. Each must
+// have its own out-of-range block: sharing one put a jump from the stub into
+// the other function, and the optimiser went round it for ever.
+
+using System;
+using System.Runtime.InteropServices;
+
+static class Program
+{
+    [DllImport("libc.so.6")] static extern nint strlen(string s);
+
+    static int Main(string[] args)
+    {
+        Console.WriteLine(args.Length + " " + string.Join(" ", args));
+        Console.WriteLine("strlen " + strlen(args[1]));
+        return 0;
+    }
+}

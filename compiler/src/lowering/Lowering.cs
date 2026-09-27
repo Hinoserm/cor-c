@@ -832,6 +832,10 @@ public sealed partial class Lowering
         // args and Environment.GetCommandLineArgs in .NET too.
         _f = f;
         _e = e;
+        // A block made on demand for this function belongs to it alone: the
+        // entry stub and the C library's main are both written from here,
+        // and a bounds check in the second must not jump into the first.
+        _boundsFail = null;
 
         // MAIN'S OWN TYPE IS TOUCHED BEFORE MAIN RUNS, which is what C# does
         // and what the three ordinary triggers cannot do: a static method of a

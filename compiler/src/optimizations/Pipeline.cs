@@ -225,8 +225,15 @@ public sealed class Pipeline
                     + (cost.Bytes >> 20) + "MiB runs=" + cost.Runs);
     }
 
+    /// <summary>CORC_TRACE_FUNCTIONS: each function's name and size as the pipeline starts on it, for finding one that never finishes.</summary>
+    private static readonly bool TraceFunctions = Environment.GetEnvironmentVariable("CORC_TRACE_FUNCTIONS") is not null;
+
     public void Run(Function f)
     {
+        if (TraceFunctions)
+        {
+            Console.Error.WriteLine($"pipeline {f.Name} ({f.Blocks.Sum(b => b.Instrs.Count)} instructions, {f.Blocks.Count} blocks)");
+        }
         if (Verify)
         {
             Verifier.Check(f, "before optimisation");
