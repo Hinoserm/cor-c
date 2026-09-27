@@ -2547,14 +2547,18 @@ public sealed partial class Lowering
 
         if (!againstNull && (left.Prim == Prim.String || right.Prim == Prim.String))
         {
-            // `"" + e` FOR AN ENUM IS THE ENUM'S NAME and nothing else, and
-            // that is what `e.ToString()` is written as: joining the empty
-            // string to it would make Concat copy a string the table already
-            // holds. Only for an enum, because for anything else the empty
-            // string is doing work -- `"" + (string)null` is "", not null.
-            if (b.Op == BinOp.Add && Empty(b.Left) && right.Symbol is { Kind: TypeKind.Enum })
+            // A CHAIN IS ONE JOIN. `a + b + c + d` was three calls, each making
+            // a string only to copy it into the next; flattened, the parts are
+            // made text left to right, adjacent literals are joined now -- so
+            // `"ab" + "cd"` IS the literal "abcd", as C# makes it -- an empty
+            // one is dropped (`"" + e` for an enum is its name, the table's own
+            // string, and `"" + s` is s), and one Concat makes the rest in one
+            // allocation (EmitConcat).
+            if (b.Op == BinOp.Add)
             {
-                return Stringify(b.Right, Eval(b.Right), right);
+                List<Expr> parts = new();
+                ConcatParts(b, parts);
+                return EmitConcat(b, parts);
             }
 
             // EQUALITY TAKES A NULL STRING AS IT IS. String.Equals answers for
@@ -3294,8 +3298,83 @@ public sealed partial class Lowering
         return _e.Binary(Opcode.Eq, R(answer), Imm(0, answer.Type), IrType.I32);
     }
 
-    /// <summary>Whether an expression is the empty string literal.</summary>
-    private static bool Empty(Expr e) => e is LiteralExpr { Kind: Lit.Str, Text: "" };
+    /// <summary>
+    /// The operands of a chain of string joins, left to right: a `+` whose
+    /// either side is a string and that the checker did not make a call of (a
+    /// user-defined operator) is a join, and its operands are the chain's.
+    /// </summary>
+    private void ConcatParts(Expr e, List<Expr> parts)
+    {
+        if (e is BinaryExpr { Op: BinOp.Add } join && !_b.Rewrites.ContainsKey(join)
+            && (_b.TypeOf(join.Left).Prim == Prim.String || _b.TypeOf(join.Right).Prim == Prim.String))
+        {
+            ConcatParts(join.Left, parts);
+            ConcatParts(join.Right, parts);
+            return;
+        }
+        parts.Add(e);
+    }
+
+    /// <summary>
+    /// A flattened chain of joins (ConcatParts): adjacent string literals
+    /// joined here, as C# joins constant strings; an empty literal dropped;
+    /// every other part made text in order (Stringify); and the whole made
+    /// once -- String.Concat of two, three or four, or of an array beyond
+    /// that, which does not outlive the call and so is a frame slot, not a
+    /// heap object (Escape).
+    /// </summary>
+    private VReg EmitConcat(Node at, List<Expr> parts)
+    {
+        List<object> pieces = new();       // string: a literal's text; VReg: a part made text
+        foreach (Expr part in parts)
+        {
+            if (part is LiteralExpr { Kind: Lit.Str } literal && !_b.Rewrites.ContainsKey(part))
+            {
+                if (pieces.Count > 0 && pieces[^1] is string before)
+                    pieces[^1] = before + literal.Text;
+                else
+                    pieces.Add(literal.Text);
+                continue;
+            }
+            pieces.Add(Stringify(part, Eval(part), _b.TypeOf(part)));
+        }
+        pieces.RemoveAll(p => p is "");
+        if (pieces.Count == 0)
+        {
+            return _e.Address(InternString(""));
+        }
+        List<VReg> made = pieces.Select(p => p is string text ? _e.Address(InternString(text)) : (VReg)p).ToList();
+        if (made.Count == 1)
+        {
+            return made[0];
+        }
+        if (made.Count == 2)
+        {
+            return StringBinary(at, BinOp.Add, made[0], made[1]);
+        }
+        if (made.Count <= 4 && StringMethod(at, Prelude.ConcatMethod, made.Count, "joining strings with '+'") is MethodSymbol some)
+        {
+            return _e.Call(CallLabel(some), IrTypes.Of(some.Returns), made.Select(R).ToArray())!;
+        }
+        MethodSymbol? many = _b.Types.TryGetValue(Prelude.StringType, out TypeSymbol? strings)
+            ? strings.Methods.FirstOrDefault(m => m.Name == Prelude.ConcatMethod && m.Static && m.Params.Count == 1
+                                                && m.Params[0].Type is { IsArray: true, Element.Prim: Prim.String })
+            : null;
+        if (many is null)
+        {
+            VReg joined = made[0];
+            for (int i = 1; i < made.Count; i++) joined = StringBinary(at, BinOp.Add, joined, made[i]);
+            return joined;
+        }
+        Require(many);
+        VReg array = AllocateArray(at, _e.Const(made.Count, IrType.I32), Type.String);
+        for (int i = 0; i < made.Count; i++)
+        {
+            _e.Store(R(array), R(made[i]), _t.ArrayHeaderBytes + i * _t.WordSize, _t.WordSize);
+        }
+        return _e.Call(CallLabel(many), IrTypes.Of(many.Returns), R(array))!;
+    }
+
 
     /// <summary>A non-string operand of a string expression rendered as text.</summary>
     private VReg Stringify(Expr at, VReg v, Type type)

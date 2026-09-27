@@ -708,19 +708,42 @@ static class String {
 
     // .NET's Concat family: a null is nothing, and an object is what its
     // ToString says.
+    // EACH IN ONE ALLOCATION: the lengths added, the result made once, and
+    // each part copied into it once. `a + b + c + d` is one of these (the
+    // compiler joins a chain into one call), so a name built from four parts
+    // is one string, not three.
     public static string Concat(string? a, string? b, string? c) {
-        return Concat(Concat(a ?? "", b ?? ""), c ?? "");
+        string x = a ?? "", y = b ?? "", z = c ?? "";
+        string result = Sys.NewChars(x.Length + y.Length + z.Length);
+        CopyRange(result, 0, x, 0, x.Length);
+        CopyRange(result, x.Length, y, 0, y.Length);
+        CopyRange(result, x.Length + y.Length, z, 0, z.Length);
+        return result;
     }
 
     public static string Concat(string? a, string? b, string? c, string? d) {
-        return Concat(Concat(a ?? "", b ?? ""), Concat(c ?? "", d ?? ""));
+        string w = a ?? "", x = b ?? "", y = c ?? "", z = d ?? "";
+        string result = Sys.NewChars(w.Length + x.Length + y.Length + z.Length);
+        int at = 0;
+        CopyRange(result, at, w, 0, w.Length); at += w.Length;
+        CopyRange(result, at, x, 0, x.Length); at += x.Length;
+        CopyRange(result, at, y, 0, y.Length); at += y.Length;
+        CopyRange(result, at, z, 0, z.Length);
+        return result;
     }
 
     public static string Concat(params string?[] values) {
         if (values == null) { throw new ArgumentNullException("values"); }
-        StringBuilder made = new StringBuilder();
-        for (int i = 0; i < values.Length; i++) { made.Append(values[i]); }
-        return made.ToString();
+        long total = 0;
+        for (int i = 0; i < values.Length; i++) { if (values[i] is string one) { total += one.Length; } }
+        if (total > int.MaxValue) { throw new OutOfMemoryException(); }
+        string result = Sys.NewChars((int)total);
+        int at = 0;
+        for (int i = 0; i < values.Length; i++)
+        {
+            if (values[i] is string one) { CopyRange(result, at, one, 0, one.Length); at += one.Length; }
+        }
+        return result;
     }
 
     public static string Concat(IEnumerable<string?> values) {
@@ -2131,6 +2154,29 @@ static class BitConverter {
     // LITTLE END FIRST, which is what the machine holds them as, so what comes
     // back is the number's storage and not a rendering of it. This is the pair
     // a file format and a network protocol are written with.
+
+    // ---- into a span the caller has ------------------------------------------
+    //
+    // .NET's TryWriteBytes: the value's bytes, little end first, written into
+    // the start of `destination` when it holds that many, and false with
+    // nothing written when it does not. No array is made.
+
+    static bool Put(Span<byte> destination, long value, int count) {
+        if (destination.Length < count) { return false; }
+        for (int i = 0; i < count; i++) { destination[i] = (byte)(value >> (8 * i)); }
+        return true;
+    }
+
+    public static bool TryWriteBytes(Span<byte> destination, bool value) { return Put(destination, value ? 1 : 0, 1); }
+    public static bool TryWriteBytes(Span<byte> destination, char value) { return Put(destination, (long)value, 2); }
+    public static bool TryWriteBytes(Span<byte> destination, short value) { return Put(destination, (long)value, 2); }
+    public static bool TryWriteBytes(Span<byte> destination, ushort value) { return Put(destination, (long)value, 2); }
+    public static bool TryWriteBytes(Span<byte> destination, int value) { return Put(destination, (long)value, 4); }
+    public static bool TryWriteBytes(Span<byte> destination, uint value) { return Put(destination, (long)value, 4); }
+    public static bool TryWriteBytes(Span<byte> destination, long value) { return Put(destination, value, 8); }
+    public static bool TryWriteBytes(Span<byte> destination, ulong value) { return Put(destination, (long)value, 8); }
+    public static bool TryWriteBytes(Span<byte> destination, float value) { return Put(destination, (long)SingleToInt32Bits(value), 4); }
+    public static bool TryWriteBytes(Span<byte> destination, double value) { return Put(destination, Sys.Bits(value), 8); }
 
     public static byte[] GetBytes(bool value) {
         byte[] made = new byte[1];
