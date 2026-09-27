@@ -130,7 +130,12 @@ public sealed partial class Lowering
 
         // A USER-DEFINED CONVERSION already produced the operator's result;
         // what is left to convert is from that, not from what was written.
-        Type had = _b.Rewrites.TryGetValue(e, out Expr? made) && _b.UserConversions.Contains(made) ? _b.TypeOf(made) : _b.TypeOf(e);
+        // So did a TUPLE REBUILT in another shape (Binder.CheckAssignable):
+        // the value is already the wider tuple, and converting it again from
+        // the arm's own narrower shape read its fields at the wrong widths.
+        Type had = _b.Rewrites.TryGetValue(e, out Expr? made)
+                   && (_b.UserConversions.Contains(made) || made is PatternExpr { Test: TupleExpr })
+                 ? _b.TypeOf(made) : _b.TypeOf(e);
         return Convert(e, v, had, target);
     }
 

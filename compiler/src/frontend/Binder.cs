@@ -4551,15 +4551,27 @@ public sealed partial class Binder
         // is built from a.Item1 and a.Item2 widened, not the same object read
         // at another layout -- which answered garbage for every element after
         // the first width change.
-        if (at is Expr source && !_r.Rewrites.ContainsKey(source) && TupleRebuilt(from, to))
+        //
+        // CHECKED AGAIN WHEN IT WAS MADE BEFORE. A look ahead (Peek) checks an
+        // expression and then gives back the frame slots it took, so a rebuild
+        // made during one holds its subject in a slot the real check hands to
+        // somebody else: `(long x, long y) = c ? (1, 2) : (3L, 4L)` kept the
+        // (int, int) arm's value in the very slot of the tuple it was being
+        // copied into. The real check checks the same rebuild again, and it
+        // takes a slot that is its own.
+        if (at is Expr source && TupleRebuilt(from, to)
+            && (!_r.Rewrites.TryGetValue(source, out Expr? earlier) || earlier is PatternExpr { Test: TupleExpr }))
         {
-            SubjectExpr Held() => new() { Line = source.Line, Col = source.Col };
-            TupleExpr items = new() { Line = source.Line, Col = source.Col };
-            for (int i = 0; i < to.Symbol!.Fields.Count(f => !f.Static); i++)
+            if (earlier is not PatternExpr rebuilt)
             {
-                items.Items.Add(new MemberExpr { Target = Held(), Name = "Item" + (i + 1), Guarded = true, Line = source.Line, Col = source.Col });
+                SubjectExpr Held() => new() { Line = source.Line, Col = source.Col };
+                TupleExpr items = new() { Line = source.Line, Col = source.Col };
+                for (int i = 0; i < to.Symbol!.Fields.Count(f => !f.Static); i++)
+                {
+                    items.Items.Add(new MemberExpr { Target = Held(), Name = "Item" + (i + 1), Guarded = true, Line = source.Line, Col = source.Col });
+                }
+                rebuilt = new() { Subject = source, Test = items, Line = source.Line, Col = source.Col };
             }
-            PatternExpr rebuilt = new() { Subject = source, Test = items, Line = source.Line, Col = source.Col };
             _r.Rewrites[source] = rebuilt;
             Type? outside = _wanted;
             _wanted = to;
@@ -10652,6 +10664,13 @@ public sealed partial class Binder
                         {
                             _r.Views[arm] = ArrayView(had.Element!, face);
                         }
+                        // AND A TUPLE ARM OF ANOTHER SHAPE IS REBUILT AS THE
+                        // WHOLE'S, element by element: `c ? (1, 2) : (3L, 4L)`
+                        // is two longs either way.
+                        if (!had.IsError && !whole.IsError && TupleRebuilt(had, whole))
+                        {
+                            CheckAssignable(had, whole, arm, "arm");
+                        }
                     }
                     return whole;
                 }
@@ -11006,6 +11025,23 @@ public sealed partial class Binder
                                            || (had.IsInteger && asked.IsInteger))))
                 {
                     result = asked;
+                }
+
+                // AN ARM THAT IS A DIFFERENT TUPLE IS REBUILT AS THE RESULT'S:
+                // `(int.MinValue, int.MaxValue)` as an arm of a (long, long)
+                // switch is two longs, element by element. Left to itself the
+                // arm's two ints were read as one long, and the self-compiled
+                // compiler's range for an int element came out as nonsense.
+                if (!result.IsError)
+                {
+                    foreach (SwitchArm arm in sx.Arms)
+                    {
+                        if (_r.ExprType.TryGetValue(arm.Result, out Type? had) && !had.IsError
+                            && TupleRebuilt(had, result))
+                        {
+                            CheckAssignable(had, result, arm.Result, "arm");
+                        }
+                    }
                 }
 
                 // NOT A WARNING. An expression has to have a value on every
