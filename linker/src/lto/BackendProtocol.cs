@@ -29,6 +29,15 @@ public static class BackendProtocol
             foreach (string name in facts.Fresh.Order(StringComparer.Ordinal)) WriteText(writer, name);
             writer.Write(facts.Helpers.Count);
             foreach (string name in facts.Helpers.Order(StringComparer.Ordinal)) WriteText(writer, name);
+            writer.Write(facts.Fields.Count);
+            foreach ((string name, SolvedFields?[] parameters) in facts.Fields.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+            {
+                WriteText(writer, name); writer.Write(parameters.Length);
+                foreach (SolvedFields? fields in parameters) WriteFields(writer, fields);
+            }
+            writer.Write(facts.FreshFields.Count);
+            foreach ((string name, SolvedFields fields) in facts.FreshFields.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+            { WriteText(writer, name); WriteFields(writer, fields); }
         }
         writer.Flush();
     }
@@ -79,9 +88,51 @@ public static class BackendProtocol
             int helpers = reader.ReadInt32();
             if (helpers < 0 || helpers > 64) throw new InvalidDataException("Invalid backend lifetime facts");
             for (int i = 0; i < helpers; i++) facts.Helpers.Add(ReadText(reader));
+            int fieldFunctions = reader.ReadInt32();
+            if (fieldFunctions < 0 || fieldFunctions > 1000000) throw new InvalidDataException("Invalid backend lifetime facts");
+            for (int i = 0; i < fieldFunctions; i++)
+            {
+                string name = ReadText(reader); int parameters = reader.ReadInt32();
+                if (parameters < 0 || parameters > 65536) throw new InvalidDataException("Invalid backend lifetime facts");
+                SolvedFields?[] fields = new SolvedFields?[parameters];
+                for (int p = 0; p < parameters; p++) fields[p] = ReadFields(reader);
+                if (!facts.Fields.TryAdd(name, fields)) throw new InvalidDataException("Duplicate backend lifetime fact");
+            }
+            int freshFields = reader.ReadInt32();
+            if (freshFields < 0 || freshFields > 1000000) throw new InvalidDataException("Invalid backend lifetime facts");
+            for (int i = 0; i < freshFields; i++)
+            {
+                string name = ReadText(reader);
+                if (ReadFields(reader) is not SolvedFields fields || !facts.FreshFields.TryAdd(name, fields))
+                    throw new InvalidDataException("Invalid backend fresh field fact");
+            }
         }
         return new(input, output, imports, retained, facts);
     }
+    private static void WriteFields(BinaryWriter writer, SolvedFields? fields)
+    {
+        if (fields is null) { writer.Write(false); return; }
+        writer.Write(true); writer.Write(fields.Opaque);
+        writer.Write(fields.Dirty.Length); foreach (long offset in fields.Dirty) writer.Write(offset);
+        writer.Write(fields.Fresh.Length); foreach (long offset in fields.Fresh) writer.Write(offset);
+    }
+
+    private static SolvedFields? ReadFields(BinaryReader reader)
+    {
+        if (!reader.ReadBoolean()) return null;
+        bool opaque = reader.ReadBoolean();
+        long[] Offsets()
+        {
+            int count = reader.ReadInt32();
+            if (count < 0 || count > 65536) throw new InvalidDataException("Invalid backend field offsets");
+            long[] offsets = new long[count];
+            for (int i = 0; i < count; i++) offsets[i] = reader.ReadInt64();
+            return offsets;
+        }
+        long[] dirty = Offsets();
+        return new(opaque, dirty, Offsets());
+    }
+
     public static void WriteResponse(BinaryWriter writer, string? error)
     { writer.Write(error is null ? 0 : 1); WriteText(writer, error ?? ""); writer.Flush(); }
     public static void ReadResponse(BinaryReader reader)

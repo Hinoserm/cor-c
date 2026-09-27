@@ -612,7 +612,7 @@ public static partial class Program
         // The link says ext keeps nothing: lend's object goes in its frame.
         Corsac.Lang.Lto.LifetimeFacts facts = new();
         facts.Escapes["ext"] = new[] { false };
-        Assert(Escape.RunAtLink(lend, facts) == 1, "with the link's answer the object is placed");
+        Assert(Escape.RunAtLink(lend, new Escape.LinkFacts(facts)) == 1, "with the link's answer the object is placed");
         Verifier.Check(lend, "lend at link");
         Assert(!lend.Blocks.SelectMany(x => x.Instrs).Any(i => i.Op == Opcode.Call && i.Callee == Escape.Allocator), "no allocation left");
     }

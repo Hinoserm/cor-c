@@ -19,6 +19,7 @@ public sealed class UnitBackend : IUnitBackend
         LifetimeFacts? facts = null)
     {
         _lifetimes = 0;
+        Escape.LinkFacts? link = facts is null ? null : new(facts);
         Target.Current = Target.X86;
         // Each invocation must restore its own permissions; a previous unit may
         // have selected a newer CPU or explicitly disabled an extension.
@@ -72,7 +73,7 @@ public sealed class UnitBackend : IUnitBackend
             cleanup.Run(local);
             if (facts is not null)
             {
-                Interlocked.Add(ref _lifetimes, Escape.RunAtLink(function, facts));
+                Interlocked.Add(ref _lifetimes, Escape.RunAtLink(function, link!));
                 new Inline { SmallBody = 40, GrowthLimit = 1024, ConstantBranchBody = 160, FreshOwnerBody = 0 }.Run(local);
                 cleanup.Run(local);
             }

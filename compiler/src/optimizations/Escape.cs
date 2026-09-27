@@ -85,10 +85,16 @@ public sealed partial class Escape : IModulePass
             // now when the condition is already true.
             LifetimeCondition? freshHint = FreshHint(f, summaries, out List<Instr>? origins, out HashSet<VReg>? chain);
             _freshHints[f.Name] = freshHint;
-            if (freshHint is { IsTrue: true })
+            if (freshHint is not null && (freshHint.IsTrue || _hinting))
             {
-                _fresh.Add(f.Name);
-                _freshFields[f.Name] = FreshFields(f, summaries, origins!, chain!);
+                LifetimeFields? returned = _hinting ? new() : null;
+                FieldSummary left = FreshFields(f, summaries, origins!, chain!, returned);
+                if (freshHint.IsTrue)
+                {
+                    _fresh.Add(f.Name);
+                    _freshFields[f.Name] = left;
+                }
+                if (returned is not null) _freshFieldHints[f.Name] = returned;
             }
             // What it does to each field of every object it is handed
             // (EscapeFields): the reference fields that hold only objects
@@ -100,6 +106,8 @@ public sealed partial class Escape : IModulePass
         bool Provided(string helper) => byName.ContainsKey(helper) || m.RuntimeHelpers.Contains(helper);
         bool canFree = Provided(Freer);
         bool canFreeFields = canFree && Provided(FieldFreer);
+        _fieldSites = canFreeFields && Provided(FieldKeeper);
+        _unitKey = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(m.Name)))[..16];
         OwnedFieldEscape fields = new(byName, summaries);
         foreach (Function f in m.Functions)
         {
@@ -976,7 +984,8 @@ public sealed partial class Escape : IModulePass
             }
         if (calls.Count == 0 && waiting.Count == 0) return;
         Defs defs = new(f, buildCfg: false);
-        waiting.RemoveAll(w => !defs.IsSingle(w.Call.Dest!) || !Dereferenced(f, w.Call.Dest!));
+        HashSet<VReg>? addresses = waiting.Count == 0 ? null : AddressRegisters(f);
+        waiting.RemoveAll(w => !defs.IsSingle(w.Call.Dest!) || !addresses!.Contains(w.Call.Dest!));
         Liveness? liveness = null;
         HashSet<VReg>? pads = null;
         List<(Block Block, Instr Call, bool ReadsPrevious)> chosen = new();
@@ -1010,30 +1019,35 @@ public sealed partial class Escape : IModulePass
     }
 
     /// <summary>
-    /// Whether a register is used as the address of the memory it points at
-    /// -- read through, written through, its length taken. What tells a
-    /// call's object result from a number: the IR types do not.
+    /// Every register used as the address of the memory it points at -- read
+    /// through, written through, its length taken -- directly or through the
+    /// copies and width changes that lead to such a use: what tells a call's
+    /// object result from a number, which the IR types do not. One pass over
+    /// the function, then back along the copies, for all of its calls at once.
     /// </summary>
-    private static bool Dereferenced(Function f, VReg r)
+    private static HashSet<VReg> AddressRegisters(Function f)
     {
-        // Through copies and width changes: a call's 64-bit result is often
-        // narrowed before it is used.
-        HashSet<VReg> same = new() { r };
-        for (bool grew = true; grew;)
-        {
-            grew = false;
-            foreach (Block b in f.Blocks)
-                foreach (Instr i in b.Instrs)
+        HashSet<VReg> used = new();
+        Dictionary<VReg, List<VReg>> copiedFrom = new();
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+            {
+                if (i.Op is Opcode.Load or Opcode.Store or Opcode.ArrayLength or Opcode.InitArrayLength
+                    && i.Operands.Count > 0 && i.Operands[0] is RegOperand address)
+                    used.Add(address.Reg);
+                if (i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.SExt32 && i.Dest is not null
+                    && i.Operands.Count == 1 && i.Operands[0] is RegOperand from)
                 {
-                    if (i.Op is Opcode.Load or Opcode.Store or Opcode.ArrayLength or Opcode.InitArrayLength
-                        && i.Operands.Count > 0 && i.Operands[0] is RegOperand address && same.Contains(address.Reg))
-                        return true;
-                    if (i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.SExt32 && i.Dest is not null
-                        && i.Operands.Count == 1 && i.Operands[0] is RegOperand from && same.Contains(from.Reg) && same.Add(i.Dest))
-                        grew = true;
+                    if (!copiedFrom.TryGetValue(i.Dest, out List<VReg>? sources)) copiedFrom[i.Dest] = sources = new();
+                    sources.Add(from.Reg);
                 }
-        }
-        return false;
+            }
+        Stack<VReg> work = new(used);
+        while (work.TryPop(out VReg? r))
+            if (copiedFrom.TryGetValue(r, out List<VReg>? sources))
+                foreach (VReg source in sources)
+                    if (used.Add(source)) work.Push(source);
+        return used;
     }
 
     private bool OwnFreshResult(Function f, Block b, Instr call, bool readsPrevious)

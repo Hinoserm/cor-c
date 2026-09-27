@@ -531,6 +531,15 @@ static class Runtime
         }
     }
 
+    /// What a field free becomes when the link finds the field is not clean
+    /// after all: nothing. A unit compiled on its own cannot tell whether a
+    /// field another unit fills holds only objects made for it; it calls a
+    /// symbol of its own there, and the link makes that symbol FreeField or
+    /// this (Escape's field sites, the link's lifetime hints).
+    public static void KeepField(long at, long offset)
+    {
+    }
+
     /// Nonzero while a collection marks with the other threads running. The
     /// compiler reads it, inline, before every store of a reference into
     /// the heap or a static, and calls WriteBarrier when it is set.

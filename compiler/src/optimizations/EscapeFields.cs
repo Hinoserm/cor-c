@@ -1,5 +1,6 @@
 #nullable enable
 using Corsac.Lang.Ir;
+using Corsac.Lang.Lto;
 
 namespace Corsac.Lang.Opt;
 
@@ -52,7 +53,10 @@ using Block = Corsac.Lang.Ir.Block;
 public sealed partial class Escape
 {
     /// <summary>Runtime.FreeField(long at, long offset): the field's object given back, before the owner's.</summary>
-    public const string FieldFreer = "m_Runtime_FreeField_2_V$I64_V$I64";
+    public const string FieldFreer = LifetimeHints.FieldFreer;
+
+    /// <summary>Runtime.KeepField(long at, long offset): nothing. What a field site becomes when the link finds the field is not clean.</summary>
+    public const string FieldKeeper = LifetimeHints.FieldKeeper;
 
     /// <summary>
     /// The collector told of a reference: the write barrier, whole or inlined
@@ -90,10 +94,10 @@ public sealed partial class Escape
     }
 
     /// <summary>Per function, per parameter: its field summary; null for a parameter that escapes or is not a reference.</summary>
-    private readonly Dictionary<string, FieldSummary?[]> _paramFields = new(StringComparer.Ordinal);
+    private Dictionary<string, FieldSummary?[]> _paramFields = new(StringComparer.Ordinal);
 
     /// <summary>Per fresh function: what it left in the fields of the object it hands over.</summary>
-    private readonly Dictionary<string, FieldSummary> _freshFields = new(StringComparer.Ordinal);
+    private Dictionary<string, FieldSummary> _freshFields = new(StringComparer.Ordinal);
 
     /// <summary>Instructions this pass inserted to track owned objects: not uses of the objects.</summary>
     private readonly HashSet<Instr> _bookkeeping = new(ReferenceEqualityComparer.Instance);
@@ -129,18 +133,30 @@ public sealed partial class Escape
     private FieldSummary?[] ParameterFields(Function f, Dictionary<string, bool[]> summaries)
     {
         FieldSummary?[] result = new FieldSummary?[f.Params.Count];
+        LifetimeFields?[] hints = new LifetimeFields?[f.Params.Count];
         bool[] escapes = summaries[f.Name];
         if (f.Async is not null) return result;
+        _paramHints.TryGetValue(f.Name, out LifetimeCondition?[]? stays);
         for (int p = 0; p < f.Params.Count; p++)
         {
             VReg param = f.Params[p];
-            if (param.Type is not (IrType.I32 or IrType.I64) || (p < escapes.Length && escapes[p])) continue;
-            result[p] = FieldUses(f, new[] { param }, summaries, null, null);
+            if (param.Type is not (IrType.I32 or IrType.I64)) continue;
+            // The unit's own summary where the parameter stays here; the
+            // link's wherever it may stay once other units are known.
+            bool here = !(p < escapes.Length && escapes[p]);
+            bool link = _hinting && stays is not null && p < stays.Length && stays[p] is not null;
+            if (!here && !link) continue;
+            LifetimeFields? hint = link ? new() : null;
+            FieldSummary fields = FieldUses(f, new[] { param }, summaries, null, null, hint);
+            if (here) result[p] = fields;
+            hints[p] = hint;
         }
+        if (_hinting) _fieldHints[f.Name] = hints;
         return result;
     }
 
-    private FieldSummary FreshFields(Function f, Dictionary<string, bool[]> summaries, List<Instr> origins, HashSet<VReg> chain)
+    private FieldSummary FreshFields(Function f, Dictionary<string, bool[]> summaries, List<Instr> origins, HashSet<VReg> chain,
+        LifetimeFields? hint = null)
     {
         FieldSummary merged = new();
         // A returned register joined from several paths is not followed by
@@ -149,15 +165,36 @@ public sealed partial class Escape
         Defs defs = new(f, buildCfg: false);
         foreach (VReg r in chain)
         {
-            if (!defs.IsSingle(r) && !f.Params.Contains(r)) { merged.Opaque = true; return merged; }
-            if (defs.Definition(r) is { Op: Opcode.Phi }) { merged.Opaque = true; return merged; }
+            if (!defs.IsSingle(r) && !f.Params.Contains(r) || defs.Definition(r) is { Op: Opcode.Phi })
+            {
+                merged.Opaque = true;
+                if (hint is not null) hint.Opaque = true;
+                return merged;
+            }
         }
         foreach (Instr origin in origins)
         {
-            FieldSummary one = FieldUses(f, new[] { origin.Dest! }, summaries, origin, chain);
+            LifetimeFields? oneHint = hint is null ? null : new();
+            FieldSummary one = FieldUses(f, new[] { origin.Dest! }, summaries, origin, chain, oneHint);
             if (origin.Callee is not null && !IsAllocator(origin.Callee))
+            {
                 one.Merge(_freshFields.GetValueOrDefault(origin.Callee));
+                // What the maker left in it: another unit's, by its fresh
+                // return (argument -1); this unit's, by its own hint.
+                if (oneHint is not null)
+                {
+                    if (!_defined.Contains(origin.Callee)) oneHint.Merges.Add((origin.Callee, -1));
+                    else if (_freshFieldHints.GetValueOrDefault(origin.Callee) is LifetimeFields made) oneHint.Absorb(made);
+                    else oneHint.Opaque = true;
+                }
+            }
             merged.Merge(one);
+            if (oneHint is not null) hint!.Absorb(oneHint);
+        }
+        if (hint is not null && !hint.Bounded)
+        {
+            hint.Dirty.Clear(); hint.Fresh.Clear(); hint.Conditional.Clear(); hint.Merges.Clear();
+            hint.Opaque = true;
         }
         return merged;
     }
@@ -169,9 +206,16 @@ public sealed partial class Escape
     /// `source` (the instruction that made it) and this pass's own bookkeeping
     /// are not uses; a return of a register in `returnable` hands the object
     /// over and is allowed.
+    ///
+    /// With `hint`, the same question is also asked for the link (EscapeHints):
+    /// the object handed to another unit's function merges that function's
+    /// summary in, a child stored there from another unit's function is fresh
+    /// if that function is, and a loaded child handed to one stays clean if it
+    /// keeps nothing. The summary returned is the unit's own, pessimistic
+    /// answer either way.
     /// </summary>
     internal FieldSummary FieldUses(Function f, IEnumerable<VReg> roots, Dictionary<string, bool[]> summaries,
-        Instr? source, HashSet<VReg>? returnable)
+        Instr? source, HashSet<VReg>? returnable, LifetimeFields? hint = null)
     {
         FieldSummary fs = new();
         int word = IrTypes.Word.Bytes();
@@ -180,11 +224,23 @@ public sealed partial class Escape
         List<(long At, VReg Value, Instr Load)> loads = new();
         List<(long At, Instr Store)> stores = new();
 
+        void Opaque()
+        {
+            fs.Opaque = true;
+            if (hint is not null) hint.Opaque = true;
+        }
         void DirtyRange(long at, long bytes)
         {
             long first = at - ((at % word) + word) % word;
-            for (long o = first; o < at + bytes; o += word) fs.Dirty.Add(o);
+            for (long o = first; o < at + bytes; o += word)
+            {
+                fs.Dirty.Add(o);
+                hint?.Dirty.Add(o);
+            }
         }
+        // Past the first use the rules cannot follow, nothing more is learned;
+        // with a hint, only a use that is opaque whatever other units do.
+        bool Done() => hint is null ? fs.Opaque : hint.Opaque;
 
         foreach (Block b in f.Blocks)
         {
@@ -203,7 +259,7 @@ public sealed partial class Escape
                     case Opcode.Load:
                     {
                         if (i.Operands[0] is not RegOperand baseReg || !addresses.TryGetValue(baseReg.Reg, out long off))
-                        { fs.Opaque = true; break; }
+                        { Opaque(); break; }
                         long at = off + i.Offset;
                         if (i.Size == word && ((at % word) + word) % word == 0 && i.Dest is not null && defs.IsSingle(i.Dest))
                             loads.Add((at, i.Dest, i));
@@ -216,11 +272,11 @@ public sealed partial class Escape
                     }
                     case Opcode.Store:
                     {
-                        if (i.Operands.Count < 2) { fs.Opaque = true; break; }
+                        if (i.Operands.Count < 2) { Opaque(); break; }
                         // The object's own address stored anywhere -- in itself included.
-                        if (i.Operands[1] is RegOperand v0 && addresses.ContainsKey(v0.Reg)) { fs.Opaque = true; break; }
+                        if (i.Operands[1] is RegOperand v0 && addresses.ContainsKey(v0.Reg)) { Opaque(); break; }
                         if (i.Operands[0] is not RegOperand baseReg || !addresses.TryGetValue(baseReg.Reg, out long off))
-                        { fs.Opaque = true; break; }
+                        { Opaque(); break; }
                         long at = off + i.Offset;
                         if (i.Size == word && ((at % word) + word) % word == 0) stores.Add((at, i));
                         else DirtyRange(at, i.Size);
@@ -233,7 +289,7 @@ public sealed partial class Escape
                         bool baseOnly = i.Operands.Count >= 1 && i.Operands[0] is RegOperand t && addresses.ContainsKey(t.Reg);
                         for (int k = 1; k < i.Operands.Count; k++)
                             if (i.Operands[k] is RegOperand r && addresses.ContainsKey(r.Reg)) baseOnly = false;
-                        if (!zero || !baseOnly) fs.Opaque = true;
+                        if (!zero || !baseOnly) Opaque();
                         break;
                     }
                     case Opcode.Call:
@@ -242,71 +298,128 @@ public sealed partial class Escape
                         for (int a = 0; a < i.Operands.Count; a++)
                         {
                             if (i.Operands[a] is not RegOperand arg || !addresses.TryGetValue(arg.Reg, out long off)) continue;
-                            if (off != 0 || i.Callee is null || !_paramFields.TryGetValue(i.Callee, out FieldSummary?[]? callee)
-                                || a >= callee.Length)
-                            {
-                                fs.Opaque = true;
-                                break;
-                            }
-                            fs.Merge(callee[a]);
+                            if (off != 0 || i.Callee is null) { Opaque(); break; }
+                            if (_paramFields.TryGetValue(i.Callee, out FieldSummary?[]? callee) && a < callee.Length) fs.Merge(callee[a]);
+                            else fs.Opaque = true;
+                            if (hint is null) continue;
+                            // For the link: another unit's function is merged in
+                            // there; one of this unit's brings its own hint.
+                            if (!_defined.Contains(i.Callee)) hint.Merges.Add((i.Callee, a));
+                            else if (_fieldHints.TryGetValue(i.Callee, out LifetimeFields?[]? calleeHints) && a < calleeHints.Length
+                                     && calleeHints[a] is LifetimeFields known)
+                                hint.Absorb(known);
+                            else hint.Opaque = true;
                         }
                         break;
                     }
                     case Opcode.Ret:
                         if (returnable is null || i.Operands.Count != 1 || i.Operands[0] is not RegOperand back
                             || !returnable.Contains(back.Reg) || addresses[back.Reg] != 0)
-                            fs.Opaque = true;
+                            Opaque();
                         break;
                     case Opcode.Branch:
                     case Opcode.Switch:
                         break;
                     default:
-                        if (!IrInfo.IsIntCompare(i.Op)) fs.Opaque = true;
+                        if (!IrInfo.IsIntCompare(i.Op)) Opaque();
                         break;
                 }
-                if (fs.Opaque) return fs;
+                if (Done()) return fs;
             }
         }
 
         // What went into each field (rule 1).
+        // Counted apart: what the unit decides must not move with what it
+        // only tells the link.
         Dictionary<Instr, int> storedOrigins = new(ReferenceEqualityComparer.Instance);
-        List<(long At, Instr Origin)> fresh = new();
+        Dictionary<Instr, int> hintOrigins = new(ReferenceEqualityComparer.Instance);
+        List<(long At, Instr Origin, LifetimeCondition? Condition)> fresh = new();
         foreach ((long at, Instr st) in stores)
         {
             Operand value = st.Operands[1];
             if (value is ImmOperand { Value: 0 }) continue;
-            if (value is not RegOperand vr) { fs.Dirty.Add(at); continue; }
+            if (value is not RegOperand vr) { fs.Dirty.Add(at); hint?.Dirty.Add(at); continue; }
             // Put back what was just taken from the same field.
             if (loads.Any(l => l.At == at && ReferenceEquals(l.Value, vr.Reg))) continue;
+            HashSet<Instr> putHere = new(ReferenceEqualityComparer.Instance) { st };
             Instr? origin = FreshOrigin(f, defs, vr.Reg);
-            if (origin is null || ReferenceEquals(origin, source) || _owned.Contains(origin) || _ownedCalls.Contains(origin))
+            if (origin is not null && !ReferenceEquals(origin, source) && !_owned.Contains(origin) && !_ownedCalls.Contains(origin))
             {
-                fs.Dirty.Add(at);
-                continue;
+                Flow flow = Analyse(f, new[] { origin.Dest! }, summaries, origin, putHere);
+                if (!flow.Escapes)
+                {
+                    storedOrigins[origin] = storedOrigins.GetValueOrDefault(origin) + 1;
+                    hintOrigins[origin] = hintOrigins.GetValueOrDefault(origin) + 1;
+                    fresh.Add((at, origin, null));
+                    continue;
+                }
             }
-            Flow flow = Analyse(f, new[] { origin.Dest! }, summaries, origin, new HashSet<Instr>(ReferenceEqualityComparer.Instance) { st });
-            if (flow.Escapes) { fs.Dirty.Add(at); continue; }
-            storedOrigins[origin] = storedOrigins.GetValueOrDefault(origin) + 1;
-            fresh.Add((at, origin));
+            fs.Dirty.Add(at);
+            if (hint is null) continue;
+            // For the link: a child made by another unit's function, or let go
+            // only through calls to one, is fresh if the condition holds.
+            Instr? made = origin ?? CallOrigin(defs, vr.Reg);
+            if (made is null || ReferenceEquals(made, source) || _owned.Contains(made) || _ownedCalls.Contains(made))
+            { hint.Dirty.Add(at); continue; }
+            Needs needs = new(this);
+            if (made.Callee is not null && !IsAllocator(made.Callee) && !IsFreshCall(made) && !needs.AllowFresh(made.Callee))
+            { hint.Dirty.Add(at); continue; }
+            if (Analyse(f, new[] { made.Dest! }, summaries, made, putHere, needs: needs).Escapes) { hint.Dirty.Add(at); continue; }
+            hintOrigins[made] = hintOrigins.GetValueOrDefault(made) + 1;
+            fresh.Add((at, made, needs.Condition));
         }
-        foreach ((long at, Instr origin) in fresh)
+        foreach ((long at, Instr origin, LifetimeCondition? condition) in fresh)
         {
             // One object in two fields would be freed twice.
-            if (storedOrigins[origin] > 1) fs.Dirty.Add(at);
-            else fs.FreshStored.Add(at);
+            if (condition is null)
+            {
+                if (storedOrigins[origin] > 1) fs.Dirty.Add(at);
+                else fs.FreshStored.Add(at);
+            }
+            if (hint is null) continue;
+            if (hintOrigins[origin] > 1) hint.Dirty.Add(at);
+            else if (condition is null || condition.IsTrue) hint.Fresh.Add(at);
+            else hint.Conditional.Add((at, condition, true));
         }
 
         // What came out of each field (rule 2).
         foreach ((long at, VReg v, Instr load) in loads)
         {
             fs.Loads.Add((at, v));
-            if (fs.Dirty.Contains(at)) continue;
+            bool unitDirty = fs.Dirty.Contains(at), hintDirty = hint is null || hint.Dirty.Contains(at);
+            if (unitDirty && hintDirty) continue;
             HashSetOfStores putBack = new();
             foreach ((long sat, Instr st) in stores)
                 if (sat == at && st.Operands[1] is RegOperand sv && ReferenceEquals(sv.Reg, v)) putBack.Set.Add(st);
-            if (Analyse(f, new[] { v }, summaries, load, putBack.Set).Escapes) fs.Dirty.Add(at);
+            Needs? needs = hintDirty ? null : new(this);
+            Flow flow = Analyse(f, new[] { v }, summaries, load, putBack.Set, needs: needs);
+            bool escapes = flow.Escapes || needs is { Condition.IsTrue: false };
+            if (escapes) fs.Dirty.Add(at);
+            if (needs is null) continue;
+            if (flow.Escapes) hint!.Dirty.Add(at);
+            else if (!needs.Condition.IsTrue) hint!.Conditional.Add((at, needs.Condition, false));
+        }
+        if (hint is not null && !hint.Bounded)
+        {
+            // Past the fixed bound: opaque, and nothing more to say.
+            hint.Dirty.Clear(); hint.Fresh.Clear(); hint.Conditional.Clear(); hint.Merges.Clear();
+            hint.Opaque = true;
         }
         return fs;
+    }
+
+    /// <summary>The call a register holds the result of, through copies and width changes; or null.</summary>
+    private static Instr? CallOrigin(Defs defs, VReg r)
+    {
+        for (int hops = 0; hops < 8; hops++)
+        {
+            if (!defs.IsSingle(r) || defs.Definition(r) is not Instr d) return null;
+            if (d.Op == Opcode.Call && d.Callee is not null && d.Dest is not null) return d;
+            if (d.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.SExt32)
+                || d.Operands.Count != 1 || d.Operands[0] is not RegOperand from) return null;
+            r = from.Reg;
+        }
+        return null;
     }
 
     private sealed class HashSetOfStores
@@ -347,24 +460,55 @@ public sealed partial class Escape
         foreach (OwnedRecord r in records)
         {
             VReg[] roots = r.SlotAddress is null ? new[] { r.Root } : new[] { r.Root, r.SlotAddress };
-            FieldSummary fs = FieldUses(f, roots, summaries, r.Origin, null);
-            if (r.FreshCallee is not null) fs.Merge(_freshFields.GetValueOrDefault(r.FreshCallee));
-            List<long> clean = fs.Clean().Where(o => o >= 0 && (r.Bytes < 0 || o + word <= r.Bytes)).OrderBy(o => o).ToList();
-            if (clean.Count == 0) continue;
+            // For the link as well, when the unit can leave it field sites.
+            LifetimeFields? hint = _hinting && _fieldSites ? new() : null;
+            FieldSummary fs = FieldUses(f, roots, summaries, r.Origin, null, hint);
+            if (r.FreshCallee is not null)
+            {
+                fs.Merge(_freshFields.GetValueOrDefault(r.FreshCallee));
+                if (hint is not null)
+                {
+                    if (!_defined.Contains(r.FreshCallee)) hint.Merges.Add((r.FreshCallee, -1));
+                    else if (_freshFieldHints.GetValueOrDefault(r.FreshCallee) is LifetimeFields made) hint.Absorb(made);
+                    else hint.Opaque = true;
+                }
+            }
+            bool Fits(long o) => o >= 0 && (r.Bytes < 0 || o + word <= r.Bytes);
+            List<long> clean = fs.Clean().Where(Fits).OrderBy(o => o).ToList();
+            // The fields only the link can call clean: those some code filled
+            // with fresh objects -- or will have, if another unit's function
+            // is what the link finds it to be -- and none made dirty here.
+            List<long> later = hint is null || hint.Opaque || !hint.Bounded || hint.Merges.Count + hint.Conditional.Count == 0
+                ? new()
+                : hint.Fresh.Concat(hint.Conditional.Where(c => c.Stores).Select(c => c.Offset))
+                    .Where(o => Fits(o) && !hint.Dirty.Contains(o) && !clean.Contains(o)).Distinct().OrderBy(o => o).ToList();
+            if (clean.Count == 0 && later.Count == 0) continue;
 
             // Where the previous object dies inside the function, nothing
             // loaded from its fields may still be in use.
             if (r.Renew is not null)
             {
-                HashSet<VReg> loaded = Derivations(f, fs.Loads.Where(l => clean.Contains(l.Offset)).Select(l => l.Value));
                 liveness ??= new Liveness(f);
                 pads ??= PadLive(liveness);
-                if (LiveAt(f, liveness, pads, r.Renew, loaded)) continue;
+                bool LoadedLive(List<long> offsets) => offsets.Count > 0 && LiveAt(f, liveness, pads, r.Renew,
+                    Derivations(f, fs.Loads.Where(l => offsets.Contains(l.Offset)).Select(l => l.Value)));
+                if (LoadedLive(clean)) clean.Clear();
+                if (LoadedLive(later)) later.Clear();
             }
+            if (clean.Count == 0 && later.Count == 0) continue;
 
+            // A field the link decides is freed through a symbol of its own,
+            // which the link makes Runtime.FreeField or Runtime.KeepField.
+            List<(long Offset, string Callee)> frees = clean.Select(o => (o, FieldFreer)).ToList();
+            if (later.Count > 0)
+            {
+                List<(string Symbol, long Offset)> sites = later.Select(o => (FieldSiteSymbol(), o)).ToList();
+                _fieldSiteRecords.Add((hint!, sites));
+                frees.AddRange(sites.Select(site => (site.Offset, site.Symbol)));
+            }
             if (r.Slot is not null && r.SlotAddress is not null)
             {
-                SlotFieldFrees(f, r, clean);
+                SlotFieldFrees(f, r, frees);
             }
             else
             {
@@ -373,7 +517,7 @@ public sealed partial class Escape
                     int at = b.Instrs.IndexOf(free);
                     if (at < 0) continue;
                     List<Instr> before = new();
-                    foreach (long o in clean) AppendFieldFree(f, before, pointer, o, free.Line);
+                    foreach ((long o, string callee) in frees) AppendFieldFree(f, before, pointer, o, free.Line, callee);
                     b.Instrs.InsertRange(at, before);
                     _bookkeeping.UnionWith(before);
                 }
@@ -382,7 +526,15 @@ public sealed partial class Escape
         }
     }
 
-    private void SlotFieldFrees(Function f, OwnedRecord r, List<long> clean)
+    /// <summary>A field free the link decides: a symbol unique to this unit and site.</summary>
+    private string FieldSiteSymbol()
+        => FieldSitePrefix + _unitKey + "$" + (_siteSerial++).ToString(System.Globalization.CultureInfo.InvariantCulture);
+    private int _siteSerial;
+
+    /// <summary>The prefix of the symbols field sites call (LifetimeHints.FieldSites).</summary>
+    public const string FieldSitePrefix = "__corsac_field$";
+
+    private void SlotFieldFrees(Function f, OwnedRecord r, List<(long Offset, string Callee)> frees)
     {
         int word = IrTypes.Word.Bytes();
         int line = r.Origin.Line;
@@ -390,7 +542,7 @@ public sealed partial class Escape
         List<Instr> entry = new();
         VReg entryAddr = f.NewReg(IrTypes.Word, "fieldsp");
         entry.Add(new Instr { Op = Opcode.Copy, Dest = entryAddr, Operands = { new SlotOperand(r.Slot!) }, Line = line });
-        foreach (long o in clean)
+        foreach ((long o, string _) in frees)
             entry.Add(new Instr { Op = Opcode.Store, Size = word, Offset = o, Operands = { new RegOperand(entryAddr), new ImmOperand(0, IrTypes.Word) }, Line = line });
         f.Entry.Instrs.InsertRange(0, entry);
         _bookkeeping.UnionWith(entry);
@@ -403,7 +555,7 @@ public sealed partial class Escape
             List<Instr> before = new();
             VReg addr = f.NewReg(IrTypes.Word, "fieldsp");
             before.Add(new Instr { Op = Opcode.Copy, Dest = addr, Operands = { new SlotOperand(r.Slot!) }, Line = line });
-            foreach (long o in clean) AppendFieldFree(f, before, addr, o, line);
+            foreach ((long o, string callee) in frees) AppendFieldFree(f, before, addr, o, line, callee);
             b.Instrs.InsertRange(at, before);
             _bookkeeping.UnionWith(before);
             break;
@@ -416,13 +568,13 @@ public sealed partial class Escape
             List<Instr> before = new();
             VReg addr = f.NewReg(IrTypes.Word, "fieldsp");
             before.Add(new Instr { Op = Opcode.Copy, Dest = addr, Operands = { new SlotOperand(r.Slot!) }, Line = line });
-            foreach (long o in clean) AppendFieldFree(f, before, addr, o, line);
+            foreach ((long o, string callee) in frees) AppendFieldFree(f, before, addr, o, line, callee);
             b.Instrs.InsertRange(b.Instrs.Count - 1, before);
             _bookkeeping.UnionWith(before);
         }
     }
 
-    private static void AppendFieldFree(Function f, List<Instr> output, VReg owner, long offset, int line)
+    private static void AppendFieldFree(Function f, List<Instr> output, VReg owner, long offset, int line, string callee = FieldFreer)
     {
         VReg argument = owner;
         if (owner.Type == IrType.I32)
@@ -430,7 +582,7 @@ public sealed partial class Escape
             argument = f.NewReg(IrType.I64, "fieldOwner");
             output.Add(new Instr { Op = Opcode.ZExt32, Dest = argument, Operands = { new RegOperand(owner) }, Line = line });
         }
-        output.Add(new Instr { Op = Opcode.Call, Callee = FieldFreer,
+        output.Add(new Instr { Op = Opcode.Call, Callee = callee,
             Operands = { new RegOperand(argument), new ImmOperand(offset, IrType.I64) }, Line = line });
     }
 

@@ -127,7 +127,7 @@ collector only because of such a call could have been placed in its frame or
 freed (at most 4096 per unit). The unit's own decisions use the same analysis
 read pessimistically, so hints change nothing a unit compiles to by itself.
 
-Magic `CLIF`, version 1, total length; a sorted name table; the runtime frees the
+Magic `CLIF`, version 2, total length; a sorted name table; the runtime frees the
 unit may call; function records (name index, global flag, parameter conditions,
 fresh condition); pending conditions. A condition is a stays count (-1 for never)
 with name/argument pairs, then a fresh count with names.
@@ -145,9 +145,34 @@ import candidates). In the backend each function is inlined with its imports but
 not the allocators, cleaned up, given the lifetime rules again with those facts
 (`Escape.RunAtLink`), then inlined again so the allocators and the new frees fold
 in as they do in a unit compile. The compile keeps a pending allocation a call to
-the allocator (`Module.KeepCalls`) so the link can still recognise it. The log
-reports `LTO lifetimes: units with hints=N, units gaining=M` and the backend
-`lifetimes placed or freed=K`.
+the allocator (`Module.KeepCalls`) so the link can still recognise it.
+
+Fields go the same way (the owned field rules, `Opt/EscapeFields.cs`). For each
+parameter that may stay and each function that may return a fresh object, the
+unit states what the function does to that object's reference fields: word
+offsets dirty or freshly filled whatever other units do; offsets that are fresh
+only if a condition holds (a child stored from another unit's function) or stay
+clean only if one holds (a loaded child handed to one); and the other units'
+functions the object is handed to at its base, argument -1 meaning the object a
+fresh function returns, whose summaries merge in. Bounded to 64 entries, past
+which the object is opaque. The link unions those to a least fixed point as it
+does escapes, with the conditions answered from the solved escapes and
+freshness, and hands the solved summaries to the backend with the other facts.
+
+An object the unit already owns is stored in its slot in the archived IR, so
+the link's second look cannot take it again to add field frees. For those the
+unit frees each field it cannot yet call clean through a symbol of its own
+(`__corsac_field$<unit>$<n>`) and lists the site with the object's field
+summary. The link defines every such symbol, with LTO on or off, as an alias of
+`Runtime.FreeField` where the solved summary leaves the field clean and of
+`Runtime.KeepField`, which does nothing, everywhere else; no code is
+regenerated for them. Version 2 of the section adds the field summaries after
+each function's conditions and the field sites after the pending conditions;
+conditions gain a third requirement list, argument field summaries that must not
+be opaque, used by pending triggers.
+
+The log reports `LTO lifetimes: units with hints=N, units gaining=M, field
+sites=S freed=F` and the backend `lifetimes placed or freed=K`.
 
 ## Remaining limits
 

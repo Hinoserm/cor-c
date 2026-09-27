@@ -70,6 +70,14 @@ public sealed partial class Escape
     private readonly HashSet<string> _defined = new(StringComparer.Ordinal);
     private readonly Dictionary<string, LifetimeCondition?[]> _paramHints = new(StringComparer.Ordinal);
     private readonly Dictionary<string, LifetimeCondition?> _freshHints = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, LifetimeFields?[]> _fieldHints = new(StringComparer.Ordinal);
+    /// <summary>Field frees the link decides (OwnFields): each owned object's field summary and its sites.</summary>
+    private readonly List<(LifetimeFields Fields, List<(string Symbol, long Offset)> Sites)> _fieldSiteRecords = new();
+    /// <summary>Whether the runtime has both frees a field site can become; the unit then leaves sites.</summary>
+    private bool _fieldSites;
+    /// <summary>What makes this unit's field-site symbols its own: its name, hashed.</summary>
+    private string _unitKey = "";
+    private readonly Dictionary<string, LifetimeFields?> _freshFieldHints = new(StringComparer.Ordinal);
     private readonly List<LifetimeCondition> _pending = new();
     private readonly HashSet<LifetimeCondition> _pendingSeen = new();
 
@@ -193,11 +201,13 @@ public sealed partial class Escape
         {
             LifetimeCondition?[] parameters = _paramHints.TryGetValue(f.Name, out LifetimeCondition?[]? known)
                 ? known : new LifetimeCondition?[f.Params.Count];
-            hints.Functions.Add(new(f.Name, f.Exported, parameters, _freshHints.GetValueOrDefault(f.Name)));
+            hints.Functions.Add(new(f.Name, f.Exported, parameters, _freshHints.GetValueOrDefault(f.Name),
+                _fieldHints.GetValueOrDefault(f.Name), _freshFieldHints.GetValueOrDefault(f.Name)));
         }
         hints.Pending.AddRange(_pending);
+        hints.FieldSites.AddRange(_fieldSiteRecords);
         m.KeepCalls.UnionWith(_keep);
-        foreach (string helper in new[] { Freer, FieldFreer, ReplacedFreer })
+        foreach (string helper in new[] { Freer, FieldFreer, ReplacedFreer, FieldKeeper })
             if (provided(helper)) hints.Helpers.Add(helper);
         return hints;
     }
@@ -211,17 +221,51 @@ public sealed partial class Escape
     /// object it already placed or owns is stored in its slot and so escapes
     /// here, and is not taken twice.
     /// </summary>
-    public static int RunAtLink(Function f, LifetimeFacts facts)
+    /// <summary>
+    /// The link's answers for one unit in the form the passes read them,
+    /// made once per unit rather than once per function it loads.
+    /// </summary>
+    public sealed class LinkFacts
+    {
+        internal HashSet<string> Fresh { get; }
+        internal Dictionary<string, bool[]> Escapes { get; }
+        internal HashSet<string> Helpers { get; }
+        internal Dictionary<string, FieldSummary?[]> ParameterFields { get; } = new(StringComparer.Ordinal);
+        internal Dictionary<string, FieldSummary> FreshFields { get; } = new(StringComparer.Ordinal);
+
+        public LinkFacts(LifetimeFacts facts)
+        {
+            Fresh = facts.Fresh;
+            Escapes = facts.Escapes;
+            Helpers = facts.Helpers;
+            foreach ((string name, SolvedFields?[] fields) in facts.Fields) ParameterFields[name] = fields.Select(Summary).ToArray();
+            foreach ((string name, SolvedFields fields) in facts.FreshFields) FreshFields[name] = Summary(fields)!;
+        }
+
+        private static FieldSummary? Summary(SolvedFields? solved)
+        {
+            if (solved is null) return null;
+            FieldSummary summary = new() { Opaque = solved.Opaque };
+            summary.Dirty.UnionWith(solved.Dirty);
+            summary.FreshStored.UnionWith(solved.Fresh);
+            return summary;
+        }
+    }
+
+    public static int RunAtLink(Function f, LinkFacts facts)
     {
         // The facts are shared by every function of the unit, on every
         // backend worker: read here, never written, never copied.
-        Escape pass = new() { _hinting = false, _fresh = facts.Fresh };
+        Escape pass = new()
+        {
+            _hinting = false, _fresh = facts.Fresh, _paramFields = facts.ParameterFields, _freshFields = facts.FreshFields,
+        };
         Dictionary<string, bool[]> summaries = facts.Escapes;
         bool canFree = facts.Helpers.Contains(Freer);
         Dictionary<string, Function> byName = new(StringComparer.Ordinal) { [f.Name] = f };
         pass.PromoteIn(f, summaries, canFree, new OwnedFieldEscape(byName, summaries));
         if (canFree && facts.Helpers.Contains(ReplacedFreer)) pass.OwnVariables(f, summaries);
         if (canFree && facts.Helpers.Contains(FieldFreer)) pass.OwnFields(f, summaries);
-        return pass.Promoted + pass.Owned;
+        return pass.Promoted + pass.Owned + pass.FieldsOwned;
     }
 }

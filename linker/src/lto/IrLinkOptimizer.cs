@@ -93,10 +93,55 @@ public static class IrLinkOptimizer
         foreach (var replacement in replacements)
             inputs[replacement.Index] = (inputs[replacement.Index].Name, replacement.Object);
         // Final images do not carry compiler IR or stale native integrity hashes.
+        (int sites, int sitesFreed) = DefineFieldSites(inputs, hints, lifetimes);
         foreach (var input in inputs)
             input.Object.Sections.RemoveAll(section => section.Name == IrArchive.SectionName || section.Name == LifetimeHints.SectionName);
-        if (lifetimes is not null)
-            Console.Error.WriteLine("LTO lifetimes: units with hints=" + hints.Count + ", units gaining=" + lifetimeUnits);
+        if (lifetimes is not null || sites > 0)
+            Console.Error.WriteLine("LTO lifetimes: units with hints=" + hints.Count + ", units gaining=" + lifetimeUnits
+                + ", field sites=" + sites + " freed=" + sitesFreed);
         return replacements.Count;
+    }
+
+    /// <summary>
+    /// FIELD SITES: a unit that owns an object whose fields another unit
+    /// fills cannot tell whether they hold only objects made for them, so it
+    /// frees each such field through a symbol of its own (LifetimeHints.
+    /// FieldSites). Every such symbol is defined here, whatever else the link
+    /// does: as Runtime.FreeField where the whole program leaves the field
+    /// clean, and as Runtime.KeepField, which does nothing, everywhere else --
+    /// all of them, with the link-time optimizer off. Defined in the object
+    /// that defines the routine, after any unit has been regenerated.
+    /// </summary>
+    private static (int Sites, int Freed) DefineFieldSites(List<(string Name, ObjectFile Object)> inputs,
+        Dictionary<ObjectFile, LifetimeHints> hints, LifetimeSolver? solver)
+    {
+        if (hints.Values.All(unit => unit.FieldSites.Count == 0)) return (0, 0);
+        (ObjectFile Object, Symbol Symbol)? Find(string name)
+        {
+            foreach (var input in inputs)
+                foreach (Symbol symbol in input.Object.Symbols)
+                    if (symbol.Name == name && symbol.IsDefined && symbol.Global) return (input.Object, symbol);
+            return null;
+        }
+        var freer = Find(LifetimeHints.FieldFreer);
+        var keeper = Find(LifetimeHints.FieldKeeper)
+            ?? throw new ElfFormatException("Field sites need Runtime.KeepField, which no object defines");
+        int sites = 0, freed = 0;
+        foreach (LifetimeHints unit in hints.Values)
+            foreach ((LifetimeFields fields, List<(string Symbol, long Offset)> list) in unit.FieldSites)
+            {
+                SolvedFields? solved = solver?.Solve(fields);
+                foreach ((string name, long offset) in list)
+                {
+                    bool clean = freer is not null && solved is { Opaque: false }
+                        && solved.Fresh.Contains(offset) && !solved.Dirty.Contains(offset);
+                    (ObjectFile owner, Symbol target) = clean ? freer!.Value : keeper;
+                    owner.Symbols.Add(new Symbol { Name = name, Section = target.Section, Offset = target.Offset,
+                        Size = target.Size, IsFunction = true, Global = true });
+                    sites++;
+                    if (clean) freed++;
+                }
+            }
+        return (sites, freed);
     }
 }

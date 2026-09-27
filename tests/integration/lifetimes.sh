@@ -43,10 +43,17 @@ grep -q 'LTO lifetimes: units with hints=2, units gaining=1' "$work/on.log" || f
 taken=$(sed -n 's/.*lifetimes placed or freed=\([0-9][0-9]*\).*/\1/p' "$work/on.log" | head -1)
 [ "${taken:-0}" -ge 2 ] || fail "the link placed or freed ${taken:-0} objects, expected the lent and the received arrays"
 if readelf -SW "$work/on" | grep -q '\.corsac\.life'; then fail "lifetime hints leaked into the final image"; fi
+# Fields: a holder's array made by Provider.Make is freed with the holder
+# (its field site becomes FreeField); one Provider.Shared hands everybody
+# is not (its site becomes KeepField, and the shared array survives, exit 28).
+sites=$(sed -n 's/.*field sites=\([0-9][0-9]*\) freed=\([0-9][0-9]*\).*/\1 \2/p' "$work/on.log" | head -1)
+set -- $sites
+[ "${2:-0}" -gt 0 ] || fail "no field site became a free"
+[ "${1:-0}" -gt "${2:-0}" ] || fail "every field site became a free, the shared array's included"
 
 corlink --no-lto "$work/caller.o" "$work/provider.o" -o "$work/off" > "$work/off.log" 2>&1
 run "$work/off"
-if grep -q 'LTO lifetimes' "$work/off.log"; then fail "--no-lto still solved lifetimes"; fi
+grep -q 'units gaining=0, field sites=[0-9]* freed=0' "$work/off.log" || fail "--no-lto freed through a field site or gained a unit"
 
 # 3. The same bytes again, and the same bytes with the backend made to work
 #    one function at a time: memory sizes the work, never the answer.
@@ -55,4 +62,4 @@ cmp "$work/on" "$work/again" || fail "two links of the same objects differ"
 CORC_WORK_BUDGET=1 corlink "$work/caller.o" "$work/provider.o" -o "$work/small" > "$work/small.log" 2>&1
 cmp "$work/on" "$work/small" || fail "the link on a one-function budget differs"
 grep -q 'peak batch functions=1,' "$work/small.log" || fail "the small budget did not batch one function at a time"
-echo 'PASS lifetimes: per-unit frees, link-time hints solved across units, kept objects kept, identical under a one-function budget'
+echo 'PASS lifetimes: per-unit frees, link-time hints solved across units, fields across units, kept objects kept, identical under a one-function budget'

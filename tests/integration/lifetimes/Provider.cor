@@ -25,4 +25,24 @@ public static class Provider
 
     // Keeps what it is handed: never the caller's to free.
     public static void Keep(byte[] data) => Held = data;
+
+    // Fills a box's field with an array made for it.
+    public static void Fill(Box box, int length)
+    {
+        box.Data = new byte[length];
+        box.Data[0] = 5;
+    }
+
+    // One array everybody shares: never anybody's to free.
+    public static byte[] Common = new byte[16];
+    public static byte[] Shared()
+    {
+        Common[1] = 9;
+        return Common;
+    }
+}
+
+public class Box
+{
+    public byte[] Data;
 }

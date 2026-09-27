@@ -42,6 +42,47 @@ static class Program
         return total;
     }
 
+    // A box another unit's function fills: the box and its array go at the
+    // link, once Fill is known to keep the box and fill the field freshly.
+    static int Boxed(int length)
+    {
+        int total = 0;
+        for (int i = 0; i < 200; i++)
+        {
+            Box box = new Box();
+            Provider.Fill(box, length);
+            total += box.Data[0];
+        }
+        return total;
+    }
+
+    // A holder of this unit's, given an array another unit made: freed with
+    // the holder if the link finds Make fresh (a field site).
+    static int Held(int length)
+    {
+        int total = 0;
+        for (int i = 0; i < 200; i++)
+        {
+            Holder holder = new Holder();
+            holder.Data = Provider.Make(length, 4);
+            total += holder.Data[0];
+        }
+        return total;
+    }
+
+    // The same with an array another unit shares: never freed.
+    static int Sharing()
+    {
+        int total = 0;
+        for (int i = 0; i < 200; i++)
+        {
+            Holder holder = new Holder();
+            holder.Data = Provider.Shared();
+            total += holder.Data[1];
+        }
+        return total;
+    }
+
     static int Main()
     {
         int length = Provider.Size;
@@ -51,9 +92,18 @@ static class Program
         if (Local(length) != 19900) return 21;
         if (Lent(length) != 200) return 22;
         if (Received(length) != 600) return 23;
+        if (Boxed(length) != 1000) return 25;
+        if (Held(length) != 800) return 26;
+        if (Sharing() != 1800) return 27;
         // Everything above was freed or collected; what was kept is intact.
         Gc.Collect();
         if (Provider.Held[5] != 77 || Provider.Held.Length != length) return 24;
+        if (Provider.Common.Length != 16 || Provider.Common[1] != 9) return 28;
         return 42;
     }
+}
+
+class Holder
+{
+    public byte[] Data;
 }

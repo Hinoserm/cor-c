@@ -87,10 +87,57 @@ public static class LifetimeTests
         Check(request.Facts is LifetimeFacts f2 && f2.Escapes.Count == facts.Escapes.Count && f2.Escapes["Store"][0]
             && f2.Fresh.SetEquals(facts.Fresh) && f2.Helpers.SetEquals(facts.Helpers), "facts round trip on the backend wire");
 
+        // Fields: what each function does to its argument's fields, solved.
+        // Fill(box) fills offset 8 freshly; Pass(box) hands it to Fill;
+        // Lost(box) hands it to a function nobody summarised; Mixed(box)
+        // stores New()'s object at 16 and Shared()'s at 24, and hands what it
+        // loads from 32 to Read and from 40 to Store; New returns a fresh
+        // object whose offset 8 it filled.
+        LifetimeFields Local(Action<LifetimeFields> fill) { LifetimeFields f = new(); fill(f); return f; }
+        LifetimeHints c = new();
+        LifetimeCondition stay = new();
+        c.Functions.Add(new("Fill", true, new LifetimeCondition?[] { stay }, null,
+            new LifetimeFields?[] { Local(f => f.Fresh.Add(8)) }));
+        c.Functions.Add(new("Pass", true, new LifetimeCondition?[] { Stays(("Fill", 0)) }, null,
+            new LifetimeFields?[] { Local(f => f.Merges.Add(("Fill", 0))) }));
+        c.Functions.Add(new("Lost", true, new LifetimeCondition?[] { Stays(("Nowhere", 0)) }, null,
+            new LifetimeFields?[] { Local(f => f.Merges.Add(("Nowhere", 0))) }));
+        c.Functions.Add(new("Mixed", true, new LifetimeCondition?[] { stay }, null, new LifetimeFields?[] { Local(f =>
+        {
+            f.Conditional.Add((16, Fresh("New"), true));
+            f.Conditional.Add((24, Fresh("Shared"), true));
+            f.Conditional.Add((32, Stays(("Read", 0)), false));
+            f.Conditional.Add((40, Stays(("Store", 0)), false));
+            f.Fresh.Add(32); f.Fresh.Add(40);
+        }) }));
+        c.Functions.Add(new("Make2", true, Array.Empty<LifetimeCondition?>(), Fresh("New"), null,
+            Local(f => f.Merges.Add(("New", -1)))));
+        b.Functions.RemoveAll(f => f.Name == "New");
+        b.Functions.Add(new("New", true, Array.Empty<LifetimeCondition?>(), new(), null, Local(f => f.Fresh.Add(8))));
+        c.FieldSites.Add((Local(f => f.Merges.Add(("Fill", 0))), new() { ("__corsac_field$t$0", 8), ("__corsac_field$t$1", 12) }));
+
+        LifetimeHints cBack = LifetimeHints.Read(c.Write());
+        Check(cBack.Functions.Single(f => f.Name == "Mixed").ParameterFields![0]!.Conditional.Count == 4, "field conditions round trip");
+        Check(cBack.Functions.Single(f => f.Name == "Make2").FreshFields!.Merges.Single() == ("New", -1), "fresh-return merges round trip");
+        Check(cBack.FieldSites.Single().Sites.Count == 2 && cBack.FieldSites.Single().Sites[1] == ("__corsac_field$t$1", 12), "field sites round trip");
+
+        LifetimeSolver fields = new(new[] { a, b, c });
+        Check(fields.FieldsOf("Pass", 0) is { Opaque: false } pass && pass.Fresh.SequenceEqual(new long[] { 8 }), "fields merged across units");
+        Check(fields.FieldsOf("Lost", 0) is null && fields.Escapes("Lost", 0), "handed to an unknown function: escapes, no fields");
+        SolvedFields mixed = fields.FieldsOf("Mixed", 0)!;
+        Check(mixed.Fresh.Contains(16) && mixed.Dirty.Contains(24), "a stored child is fresh only if its maker is");
+        Check(!mixed.Dirty.Contains(32) && mixed.Dirty.Contains(40), "a loaded child stays clean only if its taker keeps nothing");
+        Check(fields.FreshFieldsOf("Make2") is { Opaque: false } made && made.Fresh.Contains(8), "a fresh return's fields merged from its maker");
+        SolvedFields site = fields.Solve(cBack.FieldSites.Single().Fields)!;
+        Check(!site.Opaque && site.Fresh.Contains(8) && !site.Fresh.Contains(12), "a field site's summary: 8 clean, 12 not");
+        LifetimeCondition needsFields = new(); needsFields.Fields.Add(("Pass", 0));
+        LifetimeCondition needsLost = new(); needsLost.Fields.Add(("Lost", 0));
+        Check(fields.Holds(needsFields) && !fields.Holds(needsLost), "field requirements");
+
         // Hints ride in an object and are consumed by the link.
         ObjectFile obj = new(); Section text = new(".text", SectionKind.Code); text.Bytes.Add(0xc3); obj.Sections.Add(text);
         a.Attach(obj);
         Check(LifetimeHints.Read(obj)!.Functions.Count == 5, "hints attached to an object");
-        Console.WriteLine("  lifetime hint format, whole-program solve, cycles, unknown callees and backend facts passed");
+        Console.WriteLine("  lifetime hint format, whole-program solve, cycles, unknown callees, fields, field sites and backend facts passed");
     }
 }
