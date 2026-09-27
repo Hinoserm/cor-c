@@ -3378,6 +3378,11 @@ static class HeapChunks
     /// Takes a chunk out of the list and gives its memory back. The floor and
     /// ceiling are left as they were: an address inside a gone chunk still
     /// fails the lookup that follows the envelope test.
+    /// Chunks taken from the operating system and given back, and of those
+    /// given back the ones not of the usual size -- a large array's own:
+    /// what says whether a program's heap is churning its mappings.
+    public static long Maps, Releases, BigReleases;
+
     public static void Release(long chunk)
     {
         long size = Sys.Peek(chunk + ChunkLimit) - chunk;
@@ -3408,6 +3413,8 @@ static class HeapChunks
         }
 
         _heapBytes = _heapBytes - size;
+        Releases = Releases + 1;
+        if (size != ChunkAsk) BigReleases = BigReleases + 1;
         long anchors = Sys.Peek(chunk + ChunkAnchors);
         if (anchors != 0)
         {
@@ -3513,6 +3520,7 @@ static class HeapChunks
             return 0;
         }
 
+        Maps = Maps + 1;
         Sys.Poke(raw + ChunkNext, _chunks);
         Sys.Poke(raw + ChunkEnd, raw + ChunkBytes);
         Sys.Poke(raw + ChunkLimit, raw + ask);
