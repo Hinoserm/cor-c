@@ -192,6 +192,18 @@ static partial class Os
         return (int)Err.Result(Sys.Syscall(Call.Flock, fd, operation, 0));
     }
 
+    /// fsync(2): the file's data and metadata on the device before it returns.
+    public static int Fsync(int fd)
+    {
+        return (int)Err.Result(Sys.Syscall(Call.Fsync, fd, 0, 0));
+    }
+
+    /// ftruncate64(2), the length split into two words as the i386 call takes it.
+    public static int Ftruncate(int fd, long length)
+    {
+        return (int)Err.Result(Sys.Syscall(Call.Ftruncate64, fd, length & 0xFFFFFFFF, (length >> 32) & 0xFFFFFFFF));
+    }
+
     public static int Stat(string path, byte[] into)
     {
         StatBuf.Check(into);

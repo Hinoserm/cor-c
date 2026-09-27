@@ -2449,6 +2449,39 @@ namespace System.Threading.Tasks
 
         public System.Runtime.CompilerServices.ValueTaskAwaiter GetAwaiter()
             => new System.Runtime.CompilerServices.ValueTaskAwaiter(AsTask());
+
+        public static ValueTask FromResult() => default;
+    }
+
+    /// A result that is either here already or the Task that will make it.
+    readonly struct ValueTask<TResult>
+    {
+        readonly Task<TResult>? _task;
+        readonly TResult _result;
+
+        public ValueTask(TResult result)
+        {
+            _task = null;
+            _result = result;
+        }
+
+        public ValueTask(Task<TResult> task)
+        {
+            if (task is null) throw new ArgumentNullException("task");
+            _task = task;
+            _result = default!;
+        }
+
+        public bool IsCompleted => _task is null || _task.IsCompleted;
+        public bool IsCompletedSuccessfully => _task is null || _task.IsCompletedSuccessfully;
+        public bool IsFaulted => _task is not null && _task.IsFaulted;
+
+        public TResult Result => _task is null ? _result : _task.Result;
+
+        public Task<TResult> AsTask() => _task ?? Task.FromResult(_result);
+
+        public System.Runtime.CompilerServices.ValueTaskAwaiter<TResult> GetAwaiter()
+            => new System.Runtime.CompilerServices.ValueTaskAwaiter<TResult>(AsTask());
     }
 }
 
@@ -2469,6 +2502,30 @@ namespace System.Runtime.CompilerServices
         {
             _task.ThrowIfNotSuccessful();
         }
+
+        public void OnCompleted(Action continuation)
+        {
+            _task.AddContinuation(continuation);
+        }
+
+        public void UnsafeOnCompleted(Action continuation)
+        {
+            _task.AddContinuation(continuation);
+        }
+    }
+
+    readonly struct ValueTaskAwaiter<TResult>
+    {
+        readonly System.Threading.Tasks.Task<TResult> _task;
+
+        public ValueTaskAwaiter(System.Threading.Tasks.Task<TResult> task)
+        {
+            _task = task;
+        }
+
+        public bool IsCompleted => _task.IsCompleted;
+
+        public TResult GetResult() => _task.GetAwaiter().GetResult();
 
         public void OnCompleted(Action continuation)
         {

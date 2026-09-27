@@ -57,6 +57,7 @@ static class Call
     public const long Ioctl = 54;
     public const long Dup2 = 63;        // (from, to)
     public const long Ftruncate = 93;
+    public const long Ftruncate64 = 194; // (fd, low, high): 64-bit length
     public const long LlSeek = 140;     // (fd, high, low, result, whence): 64-bit lseek
     public const long Getcwd = 183;     // (buffer, size) -> length INCLUDING the NUL
     public const long Stat64 = 195;     // (path, buffer)

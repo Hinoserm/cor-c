@@ -4789,6 +4789,18 @@ struct ReadOnlySpan<T> {
         get { return items[from + index]; }
     }
 
+    /// THE ORDER OF TWO SEQUENCES, element by element and then by length:
+    /// .NET's MemoryExtensions.SequenceCompareTo.
+    public int SequenceCompareTo(ReadOnlySpan<T> other) {
+        IComparer<T> by = new DefaultComparer<T>();
+        int common = count < other.Length ? count : other.Length;
+        for (int i = 0; i < common; i++) {
+            int order = by.Compare(items[from + i], other[i]);
+            if (order != 0) { return order; }
+        }
+        return count.CompareTo(other.Length);
+    }
+
     public ReadOnlySpan<T> Slice(int start) {
         return new ReadOnlySpan<T>(items, from + start, count - start);
     }
@@ -4846,6 +4858,108 @@ struct ReadOnlySpan<T> {
     public bool Contains(T value) { return IndexOf(value) >= 0; }
 }
 
+/// .NET's Memory<T>: a window onto an array that, unlike a span, may be kept
+/// in a field or handed to an asynchronous method. Span is how it is read.
+readonly struct Memory<T> {
+    private readonly T[]? items;
+    private readonly int from;
+    private readonly int count;
+
+    public Memory(T[]? array) {
+        items = array;
+        from = 0;
+        count = array == null ? 0 : array.Length;
+    }
+
+    public Memory(T[]? array, int start, int length) {
+        if (array == null) {
+            if (start != 0 || length != 0) { throw new ArgumentOutOfRangeException("start"); }
+        }
+        else if (start < 0 || length < 0 || start > array.Length - length) {
+            throw new ArgumentOutOfRangeException("start");
+        }
+        items = array;
+        from = start;
+        count = length;
+    }
+
+    public static Memory<T> Empty => default;
+
+    public int Length => count;
+    public bool IsEmpty => count == 0;
+
+    public Span<T> Span => items == null ? new Span<T>(new T[0]) : new Span<T>(items, from, count);
+
+    public Memory<T> Slice(int start) {
+        if (start < 0 || start > count) { throw new ArgumentOutOfRangeException("start"); }
+        return new Memory<T>(items, from + start, count - start);
+    }
+
+    public Memory<T> Slice(int start, int length) {
+        if (start < 0 || length < 0 || start > count - length) { throw new ArgumentOutOfRangeException("start"); }
+        return new Memory<T>(items, from + start, length);
+    }
+
+    public T[] ToArray() { return Span.ToArray(); }
+
+    /// The array, start and length, for a reader that works in those.
+    internal T[]? Array => items;
+    internal int Start => from;
+
+    public static implicit operator Memory<T>(T[]? array) => new Memory<T>(array);
+
+    public static implicit operator ReadOnlyMemory<T>(Memory<T> memory) => new ReadOnlyMemory<T>(memory.items, memory.from, memory.count);
+}
+
+/// .NET's ReadOnlyMemory<T>: a Memory the holder promises not to write.
+readonly struct ReadOnlyMemory<T> {
+    private readonly T[]? items;
+    private readonly int from;
+    private readonly int count;
+
+    public ReadOnlyMemory(T[]? array) {
+        items = array;
+        from = 0;
+        count = array == null ? 0 : array.Length;
+    }
+
+    public ReadOnlyMemory(T[]? array, int start, int length) {
+        if (array == null) {
+            if (start != 0 || length != 0) { throw new ArgumentOutOfRangeException("start"); }
+        }
+        else if (start < 0 || length < 0 || start > array.Length - length) {
+            throw new ArgumentOutOfRangeException("start");
+        }
+        items = array;
+        from = start;
+        count = length;
+    }
+
+    public static ReadOnlyMemory<T> Empty => default;
+
+    public int Length => count;
+    public bool IsEmpty => count == 0;
+
+    public ReadOnlySpan<T> Span => items == null ? new ReadOnlySpan<T>(new T[0]) : new ReadOnlySpan<T>(items, from, count);
+
+    public ReadOnlyMemory<T> Slice(int start) {
+        if (start < 0 || start > count) { throw new ArgumentOutOfRangeException("start"); }
+        return new ReadOnlyMemory<T>(items, from + start, count - start);
+    }
+
+    public ReadOnlyMemory<T> Slice(int start, int length) {
+        if (start < 0 || length < 0 || start > count - length) { throw new ArgumentOutOfRangeException("start"); }
+        return new ReadOnlyMemory<T>(items, from + start, length);
+    }
+
+    public T[] ToArray() { return Span.ToArray(); }
+
+    internal T[]? Array => items;
+    internal int Start => from;
+
+    public static implicit operator ReadOnlyMemory<T>(T[]? array) => new ReadOnlyMemory<T>(array);
+}
+
 struct Span<T> {
     private T[] items;
     private int from;
@@ -4868,6 +4982,18 @@ struct Span<T> {
     public T this[int index] {
         get { return items[from + index]; }
         set { items[from + index] = value; }
+    }
+
+    /// THE ORDER OF TWO SEQUENCES, element by element and then by length:
+    /// .NET's MemoryExtensions.SequenceCompareTo.
+    public int SequenceCompareTo(ReadOnlySpan<T> other) {
+        IComparer<T> by = new DefaultComparer<T>();
+        int common = count < other.Length ? count : other.Length;
+        for (int i = 0; i < common; i++) {
+            int order = by.Compare(items[from + i], other[i]);
+            if (order != 0) { return order; }
+        }
+        return count.CompareTo(other.Length);
     }
 
     public Span<T> Slice(int start) {
@@ -5472,6 +5598,11 @@ class List<T> : IReadOnlyList<T>, IEnumerable<T> {
         return removed;
     }
 
+    /// A read-only view of this list, which sees later changes to it.
+    public System.Collections.ObjectModel.ReadOnlyCollection<T> AsReadOnly() {
+        return new System.Collections.ObjectModel.ReadOnlyCollection<T>(this);
+    }
+
     public List<T> GetRange(int index, int howMany) {
         List<T> made = new List<T>(howMany);
         for (int i = 0; i < howMany; i++) { made.Add(items[index + i]); }
@@ -5623,6 +5754,10 @@ class Queue<T> : IEnumerable<T> {
         items = new T[8];
         head = 0;
         count = 0;
+    }
+
+    public Queue(IEnumerable<T> collection) : this() {
+        foreach (T item in collection) { Enqueue(item); }
     }
 
     public int Count => count;
@@ -6303,6 +6438,72 @@ static class Enumerable {
         int end = count < items.Count ? count : items.Count;
         for (int i = 0; i < end; i++) { made.Add(items[i]); }
         return made;
+    }
+
+    /// The source as a sequence, which it already is: what .NET's does.
+    public static IEnumerable<T> AsEnumerable<T>(this IEnumerable<T> source) { return source; }
+
+    /// DISTINCT BY A COMPARER, first occurrence kept.
+    public static List<T> Distinct<T>(this IEnumerable<T> source, IEqualityComparer<T>? comparer) {
+        IReadOnlyList<T> items = AsList(source);
+
+        List<T> made = new List<T>();
+        HashSet<T> seen = new HashSet<T>(comparer);
+        for (int i = 0; i < items.Count; i++) {
+            if (seen.Add(items[i])) { made.Add(items[i]); }
+        }
+        return made;
+    }
+
+    public static bool Contains<T>(this IEnumerable<T> source, T value, IEqualityComparer<T>? comparer) {
+        if (comparer == null) { return Contains(source, value); }
+        foreach (T item in source) {
+            if (comparer.Equals(item, value)) { return true; }
+        }
+        return false;
+    }
+
+    public static List<T> Intersect<T>(this IEnumerable<T> first, IEnumerable<T> second, IEqualityComparer<T>? comparer) {
+        HashSet<T> keep = new HashSet<T>(second, comparer);
+        HashSet<T> seen = new HashSet<T>(comparer);
+        List<T> made = new List<T>();
+        foreach (T item in first) {
+            if (keep.Contains(item) && seen.Add(item)) { made.Add(item); }
+        }
+        return made;
+    }
+
+    public static OrderedList<T> Order<T>(this IEnumerable<T> source, IComparer<T>? comparer) {
+        return Ordered(source, comparer ?? new DefaultComparer<T>());
+    }
+
+    public static OrderedList<T> OrderDescending<T>(this IEnumerable<T> source, IComparer<T>? comparer) {
+        return Ordered(source, new ReverseComparer<T>(comparer ?? new DefaultComparer<T>()));
+    }
+
+    /// THE LEAST, by the element type's own order: what `dates.Min()` is.
+    public static T Min<T>(this IEnumerable<T> source) {
+        IComparer<T> by = new DefaultComparer<T>();
+        bool any = false;
+        T least = default(T)!;
+        foreach (T item in source) {
+            if (!any || by.Compare(item, least) < 0) { least = item; }
+            any = true;
+        }
+        if (!any) { throw new InvalidOperationException("Sequence contains no elements"); }
+        return least;
+    }
+
+    public static T Max<T>(this IEnumerable<T> source) {
+        IComparer<T> by = new DefaultComparer<T>();
+        bool any = false;
+        T most = default(T)!;
+        foreach (T item in source) {
+            if (!any || by.Compare(item, most) > 0) { most = item; }
+            any = true;
+        }
+        if (!any) { throw new InvalidOperationException("Sequence contains no elements"); }
+        return most;
     }
 
     public static List<T> Distinct<T>(this IEnumerable<T> source) {
@@ -7036,6 +7237,17 @@ static class Array {
         for (int i = 0; i < items.Length; i++) { into[i] = items[i]; }
     }
 
+    // .NET's MemoryExtensions.AsMemory: an array's window as a Memory.
+    public static Memory<T> AsMemory<T>(this T[]? items) { return new Memory<T>(items); }
+
+    public static Memory<T> AsMemory<T>(this T[]? items, int start) {
+        return new Memory<T>(items, start, (items == null ? 0 : items.Length) - start);
+    }
+
+    public static Memory<T> AsMemory<T>(this T[]? items, int start, int length) {
+        return new Memory<T>(items, start, length);
+    }
+
     // .NET's MemoryExtensions.AsSpan, which is how an array is handed to
     // something that takes a span without the conversion being implicit.
     public static Span<T> AsSpan<T>(this T[] items) { return new Span<T>(items); }
@@ -7264,7 +7476,29 @@ static class Array {
 /// The overloads take `object` because that is what C#'s take (generically),
 /// and every value here is a machine word: an int, a reference, a bool. The
 /// value IS the input.
-static class HashCode {
+/// .NET's HashCode: the static Combine, and a value that is added to a part
+/// at a time and asked for ToHashCode at the end.
+struct HashCode {
+    private long _hash;
+    private int _parts;
+
+    public void Add<T>(T value) {
+        long part = Sys.IsObject(value) ? Sys.KeyHash(value) : Sys.Word(value);
+        _hash = Mix(_parts == 0 ? Seed : _hash, part);
+        _parts = _parts + 1;
+    }
+
+    public void Add<T>(T value, IEqualityComparer<T>? comparer) {
+        if (comparer == null) { Add(value); return; }
+        _hash = Mix(_parts == 0 ? Seed : _hash, comparer.GetHashCode(value));
+        _parts = _parts + 1;
+    }
+
+    public int ToHashCode() {
+        long h = _parts == 0 ? Seed : _hash;
+        return (int)(h ^ (h >> 32));
+    }
+
     private const long Prime = 1099511628211;
     private const long Seed = -3750763034362895579;
 
@@ -7417,6 +7651,8 @@ class DictionaryEnumerator<K, V> : IEnumerator<KeyValuePair<K, V>> {
 interface IReadOnlyDictionary<K, V> : IEnumerable<KeyValuePair<K, V>> {
     int Count { get; }
     V this[K key] { get; }
+    IEnumerable<K> Keys { get; }
+    IEnumerable<V> Values { get; }
     bool ContainsKey(K key);
     bool TryGetValue(K key, out V value);
 }
@@ -7715,6 +7951,9 @@ class Dictionary<K, V> : IEnumerable<KeyValuePair<K, V>>, IReadOnlyDictionary<K,
             return found;
         }
     }
+
+    IEnumerable<K> IReadOnlyDictionary<K, V>.Keys => Keys;
+    IEnumerable<V> IReadOnlyDictionary<K, V>.Values => Values;
 
     public List<V> Values {
         get {
@@ -9138,23 +9377,133 @@ class HashSet<T> : IReadOnlySet<T>, IEnumerable<T> {
 // implementation favours a compact, deterministic iteration order over a tree:
 // descriptor interface lists are short, and insertion-sort behaviour is both
 // simpler and cheaper at their actual sizes.
-class SortedSet<T> : IEnumerable<T> {
+/// A set kept in order, .NET's SortedSet<T>: by the comparer it was given, or
+/// the element type's own order (text by its characters, a number by value).
+/// A sorted array searched by halving, rather than .NET's red-black tree: the
+/// same answers and the same order of enumeration.
+class SortedSet<T> : IReadOnlySet<T>, IEnumerable<T> {
     private List<T> items;
+    private IComparer<T> by;
 
-    public SortedSet() { items = new List<T>(); }
+    public SortedSet() { items = new List<T>(); by = new DefaultComparer<T>(); }
+
+    public SortedSet(IComparer<T>? comparer) {
+        items = new List<T>();
+        by = comparer ?? new DefaultComparer<T>();
+    }
+
+    public SortedSet(IEnumerable<T> collection) : this(collection, null) { }
+
+    public SortedSet(IEnumerable<T> collection, IComparer<T>? comparer) : this(comparer) {
+        foreach (T item in collection) { Add(item); }
+    }
+
+    public IComparer<T> Comparer => by;
 
     public int Count => items.Count;
 
+    public T Min {
+        get { return items.Count == 0 ? default(T)! : items[0]; }
+    }
+
+    public T Max {
+        get { return items.Count == 0 ? default(T)! : items[items.Count - 1]; }
+    }
+
+    /// Where value is, or the complement of where it would go.
+    private int Find(T value) {
+        int low = 0;
+        int high = items.Count - 1;
+        while (low <= high) {
+            int middle = low + ((high - low) >> 1);
+            int order = by.Compare(items[middle], value);
+            if (order == 0) { return middle; }
+            if (order < 0) { low = middle + 1; } else { high = middle - 1; }
+        }
+        return ~low;
+    }
+
     public bool Add(T value) {
-        long word = Sys.Word(value);
-        int at = 0;
-        while (at < items.Count && Sys.Word(items[at]) < word) { at = at + 1; }
-        if (at < items.Count && Sys.Word(items[at]) == word) { return false; }
-        items.Insert(at, value);
+        int at = Find(value);
+        if (at >= 0) { return false; }
+        items.Insert(~at, value);
         return true;
     }
 
-    public bool Contains(T value) { return items.Contains(value); }
+    public bool Remove(T value) {
+        int at = Find(value);
+        if (at < 0) { return false; }
+        items.RemoveAt(at);
+        return true;
+    }
+
+    public bool Contains(T value) { return Find(value) >= 0; }
+
+    public void Clear() { items.Clear(); }
+
+    public void UnionWith(IEnumerable<T> other) {
+        foreach (T item in other) { Add(item); }
+    }
+
+    public void ExceptWith(IEnumerable<T> other) {
+        foreach (T item in other) { Remove(item); }
+    }
+
+    public void IntersectWith(IEnumerable<T> other) {
+        SortedSet<T> keep = new SortedSet<T>(by);
+        foreach (T item in other) {
+            if (Contains(item)) { keep.Add(item); }
+        }
+        items = keep.items;
+    }
+
+    public bool SetEquals(IEnumerable<T> other) {
+        SortedSet<T> them = new SortedSet<T>(other, by);
+        if (them.Count != Count) { return false; }
+        for (int i = 0; i < items.Count; i++) {
+            if (by.Compare(items[i], them.items[i]) != 0) { return false; }
+        }
+        return true;
+    }
+
+    public bool IsSubsetOf(IEnumerable<T> other) {
+        SortedSet<T> them = new SortedSet<T>(other, by);
+        for (int i = 0; i < items.Count; i++) {
+            if (!them.Contains(items[i])) { return false; }
+        }
+        return true;
+    }
+
+    public bool IsSupersetOf(IEnumerable<T> other) {
+        foreach (T item in other) {
+            if (!Contains(item)) { return false; }
+        }
+        return true;
+    }
+
+    public bool Overlaps(IEnumerable<T> other) {
+        foreach (T item in other) {
+            if (Contains(item)) { return true; }
+        }
+        return false;
+    }
+
+    public int RemoveWhere(Predicate<T> match) {
+        return items.RemoveAll(item => match(item));
+    }
+
+    public void CopyTo(T[] array) { CopyTo(array, 0); }
+
+    public void CopyTo(T[] array, int index) {
+        for (int i = 0; i < items.Count; i++) { array[index + i] = items[i]; }
+    }
+
+    public IEnumerable<T> Reverse() {
+        List<T> backwards = new List<T>();
+        for (int i = items.Count - 1; i >= 0; i--) { backwards.Add(items[i]); }
+        return backwards;
+    }
+
     public IEnumerator<T> GetEnumerator() { return new ListEnumerator<T>(items); }
 }
 
@@ -10560,4 +10909,50 @@ static class Math {
     // renaming it would break what calls it.
     public static double PI => 3.14159265358979323846;
     public static double E => 2.71828182845904523536;
+}
+
+namespace System.Collections.ObjectModel
+{
+    /// .NET's read-only wrapper: a view onto a list that cannot change it.
+    public class ReadOnlyCollection<T> : IReadOnlyList<T>, IEnumerable<T>
+    {
+        private readonly IReadOnlyList<T> list;
+
+        public ReadOnlyCollection(IReadOnlyList<T> list)
+        {
+            ArgumentNullException.ThrowIfNull(list);
+            this.list = list;
+        }
+
+        public static ReadOnlyCollection<T> Empty => new ReadOnlyCollection<T>(new List<T>());
+
+        public int Count => list.Count;
+
+        public T this[int index] => list[index];
+
+        public bool Contains(T value)
+        {
+            for (int i = 0; i < list.Count; i++)
+            {
+                if (EqualityComparer<T>.Default.Equals(list[i], value)) { return true; }
+            }
+            return false;
+        }
+
+        public int IndexOf(T value)
+        {
+            for (int i = 0; i < list.Count; i++)
+            {
+                if (EqualityComparer<T>.Default.Equals(list[i], value)) { return i; }
+            }
+            return -1;
+        }
+
+        public void CopyTo(T[] array, int index)
+        {
+            for (int i = 0; i < list.Count; i++) { array[index + i] = list[i]; }
+        }
+
+        public IEnumerator<T> GetEnumerator() { return list.GetEnumerator(); }
+    }
 }
