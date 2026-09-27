@@ -246,8 +246,10 @@ public sealed partial class Lowering
 
         // Structural, like a sequence descriptor: a boxed int is one type
         // across the whole process, so the library's copy is used where
-        // there is one.
-        DataItem item = new(sym, block) { ReadOnly = true, Align = _t.Align64, FromLibrary = true };
+        // there is one -- and, between units linked statically, one copy is
+        // kept of the several they each made (Coalescible: certified by its
+        // contents, as the object descriptor is).
+        DataItem item = new(sym, block) { ReadOnly = true, Align = _t.Align64, FromLibrary = true, Coalescible = true };
         _m.Data.Add(item);
         item.Relocs.Add(new DataReloc(DescName * w, InternString(name), 0));
         item.Relocs.Add(new DataReloc(DescSelf * w, sym, 0));

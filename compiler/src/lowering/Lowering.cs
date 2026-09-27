@@ -504,12 +504,27 @@ public sealed partial class Lowering
     /// </summary>
     private MethodSymbol Canonical(MethodSymbol m)
     {
-        if (m.Owner.Decl?.Canon is not string canon || m.Decl is null || m.Decl.TemplateIndex < 0)
+        if (m.Owner.Decl?.Canon is not string canon || m.Decl is null)
         {
             return m;
         }
         if (!_b.Types.TryGetValue(canon, out TypeSymbol? owner))
         {
+            return m;
+        }
+        // A CONSTRUCTOR NOBODY WROTE has no place in the template: a type with
+        // field initialisers and no constructor is given one (Binder's
+        // Initialisers) on the copy itself when the copy was made before the
+        // template had it. The canonical copy was given its own the same way,
+        // and a copy's members are never emitted -- the call has to reach
+        // that one, or it names a symbol nothing defines (Shelf<string>, made
+        // in one round of specialisation, calling a constructor only the
+        // canonical Shelf has).
+        if (m.Decl.TemplateIndex < 0)
+        {
+            if (!m.IsCtor) return m;
+            foreach (MethodSymbol c in owner.Methods)
+                if (c.IsCtor && c.Static == m.Static && c.Decl is { TemplateIndex: < 0 } && c.Params.Count == m.Params.Count) return c;
             return m;
         }
         MethodSymbol? byName = null;

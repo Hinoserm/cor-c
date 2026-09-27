@@ -7,7 +7,7 @@ namespace Corsac.Lang;
 
 public static class ManagedLayouts
 {
-    public static void Attach(ObjectFile obj, BindResult bound)
+    public static void Attach(ObjectFile obj, BindResult bound, bool library = true)
     {
         // WHAT THIS UNIT HAS AN OPINION ABOUT. Every type the binder
         // materialised used to be described here, which made the section
@@ -21,10 +21,19 @@ public static class ManagedLayouts
         // the check that publishes the layout -- and so is everything a
         // described type is built out of, because its own record names its
         // base and its interfaces and a reader is entitled to look them up.
+        //
+        // A CLASS LIBRARY'S TYPE IS A PROGRAM'S ONLY WHEN IT USES IT. A program
+        // compiled against the library's sources (--ref) holds those
+        // declarations as its own, and a type of the program's that shares a
+        // library type's name replaces it there (namespaces are flattened):
+        // the library's Seat, described by the program, returned the
+        // program's Point and disagreed with the library's own object about a
+        // type the program never touched. A library unit still describes
+        // every type it defines; a program describes library types it uses.
         HashSet<TypeSymbol> described = new(ReferenceEqualityComparer.Instance);
         Queue<TypeSymbol> pending = new();
         foreach (TypeSymbol type in bound.Types.Values.Distinct())
-            if (type.Used || type.Decl is { Elsewhere: false })
+            if (type.Used || type.Decl is { Elsewhere: false } && (library || !type.Decl.FromLibrary))
                 pending.Enqueue(type);
         while (pending.Count != 0)
         {

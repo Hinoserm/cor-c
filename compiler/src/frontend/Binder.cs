@@ -308,13 +308,32 @@ public sealed partial class Binder
                 or Prim.NInt or Prim.NUInt or Prim.F32 or Prim.F64
                 or Prim.Char or Prim.String;
 
+    /// <summary>Whether the declaration being bound is somebody else's: an Elsewhere type's, or a member whose code another unit has.</summary>
+    private bool BindingElsewhere => _thisType?.Decl?.Elsewhere == true || _member?.OwnedImplementation == false
+        // A type's header -- its base and interfaces -- is bound with only the
+        // file known: an Elsewhere file's headers are somebody else's too.
+        || _thisType is null && _member is null && ElsewhereFiles.Contains(_in)
+        // And the member signatures of a specialisation (List<Control>, made
+        // because a library signature names it): its types are its arguments,
+        // and a unit that writes List<Control> itself has already asked for
+        // Control where it wrote it.
+        || _thisType is null && _scope?.Decl is { Elsewhere: true } or { Specialised: true };
+
+    private HashSet<string>? _elsewhereFiles;
+    private HashSet<string> ElsewhereFiles => _elsewhereFiles ??= _r.Types.Values
+        .Where(type => type.Decl is { Elsewhere: true }).Select(type => type.Decl!.File).ToHashSet(StringComparer.Ordinal);
+
     private bool TypeCandidate(string key, out TypeSymbol? symbol)
     {
         if (_r.Types.TryGetValue(key, out symbol))
         {
             // ASKED FOR, not merely present. This is what tells the managed
-            // layout which types this unit has an opinion about.
-            symbol.Used = true;
+            // layout which types this unit has an opinion about -- asked for
+            // by THIS unit's code, that is: binding the declarations of a
+            // source given only for them (--ref, TypeDecl.Elsewhere) asks
+            // about the types they mention, and a program then described
+            // every library type the library's own signatures name.
+            if (!BindingElsewhere) symbol.Used = true;
             return true;
         }
         // A MISSING DECLARATION IS RECORDED, NOT RAISED. Unwinding here threw
@@ -12064,10 +12083,18 @@ public sealed partial class Binder
                 && Enumerable.Range(args.Count, m.Params.Count - args.Count)
                              .All(i => m.Decl?.Params.ElementAtOrDefault(i)?.Default is not null);
 
-            MethodSymbol? shorter = group.Methods.FirstOrDefault(
+            //
+            // AND OF THOSE, THE BETTER MEMBER by the arguments written, as C#
+            // judges it -- the defaults take no part. `Take(s, long n = 0, …)`
+            // and `Take(s, int n = 0, …)` both fit `Take("x", small)`, and the
+            // first written won; a second round of binding hid it, because by
+            // then the call carried its completed arguments and the full-arity
+            // rule chose the int. A unit bound once took the long.
+            MethodSymbol? shorter = BetterMember(group.Methods.Where(
                 m => Completable(m)
                   && Enumerable.Range(0, args.Count)
                                .All(i => WordFits(m, i) && WrittenFits(args[i], Wants(m, i), c.Args[i])))
+                .ToList())
                 ?? group.Methods.FirstOrDefault(Completable);
 
             if (shorter != null)

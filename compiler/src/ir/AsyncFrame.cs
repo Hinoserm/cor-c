@@ -17,6 +17,14 @@ public sealed class AsyncFrame
     public required int FieldsStart { get; init; }
     public required string SizeSymbol { get; init; }
 
+    /// <summary>
+    /// Set once AsyncTransform has made the body a state machine: no marker is
+    /// left in it and it may be written to an object's IR archive. What stays
+    /// is the record that it was async, which later passes read (a frame
+    /// slot does not survive a suspension).
+    /// </summary>
+    public bool Lowered { get; set; }
+
     /// <summary>The markers lowering puts around the continuation registration.</summary>
     public const string Suspend = "__suspend";
     public const string Resume = "__resume";

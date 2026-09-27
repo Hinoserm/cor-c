@@ -13,6 +13,8 @@ public static class IrFunctionCodec
             + 96L * function.Slots.Count + 160L * function.Blocks.Count;
         void Text(string? value) { if (value is not null) bytes = checked(bytes + 32 + 3L * IrBinary.Utf8.GetByteCount(value)); }
         Text(function.Name); Text(function.SourceFile); Text(function.Display);
+        // A lowered async body's record (Write): its size symbol and the frame.
+        if (function.Async is AsyncFrame frame) { bytes = checked(bytes + 128); Text(frame.SizeSymbol); }
         foreach (Instr instruction in function.Blocks.SelectMany(block => block.Instrs))
         {
             bytes = checked(bytes + 256 + 64L * instruction.Operands.Count + 16L * instruction.Targets.Count);
@@ -24,10 +26,10 @@ public static class IrFunctionCodec
 
     public static byte[] Write(Function function)
     {
-        if (function.Async is not null) throw new InvalidDataException("Serialize IR after async lowering");
+        if (function.Async is { Lowered: false }) throw new InvalidDataException("Serialize IR after async lowering");
         using MemoryStream stream = new();
         using BinaryWriter writer = new(stream, IrBinary.Utf8, leaveOpen: true);
-        writer.Write(1); IrBinary.Text(writer, function.Name); writer.Write((byte)function.Returns);
+        writer.Write(2); IrBinary.Text(writer, function.Name); writer.Write((byte)function.Returns);
         writer.Write(function.Exported); writer.Write(function.Coalescible); writer.Write(function.FromLibrary);
         IrBinary.Text(writer, function.SourceFile); writer.Write(function.Line); IrBinary.Text(writer, function.Display);
         Dictionary<int, IrType> registers = new();
@@ -49,6 +51,13 @@ public static class IrFunctionCodec
         for (int i = 0; i < function.RegCount; i++) writer.Write((byte)registers.GetValueOrDefault(i, IrType.I32));
         writer.Write(function.Params.Count);
         foreach (VReg parameter in function.Params) writer.Write(parameter.Id);
+        // A lowered async body keeps the record that it was one (AsyncFrame).
+        writer.Write(function.Async is not null);
+        if (function.Async is AsyncFrame frame)
+        {
+            writer.Write(frame.StateMachine.Id); writer.Write(frame.StateOffset); writer.Write(frame.FieldsStart);
+            IrBinary.Text(writer, frame.SizeSymbol);
+        }
         writer.Write(function.Slots.Count);
         foreach (FrameSlot slot in function.Slots) { writer.Write(slot.Bytes); writer.Write(slot.Align); }
         Dictionary<FrameSlot, int> slots = function.Slots.Select((slot, id) => (slot, id)).ToDictionary(pair => pair.slot, pair => pair.id);
@@ -89,7 +98,7 @@ public static class IrFunctionCodec
         using BinaryReader reader = new(stream, IrBinary.Utf8);
         try
         {
-            if (reader.ReadInt32() != 1) throw new InvalidDataException("Unsupported IR function version");
+            if (reader.ReadInt32() != 2) throw new InvalidDataException("Unsupported IR function version");
             Function function = new(IrBinary.Name(reader, budget), IrBinary.Type(reader))
             {
                 Exported = IrBinary.Flag(reader), Coalescible = IrBinary.Flag(reader), FromLibrary = IrBinary.Flag(reader),
@@ -104,6 +113,18 @@ public static class IrFunctionCodec
             int parameters = IrBinary.Count(reader);
             budget.Charge(parameters, 16, "parameters");
             for (int i = 0; i < parameters; i++) function.Params.Add(At(registers, reader.ReadInt32()));
+            if (IrBinary.Flag(reader))
+            {
+                budget.Charge(1, 128, "async frame");
+                VReg machine = At(registers, reader.ReadInt32());
+                int stateOffset = reader.ReadInt32(), fieldsStart = reader.ReadInt32();
+                function.Async = new AsyncFrame
+                {
+                    StateMachine = machine, StateOffset = stateOffset, FieldsStart = fieldsStart,
+                    SizeSymbol = IrBinary.Text(reader, budget) ?? throw new InvalidDataException("Async frame without a size symbol"),
+                    Lowered = true,
+                };
+            }
             int slotCount = IrBinary.Count(reader);
             budget.Charge(slotCount, 96, "frame slots");
             FrameSlot[] slots = new FrameSlot[slotCount];

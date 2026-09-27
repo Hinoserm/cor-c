@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# The compiler as tests/language/run.sh sees it, compiling each test the way
+# the OS builds a program: the test's own sources as ONE unit against the
+# declarations of the runtime and class library (--ref, --decl-index), then
+# linked with the library object compiled once, apart.
+#
+#   SEPARATE_CORC     the real compiler command
+#   SEPARATE_LIBS     file of the library sources, one absolute path a line
+#   SEPARATE_INDEX    declaration index of the library
+#   SEPARATE_LIB_OBJ  the library object
+#
+# Anything else -- and a compile a test runs itself (280 builds the kernel
+# with --freestanding --obj) -- goes to the real compiler unchanged.
+set -euo pipefail
+read -r -a real <<< "$SEPARATE_CORC"
+case " $* " in *" --obj "*|*" --freestanding "*) exec "${real[@]}" "$@" ;; esac
+[ "${1:-}" = compile ] || exec "${real[@]}" "$@"
+shift
+declare -A library=()
+while IFS= read -r lib; do library["$lib"]=1; done < "$SEPARATE_LIBS"
+flags=() sources=() refs=() out=
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -o) out=$2; shift 2; continue ;;
+        *.cor) [ -n "${library[$(realpath -m "$1")]:-}" ] || sources+=("$1") ;;
+        *) flags+=("$1") ;;
+    esac
+    shift
+done
+for lib in "${!library[@]}"; do refs+=(--ref "$lib"); done
+"${real[@]}" compile --nostdlib "${refs[@]}" --decl-index "$SEPARATE_INDEX" --assembly Suite \
+    "${flags[@]}" "${sources[@]}" --obj -o "$out.o"
+exec "${real[@]}" link "$out.o" "$SEPARATE_LIB_OBJ" -o "$out"

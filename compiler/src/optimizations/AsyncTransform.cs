@@ -67,6 +67,7 @@ public static class AsyncTransform
 
     private static int Transform(Function f, AsyncFrame frame, int wordSize)
     {
+        frame.Lowered = true;
         VReg machine = frame.StateMachine;
         IrType word = wordSize == 8 ? IrType.I64 : IrType.I32;
         int next = Align(frame.FieldsStart, 8);

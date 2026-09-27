@@ -705,7 +705,7 @@ public static class Driver
         Phase("codegen");
         Corsac.Lang.Opt.Pipeline.ReportAccounts();
         new TargetContract(freestanding ? (Lowering.TlsGs ? 2u : 1u) : 0u, requiresManagedLayouts: true, requiresCodeGenerationContract: true).Attach(obj);
-        ManagedLayouts.Attach(obj, front.Value.bound);
+        ManagedLayouts.Attach(obj, front.Value.bound, library);
 
         // WHAT THIS PROGRAM'S SETTINGS ARE, for the kernel to read out of the
         // file rather than out of the running process -- which is why the
