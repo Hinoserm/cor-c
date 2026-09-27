@@ -242,6 +242,10 @@ public sealed partial class Lowering
                 // word that ThreadBlock reads when there is no GS.
                 _e.Store(new SymOperand(ThreadBlockSelf), R(ToWord(Arg(call, target, 0))));
                 return Void();
+            case "GetGs":
+                // The selector GS holds now: on Linux, before the runtime
+                // takes it, the C library's thread pointer.
+                return Widen(_e.Call(MachineIntrinsics.GetGs, IrType.I32)!);
             case "SetGs":
                 // The selector of the descriptor whose base is the block. Only
                 // an operating system that made that descriptor may say this.
@@ -475,6 +479,16 @@ public sealed partial class Lowering
                     args.Add(R(ToWord(Arg(call, target, i))));
                 }
                 return Widen(_e.CallIndirect(R(fn), word, args)!);
+            }
+            case "CallNative":
+            {
+                VReg fn = Address(call, target, 0);
+                List<Operand> args = new();
+                for (int i = 1; i < target.Params.Count; i++)
+                {
+                    args.Add(R(ToWord(Arg(call, target, i))));
+                }
+                return Widen(_e.CallIndirect(R(fn), word, args, NativeCall.Indirect)!);
             }
             case "AddressOf":
                 return Widen(Arg(call, target, 0));

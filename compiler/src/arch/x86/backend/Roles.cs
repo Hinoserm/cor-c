@@ -35,6 +35,7 @@ public static class Roles
             case MOp.MovFromCr:
             case MOp.GotPc:
             case MOp.GsSelf:
+            case MOp.GetGs:
                 return operand == 0 ? Role.Def : Role.Use;
             case MOp.Add:
             case MOp.Adc:

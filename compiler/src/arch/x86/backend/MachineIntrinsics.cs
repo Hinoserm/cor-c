@@ -42,4 +42,16 @@ internal static class MachineIntrinsics
     public const string LoadSegments = Prefix + "loadsegments";
     public const string ThreadBlock = Prefix + "threadblock";
     public const string SetGs = Prefix + "setgs";
+    public const string GetGs = Prefix + "getgs";
+    /// <summary>
+    /// A use of its operand and nothing else: `test r, r`. What keeps an
+    /// object C was given a pointer into alive until the C call is over.
+    /// </summary>
+    public const string KeepAlive = Prefix + "keepalive";
+    /// <summary>
+    /// At the process entry, the loader's finaliser the System V ABI passes
+    /// in EDX (i386) or RDX (x86-64); zero from a kernel that loaded a static
+    /// program. Only as the entry stub's first instruction.
+    /// </summary>
+    public const string LoaderFini = Prefix + "loaderfini";
 }

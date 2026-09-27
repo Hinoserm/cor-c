@@ -111,6 +111,10 @@ internal static class Roles
                 break;
             case MOp.Call:
             case MOp.CallInd:
+                if (i.NativeAl)
+                {
+                    yield return (int)Gpr.Rax;
+                }
                 for (int k = 0; k < i.IntArgs; k++)
                 {
                     yield return (int)Selector.IntArgRegs[k];
@@ -987,7 +991,7 @@ internal sealed class Allocator
         MInstr n = new(i.Op)
         {
             Width = i.Width, SourceWidth = i.SourceWidth, Cond = i.Cond, Lock = i.Lock, Table = i.Table, TableSymbol = i.TableSymbol,
-            Line = i.Line, IntArgs = i.IntArgs, FloatArgs = i.FloatArgs,
+            Line = i.Line, IntArgs = i.IntArgs, FloatArgs = i.FloatArgs, NativeAl = i.NativeAl,
         };
 
         if (_liveAtCall.TryGetValue(index, out List<int>? live))

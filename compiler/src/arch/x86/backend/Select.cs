@@ -1948,6 +1948,37 @@ internal sealed partial class Selector
         }
 
         int first = i.Op == Opcode.CallIndirect ? 1 : 0;
+
+        // A CALL INTO C. GCC's code for i386 System V may assume the stack
+        // sixteen-byte aligned at a call (it keeps SSE spills there), and
+        // this backend's own calls keep only four. So ESP is kept, aligned
+        // down, and padded so the arguments end on the boundary; the
+        // arguments themselves are all reached through EBP or registers,
+        // never through ESP, so moving it under them is safe.
+        bool native = NativeCall.Is(i);
+        MReg? savedEsp = null;
+        MReg? nativeTarget = null;
+        if (native)
+        {
+            int argumentBytes = 0;
+            for (int k = first; k < i.Operands.Count; k++)
+            {
+                argumentBytes += i.Operands[k].Type is IrType.I64 or IrType.F64 ? 8 : 4;
+            }
+            if (i.Op == Opcode.CallIndirect)
+            {
+                nativeTarget = R(i.Operands[0]);
+            }
+            savedEsp = _m.NewReg();
+            Mov(savedEsp, Esp);
+            Emit(MOp.And, Esp, Imm(-16));
+            int pad = (16 - argumentBytes % 16) % 16;
+            if (pad != 0)
+            {
+                Emit(MOp.Sub, Esp, Imm(pad));
+            }
+        }
+
         int bytes = 0;
         for (int k = i.Operands.Count - 1; k >= first; k--)
         {
@@ -1955,13 +1986,17 @@ internal sealed partial class Selector
         }
         if (i.Op == Opcode.Call)
         {
-            CallSymbol(i.Callee!);
+            Emit(new MInstr(MOp.Call, SymbolAddress(NativeCall.Symbol(i.Callee!), 0)) { CallReloc = RelocKind.Rel32, Native = native });
         }
         else
         {
-            Emit(MOp.CallInd, R(i.Operands[0]));
+            Emit(new MInstr(MOp.CallInd, nativeTarget ?? R(i.Operands[0])) { Native = native });
         }
-        if (bytes > 0)
+        if (savedEsp is not null)
+        {
+            Mov(Esp, savedEsp);
+        }
+        else if (bytes > 0)
         {
             Emit(MOp.Add, Esp, Imm(bytes));
         }
@@ -2186,6 +2221,18 @@ internal sealed partial class Selector
                 {
                     Emit(MOp.GsSelf, Lo(i.Dest));
                 }
+                return;
+            case MachineIntrinsics.LoaderFini:
+                Mov(Lo(i.Dest!), Edx);
+                return;
+            case MachineIntrinsics.KeepAlive:
+            {
+                MReg kept = R(i.Operands[0]);
+                Emit(MOp.Test, kept, kept);
+                return;
+            }
+            case MachineIntrinsics.GetGs:
+                Emit(MOp.GetGs, Lo(i.Dest!));
                 return;
             case MachineIntrinsics.SetGs:
                 Emit(MOp.SetGs, R(i.Operands[0]));

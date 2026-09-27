@@ -164,6 +164,13 @@ public static partial class Linker
             }
         }
         List<string> errors = new();
+        foreach (string soname in NativeNeeded(inputs, isLongMode, errors))
+        {
+            if (!dyn.Needed.Contains(soname))
+            {
+                dyn.Needed.Add(soname);
+            }
+        }
         Layout layout = new(loadAddress) { Dyn = dyn, LongMode = isLongMode };
         TargetContract.Validate(inputs.Select(input => (input.Name, input.Object)));
         ManagedLayoutContract.Validate(inputs.Select(input => (input.Name, input.Object)));

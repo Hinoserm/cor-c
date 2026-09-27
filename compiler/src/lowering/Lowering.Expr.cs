@@ -2184,6 +2184,11 @@ public sealed partial class Lowering
                 return LoadPlace(new MemPlace(R(addr), 0, type));
             }
 
+            case UnOp.AddressOf when _b.MethodAddresses.TryGetValue(u, out MethodSymbol? addressed):
+                // `&Method`: the function pointer is the method's address.
+                Require(addressed);
+                return _e.Address(CallLabel(addressed));
+
             case UnOp.AddressOf:
                 return AddressOf(u, u.Operand);
 

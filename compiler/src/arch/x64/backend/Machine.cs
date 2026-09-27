@@ -292,6 +292,9 @@ public sealed class MInstr
     /// <summary>For a call: the general registers holding arguments, so they count as read.</summary>
     public int IntArgs { get; init; }
 
+    /// <summary>For a call into C: AL holds the count of vector arguments, so RAX counts as read.</summary>
+    public bool NativeAl { get; init; }
+
     public MInstr(MOp op, params MOperand[] operands)
     {
         Op = op;

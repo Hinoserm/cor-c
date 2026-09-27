@@ -611,8 +611,37 @@ class Thread
         }
     }
 
+    // A THREAD C CAN RUN IN. When the C library is loaded -- a program with
+    // a [DllImport], or one linked against a library that has one -- a new
+    // thread is made by its pthread_create, so that it has the C library's
+    // own per-thread state (errno, the allocator's caches, the stack
+    // canary) for whatever C it calls. clone(2) alone gives it the creating
+    // thread's, which C would then share between two threads at once. The
+    // runtime's block is its own page; the stack is the C library's.
+
+    static long _nativeCreate;          // pthread_create, -1 when there is none
+    static long _nativeDetach;
+
+    static long NativeCreate()
+    {
+        if (_nativeCreate == 0)
+        {
+            long create = Runtime.NativeSymbol("pthread_create");
+            _nativeDetach = Runtime.NativeSymbol("pthread_detach");
+            _nativeCreate = create == 0 || _nativeDetach == 0 ? -1 : create;
+        }
+        return _nativeCreate < 0 ? 0 : _nativeCreate;
+    }
+
     void Launch()
     {
+        long create = NativeCreate();
+        if (create != 0)
+        {
+            LaunchNative(create);
+            return;
+        }
+
         long stack = Native.MapStack(StackBytes);
 
         if (stack == 0)
@@ -649,6 +678,61 @@ class Thread
             throw new InvalidOperationException("threading: clone failed");
         }
         _id = id;
+    }
+
+    void LaunchNative(long create)
+    {
+        long block = Platform.Map(4096);
+
+        if (block == 0)
+        {
+            throw new InvalidOperationException("threading: no memory for a thread block");
+        }
+        _block = block;
+        _stack = 0;
+        _stackBytes = 0;
+
+        // Registered stopped with an empty stack, as Launch does: the child
+        // says where its stack is once it stands on it (BeginNative).
+        Runtime.RegisterThread(_block, 0);
+
+        byte[] handle = new byte[8];
+        long failed = Runtime.CallC(create, Sys.ArrayData(handle), 0, Sys.AddressOf(Thread.NativeEntry), _slot);
+
+        if (failed != 0)
+        {
+            Runtime.ForgetThread(_block);
+            throw new InvalidOperationException("threading: pthread_create failed");
+        }
+        // Nobody joins it through the C library: Join waits on the thread's
+        // own word, so its C side is released when it returns.
+        Runtime.CallC(_nativeDetach, Sys.Peek(Sys.ArrayData(handle)), 0, 0, 0);
+        _id = 1;
+    }
+
+    /// Where a thread pthread_create made begins: a C start routine, which
+    /// this compiler's convention already is.
+    static long NativeEntry(long slot)
+    {
+        Thread? t = _all[(int)slot];
+
+        if (t != null)
+        {
+            t.BeginNative(Sys.FramePointer());
+        }
+        return 0;
+    }
+
+    /// Begin, for a thread on the C library's stack: nothing above `frame`
+    /// is the runtime's, so the stack the collector reads starts there.
+    void BeginNative(long frame)
+    {
+        Platform.SetThreadBlock(_block);
+        Sys.Poke(_block + Tls.ThreadId, Native.CurrentThreadId());
+        long top = frame + 2 * WordSize.Bytes;
+        Runtime.MoveStack(top, top);
+        Runtime.EndBlocking();
+        Body();
     }
 
     /// Where a new thread begins, on its own stack with no frame above it. It

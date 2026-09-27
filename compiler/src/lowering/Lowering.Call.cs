@@ -104,6 +104,11 @@ public sealed partial class Lowering
 
     private VReg EmitCall(CallExpr call)
     {
+        if (_b.PointerCalls.TryGetValue(call, out FunctionPointer? pointer))
+        {
+            return EmitPointerCall(call, pointer);
+        }
+
         // Enum.HasFlag: (value & flag) == flag.
         if (_b.EnumHasFlags.Contains(call) && call.Target is MemberExpr on && call.Args.Count == 1)
         {

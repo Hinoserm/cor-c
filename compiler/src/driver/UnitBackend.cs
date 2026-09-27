@@ -126,7 +126,7 @@ public sealed class UnitBackend : IUnitBackend
             + (facts is null ? "" : ", lifetimes placed or freed=" + _lifetimes));
         if (errors.Count > 0) throw new InvalidDataException("IR backend: " + string.Join("; ", errors));
         foreach (Section section in original.Sections.Where(section => section.Name is TargetContract.SectionName or ManagedLayoutContract.SectionName
-                       or ".corsac.tag" or RegistrySchema.SectionName))
+                       or ".corsac.tag" or RegistrySchema.SectionName or NativeLibraries.SectionName))
         {
             Section copy = new(section.Name, section.Kind) { Align = section.Align };
             copy.Bytes.AddRange(section.Bytes); copy.Relocs.AddRange(section.Relocs); result.Sections.Add(copy);

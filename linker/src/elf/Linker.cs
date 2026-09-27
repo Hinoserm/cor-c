@@ -104,6 +104,18 @@ public static partial class Linker
             throw new LinkException(new[] { "nothing to link" });
         }
 
+        // A PROGRAM THAT CALLS INTO C IS A DYNAMIC ONE, whether or not it
+        // links a library of ours: the loader has to map the C library and
+        // run its initialisers before the program starts.
+        if (inputs.Any(i => i.Object.Sections.Any(s => s.Name == NativeLibraries.SectionName)))
+        {
+            if (physicalAddress is not null)
+            {
+                throw new LinkException(new[] { "a program that calls into C is loaded by ld-linux; it has no physical address" });
+            }
+            return Link(inputs.Select(i => (i.Name, i.Object)).ToList(), entrySymbol, Array.Empty<string>(), program: program, longMode: longMode);
+        }
+
         TargetContract.Validate(inputs.Select(i => (i.Name, i.Object)));
         ManagedLayoutContract.Validate(inputs.Select(i => (i.Name, i.Object)));
         Corsac.Lang.Lto.DefinitionCoalescer.Run(inputs.Select(i => (i.Name, i.Object)).ToArray());

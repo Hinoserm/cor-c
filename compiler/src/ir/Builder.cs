@@ -144,10 +144,10 @@ public sealed class Builder
     public VReg? Call(string callee, IrType returns, IEnumerable<VReg> args)
         => Call(callee, returns, args.Select(a => (Operand)R(a)).ToArray());
 
-    public VReg? CallIndirect(Operand target, IrType returns, IEnumerable<Operand> args)
+    public VReg? CallIndirect(Operand target, IrType returns, IEnumerable<Operand> args, string? marker = null)
     {
         VReg? d = returns == IrType.Void ? null : Function.NewReg(returns);
-        Instr i = new() { Op = Opcode.CallIndirect, Dest = d };
+        Instr i = new() { Op = Opcode.CallIndirect, Dest = d, Callee = marker };
         i.Operands.Add(target);
         i.Operands.AddRange(args);
         Append(i);

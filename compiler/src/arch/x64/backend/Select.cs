@@ -1671,9 +1671,17 @@ internal sealed class Selector
             }
         }
 
+        // A CALL INTO C: a variadic function (printf) reads in AL how many
+        // vector registers carry arguments, and every other function ignores
+        // it, so a native call always says.
+        bool native = NativeCall.Is(i);
+        if (native)
+        {
+            Mov(Rax, Imm(floats), 4);
+        }
         if (target is null)
         {
-            Emit(new MInstr(MOp.Call, MImm.Sym(i.Callee!, 0)) { IntArgs = ints, FloatArgs = floats });
+            Emit(new MInstr(MOp.Call, MImm.Sym(NativeCall.Symbol(i.Callee!), 0)) { IntArgs = ints, FloatArgs = floats, NativeAl = native });
         }
         else
         {
@@ -1681,7 +1689,7 @@ internal sealed class Selector
             // there so no argument register has to be kept away from it.
             MReg r11 = MReg.Of(Gpr.R11);
             Mov(r11, target, 8);
-            Emit(new MInstr(MOp.CallInd, r11) { IntArgs = ints, FloatArgs = floats });
+            Emit(new MInstr(MOp.CallInd, r11) { IntArgs = ints, FloatArgs = floats, NativeAl = native });
         }
         if (pushed + pad > 0)
         {
@@ -1849,6 +1857,15 @@ internal sealed class Selector
                     Mov(V(i.Dest), new MMem(null, 0) { Segment = 0x65 });
                 }
                 return;
+            case Corsac.Lang.X86.MachineIntrinsics.LoaderFini:
+                Mov(V(i.Dest!), Rdx);
+                return;
+            case Corsac.Lang.X86.MachineIntrinsics.KeepAlive:
+            {
+                MReg kept = R(i.Operands[0]);
+                EmitW(MOp.Test, 8, kept, kept);
+                return;
+            }
             case Corsac.Lang.X86.MachineIntrinsics.In8:
             case Corsac.Lang.X86.MachineIntrinsics.In16:
             case Corsac.Lang.X86.MachineIntrinsics.In32:

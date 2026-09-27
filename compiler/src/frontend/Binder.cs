@@ -2746,7 +2746,15 @@ public sealed partial class Binder
 
     private Type Resolve(TypeRef r, TypeSymbol? context)
     {
-        Type baseType = ResolveCore(r, context);
+        // A FUNCTION POINTER: an nint that knows its signature.
+        Type baseType = r.IsFunctionPointer && r.Args.Count > 0
+            ? new Type
+            {
+                Prim = Prim.NInt,
+                Function = new FunctionPointer(r.Args.Take(r.Args.Count - 1).Select(p => Resolve(p, context)).ToList(),
+                    Resolve(r.Args[^1], context), r.Name == TypeRef.UnmanagedFunction),
+            }
+            : ResolveCore(r, context);
 
         // POINTERS FIRST, then the array: `byte*[]` is an array OF pointers,
         // which is C#'s reading and the only one that makes sense -- an array
@@ -8731,6 +8739,18 @@ public sealed partial class Binder
 
             case UnaryExpr u:
             {
+                // `&Method`: a static method's address, as a function pointer.
+                if (u.Op == UnOp.AddressOf && AddressedMethod(u.Operand) is MethodSymbol addressed)
+                {
+                    _r.MethodAddresses[u] = addressed;
+                    return new Type
+                    {
+                        Prim = Prim.NInt,
+                        Function = new FunctionPointer(addressed.Params.Select(p => p.Type).ToList(), addressed.Returns,
+                            addressed.Decl is MemberDecl md && md.Attributes.Any(a => a.Is("UnmanagedCallersOnly"))),
+                    };
+                }
+
                 Type t = CheckExpr(u.Operand);
 
                 if (t.IsError)
@@ -11799,8 +11819,75 @@ public sealed partial class Binder
         return Type.Error;
     }
 
+    /// <summary>
+    /// The static method `&name` or `&Type.name` takes the address of, or
+    /// null when the operand is not a method group (a variable is taken the
+    /// ordinary way). One method of the name, as C# requires when nothing
+    /// says which overload is meant.
+    /// </summary>
+    private MethodSymbol? AddressedMethod(Expr operand)
+    {
+        List<MethodSymbol> found = new();
+        if (operand is NameExpr name && Lookup(name.Name) is null && _thisType is not null)
+        {
+            found.AddRange(_thisType.FindMethods(name.Name).Where(m => m.Static));
+        }
+        else if (operand is MemberExpr member && ConstantOwner(member.Target) is TypeSymbol owner)
+        {
+            found.AddRange(owner.FindMethods(member.Name).Where(m => m.Static));
+        }
+        if (found.Count == 0)
+        {
+            return null;
+        }
+        if (found.Count > 1)
+        {
+            Error(operand, $"'&{(operand as NameExpr)?.Name ?? (operand as MemberExpr)?.Name}' names {found.Count} methods; give the one meant a name of its own");
+        }
+        return found[0];
+    }
+
+    /// <summary>The function pointer a call is made through, when its target is a variable or field holding one.</summary>
+    private FunctionPointer? CalledPointer(Expr target)
+    {
+        switch (target)
+        {
+            case NameExpr name when Lookup(name.Name) is not null:
+            case NameExpr field when _thisType?.FindField(field.Name) is not null && _thisType.FindMethods(field.Name).Count == 0:
+            case CastExpr:
+                return CheckExpr(target).Function;
+            case MemberExpr member when member.Target is not null && ConstantOwner(member.Target) is TypeSymbol owner
+                && owner.FindField(member.Name) is not null && owner.FindMethods(member.Name).Count == 0:
+                return CheckExpr(target).Function;
+            default:
+                return null;
+        }
+    }
+
     private Type CheckCall(CallExpr c)
     {
+        // A CALL THROUGH A FUNCTION POINTER: `compare(a, b)` where compare is
+        // a delegate*. The arguments are converted to its parameters, as a
+        // method's are; the call itself is made by the pointer's address.
+        if (CalledPointer(c.Target) is FunctionPointer pointer)
+        {
+            if (c.Args.Count != pointer.Params.Count)
+            {
+                Error(c, $"the function pointer takes {pointer.Params.Count} argument(s), not {c.Args.Count}");
+                return Type.Error;
+            }
+            for (int i = 0; i < c.Args.Count; i++)
+            {
+                Type given = CheckExpr(c.Args[i]);
+                if (!given.IsError && !Convertible(given, pointer.Params[i]))
+                {
+                    Error(c.Args[i], $"argument {i + 1}: a '{given}' is not a '{pointer.Params[i]}'");
+                }
+            }
+            _r.PointerCalls[c] = pointer;
+            return pointer.Returns;
+        }
+
         // `GetType()` WRITTEN BARE inside a class is this object's, as C#
         // reads every inherited member of object: the call is `this.GetType()`.
         // Only when nothing in scope is called GetType.

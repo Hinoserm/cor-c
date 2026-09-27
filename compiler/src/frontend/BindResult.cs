@@ -299,6 +299,12 @@ public sealed partial class BindResult
     /// something with an Invoke. The method recorded here is that Invoke.
     public Dictionary<CallExpr, MethodSymbol> Invocations { get; } = new(ReferenceEqualityComparer.Instance);
 
+    /// <summary>`&Method`: the static method whose address this is, as a function pointer.</summary>
+    public Dictionary<UnaryExpr, MethodSymbol> MethodAddresses { get; } = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>A call through a function pointer: the pointer's signature.</summary>
+    public Dictionary<CallExpr, FunctionPointer> PointerCalls { get; } = new(ReferenceEqualityComparer.Instance);
+
     /// Member accesses whose RECEIVER is really the first argument: `s.Trim()`
     /// calling the static `String.Trim(s)`. A primitive has no vtable to hang an
     /// instance method on, so this is how a string gets methods at all.

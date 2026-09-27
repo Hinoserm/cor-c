@@ -777,6 +777,18 @@ internal sealed class Encoder
                 B(0x00, 0x00, 0x00, 0x00);
                 break;
             }
+            case MOp.GetGs:
+            {
+                // xor r, r; then 66 8C /r, mov r16, gs: a 32-bit move from a
+                // segment register leaves the upper half undefined before
+                // the Pentium Pro, so only the low half is written.
+                int r = ((MReg)i.Operands[0]).Id;
+                B(0x31);
+                _out.Add((byte)(0xC0 | (r << 3) | r));
+                B(0x66, 0x8C);
+                _out.Add((byte)(0xE8 | r));
+                break;
+            }
             case MOp.SetGs:
                 // 8E /r with the segment number in the reg field: GS is 5.
                 B(0x8E);

@@ -295,7 +295,24 @@ static class Platform
 
         long desc = block + Tls.Scratch;
 
-        Sys.PokeWord(desc, 0 - 1);              // entry_number: any free one
+        // THE C LIBRARY'S SELECTOR, taken before this replaces it: under
+        // ld-linux, GS already names glibc's thread pointer, and a call into
+        // C puts it back for the length of the call (Runtime.EnterNative).
+        // Only the first time -- a later thread starts with the runtime's.
+        long entry = 0 - 1;                     // entry_number: any free one
+        if (Runtime.ManagedGs == 0)
+        {
+            Runtime.NativeGs = Sys.GetGs();
+        }
+        else
+        {
+            // The same slot in every thread, so one selector means each
+            // thread's own block: a thread made by pthread_create inherits
+            // the slot as its creator left it, and asking for "any" would
+            // give it another.
+            entry = Runtime.ManagedGs >> 3;
+        }
+        Sys.PokeWord(desc, entry);
         Sys.PokeWord(desc + 4, block);          // base_addr
         Sys.PokeWord(desc + 8, 0xFFFFF);        // limit: the whole space, in pages
         // seg_32bit | limit_in_pages | useable; a writable data segment that
@@ -310,7 +327,9 @@ static class Platform
             Exit(134);
         }
 
-        Sys.SetGs((Sys.PeekWord(desc) << 3) | 3);
+        long selector = (Sys.PeekWord(desc) << 3) | 3;
+        Runtime.ManagedGs = selector;
+        Sys.SetGs(selector);
 #endif
     }
 
@@ -372,6 +391,14 @@ static class Platform
         // with the runtime by whoever buffered it: this library is below the
         // class library and may not name Console.
         Runtime.AtExit();
+        // And C's, when a C library is loaded: exit(3) flushes what printf
+        // buffered and runs its atexit handlers and its libraries'
+        // finalisers, then ends the process itself.
+        long cExit = Runtime.NativeSymbol("exit");
+        if (cExit != 0)
+        {
+            Runtime.CallC(cExit, code, 0, 0, 0);
+        }
         Sys.Syscall(Call.ExitGroup, code, 0, 0);
         // The kernel does not return from that; if it somehow did, the plain
         // exit is the next best thing, and after that there is nothing.

@@ -739,6 +739,8 @@ public static class Driver
         Phase("codegen");
         Corsac.Lang.Opt.Pipeline.ReportAccounts();
         new TargetContract(freestanding ? (Lowering.TlsGs ? 2u : 1u) : 0u, requiresManagedLayouts: true, requiresCodeGenerationContract: true, longMode: longMode).Attach(obj);
+        // The C libraries its [DllImport]s call, for the link to need.
+        NativeLibraries.Attach(obj, module.NativeLibraries);
         ManagedLayouts.Attach(obj, front.Value.bound, library);
 
         // WHAT THIS PROGRAM'S SETTINGS ARE, for the kernel to read out of the

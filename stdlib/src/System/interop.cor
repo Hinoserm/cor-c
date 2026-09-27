@@ -23,36 +23,289 @@
 
 static class Marshal
 {
-    static int _lastError;
-
-    /// The errno of the last call that failed, as this process last recorded
-    /// it. .NET's is per-thread and set by the P/Invoke layer; ours is set by
-    /// the library that made the call.
+    /// The errno of the last call that failed on THIS thread, as .NET's is:
+    /// set by a [DllImport] declared with SetLastError = true, and by the
+    /// class library for the system calls it makes itself. It lives in the
+    /// thread's block (Runtime.NativeError).
     public static int GetLastPInvokeError()
     {
-        return _lastError;
+        return Runtime.NativeError();
     }
 
     public static void SetLastPInvokeError(int error)
     {
-        _lastError = error;
+        Runtime.SetNativeError(error);
     }
 
     /// The same number under the name .NET uses for it on Unix, where the
     /// "system error" and the P/Invoke error are one and the same.
     public static int GetLastSystemError()
     {
-        return _lastError;
+        return Runtime.NativeError();
     }
 
     public static void SetLastSystemError(int error)
     {
-        _lastError = error;
+        Runtime.SetNativeError(error);
     }
 
     public static string GetLastPInvokeErrorMessage()
     {
-        return GetPInvokeErrorMessage(_lastError);
+        return GetPInvokeErrorMessage(Runtime.NativeError());
+    }
+
+    // ---- memory C owns --------------------------------------------------
+    //
+    // What a [DllImport] hands back as a pointer, and what it wants one to.
+    // The collector knows nothing of any of it: AllocHGlobal is the C
+    // library's malloc when a C library is loaded (so free(3) in C may
+    // release it, and the other way round), and pages of the process's own
+    // otherwise.
+
+    /// A NUL-terminated UTF-8 string C made, as a string; null for zero.
+    public static string? PtrToStringUTF8(nint ptr)
+    {
+        if (ptr == 0)
+        {
+            return null;
+        }
+        int length = 0;
+        while (Sys.PeekByte(ptr + length) != 0)
+        {
+            length++;
+        }
+        return PtrToStringUTF8(ptr, length);
+    }
+
+    /// `byteLen` bytes of UTF-8 at `ptr`, as a string.
+    public static string PtrToStringUTF8(nint ptr, int byteLen)
+    {
+        if (ptr == 0 && byteLen != 0)
+        {
+            throw new ArgumentNullException("ptr");
+        }
+        if (byteLen < 0)
+        {
+            throw new ArgumentOutOfRangeException("byteLen");
+        }
+        string made = Sys.NewBytes(byteLen);
+        for (int i = 0; i < byteLen; i++)
+        {
+            Sys.SetByte(made, i, (int)Sys.PeekByte(ptr + i));
+        }
+        return made;
+    }
+
+    /// On Unix .NET reads an "ANSI" string as UTF-8, and so does this.
+    public static string? PtrToStringAnsi(nint ptr)
+    {
+        return PtrToStringUTF8(ptr);
+    }
+
+    public static string PtrToStringAnsi(nint ptr, int len)
+    {
+        return PtrToStringUTF8(ptr, len);
+    }
+
+    /// A copy of `s` as C reads one, in memory AllocHGlobal gave; free it
+    /// with FreeHGlobal. Zero for null.
+    public static nint StringToHGlobalUTF8(string? s)
+    {
+        if (s == null)
+        {
+            return 0;
+        }
+        nint at = AllocHGlobal(s.Length + 1);
+        for (int i = 0; i < s.Length; i++)
+        {
+            Sys.PokeByte(at + i, Sys.GetByte(s, i));
+        }
+        Sys.PokeByte(at + s.Length, 0);
+        return at;
+    }
+
+    public static nint StringToHGlobalAnsi(string? s)
+    {
+        return StringToHGlobalUTF8(s);
+    }
+
+    public static nint StringToCoTaskMemUTF8(string? s)
+    {
+        return StringToHGlobalUTF8(s);
+    }
+
+    static long _malloc;
+    static long _free;
+    static long _realloc;
+
+    static bool CLibrary()
+    {
+        if (_malloc == 0)
+        {
+            _malloc = Runtime.NativeSymbol("malloc");
+            _free = Runtime.NativeSymbol("free");
+            _realloc = Runtime.NativeSymbol("realloc");
+        }
+        return _malloc != 0 && _free != 0 && _realloc != 0;
+    }
+
+    /// `cb` bytes no collector will move or free.
+    public static nint AllocHGlobal(nint cb)
+    {
+        if (cb < 0)
+        {
+            throw new ArgumentOutOfRangeException("cb");
+        }
+        long at;
+        if (CLibrary())
+        {
+            at = Runtime.CallC(_malloc, cb == 0 ? 1 : cb, 0, 0, 0);
+        }
+        else
+        {
+            // No C library to ask: pages, with the size kept in front so
+            // FreeHGlobal can give them back.
+            long bytes = (cb + 2 * WordSize.Bytes + 4095) & ~4095L;
+            long pages = Platform.Map(bytes);
+            if (pages != 0)
+            {
+                Sys.Poke(pages, bytes);
+                at = pages + 2 * WordSize.Bytes;
+            }
+            else
+            {
+                at = 0;
+            }
+        }
+        if (at == 0)
+        {
+            throw new OutOfMemoryException();
+        }
+        return (nint)at;
+    }
+
+    public static nint AllocHGlobal(int cb)
+    {
+        return AllocHGlobal((nint)cb);
+    }
+
+    public static nint AllocCoTaskMem(int cb)
+    {
+        return AllocHGlobal((nint)cb);
+    }
+
+    public static void FreeHGlobal(nint hglobal)
+    {
+        if (hglobal == 0)
+        {
+            return;
+        }
+        if (CLibrary())
+        {
+            Runtime.CallC(_free, hglobal, 0, 0, 0);
+            return;
+        }
+        long pages = hglobal - 2 * WordSize.Bytes;
+        Platform.Unmap(pages, Sys.Peek(pages));
+    }
+
+    public static void FreeCoTaskMem(nint ptr)
+    {
+        FreeHGlobal(ptr);
+    }
+
+    public static nint ReAllocHGlobal(nint pv, nint cb)
+    {
+        if (pv == 0)
+        {
+            return AllocHGlobal(cb);
+        }
+        if (CLibrary())
+        {
+            long at = Runtime.CallC(_realloc, pv, cb == 0 ? 1 : cb, 0, 0);
+            if (at == 0)
+            {
+                throw new OutOfMemoryException();
+            }
+            return (nint)at;
+        }
+        long pages = pv - 2 * WordSize.Bytes;
+        long had = Sys.Peek(pages) - 2 * WordSize.Bytes;
+        nint made = AllocHGlobal(cb);
+        long keep = had < cb ? had : cb;
+        for (long i = 0; i < keep; i++)
+        {
+            Sys.PokeByte(made + i, Sys.PeekByte(pv + i));
+        }
+        FreeHGlobal(pv);
+        return made;
+    }
+
+    public static byte ReadByte(nint ptr) { return (byte)Sys.PeekByte(ptr); }
+    public static byte ReadByte(nint ptr, int ofs) { return (byte)Sys.PeekByte(ptr + ofs); }
+    public static short ReadInt16(nint ptr) { return (short)Sys.PeekHalf(ptr); }
+    public static short ReadInt16(nint ptr, int ofs) { return (short)Sys.PeekHalf(ptr + ofs); }
+    public static int ReadInt32(nint ptr) { return (int)Sys.PeekWord(ptr); }
+    public static int ReadInt32(nint ptr, int ofs) { return (int)Sys.PeekWord(ptr + ofs); }
+    public static long ReadInt64(nint ptr) { return Sys.PeekWord(ptr) | (Sys.PeekWord(ptr + 4) << 32); }
+    public static long ReadInt64(nint ptr, int ofs) { return ReadInt64(ptr + ofs); }
+    public static nint ReadIntPtr(nint ptr) { return (nint)Sys.Peek(ptr); }
+    public static nint ReadIntPtr(nint ptr, int ofs) { return (nint)Sys.Peek(ptr + ofs); }
+
+    public static void WriteByte(nint ptr, byte val) { Sys.PokeByte(ptr, val); }
+    public static void WriteByte(nint ptr, int ofs, byte val) { Sys.PokeByte(ptr + ofs, val); }
+    public static void WriteInt16(nint ptr, short val) { Sys.PokeHalf(ptr, val); }
+    public static void WriteInt16(nint ptr, int ofs, short val) { Sys.PokeHalf(ptr + ofs, val); }
+    public static void WriteInt32(nint ptr, int val) { Sys.PokeWord(ptr, val); }
+    public static void WriteInt32(nint ptr, int ofs, int val) { Sys.PokeWord(ptr + ofs, val); }
+    public static void WriteInt64(nint ptr, long val) { Sys.PokeWord(ptr, val); Sys.PokeWord(ptr + 4, val >> 32); }
+    public static void WriteInt64(nint ptr, int ofs, long val) { WriteInt64(ptr + ofs, val); }
+    public static void WriteIntPtr(nint ptr, nint val) { Sys.Poke(ptr, val); }
+    public static void WriteIntPtr(nint ptr, int ofs, nint val) { Sys.Poke(ptr + ofs, val); }
+
+    /// Bytes between an array and memory C owns, both ways.
+    public static void Copy(byte[] source, int startIndex, nint destination, int length)
+    {
+        CheckRange(source.Length, startIndex, length);
+        for (int i = 0; i < length; i++)
+        {
+            Sys.PokeByte(destination + i, source[startIndex + i]);
+        }
+    }
+
+    public static void Copy(nint source, byte[] destination, int startIndex, int length)
+    {
+        CheckRange(destination.Length, startIndex, length);
+        for (int i = 0; i < length; i++)
+        {
+            destination[startIndex + i] = (byte)Sys.PeekByte(source + i);
+        }
+    }
+
+    public static void Copy(int[] source, int startIndex, nint destination, int length)
+    {
+        CheckRange(source.Length, startIndex, length);
+        for (int i = 0; i < length; i++)
+        {
+            Sys.PokeWord(destination + 4 * i, source[startIndex + i]);
+        }
+    }
+
+    public static void Copy(nint source, int[] destination, int startIndex, int length)
+    {
+        CheckRange(destination.Length, startIndex, length);
+        for (int i = 0; i < length; i++)
+        {
+            destination[startIndex + i] = (int)Sys.PeekWord(source + 4 * i);
+        }
+    }
+
+    static void CheckRange(int count, int start, int length)
+    {
+        if (start < 0 || length < 0 || start > count - length)
+        {
+            throw new ArgumentOutOfRangeException("length");
+        }
     }
 
     /// strerror(3), word for word, because these strings are the ones every

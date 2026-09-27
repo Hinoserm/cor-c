@@ -200,6 +200,10 @@ internal static class AsmText
             case MOp.SetGs:
                 yield return $"mov gs, {Op(i.Operands[0], 2, false)}";
                 yield break;
+            case MOp.GetGs:
+                yield return $"xor {Op(i.Operands[0], 4, false)}, {Op(i.Operands[0], 4, false)}";
+                yield return $"mov {Op(i.Operands[0], 2, false)}, gs";
+                yield break;
             case MOp.LoadSegments:
                 yield return "mov ds, ax";
                 yield return "mov es, ax";

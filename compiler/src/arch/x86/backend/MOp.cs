@@ -85,4 +85,6 @@ public enum MOp : byte
     GsSelf,
     /// <summary>mov gs, r16 -- the selector of the descriptor that block sits behind.</summary>
     SetGs,
+    /// <summary>xor r32, r32; mov r16, gs -- the selector in GS, zero-extended on every processor.</summary>
+    GetGs,
 }

@@ -28,6 +28,15 @@ public sealed class MInstr
     /// <summary>For Jcc and Setcc.</summary>
     public Cond Cond { get; init; }
 
+    /// <summary>
+    /// For a call: into C (Ir.NativeCall). Carried through the passes after
+    /// selection so a call that is rewritten stays one; the collector needs
+    /// nothing of it, since the thread's callee-saved registers were copied
+    /// into its block (Tls.Spill) when it counted itself stopped, and C
+    /// preserves them for the length of the call.
+    /// </summary>
+    public bool Native { get; init; }
+
     /// <summary>Whether a LOCK prefix goes in front (Xadd, Cmpxchg).</summary>
     public bool Lock { get; init; }
 

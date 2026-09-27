@@ -262,7 +262,7 @@ public sealed partial class Lowering
     public const int TlsAllocLimit = 20;
     public const int TlsThreadId = 24;
     public const int TlsState = 28;
-    public const int TlsBytes = 136;
+    public const int TlsBytes = 140;
 
     /// <summary>The type the runtime library provides its hooks in.</summary>
     public const string RuntimeType = "Runtime";
@@ -642,9 +642,15 @@ public sealed partial class Lowering
         //
         // Freestanding, nobody left anything there: see Freestanding above.
         VReg? entrySp = null;
+        VReg? loaderFini = null;
 
         if (!Freestanding)
         {
+            // The loader's finaliser, in RDX/EDX at the first instruction
+            // (the System V process entry): what C's startup registers so the
+            // libraries' destructors run at exit. First, before anything can
+            // use the register.
+            loaderFini = e.Call(MachineIntrinsics.LoaderFini, IrTypes.Word)!;
             VReg fp = e.Reg(IrTypes.Word, "fp");
             e.Emit(Opcode.FramePointer, fp);
             entrySp = e.Binary(Opcode.Add, fp, Target.Current.WordSize);
@@ -725,7 +731,7 @@ public sealed partial class Lowering
         // `__data_start`, `_end` and `__corsac_frames` are the library's own,
         // and nothing in it can discover a second image; the program's
         // statics would never be scanned and its frames would have no names.
-        if (Dynamic)
+        if (Dynamic || AnyNativeImports())
         {
             // The libraries first, if nobody else ran their initialisers --
             // which is the case under a loader that cannot call into the
@@ -750,6 +756,73 @@ public sealed partial class Lowering
 
         Require(entry);
 
+        // UNDER A C LIBRARY, C'S STARTUP RUNS FIRST. A dynamically linked C
+        // program is entered through __libc_start_main, and so is this one
+        // when a C library is loaded: it is what sets up the C library's
+        // environment, program name and standard streams, and registers the
+        // loader's finaliser so every library's destructors run at exit.
+        // It calls back into __corsac_c_main, which runs Main exactly as
+        // below. With no C library loaded StartC comes straight back, and the
+        // program carries on here.
+        if (!Freestanding && (Dynamic || AnyNativeImports()) && entrySp is not null && loaderFini is not null
+            && RuntimeMethod("StartC", 3) is MethodSymbol startC)
+        {
+            Function cMain = new(CMainName, IrType.I32);
+            cMain.Params.Add(cMain.NewReg(IrTypes.Word, "argc"));
+            cMain.Params.Add(cMain.NewReg(IrTypes.Word, "argv"));
+            cMain.Params.Add(cMain.NewReg(IrTypes.Word, "envp"));
+            Builder ce = new(cMain, cMain.NewBlock("entry"));
+            if (RuntimeMethod("ReturnFromC", 0) is MethodSymbol back)
+            {
+                Require(back);
+                ce.Call(CallLabel(back), IrType.Void);
+            }
+            EmitRunMain(entry, cMain, ce);
+            _m.Functions.Add(cMain);
+
+            Require(startC);
+            e.Call(CallLabel(startC), IrType.Void,
+                new RegOperand(loaderFini), new RegOperand(entrySp), new RegOperand(e.Address(CMainName)));
+        }
+
+        EmitRunMain(entry, f, e);
+
+        // The optimiser rewrites allocations after lowering -- an owned
+        // object gains a Free, a program that needs no collector has its
+        // Alloc retargeted to AllocBump -- and the worklist only lowers what
+        // the program reaches. These are reached by the optimiser, so they
+        // are rooted here; the inliner drops whichever end up unused.
+        foreach (string helper in new[] { "AllocBump", "Free", "FreeBump" })
+        {
+            if (RuntimeMethod(helper, 1) is MethodSymbol rooted)
+            {
+                Require(rooted);
+            }
+        }
+        // And the free of an owned object's field (Escape's owned fields),
+        // and of an owned variable's previous value (owned variables).
+        if (RuntimeMethod("FreeField", 2) is MethodSymbol fieldFree)
+        {
+            Require(fieldFree);
+        }
+        if (RuntimeMethod("FreeReplaced", 2) is MethodSymbol replacedFree)
+        {
+            Require(replacedFree);
+        }
+
+        _m.Functions.Add(f);
+        _m.Entry = EntryName;
+    }
+
+    /// <summary>What C's startup calls as main when it runs first: see EmitEntry.</summary>
+    private const string CMainName = "__corsac_c_main";
+
+    /// <summary>
+    /// The rest of the entry, from Main's own type on: into <paramref name="f"/>,
+    /// which is the entry stub or the C library's main.
+    /// </summary>
+    private void EmitRunMain(MethodSymbol entry, Function f, Builder e)
+    {
         // WHAT MAIN WAS DECLARED TO TAKE. `static int Main(string[] args)` is
         // one of the four shapes C# allows, and the stub called it with no
         // arguments at all: the program read whatever the register happened to
@@ -818,32 +891,6 @@ public sealed partial class Lowering
             e.Syscall(new ImmOperand(1, IrTypes.Word), new[] { code });
         }
         e.Unreachable();
-
-        // The optimiser rewrites allocations after lowering -- an owned
-        // object gains a Free, a program that needs no collector has its
-        // Alloc retargeted to AllocBump -- and the worklist only lowers what
-        // the program reaches. These are reached by the optimiser, so they
-        // are rooted here; the inliner drops whichever end up unused.
-        foreach (string helper in new[] { "AllocBump", "Free", "FreeBump" })
-        {
-            if (RuntimeMethod(helper, 1) is MethodSymbol rooted)
-            {
-                Require(rooted);
-            }
-        }
-        // And the free of an owned object's field (Escape's owned fields),
-        // and of an owned variable's previous value (owned variables).
-        if (RuntimeMethod("FreeField", 2) is MethodSymbol fieldFree)
-        {
-            Require(fieldFree);
-        }
-        if (RuntimeMethod("FreeReplaced", 2) is MethodSymbol replacedFree)
-        {
-            Require(replacedFree);
-        }
-
-        _m.Functions.Add(f);
-        _m.Entry = EntryName;
     }
 
     /// <summary>

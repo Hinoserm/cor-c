@@ -77,6 +77,13 @@ public sealed class Module
     /// </summary>
     public bool LibraryCodeIsShared { get; set; }
 
+    /// <summary>
+    /// The C libraries this module's [DllImport] methods call into, by the
+    /// name the declaration gave. The object records them (.corsac.native)
+    /// and the link makes the program a dynamic one that needs them.
+    /// </summary>
+    public HashSet<string> NativeLibraries { get; } = new(StringComparer.Ordinal);
+
     public int Provided(IReadOnlySet<string> provided)
     {
         ArgumentNullException.ThrowIfNull(provided);

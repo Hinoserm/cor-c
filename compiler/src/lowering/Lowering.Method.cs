@@ -206,7 +206,16 @@ public sealed partial class Lowering
             CallDirect(inherited, IrType.Void, new List<Operand> { new RegOperand(_this!) });
         }
 
-        EmitStmt(decl.Body!);
+        VReg? fromC = CalledByC(m) ? EnterFromC(decl) : null;
+
+        if (NativeImportOf(m) is NativeImport native)
+        {
+            EmitNativeBody(m, native);
+        }
+        else
+        {
+            EmitStmt(decl.Body!);
+        }
 
         if (!_e.Closed)
         {
@@ -217,6 +226,10 @@ public sealed partial class Lowering
         }
 
         _e.SetBlock(_returnBlock);
+        if (fromC is not null)
+        {
+            LeaveToC(decl, fromC);
+        }
         _e.Ret(_returnValue is null ? null : new RegOperand(_returnValue));
 
         _m.Functions.Add(_f);
