@@ -1148,12 +1148,14 @@ public class Seat : IDrawingTarget
     }
     // --- synthetic input: driving the seat from outside (a test harness
     // with no keyboard or mouse of its own). Each goes the way the real
-    // device's input goes: a key to the focused window, the pointer into the
-    // kernel's pointer ring as an absolute device of its own. ---------------
+    // device's input goes: a key into the kernel's keyboard ring as the
+    // keyboard's own scan code, the pointer into the kernel's pointer ring
+    // as an absolute device of its own. ---------------------------------------
 
-    /// A key, as the keyboard would have given it: a Key code or a
-    /// character, and the modifiers (Key.Shift, Ctrl, Alt, Caps, Num) or'd.
-    public void InjectKey(long key, long modifiers) { Ioctl(SeatIoctl.InjectKey, (key & 0xFFFFFFFF) | (modifiers << 32)); }
+    /// One press or release, as the keyboard sends it: the set-1 make code
+    /// (0x1C Enter, 0x2A left Shift), with 0x100 for the release, 0x200 for
+    /// the E0 prefix (the grey arrows, right Ctrl) and 0x400 for E1 (Pause).
+    public void InjectKey(long scanEvent) { Ioctl(SeatIoctl.InjectKey, scanEvent & 0x7FF); }
 
     /// The injected pointer to a place on the screen, in pixels.
     public void InjectPointerMove(int x, int y) { Ioctl(SeatIoctl.InjectPointerMove, (x & 0xFFFF) | ((y & 0xFFFF) << 16)); }
