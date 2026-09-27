@@ -85,8 +85,8 @@ static class Program
         Line("one " + parts.Single(p => p.Size == 3).Name + " " + n.ElementAt(2)
              + " " + n.Last(x => x < 4));
 
-        List<List<int>> pieces = n.Chunk(2);
-        List<int> head = pieces[0];
+        List<int[]> pieces = n.Chunk(2).ToList();
+        int[] head = pieces[0];
         Line("chunk " + pieces.Count + " " + String.Join(",", head));
 
         Dictionary<string, int> table = parts.ToDictionary(p => p.Name, p => p.Size);
