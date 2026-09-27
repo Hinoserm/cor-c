@@ -58,8 +58,8 @@ static class Program
         {
             nums.Add(i);
         }
-        List<int> evens = nums.Where(x => x % 2 == 0);
-        List<int> squares = nums.Select(x => x * x);
+        List<int> evens = nums.Where(x => x % 2 == 0).ToList();
+        List<int> squares = nums.Select(x => x * x).ToList();
         int squareSum = 0;
         foreach (int q in squares)
         {

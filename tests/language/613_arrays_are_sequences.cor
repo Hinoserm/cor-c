@@ -40,7 +40,7 @@ static class Program
         Line("any " + numbers.Any(n => n == 2) + " " + numbers.Any(n => n == 9));
         Line("count " + numbers.Count() + " " + numbers.Sum());
 
-        List<int> doubled = numbers.Select(n => n);
+        List<int> doubled = numbers.Select(n => n).ToList();
         string shown = "";
 
         foreach (int n in doubled)
