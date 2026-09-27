@@ -4084,6 +4084,14 @@ public sealed partial class Binder
             return;
         }
 
+        // A USER-DEFINED IMPLICIT CONVERSION, where no standard one applies.
+        if (at is Expr converted && !StandardConvertible(from, to) && !Variant(from, to)
+            && !_r.Rewrites.ContainsKey(converted) && UserConversion(from, to, explicitToo: false) is { } implicitOp)
+        {
+            ConvertByOperator(converted, implicitOp);
+            return;
+        }
+
         if (Convertible(from, to) || Variant(from, to))
         {
             // A T BECOMING A T? IS A REAL CONVERSION, not merely permitted --
@@ -4211,7 +4219,76 @@ public sealed partial class Binder
         return false;
     }
 
+    /// <summary>
+    /// Whether a value of one type may stand where another is wanted with no
+    /// cast written: a standard conversion, or one user-defined `implicit
+    /// operator` on either type (C# 10.5.4), the way `XElement e = new("a")`
+    /// makes its XName from a string.
+    /// </summary>
     private bool Convertible(Type from, Type to)
+        => StandardConvertible(from, to) || UserConversion(from, to, explicitToo: false) is not null;
+
+    /// <summary>
+    /// The user-defined conversion operator taking a `from` to a `to`, or
+    /// null. Declared on the source type or the target type, as C# looks
+    /// (C# 10.5.3); its operand and result reached by standard conversions
+    /// only, since C# never chains two user-defined conversions. A cast may
+    /// use an `explicit` one as well.
+    /// </summary>
+    private MethodSymbol? UserConversion(Type from, Type to, bool explicitToo)
+    {
+        if (from.IsError || to.IsError || from.Prim is Prim.Any or Prim.NullLiteral || to.Prim == Prim.Any
+            || from.IsArray || to.IsArray)
+        {
+            return null;
+        }
+
+        TypeSymbol? source = from.AsNonNullable().Symbol;
+        TypeSymbol? target = to.AsNonNullable().Symbol;
+
+        foreach (TypeSymbol? holder in new[] { source, target == source ? null : target })
+        {
+            if (holder is null || holder.Kind == TypeKind.Interface)
+            {
+                continue;
+            }
+
+            foreach (string name in explicitToo ? new[] { "op_Implicit", "op_Explicit" } : new[] { "op_Implicit" })
+            {
+                foreach (MethodSymbol m in holder.FindMethods(name))
+                {
+                    if (m.Static && m.Params.Count == 1
+                        && StandardConvertible(from, m.Params[0].Type) && StandardConvertible(m.Returns, to))
+                    {
+                        return m;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// A user-defined conversion made where it is needed: the expression
+    /// rewritten as the call its operator is -- `XName.op_Implicit("a")` --
+    /// the way CheckAssignable already writes the array-to-span and
+    /// string-to-span conversions. The lowering evaluates the original inside
+    /// the call for what it is.
+    /// </summary>
+    private Type ConvertByOperator(Expr value, MethodSymbol op)
+    {
+        CallExpr call = new()
+        {
+            Target = new MemberExpr { Target = Qualified(op.Owner.Key, value), Name = op.Name, Line = value.Line, Col = value.Col, File = value.File },
+            Line = value.Line, Col = value.Col, File = value.File,
+        };
+        call.Args.Add(value);
+        _r.Rewrites[value] = call;
+        _r.UserConversions.Add(call);
+        return CheckExpr(call);
+    }
+
+    private bool StandardConvertible(Type from, Type to)
     {
         // Anything is a machine word, which is the whole point of this type.
         if (to.Prim == Prim.Any || from.Prim == Prim.Any)
@@ -4301,7 +4378,7 @@ public sealed partial class Binder
         {
             for (int i = 0; i < fromTuple.Fields.Count; i++)
             {
-                if (!Convertible(fromTuple.Fields[i].Type, toTuple.Fields[i].Type))
+                if (!StandardConvertible(fromTuple.Fields[i].Type, toTuple.Fields[i].Type))
                 {
                     return false;
                 }
@@ -4347,7 +4424,7 @@ public sealed partial class Binder
         // A Nullable<T> holds a T, so anything a T converts to it can reach --
         // `long? x = 1;` and `int? a = 2; long? b = a;` both being ordinary C#.
         // Only in this direction: emptying one out is checked above.
-        if (to.IsNullableValue && Convertible(from.Underlying, to.Underlying))
+        if (to.IsNullableValue && StandardConvertible(from.Underlying, to.Underlying))
         {
             return true;
         }
@@ -4589,6 +4666,10 @@ public sealed partial class Binder
             {
                 if (m.Static && m.Params.Count > 0 && m.Decl?.Params.FirstOrDefault()?.IsThis == true
                     && (Convertible(target, m.Params[0].Type)
+                        // As an argument would be accepted: an IEnumerable<Box>
+                        // is the IEnumerable<Box?> a copy of `Elements<T>(this
+                        // IEnumerable<T?>)` takes, the annotation being no type.
+                        || Variant(target, m.Params[0].Type)
                         || m.Params[0].Type.ParamName != null
                         || Applies(m, m.Params[0].Type, target)))
                 {
@@ -9139,6 +9220,23 @@ public sealed partial class Binder
                 Type operand = CheckExpr(cast.Operand);
                 Type wanted = Resolve(cast.Type, _thisType);
 
+                // `(string?)attribute` CALLS THE OPERATOR the type declares,
+                // implicit or explicit, where no standard conversion either
+                // way does the job (a downcast is a standard one).
+                if (!StandardConvertible(operand, wanted) && !StandardConvertible(wanted, operand)
+                    && !_r.Rewrites.ContainsKey(cast) && UserConversion(operand, wanted, explicitToo: true) is { } castOp)
+                {
+                    CallExpr call = new()
+                    {
+                        Target = new MemberExpr { Target = Qualified(castOp.Owner.Key, cast), Name = castOp.Name, Line = cast.Line, Col = cast.Col, File = cast.File },
+                        Line = cast.Line, Col = cast.Col, File = cast.File,
+                    };
+                    call.Args.Add(cast.Operand);
+                    _r.Rewrites[cast] = call;
+                    Type produced = CheckExpr(call);
+                    return wanted.Nullable && !produced.Nullable ? wanted : produced;
+                }
+
                 // `(int?)5` PUTS THE NUMBER IN A CELL, which is a conversion
                 // and not merely a name for the same bits. Marked on the
                 // operand, because that is the value the cell is made from.
@@ -12784,7 +12882,11 @@ public sealed partial class Binder
             return null;
         }
 
-        if (l.ArrayRank > 0 || r.ArrayRank > 0 || l.Prim == Prim.String || r.Prim == Prim.String
+        // A STRING ON ONE SIDE still reaches an operator of the other's type
+        // through its conversions: `element.Name == "Target"` is XName's
+        // op_Equality, the string made an XName by op_Implicit. Two strings
+        // are the language's own.
+        if (l.ArrayRank > 0 || r.ArrayRank > 0 || (l.Prim == Prim.String && r.Prim == Prim.String)
             || l.Prim == Prim.NullLiteral || r.Prim == Prim.NullLiteral)
         {
             return null;

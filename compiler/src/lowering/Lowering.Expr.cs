@@ -128,7 +128,10 @@ public sealed partial class Lowering
             v = CopyStruct(e, v, target.Symbol!);
         }
 
-        return Convert(e, v, _b.TypeOf(e), target);
+        // A USER-DEFINED CONVERSION already produced the operator's result;
+        // what is left to convert is from that, not from what was written.
+        Type had = _b.Rewrites.TryGetValue(e, out Expr? made) && _b.UserConversions.Contains(made) ? _b.TypeOf(made) : _b.TypeOf(e);
+        return Convert(e, v, had, target);
     }
 
     /// <summary>

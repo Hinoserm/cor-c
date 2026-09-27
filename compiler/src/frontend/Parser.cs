@@ -2048,6 +2048,32 @@ public sealed class Parser
             return FinishMethod(ctor, chain);
         }
 
+        // A CONVERSION OPERATOR: `public static implicit operator XName(string
+        // name)`. No return type is written before it -- the type after
+        // `operator` is both the name and what it returns -- so it is
+        // recognised here, before a type is parsed. `implicit` and `explicit`
+        // are words only in this position, as C# has them. Desugared, like
+        // the others, to the method .NET's metadata names: op_Implicit and
+        // op_Explicit, one parameter each.
+        if (At(Tok.Ident) && Cur.Text is "implicit" or "explicit" && Ahead().Kind == Tok.KwOperator)
+        {
+            bool isImplicit = Cur.Text == "implicit";
+            _i += 2;
+            MethodDecl conversion = new()
+            {
+                Name = isImplicit ? "op_Implicit" : "op_Explicit", Mods = mods, Returns = ParseTypeRef(),
+                Line = start.Line, Col = start.Col, Body = null,
+            };
+            ParseParams(conversion.Params);
+
+            if (conversion.Params.Count != 1)
+            {
+                throw Error("a conversion operator takes one operand");
+            }
+            conversion.Attributes.AddRange(attributes);
+            return FinishMethod(conversion);
+        }
+
         TypeRef type = At(Tok.KwVoid) ? VoidType() : ParseTypeRef();
 
         // AN OPERATOR: `public static TimeSpan operator -(DateTime a, DateTime b)`.
@@ -2203,10 +2229,10 @@ public sealed class Parser
     /// static method it is: op_Subtraction, with its two operands as
     /// parameters.
     ///
-    /// The unary forms and the conversion operators (`implicit operator`,
-    /// `explicit operator`) are not here yet; what is here is the binary set,
+    /// The unary forms are not here yet; what is here is the binary set,
     /// which is what a date, a time, a vector or a big integer needs to be
-    /// written the way C# writes it.
+    /// written the way C# writes it. The conversion operators are parsed
+    /// with the members, since no return type precedes them.
     /// </summary>
     private MethodDecl ParseOperator(TypeRef type, Mods mods, Token start)
     {

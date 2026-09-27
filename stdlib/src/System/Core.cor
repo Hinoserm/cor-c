@@ -821,6 +821,25 @@ static class String {
 
     public static int CompareOrdinal(string a, string b) { return Compare(a, b); }
 
+    /// At most length characters of each, from those indices, compared by
+    /// code unit; a shorter remainder sorts first, as .NET has it.
+    public static int CompareOrdinal(string a, int indexA, string b, int indexB, int length) {
+        if (length < 0 || indexA < 0 || indexB < 0) { throw new ArgumentOutOfRangeException("length"); }
+        int left = Math.Min(length, a.Length - indexA);
+        int right = Math.Min(length, b.Length - indexB);
+        if (left < 0 || right < 0) { throw new ArgumentOutOfRangeException("indexA"); }
+        int common = Math.Min(left, right);
+        for (int i = 0; i < common; i++) {
+            int difference = a[indexA + i] - b[indexB + i];
+            if (difference != 0) { return difference; }
+        }
+        return left - right;
+    }
+
+    /// The same hash StringComparer.Ordinal gives, so a string and its
+    /// comparer agree.
+    public static int GetHashCode(string s) { return (int)Sys.StringHash(s, 0, s.Length, 2166136261); }
+
     // ---- cutting and splicing ---------------------------------------------
 
     public static string Remove(string s, int start) {
@@ -1248,6 +1267,15 @@ static partial class Path {
 // which is what this machine's console and filing system are.
 
 static class Char {
+    /// A code point as the one or two UTF-16 units that spell it.
+    public static string ConvertFromUtf32(int utf32) {
+        if (utf32 < 0 || utf32 > 0x10FFFF || (utf32 >= 0xD800 && utf32 <= 0xDFFF)) {
+            throw new ArgumentOutOfRangeException("utf32");
+        }
+        if (utf32 < 0x10000) { return new string((char)utf32, 1); }
+        int v = utf32 - 0x10000;
+        return new string(new char[] { (char)(0xD800 + (v >> 10)), (char)(0xDC00 + (v & 0x3FF)) });
+    }
     public static int CompareTo(char value, char other) { return value < other ? -1 : value > other ? 1 : 0; }
     public static int CompareTo(char value, object? other) {
         if (other == null) return 1;
@@ -3497,7 +3525,7 @@ static class UInt32 {
 
     public static bool TryParse(string s, NumberStyles style, IFormatProvider? provider, out uint value) {
         ulong wide = 0;
-        bool ok = NumberParse.TryUnsigned(s, style == NumberStyles.HexNumber ? 16 : 10, out wide)
+        bool ok = NumberParse.TryUnsigned(s, (style & NumberStyles.AllowHexSpecifier) != 0 ? 16 : 10, out wide)
                && wide <= 4294967295;
         value = (uint)wide;
         return ok;
@@ -3592,7 +3620,7 @@ static class Int64 {
     }
 
     public static bool TryParse(string s, NumberStyles style, IFormatProvider? provider, out long value) {
-        return NumberParse.TrySigned(s, style == NumberStyles.HexNumber ? 16 : 10, 64, out value);
+        return NumberParse.TrySigned(s, (style & NumberStyles.AllowHexSpecifier) != 0 ? 16 : 10, 64, out value);
     }
 
     public static long Parse(string s, NumberStyles style) {
@@ -3680,7 +3708,7 @@ static class Int32 {
 
     public static bool TryParse(string s, NumberStyles style, IFormatProvider? provider, out int value) {
         long wide = 0;
-        bool ok = NumberParse.TrySigned(s, style == NumberStyles.HexNumber ? 16 : 10, 32, out wide);
+        bool ok = NumberParse.TrySigned(s, (style & NumberStyles.AllowHexSpecifier) != 0 ? 16 : 10, 32, out wide);
         value = (int)wide;
         return ok;
     }
@@ -3694,10 +3722,26 @@ static class Int32 {
     }
 }
 
+/// The number forms a parser accepts, .NET's flags and their values.
+[Flags]
 enum NumberStyles {
     None = 0,
+    AllowLeadingWhite = 1,
+    AllowTrailingWhite = 2,
+    AllowLeadingSign = 4,
+    AllowTrailingSign = 8,
+    AllowParentheses = 16,
+    AllowDecimalPoint = 32,
+    AllowThousands = 64,
+    AllowExponent = 128,
+    AllowCurrencySymbol = 256,
+    AllowHexSpecifier = 512,
     Integer = 7,
     HexNumber = 515,
+    Number = 111,
+    Float = 167,
+    Currency = 383,
+    Any = 511,
 }
 
 /// What a formatter or a parser is told to use. .NET's every Parse, TryParse
@@ -3733,7 +3777,7 @@ static class UInt64 {
         value = 0;
         if (s.Length == 0) { return false; }
 
-        int radix = style == NumberStyles.HexNumber ? 16 : 10;
+        int radix = (style & NumberStyles.AllowHexSpecifier) != 0 ? 16 : 10;
         for (int i = 0; i < s.Length; i++) {
             int c = (int)s[i];
             int digit = -1;
@@ -3805,7 +3849,7 @@ static class Byte {
 
     public static bool TryParse(string s, NumberStyles style, IFormatProvider? provider, out byte value) {
         ulong wide = 0;
-        bool ok = NumberParse.TryUnsigned(s, style == NumberStyles.HexNumber ? 16 : 10, out wide)
+        bool ok = NumberParse.TryUnsigned(s, (style & NumberStyles.AllowHexSpecifier) != 0 ? 16 : 10, out wide)
                && wide <= 255;
         value = (byte)wide;
         return ok;
