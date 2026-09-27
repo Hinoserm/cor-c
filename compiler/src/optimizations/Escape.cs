@@ -709,6 +709,8 @@ public sealed partial class Escape : IModulePass
             return;
         }
 
+        if (canFree) OwnFreshResults(f, summaries);
+
         int budget = FrameBudget;
         Liveness? liveness = null;
         List<OwnedFieldEscape.Owner> owners = new();
@@ -718,20 +720,6 @@ public sealed partial class Escape : IModulePass
             for (int k = 0; k < b.Instrs.Count; k++)
             {
                 Instr i = b.Instrs[k];
-                if (canFree && IsFreshCall(i) && i.Dest is not null && !_ownedCalls.Contains(i))
-                {
-                    // A fresh function's result: the caller owns it. Never a
-                    // frame slot -- the callee made it on the heap -- but
-                    // freed at its last use here, as a dynamic allocation is.
-                    if (OwnFreshResult(f, b, i, summaries, ref liveness))
-                    {
-                        // Instructions went in before the call; carry on
-                        // just after it (what went in after is bookkeeping,
-                        // no allocation or call to own).
-                        k = b.Instrs.IndexOf(i);
-                    }
-                    continue;
-                }
                 if (i.Op != Opcode.Call || !IsAllocator(i.Callee) || i.Dest is null || i.Operands.Count != 1
                     || _owned.Contains(i))
                 {
@@ -963,15 +951,45 @@ public sealed partial class Escape : IModulePass
     /// and no earlier result from the same call is still in use when it runs
     /// again. True if ownership was taken (five instructions follow the call).
     /// </summary>
-    private bool OwnFreshResult(Function f, Block b, Instr call, Dictionary<string, bool[]> summaries, ref Liveness? liveness)
+    /// <summary>
+    /// Every fresh function's result in `f` the caller can own: all of them
+    /// judged against ONE analysis of the function as it stands, then owned.
+    /// Owning one inserts only bookkeeping of its own -- a slot, frees, a
+    /// store of that result -- which touches no register another result's
+    /// judgement rests on; judged one at a time with the analysis made again
+    /// after each, a function with thousands of such calls cost thousands of
+    /// liveness solutions.
+    /// </summary>
+    private void OwnFreshResults(Function f, Dictionary<string, bool[]> summaries)
     {
-        if (f.Async is not null) return false;
+        if (f.Async is not null) return;
+        List<(Block Block, Instr Call)> calls = new();
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (IsFreshCall(i) && i.Dest is not null && !_ownedCalls.Contains(i)) calls.Add((b, i));
+        if (calls.Count == 0) return;
         Defs defs = new(f, buildCfg: false);
-        if (!defs.IsSingle(call.Dest!)) return false;
-        Flow flow = Analyse(f, new[] { call.Dest! }, summaries, call);
-        if (flow.Escapes) return false;
-        liveness ??= new Liveness(f);
-        if (LiveAtSelf(liveness, b, call, flow.Derived)) return false;
+        Liveness? liveness = null;
+        List<(Block Block, Instr Call, bool ReadsPrevious)> chosen = new();
+        foreach ((Block b, Instr call) in calls)
+        {
+            if (!defs.IsSingle(call.Dest!)) continue;
+            Flow flow = Analyse(f, new[] { call.Dest! }, summaries, call);
+            if (flow.Escapes) continue;
+            liveness ??= new Liveness(f);
+            if (LiveAtSelf(liveness, b, call, flow.Derived)) continue;
+            // BEFORE THE CALL WHEN THE CALL CANNOT BE READING IT (see below).
+            bool readsPrevious = false;
+            foreach (Operand o in call.Operands)
+                if (o is RegOperand arg && flow.Derived.Contains(arg.Reg)) readsPrevious = true;
+            chosen.Add((b, call, readsPrevious));
+        }
+        foreach ((Block b, Instr call, bool readsPrevious) in chosen)
+            OwnFreshResult(f, b, call, readsPrevious);
+    }
+
+    private bool OwnFreshResult(Function f, Block b, Instr call, bool readsPrevious)
+    {
         // BEFORE THE CALL WHEN THE CALL CANNOT BE READING IT. The previous
         // result is reachable only through registers derived from it (it
         // does not escape), so a call that is handed none of them cannot
@@ -979,16 +997,12 @@ public sealed partial class Escape : IModulePass
         // callee's own allocation lands on the same bytes through the
         // collector's lock-free top-of-buffer path. A call handed the old
         // object -- x = Grow(x) -- gives it back after instead.
-        bool readsPrevious = false;
-        foreach (Operand o in call.Operands)
-            if (o is RegOperand arg && flow.Derived.Contains(arg.Reg)) readsPrevious = true;
         if (readsPrevious ? !OwnAfter(f, b, call) : !Own(f, b, call)) return false;
         // Own/OwnAfter recorded the object's frees; the callee is what filled its fields.
         _records[f][^1].FreshCallee = call.Callee;
         _ownedCalls.Add(call);
         Owned++;
         OwnedReturns++;
-        liveness = null;
         return true;
     }
 

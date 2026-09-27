@@ -30,12 +30,19 @@ public sealed class ScalarObjects : IParallelModulePass
     {
             if (f.Async is not null) return 0;
             int replaced = 0;
+            // ONE ANALYSIS OF THE FUNCTION FOR ALL ITS CANDIDATES, made again
+            // only after a replacement has changed the function. Made afresh
+            // for every candidate, a function with thousands of small
+            // allocations -- what inlining a whole kernel into one module
+            // leaves -- cost thousands of whole-function control-flow graphs
+            // and liveness solutions: most of a whole-kernel compile.
+            Analysis cache = new(f);
             foreach (Block block in f.Blocks)
                 foreach (Instr alloc in block.Instrs.ToArray())
                     if (alloc.Op == Opcode.Call && Escape.IsAllocator(alloc.Callee)
                         && alloc.Dest is not null && alloc.Operands.Count == 1
                         && alloc.Operands[0] is ImmOperand size && size.Value > 0 && size.Value <= 1024)
-                        if (Replace(f, block, alloc, size.Value)) replaced++;
+                        if (Replace(f, block, alloc, size.Value, cache)) { replaced++; cache = new(f); }
             if (replaced != 0)
             {
                 // Expose child references before the following escape pass:
@@ -46,40 +53,75 @@ public sealed class ScalarObjects : IParallelModulePass
             return replaced;
     }
 
-    private static bool Replace(Function f, Block block, Instr alloc, long bytes)
+    /// <summary>The definitions and liveness of a function as it stands, each made when first asked for.</summary>
+    private sealed class Analysis
     {
-        Defs defs = new(f);
+        private readonly Function _f;
+        private Defs? _defs;
+        private Liveness? _liveness;
+        public Analysis(Function f) { _f = f; }
+        public Defs Defs => _defs ??= new Defs(_f);
+        public Liveness Liveness => _liveness ??= new Liveness(Defs.Cfg);
+        private Dictionary<VReg, List<(Block Block, int Index)>>? _uses;
+        /// <summary>Every instruction that reads each register, in block and instruction order.</summary>
+        public Dictionary<VReg, List<(Block Block, int Index)>> Uses
+        {
+            get
+            {
+                if (_uses is not null) return _uses;
+                _uses = new();
+                foreach (Block b in _f.Blocks)
+                    for (int k = 0; k < b.Instrs.Count; k++)
+                        foreach (VReg r in IrInfo.Uses(b.Instrs[k]).Distinct())
+                        {
+                            if (!_uses.TryGetValue(r, out var list)) _uses[r] = list = new();
+                            list.Add((b, k));
+                        }
+                return _uses;
+            }
+        }
+    }
+
+    private static bool Replace(Function f, Block block, Instr alloc, long bytes, Analysis cache)
+    {
+        Defs defs = cache.Defs;
         if (!defs.IsSingle(alloc.Dest!) || defs.Cfg.Roots.Count != 1) return false;
         Dictionary<VReg, long> addresses = new() { [alloc.Dest!] = 0 };
         HashSet<Instr> aliases = new();
         int start = block.Instrs.IndexOf(alloc);
-        bool changed;
-        do
+        // The object's addresses, followed from its registers' readers only.
+        var uses = cache.Uses;
+        Queue<VReg> pending = new();
+        pending.Enqueue(alloc.Dest!);
+        while (pending.TryDequeue(out VReg? from))
         {
-            changed = false;
-            foreach (Block b in f.Blocks)
-            foreach (Instr i in b.Instrs)
+            if (!uses.TryGetValue(from, out var readers)) continue;
+            foreach ((Block rb, int ri) in readers)
             {
+            Instr i = rb.Instrs[ri];
             if (i.Dest is null || !defs.IsSingle(i.Dest) || i.Operands.Count == 0
                 || addresses.ContainsKey(i.Dest)
                 || i.Operands[0] is not RegOperand r || !addresses.TryGetValue(r.Reg, out long at)) continue;
             if (i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32)
-            { addresses[i.Dest] = at; aliases.Add(i); changed = true; }
+            { addresses[i.Dest] = at; aliases.Add(i); pending.Enqueue(i.Dest); }
             else if (i.Op == Opcode.Add && i.Operands.Count == 2 && i.Operands[1] is ImmOperand delta
                 && delta.Value >= 0 && delta.Value <= bytes && at <= bytes - delta.Value)
-            { addresses[i.Dest] = at + delta.Value; aliases.Add(i); changed = true; }
+            { addresses[i.Dest] = at + delta.Value; aliases.Add(i); pending.Enqueue(i.Dest); }
             }
-        } while (changed);
-
-        if (Escape.LiveAtSelf(new Liveness(defs.Cfg), block, alloc, addresses.Keys.ToHashSet())) return false;
+        }
 
         Dictionary<long, (int Size, IrType Type)> fields = new();
         Dictionary<Instr, long> accesses = new();
-        foreach (Block b in f.Blocks)
-        for (int k = 0; k < b.Instrs.Count; k++)
+        // Only the instructions that read one of its addresses, each once.
+        HashSet<(Block, int)> seen = new();
+        List<(Block Block, int Index)> touching = new();
+        foreach (VReg a in addresses.Keys)
+            if (uses.TryGetValue(a, out var readers))
+                foreach (var site in readers)
+                    if (seen.Add(site)) touching.Add(site);
+        foreach ((Block b, int k) in touching)
         {
             Instr i = b.Instrs[k];
-            if (!IrInfo.Uses(i).Any(addresses.ContainsKey)) continue;
             // No loop-carried references, calls, address escapes,
             // identity tests, unknown offsets, overlapping fields or partial loads.
             if (!defs.Cfg.Dominates(block, b) || (b == block && k <= start)) return false;
@@ -105,6 +147,8 @@ public sealed class ScalarObjects : IParallelModulePass
             accesses[i] = offset;
         }
         if (fields.Count == 0) return false;
+        // Last, being the dearest: nothing loop-carried still holds it.
+        if (Escape.LiveAtSelf(cache.Liveness, block, alloc, addresses.Keys.ToHashSet())) return false;
         Dictionary<long, VReg> locals = fields.ToDictionary(p => p.Key, p => f.NewReg(p.Value.Type, "scalarfield"));
         foreach (Block b in f.Blocks)
         {
