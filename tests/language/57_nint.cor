@@ -2,19 +2,26 @@
 // expect-exit: 0
 // expect-output:
 // arith 30 -10 200 2 6 -20
-// wrap -2147483648 4294967295 0 True
-// conv 5 -1 4294967295 -1 True 1000
+// wrap True True 0 True
+// conv 5 -1 True -1 True 1000
 // mixed 15 45 4294967300 True
-// addr 28 12345 7
+// addr 12 12345 7
 //
 // nint and nuint: the integers that are exactly one machine word. Arithmetic
-// between them and with int, wrap-around at the word's width (this target's
-// word is 32 bits), the implicit conversions in from int and uint and out to
+// between them and with int, wrap-around at the word's width (32 bits on
+// i386, 64 in long mode, so the edges are checked against nint.MinValue and
+// nuint.MaxValue), the implicit conversions in from int and uint and out to
 // long and ulong, the explicit ones back, promotion with long and uint, and
 // holding an address that Sys.PeekWord reads through.
 
 static class Program
 {
+#if TARGET_64BIT
+    const int ArrayHeader = 24;
+#else
+    const int ArrayHeader = 16;
+#endif
+
     static void Line(string s)
     {
         Sys.Print(s);
@@ -37,12 +44,12 @@ static class Program
         nint b = 10;
         Line("arith " + (a + b) + " " + (b - a) + " " + (a * b) + " " + (a / b) + " " + (a % 7) + " " + (-a));
 
-        nint max = 2147483647;
+        nint max = nint.MaxValue;
         nint over = max + 1;
         nuint umax = 0;
         umax = umax - 1;
         nuint zero = umax + 1;
-        Line("wrap " + over + " " + U(umax) + " " + U(zero) + " " + (over < 0));
+        Line("wrap " + (over == nint.MinValue) + " " + (umax == nuint.MaxValue) + " " + U(zero) + " " + (over < 0));
 
         int i = 5;
         nint ni = i;
@@ -53,7 +60,7 @@ static class Program
         int back = (int)fromLong;
         uint ui = 1000;
         nuint nu2 = ui;
-        Line("conv " + l + " " + fromLong + " " + ul + " " + back + " " + (nu == umax) + " " + U(nu2));
+        Line("conv " + l + " " + fromLong + " " + (ul == nuint.MaxValue) + " " + back + " " + (nu == umax) + " " + U(nu2));
 
         nint n = 5;
         int k = 10;
@@ -68,9 +75,9 @@ static class Program
         values[3] = 12345;
         values[0] = 7;
         nint start = (nint)Sys.Word(values);
-        nint at = start + 16 + 3 * 4;
-        long first = Sys.PeekWord(start + 16);
-        Line("addr " + (at - start) + " " + Sys.PeekWord(at) + " " + first);
+        nint at = start + ArrayHeader + 3 * 4;
+        long first = Sys.PeekWord(start + ArrayHeader);
+        Line("addr " + (at - start - ArrayHeader) + " " + Sys.PeekWord(at) + " " + first);
         return 0;
     }
 }

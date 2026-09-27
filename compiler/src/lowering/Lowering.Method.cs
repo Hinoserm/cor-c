@@ -552,7 +552,8 @@ public sealed partial class Lowering
     {
         if (!_localRegs.TryGetValue(d, out VReg? r))
         {
-            Type t = _b.LocalType.TryGetValue(d, out Type? declared) ? declared : Type.I32;
+            Type t = _b.LocalType.TryGetValue(d, out Type? declared) ? declared
+                   : d.Init is not null ? _b.TypeOf(d.Init) : Type.I32;
             bool boxed = _b.BoxedLocals.Contains(d);
             r = _f.NewReg(boxed ? IrTypes.Word : IrTypes.Of(t), d.Name);
             _localRegs[d] = r;

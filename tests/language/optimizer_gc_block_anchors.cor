@@ -4,6 +4,14 @@
 // block anchors passed
 static class Program
 {
+    // Where a request's payload ends: the block is the request plus a
+    // two-word header and a one-word footer, rounded to eight bytes.
+    static long OnePast(long request)
+    {
+        long overhead = 3 * WordSize.Bytes;
+        return ((request + overhead + 7) & -8L) - overhead;
+    }
+
     static int Main()
     {
         const int count = 8192;
@@ -13,15 +21,15 @@ static class Program
         {
             long memory = Runtime.Alloc(64);
             Sys.Poke(memory + 16, i + 1);
-            // A 64-byte request occupies an 80-byte block: its actual
-            // payload ends at +68, which is also a valid conservative root.
-            roots[i] = memory + (i % 7 == 0 ? 68 : 16);
+            // A 64-byte request's actual payload ends at OnePast(64) (+68 in
+            // an 80-byte block on i386), which is also a valid conservative root.
+            roots[i] = memory + (i % 7 == 0 ? OnePast(64) : 16);
         }
         for (int i = 0; i < 2; i++)
         {
             long memory = Runtime.Alloc(20000);
             Sys.Poke(memory + 15000, 9000 + i);
-            roots[count + i] = memory + (i == 0 ? 15000 : 20004);
+            roots[count + i] = memory + (i == 0 ? 15000 : OnePast(20000));
         }
         long before = Gc.WalkSteps;
         Gc.Collect();
@@ -30,21 +38,21 @@ static class Program
         { Sys.Print("interior scan steps=" + steps + "\n"); return 1; }
         for (int i = 0; i < count; i++)
         {
-            long memory = roots[i] - (i % 7 == 0 ? 68 : 16);
+            long memory = roots[i] - (i % 7 == 0 ? OnePast(64) : 16);
             if (Sys.Peek(memory + 16) != i + 1) return 2;
         }
-        if (Sys.Peek(roots[count]) != 9000 || Sys.Peek(roots[count + 1] - 5004) != 9001) return 3;
+        if (Sys.Peek(roots[count]) != 9000 || Sys.Peek(roots[count + 1] - OnePast(20000) + 15000) != 9001) return 3;
         long chunk = HeapChunks.Of(roots[count / 2]);
         // Sweep invalidates boundaries. Outside marking the helper must not
         // consult the previous collection's now-stale page entries.
         if (HeapChunks.MarkStart(chunk, roots[count / 2]) != HeapChunks.First(chunk)) return 4;
         GcLock.Enter();
-        long saved = Sys.Peek(chunk + 12);
-        Sys.Poke(chunk + 12, 0);
+        long saved = Sys.Peek(chunk + 3 * WordSize.Bytes);
+        Sys.Poke(chunk + 3 * WordSize.Bytes, 0);
         HeapChunks.SetBlockAnchorsActive(true);
         bool fallback = HeapChunks.MarkStart(chunk, roots[count / 2]) == HeapChunks.First(chunk);
         HeapChunks.SetBlockAnchorsActive(false);
-        Sys.Poke(chunk + 12, saved);
+        Sys.Poke(chunk + 3 * WordSize.Bytes, saved);
         GcLock.Exit();
         if (!fallback) return 5;
         long metadata = HeapChunks.BlockAnchorBytes;

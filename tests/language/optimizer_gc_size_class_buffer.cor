@@ -16,12 +16,12 @@ static class Program
         long thread = Sys.ThreadBlock();
         long cursor = Sys.Peek(thread + Tls.AllocPtr);
         long large = Runtime.Alloc(4096);
-        if (large != cursor + 8) return 1;
-        for (int i = 0; i < 4096; i += 4)
+        if (large != cursor + 2 * WordSize.Bytes) return 1;
+        for (long i = 0; i < 4096; i += WordSize.Bytes)
             if (Sys.Peek(large + i) != 0) return 2;
         long again = Runtime.Alloc(32);
         if (again != reusable) return 3;
-        for (int i = 0; i < 32; i += 4)
+        for (long i = 0; i < 32; i += WordSize.Bytes)
             if (Sys.Peek(again + i) != 0) return 4;
         if (Sys.Peek(left) != 111 || Sys.Peek(right) != 222) return 5;
         long treeHole = Runtime.Alloc(280);
