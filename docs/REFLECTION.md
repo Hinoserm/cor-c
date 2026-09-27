@@ -143,7 +143,7 @@ changes with it.
 
 ### Type table (`.rodata.reflect`)
 
-One per reflectable type, word-aligned, all references relocated:
+One per reflectable type, word-aligned, every reference self-relative (below):
 
 ```
 TypeTable
