@@ -1,0 +1,37 @@
+// test: named_arguments_overloads
+// expect-exit: 0
+// expect-output:
+// six main 134512640 6 True
+// eight main /lib 134512640 x False
+// six e 134512640  True
+//
+// Named arguments choose among every overload whose names fit, by the
+// written arguments' types and then the fewest defaults (C# 12.6.4): the
+// eight-parameter Link declared first used to take `Link(inputs, "main",
+// address, 6, longMode: true)`, meant for the six-parameter one, because its
+// names fit too. Expected output is real .NET's.
+
+using System;
+using System.Collections.Generic;
+
+static class L
+{
+    public const uint DefaultLoad = 0x8048000;
+    public static string Link(IEnumerable<int> objects, string entry, IEnumerable<string> shared, string? runPath = null,
+                              uint load = DefaultLoad, object? program = null, IEnumerable<string>? libraries = null, bool? longMode = null)
+        => "eight " + entry + " " + runPath + " " + load + " " + (libraries == null ? "none" : string.Join(",", libraries)) + " " + longMode;
+    public static string Link(IEnumerable<int> objects, string entry, ulong load = DefaultLoad, ulong? phys = null, object? program = null, bool? longMode = null)
+        => "six " + entry + " " + load + " " + phys + " " + longMode;
+}
+
+static class Program
+{
+    static void Main()
+    {
+        List<int> inputs = new() { 1 };
+        ulong? baseAddress = null;
+        Console.WriteLine(L.Link(inputs, "main", baseAddress ?? L.DefaultLoad, 6, longMode: true));
+        Console.WriteLine(L.Link(inputs, "main", new List<string> { "libc" }, "/lib", libraries: new[] { "x" }, longMode: false));
+        Console.WriteLine(L.Link(inputs, "e", longMode: true));
+    }
+}

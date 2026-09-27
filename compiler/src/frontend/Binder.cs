@@ -5594,12 +5594,22 @@ public sealed partial class Binder
             return;
         }
 
+        // EVERY OVERLOAD THE NAMES FIT, and of those the ones the written
+        // arguments' types reach (C# 12.6.4.2 applies both). The first whose
+        // names fit was taken, and the order a partial class's overloads
+        // arrive in decides which is first: `Link(inputs, entry, address,
+        // physical, longMode: m)` is Linker.cs's six-parameter Link, and was
+        // laid out for Dynamic.cs's eight -- whose names fit too, the gaps
+        // having defaults -- when that part came first.
+        List<(MethodSymbol Method, Expr?[] Placed, int Filled)> fitting = new();
+        List<Type?>? written = null;
         foreach (MethodSymbol m in group.Methods)
         {
             Expr?[] placed = new Expr?[m.Params.Count];
             int[] from = new int[m.Params.Count];
             Array.Fill(from, -1);
             bool fits = true;
+            int filled = 0;
 
             for (int i = 0; i < c.Args.Count && fits; i++)
             {
@@ -5631,6 +5641,7 @@ public sealed partial class Binder
                         // is span pair k + 1.
                         placed[i] = CallerValue(spare, m.Decl.Params, CallLine(c), k => from[k] < 0 ? null : SpanText(c.Spans, c.Source, from[k] + 1))
                                     ?? Written(m, spare);
+                        filled++;
                     }
                     else
                     {
@@ -5644,8 +5655,32 @@ public sealed partial class Binder
                 continue;
             }
 
+            // WHAT THE WRITTEN ARGUMENTS ARE, asked quietly once: one that
+            // takes its type from the parameter -- a lambda, a null, a
+            // default, a new() -- fits whatever it is placed against.
+            written ??= c.Args.Select(a => IsFunctionSource(a) || HoldsLambda(a) || Typeless(a)
+                                           || a is LiteralExpr { Kind: Lit.Null } || a is DefaultExpr || a is RefArgExpr
+                                           ? null : (Type?)Peek(a)).ToList();
+            bool reaches = true;
+            for (int i = 0; i < placed.Length && reaches; i++)
+            {
+                if (from[i] < 0 || written[from[i]] is not Type given || given.IsError) continue;
+                Type want = m.Params[i].Type;
+                reaches = Convertible(given, want) || Variant(given, want) || Unmade(want)
+                    || given.IsInteger && want.IsInteger && ConstantValue(c.Args[from[i]], _thisType) is long v && Binder.Fits(v, want)
+                    || want.Symbol is not null && UserConversion(given, want, false, IntegerConstant(c.Args[from[i]], given)) is not null;
+            }
+            fitting.Add((m, placed, reaches ? filled : int.MaxValue));
+        }
+
+        // Reached by the written arguments first; of those, the one needing
+        // the fewest defaults (C# 12.6.4.3's last tie-break); names alone
+        // decide only when no candidate's types were reached.
+        if (fitting.Count > 0)
+        {
+            (MethodSymbol _, Expr?[] chosen, int _) = fitting.OrderBy(f => f.Filled).First();
             c.Args.Clear();
-            c.Args.AddRange(placed!);
+            c.Args.AddRange(chosen!);
             c.ArgNames.Clear();
             return;
         }
