@@ -8894,6 +8894,18 @@ public sealed partial class Binder
                         return CheckExpr(plain);
                     }
 
+                    // `int x = new();` IS `new int()`, which is 0 -- and for a
+                    // `T?` waiting, a T, as below. Every primitive value type has
+                    // the parameterless constructor C# gives a struct.
+                    Type primitive = _wanted is { IsNullableValue: true } cell ? cell.Underlying : _wanted ?? Type.Error;
+                    if (primitive is { Symbol: null, IsArray: false, IsPointer: false } && (primitive.IsNumeric || primitive.Prim is Prim.Bool or Prim.Char)
+                        && nw.Args.Count == 0 && nw.Body.IsEmpty && RefOf(primitive) is TypeRef zeroType)
+                    {
+                        DefaultExpr zero = new() { Type = zeroType, Line = nw.Line, Col = nw.Col };
+                        _r.Rewrites[nw] = zero;
+                        return CheckExpr(zero);
+                    }
+
                     if (_wanted is not { Symbol: not null })
                     {
                         Error(nw, "the type of 'new()' cannot be worked out here; write the type, "
@@ -8906,8 +8918,13 @@ public sealed partial class Binder
                 // The code generator reads neither: it asks what this
                 // expression's type came out as, which is what is returned
                 // below either way.
+                //
+                // A `T?` WAITING FOR IT GETS A T, as C# makes one: `Address? a =
+                // new(slot, 0)` constructs an Address, and the conversion to
+                // Address? that follows puts it in its cell. Taken as the T? it
+                // was a struct's block read as a cell.
                 Type type = nw.Type.Name.Length == 0
-                          ? (_wanted ?? Type.Error)
+                          ? (_wanted is { IsNullableValue: true } lifted ? lifted.Underlying : _wanted ?? Type.Error)
                           : Resolve(nw.Type, _thisType);
 
                 if (nw.Elements is { } written)
@@ -12302,6 +12319,12 @@ public sealed partial class Binder
                 CheckAssignable(constructorArgs[i], ctor.Params[i].Type,
                                 nw.Args[i], $"constructor argument {i + 1}");
             }
+        }
+        // A STRUCT'S `new S()` NEEDS NO CONSTRUCTOR: every struct has the
+        // parameterless one C# gives it, which is its zero -- whatever others
+        // it declares.
+        else if (constructed.Kind == TypeKind.Struct && constructorArgs.Count == 0)
+        {
         }
         else if (methods.Any(m => m.IsCtor))
         {

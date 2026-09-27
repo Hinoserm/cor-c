@@ -94,7 +94,18 @@ public static class ProjectCompile
         // sources otherwise keeps every object the broken one made: a
         // library's missing export stayed missing across rebuilds until the
         // objects were deleted by hand.
-        string optionsText = "3\t" + CompilerIdentity() + "\t" + string.Join('\t', common);
+        //
+        // AND THE LIBRARIES IT REFERENCES, by what is in them. A unit copies
+        // the bodies of the library generics it uses into itself, so a changed
+        // library is a changed unit whatever its own source says: stamped by
+        // the libraries' names alone, a unit kept its copy of an old
+        // ReadOnlyCollection<T> and the link met two different ones.
+        StringBuilder references = new();
+        for (int i = 0; i + 1 < args.Length; i++)
+        {
+            if (args[i] == "--ref") references.Append('\t').Append(Corsac.Projects.ProjectState.FileIdentity(args[i + 1]));
+        }
+        string optionsText = "3\t" + CompilerIdentity() + "\t" + string.Join('\t', common) + references;
         string Stamp(Unit unit)
         {
             using SHA256 sha = SHA256.Create();

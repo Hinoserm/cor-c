@@ -1,0 +1,26 @@
+// test: target_typed_new_nullable
+// expect-exit: 0
+// expect-output:
+// True 0 True s0 True m
+//
+// A target-typed `new(...)` waiting to become a T? constructs a T, and the
+// conversion puts it in its cell -- `Address? a = new("s0", 0)`, as the
+// optimiser's FrameAddressFold returns its addresses, came back as a struct
+// read as a cell. `new()` for a struct is its zero whatever constructors it
+// declares, and for a primitive (`int? x = new()`) the primitive's zero.
+// Expected output is what .NET 10 prints.
+
+using System;
+record struct Address(string Name, long Offset);
+static class P
+{
+    static Address? Make(string n) => new(n, 1);
+    static int Main()
+    {
+        int? x = new();
+        Address? a = new("s0", 0);
+        Address? b = new();
+        Console.WriteLine($"{x.HasValue} {x} {a.HasValue} {a!.Value.Name} {b.HasValue} {Make("m")!.Value.Name}");
+        return 0;
+    }
+}
