@@ -70,9 +70,11 @@ public sealed partial class Escape : IModulePass
         // callee's answer is known before its callers ask. Cycles keep the
         // pessimistic answer.
         Dictionary<string, bool[]> summaries = new(StringComparer.Ordinal);
-        foreach (Function f in BottomUp(m, byName))
+        foreach (List<Function> cycle in CallCycles(m, byName))
         {
-            summaries[f.Name] = ParameterSummary(f, summaries);
+            SummariseCycle(cycle, summaries);
+            foreach (Function f in cycle)
+            {
             // Whether what it returns is a fresh object it hands over: made
             // here (or by a callee that hands it over in turn), never stored
             // anywhere and never let go of any other way. Its caller then
@@ -86,6 +88,7 @@ public sealed partial class Escape : IModulePass
             // (EscapeFields): the reference fields that hold only objects
             // made for them may be freed with an owner that dies.
             _paramFields[f.Name] = ParameterFields(f, summaries);
+            }
         }
 
         bool canFree = byName.ContainsKey(Freer);
@@ -531,6 +534,126 @@ public sealed partial class Escape : IModulePass
                 changed = true;
             }
         }
+    }
+
+    // ---- recursion ---------------------------------------------------------------------
+    //
+    // A FUNCTION IN A CYCLE OF CALLS used to be summarised before its callees
+    // in the cycle were, and a callee with no summary lets everything escape:
+    // every parameter anywhere in a recursive family escaped, whatever the
+    // functions did with it. win32k's dispatcher is one such family -- a
+    // call can make a callback, whose calls come back into it -- and every
+    // object it handed a handler went to the collector on that ground alone.
+    //
+    // Whether a parameter escapes is a monotone question: a callee's
+    // parameter escaping can only make more of the caller's escape. So a
+    // cycle is solved as such questions are, to its least fixed point:
+    // every parameter of the cycle starts as staying put, each function is
+    // summarised again with what the others were found to do, until nothing
+    // changes. A parameter that escapes somewhere on the cycle is found to,
+    // however far round the cycle that is; one that only travels round it
+    // does not. If a cycle does not settle within the bound (it always does:
+    // each round can only turn answers from no to yes), it goes back to the
+    // old answer, everything escaping.
+
+    private const int CycleRounds = 64;
+
+    private static void SummariseCycle(List<Function> cycle, Dictionary<string, bool[]> summaries)
+    {
+        if (cycle.Count == 1 && !CallsItself(cycle[0]))
+        {
+            summaries[cycle[0].Name] = ParameterSummary(cycle[0], summaries);
+            return;
+        }
+        foreach (Function f in cycle) summaries[f.Name] = new bool[f.Params.Count];
+        for (int round = 0; round < CycleRounds; round++)
+        {
+            bool changed = false;
+            foreach (Function f in cycle)
+            {
+                bool[] again = ParameterSummary(f, summaries);
+                if (!again.AsSpan().SequenceEqual(summaries[f.Name])) { summaries[f.Name] = again; changed = true; }
+            }
+            if (!changed) return;
+        }
+        foreach (Function f in cycle) summaries[f.Name] = Enumerable.Repeat(true, f.Params.Count).ToArray();
+    }
+
+    private static bool CallsItself(Function f)
+    {
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Op == Opcode.Call && i.Callee == f.Name) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// The module's functions as the cycles of its call graph (Tarjan's
+    /// strongly connected components), callees' cycles before their
+    /// callers'; a function in no cycle is a cycle of one. Iterative, since
+    /// a call chain can be deeper than a thread's stack.
+    /// </summary>
+    private static List<List<Function>> CallCycles(Module m, Dictionary<string, Function> byName)
+    {
+        List<List<Function>> result = new();
+        Dictionary<Function, int> index = new(), low = new();
+        HashSet<Function> onStack = new();
+        Stack<Function> stack = new();
+        int next = 0;
+        Dictionary<Function, List<Function>> callees = new();
+        foreach (Function f in m.Functions)
+        {
+            List<Function> list = new();
+            HashSet<Function> seen = new();
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Op == Opcode.Call && i.Callee is not null && byName.TryGetValue(i.Callee, out Function? c) && seen.Add(c))
+                        list.Add(c);
+            callees[f] = list;
+        }
+        foreach (Function root in m.Functions)
+        {
+            if (index.ContainsKey(root)) continue;
+            Stack<(Function F, int Next)> work = new();
+            work.Push((root, 0));
+            index[root] = low[root] = next++;
+            stack.Push(root); onStack.Add(root);
+            while (work.Count > 0)
+            {
+                (Function f, int at) = work.Pop();
+                List<Function> outs = callees[f];
+                if (at < outs.Count)
+                {
+                    work.Push((f, at + 1));
+                    Function c = outs[at];
+                    if (!index.ContainsKey(c))
+                    {
+                        index[c] = low[c] = next++;
+                        stack.Push(c); onStack.Add(c);
+                        work.Push((c, 0));
+                    }
+                    else if (onStack.Contains(c))
+                    {
+                        low[f] = Math.Min(low[f], index[c]);
+                    }
+                    continue;
+                }
+                // f is finished: its low link goes to whoever called it.
+                if (work.Count > 0)
+                {
+                    Function parent = work.Peek().F;
+                    low[parent] = Math.Min(low[parent], low[f]);
+                }
+                if (low[f] == index[f])
+                {
+                    List<Function> cycle = new();
+                    Function w;
+                    do { w = stack.Pop(); onStack.Remove(w); cycle.Add(w); } while (w != f);
+                    result.Add(cycle);
+                }
+            }
+        }
+        return result;
     }
 
     /// <summary>For each parameter: whether the function lets it escape. Returning it counts.</summary>
@@ -1098,40 +1221,5 @@ public sealed partial class Escape : IModulePass
             }
         }
         return false;
-    }
-
-    private static List<Function> BottomUp(Module m, Dictionary<string, Function> byName)
-    {
-        List<Function> order = new();
-        HashSet<Function> done = new();
-        HashSet<Function> onPath = new();
-
-        void Visit(Function f)
-        {
-            if (!done.Add(f))
-            {
-                return;
-            }
-            onPath.Add(f);
-            foreach (Block b in f.Blocks)
-            {
-                foreach (Instr i in b.Instrs)
-                {
-                    if (i.Op == Opcode.Call && i.Callee is not null
-                        && byName.TryGetValue(i.Callee, out Function? callee) && !onPath.Contains(callee))
-                    {
-                        Visit(callee);
-                    }
-                }
-            }
-            onPath.Remove(f);
-            order.Add(f);
-        }
-
-        foreach (Function f in m.Functions)
-        {
-            Visit(f);
-        }
-        return order;
     }
 }

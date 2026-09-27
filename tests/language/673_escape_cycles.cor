@@ -1,0 +1,83 @@
+// test: escape cycles
+// expect-exit: 0
+// expect-output:
+// even 2500
+// odd 2500
+// kept 7 7
+// heap True
+//
+// A parameter handed round a cycle of calls escapes only if something on
+// the cycle keeps it. Walk and Step call each other and only read the array
+// they pass along, so the array made in Main for them stays off the heap:
+// Escape solves the cycle's summaries to their least fixed point rather than
+// letting every parameter of a recursive family escape. Keep and Hold call
+// each other too, and Hold stores its argument in a static three calls
+// round: that one must be found to escape, and its array read back intact
+// after churn that would reuse it if it had been freed.
+
+static class Program
+{
+    static long[]? _kept;
+    static long _sink;
+
+    static long Walk(long[] v, int n)
+    {
+        if (n <= 0) return v[0];
+        return Step(v, n - 1) + v[1];
+    }
+
+    static long Step(long[] v, int n)
+    {
+        if (n <= 0) return v[1];
+        return Walk(v, n - 1) + v[0];
+    }
+
+    static void Keep(long[] v, int n)
+    {
+        if (n <= 0) { Hold(v, 3); return; }
+        Keep(v, n - 1);
+    }
+
+    static void Hold(long[] v, int n)
+    {
+        if (n == 0) { _kept = v; return; }
+        Hold(v, n - 1);
+    }
+
+    static int Main()
+    {
+        long before = Gc.Allocated;
+        long even = 0, odd = 0;
+        for (int k = 0; k < 500; k++)
+        {
+            long[] v = new long[2];
+            v[0] = 1; v[1] = 0;
+            even = even + Walk(v, 8);
+            long[] w = new long[2];
+            w[0] = 0; w[1] = 1;
+            odd = odd + Step(w, 8);
+        }
+        long after = Gc.Allocated;
+
+        long[] kept = new long[4];
+        kept[0] = 7;
+        Keep(kept, 5);
+
+        long[][] junk = new long[400][];
+        for (int k = 0; k < 6000; k++)
+        {
+            long[] j = new long[(k % 24) + 1];
+            for (int i = 0; i < j.Length; i++) j[i] = -1;
+            junk[k % 400] = j;
+        }
+        _sink = _sink + junk[3][0];
+
+        Sys.Print("even "); Sys.PrintInt(even); Sys.PrintLine();
+        Sys.Print("odd "); Sys.PrintInt(odd); Sys.PrintLine();
+        Sys.Print("kept "); Sys.PrintInt(kept[0]); Sys.Print(" "); Sys.PrintInt(_kept![0]); Sys.PrintLine();
+        Sys.Print("heap ");
+        if (after == before) Sys.Print("True"); else Sys.Print("False");
+        Sys.PrintLine();
+        return 0;
+    }
+}
