@@ -137,6 +137,11 @@ internal static class Elf
 
     /// <summary>The program interpreter a dynamically linked i386 Linux program names.</summary>
     public const string DefaultInterpreter = "/lib/ld-linux.so.2";
+    /// <summary>The x86-64 loader, where every long-mode Linux distribution puts it.</summary>
+    public const string DefaultInterpreter64 = "/lib64/ld-linux-x86-64.so.2";
+    public const int DtRela = 7;
+    public const int DtRelaSz = 8;
+    public const int DtRelaEnt = 9;
 
     /// <summary>The SysV hash of a symbol name, as the ELF specification defines it.</summary>
     public static uint HashName(string name)

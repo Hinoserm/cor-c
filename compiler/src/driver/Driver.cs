@@ -707,10 +707,6 @@ public static class Driver
         {
             x64Backend.Imported.Add(symbol);
         }
-        if (longMode && (shared || args.Contains("--pic") || sharedLibs.Count > 0))
-        {
-            return Fail("x86-64: shared objects and dynamic linking are not built yet; link statically");
-        }
         if (longMode && freestanding)
         {
             return Fail("x86-64: a freestanding (bare-metal) image is not built yet; the target is a Linux program");

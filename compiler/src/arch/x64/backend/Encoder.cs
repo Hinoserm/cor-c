@@ -198,7 +198,7 @@ internal sealed class Encoder
             Imm32(0);
             if (m.Symbol is not null)
             {
-                _relocs.Add((at, m.Symbol, m.Disp - 4 - tail, RelocKind.Rel32));
+                _relocs.Add((at, m.Symbol, m.Disp - 4 - tail, m.Got ? RelocKind.GotPcRel : RelocKind.Rel32));
             }
             else
             {

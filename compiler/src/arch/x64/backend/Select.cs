@@ -52,18 +52,45 @@ internal sealed class Selector
     private static readonly MReg R10 = MReg.Of(Gpr.R10);
     private static readonly MReg Xmm0 = MReg.Xmm(0);
 
-    private Selector(Function f, List<string> errors)
+    private Selector(Function f, List<string> errors, Func<string, bool>? isExternal)
     {
         _f = f;
         _m = new MFunction(f);
         _errors = errors;
+        _external = isExternal;
     }
 
-    public static MFunction Run(Function f, List<string> errors)
+    /// <summary>
+    /// Select one function. <paramref name="isExternal"/> names what another
+    /// image defines -- in a shared object everything this object does not,
+    /// in a dynamically linked program what its libraries supply -- which is
+    /// reached through its GOT slot rather than at its own address.
+    /// </summary>
+    public static MFunction Run(Function f, List<string> errors, Func<string, bool>? isExternal = null)
     {
-        Selector s = new(f, errors);
+        Selector s = new(f, errors, isExternal);
         s.Select();
         return s._m;
+    }
+
+    private readonly Func<string, bool>? _external;
+
+    private bool External(string symbol) => _external is not null && _external(symbol);
+
+    /// <summary>
+    /// The address of a symbol another image defines, plus an offset: its
+    /// GOT slot read (`mov r, [rip + sym@GOTPCREL]`), which the linker turns
+    /// back into `lea r, [rip + sym]` when the symbol is defined after all.
+    /// </summary>
+    private MReg GotAddress(string symbol, long offset, MReg? into = null)
+    {
+        MReg t = into ?? Temp();
+        EmitW(MOp.Mov, 8, t, MMem.RipGot(symbol));
+        if (offset != 0)
+        {
+            Emit(MOp.Lea, t, new MMem(t, checked((int)offset)));
+        }
+        return t;
     }
 
     private void Error(string what) => _errors.Add($"{_f.Name}: {what}");
@@ -127,6 +154,10 @@ internal sealed class Selector
             }
             case SymOperand s:
             {
+                if (External(s.Name))
+                {
+                    return GotAddress(s.Name, s.Offset);
+                }
                 MReg t = Temp();
                 Emit(MOp.Lea, t, MMem.Rip(s.Name, checked((int)s.Offset)));
                 return t;
@@ -208,6 +239,10 @@ internal sealed class Selector
             case RegOperand r:
                 return new MMem(V(r.Reg), disp);
             case SymOperand s:
+                if (External(s.Name))
+                {
+                    return new MMem(GotAddress(s.Name, 0), checked((int)(s.Offset + disp)));
+                }
                 return MMem.Rip(s.Name, checked((int)(s.Offset + disp)));
             case SlotOperand s:
                 return MMem.Frame(_m.Frame.SlotOffset(s.Slot) + disp);
@@ -588,6 +623,11 @@ internal sealed class Selector
                 }
                 break;
             case SymOperand sym:
+                if (External(sym.Name))
+                {
+                    GotAddress(sym.Name, sym.Offset, V(d));
+                    break;
+                }
                 Emit(MOp.Lea, V(d), MMem.Rip(sym.Name, checked((int)sym.Offset)));
                 break;
             case SlotOperand slot:

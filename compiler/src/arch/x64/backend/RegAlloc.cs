@@ -1065,6 +1065,7 @@ internal sealed class Allocator
                         Index = m.Index is null ? null : Place(m.Index),
                         Scale = m.Scale,
                         Symbol = m.Symbol,
+                        Got = m.Got,
                         Label = m.Label,
                         IsSpill = m.IsSpill,
                         Segment = m.Segment,

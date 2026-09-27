@@ -736,7 +736,7 @@ public sealed partial class Lowering
             {
                 Require(images);
                 e.Call(CallLabel(images), IrType.Void,
-                    new RegOperand(e.Unary(Opcode.ZExt32, e.Address("_DYNAMIC"))));
+                    new RegOperand(WordAddress(e, "_DYNAMIC")));
             }
             EmitBeginImage(e);
         }
@@ -905,9 +905,20 @@ public sealed partial class Lowering
         }
         Require(begin);
         e.Call(CallLabel(begin), IrType.Void,
-            new RegOperand(e.Unary(Opcode.ZExt32, e.Address("__data_start"))),
-            new RegOperand(e.Unary(Opcode.ZExt32, e.Address("_end"))),
-            new RegOperand(e.Unary(Opcode.ZExt32, e.Address(ManagedDirectory.Symbol))));
+            new RegOperand(WordAddress(e, "__data_start")),
+            new RegOperand(WordAddress(e, "_end")),
+            new RegOperand(WordAddress(e, ManagedDirectory.Symbol)));
+    }
+
+    /// <summary>
+    /// A symbol's address as the `long` the runtime's hooks take: widened
+    /// from i386's 32-bit word, and already that in long mode, where
+    /// widening would cut it to its low half.
+    /// </summary>
+    private static VReg WordAddress(Builder e, string symbol)
+    {
+        VReg address = e.Address(symbol);
+        return address.Type == IrType.I32 ? e.Unary(Opcode.ZExt32, address) : address;
     }
 
     /// <summary>A hook the runtime library provides, found by name and arity.</summary>

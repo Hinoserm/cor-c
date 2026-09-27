@@ -324,7 +324,7 @@ public static partial class Linker
 
     private sealed class OutputSection
     {
-        public string Name { get; }
+        public string Name { get; set; }
         public SectionKind Kind { get; }
 
         /// <summary>
@@ -844,6 +844,26 @@ public static partial class Linker
                         {
                             continue;
                         }
+                        if (layout.LongMode)
+                        {
+                            // Eight bytes for an address in data; a 32-bit
+                            // field otherwise, unsigned only for Abs32.
+                            if (r.Kind == RelocKind.Abs64)
+                            {
+                                BinaryPrimitives.WriteInt64LittleEndian(p.Bytes.AsSpan(r.Offset), value);
+                                continue;
+                            }
+                            bool fits64 = r.Kind == RelocKind.Abs32
+                                ? value >= 0 && value <= uint.MaxValue
+                                : value >= int.MinValue && value <= int.MaxValue;
+                            if (!fits64)
+                            {
+                                errors.Add($"relocation overflow: '{r.Symbol}' from {where} gives 0x{value:x}");
+                                continue;
+                            }
+                            BinaryPrimitives.WriteUInt32LittleEndian(p.Bytes.AsSpan(r.Offset), unchecked((uint)value));
+                            continue;
+                        }
                     }
                     else if (layout.LongMode)
                     {
@@ -1045,7 +1065,7 @@ public static partial class Linker
     /// section headers and symbols at their 64-bit sizes, everything else --
     /// the layout, the section contents, the tables' order -- as Emit writes it.
     /// </summary>
-    private static byte[] Emit64(List<Input> inputs, Layout layout, uint entry)
+    private static byte[] Emit64(List<Input> inputs, Layout layout, uint entry, ushort fileType = Elf.TypeExec)
     {
         List<OutputSection> present = Present(layout);
 
@@ -1057,7 +1077,22 @@ public static partial class Linker
         foreach (OutputSection s in present)
         {
             (uint type, uint flags) = Elf.SectionTypeAndFlags(s.Kind);
-            headers.Add((shstrtab.Add(s.Name), s.TypeOverride ?? type, flags, s.Addr, s.FileOffset, s.Size, 0, 0, s.Align, s.EntSize));
+            uint link = 0;
+            if (s.LinkTo is not null)
+            {
+                foreach (OutputSection t in present)
+                {
+                    if (t.Name == s.LinkTo)
+                    {
+                        link = (uint)t.Index;
+                    }
+                }
+            }
+            // sh_info of .dynsym is the index of its first global; the RELA
+            // tables' is the section they apply to, which for .rela.plt is
+            // the GOT and for .rela.dyn is several, so none.
+            uint info = s.Name == ".dynsym" ? 1u : 0u;
+            headers.Add((shstrtab.Add(s.Name), s.TypeOverride ?? type, flags, s.Addr, s.FileOffset, s.Size, link, info, s.Align, s.EntSize));
         }
         uint symtabName = shstrtab.Add(".symtab");
         uint strtabName = shstrtab.Add(".strtab");
@@ -1071,7 +1106,7 @@ public static partial class Linker
         b.U8(Elf.OsAbiSysV);
         b.U8(0);
         b.Zeros(7);
-        b.U16(Elf.TypeExec);
+        b.U16(fileType);
         b.U16(Elf.MachineX86_64);
         b.U32(Elf.VersionCurrent);
         b.U64(entry);

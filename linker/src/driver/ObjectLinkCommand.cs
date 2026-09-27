@@ -103,9 +103,9 @@ public static class ObjectLinkCommand
         if (selected is not null) X86CodeGenerationContract.ValidateTarget(inputs, selected);
         // Long mode is read before the notes that say so go.
         bool longMode = inputs.Any(input => TargetContract.IsLongMode(input.Item2));
-        if (longMode && (flat || shared || sharedLibraries.Count > 0))
+        if (longMode && flat)
         {
-            throw new LinkException(new[] { "x86-64: only a static executable can be linked yet (no --flat, --shared or shared libraries)" });
+            throw new LinkException(new[] { "x86-64: a flat image is not built yet; link an ELF" });
         }
         // These contracts have been consumed by validation. Concatenating one
         // copy per input into an executable is neither a valid contract nor
@@ -126,8 +126,8 @@ public static class ObjectLinkCommand
             HashSet<string> defined = new(inputs.SelectMany(x => x.Item2.Symbols).Where(s => s.IsDefined).Select(s => s.Name), StringComparer.Ordinal);
             HashSet<string> unresolved = new(inputs.SelectMany(x => x.Item2.Symbols).Where(s => !s.IsDefined && !defined.Contains(s.Name)).Select(s => s.Name), StringComparer.Ordinal);
             List<string> needed = sharedLibraries.Distinct(StringComparer.Ordinal).Where(path => ElfReader.ExportsOf(File.ReadAllBytes(path)).Any(unresolved.Contains)).ToList();
-            image = shared ? Linker.LinkShared(inputs, Path.GetFileName(output), needed, runpath, baseAddress ?? 0, sharedLibraries)
-                : Linker.Link(inputs, entry, needed, runpath, libraries: sharedLibraries);
+            image = shared ? Linker.LinkShared(inputs, Path.GetFileName(output), needed, runpath, baseAddress ?? 0, sharedLibraries, longMode: longMode)
+                : Linker.Link(inputs, entry, needed, runpath, libraries: sharedLibraries, longMode: longMode);
         }
         else image = Linker.Link(inputs, entry, baseAddress ?? Linker.DefaultLoadAddress, physicalAddress, longMode: longMode);
         if (noUndefined && (shared || sharedLibraries.Count > 0))

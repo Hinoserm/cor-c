@@ -1263,10 +1263,24 @@ static class Runtime
         if (count > 100000) { return false; }
         for (long i = 0; i < count; i++) {
             long record = metadata + 16 + i * 16;
-            long table = Sys.PeekWord(record);
+            long table = TableAddress(record);
             if (table != 0 && Sys.PeekWord(record + 4) >= 20 && LookupIn(table, address, out name, out file, out program, out offset)) { return true; }
         }
         return false;
+    }
+
+    /// AN ADDRESS THE LINK WROTE INTO A TABLE: on i386 the address itself;
+    /// in long mode the distance from the word to it, signed, so a shared
+    /// object loaded anywhere in 64-bit space needs no loader relocation to
+    /// describe its own code. Zero is none either way.
+    static long TableAddress(long at) {
+        long held = Sys.PeekWord(at);
+#if TARGET_64BIT
+        if (held == 0) { return 0; }
+        return at + (long)(int)held;
+#else
+        return held;
+#endif
     }
 
     /// The same, in one table. The line program is an absolute address into
@@ -1281,7 +1295,7 @@ static class Runtime
         if (Sys.PeekWord(table) != TableMagic) { return false; }
 
         long count = Sys.PeekWord(table + 4);
-        long walk = Sys.PeekWord(table + 8);
+        long walk = TableAddress(table + 8);
         long strings = table + Sys.PeekWord(table + 12);
         long at = table + 20;
 

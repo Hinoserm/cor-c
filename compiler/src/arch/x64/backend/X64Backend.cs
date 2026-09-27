@@ -93,10 +93,31 @@ public sealed class X64Backend : IBackend
         Section rodata = new(".rodata", SectionKind.ReadOnlyData) { Align = 8 };
         Section data = new(".data", SectionKind.Data) { Align = 8 };
         Section bss = new(".bss", SectionKind.Uninitialised) { Align = 8 };
+        // Read-only after the loader has written the addresses in it: what
+        // holds an address in a shared object, or an address a library
+        // supplies in a program, so no relocation lands in a page the text
+        // shares.
+        Section relocatedConstants = new(".data.rel.ro", SectionKind.Data) { Align = 8 };
         obj.Sections.Add(text);
         obj.Sections.Add(rodata);
         obj.Sections.Add(data);
         obj.Sections.Add(bss);
+        obj.Sections.Add(relocatedConstants);
+
+        // WHAT ANOTHER IMAGE DEFINES, reached through a GOT slot. In a
+        // shared object that is everything this object does not define
+        // (the link relaxes a slot back to a lea when a sibling object turns
+        // out to define it); in a program, what its libraries supply.
+        HashSet<string> definedNames = new(StringComparer.Ordinal);
+        foreach (Function f in module.Functions) definedNames.Add(f.Name);
+        foreach (DataItem d in module.Data) definedNames.Add(d.Name);
+        definedNames.Add(Corsac.Lang.X86.FrameTable.Symbol);
+        definedNames.Add(StackMapStart);
+        definedNames.Add(StackMapEnd);
+        Func<string, bool>? isExternal = PositionIndependent ? name => !definedNames.Contains(name)
+            : Imported.Count > 0 ? name => Imported.Contains(name) && !definedNames.Contains(name)
+            : null;
+        bool loaderRelocates = PositionIndependent || Imported.Count > 0;
 
         HashSet<string> defined = new(StringComparer.Ordinal);
         Encoder encoder = new(text);
@@ -122,7 +143,7 @@ public sealed class X64Backend : IBackend
             if (workers == 1 && FunctionLoader is null)
             {
                 Function only = module.Functions[functionIndex];
-                m = Compile(only, errors, only.Name == module.Entry);
+                m = Compile(only, errors, only.Name == module.Entry, isExternal);
             }
             else
             {
@@ -160,7 +181,7 @@ public sealed class X64Backend : IBackend
                             {
                                 List<string> localErrors = new();
                                 Function body = FunctionLoader?.Invoke(first + item) ?? module.Functions[first + item];
-                                compiled[item] = Compile(body, localErrors, body.Name == module.Entry);
+                                compiled[item] = Compile(body, localErrors, body.Name == module.Entry, isExternal);
                                 diagnostics[item] = localErrors;
                             }
                         });
@@ -222,23 +243,27 @@ public sealed class X64Backend : IBackend
                 }
             }
 
-            // Jump tables: eight-byte absolute addresses of the blocks.
+            // Jump tables: eight-byte absolute addresses of the blocks, which
+            // the loader relocates in a shared object.
+            Section tables = PositionIndependent ? relocatedConstants : rodata;
             foreach ((string sym, List<MBlock> targets) in encoder.Tables)
             {
-                Pad(rodata, 8, 0);
-                obj.Symbols.Add(new Symbol { Name = sym, Section = rodata, Offset = rodata.Bytes.Count, Size = targets.Count * 8, Global = false });
+                Pad(tables, 8, 0);
+                obj.Symbols.Add(new Symbol { Name = sym, Section = tables, Offset = tables.Bytes.Count, Size = targets.Count * 8, Global = false });
                 defined.Add(sym);
                 foreach (MBlock t in targets)
                 {
-                    rodata.Relocs.Add(new Relocation(rodata.Bytes.Count, f.Name, t.Offset, RelocKind.Abs64));
-                    rodata.Bytes.AddRange(new byte[8]);
+                    tables.Relocs.Add(new Relocation(tables.Bytes.Count, f.Name, t.Offset, RelocKind.Abs64));
+                    tables.Bytes.AddRange(new byte[8]);
                 }
             }
             encoder.ReleaseFunction();
         }
 
-        // The frame table: the x86 format, whose one address is 32 bits --
-        // which in the small model every address in the image is.
+        // The frame table: the x86 format, whose one address is 32 bits. In
+        // long mode it is the distance from the word to the first function
+        // (PC32), which a shared object loaded anywhere can hold without the
+        // loader's help; the runtime's TableAddress reads it back.
         if (frames.Count > 0)
         {
             byte[] bytes = Corsac.Lang.X86.FrameTable.Build(frames, out int fixup, out string baseSymbol);
@@ -250,12 +275,14 @@ public sealed class X64Backend : IBackend
             });
             defined.Add(Corsac.Lang.X86.FrameTable.Symbol);
             rodata.Bytes.AddRange(bytes);
-            rodata.Relocs.Add(new Relocation(at + fixup, baseSymbol, 0, RelocKind.Abs32));
+            rodata.Relocs.Add(new Relocation(at + fixup, baseSymbol, 0, RelocKind.Rel32));
         }
 
         foreach (DataItem d in module.Data)
         {
-            Section s = d.Zero ? bss : d.ReadOnly ? rodata : data;
+            bool loaderWrites = d.Relocs.Count > 0
+                && (PositionIndependent || d.Relocs.Any(r => isExternal is not null && isExternal(r.Symbol)));
+            Section s = d.Zero ? bss : d.ReadOnly ? (loaderWrites ? relocatedConstants : rodata) : data;
             int align = Math.Max(d.Align, 1);
             long offset;
             if (d.Zero)
@@ -354,10 +381,10 @@ public sealed class X64Backend : IBackend
         return $"{(i.Lock ? "lock " : "")}{name}{width} {string.Join(", ", i.Operands)}";
     }
 
-    private static MFunction? Compile(Function f, List<string> errors, bool entry = false)
+    private static MFunction? Compile(Function f, List<string> errors, bool entry = false, Func<string, bool>? isExternal = null)
     {
         int before = errors.Count;
-        MFunction m = Selector.Run(f, errors);
+        MFunction m = Selector.Run(f, errors, isExternal);
         m.RealignsStack = entry;
         if (errors.Count > before)
         {
@@ -406,7 +433,8 @@ public sealed class X64Backend : IBackend
         int baseAt = maps.Count > 0 ? maps[0].At - maps[0].Return : 0;
         if (maps.Count > 0)
         {
-            s.Relocs.Add(new Relocation(s.Bytes.Count, maps[0].Function, 0, RelocKind.Abs32));
+            // Self-relative, as the frame table's base is.
+            s.Relocs.Add(new Relocation(s.Bytes.Count, maps[0].Function, 0, RelocKind.Rel32));
         }
         Word(0);
 

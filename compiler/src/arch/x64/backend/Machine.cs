@@ -82,6 +82,13 @@ public sealed class MMem : MOperand
     /// <summary>RIP-relative to this symbol when set; Base and Index are then null.</summary>
     public string? Symbol { get; init; }
 
+    /// <summary>
+    /// With Symbol: the symbol's GOT slot rather than the symbol, RIP-relative
+    /// (R_X86_64_GOTPCREL) -- the eight-byte address another image defines,
+    /// which only a `mov r64` reads.
+    /// </summary>
+    public bool Got { get; init; }
+
     /// <summary>A block of the enclosing function, RIP-relative: a jump table or a handler address.</summary>
     public MBlock? Label { get; init; }
 
@@ -100,6 +107,7 @@ public sealed class MMem : MOperand
     public static MMem Frame(int offset) => new(MReg.Of(Gpr.Rbp), offset);
     public static MMem Spill(int offset) => new(MReg.Of(Gpr.Rbp), offset) { IsSpill = true };
     public static MMem Rip(string symbol, int disp) => new(null, disp) { Symbol = symbol };
+    public static MMem RipGot(string symbol) => new(null, 0) { Symbol = symbol, Got = true };
 
     public bool IsRipRelative => Symbol is not null || Label is not null;
 

@@ -23,13 +23,20 @@
 #
 # Environment:
 #   CORC   the compiler (default: compiler/bin/managed/Release/net10.0/corc)
-#   OUT    where the .so files go (default: build/lib)
+#   OUT    where the .so files go (default: build/lib, build/lib64 for x86-64)
+#   TARGET x86 (the default) or x86-64
 
 set -u
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
-out="${OUT:-$root/build/lib}"
+target_name="${TARGET:-x86}"
+case "$target_name" in
+    x86) target_args=(); default_out="$root/build/lib" ;;
+    x86-64|x86_64|amd64|x64) target_args=(--target x86-64 --cpu k8); default_out="$root/build/lib64" ;;
+    *) echo "unknown TARGET '$target_name'" >&2; exit 2 ;;
+esac
+out="${OUT:-$default_out}"
 corc="${CORC:-$root/compiler/bin/managed/Release/net10.0/corc}"
 jobs="${CORSAC_BUILD_JOBS:-1}"
 force=0
@@ -135,7 +142,7 @@ while IFS='|' read -r soname owned; do
     done
 
     if stale "$target"; then
-        if "$corc" compile --jobs "$jobs" --nostdlib --shared "${args[@]}" -o "$target" >"$out/$soname.log" 2>&1; then
+        if "$corc" compile --jobs "$jobs" --nostdlib --shared "${target_args[@]}" "${args[@]}" -o "$target" >"$out/$soname.log" 2>&1; then
             rm -f "$out/$soname.log"
             built=$((built + 1))
         else
