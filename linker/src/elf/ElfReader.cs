@@ -228,6 +228,10 @@ public static class ElfReader
         {
             throw new ElfFormatException("not an ELF file");
         }
+        if (f[4] == Elf.Class64 && f[5] == Elf.Data2Lsb)
+        {
+            return Elf64Object.Read(bytes);
+        }
         if (f[4] != Elf.Class32)
         {
             throw new ElfFormatException("not a 32-bit ELF file");

@@ -69,7 +69,7 @@ public static partial class Linker
     /// Link objects that have names -- file names, usually -- so an error
     /// can say which one it means.
     /// </summary>
-    public static byte[] Link(IEnumerable<(string Name, ObjectFile Object)> objects, string entrySymbol, uint loadAddress = DefaultLoadAddress, uint? physicalAddress = null, ProgramInfo? program = null)
+    public static byte[] Link(IEnumerable<(string Name, ObjectFile Object)> objects, string entrySymbol, uint loadAddress = DefaultLoadAddress, uint? physicalAddress = null, ProgramInfo? program = null, bool? longMode = null)
     {
         ArgumentNullException.ThrowIfNull(objects);
         ArgumentNullException.ThrowIfNull(entrySymbol);
@@ -111,12 +111,12 @@ public static partial class Linker
         // LONG MODE, from what the objects say they are: an x86-64 image is
         // ELF64, loads at 0x400000 by default and relocates with the x86-64
         // types. TargetContract.Validate has already refused a mixture.
-        bool longMode = inputs.Any(i => TargetContract.IsLongMode(i.Object));
-        if (longMode && loadAddress == DefaultLoadAddress)
+        bool isLongMode = longMode ?? inputs.Any(i => TargetContract.IsLongMode(i.Object));
+        if (isLongMode && loadAddress == DefaultLoadAddress)
         {
             loadAddress = Elf.DefaultLoadAddress64;
         }
-        Layout layout = new(loadAddress) { LoadBias = loadAddress - (physicalAddress ?? loadAddress), LongMode = longMode };
+        Layout layout = new(loadAddress) { LoadBias = loadAddress - (physicalAddress ?? loadAddress), LongMode = isLongMode };
         layout.ArrangeStatic();
         AddManagedMetadata(inputs, layout, errors);
         Merge(inputs, layout, errors);

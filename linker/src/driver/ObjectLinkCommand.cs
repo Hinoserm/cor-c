@@ -101,6 +101,12 @@ public static class ObjectLinkCommand
             closedImageEntry: flat || physicalAddress is not null ? entry : null);
         int folded = LinkTimeOptimizer.Run(inputs, lto);
         if (selected is not null) X86CodeGenerationContract.ValidateTarget(inputs, selected);
+        // Long mode is read before the notes that say so go.
+        bool longMode = inputs.Any(input => TargetContract.IsLongMode(input.Item2));
+        if (longMode && (flat || shared || sharedLibraries.Count > 0))
+        {
+            throw new LinkException(new[] { "x86-64: only a static executable can be linked yet (no --flat, --shared or shared libraries)" });
+        }
         // These contracts have been consumed by validation. Concatenating one
         // copy per input into an executable is neither a valid contract nor
         // runtime metadata, and can dwarf a small kernel's actual load image.
@@ -123,7 +129,7 @@ public static class ObjectLinkCommand
             image = shared ? Linker.LinkShared(inputs, Path.GetFileName(output), needed, runpath, baseAddress ?? 0, sharedLibraries)
                 : Linker.Link(inputs, entry, needed, runpath, libraries: sharedLibraries);
         }
-        else image = Linker.Link(inputs, entry, baseAddress ?? Linker.DefaultLoadAddress, physicalAddress);
+        else image = Linker.Link(inputs, entry, baseAddress ?? Linker.DefaultLoadAddress, physicalAddress, longMode: longMode);
         if (noUndefined && (shared || sharedLibraries.Count > 0))
         {
             HashSet<string> provided = new(sharedLibraries.SelectMany(path => ElfReader.ExportsOf(File.ReadAllBytes(path))), StringComparer.Ordinal);

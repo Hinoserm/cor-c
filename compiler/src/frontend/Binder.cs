@@ -6264,7 +6264,7 @@ public sealed partial class Binder
 
         TypeDecl decl = new() { Name = name, Kind = TypeKind.Class, File = _in };
         TypeSymbol tuple = new() { Name = name, Kind = TypeKind.Class, Decl = decl, Structural = true };
-        int at = 8;                             // past the vtable
+        int at = Target.Current.ObjectHeaderBytes;  // past the vtable and sync word
 
         for (int i = 0; i < elements.Count; i++)
         {

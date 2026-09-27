@@ -5,6 +5,7 @@
 #   tests/lang/run.sh            run every tests/lang/*.cor
 #   tests/lang/run.sh strings    run the one whose file is *strings*.cor
 #   tests/lang/run.sh -v hello   also show the compiler's output
+#   tests/lang/run.sh --target=x86-64   every test compiled for long mode
 #   tests/lang/run.sh --opt-size  exercise size-oriented compilation
 #   tests/lang/run.sh --experimental-batch  exercise the staged optimizer group
 #
@@ -41,6 +42,10 @@ for arg in "$@"; do
             ;;
         --opt-size|--experimental-batch)
             compiler_flags+=("$arg")
+            ;;
+        --target=*)
+            # Every test compiled for this target: x86 (the default) or x86-64.
+            compiler_flags+=("--target" "${arg#--target=}")
             ;;
         -h|--help)
             sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
