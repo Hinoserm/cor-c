@@ -1,0 +1,55 @@
+// test: inference_best_common_type
+// expect-exit: 0
+// expect-output:
+// Animal dog animal
+// Animal animal dog
+// Object s o
+// Object o s
+// Int64 1 2
+// Int64 2 1
+// Double 1.5 2
+// Animal 3
+// Int64 3
+// x
+// 2 dog animal
+// 3
+//
+// A type parameter bound twice is fixed to the type the others convert to
+// (C# 12.6.3.12): Two(dog, animal) is Two<Animal>, Two("s", obj) is
+// Two<object>, Two(1, 2L) is Two<long>. Expected output is real .NET's.
+
+using System;
+using System.Collections.Generic;
+
+class Animal { public override string ToString() => "animal"; }
+class Dog : Animal { public override string ToString() => "dog"; }
+
+static class Pick
+{
+    public static string Two<T>(T a, T b) => typeof(T).Name + " " + a + " " + b;
+    public static string Many<T>(params T[] items) => typeof(T).Name + " " + items.Length;
+    public static T First<T>(T a, T b) => a;
+    public static List<T> Both<T>(T a, T b) => new List<T> { a, b };
+}
+
+static class Program
+{
+    static void Main()
+    {
+        Console.WriteLine(Pick.Two(new Dog(), new Animal()));
+        Console.WriteLine(Pick.Two(new Animal(), new Dog()));
+        Console.WriteLine(Pick.Two("s", (object)"o"));
+        Console.WriteLine(Pick.Two((object)"o", "s"));
+        Console.WriteLine(Pick.Two(1, 2L));
+        Console.WriteLine(Pick.Two(2L, 1));
+        Console.WriteLine(Pick.Two(1.5, 2));
+        Console.WriteLine(Pick.Many(new Dog(), new Animal(), new Dog()));
+        Console.WriteLine(Pick.Many(1, 2L, 3));
+        object f = Pick.First("x", (object)5);
+        Console.WriteLine(f);
+        List<Animal> both = Pick.Both(new Dog(), new Animal());
+        Console.WriteLine(both.Count + " " + both[0] + " " + both[1]);
+        long wide = Pick.First(3, 4L);
+        Console.WriteLine(wide);
+    }
+}

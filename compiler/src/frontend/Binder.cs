@@ -4272,8 +4272,8 @@ public sealed partial class Binder
         // lowering path rather than treating the unresolved group as void.
         if (at is Expr methodSource && !_r.Rewrites.ContainsKey(methodSource)
             && _r.Resolved.TryGetValue(methodSource, out Sym? methodSym)
-            && methodSym is MethodGroupSym or CapturedMethodGroupSym
-            && MethodGroupLambda(methodSource, to) is LambdaExpr methodWrapper)
+            && (methodSym is MethodGroupSym or CapturedMethodGroupSym || LocalFunctionConverts(methodSource, to))
+            && MethodGroupLambda(methodSource, to, localFunctions: true) is LambdaExpr methodWrapper)
         {
             _r.Rewrites[methodSource] = methodWrapper;
             CheckLambda(methodWrapper, to);
@@ -5977,12 +5977,16 @@ public sealed partial class Binder
     /// calls. The original syntax node is retained as the call target so normal
     /// overload resolution still chooses the actual method.
     /// </summary>
-    private LambdaExpr? MethodGroupLambda(Expr source, Type wanted)
+    private LambdaExpr? MethodGroupLambda(Expr source, Type wanted, bool localFunctions = false)
     {
-        if (!_r.Resolved.TryGetValue(source, out Sym? sym)
-            || sym is not (MethodGroupSym or CapturedMethodGroupSym))
+        if (!_r.Resolved.TryGetValue(source, out Sym? sym))
         {
             return null;
+        }
+
+        if (sym is not (MethodGroupSym or CapturedMethodGroupSym))
+        {
+            return localFunctions && LocalFunctionConverts(source, wanted) ? LocalFunctionLambda((NameExpr)source, wanted) : null;
         }
 
         MethodSymbol? invoke = wanted.Symbol?.FindMethods("Invoke").FirstOrDefault();
@@ -6040,6 +6044,63 @@ public sealed partial class Binder
             NameExpr passed = new() { Name = name, Line = source.Line, Col = source.Col };
             call.Args.Add(delegated.ByRef && !delegated.ReadOnly
                 ? new RefArgExpr { Target = passed, IsOut = isOut, Line = source.Line, Col = source.Col }
+                : passed);
+        }
+        return made;
+    }
+
+    /// <summary>
+    /// Whether a local function's name, written where a delegate of ANOTHER
+    /// type is wanted, converts to it: a local function is a method group
+    /// (C# 10.8), and `values.RemoveAll(Big)` over `bool Big(long v)` is a
+    /// Predicate&lt;long&gt;, not the Func&lt;long, bool&gt; the local holds. Same
+    /// arity, and each parameter and the result the same type.
+    /// </summary>
+    private bool LocalFunctionConverts(Expr source, Type wanted)
+    {
+        if (source is not NameExpr || !_r.Resolved.TryGetValue(source, out Sym? sym)
+            || LocalFunctionDeclaration(sym) is null
+            || _r.TypeOf(source) is not { Symbol: { } own } held
+            || wanted.Symbol is not { } target || ReferenceEquals(own, target)
+            || Unmade(wanted) || wanted.ParamName is not null)
+        {
+            return false;
+        }
+
+        MethodSymbol? mine = own.FindMethods("Invoke").FirstOrDefault();
+        MethodSymbol? theirs = target.FindMethods("Invoke").FirstOrDefault();
+        return mine is not null && theirs is not null && !held.IsNullableValue
+            && mine.Params.Count == theirs.Params.Count
+            && mine.Params.Zip(theirs.Params).All(pair => MethodSignatures.SameType(pair.First.Type, pair.Second.Type)
+                                                        && pair.First.ByRef == pair.Second.ByRef)
+            && MethodSignatures.SameType(mine.Returns, theirs.Returns);
+    }
+
+    /// <summary>
+    /// The delegate a local function converts to: a lambda of the wanted
+    /// type calling it with the arguments it is given.
+    /// </summary>
+    private LambdaExpr LocalFunctionLambda(NameExpr source, Type wanted)
+    {
+        MethodSymbol invoke = wanted.Symbol!.FindMethods("Invoke").First();
+        CallExpr call = new() { Target = new NameExpr { Name = source.Name, Line = source.Line, Col = source.Col },
+                                Line = source.Line, Col = source.Col };
+        LambdaExpr made = new() { Body = call, Line = source.Line, Col = source.Col };
+        for (int i = 0; i < invoke.Params.Count; i++)
+        {
+            string name = "$arg" + i;
+            ParamSymbol delegated = invoke.Params[i];
+            made.Params.Add(new Param
+            {
+                Name = name,
+                Type = new TypeRef { Name = "object", Line = source.Line, Col = source.Col },
+                IsRef = delegated.ByRef, IsReadOnlyRef = delegated.ReadOnly,
+                Line = source.Line,
+                Col = source.Col,
+            });
+            NameExpr passed = new() { Name = name, Line = source.Line, Col = source.Col };
+            call.Args.Add(delegated.ByRef && !delegated.ReadOnly
+                ? new RefArgExpr { Target = passed, Line = source.Line, Col = source.Col }
                 : passed);
         }
         return made;
@@ -7759,7 +7820,19 @@ public sealed partial class Binder
             // The SAME T twice has to mean the same thing both times, so
             // `Pick(1, "two")` finds no overload rather than quietly taking one
             // of the two and mistyping the result.
-            return got.IsError || Convertible(got, already);
+            //
+            // AND IT IS THE ONE THE OTHERS CONVERT TO (C# 12.6.3.12), whichever
+            // came first: `Many(dog, animal)` is Many<Animal>, and
+            // `Pick("s", o)` over an object is Pick<object> -- `object` reaching
+            // a string only as a machine word, which is no conversion to C#.
+            if (got.IsError || already.IsError) return true;
+            if ((got.Prim != Prim.Any || already.Prim == Prim.Any) && Convertible(got, already)) return true;
+            if ((already.Prim != Prim.Any || got.Prim == Prim.Any) && Convertible(already, got))
+            {
+                bound[name] = got;
+                return true;
+            }
+            return false;
         }
 
         // `T[]` against `string[]` binds T to string. Through the element,
@@ -9251,6 +9324,32 @@ public sealed partial class Binder
             // the same characters come out.
             // `s[^1]` -- an index counted from the end, which is the
             // subtraction it stands for once the target is known.
+            // IN A NULL-CONDITIONAL CHAIN the count is taken of the value the
+            // chain reached, once, and only when it reached one:
+            // `h?.Params[^1]` is null when h is, and otherwise the last of the
+            // Params it read -- not `h?.Params[h?.Params.Count - 1]`, whose
+            // index is itself an int? and which reads the chain twice.
+            case IndexExpr { Args.Count: 1 } backOf when backOf.Args[0] is FromEndExpr endOf
+                                                     && (backOf.NullConditional || HasConditionalMember(backOf.Target)):
+            {
+                SubjectExpr Reached() => new() { Outer = 0, Line = backOf.Line, Col = backOf.Col };
+                IndexExpr at = new() { Target = Reached(), NullConditional = true, Line = backOf.Line, Col = backOf.Col };
+                at.Args.Add(new BinaryExpr
+                {
+                    Op = BinOp.Sub,
+                    Left = new MemberExpr
+                    {
+                        Target = new SuppressExpr { Operand = Reached(), Line = endOf.Line, Col = endOf.Col },
+                        Name = "Length", Else = "Count", Line = endOf.Line, Col = endOf.Col,
+                    },
+                    Right = endOf.Offset,
+                    Line = endOf.Line, Col = endOf.Col,
+                });
+                PatternExpr once = new() { Subject = backOf.Target, Test = at, Line = backOf.Line, Col = backOf.Col };
+                _r.Rewrites[backOf] = once;
+                return CheckExpr(once);
+            }
+
             case IndexExpr { Args.Count: 1 } back when back.Args[0] is FromEndExpr end:
             {
                 back.Args[0] = Counted(back.Target, end);
@@ -13161,7 +13260,7 @@ public sealed partial class Binder
                     constructorArgs[i] = CheckLambda(lambda, ctor.Params[i].Type);
                     continue;
                 }
-                if (MethodGroupLambda(nw.Args[i], ctor.Params[i].Type) is LambdaExpr wrapper)
+                if (MethodGroupLambda(nw.Args[i], ctor.Params[i].Type, localFunctions: true) is LambdaExpr wrapper)
                 {
                     _r.Rewrites[nw.Args[i]] = wrapper;
                     constructorArgs[i] = CheckLambda(wrapper, ctor.Params[i].Type);
@@ -13950,7 +14049,8 @@ public sealed partial class Binder
         {
             if (written is NewExpr { Type.Name.Length: 0, Elements: null } && (want.Symbol is not null || (written is NewExpr { Collection: true } && want.IsArray))) return true;
             if (NullableIntoValue(had, want)) return false;
-            if (Convertible(had, want) || had.IsError || Unmade(want) || Variant(had, want))
+            if (Convertible(had, want) || had.IsError || Unmade(want) || Variant(had, want)
+                || LocalFunctionConverts(written, want))
             {
                 return true;
             }
@@ -14353,7 +14453,8 @@ public sealed partial class Binder
 
                 if (NullableIntoValue(args[i], want)) return false;
                 if (Convertible(args[i], want) || args[i].IsError || Unmade(want)
-                    || (variant && Variant(args[i], want)))
+                    || (variant && Variant(args[i], want))
+                    || (i < c.Args.Count && LocalFunctionConverts(c.Args[i], want)))
                 {
                     continue;
                 }
@@ -14671,7 +14772,7 @@ public sealed partial class Binder
                     continue;
                 }
 
-                if (MethodGroupLambda(c.Args[i], want) is LambdaExpr wrapper)
+                if (MethodGroupLambda(c.Args[i], want, localFunctions: true) is LambdaExpr wrapper)
                 {
                     _r.Rewrites[c.Args[i]] = wrapper;
                     args[i] = CheckLambda(wrapper, want);

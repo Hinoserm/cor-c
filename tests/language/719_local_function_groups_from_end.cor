@@ -1,0 +1,54 @@
+// test: local_function_groups_from_end
+// expect-exit: 0
+// expect-output:
+// 1,2,3,4
+// 2,4
+// True 1 False
+// True
+// 6
+// True
+// 5
+//
+// A local function is a method group: its name converts to any delegate of
+// the same signature (RemoveAll takes a Predicate, not the local's Func).
+// In a null-conditional chain ^k counts the value the chain reached, once.
+// Expected output is real .NET's.
+
+using System;
+using System.Collections.Generic;
+
+class Holder
+{
+    public List<int> Params = new() { 4, 5, 6 };
+}
+
+static class Program
+{
+    static bool Odd(long v) => v % 2 != 0;
+
+    static void Main()
+    {
+        List<long> values = new() { 1, 2, 3, 4, 5, 6, 7 };
+        long limit = 4;
+        bool Big(long v) => v > limit;
+        values.RemoveAll(Big);
+        Console.WriteLine(string.Join(",", values));
+        values.RemoveAll(Odd);
+        Console.WriteLine(string.Join(",", values));
+        List<string> words = new() { "a", "bb", "ccc" };
+        int longest = 2;
+        bool Long(string w) => w.Length >= longest;
+        Console.WriteLine(words.Exists(Long) + " " + words.FindIndex(Long) + " " + words.TrueForAll(Long));
+        Predicate<string> kept = Long;
+        Console.WriteLine(kept("zz"));
+
+        Holder? h = new Holder();
+        int? last = h?.Params[^1];
+        Console.WriteLine(last);
+        Holder? none = null;
+        int? missing = none?.Params[^1];
+        Console.WriteLine(missing is null);
+        int? second = h?.Params[^2];
+        Console.WriteLine(second);
+    }
+}
