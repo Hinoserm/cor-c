@@ -356,6 +356,8 @@ public sealed partial class Escape : IModulePass
         public HashSet<VReg> Derived { get; } = new();
         public bool Escapes { get; set; }
         public Instr? Source { get; init; }
+        /// <summary>The instruction the object escaped through, for a diagnostic.</summary>
+        public Instr? Why { get; set; }
     }
 
     internal static Flow Analyse(Function f, IEnumerable<VReg> roots, Dictionary<string, bool[]> summaries, Instr? source,
@@ -535,6 +537,7 @@ public sealed partial class Escape : IModulePass
 
                     if (flow.Escapes)
                     {
+                        flow.Why ??= i;
                         break;
                     }
                 }

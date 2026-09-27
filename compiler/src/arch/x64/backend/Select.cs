@@ -683,6 +683,10 @@ internal sealed class Selector
         int w = Width(d.Type);
         bool signed = i.Op is Opcode.DivS or Opcode.RemS;
         bool rem = i.Op is Opcode.RemS or Opcode.RemU;
+        if (i.Operands[1] is ImmOperand constant && SelectDivByConstant(i, constant.Value, w, signed, rem))
+        {
+            return;
+        }
         MReg divisor = Temp();
         Mov(divisor, RM(i.Operands[1], w), w);
         Mov(Rax, RM(i.Operands[0], w), w);
@@ -696,6 +700,186 @@ internal sealed class Selector
         }
         EmitW(signed ? MOp.Idiv : MOp.Div, w, divisor);
         Mov(V(d), rem ? Rdx : Rax, w);
+    }
+
+    /// <summary>
+    /// DIVISION BY A CONSTANT, AS A MULTIPLICATION: the high half of the
+    /// dividend times a magic number, shifted, which is what every compiler
+    /// since Granlund and Montgomery (1994) does -- a multiply is a few cycles
+    /// where a 64-bit DIV on a K8 is dozens. Unsigned uses their round-up
+    /// method with the one-bit fix-up that makes it exact for every dividend;
+    /// signed, Hacker's Delight's (10-1). The remainder is n - q*d. Zero, one
+    /// and minus one, and the most negative value, are left to DIV, whose
+    /// trap or identity is the answer they need.
+    /// </summary>
+    private bool SelectDivByConstant(Instr i, long value, int w, bool signed, bool rem)
+    {
+        int bits = w * 8;
+        long divisor = w == 4 ? (signed ? unchecked((int)value) : (long)(uint)value) : value;
+        if (divisor == 0 || divisor == 1 || (signed && divisor == -1))
+        {
+            return false;
+        }
+        if (signed && divisor == (w == 4 ? int.MinValue : long.MinValue))
+        {
+            return false;
+        }
+        if (!signed && w == 8 && divisor < 0)
+        {
+            // An unsigned 64-bit divisor at or above 2^63: the quotient is 0 or 1.
+            return false;
+        }
+
+        VReg d = i.Dest!;
+        MReg n = Temp();
+        Mov(n, RM(i.Operands[0], w), w);
+        MReg q = Temp();
+
+        if (!signed)
+        {
+            ulong ud = (ulong)divisor;
+            int l = 0;
+            while (l < bits && (UInt128.One << l) < ud)
+            {
+                l++;
+            }
+            UInt128 magic = ((UInt128.One << bits) * ((UInt128.One << l) - ud)) / ud + 1;
+            MulHigh(q, n, unchecked((long)(ulong)magic), w, signedMultiply: false);
+            // t = (n - q) >> 1; q = (t + q) >> (l - 1)
+            MReg t = Temp();
+            Mov(t, n, w);
+            EmitW(MOp.Sub, w, t, q);
+            EmitW(MOp.Shr, w, t, Imm(1));
+            EmitW(MOp.Add, w, q, t);
+            if (l > 1)
+            {
+                EmitW(MOp.Shr, w, q, Imm(l - 1));
+            }
+        }
+        else
+        {
+            (long magic, int shift) = SignedMagic(divisor, bits);
+            MulHigh(q, n, magic, w, signedMultiply: true);
+            if (divisor > 0 && magic < 0)
+            {
+                EmitW(MOp.Add, w, q, n);
+            }
+            else if (divisor < 0 && magic > 0)
+            {
+                EmitW(MOp.Sub, w, q, n);
+            }
+            if (shift > 0)
+            {
+                EmitW(MOp.Sar, w, q, Imm(shift));
+            }
+            // Toward zero: one more when the quotient came out negative.
+            MReg sign = Temp();
+            Mov(sign, q, w);
+            EmitW(MOp.Shr, w, sign, Imm(bits - 1));
+            EmitW(MOp.Add, w, q, sign);
+        }
+
+        if (!rem)
+        {
+            Mov(V(d), q, w);
+            return true;
+        }
+        MReg product = Temp();
+        if (divisor is >= int.MinValue and <= int.MaxValue)
+        {
+            Emit(new MInstr(MOp.Imul3, product, q, Imm(divisor)) { Width = w });
+        }
+        else
+        {
+            Mov(product, q, w);
+            MReg k = Temp();
+            LoadConstant(k, divisor, 8);
+            EmitW(MOp.Imul, w, product, k);
+        }
+        MReg r = Temp();
+        Mov(r, n, w);
+        EmitW(MOp.Sub, w, r, product);
+        Mov(V(d), r, w);
+        return true;
+    }
+
+    /// <summary>
+    /// The high half of n times a constant: for 32 bits, the exact 64-bit
+    /// product of the widened operands, shifted down; for 64 bits, the upper
+    /// word MUL or IMUL leaves in RDX.
+    /// </summary>
+    private void MulHigh(MReg into, MReg n, long magic, int w, bool signedMultiply)
+    {
+        if (w == 4)
+        {
+            MReg wide = Temp(), m = Temp();
+            if (signedMultiply)
+            {
+                EmitW(MOp.Movsx, 4, wide, n);
+                LoadConstant(m, unchecked((int)magic), 8);
+                EmitW(MOp.Imul, 8, wide, m);
+                EmitW(MOp.Sar, 8, wide, Imm(32));
+            }
+            else
+            {
+                Mov(wide, n, 4);
+                LoadConstant(m, (long)(uint)magic, 8);
+                EmitW(MOp.Imul, 8, wide, m);
+                EmitW(MOp.Shr, 8, wide, Imm(32));
+            }
+            Mov(into, wide, 4);
+            return;
+        }
+        MReg k = Temp();
+        LoadConstant(k, magic, 8);
+        Mov(Rax, n, 8);
+        EmitW(signedMultiply ? MOp.ImulWide : MOp.MulWide, 8, k);
+        Mov(into, Rdx, 8);
+    }
+
+    /// <summary>
+    /// The signed magic number and shift for dividing by d in `bits`-bit
+    /// arithmetic: Hacker's Delight, figure 10-1, in 128-bit arithmetic so one
+    /// routine serves both widths.
+    /// </summary>
+    private static (long Magic, int Shift) SignedMagic(long d, int bits)
+    {
+        UInt128 two = UInt128.One << (bits - 1);
+        UInt128 mask = (UInt128.One << bits) - 1;
+        UInt128 ad = (UInt128)(ulong)Math.Abs(d);
+        UInt128 t = two + (d < 0 ? UInt128.One : UInt128.Zero);
+        UInt128 anc = t - 1 - t % ad;
+        int p = bits - 1;
+        UInt128 q1 = two / anc, r1 = two - q1 * anc;
+        UInt128 q2 = two / ad, r2 = two - q2 * ad;
+        UInt128 delta;
+        do
+        {
+            p++;
+            q1 = (2 * q1) & mask;
+            r1 = (2 * r1) & mask;
+            if (r1 >= anc)
+            {
+                q1 = (q1 + 1) & mask;
+                r1 = (r1 - anc) & mask;
+            }
+            q2 = (2 * q2) & mask;
+            r2 = (2 * r2) & mask;
+            if (r2 >= ad)
+            {
+                q2 = (q2 + 1) & mask;
+                r2 = (r2 - ad) & mask;
+            }
+            delta = ad - r2;
+        }
+        while (q1 < delta || (q1 == delta && r1 == 0));
+        UInt128 magic = (q2 + 1) & mask;
+        long m = bits == 32 ? unchecked((int)(uint)magic) : unchecked((long)(ulong)magic);
+        if (d < 0)
+        {
+            m = bits == 32 ? unchecked(-(int)m) : unchecked(-m);
+        }
+        return (m, p - bits);
     }
 
     /// <summary>
@@ -1151,11 +1335,47 @@ internal sealed class Selector
         Mov(m, src, i.Size);
     }
 
+    /// <summary>The most bytes a constant clear or copy is written out as moves.</summary>
+    private const long InlineBytes = 128;
+
+    /// <summary>Stores of 8, 4, 2 and 1 bytes covering [at, at + count), each from `value(width)`.</summary>
+    private void Pieces(long count, Action<int, int> piece)
+    {
+        int offset = 0;
+        foreach (int width in new[] { 8, 4, 2, 1 })
+        {
+            while (count - offset >= width)
+            {
+                piece(offset, width);
+                offset += width;
+            }
+        }
+    }
+
     /// <summary>Eight bytes at a time and the tail a byte at a time, as x86 does four and one.</summary>
     private void SelectMemCopy(Instr i)
     {
         MReg dst = R(i.Operands[0]);
         MReg src = R(i.Operands[1]);
+        if (i.Operands[2] is ImmOperand { Value: >= 0 and <= InlineBytes } small)
+        {
+            // A small copy of known length is loads and stores, in order: a
+            // string instruction's start-up costs more than the whole copy.
+            MReg t = Temp();
+            Pieces(small.Value, (offset, width) =>
+            {
+                if (width >= 4)
+                {
+                    Mov(t, new MMem(src, offset), width);
+                }
+                else
+                {
+                    EmitW(MOp.Movzx, width, t, new MMem(src, offset));
+                }
+                Mov(new MMem(dst, offset), t, width);
+            });
+            return;
+        }
         if (i.Operands[2] is ImmOperand n)
         {
             Mov(Rdi, dst);
@@ -1188,6 +1408,33 @@ internal sealed class Selector
     private void SelectMemSet(Instr i)
     {
         MReg dst = R(i.Operands[0]);
+        if (i.Operands[2] is ImmOperand { Value: >= 0 and <= InlineBytes } small && i.Operands[1] is ImmOperand smallFill)
+        {
+            // A small clear of known length is stores, of an immediate when the
+            // repeated byte fits one (zero always does), else of a register.
+            ulong pattern = (byte)smallFill.Value * 0x0101010101010101UL;
+            MOperand source;
+            if ((long)pattern is >= int.MinValue and <= int.MaxValue)
+            {
+                source = Imm((long)pattern);
+            }
+            else
+            {
+                MReg p = Temp();
+                LoadConstant(p, unchecked((long)pattern), 8);
+                source = p;
+            }
+            Pieces(small.Value, (offset, width) =>
+            {
+                MOperand value = source is MImm imm ? Imm(width == 8 ? imm.Value : imm.Value & ((1L << (width * 8)) - 1)) : source;
+                if (value is MImm narrow && width == 4)
+                {
+                    value = Imm(unchecked((int)narrow.Value));
+                }
+                Mov(new MMem(dst, offset), value, width);
+            });
+            return;
+        }
         MReg fill = Temp();
         if (i.Operands[1] is ImmOperand f)
         {

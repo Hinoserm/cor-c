@@ -201,7 +201,10 @@ public sealed class Inline : IParallelModulePass
                     {
                         continue;
                     }
-                    if (!Inlineable(callee, addressTaken) || recursive.Contains(callee))
+                    // The collector's own notes stay calls: the escape rules
+                    // know them by name, and inlined their ring store reads
+                    // as the reported object escaping.
+                    if (!Inlineable(callee, addressTaken) || recursive.Contains(callee) || Escape.IsCollectorLeaf(callee.Name))
                     {
                         continue;
                     }
