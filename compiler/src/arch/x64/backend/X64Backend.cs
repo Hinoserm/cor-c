@@ -251,6 +251,7 @@ public sealed class X64Backend : IBackend
         try
         {
             Allocator.Run(m);
+            Peephole.Run(m);
         }
         catch (InvalidOperationException e)
         {
