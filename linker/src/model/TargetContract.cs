@@ -17,11 +17,19 @@ public sealed class TargetContract
     /// </summary>
     public bool LongMode { get; }
     public const uint I386Machine = 486, I386Convention = 1;
+
+    /// <summary>
+    /// The TLS model of an object that makes no claim about one: hand-written
+    /// assembly, which says what machine it is for (so a long-mode stub is
+    /// not linked into an i386 image) and nothing about where a thread block
+    /// is.
+    /// </summary>
+    public const uint NoTlsClaim = 3;
     public const uint Amd64Machine = 0x8664, Amd64Convention = 2;
     public TargetContract(uint tlsModel, bool requiresManagedLayouts = false, bool requiresCodeGenerationContract = false, bool longMode = false)
     {
         LongMode = longMode;
-        if (tlsModel > 2) throw new ElfFormatException("unsupported TLS/platform contract");
+        if (tlsModel > NoTlsClaim) throw new ElfFormatException("unsupported TLS/platform contract");
         TlsModel = tlsModel;
         RequiresManagedLayouts = requiresManagedLayouts;
         RequiresCodeGenerationContract = requiresCodeGenerationContract;
@@ -90,7 +98,8 @@ public sealed class TargetContract
                 throw new ElfFormatException(input.Name + ": required CPU/FPU code-generation contract is missing");
             if ((required & 1) != 0 && !input.Object.Sections.Any(section => section.Name == ManagedLayoutContract.SectionName))
                 throw new ElfFormatException(input.Name + ": required managed layout contract is missing");
-            if (current > 2) throw new ElfFormatException(input.Name + ": unsupported TLS/platform contract");
+            if (current > NoTlsClaim) throw new ElfFormatException(input.Name + ": unsupported TLS/platform contract");
+            if (current == NoTlsClaim) continue;
             if (model is not null && current != model)
                 throw new LinkException(new[] { input.Name + ": TLS/platform contract conflicts with " + owner });
             model = current;

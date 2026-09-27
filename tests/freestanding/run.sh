@@ -16,6 +16,8 @@
 #   // expect-output:            then the lines, each after "// "
 #   // flags: ...                extra compiler flags
 #   // run: no                   compile and read, do not run
+#   // with-asm: NAME             assemble NAME.<target>.asm (corc asm --obj)
+#                                and link it in (--with)
 #   // expect-asm-<target>: F: a b c
 #                                the disassembly of function F (its COR-C#
 #                                name; Main's or the entry stub's, when F
@@ -48,8 +50,19 @@ for source in "$here"/[0-9]*.cor; do
     for target in $targets; do
         label="$name ($target)"
         exe="$work/$name.$target"
+        with=""
+        asm="$(header "$source" with-asm)"
+        if [ -n "$asm" ]; then
+            object="$work/$name.$target.o"
+            asmtarget="$target"; [ "$target" = x86 ] && asmtarget=x86-32
+            if ! "$corc" asm --target "$asmtarget" "$here/$asm.$target.asm" --obj -o "$object" > "$work/$name.$target.asm.log" 2>&1; then
+                sed 's/^/    /' "$work/$name.$target.asm.log" | head -n 20
+                failed=$((failed + 1)); failed_names="$failed_names $label"; echo "FAIL $label (the assembly did not assemble)"; continue
+            fi
+            with="--with $object"
+        fi
         # shellcheck disable=SC2086
-        if ! "$corc" compile --target "$target" --freestanding $flags "$here/host.cor" "$source" -o "$exe" > "$work/$name.$target.log" 2>&1; then
+        if ! "$corc" compile --target "$target" --freestanding $flags $with "$here/host.cor" "$source" -o "$exe" > "$work/$name.$target.log" 2>&1; then
             sed 's/^/    /' "$work/$name.$target.log" | head -n 20
             failed=$((failed + 1)); failed_names="$failed_names $label"; echo "FAIL $label (did not compile)"; continue
         fi
@@ -95,6 +108,27 @@ for source in "$here"/[0-9]*.cor; do
             failed=$((failed + 1)); failed_names="$failed_names $label"; echo "FAIL $label ($wrong)"
         fi
     done
+done
+
+# THE ASSEMBLER'S LONG MODE, against binutils: each *.listing.asm is
+# assembled flat and read back by objdump, which must say exactly what its
+# .expected file says.
+for listing in "$here"/*.listing.asm; do
+    [ -e "$listing" ] || continue
+    name="$(basename "$listing" .asm)"
+    if [ -n "$filter" ] && [[ "$name" != *"$filter"* ]]; then continue; fi
+    if ! "$corc" asm --target x86-64 "$listing" -o "$work/$name.bin" > "$work/$name.log" 2>&1; then
+        sed 's/^/    /' "$work/$name.log" | head -n 10
+        failed=$((failed + 1)); failed_names="$failed_names $name"; echo "FAIL $name (did not assemble)"; continue
+    fi
+    objdump -D -b binary -m i386:x86-64 -M intel --no-show-raw-insn "$work/$name.bin" \
+        | sed -n '/<.data>:/,$p' | tail -n +2 | awk -F'\t' '{print $2}' | sed 's/ *$//' > "$work/$name.got"
+    if cmp -s "$work/$name.got" "$here/$name.expected"; then
+        passed=$((passed + 1)); echo "PASS $name"
+    else
+        failed=$((failed + 1)); failed_names="$failed_names $name"
+        echo "FAIL $name (differs: $(diff "$here/$name.expected" "$work/$name.got" | head -n 4 | tr '\n' ' '))"
+    fi
 done
 
 echo

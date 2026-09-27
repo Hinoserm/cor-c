@@ -120,6 +120,7 @@ public sealed partial class X86Assembler : ISymbols
     {
         _cpu = cpu ?? Corsac.Lang.X86.X86Cpu.Parse(Array.Empty<string>());
         _defaultBits = bits;
+        _everLongMode = bits == 64;
         _object = asObject;
         _sec = new Sec { Name = ".text", Kind = SectionKind.Code };
         _sections.Add(_sec);
@@ -216,7 +217,18 @@ public sealed partial class X86Assembler : ISymbols
     private ObjectFile BuildObject()
     {
         ObjectFile obj = new();
-        (_cpu.Contract with { AutomaticPacked = false }).Attach(obj);
+        // An object with any 64-bit code in it is a long-mode one: ELF64,
+        // linked with the x86-64 relocation types -- its 32-bit parts too,
+        // which is what a boot stub that switches modes is made of.
+        if (_everLongMode)
+        {
+            new X86CodeGenerationContract("k8", "k8", "sse2", false, false, false, false).Attach(obj);
+            new TargetContract(TargetContract.NoTlsClaim, longMode: true).Attach(obj);
+        }
+        else
+        {
+            (_cpu.Contract with { AutomaticPacked = false }).Attach(obj);
+        }
         Dictionary<string, Section> byName = new(StringComparer.Ordinal);
         foreach (Sec sec in _sections)
         {
@@ -348,6 +360,131 @@ public sealed partial class X86Assembler : ISymbols
     /// <summary>The next four-byte field is a displacement from its own end, not an address.</summary>
     private bool _pcRelative;
 
+    // ---- long mode: the REX prefix -------------------------------------------
+    //
+    // A REX byte goes between the legacy prefixes and the opcode, and what it
+    // holds is known only once the operands have been placed: W from the
+    // operand size (Prefixes), R, X and B from registers 8-15 in the ModRM
+    // fields or the opcode byte, and a bare 0x40 for spl, bpl, sil and dil. So
+    // Prefixes marks where it would go, the operand encoders set its bits, and
+    // EndInstruction puts it in -- moving up whatever was placed after the
+    // mark, which is only this instruction's own fields.
+    private int _rexAt = -1;
+    private bool _rexW, _rexR, _rexX, _rexB, _rexForce;
+    private bool _everLongMode;
+
+    /// <summary>A RIP-relative displacement written as a placeholder: its field, its target, and what the target names.</summary>
+    private (int At, long Target, List<string> Refs)? _rip;
+
+    private void BeginInstruction()
+    {
+        _rexAt = -1;
+        _rexW = _rexR = _rexX = _rexB = _rexForce = false;
+        _rip = null;
+    }
+
+    private void EndInstruction()
+    {
+        if (_bits == 64 && (_rexW || _rexR || _rexX || _rexB || _rexForce))
+        {
+            if (_rexAt < 0)
+            {
+                throw Error("internal: this instruction needs a REX prefix and marked no place for one");
+            }
+            if (_sec.Zeroed)
+            {
+                throw Error($"'{_sec.Name}' is uninitialised; instructions cannot go in it");
+            }
+            byte rex = (byte)(0x40 | (_rexW ? 8 : 0) | (_rexR ? 4 : 0) | (_rexX ? 2 : 0) | (_rexB ? 1 : 0));
+            _sec.Bytes.Insert(_rexAt, rex);
+            for (int i = 0; i < _sec.Relocs.Count; i++)
+            {
+                Relocation r = _sec.Relocs[i];
+                if (r.Offset >= _rexAt)
+                {
+                    _sec.Relocs[i] = new Relocation(r.Offset + 1, r.Symbol, r.Addend, r.Kind);
+                }
+            }
+            if (_rip is { } moved && moved.At >= _rexAt)
+            {
+                _rip = (moved.At + 1, moved.Target, moved.Refs);
+            }
+        }
+        if (_rip is { } rip)
+        {
+            FinishRipRelative(rip.At, rip.Target, rip.Refs);
+        }
+        BeginInstruction();
+    }
+
+    /// <summary>
+    /// `[rip + x]`: the distance from the END of the instruction, which is
+    /// only known now. Against a label of this section nothing moves it; a
+    /// name elsewhere is a PC32 relocation whose addend accounts for the
+    /// bytes between the field and the end.
+    /// </summary>
+    private void FinishRipRelative(int at, long target, List<string> refs)
+    {
+        int end = _sec.Size;
+        long disp = target - (_base + end);
+        if (_object && refs.Count > 0 && _pass == 2)
+        {
+            if (refs.Count > 1)
+            {
+                throw Error($"'{string.Join(" and ", refs)}': a RIP-relative address names one thing");
+            }
+            string name = refs[0];
+            string? section = SectionOf(name);
+            if (section is null || section != _sec.Name)
+            {
+                // S + A - P, where P is the field and the instruction ends
+                // (end - at) bytes after it.
+                long offset = section is null ? target : target - _base;
+                long addend = offset - (end - at);
+                _sec.Relocs.Add(new Relocation(at, section ?? name, addend, RelocKind.Rel32));
+                disp = 0;
+            }
+        }
+        if (_pass == 2 && _object == false && (disp < int.MinValue || disp > int.MaxValue))
+        {
+            throw Error($"a RIP-relative target is {disp} bytes away; the field holds 32 bits");
+        }
+        for (int i = 0; i < 4; i++)
+        {
+            _sec.Bytes[at + i] = (byte)(disp >> (8 * i));
+        }
+    }
+
+    /// <summary>REX.R and the bare REX for the register in a ModRM reg field (or a /digit, which sets neither).</summary>
+    private void RexReg(int reg)
+    {
+        if (_bits != 64) return;
+        if ((reg & 8) != 0) _rexR = true;
+        if ((reg & 16) != 0) _rexForce = true;
+    }
+
+    /// <summary>REX.B for a register in the opcode byte itself (push r12, mov r9, imm).</summary>
+    private void RexOpcodeReg(int reg)
+    {
+        if (_bits != 64) return;
+        if ((reg & 8) != 0) _rexB = true;
+        if ((reg & 16) != 0) _rexForce = true;
+    }
+
+    /// <summary>REX.B and REX.X for the r/m operand.</summary>
+    private void RexRm(Operand rm)
+    {
+        if (_bits != 64) return;
+        if (rm.Kind == OperandKind.Memory)
+        {
+            if (rm.Base >= 8) _rexB = true;
+            if (rm.Index >= 8) _rexX = true;
+            return;
+        }
+        if ((rm.Reg & 8) != 0) _rexB = true;
+        if ((rm.Reg & 16) != 0) _rexForce = true;
+    }
+
     private long Value(string text, out bool resolved)
     {
         _refs.Clear();
@@ -437,7 +574,9 @@ public sealed partial class X86Assembler : ISymbols
             return;
         }
 
+        BeginInstruction();
         Instruction(lower, rest);
+        EndInstruction();
     }
 
     /// <summary>
@@ -695,14 +834,15 @@ public sealed partial class X86Assembler : ISymbols
             case ".bits":
                 if (ops.Length != 1)
                 {
-                    throw Error(".bits takes 16 or 32");
+                    throw Error(".bits takes 16, 32 or 64");
                 }
                 long bits = ValueNow(ops[0]);
-                if (bits is not (16 or 32))
+                if (bits is not (16 or 32 or 64))
                 {
-                    throw Error($".bits {bits}: this assembler emits 16-bit and 32-bit code only");
+                    throw Error($".bits {bits}: this assembler emits 16-, 32- and 64-bit code");
                 }
                 _bits = (int)bits;
+                _everLongMode |= _bits == 64;
                 return;
 
             // GAS's spellings of the same thing, so that a source written for
@@ -721,6 +861,15 @@ public sealed partial class X86Assembler : ISymbols
                     throw Error(".code32 takes no operand");
                 }
                 _bits = 32;
+                return;
+
+            case ".code64":
+                if (ops.Length != 0)
+                {
+                    throw Error(".code64 takes no operand");
+                }
+                _bits = 64;
+                _everLongMode = true;
                 return;
 
             case ".equ":
@@ -743,6 +892,7 @@ public sealed partial class X86Assembler : ISymbols
             case ".db":  Data(ops, 1); return;
             case ".dw":  Data(ops, 2); return;
             case ".dd":  Data(ops, 4); return;
+            case ".dq":  Data(ops, 8); return;
 
             case ".ascii": Ascii(ops, false); return;
             case ".asciz":
@@ -1024,10 +1174,16 @@ public sealed partial class X86Assembler : ISymbols
         {
             return;
         }
-        if (size != 4)
+        if (size != 4 && !(size == 8 && !pcRelative))
         {
             throw Error($"'{name}' is {(external ? "supplied by the linker" : "in section '" + section + "'")}, "
-                        + $"so it needs a four-byte field; this one is {size}");
+                        + $"so it needs a four-byte field, or eight for an address; this one is {size}");
+        }
+        if (size == 8)
+        {
+            // A 64-bit address: R_X86_64_64, with the addend in the entry.
+            _sec.Relocs.Add(new Relocation(_sec.Size, external ? name : section, value, RelocKind.Abs64));
+            return;
         }
 
         // REL, so the addend lives in the word. For an absolute field that is
@@ -1083,7 +1239,7 @@ public sealed partial class X86Assembler : ISymbols
         // default". That is why they are computed against _bits rather than
         // written down per instruction, and why `.bits 32` needs no second
         // encoder: the same table emits 32-bit code with the prefixes inverted.
-        if ((opSize == 2 && _bits == 32) || (opSize == 4 && _bits == 16))
+        if ((opSize == 2 && _bits >= 32) || (opSize == 4 && _bits == 16))
         {
             Emit(0x66);
         }
@@ -1092,10 +1248,35 @@ public sealed partial class X86Assembler : ISymbols
         {
             Emit(0x67);
         }
+
+        // Long mode: 64-bit operands are REX.W, and whatever else the REX
+        // will say is found out by the operands (EndInstruction).
+        if (_bits == 64)
+        {
+            if (opSize == 8)
+            {
+                _rexW = true;
+            }
+            _rexAt = _sec.Size;
+        }
     }
 
     private void EmitRM(int reg, Operand rm)
     {
+        RexReg(reg);
+        if (rm.Kind is OperandKind.Register)
+        {
+            RexRm(rm);
+        }
+        else if (rm.Kind == OperandKind.Memory)
+        {
+            RexRm(rm);
+        }
+        if (_bits == 64 && _rexAt < 0 && (_rexR || _rexB || _rexX || _rexForce))
+        {
+            throw Error("internal: an operand needs a REX prefix and the instruction marked no place for one");
+        }
+
         if (rm.Kind is OperandKind.Register or OperandKind.Segment or OperandKind.Control or OperandKind.Mmx)
         {
             Emit((byte)(0xC0 | ((reg & 7) << 3) | (rm.Reg & 7)));
@@ -1186,10 +1367,24 @@ public sealed partial class X86Assembler : ISymbols
     private void EmitRM32(int reg, Operand rm)
     {
         const int Esp = 4, Ebp = 5;
+
+        // [rip + x]: mod 00, r/m 101, and a displacement from the end of the
+        // instruction, which EndInstruction works out once it is known.
+        if (rm.RipRelative)
+        {
+            Emit((byte)(((reg & 7) << 3) | 5));
+            long target = rm.HasDisp ? Val(rm.Disp) : 0;
+            _rip = (_sec.Size, target, Take());
+            Emit(0, 0, 0, 0);
+            return;
+        }
+
         int b = rm.Base, ix = rm.Index;
-        bool needSib = ix >= 0 || b == Esp;
+        // r12 and r13 are rsp and rbp to the ModRM byte: the same SIB and the
+        // same compulsory displacement.
+        bool needSib = ix >= 0 || (b >= 0 && (b & 7) == Esp);
         bool noBase = b < 0;
-        bool mustHaveDisp = b == Ebp;
+        bool mustHaveDisp = b >= 0 && (b & 7) == Ebp;
 
         int form = Decide(() =>
         {
@@ -1218,6 +1413,15 @@ public sealed partial class X86Assembler : ISymbols
 
         if (noBase)
         {
+            if (ix < 0 && _bits == 64)
+            {
+                // An absolute address in long mode: mod 00 r/m 101 means RIP
+                // there, so the SIB's "no base, no index" says disp32 instead.
+                Emit((byte)(((reg & 7) << 3) | 4));
+                Emit(0x25);
+                EmitImm(disp, 4);
+                return;
+            }
             if (ix < 0)
             {
                 Emit((byte)(((reg & 7) << 3) | 5));
@@ -1232,7 +1436,7 @@ public sealed partial class X86Assembler : ISymbols
             return;
         }
 
-        int rmField = needSib ? 4 : b;
+        int rmField = needSib ? 4 : (b & 7);
         Emit((byte)((form << 6) | ((reg & 7) << 3) | rmField));
         if (needSib)
         {
@@ -1311,6 +1515,9 @@ public sealed partial class X86Assembler : ISymbols
         "bsf", "bsr", "bt", "bts", "btr", "btc", "shld", "shrd",
         "pusha", "pushaw", "pushad", "popa", "popaw", "popad",
         "pushf", "pushfw", "pushfd", "popf", "popfw", "popfd", "ltr", "lldt", "str", "sldt",
+        // long mode's own
+        "iretq", "pushfq", "popfq", "cdqe", "cqo", "lodsq", "stosq", "movsq", "scasq", "cmpsq",
+        "swapgs", "syscall", "sysret", "sysretq", "retfq", "lretq", "movsxd",
     };
 
     private static bool IsMnemonic(string word)
@@ -1374,8 +1581,40 @@ public sealed partial class X86Assembler : ISymbols
             // Plain PUSHA is whatever the mode is: sixteen bits of registers
             // in .bits 16 and thirty-two in .bits 32, which is what every
             // other assembler means by it. The w and d spellings insist.
-            case "pusha":  Bare(a, 0x60); return;
-            case "popa":   Bare(a, 0x61); return;
+            // ---- long mode's own ----
+            case "iretq":  LongOnly(mn); Sized(a, 8, 0xCF); return;
+            case "pushfq": LongOnly(mn); Bare(a, 0x9C); return;
+            case "popfq":  LongOnly(mn); Bare(a, 0x9D); return;
+            case "cdqe":   LongOnly(mn); Sized(a, 8, 0x98); return;
+            case "cqo":    LongOnly(mn); Sized(a, 8, 0x99); return;
+            case "lodsq":  LongOnly(mn); Sized(a, 8, 0xAD); return;
+            case "stosq":  LongOnly(mn); Sized(a, 8, 0xAB); return;
+            case "movsq":  LongOnly(mn); Sized(a, 8, 0xA5); return;
+            case "scasq":  LongOnly(mn); Sized(a, 8, 0xAF); return;
+            case "cmpsq":  LongOnly(mn); Sized(a, 8, 0xA7); return;
+            case "retfq":
+            case "lretq":  LongOnly(mn); Sized(a, 8, 0xCB); return;
+            case "swapgs": LongOnly(mn); Need(a, 0, mn); Emit(0x0F, 0x01, 0xF8); return;
+            case "syscall": Need(a, 0, mn); Emit(0x0F, 0x05); return;
+            case "sysret": Need(a, 0, mn); Emit(0x0F, 0x07); return;
+            case "sysretq": LongOnly(mn); Need(a, 0, mn); Prefixes(8, null); Emit(0x0F, 0x07); return;
+            case "movsxd":
+            {
+                LongOnly(mn);
+                Need(a, 2, mn);
+                Operand d = P(a[0]), s = P(a[1]);
+                if (d.Kind != OperandKind.Register || d.Size != 8 || !s.IsRegOrMem || (s.Kind == OperandKind.Register && s.Size != 4))
+                {
+                    throw Error("movsxd widens a 32-bit register or memory operand into a 64-bit register");
+                }
+                Prefixes(8, MemOf(s));
+                Emit(0x63);
+                EmitRM(d.Reg, s);
+                return;
+            }
+
+            case "pusha":  NotLong(mn); Bare(a, 0x60); return;
+            case "popa":   NotLong(mn); Bare(a, 0x61); return;
             case "pushaw": Sized(a, 2, 0x60); return;
             case "pushad": Sized(a, 4, 0x60); return;
             case "popaw":  Sized(a, 2, 0x61); return;
@@ -1496,6 +1735,24 @@ public sealed partial class X86Assembler : ISymbols
         throw Error($"unknown instruction '{mn}'");
     }
 
+    /// <summary>An instruction that exists only in long mode.</summary>
+    private void LongOnly(string mn)
+    {
+        if (_bits != 64)
+        {
+            throw Error($"{mn} is a long-mode instruction; it needs .bits 64");
+        }
+    }
+
+    /// <summary>An instruction long mode took away (its opcode means something else there, or nothing).</summary>
+    private void NotLong(string mn)
+    {
+        if (_bits == 64)
+        {
+            throw Error($"{mn} does not exist in long mode");
+        }
+    }
+
     private void Bare(string[] a, byte op)
     {
         if (a.Length != 0)
@@ -1563,6 +1820,10 @@ public sealed partial class X86Assembler : ISymbols
         {
             return;
         }
+        if (size == 8)
+        {
+            return;                     // every long fits a quadword
+        }
         (long lo, long hi) = size switch
         {
             1 => (-128L, 255L),
@@ -1585,6 +1846,9 @@ public sealed partial class X86Assembler : ISymbols
 
     private int WordSize => _bits / 8;
 
+    /// <summary>A near branch's displacement: 16 bits in 16-bit code, and 32 otherwise -- long mode's too.</summary>
+    private int BranchSize => _bits == 16 ? 2 : 4;
+
     private void Mov(string[] a)
     {
         Need(a, 2, "mov");
@@ -1605,25 +1869,25 @@ public sealed partial class X86Assembler : ISymbols
         // The control registers are reached by their own two-byte opcode and
         // are always 32 bits wide, prefix or no prefix; that is how `mov eax,
         // cr0` works in 16-bit code without a 0x66 in front of it.
-        if (d.Kind == OperandKind.Control)
+        if (d.Kind == OperandKind.Control || s.Kind == OperandKind.Control)
         {
-            if (s.Kind != OperandKind.Register || s.Size != 4)
+            // Always the machine's width: 32 bits, or 64 in long mode, where
+            // REX.R reaches cr8 and REX.B the upper registers.
+            bool write = d.Kind == OperandKind.Control;
+            Operand control = write ? d : s, general = write ? s : d;
+            int wide = _bits == 64 ? 8 : 4;
+            if (general.Kind != OperandKind.Register || general.Size != wide)
             {
-                throw Error($"mov {d.Text}, {s.Text}: a control register is loaded from a 32-bit register");
+                throw Error($"mov {d.Text}, {s.Text}: a control register goes to or from a {wide * 8}-bit register");
             }
-            Emit(0x0F, 0x22);
-            Emit((byte)(0xC0 | ((d.Reg & 7) << 3) | (s.Reg & 7)));
-            return;
-        }
-
-        if (s.Kind == OperandKind.Control)
-        {
-            if (d.Kind != OperandKind.Register || d.Size != 4)
+            if (_bits == 64)
             {
-                throw Error($"mov {d.Text}, {s.Text}: a control register is read into a 32-bit register");
+                _rexAt = _sec.Size;
+                if (control.Reg >= 8) _rexR = true;
+                if (general.Reg >= 8) _rexB = true;
             }
-            Emit(0x0F, 0x20);
-            Emit((byte)(0xC0 | ((s.Reg & 7) << 3) | (d.Reg & 7)));
+            Emit(0x0F, write ? (byte)0x22 : (byte)0x20);
+            Emit((byte)(0xC0 | ((control.Reg & 7) << 3) | (general.Reg & 7)));
             return;
         }
 
@@ -1654,8 +1918,11 @@ public sealed partial class X86Assembler : ISymbols
 
             if (d.Kind == OperandKind.Register)
             {
+                // B8+r with REX.W is the one instruction with a 64-bit
+                // immediate (movabs): an address or a constant of any size.
                 Prefixes(size, null);
-                Emit((byte)((size == 1 ? 0xB0 : 0xB8) + d.Reg));
+                RexOpcodeReg(d.Reg);
+                Emit((byte)((size == 1 ? 0xB0 : 0xB8) + (d.Reg & 7)));
                 EmitImm(v, size, named);
                 return;
             }
@@ -1663,7 +1930,8 @@ public sealed partial class X86Assembler : ISymbols
             Prefixes(size, MemOf(d));
             Emit(size == 1 ? (byte)0xC6 : (byte)0xC7);
             EmitRM(0, d);
-            EmitImm(v, size, named);
+            // A qword store's immediate is four bytes, sign-extended.
+            EmitImm(v, size == 8 ? 4 : size, named);
             return;
         }
 
@@ -1760,15 +2028,22 @@ public sealed partial class X86Assembler : ISymbols
             {
                 throw Error($"push {o.Text}: there is no byte push");
             }
-            Prefixes(o.Size, null);
-            Emit((byte)(0x50 + o.Reg));
+            if (_bits == 64 && o.Size == 4)
+            {
+                throw Error($"push {o.Text}: long mode pushes 64-bit registers");
+            }
+            // 64 bits is push's own size in long mode: no REX.W.
+            Prefixes(o.Size == 8 ? 0 : o.Size, null);
+            RexOpcodeReg(o.Reg);
+            Emit((byte)(0x50 + (o.Reg & 7)));
             return;
         }
 
         if (o.Kind == OperandKind.Immediate)
         {
             long v = Val(o.Value);
-            int size = o.SizeGiven ? o.Size : WordSize;
+            // Long mode pushes a sign-extended imm32 as a qword.
+            int size = o.SizeGiven ? (o.Size == 8 ? 4 : o.Size) : (_bits == 64 ? 4 : WordSize);
             int form = Decide(() =>
             {
                 long x = Value(o.Value, out bool ok);
@@ -1788,7 +2063,7 @@ public sealed partial class X86Assembler : ISymbols
         }
 
         int msize = o.Size != 0 ? o.Size : WordSize;
-        Prefixes(msize, o);
+        Prefixes(msize == 8 ? 0 : msize, o);
         Emit(0xFF);
         EmitRM(6, o);
     }
@@ -1819,8 +2094,13 @@ public sealed partial class X86Assembler : ISymbols
             {
                 throw Error($"pop {o.Text}: there is no byte pop");
             }
-            Prefixes(o.Size, null);
-            Emit((byte)(0x58 + o.Reg));
+            if (_bits == 64 && o.Size == 4)
+            {
+                throw Error($"pop {o.Text}: long mode pops 64-bit registers");
+            }
+            Prefixes(o.Size == 8 ? 0 : o.Size, null);
+            RexOpcodeReg(o.Reg);
+            Emit((byte)(0x58 + (o.Reg & 7)));
             return;
         }
 
@@ -1830,7 +2110,7 @@ public sealed partial class X86Assembler : ISymbols
         }
 
         int msize = o.Size != 0 ? o.Size : WordSize;
-        Prefixes(msize, o);
+        Prefixes(msize == 8 ? 0 : msize, o);
         Emit(0x8F);
         EmitRM(0, o);
     }
@@ -1845,7 +2125,9 @@ public sealed partial class X86Assembler : ISymbols
             && (x.Reg == 0 || y.Reg == 0))
         {
             Prefixes(x.Size, null);
-            Emit((byte)(0x90 + (x.Reg == 0 ? y.Reg : x.Reg)));
+            int other = x.Reg == 0 ? y.Reg : x.Reg;
+            RexOpcodeReg(other);
+            Emit((byte)(0x90 + (other & 7)));
             return;
         }
 
@@ -1920,14 +2202,14 @@ public sealed partial class X86Assembler : ISymbols
             {
                 Prefixes(size, null);
                 Emit((byte)(b + (size == 1 ? 4 : 5)));
-                EmitImm(v, size, named);
+                EmitImm(v, size == 8 ? 4 : size, named);
                 return;
             }
 
             Prefixes(size, MemOf(d));
             Emit(size == 1 ? (byte)0x80 : (byte)0x81);
             EmitRM(op, d);
-            EmitImm(v, size, named);
+            EmitImm(v, size == 8 ? 4 : size, named);
             return;
         }
 
@@ -1968,14 +2250,14 @@ public sealed partial class X86Assembler : ISymbols
             {
                 Prefixes(size, null);
                 Emit(size == 1 ? (byte)0xA8 : (byte)0xA9);
-                EmitImm(v, size);
+                EmitImm(v, size == 8 ? 4 : size);
                 return;
             }
 
             Prefixes(size, MemOf(d));
             Emit(size == 1 ? (byte)0xF6 : (byte)0xF7);
             EmitRM(0, d);
-            EmitImm(v, size);
+            EmitImm(v, size == 8 ? 4 : size);
             return;
         }
 
@@ -1999,7 +2281,9 @@ public sealed partial class X86Assembler : ISymbols
         Need(a, 1, mn);
         Operand d = P(a[0]);
 
-        if (d.Kind == OperandKind.Register && d.Size > 1)
+        // The one-byte forms are REX prefixes in long mode, so there it is
+        // FF /0 and FF /1 like the memory forms.
+        if (d.Kind == OperandKind.Register && d.Size > 1 && _bits != 64)
         {
             Prefixes(d.Size, null);
             Emit((byte)((which == 0 ? 0x40 : 0x48) + d.Reg));
@@ -2135,12 +2419,12 @@ public sealed partial class X86Assembler : ISymbols
 
             Emit(0xE9);
             _pcRelative = true;
-            EmitImm(target - (Pc + WordSize), WordSize);
+            EmitImm(target - (Pc + BranchSize), BranchSize);
             return;
         }
 
         int size = o.Size != 0 ? o.Size : WordSize;
-        Prefixes(size, MemOf(o));
+        Prefixes(size == 8 ? 0 : size, MemOf(o));        // a near branch is 64 bits in long mode already
         Emit(0xFF);
         EmitRM(hint == 2 ? 5 : 4, o);
     }
@@ -2177,12 +2461,12 @@ public sealed partial class X86Assembler : ISymbols
             long target = Val(o.Value);
             Emit(0xE8);
             _pcRelative = true;
-            EmitImm(target - (Pc + WordSize), WordSize);
+            EmitImm(target - (Pc + BranchSize), BranchSize);
             return;
         }
 
         int size = o.Size != 0 ? o.Size : WordSize;
-        Prefixes(size, MemOf(o));
+        Prefixes(size == 8 ? 0 : size, MemOf(o));        // a near branch is 64 bits in long mode already
         Emit(0xFF);
         EmitRM(hint == 2 ? 3 : 2, o);
     }
@@ -2260,7 +2544,7 @@ public sealed partial class X86Assembler : ISymbols
 
         Emit(0x0F, (byte)(0x80 + cc));
         _pcRelative = true;
-        EmitImm(target - (Pc + WordSize), WordSize);
+        EmitImm(target - (Pc + BranchSize), BranchSize);
     }
 
     private void Int(string[] a)

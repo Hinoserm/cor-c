@@ -1,0 +1,57 @@
+movabs rax,0x123456789abcdef0
+movabs r9,0x5
+mov    eax,0x7
+mov    r10d,ebx
+mov    rbx,QWORD PTR [rsp+0x8]
+mov    QWORD PTR [r12+r13*4+0x10],rdi
+mov    QWORD PTR [rbp+0x0],0x2a
+mov    r15,QWORD PTR [rip+0x87]        # 0xbc
+lea    rsi,[rip+0x80]        # 0xbc
+add    rax,r8
+sub    r11,0x1000
+and    ecx,0xff
+xor    r14d,r14d
+cmp    QWORD PTR [rax],0x0
+test   r9,r9
+inc    r12
+dec    DWORD PTR [rbx]
+shl    rdx,0x3
+push   rbp
+push   r15
+pop    r12
+push   0x10
+call   0xbb
+call   rax
+call   QWORD PTR [r11+0x8]
+jmp    0xbb
+jne    0x0
+mov    cr3,rax
+mov    rbx,cr0
+mov    cr8,r9
+lgdt   [rdi]
+lidt   [rip+0x30]        # 0xbc
+ltr    eax
+wrmsr
+rdmsr
+swapgs
+iretq
+sysretq
+syscall
+pushf
+popf
+cdqe
+cqo
+rep stos QWORD PTR [rdi],rax
+movsxd rax,DWORD PTR [rcx]
+movzx  r8d,BYTE PTR [rsi]
+xchg   r13,rax
+mov    sil,0x1
+mov    BYTE PTR [rdi],r10b
+int    0x83
+hlt
+retfq
+ret
+ret
+mov    ebx,0x0
+add    BYTE PTR [rax],al
+...

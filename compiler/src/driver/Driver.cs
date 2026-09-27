@@ -291,7 +291,7 @@ public static class Driver
         }
 
         string targetName = Value(args, "--target") ?? "x86-16";
-        if (targetName is not ("x86-16" or "x86_16" or "x86-32"))
+        if (targetName is not ("x86-16" or "x86_16" or "x86-32" or "x86-64" or "x86_64"))
         {
             return Fail($"unknown build target '{targetName}'");
         }
@@ -299,7 +299,7 @@ public static class Driver
         // --target names the assembler's default mode, which `.bits` in the
         // source still overrides: x86-16 for a boot sector, x86-32 for the
         // kernel's own assembly, which has no real mode left to speak of.
-        int bits = targetName == "x86-32" ? 32 : 16;
+        int bits = targetName == "x86-32" ? 32 : targetName is "x86-64" or "x86_64" ? 64 : 16;
         bool asObject = args.Contains("--obj");
         string output = Value(args, "-o") ?? Path.ChangeExtension(files[0], asObject ? ".o" : ".bin");
         Corsac.Asm.X86Assembler.Result result = Corsac.Asm.X86Assembler.AssembleFile(files[0], bits, asObject, X86Cpu.Parse(args));

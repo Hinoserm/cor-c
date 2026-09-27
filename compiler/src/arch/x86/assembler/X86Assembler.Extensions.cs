@@ -34,7 +34,8 @@ public sealed partial class X86Assembler
 
     private void Require(bool available, string mnemonic, string feature)
     {
-        if (!available) throw Error(mnemonic + " requires " + feature + "; selected CPU is " + _cpu.Name);
+        // Long mode is a K8 or later, which has every one of them.
+        if (!available && _bits != 64) throw Error(mnemonic + " requires " + feature + "; selected CPU is " + _cpu.Name);
     }
 
     private void MmxSource(Operand operand, int size, string mnemonic)
@@ -93,8 +94,8 @@ public sealed partial class X86Assembler
             if (mn == "bswap")
             {
                 Need(a, 1, mn); Operand reg = P(a[0]);
-                if (reg.Kind != OperandKind.Register || reg.Size != 4) throw Error("bswap requires a 32-bit register");
-                Prefixes(4, null); Emit(0x0f, (byte)(0xc8 + reg.Reg)); return true;
+                if (reg.Kind != OperandKind.Register || reg.Size is not (4 or 8)) throw Error("bswap requires a 32- or 64-bit register");
+                Prefixes(reg.Size, null); RexOpcodeReg(reg.Reg); Emit(0x0f, (byte)(0xc8 + (reg.Reg & 7))); return true;
             }
             if (mn == "invlpg")
             {

@@ -1,0 +1,28 @@
+// test: an assembled entry stub calls the COR-C# entry, as a kernel's does
+// with-asm: 04_asm_entry
+// flags: --asm-entry corc_start --entry _start
+// expect-exit: 0
+// expect-output:
+// from the stub 42
+// stub stack aligned True
+//
+// The kernel's _start is assembly (os/kernel/arch/x86/entry.asm): it sets up
+// what COR-C# needs and calls corc_start. Here the stub, one per target,
+// writes a COR-C# static -- through [rip + symbol] with an immediate after
+// it in long mode, which is the relocation arithmetic a RIP-relative store
+// needs -- and records the stack pointer, then calls in.
+
+static class Program
+{
+    public static long FromAsm;
+    public static long StubStack;
+
+    static int Main()
+    {
+        Host.Start(1024 * 1024);
+        Host.Line("from the stub " + FromAsm);
+        Host.Line("stub stack aligned " + ((StubStack & 15) == 0));
+        Host.Done(0);
+        return 0;
+    }
+}
