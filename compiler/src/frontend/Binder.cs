@@ -13403,6 +13403,34 @@ public sealed partial class Binder
             return CheckExpr(lowered);
         }
 
+        // AN ENUM'S Equals AND GetHashCode are System.Enum's: the value boxed,
+        // compared by type and value, hashed as its underlying number -- which
+        // is what a boxed enum's own slots answer here.
+        if (c.Target is MemberExpr { Name: "Equals" or "GetHashCode" } enumCall
+            && (enumCall.Name == "Equals" ? c.Args.Count == 1 : c.Args.Count == 0)
+            && !_r.Rewrites.ContainsKey(c)
+            && Peek(enumCall.Target).AsNonNullable() is { Symbol: { Kind: TypeKind.Enum } enumType } enumValue
+            && !enumValue.IsNullableValue && enumType.FindMethods(enumCall.Name).Count == 0)
+        {
+            CallExpr boxed = new()
+            {
+                Target = new MemberExpr
+                {
+                    Target = new CastExpr
+                    {
+                        Type = new TypeRef { Name = "object", Line = c.Line, Col = c.Col },
+                        Operand = enumCall.Target, Line = c.Line, Col = c.Col,
+                    },
+                    Name = enumCall.Name, Line = enumCall.Line, Col = enumCall.Col,
+                },
+                Line = c.Line, Col = c.Col,
+            };
+            boxed.Args.AddRange(c.Args);
+            boxed.ArgNames.AddRange(c.ArgNames);
+            _r.Rewrites[c] = boxed;
+            return CheckExpr(boxed);
+        }
+
         if (c.Target is MemberExpr { Name: "HasFlag" } flag && c.Args.Count == 1)
         {
             Type valueType = CheckExpr(flag.Target);
