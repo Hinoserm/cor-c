@@ -1,13 +1,132 @@
-// The Linux i386 ABI's constants and structures: the call numbers, the
-// descriptors, open(2)'s flags, errno, and the byte layouts of stat64,
-// statfs64, getdents64 and the time structures, with Raw to read them. No
-// system call is made here.
+// The Linux ABI's constants and structures, i386's and x86-64's: the call
+// numbers, the descriptors, open(2)'s flags, errno, and the byte layouts of
+// stat, statfs, getdents64 and the time structures, with Raw to read them.
+// Which machine's is chosen by the target's symbol (TARGET_AMD64). No system
+// call is made here.
 //
 // Apart from system.cor so that code which makes Linux's file calls without
 // being a Linux process -- CORSAC's ring-1 kernels, through files.cor and a
 // gate of their own -- has the same numbers and structures by the same
 // names.
 
+#if TARGET_AMD64
+/// The x86-64 system-call numbers this library uses, from asm/unistd_64.h,
+/// under the names the i386 table gives them so one source makes the call.
+/// Where i386 had a separate 64-bit or 32-bit-id variant -- stat64, the
+/// getuid32 family, _llseek, mmap2 -- the x86-64 call already IS that one,
+/// and the name keeps pointing at what the code means. The calls whose
+/// ARGUMENTS differ as well (mmap's offset, statfs's size, wait4's rusage,
+/// ftruncate's length, set_thread_area) are shaped at their call sites.
+static class Call
+{
+    public const long Exit = 60;        // (status)
+    public const long Read = 0;         // (fd, address, count) -> read, or -errno
+    public const long Write = 1;        // (fd, address, count) -> written, or -errno
+    public const long Open = 2;         // (path, flags, mode) -> fd, or -errno
+    public const long Close = 3;        // (fd) -> 0, or -errno
+    public const long Getpid = 39;
+    public const long Uname = 63;       // (utsname)
+    public const long Brk = 12;
+    /// mmap(2): the offset is in BYTES here, where i386's mmap2 takes pages.
+    public const long Mmap = 9;         // (addr, len, prot, flags, fd, offset) -> address
+    public const int MmapOffsetShift = 12;
+    public const long ExitGroup = 231;  // (status): every thread, not just this one
+    /// arch_prctl(2): where this thread's FS base, and so its block, is.
+    public const long ArchPrctl = 158;  // (code, address)
+    public const long ArchSetFs = 0x1002;
+    public const long Futex = 202;      // (uaddr, op, val, timeout, uaddr2, val3)
+
+    // ---- processes -------------------------------------------------------
+    public const long Fork = 57;
+    /// wait4(2): waitpid's arguments and a fourth, the rusage, which is 0.
+    public const long Wait4 = 61;       // (pid, status, options, rusage)
+    public const long Execve = 59;
+    public const long Kill = 62;
+    public const long Getppid = 110;
+    public const long Getuid = 102;
+    public const long Getgid = 104;
+    public const long Setpgid = 109;
+    public const long Getpgid = 121;
+    public const long Setsid = 112;
+    public const long Setuid = 105;
+    public const long Setgid = 106;
+    public const long Setgroups = 116;
+    public const long Umask = 95;
+    public const long Chown = 92;
+    public const long Gettid = 186;
+    public const long Tgkill = 234;
+    public const long Clone = 56;       // (flags, stack, ptid, ctid, tls): x86-64's order
+    public const long SetTidAddress = 218;
+
+    // ---- files and directories -------------------------------------------
+    public const long Unlink = 87;
+    public const long Link = 86;
+    public const long Chdir = 80;
+    public const long Lseek = 8;        // (fd, offset, whence) -> the offset: 64 bits already
+    public const long Rename = 82;
+    public const long Mkdir = 83;
+    public const long Rmdir = 84;
+    public const long Dup = 32;
+    public const long Pipe = 22;
+    public const long Ioctl = 16;
+    public const long Dup2 = 33;
+    public const long Ftruncate = 77;   // (fd, length): the length is 64 bits already
+    public const long Getcwd = 79;
+    public const long Stat64 = 4;       // stat: already the 64-bit structure (StatBuf)
+    public const long Lstat64 = 6;
+    public const long Fstat64 = 5;
+    public const long Getdents64 = 217;
+    public const long Access = 21;
+    public const long Chmod = 90;
+    public const long Symlink = 88;
+    public const long Readlink = 89;
+    public const long Poll = 7;
+    public const long Fcntl = 72;
+    public const long RtSigaction = 13;
+    public const long RtSigprocmask = 14;
+    public const long RtSigreturn = 15;
+    public const long GetRandom = 318;
+    public const long SchedGetaffinity = 204;
+    public const long Utimensat = 280;
+    public const long Sync = 162;
+    public const long Fsync = 74;
+    public const long Flock = 73;
+    public const long Fdatasync = 75;
+    public const long Mount = 165;
+    public const long Umount2 = 166;
+    /// statfs/fstatfs: (path or fd, buffer) -- no size argument on x86-64.
+    public const long Statfs64 = 137;
+    public const long Fstatfs64 = 138;
+    public const long Reboot = 169;
+    public const long Munmap = 11;
+
+    // ---- time ------------------------------------------------------------
+    public const long Time = 201;
+    public const long GetTimeOfDay = 96;
+    public const long NanoSleep = 35;
+    public const long ClockGetTime = 228;
+    public const long ClockGetRes = 229;
+    public const long ClockNanosleep = 230;
+    public const long Sched_Yield = 24;
+
+    // ---- sockets: one call each, and no socketcall(2) at all -------------
+    public const long Socket = 41;
+    public const long SocketPair = 53;
+    public const long Bind = 49;
+    public const long Connect = 42;
+    public const long Listen = 50;
+    public const long Accept4 = 288;
+    public const long GetSockOpt = 55;
+    public const long SetSockOpt = 54;
+    public const long GetSockName = 51;
+    public const long GetPeerName = 52;
+    public const long SendTo = 44;
+    public const long SendMsg = 46;
+    public const long RecvFrom = 45;
+    public const long RecvMsg = 47;
+    public const long Shutdown = 48;
+}
+#else
 /// The i386 system-call numbers this library uses, from asm/unistd_32.h. The
 /// name matches os/lib/user.cor's `Call` on purpose -- a utility that says
 /// Call.Write means the same thing here -- but the NUMBERS are Linux's and
@@ -21,11 +140,18 @@ static class Call
     public const long Open = 5;         // (path, flags, mode) -> fd, or -errno
     public const long Close = 6;        // (fd) -> 0, or -errno
     public const long Getpid = 20;      // () -> pid; the cheapest call there is
+    public const long Uname = 122;      // (utsname)
     public const long Brk = 45;         // (address) -> the break now; unused
     public const long Mmap2 = 192;      // (addr, len, prot, flags, fd, pgoff) -> address
+    /// The one this library calls: mmap2, whose offset is in pages.
+    public const long Mmap = 192;
+    public const int MmapOffsetShift = 0;
     public const long ExitGroup = 252;  // (status): every thread, not just this one
     public const long SetThreadArea = 243;  // (user_desc): a GDT entry of this thread's own
     public const long Futex = 240;      // (uaddr, op, val, timeout, uaddr2, val3)
+    public const long Gettid = 224;
+    public const long Clone = 120;      // (flags, stack, ptid, tls, ctid)
+    public const long ClockNanosleep = 267;
 
     // ---- processes -------------------------------------------------------
     public const long Fork = 2;         // () -> child pid in the parent, 0 in the child
@@ -118,6 +244,7 @@ static class Call
     public const long RecvMsg = 372;
     public const long Shutdown = 373;
 }
+#endif
 
 /// The three standard descriptors, as os/lib/user.cor spells them.
 static class Fd
@@ -206,12 +333,18 @@ static class Err
     /// -MAX_ERRNO), and they come back negative.
     public static long Result(long raw)
     {
+#if TARGET_AMD64
+        // RAX is the whole answer: -4095..-1 is -errno, as the kernel
+        // wrote it, and an address or a count is itself.
+        return raw;
+#else
         long word = raw & 0xFFFFFFFF;
         if (word >= 0xFFFFF001)
         {
             return word - 0x100000000;
         }
         return word;
+#endif
     }
 }
 
@@ -267,6 +400,25 @@ static class Raw
     /// `count` bytes as text. The kernel's strings are bytes and this treats
     /// them as bytes: no decoding, because a path is not necessarily UTF-8 and
     /// a program that round-trips one must not change it.
+    /// A machine word: a pointer or a size_t in a structure the kernel reads.
+    public static long Word(byte[] b, int at)
+    {
+#if TARGET_64BIT
+        return I64(b, at);
+#else
+        return U32(b, at);
+#endif
+    }
+
+    public static void SetWord(byte[] b, int at, long value)
+    {
+#if TARGET_64BIT
+        SetI64(b, at, value);
+#else
+        SetU32(b, at, value);
+#endif
+    }
+
     public static string Text(byte[] b, int at, int count)
     {
         string s = Sys.NewBytes(count);
@@ -301,6 +453,31 @@ static class Whence
     public const int End = 2;
 }
 
+#if TARGET_AMD64
+/// The x86-64 `struct stat` that stat/lstat/fstat fill in: every count and
+/// time a full eight bytes, naturally aligned.
+static class StatBuf
+{
+    public const int Bytes = 144;
+
+    public const int Dev = 0;           // 8 bytes
+    public const int InoAt = 8;         // 8 bytes
+    public const int NlinkAt = 16;      // 8 bytes
+    public const int ModeAt = 24;
+    public const int UidAt = 28;
+    public const int GidAt = 32;
+    public const int RdevAt = 40;       // 8 bytes
+    public const int SizeAt = 48;       // 8 bytes
+    public const int BlkSizeAt = 56;    // 8 bytes
+    public const int BlocksAt = 64;     // 8 bytes
+    public const int AtimeAt = 72;      // seconds, 8 bytes; nanoseconds after
+    public const int AtimeNsecAt = 80;
+    public const int MtimeAt = 88;
+    public const int MtimeNsecAt = 96;
+    public const int CtimeAt = 104;
+    public const int CtimeNsecAt = 112;
+    public const int TimeBytes = 8;
+#else
 /// The i386 `struct stat64` that stat64/lstat64/fstat64 fill in. The odd
 /// offsets are real: the 64-bit fields in it are packed to four bytes, so
 /// st_size sits at 44 and not at 48.
@@ -335,6 +512,9 @@ static class StatBuf
     public const int CtimeNsecAt = 84;
     public const int InoAt = 88;        // 8 bytes
 
+    public const int TimeBytes = 4;
+#endif
+
     public const long TypeMask = 0xF000;
     public const long Fifo = 0x1000;
     public const long Char = 0x2000;
@@ -359,7 +539,7 @@ static class StatBuf
     {
         if (b.Length < Bytes)
         {
-            throw new ArgumentException("a stat buffer is 96 bytes");
+            throw new ArgumentException("a stat buffer is too small");
         }
     }
 
@@ -372,9 +552,9 @@ static class StatBuf
     public static long Size(byte[] b)   { return Raw.I64(b, SizeAt); }
     public static long Blocks(byte[] b) { return Raw.I64(b, BlocksAt); }
     public static long Ino(byte[] b)    { return Raw.I64(b, InoAt); }
-    public static long Mtime(byte[] b)  { return Raw.I32(b, MtimeAt); }
-    public static long Atime(byte[] b)  { return Raw.I32(b, AtimeAt); }
-    public static long Ctime(byte[] b)  { return Raw.I32(b, CtimeAt); }
+    public static long Mtime(byte[] b)  { return TimeBytes == 8 ? Raw.I64(b, MtimeAt) : Raw.I32(b, MtimeAt); }
+    public static long Atime(byte[] b)  { return TimeBytes == 8 ? Raw.I64(b, AtimeAt) : Raw.I32(b, AtimeAt); }
+    public static long Ctime(byte[] b)  { return TimeBytes == 8 ? Raw.I64(b, CtimeAt) : Raw.I32(b, CtimeAt); }
 
     public static long MtimeNsec(byte[] b) { return Raw.U32(b, MtimeNsecAt); }
     public static long AtimeNsec(byte[] b) { return Raw.U32(b, AtimeNsecAt); }
@@ -446,6 +626,49 @@ static class Stat
     public static bool IsFile(string path) { return StatBuf.IsFile(path); }
 }
 
+#if TARGET_AMD64
+/// The x86-64 `struct statfs`: every field a full word.
+static class StatFs
+{
+    public const int Bytes = 120;
+
+    public const int TypeAt = 0;
+    public const int BlockSizeAt = 8;
+    public const int BlocksAt = 16;
+    public const int FreeAt = 24;
+    public const int AvailableAt = 32;
+    public const int FilesAt = 40;
+    public const int FilesFreeAt = 48;
+    public const int FsidAt = 56;
+    public const int NameLengthAt = 64;
+    public const int FragmentSizeAt = 72;
+    public const int FlagsAt = 80;
+
+    public static byte[] Room()
+    {
+        return new byte[Bytes];
+    }
+
+    public static void Check(byte[] b)
+    {
+        if (b.Length < Bytes)
+        {
+            throw new ArgumentException("a statfs buffer is 120 bytes");
+        }
+    }
+
+    public static long Type(byte[] b)         { return Raw.I64(b, TypeAt); }
+    public static long BlockSize(byte[] b)    { return Raw.I64(b, BlockSizeAt); }
+    public static long Blocks(byte[] b)       { return Raw.I64(b, BlocksAt); }
+    public static long Free(byte[] b)         { return Raw.I64(b, FreeAt); }
+    public static long Available(byte[] b)    { return Raw.I64(b, AvailableAt); }
+    public static long Files(byte[] b)        { return Raw.I64(b, FilesAt); }
+    public static long FilesFree(byte[] b)    { return Raw.I64(b, FilesFreeAt); }
+    public static long NameLength(byte[] b)   { return Raw.I64(b, NameLengthAt); }
+    public static long FragmentSize(byte[] b) { return Raw.I64(b, FragmentSizeAt); }
+    public static long Flags(byte[] b)        { return Raw.I64(b, FlagsAt); }
+}
+#else
 /// The i386 `struct statfs64` that statfs64(2) fills in. Its 64-bit fields
 /// are packed to four bytes, as the stat structure's are, so the offsets run
 /// on without padding.
@@ -489,6 +712,7 @@ static class StatFs
     public static long FragmentSize(byte[] b) { return Raw.I32(b, FragmentSizeAt); }
     public static long Flags(byte[] b)        { return Raw.I32(b, FlagsAt); }
 }
+#endif
 
 /// One record in a getdents64(2) buffer: an inode, an offset, the length of
 /// the record itself, a kind, and a NUL-terminated name. The records are
@@ -544,7 +768,14 @@ static class Dirent
 /// second, both signed words on i386.
 static class TimeSpec
 {
+#if TARGET_64BIT
+    // Two longs: seconds and nanoseconds.
+    public const int Bytes = 16;
+    public const int NanosAt = 8;
+#else
     public const int Bytes = 8;
+    public const int NanosAt = 4;
+#endif
 
     public static byte[] Room()
     {
@@ -555,10 +786,20 @@ static class TimeSpec
     {
         if (b.Length < Bytes)
         {
-            throw new ArgumentException("a timespec is 8 bytes");
+            throw new ArgumentException("a timespec is too small");
         }
     }
 
+#if TARGET_64BIT
+    public static long Seconds(byte[] b) { return Raw.I64(b, 0); }
+    public static long Nanos(byte[] b)   { return Raw.I64(b, NanosAt); }
+
+    public static void Set(byte[] b, long seconds, long nanos)
+    {
+        Raw.SetI64(b, 0, seconds);
+        Raw.SetI64(b, NanosAt, nanos);
+    }
+#else
     public static long Seconds(byte[] b) { return Raw.I32(b, 0); }
     public static long Nanos(byte[] b)   { return Raw.I32(b, 4); }
 
@@ -567,21 +808,31 @@ static class TimeSpec
         Raw.SetU32(b, 0, seconds);
         Raw.SetU32(b, 4, nanos);
     }
+#endif
 }
 
 /// `struct timeval`: seconds and MICROseconds, which is the older call's
 /// resolution and the reason it is a different structure.
 static class TimeVal
 {
+#if TARGET_64BIT
+    public const int Bytes = 16;
+#else
     public const int Bytes = 8;
+#endif
 
     public static byte[] Room()
     {
         return new byte[Bytes];
     }
 
+#if TARGET_64BIT
+    public static long Seconds(byte[] b) { return Raw.I64(b, 0); }
+    public static long Micros(byte[] b)  { return Raw.I64(b, 8); }
+#else
     public static long Seconds(byte[] b) { return Raw.I32(b, 0); }
     public static long Micros(byte[] b)  { return Raw.I32(b, 4); }
+#endif
 }
 
 /// Which clock. Realtime can jump -- it is the one a user sets -- so anything
