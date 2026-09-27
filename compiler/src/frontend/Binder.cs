@@ -21,6 +21,7 @@ public sealed partial class Binder
     private readonly string _file;
     private readonly Action<string>? _requireDeclaration;
     private readonly Action<string, string>? _requireExtensions;
+    private readonly Action<string, int>? _requireOverrides;
     private readonly Metadata.DeclarationBatch _declarationBatch = new();
     private readonly IReadOnlyDictionary<(string Name, int Arity), int>? _indexedInterfaces;
     private readonly IReadOnlySet<(string Name, int Arity)>? _libraryInterfaces;
@@ -586,11 +587,13 @@ public sealed partial class Binder
     public Binder(string file = "<source>", Action<string>? requireDeclaration = null,
         IReadOnlyDictionary<(string Name, int Arity), int>? indexedInterfaces = null,
         Action<string, string>? requireExtensions = null,
-        IReadOnlySet<(string Name, int Arity)>? libraryInterfaces = null)
+        IReadOnlySet<(string Name, int Arity)>? libraryInterfaces = null,
+        Action<string, int>? requireOverrides = null)
     {
         _file = file;
         _requireDeclaration = requireDeclaration;
         _requireExtensions = requireExtensions;
+        _requireOverrides = requireOverrides;
         _indexedInterfaces = indexedInterfaces;
         _libraryInterfaces = libraryInterfaces;
     }
@@ -626,9 +629,10 @@ public sealed partial class Binder
     public static BindResult Bind(CompilationUnit unit, string file = "<source>", Action<string>? requireDeclaration = null,
         IReadOnlyDictionary<(string Name, int Arity), int>? indexedInterfaces = null,
         Action<string, string>? requireExtensions = null,
-        IReadOnlySet<(string Name, int Arity)>? libraryInterfaces = null)
+        IReadOnlySet<(string Name, int Arity)>? libraryInterfaces = null,
+        Action<string, int>? requireOverrides = null)
     {
-        Binder b = new(file, requireDeclaration, indexedInterfaces, requireExtensions, libraryInterfaces);
+        Binder b = new(file, requireDeclaration, indexedInterfaces, requireExtensions, libraryInterfaces, requireOverrides);
         b.Run(unit);
         b._r = b._r.CopyForBodyChecking();
         b.CheckBodyWork();
@@ -1406,7 +1410,11 @@ public sealed partial class Binder
             bool library = IsLibraryType(t) || (_libraryInterfaces?.Contains(family) ?? true);
             SortedDictionary<(string, int), int> into = library ? families : local;
             if (library) local.Remove(family);
-            into[family] = Math.Max(into.GetValueOrDefault(family), t.Methods.Count);
+            // THE DECLARED MEMBERS, not the copies this unit made beside them:
+            // a copy of the interface's generic method is local to the unit,
+            // and counting it gave the family one more slot here than in every
+            // unit that made no copy -- moving every family numbered after it.
+            into[family] = Math.Max(into.GetValueOrDefault(family), t.Methods.Count(m => m.Decl?.LocalCopy != true));
         }
 
         void Number(SortedDictionary<(string, int), int> table)
@@ -1432,7 +1440,7 @@ public sealed partial class Binder
 
                 for (int i = 0; i < t.Methods.Count; i++)
                 {
-                    if (t.Methods[i].VtableSlot >= 0)
+                    if (t.Methods[i].VtableSlot >= 0 || t.Methods[i].Decl?.LocalCopy == true)
                     {
                         continue;
                     }
@@ -2659,6 +2667,10 @@ public sealed partial class Binder
             foreach (MethodSymbol want in iface.Methods)
             {
                 if (want.Static) continue;
+                // A GENERIC METHOD OF THE INTERFACE IS DISPATCHED BY TYPE TEST,
+                // not through a slot (MethodSymbol.GenericVirtual), and a copy
+                // of one made in this unit is no member of the interface's ABI.
+                if (want.TypeParams.Count > 0 || want.Decl?.LocalCopy == true) continue;
                 // Merely hiding a base member does not remap an inherited
                 // interface. An override does; naming the interface again
                 // explicitly requests a fresh implementation search.
@@ -2760,9 +2772,11 @@ public sealed partial class Binder
         // Abstract instance members are implicitly virtual in C#. Without a
         // slot a call through the abstract type became a direct call to a
         // body which cannot exist, and the linker failed on its missing label.
+        // NOT A GENERIC ONE: a slot holds one address, and a generic virtual
+        // method has one per type argument. See MethodSymbol.GenericVirtual.
         foreach (MethodSymbol m in sym.Methods.Where(m =>
                      (m.Virtual || m.Override || m.Abstract)
-                     && !m.Static && m.VtableSlot < 0))
+                     && !m.Static && m.VtableSlot < 0 && m.TypeParams.Count == 0))
         {
             List<MethodSymbol> sameArity = sym.Base?.FindMethods(m.Name)
                 .Where(b => b.Params.Count == m.Params.Count).ToList()
@@ -5732,6 +5746,7 @@ public sealed partial class Binder
         int errors = _r.Errors.Count;
         int warnings = _r.Warnings.Count;
         int wanted = _r.Wanted.Count;
+        int overrides = _r.WantedOverrides.Count;
         // WHAT THE LOOK DECLARED IS TAKEN BACK TOO. An `out var` or a pattern
         // variable in the expression declares a name in the scope it is
         // checked in, and the real check that follows declares it again: a
@@ -5753,6 +5768,7 @@ public sealed partial class Binder
         _r.Errors.RemoveRange(errors, _r.Errors.Count - errors);
         _r.Warnings.RemoveRange(warnings, _r.Warnings.Count - warnings);
         _r.Wanted.RemoveRange(wanted, _r.Wanted.Count - wanted);
+        _r.WantedOverrides.RemoveRange(overrides, _r.WantedOverrides.Count - overrides);
         return had;
     }
 
@@ -13184,7 +13200,15 @@ public sealed partial class Binder
                 spelt.Add(spell);
             }
 
-            if (spelt.Count == best.TypeParams.Count)
+            // A GENERIC VIRTUAL METHOD IS DISPATCHED ON THE RECEIVER, except
+            // through `base.`, which names one implementation and is an
+            // ordinary call to its copy.
+            if (spelt.Count == best.TypeParams.Count && best.GenericVirtual
+                && c.Target is not MemberExpr { Target: BaseExpr })
+            {
+                GenericVirtualCall(c, best, spelt, bound);
+            }
+            else if (spelt.Count == best.TypeParams.Count)
             {
                 int member = generic.TemplateIndex;
 
@@ -13268,6 +13292,139 @@ public sealed partial class Binder
         }
 
         return answer;
+    }
+
+    /// <summary>
+    /// A call of a GENERIC VIRTUAL METHOD: `node.GetValue&lt;int&gt;()` where
+    /// JsonNode's is virtual and JsonValue overrides it.
+    ///
+    /// A vtable slot holds one address and this method has one per type
+    /// argument, compiled wherever that argument is known -- so it has no slot,
+    /// and the call is dispatched the way an ahead-of-time compiler must: every
+    /// class that overrides the method (or implements it, when it belongs to an
+    /// interface) is found, a copy of each override is made at the call's type
+    /// arguments, and the code generator tests the receiver against those
+    /// classes deepest first and calls the first that matches directly.
+    ///
+    /// Every class the program can see is found, not only this file's: the
+    /// declaration index keeps every generic instance method by name and
+    /// arity, and the ones not loaded yet are demanded. A class the call could
+    /// not see -- one in a program linking a library that makes the call --
+    /// reaches the method's own implementation, or MissingMethodException
+    /// when that one is abstract.
+    /// </summary>
+    private void GenericVirtualCall(CallExpr c, MethodSymbol best, List<TypeRef> spelt, Dictionary<string, Type>? bound)
+    {
+        try { _requireOverrides?.Invoke(best.Name, best.TypeParams.Count); }
+        catch (Metadata.DeclarationDemand demand) { _declarationBatch.Add(demand); return; }
+
+        TypeSymbol home = best.Owner;
+        bool contract = home.Kind == TypeKind.Interface;
+        bool complete = true;
+
+        // The copy of `template` on `owner` at these arguments, named as every
+        // other copy of a generic method is (the member's position keeps two
+        // overloads apart), or null while it waits to be made.
+        MethodSymbol? CopyOf(TypeSymbol owner, MethodSymbol template)
+        {
+            if (owner.Decl is not TypeDecl declaring || template.Decl is not MethodDecl generic || generic.Body is null)
+            {
+                return null;
+            }
+
+            int member = generic.TemplateIndex >= 0 ? generic.TemplateIndex : declaring.Members.IndexOf(generic);
+            string name = Monomorphiser.MethodName(generic.Name, spelt) + "$" + member;
+            MethodSymbol? made = owner.Methods.FirstOrDefault(m => m.Name == name);
+
+            if (made is null)
+            {
+                _r.WantedOverrides.Add((declaring, generic, spelt, name));
+                complete = false;
+            }
+
+            return made;
+        }
+
+        List<(TypeSymbol Class, MethodSymbol Copy)> targets = new();
+
+        // A STRUCT TOO, for an interface's method: a boxed value is reached
+        // through the interface like any object, and the dispatch knows its
+        // box (Lowering.GenericVirtualDispatch). A struct derives from nothing,
+        // so a class's method never lands on one.
+        foreach (TypeSymbol t in _r.Types.Values.Distinct().Where(t => (t.Kind == TypeKind.Class || contract && t.Kind == TypeKind.Struct)
+                     && !IsTemplate(t) && t.Decl is not null))
+        {
+            MethodSymbol? own;
+
+            if (contract)
+            {
+                if (!AllInterfaces(t).Contains(home))
+                {
+                    continue;
+                }
+
+                // As AssignSlots maps an interface member: an explicit
+                // implementation for this interface first, then a public one
+                // of the name -- on this class or inherited.
+                string ifaceName = PlainName(home.Decl?.Template ?? home.Name);
+                own = t.Methods.FirstOrDefault(m => m.ExplicitMember == best.Name && m.ExplicitInterface == ifaceName
+                          && !m.Abstract && m.TypeParams.Count == best.TypeParams.Count && MethodSignatures.Implements(m, best))
+                   ?? t.FindMethods(best.Name).FirstOrDefault(m => !m.Static && !m.Abstract
+                          && m.TypeParams.Count == best.TypeParams.Count && MethodSignatures.Implements(m, best));
+            }
+            else
+            {
+                bool below = false;
+
+                for (TypeSymbol? a = t; a != null && !below; a = a.Base)
+                {
+                    below = ReferenceEquals(a, home);
+                }
+
+                if (!below)
+                {
+                    continue;
+                }
+
+                // ITS OWN override, declared here: a class that inherits one
+                // is matched by the class it inherits it from, further down
+                // the list.
+                own = t.Methods.FirstOrDefault(m => ReferenceEquals(m.Owner, t) && m.Name == best.Name && !m.Abstract
+                    && (m.Override || ReferenceEquals(m, best)) && MethodSignatures.Implements(m, best));
+            }
+
+            if (own is null)
+            {
+                continue;
+            }
+
+            if (CopyOf(own.Owner, own) is MethodSymbol copy)
+            {
+                targets.Add((t, copy));
+            }
+        }
+
+        MethodSymbol? fallback = contract || best.Abstract ? null : CopyOf(home, best);
+
+        if (!complete)
+        {
+            return;
+        }
+
+        _r.GenericDispatches[c] = new GenericDispatch
+        {
+            Method = home.Name + "." + best.Name + "<" + string.Join(", ", spelt) + ">",
+            Targets = targets.Where(target => !ReferenceEquals(target.Copy, fallback) || !ReferenceEquals(target.Class, home))
+                             .OrderByDescending(target => target.Class.Depth)
+                             .ThenBy(target => target.Class.Key, StringComparer.Ordinal)
+                             .ToList(),
+            Fallback = fallback,
+            Params = best.Params.Select(p => new ParamSymbol
+            {
+                Name = p.Name, Type = Close(p.Type, bound), ByRef = p.ByRef, ReadOnly = p.ReadOnly, IsParams = p.IsParams,
+            }).ToList(),
+            Returns = Close(best.Returns, bound),
+        };
     }
 
     private static bool HasConditionalMember(Expr expression) => expression switch

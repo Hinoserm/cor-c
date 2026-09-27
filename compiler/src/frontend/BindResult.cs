@@ -299,6 +299,24 @@ public sealed partial class BindResult
     /// something with an Invoke. The method recorded here is that Invoke.
     public Dictionary<CallExpr, MethodSymbol> Invocations { get; } = new(ReferenceEqualityComparer.Instance);
 
+    /// <summary>
+    /// Calls of a GENERIC VIRTUAL METHOD (MethodSymbol.GenericVirtual) and the
+    /// copies they dispatch among: for each class that overrides or implements
+    /// the method, deepest in the hierarchy first, the copy of its override at
+    /// the call's type arguments. The code generator tests the receiver
+    /// against each class in turn and calls the first that matches directly;
+    /// `Fallback` is the copy on the method's own class, or null when that one
+    /// is abstract and the receiver must have matched a class above it.
+    /// </summary>
+    public Dictionary<CallExpr, GenericDispatch> GenericDispatches { get; } = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>
+    /// Copies of generic methods that no call names but a dispatch needs: the
+    /// overrides a generic virtual call may land on (GenericDispatches). Made
+    /// beside their templates the way Wanted's are, without renaming a call.
+    /// </summary>
+    public List<(TypeDecl Owner, MethodDecl Template, List<TypeRef> Args, string Name)> WantedOverrides { get; } = new();
+
     /// Member accesses whose RECEIVER is really the first argument: `s.Trim()`
     /// calling the static `String.Trim(s)`. A primitive has no vtable to hang an
     /// instance method on, so this is how a string gets methods at all.
@@ -440,6 +458,8 @@ public sealed partial class BindResult
         ArrayTypeOfs.Clear();
         GetTypes.Clear();
         Invocations.Clear();
+        GenericDispatches.Clear();
+        WantedOverrides.Clear();
         Receivers.Clear();
         ForeachSlot.Clear();
         SwitchSubject.Clear();
@@ -519,6 +539,8 @@ public sealed partial class BindResult
         CopyEntries(ArrayTypeOfs, copy.ArrayTypeOfs);
         foreach (var item in GetTypes) copy.GetTypes.Add(item);
         CopyEntries(Invocations, copy.Invocations);
+        CopyEntries(GenericDispatches, copy.GenericDispatches);
+        copy.WantedOverrides.AddRange(WantedOverrides);
         CopyEntries(Receivers, copy.Receivers);
         CopyEntries(ForeachSlot, copy.ForeachSlot);
         CopyEntries(SwitchSubject, copy.SwitchSubject);
@@ -546,4 +568,26 @@ public sealed partial class BindResult
         foreach (KeyValuePair<K, V> entry in source)
             destination.Add(entry.Key, entry.Value);
     }
+}
+
+/// <summary>Where a generic virtual call may land. See BindResult.GenericDispatches.</summary>
+public sealed class GenericDispatch
+{
+    /// <summary>The method as the call names it, for the exception when nothing matches.</summary>
+    public required string Method { get; init; }
+
+    /// <summary>
+    /// Deepest class first, so the first class the receiver is decides: an
+    /// object of a class below two overriders runs the nearer one.
+    /// </summary>
+    public required List<(TypeSymbol Class, MethodSymbol Copy)> Targets { get; init; }
+    public MethodSymbol? Fallback { get; init; }
+
+    /// <summary>
+    /// The signature at the call's type arguments: what the arguments are
+    /// converted to and what comes back. The call itself is bound to the
+    /// template, whose parameters are still T.
+    /// </summary>
+    public required List<ParamSymbol> Params { get; init; }
+    public required Type Returns { get; init; }
 }

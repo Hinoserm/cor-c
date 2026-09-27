@@ -142,6 +142,18 @@ public sealed class DeclarationCatalog : IDisposable
         }
     }
 
+    /// <summary>The declarations with a generic instance method of this name and arity (`Name`k).</summary>
+    public IReadOnlyList<string> OverrideKeys(string assembly, string method)
+    {
+        lock (gate)
+        {
+            if (disposed) throw new ObjectDisposedException(nameof(DeclarationCatalog));
+            return index.Find("G:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + method)
+                .Select(record => DeclarationIndex.Utf8.GetString(record.Payload))
+                .Distinct(StringComparer.Ordinal).ToArray();
+        }
+    }
+
     /// <summary>
     /// What a binding name resolves to, remembered for the life of the
     /// catalog.

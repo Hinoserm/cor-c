@@ -233,14 +233,97 @@ public sealed partial class Lowering
             args.Add(R(receiver));
         }
 
+        // A GENERIC VIRTUAL CALL is bound to the template, whose parameters
+        // are still T; the arguments are converted to what T is at this call.
+        _b.GenericDispatches.TryGetValue(call, out GenericDispatch? dispatch);
+        IReadOnlyList<ParamSymbol> parameters = dispatch?.Params ?? target.Params;
+
         for (int i = 0; i < call.Args.Count; i++)
         {
-            ParamSymbol p = target.Params[i];
+            ParamSymbol p = parameters[i];
             args.Add(R(EvalAs(call.Args[i], p)));
         }
 
+        if (dispatch is not null && receiver is not null)
+        {
+            return GenericVirtualDispatch(dispatch, receiver, args) ?? _e.Const(0, IrTypes.Word);
+        }
+
         bool viaBase = call.Target is MemberExpr { Target: BaseExpr };
+        if (target.GenericVirtual && !viaBase)
+        {
+            return Fail(call, "the generic virtual call to '" + target.Signature + "' was never given its dispatch");
+        }
+
         VReg? result = CallMethod(target, receiver, args, viaBase);
         return result ?? _e.Const(0, IrTypes.Word);
+    }
+
+    /// <summary>
+    /// A call of a generic virtual method (Binder.GenericVirtualCall): the
+    /// receiver tested against every class that overrides it, deepest first,
+    /// and the first that matches called directly. What none of them matches
+    /// runs the method's own implementation -- or, when that is abstract,
+    /// raises MissingMethodException, because the receiver's class overrides
+    /// the method somewhere this call could not see.
+    /// </summary>
+    private VReg? GenericVirtualDispatch(GenericDispatch dispatch, VReg receiver, List<Operand> args)
+    {
+        IrType returns = IrTypes.Of(dispatch.Returns);
+        VReg? result = dispatch.Returns.IsVoid ? null : _f.NewReg(returns, "gvm");
+        Block end = _f.NewBlock("gvmend");
+
+        // THROUGH NULL IT FAULTS, as a call through a vtable does: C# checks
+        // the receiver of every virtual call, and the type tests below would
+        // otherwise send null quietly to the fallback.
+        _e.Load(IrTypes.Word, receiver, 0);
+
+        void Land(MethodSymbol copy, bool boxed = false)
+        {
+            // A STRUCT'S METHOD ON ITS BOX takes the value, past the header,
+            // as `this` -- what the box's interface stub does for a slot.
+            List<Operand> passed = args;
+            if (boxed)
+            {
+                passed = new List<Operand>(args);
+                passed[0] = R(_e.Binary(Opcode.Add, receiver, _t.ObjectHeaderBytes));
+            }
+            VReg? got = CallDirect(copy, returns, passed);
+            if (result is not null && got is not null)
+            {
+                _e.CopyTo(result, R(got));
+            }
+            _e.Jump(end);
+        }
+
+        foreach ((TypeSymbol type, MethodSymbol copy) in dispatch.Targets)
+        {
+            Block hit = _f.NewBlock("gvmhit");
+            Block next = _f.NewBlock("gvmnext");
+            bool boxed = type.Kind == TypeKind.Struct;
+            _e.Branch(boxed ? BoxTest(receiver, new Type { Prim = Prim.Void, Symbol = type }) : TypeTest(receiver, type), hit, next);
+            _e.SetBlock(hit);
+            Land(copy, boxed);
+            _e.SetBlock(next);
+        }
+
+        if (dispatch.Fallback is MethodSymbol own)
+        {
+            Land(own);
+        }
+        else
+        {
+            MethodSymbol? missing = RuntimeMethod("GenericVirtualMissing", 2);
+            if (missing is not null)
+            {
+                Require(missing);
+                _e.Call(CallLabel(missing), IrType.Void, R(receiver), R(_e.Address(InternString(dispatch.Method))));
+            }
+            _e.Emit(Opcode.Trap, null);
+            _e.Unreachable();
+        }
+
+        _e.SetBlock(end);
+        return result;
     }
 }

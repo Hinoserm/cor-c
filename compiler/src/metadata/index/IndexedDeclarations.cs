@@ -11,6 +11,7 @@ public sealed class IndexedDeclarations : IDisposable
     private readonly HashSet<string> implementations = new(StringComparer.Ordinal);
     private readonly HashSet<string> queries = new(StringComparer.Ordinal);
     private readonly HashSet<string> resolvedExtensions = new(StringComparer.Ordinal);
+    private readonly HashSet<string> resolvedOverrides = new(StringComparer.Ordinal);
     public long PayloadLoads => catalog.PayloadLoads;
     public SyntaxTokenCache Tokens { get; }
     public int Passes { get; set; }
@@ -186,6 +187,23 @@ public sealed class IndexedDeclarations : IDisposable
         foreach (string key in catalog.ExtensionKeys(assembly, space, method))
             if (!loaded.Contains(key)) throw new DeclarationDemand(key);
         resolvedExtensions.Add(query);
+    }
+
+    /// <summary>
+    /// Every declaration with a generic instance method of this name and
+    /// arity: what a call to a generic virtual method needs loaded to know
+    /// all the classes that override or implement it.
+    /// </summary>
+    public void RequireOverrides(string method, int arity)
+    {
+        string query = method + "`" + arity;
+        queries.Add("G:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + query);
+        if (resolvedOverrides.Contains(query)) return;
+        DeclarationBatch missing = new();
+        foreach (string key in catalog.OverrideKeys(assembly, query))
+            if (!loaded.Contains(key)) missing.Add(new DeclarationDemand(key));
+        missing.ThrowIfAny();
+        resolvedOverrides.Add(query);
     }
 
     public void AddHeaders(CompilationUnit unit)

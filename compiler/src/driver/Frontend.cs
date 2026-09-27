@@ -173,14 +173,15 @@ public static class Frontend
         Program.BenchmarkStage("bind-initial");
 #endif
         BindResult bound = Binder.Bind(unit, name, declarations is null ? null : declarations.Require, declarations?.Interfaces,
-            declarations is null ? null : declarations.RequireExtensions, declarations?.LibraryInterfaces);
+            declarations is null ? null : declarations.RequireExtensions, declarations?.LibraryInterfaces,
+                declarations is null ? null : declarations.RequireOverrides);
 
         // The checker's first pass discovers which generic methods were called
         // with which type arguments; each becomes a copy, and the whole thing
         // goes round again because a copy's body can ask for more. Bounded,
         // because a method that instantiates itself deeper every time has no
         // fixed point.
-        for (int round = 0; round < 8 && bound.Errors.Count == 0 && bound.Wanted.Count > 0; round++)
+        for (int round = 0; round < 8 && bound.Errors.Count == 0 && (bound.Wanted.Count > 0 || bound.WantedOverrides.Count > 0); round++)
         {
 #if COR_SELFHOST_BENCHMARK
             Program.BenchmarkStage("specialise-" + round);
@@ -205,7 +206,8 @@ public static class Frontend
             Program.BenchmarkStage("bind-" + round);
 #endif
             bound = Binder.Bind(unit, name, declarations is null ? null : declarations.Require, declarations?.Interfaces,
-                declarations is null ? null : declarations.RequireExtensions, declarations?.LibraryInterfaces);
+                declarations is null ? null : declarations.RequireExtensions, declarations?.LibraryInterfaces,
+                declarations is null ? null : declarations.RequireOverrides);
         }
 
         // WARNINGS ARE ERRORS. Every warning the binder raises is a statement
@@ -320,6 +322,36 @@ public static class Frontend
     {
         bool made = false;
 
+        // A copy in the canonical class too, when the owner shares its code
+        // with one (see the comment where it is called); answers whether it
+        // made one.
+        bool CanonicalTwin(Lang.TypeDecl owner, Lang.MethodDecl template, List<Lang.TypeRef> args, string wanted)
+        {
+            if (owner.Canon is string canonical)
+            {
+                Lang.TypeDecl? shared = unit.Types.FirstOrDefault(t => t.Name == canonical);
+
+                if (shared is not null && !shared.Members.Any(m => m.Name == wanted))
+                {
+                    Lang.MethodDecl? origin = shared.Members.OfType<Lang.MethodDecl>()
+                        .FirstOrDefault(m => m.Name == template.Name
+                            && m.TypeParams.Count == template.TypeParams.Count
+                            && (template.TemplateIndex < 0 || m.TemplateIndex == template.TemplateIndex));
+
+                    if (origin is not null)
+                    {
+                        Lang.MethodDecl twin = Lang.Monomorphiser.Specialise(origin, args, wanted);
+
+                        twin.File = origin.File;
+                        twin.LocalCopy = true;
+                        shared.Members.Add(twin);
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
         foreach ((Lang.CallExpr call, Lang.MethodDecl template, List<Lang.TypeRef> args) in bound.Wanted)
         {
             // WHOSE MEMBER IS IT? The template is a member of exactly one
@@ -375,28 +407,7 @@ public static class Frontend
             // so its body is written over __canon rather than over Person, and
             // it is given the same name so the redirect -- which matches on
             // index and name together -- finds it.
-            if (owner.Canon is string canonical)
-            {
-                Lang.TypeDecl? shared = unit.Types.FirstOrDefault(t => t.Name == canonical);
-
-                if (shared is not null && !shared.Members.Any(m => m.Name == wanted))
-                {
-                    Lang.MethodDecl? origin = shared.Members.OfType<Lang.MethodDecl>()
-                        .FirstOrDefault(m => m.Name == template.Name
-                            && m.TypeParams.Count == template.TypeParams.Count
-                            && (template.TemplateIndex < 0 || m.TemplateIndex == template.TemplateIndex));
-
-                    if (origin is not null)
-                    {
-                        Lang.MethodDecl twin = Lang.Monomorphiser.Specialise(origin, args, wanted);
-
-                        twin.File = origin.File;
-                        twin.LocalCopy = true;
-                        shared.Members.Add(twin);
-                        made = true;
-                    }
-                }
-            }
+            made |= CanonicalTwin(owner, template, args, wanted);
 
             // AND THE CALL NAMES THE COPY. The receiver and the arguments are
             // untouched; only which member is being asked for changes.
@@ -410,6 +421,27 @@ public static class Frontend
                     bare.Name = wanted;
                     break;
             }
+        }
+
+        // THE OVERRIDES A GENERIC VIRTUAL CALL MAY LAND ON, which no call
+        // names: the call keeps naming the method and is dispatched among
+        // these by type (Binder.GenericVirtualCall). Made beside their
+        // templates exactly as the copies above are, under the name the
+        // binder looks for.
+        foreach ((Lang.TypeDecl owner, Lang.MethodDecl template, List<Lang.TypeRef> args, string wanted) in bound.WantedOverrides)
+        {
+            if (!unit.Types.Contains(owner) || owner.Members.Any(m => m.Name == wanted))
+            {
+                continue;
+            }
+
+            Lang.MethodDecl copy = Lang.Monomorphiser.Specialise(template, args, wanted);
+
+            copy.File = template.File;
+            copy.LocalCopy = true;
+            owner.Members.Add(copy);
+            made = true;
+            made |= CanonicalTwin(owner, template, args, wanted);
         }
         return made;
     }

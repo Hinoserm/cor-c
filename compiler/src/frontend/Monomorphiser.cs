@@ -115,7 +115,34 @@ public sealed class Monomorphiser
 
         made.TypeParams.Clear();
         made.Name = name;
-        return made;
+
+        // A COPY IS NEVER VIRTUAL. A generic virtual method has no slot for its
+        // copies to take (MethodSymbol.GenericVirtual): a call reaches them
+        // through a dispatch by type, and a copy left `virtual` or `override`
+        // was given a slot of its own -- a different vtable in every unit
+        // that happened to make a different set of copies.
+        //
+        // NOR AN EXPLICIT IMPLEMENTATION, for the same reason: the interface
+        // member it implements is the generic one, which the dispatch finds by
+        // the template; the copy is an ordinary method of its class, found by
+        // its own name.
+        const Mods dispatch = Mods.Virtual | Mods.Override | Mods.Abstract;
+        if ((made.Mods & dispatch) == 0 && made.ExplicitInterface is null)
+        {
+            return made;
+        }
+
+        MethodDecl plain = new()
+        {
+            Name = made.Name, Mods = made.Mods & ~dispatch, Returns = made.Returns, IsCtor = made.IsCtor,
+            Body = made.Body, Init = made.Init, VtableSlotHint = -1, NotNullIfNotNull = made.NotNullIfNotNull,
+            ExplicitInterface = null, Line = made.Line, Col = made.Col,
+            LocalCopy = made.LocalCopy, File = made.File, TemplateIndex = made.TemplateIndex,
+            Scope = made.Scope, Namespace = made.Namespace, OwnedImplementation = made.OwnedImplementation,
+        };
+        plain.Attributes.AddRange(made.Attributes);
+        plain.Params.AddRange(made.Params);
+        return plain;
     }
 
     /// <summary>The name a specialised method gets, readable on purpose.</summary>

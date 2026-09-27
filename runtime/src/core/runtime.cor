@@ -51,6 +51,29 @@ class NullReferenceException : SystemException
     public NullReferenceException(string message) : base(message) { }
 }
 
+/// A member that cannot be reached: .NET's base for the missing-member family.
+class MemberAccessException : SystemException
+{
+    public MemberAccessException() : base("Cannot access member.") { }
+    public MemberAccessException(string message) : base(message) { }
+}
+
+class MissingMemberException : MemberAccessException
+{
+    public MissingMemberException() : base("Attempted to access a missing member.") { }
+    public MissingMemberException(string message) : base(message) { }
+}
+
+/// A method with no code to run. The compiler raises it for a generic virtual
+/// method called on an object whose class overrides it but was not visible to
+/// the code that made the call, so no copy of the override exists for that type
+/// argument -- what an ahead-of-time compiler cannot make after the fact.
+class MissingMethodException : MissingMemberException
+{
+    public MissingMethodException() : base("Attempted to access a missing method.") { }
+    public MissingMethodException(string message) : base(message) { }
+}
+
 /// The shape of a thread's block of runtime state.
 ///
 /// ONE OF THESE PER THREAD, and everything in it used to be one word of .bss
@@ -1495,6 +1518,12 @@ static class Runtime
         // `object` in this dialect.) The type it was meant to be is on the
         // line that threw.
         throw new InvalidCastException("Unable to cast object '" + o + "' to the requested type.");
+    }
+
+    public static void GenericVirtualMissing(object o, string method)
+    {
+        throw new MissingMethodException("No compiled implementation of the generic virtual method '" + method
+            + "' for object '" + o + "'.");
     }
 
     // ---- 64-bit division on a 32-bit machine -----------------------------------

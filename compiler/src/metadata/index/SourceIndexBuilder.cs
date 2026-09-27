@@ -116,6 +116,19 @@ public static class SourceIndexBuilder
                         .Select(method => method.Name).Distinct(StringComparer.Ordinal))
                         yield return new DeclarationRecord("E:" + identity + "\n" + type.Namespace + "\n" + method,
                             Encoding.UTF8.GetBytes(key));
+                    // AND EVERY GENERIC INSTANCE METHOD BY NAME AND ARITY, so a
+                    // call to a generic virtual method can find every class
+                    // that overrides or implements it wherever it is declared
+                    // (IndexedDeclarations.RequireOverrides). Instance methods
+                    // of any kind, not only those written `override`: a class
+                    // implements an interface's generic method without saying
+                    // so.
+                    foreach (string method in type.Members.OfType<MethodDecl>()
+                        .Where(method => method.TypeParams.Count > 0 && !method.Mods.HasFlag(Mods.Static))
+                        .Select(method => (method.ExplicitInterface is null ? method.Name : method.Name[(method.Name.LastIndexOf('.') + 1)..])
+                                        + "`" + method.TypeParams.Count)
+                        .Distinct(StringComparer.Ordinal))
+                        yield return new DeclarationRecord("G:" + identity + "\n" + method, Encoding.UTF8.GetBytes(key));
                     if (type.Kind == TypeKind.Interface) yield return InterfaceFamilies.Record(key, type, librarySource?.Invoke(path) ?? true);
                 }
             }

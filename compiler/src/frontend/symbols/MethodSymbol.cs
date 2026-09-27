@@ -26,6 +26,17 @@ public sealed class MethodSymbol
     public string? ExplicitMember { get; init; }
     public List<string> TypeParams { get; } = new();
 
+    /// <summary>
+    /// A GENERIC VIRTUAL METHOD: `virtual T GetValue&lt;T&gt;()`, an override of
+    /// one, or a generic method of an interface. It has no vtable slot -- a
+    /// slot holds one address and this has one per type argument, compiled
+    /// wherever the argument is known -- so a call to it goes through a
+    /// dispatcher that tests the receiver against every class that overrides
+    /// it (see Binder.GenericVirtualCall).
+    /// </summary>
+    public bool GenericVirtual => TypeParams.Count > 0 && !Static
+        && (Virtual || Override || Abstract || Owner.Kind == TypeKind.Interface);
+
     /// <summary>Slot in the owner's vtable, or -1 when dispatch is static.</summary>
     public int VtableSlot { get; set; } = -1;
 

@@ -1,0 +1,97 @@
+// test: generic_virtual_methods
+// expect-exit: 0
+// expect-output:
+// leaf:5 mid:x base:1.5
+// inherit:7 base-call:[mid:9]
+// out:3 null:True this:mid:4
+// iface:implicit:8 explicit:True
+// deep:Box<8> struct:12 counted:2
+//
+// Generic virtual methods: a call dispatches on the receiver's class to the
+// override compiled at the call's type arguments -- through an abstract root,
+// an override inherited from a middle class, `base.`, a value-type argument,
+// out parameters, `?.`, an implicit `this`, namespaced classes and an
+// interface's generic method implemented both publicly and explicitly, by a
+// class and by a boxed struct.
+
+using System;
+
+namespace Shapes.Core
+{
+    abstract class Node
+    {
+        public abstract string Show<T>(T value);
+        public virtual bool Try<T>(T value, out int length) { length = -1; return false; }
+        public string Self<T>(T value) => Show(value);
+    }
+
+    class Middle : Node
+    {
+        public override string Show<T>(T value) => "mid:" + value;
+        public override bool Try<T>(T value, out int length) { length = ("" + value).Length; return true; }
+    }
+}
+
+namespace Shapes.Leaves
+{
+    using Shapes.Core;
+
+    class Leaf : Middle
+    {
+        public override string Show<T>(T value) => "leaf:" + value;
+    }
+
+    class Heir : Middle { }
+
+    class Wrapper : Middle
+    {
+        public override string Show<T>(T value) => "[" + base.Show(value) + "]";
+    }
+
+    class Boxy<U> : Middle
+    {
+        public override string Show<T>(T value) => "Box<" + value + ">";
+    }
+}
+
+interface IConvert
+{
+    string Convert<T>(T value);
+    bool Known<T>();
+}
+
+class Plain : IConvert
+{
+    public string Convert<T>(T value) => "implicit:" + value;
+    bool IConvert.Known<T>() => true;
+}
+
+struct Counter : IConvert
+{
+    public int Base;
+    public string Convert<T>(T value) => "struct:" + (Base + ("" + value).Length);
+    bool IConvert.Known<T>() => Base > 0;
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Shapes.Core.Node leaf = new Shapes.Leaves.Leaf();
+        Shapes.Core.Node mid = new Shapes.Core.Middle();
+        Shapes.Core.Node heir = new Shapes.Leaves.Heir();
+        Shapes.Core.Node wrapper = new Shapes.Leaves.Wrapper();
+        Shapes.Core.Node boxy = new Shapes.Leaves.Boxy<long>();
+        Shapes.Core.Node? none = null;
+        Console.WriteLine(leaf.Show(5) + " " + mid.Show("x") + " " + (mid.Show<double>(1.5) == "mid:1.5" ? "base:1.5" : "?"));
+        Console.WriteLine("inherit:" + heir.Show(7).Substring(4) + " base-call:" + wrapper.Show(9));
+        mid.Try("abc", out int length);
+        Console.WriteLine("out:" + length + " null:" + (none?.Show(1) is null) + " this:" + mid.Self(4));
+        IConvert plain = new Plain();
+        Console.WriteLine("iface:" + plain.Convert(8) + " explicit:" + plain.Known<string>());
+        IConvert counter = new Counter { Base = 10 };
+        int counted = (counter.Known<int>() ? 1 : 0) + (plain.Known<long>() ? 1 : 0);
+        Console.WriteLine("deep:" + boxy.Show(8) + " " + counter.Convert("ab") + " counted:" + counted);
+        return 0;
+    }
+}
