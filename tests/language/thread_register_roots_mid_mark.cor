@@ -1,0 +1,205 @@
+// test: a root range registered while a mark is under way is marked from
+// expect-exit: 0
+// expect-output:
+// rounds 40
+// windows True
+// held True
+// marked True
+//
+// A kernel's thread is a processor. A process parks its kernel stack -- a
+// root range it registers (KernelContinuation) -- and the processor goes on
+// to the scheduler's stack. The registered ranges are read once a
+// collection, with the collector's own roots; a thread's stack is read when
+// it answers SCAN, from where it stands then. A stack parked between the two
+// was read by neither, and an object only it held was swept under a live
+// frame: an exec's ElfLoader became another exec's symbol names on a
+// four-processor board (2026-09-26). Gc.MarkRegistered now marks from a
+// range registered while a mark is under way.
+//
+// Here a thread holds a megabyte only in a local, made before the mark
+// began and out of its allocation buffer; waits until the roots have been
+// read and the collector asks for stacks (the SCAN round); moves the address
+// into memory that is not the heap, registers that memory, and ends -- its
+// stack gone before it answers, as a parked stack leaves its processor.
+// Three other threads allocate so that collections keep coming. An array
+// that large has a chunk of its own, given back when it is swept, so a lost
+// one is simply in no chunk when it is looked for after the collection.
+
+class Node
+{
+    public Node? Next;
+    public long Value;
+    public long Check;
+    public byte[] Payload;
+
+    public Node(long value, Node? next)
+    {
+        Value = value;
+        Next = next;
+        Payload = new byte[16 + (int)(value % 24)];
+        for (int i = 0; i < Payload.Length; i++) Payload[i] = (byte)(value + i);
+        Check = value * 31 + Payload.Length;
+    }
+
+    public bool Good()
+    {
+        if (Check != Value * 31 + Payload.Length) return false;
+        for (int i = 0; i < Payload.Length; i++)
+        {
+            if (Payload[i] != (byte)(Value + i)) return false;
+        }
+        return true;
+    }
+}
+
+class Churn : Action
+{
+    public volatile bool Stop;
+    public long Made;
+
+    public void Invoke()
+    {
+        Node? keep = null;
+        long n = 0;
+
+        while (!Stop)
+        {
+            keep = new Node(n, (n & 255) == 0 ? null : keep);
+            n = n + 1;
+        }
+        Made = n;
+    }
+}
+
+/// What a parking kernel stack does, on a stack of its own: the megabyte
+/// made before the mark and held only by this frame; once the roots are read,
+/// its address into `Slot` -- memory that is not the heap -- and that memory
+/// registered; and then the stack is gone before it answers SCAN, as a parked
+/// stack leaves its processor for the scheduler's. Nothing of it is left for
+/// a scan to find, stale or live.
+class Parker : Action
+{
+    public long Slot;
+    public long Round;
+
+    public void Invoke()
+    {
+        long[] held = Program.Build(Round);
+        if (Program.WaitForRoots(Gc.Collections)) Program._windows = Program._windows + 1;
+        Sys.Poke(Slot, Sys.Word(held));
+        Runtime.RegisterRoots(Slot, Slot + 4);
+    }
+}
+
+static class Program
+{
+    const int Rounds = 40;
+    const int Length = 131072;
+
+    /// A megabyte the caller holds only in a local. An array this large has
+    /// a chunk of its own, which the sweep gives back as it frees it: freed,
+    /// the address is in no chunk at all (HeapChunks.Of), and nothing has to
+    /// be reused over it for the loss to show.
+    public static long[] Build(long round)
+    {
+        long[] held = new long[Length];
+        for (int i = 0; i < Length; i++) held[i] = round * 7 + i * 3;
+        return held;
+    }
+
+    static bool Whole(long at, long round)
+    {
+        if (at == 0 || HeapChunks.Of(at) == 0) return false;
+        long[] held = (long[])Sys.FromWord(at);
+        if (held.Length != Length) return false;
+        for (int i = 0; i < Length; i++)
+        {
+            if (held[i] != round * 7 + i * 3) return false;
+        }
+        return true;
+    }
+
+    /// Where the waits' allocations go, so that each is a real allocation
+    /// -- a safepoint -- and not a local the optimiser takes apart.
+    static byte[]? _junk;
+
+    /// Allocates until a mark has read its roots and asked for the stacks.
+    /// First out of any mark already under way, and past the buffer the
+    /// megabyte was made beside: a mark that began before it would keep it
+    /// as new,
+    /// and a live allocation buffer is stepped over by the sweep whole --
+    /// the kernel's loader had long left its own behind, through its reads.
+    public static bool WaitForRoots(long collections)
+    {
+        long tries = 0;
+        while (Runtime.Marking != 0)
+        {
+            _junk = new byte[64];
+            tries = tries + 1;
+            if (tries > 50000000) return false;
+        }
+        for (int i = 0; i < 16384; i++) _junk = new byte[240];
+        // The SCAN round asked for: the roots have been read. Asked, not yet
+        // answered here -- the next allocation answers it -- and nothing
+        // between here and the registration allocates. A spin would not
+        // do: a thread that reaches no safepoint for long is answered for
+        // where it stands, with the megabyte still in this frame.
+        long request = GcLock.Words() + GcLock.Request;
+        while (Runtime.Marking != 2 || Sys.Peek(request) != GcThreads.Scan)
+        {
+            _junk = new byte[64];
+            tries = tries + 1;
+            if (tries > 50000000 || Gc.Collections > collections + 50) return false;
+        }
+        return true;
+    }
+
+    public static long _windows;
+
+    static int Main()
+    {
+        Gc.SetLimit(33554432);
+        long slot = Platform.Map(4096);
+        if (slot == 0) return 3;
+
+        Churn[] bodies = new Churn[3];
+        Thread[] threads = new Thread[3];
+        for (int i = 0; i < 3; i++)
+        {
+            bodies[i] = new Churn();
+            threads[i] = Thread.Start(bodies[i]);
+        }
+
+        long markedBefore = Gc.RegisteredMidMark;
+        bool held = true;
+
+        for (int round = 0; round < Rounds; round++)
+        {
+            Parker parker = new Parker();
+            parker.Slot = slot;
+            parker.Round = round;
+            Thread.Start(parker).Join();
+
+            // Past the end of the collection that was marking.
+            long now = Gc.Collections;
+            while (Gc.Collections < now + 2)
+            {
+                _junk = new byte[256];
+            }
+
+            if (!Whole(Sys.Peek(slot), round)) held = false;
+            Runtime.UnregisterRoots(slot, slot + 4);
+            Sys.Poke(slot, 0);
+        }
+
+        for (int i = 0; i < 3; i++) bodies[i].Stop = true;
+        for (int i = 0; i < 3; i++) threads[i].Join();
+
+        System.Console.WriteLine("rounds " + Rounds);
+        System.Console.WriteLine("windows " + (_windows >= Rounds / 2));
+        System.Console.WriteLine("held " + held);
+        System.Console.WriteLine("marked " + (Gc.RegisteredMidMark > markedBefore));
+        if (!Gc.CheckFreeIndex()) return 2;
+        return 0;
+    }
+}
