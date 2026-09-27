@@ -776,6 +776,15 @@ internal sealed class Allocator
         {
             return false;
         }
+        // A NARROW WRITE LEAVES THE SLOT'S TOP HALF AS IT WAS, and a reload is
+        // the whole eight bytes: a 32-bit value written into its slot in place
+        // would come back with somebody's old upper half. A register's 32-bit
+        // result has that half zero, so an integer written narrower than the
+        // word is made in a register and stored whole.
+        if ((o.Role & Roles.Role.Def) != 0 && i.Width < 8 && !IsFloat(vreg))
+        {
+            return false;
+        }
         int hits = 0;
         foreach (Occurrence other in _occ[vreg])
         {

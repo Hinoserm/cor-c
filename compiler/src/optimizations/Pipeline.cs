@@ -119,6 +119,16 @@ public sealed class Pipeline
         p.LatePasses.Add(new ScalarObjects());
         p.LatePasses.Add(new Escape());
         p.LatePasses.Add(Inliner());
+        // A DIAGNOSTIC SWITCH, for finding which pass a miscompile comes out
+        // of: CORC_SKIP_PASSES=Escape,Inline leaves those out of every list.
+        // Nothing is ever built with it set.
+        if (Environment.GetEnvironmentVariable("CORC_SKIP_PASSES") is { Length: > 0 } skip)
+        {
+            HashSet<string> names = new(skip.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries), StringComparer.Ordinal);
+            p.Passes.RemoveAll(pass => names.Contains(pass.GetType().Name));
+            p.ModulePasses.RemoveAll(pass => names.Contains(pass.GetType().Name));
+            p.LatePasses.RemoveAll(pass => names.Contains(pass.GetType().Name));
+        }
         return p;
     }
 

@@ -456,10 +456,8 @@ internal sealed class Selector
                 SelectUnsignedToFloat(i);
                 break;
             case Opcode.FToI:
-                Emit(new MInstr(MOp.CvtFToInt, V(i.Dest!), F(i.Operands[0])) { Width = Width(i.Dest!.Type), SourceWidth = Width(i.Operands[0].Type) });
-                break;
             case Opcode.FToU:
-                SelectFloatToUnsigned(i);
+                SelectFloatToInteger(i);
                 break;
             case Opcode.Bits:
                 SelectBits(i);
@@ -933,43 +931,114 @@ internal sealed class Selector
     }
 
     /// <summary>
-    /// Float to unsigned, truncating. To 32 bits: the 64-bit signed
-    /// conversion holds every value that fits, and its low half is the
-    /// answer, as x86's 64-bit FISTP is. To 64 bits: at or above 2^63 the
-    /// value is brought down by 2^63 first -- exact, a power of two -- and
-    /// the top bit put back afterwards.
+    /// Float to integer as .NET converts since it made the conversion the same
+    /// on every machine: NaN is zero, a value beyond the destination's range
+    /// is its limit, and a negative value into an unsigned destination is
+    /// zero -- the i386 backend's rule, decided the same way, from the IEEE
+    /// bits before any conversion instruction runs. In range, the truncating
+    /// conversion below answers.
     /// </summary>
-    private void SelectFloatToUnsigned(Instr i)
+    private void SelectFloatToInteger(Instr i)
     {
         VReg d = i.Dest!;
+        bool wide = d.Type == IrType.I64, unsigned = i.Op == Opcode.FToU;
         int fw = Width(i.Operands[0].Type);
+        bool single = fw == 4;
         MReg x = F(i.Operands[0]);
-        if (d.Type == IrType.I32)
+        MReg bits = Temp(), magnitude = Temp(), limit = Temp(), dr = V(d);
+        int dw = wide ? 8 : 4;
+
+        EmitW(MOp.MovGx, fw, bits, x);
+        Mov(magnitude, bits, fw);
+        if (single)
         {
-            MReg wide = Temp();
-            Emit(new MInstr(MOp.CvtFToInt, wide, x) { Width = 8, SourceWidth = fw });
-            Mov(V(d), wide, 4);
-            return;
+            EmitW(MOp.And, 4, magnitude, Imm(int.MaxValue));
         }
-        MReg limitBits = Temp();
-        LoadConstant(limitBits, fw == 4 ? 0x5F000000 : 0x43E0000000000000, 8);
-        MReg limit = FTemp();
-        EmitW(MOp.MovGx, fw, limit, limitBits);
-        MReg dr = V(d);
-        MBlock big = Aside();
-        MBlock done = _m.NewBlock($"{_cur.Name}.{_splits++}", big);
-        EmitW(MOp.UcomiF, fw, x, limit);
-        Jcc(Cond.Ae, big);
-        Emit(new MInstr(MOp.CvtFToInt, dr, x) { Width = 8, SourceWidth = fw });
+        else
+        {
+            MReg mask = Temp();
+            Mov(mask, Imm(long.MaxValue), 8);
+            EmitW(MOp.And, 8, magnitude, mask);
+        }
+
+        MBlock anchor = _cur;
+        MBlock New(string name) { MBlock b = _m.NewBlock($"{name}{_splits++}", anchor); anchor = b; return b; }
+        MBlock finite = New("cast-finite"), negative = New("cast-negative"), zero = New("cast-zero"),
+            maximum = New("cast-maximum"), minimum = New("cast-minimum"), normal = New("cast-normal"),
+            done = New("cast-done");
+
+        // NaN: above the infinity's bits.
+        LoadConstant(limit, single ? 0x7f800000 : 0x7ff0000000000000, 8);
+        EmitW(MOp.Cmp, fw, magnitude, limit);
+        Jcc(Cond.A, zero);
+        Jmp(finite);
+
+        _cur = finite;
+        EmitW(MOp.Test, fw, bits, bits);
+        Jcc(Cond.S, unsigned ? zero : negative);
+        // 2^31, 2^32, 2^63 or 2^64 in the source format: the first value
+        // that does not fit.
+        long bound = single
+            ? (wide ? (unsigned ? 0x5f800000 : 0x5f000000) : (unsigned ? 0x4f800000 : 0x4f000000))
+            : (wide ? (unsigned ? 0x43f0000000000000 : 0x43e0000000000000) : (unsigned ? 0x41f0000000000000 : 0x41e0000000000000));
+        LoadConstant(limit, bound, 8);
+        EmitW(MOp.Cmp, fw, magnitude, limit);
+        Jcc(Cond.Ae, maximum);
+        Jmp(normal);
+
+        _cur = negative;
+        EmitW(MOp.Cmp, fw, magnitude, limit);
+        Jcc(Cond.Ae, minimum);
+        Jmp(normal);
+
+        _cur = zero;
+        EmitW(MOp.Xor, 4, dr, dr);
         Jmp(done);
-        _cur = big;
-        MReg reduced = FTemp();
-        EmitW(MOp.MovF, fw, reduced, x);
-        EmitW(MOp.SubF, fw, reduced, limit);
-        Emit(new MInstr(MOp.CvtFToInt, dr, reduced) { Width = 8, SourceWidth = fw });
-        MReg top = Temp();
-        Mov(top, Imm(long.MinValue), 8);
-        EmitW(MOp.Or, 8, dr, top);
+
+        _cur = maximum;
+        LoadConstant(dr, wide ? (unsigned ? -1L : long.MaxValue) : (unsigned ? 0xFFFFFFFFL : int.MaxValue), dw);
+        Jmp(done);
+
+        _cur = minimum;
+        LoadConstant(dr, wide ? long.MinValue : int.MinValue, dw);
+        Jmp(done);
+
+        _cur = normal;
+        if (!unsigned)
+        {
+            Emit(new MInstr(MOp.CvtFToInt, dr, x) { Width = dw, SourceWidth = fw });
+        }
+        else if (!wide)
+        {
+            // Below 2^32: the 64-bit signed conversion holds it, and its low
+            // half is the answer.
+            MReg wideResult = Temp();
+            Emit(new MInstr(MOp.CvtFToInt, wideResult, x) { Width = 8, SourceWidth = fw });
+            Mov(dr, wideResult, 4);
+        }
+        else
+        {
+            // Below 2^64: at or above 2^63 the value comes down by 2^63 first
+            // (exact, a power of two) and the top bit goes back on after.
+            MReg limitBits = Temp();
+            LoadConstant(limitBits, single ? 0x5F000000 : 0x43E0000000000000, 8);
+            MReg half = FTemp();
+            EmitW(MOp.MovGx, fw, half, limitBits);
+            MBlock big = New("cast-unsigned-high");
+            EmitW(MOp.UcomiF, fw, x, half);
+            Jcc(Cond.Ae, big);
+            Emit(new MInstr(MOp.CvtFToInt, dr, x) { Width = 8, SourceWidth = fw });
+            Jmp(done);
+            _cur = big;
+            MReg reduced = FTemp();
+            EmitW(MOp.MovF, fw, reduced, x);
+            EmitW(MOp.SubF, fw, reduced, half);
+            Emit(new MInstr(MOp.CvtFToInt, dr, reduced) { Width = 8, SourceWidth = fw });
+            MReg top = Temp();
+            Mov(top, Imm(long.MinValue), 8);
+            EmitW(MOp.Or, 8, dr, top);
+        }
+        Jmp(done);
         _cur = done;
     }
 
