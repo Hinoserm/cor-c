@@ -220,17 +220,27 @@ public sealed partial class Lowering
         return sym;
     }
 
+    /// <summary>
+    /// What a box's SYMBOLS are named by: the type's full key for a struct or
+    /// an enum, so two private structs both called Region -- in Dse and in
+    /// StoreBackElimination -- are two boxes, not one name defined twice with
+    /// two meanings. The name it SAYS it is stays BoxName's.
+    /// </summary>
+    private static string BoxKey(Type t)
+        => t.Symbol is { Kind: TypeKind.Enum or TypeKind.Struct } named ? TypeKey(named) : BoxName(t);
+
     private string BoxDescriptor(Type of)
     {
         string name = BoxName(of);
+        string key = BoxKey(of);
 
-        if (_boxes.TryGetValue(name, out string? sym))
+        if (_boxes.TryGetValue(key, out string? sym))
         {
             return sym;
         }
 
-        sym = "b_" + Safe(name);
-        _boxes[name] = sym;
+        sym = "b_" + Safe(key);
+        _boxes[key] = sym;
 
         int w = _t.WordSize;
         int slots = Math.Max(Math.Max(_b.ToStringSlot, _b.CompareSlot), Math.Max(_b.EqualsSlot, _b.HashSlot)) + 1;
@@ -263,7 +273,7 @@ public sealed partial class Lowering
         // display holds only itself and the interface array is the terminator
         // alone. They exist because `is` and `as` read them without knowing
         // what they are looking at.
-        DataItem display = new("bd_" + Safe(name), new byte[w]) { ReadOnly = true, Exported = false };
+        DataItem display = new("bd_" + Safe(key), new byte[w]) { ReadOnly = true, Exported = false };
         display.Relocs.Add(new DataReloc(0, sym, 0));
         _m.Data.Add(display);
         item.Relocs.Add(new DataReloc(DescDisplay * w, display.Name, 0));
@@ -277,7 +287,7 @@ public sealed partial class Lowering
             foreach (TypeSymbol face in implemented) InterfaceDescriptor(face);
             implemented.Sort((a, b) => string.CompareOrdinal(InterfaceDescriptor(a), InterfaceDescriptor(b)));
         }
-        DataItem faces = new("bf_" + Safe(name), new byte[(implemented.Count + 1) * w]) { ReadOnly = true, Exported = false };
+        DataItem faces = new("bf_" + Safe(key), new byte[(implemented.Count + 1) * w]) { ReadOnly = true, Exported = false };
         for (int i = 0; i < implemented.Count; i++) faces.Relocs.Add(new DataReloc(i * w, InterfaceDescriptor(implemented[i]), 0));
         _m.Data.Add(faces);
         item.Relocs.Add(new DataReloc(DescInterfaces * w, faces.Name, 0));
@@ -288,7 +298,7 @@ public sealed partial class Lowering
             {
                 if (implementation.Value.Abstract) continue;
                 item.Relocs.Add(new DataReloc(_t.DescriptorBytes + implementation.Key * w,
-                    BoxInterfaceStub(implementation.Value, name), 0));
+                    BoxInterfaceStub(implementation.Value, key), 0));
             }
         }
 
@@ -301,7 +311,7 @@ public sealed partial class Lowering
                 .Where(fd => !fd.Static)
                 .Select(fd => (_t.ObjectHeaderBytes + fd.Offset, fd.Type))
                 .ToList();
-            string? map = ReferenceMap("box_" + Safe(name), held,
+            string? map = ReferenceMap("box_" + Safe(key), held,
                                        _t.ObjectHeaderBytes + BoxPayload(of));
             if (map is not null)
             {
@@ -309,9 +319,9 @@ public sealed partial class Lowering
             }
         }
 
-        item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.ToStringSlot * w, BoxToString(of, name), 0));
-        item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.EqualsSlot * w, BoxEquals(of, name), 0));
-        item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.HashSlot * w, BoxHash(of, name), 0));
+        item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.ToStringSlot * w, BoxToString(of, name, key), 0));
+        item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.EqualsSlot * w, BoxEquals(of, key), 0));
+        item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.HashSlot * w, BoxHash(of, key), 0));
         item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.CompareSlot * w, ObjectCompareStub(), 0));
         return sym;
     }
@@ -350,9 +360,9 @@ public sealed partial class Lowering
     private readonly HashSet<string> _boxStubs = new(StringComparer.Ordinal);
 
     /// <summary>A boxed value rendered the way the library renders its type.</summary>
-    private string BoxToString(Type of, string name)
+    private string BoxToString(Type of, string name, string key)
     {
-        string label = "__box_tostring_" + Safe(name);
+        string label = "__box_tostring_" + Safe(key);
         Function f = new(label, IrTypes.Word) { Coalescible = true };
         VReg self = f.NewReg(IrTypes.Word, "this");
         f.Params.Add(self);

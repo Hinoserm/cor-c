@@ -212,6 +212,12 @@ public sealed partial class Lowering
         _decl = decl;
         _in = m.Owner.Decl?.File ?? decl.File ?? "";
 
+        // SUSPENSION POINTS ARE NUMBERED PER FUNCTION, from zero: the markers'
+        // numbers are in the IR a shared copy is certified by (Definition-
+        // Semantics), and counted across the unit they said how many other
+        // state machines the unit happened to lower first.
+        int outsideAwaits = _awaitPoints;
+        _awaitPoints = 0;
         _f = new Function(Label(am.MoveNext), IrType.Void) { SourceFile = _in, Line = decl.Line, Display = Display(am.MoveNext), FromLibrary = IsLibrary(am.MoveNext.Owner), Exported = false };
         Block entry = _f.NewBlock("entry");
         _e = new Builder(_f, entry);
@@ -325,6 +331,7 @@ public sealed partial class Lowering
         _stateMachine = null;
         _method = null;
         _decl = null;
+        _awaitPoints = outsideAwaits;
     }
 
     private MethodSymbol? AsyncRuntimeMethod(Node at, string name, int arity)

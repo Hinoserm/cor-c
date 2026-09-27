@@ -292,6 +292,10 @@ public sealed partial class Lowering
         _decl = decl;
         _in = m.Owner.Decl?.File ?? decl.File ?? "";
 
+        // Yield points numbered from zero in each body, for the reason the
+        // await points are (EmitMoveNext).
+        int outsideYields = _yieldPoints;
+        _yieldPoints = 0;
         _f = new Function(Label(it.MoveNext), IrType.I32) { SourceFile = _in, Line = decl.Line, Display = Display(it.MoveNext),
             FromLibrary = IsLibrary(m.Owner), Coalescible = true, Exported = false };
         Block entry = _f.NewBlock("entry");
@@ -390,6 +394,7 @@ public sealed partial class Lowering
         _iterating = null;
         _method = null;
         _decl = null;
+        _yieldPoints = outsideYields;
     }
 
     /// <summary>
