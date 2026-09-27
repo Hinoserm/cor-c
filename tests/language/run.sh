@@ -205,6 +205,26 @@ for f in "${tests[@]}"; do
         fi
         continue
     fi
+    # WHAT THE COMPILER WARNS, when that is the point of the test: each
+    # "// expect-compile-warning: <text>" line must be in the compile output
+    # and each "// expect-no-compile-warning: <text>" must not -- the code and
+    # line of a diagnostic, or its absence under #pragma warning disable.
+    warn_miss=""
+    while IFS= read -r want; do
+        [ -n "$want" ] && ! grep -qF -- "$want" "$work/$name.compile" && warn_miss="$warn_miss
+    missing warning: $want"
+    done < <(sed -n 's|^// expect-compile-warning: ||p' "$f")
+    while IFS= read -r unwanted; do
+        [ -n "$unwanted" ] && grep -qF -- "$unwanted" "$work/$name.compile" && warn_miss="$warn_miss
+    unexpected warning: $unwanted"
+    done < <(sed -n 's|^// expect-no-compile-warning: ||p' "$f")
+    if [ -n "$warn_miss" ]; then
+        echo "FAIL $name (compiler diagnostics)$warn_miss"
+        sed "s/^/    /" "$work/$name.compile" | head -30
+        failed=$((failed + 1))
+        failed_names="$failed_names $name"
+        continue
+    fi
     if [ "$cc_status" -ne 0 ] || [ ! -x "$exe" ]; then
         echo "FAIL $name (compile error, status $cc_status)"
         if [ "$verbose" != 1 ]; then

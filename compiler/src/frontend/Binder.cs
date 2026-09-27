@@ -722,7 +722,7 @@ public sealed partial class Binder
     /// caller that invents a new `what` string outside these patterns falls
     /// through to CONVERSION, the same bucket real C# uses for a cast.
     /// </summary>
-    private enum NullContext { Assignment, Return, Argument, Conversion }
+    private enum NullContext { Assignment, Return, Argument, Local, Conversion }
 
     private static NullContext ClassifyNullContext(string what)
     {
@@ -741,7 +741,17 @@ public sealed partial class Binder
             return NullContext.Return;
         }
 
-        // ASSIGNMENTS: a plain `x = y`, an object- or `with`-initialiser
+        // A LOCAL, declared with its value or assigned one later: Roslyn's
+        // general CS8600, for a null literal as much as for a maybe-null
+        // value (checked against Roslyn: `string s = null;` and `s = maybe;`
+        // are both CS8600, where the same into a field is CS8625 and CS8601).
+        if (what.StartsWith("initialiser for ", StringComparison.Ordinal) || what == "assignment to a local")
+        {
+            return NullContext.Local;
+        }
+
+        // ASSIGNMENTS: a plain `x = y` into a field, a property or an
+        // element, an object- or `with`-initialiser
         // member (built as `'Name'`), and an array/collection initialiser
         // element (`element 3`) all store a value into a place that already
         // has a declared type -- CS8601.
@@ -751,10 +761,9 @@ public sealed partial class Binder
             return NullContext.Assignment;
         }
 
-        // EVERYTHING ELSE IS A CONVERSION: a local's own `= expr`, where C#
-        // reports the general code rather than the assignment-specific one,
-        // and a method-group-to-delegate conversion, which is not a "place"
-        // that is assigned to at all.
+        // EVERYTHING ELSE IS A CONVERSION: a cast, and a method-group-to-
+        // delegate conversion, which is not a "place" that is assigned to at
+        // all -- the general code, as for a local.
         return NullContext.Conversion;
     }
 
@@ -765,6 +774,18 @@ public sealed partial class Binder
         NullContext.Return => "CS8603",
         NullContext.Assignment => "CS8601",
         _ => "CS8600",
+    };
+
+    /// <summary>
+    /// A null LITERAL where a non-nullable one was wanted: CS8625 into a
+    /// field, a property, an element or an argument, but a local takes the
+    /// general CS8600 and a return CS8603, as the maybe-null value does.
+    /// </summary>
+    private static string NullLiteralCode(string what) => ClassifyNullContext(what) switch
+    {
+        NullContext.Local or NullContext.Conversion => "CS8600",
+        NullContext.Return => "CS8603",
+        _ => "CS8625",
     };
 
     /// <summary>
@@ -4488,7 +4509,7 @@ public sealed partial class Binder
                 // C# gives the literal its own code rather than the general
                 // "possibly null" one below, because a literal null is not
                 // possibly anything -- it is certainly null, every time.
-                Warning(at, "CS8625", $"{what}: '{to}' is not nullable; declare it as '{to}?' to allow null");
+                Warning(at, NullLiteralCode(what), $"{what}: '{to}' is not nullable; declare it as '{to}?' to allow null");
             }
             return;
         }
@@ -10377,7 +10398,7 @@ public sealed partial class Binder
 
                 if (a.Op is null)
                 {
-                    CheckAssignable(value, target, a.Value, "assignment");
+                    CheckAssignable(value, target, a.Value, assignedLocal is not null ? "assignment to a local" : "assignment");
                     if (assignedLocal is not null) { _assigned.Add(assignedLocal); }
                 }
                 else if (!target.IsError && !value.IsError)
