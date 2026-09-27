@@ -31,6 +31,11 @@ class InvalidDataException : SystemException
     public InvalidDataException(string message) : base(message)
     {
     }
+
+    public InvalidDataException(string? message, Exception? innerException)
+        : base(message ?? "Found invalid data while decoding.", innerException)
+    {
+    }
 }
 
 // ---- text in a string -----------------------------------------------------

@@ -626,6 +626,13 @@ public sealed partial class Binder
 
     /// <summary>Names the lambda being looked over reads from outside itself.</summary>
     private Dictionary<string, Type>? _captured;
+
+    /// <summary>
+    /// The enclosing method's constants a lambda reads, found alongside the
+    /// captures. A constant is not captured -- it has no storage to share --
+    /// so the lambda's body declares the same constant (pass two).
+    /// </summary>
+    private Dictionary<string, ConstSym>? _capturedConstants;
     private TypeSymbol? _capturedThisType;
     private FieldSymbol? _capturedThisField;
 
@@ -3165,6 +3172,10 @@ public sealed partial class Binder
                 // here.
                 if (_captured != null && i < _lambdaFloor)
                 {
+                    if (s is ConstSym constant && _capturedConstants is not null)
+                    {
+                        _capturedConstants[name] = constant;
+                    }
                     Type held = s switch
                     {
                         LocalSym l => l.Type,
@@ -4081,11 +4092,22 @@ public sealed partial class Binder
 
         // A Nullable<T> WHERE A T IS WANTED is not a conversion the compiler
         // may make on its own -- it can fail, and C# makes you write .Value or
-        // a cast so the place it can fail is visible.
-        if (from.IsNullableValue && !to.IsNullableValue && !to.Nullable
+        // a cast so the place it can fail is visible. Where an OBJECT or an
+        // interface is wanted it is boxing, which C# does implicitly: no value
+        // boxes to null, a value to the boxed T (the library's comparers are
+        // handed a T? this way whenever T is a nullable struct).
+        if (from.IsNullableValue && !to.IsNullableValue && !to.Nullable && !to.IsReference && to.Prim != Prim.Any
             && Convertible(from.Underlying, to))
         {
             Error(at, $"{what}: '{from}' may have no value; use '.Value' or cast it to '{to}'");
+            return;
+        }
+
+        // A USER-DEFINED IMPLICIT CONVERSION, where no standard one applies.
+        if (at is Expr converted && !StandardConvertible(from, to) && !Variant(from, to)
+            && !_r.Rewrites.ContainsKey(converted) && UserConversion(from, to, explicitToo: false) is { } implicitOp)
+        {
+            ConvertByOperator(converted, implicitOp);
             return;
         }
 
@@ -4216,7 +4238,76 @@ public sealed partial class Binder
         return false;
     }
 
+    /// <summary>
+    /// Whether a value of one type may stand where another is wanted with no
+    /// cast written: a standard conversion, or one user-defined `implicit
+    /// operator` on either type (C# 10.5.4), the way `XElement e = new("a")`
+    /// makes its XName from a string.
+    /// </summary>
     private bool Convertible(Type from, Type to)
+        => StandardConvertible(from, to) || UserConversion(from, to, explicitToo: false) is not null;
+
+    /// <summary>
+    /// The user-defined conversion operator taking a `from` to a `to`, or
+    /// null. Declared on the source type or the target type, as C# looks
+    /// (C# 10.5.3); its operand and result reached by standard conversions
+    /// only, since C# never chains two user-defined conversions. A cast may
+    /// use an `explicit` one as well.
+    /// </summary>
+    private MethodSymbol? UserConversion(Type from, Type to, bool explicitToo)
+    {
+        if (from.IsError || to.IsError || from.Prim is Prim.Any or Prim.NullLiteral || to.Prim == Prim.Any
+            || from.IsArray || to.IsArray)
+        {
+            return null;
+        }
+
+        TypeSymbol? source = from.AsNonNullable().Symbol;
+        TypeSymbol? target = to.AsNonNullable().Symbol;
+
+        foreach (TypeSymbol? holder in new[] { source, target == source ? null : target })
+        {
+            if (holder is null || holder.Kind == TypeKind.Interface)
+            {
+                continue;
+            }
+
+            foreach (string name in explicitToo ? new[] { "op_Implicit", "op_Explicit" } : new[] { "op_Implicit" })
+            {
+                foreach (MethodSymbol m in holder.FindMethods(name))
+                {
+                    if (m.Static && m.Params.Count == 1
+                        && StandardConvertible(from, m.Params[0].Type) && StandardConvertible(m.Returns, to))
+                    {
+                        return m;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// A user-defined conversion made where it is needed: the expression
+    /// rewritten as the call its operator is -- `XName.op_Implicit("a")` --
+    /// the way CheckAssignable already writes the array-to-span and
+    /// string-to-span conversions. The lowering evaluates the original inside
+    /// the call for what it is.
+    /// </summary>
+    private Type ConvertByOperator(Expr value, MethodSymbol op)
+    {
+        CallExpr call = new()
+        {
+            Target = new MemberExpr { Target = Qualified(op.Owner.Key, value), Name = op.Name, Line = value.Line, Col = value.Col, File = value.File },
+            Line = value.Line, Col = value.Col, File = value.File,
+        };
+        call.Args.Add(value);
+        _r.Rewrites[value] = call;
+        _r.UserConversions.Add(call);
+        return CheckExpr(call);
+    }
+
+    private bool StandardConvertible(Type from, Type to)
     {
         // Anything is a machine word, which is the whole point of this type.
         if (to.Prim == Prim.Any || from.Prim == Prim.Any)
@@ -4306,7 +4397,7 @@ public sealed partial class Binder
         {
             for (int i = 0; i < fromTuple.Fields.Count; i++)
             {
-                if (!Convertible(fromTuple.Fields[i].Type, toTuple.Fields[i].Type))
+                if (!StandardConvertible(fromTuple.Fields[i].Type, toTuple.Fields[i].Type))
                 {
                     return false;
                 }
@@ -4352,7 +4443,7 @@ public sealed partial class Binder
         // A Nullable<T> holds a T, so anything a T converts to it can reach --
         // `long? x = 1;` and `int? a = 2; long? b = a;` both being ordinary C#.
         // Only in this direction: emptying one out is checked above.
-        if (to.IsNullableValue && Convertible(from.Underlying, to.Underlying))
+        if (to.IsNullableValue && StandardConvertible(from.Underlying, to.Underlying))
         {
             return true;
         }
@@ -4594,6 +4685,10 @@ public sealed partial class Binder
             {
                 if (m.Static && m.Params.Count > 0 && m.Decl?.Params.FirstOrDefault()?.IsThis == true
                     && (Convertible(target, m.Params[0].Type)
+                        // As an argument would be accepted: an IEnumerable<Box>
+                        // is the IEnumerable<Box?> a copy of `Elements<T>(this
+                        // IEnumerable<T?>)` takes, the annotation being no type.
+                        || Variant(target, m.Params[0].Type)
                         || m.Params[0].Type.ParamName != null
                         || Applies(m, m.Params[0].Type, target)))
                 {
@@ -4666,10 +4761,13 @@ public sealed partial class Binder
 
         // ---- pass one: which of the enclosing locals does it read? ----------
         Dictionary<string, Type>? outerCaptured = _captured;
+        Dictionary<string, ConstSym>? outerConstants = _capturedConstants;
         int outerFloor = _lambdaFloor;
         Dictionary<string, Type> captured = new(StringComparer.Ordinal);
+        Dictionary<string, ConstSym> constants = new(StringComparer.Ordinal);
 
         _captured = captured;
+        _capturedConstants = constants;
         _quiet++;
         // C# 8+ permits a nested function's parameters and locals to shadow
         // enclosing names. Its own ordinary blocks still cannot shadow its
@@ -4687,7 +4785,17 @@ public sealed partial class Binder
         PopScope();
         _quiet--;
         _captured = outerCaptured;
+        _capturedConstants = outerConstants;
         _lambdaFloor = outerFloor;
+        // And a lambda inside a lambda reads its constants through the outer
+        // one's declarations of them.
+        if (outerConstants != null)
+        {
+            foreach ((string name, ConstSym constant) in constants)
+            {
+                outerConstants[name] = constant;
+            }
+        }
 
         // A lambda inside a lambda captures through the outer one, so anything
         // the inner one reached for has to be captured by the outer one too.
@@ -4927,6 +5035,15 @@ public sealed partial class Binder
         _capturedThisField = thisField;
         _method = run;
         _nextSlot = 0;
+        // THE ENCLOSING METHOD'S CONSTANTS THE BODY READS, declared again
+        // here, outside the parameters so a parameter may shadow one as C#
+        // lets it: `const string rid = ...; names.Where(n => n.EndsWith(rid))`
+        // said rid was not declared.
+        PushScope(functionBoundary: true);
+        foreach ((string name, ConstSym constant) in constants)
+        {
+            Declare(lam, name, constant);
+        }
         PushScope(functionBoundary: true);
 
         for (int i = 0; i < lam.Params.Count; i++)
@@ -4941,6 +5058,7 @@ public sealed partial class Binder
 
         Look(lam, closureReturns);
         _r.FrameSize[body] = _nextSlot;
+        PopScope();
         PopScope();
 
         _scopes.Clear();
@@ -5391,8 +5509,24 @@ public sealed partial class Binder
         int errors = _r.Errors.Count;
         int warnings = _r.Warnings.Count;
         int wanted = _r.Wanted.Count;
+        // WHAT THE LOOK DECLARED IS TAKEN BACK TOO. An `out var` or a pattern
+        // variable in the expression declares a name in the scope it is
+        // checked in, and the real check that follows declares it again: a
+        // `foreach` over `(t.TryGetValue(k, out string? v) ? v : "")` said v
+        // was already declared.
+        LocalScope scope = _scopes[^1];
+        HashSet<string> names = new(scope.Keys, StringComparer.Ordinal);
+        HashSet<string> nested = new(scope.NestedNames, StringComparer.Ordinal);
+        int slot = _nextSlot;
         Type had = CheckExpr(e);
 
+        foreach (string name in scope.Keys.Where(name => !names.Contains(name)).ToList())
+        {
+            if (scope[name] is LocalSym local) _assigned.Remove(local);
+            scope.Remove(name);
+        }
+        scope.NestedNames.IntersectWith(nested);
+        _nextSlot = slot;
         _r.Errors.RemoveRange(errors, _r.Errors.Count - errors);
         _r.Warnings.RemoveRange(warnings, _r.Warnings.Count - warnings);
         _r.Wanted.RemoveRange(wanted, _r.Wanted.Count - wanted);
@@ -9105,6 +9239,23 @@ public sealed partial class Binder
                 Type operand = CheckExpr(cast.Operand);
                 Type wanted = Resolve(cast.Type, _thisType);
 
+                // `(string?)attribute` CALLS THE OPERATOR the type declares,
+                // implicit or explicit, where no standard conversion either
+                // way does the job (a downcast is a standard one).
+                if (!StandardConvertible(operand, wanted) && !StandardConvertible(wanted, operand)
+                    && !_r.Rewrites.ContainsKey(cast) && UserConversion(operand, wanted, explicitToo: true) is { } castOp)
+                {
+                    CallExpr call = new()
+                    {
+                        Target = new MemberExpr { Target = Qualified(castOp.Owner.Key, cast), Name = castOp.Name, Line = cast.Line, Col = cast.Col, File = cast.File },
+                        Line = cast.Line, Col = cast.Col, File = cast.File,
+                    };
+                    call.Args.Add(cast.Operand);
+                    _r.Rewrites[cast] = call;
+                    Type produced = CheckExpr(call);
+                    return wanted.Nullable && !produced.Nullable ? wanted : produced;
+                }
+
                 // `(int?)5` PUTS THE NUMBER IN A CELL, which is a conversion
                 // and not merely a name for the same bits. Marked on the
                 // operand, because that is the value the cell is made from.
@@ -11805,10 +11956,24 @@ public sealed partial class Binder
         // from them), so the receiver chain's `!`s are applied ahead of them.
         ProveReceivers((c.Target as MemberExpr)?.Target);
 
+        // A RECEIVER ALREADY MOVED INTO THE ARGUMENTS (a string's method,
+        // below) is still the member's target too, and is checked there: a
+        // call checked a second time -- the next round, a generic
+        // instantiation -- checked it twice, and an `out` or pattern variable
+        // inside it was declared twice. A body copied for the next round
+        // copies the two separately, so the argument is made the target's
+        // node again first: one expression, checked and lowered once.
+        Expr? movedReceiver = null;
+        if (c.ReceiverAdded && c.Target is MemberExpr moved && c.Args.Count > 0)
+        {
+            c.Args[0] = moved.Target;
+            movedReceiver = moved.Target;
+        }
         List<Type> args = new();
         foreach (Expr argument in c.Args)
         {
-            if (argument is LambdaExpr or NewExpr { Type.Name.Length: 0, Elements: null })
+            if (argument is LambdaExpr or NewExpr { Type.Name.Length: 0, Elements: null }
+                || ReferenceEquals(argument, movedReceiver))
             {
                 args.Add(Type.Any);
                 continue;
@@ -11820,6 +11985,10 @@ public sealed partial class Binder
         _wanted = outerTarget;
 
         Type targetType = CheckExpr(c.Target);
+        if (movedReceiver is not null)
+        {
+            args[0] = _r.TypeOf(movedReceiver);
+        }
 
         // A PROPERTY THAT IS BEING CALLED IS NOT THE PROPERTY. `list.Count` is
         // how many there are; `list.Count(x => x.Ready)` is how many match, and
@@ -12740,7 +12909,11 @@ public sealed partial class Binder
             return null;
         }
 
-        if (l.ArrayRank > 0 || r.ArrayRank > 0 || l.Prim == Prim.String || r.Prim == Prim.String
+        // A STRING ON ONE SIDE still reaches an operator of the other's type
+        // through its conversions: `element.Name == "Target"` is XName's
+        // op_Equality, the string made an XName by op_Implicit. Two strings
+        // are the language's own.
+        if (l.ArrayRank > 0 || r.ArrayRank > 0 || (l.Prim == Prim.String && r.Prim == Prim.String)
             || l.Prim == Prim.NullLiteral || r.Prim == Prim.NullLiteral)
         {
             return null;

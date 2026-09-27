@@ -233,6 +233,10 @@ public sealed partial class BindResult
     /// </summary>
     public Dictionary<Expr, Expr> Rewrites { get; } = new(ReferenceEqualityComparer.Instance);
 
+    /// <summary>The calls Rewrites made of user-defined conversions: their
+    /// value is the operator's result, not the expression they replace.</summary>
+    public HashSet<Expr> UserConversions { get; } = new(ReferenceEqualityComparer.Instance);
+
     /// The Add each element of a collection initialiser calls.
     public Dictionary<InitAdd, MethodSymbol> InitAdder { get; } = new(ReferenceEqualityComparer.Instance);
     public Dictionary<NewExpr, MethodSymbol> NewConstructors { get; } = new(ReferenceEqualityComparer.Instance);
@@ -421,6 +425,7 @@ public sealed partial class BindResult
         InitSetter.Clear();
         InitGetter.Clear();
         Rewrites.Clear();
+        UserConversions.Clear();
         InitAdder.Clear();
         NewConstructors.Clear();
         InitIndexer.Clear();
@@ -499,6 +504,7 @@ public sealed partial class BindResult
         CopyEntries(InitSetter, copy.InitSetter);
         CopyEntries(InitGetter, copy.InitGetter);
         CopyEntries(Rewrites, copy.Rewrites);
+        foreach (var item in UserConversions) copy.UserConversions.Add(item);
         CopyEntries(InitAdder, copy.InitAdder);
         CopyEntries(NewConstructors, copy.NewConstructors);
         CopyEntries(InitIndexer, copy.InitIndexer);

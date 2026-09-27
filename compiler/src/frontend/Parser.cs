@@ -1615,7 +1615,26 @@ public sealed class Parser
         made.SourceTo = delegateDecl.SourceTo;
         made.File = _file;
         made.Scope = _fileScope;
+        Adopt(made.Members);
         return made;
+    }
+
+    /// <summary>
+    /// MEMBERS MADE FROM GENERATED SOURCE READ NAMES FROM THE FILE THEY ARE
+    /// FOR. A sub-parser has no using directives and no namespace of its own,
+    /// and each member carries the scope it was parsed in: a record's
+    /// equality over a field of type `Operand` then found `Operand` only while
+    /// one type in the whole program had that name, and with a second one --
+    /// this compiler has an IR Operand and an assembler Operand -- the record
+    /// did not compile at all.
+    /// </summary>
+    private void Adopt(IEnumerable<MemberDecl> members)
+    {
+        foreach (MemberDecl member in members)
+        {
+            member.Scope = _fileScope;
+            member.Namespace = _namespace;
+        }
     }
 
     /// Turns a record's positional parameters into members.
@@ -1760,6 +1779,7 @@ public sealed class Parser
         Parser sub = new(Lexer.Tokenize(src.ToString(), _file), _file, _declarationsOnly);
         CompilationUnit unit = sub.ParseUnit();
         if (unit.Types.Count != 1) return;
+        Adopt(unit.Types[0].Members);
         decl.Members.AddRange(unit.Types[0].Members);
     }
 
@@ -2028,6 +2048,32 @@ public sealed class Parser
             return FinishMethod(ctor, chain);
         }
 
+        // A CONVERSION OPERATOR: `public static implicit operator XName(string
+        // name)`. No return type is written before it -- the type after
+        // `operator` is both the name and what it returns -- so it is
+        // recognised here, before a type is parsed. `implicit` and `explicit`
+        // are words only in this position, as C# has them. Desugared, like
+        // the others, to the method .NET's metadata names: op_Implicit and
+        // op_Explicit, one parameter each.
+        if (At(Tok.Ident) && Cur.Text is "implicit" or "explicit" && Ahead().Kind == Tok.KwOperator)
+        {
+            bool isImplicit = Cur.Text == "implicit";
+            _i += 2;
+            MethodDecl conversion = new()
+            {
+                Name = isImplicit ? "op_Implicit" : "op_Explicit", Mods = mods, Returns = ParseTypeRef(),
+                Line = start.Line, Col = start.Col, Body = null,
+            };
+            ParseParams(conversion.Params);
+
+            if (conversion.Params.Count != 1)
+            {
+                throw Error("a conversion operator takes one operand");
+            }
+            conversion.Attributes.AddRange(attributes);
+            return FinishMethod(conversion);
+        }
+
         TypeRef type = At(Tok.KwVoid) ? VoidType() : ParseTypeRef();
 
         // AN OPERATOR: `public static TimeSpan operator -(DateTime a, DateTime b)`.
@@ -2183,10 +2229,10 @@ public sealed class Parser
     /// static method it is: op_Subtraction, with its two operands as
     /// parameters.
     ///
-    /// The unary forms and the conversion operators (`implicit operator`,
-    /// `explicit operator`) are not here yet; what is here is the binary set,
+    /// The unary forms are not here yet; what is here is the binary set,
     /// which is what a date, a time, a vector or a big integer needs to be
-    /// written the way C# writes it.
+    /// written the way C# writes it. The conversion operators are parsed
+    /// with the members, since no return type precedes them.
     /// </summary>
     private MethodDecl ParseOperator(TypeRef type, Mods mods, Token start)
     {
@@ -3248,15 +3294,19 @@ public sealed class Parser
         {
             Name = marker.Declaration.Name, Line = marker.Line, Col = marker.Col,
         };
-        CallExpr dispose = new()
+        // `await using` gives the resource back by awaiting its DisposeAsync
+        // (IAsyncDisposable), everything else the same.
+        Expr dispose = new CallExpr
         {
             Target = new MemberExpr
             {
-                Target = resource, Name = "Dispose", Line = marker.Line, Col = marker.Col,
+                Target = resource, Name = marker.Async ? "DisposeAsync" : "Dispose", Line = marker.Line, Col = marker.Col,
             },
             Line = marker.Line,
             Col = marker.Col,
         };
+        if (marker.Async)
+            dispose = new AwaitExpr { Operand = dispose, Line = marker.Line, Col = marker.Col };
         Block cleanup = new() { Line = marker.Line, Col = marker.Col };
         cleanup.Statements.Add(new IfStmt
         {
@@ -3289,6 +3339,90 @@ public sealed class Parser
         return result;
     }
 
+    /// <summary>
+    /// A using, at `using` (after any `await`). THE STATEMENT FORM:
+    /// `using (Res r = new Res()) body`, or `using (expression) body`. It is
+    /// the declaration form with the body as the rest of the block, so it is
+    /// built as exactly that and lowered by the same code -- one try/finally
+    /// per resource, disposed in reverse order, on every way out. THE
+    /// DECLARATION FORM, `using var r = ...;`, is lowered by the block that
+    /// holds it. `await using` (async) gives each resource back by awaiting
+    /// its DisposeAsync rather than calling Dispose.
+    /// </summary>
+    private Stmt ParseUsing(Token at, bool async)
+    {
+        Expect(Tok.KwUsing, "'using'");
+        if (Take(Tok.LParen))
+        {
+            Stmt resource = ParseSimpleStmt();
+            Expect(Tok.RParen, "')' after the resource");
+            Stmt body = ParseStmt();
+
+            Block built = new() { Line = at.Line, Col = at.Col };
+
+            if (resource is LocalDecl first)
+            {
+                List<LocalDecl> each = new() { first };
+                each.AddRange(first.Also);
+                foreach (LocalDecl d in each)
+                {
+                    built.Statements.Add(new UsingDeclStmt
+                    {
+                        Declaration = new LocalDecl
+                        {
+                            Type = d.Type ?? first.Type, Name = d.Name, Init = d.Init,
+                            Line = d.Line, Col = d.Col,
+                        },
+                        Async = async,
+                        Line = d.Line,
+                        Col = d.Col,
+                    });
+                }
+            }
+            else if (resource is ExprStmt held)
+            {
+                // No name was given, so one is made: the resource still has
+                // to be held somewhere the finally can reach.
+                built.Statements.Add(new UsingDeclStmt
+                {
+                    Declaration = new LocalDecl
+                    {
+                        Type = null, Name = "$using$" + _lockSerial++, Init = held.Expr,
+                        Line = at.Line, Col = at.Col,
+                    },
+                    Async = async,
+                    Line = at.Line,
+                    Col = at.Col,
+                });
+            }
+            else
+            {
+                throw new CompileError(_file, at.Line, at.Col, "a using statement needs a declaration or an expression");
+            }
+
+            built.Statements.Add(body);
+            return LowerUsings(built);
+        }
+
+        TypeRef? type = Take(Tok.KwVar) ? null : ParseTypeRef();
+        string name = Expect(Tok.Ident, "a resource name").Text;
+        Expect(Tok.Assign, "'=' in a using declaration");
+        Expr init = ParseExpr();
+        Expect(Tok.Semi, "';' after the using declaration");
+
+        return new UsingDeclStmt
+        {
+            Declaration = new LocalDecl
+            {
+                Type = type, Name = name, Init = init,
+                Line = at.Line, Col = at.Col,
+            },
+            Async = async,
+            Line = at.Line,
+            Col = at.Col,
+        };
+    }
+
     private Stmt ParseStmt()
     {
         Token at = Cur;
@@ -3309,93 +3443,15 @@ public sealed class Parser
                 _i++;
                 return new Block { Line = at.Line, Col = at.Col };
 
-            // THE STATEMENT FORM: `using (Res r = new Res()) body`, or
-            // `using (expression) body`. It is the declaration form with the
-            // body as the rest of the block, so it is built as exactly that and
-            // lowered by the same code -- one try/finally per resource,
-            // disposed in reverse order, on every way out.
-            case Tok.KwUsing when Ahead().Kind == Tok.LParen:
+            // Both using forms (ParseUsing), and `await using`.
+            case Tok.KwAwait when Ahead().Kind == Tok.KwUsing:
             {
                 _i++;
-                Expect(Tok.LParen, "'(' after 'using'");
-                Stmt resource = ParseSimpleStmt();
-                Expect(Tok.RParen, "')' after the resource");
-                Stmt body = ParseStmt();
-
-                Block built = new() { Line = at.Line, Col = at.Col };
-
-                if (resource is LocalDecl first)
-                {
-                    List<LocalDecl> each = new() { first };
-                    each.AddRange(first.Also);
-                    foreach (LocalDecl d in each)
-                    {
-                        built.Statements.Add(new UsingDeclStmt
-                        {
-                            Declaration = new LocalDecl
-                            {
-                                Type = d.Type ?? first.Type, Name = d.Name, Init = d.Init,
-                                Line = d.Line, Col = d.Col,
-                            },
-                            Line = d.Line,
-                            Col = d.Col,
-                        });
-                    }
-                }
-                else if (resource is ExprStmt held)
-                {
-                    // No name was given, so one is made: the resource still has
-                    // to be held somewhere the finally can reach.
-                    built.Statements.Add(new UsingDeclStmt
-                    {
-                        Declaration = new LocalDecl
-                        {
-                            Type = null, Name = "$using$" + _lockSerial++, Init = held.Expr,
-                            Line = at.Line, Col = at.Col,
-                        },
-                        Line = at.Line,
-                        Col = at.Col,
-                    });
-                }
-                else
-                {
-                    throw new CompileError(_file, at.Line, at.Col, "a using statement needs a declaration or an expression");
-                }
-
-                built.Statements.Add(body);
-                return LowerUsings(built);
+                return ParseUsing(at, async: true);
             }
 
             case Tok.KwUsing:
-            {
-                _i++;
-                TypeRef? type = null;
-
-                if (Take(Tok.KwVar))
-                {
-                    type = null;
-                }
-                else
-                {
-                    type = ParseTypeRef();
-                }
-
-                string name = Expect(Tok.Ident, "a resource name").Text;
-                Expect(Tok.Assign, "'=' in a using declaration");
-                Expr init = ParseExpr();
-                Expect(Tok.Semi, "';' after the using declaration");
-
-                return new UsingDeclStmt
-                {
-                    Declaration = new LocalDecl
-                    {
-                        Type = type, Name = name, Init = init,
-                        Line = at.Line, Col = at.Col,
-                    },
-                    Line = at.Line,
-                    Col = at.Col,
-                };
-            }
+                return ParseUsing(at, async: false);
 
             case Tok.Ident when Cur.Text == "lock" && Ahead().Kind == Tok.LParen:
             {
@@ -3882,7 +3938,7 @@ public sealed class Parser
                         string held = At(Tok.Ident) ? "" : $"$matched${_patterns++}";
                         Expr test = ParseMemberPattern(
                             new NameExpr { Name = "$held$", Line = braceAt.Line, Col = braceAt.Col },
-                            braceAt);
+                            braceAt, designates: false);
 
                         binding = At(Tok.Ident) && Cur.Text is not ("when" or "or" or "and")
                                 ? _t[_i++].Text
@@ -4147,7 +4203,10 @@ public sealed class Parser
     /// <summary>
     /// `is { Prop: a or b }` -- not null, and Prop is one of these.
     /// </summary>
-    private Expr ParseMemberPattern(Expr subject, Token at)
+    /// <param name="designates">Whether a name after the braces is this
+    /// pattern's to bind (`x is { } y`). A type in front (`x is Foo { } y`)
+    /// binds that name itself, in its type test, and passes false.</param>
+    private Expr ParseMemberPattern(Expr subject, Token at, bool designates = true)
     {
         // NO REFUSAL HERE ANY MORE. This threw for a subject that was not a
         // bare name, on the grounds that a property pattern reads the subject
@@ -4180,7 +4239,7 @@ public sealed class Parser
             // written and the parser cannot invent one -- only the checker
             // knows what x is -- so it writes the sentinel and the binder
             // resolves it against the operand.
-            if (PeekBinding() is string bound)
+            if (designates && PeekBinding() is string bound)
             {
                 _i++;
 
@@ -5053,7 +5112,7 @@ public sealed class Parser
                 };
 
                 Expr tested = ParseMemberPattern(
-                    new NameExpr { Name = also, Line = at.Line, Col = at.Col }, at);
+                    new NameExpr { Name = also, Line = at.Line, Col = at.Col }, at, designates: false);
 
                 _i++;                           // the designation
 
@@ -5104,8 +5163,11 @@ public sealed class Parser
                 Line = at.Line, Col = at.Col,
             };
 
+            // The designation is the type test's (above), so the member
+            // pattern must not bind it a second time -- which an empty
+            // `{ }` in front of it did: `x is Foo { } y` declared y twice.
             Expr members = ParseMemberPattern(
-                new NameExpr { Name = held, Line = at.Line, Col = at.Col }, at);
+                new NameExpr { Name = held, Line = at.Line, Col = at.Col }, at, designates: false);
 
             // Consume the designation the lookahead found.
             if (PeekBinding() != null)

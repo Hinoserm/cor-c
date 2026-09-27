@@ -5,4 +5,7 @@ namespace Corsac.Lang;
 public sealed class UsingDeclStmt : Stmt
 {
     public required LocalDecl Declaration { get; init; }
+
+    /// <summary>`await using`: the resource is given back by awaiting DisposeAsync, not by Dispose.</summary>
+    public bool Async { get; init; }
 }

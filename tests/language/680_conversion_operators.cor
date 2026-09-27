@@ -1,0 +1,42 @@
+// test: user-defined conversion operators
+// expect-exit: 0
+// expect-output:
+// b:x a y
+// 7 12 True False
+using System;
+
+sealed class Name
+{
+    public string Text;
+    private Name(string text) { Text = text; }
+    public static implicit operator Name(string text) => new Name(text);
+    public static explicit operator string(Name name) => name.Text;
+    public static bool operator ==(Name? a, Name? b) => (object?)a == null ? (object?)b == null : (object?)b != null && a.Text == b.Text;
+    public static bool operator !=(Name? a, Name? b) => !(a == b);
+    public override bool Equals(object? o) => o is Name n && n.Text == Text;
+    public override int GetHashCode() => Text.GetHashCode();
+}
+
+struct Meters
+{
+    public int Value;
+    public Meters(int v) { Value = v; }
+    public static implicit operator Meters(int v) => new Meters(v);
+    public static explicit operator int(Meters m) => m.Value;
+}
+
+static class Program
+{
+    static string Show(Name n) => (string)n;
+    static int Twice(Meters m) => (int)m * 2;
+
+    static int Main()
+    {
+        Name a = "a";
+        Name y = "y";
+        Console.WriteLine(Show("b") + ":x " + (string)a + " " + (string)y);
+        Meters m = 7;
+        Console.WriteLine((int)m + " " + Twice(6) + " " + (a == "a") + " " + (a == "b"));
+        return 0;
+    }
+}

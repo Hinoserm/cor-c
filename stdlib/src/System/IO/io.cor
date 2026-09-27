@@ -49,7 +49,7 @@ enum SeekOrigin
 /// single-threaded and the descriptors block -- which is legal for a
 /// Stream and what .NET's base class does for a stream that does not
 /// override them.
-abstract class Stream : IDisposable
+abstract class Stream : IDisposable, IAsyncDisposable
 {
     public abstract bool CanRead { get; }
     public abstract bool CanWrite { get; }
@@ -75,6 +75,11 @@ abstract class Stream : IDisposable
 
     public virtual void Flush()
     {
+    }
+
+    public virtual void SetLength(long value)
+    {
+        throw new NotSupportedException("this stream cannot be resized");
     }
 
     public virtual int ReadByte()
@@ -111,6 +116,57 @@ abstract class Stream : IDisposable
         return Task.CompletedTask;
     }
 
+    /// Into a window of memory, as many bytes as are ready; 0 at the end.
+    public virtual System.Threading.Tasks.ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        byte[] into = new byte[buffer.Length];
+        int n = Read(into, 0, into.Length);
+        for (int i = 0; i < n; i++) buffer.Span[i] = into[i];
+        return new System.Threading.Tasks.ValueTask<int>(n);
+    }
+
+    public virtual System.Threading.Tasks.ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        byte[] bytes = buffer.ToArray();
+        Write(bytes, 0, bytes.Length);
+        return default;
+    }
+
+    public Task CopyToAsync(Stream destination) => CopyToAsync(destination, 81920, CancellationToken.None);
+
+    public Task CopyToAsync(Stream destination, CancellationToken cancellationToken) => CopyToAsync(destination, 81920, cancellationToken);
+
+    /// Copied on a worker, so a caller awaiting two of them (a child's two
+    /// pipes) drains both at once rather than one after the other.
+    public virtual Task CopyToAsync(Stream destination, int bufferSize, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(destination);
+        return Task.Run(() =>
+        {
+            byte[] chunk = new byte[bufferSize];
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                int n = Read(chunk, 0, chunk.Length);
+                if (n <= 0) return;
+                destination.Write(chunk, 0, n);
+            }
+        });
+    }
+
+    public virtual Task FlushAsync() => FlushAsync(CancellationToken.None);
+
+    public virtual Task FlushAsync(CancellationToken cancellationToken)
+    {
+        Flush();
+        return Task.CompletedTask;
+    }
+
+    /// A stream that holds nothing and swallows everything: .NET's Stream.Null.
+    public static readonly Stream Null = new NullStream();
+
     public void CopyTo(Stream destination)
     {
         byte[] chunk = new byte[8192];
@@ -133,6 +189,14 @@ abstract class Stream : IDisposable
     public virtual void Dispose()
     {
         Dispose(true);
+    }
+
+    /// .NET's: disposes synchronously and hands back a completed ValueTask
+    /// (what `await using` over a stream awaits).
+    public virtual System.Threading.Tasks.ValueTask DisposeAsync()
+    {
+        Dispose();
+        return default;
     }
 
     protected virtual void Dispose(bool disposing)
@@ -259,6 +323,27 @@ class FileStream : Stream
         }
     }
 
+    /// Flush, and with flushToDisk the file's bytes onto the device (fsync),
+    /// as .NET's FileStream.Flush(bool) does. Nothing is buffered here, so a
+    /// plain Flush has nothing to write.
+    public virtual void Flush(bool flushToDisk)
+    {
+        Flush();
+        if (flushToDisk && _fd >= 0)
+        {
+            int result = Os.Fsync(_fd);
+            if (result < 0) throw Interop.GetExceptionForIoErrno(result, "");
+        }
+    }
+
+    public override void SetLength(long value)
+    {
+        if (value < 0) throw new ArgumentOutOfRangeException("value");
+        if (!_canWrite) throw new NotSupportedException("Stream does not support writing.");
+        int result = Os.Ftruncate(_fd, value);
+        if (result < 0) throw Interop.GetExceptionForIoErrno(result, "");
+    }
+
     public override void Write(byte[] buffer, int offset, int count)
     {
         int done = 0;
@@ -309,6 +394,18 @@ class FileStream : Stream
 }
 
 /// A stream over a growable byte array.
+sealed class NullStream : Stream
+{
+    public override bool CanRead => true;
+    public override bool CanWrite => true;
+    public override bool CanSeek => true;
+    public override long Length => 0;
+    public override long Position { get { return 0; } set { } }
+    public override long Seek(long offset, SeekOrigin origin) => 0;
+    public override int Read(byte[] buffer, int offset, int count) => 0;
+    public override void Write(byte[] buffer, int offset, int count) { }
+}
+
 class MemoryStream : Stream
 {
     byte[] _bytes;
@@ -338,6 +435,31 @@ class MemoryStream : Stream
     /// grows.
     public MemoryStream(byte[] buffer) : this(buffer, 0, buffer.Length) { _visible = true; }
 
+    /// Over all of `buffer`, read-only when writable is false.
+    public MemoryStream(byte[] buffer, bool writable) : this(buffer) { _readOnly = !writable; }
+
+    bool _readOnly;
+
+    /// The length set outright: cut short, or grown with zeroes.
+    public override void SetLength(long value)
+    {
+        if (_readOnly) throw new NotSupportedException("Stream does not support writing.");
+        if (value < 0 || value > int.MaxValue) throw new ArgumentOutOfRangeException("value");
+        int length = (int)value;
+        if (length > _capacity)
+        {
+            if (!_expandable) throw new NotSupportedException("memory stream is not expandable");
+            byte[] bigger = new byte[length];
+            Array.Copy(_bytes, _origin, bigger, 0, _length);
+            _bytes = bigger;
+            _origin = 0;
+            _capacity = length;
+        }
+        if (length > _length) Array.Clear(_bytes, _origin + _length, length - _length);
+        _length = length;
+        if (_position > length) _position = length;
+    }
+
     /// Over `count` bytes of `buffer` from `index`: position 0 is
     /// buffer[index], and the stream ends after `count` bytes.
     public MemoryStream(byte[] buffer, int index, int count)
@@ -353,7 +475,7 @@ class MemoryStream : Stream
     }
 
     public override bool CanRead { get { return true; } }
-    public override bool CanWrite { get { return true; } }
+    public override bool CanWrite { get { return !_readOnly; } }
     public override bool CanSeek { get { return true; } }
 
     public override long Length { get { return _length; } }
@@ -394,6 +516,7 @@ class MemoryStream : Stream
 
     public override void Write(byte[] buffer, int offset, int count)
     {
+        if (_readOnly) throw new NotSupportedException("Stream does not support writing.");
         if (_position + count > _capacity)
         {
             if (!_expandable) throw new NotSupportedException("memory stream is not expandable");
@@ -534,6 +657,16 @@ abstract class TextReader : IDisposable
         return line.ToString();
     }
 
+    public virtual Task<string> ReadToEndAsync() => ReadToEndAsync(CancellationToken.None);
+
+    /// The rest of the text, read on a worker so the caller can wait on
+    /// something else meanwhile (a child's other pipe).
+    public virtual Task<string> ReadToEndAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(ReadToEnd());
+    }
+
     public virtual string ReadToEnd()
     {
         StringBuilder all = new StringBuilder();
@@ -668,6 +801,13 @@ class StreamReader : TextReader
     }
 }
 
+/// Whether a search looks in the directory alone or in every one below it.
+enum SearchOption
+{
+    TopDirectoryOnly = 0,
+    AllDirectories = 1,
+}
+
 /// .NET's Directory, the parts a program reaches for first.
 /// System.IO.Enumeration.FileSystemName -- .NET's own matcher for the search
 /// pattern GetFiles and GetDirectories take. `*` stands for any run of
@@ -753,6 +893,56 @@ partial static class Directory
         return kept.ToArray();
     }
 
+    /// With AllDirectories, every directory below as well: a directory
+    /// reached through a symbolic link is not entered, as .NET does not, so a
+    /// link back up the tree cannot make the walk endless.
+    public static string[] GetFiles(string path, string searchPattern, SearchOption searchOption)
+    {
+        if (searchOption == SearchOption.TopDirectoryOnly) return GetFiles(path, searchPattern);
+        if (searchOption != SearchOption.AllDirectories) throw new ArgumentOutOfRangeException("searchOption");
+        List<string> kept = new List<string>();
+        Queue<string> pending = new Queue<string>();
+        pending.Enqueue(path);
+        while (pending.Count > 0)
+        {
+            string directory = pending.Dequeue();
+            foreach (string file in GetFiles(directory, searchPattern)) kept.Add(file);
+            foreach (string below in GetDirectories(directory))
+            {
+                if (FileSystem.IsDirectoryNoFollow(below)) pending.Enqueue(below);
+            }
+        }
+        return kept.ToArray();
+    }
+
+    public static string[] GetDirectories(string path, string searchPattern, SearchOption searchOption)
+    {
+        if (searchOption == SearchOption.TopDirectoryOnly) return GetDirectories(path, searchPattern);
+        if (searchOption != SearchOption.AllDirectories) throw new ArgumentOutOfRangeException("searchOption");
+        List<string> kept = new List<string>();
+        Queue<string> pending = new Queue<string>();
+        pending.Enqueue(path);
+        while (pending.Count > 0)
+        {
+            foreach (string below in GetDirectories(pending.Dequeue()))
+            {
+                if (FileSystemName.MatchesSimpleExpression(searchPattern, Path.GetFileName(below))) kept.Add(below);
+                if (FileSystem.IsDirectoryNoFollow(below)) pending.Enqueue(below);
+            }
+        }
+        return kept.ToArray();
+    }
+
+    public static IEnumerable<string> EnumerateFiles(string path, string searchPattern) => GetFiles(path, searchPattern);
+
+    public static IEnumerable<string> EnumerateFiles(string path, string searchPattern, SearchOption searchOption)
+        => GetFiles(path, searchPattern, searchOption);
+
+    public static IEnumerable<string> EnumerateDirectories(string path, string searchPattern) => GetDirectories(path, searchPattern);
+
+    public static IEnumerable<string> EnumerateDirectories(string path, string searchPattern, SearchOption searchOption)
+        => GetDirectories(path, searchPattern, searchOption);
+
     public static string[] GetDirectories(string path, string searchPattern)
     {
         List<string> kept = new List<string>();
@@ -809,6 +999,50 @@ static partial class Path
         string? dir = Environment.GetEnvironmentVariable("TMPDIR");
         if (dir == null || dir.Length == 0) return "/tmp/";
         return dir.EndsWith("/") ? dir : dir + "/";
+    }
+
+    private static int _tempSerial;
+
+    /// A new empty file under GetTempPath, made here and never one that
+    /// already existed (O_EXCL), its full path returned.
+    public static string GetTempFileName()
+    {
+        string directory = GetTempPath();
+        for (int attempt = 0; attempt < 1000; attempt++)
+        {
+            long serial = Interlocked.Increment(ref _tempSerial);
+            long mix = (Environment.TickCount64 * 31 + Environment.ProcessId) * 1000003 + serial * 7919 + attempt;
+            string name = "tmp" + ((mix & 0x7FFFFFFFFFFF) % 0xFFFFFF).ToString("X6") + ".tmp";
+            string full = directory + name;
+            try
+            {
+                using (FileStream made = new FileStream(full, FileMode.CreateNew, FileAccess.ReadWrite)) { }
+                return full;
+            }
+            catch (IOException) when (File.Exists(full))
+            {
+            }
+        }
+        throw new IOException("The file name could not be created in " + directory);
+    }
+
+    /// The path from one to the other: `..` for each directory of
+    /// relativeTo that path is not under, then the rest of path. "." when
+    /// they are the same. Compared exactly, as a Unix file system does.
+    public static string GetRelativePath(string relativeTo, string path)
+    {
+        ArgumentNullException.ThrowIfNull(relativeTo);
+        ArgumentNullException.ThrowIfNull(path);
+        if (relativeTo.Length == 0) throw new ArgumentException("The value cannot be an empty string.", "relativeTo");
+        if (path.Length == 0) throw new ArgumentException("The value cannot be an empty string.", "path");
+        string[] from = GetFullPath(relativeTo).Split('/', StringSplitOptions.RemoveEmptyEntries);
+        string[] to = GetFullPath(path).Split('/', StringSplitOptions.RemoveEmptyEntries);
+        int common = 0;
+        while (common < from.Length && common < to.Length && from[common] == to[common]) common++;
+        List<string> parts = new List<string>();
+        for (int i = common; i < from.Length; i++) parts.Add("..");
+        for (int i = common; i < to.Length; i++) parts.Add(to[i]);
+        return parts.Count == 0 ? "." : string.Join("/", parts);
     }
 
     /// The absolute path this one names, with `.` and `..` resolved. .NET

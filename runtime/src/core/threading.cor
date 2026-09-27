@@ -2418,3 +2418,132 @@ static class AsyncRuntime
         }
     }
 }
+
+// ---- ValueTask and asynchronous disposal ---------------------------------------
+//
+// .NET's shapes and namespaces. A ValueTask is a struct that is either
+// already complete (default, CompletedTask) or stands for a Task; awaiting
+// it awaits that task. What `await using` calls: IAsyncDisposable's
+// DisposeAsync, awaited in the finally the using is lowered to.
+
+namespace System.Threading.Tasks
+{
+    readonly struct ValueTask
+    {
+        readonly Task? _task;
+
+        public ValueTask(Task task)
+        {
+            if (task is null) throw new ArgumentNullException("task");
+            _task = task;
+        }
+
+        /// A completed ValueTask; the same as default.
+        public static ValueTask CompletedTask => default;
+
+        public bool IsCompleted => _task is null || _task.IsCompleted;
+        public bool IsCompletedSuccessfully => _task is null || _task.IsCompletedSuccessfully;
+        public bool IsFaulted => _task is not null && _task.IsFaulted;
+
+        public Task AsTask() => _task ?? Task.CompletedTask;
+
+        public System.Runtime.CompilerServices.ValueTaskAwaiter GetAwaiter()
+            => new System.Runtime.CompilerServices.ValueTaskAwaiter(AsTask());
+
+        public static ValueTask FromResult() => default;
+    }
+
+    /// A result that is either here already or the Task that will make it.
+    readonly struct ValueTask<TResult>
+    {
+        readonly Task<TResult>? _task;
+        readonly TResult _result;
+
+        public ValueTask(TResult result)
+        {
+            _task = null;
+            _result = result;
+        }
+
+        public ValueTask(Task<TResult> task)
+        {
+            if (task is null) throw new ArgumentNullException("task");
+            _task = task;
+            _result = default!;
+        }
+
+        public bool IsCompleted => _task is null || _task.IsCompleted;
+        public bool IsCompletedSuccessfully => _task is null || _task.IsCompletedSuccessfully;
+        public bool IsFaulted => _task is not null && _task.IsFaulted;
+
+        public TResult Result => _task is null ? _result : _task.Result;
+
+        public Task<TResult> AsTask() => _task ?? Task.FromResult(_result);
+
+        public System.Runtime.CompilerServices.ValueTaskAwaiter<TResult> GetAwaiter()
+            => new System.Runtime.CompilerServices.ValueTaskAwaiter<TResult>(AsTask());
+    }
+}
+
+namespace System.Runtime.CompilerServices
+{
+    readonly struct ValueTaskAwaiter
+    {
+        readonly Task _task;
+
+        public ValueTaskAwaiter(Task task)
+        {
+            _task = task;
+        }
+
+        public bool IsCompleted => _task.IsCompleted;
+
+        public void GetResult()
+        {
+            _task.ThrowIfNotSuccessful();
+        }
+
+        public void OnCompleted(Action continuation)
+        {
+            _task.AddContinuation(continuation);
+        }
+
+        public void UnsafeOnCompleted(Action continuation)
+        {
+            _task.AddContinuation(continuation);
+        }
+    }
+
+    readonly struct ValueTaskAwaiter<TResult>
+    {
+        readonly System.Threading.Tasks.Task<TResult> _task;
+
+        public ValueTaskAwaiter(System.Threading.Tasks.Task<TResult> task)
+        {
+            _task = task;
+        }
+
+        public bool IsCompleted => _task.IsCompleted;
+
+        public TResult GetResult() => _task.GetAwaiter().GetResult();
+
+        public void OnCompleted(Action continuation)
+        {
+            _task.AddContinuation(continuation);
+        }
+
+        public void UnsafeOnCompleted(Action continuation)
+        {
+            _task.AddContinuation(continuation);
+        }
+    }
+}
+
+namespace System
+{
+    /// What `await using` gives a resource back through.
+    interface IAsyncDisposable
+    {
+        System.Threading.Tasks.ValueTask DisposeAsync();
+    }
+}

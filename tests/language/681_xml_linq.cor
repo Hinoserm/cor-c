@@ -1,0 +1,68 @@
+// test: System.Xml.Linq: parse, query, line info, build and print
+// expect-exit: 0
+// expect-output:
+// Project Microsoft.NET.Sdk
+// A=x & y|B=2
+// Compile a.cs 9
+// True True
+// <root id="1" ok="true">
+//   <child>text &lt;&amp;&gt;</child>
+//   <empty />
+// </root>
+// <a b="q&quot;">t</a>
+// ns http://example.com/p Item
+// DTD refused
+using System;
+using System.IO;
+using System.Linq;
+using System.Xml;
+using System.Xml.Linq;
+
+static class Program
+{
+    static int Main()
+    {
+        string path = Path.Combine(Path.GetTempPath(), "corsac-xml-" + Environment.ProcessId + ".xml");
+        File.WriteAllText(path, "<?xml version=\"1.0\"?>\n<!-- c -->\n<Project Sdk=\"Microsoft.NET.Sdk\">\r\n  <PropertyGroup>\n    <A>x &amp; y</A>\n    <B>2</B>\n  </PropertyGroup>\n  <ItemGroup>\n    <Compile Include='a.cs' />\n  </ItemGroup>\n</Project>\n");
+        using (XmlReader reader = XmlReader.Create(path, new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null }))
+        {
+            XElement root = XDocument.Load(reader, LoadOptions.SetLineInfo).Root!;
+            Console.WriteLine(root.Name.LocalName + " " + (string?)root.Attribute("Sdk"));
+            Console.WriteLine(string.Join("|", root.Elements("PropertyGroup").Elements().Select(p => p.Name + "=" + p.Value)));
+            XElement compile = root.Descendants("Compile").Single();
+            Console.WriteLine(compile.Name + " " + compile.Attribute("Include")!.Value + " " + ((IXmlLineInfo)compile).LineNumber);
+            Console.WriteLine((compile.Name == "Compile") + " " + (root.Name.Namespace == XNamespace.None));
+        }
+        File.Delete(path);
+
+        XElement built = new XElement("root", new XAttribute("id", 1), new XAttribute("ok", true),
+            new XElement("child", "text <&>"), new XElement("empty"));
+        Console.WriteLine(built.ToString());
+        Console.WriteLine(new XElement("a", new XAttribute("b", "q\""), "t").ToString(SaveOptions.DisableFormatting));
+
+        XElement spaced = XElement.Parse("<p:Root xmlns:p=\"http://example.com/p\"><p:Item/></p:Root>");
+        XElement item = spaced.Elements().First();
+        Console.WriteLine("ns " + item.Name.NamespaceName + " " + item.Name.LocalName);
+
+        try
+        {
+            string dtd = Path.Combine(Path.GetTempPath(), "corsac-dtd-" + Environment.ProcessId + ".xml");
+            File.WriteAllText(dtd, "<!DOCTYPE a []><a/>");
+            try
+            {
+                using XmlReader r = XmlReader.Create(dtd, new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit });
+                XDocument.Load(r);
+                Console.WriteLine("DTD accepted");
+            }
+            finally
+            {
+                File.Delete(dtd);
+            }
+        }
+        catch (XmlException)
+        {
+            Console.WriteLine("DTD refused");
+        }
+        return 0;
+    }
+}
