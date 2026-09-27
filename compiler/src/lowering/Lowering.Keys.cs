@@ -546,6 +546,16 @@ public sealed partial class Lowering
             return label;
         }
 
+        // A SHAPE NO VALUE IS EVER BUILT OF -- an element that is a pointer, a
+        // function pointer, a type that failed to resolve, or a bare type
+        // parameter (a template's `ValueTuple$T$U`; shared code holds __canon
+        // instead) -- says its type's name, as any object does.
+        if (shape.Fields.Any(fd => !fd.Static && (fd.Type.IsError || fd.Type.IsPointer || fd.Type.Function is not null
+                                                  || fd.Type.Prim == Prim.Void && fd.Type.Symbol is null && !fd.Type.IsArray)))
+        {
+            return ObjectToStringStub();
+        }
+
         Function f = new(label, IrTypes.Word) { Coalescible = true };
         VReg self = f.NewReg(IrTypes.Word, "this");
         f.Params.Add(self);
