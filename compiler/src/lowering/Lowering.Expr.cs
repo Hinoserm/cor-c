@@ -93,7 +93,7 @@ public sealed partial class Lowering
             if (IsStructValue(target))
             {
                 if (readOnly && !HasAddress(e)) return EvalAs(e, target);
-                return StructReference(e is RefArgExpr sra ? sra.Target : e, target);
+                return StructReference(e is RefArgExpr sra ? sra.Target : e, target, fresh: e is RefArgExpr { Name: not null });
             }
 
             if (readOnly && !HasAddress(e))
@@ -2388,7 +2388,14 @@ public sealed partial class Lowering
         return EvalAs(value, storedAs);
     }
 
-    private VReg StructReference(Expr target, Type type)
+    /// <summary>
+    /// <paramref name="fresh"/> for a variable the argument DECLARES -- `out
+    /// var d`, `out Pair d`, `out _` -- which C# makes new each time the
+    /// declaration runs: it gets a zeroed block of its own rather than
+    /// whatever its slot last held, which in a loop is the previous
+    /// iteration's struct and before any, whatever was in the frame.
+    /// </summary>
+    private VReg StructReference(Expr target, Type type, bool fresh = false)
     {
         if (target is NameExpr n && _b.Resolved.TryGetValue(n, out Sym? s) && s is ParamSym { ByRef: true } passed)
         {
@@ -2402,6 +2409,12 @@ public sealed partial class Lowering
         if (place is MemPlace { Inline: true })
         {
             return LoadPlace(place);
+        }
+        if (fresh)
+        {
+            VReg made = NewStruct(target, type.Symbol!);
+            StorePlace(place, made);
+            return made;
         }
         VReg held = LoadPlace(place);
         VReg result = _f.NewReg(IrTypes.Word, "sref");
