@@ -310,18 +310,17 @@ public sealed partial class Binder
 
     /// <summary>Whether the declaration being bound is somebody else's: an Elsewhere type's, or a member whose code another unit has.</summary>
     private bool BindingElsewhere => _thisType?.Decl?.Elsewhere == true || _member?.OwnedImplementation == false
-        // A type's header -- its base and interfaces -- is bound with only the
-        // file known: an Elsewhere file's headers are somebody else's too.
-        || _thisType is null && _member is null && ElsewhereFiles.Contains(_in)
+        // The tuple namings of every file, this unit's and the others', read
+        // for their element names alone: a type a tuple names is asked for
+        // where the code that makes or reads the tuple is bound.
+        || _namingTuples
         // And the member signatures of a specialisation (List<Control>, made
         // because a library signature names it): its types are its arguments,
         // and a unit that writes List<Control> itself has already asked for
         // Control where it wrote it.
         || _thisType is null && _scope?.Decl is { Elsewhere: true } or { Specialised: true };
 
-    private HashSet<string>? _elsewhereFiles;
-    private HashSet<string> ElsewhereFiles => _elsewhereFiles ??= _r.Types.Values
-        .Where(type => type.Decl is { Elsewhere: true }).Select(type => type.Decl!.File).ToHashSet(StringComparer.Ordinal);
+    private bool _namingTuples;
 
     private bool TypeCandidate(string key, out TypeSymbol? symbol)
     {
@@ -473,14 +472,18 @@ public sealed partial class Binder
     private bool NamesType(string dotted, Expr at)
     {
         if (IsTypeName(dotted)) return true;
-        // A MEMBER OF A TYPE IS NOT A TYPE. Behind a qualifier that is itself
-        // a type, the name is that type's member or a type nested in it, and
-        // the lookup above has answered for the nested one. Resolving it as
-        // written trims the qualifier -- namespaces are not a tree here -- and
-        // `case NtObjectRequest.Watch:` became a type test for the registry's
-        // nested class Watch, reading an enum value as an object's header.
+        // A CONSTANT OF A TYPE IS NOT A TYPE. Resolving the name as written
+        // trims the qualifier -- namespaces are not a tree here -- and finds
+        // any type of the last name anywhere: `case NtObjectRequest.Watch:`
+        // became a type test for the registry's nested class Watch, reading an
+        // enum value as an object's header. Only a member the qualifier's
+        // type really has stops it; a type nested in its base still resolves.
         int dot = dotted.LastIndexOf('.');
-        if (dot > 0 && IsTypeName(dotted[..dot])) return false;
+        if (dot > 0 && FindType(dotted[..dot], out TypeSymbol? owner) && owner is not null)
+        {
+            string member = dotted[(dot + 1)..];
+            if (owner.EnumValues.ContainsKey(member) || FindConstant(owner, member) is not null) return false;
+        }
         _quiet++;
         try { return !Resolve(new TypeRef { Name = dotted, Line = at.Line, Col = at.Col }, _thisType).IsError; }
         finally { _quiet--; }
@@ -1177,11 +1180,16 @@ public sealed partial class Binder
         // cannot be resolved has nothing to remember and says so to nobody.
         _quiet++;
 
-        foreach (TypeRef naming in unit.TupleNamings)
+        _namingTuples = true;
+        try
         {
-            try { Resolve(naming, null); }
-            catch (Metadata.DeclarationDemand demand) { _declarationBatch.Add(demand); }
+            foreach (TypeRef naming in unit.TupleNamings)
+            {
+                try { Resolve(naming, null); }
+                catch (Metadata.DeclarationDemand demand) { _declarationBatch.Add(demand); }
+            }
         }
+        finally { _namingTuples = false; }
 
         _quiet--;
 
@@ -7007,9 +7015,27 @@ public sealed partial class Binder
     /// </summary>
     /// <summary>Whether what is being bound is a canonical copy: the one
     /// specialisation of a type or method that every word argument shares.</summary>
+    /// Exactly: every argument __canon, not merely one somewhere --
+    /// `Foo<List<T>>` made inside a canonical body is `Foo$List$__canon`, a
+    /// specialisation over a canonical type and no canonical copy itself.
     private bool InCanonicalCopy
-        => _thisType?.Name.Contains("$" + Monomorphiser.CanonName, StringComparison.Ordinal) == true
-        || _member?.Name.Contains("$" + Monomorphiser.CanonName, StringComparison.Ordinal) == true;
+        => _thisType?.Decl is { Specialised: true, TemplateArgs.Count: > 0 } type
+           && type.TemplateArgs.All(a => a.Name == Monomorphiser.CanonName && a.Args.Count == 0)
+        || _member?.Name is string name && CanonicalMethodName(name);
+
+    /// `FromResult$__canon$3`: the method's name, then only __canon for each
+    /// argument, then the member index its copies are told apart by.
+    private static bool CanonicalMethodName(string name)
+    {
+        string[] parts = name.Split('$');
+        if (parts.Length < 2) return false;
+        int last = parts.Length - 1;
+        if (parts[last].Length > 0 && parts[last].All(char.IsAsciiDigit)) last--;
+        if (last < 1) return false;
+        for (int i = 1; i <= last; i++)
+            if (parts[i] != Monomorphiser.CanonName) return false;
+        return true;
+    }
 
     private Type Close(Type t, Dictionary<string, Type>? bound)
     {

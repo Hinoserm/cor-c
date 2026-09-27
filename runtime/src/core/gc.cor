@@ -1395,7 +1395,16 @@ static class Gc
         // bump pointer the code under it has read and not yet moved; landed
         // on the lock's holder, GcLock.Enter would wait on itself for ever.
         // The object is left to the collector, as a wrong proof's is.
-        if (Sys.Peek(Sys.ThreadBlock() + Tls.InAlloc) != 0 || GcLock.HeldByMe())
+        //
+        // A null first, which an owned variable's first assignment hands
+        // over (FreeReplaced), and with no thread block nothing to read:
+        // before one exists there is no fast path to be on top of.
+        if (at == 0)
+        {
+            return;
+        }
+        long self = Sys.ThreadBlock();
+        if (self != 0 && Sys.Peek(self + Tls.InAlloc) != 0 || GcLock.HeldByMe())
         {
             return;
         }

@@ -281,10 +281,23 @@ public static class ProjectCompile
     static string CompilerIdentity()
     {
         if (_compilerIdentity is not null) return _compilerIdentity;
-        string? self = Environment.ProcessPath;
-        if (self is null || !File.Exists(self)) return _compilerIdentity = "unknown";
+        // THE COMPILER, not the program that runs it. Run as `dotnet
+        // corc.dll`, the process is the dotnet host, the same file whatever
+        // corc.dll holds: a rebuilt compiler found every receipt current and
+        // kept objects the old one made. The compiler's own assembly is part
+        // of it wherever there is one (a native build has none of its own).
+        List<string> parts = new();
+        if (Environment.ProcessPath is string self && File.Exists(self)) parts.Add(self);
+        string assembly = typeof(ProjectCompile).Assembly.Location;
+        if (assembly.Length > 0 && File.Exists(assembly)) parts.Add(assembly);
+        if (parts.Count == 0) return _compilerIdentity = "unknown";
         using SHA256 sha = SHA256.Create();
-        using FileStream stream = File.OpenRead(self);
-        return _compilerIdentity = Convert.ToHexString(sha.ComputeHash(stream));
+        foreach (string part in parts)
+        {
+            byte[] bytes = File.ReadAllBytes(part);
+            sha.TransformBlock(bytes, 0, bytes.Length, null, 0);
+        }
+        sha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
+        return _compilerIdentity = Convert.ToHexString(sha.Hash!);
     }
 }
