@@ -34,6 +34,7 @@ static class Call
     /// arch_prctl(2): where this thread's FS base, and so its block, is.
     public const long ArchPrctl = 158;  // (code, address)
     public const long ArchSetFs = 0x1002;
+    public const long ArchSetGs = 0x1001;
     public const long Futex = 202;      // (uaddr, op, val, timeout, uaddr2, val3)
 
     // ---- processes -------------------------------------------------------
@@ -53,6 +54,7 @@ static class Call
     public const long Setgroups = 116;
     public const long Umask = 95;
     public const long Chown = 92;
+    public const long Lchown = 94;
     public const long Gettid = 186;
     public const long Tgkill = 234;
     public const long Clone = 56;       // (flags, stack, ptid, ctid, tls): x86-64's order
@@ -169,6 +171,7 @@ static class Call
     public const long Setgroups = 206;  // setgroups32 (count, list)
     public const long Umask = 60;       // (mask) -> the mask it replaced
     public const long Chown = 212;      // chown32 (path, uid, gid)
+    public const long Lchown = 198;     // lchown32 (path, uid, gid): the link itself
 
     // ---- files and directories -------------------------------------------
     public const long Unlink = 10;
@@ -829,9 +832,21 @@ static class TimeVal
 #if TARGET_64BIT
     public static long Seconds(byte[] b) { return Raw.I64(b, 0); }
     public static long Micros(byte[] b)  { return Raw.I64(b, 8); }
+
+    public static void Set(byte[] b, long seconds, long micros)
+    {
+        Raw.SetI64(b, 0, seconds);
+        Raw.SetI64(b, 8, micros);
+    }
 #else
     public static long Seconds(byte[] b) { return Raw.I32(b, 0); }
     public static long Micros(byte[] b)  { return Raw.I32(b, 4); }
+
+    public static void Set(byte[] b, long seconds, long micros)
+    {
+        Raw.SetU32(b, 0, seconds);
+        Raw.SetU32(b, 4, micros);
+    }
 #endif
 }
 

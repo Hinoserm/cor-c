@@ -277,13 +277,16 @@ static class Platform
         Sys.Poke(block + Tls.Self, block);
 
 #if TARGET_AMD64
-        // LONG MODE KEEPS A BASE REGISTER PER THREAD FOR THIS: FS, set with
-        // arch_prctl(ARCH_SET_FS), saved and restored by the kernel on every
-        // switch -- glibc's thread pointer. No descriptor, no selector: the
-        // block's own first word is still its address, so fs:[0] answers it.
-        if (Result(Sys.Syscall(Call.ArchPrctl, Call.ArchSetFs, block, 0)) < 0)
+        // LONG MODE KEEPS A BASE REGISTER PER THREAD FOR THIS: GS, set with
+        // arch_prctl(ARCH_SET_GS), saved and restored by the kernel on every
+        // switch. Not FS, which is glibc's thread pointer: a program that
+        // calls into C (a [DllImport]) runs C code on this thread, and that
+        // code finds errno, its allocator's caches and its stack canary
+        // through FS. No descriptor, no selector: the block's own first word
+        // is still its address, so gs:[0] answers it.
+        if (Result(Sys.Syscall(Call.ArchPrctl, Call.ArchSetGs, block, 0)) < 0)
         {
-            string text = "arch_prctl(ARCH_SET_FS) failed: this kernel cannot give a thread its own block\n";
+            string text = "arch_prctl(ARCH_SET_GS) failed: this kernel cannot give a thread its own block\n";
 
             WriteBytes(2, Sys.ArrayData(text), text.Length);
             Exit(134);

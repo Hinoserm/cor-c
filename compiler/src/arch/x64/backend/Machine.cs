@@ -93,8 +93,9 @@ public sealed class MMem : MOperand
     public MBlock? Label { get; init; }
 
     /// <summary>
-    /// A segment override: 0 for none, else the prefix byte (0x64 for FS).
-    /// FS holds the thread block on Linux x86-64, as it does for glibc.
+    /// A segment override: 0 for none, else the prefix byte (0x65 for GS).
+    /// GS holds the thread block: FS is glibc's thread pointer, and a
+    /// program that calls into C must leave it alone.
     /// </summary>
     public byte Segment { get; init; }
 

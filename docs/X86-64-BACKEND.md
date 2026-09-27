@@ -57,7 +57,7 @@ them (GcRoots.Enter in runtime/src/core/gc.cor).
   Named things are reached RIP-relative; a symbol's address is `lea`.
   Division uses the hardware and its trap, as on i386. Float-to-integer
   conversion follows .NET's saturating rule from the IEEE bits, exactly as
-  the i386 backend does. The thread block is `fs:[0]`.
+  the i386 backend does. The thread block is `gs:[0]`: FS is left to glibc, whose thread pointer C code needs.
 - **RegAlloc.cs** -- the i386 linear scan with two register classes. A value
   live across a call cannot sit in a caller-saved register; a float across a
   call is always spilled. Spill slots are eight bytes and reloads are whole

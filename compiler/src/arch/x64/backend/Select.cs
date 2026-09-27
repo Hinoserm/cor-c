@@ -1842,11 +1842,11 @@ internal sealed class Selector
         switch (name)
         {
             case Corsac.Lang.X86.MachineIntrinsics.ThreadBlock:
-                // The self pointer at fs:[0]: the first word of the block is
+                // The self pointer at gs:[0]: the first word of the block is
                 // its own address, as glibc's thread control block is.
                 if (i.Dest is not null)
                 {
-                    Mov(V(i.Dest), new MMem(null, 0) { Segment = 0x64 });
+                    Mov(V(i.Dest), new MMem(null, 0) { Segment = 0x65 });
                 }
                 return;
             case Corsac.Lang.X86.MachineIntrinsics.In8:

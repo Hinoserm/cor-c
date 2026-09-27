@@ -441,6 +441,14 @@ static partial class Os
         return (int)Err.Result(Sys.Syscall(Call.Chown, BytesOf(c), uid, gid));
     }
 
+    /// lchown(2): as Chown, but of a symbolic link itself rather than what
+    /// it names.
+    public static int Lchown(string path, int uid, int gid)
+    {
+        string c = CString(path);
+        return (int)Err.Result(Sys.Syscall(Call.Lchown, BytesOf(c), uid, gid));
+    }
+
     /// statfs64(2): how big a filing system is and how much of it is left.
     public static int Statfs(string path, byte[] into)
     {
