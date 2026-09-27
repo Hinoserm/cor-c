@@ -4222,6 +4222,42 @@ public sealed partial class Binder
         }
     }
 
+    /// <summary>
+    /// Whether a value of one tuple shape has to be rebuilt to be another: two
+    /// shapes, element for element convertible, and some element not held the
+    /// same way in both -- a number of another width, a value into a cell. Two
+    /// references are the same word however they are typed.
+    /// </summary>
+    private bool TupleRebuilt(Type from, Type to)
+    {
+        if (from.IsArray || to.IsArray || from.IsNullableValue || to.IsNullableValue
+            || from.Symbol is not { } a || to.Symbol is not { } b || ReferenceEquals(a, b)
+            || !a.Name.StartsWith(TypeRef.Tuple + "$", StringComparison.Ordinal)
+            || !b.Name.StartsWith(TypeRef.Tuple + "$", StringComparison.Ordinal))
+        {
+            return false;
+        }
+        List<FieldSymbol> have = a.Fields.Where(f => !f.Static).ToList();
+        List<FieldSymbol> want = b.Fields.Where(f => !f.Static).ToList();
+        if (have.Count != want.Count)
+        {
+            return false;
+        }
+        bool differs = false;
+        for (int i = 0; i < have.Count; i++)
+        {
+            Type x = have[i].Type, y = want[i].Type;
+            if (!Convertible(x, y))
+            {
+                return false;
+            }
+            bool sameWord = x.Equals(y) || MethodSignatures.SameType(x, y)
+                || (x.IsReference || x.Prim == Prim.Any) && (y.IsReference || y.Prim == Prim.Any) && !x.IsNullableValue && !y.IsNullableValue;
+            differs |= !sameWord || have[i].Offset != want[i].Offset;
+        }
+        return differs;
+    }
+
     /// <summary>The one place assignability and nullability are decided.</summary>
     private void CheckAssignable(Type from, Type to, Node at, string what)
     {
@@ -4389,6 +4425,28 @@ public sealed partial class Binder
             && Convertible(from.Underlying, to))
         {
             Error(at, $"{what}: '{from}' may have no value; use '.Value' or cast it to '{to}'");
+            return;
+        }
+
+        // A TUPLE INTO A SHAPE WITH OTHER ELEMENTS IS A NEW TUPLE (C# 10.2.13),
+        // each element converted: `(long, long) b = a` over an `(int, int)`
+        // is built from a.Item1 and a.Item2 widened, not the same object read
+        // at another layout -- which answered garbage for every element after
+        // the first width change.
+        if (at is Expr source && !_r.Rewrites.ContainsKey(source) && TupleRebuilt(from, to))
+        {
+            SubjectExpr Held() => new() { Line = source.Line, Col = source.Col };
+            TupleExpr items = new() { Line = source.Line, Col = source.Col };
+            for (int i = 0; i < to.Symbol!.Fields.Count(f => !f.Static); i++)
+            {
+                items.Items.Add(new MemberExpr { Target = Held(), Name = "Item" + (i + 1), Guarded = true, Line = source.Line, Col = source.Col });
+            }
+            PatternExpr rebuilt = new() { Subject = source, Test = items, Line = source.Line, Col = source.Col };
+            _r.Rewrites[source] = rebuilt;
+            Type? outside = _wanted;
+            _wanted = to;
+            CheckExpr(rebuilt);
+            _wanted = outside;
             return;
         }
 
