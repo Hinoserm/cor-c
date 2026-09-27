@@ -373,8 +373,8 @@ class Thread
     // LAYOUT: these two must stay the first instance fields (see Atom). _done
     // is what Join waits on, and it is a futex word, so it must have an
     // address -- hence a field of an object rather than a static.
-    int _done;
-    int _lock;
+    nint _done;
+    nint _lock;
 
     Action _body;
     ThreadStart? _start;
@@ -635,7 +635,7 @@ class Thread
     void Begin()
     {
         Platform.SetThreadBlock(_block);
-        Sys.PokeWord(_block + Tls.ThreadId, Native.CurrentThreadId());
+        Sys.Poke(_block + Tls.ThreadId, Native.CurrentThreadId());
 
         // Running, from here on: until this the collector was told this thread
         // was stopped with nothing on its stack, which it was.
@@ -710,7 +710,7 @@ class Thread
 class Mutex
 {
     // LAYOUT: first instance field, at Atom.FirstWord (see Atom).
-    int _state;
+    nint _state;
     int _pad;
 
     const int Free = 0;
@@ -774,7 +774,7 @@ class Mutex
 class Semaphore
 {
     // LAYOUT: first instance field, at Atom.FirstWord (see Atom).
-    int _count;
+    nint _count;
     int _pad;
 
     public Semaphore(int initialCount)
@@ -788,7 +788,7 @@ class Semaphore
         Atom.CheckLayout();
     }
 
-    public int Count => _count;
+    public int Count => (int)_count;
 
     public void Wait()
     {
@@ -842,7 +842,7 @@ class Semaphore
 class ManualResetEvent
 {
     // LAYOUT: first instance field, at Atom.FirstWord (see Atom).
-    int _signalled;
+    nint _signalled;
     int _pad;
 
     public ManualResetEvent(bool initialState)

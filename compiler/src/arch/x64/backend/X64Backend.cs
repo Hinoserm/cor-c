@@ -69,7 +69,7 @@ public sealed class X64Backend : IBackend
 
         foreach (Function f in module.Functions)
         {
-            MFunction? m = Compile(f, errors);
+            MFunction? m = Compile(f, errors, f.Name == module.Entry);
             if (m is null)
             {
                 continue;
@@ -235,10 +235,11 @@ public sealed class X64Backend : IBackend
         return $"{(i.Lock ? "lock " : "")}{name}{width} {string.Join(", ", i.Operands)}";
     }
 
-    private static MFunction? Compile(Function f, List<string> errors)
+    private static MFunction? Compile(Function f, List<string> errors, bool entry = false)
     {
         int before = errors.Count;
         MFunction m = Selector.Run(f, errors);
+        m.RealignsStack = entry;
         if (errors.Count > before)
         {
             return null;

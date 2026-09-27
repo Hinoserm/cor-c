@@ -348,6 +348,13 @@ public sealed class MFunction
     /// </summary>
     public bool SavesEverything { get; set; }
 
+    /// <summary>
+    /// The process entry: the loader jumps to it with RSP sixteen-byte aligned
+    /// and no return address pushed, so after `push rbp` the frame is eight
+    /// bytes off the alignment every call assumes. Its prologue realigns.
+    /// </summary>
+    public bool RealignsStack { get; set; }
+
     /// <summary>Bytes of arguments this function passes on the stack at its widest call.</summary>
     public int OutgoingBytes { get; set; }
 

@@ -770,6 +770,10 @@ internal sealed class Encoder
     {
         Byte(0x55);
         Byte(0x48); Byte(0x89); Byte(0xE5);
+        if (_m.RealignsStack)
+        {
+            Byte(0x48); Byte(0x83); Byte(0xE4); Byte(0xF0);     // and rsp, -16
+        }
         if (_frameBytes > 0)
         {
             Alu(5, new MInstr(MOp.Sub, MReg.Of(Gpr.Rsp), new MImm(_frameBytes)), 8);

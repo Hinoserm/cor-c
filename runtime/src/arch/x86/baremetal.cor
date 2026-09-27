@@ -217,7 +217,7 @@ static class Platform
 
     public static void SetThreadBlock(long block)
     {
-        Sys.PokeWord(block + Tls.Self, block);
+        Sys.Poke(block + Tls.Self, block);
         Sys.SetThreadBlock(block);
     }
 

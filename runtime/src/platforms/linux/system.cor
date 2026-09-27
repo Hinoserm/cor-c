@@ -263,7 +263,7 @@ static class Platform
     {
         // The collector times its pauses by this system's clock.
         Gc.PauseClock = Sys.AddressOf(Clock.NowMicroseconds);
-        Sys.PokeWord(block + Tls.Self, block);
+        Sys.Poke(block + Tls.Self, block);
 
         long desc = block + Tls.Scratch;
 

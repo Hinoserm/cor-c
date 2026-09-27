@@ -389,7 +389,7 @@ public sealed partial class Lowering
             // is one thread block for the process and it is the library's,
             // and a program carrying a second one would have a handler chain
             // and an allocation buffer nothing else could see.
-            _m.Data.Add(new DataItem(ThreadBlock0, new byte[TlsBytes]) { Zero = true, Align = _t.WordSize, FromLibrary = true });
+            _m.Data.Add(new DataItem(ThreadBlock0, new byte[TlsBytes / 4 * _t.WordSize]) { Zero = true, Align = _t.WordSize, FromLibrary = true });
             _m.Data.Add(new DataItem(ThreadBlockSelf, new byte[_t.WordSize]) { Zero = true, Align = _t.WordSize, FromLibrary = true });
         }
 
@@ -692,7 +692,7 @@ public sealed partial class Lowering
             // ours: the frame pointer plus the pushed word is the top.
             VReg top = e.Reg(IrTypes.Word, "fp");
             e.Emit(Opcode.FramePointer, top);
-            e.Store(only, e.Binary(Opcode.Add, top, Target.Current.WordSize), TlsStackBase);
+            e.Store(only, e.Binary(Opcode.Add, top, Target.Current.WordSize), TlsStackBase / 4 * Target.Current.WordSize);
         }
 
         // Linux: the block goes behind a GDT entry and GS names it. This is
@@ -710,7 +710,7 @@ public sealed partial class Lowering
         // which is where the collector's scan of it ends.
         if (entrySp is not null && initializedThreadBlock)
         {
-            e.Store(ThreadBlockOf(e), entrySp, TlsStackBase);
+            e.Store(ThreadBlockOf(e), entrySp, TlsStackBase / 4 * Target.Current.WordSize);
         }
 
         // The collector cannot scan a stack it does not know about; the main
