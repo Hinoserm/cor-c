@@ -1171,6 +1171,15 @@ public sealed partial class Lowering
         _m.Data.Add(item);
         item.Relocs.Add(new DataReloc(DescName * w, InternString(isString ? "System.String" : DotNetName(element) + "[]"), 0));
         item.Relocs.Add(new DataReloc(DescSelf * w, sym, 0));
+
+        // AN EMPTY INTERFACE LIST, the terminator alone, so `is` and `as`
+        // against an interface answer no for a sequence rather than read a
+        // list that is not there. An array reaches its sequence interfaces
+        // through a view made where it is converted (Binder.ArrayView); held
+        // as object, it has no table to dispatch them through.
+        DataItem faces = new("sf_" + sym, new byte[w]) { ReadOnly = true, Exported = false };
+        _m.Data.Add(faces);
+        item.Relocs.Add(new DataReloc(DescInterfaces * w, faces.Name, 0));
         if (slots > 0)
         {
             item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.ToStringSlot * w, ObjectToStringStub(), 0));

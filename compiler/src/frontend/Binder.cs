@@ -6595,6 +6595,16 @@ public sealed partial class Binder
         }
     }
 
+    /// <summary>An array operand of `??` going to one of its interfaces: the view that answers them.</summary>
+    private void CoalesceView(Expr operand, Type from, Type to)
+    {
+        if (from.IsArray && !to.IsArray && ArrayFace(from, to) is { } through
+            && _r.Types.TryGetValue(TypeKey(through), out TypeSymbol? face))
+        {
+            _r.Views[operand] = ArrayView(from.Element!, face);
+        }
+    }
+
     private TypeSymbol ArrayView(Type element, TypeSymbol face)
     {
         string name = $"ArrayView${face.Name}";
@@ -9636,6 +9646,15 @@ public sealed partial class Binder
                     && operand.Prim != Prim.NullLiteral && !operand.IsError)
                 {
                     _r.Boxes.Add(cast.Operand);
+                }
+
+                // `(IReadOnlyList<T>)array` IS THE CONVERSION it names, and the
+                // view that answers Count and the indexer is made here as it is
+                // where the conversion is implicit.
+                if (operand.IsArray && !wanted.IsArray && ArrayFace(operand, wanted) is { } through
+                    && _r.Types.TryGetValue(TypeKey(through), out TypeSymbol? castFace))
+                {
+                    _r.Views[cast.Operand] = ArrayView(operand.Element!, castFace);
                 }
                 return wanted;
             }
@@ -14064,6 +14083,24 @@ public sealed partial class Binder
                     && Convertible(r, l.Underlying))
                 {
                     return l.Underlying;
+                }
+
+                // C#'s RULE for the rest: the left's type when the right
+                // converts to it, and otherwise the right's when the left
+                // converts to that. An array going to one of its interfaces is
+                // wrapped in its view, on whichever side it is.
+                {
+                    Type left = l.AsNonNullable();
+                    Type right = r.AsNonNullable();
+                    if (!l.IsNullableValue && r.Prim != Prim.NullLiteral && !right.Equals(left) && Convertible(right, left) && !Convertible(left, right))
+                    {
+                        CoalesceView(b.Right, right, left);
+                        return r.Nullable ? l : left;
+                    }
+                    if (Convertible(left, right))
+                    {
+                        CoalesceView(b.Left, left, right);
+                    }
                 }
 
                 return r.Nullable ? r : r.AsNonNullable();
