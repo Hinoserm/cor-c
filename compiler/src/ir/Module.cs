@@ -70,6 +70,13 @@ public sealed class Module
     /// own: that is a program shadowing a library type, and the program's is
     /// the one it meant.
     /// </summary>
+    /// <summary>
+    /// The class library's definitions will be given away to shared objects
+    /// (Provided): its code is here to be read, not emitted, so no pass may
+    /// make a new definition out of it that no library exports.
+    /// </summary>
+    public bool LibraryCodeIsShared { get; set; }
+
     public int Provided(IReadOnlySet<string> provided)
     {
         ArgumentNullException.ThrowIfNull(provided);

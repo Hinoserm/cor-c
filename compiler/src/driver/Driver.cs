@@ -589,6 +589,7 @@ public static class Driver
         Program.BenchmarkStage("lower");
 #endif
         Module module = Lowering.Lower(front.Value.bound, front.Value.unit, name, library, errors, entries);
+        module.LibraryCodeIsShared = Corsac.Lang.Lower.Lowering.Dynamic;
         Phase("lower");
 
         if (errors.Count > 0)

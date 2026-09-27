@@ -43,4 +43,13 @@ public enum RelocKind : byte
     /// descriptor's pointer, a jump table entry -- in a long-mode image.
     /// </summary>
     Abs64,
+
+    /// <summary>
+    /// R_X86_64_GOTPCREL: the 32-bit displacement from the end of the field
+    /// (Addend -4) to Symbol's GOT slot -- `mov r, [rip + sym@GOTPCREL]`,
+    /// how long-mode code reaches what another image defines. When the link
+    /// finds the symbol defined after all, the load becomes `lea r, [rip +
+    /// sym]` (the GOTPCRELX relaxation) and no slot is made.
+    /// </summary>
+    GotPcRel,
 }

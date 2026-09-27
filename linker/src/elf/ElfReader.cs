@@ -18,65 +18,113 @@ namespace Corsac.Lang.Elf;
 public static class ElfReader
 {
     /// <summary>
+    /// A linked image's dynamic tables, read through its section headers
+    /// from either class: an i386 image (ELF32) or an x86-64 one (ELF64).
+    /// Everything this reads is a file a linker wrote -- this one or GNU ld
+    /// -- and section headers are the simpler road to the same tables than
+    /// PT_DYNAMIC.
+    /// </summary>
+    private sealed class DynamicView
+    {
+        public readonly List<(string Name, ushort Shndx, ulong Value)> Symbols = new();
+        public readonly List<(long Tag, ulong Value)> Entries = new();
+        public ReadOnlyMemory<byte> Strings = ReadOnlyMemory<byte>.Empty;
+        public ulong LowAddress = ulong.MaxValue;
+        public bool HasDynamic;
+
+        public string Text(ulong at, string what) => StringTable.Read(Strings.Span, checked((uint)at), what);
+
+        public static DynamicView Read(byte[] bytes)
+        {
+            ArgumentNullException.ThrowIfNull(bytes);
+            ReadOnlySpan<byte> f = bytes;
+            if (f.Length < Elf.HeaderSize || !f[..4].SequenceEqual(Elf.Magic) || f[5] != Elf.Data2Lsb
+                || (f[4] != Elf.Class32 && f[4] != Elf.Class64))
+            {
+                throw new ElfFormatException("not a little-endian ELF file");
+            }
+            bool wide = f[4] == Elf.Class64;
+            if (wide && f.Length < Elf.Header64Size) throw new ElfFormatException("ELF64 header is truncated");
+            ulong Word(int at) => wide ? BinaryPrimitives.ReadUInt64LittleEndian(bytes.AsSpan(at)) : BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(at));
+            ulong phoff = wide ? Word(32) : Word(28);
+            ulong shoff = wide ? Word(40) : Word(32);
+            int phent = wide ? Elf.ProgramHeader64Size : Elf.ProgramHeaderSize;
+            int shent = wide ? Elf.SectionHeader64Size : Elf.SectionHeaderSize;
+            ushort phnum = BinaryPrimitives.ReadUInt16LittleEndian(f[(wide ? 56 : 44)..]);
+            ushort shnum = BinaryPrimitives.ReadUInt16LittleEndian(f[(wide ? 60 : 48)..]);
+            DynamicView view = new();
+            for (int i = 0; i < phnum; i++)
+            {
+                int at = checked((int)phoff + i * phent);
+                if (at + phent > f.Length) break;
+                if (BinaryPrimitives.ReadUInt32LittleEndian(f[at..]) != Elf.PtLoad) continue;
+                ulong vaddr = wide ? Word(at + 16) : Word(at + 8);
+                view.LowAddress = Math.Min(view.LowAddress, vaddr);
+            }
+            if (view.LowAddress == ulong.MaxValue) view.LowAddress = 0;
+
+            // (type, offset, size, link) of every section.
+            List<(uint Type, ulong Offset, ulong Size, uint Link)> sections = new();
+            for (int i = 0; i < shnum && shoff != 0; i++)
+            {
+                int at = checked((int)shoff + i * shent);
+                if (at + shent > f.Length) throw new ElfFormatException("section headers run past the end of the file");
+                uint type = BinaryPrimitives.ReadUInt32LittleEndian(f[(at + 4)..]);
+                sections.Add(wide
+                    ? (type, Word(at + 24), Word(at + 32), BinaryPrimitives.ReadUInt32LittleEndian(f[(at + 40)..]))
+                    : (type, Word(at + 16), Word(at + 20), BinaryPrimitives.ReadUInt32LittleEndian(f[(at + 24)..])));
+            }
+            ReadOnlySpan<byte> Content((uint Type, ulong Offset, ulong Size, uint Link) s)
+            {
+                if (s.Offset + s.Size > (ulong)bytes.Length) throw new ElfFormatException("a section runs past the end of the file");
+                return bytes.AsSpan((int)s.Offset, (int)s.Size);
+            }
+            int dynsym = sections.FindIndex(s => s.Type == Elf.ShtDynSym);
+            int dynamic = sections.FindIndex(s => s.Type == Elf.ShtDynamic);
+            int strings = dynsym >= 0 ? (int)sections[dynsym].Link : dynamic >= 0 ? (int)sections[dynamic].Link : 0;
+            if (strings > 0 && strings < sections.Count) view.Strings = Content(sections[strings]).ToArray();
+            if (dynsym >= 0 && strings > 0)
+            {
+                ReadOnlySpan<byte> table = Content(sections[dynsym]);
+                int size = wide ? Elf.Symbol64Size : Elf.SymbolSize;
+                for (int at = 0; at + size <= table.Length; at += size)
+                {
+                    uint name = BinaryPrimitives.ReadUInt32LittleEndian(table[at..]);
+                    ushort shndx = BinaryPrimitives.ReadUInt16LittleEndian(table[(at + (wide ? 6 : 14))..]);
+                    ulong value = wide ? BinaryPrimitives.ReadUInt64LittleEndian(table[(at + 8)..]) : BinaryPrimitives.ReadUInt32LittleEndian(table[(at + 4)..]);
+                    if (name == 0) continue;
+                    view.Symbols.Add((view.Text(name, ".dynsym"), shndx, value));
+                }
+            }
+            if (dynamic >= 0)
+            {
+                view.HasDynamic = true;
+                ReadOnlySpan<byte> table = Content(sections[dynamic]);
+                int size = wide ? 16 : 8;
+                for (int at = 0; at + size <= table.Length; at += size)
+                {
+                    long tag = wide ? BinaryPrimitives.ReadInt64LittleEndian(table[at..]) : BinaryPrimitives.ReadInt32LittleEndian(table[at..]);
+                    ulong value = wide ? BinaryPrimitives.ReadUInt64LittleEndian(table[(at + 8)..]) : BinaryPrimitives.ReadUInt32LittleEndian(table[(at + 4)..]);
+                    if (tag == Elf.DtNull) break;
+                    view.Entries.Add((tag, value));
+                }
+            }
+            return view;
+        }
+    }
+
+    /// <summary>
     /// The name a shared object calls itself: its DT_SONAME, or null if it
-    /// has none or is not a shared object at all. Read through the section
-    /// headers, which both this linker and GNU ld emit; a stripped-to-the-
-    /// segments library answers null and the caller falls back to the file
-    /// name, which is what the loader would have looked for anyway.
+    /// has none or is not a shared object at all. A stripped-to-the-segments
+    /// library answers null and the caller falls back to the file name,
+    /// which is what the loader would have looked for anyway.
     /// </summary>
     public static string? SoNameOf(byte[] bytes)
     {
-        ArgumentNullException.ThrowIfNull(bytes);
-        ReadOnlySpan<byte> f = bytes;
-        if (f.Length < Elf.HeaderSize || !f[..4].SequenceEqual(Elf.Magic) || f[4] != Elf.Class32 || f[5] != Elf.Data2Lsb)
+        DynamicView view = DynamicView.Read(bytes);
+        foreach ((long tag, ulong value) in view.Entries)
         {
-            throw new ElfFormatException("not a 32-bit little-endian ELF file");
-        }
-        uint shoff = BinaryPrimitives.ReadUInt32LittleEndian(f[32..]);
-        ushort shnum = BinaryPrimitives.ReadUInt16LittleEndian(f[48..]);
-        if (shoff == 0 || shnum == 0)
-        {
-            return null;
-        }
-        SectionHeader? dynamic = null;
-        SectionHeader? strtab = null;
-        for (int i = 0; i < shnum; i++)
-        {
-            int at = (int)shoff + i * Elf.SectionHeaderSize;
-            if (at + Elf.SectionHeaderSize > f.Length)
-            {
-                throw new ElfFormatException("section headers run past the end of the file");
-            }
-            SectionHeader h = SectionHeader.Read(f[at..]);
-            if (h.Type == Elf.ShtDynamic)
-            {
-                dynamic = h;
-            }
-        }
-        if (dynamic is null)
-        {
-            return null;
-        }
-        // .dynamic's sh_link names the string table its tags index into.
-        int linkAt = (int)shoff + (int)dynamic.Value.Link * Elf.SectionHeaderSize;
-        if (dynamic.Value.Link == 0 || linkAt + Elf.SectionHeaderSize > f.Length)
-        {
-            return null;
-        }
-        strtab = SectionHeader.Read(f[linkAt..]);
-        ReadOnlySpan<byte> table = f.Slice((int)strtab.Value.Offset, (int)strtab.Value.Size);
-        for (uint at = dynamic.Value.Offset; at + 8 <= dynamic.Value.Offset + dynamic.Value.Size; at += 8)
-        {
-            int tag = (int)BinaryPrimitives.ReadUInt32LittleEndian(f[(int)at..]);
-            uint value = BinaryPrimitives.ReadUInt32LittleEndian(f[((int)at + 4)..]);
-            if (tag == Elf.DtNull)
-            {
-                break;
-            }
-            if (tag == Elf.DtSoName)
-            {
-                return StringTable.Read(table, value, "DT_SONAME");
-            }
+            if (tag == Elf.DtSoName) return view.Text(value, "DT_SONAME");
         }
         return null;
     }
@@ -85,11 +133,6 @@ public static class ElfReader
     /// Every name a shared object DEFINES, out of its .dynsym: what a
     /// consumer must not compile a second copy of, and what it may leave
     /// for the loader to supply.
-    ///
-    /// Read from the section headers rather than by walking PT_DYNAMIC,
-    /// because everything this reads is a file the compiler itself wrote a
-    /// moment earlier and section headers are the simpler road to the same
-    /// table.
     /// </summary>
     public static List<string> ExportsOf(byte[] bytes) => DynamicNames(bytes, defined: true);
 
@@ -105,116 +148,32 @@ public static class ElfReader
 
     public static SharedImageInfo ReadSharedImage(byte[] bytes)
     {
-        ArgumentNullException.ThrowIfNull(bytes);
-        ReadOnlySpan<byte> f = bytes;
-        if (f.Length < Elf.HeaderSize || !f[..4].SequenceEqual(Elf.Magic) || f[4] != Elf.Class32 || f[5] != Elf.Data2Lsb)
-        {
-            throw new ElfFormatException("not a 32-bit little-endian ELF file");
-        }
+        DynamicView view = DynamicView.Read(bytes);
         Dictionary<string, uint> exports = new(StringComparer.Ordinal);
+        foreach ((string name, ushort shndx, ulong value) in view.Symbols)
+        {
+            if (shndx != Elf.ShnUndef && value <= uint.MaxValue) exports.TryAdd(name, (uint)value);
+        }
         List<string> needed = new();
         string? soname = null;
-        uint checksum = 0, low = uint.MaxValue;
-
-        uint phoff = BinaryPrimitives.ReadUInt32LittleEndian(f[28..]);
-        ushort phnum = BinaryPrimitives.ReadUInt16LittleEndian(f[44..]);
-        for (int i = 0; i < phnum; i++)
+        uint checksum = 0;
+        foreach ((long tag, ulong value) in view.Entries)
         {
-            int at = (int)phoff + i * 32;
-            if (at + 32 > f.Length) break;
-            if (BinaryPrimitives.ReadUInt32LittleEndian(f[at..]) != Elf.PtLoad) continue;
-            uint vaddr = BinaryPrimitives.ReadUInt32LittleEndian(f[(at + 8)..]);
-            if (vaddr < low) low = vaddr;
+            if (tag == Elf.DtNeeded) needed.Add(view.Text(value, ".dynstr"));
+            else if (tag == Elf.DtSoName) soname = view.Text(value, ".dynstr");
+            else if (tag == Elf.DtCorsacChecksum) checksum = (uint)value;
         }
-        if (low == uint.MaxValue) low = 0;
-
-        uint shoff = BinaryPrimitives.ReadUInt32LittleEndian(f[32..]);
-        ushort shnum = BinaryPrimitives.ReadUInt16LittleEndian(f[48..]);
-        SectionHeader? dynsym = null, dynamic = null;
-        for (int i = 0; i < shnum && shoff != 0; i++)
-        {
-            int at = (int)shoff + i * Elf.SectionHeaderSize;
-            if (at + Elf.SectionHeaderSize > f.Length) break;
-            SectionHeader h = SectionHeader.Read(f[at..]);
-            if (h.Type == Elf.ShtDynSym) dynsym = h;
-            if (h.Type == Elf.ShtDynamic) dynamic = h;
-        }
-        if (dynsym is not null && dynsym.Value.Link != 0)
-        {
-            SectionHeader str = SectionHeader.Read(f[((int)shoff + (int)dynsym.Value.Link * Elf.SectionHeaderSize)..]);
-            ReadOnlySpan<byte> table = f.Slice((int)str.Offset, (int)str.Size);
-            for (uint at = dynsym.Value.Offset; at + Elf.SymbolSize <= dynsym.Value.Offset + dynsym.Value.Size; at += (uint)Elf.SymbolSize)
-            {
-                SymbolEntry e = SymbolEntry.Read(f[(int)at..]);
-                if (e.Shndx == Elf.ShnUndef || e.Name == 0) continue;
-                exports.TryAdd(StringTable.Read(table, e.Name, ".dynsym"), e.Value);
-            }
-        }
-        if (dynamic is not null && dynamic.Value.Link != 0)
-        {
-            SectionHeader str = SectionHeader.Read(f[((int)shoff + (int)dynamic.Value.Link * Elf.SectionHeaderSize)..]);
-            ReadOnlySpan<byte> table = f.Slice((int)str.Offset, (int)str.Size);
-            for (uint at = dynamic.Value.Offset; at + 8 <= dynamic.Value.Offset + dynamic.Value.Size; at += 8)
-            {
-                int tag = BinaryPrimitives.ReadInt32LittleEndian(f[(int)at..]);
-                uint value = BinaryPrimitives.ReadUInt32LittleEndian(f[((int)at + 4)..]);
-                if (tag == Elf.DtNull) break;
-                if (tag == Elf.DtNeeded) needed.Add(StringTable.Read(table, value, ".dynstr"));
-                else if (tag == Elf.DtSoName) soname = StringTable.Read(table, value, ".dynstr");
-                else if (tag == Elf.DtCorsacChecksum) checksum = value;
-            }
-        }
+        // An image laid out above 4 GiB has no preferred address prebinding can use.
+        uint low = view.LowAddress <= uint.MaxValue ? (uint)view.LowAddress : 0;
         return new SharedImageInfo(soname, needed, checksum, low, exports);
     }
 
     private static List<string> DynamicNames(byte[] bytes, bool defined)
     {
-        ArgumentNullException.ThrowIfNull(bytes);
-        ReadOnlySpan<byte> f = bytes;
-        if (f.Length < Elf.HeaderSize || !f[..4].SequenceEqual(Elf.Magic) || f[4] != Elf.Class32 || f[5] != Elf.Data2Lsb)
-        {
-            throw new ElfFormatException("not a 32-bit little-endian ELF file");
-        }
-        uint shoff = BinaryPrimitives.ReadUInt32LittleEndian(f[32..]);
-        ushort shnum = BinaryPrimitives.ReadUInt16LittleEndian(f[48..]);
         List<string> names = new();
-        if (shoff == 0 || shnum == 0)
+        foreach ((string name, ushort shndx, _) in DynamicView.Read(bytes).Symbols)
         {
-            return names;
-        }
-        SectionHeader? dynsym = null;
-        for (int i = 0; i < shnum; i++)
-        {
-            int at = (int)shoff + i * Elf.SectionHeaderSize;
-            if (at + Elf.SectionHeaderSize > f.Length)
-            {
-                throw new ElfFormatException("section headers run past the end of the file");
-            }
-            SectionHeader h = SectionHeader.Read(f[at..]);
-            if (h.Type == Elf.ShtDynSym)
-            {
-                dynsym = h;
-            }
-        }
-        if (dynsym is null)
-        {
-            return names;
-        }
-        int strAt = (int)shoff + (int)dynsym.Value.Link * Elf.SectionHeaderSize;
-        if (dynsym.Value.Link == 0 || strAt + Elf.SectionHeaderSize > f.Length)
-        {
-            return names;
-        }
-        SectionHeader str = SectionHeader.Read(f[strAt..]);
-        ReadOnlySpan<byte> table = f.Slice((int)str.Offset, (int)str.Size);
-        for (uint at = dynsym.Value.Offset; at + Elf.SymbolSize <= dynsym.Value.Offset + dynsym.Value.Size; at += (uint)Elf.SymbolSize)
-        {
-            SymbolEntry e = SymbolEntry.Read(f[(int)at..]);
-            if ((e.Shndx != Elf.ShnUndef) != defined || e.Name == 0)
-            {
-                continue;
-            }
-            names.Add(StringTable.Read(table, e.Name, ".dynsym"));
+            if ((shndx != Elf.ShnUndef) == defined) names.Add(name);
         }
         return names;
     }
