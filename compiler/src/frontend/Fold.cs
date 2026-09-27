@@ -79,6 +79,7 @@ public static class Fold
                         value = v;
                         return true;
                     case UnOp.Neg: value = -v; return true;
+                    case UnOp.Plus: value = v; return true;
                     case UnOp.Not: value = v == 0 ? 1 : 0; return true;
                     case UnOp.BitNot: value = ~v; return true;
                     default: return false;

@@ -1,0 +1,74 @@
+// test: uint128_and_unary_operators
+// expect-exit: 0
+// expect-output:
+// 3 32: (1431655766, 0) 1431655766
+// 3 64: (6148914691236517206, 0) 6148914691236517206
+// 5 32: (1717986919, 1) 2576980378
+// 5 64: (7378697629483820647, 1) 11068046444225730970
+// 7 32: (-1840700269, 2) 613566757
+// 7 64: (5270498306774157605, 1) 2635249153387078803
+// -7 32: (1840700269, 2) 613566757
+// -7 64: (-5270498306774157605, 1) 2635249153387078803
+// 10 32: (1717986919, 2) 2576980378
+// 10 64: (7378697629483820647, 2) 11068046444225730970
+// 641 32: (6700417, 0) 2566259711
+// 641 64: (7367186400732675841, 8) 11022001529221151746
+// 1000000007 32: (1152921497, 28) 316718691
+// 1000000007 64: (-8543223828751151131, 29) 1360296416207249353
+// -3 32: (1431655765, 1) 1431655766
+// -3 64: (6148914691236517205, 1) 6148914691236517206
+// 12345678901 64: (-5611781630640202651, 33) 7223180812429146313
+// 340282366920938463463374607431768211455 34028236692093846346337460743176821145 455 18446744073709551616 170141183460469231731687303715884105728 838102050 340282366920938463463374607431768211455
+//
+// System.UInt128 as .NET has it, exercised the way the x86-64 backend's
+// magic-number division (Select.cs) uses it: shifts, + - * / %, &, the
+// comparisons, `2 * q` and `t - 1` reaching UInt128's operators through the
+// constant conversion to uint, and (UInt128)(-1) choosing the operator from
+// int. Expected output is real .NET's.
+
+using System;
+static class Program
+{
+    static (long Magic, int Shift) SignedMagic(long d, int bits)
+    {
+        UInt128 two = UInt128.One << (bits - 1);
+        UInt128 mask = (UInt128.One << bits) - 1;
+        UInt128 ad = (UInt128)(ulong)Math.Abs(d);
+        UInt128 t = two + (d < 0 ? UInt128.One : UInt128.Zero);
+        UInt128 anc = t - 1 - t % ad;
+        int p = bits - 1;
+        UInt128 q1 = two / anc, r1 = two - q1 * anc;
+        UInt128 q2 = two / ad, r2 = two - q2 * ad;
+        UInt128 delta;
+        do
+        {
+            p++;
+            q1 = (2 * q1) & mask; r1 = (2 * r1) & mask;
+            if (r1 >= anc) { q1 = (q1 + 1) & mask; r1 = (r1 - anc) & mask; }
+            q2 = (2 * q2) & mask; r2 = (2 * r2) & mask;
+            if (r2 >= ad) { q2 = (q2 + 1) & mask; r2 = (r2 - ad) & mask; }
+            delta = ad - r2;
+        }
+        while (q1 < delta || (q1 == delta && r1 == 0));
+        UInt128 magic = (q2 + 1) & mask;
+        long m = bits == 32 ? unchecked((int)(uint)magic) : unchecked((long)(ulong)magic);
+        if (d < 0) m = bits == 32 ? unchecked(-(int)m) : unchecked(-m);
+        return (m, p - bits);
+    }
+    static ulong Unsigned(ulong ud, int bits)
+    {
+        int l = 0;
+        while (l < bits && (UInt128.One << l) < ud) l++;
+        UInt128 magic = ((UInt128.One << bits) * ((UInt128.One << l) - ud)) / ud + 1;
+        return (ulong)magic;
+    }
+    static void Main()
+    {
+        foreach (long d in new long[] { 3, 5, 7, -7, 10, 641, 1000000007, -3, 12345678901 })
+            foreach (int bits in new[] { 32, 64 })
+                if (bits == 64 || Math.Abs(d) < int.MaxValue)
+                    Console.WriteLine($"{d} {bits}: {SignedMagic(d, bits)} {Unsigned((ulong)Math.Abs(d), bits)}");
+        UInt128 big = UInt128.MaxValue;
+        Console.WriteLine(big + " " + (big / 10) + " " + (big % 1000) + " " + new UInt128(1, 0) + " " + (UInt128.One << 127) + " " + ((UInt128)12345 * 67890) + " " + (UInt128)(-1));
+    }
+}

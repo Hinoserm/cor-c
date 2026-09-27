@@ -322,6 +322,17 @@ public static class Frontend
     {
         bool made = false;
 
+        // WHICH NAMES ARE VALUE TYPES, for the copies' `T?` (Monomorphiser.Specialise).
+        HashSet<string> values = new(StringComparer.Ordinal);
+        foreach (Lang.TypeDecl t in unit.Types)
+        {
+            if (t.Kind is Lang.TypeKind.Struct or Lang.TypeKind.Enum)
+            {
+                values.Add(t.Name);
+                if (t.Outer is not null) values.Add(t.Outer + "." + t.Name);
+            }
+        }
+
         // A copy in the canonical class too, when the owner shares its code
         // with one (see the comment where it is called); answers whether it
         // made one.
@@ -340,7 +351,7 @@ public static class Frontend
 
                     if (origin is not null)
                     {
-                        Lang.MethodDecl twin = Lang.Monomorphiser.Specialise(origin, args, wanted);
+                        Lang.MethodDecl twin = Lang.Monomorphiser.Specialise(origin, args, wanted, values);
 
                         twin.File = origin.File;
                         twin.LocalCopy = true;
@@ -376,7 +387,7 @@ public static class Frontend
 
             if (!owner.Members.Any(m => m.Name == wanted))
             {
-                Lang.MethodDecl copy = Lang.Monomorphiser.Specialise(template, args, wanted);
+                Lang.MethodDecl copy = Lang.Monomorphiser.Specialise(template, args, wanted, values);
 
                 copy.File = template.File;
 
@@ -435,7 +446,7 @@ public static class Frontend
                 continue;
             }
 
-            Lang.MethodDecl copy = Lang.Monomorphiser.Specialise(template, args, wanted);
+            Lang.MethodDecl copy = Lang.Monomorphiser.Specialise(template, args, wanted, values);
 
             copy.File = template.File;
             copy.LocalCopy = true;

@@ -898,6 +898,8 @@ public sealed partial class Binder
                 return whole.IntValue;
             case UnaryExpr { Op: UnOp.Neg } negated:
                 return RealConstant(negated.Operand, owner) is double inner ? -inner : null;
+            case UnaryExpr { Op: UnOp.Plus } plus:
+                return RealConstant(plus.Operand, owner);
             case BinaryExpr { Op: BinOp.Add or BinOp.Sub or BinOp.Mul or BinOp.Div or BinOp.Rem } b:
             {
                 if (RealConstant(b.Left, owner) is not double left || RealConstant(b.Right, owner) is not double right) return null;
@@ -2853,7 +2855,7 @@ public sealed partial class Binder
                 // so an interface that re-implements the member explicitly
                 // (`string IGreeter.Greet() => …` in a derived interface) is
                 // taken before the one that declared it.
-                if (impl is null && !sym.Kind.Equals(TypeKind.Interface))
+                if (impl is null && sym.Kind != TypeKind.Interface)
                 {
                     impl = AllInterfaces(sym).Select(face => face.Methods.FirstOrDefault(m => m.ExplicitMember == want.Name
                                    && m.ExplicitInterface == ifaceName && m.Decl?.Body is not null
@@ -4392,7 +4394,8 @@ public sealed partial class Binder
 
         // A USER-DEFINED IMPLICIT CONVERSION, where no standard one applies.
         if (at is Expr converted && !StandardConvertible(from, to) && !Variant(from, to)
-            && !_r.Rewrites.ContainsKey(converted) && UserConversion(from, to, explicitToo: false) is { } implicitOp)
+            && !_r.Rewrites.ContainsKey(converted)
+            && UserConversion(from, to, explicitToo: false, IntegerConstant(converted, from)) is { } implicitOp)
         {
             ConvertByOperator(converted, implicitOp);
             return;
@@ -4541,7 +4544,30 @@ public sealed partial class Binder
     /// only, since C# never chains two user-defined conversions. A cast may
     /// use an `explicit` one as well.
     /// </summary>
+    /// <summary>The value of an integer constant expression of this type, or null.</summary>
+    private long? IntegerConstant(Expr? e, Type type)
+        => e is not null && type.IsInteger && !type.IsNullableValue && ConstantValue(e, _thisType) is long value ? value : null;
+
+    /// <summary>
+    /// ... and a CONSTANT reaches an operator's operand through the constant
+    /// conversion first (C# 10.5.3's standard conversions include it): the
+    /// `2` of `2 * q` becomes a uint, and UInt128's `implicit operator
+    /// UInt128(uint)` makes the rest.
+    /// </summary>
+    private MethodSymbol? UserConversion(Type from, Type to, bool explicitToo, long? constant)
+    {
+        if (constant is not long value)
+        {
+            return UserConversion(from, to, explicitToo);
+        }
+        return UserConversion(from, to, explicitToo) ?? UserConversionWhere(from, to, explicitToo,
+            operand => operand.IsInteger && !operand.IsNullableValue && operand.Prim != Prim.Char && Binder.Fits(value, operand));
+    }
+
     private MethodSymbol? UserConversion(Type from, Type to, bool explicitToo)
+        => UserConversionWhere(from, to, explicitToo, operand => StandardConvertible(from, operand));
+
+    private MethodSymbol? UserConversionWhere(Type from, Type to, bool explicitToo, Func<Type, bool> takes)
     {
         if (from.IsError || to.IsError || from.Prim is Prim.Any or Prim.NullLiteral || to.Prim == Prim.Any
             || from.IsArray && to.IsArray)
@@ -4570,7 +4596,7 @@ public sealed partial class Binder
                 foreach (MethodSymbol m in holder.FindMethods(name))
                 {
                     if (m.Static && m.Params.Count == 1
-                        && StandardConvertible(from, m.Params[0].Type) && StandardConvertible(m.Returns, to))
+                        && takes(m.Params[0].Type) && StandardConvertible(m.Returns, to))
                     {
                         candidates.Add(m);
                     }
@@ -4578,14 +4604,14 @@ public sealed partial class Binder
             }
         }
 
-        // THE MOST SPECIFIC OPERATOR (C# 10.5.5): the one whose result is the
-        // target itself, else whose operand is the source itself, else the
-        // first that fits. `(long)node` is JsonNode's operator to long, not
-        // the one to int that also widens to long.
-        MethodSymbol? exact = candidates.FirstOrDefault(m => MethodSignatures.SameType(m.Returns, to));
-        if (exact != null) return exact;
-        MethodSymbol? fromExactly = candidates.FirstOrDefault(m => MethodSignatures.SameType(m.Params[0].Type, from));
-        return fromExactly ?? candidates.FirstOrDefault();
+        // THE MOST SPECIFIC OPERATOR (C# 10.5.5): among those whose operand
+        // is the source itself when any is, the one whose result is the
+        // target itself. `(UInt128)(-1)` is UInt128's operator from int, not
+        // the one from uint that the int also reaches by a cast; `(long)node`
+        // is JsonNode's operator to long, not the one to int that widens.
+        List<MethodSymbol> fromExactly = candidates.Where(m => MethodSignatures.SameType(m.Params[0].Type, from)).ToList();
+        if (fromExactly.Count > 0) candidates = fromExactly;
+        return candidates.FirstOrDefault(m => MethodSignatures.SameType(m.Returns, to)) ?? candidates.FirstOrDefault();
     }
 
     /// <summary>
@@ -7808,6 +7834,25 @@ public sealed partial class Binder
     {
         Type made = Substitute(t, bound);
 
+        // A TUPLE OVER TYPE PARAMETERS IS REMADE OVER WHAT THEY ARE BOUND TO.
+        // A tuple is a shape of its element types, not a template with
+        // arguments, so `(T First, U Second)` -- Zip's element -- stayed the
+        // shape over T and U, and a lambda over the pairs could not be typed.
+        if (bound is not null && made.Symbol is { } shape && !made.IsArray
+            && shape.Name.StartsWith(TypeRef.Tuple + "$", StringComparison.Ordinal)
+            && shape.Fields.Any(f => !f.Static && bound.Keys.Any(k => Mentions(f.Type, k))))
+        {
+            List<Type> elements = shape.Fields.Where(f => !f.Static).Select(f => Close(f.Type, bound)).ToList();
+            Type remade = new() { Prim = Prim.Void, Symbol = TupleType(elements, shape.TupleNames) };
+            return made.Nullable ? remade.AsNullable() : remade;
+        }
+        if (bound is not null && made.IsArray && made.Element is Type inner && Close(inner, bound) is { } closedInner
+            && !ReferenceEquals(closedInner.Symbol, inner.Symbol))
+        {
+            Type array = Type.ArrayOf(closedInner, 1);
+            return made.Nullable ? array.AsNullable() : array;
+        }
+
         if (bound is null || made.Symbol is not { } template || made.Args.Count == 0
             || template.Decl?.TypeParams.Count != made.Args.Count)
         {
@@ -9631,8 +9676,23 @@ public sealed partial class Binder
                     return Type.Error;
                 }
 
+                // A TYPE'S OWN OPERATOR (C# 12.9): `-v`, `~flags`, `!ok`,
+                // `+x` and `i++` on a struct or class that declares one.
+                if (UserUnary(u, t) is Type byOperator)
+                {
+                    return byOperator;
+                }
+
                 switch (u.Op)
                 {
+                    case UnOp.Plus:
+                        if (!t.IsNumeric)
+                        {
+                            Error(u, $"'+' needs a number, not '{t}'");
+                            return Type.Error;
+                        }
+                        return t.IsNullableValue ? t : Promote(t);
+
                     case UnOp.Checked:
                     case UnOp.Unchecked:
                         return t;
@@ -14042,6 +14102,14 @@ public sealed partial class Binder
                 {
                     continue;
                 }
+
+                // A CONSTANT INTO A TYPE WITH A CONVERSION FROM A NARROWER
+                // INTEGER: `UInt128.Max(x, 1)` takes the 1 as a uint first.
+                if (i < c.Args.Count && want.Symbol is not null
+                    && UserConversion(args[i], want, false, IntegerConstant(c.Args[i], args[i])) is not null)
+                {
+                    continue;
+                }
                 return false;
             }
             return true;
@@ -14663,7 +14731,8 @@ public sealed partial class Binder
             return null;
         }
 
-        MethodSymbol? found = Operator(l.Symbol, name, l, r) ?? Operator(r.Symbol, name, l, r);
+        long? lc = IntegerConstant(b.Left, l), rc = IntegerConstant(b.Right, r);
+        MethodSymbol? found = Operator(l.Symbol, name, l, r, lc, rc) ?? Operator(r.Symbol, name, l, r, lc, rc);
 
         if (found is null)
         {
@@ -14686,6 +14755,92 @@ public sealed partial class Binder
         return CheckExpr(call);
     }
 
+    /// <summary>
+    /// A unary operator a type declares, called: the operand-to-value ones as
+    /// the call they are, and `++`/`--` as C# 12.8.16 has them -- the operator
+    /// applied and the result stored back, the expression's value the new one
+    /// before the operand (prefix) or the old one (postfix). Null when the
+    /// operand's type declares none, and the language's own rules apply.
+    /// </summary>
+    private Type? UserUnary(UnaryExpr u, Type operand)
+    {
+        string? name = u.Op switch
+        {
+            UnOp.Neg => "op_UnaryNegation",
+            UnOp.Plus => "op_UnaryPlus",
+            UnOp.Not => "op_LogicalNot",
+            UnOp.BitNot => "op_OnesComplement",
+            UnOp.PreInc or UnOp.PostInc => "op_Increment",
+            UnOp.PreDec or UnOp.PostDec => "op_Decrement",
+            _ => null,
+        };
+        if (name is null || operand.IsArray || operand.IsPointer
+            || operand.AsNonNullable().Symbol is not { Kind: TypeKind.Class or TypeKind.Struct } holder)
+        {
+            return null;
+        }
+        MethodSymbol? found = holder.FindMethods(name)
+            .FirstOrDefault(m => m.Static && m.Params.Count == 1 && Convertible(operand, m.Params[0].Type));
+        if (found is null)
+        {
+            return null;
+        }
+
+        CallExpr Apply(Expr on)
+        {
+            CallExpr call = new()
+            {
+                Target = new MemberExpr { Target = Qualified(found.Owner.Key, u), Name = name, Line = u.Line, Col = u.Col },
+                Line = u.Line, Col = u.Col,
+            };
+            call.Args.Add(on);
+            call.ArgNames.Add(null);
+            return call;
+        }
+
+        Expr made;
+        switch (u.Op)
+        {
+            case UnOp.PreInc or UnOp.PreDec:
+                RequireAssignable(u.Operand, u.Op == UnOp.PreInc ? "increment" : "decrement");
+                made = new AssignExpr { Target = u.Operand, Value = Apply(u.Operand), Line = u.Line, Col = u.Col };
+                break;
+
+            case UnOp.PostInc or UnOp.PostDec:
+            {
+                // The old value is held while the new one is stored, and is
+                // what the expression is worth.
+                RequireAssignable(u.Operand, u.Op == UnOp.PostInc ? "increment" : "decrement");
+                SubjectExpr old = new() { Line = u.Line, Col = u.Col };
+                made = new PatternExpr
+                {
+                    Subject = u.Operand,
+                    Test = new SequenceExpr
+                    {
+                        Effect = new ExprStmt
+                        {
+                            Expr = new AssignExpr
+                            {
+                                Target = u.Operand, Value = Apply(new SubjectExpr { Line = u.Line, Col = u.Col }),
+                                Line = u.Line, Col = u.Col,
+                            },
+                            Line = u.Line, Col = u.Col,
+                        },
+                        Value = old, Line = u.Line, Col = u.Col,
+                    },
+                    Line = u.Line, Col = u.Col,
+                };
+                break;
+            }
+
+            default:
+                made = Apply(u.Operand);
+                break;
+        }
+        _r.Rewrites[u] = made;
+        return CheckExpr(made);
+    }
+
     /// <summary>A dotted type name as the member chain a program would write for it.</summary>
     private static Expr Qualified(string dotted, Node at)
     {
@@ -14700,17 +14855,20 @@ public sealed partial class Binder
 
     /// <summary>The operator of that name on this type whose two parameters
     /// accept these operands, or null.</summary>
-    private MethodSymbol? Operator(TypeSymbol? holder, string name, Type l, Type r)
+    private MethodSymbol? Operator(TypeSymbol? holder, string name, Type l, Type r, long? lc = null, long? rc = null)
     {
         if (holder is null)
         {
             return null;
         }
 
+        bool Takes(Type given, long? constant, Type want)
+            => Convertible(given, want) || constant is not null && UserConversion(given, want, false, constant) is not null;
+
         foreach (MethodSymbol m in holder.FindMethods(name))
         {
             if (m.Static && m.Params.Count == 2
-                && Convertible(l, m.Params[0].Type) && Convertible(r, m.Params[1].Type))
+                && Takes(l, lc, m.Params[0].Type) && Takes(r, rc, m.Params[1].Type))
             {
                 return m;
             }
@@ -14977,7 +15135,12 @@ public sealed partial class Binder
                     // TEST. C# writes no such test there -- a struct is always
                     // there -- so the answer it always gives is written down
                     // instead, and the members are checked as the pattern says.
-                    if (b.PatternNullTest && !other.IsReference && !other.IsNullableValue
+                    //
+                    // AND IN A GENERIC COPY: `default(T) == null` is C# over an
+                    // unconstrained T, false for a value type, and the copy made
+                    // for an int or a KeyValuePair is where that T became one.
+                    bool inCopy = _member is MethodDecl { LocalCopy: true } || _thisType?.Decl?.Specialised == true;
+                    if ((b.PatternNullTest || inCopy) && !other.IsReference && !other.IsNullableValue
                         && other.Prim != Prim.Any && other.ParamName is null && !other.IsError)
                     {
                         LiteralExpr always = new()

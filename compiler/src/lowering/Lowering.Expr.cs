@@ -2232,6 +2232,13 @@ public sealed partial class Lowering
                 return _e.Binary(Opcode.Eq, R(v), Imm(0, v.Type), IrType.I32);
             }
 
+            // `+x`: the value, promoted (a lifted one through its cell).
+            case UnOp.Plus when _b.TypeOf(u.Operand).IsNullableValue:
+                return Eval(u.Operand);
+
+            case UnOp.Plus:
+                return EvalAs(u.Operand, NumericRules.Unary(_b.TypeOf(u.Operand)));
+
             case UnOp.BitNot:
             {
                 Type operand = _b.TypeOf(u.Operand);

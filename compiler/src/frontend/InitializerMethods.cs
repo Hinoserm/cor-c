@@ -30,7 +30,7 @@ internal static class InitializerMethods
     {
         LiteralExpr => true,
         SuppressExpr suppressed => IsConstant(suppressed.Operand),
-        UnaryExpr { Op: UnOp.Neg or UnOp.Not or UnOp.BitNot } unary => IsConstant(unary.Operand),
+        UnaryExpr { Op: UnOp.Neg or UnOp.Not or UnOp.BitNot or UnOp.Plus } unary => IsConstant(unary.Operand),
         _ => false,
     };
 }

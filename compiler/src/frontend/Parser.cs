@@ -2445,19 +2445,17 @@ public sealed class Parser
     /// static method it is: op_Subtraction, with its two operands as
     /// parameters.
     ///
-    /// The unary forms are not here yet; what is here is the binary set,
-    /// which is what a date, a time, a vector or a big integer needs to be
-    /// written the way C# writes it. The conversion operators are parsed
-    /// with the members, since no return type precedes them.
+    /// The unary ones too (C# 15.10.2), named by their operand count where
+    /// the symbol is both: `operator -(Vec v)` is op_UnaryNegation and
+    /// `operator -(Vec a, Vec b)` op_Subtraction. The conversion operators are
+    /// parsed with the members, since no return type precedes them.
     /// </summary>
     private MethodDecl ParseOperator(TypeRef type, Mods mods, Token start)
     {
         Expect(Tok.KwOperator, "'operator'");
 
         Token symbol = Cur;
-        string? name = OperatorName(symbol.Kind);
-
-        if (name is null)
+        if (OperatorName(symbol.Kind) is null && UnaryOperatorName(symbol.Kind) is null)
         {
             throw Error($"'{symbol.Text}' is not an operator that can be overloaded");
         }
@@ -2465,18 +2463,43 @@ public sealed class Parser
 
         MethodDecl made = new()
         {
-            Name = name, Mods = mods, Returns = type,
+            Name = "", Mods = mods, Returns = type,
             Line = start.Line, Col = start.Col, Body = null,
         };
 
         ParseParams(made.Params);
 
-        if (made.Params.Count != 2)
+        string? name = made.Params.Count switch
         {
-            throw Error($"'operator {symbol.Text}' takes two operands");
+            1 => UnaryOperatorName(symbol.Kind),
+            2 => OperatorName(symbol.Kind),
+            _ => null,
+        };
+        if (name is null)
+        {
+            throw Error(UnaryOperatorName(symbol.Kind) is null
+                ? $"'operator {symbol.Text}' takes two operands"
+                : OperatorName(symbol.Kind) is null
+                    ? $"'operator {symbol.Text}' takes one operand"
+                    : $"'operator {symbol.Text}' takes one or two operands");
         }
+        made.Name = name;
         return FinishMethod(made);
     }
+
+    /// <summary>The metadata name of a one-operand operator.</summary>
+    private static string? UnaryOperatorName(Tok kind) => kind switch
+    {
+        Tok.Plus => "op_UnaryPlus",
+        Tok.Minus => "op_UnaryNegation",
+        Tok.Bang => "op_LogicalNot",
+        Tok.Tilde => "op_OnesComplement",
+        Tok.PlusPlus => "op_Increment",
+        Tok.MinusMinus => "op_Decrement",
+        Tok.KwTrue => "op_True",
+        Tok.KwFalse => "op_False",
+        _ => null,
+    };
 
     /// <summary>The name an operator has in metadata, which is the name the
     /// checker looks for when it meets the operator in an expression.</summary>
@@ -6909,7 +6932,7 @@ public sealed class Parser
 
             case Tok.Plus:
                 _i++;
-                return ParseUnary();
+                return new UnaryExpr { Op = UnOp.Plus, Operand = ParseUnary(), Line = at.Line, Col = at.Col };
 
             // `*p` -- the thing at an address. Unambiguous here: multiplication
             // is binary and never begins an expression, so a star in prefix

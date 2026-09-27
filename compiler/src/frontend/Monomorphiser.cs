@@ -101,9 +101,18 @@ public sealed class Monomorphiser
     /// Driven from outside because only the CHECKER knows what T is: a call
     /// says `list.Where(n => n.Ready)` and never says Node anywhere.
     /// </summary>
-    public static MethodDecl Specialise(MethodDecl template, IReadOnlyList<TypeRef> args, string name)
+    /// <param name="valueTypes">The names of the unit's structs and enums,
+    /// specialisations included: a `T?` over one of them stays the value
+    /// type (Sub's rule for an unconstrained T), which this copy cannot tell
+    /// from the arguments' names alone.</param>
+    public static MethodDecl Specialise(MethodDecl template, IReadOnlyList<TypeRef> args, string name,
+                                        IEnumerable<string>? valueTypes = null)
     {
         Monomorphiser m = new("<specialise>");
+        if (valueTypes is not null)
+        {
+            m._byValue.UnionWith(valueTypes);
+        }
         Dictionary<string, TypeRef> map = new(StringComparer.Ordinal);
 
         for (int i = 0; i < template.TypeParams.Count && i < args.Count; i++)
@@ -787,9 +796,16 @@ public sealed class Monomorphiser
             //
             // A '?' written at the USE site -- `Pick<string?>` -- is the
             // bound type's own and is kept.
+            // A STRUCT SPECIALISATION IS A VALUE TOO: `KeyValuePair<string,
+            // Source>` arrives as the copy `KeyValuePair$string$Source` or as
+            // the template's name with its arguments, and MinBy's `T?` over it
+            // is still the pair, not a cell holding one.
             bool valueBound = bound.ArrayRank == 0 && bound.PointerDepth == 0
                 && (Narrow.Contains(bound.Name) || _byValue.Contains(bound.Name)
-                    || bound.Name is "long" or "ulong" or "nint" or "nuint" or "decimal");
+                    || bound.Name is "long" or "ulong" or "nint" or "nuint" or "decimal"
+                    || _made.TryGetValue(bound.Name, out TypeDecl? madeDecl) && madeDecl.Kind is TypeKind.Struct or TypeKind.Enum
+                    || bound.Args.Count > 0 && _generic.TryGetValue(Arity(bound.Name, bound.Args.Count), out TypeDecl? template)
+                       && template.Kind == TypeKind.Struct);
 
             return new TypeRef
             {
