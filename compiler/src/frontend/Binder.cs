@@ -14046,8 +14046,20 @@ public sealed partial class Binder
                 // THE ONES THERE ARE, so the reader can see which was meant
                 // and what it takes -- the question this answers is usually
                 // "then which Link was I calling?".
+                // And for one of the right arity, the argument that did not
+                // fit it -- CS1503's answer, which is what the reader needs.
+                string Misfit(MethodSymbol m)
+                {
+                    if (m.Params.Count != args.Count) return "";
+                    for (int i = 0; i < args.Count; i++)
+                    {
+                        if (!WordFits(m, i)) return $" (argument {i + 1} is {(c.Args[i] is RefArgExpr ? "" : "not ")}passed by reference)";
+                        if (!WrittenFits(args[i], Wants(m, i), c.Args[i])) return $" (argument {i + 1}: '{args[i]}' is not '{Wants(m, i)}')";
+                    }
+                    return "";
+                }
                 string there = string.Join("; ", group.Methods.Take(6).Select(m =>
-                    $"{m.Owner?.Name}.{m.Name}({m.Params.Count}){(m.Decl?.File is { Length: > 0 } f ? " in " + System.IO.Path.GetFileName(f) : "")}"));
+                    $"{m.Owner?.Name}.{m.Name}({m.Params.Count}){(m.Decl?.File is { Length: > 0 } f ? " in " + System.IO.Path.GetFileName(f) : "")}{Misfit(m)}"));
                 Error(c, $"no overload of '{group.Methods[0].Name}' takes {args.Count} argument{(args.Count == 1 ? "" : "s")}; there are {there}");
                 return Type.Error;
             }
