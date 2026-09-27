@@ -13960,7 +13960,12 @@ public sealed partial class Binder
 
             if (byArity.Count == 0)
             {
-                Error(c, $"no overload of '{group.Methods[0].Name}' takes {args.Count} argument{(args.Count == 1 ? "" : "s")}");
+                // THE ONES THERE ARE, so the reader can see which was meant
+                // and what it takes -- the question this answers is usually
+                // "then which Link was I calling?".
+                string there = string.Join("; ", group.Methods.Take(6).Select(m =>
+                    $"{m.Owner?.Name}.{m.Name}({m.Params.Count}){(m.Decl?.File is { Length: > 0 } f ? " in " + System.IO.Path.GetFileName(f) : "")}"));
+                Error(c, $"no overload of '{group.Methods[0].Name}' takes {args.Count} argument{(args.Count == 1 ? "" : "s")}; there are {there}");
                 return Type.Error;
             }
 
