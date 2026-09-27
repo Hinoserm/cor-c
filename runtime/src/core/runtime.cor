@@ -410,8 +410,16 @@ static class Runtime
     /// one call the compiler makes for memory, for every class, struct,
     /// array, string, closure and nullable cell, and it answers zeroed,
     /// 8-aligned memory. Everything about policy is Gc's.
+    /// A kernel's allocation sampler (0 for none): called every sixteenth
+    /// allocation with the allocator's own frame pointer, from which the
+    /// allocating calls' return addresses are read, and the size -- where a
+    /// program's collector work comes from, counted without allocating.
+    public static long AllocHook;
+    static long _allocCount;
+
     public static long Alloc(long bytes)
     {
+        if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes, 0);
         return Gc.Alloc(bytes);
     }
 
@@ -421,6 +429,7 @@ static class Runtime
     /// compiler calls this for those, and Alloc for everything else.
     public static long AllocLeaf(long bytes)
     {
+        if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes, 0);
         return Gc.AllocLeaf(bytes);
     }
 
