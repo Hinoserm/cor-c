@@ -39,4 +39,15 @@ public sealed class FieldSymbol
 
     /// <summary>Byte offset within an instance, or within static storage.</summary>
     public int Offset { get; set; }
+
+    /// <summary>
+    /// A STRUCT HELD IN LINE: this instance field is a struct that holds no
+    /// reference -- numbers, enums, pointers, and structs in line of their
+    /// own -- and its bytes are the object's, at Offset, rather than a
+    /// pointer to a block of its own (Binder.LayOut). Reading it is the
+    /// address of those bytes, writing it copies bytes in, and a new object
+    /// has it zero with nothing made. A struct that holds a reference is
+    /// still a block of its own, the pointer here.
+    /// </summary>
+    public bool Inline { get; set; }
 }

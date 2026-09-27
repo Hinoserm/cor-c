@@ -1,0 +1,235 @@
+// test: struct_inline_fields
+// expect-exit: 0
+// expect-output:
+// zero 0 0 0
+// set 3 4 5
+// copy 3 99
+// inplace 7
+// method 8
+// clone 1 2 5 6
+// nested 11 12 13 14
+// aligned 1 2 3
+// byval 3
+// ref 42 43
+// refnew 5 6
+// refpass 50
+// refelem 9
+// reflocal 70 71
+// out 1 2
+// outlocal 1 2 True
+// in 3
+// boxed 21 22
+// boxcopy 21
+// equal True False
+// hash True
+// dict 2
+// with 1 20
+// mixed 1 hello 2
+// init 31 32
+// alias 0
+// noalloc 0
+//
+// A struct holding no reference, as a field of a class or of another struct,
+// is held in line: its bytes are the object's (FieldSymbol.Inline). What C#
+// promises of a struct must still hold -- a new object's is zero, assigning
+// it copies, a copy is not the field, a method called on the field changes
+// the field, a whole struct written by reference lands in the field, boxing
+// and equality see its bytes -- and each is asked here, with long and byte
+// fields beside it so its alignment is tried too. A struct holding a
+// reference stays a block of its own, and is asked beside it.
+
+struct Fix
+{
+    public int Mant;
+    public int Exp;
+
+    public Fix(int m, int e) { Mant = m; Exp = e; }
+
+    public void Bump() { Mant = Mant + 1; }
+}
+
+struct Wide
+{
+    public byte Tag;
+    public long Big;
+    public byte Tail;
+}
+
+struct Outer
+{
+    public Fix A;
+    public int Middle;
+    public Fix B;
+}
+
+struct Holder
+{
+    public int N;
+    public string Name;
+}
+
+class Matrix
+{
+    public Fix M11;
+    public Fix M22;
+    public int Flags;
+
+    public Matrix Clone()
+    {
+        return new Matrix { M11 = M11, M22 = M22, Flags = Flags };
+    }
+}
+
+class Deep
+{
+    public byte Before;
+    public Outer Pair;
+    public Wide W;
+    public Holder H;
+}
+
+record struct Point(int X, int Y);
+
+class Keyed
+{
+    public Point P;
+}
+
+static class Program
+{
+    static void Line(string s) { System.Console.WriteLine(s); }
+
+    static void Change(Fix f) { f.Mant = 1000; }
+
+    static void SetRef(ref Fix f) { f.Mant = 42; f.Exp = f.Exp + 43; }
+
+    static void Replace(ref Fix f) { f = new Fix(5, 6); }
+
+    static void PassOn(ref Fix f) { SetTo(ref f, 50); }
+
+    static void SetTo(ref Fix f, int v) { f.Mant = v; }
+
+    static void Make(out Fix f) { f = new Fix(1, 2); }
+
+    static bool TryMake(out Fix f) { f = new Fix(1, 2); return true; }
+
+    static int Read(in Fix f) { return f.Mant; }
+
+    static int Main()
+    {
+        Matrix m = new Matrix();
+        Line("zero " + m.M11.Mant + " " + m.M22.Exp + " " + m.Flags);
+
+        m.M11 = new Fix(3, 4);
+        m.M22.Exp = 5;
+        Line("set " + m.M11.Mant + " " + m.M11.Exp + " " + m.M22.Exp);
+
+        Fix c = m.M11;
+        c.Mant = 99;
+        Line("copy " + m.M11.Mant + " " + c.Mant);
+
+        m.M22.Mant = 7;
+        Line("inplace " + m.M22.Mant);
+
+        m.M22.Bump();
+        Line("method " + m.M22.Mant);
+
+        Matrix a = new Matrix { M11 = new Fix(1, 2), M22 = new Fix(5, 6) };
+        Matrix b = a.Clone();
+        a.M11.Mant = 77;
+        Line("clone " + b.M11.Mant + " " + b.M11.Exp + " " + b.M22.Mant + " " + b.M22.Exp);
+
+        Deep d = new Deep();
+        d.Pair.A = new Fix(11, 12);
+        d.Pair.B.Mant = 13;
+        d.Pair.B.Exp = 14;
+        Line("nested " + d.Pair.A.Mant + " " + d.Pair.A.Exp + " " + d.Pair.B.Mant + " " + d.Pair.B.Exp);
+
+        d.W.Tag = 1; d.W.Big = 2; d.W.Tail = 3;
+        d.Before = 255;
+        Line("aligned " + d.W.Tag + " " + d.W.Big + " " + d.W.Tail);
+
+        m.M11 = new Fix(3, 0);
+        Change(m.M11);
+        Line("byval " + m.M11.Mant);
+
+        m.M11 = new Fix(0, 0);
+        SetRef(ref m.M11);
+        Line("ref " + m.M11.Mant + " " + m.M11.Exp);
+
+        Replace(ref m.M22);
+        Line("refnew " + m.M22.Mant + " " + m.M22.Exp);
+
+        PassOn(ref d.Pair.A);
+        Line("refpass " + d.Pair.A.Mant);
+
+        Fix[] many = new Fix[3];
+        SetTo(ref many[1], 9);
+        Line("refelem " + many[1].Mant);
+
+        Fix local = new Fix(0, 28);
+        SetRef(ref local);
+        local.Mant = 70;
+        local.Exp = local.Exp - 0;
+        Line("reflocal " + local.Mant + " " + (local.Exp == 71 ? 71 : local.Exp));
+
+        Make(out Fix made);
+        Line("out " + made.Mant + " " + made.Exp);
+
+        // Into a local that already exists, as TryParse is called.
+        Fix existing = new Fix(9, 9);
+        bool parsed = TryMake(out existing);
+        Line("outlocal " + existing.Mant + " " + existing.Exp + " " + parsed);
+
+        m.M11 = new Fix(3, 0);
+        Line("in " + Read(in m.M11));
+
+        m.M11 = new Fix(21, 22);
+        object box = m.M11;
+        Fix back = (Fix)box;
+        Line("boxed " + back.Mant + " " + back.Exp);
+        m.M11.Mant = 0;
+        Line("boxcopy " + ((Fix)box).Mant);
+
+        Keyed k1 = new Keyed { P = new Point(1, 2) }, k2 = new Keyed { P = new Point(1, 2) }, k3 = new Keyed { P = new Point(2, 1) };
+        Line("equal " + k1.P.Equals(k2.P) + " " + k1.P.Equals(k3.P));
+        Line("hash " + (k1.P.GetHashCode() == k2.P.GetHashCode()));
+
+        System.Collections.Generic.Dictionary<Point, int> seen = new System.Collections.Generic.Dictionary<Point, int>();
+        seen[k1.P] = 1;
+        seen[k2.P] = 2;
+        Line("dict " + seen[new Point(1, 2)]);
+
+        Point moved = k1.P with { Y = 20 };
+        Line("with " + moved.X + " " + moved.Y);
+
+        d.H = new Holder { N = 1, Name = "hello" };
+        Holder h2 = d.H;
+        h2.N = 2;
+        Line("mixed " + d.H.N + " " + d.H.Name + " " + h2.N);
+
+        Outer o = new Outer { A = new Fix(31, 0), B = new Fix(0, 32) };
+        Line("init " + o.A.Mant + " " + o.B.Exp);
+
+        // Two objects never share one: a field copied from another is its own.
+        Matrix x = new Matrix();
+        Matrix y = new Matrix();
+        y.M11 = x.M11;
+        x.M11.Mant = 123;
+        Line("alias " + y.M11.Mant);
+
+        // Written in line, a struct field costs no allocation: the value's
+        // bytes are copied in, and a struct made only to be copied in is made
+        // on the stack.
+        long before = System.GC.GetAllocatedBytesForCurrentThread();
+        for (int i = 0; i < 1000; i++)
+        {
+            y.M11 = x.M11;
+            y.M22 = new Fix(i, i);
+            y.M22.Bump();
+        }
+        long after = System.GC.GetAllocatedBytesForCurrentThread();
+        Line("noalloc " + (after - before));
+        return 0;
+    }
+}

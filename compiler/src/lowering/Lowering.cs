@@ -1328,7 +1328,9 @@ public sealed partial class Lowering
             {
                 foreach (FieldSymbol f in s.Fields)
                 {
-                    if (!f.Static)
+                    // A struct held in line holds no reference (FieldSymbol.Inline):
+                    // nothing of its bytes is traced.
+                    if (!f.Static && !f.Inline)
                     {
                         // A captured local's field holds the ADDRESS of the shared
                         // cell, a heap pointer whatever the captured type is;

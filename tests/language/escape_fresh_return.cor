@@ -1,0 +1,110 @@
+// test: escape fresh return
+// expect-exit: 0
+// expect-output:
+// checksum 300647493994
+// collected 0
+// under cap True
+// kept 7 9
+//
+// A function that makes an object and hands it back -- a buffer of a
+// length the caller asks, a list of numbers -- keeps nothing of it: the
+// caller owns the result as it owns an allocation of its own, and frees it
+// at its last use (Escape.ReturnsFresh). Two hundred thousand of them fit
+// under a four megabyte cap with the collector never once running. A result
+// the caller keeps -- stored in a field -- is not freed, and reads back.
+
+class Box
+{
+    public int[]? Held;
+}
+
+static class Program
+{
+    static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    // Fresh: the array goes nowhere but back. The body is long enough that
+    // it stays a call rather than being folded into its callers.
+    static byte[] Buffer(int n)
+    {
+        byte[] made = new byte[n];
+        made[0] = (byte)(n & 255);
+        for (int i = 2; i < 64 && i < n; i++)
+        {
+            int v = (i * 7 + n) % 11;
+            if (v == 3) made[i] = (byte)(v + i);
+            else if (v == 5) made[i] = (byte)(v * i);
+            else if (v == 7) made[i] = (byte)(v ^ i);
+            else made[i] = (byte)v;
+        }
+        return made;
+    }
+
+    // Fresh through a fresh callee: what Buffer made, passed back again.
+    static byte[] Wrapped(int n)
+    {
+        byte[] b = Buffer(n);
+        b[1] = 1;
+        for (int i = 2; i < 64 && i < n; i++)
+        {
+            int v = b[i] + i;
+            if (v > 200) b[i] = (byte)(v - 200);
+            else if (v > 100) b[i] = (byte)(v - 100);
+            else if ((v & 1) != 0) b[i] = (byte)(v >> 1);
+        }
+        return b;
+    }
+
+    // A fresh list: the object and its own array, handed back.
+    static int[] Numbers(int n)
+    {
+        int[] made = new int[n];
+        for (int i = 0; i < n; i++)
+        {
+            int v = i * 3 + n;
+            if (v % 5 == 0) made[i] = i;
+            else if (v % 5 == 1) made[i] = i + (v - v);
+            else if (v % 5 == 2) made[i] = (i * 2) / 2;
+            else if (v % 5 == 3) made[i] = i ^ 0;
+            else made[i] = i | 0;
+        }
+        return made;
+    }
+
+    static int Main()
+    {
+        Gc.SetLimit(4194304);
+
+        // Each helper is called from more than one place, so none is folded
+        // into a single caller: the calls stay calls, and what they hand
+        // back is owned here by the rule under test, not by inlining.
+        long sum = 0;
+        for (int i = 0; i < 100000; i++)
+        {
+            int n = 1000 + (i % 7);
+            byte[] a = Wrapped(n);
+            int[] b = Numbers(10 + (i % 5));
+            sum = sum + a[0] + a[1] + b[9] + (n - 1000) * 1000 + i * 15;
+        }
+        for (int i = 100000; i < 200000; i++)
+        {
+            int n = 1000 + (i % 7);
+            byte[] a = Wrapped(n);
+            int[] b = Numbers(10 + (i % 5));
+            byte[] c = Buffer(n + 1);
+            sum = sum + a[0] + a[1] + b[9] + (n - 1000) * 1000 + i * 15 + c.Length - n - 1;
+        }
+
+        Line("checksum " + sum);
+        Line("collected " + Gc.Collections);
+        Line("under cap " + (Gc.HeapBytes <= 4194304));
+
+        Box kept = new Box();
+        kept.Held = Numbers(10);
+        Line("kept " + kept.Held[7] + " " + kept.Held[9]);
+        return 0;
+    }
+}

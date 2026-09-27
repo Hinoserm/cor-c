@@ -69,13 +69,25 @@ public sealed class Escape : IModulePass
         // function has been analysed, bottom-up over the call graph so a
         // callee's answer is known before its callers ask. Cycles keep the
         // pessimistic answer.
+        _fresh.Clear();
         Dictionary<string, bool[]> summaries = new(StringComparer.Ordinal);
+        bool canFree = byName.ContainsKey(Freer);
         foreach (Function f in BottomUp(m, byName))
         {
             summaries[f.Name] = ParameterSummary(f, summaries);
+            // A FUNCTION THAT HANDS BACK WHAT IT MADE: every return is an
+            // allocation of its own -- or the fresh result of another such
+            // function -- that went nowhere else. Its caller then owns the
+            // result as it owns an allocation of its own (PromoteIn), and
+            // frees it at its last use: the "make me a buffer" helper, the
+            // list of rectangles built and handed back, no longer the
+            // collector's.
+            if (canFree && ReturnsFresh(f, summaries))
+            {
+                _fresh.Add(f.Name);
+            }
         }
 
-        bool canFree = byName.ContainsKey(Freer);
         OwnedFieldEscape fields = new(byName, summaries);
         foreach (Function f in m.Functions)
         {
@@ -157,6 +169,82 @@ public sealed class Escape : IModulePass
     /// </summary>
     private readonly HashSet<Instr> _owned = new(ReferenceEqualityComparer.Instance);
 
+    /// <summary>Functions every return of which is a fresh allocation nothing else holds (ReturnsFresh).</summary>
+    private readonly HashSet<string> _fresh = new(StringComparer.Ordinal);
+
+    /// <summary>How many functions were found to return what they made, fresh.</summary>
+    public int FreshReturners => _fresh.Count;
+
+    /// <summary>
+    /// Whether every return of `f` hands back an allocation made in `f`
+    /// itself (or the result of a call to a function already found fresh),
+    /// through copies alone -- the object, not an address inside it -- and
+    /// whether that allocation reaches nothing but those returns.
+    /// </summary>
+    private bool ReturnsFresh(Function f, Dictionary<string, bool[]> summaries)
+    {
+        if (f.Async is not null)
+        {
+            return false;
+        }
+        HashSet<Instr> returns = new(ReferenceEqualityComparer.Instance);
+        HashSet<Instr> sources = new(ReferenceEqualityComparer.Instance);
+        foreach (Block b in f.Blocks)
+        {
+            if (b.Terminator is not { Op: Opcode.Ret } ret)
+            {
+                continue;
+            }
+            if (ret.Operands.Count != 1 || ret.Operands[0] is not RegOperand value)
+            {
+                return false;
+            }
+            Instr? made = BaseDefinition(f, value.Reg);
+            if (made is null || made.Dest is null || made.Op != Opcode.Call || made.Callee is null
+                || !(IsAllocator(made.Callee) || _fresh.Contains(made.Callee)))
+            {
+                return false;
+            }
+            returns.Add(ret);
+            sources.Add(made);
+        }
+        if (returns.Count == 0)
+        {
+            return false;
+        }
+        foreach (Instr made in sources)
+        {
+            if (Analyse(f, new[] { made.Dest! }, summaries, made, null, returns).Escapes)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// <summary>The call that made `r`, through single-definition copies and width changes; null for anything else.</summary>
+    private static Instr? BaseDefinition(Function f, VReg r)
+    {
+        for (int hops = 0; hops < 8; hops++)
+        {
+            Instr? def = SingleDefinition(f, r);
+            if (def is null)
+            {
+                return null;
+            }
+            if (def.Op == Opcode.Call)
+            {
+                return def;
+            }
+            if (def.Op is not (Opcode.Copy or Opcode.ZExt32 or Opcode.Trunc64) || def.Operands.Count != 1 || def.Operands[0] is not RegOperand from)
+            {
+                return null;
+            }
+            r = from.Reg;
+        }
+        return null;
+    }
+
     // ---- the escape question ------------------------------------------------------
 
     /// <summary>
@@ -173,7 +261,7 @@ public sealed class Escape : IModulePass
     }
 
     internal static Flow Analyse(Function f, IEnumerable<VReg> roots, Dictionary<string, bool[]> summaries, Instr? source,
-        HashSet<Instr>? ownedStores = null)
+        HashSet<Instr>? ownedStores = null, HashSet<Instr>? returns = null)
     {
         Flow flow = new() { Source = source };
         foreach (VReg r in roots)
@@ -313,6 +401,11 @@ public sealed class Escape : IModulePass
                             break;
                         }
 
+                        case Opcode.Ret when returns is not null && returns.Contains(i):
+                            // Handed back to the caller, which owns it from
+                            // here (ReturnsFresh).
+                            break;
+
                         default:
                             // Returned, unwound, atomically exchanged, passed
                             // indirectly, or anything else: gone.
@@ -412,13 +505,19 @@ public sealed class Escape : IModulePass
             for (int k = 0; k < b.Instrs.Count; k++)
             {
                 Instr i = b.Instrs[k];
-                if (i.Op != Opcode.Call || !IsAllocator(i.Callee) || i.Dest is null || i.Operands.Count != 1
+                // An allocation, or the fresh result of a call to a function
+                // that makes and hands back (ReturnsFresh): the second has no
+                // size to know, and is owned or left alone.
+                bool allocator = i.Op == Opcode.Call && IsAllocator(i.Callee);
+                bool freshCall = i.Op == Opcode.Call && !allocator && i.Callee is not null && _fresh.Contains(i.Callee);
+                if (!(allocator || freshCall) || i.Dest is null || (allocator && i.Operands.Count != 1)
                     || _owned.Contains(i))
                 {
                     continue;
                 }
 
-                bool sized = ConstantSize(f, i.Operands[0], out long size)
+                long size = 0;
+                bool sized = allocator && ConstantSize(f, i.Operands[0], out size)
                              && size > 0 && size <= ObjectLimit && size <= budget;
                 if (!sized && !canFree)
                 {

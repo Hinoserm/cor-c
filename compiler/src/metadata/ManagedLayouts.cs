@@ -57,7 +57,7 @@ public static class ManagedLayouts
                 {
                     writer.Write(field.Name); TypeName(field.Type);
                     writer.Write(field.Static); writer.Write(field.Static ? 0 : field.Offset);
-                    writer.Write(field.Boxed); writer.Write(field.Volatile); writer.Write(field.Required);
+                    writer.Write(field.Boxed); writer.Write(field.Volatile); writer.Write(field.Required); writer.Write(field.Inline);
                 }
                 writer.Write("");
                 foreach (var implementation in type.InterfaceImplementations.OrderBy(pair => pair.Key))

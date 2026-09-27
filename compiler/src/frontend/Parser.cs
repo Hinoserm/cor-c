@@ -100,6 +100,16 @@ public sealed class Parser
     /// whole of it.
     private Expr ParseArg()
     {
+        // `in x` passes x by read-only reference, which is what the
+        // parameter already says: the keyword at the call site is C#'s
+        // optional way of saying it too (EvalAs passes a variable by address
+        // and anything else by a copy for an `in` parameter).
+        if (At(Tok.KwIn))
+        {
+            _i++;
+            return ParseExpr();
+        }
+
         if (!At(Tok.KwOut) && !At(Tok.KwRef))
         {
             return ParseExpr();
