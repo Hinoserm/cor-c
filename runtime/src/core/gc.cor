@@ -352,6 +352,11 @@ static class Gc
                                 SayNumber("gc verify:   is a start ", HeapChunks.IsStart(home, target) ? 1 : 0);
                                 SayNumber("gc verify:   old block's card ", Sys.PeekByte(Runtime.Cards + ((p & WordSize.AddressMask) >> Runtime.CardShift)));
                                 SayNumber("gc verify:   old block's chunk young ", HeapChunks.IsYoung(HeapChunks.Of(block)) ? 1 : 0);
+                                // Which type, for nm: the vtable is the payload's first word.
+                                SayNumber("gc verify:   old block's vtable ", Sys.Peek(block + HeaderBytes));
+                                SayNumber("gc verify:   old block's header ", word);
+                                SayNumber("gc verify:   old block held last cycle ", WasHeld(block) ? 1 : 0);
+                                SayNumber("gc verify:   young block's size ", seen & SizeMask);
                                 _verifyReports = _verifyReports + 1;
                             }
                         }
@@ -362,6 +367,18 @@ static class Gc
             }
             chunk = HeapChunks.Next(chunk);
         }
+    }
+
+    /// Whether the record RescanHeld read this cycle names a block (the verifier).
+    static bool WasHeld(long block)
+    {
+        long count = Sys.Peek(_held);
+        if (count > HeldMax) count = HeldMax;
+        for (long i = 0; i < count; i++)
+        {
+            if (Sys.Peek(_held + HeldEntry + i * HeldEntry) == block) return true;
+        }
+        return false;
     }
 
     static void StartGenerations()
