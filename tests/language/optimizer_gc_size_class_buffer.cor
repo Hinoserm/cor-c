@@ -2,6 +2,11 @@
 // expect-exit: 0
 // expect-output:
 // size-class buffer passed
+//
+// A buffer with room answers first: neither an unrelated free size nor a
+// hole of exactly the size asked for sends a request past it. Once the
+// buffer is retired, and before any collection has started recycling
+// chunks (Gc.NextHole), a request of a freed block's size takes that hole.
 static class Program
 {
     static int Main()
@@ -19,14 +24,18 @@ static class Program
         if (large != cursor + 2 * WordSize.Bytes) return 1;
         for (long i = 0; i < 4096; i += WordSize.Bytes)
             if (Sys.Peek(large + i) != 0) return 2;
+        long bumped = Sys.Peek(thread + Tls.AllocPtr);
         long again = Runtime.Alloc(32);
-        if (again != reusable) return 3;
+        if (again == reusable || again != bumped + 2 * WordSize.Bytes) return 3;
         for (long i = 0; i < 32; i += WordSize.Bytes)
             if (Sys.Peek(again + i) != 0) return 4;
         if (Sys.Peek(left) != 111 || Sys.Peek(right) != 222) return 5;
         long treeHole = Runtime.Alloc(280);
         long treeGuard = Runtime.Alloc(32);
         Runtime.Free(treeHole);
+        GcLock.Enter();
+        Gc.Retire(thread);
+        GcLock.Exit();
         long treeReuse = Runtime.Alloc(280);
         if (treeReuse != treeHole || !Gc.CheckFreeIndex()) return 7;
         Runtime.Free(treeReuse);

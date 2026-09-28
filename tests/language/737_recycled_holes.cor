@@ -1,0 +1,80 @@
+// test: recycled_holes
+// expect-exit: 0
+// expect-output:
+// holes 255
+// from holes 255
+// fresh 0
+// intact True
+//
+// After a collection the holes it leaves are reused a chunk at a time, in
+// address order, before any fresh memory (Gc.NextHole). Five hundred and
+// twelve arrays of mixed sizes are made and every other one below the top is
+// dropped, so a collection leaves holes that cannot coalesce; the same sizes
+// asked for again, in the same order, must each land in one. A hole fits a
+// request that fills it exactly, so no size here needs a bigger one, and the
+// arrays kept are untouched by the reuse around them.
+
+static class Program
+{
+    static int SizeFor(int i)
+    {
+        return ((i % 32) + 1) * 8;
+    }
+
+    static int Main()
+    {
+        object?[] keep = new object?[512];
+        byte[]?[] again = new byte[]?[512];
+
+        for (int i = 0; i < 512; i++)
+        {
+            byte[] b = new byte[SizeFor(i)];
+            b[0] = (byte)i;
+            keep[i] = b;
+        }
+
+        long top = Sys.ArrayData((byte[])keep[511]!);
+        int holes = 0;
+
+        for (int i = 1; i < 510; i = i + 2)
+        {
+            keep[i] = null;
+            holes = holes + 1;
+        }
+
+        Gc.Collect();
+
+        int fromHoles = 0;
+        int fresh = 0;
+
+        for (int i = 1; i < 510; i = i + 2)
+        {
+            byte[] b = new byte[SizeFor(i)];
+            again[i] = b;
+            if (Sys.ArrayData(b) <= top) fromHoles = fromHoles + 1;
+            else fresh = fresh + 1;
+        }
+
+        bool intact = true;
+
+        for (int i = 0; i < 512; i = i + 2)
+        {
+            byte[] b = (byte[])keep[i]!;
+            if (b.Length != SizeFor(i) || b[0] != (byte)i) intact = false;
+        }
+
+        Sys.Print("holes ");
+        Sys.PrintInt(holes);
+        Sys.PrintLine();
+        Sys.Print("from holes ");
+        Sys.PrintInt(fromHoles);
+        Sys.PrintLine();
+        Sys.Print("fresh ");
+        Sys.PrintInt(fresh);
+        Sys.PrintLine();
+        Sys.Print("intact ");
+        Sys.Print(intact ? "True" : "False");
+        Sys.PrintLine();
+        return 0;
+    }
+}

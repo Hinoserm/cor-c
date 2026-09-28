@@ -1479,8 +1479,13 @@ static class Gc
         long block = Sys.Peek(tb + Tls.AllocPtr);
         long next = block + need;
 
-        if (bytes < 0 || bytes > MaxRequest || next + Smallest > Sys.Peek(tb + Tls.AllocLimit)
-            || HasReusableFree(need))
+        // A BUFFER WITH ROOM ANSWERS, whatever the free index holds. Asking
+        // it first sent every allocation whose size had a hole anywhere to
+        // the heap lock -- on a fragmented heap, nearly all of them, with
+        // every thread queued behind whichever was collecting -- and put the
+        // object in that hole's chunk, young for the next minor cycle to
+        // walk. Holes are reused as buffers are refilled (AllocSlow).
+        if (bytes < 0 || bytes > MaxRequest || next + Smallest > Sys.Peek(tb + Tls.AllocLimit))
         {
             Sys.Poke(tb + Tls.InAlloc, 0);
             return AllocSlow(bytes, kind);
@@ -1570,6 +1575,137 @@ static class Gc
         Sys.Poke(block + Tls.AllocPtr, arena);
         Sys.Poke(block + Tls.AllocLimit, arena + size);
         return true;
+    }
+
+    // ---- recycling: where young objects go --------------------------------
+    //
+    // A MINOR COLLECTION COSTS WHAT THE YOUNG CHUNKS HOLD, because it walks
+    // each chunk anything was handed out in, whole: its anchors, its sweep.
+    // Handed a best-fitting hole anywhere, the young objects of one cycle
+    // landed in nearly every chunk of a fragmented heap, and a "minor"
+    // collection of a compiler with a gigabyte and a half live walked three
+    // gigabytes -- as dear as a major one, and paced as a cheap one.
+    //
+    // So the holes are reused a chunk at a time. After a collection the
+    // chunks are taken in list order, each that is at least an eighth free,
+    // and a buffer is refilled from the next hole that fits in the chunk
+    // being recycled, in address order, until the chunk is done. A cycle's
+    // young objects then lie in as few chunks as their bytes can fill. A
+    // hole fits a request that fills it exactly -- the buffer is then used
+    // up, which Retire allows -- or leaves a tail that can describe itself.
+    //
+    // The walk is safe because every block below a chunk's end is a whole
+    // block (it runs with the heap lock held and never during a sweep),
+    // except inside a buffer a thread is bumping in: blocks up to its
+    // pointer and zeroed memory above it. The walk stops at the first size
+    // that cannot be a block, which is where such a buffer's pointer is, and
+    // gives up the rest of that chunk. It takes only a listed free block,
+    // never one freed in place, which is not on a list.
+
+    /// A chunk is recycled when at least this fraction of it -- one part in
+    /// eight -- was free at its last sweep. The holes of a fuller chunk wait
+    /// until something beside them dies.
+    const long RecycleShift = 3;
+
+    static long _recycle;           // the chunk whose holes are being handed out, or 0
+    static long _recycleAt;         // the next block in it to look at
+    static long _recycleNext;       // the next chunk to consider
+
+    /// Called as a collection ends: every chunk may be recycled again.
+    static void RestartRecycling()
+    {
+        _recycle = Zero;
+        _recycleAt = Zero;
+        _recycleNext = HeapChunks.Newest();
+    }
+
+    /// The bump pointer's chunk is walked too, up to its end as it stands at
+    /// each step (SyncEnd keeps it there).
+    static bool Recyclable(long chunk)
+    {
+        long used = HeapChunks.End(chunk) - HeapChunks.First(chunk);
+        return used - HeapChunks.LiveBytes(chunk) >= (used >> RecycleShift);
+    }
+
+    /// The thread whose block is `block` given a buffer from the next hole
+    /// that fits `need` in the chunk being recycled. The heap lock is held.
+    static bool Recycle(long block, long need)
+    {
+        long arena = NextHole(need);
+        if (arena == 0)
+        {
+            return false;
+        }
+        Retire(block);
+        long size = SizeOfBlock(arena);
+        ZeroWords(arena + HeaderBytes, arena + size - FooterBytes);
+        _since = _since + size;
+        Sys.Poke(block + Tls.AllocBase, arena);
+        Sys.Poke(block + Tls.AllocPtr, arena);
+        Sys.Poke(block + Tls.AllocLimit, arena + size);
+        return true;
+    }
+
+    /// The next hole that fits `need` in the chunk being recycled, taken off
+    /// its list and stamped allocated, at most a buffer's worth (the rest is
+    /// put back); or zero when no recyclable chunk is left. The heap lock is
+    /// held.
+    static long NextHole(long need)
+    {
+        if (_sweeping || _collecting)
+        {
+            return 0;
+        }
+
+        while (true)
+        {
+            if (_recycle == 0)
+            {
+                long chunk = _recycleNext;
+                while (chunk != 0 && !Recyclable(chunk))
+                {
+                    chunk = HeapChunks.Next(chunk);
+                }
+                if (chunk == 0)
+                {
+                    _recycleNext = Zero;
+                    return 0;
+                }
+                _recycle = chunk;
+                _recycleAt = HeapChunks.First(chunk);
+                _recycleNext = HeapChunks.Next(chunk);
+            }
+
+            long end = HeapChunks.End(_recycle);
+            long at = _recycleAt;
+
+            while (at < end)
+            {
+                long word = Sys.Peek(at);
+                long size = word & SizeMask;
+
+                if (size < Smallest || at + size > end || Sys.Peek(at + size - FooterBytes) != word)
+                {
+                    break;
+                }
+                if ((word & FlagFree) != 0 && (size == need || size >= need + Smallest) && !IsInPlace(at))
+                {
+                    Unlink(at);
+                    if (size - BufferBytes >= Smallest)
+                    {
+                        Stamp(at + BufferBytes, size - BufferBytes, FlagFree);
+                        Link(at + BufferBytes);
+                        size = BufferBytes;
+                    }
+                    _recycleAt = at + size;
+                    Stamp(at, size, Zero);
+                    HeapChunks.YoungAt(at);
+                    return at;
+                }
+                at = at + size;
+            }
+            _recycle = Zero;
+        }
     }
 
     // Largest available fragment below the preferred buffer size. Keep it
@@ -1827,9 +1963,16 @@ static class Gc
         // A different thread may have consumed the exact-bin hint which
         // brought us here. Keep our existing arena if it still has room;
         // replacing it would throw away capacity merely because of a race.
+        //
+        // THE CHUNK BEING RECYCLED IS ASKED FIRST (recycling, above): a hole
+        // that fits, taken from anywhere else, is a hole in whatever chunk
+        // it is in, and that chunk is young for the next minor collection to
+        // walk. Only when no chunk is left to recycle does an exact-size
+        // hole from the free index win over a fresh buffer.
         bool room = Sys.Peek(tb + Tls.AllocPtr) != 0
             && Sys.Peek(tb + Tls.AllocPtr) + need + Smallest <= Sys.Peek(tb + Tls.AllocLimit);
-        if (!HasReusableFree(need) && need + Smallest <= BufferBytes && (room || Refill(tb, need)))
+        if (need + Smallest <= BufferBytes
+            && (room || Recycle(tb, need) || (!HasReusableFree(need) && Refill(tb, need))))
         {
             long from = Sys.Peek(tb + Tls.AllocPtr);
 
@@ -2274,6 +2417,9 @@ static class Gc
         if (whole != 0 && whole != _current && block == HeapChunks.First(whole)
             && block + size == HeapChunks.Limit(whole))
         {
+            // Not a chunk the recycling walk may still step onto.
+            if (whole == _recycleNext) _recycleNext = HeapChunks.Next(whole);
+            if (whole == _recycle) _recycle = Zero;
             HeapChunks.Release(whole);
             GcLock.Exit();
             return;
@@ -3586,6 +3732,7 @@ static class Gc
         _liveBlocks = _sweepLive;
         _liveBytes = _sweepLiveBytes;
         _sweeping = false;
+        RestartRecycling();
         _snapshots = false;
         _concurrent = false;
 

@@ -15,6 +15,11 @@
 // asked for again. Every one of them must come back out of a hole rather than
 // off the bump pointer, which is what a size class is for: without one, a
 // request walks a single list of slightly-wrong sizes and carves it finer.
+//
+// The thread's buffer is retired first. A buffer with room answers before the
+// free index is asked (Gc.AllocKind), so the holes are for the requests made
+// when it has none -- and before any collection there is no chunk being
+// recycled to ask first (Gc.NextHole).
 
 static class Program
 {
@@ -56,6 +61,10 @@ static class Program
             holeCount = holeCount + 1;
             live[i] = 0;
         }
+
+        GcLock.Enter();
+        Gc.Retire(Sys.ThreadBlock());
+        GcLock.Exit();
 
         long startHeap = Gc.HeapBytes;
         long fromHoles = 0;

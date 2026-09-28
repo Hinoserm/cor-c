@@ -1114,6 +1114,15 @@ blocks.
   (`Gc.NextIsMinor`), on `GC.Collect`, when memory ran out, and after
   anything that makes the old generation's marks doubtful: an abandoned
   cycle, an overflowed record.
+- *Young objects in few chunks.* A minor cycle walks each young chunk
+  whole, so what it costs is how many chunks the cycle's allocation
+  touched. So after each collection a thread's buffer is refilled from the
+  holes of one chunk at a time, in address order, chunks at least an
+  eighth free taken in turn (`Gc.NextHole`); only when none is left does a
+  request take an exact-size hole from the free index, wherever it lies,
+  or a fresh buffer. A buffer with room always answers first: the free
+  index is never consulted on the fast path. A minor sweep leaves on its list a hole nothing beside it
+  died to widen (`Gc.CloseDeadRun`).
 - *Paced apart.* Between minor collections a program allocates a quarter of
   what the pacing would allow between whole-heap ones, within [the minimum
   threshold, 64 MB] (`Gc.Nursery`): a small board collects its nursery often
