@@ -548,14 +548,31 @@ public sealed class Monomorphiser
                 map[job.Template.TypeParams[i].Name] = job.Args[i];
             }
 
-            TypeDecl made = RewriteDecl(job.Template, map, job.Name);
+            // A WORD-SHAPED COPY TAKES NO BODIES. Canon names the one copy
+            // whose instructions serve it, the checker skips its bodies and
+            // the lowering emits none (Binder.CheckBodies), so a copied body
+            // was a whole method's tree held for nothing -- and the walk over
+            // it queued the instantiations that body would have needed, which
+            // the canonical body already asks for over the machine word.
+            // Across a compiler's worth of List, Dictionary and HashSet over
+            // reference types that was most of the declarations in memory.
+            _bodiesElsewhere = job.Canon != null;
+            TypeDecl made;
+            try
+            {
+                made = RewriteDecl(job.Template, map, job.Name);
+            }
+            finally
+            {
+                _bodiesElsewhere = false;
+            }
 
             // WHERE ITS CODE LIVES, which is the whole of code sharing.
             //
             // The declaration is complete either way -- every field, every
-            // signature, every body -- because that is what checks the caller
-            // and lays out the object. Canon says only that the INSTRUCTIONS
-            // are somewhere else, and External says that somewhere else is
+            // signature -- because that is what checks the caller and lays
+            // out the object. Canon says only that the INSTRUCTIONS are
+            // somewhere else, and External says that somewhere else is
             // another image.
             made.External = job.External;
             made.Canon = job.Canon;
@@ -1300,6 +1317,20 @@ public sealed class Monomorphiser
         return made;
     }
 
+    /// <summary>
+    /// Whether the declaration being copied is a word-shaped specialisation,
+    /// whose bodies live in the canonical copy. Its bodies are copied as the
+    /// empty markers the parser leaves for a skipped body, so every "has a
+    /// body" question still has its answer. A generic method's body is kept:
+    /// it is the template that method is specialised from, per call.
+    /// </summary>
+    private bool _bodiesElsewhere;
+
+    private Block? Body(Block? body, Dictionary<string, TypeRef> map, bool template = false)
+        => body is null ? null
+         : _bodiesElsewhere && !template ? new Block { Line = body.Line, Col = body.Col }
+         : (Block)Rewrite(body, map);
+
     private MemberDecl RewriteMember(MemberDecl m, Dictionary<string, TypeRef> map, string owner)
     {
         switch (m)
@@ -1325,8 +1356,8 @@ public sealed class Monomorphiser
                 PropertyDecl copy = new()
                 {
                     Name = p.Name, Mods = p.Mods, Type = Sub(p.Type, map),
-                    Getter = p.Getter is null ? null : (Block)Rewrite(p.Getter, map),
-                    Setter = p.Setter is null ? null : (Block)Rewrite(p.Setter, map),
+                    Getter = Body(p.Getter, map),
+                    Setter = Body(p.Setter, map),
                     Auto = p.Auto, HasSetter = p.HasSetter,
                     Init = p.Init is null ? null : Rewrite(p.Init, map),
                     VtableSlotHint = p.VtableSlotHint,
@@ -1372,7 +1403,7 @@ public sealed class Monomorphiser
                     Mods = md.Mods,
                     Returns = md.Returns is null ? null : Sub(md.Returns, map),
                     IsCtor = md.IsCtor,
-                    Body = md.Body is null ? null : (Block)Rewrite(md.Body, map),
+                    Body = Body(md.Body, map, template: md.TypeParams.Count > 0),
                     Init = md.Init is null ? null : RewriteCtorInit(md.Init, map),
                     VtableSlotHint = md.VtableSlotHint,
                     NotNullIfNotNull = md.NotNullIfNotNull,
