@@ -2609,9 +2609,12 @@ static class Gc
     // lands on the new object -- a list's array, taken from under the list --
     // and nothing can tell. So the blocks freed last stay out of the
     // collector's hands: a ring of their addresses is a root range, and a
-    // block leaves the ring only when a quarter of a million later frees have
-    // pushed it out. Its first word counts the frees.
-    const long QuarantineEntries = 262144;
+    // block leaves the ring only when later frees have pushed it out --
+    // sixteen million of them, more than a compile of a
+    // large unit makes, so a free that comes long after the block's first
+    // is caught too; the ring is mapped lazily and only this mode has one.
+    // Its first word counts the frees.
+    const long QuarantineEntries = 16777216;
     static long _quarantine;
 
     static void StartQuarantine()
