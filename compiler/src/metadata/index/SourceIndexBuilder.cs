@@ -7,7 +7,24 @@ namespace Corsac.Lang.Metadata;
 /// <summary>Indexes one source at a time, with ordinary method bodies omitted by the parser.</summary>
 public static class SourceIndexBuilder
 {
+    private sealed record Identity(string Written, string Canonical);
+    private static Identity? _identity;
+
+    /// <summary>
+    /// The canonical spelling of an assembly's identity. Every index query
+    /// begins with it, thousands per unit and nearly always for the one
+    /// assembly being compiled, so the last answer is kept.
+    /// </summary>
     public static string AssemblyIdentity(string identity)
+    {
+        Identity? last = _identity;
+        if (last is not null && last.Written == identity) return last.Canonical;
+        string canonical = Canonical(identity);
+        _identity = new Identity(identity, canonical);
+        return canonical;
+    }
+
+    private static string Canonical(string identity)
     {
         AssemblyName name = new(identity);
         if (string.IsNullOrWhiteSpace(name.Name)) throw new ArgumentException("Assembly identity needs a name");
