@@ -88,6 +88,13 @@ interface IConsole
 /// the same rule here.
 static class Platform
 {
+    /// A call that may wait, as the Linux platform makes one: here there is
+    /// no kernel below to wait in, and the call is made as it stands.
+    public static long Blocking(long n, long a, long b, long c, long d = 0, long e = 0, long f = 0)
+    {
+        return Sys.Syscall(n, a, b, c, d, e, f);
+    }
+
     /// Where the bump region begins and ends. Zero means "not yet decided",
     /// and the first call to Map decides it.
     private static long _at;
