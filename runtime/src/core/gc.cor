@@ -420,8 +420,65 @@ static class Gc
     /// and the live heap has not grown past what the pacing allows since.
     static bool NextIsMinor()
     {
-        return _generational && !_forceMajor && _majorLive != 0
+        return _generational && !_forceMajor && _majorLive != 0 && !_minorsCostly
             && _liveBytes < _majorLive + NextThreshold(_majorLive);
+    }
+
+    // PACED BY WHAT THEY COST. A minor cycle is worth running only if it
+    // costs less per byte allocated than a major one. Where most chunks
+    // have had something allocated in them -- a fragmented heap, where new
+    // objects fill the holes between old ones -- a minor walks nearly all of
+    // the heap and reads a card for nearly every old object, and costs
+    // nearly what a major does; run every 64 MB, as a nursery would be, the
+    // self-hosted compiler spent three times its old collection time. So
+    // the last minor and major cycles are timed (PauseClock), the nursery
+    // is the whole-heap threshold scaled by what a minor costs against a
+    // major, and a minor that costs as much as a major stops them until the
+    // next major, which tries one again. When collections come changes;
+    // what a program computes never does.
+    static long _minorMicros;
+    static long _majorMicros;
+    // Zero-initialised, as every static of the collector must be: it runs
+    // before anything that could run a static constructor.
+    static bool _minorsCostly;
+    const long PacedMicros = 10000;
+
+    /// The next threshold after a cycle of the kind given, its length known.
+    static long Paced(long live, bool minor, long micros)
+    {
+        long major = NextThreshold(live);
+        if (minor)
+        {
+            _minorMicros = micros;
+        }
+        else
+        {
+            _majorMicros = micros;
+        }
+        // Below a hundredth of a second a major cycle's length is mostly the
+        // clock's noise, and a small heap's pace is the nursery's either way.
+        if (_minorMicros == 0 || _majorMicros < PacedMicros)
+        {
+            _minorsCostly = false;
+            return Nursery(live);
+        }
+        if (minor)
+        {
+            _minorsCostly = _minorMicros >= _majorMicros;
+        }
+        else
+        {
+            // The major cycle that follows a stop to minors tries one again.
+            _minorsCostly = false;
+        }
+        if (_minorsCostly)
+        {
+            return major;
+        }
+        long scaled = _minorMicros >= _majorMicros ? major : major / _majorMicros * _minorMicros + (major % _majorMicros) * _minorMicros / _majorMicros;
+        long least = Nursery(live);
+        if (scaled < least) scaled = least;
+        return scaled < major ? scaled : major;
     }
 
     /// How much a program allocates between minor collections: a quarter of
@@ -3096,8 +3153,23 @@ static class Gc
         }
         long clock = PauseClock;
         long began = clock != 0 ? Sys.Call(clock, 0, 0, 0) : 0;
+        bool minor = _minor;
+        long before = Collections;
         try { CollectBoth(); }
-        finally { if (clock != 0) PauseMicros = PauseMicros + ((Sys.Call(clock, 0, 0, 0) - began) & 0xFFFFFFFF); }
+        finally
+        {
+            if (clock != 0)
+            {
+                long took = (Sys.Call(clock, 0, 0, 0) - began) & 0xFFFFFFFF;
+                PauseMicros = PauseMicros + took;
+                // A cycle that finished sets the pace of the next by what it
+                // cost; one given up leaves it as it was.
+                if (_generational && Collections != before)
+                {
+                    _threshold = Paced(_liveBytes, minor, took < 1 ? 1 : took);
+                }
+            }
+        }
     }
 
     static void CollectBoth()
