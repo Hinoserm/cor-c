@@ -2293,6 +2293,7 @@ static class Gc
     static void Start()
     {
         _verify = Platform.VerifyFrees();
+        _ignoreFrees = Platform.IgnoreFrees();
         if (_verify)
         {
             StartQuarantine();
@@ -2390,7 +2391,7 @@ static class Gc
         // A null first, which an owned variable's first assignment hands
         // over (FreeReplaced), and with no thread block nothing to read:
         // before one exists there is no fast path to be on top of.
-        if (at == 0)
+        if (at == 0 || _ignoreFrees)
         {
             return;
         }
@@ -2567,6 +2568,7 @@ static class Gc
     // own stack as if it were the environment and faulted. Start runs at
     // the first allocation, before any thread can exist.
     static bool _verify;
+    static bool _ignoreFrees;       // CORSAC_IGNORE_FREES (Platform.IgnoreFrees)
     const long Poison = 0xFEEEFEEE;
 
     /// How many blocks the checked mode has taken back and filled.

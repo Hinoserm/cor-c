@@ -141,34 +141,20 @@ static class Platform
     /// entry stack is the loader's (the collector asks once, as it starts).
     /// CORSAC_GC_VERIFY=1: the collector checks, after each minor cycle's
     /// mark, that no old object points at a young one it is about to sweep.
-    public static bool VerifyGenerations()
-    {
-        const string key = "CORSAC_GC_VERIFY=";
-        long env = Os.EnvironAddress();
-        while (true)
-        {
-            long text = Sys.Peek(env) & WordSize.AddressMask;
-            if (text == 0)
-            {
-                return false;
-            }
-            int i = 0;
-            while (i < key.Length && Sys.PeekByte(text + i) == key[i])
-            {
-                i = i + 1;
-            }
-            if (i == key.Length)
-            {
-                long first = Sys.PeekByte(text + i);
-                return first != 0 && first != 48;
-            }
-            env = env + WordSize.Bytes;
-        }
-    }
+    public static bool VerifyGenerations() => EnvironmentFlag("CORSAC_GC_VERIFY=");
 
-    public static bool VerifyFrees()
+    public static bool VerifyFrees() => EnvironmentFlag("CORSAC_VERIFY_FREES=");
+
+    /// CORSAC_IGNORE_FREES=1: every free the compiler wrote is ignored and the
+    /// collector finds all garbage. What it is for is telling a fault that a
+    /// free makes from one the collector makes: if a program's corruption
+    /// goes when its frees do, a free is wrong.
+    public static bool IgnoreFrees() => EnvironmentFlag("CORSAC_IGNORE_FREES=");
+
+    /// Whether `key` (ending in '=') is set in the environment to something
+    /// other than nothing or 0, read from the loader's stack.
+    static bool EnvironmentFlag(string key)
     {
-        const string key = "CORSAC_VERIFY_FREES=";
         long env = Os.EnvironAddress();
         while (true)
         {

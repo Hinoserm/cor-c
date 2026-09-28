@@ -95,6 +95,11 @@ static class Platform
         return false;
     }
 
+    public static bool IgnoreFrees()
+    {
+        return false;
+    }
+
     /// Where the bump region begins and ends. Zero means "not yet decided",
     /// and the first call to Map decides it.
     private static long _at;
