@@ -162,13 +162,17 @@ public sealed class IndexedDeclarations : IDisposable
     /// </summary>
     private string? SpeculateIn(string? space, FileScope? scope, string name, int arity)
     {
-        if (name.Length == 0 || name[0] == '_' || name.Contains('.') || Builtin.Contains(name)) return Speculate(name, arity);
-        if (arity == 0 && name.Length <= 2 && char.IsUpper(name[0])) return null;
-        if (scope is not null)
+        if (name.Length == 0 || name[0] == '_' || Builtin.Contains(name)) return Speculate(name, arity);
+        bool dotted = name.Contains('.');
+        if (!dotted && arity == 0 && name.Length <= 2 && char.IsUpper(name[0])) return null;
+        if (scope is not null && !dotted)
         {
             foreach ((string _, string alias, string target) in scope.Aliases)
                 if (alias == name) return Speculate(target, arity);
         }
+        // A NAME QUALIFIED FROM WHERE IT WAS WRITTEN -- `Metadata.RegistrySchema`
+        // inside Corsac.Lang -- is looked up the same way: under the enclosing
+        // namespaces and the imports, as the binder resolves it.
         string simple = arity > 0 ? name + "`" + arity : name;
         for (string? at = space; !string.IsNullOrEmpty(at); at = at.LastIndexOf('.') is int cut && cut > 0 ? at[..cut] : null)
         {

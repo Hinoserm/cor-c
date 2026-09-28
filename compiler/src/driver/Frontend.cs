@@ -244,10 +244,12 @@ public static class Frontend
                     return null;
                 }
 
+                // Every member, properties too: their accessors are bodies
+                // the binder makes from them, and take the flag with them.
                 foreach (TypeDecl t in unit.Types)
                 {
                     if (known.Contains(t.Name)) continue;
-                    foreach (MethodDecl m in t.Members.OfType<MethodDecl>()) m.Fresh = true;
+                    foreach (MemberDecl m in t.Members) m.Fresh = true;
                 }
 
                 Meter fresh = Meter.Start();
@@ -276,6 +278,13 @@ public static class Frontend
                 declarations is null ? null : declarations.RequireExtensions, declarations?.LibraryInterfaces,
                 declarations is null ? null : declarations.RequireOverrides);
             rebinding.Stop("front:bind-round");
+            if (Environment.GetEnvironmentVariable("CORC_TRACE_WANTS") is not null)
+            {
+                foreach (var w in bound.Wanted)
+                    Console.Error.WriteLine("full bind still wants " + w.Item2.Name + " in " + w.Item1.Line + " of " + w.Item2.File);
+                foreach (var w in bound.WantedOverrides)
+                    Console.Error.WriteLine("full bind still wants override " + w.Item1.Name + "." + w.Item2.Name + " as " + w.Item4);
+            }
         }
 
         // WARNINGS ARE ERRORS. Every warning the binder raises is a statement

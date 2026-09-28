@@ -2577,6 +2577,7 @@ public sealed partial class Binder
                             TemplateIndex = p.TemplateIndex,
                             VtableSlotHint = p.VtableSlotHint,
                             OwnedImplementation = p.OwnedImplementation, File = p.File, Scope = p.Scope, Namespace = p.Namespace,
+                            Fresh = p.Fresh,
                         };
 
                         MethodSymbol gs = new()
@@ -2610,6 +2611,7 @@ public sealed partial class Binder
                             TemplateIndex = p.TemplateIndex,
                             VtableSlotHint = p.VtableSlotHint,
                             OwnedImplementation = p.OwnedImplementation, File = p.File, Scope = p.Scope, Namespace = p.Namespace,
+                            Fresh = p.Fresh,
                         };
                         // The indices, and THEN the value -- `set_Item(i, v)`,
                         // which is the order C# uses and the order the use site
