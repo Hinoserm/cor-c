@@ -440,6 +440,91 @@ static class Platform
         return space;
     }
 
+    // ---- a fault no program survives -----------------------------------------
+    //
+    // A SEGMENTATION FAULT SAYS WHERE IT WAS, as .NET's runtime has one say:
+    // "Fatal error. System.AccessViolationException", the address and the
+    // stack, on standard error (Runtime.ReportFault) -- and then the process
+    // dies of the signal all the same: the default action, a core where one
+    // is asked for, and 128 + the signal to whatever waits on it. Without
+    // it a compile process of a project build died of one with nothing in
+    // any log; only the kernel's ring buffer had a pid and an address.
+    //
+    // Armed once, as the first image begins, on a page of the system's own
+    // that holds the kernel's sigaction, a signal set and the digits the
+    // report spells numbers in: nothing here allocates, because the fault
+    // may be in the allocator. The handler never returns, so it needs no
+    // sigreturn trampoline; it puts the default action back itself rather
+    // than trusting SA_RESETHAND to have, unblocks the signal and sends it
+    // again, and ends the process outright if that did not.
+    static long _faultPage;
+    static long _faulting;
+
+    const int SignalBus = 7;
+    const int SignalSegv = 11;
+
+    public static void ArmFaultReport()
+    {
+        if (_faultPage != 0)
+        {
+            return;
+        }
+        long page = Map(4096);
+        if (page == 0)
+        {
+            return;
+        }
+        _faultPage = page;
+        // The kernel's sigaction: handler, flags, restorer, mask, a word
+        // each but the mask. SA_SIGINFO for the address and the registers;
+        // SA_RESTORER, which x86-64 insists on, naming the handler because
+        // nothing returns to it; SA_NODEFER and SA_RESETHAND, so a second
+        // fault inside the report ends the process instead of nesting.
+        long handler = Sys.AddressOf(Platform.Fault);
+        Sys.Poke(page, handler);
+        Sys.Poke(page + WordSize.Bytes, 0x00000004 | 0x04000000 | 0x40000000 | 0x80000000);
+        Sys.Poke(page + 2 * WordSize.Bytes, handler);
+        Sys.Syscall(Call.RtSigaction, SignalSegv, page, 0, 8, 0, 0);
+        Sys.Syscall(Call.RtSigaction, SignalBus, page, 0, 8, 0, 0);
+    }
+
+    /// The kernel's call on a fault: the signal, its siginfo and the
+    /// interrupted context. Reports once, then dies of the signal.
+    public static void Fault(int signal, nint info, nint context)
+    {
+        long si = (long)info & WordSize.AddressMask;
+        long uc = (long)context & WordSize.AddressMask;
+        if (_faulting == 0 && si != 0 && uc != 0)
+        {
+            _faulting = 1;
+#if TARGET_64BIT
+            // siginfo's si_addr at 16; mcontext's gregs from 40, RBP the
+            // eleventh and RIP the seventeenth.
+            long address = Sys.Peek(si + 16);
+            long pc = Sys.Peek(uc + 168);
+            long frame = Sys.Peek(uc + 120);
+#else
+            // siginfo's si_addr at 12; mcontext's gregs from 20, EBP the
+            // seventh and EIP the fifteenth.
+            long address = Sys.Peek(si + 12) & WordSize.AddressMask;
+            long pc = Sys.Peek(uc + 76) & WordSize.AddressMask;
+            long frame = Sys.Peek(uc + 44) & WordSize.AddressMask;
+#endif
+            Runtime.ReportFault(address, pc, frame, _faultPage + 256);
+        }
+        // SIG_DFL, the signal unblocked (SIG_UNBLOCK, a set of one), and sent.
+        long page = _faultPage;
+        Sys.Poke(page, 0);
+        Sys.Poke(page + WordSize.Bytes, 0);
+        Sys.Syscall(Call.RtSigaction, signal, page, 0, 8, 0, 0);
+        Sys.Poke(page + 128, 0);
+        Sys.Poke(page + 128 + WordSize.Bytes, 0);
+        Sys.PokeByte(page + 128 + (signal - 1) / 8, 1 << ((signal - 1) % 8));
+        Sys.Syscall(Call.RtSigprocmask, 1, page + 128, 0, 8, 0, 0);
+        Sys.Syscall(Call.Kill, Sys.Syscall(Call.Getpid, 0, 0, 0, 0, 0, 0), signal, 0, 0, 0, 0);
+        Sys.Syscall(Call.ExitGroup, 128 + signal, 0, 0, 0, 0, 0);
+    }
+
     public static long MemoryLimit()
     {
         long page = Map(8192);

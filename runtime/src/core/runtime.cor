@@ -718,6 +718,7 @@ static class Runtime
         _imagesBegun = _imagesBegun + 1;
         RegisterRoots(dataStart, dataEnd);
         RegisterFrames(frames);
+        Platform.ArmFaultReport();
     }
 
     // WHO RUNS A LIBRARY'S INITIALISER. On Linux the dynamic linker does,
@@ -1949,6 +1950,48 @@ static class Runtime
             taken = taken + 1;
             frame = next;
         }
+    }
+
+    /// The fault report armed (Platform.ArmFaultReport): called by a static
+    /// program's entry stub and by BeginImage, once is enough.
+    public static void ArmFaultReport() {
+        Platform.ArmFaultReport();
+    }
+
+    /// A FAULT NOTHING CAN CATCH, said as .NET says one: its message, the
+    /// address the fault was at and the instruction that made it, then the
+    /// stack from the faulting function outward. The platform's fault handler
+    /// calls it (Platform.ArmFaultReport), with a scratch page of its own
+    /// for the digits; nothing here allocates.
+    public static void ReportFault(long address, long pc, long frame, long digits) {
+        SayLiteral(StdErr, "Fatal error. System.AccessViolationException: Attempted to read or write protected memory. This is often an indication that other memory is corrupt.\n");
+        SayLiteral(StdErr, "   fault at 0x");
+        SayHex(digits, address);
+        SayLiteral(StdErr, ", instruction at 0x");
+        SayHex(digits, pc);
+        SayLiteral(StdErr, "\n");
+
+        long name;
+        long file;
+        long program;
+        long offset;
+
+        if (Lookup(pc, out name, out file, out program, out offset)) {
+            SayLiteral(StdErr, "   at ");
+            SayText(StdErr, name);
+            SayLiteral(StdErr, "\n");
+        }
+        SayTrace(StdErr, frame);
+    }
+
+    /// A word in hexadecimal, every digit, spelled in `digits` and written.
+    static void SayHex(long digits, long value) {
+        int count = WordSize.Bytes * 2;
+        for (int i = 0; i < count; i++) {
+            long nibble = (value >> ((count - 1 - i) * 4)) & 15;
+            Sys.PokeByte(digits + i, nibble < 10 ? 48 + nibble : 87 + nibble);
+        }
+        Platform.WriteBytes(StdErr, digits, count);
     }
 
     /// A string the compiler laid out in the image, which is data and not an

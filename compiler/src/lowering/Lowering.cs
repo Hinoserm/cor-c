@@ -858,6 +858,16 @@ public sealed partial class Lowering
             e.Call(CallLabel(join), IrType.Void);
         }
 
+        // A FAULT SAYS WHERE IT WAS, from the first instruction of the
+        // program's own: the runtime's report of a segmentation fault, as
+        // .NET's (Runtime.ArmFaultReport). A shared image arms it as it
+        // begins; a static one has no BeginImage and arms it here.
+        if (!Freestanding && RuntimeMethod("ArmFaultReport", 0) is MethodSymbol arm)
+        {
+            Require(arm);
+            e.Call(CallLabel(arm), IrType.Void);
+        }
+
         // WITH A SHARED RUNTIME, THIS IMAGE INTRODUCES ITSELF. The library's
         // `__data_start`, `_end` and `__corsac_frames` are the library's own,
         // and nothing in it can discover a second image; the program's

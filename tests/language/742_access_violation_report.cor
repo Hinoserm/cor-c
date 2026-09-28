@@ -1,0 +1,63 @@
+// test: a segmentation fault is reported as .NET reports one, and the process still dies of the signal
+// expect-exit: 0
+// expect-output:
+// message reported
+// address reported
+// faulting method named
+// its caller named
+// died of signal 11
+//
+// A fault nothing can catch used to end the process with nothing said: a
+// project build's compile process died of one, and only the kernel's log
+// knew. The runtime now says what .NET says -- "Fatal error.
+// System.AccessViolationException" -- with the address, the faulting method
+// and its callers, on standard error, and the process still dies of SIGSEGV,
+// which its parent sees as 128 + 11. The program runs itself as the child
+// that faults and reads what the child said.
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Runtime.CompilerServices;
+
+static unsafe class Program
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Touch(nint address)
+    {
+        int* p = (int*)address;
+        return *p;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Crash()
+    {
+        return Touch(0x540024) + 1;
+    }
+
+    static int Main(string[] args)
+    {
+        if (args.Length == 1 && args[0] == "crash")
+        {
+            return Crash();
+        }
+        ProcessStartInfo info = new ProcessStartInfo(Environment.ProcessPath!);
+        info.RedirectStandardError = true;
+        info.ArgumentList.Add("crash");
+        Process child = Process.Start(info)!;
+        string said = child.StandardError.ReadToEnd();
+        child.WaitForExit();
+        if (said.StartsWith("Fatal error. System.AccessViolationException: Attempted to read or write protected memory."))
+            Console.WriteLine("message reported");
+        if (said.Contains("fault at 0x") && said.Contains("540024,"))
+            Console.WriteLine("address reported");
+        if (said.Contains("at Program.Touch"))
+            Console.WriteLine("faulting method named");
+        if (said.Contains("at Program.Crash"))
+            Console.WriteLine("its caller named");
+        if (child.ExitCode == 128 + 11)
+            Console.WriteLine("died of signal 11");
+        else
+            Console.WriteLine("exit code " + child.ExitCode + ", said: " + said);
+        return 0;
+    }
+}
