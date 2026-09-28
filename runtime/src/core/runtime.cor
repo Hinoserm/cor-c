@@ -584,6 +584,10 @@ static class Runtime
     /// the correct answer for a region that is never reclaimed.
     public static void Free(long at)
     {
+        if (Gc.IgnoredFrees == 'p')
+        {
+            return;
+        }
         Gc.Free(at);
     }
 
@@ -593,7 +597,7 @@ static class Runtime
     /// null or a string literal, which is no heap block, is ignored by Free.
     public static void FreeReplaced(long old, long current)
     {
-        if (old != current)
+        if (old != current && Gc.IgnoredFrees != 'r')
         {
             Gc.Free(old);
         }
@@ -606,7 +610,7 @@ static class Runtime
     /// the List. Nothing for a null object or an empty field.
     public static void FreeField(long at, long offset)
     {
-        if (at == 0)
+        if (at == 0 || Gc.IgnoredFrees == 'f')
         {
             return;
         }

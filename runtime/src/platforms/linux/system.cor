@@ -145,15 +145,30 @@ static class Platform
 
     public static bool VerifyFrees() => EnvironmentFlag("CORSAC_VERIFY_FREES=");
 
-    /// CORSAC_IGNORE_FREES=1: every free the compiler wrote is ignored and the
-    /// collector finds all garbage. What it is for is telling a fault that a
-    /// free makes from one the collector makes: if a program's corruption
-    /// goes when its frees do, a free is wrong.
-    public static bool IgnoreFrees() => EnvironmentFlag("CORSAC_IGNORE_FREES=");
+    /// CORSAC_IGNORE_FREES: which frees the compiler wrote are ignored, the
+    /// collector finding that garbage instead. What it is for is telling a
+    /// fault that a free makes from one the collector makes, and then which
+    /// kind of free: 1 (or anything else) all of them; p the plain frees at
+    /// a last use (Runtime.Free); f the fields freed with their owner
+    /// (Runtime.FreeField); r what an owned variable held before it was
+    /// assigned (Runtime.FreeReplaced). 0, or unset, none.
+    public static long IgnoreFrees()
+    {
+        long first = EnvironmentByte("CORSAC_IGNORE_FREES=");
+        return first == 48 ? 0 : first;
+    }
 
     /// Whether `key` (ending in '=') is set in the environment to something
     /// other than nothing or 0, read from the loader's stack.
     static bool EnvironmentFlag(string key)
+    {
+        long first = EnvironmentByte(key);
+        return first != 0 && first != 48;
+    }
+
+    /// The first byte of `key`'s value (`key` ends in '='), or 0 when it is
+    /// unset or empty.
+    static long EnvironmentByte(string key)
     {
         long env = Os.EnvironAddress();
         while (true)
@@ -161,7 +176,7 @@ static class Platform
             long text = Sys.Peek(env) & WordSize.AddressMask;
             if (text == 0)
             {
-                return false;
+                return 0;
             }
             int i = 0;
             while (i < key.Length && Sys.PeekByte(text + i) == key[i])
@@ -170,8 +185,7 @@ static class Platform
             }
             if (i == key.Length)
             {
-                long first = Sys.PeekByte(text + i);
-                return first != 0 && first != 48;
+                return Sys.PeekByte(text + i);
             }
             env = env + WordSize.Bytes;
         }

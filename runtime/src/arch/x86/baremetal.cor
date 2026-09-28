@@ -95,9 +95,9 @@ static class Platform
         return false;
     }
 
-    public static bool IgnoreFrees()
+    public static long IgnoreFrees()
     {
-        return false;
+        return 0;
     }
 
     /// Where the bump region begins and ends. Zero means "not yet decided",
