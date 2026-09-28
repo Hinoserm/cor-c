@@ -29,6 +29,15 @@ public static class ProjectCompile
     /// <summary>What one more unit may need before it is started beside others (see Gated).</summary>
     private const long UnitReserve = 64L * 1024 * 1024;
 
+    /// <summary>
+    /// The same in a 32-bit process, counted in heap rather than live bytes
+    /// (LiveHeap): what the self-hosted compiler's heap grows by for even a
+    /// small unit, whose imported declarations and binding cost the same
+    /// whatever its own size -- a 68 KB source took the heap to over a
+    /// gigabyte on its own.
+    /// </summary>
+    private const long UnitReserveNarrow = 512L * 1024 * 1024;
+
     public static int Run(string[] argv)
     {
         string[] args = Driver.Response(argv);
@@ -229,10 +238,18 @@ public static class ProjectCompile
         long baselineLive = LiveHeap();
         long perByte = 0;
         long seenCollection = -1;
+        // WHAT A UNIT COSTS, as the limit that binds sees it. In a 64-bit
+        // process that is memory, and a compacting collector's heap is its
+        // live bytes and little more. In a 32-bit process it is ADDRESS SPACE,
+        // and a non-moving heap takes far more of it than it holds live: the
+        // holes survivors leave, and the old garbage a generational collector
+        // keeps until its next whole-heap cycle. Measured by live bytes there,
+        // twelve threads admitted units whose heaps together ran the four
+        // gigabytes out right after the first, largest one finished.
         static long LiveHeap()
         {
             GCMemoryInfo info = GC.GetGCMemoryInfo();
-            return info.HeapSizeBytes - info.FragmentedBytes;
+            return Environment.Is64BitProcess ? info.HeapSizeBytes - info.FragmentedBytes : info.HeapSizeBytes;
         }
         bool measured = false;
         long startCollection = GC.GetGCMemoryInfo().Index;
@@ -242,13 +259,13 @@ public static class ProjectCompile
             if (compiling > 0 && runningBytes > 0 && info.Index != seenCollection && info.Index != startCollection)
             {
                 seenCollection = info.Index;
-                long rate = (info.HeapSizeBytes - info.FragmentedBytes - baselineLive) / runningBytes;
+                long rate = (LiveHeap() - baselineLive) / runningBytes;
                 if (rate > perByte) perByte = rate;
             }
         }
         long Needed(long bytes)
         {
-            long need = Math.Max(UnitReserve, perByte * bytes);
+            long need = Math.Max(Environment.Is64BitProcess ? UnitReserve : UnitReserveNarrow, perByte * bytes);
             return need + need / 2;
         }
         // HALF OF IT, because what is reserved is what the units hold live,
@@ -258,7 +275,13 @@ public static class ProjectCompile
         // compiler held 1.6 GB live under a 32-bit process's 2.5 GB ceiling
         // and ran its four gigabytes of address space out. On a machine of
         // many gigabytes the half is still more than a dozen units need.
-        long Capacity() => (MachineMemory.Available() + Math.Max(0, GC.GetTotalMemory(false) - baselineLive)) / 2;
+        //
+        // In a 32-bit process the limit is the heap's ceiling and what units
+        // are booked at is heap already, garbage and holes included, so the
+        // whole of what lies above the heap the build began with is theirs.
+        long Capacity() => Environment.Is64BitProcess
+            ? (MachineMemory.Available() + Math.Max(0, GC.GetTotalMemory(false) - baselineLive)) / 2
+            : Math.Max(0, GC.GetGCMemoryInfo().TotalAvailableMemoryBytes - baselineLive);
         // At the rate known NOW: a rate that rose after a unit was admitted
         // raises what that unit holds, rather than leaving it booked at the
         // figure from before anyone knew better.
