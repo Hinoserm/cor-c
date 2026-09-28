@@ -139,6 +139,33 @@ static class Platform
     /// (Gc.VerifyFree). Read straight from the environment on the entry
     /// stack, with nothing allocated -- so only on the MAIN thread, whose
     /// entry stack is the loader's (the collector asks once, as it starts).
+    /// CORSAC_GC_VERIFY=1: the collector checks, after each minor cycle's
+    /// mark, that no old object points at a young one it is about to sweep.
+    public static bool VerifyGenerations()
+    {
+        const string key = "CORSAC_GC_VERIFY=";
+        long env = Os.EnvironAddress();
+        while (true)
+        {
+            long text = Sys.Peek(env) & WordSize.AddressMask;
+            if (text == 0)
+            {
+                return false;
+            }
+            int i = 0;
+            while (i < key.Length && Sys.PeekByte(text + i) == key[i])
+            {
+                i = i + 1;
+            }
+            if (i == key.Length)
+            {
+                long first = Sys.PeekByte(text + i);
+                return first != 0 && first != 48;
+            }
+            env = env + WordSize.Bytes;
+        }
+    }
+
     public static bool VerifyFrees()
     {
         const string key = "CORSAC_VERIFY_FREES=";
@@ -367,6 +394,11 @@ static class Platform
     {
         return SysinfoBytes(SysinfoFree);
     }
+
+    /// Whether a mapping costs only the pages that are touched: the kernel
+    /// commits anonymous memory as it is first written, so the collector may
+    /// reserve a card table for the whole address space (Gc, generations).
+    public const bool MapsCommitLazily = true;
 
     /// Free memory as the collector may ask it: with the heap held, so without
     /// allocating (SysinfoBytes answers into a page of the system's own).

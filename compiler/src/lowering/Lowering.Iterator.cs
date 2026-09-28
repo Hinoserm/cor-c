@@ -305,6 +305,7 @@ public sealed partial class Lowering
         _f.Params.Add(machine);
         _stateMachine = machine;
         _iterating = it;
+        RequireCardMarkObject();
         _f.Async = new AsyncFrame
         {
             StateMachine = machine,

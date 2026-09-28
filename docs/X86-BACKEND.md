@@ -945,6 +945,10 @@ mangled name and arity; the library provides them.
 - `Runtime.Marking` and `Runtime.WriteBarrier(slot, value)` -- the
   concurrent mark's barrier (above). `Runtime.WriteBarrierValues(old, value)`
   is its form for a store the optimiser has replaced with registers.
+- `Runtime.Cards`, `Runtime.CardMark(slot)` and
+  `Runtime.CardMarkObject(payload)` -- the generational card marks (below):
+  the table, or 0 where there are no generations; the mark after a store of
+  a reference; every card of a coroutine's machine after a suspension.
 - Small blocks (to 256 bytes) come from exact-size free lists; larger free
   blocks are indexed by size and address in AVL trees kept in the free
   blocks themselves, in power-of-two bins.
@@ -1014,22 +1018,63 @@ emitted by lowering, and threads reach their safepoints at allocation and
 at blocking calls.)
 
 
-**Next: generational collection (designed, not built).** Most of what a
-program allocates dies before the next collection, and every collection
-today still marks the whole live heap, builds the object-start tables of
-every chunk and sweeps every chunk. The collector will stay non-moving --
-stacks and registers are read conservatively, so nothing may move -- and
-become generational by sticky mark bits: a block that survives a
-collection stays marked and is OLD; a MINOR collection marks only from the
-roots, the old objects written since the last collection, and the objects
-the roots held at the last collection (the compiler initialises a fresh
-object without a barrier, and a collection can fall between), and builds
-start tables for, and sweeps, only the chunks allocated in since. The
-compiler's barrier gains a card mark -- one byte per kilobyte of address
-space, a byte store after a shift -- on every store of a reference into the
-heap, and the runtime's bulk copies of references mark the cards of what
-they write. A MAJOR collection, when the old generation has grown by the
-pacing above, clears the marks and runs as today.
+**Generations.** Most of what a program allocates is dead by the next
+collection, and a collection that marks the whole live heap, builds every
+chunk's start table and sweeps every chunk pays for the whole heap to learn
+that. So the collector is generational -- still non-moving, since the stacks
+are read word by word and nothing may move -- by STICKY MARKS: a block that
+survives a collection keeps its mark and scanned flags and is OLD; one
+allocated since carries neither and is YOUNG. A chunk allocated in since the
+last collection is young (`HeapChunks.IsYoung`); the others hold only old
+blocks.
+
+- *A minor collection* marks from the ordinary roots, from the cards, and
+  from the blocks the stacks held at the last collection, and follows no
+  pointer into an old chunk. It builds start tables for, and sweeps, only
+  the young chunks; an old chunk's live counts are carried from its last
+  sweep and its free lists are left alone. Survivors are stamped marked and
+  become old where they stand.
+- *The cards* are a byte for each kilobyte of the address space
+  (`Runtime.Cards`, four megabytes reserved, a page committed for every four
+  megabytes of heap). The compiler sets one after every store of a
+  reference into memory -- after, so no collection can clear it between the
+  mark and the store: `Runtime.CardMark(slot)` stays a note to the collector
+  through the lifetime passes and is written out by the last pass
+  (`CardMarks`) as a load of the table, a test, a shift and a byte store.
+  A coroutine saves its frame into its state machine word by word at each
+  suspension and marks the machine's cards there once
+  (`Runtime.CardMarkObject`); `Interlocked`'s reference exchanges mark
+  theirs. Array copies and list shifts are element stores and need nothing
+  more.
+- *Taken at the snapshot.* When a cycle's start tables are built, with the
+  heap lock held, every set card is moved to a second table and cleared
+  (`Gc.TakeCards`); the cycle reads that table while marking
+  (`ScanTakenCards`). A store made after the snapshot -- above all of an
+  object allocated after it, which the cycle keeps but cannot mark -- leaves
+  its card set for the next cycle.
+- *The blocks the stacks held.* The compiler initialises a fresh object
+  without a barrier, and a collection can fall between its allocation and
+  those stores; it is on a stack then. So each cycle records every block a
+  stack or a register reached (`Gc.Hold`, 32,768 entries) and the next
+  minor one re-scans them (`RescanHeld`). A full record makes the next cycle
+  major.
+- *A major collection* clears every mark as it builds the start tables and
+  then runs as a whole-heap one; its survivors keep their marks. One runs
+  when the live heap has grown by the pacing's measure since the last major
+  (`Gc.NextIsMinor`), on `GC.Collect`, when memory ran out, and after
+  anything that makes the old generation's marks doubtful: an abandoned
+  cycle, an overflowed record.
+- *Paced apart.* Between minor collections a program allocates a quarter of
+  what the pacing would allow between whole-heap ones, within [the minimum
+  threshold, 64 MB] (`Gc.Nursery`): a small board collects its nursery often
+  and cheaply, a server lets it grow.
+- *Where it runs.* 32-bit, on a platform whose mappings commit only the
+  pages touched (`Platform.MapsCommitLazily`): Linux. Elsewhere -- the bare
+  machine, long mode -- `Runtime.Cards` stays 0, every card mark is a load
+  and a not-taken branch, and every collection is major.
+- *Checked on request.* `CORSAC_GC_VERIFY=1` makes every minor cycle, once
+  marked, walk every old block for a pointer to an unmarked young one and
+  report it with its card (`Gc.VerifyMinor`).
 
 ## The runtime
 

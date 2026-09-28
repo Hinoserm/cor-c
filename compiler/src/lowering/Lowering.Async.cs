@@ -225,6 +225,7 @@ public sealed partial class Lowering
         VReg machine = _f.NewReg(IrTypes.Word, "machine");
         _f.Params.Add(machine);
         _stateMachine = machine;
+        RequireCardMarkObject();
         _f.Async = new AsyncFrame
         {
             StateMachine = machine,

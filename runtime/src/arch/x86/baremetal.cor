@@ -263,6 +263,15 @@ static class Platform
         return 0;
     }
 
+    /// A freestanding image's mappings are its own frames, taken whole: the
+    /// collector keeps no card table here, and collects the whole heap.
+    public const bool MapsCommitLazily = false;
+
+    public static bool VerifyGenerations()
+    {
+        return false;
+    }
+
     /// Unknown here too: a kernel's collector is paced by its cap (Gc).
     public static long FreeMemoryQuietly()
     {

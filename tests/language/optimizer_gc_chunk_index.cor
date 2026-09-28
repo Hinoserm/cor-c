@@ -13,8 +13,7 @@ static class Program
         long table = Platform.Map(count * WordSize.Bytes);
         if (table == 0) return 1;
         long before = HeapChunks.HeapBytes;
-        // A chunk's first block follows its four-word record.
-        long first = 4 * WordSize.Bytes;
+        // A chunk's first block follows its record, however long that is.
         for (int i = 0; i < count; i++)
         {
             long chunk = HeapChunks.Take(64);
@@ -22,11 +21,12 @@ static class Program
             Sys.Poke(table + i * WordSize.Bytes, chunk);
             HeapChunks.SetEnd(chunk, chunk + 80);
         }
+        long first = HeapChunks.First(Sys.Peek(table)) - Sys.Peek(table);
         // Walk in reverse and nonadjacent order to defeat the one-entry memo.
         for (int i = 0; i < count; i++)
         {
             long chunk = Sys.Peek(table + ((i * 37) % count) * WordSize.Bytes);
-            if (HeapChunks.Of(chunk + first) != chunk) return 3;
+            if (HeapChunks.Of(HeapChunks.First(chunk)) != chunk) return 3;
             if (HeapChunks.Of(chunk + 79) != chunk) return 4;
             if (HeapChunks.Of(chunk + first - 1) != 0) return 5;
             if (HeapChunks.Of(chunk + 80) != 0) return 6;

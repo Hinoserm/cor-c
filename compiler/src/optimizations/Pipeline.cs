@@ -119,6 +119,9 @@ public sealed class Pipeline
         p.LatePasses.Add(new ScalarObjects());
         p.LatePasses.Add(new Escape());
         p.LatePasses.Add(Inliner());
+        // The card marks written out, last: to every pass above they are a
+        // call that lets nothing go (CardMarks).
+        p.LatePasses.Add(new CardMarks());
         // A DIAGNOSTIC SWITCH, for finding which pass a miscompile comes out
         // of: CORC_SKIP_PASSES=Escape,Inline leaves those out of every list.
         // Nothing is ever built with it set.

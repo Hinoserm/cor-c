@@ -633,6 +633,30 @@ static class Runtime
 
     /// What compiled code calls before storing the reference `value` at
     /// `slot`, while Marking is set. See Gc.Barrier.
+    /// THE CARD TABLE, or 0: one byte for every kilobyte of the address space,
+    /// set when a reference is stored into that kilobyte (Gc, generations).
+    /// The compiler emits the mark after every store of a reference, as it
+    /// emits the Marking test before it; CardMark is the same for the stores
+    /// the library makes by hand (Interlocked).
+    public static long Cards;
+    public const int CardShift = 10;
+
+    /// Every card of the object a payload belongs to: what a coroutine's
+    /// frame is saved into at a suspension, without a barrier (AsyncTransform).
+    public static void CardMarkObject(long payload)
+    {
+        Gc.CardMarkObject(payload);
+    }
+
+    public static void CardMark(long slot)
+    {
+        long cards = Cards;
+        if (cards != 0)
+        {
+            Sys.PokeByte(cards + ((slot & WordSize.AddressMask) >> CardShift), 1);
+        }
+    }
+
     public static void WriteBarrier(long slot, long value)
     {
         Gc.Barrier(slot, value);

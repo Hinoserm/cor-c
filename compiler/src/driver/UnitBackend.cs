@@ -87,6 +87,9 @@ public sealed class UnitBackend : IUnitBackend
                 new Inline { SmallBody = 40, GrowthLimit = 1024, ConstantBranchBody = 160, FreshOwnerBody = 0 }.Run(local);
                 cleanup.Run(local);
             }
+            // Written out last here too: the link's lifetime pass saw them as
+            // notes to the collector (CardMarks).
+            new CardMarks().Run(local);
             local.Functions.RemoveAll(body => !ReferenceEquals(body, function));
             LandingPadHomes.Run(local);
             return function;

@@ -66,14 +66,15 @@ public sealed partial class Escape
     internal static bool IsCollectorNote(string? callee) =>
         callee is "m_Gc_MarkAt_1_V$I64" or "m_Gc_Report_1_V$I64"
             or "m_Runtime_WriteBarrier_2_V$I64_V$I64" or "m_Gc_Barrier_2_V$I64_V$I64"
-            or "m_Runtime_WriteBarrierValues_2_V$I64_V$I64" or "m_Gc_BarrierValues_2_V$I64_V$I64";
+            or "m_Runtime_WriteBarrierValues_2_V$I64_V$I64" or "m_Gc_BarrierValues_2_V$I64_V$I64"
+            or CardMarks.CardMark;
 
     /// <summary>
     /// The notes the barrier is built from, which are never inlined. Whether
     /// Gc.Report fit the inliner's budget used to depend on the word size.
     /// </summary>
     internal static bool IsCollectorLeaf(string? callee) =>
-        callee is "m_Gc_MarkAt_1_V$I64" or "m_Gc_Report_1_V$I64";
+        callee is "m_Gc_MarkAt_1_V$I64" or "m_Gc_Report_1_V$I64" or CardMarks.CardMark;
 
     /// <summary>How many fields this pass arranged to free with their owner.</summary>
     public int FieldsOwned { get; private set; }

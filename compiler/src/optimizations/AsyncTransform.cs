@@ -37,7 +37,11 @@ public static class AsyncTransform
         {
             if (f.Async is AsyncFrame frame)
             {
-                int size = Transform(f, frame, wordSize);
+                // THE FRAME IS SAVED WITHOUT A BARRIER, word by word into the
+                // machine at each suspension; its cards are marked there, when
+                // the runtime has a card table to mark (Gc, generations).
+                string? cards = m.RuntimeHelpers.Contains(CardMarkObject) ? CardMarkObject : null;
+                int size = Transform(f, frame, wordSize, cards);
                 DataItem? item = m.Data.FirstOrDefault(d => d.Name == frame.SizeSymbol);
                 if (item is not null)
                 {
@@ -67,7 +71,10 @@ public static class AsyncTransform
         throw new InvalidOperationException($"{f.Name}: a suspension marker went missing");
     }
 
-    private static int Transform(Function f, AsyncFrame frame, int wordSize)
+    /// <summary>Runtime.CardMarkObject: every card of an object, from its payload address.</summary>
+    public const string CardMarkObject = "m_Runtime_CardMarkObject_1_V$I64";
+
+    private static int Transform(Function f, AsyncFrame frame, int wordSize, string? cards)
     {
         frame.Lowered = true;
         VReg machine = frame.StateMachine;
@@ -212,6 +219,17 @@ public static class AsyncTransform
                     Op = Opcode.Store, Size = v.Type.Bytes(), Offset = regField[v],
                     Operands = { new RegOperand(machine), new RegOperand(v) },
                 });
+            }
+            if (cards is not null && resume.Live.Count > 0)
+            {
+                // The runtime takes a long; on 32-bit the machine is a word.
+                VReg at = machine;
+                if (machine.Type != IrType.I64)
+                {
+                    at = f.NewReg(IrType.I64, "cardp");
+                    saves.Add(new Instr { Op = Opcode.ZExt32, Dest = at, Operands = { new RegOperand(machine) } });
+                }
+                saves.Add(new Instr { Op = Opcode.Call, Callee = cards, Operands = { new RegOperand(at) } });
             }
             saves.Add(new Instr
             {

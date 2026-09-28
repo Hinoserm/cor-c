@@ -621,6 +621,10 @@ public sealed class Inline : IParallelModulePass
     /// </summary>
     internal static void RemoveDeadFunctions(Module m, HashSet<string> addressTaken)
     {
+        // A COROUTINE'S CARD MARK IS CALLED FROM CODE NOT YET WRITTEN: the
+        // suspensions become saves and calls after the optimiser has finished
+        // (AsyncTransform), so while any function is one, its helper stays.
+        bool coroutines = m.Functions.Any(fn => fn.Async is not null);
         bool changed = true;
         while (changed)
         {
@@ -629,7 +633,8 @@ public sealed class Inline : IParallelModulePass
             for (int i = m.Functions.Count - 1; i >= 0; i--)
             {
                 Function f = m.Functions[i];
-                if (f.Name == m.Entry || addressTaken.Contains(f.Name) || callers.GetValueOrDefault(f.Name) > 0)
+                if (f.Name == m.Entry || addressTaken.Contains(f.Name) || callers.GetValueOrDefault(f.Name) > 0
+                    || (coroutines && f.Name == AsyncTransform.CardMarkObject))
                 {
                     continue;
                 }

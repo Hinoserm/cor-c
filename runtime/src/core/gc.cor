@@ -17,6 +17,10 @@
 // a class instance, a box, a closure, an array (KindObject) -- is read by its
 // descriptor's reference map, and a string or a byte array not at all.
 //
+// GENERATIONAL where the platform allows it (the generations section below):
+// most collections are minor ones that mark, index and sweep only what was
+// allocated since the last.
+//
 // The collector is the last of four places an object can live: static data,
 // the frame, owned by one owner and freed by the compiler, and here. What the
 // compiler can prove never reaches this file.
@@ -65,7 +69,10 @@
 //   +W    end: one past the last block laid down (the bump pointer's floor)
 //   +2W   limit: one past the chunk's memory
 //   +3W   raw page-anchor table, or 0 when not allocated
-//   +4W   the first block
+//   +4W   flags: young (allocated in since the last collection)
+//   +5W   the live bytes the last sweep of it found
+//   +6W   the live blocks the last sweep of it found
+//   +8W   the first block (8-aligned on both word sizes)
 //
 // The record is not a block and is never swept.
 
@@ -239,6 +246,364 @@ static class Gc
 
     /// How many collections have run. A test reads it to prove one happened.
     public static long Collections;
+
+    // ---- generations ---------------------------------------------------------
+    //
+    // MOST OF WHAT A PROGRAM MAKES IS DEAD BY THE NEXT COLLECTION, and a
+    // collection that marks the whole live heap, rebuilds every chunk's start
+    // table and sweeps every chunk to find that out costs the whole heap each
+    // time. So the collector is generational -- and stays non-moving, since
+    // the stacks are read word by word and nothing may move -- by STICKY
+    // MARKS: a block that survives a collection keeps its mark and scanned
+    // flags and is OLD; one allocated since carries neither and is YOUNG.
+    //
+    // A MINOR collection marks only what is young and reachable. Its roots
+    // are the ordinary ones, the CARDS -- a byte for every kilobyte of the
+    // address space, set by the compiler after every store of a reference
+    // (Runtime.Cards) -- whose memory is read word by word for pointers old
+    // objects hold into young ones, and the blocks the stacks held at the last
+    // collection (Hold): an object the compiler is still initialising is
+    // written without a barrier, a collection can fall between its allocation
+    // and those writes, and it is on a stack when it does. A pointer into an
+    // old chunk is not followed at all (its blocks are all old). Only YOUNG
+    // chunks -- allocated in since the last collection (HeapChunks.IsYoung) --
+    // have their start tables built and are swept; the free lists of the
+    // others are left as they are.
+    //
+    // A MAJOR collection clears every mark as it builds the start tables and
+    // then runs as a whole-heap one always has; its survivors keep their marks
+    // and are old. One runs when the live heap has grown by the pacing's
+    // measure since the last (NextIsMinor), first of all, when asked for
+    // (GC.Collect), when memory ran out, and after anything that makes the
+    // old generation's marks untrustworthy (an abandoned cycle, a record of
+    // the stacks' blocks that overflowed).
+    //
+    // 32-bit only, and only where a mapping costs only the pages touched: the
+    // card table is the address space over 1024, four megabytes reserved and
+    // a page committed for every four megabytes of heap. Elsewhere every
+    // collection is major, as before.
+    static bool _generational;
+    static bool _minor;             // the cycle under way is a minor one
+    static bool _forceMajor;        // the next cycle must be major
+    static long _majorLive;         // what the last major collection found live
+    public static long MinorCollections;
+    public static long MajorCollections;
+    const long CardTableBytes = 4194304;
+    const long NurseryMost = 67108864;
+    // The blocks the stacks held: a count word, then (block, size) pairs.
+    // Two tables, swapped at every cycle: what the last one held is read
+    // (RescanHeld) while this one's is written (Hold).
+    const long HeldMax = 32768;
+    const long HeldEntry = 2 * WordSize.Bytes;
+    const long HeldBytes = (HeldMax + 1) * HeldEntry;
+    static long _held;
+    static long _holding;
+    // THE CARDS AS THEY WERE AT THE SNAPSHOT (TakeCards): moved here, and the
+    // live table cleared, in one step under the heap lock. A store made after
+    // it -- of an object made after it, above all, which this cycle keeps but
+    // cannot mark -- leaves its card set for the next cycle. Read and cleared
+    // in the cycle's marking (ScanTakenCards).
+    static long _taken;
+
+    static bool _verifyGenerations;
+    static long _verifyReports;
+
+    /// CORSAC_GC_VERIFY: after a minor cycle has marked, every old block is
+    /// read word by word, and a word that lands on a young block this cycle
+    /// did not mark -- which the sweep is about to free -- is reported: the
+    /// old block, the offset in it, and what it points at. A missing barrier
+    /// shows up as exactly the object and field it missed. An old object that
+    /// has become garbage can hold such a word legitimately; a report is a
+    /// place to look, not a verdict.
+    static void VerifyMinor()
+    {
+        long chunk = HeapChunks.Newest();
+        while (chunk != 0 && _verifyReports < 20)
+        {
+            long block = HeapChunks.First(chunk);
+            long end = HeapChunks.End(chunk);
+            while (block < end && _verifyReports < 20)
+            {
+                long word = Sys.Peek(block);
+                long size = word & SizeMask;
+                if (size < Smallest || block + size > end || Sys.Peek(block + size - FooterBytes) != word)
+                {
+                    break;
+                }
+                if ((word & (FlagFree | FlagMark)) == FlagMark && Sys.Peek(block + KindAt) != KindLeaf)
+                {
+                    long p = block + HeaderBytes;
+                    while (p < block + size - FooterBytes)
+                    {
+                        long target = BlockForPointer(Sys.Peek(p));
+                        if (target != 0)
+                        {
+                            long seen = Sys.Peek(target);
+                            long home = HeapChunks.OfSnapshot(target + HeaderBytes);
+                            if ((seen & (FlagMark | FlagFree)) == 0 && home != 0 && !Newcomer(home, target, seen))
+                            {
+                                SayNumber("gc verify: old block ", block);
+                                SayNumber("gc verify:   kind ", Sys.Peek(block + KindAt));
+                                SayNumber("gc verify:   offset ", p - block);
+                                SayNumber("gc verify:   points at young ", target);
+                                SayNumber("gc verify:   whose kind is ", Sys.Peek(target + KindAt));
+                                SayNumber("gc verify:   its chunk young ", HeapChunks.IsYoung(home) ? 1 : 0);
+                                SayNumber("gc verify:   starts this cycle ", HeapChunks.StartsCycle(home) == _cycle ? 1 : 0);
+                                SayNumber("gc verify:   is a start ", HeapChunks.IsStart(home, target) ? 1 : 0);
+                                SayNumber("gc verify:   old block's card ", Sys.PeekByte(Runtime.Cards + ((p & WordSize.AddressMask) >> Runtime.CardShift)));
+                                SayNumber("gc verify:   old block's chunk young ", HeapChunks.IsYoung(HeapChunks.Of(block)) ? 1 : 0);
+                                _verifyReports = _verifyReports + 1;
+                            }
+                        }
+                        p = p + WordSize.Bytes;
+                    }
+                }
+                block = block + size;
+            }
+            chunk = HeapChunks.Next(chunk);
+        }
+    }
+
+    static void StartGenerations()
+    {
+        _verifyGenerations = Platform.VerifyGenerations();
+        if (HeapCeiling == 0 || !Platform.MapsCommitLazily)
+        {
+            return;
+        }
+        long cards = Platform.Map(CardTableBytes);
+        long taken = Platform.Map(CardTableBytes);
+        long held = Platform.Map(HeldBytes);
+        long holding = Platform.Map(HeldBytes);
+        if (cards == 0 || taken == 0 || held == 0 || holding == 0)
+        {
+            if (cards != 0) Platform.Unmap(cards, CardTableBytes);
+            if (taken != 0) Platform.Unmap(taken, CardTableBytes);
+            if (held != 0) Platform.Unmap(held, HeldBytes);
+            if (holding != 0) Platform.Unmap(holding, HeldBytes);
+            return;
+        }
+        _taken = taken;
+        _held = held;
+        _holding = holding;
+        Runtime.Cards = cards;
+        _generational = true;
+    }
+
+    /// Whether the cycle about to run may be minor: there has been a major
+    /// one to make the old generation, nothing has made its marks doubtful,
+    /// and the live heap has not grown past what the pacing allows since.
+    static bool NextIsMinor()
+    {
+        return _generational && !_forceMajor && _majorLive != 0
+            && _liveBytes < _majorLive + NextThreshold(_majorLive);
+    }
+
+    /// How much a program allocates between minor collections: a quarter of
+    /// what the pacing would allow between whole-heap ones, within
+    /// [MinThreshold, 64 MB]. A small board collects its nursery often and
+    /// cheaply; a server lets it grow.
+    static long Nursery(long live)
+    {
+        long n = NextThreshold(live) / 4;
+        if (n < MinThreshold) n = MinThreshold;
+        if (n > NurseryMost) n = NurseryMost;
+        return n;
+    }
+
+    /// The table the last cycle recorded becomes the one to read; the other
+    /// is emptied for this cycle to record into.
+    static void SwapHeld()
+    {
+        long read = _holding;
+        _holding = _held;
+        _held = read;
+        Sys.Poke(_holding, Zero);
+    }
+
+    /// A block a stack or a register held, recorded for the next cycle.
+    /// Several threads record at once (their own stacks, in the SCAN round).
+    /// A full table makes the next cycle major: every block it could not
+    /// record is then found the whole-heap way.
+    static void Hold(long block)
+    {
+        long slot = Sys.AtomicAdd(_holding, 1);
+        if (slot >= HeldMax)
+        {
+            _forceMajor = true;
+            return;
+        }
+        long at = _holding + HeldEntry + slot * HeldEntry;
+        Sys.Poke(at, block);
+        Sys.Poke(at + WordSize.Bytes, Sys.Peek(block) & SizeMask);
+    }
+
+    /// The block whose payload a word points at the start of -- in any chunk,
+    /// young or old -- or 0. Checked by its size at both ends, as
+    /// BlockForPointer's exact case is; an interior pointer is not recorded.
+    static long ExactBlock(long at)
+    {
+        if ((at & 7) != 0)
+        {
+            return 0;
+        }
+        long chunk = _snapshots ? HeapChunks.OfSnapshot(at) : HeapChunks.Of(at);
+        if (chunk == 0)
+        {
+            return 0;
+        }
+        long block = at - HeaderBytes;
+        if (block < HeapChunks.First(chunk))
+        {
+            return 0;
+        }
+        long word = Sys.Peek(block);
+        long size = word & SizeMask;
+        if (size < Smallest || block + size > HeapChunks.End(chunk) || (word & FlagFree) != 0
+            || Sys.Peek(block + size - FooterBytes) != word)
+        {
+            return 0;
+        }
+        return block;
+    }
+
+    /// A word of a stack or a register: recorded, when it is a block, for the
+    /// next cycle, and marked.
+    static void MarkRoot(long at)
+    {
+        if (_generational)
+        {
+            long block = ExactBlock(at);
+            if (block != 0)
+            {
+                Hold(block);
+            }
+        }
+        MarkAt(at);
+    }
+
+    /// ScanRange for a stack or a thread's saved registers (MarkRoot).
+    public static void ScanRoots(long from, long to)
+    {
+        long p = (from + WordSize.Bytes - 1) & -WordSize.Bytes;
+
+        while (p < to)
+        {
+            MarkRoot(Sys.Peek(p));
+            p = p + WordSize.Bytes;
+        }
+    }
+
+    /// A minor collection's roots besides the ordinary ones: the blocks the
+    /// stacks held at the last cycle, scanned if they are there still and old
+    /// now (a block may have been freed, or freed and made again, since).
+    static void RescanHeld()
+    {
+        long count = Sys.Peek(_held);
+        if (count > HeldMax) count = HeldMax;
+        for (long i = 0; i < count; i++)
+        {
+            long at = _held + HeldEntry + i * HeldEntry;
+            long block = Sys.Peek(at);
+            long size = Sys.Peek(at + WordSize.Bytes);
+            long chunk = HeapChunks.OfSnapshot(block + HeaderBytes);
+            if (chunk == 0 || block + size > HeapChunks.End(chunk))
+            {
+                continue;
+            }
+            long word = Sys.Peek(block);
+            if ((word & SizeMask) == size && (word & (FlagFree | FlagMark)) == FlagMark
+                && Sys.Peek(block + size - FooterBytes) == word)
+            {
+                ScanBlock(block, size);
+            }
+        }
+    }
+
+    /// AT THE SNAPSHOT: every set card over the heap moved into the taken
+    /// table (for a minor cycle, to be read) and cleared, with the heap lock
+    /// held. A card a store sets afterwards stays set for the next cycle.
+    static void TakeCards(bool keep)
+    {
+        long cards = Runtime.Cards;
+        long which = 0;
+        long chunk = HeapChunks.SnapshotChunk(0);
+        while (chunk != 0)
+        {
+            long card = (HeapChunks.First(chunk) & WordSize.AddressMask) >> Runtime.CardShift;
+            long last = ((HeapChunks.End(chunk) - 1) & WordSize.AddressMask) >> Runtime.CardShift;
+            while (card <= last)
+            {
+                if (Sys.PeekByte(cards + card) != 0)
+                {
+                    Sys.PokeByte(cards + card, 0);
+                    if (keep)
+                    {
+                        Sys.PokeByte(_taken + card, 1);
+                    }
+                }
+                card = card + 1;
+            }
+            which = which + 1;
+            chunk = HeapChunks.SnapshotChunk(which);
+        }
+    }
+
+    /// A minor cycle's other roots: the kilobytes whose cards were taken at the
+    /// snapshot, read word by word -- a pointer an old object was given since
+    /// the last cycle is in one of them -- and their taken cards cleared.
+    static void ScanTakenCards()
+    {
+        long which = 0;
+        long chunk = HeapChunks.SnapshotChunk(0);
+        while (chunk != 0)
+        {
+            long first = HeapChunks.First(chunk);
+            long end = HeapChunks.End(chunk);
+            long card = (first & WordSize.AddressMask) >> Runtime.CardShift;
+            long last = ((end - 1) & WordSize.AddressMask) >> Runtime.CardShift;
+            while (card <= last)
+            {
+                if (Sys.PeekByte(_taken + card) != 0)
+                {
+                    Sys.PokeByte(_taken + card, 0);
+                    long from = card << Runtime.CardShift;
+                    long to = from + (1 << Runtime.CardShift);
+                    ScanRange(from < first ? first : from, to > end ? end : to);
+                }
+                card = card + 1;
+            }
+            which = which + 1;
+            chunk = HeapChunks.SnapshotChunk(which);
+        }
+    }
+
+    /// Runtime.CardMarkObject: every card of the block a payload is in -- what
+    /// a coroutine's frame is saved into at each suspension, word by word
+    /// and without a barrier (AsyncTransform).
+    public static void CardMarkObject(long payload)
+    {
+        long cards = Runtime.Cards;
+        if (cards == 0 || payload == 0)
+        {
+            return;
+        }
+        long block = payload - HeaderBytes;
+        long word = Sys.Peek(block);
+        long size = word & SizeMask;
+        long end = payload;
+        if (size >= Smallest && size < 0x40000000 && Sys.Peek(block + size - FooterBytes) == word)
+        {
+            end = block + size - 1;
+        }
+        long card = (payload & WordSize.AddressMask) >> Runtime.CardShift;
+        long last = (end & WordSize.AddressMask) >> Runtime.CardShift;
+        while (card <= last)
+        {
+            Sys.PokeByte(cards + card, 1);
+            card = card + 1;
+        }
+    }
 
     // ---- what a program can ask ---------------------------------------------
 
@@ -911,6 +1276,7 @@ static class Gc
             if (size < minimum) continue;
             Unlink(block);
             Stamp(block, size, Zero);
+            HeapChunks.YoungAt(block);
             return block;
         }
         return 0;
@@ -1185,6 +1551,8 @@ static class Gc
         // of its own.
         for (long attempt = 0; block == 0 && attempt < 3; attempt++)
         {
+            // Memory itself ran out: only a whole collection finds all of it.
+            _forceMajor = true;
             if (_collecting) WaitOutCycle();
             else CollectLocked();
 
@@ -1347,6 +1715,9 @@ static class Gc
             need = size;
         }
         Stamp(block, need, Zero);
+        // WHAT IS HANDED OUT IS YOUNG, and so is the chunk it is in: the next
+        // minor collection walks and sweeps it (generations, below).
+        HeapChunks.YoungAt(block);
         return block;
     }
 
@@ -1361,6 +1732,7 @@ static class Gc
         _bump = _bump + need;
         HeapChunks.SetEnd(_current, _bump);
         Stamp(block, need, Zero);
+        HeapChunks.SetYoung(_current, true);
         return block;
     }
 
@@ -1399,6 +1771,7 @@ static class Gc
             _markBytes = MarkBytes;
             _markCount = MarkBytes / GreyEntry;
         }
+        StartGenerations();
     }
 
     /// Nothing left: the message is a literal, which is data the compiler laid
@@ -1770,7 +2143,7 @@ static class Gc
         // the plain lookup finds it; no boundary case needs a second look.
         long chunk = HeapChunks.Of(at);
 
-        if (chunk == 0)
+        if (chunk == 0 || (_minor && !HeapChunks.IsYoung(chunk)))
         {
             return 0;
         }
@@ -2298,6 +2671,9 @@ static class Gc
     /// see GcRoots for the reasoning -- and reached only from Alloc.
     public static void Collect()
     {
+        // ASKED FOR, it is whole: GC.Collect promises every unreachable
+        // object is gone, and a minor collection leaves the old ones be.
+        _forceMajor = true;
         while (true)
         {
             GcLock.Enter();
@@ -2403,6 +2779,12 @@ static class Gc
         // microseconds; the difference of two is exact for any collection
         // shorter than an hour and eleven minutes.
         FitMarkQueue();
+        _minor = NextIsMinor();
+        _forceMajor = false;
+        if (_generational)
+        {
+            SwapHeld();
+        }
         long clock = PauseClock;
         long began = clock != 0 ? Sys.Call(clock, 0, 0, 0) : 0;
         try { CollectBoth(); }
@@ -2513,12 +2895,22 @@ static class Gc
     {
         GcRoots.ScanAll();
 
+        // A MINOR CYCLE'S OTHER ROOTS, read with the ordinary ones: what old
+        // objects were given since the last cycle, and what the stacks held
+        // then (generations, above). A major cycle only clears the cards.
+        if (_minor)
+        {
+            ScanTakenCards();
+            RescanHeld();
+        }
+
         if (_rootsOnly)
         {
             return;
         }
 
         MarkToEmpty();
+        if (_minor && _verifyGenerations) VerifyMinor();
         HeapChunks.SetBlockAnchorsActive(false);
         BeginSweep();
         while (SweepNext()) { }
@@ -2620,6 +3012,7 @@ static class Gc
         Runtime.Marking = 0;
         GcThreads.Round(GcThreads.Ack);
         MarkToEmpty();
+        if (_minor && _verifyGenerations) VerifyMinor();
 
         GcLock.Enter();
         HeapChunks.SetBlockAnchorsActive(false);
@@ -2705,6 +3098,10 @@ static class Gc
         _snapshots = false;
         _concurrent = false;
         _collecting = false;
+        // The marks just cleared may have been an old block's: only a major
+        // cycle, which clears and makes them all again, may follow.
+        _forceMajor = true;
+        _minor = false;
         Aborted = Aborted + 1;
         Sys.AtomicSwap(ctl + GcLock.Abort, 0);
         Sys.AtomicSwap(ctl + GcLock.Collector, 0);
@@ -2757,7 +3154,17 @@ static class Gc
         // What was allocated while the mark ran was not looked at by it and
         // still counts towards the next.
         _since = _since > _sinceAtStop ? _since - _sinceAtStop : Zero;
-        _threshold = NextThreshold(_liveBytes);
+        if (_minor)
+        {
+            MinorCollections = MinorCollections + 1;
+        }
+        else
+        {
+            MajorCollections = MajorCollections + 1;
+            _majorLive = _liveBytes > MinThreshold ? _liveBytes : MinThreshold;
+        }
+        _threshold = _generational ? Nursery(_liveBytes) : NextThreshold(_liveBytes);
+        _minor = false;
         Collections = Collections + 1;
         _collecting = false;
     }
@@ -2912,6 +3319,13 @@ static class Gc
             if ((word & FlagFree) == 0)
             {
                 HeapChunks.SetStartShared(chunk, at);
+                // A MAJOR CYCLE CLEARS THE MARKS HERE TOO: survivors in a live
+                // buffer keep theirs (UnmarkBuffer), and this is where a major
+                // cycle first walks them, as BuildBlockAnchors walks the rest.
+                if (_generational && !_minor && (word & (FlagMark | FlagScan)) != 0)
+                {
+                    Stamp(at, size, word & FlagMask & ~(FlagMark | FlagScan));
+                }
             }
 
             at = at + size;
@@ -2931,7 +3345,12 @@ static class Gc
         long at = Sys.Peek(block + Tls.AllocBase);
         long upto = Sys.Peek(block + Tls.AllocPtr);
 
-        if (at == 0)
+        // WITH GENERATIONS A SURVIVOR IS OLD, in a buffer or not: its marks
+        // are what say so. Made young again here, one that only an old object
+        // pointed at -- whose card this cycle read and cleared -- would be
+        // found by nothing the next minor cycle, and swept once its buffer
+        // was retired. A major cycle clears them as it stamps (StampBuffer).
+        if (at == 0 || _generational)
         {
             return;
         }
@@ -2962,7 +3381,7 @@ static class Gc
 
         if (from != 0 && to > from)
         {
-            ScanRange(from, to);
+            ScanRoots(from, to);
         }
     }
 
@@ -3164,6 +3583,15 @@ static class Gc
         long chunk = HeapChunks.Newest();
         while (chunk != 0)
         {
+            // A MINOR CYCLE LOOKS ONLY AT YOUNG CHUNKS: an old chunk keeps
+            // the start table of its last cycle, which SnapshotBlock does not
+            // trust for this one, so a pointer into it is not followed -- its
+            // blocks are all old, and old is kept.
+            if (_minor && !HeapChunks.IsYoung(chunk))
+            {
+                chunk = HeapChunks.Next(chunk);
+                continue;
+            }
             long anchors = HeapChunks.PrepareBlockAnchors(chunk);
             if (anchors == 0) every = false;
             if (anchors != 0)
@@ -3204,6 +3632,12 @@ static class Gc
                     // WHERE EVERY OBJECT STARTS, as of this stop: what the
                     // marker finds objects by from here on (SnapshotBlock).
                     if ((header & FlagFree) == 0) HeapChunks.SetStart(chunk, block);
+                    // A MAJOR CYCLE MAKES EVERY BLOCK YOUNG AGAIN, taking off
+                    // the marks the old kept, and finds the live ones afresh.
+                    if (_generational && !_minor && (header & (FlagMark | FlagScan)) != 0)
+                    {
+                        Stamp(block, size, header & FlagMask & ~(FlagMark | FlagScan));
+                    }
                     block = block + size;
                 }
             }
@@ -3211,6 +3645,12 @@ static class Gc
         }
         HeapChunks.SetBlockAnchorsActive(true);
         _snapshots = every;
+        // THE CARDS, taken at the same stop: kept to be read by a minor cycle,
+        // simply cleared by a major one, which marks everything anyway.
+        if (_generational)
+        {
+            TakeCards(_minor);
+        }
     }
 
     /// Walks every block in every chunk: unmarked ones become free, adjacent
@@ -3297,13 +3737,42 @@ static class Gc
 
     static void BeginSweep()
     {
-        ClearBins();
+        // A MINOR SWEEP LEAVES THE FREE LISTS: the old chunks it does not
+        // walk keep theirs, and a young chunk's free blocks are taken off
+        // them one by one as it is walked (SweepNext).
+        if (!_minor)
+        {
+            ClearBins();
+        }
         _sweeping = true;
         _sweepAt = HeapChunks.Newest();
         _sweepCurrent = _current;
         _sweepCurrentEnd = _current != 0 ? HeapChunks.End(_current) : Zero;
         _sweepLive = Zero;
         _sweepLiveBytes = Zero;
+    }
+
+    /// Every listed free block of a chunk off its list (not one freed in
+    /// place, which never was on one). The chunk is wholly dead: its chain
+    /// is walkable end to end.
+    static void UnlinkFreeIn(long chunk)
+    {
+        long block = HeapChunks.First(chunk);
+        long end = HeapChunks.End(chunk);
+        while (block < end)
+        {
+            long word = Sys.Peek(block);
+            long size = word & SizeMask;
+            if (size < Smallest || block + size > end)
+            {
+                return;
+            }
+            if ((word & FlagFree) != 0 && !IsInPlace(block))
+            {
+                Unlink(block);
+            }
+            block = block + size;
+        }
     }
 
     /// Sweeps one chunk. The heap lock is held (or the world is stopped).
@@ -3329,8 +3798,26 @@ static class Gc
             long after = HeapChunks.Next(chunk);
             _sweepAt = after;
 
+            // AN OLD CHUNK IS LEFT ALONE by a minor sweep: nothing in it was
+            // made since the last cycle, nothing in it can have died that a
+            // minor cycle would know of, and what its last sweep found live
+            // still counts.
+            if (_minor && !HeapChunks.IsYoung(chunk))
+            {
+                _sweepLive = _sweepLive + HeapChunks.LiveBlocks(chunk);
+                _sweepLiveBytes = _sweepLiveBytes + HeapChunks.LiveBytes(chunk);
+                return after != 0;
+            }
+
             if (chunk != _current && chunk != _sweepCurrent && !AnyLive(chunk))
             {
+                // A MINOR SWEEP KEPT THE FREE LISTS, and this chunk's free
+                // blocks are on them: taken off before its memory goes back,
+                // or the lists would point into memory no longer there.
+                if (_minor)
+                {
+                    UnlinkFreeIn(chunk);
+                }
                 HeapChunks.Release(chunk);
                 return after != 0;
             }
@@ -3340,6 +3827,10 @@ static class Gc
             long deadStart = 0;
             long deadSize = 0;
             long step = GcThreads.BufferAtOrAbove(block);
+            // What keeps the chunk young for the next cycle: a buffer a thread
+            // is still bumping in, the bump pointer, or a block made while
+            // this cycle marked (a newcomer, kept unmarked).
+            bool stillYoung = chunk == _current || chunk == _sweepCurrent;
 
             while (block < end)
             {
@@ -3357,6 +3848,7 @@ static class Gc
                     liveBytes = liveBytes + (GcThreads.BufferLimit(step) - block);
                     block = GcThreads.BufferLimit(step);
                     step = step + 1;
+                    stillYoung = true;
                     continue;
                 }
 
@@ -3372,6 +3864,15 @@ static class Gc
                 {
                     if ((word & FlagMark) == 0 && !Newcomer(chunk, block, word))
                     {
+                        // A free block a minor sweep meets is still on the free
+                        // lists (it kept them); it joins the dead run, so it
+                        // comes off first -- unless it was freed in place in a
+                        // buffer and never listed (FreeInPlace), whose link
+                        // word is the InPlace mark and not a neighbour.
+                        if (_minor && (word & FlagFree) != 0 && !IsInPlace(block))
+                        {
+                            Unlink(block);
+                        }
                         if (deadSize == 0)
                         {
                             deadStart = block;
@@ -3387,7 +3888,17 @@ static class Gc
                             deadSize = Zero;
                         }
 
-                        Stamp(block, size, Zero);
+                        // A SURVIVOR IS OLD, and keeps the marks that say so;
+                        // a newcomer is young and stays unmarked (generations).
+                        if (_generational && (word & FlagMark) != 0)
+                        {
+                            Stamp(block, size, FlagMark | FlagScan);
+                        }
+                        else
+                        {
+                            Stamp(block, size, Zero);
+                            stillYoung = stillYoung || (word & FlagMark) == 0;
+                        }
                         live = live + 1;
                         liveBytes = liveBytes + size;
                     }
@@ -3400,6 +3911,8 @@ static class Gc
                 Stamp(deadStart, deadSize, FlagFree);
                 Link(deadStart);
             }
+            HeapChunks.SetLive(chunk, live, liveBytes);
+            HeapChunks.SetYoung(chunk, stillYoung);
         }
 
         _sweepLive = _sweepLive + live;
@@ -3418,7 +3931,10 @@ static class Gc
 //   +W    end: one past the last block laid down (the bump pointer's floor)
 //   +2W   limit: one past the chunk's memory
 //   +3W   raw page-anchor table, or 0 when not allocated
-//   +4W   the first block
+//   +4W   flags: young (allocated in since the last collection)
+//   +5W   the live bytes the last sweep of it found
+//   +6W   the live blocks the last sweep of it found
+//   +8W   the first block (8-aligned on both word sizes)
 //
 // The record is not a block and is never swept. This class knows nothing
 // about blocks; it is the part of the heap a precise collector keeps.
@@ -3429,7 +3945,17 @@ static class HeapChunks
     const long ChunkEnd = WordSize.Bytes;
     const long ChunkLimit = 2 * WordSize.Bytes;
     const long ChunkAnchors = 3 * WordSize.Bytes;
-    const long ChunkBytes = 4 * WordSize.Bytes;
+    // THE GENERATIONS' WORDS (Gc, "generations"): whether anything was
+    // allocated in the chunk since the last collection -- a YOUNG chunk,
+    // which the next minor collection walks and sweeps -- and what its last
+    // sweep found live in it, so a chunk a minor collection leaves alone
+    // still counts towards what is live. Eight words in all, so the first
+    // block stays eight-aligned on both word sizes.
+    const long ChunkFlags = 4 * WordSize.Bytes;
+    const long ChunkLiveBytes = 5 * WordSize.Bytes;
+    const long ChunkLiveBlocks = 6 * WordSize.Bytes;
+    const long ChunkBytes = 8 * WordSize.Bytes;
+    const long ChunkYoung = 1;
 
     // What a chunk is normally: a megabyte, so the operating system is asked
     // rarely and the chunk list stays short for the collector to walk. A
@@ -3853,6 +4379,44 @@ static class HeapChunks
         return chunk + ChunkBytes;
     }
 
+    /// Whether anything was allocated in the chunk since the last collection.
+    public static bool IsYoung(long chunk)
+    {
+        return (Sys.Peek(chunk + ChunkFlags) & ChunkYoung) != 0;
+    }
+
+    public static void SetYoung(long chunk, bool young)
+    {
+        long flags = Sys.Peek(chunk + ChunkFlags);
+        Sys.Poke(chunk + ChunkFlags, young ? flags | ChunkYoung : flags & ~ChunkYoung);
+    }
+
+    /// The chunk a block handed out lies in, made young. Heap lock held.
+    public static void YoungAt(long block)
+    {
+        long chunk = Of(block);
+        if (chunk != 0)
+        {
+            SetYoung(chunk, true);
+        }
+    }
+
+    public static long LiveBytes(long chunk)
+    {
+        return Sys.Peek(chunk + ChunkLiveBytes);
+    }
+
+    public static long LiveBlocks(long chunk)
+    {
+        return Sys.Peek(chunk + ChunkLiveBlocks);
+    }
+
+    public static void SetLive(long chunk, long blocks, long bytes)
+    {
+        Sys.Poke(chunk + ChunkLiveBlocks, blocks);
+        Sys.Poke(chunk + ChunkLiveBytes, bytes);
+    }
+
     /// One past the last block laid down in a chunk.
     public static long End(long chunk)
     {
@@ -4008,6 +4572,7 @@ static class HeapChunks
         Sys.Poke(raw + ChunkNext, _chunks);
         Sys.Poke(raw + ChunkEnd, raw + ChunkBytes);
         Sys.Poke(raw + ChunkLimit, raw + ask);
+        Sys.Poke(raw + ChunkFlags, ChunkYoung);
         _chunks = raw;
         _heapBytes = _heapBytes + ask;
         IndexAdd(raw);
@@ -4077,7 +4642,7 @@ static class GcRoots
         // top the thread began at. Every OTHER thread's stack is marked from
         // by that thread itself, or by the collector for it while it is
         // blocked, in the SCAN round (GcThreads) -- never by stopping it.
-        Gc.ScanRange(Sys.Stack(), Sys.EntryStack());
+        Gc.ScanRoots(Sys.Stack(), Sys.EntryStack());
         Gc.ScanRange(Sys.DataStart(), Sys.DataEnd());
 
         long i = 0;
@@ -4673,7 +5238,7 @@ static class GcThreads
                     // registers it stopped with (Tls.Spill).
                     if (request == Scan)
                     {
-                        Gc.ScanRange(block + Tls.Spill, block + Tls.Spill + Sys.Peek(block + Tls.SpillCount) * WordSize.Bytes);
+                        Gc.ScanRoots(block + Tls.Spill, block + Tls.Spill + Sys.Peek(block + Tls.SpillCount) * WordSize.Bytes);
                     }
                     Work(block, request, Sys.Peek(block + Tls.StackLimit));
                     Sys.Poke(block + Tls.Epoch, epoch);

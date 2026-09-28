@@ -707,6 +707,7 @@ public sealed partial class Lowering
                 }
                 ReferenceBarrier(m, value);
                 _e.Store(m.Address, new RegOperand(value), m.Offset, LoadSize(m.Type));
+                CardMark(m, value);
                 break;
         }
     }
@@ -780,6 +781,64 @@ public sealed partial class Lowering
     }
 
     private bool _inBarrier;
+
+    /// <summary>
+    /// A coroutine saves its frame into its machine at each suspension and
+    /// marks the machine's cards there (AsyncTransform), when the runtime has
+    /// cards: the helper it calls is then part of the program.
+    /// </summary>
+    private void RequireCardMarkObject()
+    {
+        if (_b.Types.TryGetValue(RuntimeType, out TypeSymbol? rt) && rt.Fields.Any(f => f.Static && f.Name == "Cards")
+            && RuntimeMethod("CardMarkObject", 1) is MethodSymbol helper)
+        {
+            Require(helper);
+        }
+    }
+
+    /// <summary>
+    /// THE CARD MARK, after the store, as a generational collector needs it:
+    /// the byte for the kilobyte the reference went into is set, so the next
+    /// minor collection reads that kilobyte for pointers old objects hold into
+    /// young ones (Gc, generations). A load of <c>Runtime.Cards</c>, a test, a
+    /// shift, an add and a byte store; nothing when the table is 0 -- a
+    /// freestanding image, a 64-bit one, one whose collector has no
+    /// generations. After, not before: a collection that clears the card
+    /// between a mark and the store it stands for would miss the store.
+    /// Where the Marking test is omitted -- the collector's own code, a
+    /// runtime without Cards -- so is this.
+    /// </summary>
+    private void CardMark(MemPlace m, VReg value)
+    {
+        if (!MayHoldReference(m.Type) || value.Type != IrTypes.Word || _inBarrier)
+        {
+            return;
+        }
+        if (!_b.Types.TryGetValue(RuntimeType, out TypeSymbol? rt)
+            || rt.Fields.FirstOrDefault(f => f.Static && f.Name == "Cards") is not FieldSymbol cards)
+        {
+            return;
+        }
+        if (_method is { Owner.Name: "Gc" or "GcThreads" or "GcLock" or "GcRoots" or "HeapChunks" or "Runtime" or "Platform" })
+        {
+            return;
+        }
+        if (RuntimeMethod("CardMark", 1) is not MethodSymbol mark)
+        {
+            return;
+        }
+        // A CALL UNTIL THE LAST PASS, which writes it out (CardMarks): to the
+        // lifetime passes it is a note to the collector, as the barrier is.
+        _statics.Add(cards);
+        Require(mark);
+        VReg slot = RegOf(m.Address);
+        if (m.Offset != 0)
+        {
+            slot = _e.Binary(Opcode.Add, slot, m.Offset);
+        }
+        VReg arg = IrTypes.Of(mark.Params[0].Type) == IrType.I64 && slot.Type != IrType.I64 ? _e.Unary(Opcode.ZExt32, slot) : slot;
+        _e.Call(CallLabel(mark), IrType.Void, R(arg));
+    }
 
     /// <summary>Whether a stored value of this type may be a reference the collector follows.</summary>
     private bool MayHoldReference(Type t)
