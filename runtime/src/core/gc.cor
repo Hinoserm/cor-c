@@ -1361,15 +1361,40 @@ static class Gc
     /// Whatever the old current chunk had left above its bump pointer
     /// becomes a free block first, so nothing is stranded. Answers false
     /// when the cap or the operating system refuses.
-    /// Whether a chunk of `ask` bytes should wait for a collection: past the
-    /// 32-bit ceiling, with a pace's worth allocated since the last one and
-    /// no cycle under way. Straight after a collection growth is allowed --
-    /// what is live is live -- so the ceiling slows a heap and never stops one.
+    /// Whether a chunk of `ask` bytes should wait for a collection: one past
+    /// the 32-bit ceiling, when a chunk has already been taken past it since
+    /// the last collection. One chunk past it per collection: a heap that is
+    /// live is live and must grow, and one that is garbage is found by the
+    /// collection it waits for. Judged by the collections counted, not by
+    /// what was allocated since -- with a dozen threads allocating, that is a
+    /// pace again before the thread that asked for the collection has asked
+    /// for its chunk. The allocator's last try waives it (_growPast): the
+    /// ceiling slows a heap and never fails one; only the system does.
     public static bool GrowthWaits(long ask)
     {
-        return HeapCeiling != 0 && !_collecting && _since >= MinThreshold
-            && HeapChunks.HeapBytes + ask > HeapCeiling;
+        _ceilingRefused = false;
+        if (HeapCeiling == 0 || _collecting || _growPast || HeapChunks.HeapBytes + ask <= HeapCeiling)
+        {
+            return false;
+        }
+        if (_grownPastAt != Collections + 1)
+        {
+            _grownPastAt = Collections + 1;
+            return false;
+        }
+        _ceilingRefused = true;
+        return true;
     }
+
+    // Set when GrowthWaits refused the last chunk asked for, so that Grow
+    // does not report a wait at the ceiling as the system's refusal.
+    static bool _ceilingRefused;
+
+    // The collection count, plus one, when a chunk was last taken past the
+    // ceiling (0: never); and the allocator's last try, which the ceiling
+    // does not refuse. The heap lock is held for both.
+    static long _grownPastAt;
+    static bool _growPast;
 
     static bool Grow(long need)
     {
@@ -1377,7 +1402,9 @@ static class Gc
 
         if (raw == 0)
         {
-            SayNumber("heap: no chunk for ", need);
+            // Waiting for a collection at the ceiling is no failure to report.
+            if (!_ceilingRefused) SayNumber("heap: no chunk for ", need);
+            _ceilingRefused = false;
             return false;
         }
 
@@ -1850,6 +1877,8 @@ static class Gc
             if (_collecting) WaitOutCycle();
             else CollectLocked();
 
+            // THE LAST TRY IS NOT HELD AT THE CEILING (GrowthWaits).
+            _growPast = attempt == 2;
             block = dedicated ? TakeDedicated(need) : Take(need);
 
             if (block == 0 && !dedicated && Grow(need))
@@ -1858,6 +1887,7 @@ static class Gc
             }
             // Mapping failure must not reject usable existing free space.
             if (block == 0 && dedicated) block = Take(need);
+            _growPast = false;
         }
 
         if (block == 0)
