@@ -335,7 +335,7 @@ static class Gc
                     long p = block + HeaderBytes;
                     while (p < block + size - FooterBytes)
                     {
-                        long target = BlockForPointer(Sys.Peek(p));
+                        long target = MarkerReads(block, size, p) ? BlockForPointer(Sys.Peek(p)) : 0;
                         if (target != 0)
                         {
                             long seen = Sys.Peek(target);
@@ -549,6 +549,31 @@ static class Gc
                     {
                         Sys.PokeByte(_taken + card, 1);
                     }
+                }
+                card = card + 1;
+            }
+            which = which + 1;
+            chunk = HeapChunks.SnapshotChunk(which);
+        }
+    }
+
+    /// Every card set since TakeCards, over the snapshot's chunks, added to
+    /// the ones this cycle reads -- and left set (the concurrent path, after
+    /// its first round).
+    static void PeekCards()
+    {
+        long cards = Runtime.Cards;
+        long which = 0;
+        long chunk = HeapChunks.SnapshotChunk(0);
+        while (chunk != 0)
+        {
+            long card = (HeapChunks.First(chunk) & WordSize.AddressMask) >> Runtime.CardShift;
+            long last = ((HeapChunks.End(chunk) - 1) & WordSize.AddressMask) >> Runtime.CardShift;
+            while (card <= last)
+            {
+                if (Sys.PeekByte(cards + card) != 0)
+                {
+                    Sys.PokeByte(_taken + card, 1);
                 }
                 card = card + 1;
             }
@@ -2755,6 +2780,64 @@ static class Gc
         return true;
     }
 
+    /// Whether the marker reads the word at `at` of a block -- ScanBlock's
+    /// and ScanObject's rules, for the verifier (VerifyMinor), which must
+    /// not report a number in an object's int field that looks like an
+    /// address: the marker never follows it, and nothing depends on it.
+    static bool MarkerReads(long block, long size, long at)
+    {
+        long w = WordSize.Bytes;
+        long payload = block + HeaderBytes;
+        long end = block + size - FooterBytes;
+        long kind = Sys.Peek(block + KindAt);
+        if (kind == KindLeaf)
+        {
+            return false;
+        }
+        long vt = Sys.Peek(payload) & WordSize.AddressMask;
+        if (kind != KindObject || vt == 0)
+        {
+            return true;
+        }
+        long desc = vt - DescWords * w;
+        if ((Sys.Peek(desc + DescSelfWord * w) & WordSize.AddressMask) != desc)
+        {
+            return true;
+        }
+        long flags = Sys.Peek(desc + DescFlagsWord * w);
+        if ((flags & SequenceFlag) != 0)
+        {
+            if ((flags & StringFlag) != 0)
+            {
+                return false;
+            }
+            if ((Sys.Peek(desc + DescGcFlagsWord * w) & ElementsAreReferences) == 0
+                || Sys.Peek(desc + DescSizeWord * w) != w)
+            {
+                return true;
+            }
+            long count = Sys.Peek(payload + ArrayCountAt) & 0x7FFFFFFF;
+            long first = payload + Sys.Peek(desc + DescPayloadWord * w);
+            long last = first + count * w;
+            if (last > end || last < first)
+            {
+                return true;
+            }
+            return at >= first && at < last;
+        }
+        long map = Sys.Peek(desc + DescRefMapWord * w) & WordSize.AddressMask;
+        if (map == 0 || at < payload || ((at - payload) & (w - 1)) != 0)
+        {
+            return false;
+        }
+        long index = (at - payload) / w;
+        if (index >= Sys.Peek(map))
+        {
+            return false;
+        }
+        return ((Sys.Peek(map + (1 + index / 32) * w) >> (int)(index & 31)) & 1) != 0;
+    }
+
     public static void ScanRange(long from, long to)
     {
         long p = (from + WordSize.Bytes - 1) & -WordSize.Bytes;
@@ -3067,6 +3150,18 @@ static class Gc
         {
             GiveUp(false);
             return;
+        }
+
+        // A STORE IN FLIGHT AT THE SNAPSHOT -- its barrier found Marking
+        // still 0, so its value was never reported -- has landed by now, and
+        // its card with it: every thread has passed a safepoint since, and
+        // none falls between a barrier's test and the card mark after the
+        // store. Its card may have been set after TakeCards looked. So a
+        // minor cycle reads every card set now as well, and leaves it set:
+        // what was stored after the snapshot is the next cycle's to read too.
+        if (_minor)
+        {
+            PeekCards();
         }
 
         // 3. The barrier marks. Buffers retired from here on are not stamped:

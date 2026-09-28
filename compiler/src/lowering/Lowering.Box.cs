@@ -103,12 +103,13 @@ public sealed partial class Lowering
                     continue;
                 }
                 VReg own = CopyStruct(at, _e.Load(IrTypes.Word, into, f.Offset), f.Type.Symbol!);
-                _e.Store(R(into), R(own), f.Offset, _t.WordSize);
+                StoreNewReference(into, own, f.Offset);
             }
             return obj;
         }
 
         _e.Store(R(obj), R(value), payload, bytes);
+        CardMark(new MemPlace(R(obj), payload, of), value);
         return obj;
     }
 

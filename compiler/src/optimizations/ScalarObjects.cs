@@ -126,6 +126,10 @@ public sealed class ScalarObjects : IParallelModulePass
         // it guarded in memory, and whether it was out of line was the
         // inliner's decision about the barrier's size that day.
         Dictionary<Instr, long> barriers = new();
+        // AND THE CARD MARK AFTER ONE: it names the kilobyte of the heap an
+        // object's field is in, for the next minor collection to read. A
+        // replaced object has no field in the heap, so its marks go with it.
+        HashSet<Instr> cardMarks = new();
         // Only the instructions that read one of its addresses, each once.
         HashSet<(Block, int)> seen = new();
         List<(Block Block, int Index)> touching = new();
@@ -151,6 +155,12 @@ public sealed class ScalarObjects : IParallelModulePass
                 && !(i.Operands[1] is RegOperand passed && addresses.ContainsKey(passed.Reg)))
             {
                 barriers[i] = slotAt;
+                continue;
+            }
+            if (i.Op == Opcode.Call && i.Callee == CardMarks.CardMark && i.Dest is null && i.Operands.Count == 1
+                && i.Operands[0] is RegOperand marked && addresses.ContainsKey(marked.Reg))
+            {
+                cardMarks.Add(i);
                 continue;
             }
             if (i.Op is not (Opcode.Load or Opcode.Store) || i.Size is not (1 or 2 or 4 or 8)
@@ -185,7 +195,7 @@ public sealed class ScalarObjects : IParallelModulePass
                     result.Add(new Instr { Op = Opcode.Copy, Dest = field.Value,
                         Operands = { new ImmOperand(0, field.Value.Type) }, Line = i.Line });
             }
-            else if (aliases.Contains(i)) { }
+            else if (aliases.Contains(i) || cardMarks.Contains(i)) { }
             else if (barriers.TryGetValue(i, out long slotAt))
             {
                 VReg field = locals[slotAt];

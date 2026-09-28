@@ -1044,8 +1044,13 @@ blocks.
   A coroutine saves its frame into its state machine word by word at each
   suspension and marks the machine's cards there once
   (`Runtime.CardMarkObject`); `Interlocked`'s reference exchanges mark
-  theirs. Array copies and list shifts are element stores and need nothing
-  more.
+  theirs. The stores that fill a block just made -- an array initialiser's
+  elements, a box, a cell, a struct's own block, a state machine's fields
+  -- take no barrier (nothing in a new block is overwritten) but do take
+  the card: a collection can fall between the allocation and them, find
+  the block and make it old. Array copies and list shifts are element
+  stores and need nothing more. An object the optimiser keeps in registers
+  (`ScalarObjects`) has no field in the heap, and its card marks go with it.
 - *Taken at the snapshot.* When a cycle's start tables are built, with the
   heap lock held, every set card is cleared (`Gc.TakeCards`), and a store
   made after that -- above all of an object allocated after it, which the
@@ -1061,6 +1066,14 @@ blocks.
   descriptor like any object (`Gc.OldWritten`); a block over 4 KB has only
   its set kilobytes taken, and a leaf is skipped. Only a thread's buffer,
   which that walk steps over, keeps its cards.
+- *And again after the first round.* A store whose barrier found marking
+  off just before the snapshot reports nothing, and its card may be set
+  just after the cards were taken. By the end of a concurrent cycle's first
+  handshake round every thread has passed a safepoint, and no safepoint
+  falls between a barrier's test and the card mark after its store; so a
+  minor cycle then reads every card set since as well (`Gc.PeekCards`),
+  and leaves them set for the next cycle, which must read what was stored
+  after the snapshot too.
 - *The blocks the stacks held.* The compiler initialises a fresh object
   without a barrier, and a collection can fall between its allocation and
   those stores; it is on a stack then. So each cycle records every block a
@@ -1083,7 +1096,9 @@ blocks.
   and a not-taken branch, and every collection is major.
 - *Checked on request.* `CORSAC_GC_VERIFY=1` makes every minor cycle, once
   marked, walk every old block for a pointer to an unmarked young one and
-  report it with its card (`Gc.VerifyMinor`).
+  report it with its card (`Gc.VerifyMinor`). It reads each block by the
+  marker's own rules (`Gc.MarkerReads`) -- an object by its reference map
+  -- so a number in an int field is never reported as a pointer.
 
 ## The runtime
 

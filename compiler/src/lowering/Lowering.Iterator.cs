@@ -170,11 +170,15 @@ public sealed partial class Lowering
         _e.Store(R(machine), Imm(it.Enumerable ? -2 : 0, IrType.I32), IterStateField, 4);
         if (self is not null)
         {
-            _e.Store(R(machine), R(self), IterReceiverField, _t.WordSize);
+            StoreNewReference(machine, self, IterReceiverField);
         }
         for (int i = 0; i < args.Count; i++)
         {
             _e.Store(R(machine), R(args[i]), it.ParamOffsets[i], args[i].Type.Bytes());
+            if (args[i].Type == IrTypes.Word)
+            {
+                CardMarkAt(R(machine), it.ParamOffsets[i]);
+            }
         }
         _e.Ret(R(machine));
         _m.Functions.Add(_f);

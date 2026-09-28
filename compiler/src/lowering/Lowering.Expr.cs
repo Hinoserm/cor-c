@@ -60,7 +60,7 @@ public sealed partial class Lowering
 
             VReg made = Allocate(e, view.InstanceSize, described: true);
             _e.Store(R(made), VtableOf(view), 0, _t.WordSize);
-            _e.Store(R(made), R(v), _t.ObjectHeaderBytes, _t.WordSize);
+            StoreNewReference(made, v, _t.ObjectHeaderBytes);
             _e.CopyTo(held, R(made));
             _e.Jump(done);
             _e.SetBlock(done);
@@ -228,7 +228,7 @@ public sealed partial class Lowering
                     continue;
                 }
                 VReg inner = NewStruct(at, f.Type.Symbol!);
-                _e.Store(R(obj), R(inner), f.Offset, _t.WordSize);
+                StoreNewReference(obj, inner, f.Offset);
             }
         }
     }
@@ -292,7 +292,7 @@ public sealed partial class Lowering
             }
             VReg shared = _e.Load(IrTypes.Word, made, field.Offset);
             VReg own = CopyStruct(at, shared, field.Type.Symbol!);
-            _e.Store(R(made), R(own), field.Offset, _t.WordSize);
+            StoreNewReference(made, own, field.Offset);
         }
         _e.Ret(R(made));
 
@@ -1016,7 +1016,7 @@ public sealed partial class Lowering
             value = CopyStruct(at, value, inner.Symbol!);
         }
         VReg cell = Allocate(at, Math.Max(_t.WordSize, inner.Size));
-        _e.Store(R(cell), R(value), 0, LoadSize(inner));
+        StoreNew(cell, value, 0, inner);
         return cell;
     }
 
@@ -1034,7 +1034,7 @@ public sealed partial class Lowering
             {
                 VReg value = EvalAs(written[i], element);
                 int stride = Math.Max(1, element.Size);
-                _e.Store(R(array), R(value), _t.ArrayHeaderBytes + (long)i * stride, LoadSize(element));
+                StoreNew(array, value, _t.ArrayHeaderBytes + (long)i * stride, element);
             }
             return array;
         }
@@ -1161,7 +1161,7 @@ public sealed partial class Lowering
             _e.SetBlock(body);
             VReg block = NewStruct(at, element.Symbol!);
             VReg slot = _e.Binary(Opcode.Add, array, WordOf(_e.Binary(Opcode.Mul, index, stride)));
-            _e.Store(R(slot), R(block), _t.ArrayHeaderBytes, _t.WordSize);
+            StoreNewReference(slot, block, _t.ArrayHeaderBytes);
             _e.CopyTo(index, R(_e.Binary(Opcode.Add, index, 1)));
             _e.Jump(top);
             _e.SetBlock(done);
@@ -1339,7 +1339,14 @@ public sealed partial class Lowering
                 value = LoadPlace(p);
             }
 
-            _e.Store(R(obj), R(value), f.Offset, f.Boxed ? _t.WordSize : LoadSize(f.Type));
+            if (f.Boxed)
+            {
+                StoreNewReference(obj, value, f.Offset);
+            }
+            else
+            {
+                StoreNew(obj, value, f.Offset, f.Type);
+            }
         }
 
         return obj;
@@ -1373,7 +1380,7 @@ public sealed partial class Lowering
                 {
                     v = CopyStruct(copy, v, f.Type.Symbol!);
                 }
-                _e.Store(R(obj), R(v), f.Offset, LoadSize(f.Type));
+                StoreNew(obj, v, f.Offset, f.Type);
             }
         }
 

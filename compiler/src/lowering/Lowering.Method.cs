@@ -810,7 +810,38 @@ public sealed partial class Lowering
     /// </summary>
     private void CardMark(MemPlace m, VReg value)
     {
-        if (!MayHoldReference(m.Type) || value.Type != IrTypes.Word || _inBarrier)
+        if (!MayHoldReference(m.Type) || value.Type != IrTypes.Word)
+        {
+            return;
+        }
+        CardMarkAt(m.Address, m.Offset);
+    }
+
+    /// <summary>
+    /// A reference written straight into a block being made -- an array's
+    /// elements, a box, a cell, a struct's own block, a state machine's
+    /// fields -- which takes no barrier (the block is new: nothing in it is
+    /// overwritten) but DOES take the card mark. A collection can fall
+    /// between the block's allocation and these stores, and find it and make
+    /// it old; the stores that follow are old-to-young pointers like any
+    /// other, and the card is how the next minor collection hears of them.
+    /// </summary>
+    private void StoreNew(VReg block, VReg value, long offset, Type type)
+    {
+        _e.Store(R(block), R(value), offset, LoadSize(type));
+        CardMark(new MemPlace(R(block), offset, type), value);
+    }
+
+    /// <summary>StoreNew for a word the caller knows is a reference -- a struct's block, an object.</summary>
+    private void StoreNewReference(VReg block, VReg value, long offset)
+    {
+        _e.Store(R(block), R(value), offset, _t.WordSize);
+        CardMarkAt(R(block), offset);
+    }
+
+    private void CardMarkAt(Operand address, long offset)
+    {
+        if (_inBarrier)
         {
             return;
         }
@@ -831,10 +862,10 @@ public sealed partial class Lowering
         // lifetime passes it is a note to the collector, as the barrier is.
         _statics.Add(cards);
         Require(mark);
-        VReg slot = RegOf(m.Address);
-        if (m.Offset != 0)
+        VReg slot = RegOf(address);
+        if (offset != 0)
         {
-            slot = _e.Binary(Opcode.Add, slot, m.Offset);
+            slot = _e.Binary(Opcode.Add, slot, offset);
         }
         VReg arg = IrTypes.Of(mark.Params[0].Type) == IrType.I64 && slot.Type != IrType.I64 ? _e.Unary(Opcode.ZExt32, slot) : slot;
         _e.Call(CallLabel(mark), IrType.Void, R(arg));

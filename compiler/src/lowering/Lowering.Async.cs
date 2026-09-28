@@ -161,17 +161,23 @@ public sealed partial class Lowering
             task = NewObject(decl, m.Returns);
             if (task is not null)
             {
-                _e.Store(R(machine), R(task), TaskField, _t.WordSize);
+                StoreNewReference(machine, task, TaskField);
             }
         }
 
         if (self is not null)
         {
-            _e.Store(R(machine), R(self), ReceiverField, _t.WordSize);
+            StoreNewReference(machine, self, ReceiverField);
         }
         for (int i = 0; i < args.Count; i++)
         {
             _e.Store(R(machine), R(args[i]), am.ParamOffsets[i], args[i].Type.Bytes());
+            // An argument the word size may be a reference; marking the card
+            // of one that is not costs a byte store and nothing else.
+            if (args[i].Type == IrTypes.Word)
+            {
+                CardMarkAt(R(machine), am.ParamOffsets[i]);
+            }
         }
 
         Require(am.MoveNext);

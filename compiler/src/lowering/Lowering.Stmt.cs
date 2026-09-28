@@ -426,7 +426,7 @@ public sealed partial class Lowering
             && _symCells.TryGetValue(named, out VReg? cell) && cell is not null)
         {
             _e.CopyTo(cell, new RegOperand(Allocate(fe, Math.Max(_t.WordSize, Math.Max(1, element.Size)))));
-            _e.Store(new RegOperand(cell), new RegOperand(value), 0, LoadSize(element));
+            StoreNew(cell, value, 0, element);
         }
         else
         {
