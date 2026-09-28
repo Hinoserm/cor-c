@@ -94,6 +94,26 @@ public sealed class Lexer
         // something and let them be ordinary words everywhere else.
     };
 
+    /// <summary>
+    /// Every keyword's one string, which each file's names are looked up in
+    /// before its own table: the words every file shares are the ones that
+    /// repeat most. Filled here, before any lexer runs, and only read after.
+    /// </summary>
+    private static readonly NameTable KeywordNames = CreateKeywordNames();
+    private static NameTable CreateKeywordNames()
+    {
+        NameTable table = new(Keywords.Count);
+        foreach (string keyword in Keywords.Keys) table.Add(keyword);
+        return table;
+    }
+
+    /// <summary>
+    /// This file's names, each cut out of the source once. Made at the first
+    /// name, and never by TokenEnd's one-token lexers, which only measure.
+    /// </summary>
+    private NameTable? _names;
+    private bool _measuring;
+
     private readonly string _src;
     private readonly string _file;
     private int _pos;
@@ -164,7 +184,7 @@ public sealed class Lexer
     /// </summary>
     public static int TokenEnd(string source, int pos)
     {
-        Lexer one = new(source);
+        Lexer one = new(source) { _measuring = true };
         one._pos = pos;
         one.Next();
         return one.Position;
@@ -824,7 +844,8 @@ public sealed class Lexer
             Advance();
         }
 
-        string text = _src[start.._pos];
+        string text = _measuring ? _src[start.._pos]
+            : (_names ??= new NameTable(1024, KeywordNames)).Get(_src, start, _pos - start);
         return new Token(!verbatim && Keywords.TryGetValue(text, out Tok kw) ? kw : Tok.Ident,
                          text, line, col, start);
     }

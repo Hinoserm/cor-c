@@ -412,10 +412,16 @@ public static class ProjectCompile
         if (assembly.Length > 0 && File.Exists(assembly)) parts.Add(assembly);
         if (parts.Count == 0) return _compilerIdentity = "unknown";
         using SHA256 sha = SHA256.Create();
-        foreach (string part in parts)
+        // STREAMED, and each file once. A native compiler is tens of
+        // megabytes, and read whole it was one contiguous array in every
+        // process a build started -- twice, because a native image is its
+        // own assembly.
+        byte[] buffer = new byte[65536];
+        foreach (string part in parts.Distinct(StringComparer.Ordinal))
         {
-            byte[] bytes = File.ReadAllBytes(part);
-            sha.TransformBlock(bytes, 0, bytes.Length, null, 0);
+            using FileStream file = new(part, FileMode.Open, FileAccess.Read, FileShare.Read, 1);
+            int read;
+            while ((read = file.Read(buffer, 0, buffer.Length)) > 0) sha.TransformBlock(buffer, 0, read, null, 0);
         }
         sha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
         return _compilerIdentity = Convert.ToHexString(sha.Hash!);
