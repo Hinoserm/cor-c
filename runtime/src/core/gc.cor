@@ -1565,6 +1565,10 @@ static class Gc
     /// each step (SyncEnd keeps it there).
     static bool Recyclable(long chunk)
     {
+        if (HeapChunks.LargestHole(chunk) < RecycleMin)
+        {
+            return false;
+        }
         long used = HeapChunks.End(chunk) - HeapChunks.First(chunk);
         return used - HeapChunks.LiveBytes(chunk) >= (used >> RecycleShift);
     }
@@ -4468,6 +4472,7 @@ static class Gc
             long deadSize = 0;
             long deadBlocks = 0;
             long deadListed = 0;
+            long largest = 0;
             long step = GcThreads.BufferAtOrAbove(block);
             // What keeps the chunk young for the next cycle: a buffer a thread
             // is still bumping in, the bump pointer, or a block made while
@@ -4484,6 +4489,7 @@ static class Gc
                     if (deadSize != 0)
                     {
                         CloseDeadRun(deadStart, deadSize, deadBlocks, deadListed);
+                        if (deadSize > largest) largest = deadSize;
                         deadSize = Zero;
                     }
                     liveBytes = liveBytes + (GcThreads.BufferLimit(step) - block);
@@ -4528,6 +4534,7 @@ static class Gc
                         if (deadSize != 0)
                         {
                             CloseDeadRun(deadStart, deadSize, deadBlocks, deadListed);
+                            if (deadSize > largest) largest = deadSize;
                             deadSize = Zero;
                         }
 
@@ -4552,8 +4559,10 @@ static class Gc
             if (deadSize != 0)
             {
                 CloseDeadRun(deadStart, deadSize, deadBlocks, deadListed);
+                if (deadSize > largest) largest = deadSize;
             }
             HeapChunks.SetLive(chunk, live, liveBytes);
+            HeapChunks.SetLargestHole(chunk, largest);
             HeapChunks.SetYoung(chunk, stillYoung);
         }
 
@@ -4596,6 +4605,9 @@ static class HeapChunks
     const long ChunkFlags = 4 * WordSize.Bytes;
     const long ChunkLiveBytes = 5 * WordSize.Bytes;
     const long ChunkLiveBlocks = 6 * WordSize.Bytes;
+    // The largest free run its last sweep left, so that recycling passes by
+    // a chunk whose holes are all too small without walking it (Gc.NextHole).
+    const long ChunkLargestHole = 7 * WordSize.Bytes;
     const long ChunkBytes = 8 * WordSize.Bytes;
     const long ChunkYoung = 1;
 
@@ -5076,6 +5088,16 @@ static class HeapChunks
     public static long LiveBlocks(long chunk)
     {
         return Sys.Peek(chunk + ChunkLiveBlocks);
+    }
+
+    public static long LargestHole(long chunk)
+    {
+        return Sys.Peek(chunk + ChunkLargestHole);
+    }
+
+    public static void SetLargestHole(long chunk, long bytes)
+    {
+        Sys.Poke(chunk + ChunkLargestHole, bytes);
     }
 
     public static void SetLive(long chunk, long blocks, long bytes)
