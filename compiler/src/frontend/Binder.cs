@@ -4758,44 +4758,18 @@ public sealed partial class Binder
                 _r.Boxes.Add(boxed);
             }
 
-            // AN ARRAY AS AN IList<T> OR ICollection<T> is .NET's helper over it
-            // (SZArrayHelper<T>): the indexer writes the array, and the
-            // mutators that would change its size refuse. Rewritten to the
-            // call that makes one, `SZArrayHelper.Of<X>(array)` -- a generic
-            // method, which checking can still have specialised; the array is
-            // still evaluated for what it is inside it (Lowering.Eval's guard).
-            if (from.IsArray && at is Expr listed && ListFace(from, to) is Type listElement
-                && !_r.Rewrites.ContainsKey(listed) && RefOf(listElement) is TypeRef listRef)
-            {
-                MemberExpr maker = new()
-                {
-                    Target = new NameExpr { Name = "SZArrayHelper", Line = at.Line, Col = at.Col },
-                    Name = "Of", Line = at.Line, Col = at.Col,
-                };
-                maker.TypeArgs.Add(listRef);
-                CallExpr helper = new() { Target = maker, Line = at.Line, Col = at.Col, File = at.File };
-                helper.Args.Add(listed);
-                helper.ArgNames.Add(null);
-                _r.Rewrites[listed] = helper;
-                CheckExpr(helper);
-                return;
-            }
-
-            // AND AN ARRAY GETS ITS HELPER. The conversion is real -- something
-            // has to answer Count and the indexer -- and this is the one place
-            // that knows both what was written and what was wanted.
-            if (from.IsArray && at is Expr viewed && ArrayFace(from, to) is { } through
-                && _r.Types.TryGetValue(TypeKey(through), out TypeSymbol? wantedFace))
-            {
-                _r.Views[viewed] = ArrayView(from.Element!, wantedFace);
-            }
+            // AND AN ARRAY GETS ITS HELPER (ArrayBecomes). The conversion is
+            // real -- something has to answer Count and the indexer -- and
+            // this is the one place that knows both what was written and what
+            // was wanted.
             // AND A COVARIANT ONE THE HELPER OF WHAT IS WANTED: a string[] as
             // an IEnumerable<object> is read through the view that answers
             // IEnumerable<object>, which reads each element as the word it is
             // -- the same words, taken as the wider type, which is what array
             // covariance means. A view is one per element size and interface.
-            else if (from.IsArray && at is Expr covariant && !Convertible(from, to)
-                     && to.AsNonNullable().Symbol is { Kind: TypeKind.Interface } wider)
+            if (at is Expr viewed && !ArrayBecomes(viewed, from, to)
+                && from.IsArray && at is Expr covariant && !Convertible(from, to)
+                && to.AsNonNullable().Symbol is { Kind: TypeKind.Interface } wider)
             {
                 _r.Views[covariant] = ArrayView(from.Element!, wider);
             }
@@ -7473,13 +7447,50 @@ public sealed partial class Binder
         }
     }
 
+    /// <summary>
+    /// AN ARRAY BECOMING ONE OF ITS INTERFACES, wherever it does -- an
+    /// assignment, an argument, an arm of a conditional or of `??`, a cast:
+    /// an IList&lt;T&gt; or ICollection&lt;T&gt; is .NET's SZArrayHelper over it,
+    /// made by rewriting the array to `SZArrayHelper.Of&lt;X&gt;(array)`; a
+    /// read-only sequence interface is the view the checker writes. One
+    /// place, so an arm cannot be given the one and forget the other --
+    /// an array arm of a conditional typed IList&lt;int&gt; was handed over raw,
+    /// and GetEnumerator was called through a slot it does not have.
+    /// </summary>
+    private bool ArrayBecomes(Expr at, Type from, Type to)
+    {
+        if (!from.IsArray || to.IsArray)
+        {
+            return false;
+        }
+        if (ListFace(from, to) is Type listElement && !_r.Rewrites.ContainsKey(at) && RefOf(listElement) is TypeRef listRef)
+        {
+            MemberExpr maker = new()
+            {
+                Target = new NameExpr { Name = "SZArrayHelper", Line = at.Line, Col = at.Col },
+                Name = "Of", Line = at.Line, Col = at.Col,
+            };
+            maker.TypeArgs.Add(listRef);
+            CallExpr helper = new() { Target = maker, Line = at.Line, Col = at.Col, File = at.File };
+            helper.Args.Add(at);
+            helper.ArgNames.Add(null);
+            _r.Rewrites[at] = helper;
+            CheckExpr(helper);
+            return true;
+        }
+        if (ArrayFace(from, to) is { } through && _r.Types.TryGetValue(TypeKey(through), out TypeSymbol? face))
+        {
+            _r.Views[at] = ArrayView(from.Element!, face);
+            return true;
+        }
+        return false;
+    }
+
     /// <summary>An array operand of `??` going to one of its interfaces: the view that answers them.</summary>
     private void CoalesceView(Expr operand, Type from, Type to)
     {
-        if (from.IsArray && !to.IsArray && ArrayFace(from, to) is { } through
-            && _r.Types.TryGetValue(TypeKey(through), out TypeSymbol? face))
+        if (ArrayBecomes(operand, from, to))
         {
-            _r.Views[operand] = ArrayView(from.Element!, face);
         }
     }
 
@@ -10887,11 +10898,7 @@ public sealed partial class Binder
                 {
                     foreach ((Type had, Expr arm) in new[] { (a2, c2.Then), (b2, c2.Else) })
                     {
-                        if (had.IsArray && !whole.IsArray && ArrayFace(had, whole) is { } through
-                            && _r.Types.TryGetValue(TypeKey(through), out TypeSymbol? face))
-                        {
-                            _r.Views[arm] = ArrayView(had.Element!, face);
-                        }
+                        ArrayBecomes(arm, had, whole);
                         // AND A TUPLE ARM OF ANOTHER SHAPE IS REBUILT AS THE
                         // WHOLE'S, element by element: `c ? (1, 2) : (3L, 4L)`
                         // is two longs either way.
@@ -10961,11 +10968,7 @@ public sealed partial class Binder
                 // `(IReadOnlyList<T>)array` IS THE CONVERSION it names, and the
                 // view that answers Count and the indexer is made here as it is
                 // where the conversion is implicit.
-                if (operand.IsArray && !wanted.IsArray && ArrayFace(operand, wanted) is { } through
-                    && _r.Types.TryGetValue(TypeKey(through), out TypeSymbol? castFace))
-                {
-                    _r.Views[cast.Operand] = ArrayView(operand.Element!, castFace);
-                }
+                ArrayBecomes(cast.Operand, operand, wanted);
                 return wanted;
             }
 

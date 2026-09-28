@@ -1274,7 +1274,34 @@ public sealed partial class Lowering
     /// array it names. A Nullable value's `?` stays: an `int?[]` holds cells,
     /// and is a different array.
     /// </summary>
-    private static string ElementKey(Type element) => Unannotated(element).ToString();
+    /// <summary>
+    /// What an array's descriptor is keyed and named by: its element, spelt
+    /// by the element type's KEY -- `Corsac.Lang.Ir.Operand`, not `Operand`.
+    /// Spelt by simple name, two types called Operand in two namespaces
+    /// shared one array descriptor, so `x is Operand[]` could not tell their
+    /// arrays apart; once the descriptor named its element's, the two units
+    /// that made it made it differently and the link refused the pair.
+    /// </summary>
+    private static string ElementKey(Type element) => Keyed(Unannotated(element));
+
+    private static string Keyed(Type t)
+    {
+        if (t.IsArray && t.Element is Type inner)
+        {
+            return Keyed(inner) + string.Concat(Enumerable.Repeat("[]", t.ArrayRank)) + (t.Nullable ? "?" : "");
+        }
+        if (t.Symbol is not TypeSymbol named)
+        {
+            return t.ToString();
+        }
+        string s = named.Key;
+        if (t.Args.Count > 0)
+        {
+            s += "<" + string.Join(", ", t.Args.Select(Keyed)) + ">";
+        }
+        s += new string('*', t.PointerDepth);
+        return t.Nullable ? s + "?" : s;
+    }
 
     /// <summary>
     /// An element key as .NET names the type: `System.Int32` for `int`, and
