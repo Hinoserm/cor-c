@@ -285,6 +285,24 @@ class FileStream : Stream
     bool _owns;
     string _name;
 
+    // BUFFERED, AS .NET'S IS: 4096 bytes unless the constructor says
+    // otherwise, and 0 or 1 turns it off. Without it every ReadByte was a
+    // read system call -- a BinaryReader over a megabyte file made a million
+    // of them. One buffer serves both directions: bytes read ahead
+    // (_readPos.._readLen) or bytes written and not yet sent (_writePos),
+    // never both at once.
+    //
+    // A stream over a descriptor the program already has is not buffered.
+    // Those are the console's and a child process's pipes, which .NET serves
+    // with unbuffered streams (ConsoleStream) or flushes after every write;
+    // bytes held here would reach a terminal or a child late.
+    const int DefaultBufferSize = 4096;
+    int _bufferSize = DefaultBufferSize;
+    byte[]? _buffer;
+    int _readPos;
+    int _readLen;
+    int _writePos;
+
     public FileStream(string path, FileMode mode) : this(path, mode, mode == FileMode.Open ? FileAccess.Read : FileAccess.ReadWrite)
     {
     }
@@ -345,6 +363,9 @@ class FileStream : Stream
 
     public FileStream(string path, FileMode mode, FileAccess access, FileShare share, int bufferSize) : this(path, mode, access, share)
     {
+        if (bufferSize == -1) bufferSize = DefaultBufferSize;
+        if (bufferSize < 0) throw new ArgumentOutOfRangeException("bufferSize", "Positive number required.");
+        _bufferSize = bufferSize > 1 ? bufferSize : 0;
     }
 
     /// Over a descriptor the program already has. Closing the stream closes
@@ -352,15 +373,25 @@ class FileStream : Stream
     public FileStream(int handle, FileAccess access, bool ownsHandle)
     {
         _fd = handle;
+        _bufferSize = 0;
         _name = "fd " + handle;
         _canRead = access != FileAccess.Write;
         _canWrite = access != FileAccess.Read;
         _owns = ownsHandle;
     }
 
+    /// The descriptor, with nothing held back from it: whoever asks for it
+    /// is about to use it directly, so what is buffered is written out and
+    /// what was read ahead is given back first, as .NET does when its
+    /// SafeFileHandle is taken.
     public int Handle
     {
-        get { return _fd; }
+        get
+        {
+            FlushWrite();
+            FlushRead();
+            return _fd;
+        }
     }
 
     public string Name
@@ -377,7 +408,7 @@ class FileStream : Stream
         get { return _fd >= 0 && Os.Lseek(_fd, 0, 1) >= 0; }
     }
 
-    public override int Read(byte[] buffer, int offset, int count)
+    int RawRead(byte[] buffer, int offset, int count)
     {
         while (true)
         {
@@ -394,28 +425,7 @@ class FileStream : Stream
         }
     }
 
-    /// Flush, and with flushToDisk the file's bytes onto the device (fsync),
-    /// as .NET's FileStream.Flush(bool) does. Nothing is buffered here, so a
-    /// plain Flush has nothing to write.
-    public virtual void Flush(bool flushToDisk)
-    {
-        Flush();
-        if (flushToDisk && _fd >= 0)
-        {
-            int result = Os.Fsync(_fd);
-            if (result < 0) throw Interop.GetExceptionForIoErrno(result, "");
-        }
-    }
-
-    public override void SetLength(long value)
-    {
-        if (value < 0) throw new ArgumentOutOfRangeException("value");
-        if (!_canWrite) throw new NotSupportedException("Stream does not support writing.");
-        int result = Os.Ftruncate(_fd, value);
-        if (result < 0) throw Interop.GetExceptionForIoErrno(result, "");
-    }
-
-    public override void Write(byte[] buffer, int offset, int count)
+    void RawWrite(byte[] buffer, int offset, int count)
     {
         int done = 0;
         while (done < count)
@@ -433,19 +443,160 @@ class FileStream : Stream
         }
     }
 
-    public override long Length
+    /// What was written into the buffer, out to the file.
+    void FlushWrite()
     {
-        get { return Os.SizeOf(_fd); }
+        if (_writePos == 0) return;
+        int n = _writePos;
+        _writePos = 0;
+        RawWrite(_buffer!, 0, n);
     }
 
+    /// What was read ahead and not yet consumed, given back: the descriptor's
+    /// offset moves back to where the reader is. Only a seekable descriptor
+    /// can; from a pipe the bytes are simply dropped, as .NET drops them.
+    void FlushRead()
+    {
+        int ahead = _readLen - _readPos;
+        _readPos = 0;
+        _readLen = 0;
+        if (ahead != 0 && _fd >= 0) Os.Lseek(_fd, -ahead, (int)SeekOrigin.Current);
+    }
+
+    public override int Read(byte[] buffer, int offset, int count)
+    {
+        if (_bufferSize == 0) return RawRead(buffer, offset, count);
+        FlushWrite();
+        int held = _readLen - _readPos;
+        if (held == 0)
+        {
+            // A read as big as the buffer goes straight into the caller's
+            // array; copying it through the buffer would only cost a copy.
+            if (count >= _bufferSize) return RawRead(buffer, offset, count);
+            if (_buffer == null) _buffer = new byte[_bufferSize];
+            _readPos = 0;
+            _readLen = RawRead(_buffer, 0, _bufferSize);
+            held = _readLen;
+            if (held == 0) return 0;
+        }
+        int n = held < count ? held : count;
+        Array.Copy(_buffer!, _readPos, buffer, offset, n);
+        _readPos = _readPos + n;
+        return n;
+    }
+
+    public override int ReadByte()
+    {
+        if (_readPos < _readLen)
+        {
+            int b = _buffer![_readPos] & 255;
+            _readPos = _readPos + 1;
+            return b;
+        }
+        if (_bufferSize == 0) return base.ReadByte();
+        FlushWrite();
+        if (_buffer == null) _buffer = new byte[_bufferSize];
+        _readPos = 0;
+        _readLen = RawRead(_buffer, 0, _bufferSize);
+        if (_readLen == 0) return -1;
+        _readPos = 1;
+        return _buffer[0] & 255;
+    }
+
+    public override void Flush()
+    {
+        FlushWrite();
+        FlushRead();
+    }
+
+    /// Flush, and with flushToDisk the file's bytes onto the device (fsync),
+    /// as .NET's FileStream.Flush(bool) does.
+    public virtual void Flush(bool flushToDisk)
+    {
+        Flush();
+        if (flushToDisk && _fd >= 0)
+        {
+            int result = Os.Fsync(_fd);
+            if (result < 0) throw Interop.GetExceptionForIoErrno(result, "");
+        }
+    }
+
+    public override void SetLength(long value)
+    {
+        if (value < 0) throw new ArgumentOutOfRangeException("value");
+        if (!_canWrite) throw new NotSupportedException("Stream does not support writing.");
+        FlushWrite();
+        FlushRead();
+        int result = Os.Ftruncate(_fd, value);
+        if (result < 0) throw Interop.GetExceptionForIoErrno(result, "");
+        // Cut short beneath the position, the position moves to the new end.
+        if (Os.Lseek(_fd, 0, (int)SeekOrigin.Current) > value) Os.Lseek(_fd, value, (int)SeekOrigin.Begin);
+    }
+
+    public override void Write(byte[] buffer, int offset, int count)
+    {
+        if (_bufferSize == 0)
+        {
+            RawWrite(buffer, offset, count);
+            return;
+        }
+        if (_readLen != 0) FlushRead();
+        if (_writePos + count <= _bufferSize)
+        {
+            if (_buffer == null) _buffer = new byte[_bufferSize];
+            Array.Copy(buffer, offset, _buffer, _writePos, count);
+            _writePos = _writePos + count;
+            return;
+        }
+        FlushWrite();
+        if (count >= _bufferSize)
+        {
+            RawWrite(buffer, offset, count);
+            return;
+        }
+        if (_buffer == null) _buffer = new byte[_bufferSize];
+        Array.Copy(buffer, offset, _buffer, 0, count);
+        _writePos = count;
+    }
+
+    public override void WriteByte(byte value)
+    {
+        if (_bufferSize == 0)
+        {
+            base.WriteByte(value);
+            return;
+        }
+        if (_readLen != 0) FlushRead();
+        if (_writePos == _bufferSize) FlushWrite();
+        if (_buffer == null) _buffer = new byte[_bufferSize];
+        _buffer[_writePos] = value;
+        _writePos = _writePos + 1;
+    }
+
+    public override long Length
+    {
+        get
+        {
+            FlushWrite();
+            return Os.SizeOf(_fd);
+        }
+    }
+
+    /// Where the reader or writer is, which is not where the descriptor is
+    /// while bytes are read ahead or held back.
     public override long Position
     {
-        get { return Os.Lseek(_fd, 0, (int)SeekOrigin.Current); }
-        set { Os.Lseek(_fd, value, (int)SeekOrigin.Begin); }
+        get { return Os.Lseek(_fd, 0, (int)SeekOrigin.Current) - (_readLen - _readPos) + _writePos; }
+        set { Seek(value, SeekOrigin.Begin); }
     }
 
     public override long Seek(long offset, SeekOrigin origin)
     {
+        FlushWrite();
+        // Relative to the reader, not to the descriptor, which is ahead.
+        if (origin == SeekOrigin.Current) offset = offset - (_readLen - _readPos);
+        _readPos = 0;
+        _readLen = 0;
         long at = Os.Lseek(_fd, offset, (int)origin);
         if (at < 0)
         {
@@ -456,11 +607,20 @@ class FileStream : Stream
 
     public override void Dispose()
     {
-        if (_owns && _fd >= 0)
+        try
         {
-            Os.Close(_fd);
+            if (_fd >= 0) FlushWrite();
         }
-        _fd = -1;
+        finally
+        {
+            if (_owns && _fd >= 0)
+            {
+                Os.Close(_fd);
+            }
+            _fd = -1;
+            _readPos = 0;
+            _readLen = 0;
+        }
     }
 }
 
@@ -583,6 +743,28 @@ class MemoryStream : Stream
         Array.Copy(_bytes, _origin + _position, buffer, offset, n);
         _position = _position + n;
         return n;
+    }
+
+    // A byte at a time without the one-byte array Stream's own versions make
+    // for every call, as .NET's MemoryStream overrides them too.
+    public override int ReadByte()
+    {
+        if (_position >= _length) return -1;
+        int b = _bytes[_origin + _position] & 255;
+        _position = _position + 1;
+        return b;
+    }
+
+    public override void WriteByte(byte value)
+    {
+        if (_readOnly || _position >= _capacity || _position > _length)
+        {
+            base.WriteByte(value);
+            return;
+        }
+        _bytes[_origin + _position] = value;
+        _position = _position + 1;
+        if (_position > _length) _length = _position;
     }
 
     public override void Write(byte[] buffer, int offset, int count)

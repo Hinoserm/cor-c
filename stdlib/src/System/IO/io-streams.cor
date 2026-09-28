@@ -633,9 +633,15 @@ class BinaryReader : IDisposable
         }
 
         byte[] bytes = new byte[length];
-        for (int i = 0; i < length; i++)
+        int got = 0;
+        while (got < length)
         {
-            bytes[i] = (byte)One();
+            int n = _stream.Read(bytes, got, length - got);
+            if (n <= 0)
+            {
+                throw new EndOfStreamException();
+            }
+            got = got + n;
         }
         return _encoding.GetString(bytes, 0, length);
     }
