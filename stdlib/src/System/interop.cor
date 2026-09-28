@@ -134,16 +134,32 @@ static class Marshal
     static long _malloc;
     static long _free;
     static long _realloc;
+    // 0 not yet asked, 1 the C library's, 2 our own pages.
+    static int _heapKind;
 
+    /// Whether AllocHGlobal and FreeHGlobal are C's malloc and free. ONE
+    /// ANSWER FOR EVERY THREAD, published in one word after the three
+    /// addresses it rests on: with each address published as it was found,
+    /// a second thread saw malloc found and free not yet, took pages of its
+    /// own for a block, and handed them to C's free later -- "free(): invalid
+    /// pointer", once in a few hundred runs of four threads starting at once.
+    /// Threads that ask together find the same addresses and write the same.
     static bool CLibrary()
     {
-        if (_malloc == 0)
+        int kind = _heapKind;
+        if (kind == 0)
         {
-            _malloc = Runtime.NativeSymbol("malloc");
-            _free = Runtime.NativeSymbol("free");
-            _realloc = Runtime.NativeSymbol("realloc");
+            long malloc = Runtime.NativeSymbol("malloc");
+            long free = Runtime.NativeSymbol("free");
+            long realloc = Runtime.NativeSymbol("realloc");
+            _malloc = malloc;
+            _free = free;
+            _realloc = realloc;
+            kind = malloc != 0 && free != 0 && realloc != 0 ? 1 : 2;
+            Sys.Fence();
+            _heapKind = kind;
         }
-        return _malloc != 0 && _free != 0 && _realloc != 0;
+        return kind == 1;
     }
 
     /// `cb` bytes no collector will move or free.

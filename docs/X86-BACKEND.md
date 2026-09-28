@@ -895,9 +895,15 @@ to the operating system.
   operating system reports free (or half of what a heap cap leaves) allows.
   On 32-bit, never more than half of what the address space leaves: the
   heap is kept under 2.5 GB (`Gc.HeapCeiling`), because a 32-bit process's
-  code, stacks and tables share its four gigabytes. A chunk the system
-  will not give is answered with a collection, never a failure while one
-  could help.
+  code, stacks and tables share its four gigabytes. Under a hard limit --
+  the ceiling, or a cap -- the floor of one live size gives way: near the
+  limit collections come sooner, rather than the heap outgrowing it. And
+  the ceiling is where growth waits for a collection: a chunk that would
+  pass it, with a pace's worth allocated since the last cycle, is refused
+  until a major collection has run (`Gc.GrowthWaits`); straight after one,
+  growth is allowed, so the ceiling slows a heap and never stops one. A
+  chunk the system will not give is answered with a collection, never a
+  failure while one could help.
 - *A mark queue sized to the heap.* The grey queue starts at 256 KB; a
   cycle that overflows it (and finishes by rescanning the heap, which needs
   no memory) asks the next cycle for four times it, as far as a
@@ -905,7 +911,9 @@ to the operating system.
   it; a compiler's does, once.
 - *Its own memory is the system's.* The queue, the barrier ring, the chunk
   index and the free-memory probe are mappings of their own, never heap
-  blocks, and nothing on the collection path allocates.
+  blocks, and nothing on the collection path allocates -- nor maps: a
+  chunk's start table is mapped with the chunk, because the collection
+  that would have to map it is the one the address space ran out for.
 
 **Memory is a pace, never an answer.** The toolchain builds the system on a
 machine of 128 MB as on one of many gigabytes, and builds the SAME system:

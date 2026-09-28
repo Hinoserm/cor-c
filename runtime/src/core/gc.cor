@@ -1361,6 +1361,16 @@ static class Gc
     /// Whatever the old current chunk had left above its bump pointer
     /// becomes a free block first, so nothing is stranded. Answers false
     /// when the cap or the operating system refuses.
+    /// Whether a chunk of `ask` bytes should wait for a collection: past the
+    /// 32-bit ceiling, with a pace's worth allocated since the last one and
+    /// no cycle under way. Straight after a collection growth is allowed --
+    /// what is live is live -- so the ceiling slows a heap and never stops one.
+    public static bool GrowthWaits(long ask)
+    {
+        return HeapCeiling != 0 && !_collecting && _since >= MinThreshold
+            && HeapChunks.HeapBytes + ask > HeapCeiling;
+    }
+
     static bool Grow(long need)
     {
         long raw = HeapChunks.Take(need);
@@ -3592,10 +3602,12 @@ static class Gc
     {
         long floor = live > MinThreshold ? live : MinThreshold;
         long room;
+        long bound = -1;            // half of what a hard limit leaves; -1 for none
         if (HeapChunks.Cap != 0)
         {
             long left = HeapChunks.Cap - live;
             room = left > 0 ? left / 2 : 0;
+            bound = room;
         }
         else
         {
@@ -3606,10 +3618,22 @@ static class Gc
             long left = HeapCeiling - live;
             long spare = left > 0 ? left / 2 : 0;
             if (spare < room) room = spare;
+            if (bound < 0 || spare < bound) bound = spare;
         }
         long most = floor * MaxGrowth;
         long wanted = room < most ? room : most;
-        return wanted > floor ? wanted : floor;
+        long next = wanted > floor ? wanted : floor;
+        // UNDER A HARD LIMIT -- a cap, the 32-bit ceiling -- THE FLOOR GIVES
+        // WAY. Allowing the live size again as garbage is the old pace, but
+        // with a gigabyte and a half live under a ceiling of two and a half it
+        // let the heap outgrow the address space: near a limit, collections
+        // come sooner instead. Free memory alone is no limit: a 32 MB board
+        // keeps its old pace.
+        if (bound >= 0 && next > bound)
+        {
+            next = bound > MinThreshold ? bound : MinThreshold;
+        }
+        return next;
     }
 
     /// With the world running and the heap lock NOT held between chunks.
@@ -4970,6 +4994,13 @@ static class HeapChunks
         long minimum = (need + ChunkBytes + 4095) & -4096;
         long ask = dedicated || minimum > ChunkAsk ? minimum : ChunkAsk;
 
+        // THE CEILING IS WHERE GROWTH WAITS FOR A COLLECTION (Gc.GrowthWaits):
+        // refused here, the allocator collects first and asks again.
+        if (Gc.GrowthWaits(ask))
+        {
+            return 0;
+        }
+
         // The preferred growth quantum is not a minimum allocation size.
         // A smaller remaining cap (or address-space hole) can still satisfy
         // this request. Count actual mapped pages against the heap cap.
@@ -4999,6 +5030,16 @@ static class HeapChunks
         Sys.Poke(raw + ChunkEnd, raw + ChunkBytes);
         Sys.Poke(raw + ChunkLimit, raw + ask);
         Sys.Poke(raw + ChunkFlags, ChunkYoung);
+        // ITS START TABLE WITH IT: a collection must never map, because the
+        // collection that needs to is the one the address space ran out for.
+        // Taken lazily, at the first collection, it was refused exactly then,
+        // the snapshot was given up, and nothing could be freed at all.
+        if (PrepareBlockAnchors(raw) == 0)
+        {
+            Platform.Unmap(raw, ask);
+            Maps = Maps - 1;
+            return 0;
+        }
         _chunks = raw;
         _heapBytes = _heapBytes + ask;
         IndexAdd(raw);
