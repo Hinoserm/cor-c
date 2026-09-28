@@ -63,7 +63,13 @@ public enum Tok : byte
 /// </summary>
 /// <param name="Global">The name was written after `global::`: it is looked
 /// up from the global namespace, past any local or member of the same name.</param>
-public readonly record struct Token(Tok Kind, string Text, int Line, int Col, int Pos, bool Global = false)
+/// <remarks>
+/// A CLASS, made once and then only pointed at. As a struct holding a
+/// string it was a heap block of its own in a native build, copied into a new
+/// block by every read of a token list, every growth of one and every private
+/// copy the parser takes: most of what a native unit allocated.
+/// </remarks>
+public sealed record Token(Tok Kind, string Text, int Line, int Col, int Pos, bool Global = false)
 {
     public override string ToString() => $"{Kind}('{Text}') at {Line}:{Col}";
 }
