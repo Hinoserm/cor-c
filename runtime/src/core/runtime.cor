@@ -1995,6 +1995,23 @@ static class Runtime
         Platform.WriteBytes(StdErr, digits, count);
     }
 
+    /// The function an address lies in, on a line of its own, allocating
+    /// nothing: the collector's checked mode names a free site with it.
+    public static void SayFrame(int fd, long address) {
+        long name;
+        long file;
+        long program;
+        long offset;
+
+        SayLiteral(fd, "   at ");
+        if (Lookup(address, out name, out file, out program, out offset)) {
+            SayText(fd, name);
+        } else {
+            SayLiteral(fd, "?");
+        }
+        SayLiteral(fd, "\n");
+    }
+
     /// A string the compiler laid out in the image, which is data and not an
     /// object this heap made: printing it allocates nothing.
     static void SayLiteral(int fd, string text) {

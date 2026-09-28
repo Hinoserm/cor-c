@@ -2293,6 +2293,10 @@ static class Gc
     static void Start()
     {
         _verify = Platform.VerifyFrees();
+        if (_verify)
+        {
+            StartQuarantine();
+        }
         SetCeiling();
         if (HeapChunks.Cap == 0)
         {
@@ -2573,6 +2577,37 @@ static class Gc
         return _verify;
     }
 
+    // THE LAST FREES KEPT, in the checked mode. A block freed twice is found
+    // by its pattern only while it is still the freed block: once the
+    // collector has taken it back and handed it out again, a second free
+    // lands on the new object -- a list's array, taken from under the list --
+    // and nothing can tell. So the blocks freed last stay out of the
+    // collector's hands: a ring of their addresses is a root range, and a
+    // block leaves the ring only when a quarter of a million later frees have
+    // pushed it out. Its first word counts the frees.
+    const long QuarantineEntries = 262144;
+    static long _quarantine;
+
+    static void StartQuarantine()
+    {
+        long bytes = (QuarantineEntries + 1) * WordSize.Bytes;
+        long ring = Platform.Map(bytes);
+        if (ring != 0 && Runtime.RegisterRoots(ring + WordSize.Bytes, ring + bytes))
+        {
+            _quarantine = ring;
+        }
+    }
+
+    static void Quarantine(long at)
+    {
+        if (_quarantine == 0)
+        {
+            return;
+        }
+        long n = Sys.AtomicAdd(_quarantine, 1);
+        Sys.Poke(_quarantine + WordSize.Bytes + (n % QuarantineEntries) * WordSize.Bytes, at);
+    }
+
     static void VerifyFree(long at)
     {
         if (at == 0)
@@ -2588,6 +2623,23 @@ static class Gc
         if (Sys.Peek(block + KindAt) == KindLeaf && Sys.PeekWord(at) == Poison && (at + 4 >= end || Sys.PeekWord(at + 4) == Poison))
         {
             SayNumber("gc: checked free: freed twice, block ", at);
+            // Who freed it first -- the return addresses the first free left
+            // in the block's last words (below), less 0x08000000 -- and who
+            // frees it now.
+            Runtime.WriteLiteral(2, "gc: first freed by:\n");
+            long site = end - 4;
+            while (site >= at + 8)
+            {
+                long first = Sys.PeekWord(site);
+                if (first == Poison || first == 0)
+                {
+                    break;
+                }
+                Runtime.SayFrame(2, first + 0x08000000);
+                site = site - 4;
+            }
+            Runtime.WriteLiteral(2, "gc: freed again by:\n");
+            Runtime.SayTrace(2, Sys.FramePointer());
             Platform.Exit(97);
         }
         long p = at;
@@ -2619,6 +2671,7 @@ static class Gc
             frame = next;
         }
         Sys.Poke(block + KindAt, KindLeaf);
+        Quarantine(at);
         VerifiedFrees = VerifiedFrees + 1;
         Frees = Frees + 1;
     }
