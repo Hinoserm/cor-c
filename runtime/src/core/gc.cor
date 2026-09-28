@@ -2828,8 +2828,16 @@ static class Gc
             {
                 return false;
             }
-            if ((Sys.Peek(desc + DescGcFlagsWord * w) & ElementsAreReferences) == 0
-                || Sys.Peek(desc + DescSizeWord * w) != w)
+            // AN ARRAY OF INTEGERS is scanned word by word when it is
+            // marked (this code has kept addresses in them), but an integer
+            // is not a reference to the card contract -- its stores take no
+            // card -- and one that happens to equal an address, an identity
+            // hash above all, is no pointer a minor cycle owes anything to.
+            if ((Sys.Peek(desc + DescGcFlagsWord * w) & ElementsAreReferences) == 0)
+            {
+                return false;
+            }
+            if (Sys.Peek(desc + DescSizeWord * w) != w)
             {
                 return true;
             }
