@@ -1982,6 +1982,7 @@ static class Runtime
             SayLiteral(StdErr, "\n");
         }
         SayTrace(StdErr, frame);
+        Gc.SayState();
     }
 
     /// A word in hexadecimal, every digit, spelled in `digits` and written.

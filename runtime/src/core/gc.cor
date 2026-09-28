@@ -2090,6 +2090,25 @@ static class Gc
         return block + HeaderBytes;
     }
 
+    /// WHAT THE COLLECTOR WAS DOING when a fault stopped the program, for
+    /// the fault report (Runtime.ReportFault): a fault in a live object is
+    /// most often a collection's doing, and whether one was marking or
+    /// sweeping, and of which kind the last one was, says where to look.
+    public static void SayState()
+    {
+        SayNumber("gc: cycle ", _cycle);
+        SayNumber("gc:   minor collections ", MinorCollections);
+        SayNumber("gc:   major collections ", MajorCollections);
+        SayNumber("gc:   concurrent cycles ", ConcurrentCycles);
+        SayNumber("gc:   given up ", Aborted);
+        SayNumber("gc:   collecting now ", _collecting ? 1 : 0);
+        SayNumber("gc:   sweeping now ", _sweeping ? 1 : 0);
+        SayNumber("gc:   marking now ", Runtime.Marking);
+        SayNumber("gc:   this or last cycle minor ", _minor ? 1 : 0);
+        SayNumber("gc:   frees ", Frees);
+        SayNumber("gc:   live bytes ", _liveBytes);
+    }
+
     /// A label and a number on standard error without allocating: the
     /// digits are written into a fixed buffer on the stack of static data.
     static long _digits;            // a page for the digits, mapped in Start
