@@ -391,6 +391,61 @@ static class Gc
         }
     }
 
+    /// CORSAC_GC_VERIFY, after a MAJOR cycle has marked: every marked block
+    /// is read word by word, and a word that is the start of a block the
+    /// sweep is about to free is reported -- the block, its vtable (for nm),
+    /// the offset, and whether the marker reads that word. Read and still
+    /// unmarked is a fault in marking. Not read is a reference map that left
+    /// a field out, or a number that happens to look like an address; the
+    /// report says which object and which word, and nm says which type.
+    static void VerifyMajor()
+    {
+        long chunk = HeapChunks.Newest();
+        while (chunk != 0 && _verifyReports < 40)
+        {
+            long block = HeapChunks.First(chunk);
+            long end = HeapChunks.End(chunk);
+            while (block < end && _verifyReports < 40)
+            {
+                long word = Sys.Peek(block);
+                long size = word & SizeMask;
+                if (size < Smallest || block + size > end || Sys.Peek(block + size - FooterBytes) != word)
+                {
+                    break;
+                }
+                if ((word & (FlagFree | FlagMark)) == FlagMark && Sys.Peek(block + KindAt) != KindLeaf)
+                {
+                    long p = block + HeaderBytes;
+                    while (p < block + size - FooterBytes)
+                    {
+                        long target = BlockForPointer(Sys.Peek(p));
+                        if (target != 0 && target != block)
+                        {
+                            long seen = Sys.Peek(target);
+                            long home = HeapChunks.OfSnapshot(target + HeaderBytes);
+                            if ((seen & (FlagMark | FlagFree)) == 0 && home != 0 && !Newcomer(home, target, seen)
+                                && Sys.Peek(p) == target + HeaderBytes)
+                            {
+                                SayNumber("gc verify major: marked block ", block);
+                                SayNumber("gc verify major:   its vtable ", Sys.Peek(block + HeaderBytes));
+                                SayNumber("gc verify major:   kind ", Sys.Peek(block + KindAt));
+                                SayNumber("gc verify major:   offset ", p - block - HeaderBytes);
+                                SayNumber("gc verify major:   marker reads it ", MarkerReads(block, size, p) ? 1 : 0);
+                                SayNumber("gc verify major:   points at unmarked ", target);
+                                SayNumber("gc verify major:   whose vtable ", Sys.Peek(target + HeaderBytes));
+                                SayNumber("gc verify major:   whose kind ", Sys.Peek(target + KindAt));
+                                _verifyReports = _verifyReports + 1;
+                            }
+                        }
+                        p = p + WordSize.Bytes;
+                    }
+                }
+                block = block + size;
+            }
+            chunk = HeapChunks.Next(chunk);
+        }
+    }
+
     /// Whether the record RescanHeld read this cycle names a block (the verifier).
     static bool WasHeld(long block)
     {
@@ -3513,6 +3568,7 @@ static class Gc
 
         MarkToEmpty();
         if (_minor && _verifyGenerations) VerifyMinor();
+        if (!_minor && _verifyGenerations) VerifyMajor();
         HeapChunks.SetBlockAnchorsActive(false);
         BeginSweep();
         while (SweepNext()) { }
@@ -3627,6 +3683,7 @@ static class Gc
         GcThreads.Round(GcThreads.Ack);
         MarkToEmpty();
         if (_minor && _verifyGenerations) VerifyMinor();
+        if (!_minor && _verifyGenerations) VerifyMajor();
 
         GcLock.Enter();
         HeapChunks.SetBlockAnchorsActive(false);
