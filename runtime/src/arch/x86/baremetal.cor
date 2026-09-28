@@ -105,6 +105,11 @@ static class Platform
         return false;
     }
 
+    public static long SkippedFreePaths()
+    {
+        return 0;
+    }
+
     /// Where the bump region begins and ends. Zero means "not yet decided",
     /// and the first call to Map decides it.
     private static long _at;

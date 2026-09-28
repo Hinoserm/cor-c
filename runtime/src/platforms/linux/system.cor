@@ -163,6 +163,25 @@ static class Platform
         return first == 48 ? 0 : first;
     }
 
+    /// CORSAC_FREE_PATHS: the ways a free gives a block back that are
+    /// skipped, the block left to the collector instead -- a diagnostic, for
+    /// finding which of them corrupts. Letters: t the top of the thread's own
+    /// buffer, i a block freed in place in another thread's buffer, b the
+    /// bump pointer's top, d a dedicated chunk released, m a block merged
+    /// into the free lists. As a mask: t 1, i 2, b 4, d 8, m 16.
+    public static long SkippedFreePaths()
+    {
+        long at = EnvironmentValue("CORSAC_FREE_PATHS=");
+        long mask = 0;
+        while (at != 0 && Sys.PeekByte(at) != 0)
+        {
+            long c = Sys.PeekByte(at);
+            mask = mask | (c == 't' ? 1 : c == 'i' ? 2 : c == 'b' ? 4 : c == 'd' ? 8 : c == 'm' ? 16 : 0);
+            at = at + 1;
+        }
+        return mask;
+    }
+
     /// Whether `key` (ending in '=') is set in the environment to something
     /// other than nothing or 0, read from the loader's stack.
     static bool EnvironmentFlag(string key)
@@ -174,6 +193,13 @@ static class Platform
     /// The first byte of `key`'s value (`key` ends in '='), or 0 when it is
     /// unset or empty.
     static long EnvironmentByte(string key)
+    {
+        long at = EnvironmentValue(key);
+        return at == 0 ? 0 : Sys.PeekByte(at);
+    }
+
+    /// Where `key`'s value begins in the environment, or 0 when it is unset.
+    static long EnvironmentValue(string key)
     {
         long env = Os.EnvironAddress();
         while (true)
@@ -190,7 +216,7 @@ static class Platform
             }
             if (i == key.Length)
             {
-                return Sys.PeekByte(text + i);
+                return text + i;
             }
             env = env + WordSize.Bytes;
         }
