@@ -1204,7 +1204,14 @@ public sealed partial class Lowering
 
         foreach ((int offset, Corsac.Lang.Type ty) in fields)
         {
-            if (!HoldsReference(ty) || offset % w != 0)
+            // EVERY FIELD A STORE TREATS AS A REFERENCE (MayHoldReference):
+            // a class, an array, a string -- and an `object`, and a type
+            // parameter's, which HoldsReference leaves out. Left off the map,
+            // an object held only in `object gate = new()` was never marked,
+            // and the next collection gave its memory to something else.
+            bool traced = HoldsReference(ty)
+                || ((ty.Prim is Prim.Any || ty.ParamName is not null) && !ty.IsPointer && LoadSize(ty) == w);
+            if (!traced || offset % w != 0)
             {
                 continue;
             }

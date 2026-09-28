@@ -382,6 +382,15 @@ tasks below track that work; moving files alone does not reduce the working set.
   validation. This repairs the first post-extraction native bootstrap failure
   (five/six path segments); the implementation avoids intermediate join strings.
   The path_combine_params language fixture passed in the 271-case milestone.
+- [ ] Declare the standard library's System types in `namespace System`.
+  Most of stdlib/src/System/Core.cor (Index, Range, String's helpers, the
+  collections) is in the global namespace, so a program's own global type of
+  the same name -- `class Index` -- is a second declaration of the library's
+  and replaces it inside the library too: Core.cor then fails with "'Index'
+  has no member 'End'". In C# the program's global type only shadows
+  System.Index in the program's own code. Needs `using System;` to bind
+  as a real import, and every library file's own references to resolve
+  through its namespace first.
 - [ ] Audit and repair compatibility gaps as they are found, record them as
   open defects, and add standard-behavior regression coverage. A feature
   with a known compatibility failure must not be marked complete merely

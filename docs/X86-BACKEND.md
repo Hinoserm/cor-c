@@ -879,7 +879,9 @@ to the operating system.
   collector reads such a block's references off its descriptor -- the
   reference map a class descriptor carries, or, for an array whose
   descriptor says its elements are references, the elements -- and looks
-  at nothing else in it (`Gc.ScanObject`). Strings and arrays of bytes,
+  at nothing else in it (`Gc.ScanObject`). The map names every field a
+  store treats as a reference: a class, an interface, an array, a string, a
+  struct's block, and a field typed `object` or by a type parameter. Strings and arrays of bytes,
   characters and floating point come from `Runtime.AllocLeaf` and are never
   read at all. Everything else the compiler allocates -- a struct's block, a
   nullable or captured-variable cell, a coroutine's frame -- is scanned word
