@@ -149,10 +149,19 @@ static class Gc
     // (NextThreshold), and GC.GetGCMemoryInfo says so as the process's total,
     // which is what the build's work admission reads. Long mode has no such
     // ceiling worth the name.
+    //
+    // HOW MUCH is asked of the kernel as the heap starts (Platform.AddressSpace,
+    // SetCeiling): under a 64-bit kernel the whole four gigabytes are the
+    // process's, and three and a quarter of them the heap's; under a 32-bit
+    // kernel, or when nobody says, the two and a half that fit in three.
+    // Zero until then, as every static of the collector must be.
+    public static long HeapCeiling;
 #if TARGET_64BIT
-    public const long HeapCeiling = 0;
+    const long NarrowCeiling = 0;
+    const long WideCeiling = 0;
 #else
-    public const long HeapCeiling = 2684354560;
+    const long NarrowCeiling = 2684354560;
+    const long WideCeiling = 3489660928;
 #endif
 
     // The mark queue: a block of the operating system's, not a heap block,
@@ -2197,9 +2206,16 @@ static class Gc
     /// reports, which is what the build sizes its parallel work by.
     const long ContainerFloor = 20971520;
 
+    /// The heap's ceiling for the address space this process has.
+    static void SetCeiling()
+    {
+        HeapCeiling = Platform.AddressSpace() > 3221225472 ? WideCeiling : NarrowCeiling;
+    }
+
     static void Start()
     {
         _verify = Platform.VerifyFrees();
+        SetCeiling();
         if (HeapChunks.Cap == 0)
         {
             long limit = Platform.MemoryLimit();

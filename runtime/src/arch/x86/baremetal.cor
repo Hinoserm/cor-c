@@ -272,6 +272,12 @@ static class Platform
         return false;
     }
 
+    /// No process address space to speak of: a kernel's heap has its cap.
+    public static long AddressSpace()
+    {
+        return 0;
+    }
+
     /// No control groups: a kernel's heap has the cap its kernel gives it.
     public static long MemoryLimit()
     {

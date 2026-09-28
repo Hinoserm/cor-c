@@ -894,8 +894,10 @@ to the operating system.
   small board can spare; up to three times it where half of what the
   operating system reports free (or half of what a heap cap leaves) allows.
   On 32-bit, never more than half of what the address space leaves: the
-  heap is kept under 2.5 GB (`Gc.HeapCeiling`), because a 32-bit process's
-  code, stacks and tables share its four gigabytes. Under a hard limit --
+  heap is kept under 3.25 GB under a 64-bit kernel, whose 32-bit processes
+  have all four gigabytes, and under 2.5 GB under a 32-bit kernel's three
+  (`Gc.HeapCeiling`, set as the heap starts from `Platform.AddressSpace`),
+  because a process's code, stacks and tables share that space. Under a hard limit --
   the ceiling, or a cap -- the floor of one live size gives way: near the
   limit collections come sooner, rather than the heap outgrowing it. And
   the ceiling is where growth waits for a collection: a chunk that would

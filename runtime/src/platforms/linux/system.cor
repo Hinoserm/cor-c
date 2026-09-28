@@ -415,6 +415,31 @@ static class Platform
     /// limit binds its children; or v1's memory.limit_in_bytes. Read once, at
     /// the heap's start, with raw calls into a page of the system's own:
     /// nothing here allocates.
+    /// How much address space a 32-bit process has: four gigabytes under a
+    /// 64-bit kernel, three under a 32-bit one -- uname's machine, x86_64 or
+    /// not. Asked once, at the heap's start, into a page of the system's own:
+    /// nothing here allocates. Zero when uname says nothing.
+    public static long AddressSpace()
+    {
+        long page = Map(4096);
+        if (page == 0)
+        {
+            return 0;
+        }
+        long space = 0;
+        if (Result(Sys.Syscall(Call.Uname, page, 0, 0)) == 0)
+        {
+            // struct utsname: six fields of 65 bytes; the machine is the fifth.
+            long machine = page + 4 * 65;
+            bool wide = Sys.PeekByte(machine) == 120 && Sys.PeekByte(machine + 1) == 56 && Sys.PeekByte(machine + 2) == 54
+                     && Sys.PeekByte(machine + 3) == 95 && Sys.PeekByte(machine + 4) == 54 && Sys.PeekByte(machine + 5) == 52
+                     && Sys.PeekByte(machine + 6) == 0;
+            space = wide ? 4294967296 : 3221225472;
+        }
+        Unmap(page, 4096);
+        return space;
+    }
+
     public static long MemoryLimit()
     {
         long page = Map(8192);
