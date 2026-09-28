@@ -8,6 +8,14 @@ namespace Corsac.Lang;
 public static class ManagedLayouts
 {
     public static void Attach(ObjectFile obj, BindResult bound, bool library = true)
+        => ManagedLayoutContract.Attach(obj, Capture(bound, library));
+
+    /// <summary>
+    /// The records, taken while the binding is at hand: a unit's syntax and
+    /// symbols can then be let go before it is optimised and generated,
+    /// and the records written into the object at the end.
+    /// </summary>
+    public static List<ManagedTypeLayout> Capture(BindResult bound, bool library = true)
     {
         // WHAT THIS UNIT HAS AN OPINION ABOUT. Every type the binder
         // materialised used to be described here, which made the section
@@ -121,6 +129,6 @@ public static class ManagedLayouts
                 }
             }
         }
-        ManagedLayoutContract.Attach(obj, Records());
+        return Records().ToList();
     }
 }

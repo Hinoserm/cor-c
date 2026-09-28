@@ -604,6 +604,14 @@ public static class Driver
         }
 
         Dictionary<string, byte[]> definitionSemantics = DefinitionSemantics.Capture(module);
+
+        // THE FRONT END IS LET GO HERE. Its syntax, symbols and bindings were
+        // held to the end of the unit for two things written into the object
+        // after code generation, and they were a unit's largest structure
+        // alive through its largest phase. What those two need is taken now.
+        List<ManagedTypeLayout> layouts = ManagedLayouts.Capture(front.Value.bound, library);
+        List<RegistrySchema> schemas = new(front.Value.unit.RegistrySchemas);
+        front = null;
         if (args.Contains("--dump-ir"))
         {
             Console.Write(module.Dump());
@@ -748,13 +756,13 @@ public static class Driver
         new TargetContract(freestanding ? (Lowering.TlsGs ? 2u : 1u) : 0u, requiresManagedLayouts: true, requiresCodeGenerationContract: true, longMode: longMode).Attach(obj);
         // The C libraries its [DllImport]s call, for the link to need.
         NativeLibraries.Attach(obj, module.NativeLibraries);
-        ManagedLayouts.Attach(obj, front.Value.bound, library);
+        ManagedLayoutContract.Attach(obj, layouts);
 
         // WHAT THIS PROGRAM'S SETTINGS ARE, for the kernel to read out of the
         // file rather than out of the running process -- which is why the
         // section is a note and is not loaded. docs/software/REGISTRY.md in
         // the OS repository describes both the declarations and the bytes.
-        foreach (RegistrySchema schema in front.Value.unit.RegistrySchemas)
+        foreach (RegistrySchema schema in schemas)
         {
             Section declared = new(RegistrySchema.SectionName, SectionKind.Note);
 
