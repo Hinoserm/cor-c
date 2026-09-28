@@ -614,6 +614,7 @@ static class Runtime
         {
             return;
         }
+        Gc.VerifyFieldOwner(at, offset);
         long held = Sys.Peek(at + offset);
         if (held != 0)
         {

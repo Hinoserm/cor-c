@@ -2616,6 +2616,45 @@ static class Gc
         Sys.Poke(_quarantine + WordSize.Bytes + (n % QuarantineEntries) * WordSize.Bytes, at);
     }
 
+    /// In the checked mode, a field free (Runtime.FreeField) whose OWNER has
+    /// already been freed: the field is read out of a block that belongs to
+    /// nobody -- to whoever was handed it next, when frees are not checked --
+    /// and what it holds is freed. Reported with both frees, and fatal (98).
+    public static void VerifyFieldOwner(long owner, long offset)
+    {
+        if (!_verify || owner == 0)
+        {
+            return;
+        }
+        long block = ValidAllocated(owner);
+        if (block == 0)
+        {
+            return;
+        }
+        long end = block + SizeOfBlock(block) - FooterBytes;
+        if (Sys.Peek(block + KindAt) != KindLeaf || Sys.PeekWord(owner) != Poison || (owner + 4 < end && Sys.PeekWord(owner + 4) != Poison))
+        {
+            return;
+        }
+        SayNumber("gc: checked free: a field freed out of an owner already freed, owner ", owner);
+        SayNumber("gc:   field offset ", offset);
+        Runtime.WriteLiteral(2, "gc: the owner was freed by:\n");
+        long site = end - 4;
+        while (site >= owner + 8)
+        {
+            long first = Sys.PeekWord(site);
+            if (first == Poison || first == 0)
+            {
+                break;
+            }
+            Runtime.SayFrame(2, first + 0x08000000);
+            site = site - 4;
+        }
+        Runtime.WriteLiteral(2, "gc: its field is freed now by:\n");
+        Runtime.SayTrace(2, Sys.FramePointer());
+        Platform.Exit(98);
+    }
+
     static void VerifyFree(long at)
     {
         if (at == 0)
