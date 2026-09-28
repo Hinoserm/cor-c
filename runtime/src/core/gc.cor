@@ -2407,7 +2407,9 @@ static class Gc
 
         if (Verifying())
         {
+            GcLock.Enter();
             VerifyFree(at);
+            GcLock.Exit();
             return;
         }
 
@@ -2423,14 +2425,6 @@ static class Gc
         }
 
         long tb = Sys.ThreadBlock();
-        long block = ValidAllocated(at);
-
-        if (block == 0)
-        {
-            return;
-        }
-
-        long size = SizeOfBlock(block);
 
         // THE TOP BLOCK OF THIS THREAD'S OWN BUFFER goes straight back to it:
         // the last thing the thread bumped is the next thing it will get, at
@@ -2441,14 +2435,30 @@ static class Gc
         // NOT TO BE ANSWERED FOR IN THE MIDDLE (Tls.InAlloc, as in Alloc): a
         // collector stamping this buffer's objects for the thread, or
         // unmarking them, reads the pointer this is about to move.
+        //
+        // AND KNOWN WITHOUT THE CHUNK INDEX. A block inside this thread's own
+        // live buffer is mapped, and its header is this thread's to read; the
+        // index is not anybody's to read without the heap lock -- a chunk
+        // released and unmapped, or the index itself moved, under a reader
+        // that had no lock faulted inside HeapChunks.Of. Every other block is
+        // validated under the lock, below.
         long inside = Sys.Peek(tb + Tls.InAlloc);
         Sys.Poke(tb + Tls.InAlloc, 1);
         long ptr = Sys.Peek(tb + Tls.AllocPtr);
+        long block = at - HeaderBytes;
+        long word = 0;
+        long size = 0;
+        if (ptr != 0 && (at & 7) == 0 && block >= Sys.Peek(tb + Tls.AllocBase) && block < ptr)
+        {
+            word = Sys.Peek(block);
+            size = word & SizeMask;
+        }
 
         // Not while a collection is anywhere under way: the block may carry
         // the snapshot's start, and an object bumped into it again would be
         // swept as the one that was freed.
-        if (Runtime.Marking == 0 && !_sweeping && !_collecting && ptr != 0 && block + size == ptr && block >= Sys.Peek(tb + Tls.AllocBase))
+        if (Runtime.Marking == 0 && !_sweeping && !_collecting && size >= Smallest && (word & FlagFree) == 0
+            && block + size == ptr && Sys.Peek(block + size - FooterBytes) == word)
         {
             // The fast path's one assumption is that memory above the pointer
             // has never been written; the bytes are cleared here instead.
@@ -2473,6 +2483,14 @@ static class Gc
             GcLock.Exit();
             return;
         }
+
+        block = ValidAllocated(at);
+        if (block == 0)
+        {
+            GcLock.Exit();
+            return;
+        }
+        size = SizeOfBlock(block);
 
         SyncEnd();
 
@@ -2622,17 +2640,18 @@ static class Gc
     /// and what it holds is freed. Reported with both frees, and fatal (98).
     public static void VerifyFieldOwner(long owner, long offset)
     {
-        if (!_verify || owner == 0)
+        if (!_verify || owner == 0 || GcLock.HeldByMe())
         {
             return;
         }
+        // Under the heap lock: the chunk index is not read without it.
+        GcLock.Enter();
         long block = ValidAllocated(owner);
-        if (block == 0)
-        {
-            return;
-        }
-        long end = block + SizeOfBlock(block) - FooterBytes;
-        if (Sys.Peek(block + KindAt) != KindLeaf || Sys.PeekWord(owner) != Poison || (owner + 4 < end && Sys.PeekWord(owner + 4) != Poison))
+        long end = block == 0 ? 0 : block + SizeOfBlock(block) - FooterBytes;
+        bool freed = block != 0 && Sys.Peek(block + KindAt) == KindLeaf && Sys.PeekWord(owner) == Poison
+            && (owner + 4 >= end || Sys.PeekWord(owner + 4) == Poison);
+        GcLock.Exit();
+        if (!freed)
         {
             return;
         }
@@ -5196,7 +5215,11 @@ static class HeapChunks
             }
             for (long i = 0; i < _indexCount; i++)
                 Sys.Poke(grown + i * WordSize.Bytes, Sys.Peek(_index + i * WordSize.Bytes));
-            if (_index != 0) Platform.Unmap(_index, _indexCapacity * WordSize.Bytes);
+            // THE OLD TABLE IS KEPT, not unmapped: a reader that had loaded
+            // its address -- the collector resolving a pointer with nothing
+            // held -- may still be searching it, and an unmapped page under
+            // it faulted. Doubling, all the tables left behind come to less
+            // than the one in use.
             _index = grown;
             _indexCapacity = capacity;
         }
