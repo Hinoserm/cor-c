@@ -8,6 +8,12 @@ public sealed class CarryRecognition : IPass
     public string Name => "carry-recognition";
     public void Run(Function f)
     {
+        // A carry is recognised at `x & 1`; a function without one -- most --
+        // needs neither the definitions nor the use counts gathered.
+        if (!f.Blocks.Exists(block => block.Instrs.Exists(i => i.Op == Opcode.And && i.Operands.Count == 2
+                && i.Dest?.Type is IrType.I32 or IrType.I64
+                && (IrInfo.IsImm(i.Operands[1], 1) || IrInfo.IsImm(i.Operands[0], 1)))))
+            return;
         Defs defs = new(f);
         Dictionary<VReg, int> uses = new();
         foreach (var block in f.Blocks)
