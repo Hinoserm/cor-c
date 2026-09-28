@@ -287,6 +287,20 @@ public static class Frontend
             }
         }
 
+        // WHAT THE UNIT GREW TO, for CORC_REPORT_UNIT: its declarations after
+        // expansion by kind, and the members each kind carries -- where a
+        // unit's memory goes before a line of it is lowered.
+        if (Environment.GetEnvironmentVariable("CORC_REPORT_UNIT") is not null)
+        {
+            foreach (var group in unit.Types.GroupBy(t => t.TypeParams.Count > 0 ? "template"
+                         : t.Canon is not null ? "shared-copy" : t.Specialised ? "specialised" : t.SignatureOnly ? "imported" : "own"))
+            {
+                Console.Error.WriteLine("unit " + group.Key + ": " + group.Count() + " types, "
+                    + group.Sum(t => t.Members.Count) + " members, "
+                    + group.Sum(t => t.Members.OfType<MethodDecl>().Count(m => m.Body is { Statements.Count: > 0 })) + " with bodies");
+            }
+        }
+
         // WARNINGS ARE ERRORS. Every warning the binder raises is a statement
         // about the program that is true -- a value that may be null where
         // one may not be, a name that is never read -- and a program with a
@@ -337,7 +351,7 @@ public static class Frontend
         if (workers <= 1)
         {
             for (int i = 0; i < sources.Count; i++)
-                parsed[i] = ParseSource(sources[i].Name, sources[i].Path, symbols, tokens);
+                parsed[i] = ParseSource(sources[i].Name, sources[i].Path, symbols, tokens, sources[i].Elsewhere);
             return parsed;
         }
         CompileError?[] failures = new CompileError?[sources.Count];
@@ -350,7 +364,7 @@ public static class Frontend
             {
                 for (int i = lane; i < sources.Count; i += active)
                 {
-                    try { parsed[i] = ParseSource(sources[i].Name, sources[i].Path, symbols, tokens); }
+                    try { parsed[i] = ParseSource(sources[i].Name, sources[i].Path, symbols, tokens, sources[i].Elsewhere); }
                     catch (CompileError error) { failures[i] = error; }
                 }
             });
@@ -362,13 +376,25 @@ public static class Frontend
         return parsed;
     }
 
-    private static CompilationUnit ParseSource(string name, string? path, IReadOnlyCollection<string>? symbols, SyntaxTokenCache? tokens = null)
+    /// <summary>
+    /// One source, parsed. A source compiled ELSEWHERE -- a --ref library,
+    /// the whole runtime and class library to every unit of a project -- is
+    /// read as the declaration index reads its slices: every declaration, its
+    /// constants and initialisers, and the bodies of templates, which copies
+    /// are made from here; not the bodies of its ordinary methods, which this
+    /// compilation never checks or emits. Kept, they were most of a unit's
+    /// syntax tree, held for the whole compilation and copied whole by every
+    /// round of generic expansion.
+    /// </summary>
+    private static CompilationUnit ParseSource(string name, string? path, IReadOnlyCollection<string>? symbols,
+        SyntaxTokenCache? tokens = null, bool elsewhere = false)
     {
         // Source text belongs to the active parser, not the project. Retain
         // paths in the queue so completed files release their text before the
         // next file is read. At most one source buffer per worker is live.
         string text = path is null ? Prelude.Source : File.ReadAllText(path);
-        return tokens is null ? Parser.ParseText(text, name, symbols) : tokens.Parse(text, name, symbols);
+        return tokens is null ? Parser.ParseText(text, name, symbols, elsewhere, elsewhere)
+            : tokens.Parse(text, name, symbols, elsewhere, elsewhere);
     }
 
     private static bool Report(IReadOnlyList<CompileError> errors)
