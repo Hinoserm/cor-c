@@ -47,6 +47,14 @@ public abstract class MemberDecl : Node
     /// this was found.
     /// </summary>
     public bool LocalCopy { get; set; }
+
+    /// <summary>
+    /// Made since the last binding: a generic method's new copy, or a method
+    /// of a specialised type that did not exist before. Between the rounds
+    /// that make copies, only these bodies are checked (Binder.BindFresh),
+    /// because only they can want a copy nothing has made yet.
+    /// </summary>
+    public bool Fresh { get; set; }
     /// <summary>Indexed unit ownership; null retains the enclosing type's legacy ownership.</summary>
     public bool? OwnedImplementation { get; set; }
 

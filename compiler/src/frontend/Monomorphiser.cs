@@ -1445,6 +1445,7 @@ public sealed class Monomorphiser
                 // for exactly one round and the call went back to being an
                 // import of a symbol nothing provides.
                 made.LocalCopy = md.LocalCopy;
+                made.Fresh = md.Fresh;
                 made.File = md.File;
                 made.TemplateIndex = md.TemplateIndex;
 

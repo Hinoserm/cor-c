@@ -729,9 +729,10 @@ public sealed partial class Binder
         IReadOnlyDictionary<(string Name, int Arity), int>? indexedInterfaces = null,
         Action<string, string>? requireExtensions = null,
         IReadOnlySet<(string Name, int Arity)>? libraryInterfaces = null,
-        Action<string, int>? requireOverrides = null)
+        Action<string, int>? requireOverrides = null, bool freshOnly = false)
     {
         Binder b = new(file, requireDeclaration, indexedInterfaces, requireExtensions, libraryInterfaces, requireOverrides);
+        b._freshOnly = freshOnly;
         b.Run(unit);
         b._r = b._r.CopyForBodyChecking();
         b.CheckBodyWork();
@@ -3489,6 +3490,14 @@ public sealed partial class Binder
 
     // ---- bodies ---------------------------------------------------------
 
+    /// <summary>
+    /// Only the bodies of Fresh members are checked: a binding done between
+    /// the rounds that make generic copies, to learn which copies the new
+    /// ones want. Everything else was checked in an earlier round and wants
+    /// nothing new; the full binding after the last round checks it all.
+    /// </summary>
+    private bool _freshOnly;
+
     private void CheckBodies(TypeDecl d, TypeSymbol sym)
     {
         _thisType = sym;
@@ -3501,7 +3510,8 @@ public sealed partial class Binder
         {
             _member = md;
 
-            if (md.Body is null || (!md.LocalCopy && (md.OwnedImplementation == false || d.SignatureOnly)))
+            if (md.Body is null || (!md.LocalCopy && (md.OwnedImplementation == false || d.SignatureOnly))
+                || (_freshOnly && !md.Fresh))
             {
                 continue;
             }
