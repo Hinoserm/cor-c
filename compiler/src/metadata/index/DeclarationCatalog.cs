@@ -170,8 +170,11 @@ public sealed class DeclarationCatalog : IDisposable
     private readonly object bindingGate = new();
 
     public string? BindingKey(string assembly, string bindingName)
+        => BindingKeyOf("B:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + bindingName, bindingName);
+
+    /// <summary>BindingKey for a query already spelled: `B:`, the assembly's identity, a newline, the name.</summary>
+    public string? BindingKeyOf(string query, string bindingName)
     {
-        string query = "B:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + bindingName;
         lock (bindingGate)
         {
             if (bindingKeys.TryGetValue(query, out string? known)) return known;
@@ -197,8 +200,11 @@ public sealed class DeclarationCatalog : IDisposable
     /// more than one is -- ambiguous is no answer, as in Binder.Sole.
     /// </summary>
     public string? SoleKey(string assembly, string simpleName)
+        => SoleKeyOf("S:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + simpleName);
+
+    /// <summary>SoleKey for a query already spelled: `S:`, the assembly's identity, a newline, the name.</summary>
+    public string? SoleKeyOf(string query)
     {
-        string query = "S:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + simpleName;
         lock (bindingGate)
         {
             if (bindingKeys.TryGetValue(query, out string? known)) return known;

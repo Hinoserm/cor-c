@@ -12,6 +12,13 @@ public sealed class IndexedDeclarations : IDisposable
     private readonly HashSet<string> queries = new(StringComparer.Ordinal);
     private readonly HashSet<string> resolvedExtensions = new(StringComparer.Ordinal);
     private readonly HashSet<string> resolvedOverrides = new(StringComparer.Ordinal);
+    /// <summary>
+    /// What each binding name the binder required came to, and the two query
+    /// prefixes, spelled once: the binder asks for the same names thousands of
+    /// times a unit, and each ask built both queries afresh.
+    /// </summary>
+    private readonly Dictionary<string, string?> required = new(StringComparer.Ordinal);
+    private readonly string bindingPrefix, solePrefix;
     public long PayloadLoads => catalog.PayloadLoads;
     public SyntaxTokenCache Tokens { get; }
     public int Passes { get; set; }
@@ -31,6 +38,8 @@ public sealed class IndexedDeclarations : IDisposable
         // table, even for declarations this unit never demand-loads. Adding
         // an earlier family can move every later slot: it is an ABI input.
         queries.Add("I:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n");
+        bindingPrefix = "B:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n";
+        solePrefix = "S:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n";
         owned = ownedFiles.Select(Path.GetFullPath).ToHashSet(StringComparer.Ordinal);
     }
 
@@ -48,13 +57,20 @@ public sealed class IndexedDeclarations : IDisposable
         Interfaces = session.Interfaces;
         LibraryInterfaces = session.LibraryInterfaces;
         queries.Add("I:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n");
+        bindingPrefix = "B:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n";
+        solePrefix = "S:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n";
         owned = ownedFiles.Select(Path.GetFullPath).ToHashSet(StringComparer.Ordinal);
     }
 
     public void Require(string bindingName)
     {
-        queries.Add("B:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + bindingName);
-        string? key = catalog.BindingKey(assembly, bindingName) ?? Sole(bindingName);
+        if (!required.TryGetValue(bindingName, out string? key))
+        {
+            string query = bindingPrefix + bindingName;
+            queries.Add(query);
+            key = catalog.BindingKeyOf(query, bindingName) ?? Sole(bindingName);
+            required[bindingName] = key;
+        }
         if (key is not null && !loaded.Contains(key)) throw new DeclarationDemand(key);
     }
 
@@ -73,8 +89,9 @@ public sealed class IndexedDeclarations : IDisposable
     {
         if (name.Length == 0 || name.Contains('.') || name.Contains('`')) return null;
         // Only what the binder asks is a dependency; a prefetch is a guess.
-        if (asked) queries.Add("S:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + name);
-        return catalog.SoleKey(assembly, name);
+        string query = solePrefix + name;
+        if (asked) queries.Add(query);
+        return catalog.SoleKeyOf(query);
     }
 
     public void Include(string key)
