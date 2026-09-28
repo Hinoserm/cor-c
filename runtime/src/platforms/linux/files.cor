@@ -54,6 +54,28 @@ static partial class Os
         return c;
     }
 
+    /// inotify_init1(2): a descriptor that is told of changes to the files
+    /// it watches (inotify(7)); `flags` IN_NONBLOCK (0x800), IN_CLOEXEC
+    /// (0x80000).
+    public static int InotifyInit1(int flags)
+    {
+        return (int)Err.Result(Sys.Syscall(Call.InotifyInit1, flags, 0, 0));
+    }
+
+    /// inotify_add_watch(2): `path` watched for `mask` (IN_*); its watch
+    /// descriptor, the same one again for a path watched already.
+    public static int InotifyAddWatch(int fd, string path, long mask)
+    {
+        string c = CString(path);
+        return (int)Err.Result(Sys.Syscall(Call.InotifyAddWatch, fd, BytesOf(c), mask & 0xFFFFFFFF));
+    }
+
+    /// inotify_rm_watch(2): the watch ends, and IN_IGNORED says so.
+    public static int InotifyRmWatch(int fd, int wd)
+    {
+        return (int)Err.Result(Sys.Syscall(Call.InotifyRmWatch, fd, wd, 0));
+    }
+
     /// open(2). The mode is what a file is CREATED with and is ignored
     /// otherwise, exactly as open(2)'s third argument is.
     public static int Open(string path, int flags, int mode)

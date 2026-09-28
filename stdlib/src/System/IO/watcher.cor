@@ -1,0 +1,448 @@
+// System.IO.FileSystemWatcher, over inotify(7) as .NET's is on Linux: a
+// watch on the directory -- and with IncludeSubdirectories on every one below
+// it, a new one as it appears -- read by a background thread of the
+// watcher's own, which raises Created, Deleted, Changed and Renamed for the
+// names the Filter matches. A rename is inotify's MOVED_FROM and MOVED_TO
+// sharing a cookie; one without the other is a name that came or went.
+
+[Flags]
+enum NotifyFilters
+{
+    FileName = 1,
+    DirectoryName = 2,
+    Attributes = 4,
+    Size = 8,
+    LastWrite = 16,
+    LastAccess = 32,
+    CreationTime = 64,
+    Security = 256,
+}
+
+[Flags]
+enum WatcherChangeTypes
+{
+    Created = 1,
+    Deleted = 2,
+    Changed = 4,
+    Renamed = 8,
+    All = 15,
+}
+
+public delegate void FileSystemEventHandler(object sender, FileSystemEventArgs e);
+public delegate void RenamedEventHandler(object sender, RenamedEventArgs e);
+public delegate void ErrorEventHandler(object sender, ErrorEventArgs e);
+
+public class FileSystemEventArgs : System.EventArgs
+{
+    readonly WatcherChangeTypes _changeType;
+    readonly string _fullPath;
+    readonly string? _name;
+
+    public FileSystemEventArgs(WatcherChangeTypes changeType, string directory, string? name)
+    {
+        _changeType = changeType;
+        _name = name;
+        _fullPath = name == null ? directory : Path.Combine(directory, name);
+    }
+
+    public WatcherChangeTypes ChangeType { get { return _changeType; } }
+    public string FullPath { get { return _fullPath; } }
+    public string? Name { get { return _name; } }
+}
+
+public class RenamedEventArgs : FileSystemEventArgs
+{
+    readonly string? _oldName;
+    readonly string _oldFullPath;
+
+    public RenamedEventArgs(WatcherChangeTypes changeType, string directory, string? name, string? oldName)
+        : base(changeType, directory, name)
+    {
+        _oldName = oldName;
+        _oldFullPath = oldName == null ? directory : Path.Combine(directory, oldName);
+    }
+
+    public string? OldName { get { return _oldName; } }
+    public string OldFullPath { get { return _oldFullPath; } }
+}
+
+public class ErrorEventArgs : System.EventArgs
+{
+    readonly Exception _exception;
+    public ErrorEventArgs(Exception exception) { _exception = exception; }
+    public Exception GetException() { return _exception; }
+}
+
+/// What WaitForChanged saw, or that it timed out.
+public struct WaitForChangedResult
+{
+    public WatcherChangeTypes ChangeType;
+    public string? Name;
+    public string? OldName;
+    public bool TimedOut;
+}
+
+public class FileSystemWatcher : IDisposable
+{
+    // inotify(7)'s bits.
+    const long InAccess = 0x1, InModify = 0x2, InAttrib = 0x4, InMovedFrom = 0x40, InMovedTo = 0x80;
+    const long InCreate = 0x100, InDelete = 0x200, InOverflow = 0x4000, InIgnored = 0x8000, InOnlyDir = 0x1000000, InIsDir = 0x40000000;
+    const int NonBlock = 0x800, CloseOnExec = 0x80000;
+
+    string _path = "";
+    string _filter = "*";
+    NotifyFilters _notifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.DirectoryName;
+    bool _subdirectories;
+    bool _raising;
+    int _bufferSize = 8192;
+
+    int _fd = -1;
+    Thread? _reader;
+    bool _stopping;
+    readonly Dictionary<int, string> _below = new Dictionary<int, string>();
+    readonly object _gate = new object();
+
+    public event FileSystemEventHandler? Changed;
+    public event FileSystemEventHandler? Created;
+    public event FileSystemEventHandler? Deleted;
+    public event RenamedEventHandler? Renamed;
+    public event ErrorEventHandler? Error;
+
+    public FileSystemWatcher() { }
+    public FileSystemWatcher(string path) { Path = path; }
+    public FileSystemWatcher(string path, string filter) { Path = path; Filter = filter; }
+
+    public string Path
+    {
+        get { return _path; }
+        set
+        {
+            if (value.Length > 0 && !Directory.Exists(value)) throw new ArgumentException("The directory name '" + value + "' does not exist.");
+            _path = value;
+            Restart();
+        }
+    }
+
+    /// The names raised for: "*.*" and "" are every name, as .NET has it.
+    public string Filter
+    {
+        get { return _filter; }
+        set { _filter = value.Length == 0 || value == "*.*" ? "*" : value; }
+    }
+
+    public NotifyFilters NotifyFilter
+    {
+        get { return _notifyFilter; }
+        set { _notifyFilter = value; Restart(); }
+    }
+
+    public bool IncludeSubdirectories
+    {
+        get { return _subdirectories; }
+        set { _subdirectories = value; Restart(); }
+    }
+
+    public int InternalBufferSize
+    {
+        get { return _bufferSize; }
+        set { _bufferSize = value < 4096 ? 4096 : value; }
+    }
+
+    public bool EnableRaisingEvents
+    {
+        get { return _raising; }
+        set
+        {
+            if (value == _raising) return;
+            if (value && _path.Length == 0) throw new ArgumentException("The path is empty.");
+            _raising = value;
+            if (value) Start(); else Stop();
+        }
+    }
+
+    /// The first change of a kind asked for, waiting for it; with a timeout
+    /// (milliseconds, -1 for none) TimedOut when none came.
+    public WaitForChangedResult WaitForChanged(WatcherChangeTypes changeType) { return WaitForChanged(changeType, -1); }
+
+    public WaitForChangedResult WaitForChanged(WatcherChangeTypes changeType, int timeout)
+    {
+        WaitForChangedResult result = new WaitForChangedResult();
+        result.TimedOut = true;
+        bool was = _raising;
+        int fd = was ? -1 : Open();
+        if (!was && fd < 0) return result;
+        long end = timeout < 0 ? long.MaxValue : Environment.TickCount64 + timeout;
+        try
+        {
+            while (true)
+            {
+                long left = end == long.MaxValue ? 250 : end - Environment.TickCount64;
+                if (left <= 0) return result;
+                if (was)
+                {
+                    // Raising already: the reader thread has the descriptor, so
+                    // the wait is for its next event of the kind.
+                    lock (_gate)
+                    {
+                        if (_waitedFor == 0) { _waitedFor = changeType; _hasWaited = false; }
+                        if (_hasWaited) { _waitedFor = 0; return _waited; }
+                    }
+                    Thread.Sleep(20);
+                    continue;
+                }
+                if (Os.Poll(fd, 1, (int)(left > 250 ? 250 : left)) <= 0) continue;
+                List<FileSystemEventArgs> seen = Read(fd);
+                foreach (FileSystemEventArgs e in seen)
+                {
+                    if ((e.ChangeType & changeType) == 0) continue;
+                    result.TimedOut = false;
+                    result.ChangeType = e.ChangeType;
+                    result.Name = e.Name;
+                    if (e is RenamedEventArgs r) result.OldName = r.OldName;
+                    return result;
+                }
+            }
+        }
+        finally { if (!was) Close(fd); }
+    }
+
+    // A WaitForChanged while raising: what it waits for, and what came.
+    WatcherChangeTypes _waitedFor;
+    bool _hasWaited;
+    WaitForChangedResult _waited;
+
+    public void Dispose()
+    {
+        _raising = false;
+        Stop();
+    }
+
+    // ---- the watch ---------------------------------------------------------------------
+
+    void Restart()
+    {
+        if (!_raising) return;
+        Stop();
+        Start();
+    }
+
+    void Start()
+    {
+        int fd = Open();
+        if (fd < 0)
+        {
+            OnError(new IOException("inotify could not watch " + _path + " (" + fd + ")"));
+            _raising = false;
+            return;
+        }
+        _fd = fd;
+        _stopping = false;
+        _reader = new Thread(ReadLoop);
+        _reader.IsBackground = true;
+        _reader.Start();
+    }
+
+    void Stop()
+    {
+        Thread? reader = _reader;
+        _stopping = true;
+        if (reader != null) reader.Join();
+        _reader = null;
+        if (_fd >= 0) Close(_fd);
+        _fd = -1;
+    }
+
+    /// An instance watching the path, and every directory below it when
+    /// IncludeSubdirectories: its descriptor, or -errno.
+    int Open()
+    {
+        int fd = Os.InotifyInit1(NonBlock | CloseOnExec);
+        if (fd < 0) return fd;
+        lock (_gate) _below.Clear();
+        int wd = Watch(fd, _path, "");
+        if (wd < 0) { Os.Close(fd); return wd; }
+        return fd;
+    }
+
+    void Close(int fd)
+    {
+        Os.Close(fd);
+        lock (_gate) _below.Clear();
+    }
+
+    long Mask()
+    {
+        long mask = 0;
+        if ((_notifyFilter & (NotifyFilters.FileName | NotifyFilters.DirectoryName)) != 0) mask |= InCreate | InDelete | InMovedFrom | InMovedTo;
+        if ((_notifyFilter & (NotifyFilters.LastWrite | NotifyFilters.Size)) != 0) mask |= InModify;
+        if ((_notifyFilter & (NotifyFilters.Attributes | NotifyFilters.Security | NotifyFilters.LastWrite | NotifyFilters.CreationTime)) != 0) mask |= InAttrib;
+        if ((_notifyFilter & NotifyFilters.LastAccess) != 0) mask |= InAccess;
+        // A subdirectory's own coming is always wanted: it is watched in turn.
+        if (_subdirectories) mask |= InCreate | InMovedTo;
+        return mask | InOnlyDir;
+    }
+
+    int Watch(int fd, string directory, string below)
+    {
+        int wd = Os.InotifyAddWatch(fd, directory, Mask());
+        if (wd < 0) return wd;
+        lock (_gate) _below[wd] = below;
+        if (!_subdirectories) return wd;
+        string[] children;
+        try { children = Directory.GetDirectories(directory, "*"); }
+        catch (Exception) { return wd; }
+        foreach (string child in children)
+        {
+            string name = child.Substring(child.LastIndexOf('/') + 1);
+            Watch(fd, child, below.Length == 0 ? name : below + "/" + name);
+        }
+        return wd;
+    }
+
+    void ReadLoop()
+    {
+        while (!_stopping)
+        {
+            int ready = Os.Poll(_fd, 1, 250);
+            if (ready <= 0) continue;
+            foreach (FileSystemEventArgs e in Read(_fd)) Raise(e);
+        }
+    }
+
+    /// What the descriptor holds, as the events it raises.
+    List<FileSystemEventArgs> Read(int fd)
+    {
+        List<FileSystemEventArgs> seen = new List<FileSystemEventArgs>();
+        byte[] records = new byte[_bufferSize];
+        string? fromName = null;
+        long fromCookie = 0;
+        bool fromDir = false;
+        while (true)
+        {
+            int got = Os.Read(fd, records, 0, records.Length);
+            if (got <= 0) break;
+            for (int at = 0; at + 16 <= got;)
+            {
+                int wd = (int)Word(records, at);
+                long mask = Word(records, at + 4), cookie = Word(records, at + 8), length = Word(records, at + 12);
+                string name = "";
+                for (int i = 0; i < length && records[at + 16 + i] != 0; i++) name += (char)records[at + 16 + i];
+                at += 16 + (int)length;
+                if ((mask & InOverflow) != 0) { OnError(new InternalBufferOverflowException("Too many changes at once in directory:" + _path + ".")); continue; }
+                string? below;
+                lock (_gate)
+                {
+                    if (!_below.TryGetValue(wd, out below)) below = null;
+                    if (below != null && (mask & InIgnored) != 0) _below.Remove(wd);
+                }
+                if (below == null || (mask & InIgnored) != 0 || name.Length == 0) continue;
+                string relative = below.Length == 0 ? name : below + "/" + name;
+                bool isDir = (mask & InIsDir) != 0;
+                if (fromName != null && !((mask & InMovedTo) != 0 && cookie == fromCookie))
+                {
+                    Named(seen, WatcherChangeTypes.Deleted, fromName, fromDir);
+                    fromName = null;
+                }
+                if ((mask & InCreate) != 0)
+                {
+                    Named(seen, WatcherChangeTypes.Created, relative, isDir);
+                    if (isDir && _subdirectories) Watch(fd, Join(_path, relative), relative);
+                }
+                else if ((mask & InDelete) != 0) Named(seen, WatcherChangeTypes.Deleted, relative, isDir);
+                else if ((mask & InMovedFrom) != 0) { fromName = relative; fromCookie = cookie; fromDir = isDir; }
+                else if ((mask & InMovedTo) != 0)
+                {
+                    if (fromName != null && cookie == fromCookie)
+                    {
+                        if (Wanted(isDir) && (Matches(relative) || Matches(fromName)))
+                            seen.Add(new RenamedEventArgs(WatcherChangeTypes.Renamed, _path, relative, fromName));
+                        fromName = null;
+                    }
+                    else Named(seen, WatcherChangeTypes.Created, relative, isDir);
+                    if (isDir && _subdirectories) Watch(fd, Join(_path, relative), relative);
+                }
+                else if ((mask & (InModify | InAttrib | InAccess)) != 0 && Matches(relative))
+                    seen.Add(new FileSystemEventArgs(WatcherChangeTypes.Changed, _path, relative));
+            }
+        }
+        if (fromName != null) Named(seen, WatcherChangeTypes.Deleted, fromName, fromDir);
+        return seen;
+    }
+
+    /// A name made or gone: raised when the filter asks for its kind.
+    void Named(List<FileSystemEventArgs> seen, WatcherChangeTypes change, string name, bool directory)
+    {
+        if (Wanted(directory) && Matches(name)) seen.Add(new FileSystemEventArgs(change, _path, name));
+    }
+
+    bool Wanted(bool directory)
+    {
+        return (_notifyFilter & (directory ? NotifyFilters.DirectoryName : NotifyFilters.FileName)) != 0;
+    }
+
+    static string Join(string directory, string relative) { return directory.TrimEnd('/') + "/" + relative; }
+
+    static long Word(byte[] b, int at)
+    {
+        return (b[at] & 0xFF) | ((b[at + 1] & 0xFF) << 8) | ((b[at + 2] & 0xFF) << 16) | ((long)(b[at + 3] & 0xFF) << 24);
+    }
+
+    /// Whether the name's last part matches Filter: '*' any run, '?' one
+    /// character, without regard to case as .NET's matcher is on Windows
+    /// and with it on Linux -- here with it, as the file system has.
+    bool Matches(string relative)
+    {
+        if (_filter == "*") return true;
+        string name = relative.Substring(relative.LastIndexOf('/') + 1);
+        return Like(name, 0, _filter, 0);
+    }
+
+    static bool Like(string s, int i, string p, int j)
+    {
+        while (j < p.Length)
+        {
+            char c = p[j];
+            if (c == '*')
+            {
+                for (int k = i; k <= s.Length; k++) if (Like(s, k, p, j + 1)) return true;
+                return false;
+            }
+            if (i >= s.Length || (c != '?' && c != s[i])) return false;
+            i++; j++;
+        }
+        return i == s.Length;
+    }
+
+    void Raise(FileSystemEventArgs e)
+    {
+        lock (_gate)
+        {
+            if ((e.ChangeType & _waitedFor) != 0 && !_hasWaited)
+            {
+                WaitForChangedResult r = new WaitForChangedResult();
+                r.ChangeType = e.ChangeType;
+                r.Name = e.Name;
+                if (e is RenamedEventArgs renamed) r.OldName = renamed.OldName;
+                _waited = r;
+                _hasWaited = true;
+            }
+        }
+        if (e.ChangeType == WatcherChangeTypes.Created) OnCreated(e);
+        else if (e.ChangeType == WatcherChangeTypes.Deleted) OnDeleted(e);
+        else if (e.ChangeType == WatcherChangeTypes.Changed) OnChanged(e);
+        else if (e is RenamedEventArgs moved) OnRenamed(moved);
+    }
+
+    protected void OnChanged(FileSystemEventArgs e) { Changed?.Invoke(this, e); }
+    protected void OnCreated(FileSystemEventArgs e) { Created?.Invoke(this, e); }
+    protected void OnDeleted(FileSystemEventArgs e) { Deleted?.Invoke(this, e); }
+    protected void OnRenamed(RenamedEventArgs e) { Renamed?.Invoke(this, e); }
+    protected void OnError(ErrorEventArgs e) { Error?.Invoke(this, e); }
+    void OnError(Exception failure) { OnError(new ErrorEventArgs(failure)); }
+}
+
+public class InternalBufferOverflowException : SystemException
+{
+    public InternalBufferOverflowException() : base("Too many changes at once.") { }
+    public InternalBufferOverflowException(string message) : base(message) { }
+}

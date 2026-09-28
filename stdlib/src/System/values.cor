@@ -211,6 +211,16 @@ struct Guid {
 // namespace, and a program sees it through `using System;`.
 namespace System
 {
+    /// The base of every event's arguments, and the handler that takes it
+    /// (System.EventArgs, System.EventHandler), in System as .NET has them:
+    /// Forms, the file watcher and the rest all derive from these.
+    public class EventArgs
+    {
+        public static readonly EventArgs Empty = new EventArgs();
+    }
+
+    public delegate void EventHandler(object sender, EventArgs e);
+
     /// Major.Minor.Build.Revision, where the last two may be ABSENT rather than
     /// zero -- .NET reports -1 for a field that was never given, and "1.0" and
     /// "1.0.0" are different Versions that compare equal. The distinction is what

@@ -68,6 +68,9 @@ static class Call
     public const long Symlink = 83;
     public const long Readlink = 85;
     public const long Poll = 168;       // (fds, nfds, timeout_ms)
+    public const long InotifyAddWatch = 292;    // (fd, path, mask) -> wd
+    public const long InotifyRmWatch = 293;     // (fd, wd)
+    public const long InotifyInit1 = 332;       // (flags: IN_NONBLOCK 0x800, IN_CLOEXEC 0x80000) -> fd
     public const long Fcntl = 55;       // (fd, cmd, arg)
     public const long RtSigaction = 174;
     public const long RtSigprocmask = 175;
