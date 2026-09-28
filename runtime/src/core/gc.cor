@@ -2882,6 +2882,12 @@ static class Gc
         long ctl = GcLock.Words();
         long done = 0;
 
+        // BUSY ONCE FOR THE RUN, not once a block: from before the first take
+        // to after the last scan the thread holds a block or is about to, and
+        // two locked additions a block were a large part of what marking a
+        // gigabyte cost.
+        Sys.AtomicAdd(ctl + GcLock.Active, 1);
+
         while (budget < 0 || done < budget)
         {
             if (Sys.Peek(ctl + GcLock.Abort) != 0)
@@ -2889,12 +2895,10 @@ static class Gc
                 break;
             }
 
-            Sys.AtomicAdd(ctl + GcLock.Active, 1);
             long block = PopGrey();
 
             if (block == 0)
             {
-                Sys.AtomicAdd(ctl + GcLock.Active, -1);
                 break;
             }
 
@@ -2903,10 +2907,10 @@ static class Gc
                 ScanBlock(block, Sys.Peek(block) & SizeMask);
             }
 
-            Sys.AtomicAdd(ctl + GcLock.Active, -1);
             done = done + 1;
         }
 
+        Sys.AtomicAdd(ctl + GcLock.Active, -1);
         return done;
     }
 
@@ -4603,6 +4607,10 @@ static class HeapChunks
     // word is a machine word, so a compare-and-swap of one touches nothing
     // but its own bits.
     const long StartBits = 8 * WordSize.Bytes;
+    // Offsets into a chunk are never negative, so the bit and word a block's
+    // start is at are shifts, not the signed divisions a 32-bit processor
+    // pays a correction for; the marker asks for one on every pointer.
+    const int StartShift = 3 + WordSize.Shift;
     const long StartBitMask = StartBits - 1;
 
     static long StartWords(long chunk)
@@ -4640,8 +4648,8 @@ static class HeapChunks
     {
         long starts = Starts(chunk);
         if (starts == 0) return;
-        long bit = (block - chunk) / 8;
-        long at = starts + WordSize.Bytes + (bit / StartBits) * WordSize.Bytes;
+        long bit = (block - chunk) >> 3;
+        long at = starts + WordSize.Bytes + (bit >> StartShift) * WordSize.Bytes;
         Sys.Poke(at, Sys.Peek(at) | (1L << (int)(bit & StartBitMask)));
     }
 
@@ -4652,8 +4660,8 @@ static class HeapChunks
     {
         long starts = Starts(chunk);
         if (starts == 0) return;
-        long bit = (block - chunk) / 8;
-        long at = starts + WordSize.Bytes + (bit / StartBits) * WordSize.Bytes;
+        long bit = (block - chunk) >> 3;
+        long at = starts + WordSize.Bytes + (bit >> StartShift) * WordSize.Bytes;
         long mask = 1L << (int)(bit & StartBitMask);
 
         while (true)
@@ -4668,8 +4676,8 @@ static class HeapChunks
     {
         long starts = Starts(chunk);
         if (starts == 0) return false;
-        long bit = (block - chunk) / 8;
-        return (Sys.Peek(starts + WordSize.Bytes + (bit / StartBits) * WordSize.Bytes) & (1L << (int)(bit & StartBitMask))) != 0;
+        long bit = (block - chunk) >> 3;
+        return (Sys.Peek(starts + WordSize.Bytes + (bit >> StartShift) * WordSize.Bytes) & (1L << (int)(bit & StartBitMask))) != 0;
     }
 
     /// The highest start at or below `address`, or 0.
@@ -4677,8 +4685,8 @@ static class HeapChunks
     {
         long starts = Starts(chunk);
         if (starts == 0) return 0;
-        long bit = (address - chunk) / 8;
-        long word = bit / StartBits;
+        long bit = (address - chunk) >> 3;
+        long word = bit >> StartShift;
         long bits = Sys.Peek(starts + WordSize.Bytes + word * WordSize.Bytes) & WordSize.AddressMask;
         long keep = bit & StartBitMask;
         if (keep != StartBitMask) bits = bits & ((1L << (int)(keep + 1)) - 1);
@@ -4703,8 +4711,8 @@ static class HeapChunks
         long starts = Starts(chunk);
         if (starts == 0) return 0;
         long words = StartWords(chunk);
-        long bit = (address - chunk + 7) / 8;
-        long word = bit / StartBits;
+        long bit = (address - chunk + 7) >> 3;
+        long word = bit >> StartShift;
         if (word >= words) return 0;
         long bits = (Sys.Peek(starts + WordSize.Bytes + word * WordSize.Bytes) & WordSize.AddressMask) & ~((1L << (int)(bit & StartBitMask)) - 1);
 
