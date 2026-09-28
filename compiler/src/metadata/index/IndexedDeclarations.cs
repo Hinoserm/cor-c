@@ -146,6 +146,52 @@ public sealed class IndexedDeclarations : IDisposable
     /// field and property types, method returns and parameters. Bodies are not
     /// walked, because an imported header is bound for its signatures only.
     /// </summary>
+    /// <summary>
+    /// Speculate, for a name written inside `space` in a file whose using
+    /// directives are `scope`: the alias it may be, then the declaration of
+    /// that name in the namespace it was written in or an enclosing one, then
+    /// in each namespace the file imports -- and only then the bare name.
+    ///
+    /// The bare name alone is no answer when two namespaces declare it. This
+    /// compiler has a Block of syntax and a Block of IR, an Operand of the IR
+    /// and of each assembler, a Section of the IR and of the linker; each was
+    /// skipped as ambiguous, left for the binder to demand, and every such
+    /// demand threw a whole pass away. Like Speculate, a guess: a wrong one
+    /// loads a declaration the unit did not need, and the binder still
+    /// demands whatever this misses.
+    /// </summary>
+    private string? SpeculateIn(string? space, FileScope? scope, string name, int arity)
+    {
+        if (name.Length == 0 || name[0] == '_' || name.Contains('.') || Builtin.Contains(name)) return Speculate(name, arity);
+        if (arity == 0 && name.Length <= 2 && char.IsUpper(name[0])) return null;
+        if (scope is not null)
+        {
+            foreach ((string _, string alias, string target) in scope.Aliases)
+                if (alias == name) return Speculate(target, arity);
+        }
+        string simple = arity > 0 ? name + "`" + arity : name;
+        for (string? at = space; !string.IsNullOrEmpty(at); at = at.LastIndexOf('.') is int cut && cut > 0 ? at[..cut] : null)
+        {
+            if (Qualified(at + "." + simple) is string key) return key;
+        }
+        if (scope is not null)
+        {
+            foreach ((string _, string import) in scope.Imports)
+                if (Qualified(import + "." + simple) is string key) return key;
+        }
+        return Speculate(name, arity);
+    }
+
+    private readonly Dictionary<string, string?> qualified = new(StringComparer.Ordinal);
+
+    private string? Qualified(string name)
+    {
+        if (qualified.TryGetValue(name, out string? known)) return known;
+        string? key = catalog.BindingKey(assembly, name);
+        qualified[name] = key;
+        return key;
+    }
+
     private static IEnumerable<(string Name, int Arity)> SignatureNames(TypeDecl type)
     {
         List<(string, int)> found = new();
@@ -219,20 +265,20 @@ public sealed class IndexedDeclarations : IDisposable
             if (key is not null && !loaded.Contains(key)) Include(key);
         }
         // A partial declaration cannot be bound from just the locally owned
-        // fragment. Demand its family before entering body binding -- ALL of
-        // them, in one demand. Asking for them one at a time threw on the
-        // first missing one, and the frontend answers a demand by discarding
-        // the unit and parsing, merging, monomorphising and binding it again:
-        // a unit whose headers named Path, DateTime, DateTimeOffset,
-        // Scheduler, Directory and File paid a whole extra round for each,
-        // discovering exactly one name per round. They are all known here.
-        DeclarationBatch partials = new();
+        // fragment, so its family is loaded before body binding -- in THIS
+        // pass, through the closure below, like every other name known here.
+        // Demanding it threw the pass away first: the frontend answers a
+        // demand by discarding the unit and parsing, merging, monomorphising
+        // and binding it again, and every unit that is one file of a partial
+        // class (most of this compiler) paid a whole pass for a name it held
+        // from the start.
         foreach (TypeDecl type in unit.Types.Where(type => type.Mods.HasFlag(Mods.Partial)))
         {
-            try { Require(Binder.TypeKey(type)); }
-            catch (DeclarationDemand demand) { partials.Add(demand); }
+            string name = Binder.TypeKey(type);
+            queries.Add("B:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + name);
+            string? key = catalog.BindingKey(assembly, name) ?? Sole(name);
+            if (key is not null) Load(key);
         }
-        partials.ThrowIfAny();
         // AND WHAT THIS UNIT'S OWN CODE NAMES. Its sources are fully parsed,
         // bodies and all, so the types it uses are knowable before binding
         // begins -- and until now nobody looked. The binder met them one
@@ -248,11 +294,11 @@ public sealed class IndexedDeclarations : IDisposable
         {
             BodyTypeNames.Walk(type, reference =>
             {
-                string? key = Speculate(reference.Name, reference.Args.Count);
+                string? key = SpeculateIn(type.Namespace, type.Scope, reference.Name, reference.Args.Count);
                 if (key is not null) Load(key);
             }, qualifier =>
             {
-                string? key = Speculate(qualifier, 0);
+                string? key = SpeculateIn(type.Namespace, type.Scope, qualifier, 0);
                 if (key is not null) Load(key);
             });
         }
@@ -338,7 +384,7 @@ public sealed class IndexedDeclarations : IDisposable
                 unit.Types.Add(root);
                 foreach ((string name, int arity) in SignatureNames(root))
                 {
-                    string? next = Speculate(name, arity);
+                    string? next = SpeculateIn(root.Namespace, root.Scope, name, arity);
                     if (next is not null && Load(next)) pending.Enqueue(next);
                 }
                 // AND WHAT ITS BODIES NAME, when the bodies came too. A
@@ -360,11 +406,11 @@ public sealed class IndexedDeclarations : IDisposable
                 // and reading it back a round later cost a round.
                 BodyTypeNames.Walk(root, reference =>
                 {
-                    string? next = Speculate(reference.Name, reference.Args.Count);
+                    string? next = SpeculateIn(root.Namespace, root.Scope, reference.Name, reference.Args.Count);
                     if (next is not null && Load(next)) pending.Enqueue(next);
                 }, qualifier =>
                 {
-                    string? next = Speculate(qualifier, 0);
+                    string? next = SpeculateIn(root.Namespace, root.Scope, qualifier, 0);
                     if (next is not null && Load(next)) pending.Enqueue(next);
                 });
             }
