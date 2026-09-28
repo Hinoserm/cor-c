@@ -517,8 +517,8 @@ namespace System.Runtime.InteropServices
     }
 
     /// What the program runs on and as: the system's name and release
-    /// (uname(2)), the machine's architecture, and this process's -- a 32-bit
-    /// x86 image, whatever the kernel under it is.
+    /// (uname(2)), the machine's architecture, and this process's -- the
+    /// image's own, x86 or x86-64, whatever the kernel under it is.
     public static class RuntimeInformation
     {
         public static bool IsOSPlatform(OSPlatform osPlatform)
@@ -526,7 +526,7 @@ namespace System.Runtime.InteropServices
             return osPlatform == OSPlatform.Linux;
         }
 
-        public static Architecture ProcessArchitecture => Architecture.X86;
+        public static Architecture ProcessArchitecture => WordSize.Bytes == 8 ? Architecture.X64 : Architecture.X86;
 
         /// The kernel's machine: an x86-64 one running this 32-bit image is X64.
         public static Architecture OSArchitecture
@@ -551,7 +551,7 @@ namespace System.Runtime.InteropServices
 
         public static string FrameworkDescription => "COR-C# runtime";
 
-        public static string RuntimeIdentifier => "linux-x86";
+        public static string RuntimeIdentifier => WordSize.Bytes == 8 ? "linux-x64" : "linux-x86";
 
         /// One field of struct utsname: 0 sysname, 1 nodename, 2 release,
         /// 3 version, 4 machine.

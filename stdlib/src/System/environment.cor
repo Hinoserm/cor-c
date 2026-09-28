@@ -10,6 +10,15 @@ static class Environment
     /// The processors this process may run on.
     public static int ProcessorCount { get { return Os.ProcessorCount(); } }
 
+    /// Whether this process is a 64-bit image: the long-mode target's.
+    public static bool Is64BitProcess => WordSize.Bytes == 8;
+
+    /// Whether the kernel under it is 64-bit, which a 32-bit image on an
+    /// x86-64 kernel is not, as .NET answers it.
+    public static bool Is64BitOperatingSystem => Is64BitProcess
+        || System.Runtime.InteropServices.RuntimeInformation.OSArchitecture is
+            System.Runtime.InteropServices.Architecture.X64 or System.Runtime.InteropServices.Architecture.Arm64;
+
     /// THE PROGRAM'S OWN PATH, which .NET 6 added and which is the only honest
     /// way to find anything installed beside it. /proc/self/exe is what the
     /// kernel answers with; argv[0] is what the caller chose to say and may be

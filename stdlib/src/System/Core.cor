@@ -4075,6 +4075,26 @@ class CultureInfo : IFormatProvider {
     public object? GetFormat(Type? formatType) { return null; }
 }
 
+/// System.IntPtr's statics: `nint` is IntPtr (C# 11), one machine word.
+static class IntPtr {
+    public static int Size => (int)WordSize.Bytes;
+    public static nint Zero => 0;
+    public static nint MaxValue => nint.MaxValue;
+    public static nint MinValue => nint.MinValue;
+    public static nint Add(nint pointer, int offset) { return pointer + offset; }
+    public static nint Subtract(nint pointer, int offset) { return pointer - offset; }
+}
+
+/// System.UIntPtr's statics: `nuint` is UIntPtr (C# 11).
+static class UIntPtr {
+    public static int Size => (int)WordSize.Bytes;
+    public static nuint Zero => 0;
+    public static nuint MaxValue => nuint.MaxValue;
+    public static nuint MinValue => 0;
+    public static nuint Add(nuint pointer, int offset) { return pointer + (nuint)offset; }
+    public static nuint Subtract(nuint pointer, int offset) { return pointer - (nuint)offset; }
+}
+
 static class UInt64 {
     // Equals and GetHashCode as UInt64 overrides them: equal to its own
     // type's value only, and hashed as .NET hashes it.

@@ -1,0 +1,28 @@
+// test: process_bitness
+// expect-exit: 0
+// expect-output:
+// 64-bit process False
+// architecture X86 linux-x86
+// pointer 4
+// os agrees True
+//
+// What a program learns of the image it runs as: this target is 32-bit x86,
+// so Environment.Is64BitProcess is false, RuntimeInformation says X86 and
+// linux-x86, and a pointer is four bytes. Is64BitOperatingSystem is the
+// kernel's answer -- true for this image on an x86-64 kernel, false on a
+// 32-bit machine -- and must agree with OSArchitecture.
+
+using System;
+using System.Runtime.InteropServices;
+
+static class Program
+{
+    static void Main()
+    {
+        Console.WriteLine("64-bit process " + Environment.Is64BitProcess);
+        Console.WriteLine("architecture " + RuntimeInformation.ProcessArchitecture + " " + RuntimeInformation.RuntimeIdentifier);
+        Console.WriteLine("pointer " + IntPtr.Size);
+        Architecture os = RuntimeInformation.OSArchitecture;
+        Console.WriteLine("os agrees " + (Environment.Is64BitOperatingSystem == (os == Architecture.X64 || os == Architecture.Arm64)));
+    }
+}
