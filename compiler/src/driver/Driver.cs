@@ -1120,7 +1120,7 @@ public static class Driver
             // System.Diagnostics.Process.
             foreach (string dotnet in new[] {
                 "System/interop.cor", "System/Threading/interlocked.cor", "System/IO/io.cor", "System/Collections/Collections.cor",
-                "System/IO/io-streams.cor", "System/IO/timezone.cor", "System/IO/compression.cor", "System/IO/tar.cor",
+                "System/IO/io-streams.cor", "System/IO/timezone.cor", "System/IO/compression.cor", "System/IO/tar.cor", "System/IO/watcher.cor",
                 "System/time.cor", "System/values.cor", "System/Reflection/Assembly.cor", "System/numerics.cor",
                 "System/Text/RegularExpressions.cor", "System/Xml/Xml.cor", "System/Text/Json/Json.cor", "System/console.cor", "System/environment.cor",
                 "System/Net/Net.cor", "System/Security/Cryptography/Cryptography.cor", "System/Security/Cryptography/Hashing.cor",
