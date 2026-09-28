@@ -960,8 +960,10 @@ mangled name and arity; the library provides them.
   the table, or 0 where there are no generations; the mark after a store of
   a reference; every card of a coroutine's machine after a suspension.
 - Small blocks (to 256 bytes) come from exact-size free lists; larger free
-  blocks are indexed by size and address in AVL trees kept in the free
-  blocks themselves, in power-of-two bins.
+  blocks from lists in eight bins to each power of two, with a bitmap of
+  the non-empty bins (a two-level segregated fit): a fit looks at the first
+  few blocks of its own bin, then takes the head of the next non-empty one,
+  so linking, unlinking and fitting cost the same whatever the heap holds.
 
 
 **The stack map table, as emitted today.** Its own section,

@@ -122,7 +122,7 @@ describes itself with no loader relocation; the runtime reads them back with
 ## The runtime
 
 The runtime keeps its own layouts -- the thread block, the collector's
-block headers, free tree, chunk records, bitmaps, queues -- in machine words
+block headers, free index, chunk records, bitmaps, queues -- in machine words
 through `WordSize.Bytes` (runtime/src/core/runtime.cor), chosen by the
 target's conditional symbol. The driver defines .NET CoreLib's names:
 `TARGET_64BIT` and `TARGET_AMD64` for x86-64, `TARGET_32BIT` and

@@ -1,7 +1,12 @@
-// test: balanced large free-bin search, deletion, splitting, merging and sweep rebuilding
+// test: large free-bin search, deletion, splitting, merging and sweep rebuilding
 // expect-exit: 0
 // expect-output:
 // free tree passed
+//
+// The free index is a list per bin and a bitmap of the non-empty ones: a
+// fit looks at no more than the first few blocks of its own bin (Gc.FitDepth)
+// and otherwise takes the head of the next non-empty bin, so however many
+// holes the heap has, a large request probes a handful of blocks at most.
 static class Program
 {
     static void Check(int stage)
@@ -23,7 +28,7 @@ static class Program
         {
             blocks[i] = Runtime.Alloc(40000 + (i % 7) * 8);
             // Stay below the dedicated-mapping threshold so this exercises
-            // free-bin trees rather than immediate whole-chunk unmapping.
+            // the free bins rather than immediate whole-chunk unmapping.
             guards[i] = Runtime.Alloc(64);
             Sys.Poke(guards[i], i + 1);
         }
@@ -38,7 +43,7 @@ static class Program
         }
         long probes = Gc.ProbeSteps;
         large = Runtime.Alloc(50000);
-        if (Gc.ProbeSteps == probes || Gc.ProbeSteps - probes > 128)
+        if (Gc.ProbeSteps - probes > 8)
         { Sys.Print("excessive free-index probes: " + (Gc.ProbeSteps - probes) + "\n"); return 1; }
         for (long i = 0; i + WordSize.Bytes <= 50000; i += WordSize.Bytes)
             if (Sys.Peek(large + i) != 0) return 2;

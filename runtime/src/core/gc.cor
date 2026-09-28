@@ -44,16 +44,16 @@
 //   +2W         the payload, the address handed out; 8-aligned
 //   +2W         the PREVIOUS free block          while it is free
 //   +size-W     size | flags again               (the footer word)
-// Large free blocks instead use +W/+2W for AVL children, +3W for their
-// parent, +4W for height and +5W for largest size. Those words are payload
-// again once the block is allocated. W is the machine word (WordSize.Bytes):
+// Every free block, large or small, is on its bin's list through those two
+// words, which are payload again once the block is allocated. W is the
+// machine word (WordSize.Bytes):
 // four on i386, where every offset here is the one the collector was written
 // with, and eight in long mode.
 //
 // The size is at BOTH ENDS on purpose, and that is what makes coalescing
 // possible: the block after this one is at +size, and the one BEFORE it can
 // only be found by reading backwards, through its footer. Removing a neighbour
-// uses its links in an exact-size list or its parent in a large-bin AVL tree.
+// uses its links in its bin's list.
 //
 // A payload is 8-aligned because the block is and the header is two words,
 // which is what a long or a double field in an object needs.
@@ -167,14 +167,19 @@ static class Gc
     const long MarkBytes = 262144;
     const long MarkShare = 32;
 
-    // Exact-size doubly linked lists through 256 bytes (31 bins), then an
-    // AVL size/address tree per power-of-two range. Coarse bins alone were
-    // insufficient: native selfcompilation accumulated 249,079 fragments
-    // in one range and billions of first-fit probes. Tree lower bounds keep
-    // searches logarithmic without external nodes or a bigger block header.
-    const long Bins = 64;
-    const long BinsBytes = 2 * Bins * WordSize.Bytes; // roots followed by per-bin largest-size hints
+    // Exact-size doubly linked lists through 256 bytes (31 bins), then eight
+    // lists to each power of two, and a bitmap of the non-empty ones (the
+    // free index). One list per power of two, searched first fit, was not
+    // enough: native self-compilation piled 249,079 fragments into one range
+    // and probed billions of times. Eighths keep a bin's blocks close in
+    // size, a fit looks at no more than FitDepth of them before taking the
+    // next non-empty bin's head, and the bitmap finds that bin at once.
     const long ExactLimit = 256;
+    const long ExactBins = 31;      // 16..256 bytes, eight apart
+    const long LargeSteps = 8;      // bins to each power of two above ExactLimit
+    const long LargeTop = 31;       // the highest bit length with bins of its own
+    const long Bins = ExactBins + (LargeTop - 8) * LargeSteps;
+    const long BinsBytes = (Bins + (Bins + 8 * WordSize.Bytes - 1) / (8 * WordSize.Bytes)) * WordSize.Bytes; // heads, then the non-empty bitmap
 
     // A long zero and one, named: assigning an int literal to a long local
     // inside a nested block is mis-typed by the lowering as of this writing
@@ -1007,7 +1012,9 @@ static class Gc
 
     // ---- the free list ------------------------------------------------------
 
-    /// Which bin a block of `size` bytes belongs in.
+    /// Which bin a block of `size` bytes belongs in: one for every eight
+    /// bytes up to ExactLimit, then eight to each power of two above it,
+    /// every bin a list (the free index, below).
     static long BinOf(long size)
     {
         if (size <= ExactLimit)
@@ -1015,10 +1022,15 @@ static class Gc
             return (size >> 3) - 2;
         }
 
-        // 264..511 is bin 31, 512..1023 bin 32, and so on: 31 plus the bit
-        // length above nine. Sizes are below 2^31, so this stays under 64.
+        // 264..287 is bin 31, 288..319 bin 32 and so on: the bit length
+        // picks the power of two, the three bits under the top one pick the
+        // eighth of it. Anything past 2^31 shares the top bin.
         long length = 64 - Runtime.LeadingZeroCount(size);
-        return 31 + length - 9;
+        if (length > LargeTop)
+        {
+            return Bins - 1;
+        }
+        return ExactBins + (length - 9) * LargeSteps + ((size >> (int)(length - 4)) & (LargeSteps - 1));
     }
 
     static long BinHead(long bin)
@@ -1031,168 +1043,104 @@ static class Gc
         Sys.Poke(_bins + bin * WordSize.Bytes, block);
     }
 
-    // Large free blocks are AVL nodes ordered by (size, address). Their
-    // otherwise-unused payload holds the extra metadata; allocated layout,
-    // boundary tags and the smallest allocation are unchanged. Exact-size
-    // small bins retain their doubly linked lists.
-    const long TreeLeft = WordSize.Bytes;
-    const long TreeRight = 2 * WordSize.Bytes;
-    const long TreeParent = 3 * WordSize.Bytes;
-    const long TreeHeight = 4 * WordSize.Bytes;
-    const long TreeMaxSize = 5 * WordSize.Bytes;
+    // ---- the free index ---------------------------------------------------
+    //
+    // EVERY BIN IS A LIST, and a bitmap after the heads says which are not
+    // empty, so linking, unlinking and finding a fit cost the same whatever
+    // the heap holds (a two-level segregated fit, "TLSF"). A free block's
+    // payload holds its links: the next at KindAt, the previous where the
+    // payload starts.
+    //
+    // A fit is the first block that fits in the request's own bin, looked
+    // for a few blocks deep, or else the head of the first non-empty bin
+    // above it, which fits whatever it is. Large bins were AVL trees ordered
+    // by size, a best fit; every link and unlink rebalanced one, keeping a
+    // height and a largest-size in every node, and on a fragmented heap that
+    // rebalancing was an eighth of what the compiler did at all. A block a
+    // fit splits puts its remainder back, so a good fit costs little over
+    // the best one.
 
-    static long Height(long node)
+    const long BitsPerWord = 8 * WordSize.Bytes;
+
+    /// The words of the non-empty bitmap, after the Bins heads.
+    const long MapWords = (Bins + BitsPerWord - 1) / BitsPerWord;
+
+    /// How many blocks of the request's own bin a fit looks at.
+    const long FitDepth = 8;
+
+    static long MapWord(long bin)
     {
-        return node == 0 ? Zero : Sys.Peek(node + TreeHeight);
+        return _bins + (Bins + bin / BitsPerWord) * WordSize.Bytes;
     }
 
-    static void FixHeight(long node)
+    static void MarkBin(long bin)
     {
-        long left = Height(Sys.Peek(node + TreeLeft));
-        long right = Height(Sys.Peek(node + TreeRight));
-        Sys.Poke(node + TreeHeight, (left > right ? left : right) + 1);
-        long rightNode = Sys.Peek(node + TreeRight);
-        Sys.Poke(node + TreeMaxSize, rightNode == 0 ? SizeOfBlock(node) : Sys.Peek(rightNode + TreeMaxSize));
+        long at = MapWord(bin);
+        Sys.Poke(at, Sys.Peek(at) | (One << (int)(bin % BitsPerWord)));
     }
 
-    static void PublishLargest(long bin)
+    static void UnmarkBin(long bin)
     {
-        long root = BinHead(bin);
-        Sys.Poke(_bins + Bins * WordSize.Bytes + bin * WordSize.Bytes, root == 0 ? Zero : Sys.Peek(root + TreeMaxSize));
+        long at = MapWord(bin);
+        Sys.Poke(at, Sys.Peek(at) & ~(One << (int)(bin % BitsPerWord)));
     }
 
-    static void TreeReplace(long bin, long old, long replacement)
+    static bool BinMarked(long bin)
     {
-        long parent = Sys.Peek(old + TreeParent);
-        if (parent == 0) SetBinHead(bin, replacement);
-        else if (Sys.Peek(parent + TreeLeft) == old) Sys.Poke(parent + TreeLeft, replacement);
-        else Sys.Poke(parent + TreeRight, replacement);
-        if (replacement != 0) Sys.Poke(replacement + TreeParent, parent);
+        return (Sys.Peek(MapWord(bin)) & (One << (int)(bin % BitsPerWord))) != 0;
     }
 
-    static long RotateLeft(long bin, long node)
+    /// The lowest non-empty bin at or above `from`, or -1.
+    static long NextNonEmpty(long from)
     {
-        long top = Sys.Peek(node + TreeRight);
-        long middle = Sys.Peek(top + TreeLeft);
-        TreeReplace(bin, node, top);
-        Sys.Poke(node + TreeRight, middle);
-        if (middle != 0) Sys.Poke(middle + TreeParent, node);
-        Sys.Poke(top + TreeLeft, node);
-        Sys.Poke(node + TreeParent, top);
-        FixHeight(node);
-        FixHeight(top);
-        return top;
-    }
-
-    static long RotateRight(long bin, long node)
-    {
-        long top = Sys.Peek(node + TreeLeft);
-        long middle = Sys.Peek(top + TreeRight);
-        TreeReplace(bin, node, top);
-        Sys.Poke(node + TreeLeft, middle);
-        if (middle != 0) Sys.Poke(middle + TreeParent, node);
-        Sys.Poke(top + TreeRight, node);
-        Sys.Poke(node + TreeParent, top);
-        FixHeight(node);
-        FixHeight(top);
-        return top;
-    }
-
-    static void Balance(long bin, long node)
-    {
-        while (node != 0)
+        if (from < 0) from = 0;
+        if (from >= Bins) return -1;
+        long word = from / BitsPerWord;
+        long bits = Sys.Peek(_bins + (Bins + word) * WordSize.Bytes) & WordSize.AddressMask
+                  & ~((One << (int)(from % BitsPerWord)) - 1);
+        while (bits == 0)
         {
-            FixHeight(node);
-            long left = Sys.Peek(node + TreeLeft);
-            long right = Sys.Peek(node + TreeRight);
-            long difference = Height(left) - Height(right);
-            if (difference > 1)
-            {
-                if (Height(Sys.Peek(left + TreeLeft)) < Height(Sys.Peek(left + TreeRight)))
-                    RotateLeft(bin, left);
-                node = RotateRight(bin, node);
-            }
-            else if (difference < -1)
-            {
-                if (Height(Sys.Peek(right + TreeRight)) < Height(Sys.Peek(right + TreeLeft)))
-                    RotateRight(bin, right);
-                node = RotateLeft(bin, node);
-            }
-            node = Sys.Peek(node + TreeParent);
+            word = word + 1;
+            if (word >= MapWords) return -1;
+            bits = Sys.Peek(_bins + (Bins + word) * WordSize.Bytes) & WordSize.AddressMask;
         }
+        long bin = word * BitsPerWord + Runtime.TrailingZeroCount(bits);
+        return bin < Bins ? bin : -1;
     }
 
-    static void TreeLink(long bin, long block, long size)
+    /// The highest non-empty bin at or below `from`, or -1.
+    static long PrevNonEmpty(long from)
     {
-        Sys.Poke(block + TreeLeft, Zero);
-        Sys.Poke(block + TreeRight, Zero);
-        Sys.Poke(block + TreeParent, Zero);
-        Sys.Poke(block + TreeHeight, One);
-        Sys.Poke(block + TreeMaxSize, size);
-        long node = BinHead(bin);
-        if (node == 0) { SetBinHead(bin, block); return; }
-        while (true)
+        if (from < 0) return -1;
+        if (from >= Bins) from = Bins - 1;
+        long word = from / BitsPerWord;
+        long keep = from % BitsPerWord;
+        long bits = Sys.Peek(_bins + (Bins + word) * WordSize.Bytes) & WordSize.AddressMask;
+        if (keep != BitsPerWord - 1) bits = bits & ((One << (int)(keep + 1)) - 1);
+        while (bits == 0)
         {
-            long otherSize = SizeOfBlock(node);
-            long side = size < otherSize || (size == otherSize && block < node) ? TreeLeft : TreeRight;
-            long next = Sys.Peek(node + side);
-            if (next == 0)
-            {
-                Sys.Poke(node + side, block);
-                Sys.Poke(block + TreeParent, node);
-                Balance(bin, node);
-                return;
-            }
-            node = next;
+            if (word == 0) return -1;
+            word = word - 1;
+            bits = Sys.Peek(_bins + (Bins + word) * WordSize.Bytes) & WordSize.AddressMask;
         }
+        return word * BitsPerWord + 63 - Runtime.LeadingZeroCount(bits);
     }
 
-    static void TreeUnlink(long bin, long block)
+    /// The first of the few blocks from `node` on at least `need` bytes, or 0.
+    static long FirstFit(long node, long need)
     {
-        long left = Sys.Peek(block + TreeLeft);
-        long right = Sys.Peek(block + TreeRight);
-        long start = Sys.Peek(block + TreeParent);
-        if (left == 0 || right == 0)
-        {
-            TreeReplace(bin, block, left != 0 ? left : right);
-        }
-        else
-        {
-            // Move the successor node itself, never its size/header: those
-            // bytes describe a physical block and cannot be exchanged.
-            long successor = right;
-            while (Sys.Peek(successor + TreeLeft) != 0)
-                successor = Sys.Peek(successor + TreeLeft);
-            start = Sys.Peek(successor + TreeParent);
-            if (start != block)
-            {
-                TreeReplace(bin, successor, Sys.Peek(successor + TreeRight));
-                Sys.Poke(successor + TreeRight, right);
-                Sys.Poke(right + TreeParent, successor);
-            }
-            else start = successor;
-            TreeReplace(bin, block, successor);
-            Sys.Poke(successor + TreeLeft, left);
-            Sys.Poke(left + TreeParent, successor);
-            FixHeight(successor);
-        }
-        Balance(bin, start);
-    }
-
-    static long TreeFit(long node, long need)
-    {
-        long best = 0;
-        while (node != 0)
+        long looked = 0;
+        while (node != 0 && looked < FitDepth)
         {
             ProbeSteps = ProbeSteps + 1;
             if (SizeOfBlock(node) >= need)
             {
-                best = node;
-                node = Sys.Peek(node + TreeLeft);
+                return node;
             }
-            else node = Sys.Peek(node + TreeRight);
+            node = Sys.Peek(node + KindAt);
+            looked = looked + 1;
         }
-        return best;
+        return 0;
     }
 
     // Allocation-free diagnostic. Run under the heap lock so a failure
@@ -1219,32 +1167,6 @@ static class Gc
             && Sys.Peek(node + size - FooterBytes) == header && BinOf(size) == bin;
     }
 
-    static long CheckTree(long node, long parent, long bin, long minSize, long minAddress,
-        long maxSize, long maxAddress, int depth)
-    {
-        if (node == 0) return 0;
-        if (depth > 64) return BadIndex(node, 1);
-        if (!IndexBlock(node, bin)) return BadIndex(node, 2);
-        if (Sys.Peek(node + TreeParent) != parent) return BadIndex(node, 3);
-        long size = SizeOfBlock(node);
-        if (minAddress != 0 && (size < minSize || (size == minSize && node <= minAddress)))
-            return BadIndex(node, 4);
-        if (maxAddress != 0 && (size > maxSize || (size == maxSize && node >= maxAddress)))
-            return BadIndex(node, 4);
-        long left = CheckTree(Sys.Peek(node + TreeLeft), node, bin,
-            minSize, minAddress, size, node, depth + 1);
-        if (left < 0) return -1;
-        long right = CheckTree(Sys.Peek(node + TreeRight), node, bin,
-            size, node, maxSize, maxAddress, depth + 1);
-        if (right < 0) return -1;
-        long height = (left > right ? left : right) + 1;
-        if (left - right > 1 || right - left > 1 || Sys.Peek(node + TreeHeight) != height)
-            return BadIndex(node, 5);
-        long rightNode = Sys.Peek(node + TreeRight);
-        long largest = rightNode == 0 ? size : Sys.Peek(rightNode + TreeMaxSize);
-        if (Sys.Peek(node + TreeMaxSize) != largest) return BadIndex(node, 8);
-        return height;
-    }
 
     public static bool CheckFreeIndex()
     {
@@ -1252,6 +1174,7 @@ static class Gc
         FreeIndexErrorBlock = Zero;
         FreeIndexErrorKind = Zero;
         long small = 0;
+        long seen = 0;
         bool okay = true;
         if (_bins != 0)
         {
@@ -1259,24 +1182,16 @@ static class Gc
             while (bin < Bins && okay)
             {
                 long node = BinHead(bin);
-                if (bin > BinOf(ExactLimit))
+                if (BinMarked(bin) != (node != 0)) { BadIndex(node, 8); okay = false; }
+                long previous = 0;
+                while (node != 0 && okay)
                 {
-                    okay = CheckTree(node, Zero, bin, Zero, Zero, Zero, Zero, 0) >= 0;
-                    long largest = node == 0 ? Zero : Sys.Peek(node + TreeMaxSize);
-                    if (okay && Sys.Peek(_bins + Bins * WordSize.Bytes + bin * WordSize.Bytes) != largest)
-                    { BadIndex(node, 8); okay = false; }
-                }
-                else
-                {
-                    long previous = 0;
-                    while (node != 0 && okay)
-                    {
-                        small = small + 1;
-                        if (small > HeapChunks.HeapBytes / Smallest || !IndexBlock(node, bin)
-                            || Sys.Peek(node + HeaderBytes) != previous)
-                        { BadIndex(node, 6); okay = false; }
-                        else { previous = node; node = Sys.Peek(node + KindAt); }
-                    }
+                    seen = seen + 1;
+                    if (bin <= BinOf(ExactLimit)) small = small + 1;
+                    if (seen > HeapChunks.HeapBytes / Smallest || !IndexBlock(node, bin)
+                        || Sys.Peek(node + HeaderBytes) != previous)
+                    { BadIndex(node, 6); okay = false; }
+                    else { previous = node; node = Sys.Peek(node + KindAt); }
                 }
                 bin = bin + 1;
             }
@@ -1290,7 +1205,6 @@ static class Gc
     {
         long size = SizeOfBlock(block);
         long bin = BinOf(size);
-        if (size > ExactLimit) { TreeLink(bin, block, size); PublishLargest(bin); return; }
         long head = BinHead(bin);
 
         if (size <= ExactLimit)
@@ -1305,19 +1219,16 @@ static class Gc
         {
             Sys.Poke(head + HeaderBytes, block);
         }
+        else
+        {
+            MarkBin(bin);
+        }
         SetBinHead(bin, block);
     }
 
     static void Unlink(long block)
     {
         long size = SizeOfBlock(block);
-        if (size > ExactLimit)
-        {
-            long bin = BinOf(size);
-            TreeUnlink(bin, block);
-            PublishLargest(bin);
-            return;
-        }
         long next = Sys.Peek(block + KindAt);
         long prev = Sys.Peek(block + HeaderBytes);
 
@@ -1328,7 +1239,12 @@ static class Gc
 
         if (prev == 0)
         {
-            SetBinHead(BinOf(size), next);
+            long bin = BinOf(size);
+            SetBinHead(bin, next);
+            if (next == 0)
+            {
+                UnmarkBin(bin);
+            }
         }
         else
         {
@@ -1344,14 +1260,13 @@ static class Gc
     /// Empties every bin; the sweep rebuilds them.
     static void ClearBins()
     {
-        long bin = 0;
+        long word = 0;
         _smallFree = 0;
 
-        while (bin < Bins)
+        while (word < Bins + MapWords)
         {
-            SetBinHead(bin, Zero);
-            Sys.Poke(_bins + Bins * WordSize.Bytes + bin * WordSize.Bytes, Zero);
-            bin = bin + 1;
+            Sys.Poke(_bins + word * WordSize.Bytes, Zero);
+            word = word + 1;
         }
     }
 
@@ -1531,9 +1446,10 @@ static class Gc
         if (_bins == 0) return false;
         if (need <= ExactLimit)
             return _smallFree != 0 && BinHead((need >> 3) - 2) != 0;
-        // Never walk a concurrently rotating tree. Only the published size
-        // hint is read here; the locked allocation path resolves stale hints.
-        return Sys.Peek(_bins + Bins * WordSize.Bytes + BinOf(need) * WordSize.Bytes) >= need;
+        // A block in a bin above the request's fits whatever it is, and
+        // that is one bitmap search. Only the bitmap is read here; the
+        // locked allocation path resolves a stale answer.
+        return NextNonEmpty(BinOf(need) + 1) >= 0;
     }
 
     /// A fresh allocation buffer for the thread whose block is `block`, big
@@ -1714,22 +1630,19 @@ static class Gc
     static long TakeBufferFragment(long minimum)
     {
         long lowest = BinOf(minimum);
-        for (long bin = BinOf(BufferBytes - 8); bin >= lowest; bin--)
+        long bin = PrevNonEmpty(BinOf(BufferBytes - 8));
+        while (bin >= lowest)
         {
-            long block = BinHead(bin);
-            if (block == 0) continue;
-            if (bin > BinOf(ExactLimit))
+            long block = FirstFit(BinHead(bin), minimum);
+            if (block != 0)
             {
-                if (Sys.Peek(block + TreeMaxSize) < minimum) continue;
-                while (Sys.Peek(block + TreeRight) != 0)
-                    block = Sys.Peek(block + TreeRight);
+                long size = SizeOfBlock(block);
+                Unlink(block);
+                Stamp(block, size, Zero);
+                HeapChunks.YoungAt(block);
+                return block;
             }
-            long size = SizeOfBlock(block);
-            if (size < minimum) continue;
-            Unlink(block);
-            Stamp(block, size, Zero);
-            HeapChunks.YoungAt(block);
-            return block;
+            bin = PrevNonEmpty(bin - 1);
         }
         return 0;
     }
@@ -2045,8 +1958,7 @@ static class Gc
                     long root = BinHead(bin);
                     if (root == 0) continue;
                     SayNumber("out of memory: free bin ", bin);
-                    SayNumber("out of memory: largest block ", bin <= BinOf(ExactLimit)
-                        ? SizeOfBlock(root) : Sys.Peek(root + TreeMaxSize));
+                    SayNumber("out of memory: first block ", SizeOfBlock(root));
                 }
             }
             OutOfMemory();
@@ -2131,30 +2043,25 @@ static class Gc
         return block;
     }
 
-    /// A free block of at least `need` bytes: an exact-bin head or tree lower
-    /// bound in the request's bin, else the smallest block in the next
-    /// non-empty bin. The remainder of a larger block is split off
+    /// A free block of at least `need` bytes: an exact bin's head, or one of
+    /// the first few blocks of the request's large bin that fits, else the
+    /// head of the next non-empty bin (the free index). The remainder of a larger block is split off
     /// and put back, unless it would be too small to describe itself, in
     /// which case the caller gets it.
     static long TakeFree(long need)
     {
         long bin = BinOf(need);
-        long block = BinHead(bin);
 
-        // Exact bins need only their head. Large bins use a logarithmic
-        // lower-bound query, not a scan through every smaller free block.
-        if (need > ExactLimit) block = TreeFit(block, need);
+        // An exact bin's head fits exactly. A large bin's blocks may be
+        // smaller than the request: the first few are looked at.
+        long block = need <= ExactLimit ? BinHead(bin) : FirstFit(BinHead(bin), need);
 
         if (block == 0)
         {
-            long above = bin + 1;
-
-            while (above < Bins && block == 0)
+            long above = NextNonEmpty(bin + 1);
+            if (above >= 0)
             {
                 block = BinHead(above);
-                if (block != 0 && above > BinOf(ExactLimit))
-                    block = TreeFit(block, need);
-                above = above + 1;
             }
         }
 
