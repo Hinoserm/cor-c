@@ -521,7 +521,7 @@ public sealed partial class Escape
             List<(long Offset, string Callee)> frees = clean.Select(o => (o, FieldFreer)).ToList();
             if (later.Count > 0)
             {
-                List<(string Symbol, long Offset)> sites = later.Select(o => (FieldSiteSymbol(), o)).ToList();
+                List<(string Symbol, long Offset)> sites = later.Select(o => (FieldSiteSymbol(f), o)).ToList();
                 _fieldSiteRecords.Add((hint!, sites));
                 frees.AddRange(sites.Select(site => (site.Offset, site.Symbol)));
             }
@@ -545,9 +545,25 @@ public sealed partial class Escape
         }
     }
 
-    /// <summary>A field free the link decides: a symbol unique to this unit and site.</summary>
-    private string FieldSiteSymbol()
-        => FieldSitePrefix + _unitKey + "$" + (_siteSerial++).ToString(System.Globalization.CultureInfo.InvariantCulture);
+    /// <summary>
+    /// A field free the link decides: a symbol unique to this unit, function
+    /// and site. Unit and serial were not enough: the backend compiles a unit
+    /// in batches of functions, each a module of the unit's name whose serial
+    /// began again at 0, and two batches of one object defined the same
+    /// site. The function's name is unique in the unit and gives the same
+    /// symbol however the batches fall.
+    /// </summary>
+    private string FieldSiteSymbol(Function f)
+    {
+        if (!ReferenceEquals(_siteFunction, f))
+        {
+            _siteFunction = f;
+            _siteSerial = 0;
+        }
+        string function = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(f.Name)))[..12];
+        return FieldSitePrefix + _unitKey + "$" + function + "$" + (_siteSerial++).ToString(System.Globalization.CultureInfo.InvariantCulture);
+    }
+    private Function? _siteFunction;
     private int _siteSerial;
 
     /// <summary>The prefix of the symbols field sites call (LifetimeHints.FieldSites).</summary>
