@@ -1,0 +1,48 @@
+// test: bit_operations_zero_counts
+// expect-exit: 0
+// expect-output:
+// 0: 64 64 32 32 0 32 64
+// 1: 63 0 31 0 0 0 0
+// 2: 62 1 30 1 1 1 1
+// 3: 62 0 30 0 1 0 0
+// 128: 56 7 24 7 7 7 7
+// 32768: 48 15 16 15 15 15 15
+// 65536: 47 16 15 16 16 16 16
+// 2147483648: 32 31 0 31 31 31 31
+// 4294967296: 31 32 32 32 32 32 32
+// 9223372036854775808: 0 63 32 32 63 32 63
+// 18446744073709551615: 0 0 0 0 63 0 0
+// 263882790666240: 16 44 32 32 47 32 44
+// 12345678901234: 20 1 1 1 43 1 1
+// 4294901760: 32 16 0 16 31 16 16
+// sweep 207648
+//
+// BitOperations counts leading and trailing zeros by halves, not a bit at a
+// time; every width and edge (zero, one, the top bit, all ones) answers as
+// .NET does. Output checked against .NET.
+
+using System;
+using System.Numerics;
+
+static class Program
+{
+    static void Main()
+    {
+        ulong[] values = { 0, 1, 2, 3, 0x80, 0x8000, 0x10000, 0x80000000, 0x100000000, 0x8000000000000000, 0xFFFFFFFFFFFFFFFF, 0x0000F00000000000, 12345678901234, 0xFFFF0000 };
+        long sum = 0;
+        foreach (ulong v in values)
+        {
+            uint u = (uint)v;
+            Console.WriteLine(v + ": " + BitOperations.LeadingZeroCount(v) + " " + BitOperations.TrailingZeroCount(v)
+                + " " + BitOperations.LeadingZeroCount(u) + " " + BitOperations.TrailingZeroCount(u)
+                + " " + BitOperations.Log2(v) + " " + BitOperations.TrailingZeroCount((int)u) + " " + BitOperations.TrailingZeroCount((long)v));
+        }
+        for (int i = 0; i < 64; i++)
+        {
+            ulong one = 1UL << i;
+            sum += BitOperations.LeadingZeroCount(one) * 100 + BitOperations.TrailingZeroCount(one)
+                 + BitOperations.LeadingZeroCount(one | 1) + BitOperations.TrailingZeroCount(one | (1UL << 63));
+        }
+        Console.WriteLine("sweep " + sum);
+    }
+}
