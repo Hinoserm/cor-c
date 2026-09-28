@@ -88,14 +88,14 @@ static partial class Os
         {
             throw new IndexOutOfRangeException("read range is outside its buffer");
         }
-        return (int)Err.Result(Sys.Syscall(Call.Read, fd, BytesOf(buf) + at, count));
+        return (int)Err.Result(Platform.Blocking(Call.Read, fd, BytesOf(buf) + at, count));
     }
 
     /// The raw form: an address and a count, for code that manages its own
     /// buffer. Answers the kernel's number as a long, like user.cor's.
     public static long Read(int fd, long into, long count)
     {
-        return Err.Result(Sys.Syscall(Call.Read, fd, into, count));
+        return Err.Result(Platform.Blocking(Call.Read, fd, into, count));
     }
 
     /// write(2) from part of an array. ONE call: the kernel may take fewer
@@ -106,12 +106,12 @@ static partial class Os
         {
             throw new IndexOutOfRangeException("write range is outside its buffer");
         }
-        return (int)Err.Result(Sys.Syscall(Call.Write, fd, BytesOf(buf) + at, count));
+        return (int)Err.Result(Platform.Blocking(Call.Write, fd, BytesOf(buf) + at, count));
     }
 
     public static long Write(int fd, long at, long count)
     {
-        return Err.Result(Sys.Syscall(Call.Write, fd, at, count));
+        return Err.Result(Platform.Blocking(Call.Write, fd, at, count));
     }
 
     /// The address of a byte array's first byte, as the kernel is to be
@@ -480,6 +480,15 @@ static partial class Os
     public static int Close(long fd)
     {
         return Close((int)fd);
+    }
+
+    public static long Read(long fd, string into, long count)
+    {
+        if (count < 0 || count > into.Length)
+        {
+            throw new IndexOutOfRangeException("read range is outside its buffer");
+        }
+        return Err.Result(Platform.Blocking(Call.Read, fd, BytesOf(into), count));
     }
 
     public static long Write(long fd, string s)

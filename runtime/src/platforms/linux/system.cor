@@ -281,6 +281,22 @@ static class Platform
             }
             env = env + WordSize.Bytes;
         }
+
+    /// A call that may wait -- a read of a pipe, a terminal or a socket, a
+    /// poll, a wait for a child, a sleep -- made as a blocking one to the
+    /// collector, as Native.Wait makes a futex wait. A thread parked in the
+    /// kernel that the collector counted as running is waited for by the
+    /// first collection another thread starts, for ever: lsass's accept(2)
+    /// held every other thread of it so until its callers made their waits
+    /// this way. The stack is read where it stands meanwhile; the words the
+    /// call was handed are on it, and they keep what they point into.
+    /// Answers the kernel's raw number, as Sys.Syscall does.
+    public static long Blocking(long n, long a, long b, long c, long d = 0, long e = 0, long f = 0)
+    {
+        Runtime.BeginBlocking();
+        long raw = Sys.Syscall(n, a, b, c, d, e, f);
+        Runtime.EndBlocking();
+        return raw;
     }
 
     /// The address the kernel is to be handed for `at`: a Linux process's
@@ -861,6 +877,8 @@ static class Platform
     /// wants the raw answer can have it.
     public static long WriteBytes(int fd, long address, long count)
     {
+        // Raw: this is also how the runtime says it cannot start, before
+        // the thread has the block a blocking call is recorded in.
         return Result(Sys.Syscall(Call.Write, fd, address, count));
     }
 }
@@ -1007,7 +1025,7 @@ static partial class Os
         pfd[5] = (byte)(events >> 8);
         while (true)
         {
-            long r = Platform.Result(Sys.Syscall(Call.Poll, AddressOf(pfd), 1, timeoutMs));
+            long r = Platform.Result(Platform.Blocking(Call.Poll, AddressOf(pfd), 1, timeoutMs));
             if (r == -Err.Intr || PosixSignalRegistration.Pending)
             {
                 // A signal arrived while waiting -- or just before, with
@@ -1028,7 +1046,7 @@ static partial class Os
     {
         if (!PosixSignalRegistration.Pending)
         {
-            Platform.Result(Sys.Syscall(Call.Poll, 0, 0, -1));
+            Platform.Result(Platform.Blocking(Call.Poll, 0, 0, -1));
         }
 
         PosixSignalRegistration.Deliver();
@@ -1049,7 +1067,7 @@ static partial class Os
             ready[i] = false;
         }
 
-        long r = Platform.Result(Sys.Syscall(Call.Poll, AddressOf(pfd), count, timeoutMs));
+        long r = Platform.Result(Platform.Blocking(Call.Poll, AddressOf(pfd), count, timeoutMs));
 
         if (r == -Err.Intr || PosixSignalRegistration.Pending)
         {
@@ -1292,9 +1310,9 @@ static partial class Os
         }
 #if TARGET_AMD64
         // wait4(2), the only form long mode has: no resource usage wanted.
-        return (int)Platform.Result(Sys.Syscall(Call.Wait4, pid, Sys.ArrayData(status), options, 0, 0, 0));
+        return (int)Platform.Result(Platform.Blocking(Call.Wait4, pid, Sys.ArrayData(status), options, 0, 0, 0));
 #else
-        return (int)Platform.Result(Sys.Syscall(Call.Waitpid, pid, Sys.ArrayData(status), options));
+        return (int)Platform.Result(Platform.Blocking(Call.Waitpid, pid, Sys.ArrayData(status), options));
 #endif
     }
 
@@ -1358,7 +1376,7 @@ static partial class Os
 
         while (true)
         {
-            long r = Platform.Result(Sys.Syscall(Call.NanoSleep, AddressOf(want), AddressOf(left), 0));
+            long r = Platform.Result(Platform.Blocking(Call.NanoSleep, AddressOf(want), AddressOf(left), 0));
 
             if (r != 0 - Err.Intr)
             {
@@ -1478,7 +1496,7 @@ static partial class Os
 
     private static long Sock(long direct, long which, long a, long b, long c, long d, long e, long f)
     {
-        long got = Platform.Result(Sys.Syscall(direct, a, b, c, d, e, f));
+        long got = Platform.Result(Platform.Blocking(direct, a, b, c, d, e, f));
 
 #if TARGET_AMD64
         // Long mode has always had a call per operation, and no socketcall.
@@ -1499,7 +1517,7 @@ static partial class Os
         Raw.SetU32(block, 12, d);
         Raw.SetU32(block, 16, e);
         Raw.SetU32(block, 20, f);
-        return Platform.Result(Sys.Syscall(Call.SocketCall, which, AddressOf(block), 0));
+        return Platform.Result(Platform.Blocking(Call.SocketCall, which, AddressOf(block), 0));
 #endif
     }
 
