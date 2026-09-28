@@ -2091,6 +2091,16 @@ static class Gc
     static void OutOfMemory(string text)
     {
         Runtime.WriteLiteral(2, text);
+        // WHAT THE HEAP HELD, for whoever reads the report: whether the live
+        // size ran into the ceiling, or the chunks did while little was live.
+        SayNumber("  heap bytes ", HeapChunks.HeapBytes);
+        SayNumber("  live at the last collection ", _liveBytes);
+        SayNumber("  allocated since ", _since);
+        SayNumber("  threshold ", _threshold);
+        SayNumber("  ceiling ", HeapCeiling);
+        SayNumber("  collections ", Collections);
+        SayNumber("  of them major ", MajorCollections);
+        SayNumber("  mark queue bytes ", _markBytes);
         Runtime.SayTrace(2, Sys.FramePointer());
         Platform.Exit(137);
     }
