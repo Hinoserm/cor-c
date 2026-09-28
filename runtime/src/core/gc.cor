@@ -551,6 +551,15 @@ static class Gc
     /// lock held, and -- for a minor cycle -- moved into the taken table, to
     /// be read while marking (ScanTakenCards). A card a store sets afterwards
     /// stays set for the next cycle.
+    ///
+    /// A YOUNG CHUNK'S CARD IS TAKEN ONLY OVER AN OLD OBJECT. Every store that
+    /// fills a new object sets its card, so nearly every kilobyte allocated
+    /// since the last cycle has one set, and none of them needs reading: a
+    /// young object is traced if anything reaches it. The snapshot walk has
+    /// just flagged (2) every card an old block other than a leaf lies in
+    /// (OldCards), whether set yet or not -- a store may land between the
+    /// walk and this -- and only a set card so flagged, or one over a
+    /// thread's buffer (which the walk stepped over), is kept.
     static void TakeCards(bool minor)
     {
         long cards = Runtime.Cards;
@@ -558,23 +567,64 @@ static class Gc
         long chunk = HeapChunks.SnapshotChunk(0);
         while (chunk != 0)
         {
+            bool young = HeapChunks.StartsCycle(chunk) == _cycle;
             long card = (HeapChunks.First(chunk) & WordSize.AddressMask) >> Runtime.CardShift;
             long last = ((HeapChunks.End(chunk) - 1) & WordSize.AddressMask) >> Runtime.CardShift;
             while (card <= last)
             {
-                if (Sys.PeekByte(cards + card) != 0)
+                bool set = Sys.PeekByte(cards + card) != 0;
+                if (set)
                 {
                     Sys.PokeByte(cards + card, 0);
-                    if (minor)
-                    {
-                        Sys.PokeByte(_taken + card, 1);
-                    }
+                }
+                if (!minor)
+                {
+                    card = card + 1;
+                    continue;
+                }
+                if (!young)
+                {
+                    if (set) Sys.PokeByte(_taken + card, 1);
+                }
+                else
+                {
+                    bool old = Sys.PeekByte(_taken + card) == 2;
+                    bool keep = set && (old || BufferOverlaps(card << Runtime.CardShift, (card + 1) << Runtime.CardShift));
+                    Sys.PokeByte(_taken + card, keep ? 1 : 0);
                 }
                 card = card + 1;
             }
             which = which + 1;
             chunk = HeapChunks.SnapshotChunk(which);
         }
+    }
+
+    /// Flags every card an old block lies in, for TakeCards -- a leaf holds
+    /// no reference and flags none.
+    static void OldCards(long block, long size)
+    {
+        if (Sys.Peek(block + KindAt) == KindLeaf)
+        {
+            return;
+        }
+        long card = (block & WordSize.AddressMask) >> Runtime.CardShift;
+        long last = ((block + size - 1) & WordSize.AddressMask) >> Runtime.CardShift;
+        while (card <= last)
+        {
+            Sys.PokeByte(_taken + card, 2);
+            card = card + 1;
+        }
+    }
+
+    /// Whether [from, to) overlaps a captured thread buffer.
+    static bool BufferOverlaps(long from, long to)
+    {
+        long i = GcThreads.BufferAtOrAbove(from);
+        if (i > 0 && GcThreads.BufferLimit(i - 1) > from)
+        {
+            return true;
+        }
+        return i < GcThreads.BufferCount() && GcThreads.BufferBase(i) < to;
     }
 
     /// Every card set since TakeCards, over the snapshot's chunks, added to
@@ -610,10 +660,9 @@ static class Gc
     /// AN OLD CHUNK'S are read word by word: every block in it is old, and
     /// its start table is the last major cycle's, which this one does not
     /// trust. A YOUNG CHUNK'S are read block by block (ScanCardBlocks): only
-    /// what is marked -- the old, and whatever this cycle has reached -- and
-    /// only the words of it that are references and in the kilobyte. The
-    /// young blocks there are not roots: read as roots, every young object a
-    /// dead one pointed at would be kept, and made old.
+    /// the old blocks, and only the words of them that are references and in
+    /// the kilobyte. The young blocks there are not roots: read as roots,
+    /// every young object a dead one pointed at would be kept, and made old.
     static void ScanTakenCards()
     {
         long which = 0;
@@ -652,8 +701,8 @@ static class Gc
         }
     }
 
-    /// The marked blocks of [from, to) in a chunk whose starts this cycle
-    /// wrote, each read for its references in the range only.
+    /// The old blocks of [from, to) in a chunk whose starts this cycle wrote,
+    /// each read for its references in the range only.
     static void ScanCardBlocks(long chunk, long from, long to)
     {
         long block = HeapChunks.StartAtOrBelow(chunk, from & -8);
@@ -669,7 +718,10 @@ static class Gc
             {
                 return;
             }
-            if (block + size > from && (word & (FlagFree | FlagMark)) == FlagMark)
+            // OLD ONLY: marked AND scanned, as the last sweep left every
+            // survivor. One this cycle has reached and not yet scanned is
+            // queued, and will be read whole.
+            if (block + size > from && (word & (FlagFree | FlagMark | FlagScan)) == (FlagMark | FlagScan))
             {
                 ScanBlockWithin(block, size, from, to);
             }
@@ -3901,6 +3953,9 @@ static class Gc
                     // WHERE EVERY OBJECT STARTS, as of this stop: what the
                     // marker finds objects by from here on (SnapshotBlock).
                     if ((header & FlagFree) == 0) HeapChunks.SetStart(chunk, block);
+                    // WHICH KILOBYTES HOLD AN OLD OBJECT, for TakeCards: a card
+                    // over nothing but young blocks is not read (OldCards).
+                    if (_minor && (header & (FlagFree | FlagMark | FlagScan)) == (FlagMark | FlagScan)) OldCards(block, size);
                     // A MAJOR CYCLE MAKES EVERY BLOCK YOUNG AGAIN, taking off
                     // the marks the old kept, and finds the live ones afresh.
                     if (_generational && !_minor && (header & (FlagMark | FlagScan)) != 0)

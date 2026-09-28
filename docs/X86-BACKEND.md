@@ -1060,10 +1060,15 @@ blocks.
   minor cycle moves the cards it clears to a second table and reads those
   kilobytes while marking (`ScanTakenCards`), once the start tables are
   whole. In an OLD chunk every block is old and the kilobyte is read word by
-  word. In a YOUNG chunk it is read block by block (`ScanCardBlocks`): only
-  the marked blocks -- the old ones, and whatever the cycle has reached --
-  and of each only the words its descriptor calls references that lie in
-  the kilobyte; a leaf, or an array of integers, not at all. The young
+  word. In a YOUNG chunk a card is taken only over an old object: every
+  store that fills a new object sets a card, so nearly every kilobyte
+  allocated since the last cycle has one, and none needs reading. The
+  snapshot walk flags every card an old non-leaf block lies in, set or not
+  (a store may land between the walk and the taking), and only a set card
+  so flagged -- or one over a thread's buffer, which the walk steps over --
+  is kept. It is read block by block (`ScanCardBlocks`): only the old
+  blocks, and of each only the words its descriptor calls references that
+  lie in the kilobyte; a leaf, or an array of integers, not at all. The young
   blocks there are never roots: read as roots, every young object a dead one
   pointed at would be kept, and made old. Nothing is queued but the young
   objects found, so a heap of written old objects does not overflow the
