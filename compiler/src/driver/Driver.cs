@@ -307,7 +307,7 @@ public static class Driver
         Corsac.Asm.X86Assembler.Result result = Corsac.Asm.X86Assembler.AssembleFile(files[0], bits, asObject, X86Cpu.Parse(args));
         if (asObject)
         {
-            File.WriteAllBytes(output, ElfWriter.WriteObject(result.Object!));
+            ElfWriter.WriteObjectFile(result.Object!, output);
             return 0;
         }
         File.WriteAllBytes(output, result.Bytes);
@@ -827,7 +827,7 @@ public static class Driver
                 if (module.LeavesLinkHints && module.LifetimeHints is { IsEmpty: false } hints) hints.Attach(obj);
                 IrUnitCodec.Attach(obj, module, x86Backend.StackMaps);
             }
-            File.WriteAllBytes(output, ElfWriter.WriteObject(obj));
+            ElfWriter.WriteObjectFile(obj, output);
             if (Value(args, "--dependency-file") is string dependencyFile) declarations!.WriteDependencies(dependencyFile);
             Console.Error.WriteLine($"{output}: {obj.Section(".text").Size} bytes of code");
             return 0;

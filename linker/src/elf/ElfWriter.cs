@@ -26,6 +26,30 @@ public static class ElfWriter
         {
             return Elf64Object.Write(obj);
         }
+        return Build(obj).ToArray();
+    }
+
+    /// <summary>
+    /// The object written to its file, streamed from the chunks it was built
+    /// in: never the whole image as one array, nor a copy of any section --
+    /// a large unit's object and its IR are tens of megabytes each, and a
+    /// 32-bit heap cut into chunks has no such contiguous run to spare.
+    /// </summary>
+    public static void WriteObjectFile(ObjectFile obj, string path)
+    {
+        ArgumentNullException.ThrowIfNull(obj);
+        if (TargetContract.IsLongMode(obj))
+        {
+            File.WriteAllBytes(path, Elf64Object.Write(obj));
+            return;
+        }
+        ElfBuffer built = Build(obj);
+        using FileStream output = new(path, FileMode.Create, FileAccess.Write, FileShare.None, 65536);
+        built.WriteTo(output);
+    }
+
+    private static ElfBuffer Build(ObjectFile obj)
+    {
 
         // Section header indices: the object's sections in the order given,
         // from 1, so a section symbol's index is its section's index.
@@ -78,13 +102,16 @@ public static class ElfWriter
         // A relocation may name something that is neither a symbol nor a
         // section of this object: that is a reference the linker must
         // satisfy, so it becomes an undefined global.
-        byte[][] contents = new byte[obj.Sections.Count][];
+        // The addends are written into the image as the section goes in (REL
+        // keeps them in the section's bytes), never into the object's own
+        // bytes and never into a copy of them.
+        List<(int Offset, uint Addend)>[] addends = new List<(int, uint)>[obj.Sections.Count];
         List<(uint Offset, uint Info)>[] rels = new List<(uint, uint)>[obj.Sections.Count];
         for (int i = 0; i < obj.Sections.Count; i++)
         {
             Section s = obj.Sections[i];
-            byte[] bytes = s.Bytes.ToArray();
-            contents[i] = bytes;
+            int length = s.Bytes.Count;
+            addends[i] = new List<(int, uint)>();
             rels[i] = new List<(uint, uint)>();
             foreach (Relocation r in s.Relocs)
             {
@@ -92,9 +119,9 @@ public static class ElfWriter
                 {
                     throw new ElfFormatException($"section '{s.Name}' is uninitialised but has a relocation at 0x{r.Offset:x}");
                 }
-                if (r.Offset < 0 || r.Offset + 4 > bytes.Length)
+                if (r.Offset < 0 || r.Offset + 4 > length)
                 {
-                    throw new ElfFormatException($"relocation at 0x{r.Offset:x} is outside section '{s.Name}' ({bytes.Length} bytes)");
+                    throw new ElfFormatException($"relocation at 0x{r.Offset:x} is outside section '{s.Name}' ({length} bytes)");
                 }
                 if (r.Addend < int.MinValue || r.Addend > uint.MaxValue)
                 {
@@ -120,7 +147,7 @@ public static class ElfWriter
                     symbols.Add(new SymbolEntry(strtab.Add(r.Symbol), 0, 0, SymbolEntry.MakeInfo(Elf.StbGlobal, Elf.SttNoType), 0, Elf.ShnUndef));
                     symbolIndex[r.Symbol] = sym;
                 }
-                BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(r.Offset), unchecked((uint)r.Addend));
+                addends[i].Add((checked((int)r.Offset), unchecked((uint)r.Addend)));
                 rels[i].Add(((uint)r.Offset, (uint)(sym << 8) | Elf.RelocType(r.Kind)));
             }
         }
@@ -163,7 +190,11 @@ public static class ElfWriter
             uint at = b.AlignTo(align);
             if (s.Kind != SectionKind.Uninitialised)
             {
-                b.Bytes(contents[i]);
+                b.Bytes(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(s.Bytes));
+                foreach ((int offset, uint addend) in addends[i])
+                {
+                    b.PatchU32(checked((int)at + offset), addend);
+                }
             }
             headers.Add(new SectionHeader(sectionName[i], type, flags, 0, at, (uint)s.Size, 0, 0, align, 0));
         }
@@ -211,11 +242,10 @@ public static class ElfWriter
             h.WriteTo(b);
         }
 
-        byte[] file = b.ToArray();
-        BinaryPrimitives.WriteUInt32LittleEndian(file.AsSpan(32), shoff);
-        BinaryPrimitives.WriteUInt16LittleEndian(file.AsSpan(48), (ushort)headers.Count);
-        BinaryPrimitives.WriteUInt16LittleEndian(file.AsSpan(50), (ushort)(headers.Count - 1));
-        return file;
+        b.PatchU32(32, shoff);
+        b.PatchU16(48, (ushort)headers.Count);
+        b.PatchU16(50, (ushort)(headers.Count - 1));
+        return b;
     }
 
     private static void AddSymbol(ObjectFile obj, Symbol sym, List<SymbolEntry> symbols, Dictionary<string, int> symbolIndex, StringTable strtab)
