@@ -1510,13 +1510,29 @@ static class Gc
     // hole fits a request that fills it exactly -- the buffer is then used
     // up, which Retire allows -- or leaves a tail that can describe itself.
     //
+    // AND ONLY A HOLE OF SEVERAL CARDS. Young objects in a small hole share
+    // its cards with the old blocks either side, and the stores that fill
+    // them in mark those cards: the next minor cycle reads every old block
+    // in each, and resolves every pointer it finds there. Recycling holes
+    // of any size, a stage 2 minor cycle read 23 million words of old blocks
+    // through young objects' cards, against a third of a million through
+    // old ones'. A hole of RecycleMin or more has cards only young objects
+    // lie in, which no minor cycle takes. The smaller holes stay in the
+    // free index, for an exact fit when no chunk is left to recycle and to
+    // merge with a neighbour when it dies.
+    //
     // The walk is safe because every block below a chunk's end is a whole
     // block (it runs with the heap lock held and never during a sweep),
-    // except inside a buffer a thread is bumping in: blocks up to its
-    // pointer and zeroed memory above it. The walk stops at the first size
-    // that cannot be a block, which is where such a buffer's pointer is, and
-    // gives up the rest of that chunk. It takes only a listed free block,
-    // never one freed in place, which is not on a list.
+    // except inside a buffer a thread is bumping in -- which is NOT a chain
+    // of blocks: above its pointer lies whatever a free of the thread's top
+    // block left there, and the thread may be writing a header this moment.
+    // So every thread's buffer is taken down first (the heap lock keeps them
+    // where they are: only the bump pointers move without it) and the walk
+    // steps over each whole, as the sweep does. It takes only a listed free
+    // block, never one freed in place, which is not on a list.
+
+    /// The smallest hole recycling hands out: four cards (Runtime.CardShift).
+    const long RecycleMin = 4096;
 
     /// A chunk is recycled when at least this fraction of it -- one part in
     /// eight -- was free at its last sweep. The holes of a fuller chunk wait
@@ -1526,6 +1542,7 @@ static class Gc
     static long _recycle;           // the chunk whose holes are being handed out, or 0
     static long _recycleAt;         // the next block in it to look at
     static long _recycleNext;       // the next chunk to consider
+    static long _recycleBuffers;    // the threads' buffers as a walk begins, mapped once
 
     /// Called as a collection ends: every chunk may be recycled again.
     static void RestartRecycling()
@@ -1573,6 +1590,16 @@ static class Gc
             return 0;
         }
 
+        if (_recycleBuffers == 0)
+        {
+            _recycleBuffers = Platform.Map(GcThreads.BufferTableBytes());
+            if (_recycleBuffers == 0)
+            {
+                return 0;
+            }
+        }
+        long buffers = GcThreads.CaptureBuffersInto(_recycleBuffers);
+
         while (true)
         {
             if (_recycle == 0)
@@ -1594,9 +1621,22 @@ static class Gc
 
             long end = HeapChunks.End(_recycle);
             long at = _recycleAt;
+            long step = 0;
 
             while (at < end)
             {
+                // A THREAD'S BUFFER is stepped over whole.
+                while (step < buffers && Sys.Peek(_recycleBuffers + step * (2 * WordSize.Bytes)) < at)
+                {
+                    step = step + 1;
+                }
+                if (step < buffers && Sys.Peek(_recycleBuffers + step * (2 * WordSize.Bytes)) == at)
+                {
+                    at = Sys.Peek(_recycleBuffers + step * (2 * WordSize.Bytes) + WordSize.Bytes);
+                    step = step + 1;
+                    continue;
+                }
+
                 long word = Sys.Peek(at);
                 long size = word & SizeMask;
 
@@ -1604,7 +1644,8 @@ static class Gc
                 {
                     break;
                 }
-                if ((word & FlagFree) != 0 && (size == need || size >= need + Smallest) && !IsInPlace(at))
+                if ((word & FlagFree) != 0 && size >= RecycleMin && (size == need || size >= need + Smallest)
+                    && !IsInPlace(at))
                 {
                     Unlink(at);
                     if (size - BufferBytes >= Smallest)
@@ -6124,6 +6165,16 @@ static class GcThreads
             }
         }
 
+        _bufferCount = CaptureBuffersInto(_buffers);
+    }
+
+    /// Every registered thread's buffer, base and limit, into `table`
+    /// (room for BufferMax pairs), sorted by base; answers how many. The
+    /// heap lock is held, so no buffer is replaced meanwhile -- a thread only
+    /// bumps its pointer inside its own without it.
+    public static long CaptureBuffersInto(long table)
+    {
+        long count = 0;
         long i = 0;
 
         while (i < _count || (i == 0 && _blocks == 0 && _first != 0))
@@ -6137,21 +6188,21 @@ static class GcThreads
                 limit = Sys.Peek(block + Tls.AllocSaved);
             }
 
-            if (from != 0 && limit > from && _bufferCount < BufferMax)
+            if (from != 0 && limit > from && count < BufferMax)
             {
                 // Insertion by base: a few entries, captured twice a collection.
-                long at = _bufferCount;
+                long at = count;
 
-                while (at > 0 && Sys.Peek(_buffers + (at - 1) * (2 * WordSize.Bytes)) > from)
+                while (at > 0 && Sys.Peek(table + (at - 1) * (2 * WordSize.Bytes)) > from)
                 {
-                    Sys.Poke(_buffers + at * (2 * WordSize.Bytes), Sys.Peek(_buffers + (at - 1) * (2 * WordSize.Bytes)));
-                    Sys.Poke(_buffers + at * (2 * WordSize.Bytes) + WordSize.Bytes, Sys.Peek(_buffers + (at - 1) * (2 * WordSize.Bytes) + WordSize.Bytes));
+                    Sys.Poke(table + at * (2 * WordSize.Bytes), Sys.Peek(table + (at - 1) * (2 * WordSize.Bytes)));
+                    Sys.Poke(table + at * (2 * WordSize.Bytes) + WordSize.Bytes, Sys.Peek(table + (at - 1) * (2 * WordSize.Bytes) + WordSize.Bytes));
                     at = at - 1;
                 }
 
-                Sys.Poke(_buffers + at * (2 * WordSize.Bytes), from);
-                Sys.Poke(_buffers + at * (2 * WordSize.Bytes) + WordSize.Bytes, limit);
-                _bufferCount = _bufferCount + 1;
+                Sys.Poke(table + at * (2 * WordSize.Bytes), from);
+                Sys.Poke(table + at * (2 * WordSize.Bytes) + WordSize.Bytes, limit);
+                count = count + 1;
             }
 
             if (_blocks == 0)
@@ -6160,6 +6211,12 @@ static class GcThreads
             }
             i = i + 1;
         }
+        return count;
+    }
+
+    public static long BufferTableBytes()
+    {
+        return BufferMax * (2 * WordSize.Bytes);
     }
 
     public static long BufferCount()

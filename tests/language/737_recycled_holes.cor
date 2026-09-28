@@ -2,23 +2,33 @@
 // expect-exit: 0
 // expect-output:
 // holes 255
-// from holes 255
-// fresh 0
+// mostly in holes True
+// heap steady True
 // intact True
 //
 // After a collection the holes it leaves are reused a chunk at a time, in
-// address order, before any fresh memory (Gc.NextHole). Five hundred and
-// twelve arrays of mixed sizes are made and every other one below the top is
-// dropped, so a collection leaves holes that cannot coalesce; the same sizes
-// asked for again, in the same order, must each land in one. A hole fits a
-// request that fills it exactly, so no size here needs a bigger one, and the
-// arrays kept are untouched by the reuse around them.
+// address order, before any fresh memory (Gc.NextHole) -- holes of four
+// cards or more, whose cards no old block shares. Five hundred and twelve
+// arrays above that size are made and every other one below the last is
+// dropped, so a collection leaves holes that cannot coalesce; as many asked
+// for again must land in them -- at a dropped array's start, or where a
+// buffer's free tail before it merged in -- and the heap must not grow.
+// Not every one: the free tail of the buffer the collection retired is
+// old memory too, and is handed out in its turn. A hole fits a request that fills it exactly, so no size here needs a
+// bigger one, and the arrays kept are untouched by the reuse around them.
+// (Where, not below the last: a newer chunk may be mapped lower. The
+// addresses are kept complemented: the table is small enough to live in the
+// frame, and the stack is read conservatively -- as addresses they would
+// keep the dropped arrays alive.)
 
 static class Program
 {
+    // The arrays kept are of mixed sizes; the ones dropped, and asked for
+    // again, all of one, so any hole fits any request exactly whichever
+    // order the chunks are recycled in.
     static int SizeFor(int i)
     {
-        return ((i % 32) + 1) * 8;
+        return (i & 1) != 0 ? 4200 : 4096 + ((i % 32) + 1) * 8;
     }
 
     static int Main()
@@ -33,26 +43,35 @@ static class Program
             keep[i] = b;
         }
 
-        long top = Sys.ArrayData((byte[])keep[511]!);
+        long[] dropped = new long[255];
         int holes = 0;
 
         for (int i = 1; i < 510; i = i + 2)
         {
+            dropped[holes] = ~Sys.ArrayData((byte[])keep[i]!);
             keep[i] = null;
             holes = holes + 1;
         }
 
         Gc.Collect();
 
+        long heap = Gc.HeapBytes;
         int fromHoles = 0;
-        int fresh = 0;
 
         for (int i = 1; i < 510; i = i + 2)
         {
             byte[] b = new byte[SizeFor(i)];
             again[i] = b;
-            if (Sys.ArrayData(b) <= top) fromHoles = fromHoles + 1;
-            else fresh = fresh + 1;
+            // In a dropped array's place: at its start, or where the free
+            // tail of a thread's buffer before it merged into its hole.
+            long at = Sys.ArrayData(b);
+            bool reused = false;
+            for (int h = 0; h < holes; h++)
+            {
+                long gap = ~dropped[h] - at;
+                if (gap >= 0 && gap < 4200) reused = true;
+            }
+            if (reused) fromHoles = fromHoles + 1;
         }
 
         bool intact = true;
@@ -66,11 +85,11 @@ static class Program
         Sys.Print("holes ");
         Sys.PrintInt(holes);
         Sys.PrintLine();
-        Sys.Print("from holes ");
-        Sys.PrintInt(fromHoles);
+        Sys.Print("mostly in holes ");
+        Sys.Print(fromHoles * 8 >= holes * 7 ? "True" : "False");
         Sys.PrintLine();
-        Sys.Print("fresh ");
-        Sys.PrintInt(fresh);
+        Sys.Print("heap steady ");
+        Sys.Print(Gc.HeapBytes == heap ? "True" : "False");
         Sys.PrintLine();
         Sys.Print("intact ");
         Sys.Print(intact ? "True" : "False");

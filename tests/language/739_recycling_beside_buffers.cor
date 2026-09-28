@@ -1,0 +1,125 @@
+// test: recycling beside buffers
+// expect-exit: 0
+// expect-output:
+// rounds 10
+// payloads intact True
+// collected True
+//
+// Holes are recycled while other threads bump in buffers of their own
+// (Gc.NextHole). A buffer is not a chain of blocks: above its pointer lies
+// whatever a free of its top block left, and its owner may be writing a
+// header that moment. The recycling walk used to read on into such a buffer
+// until a size could not be a block; it now steps over every thread's
+// buffer whole, as the sweep does, and never reads inside one.
+//
+// Four threads each build a list of nodes carrying 4 KB payloads stamped
+// with their own number, drop every other payload -- leaving holes a
+// collection frees and recycling hands out -- and make them again, while the
+// others do the same; every payload is then checked end to end.
+
+class Node
+{
+    public int Value;
+    public byte[]? Payload;
+    public Node? Next;
+}
+
+class Worker : Action
+{
+    public const int Count = 400;
+
+    public Node? Head;
+    public bool Intact = true;
+    int _seed;
+
+    public Worker(int seed)
+    {
+        _seed = seed;
+    }
+
+    static byte[] Stamped(int value)
+    {
+        byte[] b = new byte[4100 + (value % 24) * 8];
+        b[0] = (byte)value;
+        b[b.Length / 2] = (byte)(value >> 8);
+        b[b.Length - 1] = (byte)(value + 1);
+        return b;
+    }
+
+    static bool Holds(byte[]? b, int value)
+    {
+        return b != null && b.Length == 4100 + (value % 24) * 8 && b[0] == (byte)value
+            && b[b.Length / 2] == (byte)(value >> 8) && b[b.Length - 1] == (byte)(value + 1);
+    }
+
+    public void Invoke()
+    {
+        Node? head = null;
+
+        for (int i = 0; i < Count; i++)
+        {
+            Node n = new Node();
+            n.Value = _seed * 100000 + i;
+            n.Payload = Stamped(n.Value);
+            n.Next = head;
+            head = n;
+        }
+
+        for (Node? n = head; n != null; n = n.Next)
+        {
+            if ((n.Value & 1) != 0) n.Payload = null;
+        }
+
+        GC.Collect();
+
+        for (Node? n = head; n != null; n = n.Next)
+        {
+            if ((n.Value & 1) != 0) n.Payload = Stamped(n.Value);
+        }
+
+        for (Node? n = head; n != null; n = n.Next)
+        {
+            if (!Holds(n.Payload, n.Value)) Intact = false;
+        }
+        Head = head;
+    }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        int workers = 4;
+        int rounds = 10;
+        bool intact = true;
+        long before = Gc.Collections;
+
+        for (int round = 0; round < rounds; round++)
+        {
+            Worker[] bodies = new Worker[workers];
+            Thread[] threads = new Thread[workers];
+
+            for (int i = 0; i < workers; i++)
+            {
+                bodies[i] = new Worker(i + round * workers);
+                threads[i] = Thread.Start(bodies[i]);
+            }
+            for (int i = 0; i < workers; i++)
+            {
+                threads[i].Join();
+                if (!bodies[i].Intact) intact = false;
+            }
+        }
+
+        Sys.Print("rounds ");
+        Sys.PrintInt(rounds);
+        Sys.PrintLine();
+        Sys.Print("payloads intact ");
+        Sys.Print(intact ? "True" : "False");
+        Sys.PrintLine();
+        Sys.Print("collected ");
+        Sys.Print(Gc.Collections > before ? "True" : "False");
+        Sys.PrintLine();
+        return 0;
+    }
+}
