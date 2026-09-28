@@ -4284,6 +4284,28 @@ static class GcThreads
         }
     }
 
+    /// The blocks that owe the open round, into `blocks` with each one's
+    /// state into `states`: how many there are, however many fit. Nothing is
+    /// allocated -- a kernel asks this from inside a round that has gone on
+    /// too long, to say which thread it waits for.
+    public static int Owing(long[] blocks, long[] states)
+    {
+        long at = GcLock.Words();
+        long epoch = Sys.Peek(at + GcLock.Epoch);
+        if (Sys.Peek(at + GcLock.Pending) <= 0) return 0;
+        int n = 0;
+        GcLock.Enter();
+        for (long i = 0; i < _count; i++)
+        {
+            long block = At(i);
+            if (GcLock.IsCollector(block) || Sys.Peek(block + Tls.Epoch) == epoch) continue;
+            if (n < blocks.Length) { blocks[n] = block; states[n] = Sys.Peek(block + Tls.State); }
+            n = n + 1;
+        }
+        GcLock.Exit();
+        return n;
+    }
+
     /// Whether `block` owes the round that is open.
     public static bool Owes(long block)
     {
