@@ -9584,15 +9584,49 @@ class Exception
 
     /// WHERE IT WAS THROWN: one line a frame, newest first, in .NET's own
     /// wording -- `   at Type.Method in file.cor:line N`.
-    public string StackTrace => _trace;
+    public string StackTrace => Named();
 
     /// Written by the runtime at the throw and by nothing else. Named with the
     /// trailing '$' the compiler reserves, so no program can call it by
     /// accident and none can be written that does.
     public string Trace$
     {
-        get { return _trace; }
-        set { _trace = value; }
+        get { return Named(); }
+        set
+        {
+            _trace = value;
+            _site = null;
+            _frames = null;
+        }
+    }
+
+    // THE THROW RECORDS ADDRESSES; READING NAMES THEM, as .NET's does. A
+    // compiler that throws and catches to back out of a guess never reads the
+    // trace, and naming it at every throw was a search of the image's
+    // function table for each of up to 32 frames.
+    string? _site;
+    long[]? _frames;
+
+    /// At the throw: the site's own line and the return addresses above it.
+    public void Thrown$(string site, long[] frames)
+    {
+        _trace = "";
+        _site = site;
+        _frames = frames;
+    }
+
+    string Named()
+    {
+        string? site = _site;
+        long[]? frames = _frames;
+        if (site != null && frames != null)
+        {
+            string callers = Runtime.TraceOf(frames);
+            _trace = callers.Length == 0 ? site : String.Concat(site, String.Concat("\n", callers));
+            _site = null;
+            _frames = null;
+        }
+        return _trace;
     }
 
     /// What went wrong, in words.
@@ -9644,7 +9678,8 @@ class Exception
             text = String.Concat(text, String.Concat("\n", String.Concat(" ---> ", inner.ToString())));
             text = String.Concat(text, String.Concat("\n", "   --- End of inner exception stack trace ---"));
         }
-        if (_trace.Length > 0) text = String.Concat(text, String.Concat("\n", _trace));
+        string trace = Named();
+        if (trace.Length > 0) text = String.Concat(text, String.Concat("\n", trace));
         return text;
     }
 }

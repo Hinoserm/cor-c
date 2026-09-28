@@ -1851,23 +1851,55 @@ static class Runtime
     /// own frame pointer -- one instruction -- and the answer does not depend on
     /// what was inlined into what.
     public static string Trace(long from) {
-        StringBuilder made = new StringBuilder();
+        return TraceOf(Frames(from));
+    }
+
+    /// The return addresses of the frames above `from`, newest first: what a
+    /// trace is made of, taken while the stack still holds them. Naming them
+    /// waits for somebody to read the trace (TraceOf), as .NET's does -- a
+    /// throw pays for a walk of the frame chain, not for a search of the
+    /// image's function table per frame, which made every exception a
+    /// program caught and forgot cost thousands of lookups.
+    public static long[] Frames(long from) {
+        int count = 0;
         long frame = from;
-        int taken = 0;
+        while (count < TraceDepth) {
+            long next = StepFrame(frame);
+            if (next == -1) { break; }
+            count = count + 1;
+            frame = next;
+        }
 
-        while (frame != 0 && taken < TraceDepth) {
-            // [frame] is the caller's frame pointer, the word after it the
-            // return address: the chain every prologue here builds.
-            long next = Sys.Peek(frame);
-            long ret = Sys.Peek(frame + WordSize.Bytes);
-            if (ret == 0) { break; }
+        long[] frames = new long[count];
+        frame = from;
+        for (int i = 0; i < count; i++) {
+            frames[i] = Sys.Peek(frame + WordSize.Bytes);
+            frame = Sys.Peek(frame);
+        }
+        return frames;
+    }
 
-            // The chain runs towards the top of the stack. Anything else is a
-            // frame somebody built by hand, or rubbish, and following it would
-            // read whatever memory that number points at.
-            if (next != 0 && next <= frame) { break; }
+    /// The caller's frame of `frame`, 0 at the chain's end, or -1 when this
+    /// frame is not one to read: none, no return address, or a link that does
+    /// not run towards the top of the stack -- a frame somebody built by hand,
+    /// or rubbish, and following it would read whatever memory it points at.
+    /// [frame] is the caller's frame pointer, the word after it the return
+    /// address: the chain every prologue here builds.
+    static long StepFrame(long frame) {
+        if (frame == 0) { return -1; }
+        long next = Sys.Peek(frame);
+        if (Sys.Peek(frame + WordSize.Bytes) == 0) { return -1; }
+        if (next != 0 && next <= frame) { return -1; }
+        return next;
+    }
 
-            string? said = Frame(ret - 1);
+    /// The frames Frames took, named: one line a frame in .NET's wording, up
+    /// to the first address no function this image describes contains.
+    public static string TraceOf(long[] frames) {
+        StringBuilder made = new StringBuilder();
+
+        for (int i = 0; i < frames.Length; i++) {
+            string? said = Frame(frames[i] - 1);
             if (said == null) { break; }
 
             // ONLY METHODS, as .NET lists only managed frames: the entry stub
@@ -1876,8 +1908,6 @@ static class Runtime
                 if (made.Length > 0) { made.Append('\n'); }
                 made.Append(said);
             }
-            taken = taken + 1;
-            frame = next;
         }
         return made.ToString();
     }
@@ -1944,9 +1974,7 @@ static class Runtime
         // The iterator stop signal has no reader to show a trace to.
         if (thrown is IteratorStopSignal) { return; }
         if (thrown is Exception) {
-            Exception e = (Exception)thrown;
-            string callers = Trace(frame);
-            e.Trace$ = callers.Length == 0 ? site : String.Concat(site, String.Concat("\n", callers));
+            ((Exception)thrown).Thrown$(site, Frames(frame));
         }
     }
 
