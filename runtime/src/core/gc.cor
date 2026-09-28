@@ -2205,11 +2205,30 @@ static class Gc
     static void ZeroWords(long from, long to)
     {
         long p = from;
+        long w = WordSize.Bytes;
+
+        // EIGHT WORDS A TURN. Every reused buffer and hole is cleared here,
+        // and on a 32-bit processor the pointer is a 64-bit number: a word at
+        // a time spent its time adding, comparing and spilling that, not
+        // storing.
+        long unrolled = to - 8 * w;
+        while (p <= unrolled)
+        {
+            Sys.Poke(p, Zero);
+            Sys.Poke(p + w, Zero);
+            Sys.Poke(p + 2 * w, Zero);
+            Sys.Poke(p + 3 * w, Zero);
+            Sys.Poke(p + 4 * w, Zero);
+            Sys.Poke(p + 5 * w, Zero);
+            Sys.Poke(p + 6 * w, Zero);
+            Sys.Poke(p + 7 * w, Zero);
+            p = p + 8 * w;
+        }
 
         while (p < to)
         {
             Sys.Poke(p, Zero);
-            p = p + WordSize.Bytes;
+            p = p + w;
         }
     }
 
@@ -2707,6 +2726,13 @@ static class Gc
         if (highest < HeapChunks.First(chunk))
         {
             return 0;
+        }
+
+        // A REFERENCE IS A PAYLOAD'S START nearly always -- an interior
+        // pointer is a span or a string routine's -- and that is one bit.
+        if ((at & 7) == 0 && HeapChunks.IsStart(chunk, highest))
+        {
+            return highest;
         }
 
         long block = HeapChunks.StartAtOrBelow(chunk, highest);
@@ -4716,8 +4742,10 @@ static class HeapChunks
             bits = Sys.Peek(starts + WordSize.Bytes + word * WordSize.Bytes) & WordSize.AddressMask;
         }
 
-        long top = StartBitMask;
-        while ((bits & (1L << (int)top)) == 0) top = top - 1;
+        // The highest set bit by counting, not by stepping down a 64-bit
+        // word a bit at a time: this answers every card an old block lies
+        // in, and every pointer the marker resolves.
+        long top = 63 - Runtime.LeadingZeroCount(bits);
         return chunk + (word * StartBits + top) * 8;
     }
 
@@ -4739,8 +4767,7 @@ static class HeapChunks
             bits = Sys.Peek(starts + WordSize.Bytes + word * WordSize.Bytes) & WordSize.AddressMask;
         }
 
-        long low = 0;
-        while ((bits & (1L << (int)low)) == 0) low = low + 1;
+        long low = Runtime.TrailingZeroCount(bits);
         return chunk + (word * StartBits + low) * 8;
     }
 
