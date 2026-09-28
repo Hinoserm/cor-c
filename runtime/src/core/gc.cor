@@ -237,6 +237,14 @@ static class Gc
 
     // Work counters, for finding out where a collection's time goes.
     public static long MarkCalls;
+    // WHERE A MINOR CYCLE'S ROOT WORDS COME FROM, counted for the profile:
+    // the kilobytes of old chunks' cards, of young chunks' (by block), the
+    // blocks the stacks held, and the stacks and registers themselves.
+    public static long OldCardWords;
+    public static long YoungCardWords;
+    public static long HeldWords;
+    public static long StackWords;
+    public static long TakenCards;
     public static long WalkSteps;
     public static long ProbeSteps;
     public static long SweepVisits;
@@ -503,6 +511,7 @@ static class Gc
     public static void ScanRoots(long from, long to)
     {
         long p = (from + WordSize.Bytes - 1) & -WordSize.Bytes;
+        StackWords = StackWords + (to - p) / WordSize.Bytes;
 
         while (p < to)
         {
@@ -532,6 +541,7 @@ static class Gc
             if ((word & SizeMask) == size && (word & (FlagFree | FlagMark)) == FlagMark
                 && Sys.Peek(block + size - FooterBytes) == word)
             {
+                HeldWords = HeldWords + size / WordSize.Bytes;
                 ScanBlock(block, size);
             }
         }
@@ -624,12 +634,14 @@ static class Gc
                     long to = from + (1 << Runtime.CardShift);
                     if (from < first) from = first;
                     if (to > end) to = end;
+                    TakenCards = TakenCards + 1;
                     if (indexed)
                     {
                         ScanCardBlocks(chunk, from, to);
                     }
                     else
                     {
+                        OldCardWords = OldCardWords + (to - from) / WordSize.Bytes;
                         ScanRange(from, to);
                     }
                 }
@@ -686,6 +698,7 @@ static class Gc
             return;
         }
         long vt = Sys.Peek(payload) & WordSize.AddressMask;
+        YoungCardWords = YoungCardWords + (high - low) / w;
         if (kind != KindObject || vt == 0)
         {
             ScanRange(low, high);
