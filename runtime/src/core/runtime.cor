@@ -617,8 +617,36 @@ static class Runtime
         long held = Sys.Peek(at + offset);
         if (held != 0)
         {
+            if (FreeLogRing != 0)
+            {
+                LogFree(held, at, offset, Sys.Peek(Sys.FramePointer() + WordSize.Bytes));
+            }
             Gc.Free(held);
         }
+    }
+
+    // THE FIELD FREES, LOGGED (CORSAC_FREE_LOG). A ring of the last entries,
+    // four words each -- what was freed, whose field it was, the offset, and
+    // the return address into the code that freed it -- whose first word
+    // counts them. Nothing reads it here: a debugger or a scan of the process
+    // looks for a freed block something live still points at, and the entry
+    // names the free that took it.
+    public const long FreeLogEntries = 1048576;
+    public static long FreeLogRing;
+
+    public static void StartFreeLog()
+    {
+        FreeLogRing = Platform.Map((FreeLogEntries * 4 + 1) * WordSize.Bytes);
+    }
+
+    static void LogFree(long held, long owner, long offset, long site)
+    {
+        long n = Sys.AtomicAdd(FreeLogRing, 1) % FreeLogEntries;
+        long entry = FreeLogRing + (1 + n * 4) * WordSize.Bytes;
+        Sys.Poke(entry, held);
+        Sys.Poke(entry + WordSize.Bytes, owner);
+        Sys.Poke(entry + 2 * WordSize.Bytes, offset);
+        Sys.Poke(entry + 3 * WordSize.Bytes, site);
     }
 
     /// What a field free becomes when the link finds the field is not clean

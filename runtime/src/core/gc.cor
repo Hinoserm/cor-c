@@ -2294,6 +2294,10 @@ static class Gc
     {
         _verify = Platform.VerifyFrees();
         IgnoredFrees = Platform.IgnoreFrees();
+        if (Platform.FreeLog())
+        {
+            Runtime.StartFreeLog();
+        }
         if (_verify)
         {
             StartQuarantine();

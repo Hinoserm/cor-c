@@ -144,6 +144,11 @@ public static class IrLinkOptimizer
                 {
                     bool clean = freer is not null && solved is { Opaque: false }
                         && solved.Fresh.Contains(offset) && !solved.Dirty.Contains(offset);
+                    if (Environment.GetEnvironmentVariable("CORC_TRACE_FIELD_SITES") is not null)
+                        Console.Error.WriteLine("field site " + name + " offset " + offset + (clean ? " FREED" : " kept")
+                            + " solved fresh=[" + string.Join(",", solved?.Fresh ?? Array.Empty<long>()) + "] dirty=["
+                            + string.Join(",", solved?.Dirty ?? Array.Empty<long>()) + "] opaque=" + (solved?.Opaque ?? true)
+                            + " merges=" + string.Join(" ", fields.Merges.Take(8).Select(m => m.Callee + ":" + m.Argument)));
                     (ObjectFile owner, Symbol target) = clean ? freer!.Value : keeper;
                     owner.Symbols.Add(new Symbol { Name = name, Section = target.Section, Offset = target.Offset,
                         Size = target.Size, IsFunction = true, Global = true });

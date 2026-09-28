@@ -145,6 +145,11 @@ static class Platform
 
     public static bool VerifyFrees() => EnvironmentFlag("CORSAC_VERIFY_FREES=");
 
+    /// CORSAC_FREE_LOG=1: every field free the compiler wrote is recorded in a
+    /// ring (Runtime.FreeLog), for a debugger or a scan of the process to
+    /// find the free that took an object still in use.
+    public static bool FreeLog() => EnvironmentFlag("CORSAC_FREE_LOG=");
+
     /// CORSAC_IGNORE_FREES: which frees the compiler wrote are ignored, the
     /// collector finding that garbage instead. What it is for is telling a
     /// fault that a free makes from one the collector makes, and then which
