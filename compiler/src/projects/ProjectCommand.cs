@@ -269,7 +269,7 @@ public static class ProjectCommand
             turn = (turn + 1) % processes;
         }
         int each = Math.Max(1, workers / processes);
-        List<System.Diagnostics.Process> children = new();
+        List<(System.Diagnostics.Process Child, string Share)> children = new();
         for (int i = 0; i < processes; i++)
         {
             if (shares[i].Count == 0) continue;
@@ -280,14 +280,35 @@ public static class ProjectCommand
             start.ArgumentList.Add("--units"); start.ArgumentList.Add(share);
             start.ArgumentList.Add("--jobs"); start.ArgumentList.Add(each.ToString());
             foreach (string option in options) start.ArgumentList.Add(option);
-            children.Add(System.Diagnostics.Process.Start(start)!);
+            children.Add((System.Diagnostics.Process.Start(start)!, share));
         }
+        // EACH ONE WATCHED ON ITS OWN, and a failure said the moment it
+        // happens. Waited on in turn, a child killed by a signal -- which
+        // writes nothing, the kernel does the talking -- was not noticed
+        // until every child before it had finished, and then only as a
+        // failed build with no word of which process or why.
         bool ok = true;
-        foreach (System.Diagnostics.Process child in children)
+        object gate = new();
+        List<Thread> waits = new();
+        foreach ((System.Diagnostics.Process child, string share) in children)
         {
-            child.WaitForExit();
-            if (child.ExitCode != 0) ok = false;
+            Thread wait = new(() =>
+            {
+                child.WaitForExit();
+                int code = child.ExitCode;
+                if (code == 0) return;
+                lock (gate)
+                {
+                    ok = false;
+                    Console.Error.WriteLine("corc: the compile-project process for " + share + " (pid " + child.Id + ") "
+                        + (code > 128 ? "was killed by signal " + (code - 128) : "exited with code " + code)
+                        + "; units of it not yet compiled are not built");
+                }
+            });
+            wait.Start();
+            waits.Add(wait);
         }
+        foreach (Thread wait in waits) wait.Join();
         return ok;
     }
 
