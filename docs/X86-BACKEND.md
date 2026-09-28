@@ -1056,18 +1056,18 @@ blocks.
 - *Taken at the snapshot.* When a cycle's start tables are built, with the
   heap lock held, every set card is cleared (`Gc.TakeCards`), and a store
   made after that -- above all of an object allocated after it, which the
-  cycle keeps but cannot mark -- leaves its card set for the next cycle.
-  What a minor cycle reads for them depends on the chunk. In an OLD chunk
-  every block is old, and the kilobytes of its set cards are moved to a
-  second table and read word by word while marking (`ScanTakenCards`). A
-  YOUNG chunk's cards are never read as such: most of what they cover is
-  young, and reading it as roots would keep -- and promote -- everything a
-  dead young object pointed at. The snapshot walk meets every old block
-  in it before the cards are cleared, and one with a card set is made grey
-  again, its scanned flag taken off and the block queued, to be read by its
-  descriptor like any object (`Gc.OldWritten`); a block over 4 KB has only
-  its set kilobytes taken, and a leaf is skipped. Only a thread's buffer,
-  which that walk steps over, keeps its cards.
+  cycle keeps but cannot mark -- leaves its card set for the next cycle. A
+  minor cycle moves the cards it clears to a second table and reads those
+  kilobytes while marking (`ScanTakenCards`), once the start tables are
+  whole. In an OLD chunk every block is old and the kilobyte is read word by
+  word. In a YOUNG chunk it is read block by block (`ScanCardBlocks`): only
+  the marked blocks -- the old ones, and whatever the cycle has reached --
+  and of each only the words its descriptor calls references that lie in
+  the kilobyte; a leaf, or an array of integers, not at all. The young
+  blocks there are never roots: read as roots, every young object a dead one
+  pointed at would be kept, and made old. Nothing is queued but the young
+  objects found, so a heap of written old objects does not overflow the
+  mark queue.
 - *And again after the first round.* A store whose barrier found marking
   off just before the snapshot reports nothing, and its card may be set
   just after the cards were taken. By the end of a concurrent cycle's first

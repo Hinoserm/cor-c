@@ -261,7 +261,7 @@ static class Gc
     // are the ordinary ones, the CARDS -- a byte for every kilobyte of the
     // address space, set by the compiler after every store of a reference
     // (Runtime.Cards) -- which lead it to the old objects written since the
-    // last cycle (TakeCards, OldWritten), and the blocks the stacks held at the last
+    // last cycle (TakeCards, ScanTakenCards), and the blocks the stacks held at the last
     // collection (Hold): an object the compiler is still initialising is
     // written without a barrier, a collection can fall between its allocation
     // and those writes, and it is on a stack when it does. A pointer into an
@@ -538,15 +538,9 @@ static class Gc
     }
 
     /// AT THE SNAPSHOT: every set card over the heap cleared, with the heap
-    /// lock held, and the ones a minor cycle must read moved into the taken
-    /// table. A card a store sets afterwards stays set for the next cycle.
-    ///
-    /// A YOUNG CHUNK'S CARDS ARE NOT READ: most of what they cover is young,
-    /// and reading it as roots would keep every young object a dead one
-    /// pointed at -- and make it old. The old blocks in it were walked just
-    /// before, and those with a card set were queued whole or had their own
-    /// cards taken (OldWritten). Only a thread's buffer, stepped over by that
-    /// walk, keeps its cards: it may hold the survivors of the last cycle.
+    /// lock held, and -- for a minor cycle -- moved into the taken table, to
+    /// be read while marking (ScanTakenCards). A card a store sets afterwards
+    /// stays set for the next cycle.
     static void TakeCards(bool minor)
     {
         long cards = Runtime.Cards;
@@ -554,7 +548,6 @@ static class Gc
         long chunk = HeapChunks.SnapshotChunk(0);
         while (chunk != 0)
         {
-            bool young = HeapChunks.IsYoung(chunk);
             long card = (HeapChunks.First(chunk) & WordSize.AddressMask) >> Runtime.CardShift;
             long last = ((HeapChunks.End(chunk) - 1) & WordSize.AddressMask) >> Runtime.CardShift;
             while (card <= last)
@@ -562,7 +555,7 @@ static class Gc
                 if (Sys.PeekByte(cards + card) != 0)
                 {
                     Sys.PokeByte(cards + card, 0);
-                    if (minor && (!young || InBuffer(card << Runtime.CardShift, (card + 1) << Runtime.CardShift)))
+                    if (minor)
                     {
                         Sys.PokeByte(_taken + card, 1);
                     }
@@ -599,65 +592,18 @@ static class Gc
         }
     }
 
-    /// Whether [from, to) overlaps a captured thread buffer.
-    static bool InBuffer(long from, long to)
-    {
-        long i = GcThreads.BufferAtOrAbove(from);
-        if (i > 0 && GcThreads.BufferLimit(i - 1) > from)
-        {
-            return true;
-        }
-        return i < GcThreads.BufferCount() && GcThreads.BufferBase(i) < to;
-    }
-
-    /// Blocks larger than this have their written kilobytes read again
-    /// rather than the whole of them (OldWritten).
-    const long RegreyMost = 4096;
-
-    /// An old block in a young chunk, met by a minor cycle's snapshot walk
-    /// before its cards are taken. With no card of it set, nothing it holds
-    /// has changed since it was last scanned. With one set, it is made grey
-    /// again -- its scanned flag taken off and the block queued -- so the
-    /// mark reads it by its descriptor, as it reads any object; one larger
-    /// than RegreyMost has only its set cards taken, to be read by the
-    /// kilobyte. A leaf holds no reference and is never read at all.
-    static void OldWritten(long block, long size)
-    {
-        long cards = Runtime.Cards;
-        long card = (block & WordSize.AddressMask) >> Runtime.CardShift;
-        long last = ((block + size - 1) & WordSize.AddressMask) >> Runtime.CardShift;
-        if (Sys.Peek(block + KindAt) == KindLeaf)
-        {
-            return;
-        }
-        if (size > RegreyMost)
-        {
-            while (card <= last)
-            {
-                if (Sys.PeekByte(cards + card) != 0)
-                {
-                    Sys.PokeByte(_taken + card, 1);
-                }
-                card = card + 1;
-            }
-            return;
-        }
-        while (card <= last)
-        {
-            if (Sys.PeekByte(cards + card) != 0)
-            {
-                ClearFlag(block, FlagScan);
-                Sys.AtomicAdd(GcLock.Words() + GcLock.Pushes, 1);
-                PushGrey(block);
-                return;
-            }
-            card = card + 1;
-        }
-    }
-
-    /// A minor cycle's other roots: the kilobytes whose cards were taken at the
-    /// snapshot, read word by word -- a pointer an old object was given since
-    /// the last cycle is in one of them -- and their taken cards cleared.
+    /// A MINOR CYCLE'S OTHER ROOTS: the kilobytes whose cards were taken at
+    /// the snapshot -- a pointer an old object was given since the last cycle
+    /// is in one of them -- read once the start tables are whole, and their
+    /// taken cards cleared.
+    ///
+    /// AN OLD CHUNK'S are read word by word: every block in it is old, and
+    /// its start table is the last major cycle's, which this one does not
+    /// trust. A YOUNG CHUNK'S are read block by block (ScanCardBlocks): only
+    /// what is marked -- the old, and whatever this cycle has reached -- and
+    /// only the words of it that are references and in the kilobyte. The
+    /// young blocks there are not roots: read as roots, every young object a
+    /// dead one pointed at would be kept, and made old.
     static void ScanTakenCards()
     {
         long which = 0;
@@ -666,6 +612,7 @@ static class Gc
         {
             long first = HeapChunks.First(chunk);
             long end = HeapChunks.End(chunk);
+            bool indexed = _snapshots && HeapChunks.StartsCycle(chunk) == _cycle;
             long card = (first & WordSize.AddressMask) >> Runtime.CardShift;
             long last = ((end - 1) & WordSize.AddressMask) >> Runtime.CardShift;
             while (card <= last)
@@ -675,12 +622,121 @@ static class Gc
                     Sys.PokeByte(_taken + card, 0);
                     long from = card << Runtime.CardShift;
                     long to = from + (1 << Runtime.CardShift);
-                    ScanRange(from < first ? first : from, to > end ? end : to);
+                    if (from < first) from = first;
+                    if (to > end) to = end;
+                    if (indexed)
+                    {
+                        ScanCardBlocks(chunk, from, to);
+                    }
+                    else
+                    {
+                        ScanRange(from, to);
+                    }
                 }
                 card = card + 1;
             }
             which = which + 1;
             chunk = HeapChunks.SnapshotChunk(which);
+        }
+    }
+
+    /// The marked blocks of [from, to) in a chunk whose starts this cycle
+    /// wrote, each read for its references in the range only.
+    static void ScanCardBlocks(long chunk, long from, long to)
+    {
+        long block = HeapChunks.StartAtOrBelow(chunk, from & -8);
+        if (block == 0)
+        {
+            block = HeapChunks.NextStart(chunk, from);
+        }
+        while (block != 0 && block < to)
+        {
+            long word = Sys.Peek(block);
+            long size = word & SizeMask;
+            if (size < Smallest)
+            {
+                return;
+            }
+            if (block + size > from && (word & (FlagFree | FlagMark)) == FlagMark)
+            {
+                ScanBlockWithin(block, size, from, to);
+            }
+            block = HeapChunks.NextStart(chunk, block + 8);
+        }
+    }
+
+    /// ScanBlock's rules, over the part of a block inside [from, to): a
+    /// leaf not at all, an object by its reference map or its reference
+    /// elements, an array of integers not at all (its stores take no card),
+    /// and anything no descriptor describes word by word.
+    static void ScanBlockWithin(long block, long size, long from, long to)
+    {
+        long kind = Sys.Peek(block + KindAt);
+        if (kind == KindLeaf)
+        {
+            return;
+        }
+        long w = WordSize.Bytes;
+        long payload = block + HeaderBytes;
+        long end = block + size - FooterBytes;
+        long low = from > payload ? from : payload;
+        long high = to < end ? to : end;
+        if (low >= high)
+        {
+            return;
+        }
+        long vt = Sys.Peek(payload) & WordSize.AddressMask;
+        if (kind != KindObject || vt == 0)
+        {
+            ScanRange(low, high);
+            return;
+        }
+        long desc = vt - DescWords * w;
+        if ((Sys.Peek(desc + DescSelfWord * w) & WordSize.AddressMask) != desc)
+        {
+            ScanRange(low, high);
+            return;
+        }
+        long flags = Sys.Peek(desc + DescFlagsWord * w);
+        if ((flags & SequenceFlag) != 0)
+        {
+            if ((flags & StringFlag) != 0 || (Sys.Peek(desc + DescGcFlagsWord * w) & ElementsAreReferences) == 0)
+            {
+                return;
+            }
+            if (Sys.Peek(desc + DescSizeWord * w) != w)
+            {
+                ScanRange(low, high);
+                return;
+            }
+            long count = Sys.Peek(payload + ArrayCountAt) & 0x7FFFFFFF;
+            long first = payload + Sys.Peek(desc + DescPayloadWord * w);
+            long last = first + count * w;
+            if (last > end || last < first)
+            {
+                ScanRange(low, high);
+                return;
+            }
+            ScanRange(low > first ? low : first, high < last ? high : last);
+            return;
+        }
+        long map = Sys.Peek(desc + DescRefMapWord * w) & WordSize.AddressMask;
+        if (map == 0)
+        {
+            return;
+        }
+        long words = Sys.Peek(map);
+        long index = (low - payload + w - 1) / w;
+        long stop = (high - payload + w - 1) / w;
+        if (stop > words) stop = words;
+        while (index < stop)
+        {
+            long bits = Sys.Peek(map + (1 + index / 32) * w) & 0xFFFFFFFF;
+            if (((bits >> (int)(index & 31)) & 1) != 0)
+            {
+                MarkAt(Sys.Peek(payload + index * w));
+            }
+            index = index + 1;
         }
     }
 
@@ -2482,27 +2538,6 @@ static class Gc
         }
     }
 
-    /// Takes `flag` off a block's header, and then its footer, against every
-    /// other thread changing them.
-    static void ClearFlag(long block, long flag)
-    {
-        while (true)
-        {
-            long word = Sys.Peek(block) & WordSize.AddressMask;
-
-            if ((word & flag) == 0)
-            {
-                return;
-            }
-
-            if ((Sys.Cas(block, word, word & ~flag) & WordSize.AddressMask) == word)
-            {
-                SyncFooter(block);
-                return;
-            }
-        }
-    }
-
     /// The footer brought up to the header. Two threads adding two flags
     /// may write their footers in either order; the one that sees the header
     /// change under it writes again.
@@ -3853,9 +3888,6 @@ static class Gc
                     // WHERE EVERY OBJECT STARTS, as of this stop: what the
                     // marker finds objects by from here on (SnapshotBlock).
                     if ((header & FlagFree) == 0) HeapChunks.SetStart(chunk, block);
-                    // AN OLD BLOCK IN A YOUNG CHUNK that was written since the
-                    // last cycle is read again, precisely (OldWritten).
-                    if (_minor && (header & (FlagFree | FlagMark)) == FlagMark) OldWritten(block, size);
                     // A MAJOR CYCLE MAKES EVERY BLOCK YOUNG AGAIN, taking off
                     // the marks the old kept, and finds the live ones afresh.
                     if (_generational && !_minor && (header & (FlagMark | FlagScan)) != 0)
@@ -4341,7 +4373,9 @@ static class HeapChunks
     // counts, characters, flags -- point nowhere near the heap: the bit
     // turns those away with one load, where the search of the index cost a
     // dozen 64-bit compares on a 32-bit processor. That search was a third
-    // of all the processor time of a 233 MHz board's boot.
+    // of all the processor time of a 233 MHz board's boot. In long mode;
+    // a 32-bit process has a word per megabyte instead, which also names
+    // the chunk (_snapMegabytes).
     static long _snapRegions;
     const long RegionShift = 16;
 #if TARGET_64BIT
@@ -4372,7 +4406,9 @@ static class HeapChunks
         return bitmap;
     }
 #else
-    const long RegionMapBytes = 8192;           // 2^32 >> 16 bits
+    const long MegabyteShift = 20;
+    const long MegabyteMapBytes = 4096 * 4;     // a word per megabyte of 4 GiB
+    static long _snapMegabytes;
 #endif
 
     public static bool SnapshotIndex()
@@ -4423,18 +4459,24 @@ static class HeapChunks
             }
         }
 #else
-        if (_snapRegions == 0) _snapRegions = Platform.Map(RegionMapBytes);
-        if (_snapRegions != 0)
+        // A WORD FOR EVERY MEGABYTE OF THE ADDRESS SPACE, naming the first
+        // snapshot chunk that reaches into it (its index plus one; 0 for none).
+        // A chunk is taken a megabyte at a time unless a cap says otherwise,
+        // so a megabyte has one chunk in it or two, and OfSnapshot answers
+        // with a load and a compare where a search of the index took a dozen
+        // 64-bit compares -- for every word the marker scans.
+        if (_snapMegabytes == 0) _snapMegabytes = Platform.Map(MegabyteMapBytes);
+        if (_snapMegabytes != 0)
         {
-            for (long i = 0; i < RegionMapBytes; i = i + WordSize.Bytes) Sys.Poke(_snapRegions + i, 0);
+            for (long i = 0; i < MegabyteMapBytes; i = i + WordSize.Bytes) Sys.Poke(_snapMegabytes + i, 0);
             for (long i = 0; i < _snapCount; i++)
             {
                 long chunk = Sys.Peek(_snap + i * WordSize.Bytes) & WordSize.AddressMask;
-                long last = ((Sys.Peek(chunk + ChunkLimit) & WordSize.AddressMask) - 1) >> RegionShift;
-                for (long r = chunk >> RegionShift; r <= last; r++)
+                long last = ((Sys.Peek(chunk + ChunkLimit) & WordSize.AddressMask) - 1) >> MegabyteShift;
+                for (long m = chunk >> MegabyteShift; m <= last; m++)
                 {
-                    long at = _snapRegions + (r >> 3);
-                    Sys.PokeByte(at, Sys.PeekByte(at) | (1 << (int)(r & 7)));
+                    long at = _snapMegabytes + m * WordSize.Bytes;
+                    if (Sys.Peek(at) == 0) Sys.Poke(at, i + 1);
                 }
             }
         }
@@ -4460,10 +4502,20 @@ static class HeapChunks
             if ((Sys.PeekByte(bitmap + (within >> 3)) & (1 << (int)(within & 7))) == 0) return 0;
         }
 #else
-        if (_snapRegions != 0)
+        if (_snapMegabytes != 0)
         {
-            long region = (at & WordSize.AddressMask) >> RegionShift;
-            if ((Sys.PeekByte(_snapRegions + (region >> 3)) & (1 << (int)(region & 7))) == 0) return 0;
+            long address = at & WordSize.AddressMask;
+            long i = (Sys.Peek(_snapMegabytes + (address >> MegabyteShift) * WordSize.Bytes) & WordSize.AddressMask) - 1;
+            if (i < 0) return 0;
+            // The chunks from there on, in address order, while one could hold it.
+            while (i < _snapCount)
+            {
+                long chunk = Sys.Peek(_snap + i * WordSize.Bytes) & WordSize.AddressMask;
+                if (chunk > address) return 0;
+                if (address < (Sys.Peek(chunk + ChunkLimit) & WordSize.AddressMask)) return chunk;
+                i = i + 1;
+            }
+            return 0;
         }
 #endif
         long low = 0, high = _snapCount;
