@@ -15,6 +15,28 @@ public static class MachineMemory
     /// available (Linux MemAvailable) and what the runtime's own heap limit
     /// leaves, if either is known.
     /// </summary>
+    /// <summary>
+    /// What the MACHINE has available (Linux MemAvailable), whatever this
+    /// process's own heap may hold; 0 when unknown. What decides how many
+    /// processes a 32-bit build can spread over, each with its own address
+    /// space.
+    /// </summary>
+    public static long MachineAvailable()
+    {
+        try
+        {
+            foreach (string line in File.ReadLines("/proc/meminfo"))
+            {
+                if (!line.StartsWith("MemAvailable:", StringComparison.Ordinal)) continue;
+                string[] parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                return parts.Length >= 2 && long.TryParse(parts[1], out long kib) ? kib * 1024 : 0;
+            }
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+        return 0;
+    }
+
     public static long Available()
     {
         long best = long.MaxValue;

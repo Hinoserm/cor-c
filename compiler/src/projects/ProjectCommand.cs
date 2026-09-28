@@ -194,9 +194,17 @@ public static class ProjectCommand
             File.WriteAllLines(list, group.Units.Select(unit => unit.Source + "\t" + unit.Object + "\t" + unit.Object + ".deps\t" + (group.Entry ? "entry" : "lib")));
             Dictionary<string, DateTime> before = group.Units.ToDictionary(unit => unit.Object,
                 unit => File.Exists(unit.Object) ? File.GetLastWriteTimeUtc(unit.Object) : DateTime.MinValue, StringComparer.Ordinal);
-            List<string> args = new() { "--units", list, "--jobs", workers.ToString() };
-            args.AddRange(group.Args);
-            if (ProjectCompile.Run(args.ToArray()) != 0) return 1;
+            int processes = Processes(workers, group.Units.Count);
+            if (processes > 1)
+            {
+                if (!InProcesses(list, group.Units, group.Entry, group.Args, processes, workers)) return 1;
+            }
+            else
+            {
+                List<string> args = new() { "--units", list, "--jobs", workers.ToString() };
+                args.AddRange(group.Args);
+                if (ProjectCompile.Run(args.ToArray()) != 0) return 1;
+            }
             changed += group.Units.Count(unit => File.GetLastWriteTimeUtc(unit.Object) != before[unit.Object]);
         }
         foreach (var source in generation)
@@ -220,6 +228,67 @@ public static class ProjectCommand
         }
         Console.Error.WriteLine("project: " + changed + "/" + owners.Count + " source units rebuilt; output " + output);
         return 0;
+    }
+
+    /// <summary>
+    /// How many processes to spread a group of units over. One, as a rule:
+    /// the units share a process's caches and its heap. But a 32-bit process
+    /// has four gigabytes of address space at most, and the self-hosted
+    /// compiler holds a gigabyte for a unit -- so on a machine with the cores
+    /// and the memory for several such spaces, a single process compiles one
+    /// unit at a time and leaves the rest idle. There the group is dealt out
+    /// to child processes of this same compiler, each with a space of its
+    /// own. A small machine -- one processor, or memory for one space --
+    /// compiles in process as before. What is compiled never changes: every
+    /// unit is compiled on its own, with the same options, wherever it runs.
+    /// </summary>
+    private static int Processes(int workers, int units)
+    {
+        const long Space = 4L * 1024 * 1024 * 1024;
+        if (Environment.Is64BitProcess || workers < 2 || units < 2 || Environment.ProcessPath is null) return 1;
+        long memory = Corsac.Lang.Lto.MachineMemory.MachineAvailable();
+        int spaces = (int)Math.Min(int.MaxValue, memory / Space);
+        return Math.Max(1, Math.Min(Math.Min(workers / 2, spaces), units));
+    }
+
+    /// <summary>
+    /// A group's units dealt out to `processes` child compile-project runs of
+    /// this compiler, largest first and in turn so each gets its share of the
+    /// big ones, each with its share of the workers. Their output is this
+    /// process's; answers whether every one succeeded.
+    /// </summary>
+    private static bool InProcesses(string list, List<(string Source, string Object)> units, bool entry, List<string> options,
+        int processes, int workers)
+    {
+        List<(string Source, string Object)>[] shares = new List<(string Source, string Object)>[processes];
+        for (int i = 0; i < processes; i++) shares[i] = new();
+        int turn = 0;
+        foreach (var unit in units.OrderByDescending(unit => new FileInfo(unit.Source).Length).ThenBy(unit => unit.Source, StringComparer.Ordinal))
+        {
+            shares[turn].Add(unit);
+            turn = (turn + 1) % processes;
+        }
+        int each = Math.Max(1, workers / processes);
+        List<System.Diagnostics.Process> children = new();
+        for (int i = 0; i < processes; i++)
+        {
+            if (shares[i].Count == 0) continue;
+            string share = list[..^4] + "-" + i + ".tsv";
+            File.WriteAllLines(share, shares[i].Select(unit => unit.Source + "\t" + unit.Object + "\t" + unit.Object + ".deps\t" + (entry ? "entry" : "lib")));
+            System.Diagnostics.ProcessStartInfo start = new() { FileName = Environment.ProcessPath!, UseShellExecute = false };
+            start.ArgumentList.Add("compile-project");
+            start.ArgumentList.Add("--units"); start.ArgumentList.Add(share);
+            start.ArgumentList.Add("--jobs"); start.ArgumentList.Add(each.ToString());
+            foreach (string option in options) start.ArgumentList.Add(option);
+            children.Add(System.Diagnostics.Process.Start(start)!);
+        }
+        bool ok = true;
+        foreach (System.Diagnostics.Process child in children)
+        {
+            child.WaitForExit();
+            if (child.ExitCode != 0) ok = false;
+        }
+        return ok;
     }
 
     private static bool Current(string output, string signature, string index)
