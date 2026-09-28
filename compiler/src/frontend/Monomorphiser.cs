@@ -117,6 +117,7 @@ public sealed class Monomorphiser
 
         for (int i = 0; i < template.TypeParams.Count && i < args.Count; i++)
         {
+            m.Settled(args[i]);
             map[template.TypeParams[i].Name] = args[i];
         }
 
@@ -199,6 +200,16 @@ public sealed class Monomorphiser
     /// </summary>
     private TypeRef Qualify(TypeRef r)
     {
+        // SPELT WHERE IT WAS WRITTEN already: a type argument, and every copy
+        // made of it in substituting it, is never read again from the scope of
+        // the template it was spliced into (Settled). Read again, a program's
+        // `Version` inside ReadOnlyCollection<T> -- declared in a namespace
+        // beneath System -- became System.Version, and the copy's interfaces
+        // were IList<System.Version>.
+        if (_settled.Contains(r))
+        {
+            return r;
+        }
         List<TypeRef> args = r.Args.Count == 0 ? r.Args : r.Args.Select(Qualify).ToList();
         List<TypeRef>? useArgs = r.UseArgs?.Select(Qualify).ToList();
         string full = Path(r.Name);
@@ -533,6 +544,7 @@ public sealed class Monomorphiser
 
             for (int i = 0; i < job.Template.TypeParams.Count && i < job.Args.Count; i++)
             {
+                Settled(job.Args[i]);
                 map[job.Template.TypeParams[i].Name] = job.Args[i];
             }
 
@@ -652,6 +664,29 @@ public sealed class Monomorphiser
 
     private static string TemplatePath(TypeDecl type)
         => type.Outer is null ? type.Name : type.Outer + "." + type.Name;
+
+    /// <summary>Type arguments already spelt where they were written, and their copies (Qualify).</summary>
+    private readonly HashSet<TypeRef> _settled = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>A type argument, and everything inside it, as spelt where it was written.</summary>
+    private void Settled(TypeRef r)
+    {
+        if (!_settled.Add(r))
+        {
+            return;
+        }
+        foreach (TypeRef a in r.Args)
+        {
+            Settled(a);
+        }
+        if (r.UseArgs is not null)
+        {
+            foreach (TypeRef a in r.UseArgs)
+            {
+                Settled(a);
+            }
+        }
+    }
 
     /// <summary>Paths of library templates moved into System: old path to new.</summary>
     private readonly Dictionary<string, string> _movedToSystem = new(StringComparer.Ordinal);
@@ -906,7 +941,7 @@ public sealed class Monomorphiser
                     || bound.Args.Count > 0 && _generic.TryGetValue(Arity(bound.Name, bound.Args.Count), out TypeDecl? template)
                        && template.Kind == TypeKind.Struct);
 
-            return new TypeRef
+            TypeRef substituted = new TypeRef
             {
                 Name = bound.Name,
                 ArrayRank = r.ArrayRank + bound.ArrayRank,
@@ -931,6 +966,8 @@ public sealed class Monomorphiser
                 TupleNames = bound.TupleNames is null ? null : new List<string>(bound.TupleNames),
                 Line = r.Line, Col = r.Col,
             };
+            _settled.Add(substituted);
+            return substituted;
         }
 
         // A TUPLE TYPE IS NEVER INSTANTIATED. There is no template called

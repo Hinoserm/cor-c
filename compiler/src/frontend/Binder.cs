@@ -247,6 +247,18 @@ public sealed partial class Binder
         TypeDecl? written = (_scope ?? _thisType)?.Decl;
         string within = _member?.Scope != null ? _member.Namespace : written?.Namespace ?? "";
         FileScope? file = _member?.Scope ?? written?.Scope;
+        // A SPECIALISATION'S OWN ARGUMENTS ARE THE TYPES THEY NAMED WHERE THEY
+        // WERE WRITTEN. The monomorphiser spells an argument out where it was
+        // written, so a simple one is a global type's -- a namespaced one
+        // would be dotted -- but the copy is read from the template's scope:
+        // a program's `Version` spliced into ReadOnlyCollection<T>, declared
+        // in a namespace beneath System, was read there as System.Version.
+        if (written is { Specialised: true, TemplateArgs.Count: > 0 } specialised && !name.Contains('.')
+            && specialised.TemplateArgs.Any(a => a.Name == name) && TypeCandidate(name, out sym) && sym is not null)
+        {
+            return true;
+        }
+
         // THE LIBRARY'S GLOBAL CODE FINDS ITS OWN TYPE FIRST where a program's
         // took the name and the library's was moved into System (MoveToSystem)
         // -- judged by the declaration, which keeps the move after the pass
@@ -1286,6 +1298,37 @@ public sealed partial class Binder
     /// Which member says how long depends on what it is -- an array and a span
     /// have a Length, a list has a Count -- and the checker knows by now.
     /// </summary>
+    /// <summary>
+    /// A target whose second reading is the first: a local, a parameter,
+    /// `this`, a literal. Anything else -- a call, a property, an element --
+    /// may do something or answer differently, and is evaluated once.
+    /// </summary>
+    private bool ReadTwiceForNothing(Expr target) => target switch
+    {
+        ThisExpr or LiteralExpr => true,
+        NameExpr n => Lookup(n.Name) is LocalSym or ParamSym,
+        _ => false,
+    };
+
+    /// <summary>
+    /// `target[^k]` with the target evaluated once and held (a PatternExpr's
+    /// subject, as ThroughIndexValue does): the element at the held value's
+    /// count less k, handed to `use` -- read as it is, or assigned to.
+    /// </summary>
+    private PatternExpr FromEndOnce(Expr target, FromEndExpr end, Func<IndexExpr, Expr> use)
+    {
+        SubjectExpr Held() => new() { Outer = 0, Line = end.Line, Col = end.Col };
+        IndexExpr element = new() { Target = Held(), Line = end.Line, Col = end.Col };
+        element.Args.Add(new BinaryExpr
+        {
+            Op = BinOp.Sub,
+            Left = new MemberExpr { Target = Held(), Name = "Length", Else = "Count", Line = end.Line, Col = end.Col },
+            Right = end.Offset,
+            Line = end.Line, Col = end.Col,
+        });
+        return new PatternExpr { Subject = target, Test = use(element), Line = end.Line, Col = end.Col };
+    }
+
     private Expr Counted(Expr target, FromEndExpr end)
     {
         Type had = Peek(target);
@@ -4715,6 +4758,29 @@ public sealed partial class Binder
                 _r.Boxes.Add(boxed);
             }
 
+            // AN ARRAY AS AN IList<T> OR ICollection<T> is .NET's helper over it
+            // (SZArrayHelper<T>): the indexer writes the array, and the
+            // mutators that would change its size refuse. Rewritten to the
+            // call that makes one, `SZArrayHelper.Of<X>(array)` -- a generic
+            // method, which checking can still have specialised; the array is
+            // still evaluated for what it is inside it (Lowering.Eval's guard).
+            if (from.IsArray && at is Expr listed && ListFace(from, to) is Type listElement
+                && !_r.Rewrites.ContainsKey(listed) && RefOf(listElement) is TypeRef listRef)
+            {
+                MemberExpr maker = new()
+                {
+                    Target = new NameExpr { Name = "SZArrayHelper", Line = at.Line, Col = at.Col },
+                    Name = "Of", Line = at.Line, Col = at.Col,
+                };
+                maker.TypeArgs.Add(listRef);
+                CallExpr helper = new() { Target = maker, Line = at.Line, Col = at.Col, File = at.File };
+                helper.Args.Add(listed);
+                helper.ArgNames.Add(null);
+                _r.Rewrites[listed] = helper;
+                CheckExpr(helper);
+                return;
+            }
+
             // AND AN ARRAY GETS ITS HELPER. The conversion is real -- something
             // has to answer Count and the indexer -- and this is the one place
             // that knows both what was written and what was wanted.
@@ -5143,7 +5209,7 @@ public sealed partial class Binder
         // AN ARRAY IS A SEQUENCE. `T[]` is an IReadOnlyList<T> in C#, and
         // `IReadOnlyList<Type> Args = Array.Empty<Type>();` is how this
         // compiler's own Types.cs starts one.
-        if (from.IsArray && ArrayFace(from, to) != null)
+        if (from.IsArray && (ArrayFace(from, to) != null || ListFace(from, to) != null))
         {
             return true;
         }
@@ -7571,6 +7637,27 @@ public sealed partial class Binder
     /// nothing else. The interface has already been specialised by the time
     /// this is asked, so its element is in its TemplateArgs.
     /// </summary>
+    /// <summary>
+    /// The element an IList&lt;X&gt; or ICollection&lt;X&gt; an array is being
+    /// converted to holds, or null: X itself where the array's element is X,
+    /// or a reference type the element converts to -- an array of Dog is an
+    /// IList&lt;Animal&gt;, as array covariance has it.
+    /// </summary>
+    private Type? ListFace(Type from, Type to)
+    {
+        if (!from.IsArray || from.Element is not Type element
+            || to.AsNonNullable().Symbol is not { Kind: TypeKind.Interface, Decl: { Template: "IList" or "ICollection", TemplateArgs.Count: 1 } made })
+        {
+            return null;
+        }
+        Type wanted = Resolve(made.TemplateArgs[0], _thisType);
+        if (wanted.Equals(element) || MethodSignatures.SameType(wanted, element))
+        {
+            return wanted;
+        }
+        return element.IsReference && wanted.IsReference && ReferenceConvertible(element, wanted) ? wanted : null;
+    }
+
     private TypeDecl? ArrayFace(Type from, Type to)
     {
         if (!from.IsArray || from.Element is not Type element
@@ -9624,8 +9711,18 @@ public sealed partial class Binder
                 return CheckExpr(once);
             }
 
+            // `Make()[^1]`: THE TARGET ONCE. `^k` is the count less k, and the
+            // count is the target's -- read by writing the target twice, Make
+            // ran twice. A local, a parameter or `this` is read twice for
+            // nothing; anything else is evaluated once and held, as C# does.
             case IndexExpr { Args.Count: 1 } back when back.Args[0] is FromEndExpr end:
             {
+                if (!ReadTwiceForNothing(back.Target))
+                {
+                    PatternExpr once = FromEndOnce(back.Target, end, held => held);
+                    _r.Rewrites[back] = once;
+                    return CheckExpr(once);
+                }
                 back.Args[0] = Counted(back.Target, end);
                 return CheckExpr(back);
             }
@@ -10309,6 +10406,22 @@ public sealed partial class Binder
 
             case BinaryExpr b:
                 return CheckBinary(b);
+
+            // `Make()[^1] = v` and `Make()[^1] += v`: the target once, as for a
+            // read of it (FromEndOnce), with the assignment made to the
+            // element of what was held -- target, then index, then value,
+            // C#'s order.
+            case AssignExpr fromEnd when fromEnd.Target is IndexExpr { Args.Count: 1, NullConditional: false } backAt
+                                         && backAt.Args[0] is FromEndExpr backEnd && !ReadTwiceForNothing(backAt.Target):
+            {
+                PatternExpr once = FromEndOnce(backAt.Target, backEnd, element => new AssignExpr
+                {
+                    Target = element, Op = fromEnd.Op, Value = fromEnd.Value,
+                    Line = fromEnd.Line, Col = fromEnd.Col,
+                });
+                _r.Rewrites[fromEnd] = once;
+                return CheckExpr(once);
+            }
 
             case AssignExpr a:
             {
@@ -11366,6 +11479,25 @@ public sealed partial class Binder
                 Type tested = isx.Type.Name == TypeRef.Same
                             ? operand.AsNonNullable()
                             : Resolve(isx.Type, _thisType);
+
+                // AN ARRAY IS EVERY SEQUENCE INTERFACE OF ITS ELEMENT, as .NET's
+                // arrays are -- IList<T>, ICollection<T>, IReadOnlyList<T> --
+                // and here it is one by conversion (a view, SZArrayHelper), not
+                // by its descriptor. Known from the operand's type, the test is
+                // whether there is an array at all.
+                if (isx.Binding is null && operand.IsArray && !tested.IsArray
+                    && tested.AsNonNullable().Symbol is { Kind: TypeKind.Interface }
+                    && (ArrayFace(operand, tested) is not null || ListFace(operand, tested) is not null))
+                {
+                    BinaryExpr present = new()
+                    {
+                        Op = BinOp.Ne, Left = isx.Operand,
+                        Right = new LiteralExpr { Kind = Lit.Null, Text = "null", Line = isx.Line, Col = isx.Col },
+                        Line = isx.Line, Col = isx.Col,
+                    };
+                    _r.Rewrites[isx] = present;
+                    return CheckExpr(present);
+                }
 
                 if (tested.Symbol is { } testedSymbol)
                 {

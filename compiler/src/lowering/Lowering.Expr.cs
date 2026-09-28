@@ -689,7 +689,7 @@ public sealed partial class Lowering
                 return _e.Address(PrimitiveDescriptor(prim));
 
             case TypeOfExpr to when _b.ArrayTypeOfs.TryGetValue(to, out Type? element):
-                return _e.Address(SequenceDescriptor(ElementKey(element), Math.Max(1, element.Size), isString: false));
+                return _e.Address(SequenceDescriptor(ElementKey(element), Math.Max(1, element.Size), isString: false, elementType: element));
 
             case TypeOfExpr:
                 return _e.Const(0, IrTypes.Word);
@@ -1138,7 +1138,7 @@ public sealed partial class Lowering
         VReg bytes = stride == 1 ? count : _e.Binary(Opcode.Mul, count, stride);
         VReg total = _e.Binary(Opcode.Add, WordOf(bytes), _t.ArrayHeaderBytes);
         VReg array = AllocateDynamic(at, total, LeafElement(element), described: true);
-        string desc = SequenceDescriptor(ElementKey(element), stride, isString: false);
+        string desc = SequenceDescriptor(ElementKey(element), stride, isString: false, elementType: element);
         _e.Store(R(array), new SymOperand(desc, _t.DescriptorBytes), 0, _t.WordSize);
         _e.Emit(Opcode.InitArrayLength, null, R(array), R(count));
 
@@ -1565,7 +1565,7 @@ public sealed partial class Lowering
         _e.Branch(obj, some, end);
         _e.SetBlock(some);
         VReg vt = _e.Load(IrTypes.Word, obj, 0);
-        VReg wanted = _e.Address(SequenceDescriptor(ElementKey(element), Math.Max(1, element.Size), isString: false),
+        VReg wanted = _e.Address(SequenceDescriptor(ElementKey(element), Math.Max(1, element.Size), isString: false, elementType: element),
                                  _t.DescriptorBytes);
         _e.CopyTo(result, R(_e.Binary(Opcode.Eq, R(vt), R(wanted), IrType.I32)));
         if (element.Prim == Prim.Any && element.ArrayRank == 0)
@@ -1579,6 +1579,18 @@ public sealed partial class Lowering
             VReg refs = _e.Binary(Opcode.And, gc, GcElementsAreReferences);
             VReg anyRefs = _e.Binary(Opcode.Ne, R(refs), Imm(0, IrTypes.Word), IrType.I32);
             _e.CopyTo(result, R(_e.Binary(Opcode.And, R(sequence), R(anyRefs), IrType.I32)));
+        }
+        // COVARIANCE BETWEEN REFERENCE ELEMENTS: a Dog[] is an Animal[]. Not
+        // the exact descriptor, then asked of the element's (Runtime.ArrayOf).
+        else if (ElementDescriptor(element.AsNonNullable()) is string wantedElement && RuntimeMethod("ArrayOf", 2) is MethodSymbol arrayOf)
+        {
+            Block other = _f.NewBlock("arrcov");
+            _e.Branch(result, end, other);
+            _e.SetBlock(other);
+            Require(arrayOf);
+            VReg answer = _e.Call(CallLabel(arrayOf), IrTypes.Of(arrayOf.Returns),
+                R(AsParam(obj, arrayOf.Params[0].Type)), R(AsParam(_e.Address(wantedElement), arrayOf.Params[1].Type)))!;
+            _e.CopyTo(result, R(answer.Type == IrType.I32 ? answer : _e.Unary(Opcode.Trunc64, R(answer), IrType.I32)));
         }
         _e.Jump(end);
         _e.SetBlock(end);

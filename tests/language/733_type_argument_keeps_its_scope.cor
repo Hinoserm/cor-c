@@ -1,0 +1,47 @@
+// test: type_argument_keeps_its_scope
+// expect-exit: 0
+// expect-output:
+// v1-a,v2-b,v3-c 3 a 2
+// 20 3
+// a c
+// c c
+// 2 1.2.3
+//
+// A type argument means the type it named where it was written. A program's
+// own `Version`, passed to List<T> and on through AsReadOnly() into
+// ReadOnlyCollection<T> -- a template declared in a namespace beneath
+// System -- was read there as System.Version. Output checked against .NET.
+
+using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Linq;
+
+class Version : IComparable<Version>
+{
+    public readonly int Major;
+    public readonly string Tag;
+    public Version(int major, string tag) { Major = major; Tag = tag; }
+    public int CompareTo(Version? other) => other == null ? 1 : Major.CompareTo(other.Major);
+    public override string ToString() => "v" + Major + "-" + Tag;
+}
+
+static class Program
+{
+    static void Main()
+    {
+        List<Version> list = new() { new Version(3, "c"), new Version(1, "a"), new Version(2, "b") };
+        list.Sort();
+        ReadOnlyCollection<Version> view = list.AsReadOnly();
+        Console.WriteLine(string.Join(",", view) + " " + view.Count + " " + view[0].Tag + " " + view.IndexOf(list[2]));
+        Dictionary<Version, int> ranks = new();
+        foreach (Version v in view) ranks[v] = v.Major * 10;
+        Console.WriteLine(ranks[list[1]] + " " + ranks.Count);
+        SortedSet<Version> sorted = new(list);
+        Console.WriteLine(sorted.Min!.Tag + " " + sorted.Max!.Tag);
+        Version? best = list.Max();
+        Console.WriteLine(best!.Tag + " " + list.OrderByDescending(v => v.Major).First().Tag);
+        System.Version library = new System.Version(1, 2, 3);
+        Console.WriteLine(library.Minor + " " + library);
+    }
+}

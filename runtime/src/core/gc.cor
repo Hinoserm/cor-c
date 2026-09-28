@@ -1357,29 +1357,22 @@ static class Gc
 
     // ---- chunks ---------------------------------------------------------------
 
-    /// Takes a chunk of at least `need` block bytes and makes it current.
-    /// Whatever the old current chunk had left above its bump pointer
-    /// becomes a free block first, so nothing is stranded. Answers false
-    /// when the cap or the operating system refuses.
     /// Whether a chunk of `ask` bytes should wait for a collection: one past
-    /// the 32-bit ceiling, when a chunk has already been taken past it since
-    /// the last collection. One chunk past it per collection: a heap that is
-    /// live is live and must grow, and one that is garbage is found by the
-    /// collection it waits for. Judged by the collections counted, not by
-    /// what was allocated since -- with a dozen threads allocating, that is a
-    /// pace again before the thread that asked for the collection has asked
-    /// for its chunk. The allocator's last try waives it (_growPast): the
-    /// ceiling slows a heap and never fails one; only the system does.
+    /// the 32-bit ceiling, when half the pace has been allocated since the
+    /// last collection -- enough garbage for a collection to be worth its
+    /// cost. Near the ceiling the pace itself is half of what is left
+    /// (NextThreshold), so the heap is slowed as it nears the limit. Judged
+    /// by the pace and never by the chunk: a heap at the ceiling because its
+    /// free memory is in holes -- 920 MB live in 2.7 GB, of the self-hosted
+    /// compiler -- otherwise ran a whole collection for every megabyte it
+    /// took, and freed nothing. The allocator's last try waives it
+    /// (_growPast): the ceiling slows a heap and never fails one.
     public static bool GrowthWaits(long ask)
     {
         _ceilingRefused = false;
-        if (HeapCeiling == 0 || _collecting || _growPast || HeapChunks.HeapBytes + ask <= HeapCeiling)
+        if (HeapCeiling == 0 || _collecting || _growPast || HeapChunks.HeapBytes + ask <= HeapCeiling
+            || _since < _threshold / 2)
         {
-            return false;
-        }
-        if (_grownPastAt != Collections + 1)
-        {
-            _grownPastAt = Collections + 1;
             return false;
         }
         _ceilingRefused = true;
@@ -1390,12 +1383,14 @@ static class Gc
     // does not report a wait at the ceiling as the system's refusal.
     static bool _ceilingRefused;
 
-    // The collection count, plus one, when a chunk was last taken past the
-    // ceiling (0: never); and the allocator's last try, which the ceiling
-    // does not refuse. The heap lock is held for both.
-    static long _grownPastAt;
+    // The allocator's last try, which the ceiling does not refuse. The heap
+    // lock is held.
     static bool _growPast;
 
+    /// Takes a chunk of at least `need` block bytes and makes it current.
+    /// Whatever the old current chunk had left above its bump pointer
+    /// becomes a free block first, so nothing is stranded. Answers false
+    /// when the cap or the operating system refuses.
     static bool Grow(long need)
     {
         long raw = HeapChunks.Take(need);

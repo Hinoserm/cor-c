@@ -1,0 +1,61 @@
+// test: array_lists_and_covariance
+// expect-exit: 0
+// expect-output:
+// 60 50 3 2 True
+// 3 True
+// add refused
+// 60 True True True
+// rex,fido True False True Dog[]
+// mismatch refused
+// spot
+// boxed refused
+// a,z True
+// 2 rex
+//
+// An array is an IList<T> and an ICollection<T> of its element (writes go
+// through, the mutators that would resize it refuse), `is` answers so, and
+// array covariance is checked at run time: a Cat stored into a Dog[] held
+// as an Animal[] throws ArrayTypeMismatchException, and a Dog[] is an
+// Animal[] to `is`. Output checked against .NET.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+class Animal { public string Name; public Animal(string n) { Name = n; } public override string ToString() => Name; }
+class Dog : Animal { public Dog(string n) : base(n) { } }
+class Cat : Animal { public Cat(string n) : base(n) { } }
+
+static class Program
+{
+    static int Sum(IList<int> list) { int s = 0; for (int i = 0; i < list.Count; i++) s += list[i]; return s; }
+    static int Count<T>(ICollection<T> c) => c.Count;
+    static string Names(IReadOnlyList<Animal> all) => string.Join(",", all);
+
+    static void Main()
+    {
+        int[] numbers = { 4, 5, 6 };
+        IList<int> list = numbers;
+        list[1] = 50;
+        Console.WriteLine(Sum(numbers) + " " + numbers[1] + " " + list.Count + " " + list.IndexOf(6) + " " + list.Contains(4));
+        ICollection<int> col = numbers;
+        Console.WriteLine(Count(col) + " " + col.IsReadOnly);
+        try { col.Add(7); } catch (NotSupportedException) { Console.WriteLine("add refused"); }
+        IEnumerable<int> seq = numbers;
+        Console.WriteLine(seq.Sum() + " " + (numbers is IList<int>) + " " + (numbers is ICollection<int>) + " " + (numbers is IReadOnlyList<int>));
+
+        Dog[] dogs = { new Dog("rex"), new Dog("fido") };
+        Animal[] animals = dogs;
+        Console.WriteLine(Names(dogs) + " " + (animals is Dog[]) + " " + (animals is Cat[]) + " " + (animals is Animal[]) + " " + animals.GetType().Name);
+        try { animals[0] = new Cat("tom"); Console.WriteLine("stored"); }
+        catch (ArrayTypeMismatchException) { Console.WriteLine("mismatch refused"); }
+        animals[1] = new Dog("spot");
+        Console.WriteLine(dogs[1].Name);
+        object[] objects = new string[] { "a", "b" };
+        try { objects[0] = 1; } catch (ArrayTypeMismatchException) { Console.WriteLine("boxed refused"); }
+        objects[1] = "z";
+        Console.WriteLine(string.Join(",", objects) + " " + (objects is string[]));
+        IList<Animal> view = dogs;
+        Console.WriteLine(view.Count + " " + view[0]);
+    }
+}

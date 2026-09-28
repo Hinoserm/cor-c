@@ -1013,6 +1013,19 @@ than a scan. A return address is looked up by equality against base plus
 the entry's word, and a frame whose return address is not in the table
 is a frame this compiler did not emit.
 
+**Array covariance.** A Dog[] may be held as an Animal[], as C# allows, and a
+store into an array whose element type is written as `object`, an interface
+or a class that is not sealed is checked: nothing when the value is null or
+the array is exactly the type written (one load and a compare), and
+otherwise `Runtime.ArrayStoreCheck`, which throws ArrayTypeMismatchException
+for a Cat. An array descriptor names its element's descriptor (word 10) for
+that and for `is Animal[]` (`Runtime.ArrayOf`). A departure from .NET: a
+store into an array whose element is a type parameter is not checked. In
+shared generic code that element is a word of any type, List&lt;T&gt; stores into
+its T[] at every Add, and the check there would cost every list on a slow
+processor; a covariant array reaches a generic method's store only through a
+cast .NET itself would have to check at the store.
+
 **The interim rule for what is a reference.** On x86 a reference and an
 `int` are both `IrType.I32`, so the IR does not distinguish them. Until it
 does, a stack map lists EVERY live 32-bit value at the call except the two

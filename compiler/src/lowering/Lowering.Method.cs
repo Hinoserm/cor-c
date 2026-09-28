@@ -644,7 +644,7 @@ public sealed partial class Lowering
     /// the bytes there ARE the struct, so its value is their address and a
     /// store copies bytes in.
     /// </summary>
-    private sealed record MemPlace(Operand Address, long Offset, Type Type, bool Volatile = false, bool Inline = false) : Place(Type);
+    private sealed record MemPlace(Operand Address, long Offset, Type Type, bool Volatile = false, bool Inline = false, VReg? CovariantArray = null) : Place(Type);
 
     private VReg LoadPlace(Place p)
     {
@@ -704,6 +704,10 @@ public sealed partial class Lowering
                 if (m.Volatile)
                 {
                     _e.Emit(Opcode.Fence, null);
+                }
+                if (m.CovariantArray is VReg array)
+                {
+                    StoreCheck(array, value, m.Type);
                 }
                 ReferenceBarrier(m, value);
                 _e.Store(m.Address, new RegOperand(value), m.Offset, LoadSize(m.Type));
@@ -781,6 +785,50 @@ public sealed partial class Lowering
     }
 
     private bool _inBarrier;
+
+    /// <summary>
+    /// Whether an array whose elements are written as this type may be one
+    /// of a type derived from it, so that a store into it must be checked:
+    /// object, an interface, a class that is not sealed. Not a sealed class
+    /// or a string -- nothing derives from them -- nor a value type; and not
+    /// a type parameter's, which in shared generic code is a word of any
+    /// type: List&lt;T&gt; stores into its T[] at every Add, and the check
+    /// there would cost every list on a slow processor what .NET's own
+    /// shared code pays (a departure recorded in X86-BACKEND.md).
+    /// </summary>
+    private static bool MayBeCovariant(Type element)
+        => element.ParamName is null && !element.IsNullableValue && !element.IsPointer
+        && (element.Prim == Prim.Any
+            || element.Symbol is { Kind: TypeKind.Interface }
+            || element.Symbol is { Kind: TypeKind.Class } c && c.Decl is { } d && !d.Mods.HasFlag(Mods.Sealed) && !c.Structural);
+
+    /// <summary>
+    /// THE COVARIANT STORE'S CHECK: a value stored into an array that may be
+    /// one of a derived element type. Nothing when the value is null or the
+    /// array is exactly the type written -- one load and one compare -- and
+    /// otherwise Runtime.ArrayStoreCheck, which refuses a Cat stored into a
+    /// Dog[] held as an Animal[] with ArrayTypeMismatchException.
+    /// </summary>
+    private void StoreCheck(VReg array, VReg value, Type element)
+    {
+        if (RuntimeMethod("ArrayStoreCheck", 2) is not MethodSymbol check || value.Type != IrTypes.Word)
+        {
+            return;
+        }
+        Block notNull = _f.NewBlock("stchk");
+        Block slow = _f.NewBlock("stslow");
+        Block done = _f.NewBlock("stdone");
+        _e.Branch(value, notNull, done);
+        _e.SetBlock(notNull);
+        VReg vt = _e.Load(IrTypes.Word, array, 0);
+        VReg exact = _e.Address(SequenceDescriptor(ElementKey(element), Math.Max(1, element.Size), isString: false, elementType: element), _t.DescriptorBytes);
+        _e.Branch(_e.Binary(Opcode.Eq, R(vt), R(exact), IrType.I32), done, slow);
+        _e.SetBlock(slow);
+        Require(check);
+        _e.Call(CallLabel(check), IrType.Void, R(AsParam(array, check.Params[0].Type)), R(AsParam(value, check.Params[1].Type)));
+        _e.Jump(done);
+        _e.SetBlock(done);
+    }
 
     /// <summary>
     /// A coroutine saves its frame into its machine at each suspension and
@@ -1101,7 +1149,8 @@ public sealed partial class Lowering
         BoundsCheck(basis, index, at, sequence.IsArray);
         VReg scaled2 = stride == 1 ? index : _e.Binary(Opcode.Mul, index, stride);
         VReg addr2 = _e.Binary(Opcode.Add, basis, WordOf(scaled2));
-        return new MemPlace(new RegOperand(addr2), _t.ArrayHeaderBytes, stored);
+        return new MemPlace(new RegOperand(addr2), _t.ArrayHeaderBytes, stored,
+            CovariantArray: sequence.IsArray && MayBeCovariant(stored) ? basis : null);
     }
 
     private void BoundsCheck(VReg array, VReg index, Node at, bool managedArray)

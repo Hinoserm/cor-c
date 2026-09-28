@@ -6760,6 +6760,65 @@ interface IList<T> : ICollection<T> {
     void RemoveAt(int index);
 }
 
+/// WHAT AN ARRAY IS AS AN IList<T> OR AN ICollection<T>: .NET's own name
+/// for the helper that answers those interfaces for a T[], and the same
+/// answers. The indexer reads and writes the array itself; Count is its
+/// length; IsReadOnly is true, and the mutators that would change its size
+/// refuse with NotSupportedException -- an array's size is fixed. The
+/// checker makes one of these where a T[] is converted to either interface
+/// (through SZArrayHelper.Of); IEnumerable<T> and the read-only ones are
+/// answered by the views it writes itself.
+sealed class SZArrayHelper<T> : IList<T>, IReadOnlyList<T> {
+    readonly T[] items;
+
+    public SZArrayHelper(T[] items) { this.items = items; }
+
+    public T this[int index] {
+        get { return items[index]; }
+        set { items[index] = value; }
+    }
+
+    public int Count => items.Length;
+
+    public bool IsReadOnly => true;
+
+    public int IndexOf(T item) { return Array.IndexOf(items, item); }
+
+    public bool Contains(T item) { return Array.IndexOf(items, item) >= 0; }
+
+    public void CopyTo(T[] array, int arrayIndex) {
+        ArgumentNullException.ThrowIfNull(array);
+        if (arrayIndex < 0 || arrayIndex > array.Length - items.Length) {
+            throw new ArgumentException("Destination array was not long enough. Check the destination index, length, and the array's lower bounds.");
+        }
+        Array.Copy(items, 0, array, arrayIndex, items.Length);
+    }
+
+    public void Add(T item) { throw FixedSize(); }
+    public void Clear() { throw FixedSize(); }
+    public void Insert(int index, T item) { throw FixedSize(); }
+    public bool Remove(T item) { throw FixedSize(); }
+    public void RemoveAt(int index) { throw FixedSize(); }
+
+    static NotSupportedException FixedSize() { return new NotSupportedException("Collection was of a fixed size."); }
+
+    public IEnumerator<T> GetEnumerator() {
+        for (int i = 0; i < items.Length; i++) {
+            yield return items[i];
+        }
+    }
+
+    IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+}
+
+/// What the checker calls to make one (SZArrayHelper<T>), as .NET's
+/// SZArrayHelper is a class of generic methods: a generic method is what a
+/// conversion found while checking can still have specialised, where a
+/// generic class has to be named in the source before checking begins.
+static class SZArrayHelper {
+    public static IList<T> Of<T>(T[] items) { return new SZArrayHelper<T>(items); }
+}
+
 interface ISet<T> : ICollection<T> {
     new bool Add(T item);
     void UnionWith(IEnumerable<T> other);
@@ -9787,6 +9846,16 @@ class ArgumentNullException : ArgumentException
 }
 
 /// An index was outside what the thing being indexed holds.
+/// A value stored into an array whose elements cannot hold it: a Cat into a
+/// Dog[] held as an Animal[], as C#'s array covariance allows at compile time
+/// and refuses at run time (Runtime.ArrayStoreCheck).
+class ArrayTypeMismatchException : SystemException
+{
+    public ArrayTypeMismatchException() : base("Attempted to access an element as a type incompatible with the array.") { }
+    public ArrayTypeMismatchException(string? message) : base(message) { }
+    public ArrayTypeMismatchException(string? message, Exception? innerException) : base(message, innerException) { }
+}
+
 class IndexOutOfRangeException : SystemException
 {
     public IndexOutOfRangeException(string? message) : base(message) { }

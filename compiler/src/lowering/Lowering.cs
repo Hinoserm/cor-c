@@ -482,7 +482,7 @@ public sealed partial class Lowering
         WriteWord(block, _t.ArrayCountOffset, count);
         string sym = "sa_" + StaticSymbol(f);
         DataItem item = new(sym, block) { Align = _t.Align64, FromLibrary = IsLibrary(f.Owner), Exported = false };
-        item.Relocs.Add(new DataReloc(0, SequenceDescriptor(ElementKey(element), stride, isString: false), _t.DescriptorBytes));
+        item.Relocs.Add(new DataReloc(0, SequenceDescriptor(ElementKey(element), stride, isString: false, elementType: element), _t.DescriptorBytes));
         for (int i = 0; i < count; i++)
         {
             int at = _t.ArrayHeaderBytes + i * stride;
@@ -1154,7 +1154,34 @@ public sealed partial class Lowering
 
     private const int DescName = 0, DescSize = 1, DescDepth = 2, DescDisplay = 3,
                       DescInterfaces = 4, DescSelf = 5, DescFlags = 6, DescPayload = 7,
-                      DescRefMap = 8, DescGcFlags = 9;
+                      DescRefMap = 8, DescGcFlags = 9, DescElement = 10;
+
+    /// <summary>
+    /// The descriptor an array of these names as its element's (DescElement):
+    /// a class's, an interface's, a string's, an inner array's; null for
+    /// object, which every reference is, and for a value type.
+    /// </summary>
+    private string? ElementDescriptor(Type element)
+    {
+        if (element.IsArray && element.Element is Type inner)
+        {
+            return SequenceDescriptor(ElementKey(inner), Math.Max(1, inner.Size), isString: false, elementType: inner);
+        }
+        if (element.Prim == Prim.String)
+        {
+            return StringDescriptor();
+        }
+        if (element.IsPointer || element.IsNullableValue)
+        {
+            return null;
+        }
+        return element.Symbol switch
+        {
+            { Kind: TypeKind.Class } c => ClassDescriptor(c),
+            { Kind: TypeKind.Interface } i => InterfaceDescriptor(i),
+            _ => null,
+        };
+    }
 
     /// <summary>
     /// Bit 0 of the GC flags word: the elements of this sequence are
@@ -1320,7 +1347,7 @@ public sealed partial class Lowering
     /// <summary>A string's descriptor: a sequence of two-byte UTF-16 code units.</summary>
     private string StringDescriptor() => SequenceDescriptor("char", 2, isString: true);
 
-    private string SequenceDescriptor(string element, int stride, bool isString, bool? elementsAreReferences = null)
+    private string SequenceDescriptor(string element, int stride, bool isString, bool? elementsAreReferences = null, Type? elementType = null)
     {
         string key = (isString ? "string" : element) + ":" + stride;
         bool elemRefs = elementsAreReferences ?? (!isString && ElementNameIsReference(element));
@@ -1353,6 +1380,15 @@ public sealed partial class Lowering
         _m.Data.Add(item);
         item.Relocs.Add(new DataReloc(DescName * w, InternString(isString ? "System.String" : DotNetName(element) + "[]"), 0));
         item.Relocs.Add(new DataReloc(DescSelf * w, sym, 0));
+        // ITS ELEMENT'S DESCRIPTOR, for covariance at run time: whether a
+        // value may be stored in it (Runtime.ArrayStoreCheck) and whether it
+        // is an array of a base type (Runtime.ArrayOf). None for an element
+        // anything may be -- object -- and none for a value type, whose
+        // arrays are never covariant.
+        if (!isString && elementType is not null && ElementDescriptor(elementType.AsNonNullable()) is string elementDesc)
+        {
+            item.Relocs.Add(new DataReloc(DescElement * w, elementDesc, 0));
+        }
 
         // AN EMPTY INTERFACE LIST, the terminator alone, so `is` and `as`
         // against an interface answer no for a sequence rather than read a

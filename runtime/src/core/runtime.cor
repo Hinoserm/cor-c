@@ -2004,6 +2004,105 @@ static class Runtime
         throw new IndexOutOfRangeException("Index was outside the bounds of the array.");
     }
 
+    // ---- array covariance ------------------------------------------------
+    //
+    // A Dog[] may be held as an Animal[] -- C# allows it -- and then a Cat
+    // stored into it is refused at run time. An array's descriptor names its
+    // element's (word DescElementWord); a store the compiler cannot prove
+    // safe, into an array whose type is not exactly the one written, comes
+    // here (Lowering, StoreCheck).
+
+    const long DescWordsHere = 12;
+    const long DescDepthWord = 2;
+    const long DescDisplayWord = 3;
+    const long DescInterfacesWord = 4;
+    const long DescFlagsWordHere = 6;
+    const long DescElementWord = 10;
+
+    /// The store of `value` into `array`: refused with ArrayTypeMismatchException
+    /// unless the value is of the array's element type or derives from it.
+    public static void ArrayStoreCheck(long array, long value)
+    {
+        if (array == 0 || value == 0)
+        {
+            return;
+        }
+        long w = WordSize.Bytes;
+        long desc = (Sys.Peek(array) & WordSize.AddressMask) - DescWordsHere * w;
+        long element = Sys.Peek(desc + DescElementWord * w) & WordSize.AddressMask;
+        if (element == 0)
+        {
+            return;
+        }
+        long of = (Sys.Peek(value) & WordSize.AddressMask) - DescWordsHere * w;
+        if (!DescribedAs(of, element))
+        {
+            throw new ArrayTypeMismatchException();
+        }
+    }
+
+    /// Whether an object is an array whose elements are of `element` or
+    /// derive from it: `animals is Animal[]` for a Dog[] (ArrayTest).
+    public static bool ArrayOf(long array, long element)
+    {
+        if (array == 0)
+        {
+            return false;
+        }
+        long w = WordSize.Bytes;
+        long desc = (Sys.Peek(array) & WordSize.AddressMask) - DescWordsHere * w;
+        if ((Sys.Peek(desc + DescFlagsWordHere * w) & 3) != 1)
+        {
+            return false;
+        }
+        long had = Sys.Peek(desc + DescElementWord * w) & WordSize.AddressMask;
+        return had != 0 && DescribedAs(had, element);
+    }
+
+    /// Whether the type a descriptor describes is `want`'s, derives from it,
+    /// or implements it -- the tests Lowering.TypeTest makes inline, taken
+    /// with both types known only at run time -- and, for two arrays, whether
+    /// the one's elements are the other's, as covariance has it.
+    public static bool DescribedAs(long desc, long want)
+    {
+        if (desc == want)
+        {
+            return true;
+        }
+        long w = WordSize.Bytes;
+        // A class's depth is its place in its chain; an interface's and an
+        // array's is -1.
+        long wantDepth = (long)(int)Sys.Peek(want + DescDepthWord * w);
+        if (wantDepth >= 0)
+        {
+            long depth = (long)(int)Sys.Peek(desc + DescDepthWord * w);
+            if (depth < wantDepth)
+            {
+                return false;
+            }
+            long display = Sys.Peek(desc + DescDisplayWord * w) & WordSize.AddressMask;
+            return display != 0 && (Sys.Peek(display + wantDepth * w) & WordSize.AddressMask) == want;
+        }
+        long faces = Sys.Peek(desc + DescInterfacesWord * w) & WordSize.AddressMask;
+        if (faces != 0)
+        {
+            for (long at = faces; ; at = at + w)
+            {
+                long face = Sys.Peek(at) & WordSize.AddressMask;
+                if (face == 0) break;
+                if (face == want) return true;
+            }
+        }
+        // Two arrays of references: covariance, element by element.
+        if ((Sys.Peek(desc + DescFlagsWordHere * w) & 3) == 1 && (Sys.Peek(want + DescFlagsWordHere * w) & 3) == 1)
+        {
+            long had = Sys.Peek(desc + DescElementWord * w) & WordSize.AddressMask;
+            long wanted = Sys.Peek(want + DescElementWord * w) & WordSize.AddressMask;
+            return had != 0 && wanted != 0 && DescribedAs(had, wanted);
+        }
+        return false;
+    }
+
     // ---- iterators (Lowering.Iterator) -----------------------------------
 
     /// An iterator's Reset, which C# iterators do not support.
