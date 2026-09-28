@@ -280,6 +280,27 @@ public sealed class Monomorphiser
             return outermost;
         }
 
+        // WRITTEN WITH ITS NAMESPACE, a library type is still the one the
+        // checker finds without it: the library declares its types with no
+        // namespace, and the checker trims a qualifier that names no type
+        // (Binder.NamesType). Kept as written, `(System.Text.StringBuilder,
+        // int)` was mangled one way where it was written and another where
+        // the checker closed a template over the tuple it resolved -- and
+        // List<T>.Enumerator over it was named by neither, left as the
+        // template, with its MoveNext undefined at the link.
+        for (int dot = name.IndexOf('.'); dot > 0; dot = name.IndexOf('.', dot + 1))
+        {
+            if (_paths.Contains(name[..dot]))
+            {
+                break;                          // a type's nested name, not a namespace
+            }
+            string rest = name[(dot + 1)..];
+            if (_paths.Contains(rest))
+            {
+                return rest;
+            }
+        }
+
         return _soleNested.TryGetValue(name, out string? sole) && sole is not null ? sole : name;
     }
 
