@@ -29,8 +29,9 @@ public static class IrFunctionCodec
         if (function.Async is { Lowered: false }) throw new InvalidDataException("Serialize IR after async lowering");
         using MemoryStream stream = new();
         using BinaryWriter writer = new(stream, IrBinary.Utf8, leaveOpen: true);
-        writer.Write(2); IrBinary.Text(writer, function.Name); writer.Write((byte)function.Returns);
+        writer.Write(3); IrBinary.Text(writer, function.Name); writer.Write((byte)function.Returns);
         writer.Write(function.Exported); writer.Write(function.Coalescible); writer.Write(function.FromLibrary);
+        writer.Write(function.NoInlining);
         IrBinary.Text(writer, function.SourceFile); writer.Write(function.Line); IrBinary.Text(writer, function.Display);
         Dictionary<int, IrType> registers = new();
         void Remember(VReg? register)
@@ -98,10 +99,11 @@ public static class IrFunctionCodec
         using BinaryReader reader = new(stream, IrBinary.Utf8);
         try
         {
-            if (reader.ReadInt32() != 2) throw new InvalidDataException("Unsupported IR function version");
+            if (reader.ReadInt32() != 3) throw new InvalidDataException("Unsupported IR function version");
             Function function = new(IrBinary.Name(reader, budget), IrBinary.Type(reader))
             {
                 Exported = IrBinary.Flag(reader), Coalescible = IrBinary.Flag(reader), FromLibrary = IrBinary.Flag(reader),
+                NoInlining = IrBinary.Flag(reader),
                 SourceFile = IrBinary.Text(reader, budget), Line = reader.ReadInt32(), Display = IrBinary.Text(reader, budget),
             };
             int count = IrBinary.Count(reader);

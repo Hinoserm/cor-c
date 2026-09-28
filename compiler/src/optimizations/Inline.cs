@@ -299,7 +299,7 @@ public sealed class Inline : IParallelModulePass
     /// <summary>Whether a body can be moved into a caller at all.</summary>
     internal static bool Inlineable(Function callee, HashSet<string> addressTaken)
     {
-        if (callee.Blocks.Count == 0 || addressTaken.Contains(callee.Name) || callee.Async is not null)
+        if (callee.Blocks.Count == 0 || addressTaken.Contains(callee.Name) || callee.Async is not null || callee.NoInlining)
         {
             return false;
         }

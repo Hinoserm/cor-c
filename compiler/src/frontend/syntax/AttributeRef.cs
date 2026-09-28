@@ -6,6 +6,13 @@ public sealed class AttributeArgument
 {
     public string? Name { get; init; }
     public required string Value { get; init; }
+
+    /// <summary>
+    /// Every name and number the argument was written with, in order. Value
+    /// keeps only the last, which is the whole of `MethodImplOptions.NoInlining`
+    /// but one flag of `MethodImplOptions.NoInlining | MethodImplOptions.NoOptimization`.
+    /// </summary>
+    public IReadOnlyList<string> Words { get; init; } = [];
 }
 
 /// <summary>

@@ -1,4 +1,5 @@
 #nullable enable
+using System.Globalization;
 using System.Text;
 using Corsac.Lang.Ir;
 using Corsac.Lang.X86;
@@ -222,6 +223,33 @@ public sealed partial class Lowering
     /// question worth asking.
     /// </summary>
     private static bool IsLibrary(TypeSymbol? t) => t?.Decl?.FromLibrary ?? false;
+
+    /// <summary>
+    /// Whether the method says `[MethodImpl(MethodImplOptions.NoInlining)]`:
+    /// by the flag's name, alone or among others, or by a number with its bit
+    /// (8) set.
+    /// </summary>
+    private static bool NoInlining(MethodDecl decl)
+    {
+        foreach (AttributeRef a in decl.Attributes)
+        {
+            if (a.Target.Length != 0 || a.Name is not ("MethodImpl" or "MethodImplAttribute")) continue;
+            foreach (AttributeArgument argument in a.Arguments)
+            {
+                foreach (string word in argument.Words)
+                {
+                    if (word == "NoInlining") return true;
+                    bool hex = word.StartsWith("0x", StringComparison.OrdinalIgnoreCase);
+                    if (long.TryParse(hex ? word[2..] : word, hex ? NumberStyles.HexNumber : NumberStyles.Integer,
+                                      CultureInfo.InvariantCulture, out long value) && (value & 8) != 0)
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
 
     /// <summary>
     /// What a method is CALLED in a stack trace: `Type.Method`, the way it was

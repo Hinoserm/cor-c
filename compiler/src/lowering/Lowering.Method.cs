@@ -140,6 +140,7 @@ public sealed partial class Lowering
             SourceFile = _in, Line = decl.Line, Display = Display(m), FromLibrary = IsLibrary(m.Owner),
             Coalescible = decl.LocalCopy || m.Owner.Decl?.Specialised == true,
             Exported = m.Owner.Decl?.LocalOnly != true,
+            NoInlining = NoInlining(decl),
         };
         Block entry = _f.NewBlock("entry");
         _e = new Builder(_f, entry);

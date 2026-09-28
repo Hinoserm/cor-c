@@ -1129,9 +1129,14 @@ public sealed class Parser
         }
 
         string? last = null;
+        List<string> words = new();
 
         for (int j = from; j < to; j++)
         {
+            if (_t[j].Kind is Tok.Ident or Tok.Int)
+            {
+                words.Add(_t[j].Text);
+            }
             if (_t[j].Kind is Tok.Ident or Tok.Str)
             {
                 last = _t[j].Text;
@@ -1144,7 +1149,7 @@ public sealed class Parser
 
         if (last is not null)
         {
-            into.Add(new AttributeArgument { Name = name, Value = last });
+            into.Add(new AttributeArgument { Name = name, Value = last, Words = words });
         }
     }
 
