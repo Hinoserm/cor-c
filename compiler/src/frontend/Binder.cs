@@ -39,6 +39,12 @@ public sealed partial class Binder
     /// <summary>Slots kept above the library's interface region for the library's class virtuals; see the numbering.</summary>
     private const int LibraryClassReserve = 128;
 
+    /// <summary>Where a project class's own virtuals start: the end of the project's interface region, the same in every unit.</summary>
+    private int _projectClassSlots;
+
+    /// <summary>Slots kept above the project's interface region for its class virtuals, below this unit's own interfaces.</summary>
+    private const int ProjectClassReserve = 128;
+
     private TypeSymbol? _thisType;
     private MethodSymbol? _method;
     private readonly List<LocalScope> _scopes = new();
@@ -1727,7 +1733,16 @@ public sealed partial class Binder
         // to push every stdlib slot after it along by five: its Form was built
         // with SetBounds in a slot the library called by another number, and
         // the library's constructor jumped to nought.
-        SortedDictionary<(string, int), int> families = new(), local = new();
+        // AND A THIRD TIER, THIS UNIT'S OWN: an interface the compiler made
+        // inside a body -- the delegate of a local function whose signature
+        // Func and Action cannot say (Parser.LocalFunctionDelegate) -- which
+        // no declaration index lists and no other unit has. Numbered among
+        // the shared families, one moved every family sorted after it, in
+        // this unit alone; merely existing, it opened the project region, so
+        // every class of the project numbered its own virtuals 129 higher in
+        // the units that had one than in the units that did not. They are
+        // numbered last, above the project's classes, where nothing shared is.
+        SortedDictionary<(string, int), int> families = new(), local = new(), unitLocal = new();
         bool IsLibraryFamily((string, int) family, bool declaredHere)
             => _libraryInterfaces is null ? true : _libraryInterfaces.Contains(family) && !declaredHere;
         if (_indexedInterfaces is not null)
@@ -1736,6 +1751,11 @@ public sealed partial class Binder
         foreach (TypeSymbol t in _r.Types.Values.Where(t => t.Kind == TypeKind.Interface))
         {
             (string, int) family = Family(t);
+            if (t.Decl?.LocalOnly == true)
+            {
+                unitLocal[family] = Math.Max(unitLocal.GetValueOrDefault(family), t.Methods.Count(m => m.Decl?.LocalCopy != true));
+                continue;
+            }
             bool library = IsLibraryType(t) || (_libraryInterfaces?.Contains(family) ?? true);
             SortedDictionary<(string, int), int> into = library ? families : local;
             if (library) local.Remove(family);
@@ -1760,12 +1780,13 @@ public sealed partial class Binder
             }
         }
 
-        void Assign(bool library)
+        void Assign(bool library, bool unitOnly = false)
         {
             foreach (TypeSymbol t in _r.Types.Values.Where(t => t.Kind == TypeKind.Interface && !IsTemplate(t)))
             {
                 (string template, int arity) = Family(t);
-                if ((IsLibraryType(t) || (_libraryInterfaces?.Contains((template, arity)) ?? true)) != library) continue;
+                if ((t.Decl?.LocalOnly == true) != unitOnly) continue;
+                if (!unitOnly && (IsLibraryType(t) || (_libraryInterfaces?.Contains((template, arity)) ?? true)) != library) continue;
 
                 for (int i = 0; i < t.Methods.Count; i++)
                 {
@@ -1798,6 +1819,8 @@ public sealed partial class Binder
                 Console.Error.WriteLine("  lib " + template + "`" + arity + " methods=" + methods);
             foreach (((string template, int arity), int methods) in local)
                 Console.Error.WriteLine("  project " + template + "`" + arity + " methods=" + methods);
+            foreach (((string template, int arity), int methods) in unitLocal)
+                Console.Error.WriteLine("  unit " + template + "`" + arity + " methods=" + methods);
         }
         _librarySlots = _interfaceSlots;
 
@@ -1814,6 +1837,16 @@ public sealed partial class Binder
             _interfaceSlots = _librarySlots + LibraryClassReserve;
             Number(local);
             Assign(false);
+        }
+        _projectClassSlots = _interfaceSlots;
+
+        // Only closures the compiler made implement these, and they declare
+        // no virtuals of their own, so the reserve is room to spare.
+        if (unitLocal.Count > 0)
+        {
+            _interfaceSlots = _projectClassSlots + ProjectClassReserve;
+            Number(unitLocal);
+            Assign(false, unitOnly: true);
         }
 
         // ONE BIT PER TYPE, in an ancestor mask that is as many words wide as
@@ -3034,7 +3067,7 @@ public sealed partial class Binder
         // A class's own virtual methods are numbered above the interface
         // region -- the LIBRARY's region for a library class, so that it gets
         // the numbers its own build gave it whatever this compilation adds.
-        int slot = IsLibraryType(sym) ? _librarySlots : _interfaceSlots;
+        int slot = IsLibraryType(sym) ? _librarySlots : _projectClassSlots;
 
         for (TypeSymbol? t = sym.Base; t != null; t = t.Base)
         {

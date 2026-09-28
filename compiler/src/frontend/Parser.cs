@@ -5181,6 +5181,9 @@ public sealed class Parser
         TypeDecl declaration = new()
         {
             Kind = TypeKind.Interface, IsDelegate = true, Name = delegateName, Mods = Mods.Private,
+            // This unit's alone: no index lists it, no other unit has it
+            // (Binder's slot numbering keeps it out of the shared tiers).
+            LocalOnly = true,
             Namespace = _namespace, Scope = _fileScope, Outer = _typePath.Length == 0 ? null : _typePath,
             File = _file, Line = at.Line, Col = at.Col, SourceFrom = at.Pos, SourceTo = at.Pos,
         };
