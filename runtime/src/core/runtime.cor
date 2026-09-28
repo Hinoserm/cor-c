@@ -2484,8 +2484,9 @@ static class Runtime
     // ---- raw memory ------------------------------------------------------------
 
     /// memcmp over raw addresses: the sign of the first differing byte taken
-    /// as UNSIGNED, or zero when all `count` bytes agree. String comparison,
-    /// equality and Sys.CompareBytes all come here.
+    /// as UNSIGNED, or zero when all `count` bytes agree: Sys.CompareBytes.
+    /// Strings have their own (StringEqual, StringCompare), which walk code
+    /// units in pairs.
     public static int CompareBytes(long a, long b, long count)
     {
         long i = 0;
@@ -3102,9 +3103,20 @@ static class Runtime
     /// ORDINAL ORDER of two spans of the same length: the first code unit that
     /// differs decides, by its value, which is .NET's string.CompareOrdinal.
     /// Answers the difference of those two units, or 0.
+    ///
+    /// Equal pairs of units are passed over as one 32-bit load each
+    /// (Sys.GetCharPair); the pair that differs, or the unit left over, is
+    /// read a unit at a time for the order.
     public static int StringCompare(string a, int aAt, string b, int bAt, int count)
     {
-        for (int i = 0; i < count; i++)
+        int i = 0;
+        int pairs = count - 1;
+
+        while (i < pairs && Sys.GetCharPair(a, aAt + i) == Sys.GetCharPair(b, bAt + i))
+        {
+            i = i + 2;
+        }
+        for (; i < count; i++)
         {
             int x = Sys.GetChar(a, aAt + i);
             int y = Sys.GetChar(b, bAt + i);
@@ -3115,6 +3127,26 @@ static class Runtime
             }
         }
         return 0;
+    }
+
+    /// Whether two spans of `count` code units are the same units: two at a
+    /// time, one 32-bit load from each (Sys.GetCharPair), with a 32-bit
+    /// cursor, then the unit left over. Every string equality comes here --
+    /// String.Equals, ==, the tables' key match, StartsWith and EndsWith.
+    public static bool StringEqual(string a, int aAt, string b, int bAt, int count)
+    {
+        int i = 0;
+        int pairs = count - 1;
+
+        while (i < pairs)
+        {
+            if (Sys.GetCharPair(a, aAt + i) != Sys.GetCharPair(b, bAt + i))
+            {
+                return false;
+            }
+            i = i + 2;
+        }
+        return i >= count || Sys.GetChar(a, aAt + i) == Sys.GetChar(b, bAt + i);
     }
 
     /// Invariant case, IN PLACE, over the span; answers the count. Each
@@ -3201,7 +3233,18 @@ static class Runtime
         }
         uint h = 2166136261;
         int n = s.Length;
-        for (int i = 0; i < n; i++)
+        int pairs = n - 1;
+        int i = 0;
+        // A pair of units a load, each still hashed on its own: the low half
+        // is the first unit on this little-endian machine.
+        while (i < pairs)
+        {
+            uint two = (uint)Sys.GetCharPair(s, i);
+            h = (h ^ (two & 0xFFFF)) * 16777619;
+            h = (h ^ (two >> 16)) * 16777619;
+            i = i + 2;
+        }
+        if (i < n)
         {
             h = (h ^ (uint)Sys.GetChar(s, i)) * 16777619;
         }

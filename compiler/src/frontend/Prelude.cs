@@ -36,6 +36,7 @@ public static class Prelude
     // behind the author's back.
     public const string NewChars = "NewChars";
     public const string GetChar = "GetChar";
+    public const string GetCharPair = "GetCharPair";
     public const string SetChar = "SetChar";
     public const string Copy = "Copy";
     public const string CopyNoOverlap = "CopyNoOverlap";
@@ -440,6 +441,10 @@ public static class Prelude
             // line on a terminal -- is an encoding, and System.Text makes it.
             public static string NewChars(int length) { return ""; }
             public static char GetChar(string s, int at) { return (char)0; }
+            // Two units at once, `at` and `at + 1`, as one 32-bit load: the
+            // string routines compare a pair at a time and look at single
+            // units only where a pair differs or one is left over.
+            public static int GetCharPair(string s, int at) { return 0; }
             public static void SetChar(string s, int at, int value) { }
             // AND WITH A MACHINE-WORD CURSOR. An index is an int in C# because
             // an array's length is, and String keeps to that; these are the

@@ -272,6 +272,12 @@ static class Platform
         return false;
     }
 
+    /// No control groups: a kernel's heap has the cap its kernel gives it.
+    public static long MemoryLimit()
+    {
+        return 0;
+    }
+
     /// Unknown here too: a kernel's collector is paced by its cap (Gc).
     public static long FreeMemoryQuietly()
     {

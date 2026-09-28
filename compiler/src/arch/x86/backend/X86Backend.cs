@@ -484,6 +484,7 @@ public sealed class X86Backend : IBackend
         try
         {
             Allocator.Run(m);
+            Layout.Run(m);
             Peephole.Run(m);
         }
         catch (InvalidOperationException e)

@@ -896,6 +896,14 @@ static class String {
         return -1;
     }
 
+    public static int LastIndexOf(string s, string what, StringComparison kind) {
+        if (kind == StringComparison.Ordinal || kind == StringComparison.InvariantCulture
+         || kind == StringComparison.CurrentCulture) {
+            return LastIndexOf(s, what);
+        }
+        return LastIndexOf(ToUpperInvariant(s), ToUpperInvariant(what));
+    }
+
     public static int LastIndexOf(string s, char ch, int start) {
         for (int i = start >= s.Length ? s.Length - 1 : start; i >= 0; i--) {
             if (Sys.GetChar(s, i) == (int)ch) { return i; }

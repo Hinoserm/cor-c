@@ -260,8 +260,8 @@ static class Gc
     // A MINOR collection marks only what is young and reachable. Its roots
     // are the ordinary ones, the CARDS -- a byte for every kilobyte of the
     // address space, set by the compiler after every store of a reference
-    // (Runtime.Cards) -- whose memory is read word by word for pointers old
-    // objects hold into young ones, and the blocks the stacks held at the last
+    // (Runtime.Cards) -- which lead it to the old objects written since the
+    // last cycle (TakeCards, OldWritten), and the blocks the stacks held at the last
     // collection (Hold): an object the compiler is still initialising is
     // written without a barrier, a collection can fall between its allocation
     // and those writes, and it is on a stack when it does. A pointer into an
@@ -520,16 +520,24 @@ static class Gc
         }
     }
 
-    /// AT THE SNAPSHOT: every set card over the heap moved into the taken
-    /// table (for a minor cycle, to be read) and cleared, with the heap lock
-    /// held. A card a store sets afterwards stays set for the next cycle.
-    static void TakeCards(bool keep)
+    /// AT THE SNAPSHOT: every set card over the heap cleared, with the heap
+    /// lock held, and the ones a minor cycle must read moved into the taken
+    /// table. A card a store sets afterwards stays set for the next cycle.
+    ///
+    /// A YOUNG CHUNK'S CARDS ARE NOT READ: most of what they cover is young,
+    /// and reading it as roots would keep every young object a dead one
+    /// pointed at -- and make it old. The old blocks in it were walked just
+    /// before, and those with a card set were queued whole or had their own
+    /// cards taken (OldWritten). Only a thread's buffer, stepped over by that
+    /// walk, keeps its cards: it may hold the survivors of the last cycle.
+    static void TakeCards(bool minor)
     {
         long cards = Runtime.Cards;
         long which = 0;
         long chunk = HeapChunks.SnapshotChunk(0);
         while (chunk != 0)
         {
+            bool young = HeapChunks.IsYoung(chunk);
             long card = (HeapChunks.First(chunk) & WordSize.AddressMask) >> Runtime.CardShift;
             long last = ((HeapChunks.End(chunk) - 1) & WordSize.AddressMask) >> Runtime.CardShift;
             while (card <= last)
@@ -537,7 +545,7 @@ static class Gc
                 if (Sys.PeekByte(cards + card) != 0)
                 {
                     Sys.PokeByte(cards + card, 0);
-                    if (keep)
+                    if (minor && (!young || InBuffer(card << Runtime.CardShift, (card + 1) << Runtime.CardShift)))
                     {
                         Sys.PokeByte(_taken + card, 1);
                     }
@@ -546,6 +554,62 @@ static class Gc
             }
             which = which + 1;
             chunk = HeapChunks.SnapshotChunk(which);
+        }
+    }
+
+    /// Whether [from, to) overlaps a captured thread buffer.
+    static bool InBuffer(long from, long to)
+    {
+        long i = GcThreads.BufferAtOrAbove(from);
+        if (i > 0 && GcThreads.BufferLimit(i - 1) > from)
+        {
+            return true;
+        }
+        return i < GcThreads.BufferCount() && GcThreads.BufferBase(i) < to;
+    }
+
+    /// Blocks larger than this have their written kilobytes read again
+    /// rather than the whole of them (OldWritten).
+    const long RegreyMost = 4096;
+
+    /// An old block in a young chunk, met by a minor cycle's snapshot walk
+    /// before its cards are taken. With no card of it set, nothing it holds
+    /// has changed since it was last scanned. With one set, it is made grey
+    /// again -- its scanned flag taken off and the block queued -- so the
+    /// mark reads it by its descriptor, as it reads any object; one larger
+    /// than RegreyMost has only its set cards taken, to be read by the
+    /// kilobyte. A leaf holds no reference and is never read at all.
+    static void OldWritten(long block, long size)
+    {
+        long cards = Runtime.Cards;
+        long card = (block & WordSize.AddressMask) >> Runtime.CardShift;
+        long last = ((block + size - 1) & WordSize.AddressMask) >> Runtime.CardShift;
+        if (Sys.Peek(block + KindAt) == KindLeaf)
+        {
+            return;
+        }
+        if (size > RegreyMost)
+        {
+            while (card <= last)
+            {
+                if (Sys.PeekByte(cards + card) != 0)
+                {
+                    Sys.PokeByte(_taken + card, 1);
+                }
+                card = card + 1;
+            }
+            return;
+        }
+        while (card <= last)
+        {
+            if (Sys.PeekByte(cards + card) != 0)
+            {
+                ClearFlag(block, FlagScan);
+                Sys.AtomicAdd(GcLock.Words() + GcLock.Pushes, 1);
+                PushGrey(block);
+                return;
+            }
+            card = card + 1;
         }
     }
 
@@ -1751,9 +1815,25 @@ static class Gc
         }
     }
 
+    /// Under a control group's memory limit the heap is capped as .NET caps
+    /// it in a container: three quarters of the limit, and never below 20 MB
+    /// -- the rest is the program's code, stacks and the collector's own
+    /// tables. The cap paces the collector and is the total GC.GetGCMemoryInfo
+    /// reports, which is what the build sizes its parallel work by.
+    const long ContainerFloor = 20971520;
+
     static void Start()
     {
         _verify = Platform.VerifyFrees();
+        if (HeapChunks.Cap == 0)
+        {
+            long limit = Platform.MemoryLimit();
+            if (limit != 0)
+            {
+                long cap = limit / 4 * 3;
+                HeapChunks.SetLimit(cap > ContainerFloor ? cap : ContainerFloor);
+            }
+        }
         _ready = true;
         _threshold = MinThreshold;
         _digits = Platform.Map(4096);
@@ -2356,6 +2436,27 @@ static class Gc
             {
                 SyncFooter(block);
                 return true;
+            }
+        }
+    }
+
+    /// Takes `flag` off a block's header, and then its footer, against every
+    /// other thread changing them.
+    static void ClearFlag(long block, long flag)
+    {
+        while (true)
+        {
+            long word = Sys.Peek(block) & WordSize.AddressMask;
+
+            if ((word & flag) == 0)
+            {
+                return;
+            }
+
+            if ((Sys.Cas(block, word, word & ~flag) & WordSize.AddressMask) == word)
+            {
+                SyncFooter(block);
+                return;
             }
         }
     }
@@ -3632,6 +3733,9 @@ static class Gc
                     // WHERE EVERY OBJECT STARTS, as of this stop: what the
                     // marker finds objects by from here on (SnapshotBlock).
                     if ((header & FlagFree) == 0) HeapChunks.SetStart(chunk, block);
+                    // AN OLD BLOCK IN A YOUNG CHUNK that was written since the
+                    // last cycle is read again, precisely (OldWritten).
+                    if (_minor && (header & (FlagFree | FlagMark)) == FlagMark) OldWritten(block, size);
                     // A MAJOR CYCLE MAKES EVERY BLOCK YOUNG AGAIN, taking off
                     // the marks the old kept, and finds the live ones afresh.
                     if (_generational && !_minor && (header & (FlagMark | FlagScan)) != 0)

@@ -1047,11 +1047,20 @@ blocks.
   theirs. Array copies and list shifts are element stores and need nothing
   more.
 - *Taken at the snapshot.* When a cycle's start tables are built, with the
-  heap lock held, every set card is moved to a second table and cleared
-  (`Gc.TakeCards`); the cycle reads that table while marking
-  (`ScanTakenCards`). A store made after the snapshot -- above all of an
-  object allocated after it, which the cycle keeps but cannot mark -- leaves
-  its card set for the next cycle.
+  heap lock held, every set card is cleared (`Gc.TakeCards`), and a store
+  made after that -- above all of an object allocated after it, which the
+  cycle keeps but cannot mark -- leaves its card set for the next cycle.
+  What a minor cycle reads for them depends on the chunk. In an OLD chunk
+  every block is old, and the kilobytes of its set cards are moved to a
+  second table and read word by word while marking (`ScanTakenCards`). A
+  YOUNG chunk's cards are never read as such: most of what they cover is
+  young, and reading it as roots would keep -- and promote -- everything a
+  dead young object pointed at. The snapshot walk meets every old block
+  in it before the cards are cleared, and one with a card set is made grey
+  again, its scanned flag taken off and the block queued, to be read by its
+  descriptor like any object (`Gc.OldWritten`); a block over 4 KB has only
+  its set kilobytes taken, and a leaf is skipped. Only a thread's buffer,
+  which that walk steps over, keeps its cards.
 - *The blocks the stacks held.* The compiler initialises a fresh object
   without a barrier, and a collection can fall between its allocation and
   those stores; it is on a stack then. So each cycle records every block a

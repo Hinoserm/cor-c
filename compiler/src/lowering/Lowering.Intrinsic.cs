@@ -146,6 +146,13 @@ public sealed partial class Lowering
                 VReg p = _e.Binary(Opcode.Add, s, _e.Binary(Opcode.Mul, at, 2));
                 return _e.Load(IrType.I32, p, _t.ArrayHeaderBytes, 2, signed: false);
             }
+            case "GetCharPair":
+            {
+                VReg s = Arg(call, target, 0);
+                VReg at = WordOf(Arg(call, target, 1));
+                VReg p = _e.Binary(Opcode.Add, s, _e.Binary(Opcode.Mul, at, 2));
+                return _e.Load(IrType.I32, p, _t.ArrayHeaderBytes, 4, signed: false);
+            }
             case "SetChar":
             {
                 VReg s = Arg(call, target, 0);
@@ -169,30 +176,24 @@ public sealed partial class Lowering
                         R(_e.Binary(Opcode.Add, src, _t.ArrayHeaderBytes)), R(n));
                 return Void();
             }
-            // Two byte ranges, or two ranges of a string's code units, equal or
-            // not. ORDER over a string is the order of its code units (.NET's
-            // ordinal comparison), which the bytes of a little-endian unit do
-            // not have; that is Runtime.StringCompare, reached as a fallback.
+            // Two byte ranges equal or not, and in which order. Two ranges of a
+            // string's code units are Runtime.StringEqual and StringCompare,
+            // reached as fallbacks: they walk a pair of units at a time with
+            // a 32-bit cursor, and ORDER over a string is the order of its
+            // code units (.NET's ordinal comparison), which the bytes of a
+            // little-endian unit do not have.
             case "CompareBytes":
-            case "StringEqual":
             {
                 MethodSymbol? cmp = RequireRuntime(call, "CompareBytes", 3, $"Sys.{name}");
                 if (cmp is null)
                     return Void();
-                int unit = name == "StringEqual" ? 2 : 1;
-                VReg Scaled(VReg v) => unit == 1 ? v : _e.Binary(Opcode.Mul, v, unit);
-                VReg a = _e.Binary(Opcode.Add, _e.Binary(Opcode.Add, Arg(call, target, 0), Scaled(WordOf(Arg(call, target, 1)))), _t.ArrayHeaderBytes);
-                VReg b = _e.Binary(Opcode.Add, _e.Binary(Opcode.Add, Arg(call, target, 2), Scaled(WordOf(Arg(call, target, 3)))), _t.ArrayHeaderBytes);
-                VReg n = Scaled(WordOf(Arg(call, target, 4)));
+                VReg a = _e.Binary(Opcode.Add, _e.Binary(Opcode.Add, Arg(call, target, 0), WordOf(Arg(call, target, 1))), _t.ArrayHeaderBytes);
+                VReg b = _e.Binary(Opcode.Add, _e.Binary(Opcode.Add, Arg(call, target, 2), WordOf(Arg(call, target, 3))), _t.ArrayHeaderBytes);
+                VReg n = WordOf(Arg(call, target, 4));
                 // The runtime declares these as longs; a word pushed where a
                 // long is read leaves the callee with half of the next slot.
-                VReg r = _e.Call(CallLabel(cmp), IrTypes.Of(cmp.Returns),
-                                 R(AsParam(a, cmp.Params[0].Type)), R(AsParam(b, cmp.Params[1].Type)), R(AsParam(n, cmp.Params[2].Type)))!;
-                if (name == "StringEqual")
-                {
-                    return _e.Binary(Opcode.Eq, R(r), Imm(0, r.Type), IrType.I32);
-                }
-                return r;
+                return _e.Call(CallLabel(cmp), IrTypes.Of(cmp.Returns),
+                               R(AsParam(a, cmp.Params[0].Type)), R(AsParam(b, cmp.Params[1].Type)), R(AsParam(n, cmp.Params[2].Type)))!;
             }
 
             // ---- atomics -------------------------------------------------------------

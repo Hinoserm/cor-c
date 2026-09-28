@@ -407,6 +407,131 @@ static class Platform
         return SysinfoBytes(SysinfoFree) + SysinfoBytes(SysinfoBuffers);
     }
 
+    /// THE MEMORY THE PROCESS'S CONTROL GROUP MAY USE, or 0 when it has no
+    /// limit: what .NET reads to size its heap in a container, and what a
+    /// machine's free memory does not show -- a process capped at 256 MB on a
+    /// server with 48 GB free would otherwise pace itself for 48. cgroup v2's
+    /// memory.max, the smallest along the group's path, since a parent's
+    /// limit binds its children; or v1's memory.limit_in_bytes. Read once, at
+    /// the heap's start, with raw calls into a page of the system's own:
+    /// nothing here allocates.
+    public static long MemoryLimit()
+    {
+        long page = Map(8192);
+        if (page == 0)
+        {
+            return 0;
+        }
+        long text = page;           // /proc/self/cgroup
+        long path = page + 4096;    // the file asked for, NUL-terminated
+        long limit = 0;
+        long got = ReadInto(text, 4095, "/proc/self/cgroup", path);
+        long v2 = got > 0 ? LineAfter(text, got, "0::") : -1;
+        if (v2 >= 0)
+        {
+            long end = v2;
+            while (end < text + got && Sys.PeekByte(end) != 10) end = end + 1;
+            // The group, then each parent up to the root, whose own file
+            // does not exist.
+            while (end > v2)
+            {
+                long bytes = CgroupFile(path, v2, end, "/sys/fs/cgroup", "/memory.max", text + got + 1, page + 4096 - (text + got + 1));
+                if (bytes > 0 && (limit == 0 || bytes < limit)) limit = bytes;
+                end = end - 1;
+                while (end > v2 && Sys.PeekByte(end) != 47) end = end - 1;
+            }
+        }
+        else if (got > 0)
+        {
+            long v1 = LineAfter(text, got, ":memory:");
+            if (v1 >= 0)
+            {
+                long end = v1;
+                while (end < text + got && Sys.PeekByte(end) != 10) end = end + 1;
+                limit = CgroupFile(path, v1, end, "/sys/fs/cgroup/memory", "/memory.limit_in_bytes", text + got + 1, page + 4096 - (text + got + 1));
+                // v1 says "no limit" as a number near 2^63.
+                if (limit >= 0x7FFFFFFFFFFFF000 / 2) limit = 0;
+            }
+        }
+        Unmap(page, 8192);
+        return limit;
+    }
+
+    /// Reads the file named by `name` (built into `scratch`) into [into,
+    /// into + most); answers the bytes read, or -1.
+    static long ReadInto(long into, long most, string name, long scratch)
+    {
+        for (int i = 0; i < name.Length; i++) Sys.PokeByte(scratch + i, name[i]);
+        Sys.PokeByte(scratch + name.Length, 0);
+        return ReadPath(scratch, into, most);
+    }
+
+    static long ReadPath(long path, long into, long most)
+    {
+        long fd = Result(Sys.Syscall(Call.Open, path, 0, 0));
+        if (fd < 0)
+        {
+            return -1;
+        }
+        long got = 0;
+        while (got < most)
+        {
+            long n = Result(Sys.Syscall(Call.Read, fd, into + got, most - got));
+            if (n <= 0) break;
+            got = got + n;
+        }
+        Sys.Syscall(Call.Close, fd, 0, 0);
+        return got;
+    }
+
+    /// Where the text after `key` begins, when a line of [text, text + count)
+    /// starts with it (or, for a key starting with ':', contains it after the
+    /// line's hierarchy number); -1 when none does.
+    static long LineAfter(long text, long count, string key)
+    {
+        long line = text;
+        while (line < text + count)
+        {
+            long at = line;
+            if (key[0] == ':')
+            {
+                while (at < text + count && Sys.PeekByte(at) != 58 && Sys.PeekByte(at) != 10) at = at + 1;
+            }
+            int i = 0;
+            while (i < key.Length && at + i < text + count && Sys.PeekByte(at + i) == key[i]) i = i + 1;
+            if (i == key.Length)
+            {
+                return at + i;
+            }
+            while (line < text + count && Sys.PeekByte(line) != 10) line = line + 1;
+            line = line + 1;
+        }
+        return -1;
+    }
+
+    /// The number in `root` + [from, to) + `leaf`, or 0 for "max", for a
+    /// file that is not there, or for one that says nothing a number.
+    static long CgroupFile(long path, long from, long to, string root, string leaf, long buffer, long most)
+    {
+        long at = path;
+        for (int i = 0; i < root.Length; i++) { Sys.PokeByte(at, root[i]); at = at + 1; }
+        for (long p = from; p < to && at < path + 3000; p++) { Sys.PokeByte(at, Sys.PeekByte(p)); at = at + 1; }
+        for (int i = 0; i < leaf.Length; i++) { Sys.PokeByte(at, leaf[i]); at = at + 1; }
+        Sys.PokeByte(at, 0);
+        if (most < 32) most = 0;
+        long got = most > 0 ? ReadPath(path, buffer, most > 64 ? 64 : most) : -1;
+        long value = 0;
+        long digits = 0;
+        for (long p = buffer; p < buffer + got; p++)
+        {
+            long c = Sys.PeekByte(p);
+            if (c < 48 || c > 57) break;
+            value = value * 10 + (c - 48);
+            digits = digits + 1;
+        }
+        return digits > 0 ? value : 0;
+    }
+
     // struct sysinfo: the unsigned longs are words, so the offsets are the
     // word size's -- i386 and x86-64 lay it out alike, one word apart.
     const int SysinfoTotal = 4 * WordSize.Bytes;
