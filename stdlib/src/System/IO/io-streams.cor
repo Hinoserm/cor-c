@@ -8,6 +8,8 @@
 /// Reading past the end of what a BinaryReader was given. .NET makes this a
 /// subclass of IOException, and a caller distinguishes it from a real failure
 /// of the device precisely because it is its own type.
+namespace System.IO
+{
 class EndOfStreamException : IOException
 {
     public EndOfStreamException() : base("Unable to read beyond the end of the stream.") { }
@@ -17,10 +19,13 @@ class EndOfStreamException : IOException
     }
     public EndOfStreamException(string? message, Exception? innerException) : base(message, innerException) { }
 }
+}
 
 /// The bytes were readable and did not mean what the format says they should.
 /// NOT under IOException, though it lives in System.IO: nothing went wrong
 /// with the device, and .NET puts it under SystemException for that reason.
+namespace System.IO
+{
 class InvalidDataException : SystemException
 {
     public InvalidDataException() : base("Found invalid data while decoding.") { }
@@ -33,6 +38,7 @@ class InvalidDataException : SystemException
         : base(message ?? "Found invalid data while decoding.", innerException)
     {
     }
+}
 }
 
 // ---- text in a string -----------------------------------------------------

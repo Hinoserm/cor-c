@@ -103,6 +103,81 @@ public sealed partial class Binder
     /// would name it with, so a type written inside another is `Outer.Inner`
     /// and cannot be confused with a different `Inner` written somewhere else.
     /// </summary>
+    /// <summary>
+    /// Where the library's global types live when a program's type takes
+    /// one's name: .NET's namespace for them (MoveToSystem).
+    /// </summary>
+    private const string LibraryHome = "System";
+
+    /// <summary>The keys of library types moved into System: old key to new.</summary>
+    private readonly Dictionary<string, string> _movedToSystem = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// A library type the program has taken the name of, moved into System
+    /// with every library type nested in it -- declared under its new key,
+    /// and the old key left to the program's.
+    /// </summary>
+    private void MoveToSystem(TypeDecl library)
+    {
+        string before = TypeKey(library);
+        library.MovedToSystem = true;
+        library.Outer = library.Outer is null ? LibraryHome : LibraryHome + "." + library.Outer;
+        if (library.Namespace.Length == 0) library.Namespace = LibraryHome;
+        string after = TypeKey(library);
+        _movedToSystem[before] = after;
+
+        if (_r.Types.TryGetValue(before, out TypeSymbol? held) && ReferenceEquals(held.Decl, library))
+        {
+            _r.Types.Remove(before);
+        }
+        TypeSymbol moved = new() { Name = library.Name, Key = after, Kind = library.Kind, Decl = library };
+        moved.TypeParams.AddRange(library.TypeParams.Select(p => p.Name));
+        _r.Types[after] = moved;
+
+        // Its nested types declared already go with it; the rest are moved as
+        // they are met (MovedPath).
+        foreach (string nested in _r.Types.Keys.Where(k => k.StartsWith(before + ".", StringComparison.Ordinal)).ToList())
+        {
+            TypeSymbol inner = _r.Types[nested];
+            if (inner.Decl is not { FromLibrary: true } innerDecl || innerDecl.Outer is null)
+            {
+                continue;
+            }
+            _r.Types.Remove(nested);
+            innerDecl.Outer = MovedPath(innerDecl.Outer) ?? innerDecl.Outer;
+            if (innerDecl.Namespace.Length == 0) innerDecl.Namespace = LibraryHome;
+            TypeSymbol movedInner = new() { Name = innerDecl.Name, Key = TypeKey(innerDecl), Kind = innerDecl.Kind, Decl = innerDecl };
+            movedInner.TypeParams.AddRange(innerDecl.TypeParams.Select(p => p.Name));
+            _r.Types[movedInner.Key] = movedInner;
+        }
+    }
+
+    /// <summary>
+    /// How the checker names a library type it makes something of -- `^1` is
+    /// System.Index, `a..b` System.Range -- whatever a program calls its own:
+    /// the moved key when the program has taken the name (MoveToSystem).
+    /// </summary>
+    private string LibraryType(string name)
+        => _r.Types.TryGetValue(LibraryHome + "." + name, out TypeSymbol? moved) && moved.Decl is { MovedToSystem: true }
+            ? LibraryHome + "." + name : name;
+
+    /// <summary>A path inside a type moved into System, rewritten to its new place; null if it is not.</summary>
+    private string? MovedPath(string path)
+    {
+        foreach ((string before, string after) in _movedToSystem)
+        {
+            if (path == before)
+            {
+                return after;
+            }
+            if (path.StartsWith(before + ".", StringComparison.Ordinal))
+            {
+                return after + path.Substring(before.Length);
+            }
+        }
+        return null;
+    }
+
     internal static string TypeKey(TypeDecl d)
     {
         string simple = d.TypeParams.Count > 0 ? Arity(d.Name, d.TypeParams.Count) : d.Name;
@@ -172,6 +247,18 @@ public sealed partial class Binder
         TypeDecl? written = (_scope ?? _thisType)?.Decl;
         string within = _member?.Scope != null ? _member.Namespace : written?.Namespace ?? "";
         FileScope? file = _member?.Scope ?? written?.Scope;
+        // THE LIBRARY'S GLOBAL CODE FINDS ITS OWN TYPE FIRST where a program's
+        // took the name and the library's was moved into System (MoveToSystem)
+        // -- judged by the declaration, which keeps the move after the pass
+        // that made it. Not in a specialisation, whose arguments were written
+        // where it was used.
+        if (written is { FromLibrary: true, Specialised: false } && within.Length == 0
+            && _r.Types.TryGetValue(LibraryHome + "." + name, out TypeSymbol? moved) && moved.Decl is { MovedToSystem: true })
+        {
+            if (!BindingElsewhere) moved.Used = true;
+            sym = moved;
+            return true;
+        }
 
         // OUTWARDS FROM WHERE IT WAS WRITTEN: the types this one is written
         // inside, which is why a nested type can be named without its outer,
@@ -1342,6 +1429,13 @@ public sealed partial class Binder
         // other in any order, then fill in members, then check bodies.
         foreach (TypeDecl d in unit.Types)
         {
+            // A LIBRARY TYPE NESTED IN ONE MOVED TO SYSTEM moves with it.
+            if (d.FromLibrary && d.Outer is not null && MovedPath(d.Outer) is string movedOuter)
+            {
+                d.Outer = movedOuter;
+                if (d.Namespace.Length == 0) d.Namespace = LibraryHome;
+            }
+
             // A TEMPLATE IS KEYED BY ITS NAME AND ARITY, never by its name
             // alone.
             //
@@ -1376,21 +1470,22 @@ public sealed partial class Binder
                     continue;
                 }
 
-                // A PROGRAM'S OWN TYPE WINS OVER THE CLASS LIBRARY'S.
+                // A PROGRAM'S OWN TYPE WINS OVER THE CLASS LIBRARY'S -- in the
+                // program. .NET declares Index in System; a program that writes
+                // `class Index` of its own in the global namespace gets that
+                // one for every unqualified mention IT makes, and the library's
+                // own code, which is in System, still gets System.Index.
                 //
-                // .NET declares Stack<T> in System.Collections.Generic; a
-                // program that writes `class Stack<T>` of its own in the
-                // global namespace gets that one, and every unqualified
-                // mention of the name resolves to it. This compiler flattens
-                // namespaces, so the same answer is reached by asking which
-                // declaration came from the library -- neither is an error,
-                // and the program's replaces the library's.
-                //
-                // The pass below declares members only for the symbol whose
-                // Decl it is holding, so the shadowed declaration simply goes
-                // no further: no members, no bodies, no code.
-                if (already.Decl?.FromLibrary == true && !d.FromLibrary)
+                // The library's global types are System's here, so the
+                // library's declaration is MOVED into System (MoveToSystem):
+                // it keeps its members, its bodies and its code under
+                // System.Index, and the library's code finds it there first
+                // (FindType). Dropping it, as this once did, bound every use
+                // the library itself made -- Range's, the indexers' -- to the
+                // program's class, and the library no longer compiled.
+                if (already.Decl is { FromLibrary: true } library && !d.FromLibrary)
                 {
+                    MoveToSystem(library);
                     TypeSymbol mine = new() { Name = d.Name, Key = key, Kind = d.Kind, Decl = d };
                     mine.TypeParams.AddRange(d.TypeParams.Select(p => p.Name));
                     _r.Types[key] = mine;
@@ -1399,6 +1494,7 @@ public sealed partial class Binder
 
                 if (d.FromLibrary && already.Decl?.FromLibrary == false)
                 {
+                    MoveToSystem(d);
                     continue;
                 }
 
@@ -3240,6 +3336,10 @@ public sealed partial class Binder
             return new Type { Prim = Prim.Void, ParamName = r.Name };
         }
 
+        // A NAME THE MONOMORPHISER HAS ALREADY SPELT OUT IN FULL (TypeRef.
+        // Resolved) is that type, wherever it is read: a program's `Version`
+        // spliced into ReadOnlyCollection<T> is not System.Version because
+        // ReadOnlyCollection is declared in a namespace beneath System.
         // THE NAME AS WRITTEN, from where it was written: `ImageFile.Section`
         // and `Corsac.Lang.Ir.Block` name one type each, and it must be tried
         // BEFORE the qualifier is trimmed -- trimming is what would hand back
@@ -3279,6 +3379,21 @@ public sealed partial class Binder
         // source that says exactly what it means. When namespaces become real
         // this is where they get walked instead of trimmed.
         string bare = r.Name.Contains('.') ? r.Name[(r.Name.LastIndexOf('.') + 1)..] : r.Name;
+
+        // A NAME QUALIFIED BY A SYSTEM NAMESPACE is the library's, where a
+        // program has taken its simple name (MoveToSystem): `System.Index`
+        // beside a `class Index` of the program's.
+        if (r.Name.StartsWith(LibraryHome + ".", StringComparison.Ordinal) && r.Name.IndexOf('.', LibraryHome.Length + 1) >= 0
+            && TypeCandidate(r.Args.Count > 0 ? Arity(LibraryHome + "." + bare, r.Args.Count) : LibraryHome + "." + bare, out TypeSymbol? system)
+            && system is not null)
+        {
+            return new Type
+            {
+                Prim = system.Kind == TypeKind.Enum ? system.EnumUnderlying : Prim.Void,
+                Symbol = system,
+                Args = r.Args.Select(a => Resolve(a, context)).ToArray(),
+            };
+        }
 
         // AN OPEN TEMPLATE APPLICATION -- `List<T>` where T is a method's own
         // type parameter, which the monomorphiser could not specialise because
@@ -9715,7 +9830,7 @@ public sealed partial class Binder
             {
                 NewExpr index = new()
                 {
-                    Type = new TypeRef { Name = "Index", Line = end.Line, Col = end.Col },
+                    Type = new TypeRef { Name = LibraryType("Index"), Line = end.Line, Col = end.Col },
                     Line = end.Line, Col = end.Col,
                 };
                 index.Args.Add(end.Offset);
@@ -9730,12 +9845,12 @@ public sealed partial class Binder
             {
                 Expr Bound(Expr? given, string otherwise) => given ?? new MemberExpr
                 {
-                    Target = new NameExpr { Name = "Index", Line = range.Line, Col = range.Col },
+                    Target = new NameExpr { Name = LibraryType("Index"), Line = range.Line, Col = range.Col },
                     Name = otherwise, Line = range.Line, Col = range.Col,
                 };
                 NewExpr made = new()
                 {
-                    Type = new TypeRef { Name = "Range", Line = range.Line, Col = range.Col },
+                    Type = new TypeRef { Name = LibraryType("Range"), Line = range.Line, Col = range.Col },
                     Line = range.Line, Col = range.Col,
                 };
                 made.Args.Add(Bound(range.From, "Start"));

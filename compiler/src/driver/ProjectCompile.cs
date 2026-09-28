@@ -251,7 +251,14 @@ public static class ProjectCompile
             long need = Math.Max(UnitReserve, perByte * bytes);
             return need + need / 2;
         }
-        long Capacity() => MachineMemory.Available() + Math.Max(0, GC.GetTotalMemory(false) - baselineLive);
+        // HALF OF IT, because what is reserved is what the units hold live,
+        // and a collected heap needs as much again for the garbage between
+        // collections -- a non-moving one more, for the holes survivors leave.
+        // Reserved against the whole, a dozen units of the self-hosted
+        // compiler held 1.6 GB live under a 32-bit process's 2.5 GB ceiling
+        // and ran its four gigabytes of address space out. On a machine of
+        // many gigabytes the half is still more than a dozen units need.
+        long Capacity() => (MachineMemory.Available() + Math.Max(0, GC.GetTotalMemory(false) - baselineLive)) / 2;
         // At the rate known NOW: a rate that rose after a unit was admitted
         // raises what that unit holds, rather than leaving it booked at the
         // figure from before anyone knew better.

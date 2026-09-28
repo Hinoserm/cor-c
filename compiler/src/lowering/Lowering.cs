@@ -1254,6 +1254,36 @@ public sealed partial class Lowering
     /// `System.Int32[]` for `int[]`, which is what an array's GetType() says.
     /// A declared type's key is already its name.
     /// </summary>
+    /// <summary>
+    /// What .NET's Type.FullName answers for a declared type: its namespace
+    /// and then its name, a nested type after its outer ones with `+` --
+    /// `System.IO.IOException`, `Corsac.Lang.Parser+State`. The library's
+    /// global types are System's, as they are to the checker
+    /// (Binder.MoveToSystem): `System.NotSupportedException`. A
+    /// specialisation, a tuple or a closure keeps the name it was made with.
+    /// Type.Name is the part after the last `.` or `+` (String.TypeName).
+    /// </summary>
+    private static string FullTypeName(TypeSymbol t)
+    {
+        if (t.Decl is not TypeDecl d || d.Specialised || t.Structural)
+        {
+            return t.Name;
+        }
+        string space = d.Namespace.Length > 0 ? d.Namespace : d.FromLibrary ? "System" : "";
+        // The outer types: the declaration's path less its namespace.
+        string outer = d.Outer ?? "";
+        if (space.Length > 0 && (outer == space || outer.StartsWith(space + ".", StringComparison.Ordinal)))
+        {
+            outer = outer.Length == space.Length ? "" : outer[(space.Length + 1)..];
+        }
+        else if (d.Namespace.Length > 0 && (outer == d.Namespace || outer.StartsWith(d.Namespace + ".", StringComparison.Ordinal)))
+        {
+            outer = outer.Length == d.Namespace.Length ? "" : outer[(d.Namespace.Length + 1)..];
+        }
+        string nested = outer.Length > 0 ? outer.Replace('.', '+') + "+" + t.Name : t.Name;
+        return space.Length > 0 ? space + "." + nested : nested;
+    }
+
     private static string DotNetName(string key)
     {
         if (key.EndsWith("[]", StringComparison.Ordinal)) return DotNetName(key[..^2]) + "[]";
@@ -1512,7 +1542,7 @@ public sealed partial class Lowering
 
         DataItem item = new(sym, d) { ReadOnly = true, Align = _t.Align64, FromLibrary = IsLibrary(t), Coalescible = t.Decl?.Specialised == true };
         _m.Data.Add(item);
-        item.Relocs.Add(new DataReloc(DescName * w, InternString(t.Name), 0));
+        item.Relocs.Add(new DataReloc(DescName * w, InternString(FullTypeName(t)), 0));
         item.Relocs.Add(new DataReloc(DescSelf * w, sym, 0));
         return sym;
     }
@@ -1576,7 +1606,7 @@ public sealed partial class Lowering
         DataItem item = new(sym, block) { ReadOnly = true, Align = _t.Align64, FromLibrary = IsLibrary(t), Coalescible = t.Structural || t.Decl?.Specialised == true,
             Exported = t.Decl?.LocalOnly != true };
         _m.Data.Add(item);
-        item.Relocs.Add(new DataReloc(DescName * w, InternString(t.Name), 0));
+        item.Relocs.Add(new DataReloc(DescName * w, InternString(FullTypeName(t)), 0));
         item.Relocs.Add(new DataReloc(DescSelf * w, sym, 0));
 
         // The reference map covers the whole instance, base fields included:

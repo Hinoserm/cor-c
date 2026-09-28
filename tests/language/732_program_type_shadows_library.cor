@@ -1,0 +1,59 @@
+// test: program_type_shadows_library
+// expect-exit: 0
+// expect-output:
+// mine 7
+// 5 4 2,3 1,2
+// d adow
+// 2 True 1 True
+// my stack b 1
+// library stack 2 1 1
+// 7 1
+//
+// A program's own global `class Index` and `class Stack<T>` are the
+// program's for every unqualified mention it makes, while `^1`, ranges,
+// `System.Index` and `System.Collections.Generic.Stack<int>` are still the
+// library's -- and the library's own code still compiles against its own.
+// Output checked against .NET.
+
+using System;
+using System.Collections.Generic;
+
+class Index
+{
+    public int Value;
+    public Index(int value) { Value = value; }
+    public override string ToString() => "mine " + Value;
+}
+
+class Stack<T>
+{
+    private readonly List<T> items = new();
+    public void Push(T item) { items.Add(item); }
+    public T Pop() { T last = items[items.Count - 1]; items.RemoveAt(items.Count - 1); return last; }
+    public int Count => items.Count;
+    public string Kind => "my stack";
+}
+
+static class Program
+{
+    static void Main()
+    {
+        Index mine = new Index(7);
+        Console.WriteLine(mine);
+        int[] numbers = { 1, 2, 3, 4, 5 };
+        Console.WriteLine(numbers[^1] + " " + numbers[^2] + " " + string.Join(",", numbers[1..3]) + " " + string.Join(",", numbers[..^3]));
+        string text = "shadowed";
+        Console.WriteLine(text[^1] + " " + text[2..^2]);
+        System.Index hat = ^2;
+        System.Range middle = 1..^1;
+        Console.WriteLine(hat.Value + " " + hat.IsFromEnd + " " + middle.Start.Value + " " + middle.End.IsFromEnd);
+        Stack<string> own = new();
+        own.Push("a"); own.Push("b");
+        Console.WriteLine(own.Kind + " " + own.Pop() + " " + own.Count);
+        System.Collections.Generic.Stack<int> theirs = new();
+        theirs.Push(1); theirs.Push(2);
+        Console.WriteLine("library stack " + theirs.Pop() + " " + theirs.Count + " " + theirs.Peek());
+        List<int> list = new() { 9, 8, 7 };
+        Console.WriteLine(list[^1] + " " + list.IndexOf(8));
+    }
+}

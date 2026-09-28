@@ -185,10 +185,13 @@ static class String {
     }
 
     /// Type.Name: the last part of the name a type's descriptor holds --
-    /// `Object` of `System.Object`, `Int32` of `System.Int32`.
+    /// `Object` of `System.Object`, `Int32` of `System.Int32`, `State` of a
+    /// nested `Parser+State`.
     public static string TypeName(string full) {
         int dot = full.LastIndexOf('.');
-        return dot < 0 ? full : full.Substring(dot + 1);
+        int plus = full.LastIndexOf('+');
+        int cut = dot > plus ? dot : plus;
+        return cut < 0 ? full : full.Substring(cut + 1);
     }
 
     /// `"x = " + f` for a float: the shortest digits that are that float.
@@ -9824,10 +9827,13 @@ class OverflowException : ArithmeticException
     public OverflowException(string? message, Exception? innerException) : base(message, innerException) { }
 }
 
+namespace System.IO
+{
 class FileNotFoundException : IOException
 {
     public FileNotFoundException(string message) : base(message) { }
     public FileNotFoundException(string message, string fileName) : base(message) { }
+}
 }
 
 /// System.UnauthorizedAccessException: the operating system refused, which on
@@ -9844,11 +9850,14 @@ class UnauthorizedAccessException : SystemException
 /// System.IO.DirectoryNotFoundException: a directory on the path is not
 /// there. .NET throws this, not FileNotFoundException, when the directory
 /// rather than the file is what is missing.
+namespace System.IO
+{
 class DirectoryNotFoundException : IOException
 {
     public DirectoryNotFoundException(string? message) : base(message) { }
     public DirectoryNotFoundException() : base("Attempted to access a path that is not on the disk.") { }
     public DirectoryNotFoundException(string? message, Exception? innerException) : base(message, innerException) { }
+}
 }
 
 /// The rest of the exceptions a program catches by name. Every one of them is
@@ -9899,27 +9908,36 @@ class KeyNotFoundException : SystemException
 /// FileLoadException are all under it, as they are in .NET. That is what makes
 /// `catch (IOException)` around an open catch a missing file -- the catch a
 /// program actually writes, and the reason the tree is not flat.
+namespace System.IO
+{
 class IOException : SystemException
 {
     public IOException() : base("I/O error occurred.") { }
     public IOException(string? message) : base(message) { }
     public IOException(string? message, Exception? inner) : base(message, inner) { }
 }
+}
 
 /// The path, or a name in it, is longer than the filing system allows.
+namespace System.IO
+{
 class PathTooLongException : IOException
 {
     public PathTooLongException() : base("The specified file name or path is too long, or a component of the specified path is too long.") { }
     public PathTooLongException(string? message) : base(message) { }
     public PathTooLongException(string? message, Exception? innerException) : base(message, innerException) { }
 }
+}
 
 /// The file was found and could not be loaded.
+namespace System.IO
+{
 class FileLoadException : IOException
 {
     public FileLoadException() : base("Could not load the specified file.") { }
     public FileLoadException(string message) : base(message) { }
     public FileLoadException(string message, string fileName) : base(message) { }
+}
 }
 
 class TimeoutException : SystemException
