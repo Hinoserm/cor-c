@@ -2522,6 +2522,28 @@ static class Gc
             Sys.PokeWord(p, Poison);
             p = p + 4;
         }
+        // AND WHO FREED IT, in the block's last words: the return addresses
+        // of the calls that led here, less 0x08000000 so that none of them
+        // is a pointer either (a read through one still faults, low in the
+        // space where nothing is mapped). The first words keep the pattern,
+        // which the double-free check reads and most reads after a free
+        // meet first. Add 0x08000000 back and ask nm, or gdb's info symbol.
+        long frame = Sys.FramePointer();
+        long slot = end - 4;
+        int depth = 0;
+        while (depth < 6 && slot >= at + 8 && frame != 0)
+        {
+            long next = Sys.Peek(frame);
+            long back = Sys.Peek(frame + WordSize.Bytes) & WordSize.AddressMask;
+            if (back < 0x08000000 || next != 0 && next <= frame)
+            {
+                break;
+            }
+            Sys.PokeWord(slot, back - 0x08000000);
+            slot = slot - 4;
+            depth = depth + 1;
+            frame = next;
+        }
         Sys.Poke(block + KindAt, KindLeaf);
         VerifiedFrees = VerifiedFrees + 1;
         Frees = Frees + 1;
