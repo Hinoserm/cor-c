@@ -1951,6 +1951,16 @@ static class Gc
             {
                 block = Take(need);
             }
+            // A MAPPING OF ITS OWN IS A PREFERENCE, and when it is refused --
+            // at the ceiling, above all -- the free space the heap already has
+            // comes before a collection. The other way round, every array of
+            // 64 KB or more made at the ceiling forced a whole-heap cycle, and
+            // a compiler with a gigabyte live and as much again free between
+            // its objects marked the gigabyte every hundred megabytes.
+            if (block == 0 && dedicated)
+            {
+                block = Take(need);
+            }
         }
 
         // Growth refused -- the cap, or the operating system. A collection
