@@ -4230,6 +4230,40 @@ static class Gc
         }
     }
 
+    /// Puts a run of dead blocks back as one free block.
+    ///
+    /// A MINOR SWEEP KEPT THE FREE LISTS, so a run's free members are on them
+    /// still. A run that is one listed free block and nothing else -- a hole
+    /// nothing beside it died to widen -- is left exactly where it is. Taking
+    /// it off and putting it back rotated the large-block trees for every
+    /// hole in every young chunk, every minor cycle, and on a fragmented heap
+    /// that was most of what a collection cost. A run that did merge has its
+    /// listed members taken off first; they are still whole blocks, because
+    /// nothing is stamped until here.
+    static void CloseDeadRun(long start, long size, long blocks, long listed)
+    {
+        if (blocks == 1 && listed == 1)
+        {
+            return;
+        }
+        if (listed != 0)
+        {
+            long at = start;
+            long end = start + size;
+            while (at < end)
+            {
+                long word = Sys.Peek(at);
+                if ((word & FlagFree) != 0 && !IsInPlace(at))
+                {
+                    Unlink(at);
+                }
+                at = at + (word & SizeMask);
+            }
+        }
+        Stamp(start, size, FlagFree);
+        Link(start);
+    }
+
     /// Sweeps one chunk. The heap lock is held (or the world is stopped).
     /// Answers whether there is another.
     static bool SweepNext()
@@ -4281,6 +4315,8 @@ static class Gc
             long end = chunk == _sweepCurrent ? _sweepCurrentEnd : HeapChunks.End(chunk);
             long deadStart = 0;
             long deadSize = 0;
+            long deadBlocks = 0;
+            long deadListed = 0;
             long step = GcThreads.BufferAtOrAbove(block);
             // What keeps the chunk young for the next cycle: a buffer a thread
             // is still bumping in, the bump pointer, or a block made while
@@ -4296,8 +4332,7 @@ static class Gc
                 {
                     if (deadSize != 0)
                     {
-                        Stamp(deadStart, deadSize, FlagFree);
-                        Link(deadStart);
+                        CloseDeadRun(deadStart, deadSize, deadBlocks, deadListed);
                         deadSize = Zero;
                     }
                     liveBytes = liveBytes + (GcThreads.BufferLimit(step) - block);
@@ -4324,22 +4359,24 @@ static class Gc
                         // comes off first -- unless it was freed in place in a
                         // buffer and never listed (FreeInPlace), whose link
                         // word is the InPlace mark and not a neighbour.
-                        if (_minor && (word & FlagFree) != 0 && !IsInPlace(block))
-                        {
-                            Unlink(block);
-                        }
                         if (deadSize == 0)
                         {
                             deadStart = block;
+                            deadBlocks = Zero;
+                            deadListed = Zero;
                         }
+                        if (_minor && (word & FlagFree) != 0 && !IsInPlace(block))
+                        {
+                            deadListed = deadListed + 1;
+                        }
+                        deadBlocks = deadBlocks + 1;
                         deadSize = deadSize + size;
                     }
                     else
                     {
                         if (deadSize != 0)
                         {
-                            Stamp(deadStart, deadSize, FlagFree);
-                            Link(deadStart);
+                            CloseDeadRun(deadStart, deadSize, deadBlocks, deadListed);
                             deadSize = Zero;
                         }
 
@@ -4363,8 +4400,7 @@ static class Gc
 
             if (deadSize != 0)
             {
-                Stamp(deadStart, deadSize, FlagFree);
-                Link(deadStart);
+                CloseDeadRun(deadStart, deadSize, deadBlocks, deadListed);
             }
             HeapChunks.SetLive(chunk, live, liveBytes);
             HeapChunks.SetYoung(chunk, stillYoung);
