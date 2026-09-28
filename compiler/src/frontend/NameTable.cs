@@ -46,6 +46,26 @@ internal sealed class NameTable
         }
     }
 
+    private static readonly Dictionary<(string Prefix, string Name), string> Accessors = new();
+
+    /// <summary>
+    /// An accessor's name -- `get_Item`, `set_Count` -- as one string for the
+    /// whole process. Accessors are made again by every bind of every copy of
+    /// a type, and each made its own: `get_Item` was six thousand strings.
+    /// </summary>
+    public static string Accessor(string prefix, string name)
+    {
+        lock (Accessors)
+        {
+            if (!Accessors.TryGetValue((prefix, name), out string? joined))
+            {
+                joined = prefix + name;
+                Accessors.Add((prefix, name), joined);
+            }
+            return joined;
+        }
+    }
+
     /// <summary>Takes <paramref name="name"/> as the table's string for its text.</summary>
     public void Add(string name) => Get(name, 0, name.Length);
 

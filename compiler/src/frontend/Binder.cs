@@ -2572,7 +2572,7 @@ public sealed partial class Binder
                         // canonical copy and the property had not.
                         MethodDecl getter = new()
                         {
-                            Name = "get_" + p.Name, Mods = p.Mods, Returns = p.Type,
+                            Name = NameTable.Accessor("get_", p.Name), Mods = p.Mods, Returns = p.Type,
                             Body = getBody, Line = p.Line, Col = p.Col,
                             TemplateIndex = p.TemplateIndex,
                             VtableSlotHint = p.VtableSlotHint,
@@ -2606,7 +2606,7 @@ public sealed partial class Binder
                     {
                         MethodDecl setter = new()
                         {
-                            Name = "set_" + p.Name, Mods = p.Mods, Returns = null,
+                            Name = NameTable.Accessor("set_", p.Name), Mods = p.Mods, Returns = null,
                             Body = setBody, Line = p.Line, Col = p.Col,
                             TemplateIndex = p.TemplateIndex,
                             VtableSlotHint = p.VtableSlotHint,
