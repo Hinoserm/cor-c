@@ -8847,10 +8847,30 @@ class StringComparer : IEqualityComparer<string>, IComparer<string> {
 
     public StringComparer(bool ignoreCase) { fold = ignoreCase; }
 
-    public static StringComparer Ordinal => new StringComparer(false);
-    public static StringComparer OrdinalIgnoreCase => new StringComparer(true);
-    public static StringComparer InvariantCulture => new StringComparer(false);
-    public static StringComparer InvariantCultureIgnoreCase => new StringComparer(true);
+    // ONE OF EACH, as .NET has: the property answers the same comparer every
+    // time. A new one each time was six hundred thousand comparers made and
+    // dropped in one self-hosted compile of a single source file -- every
+    // `new Dictionary<string, T>(StringComparer.Ordinal)` -- and two tables
+    // built with "the same" comparer did not hold equal ones.
+    private static StringComparer? exact;
+    private static StringComparer? folding;
+
+    public static StringComparer Ordinal {
+        get {
+            if (exact == null) { exact = new StringComparer(false); }
+            return exact;
+        }
+    }
+
+    public static StringComparer OrdinalIgnoreCase {
+        get {
+            if (folding == null) { folding = new StringComparer(true); }
+            return folding;
+        }
+    }
+
+    public static StringComparer InvariantCulture => Ordinal;
+    public static StringComparer InvariantCultureIgnoreCase => OrdinalIgnoreCase;
 
     // IGNORING CASE IS COMPARING UPPER CASE, which is .NET's OrdinalIgnoreCase:
     // Equals, Compare and GetHashCode all fold the same way, or a table keyed
