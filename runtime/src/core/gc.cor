@@ -1299,6 +1299,31 @@ static class Gc
     /// each read for its references in the range only.
     static void ScanCardBlocks(long chunk, long from, long to)
     {
+        // A SIZE-CLASS PAGE's blocks are where its class puts them: stepped
+        // through by size, not found by searching the start bits. A free
+        // block or a newcomer carries no marks, and the test below passes it
+        // by as the bits would have.
+        if (HeapChunks.PageClass(chunk) != 0)
+        {
+            long size = ClassSize(HeapChunks.PageClass(chunk) - 1);
+            long first = HeapChunks.First(chunk);
+            long end = HeapChunks.End(chunk);
+            long at = from <= first ? first : first + (from - first) / size * size;
+            while (at < to && at < end)
+            {
+                long header = Sys.Peek(at);
+                if ((header & SizeMask) != size)
+                {
+                    return;
+                }
+                if ((header & (FlagFree | FlagMark | FlagScan)) == (FlagMark | FlagScan))
+                {
+                    ScanBlockWithin(at, size, from, to);
+                }
+                at = at + size;
+            }
+            return;
+        }
         long block = HeapChunks.StartAtOrBelow(chunk, from & -8);
         if (block == 0)
         {
