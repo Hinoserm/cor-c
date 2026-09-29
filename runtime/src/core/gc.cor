@@ -2463,6 +2463,10 @@ static class Gc
         if ((SkippedFreePaths & 1) == 0 && Runtime.Marking == 0 && !_sweeping && !_collecting && size >= Smallest && (word & FlagFree) == 0
             && block + size == ptr && Sys.Peek(block + size - FooterBytes) == word)
         {
+            if (VerifyingFieldFrees)
+            {
+                ReportFreedAgain(block, at);
+            }
             // The fast path's one assumption is that memory above the pointer
             // has never been written; the bytes are cleared here instead.
             ZeroWords(block, ptr);
@@ -2494,6 +2498,10 @@ static class Gc
             return;
         }
         size = SizeOfBlock(block);
+        if (VerifyingFieldFrees)
+        {
+            ReportFreedAgain(block, at);
+        }
 
         SyncEnd();
 
@@ -2643,6 +2651,37 @@ static class Gc
     /// CORSAC_VERIFY_FREES=f: only field frees are checked (Runtime.FreeField).
     public static bool VerifyingFieldFrees;
 
+    /// In the checked mode for field frees, an ordinary free of a block a
+    /// field free already took -- poisoned and kept -- is the same object
+    /// freed twice: unchecked, both frees give the block back, and two
+    /// allocations are handed one piece of memory. Reported with the field
+    /// free's sites and this one's, and fatal (96).
+    static void ReportFreedAgain(long block, long at)
+    {
+        long end = block + SizeOfBlock(block) - FooterBytes;
+        if (Sys.Peek(block + KindAt) != KindLeaf || Sys.PeekWord(at) != Poison || (at + 4 < end && Sys.PeekWord(at + 4) != Poison))
+        {
+            return;
+        }
+        SayNumber("gc: checked field free: the block is freed again, block ", at);
+        SayNumber("gc:   size ", SizeOfBlock(block));
+        Runtime.WriteLiteral(2, "gc: first freed as a field by:\n");
+        long site = end - 4;
+        while (site >= at + 8)
+        {
+            long first = Sys.PeekWord(site);
+            if (first == Poison || first == 0)
+            {
+                break;
+            }
+            Runtime.SayFrame(2, first + 0x08000000);
+            site = site - 4;
+        }
+        Runtime.WriteLiteral(2, "gc: freed again by:\n");
+        Runtime.SayTrace(2, Sys.FramePointer());
+        Platform.Exit(96);
+    }
+
     /// A field free in the checked mode for field frees: poisoned and kept,
     /// its free recorded in it, under the heap lock.
     public static void FreeFieldChecked(long at)
@@ -2678,6 +2717,7 @@ static class Gc
     static void StartQuarantine()
     {
         _quarantineEntries = _verify ? QuarantineAll : QuarantineFields;
+        _quarantineBudget = _verify ? QuarantineAllBytes : QuarantineFieldBytes;
         long bytes = (_quarantineEntries + 1) * WordSize.Bytes;
         long ring = Platform.Map(bytes);
         if (ring != 0 && Runtime.RegisterRoots(ring + WordSize.Bytes, ring + bytes))
@@ -2690,7 +2730,11 @@ static class Gc
     // oldest let go past it. Kept by count alone, the field frees -- arrays,
     // most of them -- filled a 32-bit heap's address space. Always called
     // with the heap lock held, so the ring's counts are plain words.
-    const long QuarantineBudget = 402653184;
+    // 384 MB checking every free, 128 MB checking field frees only: a
+    // second free comes soon after the first, and the heap needs the room.
+    const long QuarantineAllBytes = 402653184;
+    const long QuarantineFieldBytes = 134217728;
+    static long _quarantineBudget;
     static long _quarantineHead;
     static long _quarantineCount;
     static long _quarantineBytes;
@@ -2702,7 +2746,7 @@ static class Gc
             return;
         }
         long size = Sys.Peek(at - HeaderBytes) & SizeMask;
-        while (_quarantineCount > 0 && (_quarantineCount == _quarantineEntries || _quarantineBytes + size > QuarantineBudget))
+        while (_quarantineCount > 0 && (_quarantineCount == _quarantineEntries || _quarantineBytes + size > _quarantineBudget))
         {
             long oldest = _quarantine + WordSize.Bytes + _quarantineHead * WordSize.Bytes;
             long held = Sys.Peek(oldest);
