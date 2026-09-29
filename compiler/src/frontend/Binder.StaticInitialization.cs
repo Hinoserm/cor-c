@@ -130,6 +130,25 @@ public sealed partial class Binder
         return true;
     }
 
+    /// <summary>
+    /// The name a type's initializer failure is reported under: a
+    /// specialisation's is its TEMPLATE's key, `EqualityComparer`1`, and not
+    /// its own. The initializer is made on the template in some units and on
+    /// the specialisation in others, and a name that followed which one it was
+    /// made on gave the one definition two bodies -- two certified semantics
+    /// -- and the link refused them as a duplicate.
+    /// </summary>
+    private static string InitializerKey(TypeDecl type)
+    {
+        if (!type.Specialised || type.Template is not string template || type.TemplateArgs.Count == 0)
+        {
+            return TypeKey(type);
+        }
+        int dot = template.LastIndexOf('.');
+        return dot < 0 ? Arity(template, type.TemplateArgs.Count)
+            : template[..(dot + 1)] + Arity(template[(dot + 1)..], type.TemplateArgs.Count);
+    }
+
     private static void AddSynchronizedInitializer(TypeDecl type, List<Stmt> statements)
     {
         const string failure = "StaticFailure$";
@@ -196,7 +215,7 @@ public sealed partial class Binder
         failed.Statements.Add(Assign(failure, new NewExpr
         {
             Type = new TypeRef { Name = "TypeInitializationException" },
-            Args = { new LiteralExpr { Kind = Lit.Str, Text = TypeKey(type) }, Name(error) },
+            Args = { new LiteralExpr { Kind = Lit.Str, Text = InitializerKey(type) }, Name(error) },
         }));
         failed.Statements.Add(new ThrowStmt { Value = Name(failure) });
         attempt.Catches.Add(new CatchClause { Type = new TypeRef { Name = "Exception" }, Name = error, Body = failed });
