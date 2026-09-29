@@ -1189,10 +1189,34 @@ public sealed partial class Binder
 
         NameExpr name => FindText(owner, name.Name),
         MemberExpr member when ConstantOwner(member.Target) is { } named => FindText(named, member.Name),
-        BinaryExpr { Op: BinOp.Add } add when ConstantText(add.Left, owner) is { } left
-            && ConstantText(add.Right, owner) is { } right => left + right,
+        BinaryExpr { Op: BinOp.Add } add => JoinedText(add, owner),
         _ => null,
     };
+
+    /// <summary>
+    /// A chain of `+` joined in ONE pass. The chain is left-deep -- `a + b +
+    /// c` is `(a + b) + c` -- and joining it pairwise copied the growing text
+    /// once per operand: a table written as a thousand-line concatenation
+    /// made gigabytes of garbage to bind one constant.
+    /// </summary>
+    private string? JoinedText(BinaryExpr add, TypeSymbol owner)
+    {
+        List<Expr> parts = new();
+        Expr at = add;
+        while (at is BinaryExpr { Op: BinOp.Add } more)
+        {
+            parts.Add(more.Right);
+            at = more.Left;
+        }
+        parts.Add(at);
+        StringBuilder text = new();
+        for (int i = parts.Count - 1; i >= 0; i--)
+        {
+            if (ConstantText(parts[i], owner) is not { } piece) return null;
+            text.Append(piece);
+        }
+        return text.ToString();
+    }
 
     /// <summary>
     /// What a NAME inside a constant expression is worth: another const of the
