@@ -3366,6 +3366,9 @@ static class Gc
         long freeBytes = 0;
         long chunks = 0;
         long tails = 0;
+        long inPlaceBytes = 0;
+        long inPlaceBig = 0;
+        long listedBig = 0;
         long counts = _digits + 2048;           // 32 counts, 32 byte totals
         ZeroWords(counts, counts + 64 * WordSize.Bytes);
         long chunk = HeapChunks.Newest();
@@ -3402,6 +3405,12 @@ static class Gc
                     Sys.Poke(counts + b * WordSize.Bytes, Sys.Peek(counts + b * WordSize.Bytes) + 1);
                     Sys.Poke(counts + (32 + b) * WordSize.Bytes, Sys.Peek(counts + (32 + b) * WordSize.Bytes) + size);
                     freeBytes = freeBytes + size;
+                    if (IsInPlace(block))
+                    {
+                        inPlaceBytes = inPlaceBytes + size;
+                        if (size >= 8192) inPlaceBig = inPlaceBig + 1;
+                    }
+                    else if (size >= 8192) listedBig = listedBig + 1;
                 }
                 else usedBytes = usedBytes + size;
                 block = block + size;
@@ -3412,6 +3421,10 @@ static class Gc
         SayNumber("heap shape: used bytes ", usedBytes);
         SayNumber("heap shape: free bytes ", freeBytes);
         SayNumber("heap shape: buffer bytes ", bufferBytes);
+        SayNumber("heap shape: free in place, bytes ", inPlaceBytes);
+        SayNumber("heap shape: free in place, 8 KB or more ", inPlaceBig);
+        SayNumber("heap shape: free listed, 8 KB or more ", listedBig);
+        SayNumber("heap shape: a listed block of 8 KB found by BinOf ", NextNonEmpty(BinOf(8192) + 1));
         SayNumber("heap shape: chunk tails unbumped ", tails);
         for (long b = 0; b < 32; b++)
         {
