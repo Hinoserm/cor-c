@@ -294,13 +294,17 @@ static class Platform
         Sys.Syscall(Call.Munmap, at, bytes, 0);
     }
 
-    /// Memory made unreadable and unwritable and kept: mprotect(2) with
-    /// PROT_NONE. What a released chunk becomes under CORSAC_GUARD_RELEASES,
+    /// Memory made unreadable and unwritable and its address kept: a fresh
+    /// PROT_NONE mapping over it. What a released chunk becomes under CORSAC_GUARD_RELEASES,
     /// so that its address is never handed out again and the first use of it
     /// faults where it happens.
     public static void Guard(long at, long bytes)
     {
-        Sys.Syscall(Call.Mprotect, at, bytes, 0);
+        // Mapped over, not protected: MAP_FIXED | MAP_NORESERVE with
+        // PROT_NONE keeps the addresses reserved and gives the pages back.
+        // Protected, every guarded chunk stayed resident, and a build ran
+        // the machine out of memory.
+        Sys.Syscall(Call.Mmap, at, bytes, 0, 0x22 | 0x10 | 0x4000, 0 - 1, 0);
     }
 
     public static long Map(long bytes)
