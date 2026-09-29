@@ -6345,7 +6345,19 @@ static class GcRoots
         // top the thread began at. Every OTHER thread's stack is marked from
         // by that thread itself, or by the collector for it while it is
         // blocked, in the SCAN round (GcThreads) -- never by stopping it.
-        Gc.ScanRootsAttributed(Sys.Stack(), Sys.EntryStack(), 1, true);
+        // THIS THREAD'S OWN TOP, which is the process's entry stack only for
+        // the main thread. A child thread's collection read from its stack
+        // pointer to the MAIN thread's entry -- through every other thread's
+        // stack mapped between, dead frames and all -- and a stale pointer
+        // there to a finished iterator kept a whole earlier compilation alive:
+        // a compile process grew by a unit's binding for every unit it built.
+        long self = Sys.ThreadBlock();
+        long top = self != 0 ? Sys.Peek(self + Tls.StackBase) : 0;
+        if (top == 0 || top < Sys.Stack())
+        {
+            top = Sys.EntryStack();
+        }
+        Gc.ScanRootsAttributed(Sys.Stack(), top, 1, true);
         Gc.ScanRootsAttributed(Sys.DataStart(), Sys.DataEnd(), 2, false);
 
         long i = 0;
