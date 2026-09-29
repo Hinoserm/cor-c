@@ -30,7 +30,7 @@ public sealed class DeadCodeElimination : IPass
         {
             foreach (Instr i in b.Instrs)
             {
-                foreach (VReg r in IrInfo.Uses(i))
+                foreach (Operand rOperand in (i).Operands) if (rOperand is RegOperand { Reg: var r })
                 {
                     uses[r] = uses.GetValueOrDefault(r) + 1;
                 }
@@ -50,7 +50,7 @@ public sealed class DeadCodeElimination : IPass
                         return false;
                     }
                     // Its operands lose a use each; that may free them next round.
-                    foreach (VReg r in IrInfo.Uses(i))
+                    foreach (Operand rOperand in (i).Operands) if (rOperand is RegOperand { Reg: var r })
                     {
                         uses[r]--;
                     }

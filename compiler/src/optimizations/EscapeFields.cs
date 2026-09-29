@@ -274,7 +274,7 @@ public sealed partial class Escape
             {
                 if (ReferenceEquals(i, source) || _bookkeeping.Contains(i)) continue;
                 bool uses = false;
-                foreach (VReg u in IrInfo.Uses(i)) if (addresses.ContainsKey(u)) { uses = true; break; }
+                foreach (Operand uOperand in (i).Operands) if (uOperand is RegOperand { Reg: var u }) if (addresses.ContainsKey(u)) { uses = true; break; }
                 if (!uses) continue;
                 // An address of the object derived by a constant: followed already.
                 if (i.Dest is not null && addresses.ContainsKey(i.Dest)
@@ -651,7 +651,7 @@ public sealed partial class Escape
                 {
                     if (i.Dest is null || set.Contains(i.Dest)) continue;
                     if (i.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.SExt32 or Opcode.Add or Opcode.Sub or Opcode.Phi)) continue;
-                    foreach (VReg u in IrInfo.Uses(i))
+                    foreach (Operand uOperand in (i).Operands) if (uOperand is RegOperand { Reg: var u })
                         if (set.Contains(u)) { set.Add(i.Dest); changed = true; break; }
                 }
         }

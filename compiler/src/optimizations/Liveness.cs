@@ -72,7 +72,7 @@ public sealed class Liveness
                 }
                 else
                 {
-                    foreach (VReg r in IrInfo.Uses(i))
+                    foreach (Operand rOperand in (i).Operands) if (rOperand is RegOperand { Reg: var r })
                     {
                         _regs[r.Id] = r;
                         if (!Test(d, r.Id))
@@ -169,7 +169,7 @@ public sealed class Liveness
             {
                 continue;       // its reads belong to the predecessors
             }
-            foreach (VReg r in IrInfo.Uses(i))
+            foreach (Operand rOperand in (i).Operands) if (rOperand is RegOperand { Reg: var r })
             {
                 if (!skipNewer || r.Id < _registers)
                 {

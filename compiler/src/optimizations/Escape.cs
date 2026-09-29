@@ -421,10 +421,13 @@ public sealed partial class Escape : IModulePass
                         continue;
                     }
 
+                    // The operands read directly: IrInfo.Uses is an iterator, and
+                    // this is every instruction of the function, for every
+                    // allocation, until the derived set stops growing.
                     bool touches = false;
-                    foreach (VReg r in IrInfo.Uses(i))
+                    foreach (Operand o in i.Operands)
                     {
-                        if (flow.Derived.Contains(r))
+                        if (o is RegOperand r && flow.Derived.Contains(r.Reg))
                         {
                             touches = true;
                             break;
@@ -1216,9 +1219,10 @@ public sealed partial class Escape : IModulePass
                 foreach (Instr i in b.Instrs)
                 {
                     Home[i] = b;
-                    foreach (VReg r in IrInfo.Uses(i))
+                    foreach (Operand o in i.Operands)
                     {
-                        if (!Readers.TryGetValue(r, out List<Instr>? list)) Readers[r] = list = new();
+                        if (o is not RegOperand use) continue;
+                        if (!Readers.TryGetValue(use.Reg, out List<Instr>? list)) Readers[use.Reg] = list = new();
                         list.Add(i);
                     }
                 }

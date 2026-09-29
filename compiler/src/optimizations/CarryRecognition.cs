@@ -18,7 +18,7 @@ public sealed class CarryRecognition : IPass
         Dictionary<VReg, int> uses = new();
         foreach (var block in f.Blocks)
             foreach (Instr i in block.Instrs)
-                foreach (VReg r in IrInfo.Uses(i)) uses[r] = uses.GetValueOrDefault(r) + 1;
+                foreach (Operand rOperand in (i).Operands) if (rOperand is RegOperand { Reg: var r }) uses[r] = uses.GetValueOrDefault(r) + 1;
         Dictionary<Instr, List<Instr>> replacements = new();
         foreach (var block in f.Blocks)
         for (int k = 0; k < block.Instrs.Count; k++)
@@ -71,7 +71,7 @@ public sealed class CarryRecognition : IPass
                 if (site is null || site.Value.Block != block || site.Value.Index >= k) return null;
                 Instr node = block.Instrs[site.Value.Index];
                 if (node.Op != op || node.Operands.Count != (op == Opcode.Not ? 1 : 2)) return null;
-                foreach (VReg input in IrInfo.Uses(node))
+                foreach (Operand inputOperand in (node).Operands) if (inputOperand is RegOperand { Reg: var input })
                     if (!defs.CanForward(input, block, site.Value.Index, block, k)) return null;
                 return node;
             }

@@ -67,7 +67,7 @@ public sealed class Sccp : IPass
                 {
                     defined.Add(i.Dest);
                 }
-                foreach (VReg r in IrInfo.Uses(i))
+                foreach (Operand rOperand in (i).Operands) if (rOperand is RegOperand { Reg: var r })
                 {
                     if (!_users.TryGetValue(r, out List<(Block, Instr)>? list))
                     {
