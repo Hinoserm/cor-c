@@ -72,7 +72,7 @@ public static class ProjectCompile
         }
 
         long declBudget = long.TryParse(Environment.GetEnvironmentVariable("CORC_DECL_BUDGET"), out long d) ? d : 32L * 1024 * 1024;
-        long tokBudget = long.TryParse(Environment.GetEnvironmentVariable("CORC_TOKEN_BUDGET"), out long t) ? t : 256L * 1024 * 1024;
+        long tokBudget = long.TryParse(Environment.GetEnvironmentVariable("CORC_TOKEN_BUDGET"), out long t) ? t : 0;
         long srcBudget = long.TryParse(Environment.GetEnvironmentVariable("CORC_SOURCE_BUDGET"), out long c) ? c : 16L * 1024 * 1024;
         using DeclarationSession session = new(index, assembly, declBudget, tokBudget, srcBudget);
         using WorkerPool? pool = WorkerPool.Open(Driver.Value(args, "--worker-pool"));
