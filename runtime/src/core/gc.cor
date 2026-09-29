@@ -663,6 +663,13 @@ static class Gc
             {
                 continue;
             }
+            // In a chunk whose starts this cycle wrote down, a block is one
+            // only where a start is: a header left inside a free block by a
+            // free since -- or a sweep's dead run -- is none.
+            if (_snapshots && HeapChunks.StartsCycle(chunk) == _cycle && !HeapChunks.IsStart(chunk, block))
+            {
+                continue;
+            }
             long word = Sys.Peek(block);
             if ((word & SizeMask) == size && (word & (FlagFree | FlagMark)) == FlagMark
                 && Sys.Peek(block + size - FooterBytes) == word)
@@ -3220,10 +3227,21 @@ static class Gc
 
         long holder = GcThreads.BufferHolding(block);
 
+        // A MERGE WIPES THE BOUNDARIES IT REMOVES. Left inside the free block,
+        // a swallowed header and footer still agree on a size, and the one of
+        // an old block still carries its marks: the record of the blocks the
+        // stacks held (RescanHeld) found such a header where a held block had
+        // been and scanned what lay behind it as that object's fields -- a
+        // dead object's, or, in the poisoned mode, the pattern read as a
+        // vtable. Nothing reads inside a free block but its own links.
         if (next < end && IsFree(next) && !IsInPlace(next) && GcThreads.BufferHolding(next) == holder)
         {
+            long nextSize = SizeOfBlock(next);
             Unlink(next);
-            size = size + SizeOfBlock(next);
+            Sys.Poke(block + size - FooterBytes, Zero);
+            Sys.Poke(next, Zero);
+            Sys.Poke(next + KindAt, Zero);
+            size = size + nextSize;
         }
 
         // Backward: through the footer of the block below, which is the word
@@ -3239,6 +3257,9 @@ static class Gc
 
                 Unlink(prev);
                 size = size + SizeOfBlock(prev);
+                Sys.Poke(block - FooterBytes, Zero);
+                Sys.Poke(block, Zero);
+                Sys.Poke(block + KindAt, Zero);
                 block = prev;
             }
         }
