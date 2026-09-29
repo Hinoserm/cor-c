@@ -63,6 +63,16 @@ public sealed partial class Escape
     /// (Gc.MarkAt, Gc.Report). It keeps no pointer the program can use, and a
     /// block given back is refused when its turn comes to be marked.
     /// </summary>
+    internal static bool IsFreeCall(string? callee) =>
+        callee is Freer or BumpFreer or ReplacedFreer or FieldFreer or FieldKeeper
+        || (callee is not null && callee.StartsWith(FieldSitePrefix, StringComparison.Ordinal));
+
+    /// <summary>
+    /// The frees this thread's run inserted itself, which own nothing yet;
+    /// every other free call an analysis meets was there before the run.
+    /// </summary>
+    [ThreadStatic] private static HashSet<Instr>? _inserted;
+
     internal static bool IsCollectorNote(string? callee) =>
         callee is "m_Gc_MarkAt_1_V$I64" or "m_Gc_Report_1_V$I64"
             or "m_Runtime_WriteBarrier_2_V$I64_V$I64" or "m_Gc_Barrier_2_V$I64_V$I64"
@@ -311,6 +321,10 @@ public sealed partial class Escape
                     case Opcode.Call:
                     {
                         if (IsCollectorNote(i.Callee)) break;
+                        // A free already there (the link reruns this pass over
+                        // a unit's frees): the object is someone's to give
+                        // back, and freeing its fields again frees twice.
+                        if (IsFreeCall(i.Callee)) { Opaque(); break; }
                         for (int a = 0; a < i.Operands.Count; a++)
                         {
                             if (i.Operands[a] is not RegOperand arg || !addresses.TryGetValue(arg.Reg, out long off)) continue;

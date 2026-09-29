@@ -280,6 +280,7 @@ public sealed partial class Escape
         Dictionary<string, bool[]> summaries = facts.Escapes;
         bool canFree = facts.Helpers.Contains(Freer);
         Dictionary<string, Function> byName = new(StringComparer.Ordinal) { [f.Name] = f };
+        _inserted = pass._bookkeeping;
         pass.PromoteIn(f, summaries, canFree, new OwnedFieldEscape(byName, summaries));
         if (canFree && facts.Helpers.Contains(ReplacedFreer)) pass.OwnVariables(f, summaries);
         if (canFree && facts.Helpers.Contains(FieldFreer)) pass.OwnFields(f, summaries);

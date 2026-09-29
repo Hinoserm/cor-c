@@ -76,6 +76,7 @@ public sealed partial class Escape : IModulePass
         }
         _defined.UnionWith(byName.Keys);
         _hinting = m.LeavesLinkHints;
+        _inserted = _bookkeeping;
 
         // Which parameters of which functions escape: pessimistic until a
         // function has been analysed, bottom-up over the call graph so a
@@ -516,6 +517,16 @@ public sealed partial class Escape : IModulePass
                             if (i.Callee is null)
                             {
                                 flow.Escapes = true;
+                                break;
+                            }
+                            // A free that was there before this run: the object
+                            // is already owned, and owning it again would free
+                            // it twice (the link reruns this pass over frees
+                            // the unit compile put in).
+                            if (IsFreeCall(i.Callee) && _inserted?.Contains(i) != true)
+                            {
+                                foreach (Operand o in i.Operands)
+                                    if (o is RegOperand r && flow.Derived.Contains(r.Reg)) { flow.Escapes = true; flow.Why ??= i; }
                                 break;
                             }
                             summaries.TryGetValue(i.Callee, out bool[]? summary);

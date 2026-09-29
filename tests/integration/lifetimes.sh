@@ -39,6 +39,12 @@ run() {
 #    hands over are freed; the one Provider.Keep holds is not (exit 24).
 corlink "$work/caller.o" "$work/provider.o" -o "$work/on" > "$work/on.log" 2>&1
 run "$work/on"
+# The link reruns the pass over the unit's own frees: an object the unit
+# already frees (Held's holder, with its field site) must not be owned and
+# freed a second time. Every free checked, a double free exits 96 or 97.
+status=0
+CORSAC_VERIFY_FREES=1 "$work/on" > "$work/on.verify" 2>&1 || status=$?
+[ "$status" = 42 ] || fail "with every free checked the linked program exited $status (a double free?)"
 grep -q 'LTO lifetimes: units with hints=2, units gaining=1' "$work/on.log" || fail "the link found no unit to gain"
 taken=$(sed -n 's/.*lifetimes placed or freed=\([0-9][0-9]*\).*/\1/p' "$work/on.log" | head -1)
 [ "${taken:-0}" -ge 2 ] || fail "the link placed or freed ${taken:-0} objects, expected the lent and the received arrays"
