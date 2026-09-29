@@ -2461,7 +2461,7 @@ static class Gc
         // Not while a collection is anywhere under way: the block may carry
         // the snapshot's start, and an object bumped into it again would be
         // swept as the one that was freed.
-        if ((SkippedFreePaths & 1) == 0 && Runtime.Marking == 0 && !_sweeping && !_collecting && size >= Smallest && (word & FlagFree) == 0
+        if ((SkippedFreePaths & 33) == 0 && Runtime.Marking == 0 && !_sweeping && !_collecting && size >= Smallest && (word & FlagFree) == 0
             && block + size == ptr && Sys.Peek(block + size - FooterBytes) == word)
         {
             if (VerifyingFieldFrees)
@@ -2502,6 +2502,15 @@ static class Gc
         if (VerifyingFieldFrees)
         {
             ReportFreedAgain(block, at);
+        }
+        if ((SkippedFreePaths & 32) != 0)
+        {
+            long p = at;
+            while (p < block + size - FooterBytes)
+            {
+                Sys.PokeWord(p, Poison);
+                p = p + 4;
+            }
         }
 
         SyncEnd();
@@ -2584,7 +2593,7 @@ static class Gc
         // nothing. The bytes are cleared here instead, which is why only
         // small blocks take this road -- clearing a megabyte on the way past
         // would be a worse bargain than a bin.
-        if ((SkippedFreePaths & 4) == 0 && holder == 0 && _current != 0 && block + size == _bump && size <= ExactLimit
+        if ((SkippedFreePaths & 36) == 0 && holder == 0 && _current != 0 && block + size == _bump && size <= ExactLimit
             && block >= HeapChunks.First(_current))
         {
             ZeroWords(block, _bump);
@@ -2634,7 +2643,8 @@ static class Gc
     /// none; 'p', 'f' or 'r' one kind, which Runtime asks; anything else all.
     public static long IgnoredFrees;
 
-    /// The free paths skipped (CORSAC_FREE_PATHS, Platform.SkippedFreePaths): t 1, i 2, b 4, d 8, m 16.
+    /// The free paths skipped (CORSAC_FREE_PATHS, Platform.SkippedFreePaths): t 1, i 2, b 4, d 8, m 16;
+    /// p 32 poisons every block freed (and skips t and b).
     static long SkippedFreePaths;
 
     /// Released chunks guarded rather than unmapped (CORSAC_GUARD_RELEASES).

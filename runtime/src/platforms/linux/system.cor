@@ -184,7 +184,11 @@ static class Platform
     /// finding which of them corrupts. Letters: t the top of the thread's own
     /// buffer, i a block freed in place in another thread's buffer, b the
     /// bump pointer's top, d a dedicated chunk released, m a block merged
-    /// into the free lists. As a mask: t 1, i 2, b 4, d 8, m 16.
+    /// into the free lists. As a mask: t 1, i 2, b 4, d 8, m 16. And p 32:
+    /// every block freed is filled with the checked mode's pattern before it
+    /// goes back -- the two paths that hand the bytes straight back to the
+    /// bump pointer (t, b) skipped -- so a read after a free and before the
+    /// reuse faults on the pattern, and a fault that does not is the heap's.
     public static long SkippedFreePaths()
     {
         long at = EnvironmentValue("CORSAC_FREE_PATHS=");
@@ -192,7 +196,7 @@ static class Platform
         while (at != 0 && Sys.PeekByte(at) != 0)
         {
             long c = Sys.PeekByte(at);
-            mask = mask | (c == 't' ? 1 : c == 'i' ? 2 : c == 'b' ? 4 : c == 'd' ? 8 : c == 'm' ? 16 : 0);
+            mask = mask | (c == 't' ? 1 : c == 'i' ? 2 : c == 'b' ? 4 : c == 'd' ? 8 : c == 'm' ? 16 : c == 'p' ? 32 : 0);
             at = at + 1;
         }
         return mask;
