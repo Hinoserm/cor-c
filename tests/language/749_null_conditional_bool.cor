@@ -1,0 +1,25 @@
+// test: null conditional bool
+// expect-exit: 0
+// expect-output:
+// True False 5 0
+//
+// `x?.M() == true` builds a bool? whose null arm is a null cell pointer: a
+// word on every target. Converted as though it were the bool inside, it was
+// narrowed to 32 bits, which in long mode left an I32 in a 64-bit register.
+
+class Sym { public string Name = "ValueTuple$x"; }
+class Ty { public Sym? Symbol; public long L; }
+
+static class Program
+{
+    static bool Has(Ty t) => t.Symbol?.Name.StartsWith("ValueTuple$", System.StringComparison.Ordinal) == true;
+    static long Pick(bool b, Ty t) => b ? t.L : 0;
+
+    static int Main()
+    {
+        Ty a = new() { Symbol = new Sym(), L = 5 };
+        Ty n = new();
+        System.Console.WriteLine(Has(a) + " " + Has(n) + " " + Pick(true, a) + " " + Pick(false, a));
+        return 0;
+    }
+}

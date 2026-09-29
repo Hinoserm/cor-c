@@ -396,6 +396,17 @@ public sealed partial class Lowering
             return Unbox(at, v, to);
         }
 
+        // A NULLABLE VALUE PAST HERE IS A CELL'S ADDRESS, or null: a word,
+        // whatever the cell holds. The rules below read its Prim -- a bool?'s
+        // is bool -- and narrowed the address to 32 bits: nothing on i386,
+        // where a word is 32 bits, and in long mode a null arm of `x?.M() ==
+        // true` copied as an I32 into the cell register, which the verifier
+        // refused at every link.
+        if (from.IsNullableValue || to.IsNullableValue)
+        {
+            return v;
+        }
+
         // AN ENUM CONVERTS AS ITS UNDERLYING TYPE, whatever that is: taken as
         // int, `(long)Status.Error` of a `: uint` enum sign-extended
         // 0xC0000001 into a negative number, which is not what C# gives.
