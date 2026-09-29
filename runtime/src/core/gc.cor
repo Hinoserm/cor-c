@@ -173,7 +173,9 @@ static class Gc
     // next one (FitMarkQueue), as far as a thirty-second of the heap: a
     // program on a small machine keeps the small queue, and one with
     // hundreds of megabytes live gets the megabytes of queue its graph needs.
-    const long MarkBytes = 262144;
+    // A MEGABYTE TO BEGIN WITH: a compiler's heap overflowed a quarter of one
+    // in every other cycle, and each overflow is a walk of the whole heap.
+    const long MarkBytes = 1048576;
     const long MarkShare = 32;
 
     // Exact-size doubly linked lists through 256 bytes (31 bins), then eight
@@ -4473,8 +4475,17 @@ static class Gc
             {
                 return true;
             }
-            if ((Sys.Peek(desc + DescGcFlagsWord * w) & ElementsAreReferences) == 0
-                || Sys.Peek(desc + DescSizeWord * w) != w)
+            // AN ARRAY OF NUMBERS HOLDS NO REFERENCE, as in .NET: read word by
+            // word, every hash code and offset that looked like an address
+            // was looked up -- a large part of marking a compiler's heap --
+            // and kept whatever it happened to land on. (The one table that
+            // kept addresses as numbers, the scheduler's run queue, is a
+            // block of its own now, read word by word as such blocks are.)
+            if ((Sys.Peek(desc + DescGcFlagsWord * w) & ElementsAreReferences) == 0)
+            {
+                return true;
+            }
+            if (Sys.Peek(desc + DescSizeWord * w) != w)
             {
                 return false;
             }
@@ -4549,11 +4560,10 @@ static class Gc
             {
                 return false;
             }
-            // AN ARRAY OF INTEGERS is scanned word by word when it is
-            // marked (this code has kept addresses in them), but an integer
-            // is not a reference to the card contract -- its stores take no
-            // card -- and one that happens to equal an address, an identity
-            // hash above all, is no pointer a minor cycle owes anything to.
+            // AN ARRAY OF INTEGERS is not scanned (ScanObject), and an
+            // integer is not a reference to the card contract either -- its
+            // stores take no card -- and one that happens to equal an
+            // address, an identity hash above all, is no pointer.
             if ((Sys.Peek(desc + DescGcFlagsWord * w) & ElementsAreReferences) == 0)
             {
                 return false;

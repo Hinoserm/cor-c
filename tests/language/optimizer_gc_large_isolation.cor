@@ -2,12 +2,37 @@
 // expect-exit: 0
 // expect-output:
 // large allocation isolation passed
+
+// ROOTS THE COLLECTOR READS A WORD AT A TIME: a block with no descriptor,
+// read as every such block is. An array of numbers is not read at all -- it
+// holds no reference, as in .NET -- so raw addresses kept in a long[] kept
+// nothing alive once that was so; these tests hold theirs here instead.
+sealed class Roots
+{
+    readonly object _block;
+    readonly long _at;
+
+    public Roots(int count)
+    {
+        Length = count;
+        _at = Runtime.Alloc(count * 8L);
+        _block = Sys.FromWord(_at);
+    }
+
+    public int Length { get; }
+
+    public long this[int i]
+    {
+        get { return Sys.Peek(_at + i * 8L); }
+        set { Sys.Poke(_at + i * 8L, value); }
+    }
+}
 static class Program
 {
     static int Main()
     {
-        long[] survivors = new long[128];
-        long[] objects = new long[128];
+        Roots survivors = new Roots(128);
+        Roots objects = new Roots(128);
         long before = HeapChunks.HeapBytes;
         for (int i = 0; i < objects.Length; i++)
         {

@@ -2,6 +2,31 @@
 // expect-exit: 0
 // expect-output:
 // block anchors passed
+
+// ROOTS THE COLLECTOR READS A WORD AT A TIME: a block with no descriptor,
+// read as every such block is. An array of numbers is not read at all -- it
+// holds no reference, as in .NET -- so raw addresses kept in a long[] kept
+// nothing alive once that was so; these tests hold theirs here instead.
+sealed class Roots
+{
+    readonly object _block;
+    readonly long _at;
+
+    public Roots(int count)
+    {
+        Length = count;
+        _at = Runtime.Alloc(count * 8L);
+        _block = Sys.FromWord(_at);
+    }
+
+    public int Length { get; }
+
+    public long this[int i]
+    {
+        get { return Sys.Peek(_at + i * 8L); }
+        set { Sys.Poke(_at + i * 8L, value); }
+    }
+}
 static class Program
 {
     // Where a request's payload ends: the block is the request plus a
@@ -16,7 +41,7 @@ static class Program
     {
         const int count = 8192;
         Gc.SetLimit(16777216);
-        long[] roots = new long[count + 2];
+        Roots roots = new Roots(count + 2);
         for (int i = 0; i < count; i++)
         {
             long memory = Runtime.Alloc(64);
