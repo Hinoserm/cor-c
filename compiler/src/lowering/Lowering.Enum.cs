@@ -67,7 +67,7 @@ public sealed partial class Lowering
 
         DataItem item = new(sym, block) { ReadOnly = true, Align = _t.Align64, Exported = false };
         _m.Data.Add(item);
-        item.Relocs.Add(new DataReloc(0, SequenceDescriptor("string", w, isString: false), _t.DescriptorBytes));
+        item.Relocs.Add(new DataReloc(0, SequenceDescriptor("string", w, isString: false, elementType: Type.String), _t.DescriptorBytes));
 
         for (int i = 0; i < members.Count; i++)
         {

@@ -1,0 +1,28 @@
+// test: minby_zip
+// expect-exit: 0
+// expect-output:
+// b 20
+// 3
+// True
+//
+// MinBy over a dictionary keeps KeyValuePair as the value type it is (T? of
+// an unconstrained T), and Zip's (First, Second) pairs are typed for the
+// lambda after it. Expected output is real .NET's.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+class Source { public long Used; public long Bytes; }
+static class Program
+{
+    static void Main()
+    {
+        var sources = new Dictionary<string, Source> { ["a"] = new Source { Used = 5, Bytes = 10 }, ["b"] = new Source { Used = 2, Bytes = 20 } };
+        var oldest = sources.MinBy(pair => pair.Value.Used);
+        Console.WriteLine(oldest.Key + " " + oldest.Value.Bytes);
+        int[] xs = { 3, 1, 2 };
+        Console.WriteLine(xs.MinBy(x => -x));
+        var ok = new[] { 1, 2 }.Zip(new[] { "a", "b" }).All(p => p.First > 0 && p.Second.Length == 1);
+        Console.WriteLine(ok);
+    }
+}

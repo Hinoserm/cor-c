@@ -5,10 +5,19 @@ static class Environment
     static string[]? _args;
     static string[]? _env;
     public static int ExitCode;
-    public static string NewLine = "\n";
+    public static string NewLine => "\n";
 
     /// The processors this process may run on.
     public static int ProcessorCount { get { return Os.ProcessorCount(); } }
+
+    /// Whether this process is a 64-bit image: the long-mode target's.
+    public static bool Is64BitProcess => WordSize.Bytes == 8;
+
+    /// Whether the kernel under it is 64-bit, which a 32-bit image on an
+    /// x86-64 kernel is not, as .NET answers it.
+    public static bool Is64BitOperatingSystem => Is64BitProcess
+        || System.Runtime.InteropServices.RuntimeInformation.OSArchitecture is
+            System.Runtime.InteropServices.Architecture.X64 or System.Runtime.InteropServices.Architecture.Arm64;
 
     /// THE PROGRAM'S OWN PATH, which .NET 6 added and which is the only honest
     /// way to find anything installed beside it. /proc/self/exe is what the
@@ -38,11 +47,11 @@ static class Environment
             return have;
         }
         long sp = Sys.EntryStack();
-        int argc = (int)Sys.PeekWord(sp);
+        int argc = (int)Sys.Peek(sp);
         string[] args = new string[argc];
         for (int i = 0; i < argc; i++)
         {
-            args[i] = Os.StringAt(Sys.PeekWord(sp + 4 + 4 * i));
+            args[i] = Os.StringAt(Sys.Peek(sp + WordSize.Bytes + WordSize.Bytes * i));
         }
         _args = args;
         return args;
@@ -56,17 +65,17 @@ static class Environment
             return have;
         }
         long sp = Sys.EntryStack();
-        long argc = Sys.PeekWord(sp);
-        long at = sp + 4 + 4 * argc + 4;
+        long argc = Sys.Peek(sp);
+        long at = sp + WordSize.Bytes + WordSize.Bytes * argc + WordSize.Bytes;
         int n = 0;
-        while (Sys.PeekWord(at + 4 * n) != 0)
+        while (Sys.Peek(at + WordSize.Bytes * n) != 0)
         {
             n = n + 1;
         }
         string[] all = new string[n];
         for (int i = 0; i < n; i++)
         {
-            all[i] = Os.StringAt(Sys.PeekWord(at + 4 * i));
+            all[i] = Os.StringAt(Sys.Peek(at + WordSize.Bytes * i));
         }
         _env = all;
         return all;
@@ -172,6 +181,193 @@ static class Environment
         get { return Runtime.Trace(Sys.FramePointer()); }
     }
 
+    /// Where the system keeps each kind of folder, as .NET numbers them
+    /// (Windows' CSIDL values).
+    public enum SpecialFolder
+    {
+        Desktop = 0, Programs = 2, MyDocuments = 5, Personal = 5, Favorites = 6, Startup = 7, Recent = 8,
+        SendTo = 9, StartMenu = 11, MyMusic = 13, MyVideos = 14, DesktopDirectory = 16, MyComputer = 17,
+        NetworkShortcuts = 19, Fonts = 20, Templates = 21, CommonStartMenu = 22, CommonPrograms = 23,
+        CommonStartup = 24, CommonDesktopDirectory = 25, ApplicationData = 26, PrinterShortcuts = 27,
+        LocalApplicationData = 28, InternetCache = 32, Cookies = 33, History = 34, CommonApplicationData = 35,
+        Windows = 36, System = 37, ProgramFiles = 38, MyPictures = 39, UserProfile = 40, SystemX86 = 41,
+        ProgramFilesX86 = 42, CommonProgramFiles = 43, CommonProgramFilesX86 = 44, CommonTemplates = 45,
+        CommonDocuments = 46, CommonAdminTools = 47, AdminTools = 48, CommonMusic = 53, CommonPictures = 54,
+        CommonVideos = 55, Resources = 56, LocalizedResources = 57, CommonOemLinks = 58, CDBurning = 59,
+    }
+
+    /// What GetFolderPath does about a folder that is not there: answer ""
+    /// (None), make it (Create), or answer the path regardless (DoNotVerify).
+    public enum SpecialFolderOption
+    {
+        None = 0,
+        Create = 32768,
+        DoNotVerify = 16384,
+    }
+
+    public static string GetFolderPath(SpecialFolder folder)
+    {
+        return GetFolderPath(folder, SpecialFolderOption.None);
+    }
+
+    /// The folder's path as .NET finds it on Unix: the home directory for
+    /// the user's own, the XDG base directories for application data, the
+    /// user's XDG directories (user-dirs.dirs) for the desktop, documents,
+    /// music, pictures, videos and templates, fixed paths for the shared
+    /// ones, and "" for a kind of folder Unix has no place for.
+    public static string GetFolderPath(SpecialFolder folder, SpecialFolderOption option)
+    {
+        if (option != SpecialFolderOption.None && option != SpecialFolderOption.Create && option != SpecialFolderOption.DoNotVerify)
+        {
+            throw new ArgumentOutOfRangeException(nameof(option));
+        }
+        string path = FolderPath(folder);
+        if (path.Length == 0 || option == SpecialFolderOption.DoNotVerify)
+        {
+            return path;
+        }
+        if (!Os.Exists(path))
+        {
+            if (option != SpecialFolderOption.Create)
+            {
+                return "";
+            }
+            MakeDirectories(path);
+        }
+        return path;
+    }
+
+    static string FolderPath(SpecialFolder folder)
+    {
+        switch (folder)
+        {
+            case SpecialFolder.CommonApplicationData: return "/usr/share";
+            case SpecialFolder.CommonTemplates: return "/usr/share/templates";
+        }
+        string home = HomeDirectory();
+        switch (folder)
+        {
+            case SpecialFolder.UserProfile: return home;
+            case SpecialFolder.MyDocuments: return UserDirectory(home, "XDG_DOCUMENTS_DIR", "Documents");
+            case SpecialFolder.ApplicationData: return BaseDirectory("XDG_CONFIG_HOME", home, ".config");
+            case SpecialFolder.LocalApplicationData: return BaseDirectory("XDG_DATA_HOME", home, ".local/share");
+            case SpecialFolder.Desktop:
+            case SpecialFolder.DesktopDirectory: return UserDirectory(home, "XDG_DESKTOP_DIR", "Desktop");
+            case SpecialFolder.Templates: return UserDirectory(home, "XDG_TEMPLATES_DIR", "Templates");
+            case SpecialFolder.MyVideos: return UserDirectory(home, "XDG_VIDEOS_DIR", "Videos");
+            case SpecialFolder.MyMusic: return UserDirectory(home, "XDG_MUSIC_DIR", "Music");
+            case SpecialFolder.MyPictures: return UserDirectory(home, "XDG_PICTURES_DIR", "Pictures");
+            case SpecialFolder.Fonts: return Joined(home, ".fonts");
+        }
+        return "";
+    }
+
+    /// $HOME, or the root when a process was started without one.
+    static string HomeDirectory()
+    {
+        string? home = GetEnvironmentVariable("HOME");
+        return string.IsNullOrEmpty(home) ? "/" : home;
+    }
+
+    /// An XDG base directory: the variable when it names an absolute path,
+    /// otherwise its default under the home directory.
+    static string BaseDirectory(string variable, string home, string fallback)
+    {
+        string? set = GetEnvironmentVariable(variable);
+        return !string.IsNullOrEmpty(set) && set[0] == '/' ? set : Joined(home, fallback);
+    }
+
+    /// One of the user's XDG directories: the variable if it is set, then
+    /// the line for it in user-dirs.dirs (`XDG_DESKTOP_DIR="$HOME/Desktop"`),
+    /// then the conventional name under the home directory.
+    static string UserDirectory(string home, string key, string fallback)
+    {
+        string? set = GetEnvironmentVariable(key);
+        if (!string.IsNullOrEmpty(set) && set[0] == '/')
+        {
+            return set;
+        }
+        string config = BaseDirectory("XDG_CONFIG_HOME", home, ".config");
+        string? text = ReadSmallFile(Joined(config, "user-dirs.dirs"));
+        if (text != null)
+        {
+            foreach (string raw in text.Split('\n'))
+            {
+                string line = raw.Trim();
+                if (!line.StartsWith(key) || line.Length <= key.Length || line[key.Length] != '=')
+                {
+                    continue;
+                }
+                string value = line.Substring(key.Length + 1).Trim();
+                if (value.Length >= 2 && value[0] == '"' && value[value.Length - 1] == '"')
+                {
+                    value = value.Substring(1, value.Length - 2);
+                }
+                if (value.StartsWith("$HOME/"))
+                {
+                    return Joined(home, value.Substring(6));
+                }
+                if (value == "$HOME")
+                {
+                    return home;
+                }
+                if (value.StartsWith("/"))
+                {
+                    return value;
+                }
+            }
+        }
+        return Joined(home, fallback);
+    }
+
+    static string Joined(string directory, string name)
+    {
+        return directory.EndsWith("/") ? directory + name : directory + "/" + name;
+    }
+
+    /// A small file's text, or null when it cannot be read.
+    static string? ReadSmallFile(string path)
+    {
+        int fd = Os.Open(path, 0);
+        if (fd < 0)
+        {
+            return null;
+        }
+        byte[] buffer = new byte[4096];
+        string text = "";
+        while (true)
+        {
+            int got = Os.Read(fd, buffer, 0, buffer.Length);
+            if (got <= 0)
+            {
+                break;
+            }
+            text = text + System.Text.Encoding.UTF8.GetString(buffer, 0, got);
+        }
+        Os.Close(fd);
+        return text;
+    }
+
+    /// Every missing directory along the path, outermost first.
+    static void MakeDirectories(string path)
+    {
+        int at = 1;
+        while (at <= path.Length)
+        {
+            int slash = path.IndexOf('/', at);
+            string part = slash < 0 ? path : path.Substring(0, slash);
+            if (part.Length > 0 && !Os.Exists(part))
+            {
+                Os.Mkdir(part, 0x1FF);
+            }
+            if (slash < 0)
+            {
+                break;
+            }
+            at = slash + 1;
+        }
+    }
+
     public static string UserName
     {
         get
@@ -188,10 +384,10 @@ static class Environment
         get
         {
             byte[] names = new byte[65 * 6];                  // struct utsname: six fields of 65
-            if (Platform.Result(Sys.Syscall(122, Sys.ArrayData(names), 0, 0)) < 0) return "localhost";
-            string made = "";
-            for (int i = 65; i < 130 && names[i] != 0; i++) made = made + (char)names[i];
-            return made.Length > 0 ? made : "localhost";
+            if (Platform.Result(Sys.Syscall(Call.Uname, Sys.ArrayData(names), 0, 0)) < 0) return "localhost";
+            int end = 65;
+            while (end < 130 && names[end] != 0) end++;
+            return end > 65 ? Utf8Transcoder.Decode(names, 65, end - 65) : "localhost";
         }
     }
 
@@ -259,7 +455,7 @@ static class OperatingSystem
     public static bool IsAndroid() { return false; }
     public static bool IsIOS() { return false; }
     public static bool IsBrowser() { return false; }
-    public static bool IsOSPlatform(string platform) { return platform == "LINUX"; }
+    public static bool IsOSPlatform(string platform) { return string.Equals(platform, "Linux", StringComparison.OrdinalIgnoreCase); }
     public static bool IsUnix() { return true; }
 }
 

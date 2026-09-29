@@ -1,0 +1,92 @@
+// test: await using
+// expect-exit: 0
+// expect-output:
+// body a
+// body b c
+// dispose c
+// dispose b
+// after statement
+// dispose a
+// thrown
+// dispose d
+// caught boom
+// slow disposed after yield
+// file 3
+// done
+//
+// `await using` gives each resource back by awaiting its DisposeAsync
+// (IAsyncDisposable) on every way out, in reverse order, in both forms: the
+// declaration, which covers the rest of the block, and the statement with
+// one resource or several. A DisposeAsync that really suspends is awaited
+// before the code after the using runs, and a stream is disposed the way
+// .NET's Stream.DisposeAsync does it.
+
+using System;
+using System.IO;
+using System.Threading.Tasks;
+
+class Res : IAsyncDisposable
+{
+    readonly string _name;
+    public Res(string name) { _name = name; }
+    public ValueTask DisposeAsync()
+    {
+        Program.Line("dispose " + _name);
+        return default;
+    }
+}
+
+class Slow : IAsyncDisposable
+{
+    public bool Done;
+    public ValueTask DisposeAsync() => new ValueTask(Later());
+    async Task Later()
+    {
+        await Task.Yield();
+        Done = true;
+    }
+}
+
+static class Program
+{
+    public static void Line(string s)
+    {
+        Sys.Print(s);
+        Sys.PrintLine();
+    }
+
+    static async Task Throws()
+    {
+        await using var d = new Res("d");
+        Line("thrown");
+        throw new InvalidOperationException("boom");
+    }
+
+    static async Task Main()
+    {
+        {
+            await using var a = new Res("a");
+            Line("body a");
+            await using (Res b = new Res("b"), c = new Res("c"))
+            {
+                Line("body b c");
+            }
+            Line("after statement");
+        }
+        try { await Throws(); }
+        catch (InvalidOperationException e) { Line("caught " + e.Message); }
+
+        Slow slow = new Slow();
+        await using (slow) { }
+        Line(slow.Done ? "slow disposed after yield" : "slow not awaited");
+
+        string path = Path.Combine(Path.GetTempPath(), "corc-676-" + Environment.ProcessId);
+        await using (FileStream f = File.Create(path))
+        {
+            f.Write(new byte[] { 1, 2, 3 }, 0, 3);
+        }
+        Line("file " + new FileInfo(path).Length);
+        File.Delete(path);
+        Line("done");
+    }
+}

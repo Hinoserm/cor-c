@@ -21,6 +21,22 @@ enum FileAccess
     ReadWrite = 3
 }
 
+/// What other openers of the same file may do while this stream has it.
+/// On Unix, as .NET does it there: an advisory flock(2) taken at the open --
+/// exclusive for None, shared otherwise -- and a sharing violation
+/// (IOException) when another stream's lock is in the way. The other bits
+/// are .NET's and are accepted.
+[Flags]
+enum FileShare
+{
+    None = 0,
+    Read = 1,
+    Write = 2,
+    ReadWrite = 3,
+    Delete = 4,
+    Inheritable = 16
+}
+
 enum SeekOrigin
 {
     Begin = 0,
@@ -33,7 +49,7 @@ enum SeekOrigin
 /// single-threaded and the descriptors block -- which is legal for a
 /// Stream and what .NET's base class does for a stream that does not
 /// override them.
-abstract class Stream : IDisposable
+abstract class Stream : IDisposable, IAsyncDisposable
 {
     public abstract bool CanRead { get; }
     public abstract bool CanWrite { get; }
@@ -61,6 +77,11 @@ abstract class Stream : IDisposable
     {
     }
 
+    public virtual void SetLength(long value)
+    {
+        throw new NotSupportedException("this stream cannot be resized");
+    }
+
     public virtual int ReadByte()
     {
         byte[] one = new byte[1];
@@ -79,6 +100,77 @@ abstract class Stream : IDisposable
         return Read(buffer, 0, buffer.Length);
     }
 
+    /// Into a span, through an array as .NET's default does; a stream over
+    /// memory of its own does better by overriding it.
+    public virtual int Read(Span<byte> buffer)
+    {
+        byte[] through = new byte[buffer.Length];
+        int got = Read(through, 0, through.Length);
+        new ReadOnlySpan<byte>(through, 0, got).CopyTo(buffer);
+        return got;
+    }
+
+    public virtual void Write(ReadOnlySpan<byte> buffer)
+    {
+        byte[] through = buffer.ToArray();
+        Write(through, 0, through.Length);
+    }
+
+    /// Exactly `count` bytes, or EndOfStreamException: Read may hand back
+    /// fewer than asked, and this reads until it has them all.
+    public void ReadExactly(byte[] buffer, int offset, int count)
+    {
+        if (buffer == null)
+        {
+            throw new ArgumentNullException(nameof(buffer));
+        }
+        if (offset < 0 || count < 0 || offset > buffer.Length - count)
+        {
+            throw new ArgumentOutOfRangeException(nameof(offset));
+        }
+        int done = 0;
+        while (done < count)
+        {
+            int got = Read(buffer, offset + done, count - done);
+            if (got <= 0)
+            {
+                throw new EndOfStreamException("Unable to read beyond the end of the stream.");
+            }
+            done = done + got;
+        }
+    }
+
+    public void ReadExactly(Span<byte> buffer)
+    {
+        ReadAtLeast(buffer, buffer.Length, true);
+    }
+
+    /// At least `minimumBytes`, and as many more as fit and are there;
+    /// fewer only at the end of the stream, and then EndOfStreamException
+    /// unless told not to.
+    public int ReadAtLeast(Span<byte> buffer, int minimumBytes, bool throwOnEndOfStream = true)
+    {
+        if (minimumBytes < 0 || minimumBytes > buffer.Length)
+        {
+            throw new ArgumentOutOfRangeException(nameof(minimumBytes));
+        }
+        int done = 0;
+        while (done < minimumBytes)
+        {
+            int got = Read(buffer.Slice(done));
+            if (got <= 0)
+            {
+                if (throwOnEndOfStream)
+                {
+                    throw new EndOfStreamException("Unable to read beyond the end of the stream.");
+                }
+                break;
+            }
+            done = done + got;
+        }
+        return done;
+    }
+
     public void Write(byte[] buffer)
     {
         Write(buffer, 0, buffer.Length);
@@ -94,6 +186,57 @@ abstract class Stream : IDisposable
         Write(buffer, offset, count);
         return Task.CompletedTask;
     }
+
+    /// Into a window of memory, as many bytes as are ready; 0 at the end.
+    public virtual System.Threading.Tasks.ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        byte[] into = new byte[buffer.Length];
+        int n = Read(into, 0, into.Length);
+        for (int i = 0; i < n; i++) buffer.Span[i] = into[i];
+        return new System.Threading.Tasks.ValueTask<int>(n);
+    }
+
+    public virtual System.Threading.Tasks.ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        byte[] bytes = buffer.ToArray();
+        Write(bytes, 0, bytes.Length);
+        return default;
+    }
+
+    public Task CopyToAsync(Stream destination) => CopyToAsync(destination, 81920, CancellationToken.None);
+
+    public Task CopyToAsync(Stream destination, CancellationToken cancellationToken) => CopyToAsync(destination, 81920, cancellationToken);
+
+    /// Copied on a worker, so a caller awaiting two of them (a child's two
+    /// pipes) drains both at once rather than one after the other.
+    public virtual Task CopyToAsync(Stream destination, int bufferSize, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(destination);
+        return Task.Run(() =>
+        {
+            byte[] chunk = new byte[bufferSize];
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                int n = Read(chunk, 0, chunk.Length);
+                if (n <= 0) return;
+                destination.Write(chunk, 0, n);
+            }
+        });
+    }
+
+    public virtual Task FlushAsync() => FlushAsync(CancellationToken.None);
+
+    public virtual Task FlushAsync(CancellationToken cancellationToken)
+    {
+        Flush();
+        return Task.CompletedTask;
+    }
+
+    /// A stream that holds nothing and swallows everything: .NET's Stream.Null.
+    public static readonly Stream Null = new NullStream();
 
     public void CopyTo(Stream destination)
     {
@@ -119,6 +262,14 @@ abstract class Stream : IDisposable
         Dispose(true);
     }
 
+    /// .NET's: disposes synchronously and hands back a completed ValueTask
+    /// (what `await using` over a stream awaits).
+    public virtual System.Threading.Tasks.ValueTask DisposeAsync()
+    {
+        Dispose();
+        return default;
+    }
+
     protected virtual void Dispose(bool disposing)
     {
     }
@@ -133,6 +284,24 @@ class FileStream : Stream
     bool _canWrite;
     bool _owns;
     string _name;
+
+    // BUFFERED, AS .NET'S IS: 4096 bytes unless the constructor says
+    // otherwise, and 0 or 1 turns it off. Without it every ReadByte was a
+    // read system call -- a BinaryReader over a megabyte file made a million
+    // of them. One buffer serves both directions: bytes read ahead
+    // (_readPos.._readLen) or bytes written and not yet sent (_writePos),
+    // never both at once.
+    //
+    // A stream over a descriptor the program already has is not buffered.
+    // Those are the console's and a child process's pipes, which .NET serves
+    // with unbuffered streams (ConsoleStream) or flushes after every write;
+    // bytes held here would reach a terminal or a child late.
+    const int DefaultBufferSize = 4096;
+    int _bufferSize = DefaultBufferSize;
+    byte[]? _buffer;
+    int _readPos;
+    int _readLen;
+    int _writePos;
 
     public FileStream(string path, FileMode mode) : this(path, mode, mode == FileMode.Open ? FileAccess.Read : FileAccess.ReadWrite)
     {
@@ -174,20 +343,55 @@ class FileStream : Stream
         _owns = true;
     }
 
+    /// The same with what others may do meanwhile (FileShare). .NET on Unix
+    /// takes flock(LOCK_EX | LOCK_NB) for None and flock(LOCK_SH | LOCK_NB)
+    /// otherwise -- the shared one only when this stream does not write --
+    /// and turns EWOULDBLOCK into a sharing violation; any other failure
+    /// (a file system with no locks, a kernel without flock) opens anyway.
+    public FileStream(string path, FileMode mode, FileAccess access, FileShare share) : this(path, mode, access)
+    {
+        bool exclusive = share == FileShare.None;
+        if (!exclusive && access != FileAccess.Read) return;
+        int result = Os.Flock(_fd, (exclusive ? 2 : 1) | 4);
+        if (result == -(int)Err.Again)
+        {
+            Os.Close(_fd);
+            _fd = -1;
+            throw new IOException("The process cannot access the file '" + path + "' because it is being used by another process.");
+        }
+    }
+
+    public FileStream(string path, FileMode mode, FileAccess access, FileShare share, int bufferSize) : this(path, mode, access, share)
+    {
+        if (bufferSize == -1) bufferSize = DefaultBufferSize;
+        if (bufferSize < 0) throw new ArgumentOutOfRangeException("bufferSize", "Positive number required.");
+        _bufferSize = bufferSize > 1 ? bufferSize : 0;
+    }
+
     /// Over a descriptor the program already has. Closing the stream closes
     /// it too unless `ownsHandle` says otherwise.
     public FileStream(int handle, FileAccess access, bool ownsHandle)
     {
         _fd = handle;
+        _bufferSize = 0;
         _name = "fd " + handle;
         _canRead = access != FileAccess.Write;
         _canWrite = access != FileAccess.Read;
         _owns = ownsHandle;
     }
 
+    /// The descriptor, with nothing held back from it: whoever asks for it
+    /// is about to use it directly, so what is buffered is written out and
+    /// what was read ahead is given back first, as .NET does when its
+    /// SafeFileHandle is taken.
     public int Handle
     {
-        get { return _fd; }
+        get
+        {
+            FlushWrite();
+            FlushRead();
+            return _fd;
+        }
     }
 
     public string Name
@@ -204,7 +408,7 @@ class FileStream : Stream
         get { return _fd >= 0 && Os.Lseek(_fd, 0, 1) >= 0; }
     }
 
-    public override int Read(byte[] buffer, int offset, int count)
+    int RawRead(byte[] buffer, int offset, int count)
     {
         while (true)
         {
@@ -221,7 +425,7 @@ class FileStream : Stream
         }
     }
 
-    public override void Write(byte[] buffer, int offset, int count)
+    void RawWrite(byte[] buffer, int offset, int count)
     {
         int done = 0;
         while (done < count)
@@ -239,19 +443,160 @@ class FileStream : Stream
         }
     }
 
-    public override long Length
+    /// What was written into the buffer, out to the file.
+    void FlushWrite()
     {
-        get { return Os.SizeOf(_fd); }
+        if (_writePos == 0) return;
+        int n = _writePos;
+        _writePos = 0;
+        RawWrite(_buffer!, 0, n);
     }
 
+    /// What was read ahead and not yet consumed, given back: the descriptor's
+    /// offset moves back to where the reader is. Only a seekable descriptor
+    /// can; from a pipe the bytes are simply dropped, as .NET drops them.
+    void FlushRead()
+    {
+        int ahead = _readLen - _readPos;
+        _readPos = 0;
+        _readLen = 0;
+        if (ahead != 0 && _fd >= 0) Os.Lseek(_fd, -ahead, (int)SeekOrigin.Current);
+    }
+
+    public override int Read(byte[] buffer, int offset, int count)
+    {
+        if (_bufferSize == 0) return RawRead(buffer, offset, count);
+        FlushWrite();
+        int held = _readLen - _readPos;
+        if (held == 0)
+        {
+            // A read as big as the buffer goes straight into the caller's
+            // array; copying it through the buffer would only cost a copy.
+            if (count >= _bufferSize) return RawRead(buffer, offset, count);
+            if (_buffer == null) _buffer = new byte[_bufferSize];
+            _readPos = 0;
+            _readLen = RawRead(_buffer, 0, _bufferSize);
+            held = _readLen;
+            if (held == 0) return 0;
+        }
+        int n = held < count ? held : count;
+        Array.Copy(_buffer!, _readPos, buffer, offset, n);
+        _readPos = _readPos + n;
+        return n;
+    }
+
+    public override int ReadByte()
+    {
+        if (_readPos < _readLen)
+        {
+            int b = _buffer![_readPos] & 255;
+            _readPos = _readPos + 1;
+            return b;
+        }
+        if (_bufferSize == 0) return base.ReadByte();
+        FlushWrite();
+        if (_buffer == null) _buffer = new byte[_bufferSize];
+        _readPos = 0;
+        _readLen = RawRead(_buffer, 0, _bufferSize);
+        if (_readLen == 0) return -1;
+        _readPos = 1;
+        return _buffer[0] & 255;
+    }
+
+    public override void Flush()
+    {
+        FlushWrite();
+        FlushRead();
+    }
+
+    /// Flush, and with flushToDisk the file's bytes onto the device (fsync),
+    /// as .NET's FileStream.Flush(bool) does.
+    public virtual void Flush(bool flushToDisk)
+    {
+        Flush();
+        if (flushToDisk && _fd >= 0)
+        {
+            int result = Os.Fsync(_fd);
+            if (result < 0) throw Interop.GetExceptionForIoErrno(result, "");
+        }
+    }
+
+    public override void SetLength(long value)
+    {
+        if (value < 0) throw new ArgumentOutOfRangeException("value");
+        if (!_canWrite) throw new NotSupportedException("Stream does not support writing.");
+        FlushWrite();
+        FlushRead();
+        int result = Os.Ftruncate(_fd, value);
+        if (result < 0) throw Interop.GetExceptionForIoErrno(result, "");
+        // Cut short beneath the position, the position moves to the new end.
+        if (Os.Lseek(_fd, 0, (int)SeekOrigin.Current) > value) Os.Lseek(_fd, value, (int)SeekOrigin.Begin);
+    }
+
+    public override void Write(byte[] buffer, int offset, int count)
+    {
+        if (_bufferSize == 0)
+        {
+            RawWrite(buffer, offset, count);
+            return;
+        }
+        if (_readLen != 0) FlushRead();
+        if (_writePos + count <= _bufferSize)
+        {
+            if (_buffer == null) _buffer = new byte[_bufferSize];
+            Array.Copy(buffer, offset, _buffer, _writePos, count);
+            _writePos = _writePos + count;
+            return;
+        }
+        FlushWrite();
+        if (count >= _bufferSize)
+        {
+            RawWrite(buffer, offset, count);
+            return;
+        }
+        if (_buffer == null) _buffer = new byte[_bufferSize];
+        Array.Copy(buffer, offset, _buffer, 0, count);
+        _writePos = count;
+    }
+
+    public override void WriteByte(byte value)
+    {
+        if (_bufferSize == 0)
+        {
+            base.WriteByte(value);
+            return;
+        }
+        if (_readLen != 0) FlushRead();
+        if (_writePos == _bufferSize) FlushWrite();
+        if (_buffer == null) _buffer = new byte[_bufferSize];
+        _buffer[_writePos] = value;
+        _writePos = _writePos + 1;
+    }
+
+    public override long Length
+    {
+        get
+        {
+            FlushWrite();
+            return Os.SizeOf(_fd);
+        }
+    }
+
+    /// Where the reader or writer is, which is not where the descriptor is
+    /// while bytes are read ahead or held back.
     public override long Position
     {
-        get { return Os.Lseek(_fd, 0, (int)SeekOrigin.Current); }
-        set { Os.Lseek(_fd, value, (int)SeekOrigin.Begin); }
+        get { return Os.Lseek(_fd, 0, (int)SeekOrigin.Current) - (_readLen - _readPos) + _writePos; }
+        set { Seek(value, SeekOrigin.Begin); }
     }
 
     public override long Seek(long offset, SeekOrigin origin)
     {
+        FlushWrite();
+        // Relative to the reader, not to the descriptor, which is ahead.
+        if (origin == SeekOrigin.Current) offset = offset - (_readLen - _readPos);
+        _readPos = 0;
+        _readLen = 0;
         long at = Os.Lseek(_fd, offset, (int)origin);
         if (at < 0)
         {
@@ -262,15 +607,36 @@ class FileStream : Stream
 
     public override void Dispose()
     {
-        if (_owns && _fd >= 0)
+        try
         {
-            Os.Close(_fd);
+            if (_fd >= 0) FlushWrite();
         }
-        _fd = -1;
+        finally
+        {
+            if (_owns && _fd >= 0)
+            {
+                Os.Close(_fd);
+            }
+            _fd = -1;
+            _readPos = 0;
+            _readLen = 0;
+        }
     }
 }
 
 /// A stream over a growable byte array.
+sealed class NullStream : Stream
+{
+    public override bool CanRead => true;
+    public override bool CanWrite => true;
+    public override bool CanSeek => true;
+    public override long Length => 0;
+    public override long Position { get { return 0; } set { } }
+    public override long Seek(long offset, SeekOrigin origin) => 0;
+    public override int Read(byte[] buffer, int offset, int count) => 0;
+    public override void Write(byte[] buffer, int offset, int count) { }
+}
+
 class MemoryStream : Stream
 {
     byte[] _bytes;
@@ -300,6 +666,31 @@ class MemoryStream : Stream
     /// grows.
     public MemoryStream(byte[] buffer) : this(buffer, 0, buffer.Length) { _visible = true; }
 
+    /// Over all of `buffer`, read-only when writable is false.
+    public MemoryStream(byte[] buffer, bool writable) : this(buffer) { _readOnly = !writable; }
+
+    bool _readOnly;
+
+    /// The length set outright: cut short, or grown with zeroes.
+    public override void SetLength(long value)
+    {
+        if (_readOnly) throw new NotSupportedException("Stream does not support writing.");
+        if (value < 0 || value > int.MaxValue) throw new ArgumentOutOfRangeException("value");
+        int length = (int)value;
+        if (length > _capacity)
+        {
+            if (!_expandable) throw new NotSupportedException("memory stream is not expandable");
+            byte[] bigger = new byte[length];
+            Array.Copy(_bytes, _origin, bigger, 0, _length);
+            _bytes = bigger;
+            _origin = 0;
+            _capacity = length;
+        }
+        if (length > _length) Array.Clear(_bytes, _origin + _length, length - _length);
+        _length = length;
+        if (_position > length) _position = length;
+    }
+
     /// Over `count` bytes of `buffer` from `index`: position 0 is
     /// buffer[index], and the stream ends after `count` bytes.
     public MemoryStream(byte[] buffer, int index, int count)
@@ -315,7 +706,7 @@ class MemoryStream : Stream
     }
 
     public override bool CanRead { get { return true; } }
-    public override bool CanWrite { get { return true; } }
+    public override bool CanWrite { get { return !_readOnly; } }
     public override bool CanSeek { get { return true; } }
 
     public override long Length { get { return _length; } }
@@ -354,8 +745,31 @@ class MemoryStream : Stream
         return n;
     }
 
+    // A byte at a time without the one-byte array Stream's own versions make
+    // for every call, as .NET's MemoryStream overrides them too.
+    public override int ReadByte()
+    {
+        if (_position >= _length) return -1;
+        int b = _bytes[_origin + _position] & 255;
+        _position = _position + 1;
+        return b;
+    }
+
+    public override void WriteByte(byte value)
+    {
+        if (_readOnly || _position >= _capacity || _position > _length)
+        {
+            base.WriteByte(value);
+            return;
+        }
+        _bytes[_origin + _position] = value;
+        _position = _position + 1;
+        if (_position > _length) _length = _position;
+    }
+
     public override void Write(byte[] buffer, int offset, int count)
     {
+        if (_readOnly) throw new NotSupportedException("Stream does not support writing.");
         if (_position + count > _capacity)
         {
             if (!_expandable) throw new NotSupportedException("memory stream is not expandable");
@@ -395,27 +809,75 @@ class MemoryStream : Stream
     }
 }
 
-/// .NET's TextWriter: characters out. UTF-8 here, as .NET's default is.
+/// .NET's TextWriter: characters out, in whatever encoding the writer
+/// underneath uses. A line ends with NewLine, "\n" on this system as on
+/// every Unix .NET runs on.
 abstract class TextWriter : IDisposable
 {
+    string _newLine = "\n";
+
+    /// The line end WriteLine writes.
+    public virtual string NewLine
+    {
+        get { return _newLine; }
+        set { _newLine = value ?? "\n"; }
+    }
+
+    /// The encoding the text is written in; UTF-8 unless a writer says.
+    public virtual Encoding Encoding => new UTF8Encoding(false);
+
     public virtual void Close()
     {
         Dispose();
     }
 
+    /// The provider numbers and dates are written with.
+    public virtual IFormatProvider FormatProvider => CultureInfo.CurrentCulture;
+
+    /// A writer that keeps nothing: what .NET's TextWriter.Null is.
+    public static readonly TextWriter Null = new NullTextWriter();
+
     public abstract void Write(char value);
 
-    public virtual void Write(object? value)
+    public virtual void Write(char[]? buffer)
     {
-        if (value != null) Write(value.ToString());
+        if (buffer == null) return;
+        Write(buffer, 0, buffer.Length);
     }
 
-    public virtual void Write(string value)
+    public virtual void Write(char[] buffer, int index, int count)
     {
-        for (int i = 0; i < value.Length; i++)
+        if (buffer == null) throw new ArgumentNullException("buffer", "Buffer cannot be null.");
+        if (index < 0) throw new ArgumentOutOfRangeException("index", "Non-negative number required.");
+        if (count < 0) throw new ArgumentOutOfRangeException("count", "Non-negative number required.");
+        if (buffer.Length - index < count) throw new ArgumentException("Offset and length were out of bounds for the array or count is greater than the number of elements from index to the end of the source collection.");
+        for (int i = 0; i < count; i++)
         {
-            Write((char)Sys.GetByte(value, i));
+            Write(buffer[index + i]);
         }
+    }
+
+    public virtual void Write(ReadOnlySpan<char> buffer)
+    {
+        for (int i = 0; i < buffer.Length; i++)
+        {
+            Write(buffer[i]);
+        }
+    }
+
+    public virtual void Write(bool value)
+    {
+        Write(value ? "True" : "False");
+    }
+
+    public virtual void Write(int value)
+    {
+        Write(value.ToString());
+    }
+
+    public virtual void Write(uint value)
+    {
+        Write(value.ToString());
     }
 
     public virtual void Write(long value)
@@ -430,12 +892,105 @@ abstract class TextWriter : IDisposable
         Write(String.FromUInt(value));
     }
 
-    public virtual void WriteLine()
+    public virtual void Write(float value)
     {
-        Write('\n');
+        Write(value.ToString());
     }
 
-    public virtual void WriteLine(string value)
+    public virtual void Write(double value)
+    {
+        Write(value.ToString());
+    }
+
+    public virtual void Write(string? value)
+    {
+        if (value == null) return;
+        for (int i = 0; i < value.Length; i++)
+        {
+            Write(value[i]);
+        }
+    }
+
+    /// What it says of itself -- by its format provider when it takes one --
+    /// and nothing at all for null.
+    public virtual void Write(object? value)
+    {
+        if (value == null) return;
+        if (value is IFormattable formattable)
+        {
+            Write(formattable.ToString(null, FormatProvider));
+            return;
+        }
+        Write("" + value);
+    }
+
+    public virtual void Write(StringBuilder? value)
+    {
+        if (value != null) Write(value.ToString());
+    }
+
+    public virtual void Write(string format, object? arg0)
+    {
+        Write(String.Format(FormatProvider, format, arg0));
+    }
+
+    public virtual void Write(string format, object? arg0, object? arg1)
+    {
+        Write(String.Format(FormatProvider, format, arg0, arg1));
+    }
+
+    public virtual void Write(string format, object? arg0, object? arg1, object? arg2)
+    {
+        Write(String.Format(FormatProvider, format, arg0, arg1, arg2));
+    }
+
+    public virtual void Write(string format, params object?[] arg)
+    {
+        Write(String.Format(FormatProvider, format, arg));
+    }
+
+    public virtual void WriteLine()
+    {
+        Write(NewLine);
+    }
+
+    public virtual void WriteLine(char value)
+    {
+        Write(value);
+        WriteLine();
+    }
+
+    public virtual void WriteLine(char[]? buffer)
+    {
+        Write(buffer);
+        WriteLine();
+    }
+
+    public virtual void WriteLine(char[] buffer, int index, int count)
+    {
+        Write(buffer, index, count);
+        WriteLine();
+    }
+
+    public virtual void WriteLine(ReadOnlySpan<char> buffer)
+    {
+        Write(buffer);
+        WriteLine();
+    }
+
+    public virtual void WriteLine(bool value)
+    {
+        Write(value);
+        WriteLine();
+    }
+
+    public virtual void WriteLine(int value)
+    {
+        Write(value);
+        WriteLine();
+    }
+
+    public virtual void WriteLine(uint value)
     {
         Write(value);
         WriteLine();
@@ -453,6 +1008,56 @@ abstract class TextWriter : IDisposable
         WriteLine();
     }
 
+    public virtual void WriteLine(float value)
+    {
+        Write(value);
+        WriteLine();
+    }
+
+    public virtual void WriteLine(double value)
+    {
+        Write(value);
+        WriteLine();
+    }
+
+    public virtual void WriteLine(string? value)
+    {
+        Write(value);
+        WriteLine();
+    }
+
+    public virtual void WriteLine(object? value)
+    {
+        Write(value);
+        WriteLine();
+    }
+
+    public virtual void WriteLine(StringBuilder? value)
+    {
+        Write(value);
+        WriteLine();
+    }
+
+    public virtual void WriteLine(string format, object? arg0)
+    {
+        WriteLine(String.Format(FormatProvider, format, arg0));
+    }
+
+    public virtual void WriteLine(string format, object? arg0, object? arg1)
+    {
+        WriteLine(String.Format(FormatProvider, format, arg0, arg1));
+    }
+
+    public virtual void WriteLine(string format, object? arg0, object? arg1, object? arg2)
+    {
+        WriteLine(String.Format(FormatProvider, format, arg0, arg1, arg2));
+    }
+
+    public virtual void WriteLine(string format, params object?[] arg)
+    {
+        WriteLine(String.Format(FormatProvider, format, arg));
+    }
+
     public virtual void Flush()
     {
     }
@@ -461,6 +1066,14 @@ abstract class TextWriter : IDisposable
     {
         Flush();
     }
+}
+
+/// TextWriter.Null: every write kept nowhere.
+sealed class NullTextWriter : TextWriter
+{
+    public override void Write(char value) { }
+    public override void Write(string? value) { }
+    public override void Write(char[] buffer, int index, int count) { }
 }
 
 abstract class TextReader : IDisposable
@@ -477,23 +1090,36 @@ abstract class TextReader : IDisposable
         return -1;
     }
 
+    /// A line without its end, or null at the end of the text. A line ends at
+    /// "\n", "\r" or "\r\n", each once, as .NET's ReadLine has it.
     public virtual string? ReadLine()
     {
-        StringBuilder line = new StringBuilder();
         int c = Read();
         if (c < 0)
         {
             return null;
         }
-        while (c >= 0 && c != 10)
+        StringBuilder line = new StringBuilder();
+        while (c >= 0 && c != 10 && c != 13)
         {
-            if (c != 13)
-            {
-                line.Append((char)c);
-            }
+            line.Append((char)c);
             c = Read();
         }
+        if (c == 13 && Peek() == 10)
+        {
+            Read();
+        }
         return line.ToString();
+    }
+
+    public virtual Task<string> ReadToEndAsync() => ReadToEndAsync(CancellationToken.None);
+
+    /// The rest of the text, read on a worker so the caller can wait on
+    /// something else meanwhile (a child's other pipe).
+    public virtual Task<string> ReadToEndAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(ReadToEnd());
     }
 
     public virtual string ReadToEnd()
@@ -513,24 +1139,66 @@ abstract class TextReader : IDisposable
     }
 }
 
+/// .NET's StreamWriter: text into a stream in an encoding -- UTF-8 without a
+/// byte-order mark unless told otherwise, which is .NET's default.
+///
+/// The characters are gathered and encoded a block at a time. A high surrogate
+/// at the end of a block waits for the low one that follows it, so a pair split
+/// across two writes is still one character in the bytes.
 class StreamWriter : TextWriter
 {
+    const int DefaultBufferSize = 1024;
+
     Stream _stream;
-    byte[] _buffer;
+    Encoding _encoding;
+    char[] _chars;
     int _used;
-    public bool AutoFlush;
+    bool _leaveOpen;
+    bool _preambleDone;
+    bool _disposed;
+    bool _autoFlush;
 
-    public StreamWriter(Stream stream)
+    /// Whether every write is flushed to the stream when it returns, as .NET's
+    /// is; turning it on flushes what is already gathered.
+    public virtual bool AutoFlush
     {
+        get { return _autoFlush; }
+        set
+        {
+            _autoFlush = value;
+            if (value)
+            {
+                Flush();
+            }
+        }
+    }
+
+    public StreamWriter(Stream stream) : this(stream, new UTF8Encoding(false), DefaultBufferSize, false) { }
+    public StreamWriter(Stream stream, Encoding encoding) : this(stream, encoding, DefaultBufferSize, false) { }
+    public StreamWriter(Stream stream, Encoding encoding, int bufferSize) : this(stream, encoding, bufferSize, false) { }
+
+    public StreamWriter(Stream stream, Encoding? encoding, int bufferSize, bool leaveOpen)
+    {
+        if (stream == null) throw new ArgumentNullException("stream");
+        if (bufferSize == -1) bufferSize = DefaultBufferSize;
+        if (bufferSize <= 0) throw new ArgumentOutOfRangeException("bufferSize", "Positive number required.");
         _stream = stream;
-        _buffer = new byte[4096];
+        _encoding = encoding ?? new UTF8Encoding(false);
+        _chars = new char[bufferSize];
+        _leaveOpen = leaveOpen;
+        // A stream written from part way through already has its beginning:
+        // the byte-order mark belongs at the start of a file, not in the middle.
+        _preambleDone = stream.CanSeek && stream.Position > 0;
     }
 
-    public StreamWriter(string path, bool append) : this(new FileStream(path, append ? FileMode.Append : FileMode.Create, FileAccess.Write))
-    {
-    }
+    public StreamWriter(string path) : this(path, false) { }
 
-    public StreamWriter(string path) : this(new FileStream(path, FileMode.Create, FileAccess.Write))
+    public StreamWriter(string path, bool append) : this(path, append, new UTF8Encoding(false), DefaultBufferSize) { }
+
+    public StreamWriter(string path, bool append, Encoding encoding) : this(path, append, encoding, DefaultBufferSize) { }
+
+    public StreamWriter(string path, bool append, Encoding encoding, int bufferSize)
+        : this(new FileStream(path, append ? FileMode.Append : FileMode.Create, FileAccess.Write), encoding, bufferSize, false)
     {
     }
 
@@ -539,51 +1207,199 @@ class StreamWriter : TextWriter
         get { return _stream; }
     }
 
+    public override Encoding Encoding => _encoding;
+
     public override void Write(char value)
     {
-        if (_used == _buffer.Length)
+        if (_used == _chars.Length)
         {
-            Flush();
+            Drain(false);
         }
-        _buffer[_used] = (byte)value;
+        _chars[_used] = value;
         _used = _used + 1;
-        if (AutoFlush && value == '\n')
+        if (_autoFlush)
         {
             Flush();
         }
     }
 
+    /// One gathering and at most one flush per call, however many characters.
+    public override void Write(char[] buffer, int index, int count)
+    {
+        if (buffer == null) throw new ArgumentNullException("buffer", "Buffer cannot be null.");
+        if (index < 0) throw new ArgumentOutOfRangeException("index", "Non-negative number required.");
+        if (count < 0) throw new ArgumentOutOfRangeException("count", "Non-negative number required.");
+        if (buffer.Length - index < count) throw new ArgumentException("Offset and length were out of bounds for the array or count is greater than the number of elements from index to the end of the source collection.");
+        for (int i = 0; i < count; i++)
+        {
+            Gather(buffer[index + i]);
+        }
+        if (_autoFlush)
+        {
+            Flush();
+        }
+    }
+
+    public override void Write(ReadOnlySpan<char> buffer)
+    {
+        for (int i = 0; i < buffer.Length; i++)
+        {
+            Gather(buffer[i]);
+        }
+        if (_autoFlush)
+        {
+            Flush();
+        }
+    }
+
+    public override void WriteLine(string? value)
+    {
+        if (value != null)
+        {
+            for (int i = 0; i < value.Length; i++)
+            {
+                Gather(value[i]);
+            }
+        }
+        string end = NewLine;
+        for (int i = 0; i < end.Length; i++)
+        {
+            Gather(end[i]);
+        }
+        if (_autoFlush)
+        {
+            Flush();
+        }
+    }
+
+    void Gather(char value)
+    {
+        if (_used == _chars.Length)
+        {
+            Drain(false);
+        }
+        _chars[_used] = value;
+        _used = _used + 1;
+    }
+
+    public override void Write(string? value)
+    {
+        if (value == null) return;
+        for (int i = 0; i < value.Length; i++)
+        {
+            if (_used == _chars.Length)
+            {
+                Drain(false);
+            }
+            _chars[_used] = value[i];
+            _used = _used + 1;
+        }
+        if (_autoFlush)
+        {
+            Flush();
+        }
+    }
+
+    /// The gathered characters encoded into the stream -- all of them when
+    /// `final`, else all but a trailing high surrogate, which waits for its
+    /// pair.
+    void Drain(bool final)
+    {
+        if (!_preambleDone)
+        {
+            _preambleDone = true;
+            byte[] preamble = _encoding.GetPreamble();
+            if (preamble.Length > 0)
+            {
+                _stream.Write(preamble, 0, preamble.Length);
+            }
+        }
+
+        int count = _used;
+        if (!final && count > 0 && Char.IsHighSurrogate(_chars[count - 1]))
+        {
+            count = count - 1;
+        }
+        if (count > 0)
+        {
+            byte[] bytes = _encoding.GetBytes(_chars, 0, count);
+            _stream.Write(bytes, 0, bytes.Length);
+        }
+        for (int i = count; i < _used; i++)
+        {
+            _chars[i - count] = _chars[i];
+        }
+        _used = _used - count;
+    }
+
+    /// Everything written so far into the stream, and the stream flushed. A
+    /// high surrogate at the very end still waits: Flush is not the end of the
+    /// text, and .NET's encoder keeps it too.
     public override void Flush()
     {
-        if (_used > 0)
-        {
-            _stream.Write(_buffer, 0, _used);
-            _used = 0;
-        }
+        Drain(false);
         _stream.Flush();
     }
 
     public override void Dispose()
     {
-        Flush();
-        _stream.Dispose();
+        if (_disposed) return;
+        _disposed = true;
+        Drain(true);
+        _stream.Flush();
+        if (!_leaveOpen)
+        {
+            _stream.Dispose();
+        }
     }
 }
 
+/// .NET's StreamReader: text out of a stream in an encoding -- UTF-8 unless
+/// told otherwise -- and, unless told not to, a byte-order mark at the start
+/// deciding the encoding instead (UTF-8, UTF-16 either way round, UTF-32
+/// either way round), as .NET's detectEncodingFromByteOrderMarks does.
+///
+/// Bytes are decoded a buffer at a time, and a sequence cut off by the end of
+/// one buffer waits for the rest of it in the next.
 class StreamReader : TextReader
 {
-    Stream _stream;
-    byte[] _buffer;
-    int _at;
-    int _end;
+    const int DefaultBufferSize = 1024;
 
-    public StreamReader(Stream stream)
+    Stream _stream;
+    Encoding _encoding;
+    bool _detect;
+    bool _started;
+    bool _leaveOpen;
+    byte[] _bytes;
+    int _byteCount;              // bytes read and not yet decoded
+    string _chars;               // decoded and not yet handed out
+    int _at;
+    bool _ended;
+
+    public StreamReader(Stream stream) : this(stream, new UTF8Encoding(true), true, DefaultBufferSize, false) { }
+    public StreamReader(Stream stream, bool detectEncodingFromByteOrderMarks) : this(stream, new UTF8Encoding(true), detectEncodingFromByteOrderMarks, DefaultBufferSize, false) { }
+    public StreamReader(Stream stream, Encoding encoding) : this(stream, encoding, true, DefaultBufferSize, false) { }
+    public StreamReader(Stream stream, Encoding encoding, bool detectEncodingFromByteOrderMarks) : this(stream, encoding, detectEncodingFromByteOrderMarks, DefaultBufferSize, false) { }
+    public StreamReader(Stream stream, Encoding encoding, bool detectEncodingFromByteOrderMarks, int bufferSize) : this(stream, encoding, detectEncodingFromByteOrderMarks, bufferSize, false) { }
+
+    public StreamReader(Stream stream, Encoding? encoding, bool detectEncodingFromByteOrderMarks, int bufferSize, bool leaveOpen)
     {
+        if (stream == null) throw new ArgumentNullException("stream");
+        if (bufferSize == -1) bufferSize = DefaultBufferSize;
+        if (bufferSize <= 0) throw new ArgumentOutOfRangeException("bufferSize", "Positive number required.");
         _stream = stream;
-        _buffer = new byte[4096];
+        _encoding = encoding ?? new UTF8Encoding(true);
+        _detect = detectEncodingFromByteOrderMarks;
+        _leaveOpen = leaveOpen;
+        _bytes = new byte[Math.Max(bufferSize, 4)];
+        _chars = "";
     }
 
-    public StreamReader(string path) : this(new FileStream(path, FileMode.Open, FileAccess.Read))
+    public StreamReader(string path) : this(path, true) { }
+    public StreamReader(string path, bool detectEncodingFromByteOrderMarks) : this(path, new UTF8Encoding(true), detectEncodingFromByteOrderMarks) { }
+    public StreamReader(string path, Encoding encoding) : this(path, encoding, true) { }
+    public StreamReader(string path, Encoding encoding, bool detectEncodingFromByteOrderMarks)
+        : this(new FileStream(path, FileMode.Open, FileAccess.Read), encoding, detectEncodingFromByteOrderMarks, DefaultBufferSize, false)
     {
     }
 
@@ -592,15 +1408,162 @@ class StreamReader : TextReader
         get { return _stream; }
     }
 
+    /// The encoding being read -- the one a byte-order mark named, once the
+    /// first read has seen it.
+    public Encoding CurrentEncoding => _encoding;
+
+    /// Throws away what was read ahead, for a caller that moved the stream.
+    public void DiscardBufferedData()
+    {
+        _byteCount = 0;
+        _chars = "";
+        _at = 0;
+        _ended = false;
+    }
+
+    /// More characters decoded, answering whether there are any.
     bool Fill()
     {
-        if (_at < _end)
+        while (_at >= _chars.Length)
         {
-            return true;
+            if (_ended)
+            {
+                return false;
+            }
+
+            int n = _stream.Read(_bytes, _byteCount, _bytes.Length - _byteCount);
+            if (n <= 0)
+            {
+                _ended = true;
+                // A stream that ended while it could still have been a mark
+                // has its mark read now -- an empty UTF-16 file is its mark.
+                int lead = 0;
+                if (!_started)
+                {
+                    _started = true;
+                    lead = Preamble();
+                }
+                // What is left at the end is decoded as it is: a sequence
+                // the stream cut short becomes U+FFFD, as .NET's does.
+                _chars = _byteCount > lead ? _encoding.GetString(_bytes, lead, _byteCount - lead) : "";
+                _byteCount = 0;
+                _at = 0;
+                continue;
+            }
+            _byteCount = _byteCount + n;
+
+            int skip = 0;
+            if (!_started)
+            {
+                // Bytes that could still be the start of a byte-order mark wait
+                // for the rest of it -- and nothing else waits: an interactive
+                // pipe's first line must not sit unread for want of four bytes.
+                if (MarkPrefix())
+                {
+                    continue;
+                }
+                _started = true;
+                skip = Preamble();
+            }
+
+            int whole = Complete(skip, _byteCount);
+            _chars = _encoding.GetString(_bytes, skip, whole - skip);
+            _at = 0;
+            for (int i = whole; i < _byteCount; i++)
+            {
+                _bytes[i - whole] = _bytes[i];
+            }
+            _byteCount = _byteCount - whole;
         }
-        _end = _stream.Read(_buffer, 0, _buffer.Length);
-        _at = 0;
-        return _end > 0;
+        return true;
+    }
+
+    /// Whether the bytes so far are a proper beginning of some byte-order
+    /// mark this reader would act on, so that one more read could complete it.
+    bool MarkPrefix()
+    {
+        if (_byteCount >= 4) return false;
+        return (_detect && (Starts(new byte[] { 0xFF, 0xFE, 0, 0 }) || Starts(new byte[] { 0, 0, 0xFE, 0xFF })
+                         || Starts(new byte[] { 0xEF, 0xBB, 0xBF }) || Starts(new byte[] { 0xFE, 0xFF })))
+            || Starts(_encoding.GetPreamble());
+    }
+
+    /// Whether the bytes so far are a proper prefix of `mark`.
+    bool Starts(byte[] mark)
+    {
+        if (mark.Length == 0 || _byteCount >= mark.Length) return false;
+        for (int i = 0; i < _byteCount; i++)
+        {
+            if (_bytes[i] != mark[i]) return false;
+        }
+        return true;
+    }
+
+    /// The byte-order mark at the start, if there is one: the encoding it
+    /// names when detecting, and how many bytes it is.
+    int Preamble()
+    {
+        int b0 = _byteCount > 0 ? _bytes[0] : -1;
+        int b1 = _byteCount > 1 ? _bytes[1] : -1;
+        int b2 = _byteCount > 2 ? _bytes[2] : -1;
+        int b3 = _byteCount > 3 ? _bytes[3] : -1;
+
+        if (_detect)
+        {
+            if (b0 == 0xFF && b1 == 0xFE && b2 == 0 && b3 == 0) { _encoding = new UTF32Encoding(false, true); return 4; }
+            if (b0 == 0 && b1 == 0 && b2 == 0xFE && b3 == 0xFF) { _encoding = new UTF32Encoding(true, true); return 4; }
+            if (b0 == 0xEF && b1 == 0xBB && b2 == 0xBF) { _encoding = new UTF8Encoding(true); return 3; }
+            if (b0 == 0xFF && b1 == 0xFE) { _encoding = new UnicodeEncoding(false, true); return 2; }
+            if (b0 == 0xFE && b1 == 0xFF) { _encoding = new UnicodeEncoding(true, true); return 2; }
+        }
+
+        // THE ENCODING'S OWN MARK is skipped even when not detecting.
+        byte[] own = _encoding.GetPreamble();
+        if (own.Length == 0 || own.Length > _byteCount) return 0;
+        for (int i = 0; i < own.Length; i++)
+        {
+            if (_bytes[i] != own[i]) return 0;
+        }
+        return own.Length;
+    }
+
+    /// Where the last whole character in bytes[from, end) ends: a sequence
+    /// the buffer cut off is left for the next read.
+    int Complete(int from, int end)
+    {
+        if (_encoding is UTF32Encoding)
+        {
+            return end - (end - from) % 4;
+        }
+        if (_encoding is UnicodeEncoding)
+        {
+            int even = end - (end - from) % 2;
+            // A high surrogate at the end waits for its low half.
+            if (even - from >= 2)
+            {
+                bool big = _encoding.CodePage == 1201;
+                int unit = big ? (_bytes[even - 2] << 8) | _bytes[even - 1] : (_bytes[even - 1] << 8) | _bytes[even - 2];
+                if (unit >= 0xD800 && unit <= 0xDBFF) return even - 2;
+            }
+            return even;
+        }
+        if (_encoding is UTF8Encoding)
+        {
+            // Back from the end to the last lead byte; if the sequence it
+            // begins is longer than what follows it, it waits.
+            for (int back = 1; back <= 3 && end - back >= from; back++)
+            {
+                int b = _bytes[end - back];
+                if (b < 0x80) return end;
+                if (b >= 0xC0)
+                {
+                    int length = b >= 0xF0 ? 4 : b >= 0xE0 ? 3 : 2;
+                    return length > back ? end - back : end;
+                }
+            }
+            return end;
+        }
+        return end;
     }
 
     public override int Read()
@@ -609,14 +1572,53 @@ class StreamReader : TextReader
         {
             return -1;
         }
-        int c = _buffer[_at] & 255;
+        int c = _chars[_at];
         _at = _at + 1;
         return c;
     }
 
     public override int Peek()
     {
-        return Fill() ? _buffer[_at] & 255 : -1;
+        return Fill() ? _chars[_at] : -1;
+    }
+
+    public override string? ReadLine()
+    {
+        if (!Fill())
+        {
+            return null;
+        }
+        StringBuilder line = new StringBuilder();
+        while (Fill())
+        {
+            char c = _chars[_at];
+            _at = _at + 1;
+            if (c == '\n')
+            {
+                return line.ToString();
+            }
+            if (c == '\r')
+            {
+                if (Fill() && _chars[_at] == '\n')
+                {
+                    _at = _at + 1;
+                }
+                return line.ToString();
+            }
+            line.Append(c);
+        }
+        return line.ToString();
+    }
+
+    public override string ReadToEnd()
+    {
+        StringBuilder all = new StringBuilder();
+        while (Fill())
+        {
+            all.Append(_chars, _at, _chars.Length - _at);
+            _at = _chars.Length;
+        }
+        return all.ToString();
     }
 
     public bool EndOfStream
@@ -626,8 +1628,18 @@ class StreamReader : TextReader
 
     public override void Dispose()
     {
-        _stream.Dispose();
+        if (!_leaveOpen)
+        {
+            _stream.Dispose();
+        }
     }
+}
+
+/// Whether a search looks in the directory alone or in every one below it.
+enum SearchOption
+{
+    TopDirectoryOnly = 0,
+    AllDirectories = 1,
 }
 
 /// .NET's Directory, the parts a program reaches for first.
@@ -681,7 +1693,21 @@ partial static class Directory
     /// EVERY MISSING COMPONENT, which is what .NET's own CreateDirectory
     /// does and what a caller writing Combine(a, b, c) expects: a path whose
     /// parent does not exist yet is created, not refused.
-    public static void CreateDirectory(string path)
+    public static DirectoryInfo CreateDirectory(string path)
+    {
+        if (path == null)
+        {
+            throw new ArgumentNullException(nameof(path));
+        }
+        if (path.Length == 0)
+        {
+            throw new ArgumentException("The path is empty.", nameof(path));
+        }
+        Make(path);
+        return new DirectoryInfo(path);
+    }
+
+    static void Make(string path)
     {
         if (path.Length == 0 || Exists(path))
         {
@@ -690,7 +1716,7 @@ partial static class Directory
         string? parent = Path.GetDirectoryName(path);
         if (parent != null && parent.Length != 0 && parent != path && !Exists(parent))
         {
-            CreateDirectory(parent);
+            Make(parent);
         }
         int r = Os.Mkdir(path, 511);
         if (r < 0 && r != -Err.Exist)
@@ -714,6 +1740,56 @@ partial static class Directory
         }
         return kept.ToArray();
     }
+
+    /// With AllDirectories, every directory below as well: a directory
+    /// reached through a symbolic link is not entered, as .NET does not, so a
+    /// link back up the tree cannot make the walk endless.
+    public static string[] GetFiles(string path, string searchPattern, SearchOption searchOption)
+    {
+        if (searchOption == SearchOption.TopDirectoryOnly) return GetFiles(path, searchPattern);
+        if (searchOption != SearchOption.AllDirectories) throw new ArgumentOutOfRangeException("searchOption");
+        List<string> kept = new List<string>();
+        Queue<string> pending = new Queue<string>();
+        pending.Enqueue(path);
+        while (pending.Count > 0)
+        {
+            string directory = pending.Dequeue();
+            foreach (string file in GetFiles(directory, searchPattern)) kept.Add(file);
+            foreach (string below in GetDirectories(directory))
+            {
+                if (FileSystem.IsDirectoryNoFollow(below)) pending.Enqueue(below);
+            }
+        }
+        return kept.ToArray();
+    }
+
+    public static string[] GetDirectories(string path, string searchPattern, SearchOption searchOption)
+    {
+        if (searchOption == SearchOption.TopDirectoryOnly) return GetDirectories(path, searchPattern);
+        if (searchOption != SearchOption.AllDirectories) throw new ArgumentOutOfRangeException("searchOption");
+        List<string> kept = new List<string>();
+        Queue<string> pending = new Queue<string>();
+        pending.Enqueue(path);
+        while (pending.Count > 0)
+        {
+            foreach (string below in GetDirectories(pending.Dequeue()))
+            {
+                if (FileSystemName.MatchesSimpleExpression(searchPattern, Path.GetFileName(below))) kept.Add(below);
+                if (FileSystem.IsDirectoryNoFollow(below)) pending.Enqueue(below);
+            }
+        }
+        return kept.ToArray();
+    }
+
+    public static IEnumerable<string> EnumerateFiles(string path, string searchPattern) => GetFiles(path, searchPattern);
+
+    public static IEnumerable<string> EnumerateFiles(string path, string searchPattern, SearchOption searchOption)
+        => GetFiles(path, searchPattern, searchOption);
+
+    public static IEnumerable<string> EnumerateDirectories(string path, string searchPattern) => GetDirectories(path, searchPattern);
+
+    public static IEnumerable<string> EnumerateDirectories(string path, string searchPattern, SearchOption searchOption)
+        => GetDirectories(path, searchPattern, searchOption);
 
     public static string[] GetDirectories(string path, string searchPattern)
     {
@@ -764,6 +1840,85 @@ partial static class Directory
 /// operating system has no answer.
 static partial class Path
 {
+    /// Where temporary files go, as .NET answers on Unix: $TMPDIR when it is
+    /// set and not empty, else /tmp/ -- always ending in the separator.
+    /// Eight random letters and digits, a dot, and three more: a name that
+    /// is not a file anywhere yet, as .NET's is.
+    public static string GetRandomFileName()
+    {
+        const string alphabet = "abcdefghijklmnopqrstuvwxyz012345";
+        byte[] bits = new byte[11];
+        TempNames.Fill(bits);
+        char[] name = new char[12];
+        int at = 0;
+        for (int i = 0; i < 12; i++)
+        {
+            if (i == 8)
+            {
+                name[i] = '.';
+                continue;
+            }
+            name[i] = alphabet[bits[at++] & 31];
+        }
+        return new string(name);
+    }
+
+    public static string GetTempPath()
+    {
+        string? dir = Environment.GetEnvironmentVariable("TMPDIR");
+        if (dir == null || dir.Length == 0) return "/tmp/";
+        return dir.EndsWith("/") ? dir : dir + "/";
+    }
+
+    private static int _tempSerial;
+
+    /// A new empty file under GetTempPath, made here and never one that
+    /// already existed (O_EXCL), its full path returned.
+    public static string GetTempFileName()
+    {
+        string directory = GetTempPath();
+        for (int attempt = 0; attempt < 1000; attempt++)
+        {
+            // From what every build of this file has -- the Linux ABI's own
+            // calls and the Sys intrinsics -- not Interlocked or Environment's
+            // clock and process id: a ring-1 kernel compiles System.IO over
+            // its own small Environment, and has neither.
+            long serial = Sys.AtomicAdd(Sys.AddressOf(ref _tempSerial), 1) + 1;
+            long pid = Sys.Syscall(Call.Getpid, 0, 0, 0);
+            long mix = (Os.Micros() * 31 + pid) * 1000003 + serial * 7919 + attempt;
+            string name = "tmp" + ((mix & 0x7FFFFFFFFFFF) % 0xFFFFFF).ToString("X6") + ".tmp";
+            string full = directory + name;
+            try
+            {
+                using (FileStream made = new FileStream(full, FileMode.CreateNew, FileAccess.ReadWrite)) { }
+                return full;
+            }
+            catch (IOException) when (File.Exists(full))
+            {
+            }
+        }
+        throw new IOException("The file name could not be created in " + directory);
+    }
+
+    /// The path from one to the other: `..` for each directory of
+    /// relativeTo that path is not under, then the rest of path. "." when
+    /// they are the same. Compared exactly, as a Unix file system does.
+    public static string GetRelativePath(string relativeTo, string path)
+    {
+        ArgumentNullException.ThrowIfNull(relativeTo);
+        ArgumentNullException.ThrowIfNull(path);
+        if (relativeTo.Length == 0) throw new ArgumentException("The value cannot be an empty string.", "relativeTo");
+        if (path.Length == 0) throw new ArgumentException("The value cannot be an empty string.", "path");
+        string[] from = GetFullPath(relativeTo).Split('/', StringSplitOptions.RemoveEmptyEntries);
+        string[] to = GetFullPath(path).Split('/', StringSplitOptions.RemoveEmptyEntries);
+        int common = 0;
+        while (common < from.Length && common < to.Length && from[common] == to[common]) common++;
+        List<string> parts = new List<string>();
+        for (int i = common; i < from.Length; i++) parts.Add("..");
+        for (int i = common; i < to.Length; i++) parts.Add(to[i]);
+        return parts.Count == 0 ? "." : string.Join("/", parts);
+    }
+
     /// The absolute path this one names, with `.` and `..` resolved. .NET
     /// promises nothing about the file existing; this is a question about the
     /// TEXT, answered against the current directory.
@@ -943,6 +2098,62 @@ partial static class File
         }
         r.Dispose();
         return lines.ToArray();
+    }
+
+    /// The lines of a file, read as they are enumerated. The file is opened
+    /// here, so a missing one throws now; each further enumeration opens it
+    /// again, as .NET's does.
+    public static IEnumerable<string> ReadLines(string path)
+    {
+        if (path == null)
+        {
+            throw new ArgumentNullException(nameof(path));
+        }
+        return new FileLines(path, new StreamReader(path));
+    }
+
+    public static void WriteAllLines(string path, string[] contents)
+    {
+        if (contents == null)
+        {
+            throw new ArgumentNullException(nameof(contents));
+        }
+        WriteAllLines(path, (IEnumerable<string>)contents);
+    }
+
+    /// Each line followed by a newline, the file replaced.
+    public static void WriteAllLines(string path, IEnumerable<string> contents)
+    {
+        if (path == null)
+        {
+            throw new ArgumentNullException(nameof(path));
+        }
+        if (contents == null)
+        {
+            throw new ArgumentNullException(nameof(contents));
+        }
+        using StreamWriter writer = new StreamWriter(path, false);
+        foreach (string line in contents)
+        {
+            writer.WriteLine(line);
+        }
+    }
+
+    public static void AppendAllLines(string path, IEnumerable<string> contents)
+    {
+        if (path == null)
+        {
+            throw new ArgumentNullException(nameof(path));
+        }
+        if (contents == null)
+        {
+            throw new ArgumentNullException(nameof(contents));
+        }
+        using StreamWriter writer = new StreamWriter(path, true);
+        foreach (string line in contents)
+        {
+            writer.WriteLine(line);
+        }
     }
 
     public static void WriteAllBytes(string path, byte[] bytes)
@@ -1898,10 +3109,30 @@ partial static class Directory
         return new DirectoryInfo(path).Parent;
     }
 
-    public static DirectoryInfo CreateDirectoryInfo(string path)
+    /// A new, uniquely named, empty directory under the temporary path, its
+    /// name the prefix and random characters, as .NET 7's makes it.
+    public static DirectoryInfo CreateTempSubdirectory(string? prefix = null)
     {
-        CreateDirectory(path);
-        return new DirectoryInfo(path);
+        if (prefix != null && prefix.IndexOf('/') >= 0)
+        {
+            throw new ArgumentException("The prefix must not contain a directory separator.", nameof(prefix));
+        }
+        string root = Path.GetTempPath();
+        for (int attempt = 0; attempt < 1000; attempt++)
+        {
+            string name = (prefix ?? "") + Path.GetRandomFileName().Replace(".", "");
+            string full = Path.Combine(root, name);
+            int r = Os.Mkdir(full, 448);                // 0700, as .NET makes it
+            if (r >= 0)
+            {
+                return new DirectoryInfo(full);
+            }
+            if (r != -Err.Exist)
+            {
+                throw Interop.GetExceptionForIoErrno(r, full, true);
+            }
+        }
+        throw new IOException("A unique directory could not be created in " + root);
     }
 
     public static void SetCurrentDirectory(string path)
@@ -2246,3 +3477,94 @@ class DriveInfo
         return made.ToString();
     }
 }
+
+/// File.ReadLines' sequence: the first enumeration reads through the reader
+/// opened when the sequence was made, each later one opens the file again.
+class FileLines : IEnumerable<string>
+{
+    // The non-generic IEnumerable's, as .NET's collections have it.
+    IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+
+    readonly string _path;
+    StreamReader? _first;
+
+    public FileLines(string path, StreamReader first)
+    {
+        _path = path;
+        _first = first;
+    }
+
+    public IEnumerator<string> GetEnumerator()
+    {
+        StreamReader? reader = _first;
+        _first = null;
+        return new FileLinesEnumerator(reader ?? new StreamReader(_path));
+    }
+}
+
+class FileLinesEnumerator : IEnumerator<string>, IDisposable
+{
+    // The non-generic IEnumerator's members, as .NET's enumerators have them.
+    object? IEnumerator.Current => Current;
+
+    StreamReader? _reader;
+    string _current = "";
+
+    public FileLinesEnumerator(StreamReader reader)
+    {
+        _reader = reader;
+    }
+
+    public string Current => _current;
+
+    public bool MoveNext()
+    {
+        StreamReader? reader = _reader;
+        if (reader == null)
+        {
+            return false;
+        }
+        string? line = reader.ReadLine();
+        if (line == null)
+        {
+            Dispose();
+            return false;
+        }
+        _current = line;
+        return true;
+    }
+
+    public void Reset()
+    {
+        throw new NotSupportedException("Specified method is not supported.");
+    }
+
+    public void Dispose()
+    {
+        StreamReader? reader = _reader;
+        _reader = null;
+        if (reader != null)
+        {
+            reader.Dispose();
+        }
+    }
+}
+
+/// Random bytes for temporary names, from the system's generator when there
+/// is one (getrandom), else from a generator seeded by the clock.
+static class TempNames
+{
+    static Random? _fallback;
+
+    public static void Fill(byte[] into)
+    {
+        long got = Sys.Syscall(355, Sys.ArrayData(into), into.Length, 0);
+        if (got == into.Length)
+        {
+            return;
+        }
+        Random fallback = _fallback ??= new Random((int)(Os.Micros() ^ Sys.Syscall(Call.Getpid, 0, 0, 0)));
+        fallback.NextBytes(into);
+    }
+}
+

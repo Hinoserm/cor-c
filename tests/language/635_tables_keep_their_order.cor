@@ -4,15 +4,17 @@
 // map zeta alpha mid beta q0 q1 q2 q3 q4 q5 q6 q7 q8 q9 q10 q11 q12 q13 q14 q15 q16 q17 q18 q19
 // keys 24 zeta 24 1
 // set 9 3 7 1 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59
-// after zeta mid q0 last
-// copy zeta mid q0 last
+// after zeta mid last q0
+// copy zeta mid last q0
 // cleared first second
 //
 // A TABLE IS WALKED IN THE ORDER IT WAS FILLED, which is what .NET's does while
 // nothing has been removed, and what a program that fills one and then writes
 // it out depends on without ever saying so. The compiler's static data came
 // out in a different order once it was compiled by itself, because its
-// library walked a table in the order the hashes fell.
+// library walked a table in the order the hashes fell. After removals the next
+// added key takes the place most recently freed -- beta's, so `last` comes
+// before q0 -- as .NET's free list gives it.
 
 using System;
 using System.Collections.Generic;

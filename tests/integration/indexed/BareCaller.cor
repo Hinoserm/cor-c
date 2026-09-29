@@ -1,0 +1,6 @@
+// No namespace and no using: DemoLib.Value by its simple name, the one type
+// that carries it, as a whole-program compile finds it.
+static class Program
+{
+    static int Main() => Value.Get();
+}

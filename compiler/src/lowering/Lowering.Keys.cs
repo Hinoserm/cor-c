@@ -533,6 +533,60 @@ public sealed partial class Lowering
         return label;
     }
 
+    /// <summary>
+    /// A tuple's text, as ValueTuple writes it: `(1, two, 3.5)`, each item as
+    /// `"" + item` would show it -- a null one as nothing at all.
+    /// </summary>
+    private string TupleToString(TypeSymbol shape)
+    {
+        string label = "__tuple_tostring_" + Safe(shape.Name);
+
+        if (_m.Functions.Any(had => had.Name == label))
+        {
+            return label;
+        }
+
+        // A SHAPE NO VALUE IS EVER BUILT OF -- an element that is a pointer, a
+        // function pointer, a type that failed to resolve, or a bare type
+        // parameter (a template's `ValueTuple$T$U`; shared code holds __canon
+        // instead) -- says its type's name, as any object does.
+        if (shape.Fields.Any(fd => !fd.Static && (fd.Type.IsError || fd.Type.IsPointer || fd.Type.Function is not null
+                                                  || fd.Type.Prim == Prim.Void && fd.Type.Symbol is null && !fd.Type.IsArray)))
+        {
+            return ObjectToStringStub();
+        }
+
+        Function f = new(label, IrTypes.Word) { Coalescible = true };
+        VReg self = f.NewReg(IrTypes.Word, "this");
+        f.Params.Add(self);
+        Builder e = new(f, f.NewBlock("entry"));
+
+        Function savedF = _f;
+        Builder savedE = _e;
+        _f = f;
+        _e = e;
+
+        LiteralExpr at = new() { Kind = Lit.Int, Text = "0", Line = 0, Col = 0 };
+        VReg text = e.Address(InternString("("));
+        List<FieldSymbol> items = shape.Fields.Where(fd => !fd.Static).ToList();
+        for (int i = 0; i < items.Count; i++)
+        {
+            if (i > 0)
+            {
+                text = StringBinary(at, BinOp.Add, text, e.Address(InternString(", ")));
+            }
+            VReg item = LoadPlace(PlaceOfField(items[i], self, at));
+            text = StringBinary(at, BinOp.Add, text, Stringify(at, item, items[i].Type));
+        }
+        text = StringBinary(at, BinOp.Add, text, e.Address(InternString(")")));
+        e.Ret(new RegOperand(text));
+
+        _f = savedF;
+        _e = savedE;
+        _m.Functions.Add(f);
+        return label;
+    }
+
     private string TupleHash(TypeSymbol shape)
     {
         string label = "__tuple_hash_" + Safe(shape.Name);

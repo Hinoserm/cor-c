@@ -1,0 +1,27 @@
+// test: local_function_params
+// expect-exit: 0
+// expect-output:
+// none 0
+// three 6
+// array 9
+// Main:2 + 3
+//
+// A local function takes the parameter list a method does: `params`,
+// packed from the arguments after the fixed ones unless one array is given,
+// and caller-information attributes, filled in at the call.
+
+using System;
+using System.Runtime.CompilerServices;
+static class P
+{
+    static int Main()
+    {
+        int Sum(string label, params int[] xs) { int t = 0; foreach (int x in xs) t += x; Console.WriteLine(label + t); return t; }
+        string Here([CallerMemberName] string m = "", [CallerArgumentExpression("v")] string? e = null, int v = 0) => m + ":" + e;
+        Sum("none ");
+        Sum("three ", 1, 2, 3);
+        Sum("array ", new[] { 4, 5 });
+        Console.WriteLine(Here(v: 2 + 3));
+        return 0;
+    }
+}

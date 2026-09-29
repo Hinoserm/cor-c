@@ -13,7 +13,7 @@ namespace Corsac.Tests.Elf;
 /// Usage: ElfTests [work-directory]. Every intermediate file is left in the
 /// work directory for inspection.
 /// </summary>
-public static class Program
+public static partial class Program
 {
     private static int _failures;
     private static int _passes;
@@ -37,6 +37,7 @@ public static class Program
         Try("certified shared definition ownership", () => { CoalescingTests.Run(); Check(true, "coalescing contract"); });
         Try("indexed IR archives and bounded import plans", () => { IrArchiveTests.Run(); Check(true, "IR archive contract"); });
         Try("closed-image IR retention", () => { IrReachabilityTests.Run(); Check(true, "IR retention graph"); });
+        Try("link-time lifetime hints", () => { LifetimeTests.Run(); Check(true, "lifetime hints"); });
         Try("image-wide managed metadata", () => { ManagedDirectoryTests.Run(); Check(true, "unit metadata directory"); });
         Try("linked with gcc object", LinkWithGcc);
         Try("shared object structure", SharedObjectStructure);
@@ -44,6 +45,10 @@ public static class Program
         Try("dynamically linked executable runs", DynamicExecutable);
         Try("one shared object importing from another", TwoSharedObjects);
         Try("shared object used by a C program", SharedObjectFromC);
+        Try("x86-64 objects: ELF64 RELA, accepted by binutils", LongModeObjects);
+        Try("x86-64 static link runs under the kernel", LongModeLink);
+        Try("32-bit and 64-bit objects do not link together", LongModeMixture);
+        Try("x86-64 shared object and dynamic program run under ld-linux-x86-64", LongModeDynamic);
 
         Console.WriteLine($"{_passes} passed, {_failures} failed");
         return _failures == 0 ? 0 : 1;

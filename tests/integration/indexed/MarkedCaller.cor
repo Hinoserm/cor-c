@@ -1,0 +1,6 @@
+static class Program
+{
+    static int Measure(Marked? m) => m is null ? 42 : m.Size;
+
+    static int Main() => Measure(null);
+}

@@ -142,6 +142,18 @@ public sealed class DeclarationCatalog : IDisposable
         }
     }
 
+    /// <summary>The declarations with a generic instance method of this name and arity (`Name`k).</summary>
+    public IReadOnlyList<string> OverrideKeys(string assembly, string method)
+    {
+        lock (gate)
+        {
+            if (disposed) throw new ObjectDisposedException(nameof(DeclarationCatalog));
+            return index.Find("G:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + method)
+                .Select(record => DeclarationIndex.Utf8.GetString(record.Payload))
+                .Distinct(StringComparer.Ordinal).ToArray();
+        }
+    }
+
     /// <summary>
     /// What a binding name resolves to, remembered for the life of the
     /// catalog.
@@ -158,8 +170,11 @@ public sealed class DeclarationCatalog : IDisposable
     private readonly object bindingGate = new();
 
     public string? BindingKey(string assembly, string bindingName)
+        => BindingKeyOf("B:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + bindingName, bindingName);
+
+    /// <summary>BindingKey for a query already spelled: `B:`, the assembly's identity, a newline, the name.</summary>
+    public string? BindingKeyOf(string query, string bindingName)
     {
-        string query = "B:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + bindingName;
         lock (bindingGate)
         {
             if (bindingKeys.TryGetValue(query, out string? known)) return known;
@@ -175,6 +190,38 @@ public sealed class DeclarationCatalog : IDisposable
                 result = found;
             }
         }
+        lock (bindingGate) bindingKeys[query] = result;
+        return result;
+    }
+
+    /// <summary>
+    /// The one declaration whose simple name this is, among those keyed by a
+    /// qualified name (a namespace or an outer type), or null when none is or
+    /// more than one is -- ambiguous is no answer, as in Binder.Sole.
+    /// </summary>
+    public string? SoleKey(string assembly, string simpleName)
+        => SoleKeyOf("S:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + simpleName);
+
+    /// <summary>SoleKey for a query already spelled: `S:`, the assembly's identity, a newline, the name.</summary>
+    public string? SoleKeyOf(string query)
+    {
+        lock (bindingGate)
+        {
+            if (bindingKeys.TryGetValue(query, out string? known)) return known;
+        }
+        string? result = null;
+        bool ambiguous = false;
+        lock (gate)
+        {
+            if (disposed) throw new ObjectDisposedException(nameof(DeclarationCatalog));
+            foreach (DeclarationRecord record in index.Find(query))
+            {
+                string found = DeclarationIndex.Utf8.GetString(record.Payload);
+                if (result is not null && result != found) ambiguous = true;
+                result = found;
+            }
+        }
+        if (ambiguous) result = null;
         lock (bindingGate) bindingKeys[query] = result;
         return result;
     }

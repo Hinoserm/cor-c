@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text;
 using Corsac.Lang.Elf;
@@ -52,14 +53,25 @@ public sealed class IrArchive
             if (bodyBytes > MaximumBytes || directory.Length > MaximumBytes - bodyBytes - 84)
                 throw new ElfFormatException("IR archive exceeds unit budget");
         }
-        using MemoryStream stream = new();
-        using BinaryWriter output = new(stream, Utf8, leaveOpen: true);
-        output.Write(0x52494343u); output.Write(3); output.Write(records.Count);
-        output.Write(checked((int)directory.Length)); output.Write(checked(84 + (int)directory.Length + bodyBytes));
+        // Straight into the section, sized once: the header, the directory,
+        // then every body. Written through a stream and copied out, a large
+        // unit's IR -- tens of megabytes -- was held three times over.
         byte[] index = directory.ToArray();
-        output.Write(NativeHash(obj)); output.Write(SHA256.HashData(index)); output.Write(index);
-        foreach (IrArchiveRecord record in records) output.Write(record.Payload);
-        Section section = new(SectionName, SectionKind.Note); section.Bytes.AddRange(stream.ToArray()); obj.Sections.Add(section);
+        int total = checked(84 + index.Length + bodyBytes);
+        Section section = new(SectionName, SectionKind.Note);
+        section.Bytes.Capacity = total;
+        byte[] header = new byte[20];
+        BinaryPrimitives.WriteUInt32LittleEndian(header, 0x52494343u);
+        BinaryPrimitives.WriteInt32LittleEndian(header.AsSpan(4), 3);
+        BinaryPrimitives.WriteInt32LittleEndian(header.AsSpan(8), records.Count);
+        BinaryPrimitives.WriteInt32LittleEndian(header.AsSpan(12), index.Length);
+        BinaryPrimitives.WriteInt32LittleEndian(header.AsSpan(16), total);
+        section.Bytes.AddRange(header);
+        section.Bytes.AddRange(NativeHash(obj));
+        section.Bytes.AddRange(SHA256.HashData(index));
+        section.Bytes.AddRange(index);
+        foreach (IrArchiveRecord record in records) section.Bytes.AddRange(record.Payload);
+        obj.Sections.Add(section);
     }
 
     public static IrArchive? Read(ObjectFile obj)

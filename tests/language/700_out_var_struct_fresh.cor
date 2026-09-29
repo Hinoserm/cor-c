@@ -1,0 +1,34 @@
+// test: out_var_struct_fresh
+// expect-exit: 0
+// expect-output:
+// a: 1 a
+// x: -1 none
+// b: 2 b
+// a: 1 a
+// Def { Address = 1, Name = a },Def { Address = 2, Name = b },Def { Address = 1, Name = a }
+//
+// A struct variable an `out` argument declares is a new variable each time
+// the declaration runs, zero until the callee writes it: a block of its own,
+// never what its frame slot held before -- which was the stage-1 linker's
+// enumerator, written over by an inlined TryGetValue.
+
+using System;
+using System.Collections.Generic;
+record struct Def(int Address, string Name);
+static class P
+{
+    static Def? Find(Dictionary<string, Def> map, string key) => map.TryGetValue(key, out Def d) ? d : null;
+    static int Main()
+    {
+        var map = new Dictionary<string, Def> { ["a"] = new Def(1, "a"), ["b"] = new Def(2, "b") };
+        var kept = new List<Def>();
+        foreach (string k in new[] { "a", "x", "b", "a" })
+        {
+            if (map.TryGetValue(k, out var found)) kept.Add(found);
+            Def? f = Find(map, k);
+            Console.WriteLine($"{k}: {f?.Address ?? -1} {found.Name ?? "none"}");
+        }
+        Console.WriteLine(string.Join(",", kept));
+        return 0;
+    }
+}

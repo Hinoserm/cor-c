@@ -91,6 +91,37 @@ public static class GC
     }
 
     public static void WaitForPendingFinalizers() { }
+
+    /// What the collector knew at its last collection: how much memory it
+    /// may use (the heap's cap when one is set, the machine's memory
+    /// otherwise), how full the machine is, and how big the heap is. One
+    /// generation, never compacted, never concurrent (see the top of this
+    /// file); the kind asked for changes nothing, as every collection here
+    /// is the same kind.
+    public static GCMemoryInfo GetGCMemoryInfo()
+    {
+        return GetGCMemoryInfo(GCKind.Any);
+    }
+
+    public static GCMemoryInfo GetGCMemoryInfo(GCKind kind)
+    {
+        if (kind < GCKind.Any || kind > GCKind.Background)
+        {
+            throw new ArgumentOutOfRangeException(nameof(kind));
+        }
+        long physical = Platform.TotalMemory();
+        long cap = HeapChunks.Cap;
+        long total = cap != 0 && (physical == 0 || cap < physical) ? cap : physical;
+        // A 32-bit process can hold no more than its address space leaves the
+        // heap, whatever the machine has: that is the limit .NET reports for a
+        // process, and what a build admitting work by it must see.
+        if (Gc.HeapCeiling != 0 && (total == 0 || Gc.HeapCeiling < total)) total = Gc.HeapCeiling;
+        long available = Platform.AvailableMemory();
+        long load = physical != 0 && available != 0 ? physical - available : Gc.HeapBytes;
+        long heap = Gc.HeapBytes;
+        long live = Gc.LiveBytes;
+        return new GCMemoryInfo(total, total / 10 * 9, load, heap, heap > live ? heap - live : 0, heap, live, Gc.Collections);
+    }
 }
 
 /// How a collection may be done, as .NET names it; this collector does every
@@ -102,3 +133,64 @@ public enum GCCollectionMode
     Optimized = 2,
     Aggressive = 3,
 }
+
+/// Which collections GetGCMemoryInfo reports on, as .NET names them.
+public enum GCKind
+{
+    Any = 0,
+    Ephemeral = 1,
+    FullBlocking = 2,
+    Background = 3,
+}
+
+/// What the collector reported about memory at a collection (System.GCMemoryInfo).
+public readonly struct GCMemoryInfo
+{
+    readonly long _total;
+    readonly long _threshold;
+    readonly long _load;
+    readonly long _heap;
+    readonly long _fragmented;
+    readonly long _committed;
+    readonly long _promoted;
+    readonly long _index;
+
+    public GCMemoryInfo(long total, long threshold, long load, long heap, long fragmented, long committed, long promoted, long index)
+    {
+        _total = total;
+        _threshold = threshold;
+        _load = load;
+        _heap = heap;
+        _fragmented = fragmented;
+        _committed = committed;
+        _promoted = promoted;
+        _index = index;
+    }
+
+    /// The memory the collector may use: its hard limit, or the machine's.
+    public long TotalAvailableMemoryBytes => _total;
+
+    /// The load past which memory counts as high: 90% of the total.
+    public long HighMemoryLoadThresholdBytes => _threshold;
+
+    /// Memory in use on the machine when the collection ran.
+    public long MemoryLoadBytes => _load;
+
+    public long HeapSizeBytes => _heap;
+    public long FragmentedBytes => _fragmented;
+    public long TotalCommittedBytes => _committed;
+
+    /// What survived the collection: every live byte, as there is only one generation.
+    public long PromotedBytes => _promoted;
+
+    /// Which collection this was, counting from the first.
+    public long Index => _index;
+
+    public int Generation => 0;
+    public bool Compacted => false;
+    public bool Concurrent => false;
+    public long PinnedObjectsCount => 0;
+    public long FinalizationPendingCount => 0;
+    public double PauseTimePercentage => 0.0;
+}
+

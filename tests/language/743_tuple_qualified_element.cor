@@ -1,0 +1,47 @@
+// test: a tuple whose element type is written with its namespace works as a type argument, nested types and all
+// expect-exit: 0
+// expect-output:
+// walked 2 pairs, total 7
+// looked up 3
+// deconstructed 5
+//
+// `List<(System.Text.StringBuilder Text, int Count)>` spelled its element
+// type with dots, and the list's own nested Enumerator could not be named
+// for it: `foreach` called List$Enumerator`1's MoveNext and get_Current,
+// which no image defines, and the link stopped. Written without the
+// namespace, the same program built. The project build's own
+// compile-process watcher, which keeps (System.Diagnostics.Process, string)
+// pairs, was the first to write one.
+using System;
+using System.Collections.Generic;
+
+static class Program
+{
+    static int Main()
+    {
+        List<(System.Text.StringBuilder Text, int Count)> pairs = new();
+        pairs.Add((new System.Text.StringBuilder("ab"), 2));
+        pairs.Add((new System.Text.StringBuilder("xyz"), 2));
+        int total = 0;
+        foreach ((System.Text.StringBuilder text, int count) in pairs)
+        {
+            total += text.Length + count - 1;
+        }
+        Console.WriteLine("walked " + pairs.Count + " pairs, total " + total);
+
+        Dictionary<string, (System.Text.StringBuilder Text, int Count)> named = new();
+        named["one"] = (new System.Text.StringBuilder("abc"), 1);
+        foreach (KeyValuePair<string, (System.Text.StringBuilder Text, int Count)> entry in named)
+        {
+            Console.WriteLine("looked up " + entry.Value.Text.Length);
+        }
+
+        HashSet<(System.Text.StringBuilder, int)> seen = new();
+        seen.Add((new System.Text.StringBuilder("hello"), 0));
+        foreach (var (builder, _) in seen)
+        {
+            Console.WriteLine("deconstructed " + builder.Length);
+        }
+        return 0;
+    }
+}

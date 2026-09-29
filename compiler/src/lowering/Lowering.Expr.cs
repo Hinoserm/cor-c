@@ -58,9 +58,9 @@ public sealed partial class Lowering
             _e.Branch(v, wrap, done);
             _e.SetBlock(wrap);
 
-            VReg made = Allocate(e, view.InstanceSize);
+            VReg made = Allocate(e, view.InstanceSize, described: true);
             _e.Store(R(made), VtableOf(view), 0, _t.WordSize);
-            _e.Store(R(made), R(v), _t.ObjectHeaderBytes, _t.WordSize);
+            StoreNewReference(made, v, _t.ObjectHeaderBytes);
             _e.CopyTo(held, R(made));
             _e.Jump(done);
             _e.SetBlock(done);
@@ -72,10 +72,37 @@ public sealed partial class Lowering
 
     /// <summary>Evaluates and converts to the type a slot, parameter or return wants.</summary>
     /// <summary>An argument evaluated for the parameter it fills in.</summary>
+    /// <summary>The class a non-nullable tuple type is made as, or null.</summary>
+    private static TypeSymbol? TupleShapeOf(Type t)
+        => t is { Nullable: false, Symbol: { Kind: TypeKind.Class } shape } && IsTupleShape(shape) ? shape : null;
+
+    /// <summary>
+    /// A TUPLE'S DEFAULT IS A TUPLE of zeros, not null: C#'s ValueTuple is a
+    /// value, and here each shape is a class the checker made, so its default
+    /// has to be made too. `new List&lt;(uint, ulong)&gt; { default }` held null,
+    /// and the first read of it faulted -- the 64-bit linker's section header
+    /// list begins with exactly that entry.
+    /// </summary>
+    private VReg TupleDefault(Node at, TypeSymbol shape)
+    {
+        TouchType(shape);
+        VReg made = Allocate(at, Math.Max(_t.ObjectHeaderBytes, shape.InstanceSize), described: true);
+        _e.Store(R(made), VtableOf(shape), 0, _t.WordSize);
+        InitStructFields(at, made, shape);
+        return made;
+    }
+
     private VReg EvalAs(Expr e, ParamSymbol p) => EvalAs(e, p.Type, p.ByRef, p.ReadOnly);
 
     private VReg EvalAs(Expr e, Type target, bool byRef = false, bool readOnly = false)
     {
+        // `default` WANTED AS A TUPLE is one: typed by the checker as the null
+        // literal it looks like, it was converted to the tuple's class as null.
+        if (!byRef && e is DefaultExpr && TupleShapeOf(target) is TypeSymbol tupleShape)
+        {
+            return TupleDefault(e, tupleShape);
+        }
+
         if (byRef)
         {
             // `in` TAKES A VALUE WHERE `ref` TAKES A VARIABLE. C# passes the
@@ -93,7 +120,7 @@ public sealed partial class Lowering
             if (IsStructValue(target))
             {
                 if (readOnly && !HasAddress(e)) return EvalAs(e, target);
-                return StructReference(e is RefArgExpr sra ? sra.Target : e, target);
+                return StructReference(e is RefArgExpr sra ? sra.Target : e, target, fresh: e is RefArgExpr { Name: not null });
             }
 
             if (readOnly && !HasAddress(e))
@@ -128,7 +155,15 @@ public sealed partial class Lowering
             v = CopyStruct(e, v, target.Symbol!);
         }
 
-        return Convert(e, v, _b.TypeOf(e), target);
+        // A USER-DEFINED CONVERSION already produced the operator's result;
+        // what is left to convert is from that, not from what was written.
+        // So did a TUPLE REBUILT in another shape (Binder.CheckAssignable):
+        // the value is already the wider tuple, and converting it again from
+        // the arm's own narrower shape read its fields at the wrong widths.
+        Type had = _b.Rewrites.TryGetValue(e, out Expr? made)
+                   && (_b.UserConversions.Contains(made) || made is PatternExpr { Test: TupleExpr })
+                 ? _b.TypeOf(made) : _b.TypeOf(e);
+        return Convert(e, v, had, target);
     }
 
     /// <summary>
@@ -220,7 +255,7 @@ public sealed partial class Lowering
                     continue;
                 }
                 VReg inner = NewStruct(at, f.Type.Symbol!);
-                _e.Store(R(obj), R(inner), f.Offset, _t.WordSize);
+                StoreNewReference(obj, inner, f.Offset);
             }
         }
     }
@@ -284,7 +319,7 @@ public sealed partial class Lowering
             }
             VReg shared = _e.Load(IrTypes.Word, made, field.Offset);
             VReg own = CopyStruct(at, shared, field.Type.Symbol!);
-            _e.Store(R(made), R(own), field.Offset, _t.WordSize);
+            StoreNewReference(made, own, field.Offset);
         }
         _e.Ret(R(made));
 
@@ -388,11 +423,22 @@ public sealed partial class Lowering
             return Unbox(at, v, to);
         }
 
+        // A NULLABLE VALUE PAST HERE IS A CELL'S ADDRESS, or null: a word,
+        // whatever the cell holds. The rules below read its Prim -- a bool?'s
+        // is bool -- and narrowed the address to 32 bits: nothing on i386,
+        // where a word is 32 bits, and in long mode a null arm of `x?.M() ==
+        // true` copied as an I32 into the cell register, which the verifier
+        // refused at every link.
+        if (from.IsNullableValue || to.IsNullableValue)
+        {
+            return v;
+        }
+
         // AN ENUM CONVERTS AS ITS UNDERLYING TYPE, whatever that is: taken as
         // int, `(long)Status.Error` of a `: uint` enum sign-extended
         // 0xC0000001 into a negative number, which is not what C# gives.
-        Type f = from.Symbol is { Kind: TypeKind.Enum } enumFrom ? new Type { Prim = enumFrom.EnumUnderlying } : from;
-        Type t = to.Symbol is { Kind: TypeKind.Enum } enumTo ? new Type { Prim = enumTo.EnumUnderlying } : to;
+        Type f = from.IsEnumValue && from.Symbol is { } enumFrom ? new Type { Prim = enumFrom.EnumUnderlying } : from;
+        Type t = to.IsEnumValue && to.Symbol is { } enumTo ? new Type { Prim = enumTo.EnumUnderlying } : to;
 
         if (f.Prim == Prim.Bool)
             f = Type.I32;
@@ -425,7 +471,7 @@ public sealed partial class Lowering
             // Truncates toward zero, as C# specifies, whatever the FPU's
             // rounding mode says. To a 64-bit register for the wide types and
             // to 32 for the rest, then narrowed to canonical.
-            bool wide = t.Prim is Prim.I64 or Prim.U64;
+            bool wide = IsWideInteger(t);
             Opcode op = t.IsUnsigned ? Opcode.FToU : Opcode.FToI;
             VReg i = _e.Unary(op, R(v), wide ? IrType.I64 : IrType.I32);
             return wide ? i : Narrow(_e, i, t.IsUnsigned ? Type.U32 : Type.I32, t);
@@ -439,7 +485,7 @@ public sealed partial class Lowering
     private static VReg Narrow(Builder e, VReg v, Type from, Type to)
     {
         bool fromWide = v.Type == IrType.I64;
-        bool toWide = to.Prim is Prim.I64 or Prim.U64;
+        bool toWide = IsWideInteger(to);
 
         if (toWide)
         {
@@ -462,6 +508,10 @@ public sealed partial class Lowering
             default: return v;
         }
     }
+
+    /// <summary>An integer held in a 64-bit register: long, ulong, and nint and nuint in long mode.</summary>
+    internal static bool IsWideInteger(Type t) =>
+        t.Prim is Prim.I64 or Prim.U64 || (t.IsNative && Target.Current.WordSize == 8);
 
     /// <summary>The address to which a narrowing must return after arithmetic: the operand type's own width.</summary>
     private VReg Canonical(VReg v, Type t) => Narrow(_e, v, t, t);
@@ -666,20 +716,28 @@ public sealed partial class Lowering
             case SizeOfExpr so:
                 return _e.Const(_b.SizeOfType(so), IrType.I32);
 
+            // AN ENUM'S OR A STRUCT'S TYPE IS ITS BOX'S, as a primitive's is:
+            // what GetType() on one reads is the box, and typeof has to be
+            // that same descriptor for the two to compare equal.
             case TypeOfExpr to when _b.TypeOfs.TryGetValue(to, out TypeSymbol? named):
-                return _e.Address(DescriptorOf(named));
+                return _e.Address(named.Kind is TypeKind.Enum or TypeKind.Struct
+                    ? BoxDescriptor(new Type { Symbol = named }) : DescriptorOf(named));
 
             case TypeOfExpr to when _b.PrimitiveTypeOfs.TryGetValue(to, out Prim prim):
                 return _e.Address(PrimitiveDescriptor(prim));
 
             case TypeOfExpr to when _b.ArrayTypeOfs.TryGetValue(to, out Type? element):
-                return _e.Address(SequenceDescriptor(ElementKey(element), Math.Max(1, element.Size), isString: false));
+                return _e.Address(SequenceDescriptor(ElementKey(element), Math.Max(1, element.Size), isString: false, elementType: element));
 
             case TypeOfExpr:
                 return _e.Const(0, IrTypes.Word);
 
             case DefaultExpr df when IsStructValue(_b.TypeOf(df)):
                 return NewStruct(df, _b.TypeOf(df).Symbol!);
+
+            // A TUPLE'S DEFAULT IS A TUPLE of zeros (TupleDefault).
+            case DefaultExpr df when TupleShapeOf(_b.TypeOf(df)) is TypeSymbol shape:
+                return TupleDefault(df, shape);
 
             case DefaultExpr df:
             {
@@ -704,6 +762,12 @@ public sealed partial class Lowering
                 _e.CopyTo(SlotReg(held, IrTypes.Of(_b.TypeOf(pat.Subject))), R(subject));
                 return Eval(pat.Test);
             }
+
+            // A STATEMENT, THEN A VALUE: a positional pattern taking its subject
+            // apart before its elements are tested.
+            case SequenceExpr seq:
+                EmitStmt(seq.Effect);
+                return Eval(seq.Value);
 
             case SubjectExpr subject when _b.Resolved.TryGetValue(subject, out Sym? where):
             {
@@ -847,6 +911,7 @@ public sealed partial class Lowering
     /// <summary>A member the compiler answers itself: an array's or a string's Length, a type's Name and FullName.</summary>
     private static bool IsIntrinsicMember(MemberExpr m, Type target)
         => (m.Name == "Length" && (target.IsArray || target.Prim == Prim.String))
+        || (m.Name == "LongLength" && target.IsArray)
         || (m.Name is "Name" or "FullName" && target.Prim == Prim.Type);
 
     /// <summary>
@@ -860,6 +925,8 @@ public sealed partial class Lowering
     {
         if (m.Name == "Length")
             return target.IsArray ? _e.Unary(Opcode.ArrayLength, R(obj), IrType.I32) : _e.Load(IrType.I32, obj, _t.ArrayCountOffset);
+        if (m.Name == "LongLength")
+            return _e.Unary(Opcode.SExt32, R(_e.Unary(Opcode.ArrayLength, R(obj), IrType.I32)), IrType.I64);
         VReg full = _e.Load(IrTypes.Word, obj, DescName * _t.WordSize);
         if (m.Name == "FullName" || !HasStringMethod(Prelude.TypeNameMethod)) return full;
         MethodSymbol? simple = StringMethod(m, Prelude.TypeNameMethod, 1, "a type's name");
@@ -880,6 +947,8 @@ public sealed partial class Lowering
         Prim.F32 => "System.Single", Prim.F64 => "System.Double",
         Prim.Char => "System.Char",  Prim.String => "System.String",
         Prim.Any => "System.Object",
+        Prim.NInt => "System.IntPtr", Prim.NUInt => "System.UIntPtr",
+        Prim.Void => "System.Void",
         _ => t.Symbol?.Key ?? t.ToString(),
     };
 
@@ -891,7 +960,7 @@ public sealed partial class Lowering
     {
         MemberExpr member => member.NullConditional || InConditionalChain(member.Target),
         CallExpr call => InConditionalChain(call.Target),
-        IndexExpr index => InConditionalChain(index.Target),
+        IndexExpr index => index.NullConditional || InConditionalChain(index.Target),
         _ => false,
     };
 
@@ -920,7 +989,7 @@ public sealed partial class Lowering
             PropertyGetSym { Getter.Static: false } p
                 => (CallAccessor(p.Getter, self: false, target: null, receiver: obj), p.Getter.Returns),
             _ when IsIntrinsicMember(m, _b.TypeOf(m.Target))
-                => (IntrinsicMember(m, _b.TypeOf(m.Target), obj), m.Name == "Length" ? Type.I32 : Type.String),
+                => (IntrinsicMember(m, _b.TypeOf(m.Target), obj), m.Name switch { "Length" => Type.I32, "LongLength" => Type.I64, _ => Type.String }),
             _ => ((VReg?)null, result),
         };
 
@@ -949,17 +1018,26 @@ public sealed partial class Lowering
     /// allocator: every field of a new object is its default, which the
     /// language promises and the code generator relies on.
     /// </summary>
-    private VReg Allocate(Node at, long bytes)
+    private VReg Allocate(Node at, long bytes, bool described = false)
     {
-        return AllocateDynamic(at, _e.Const(bytes, IrTypes.Word));
+        return AllocateDynamic(at, _e.Const(bytes, IrTypes.Word), described: described);
     }
 
-    private VReg AllocateDynamic(Node at, VReg bytes, bool leaf = false)
+    private VReg AllocateDynamic(Node at, VReg bytes, bool leaf = false, bool described = false)
     {
         // Memory that can hold no reference -- a string, an array of bytes,
         // characters or floating-point numbers -- comes from AllocLeaf where
         // the runtime has it: the collector marks it and never scans it.
-        MethodSymbol? alloc = (leaf ? RuntimeMethod("AllocLeaf", 1) : null) ?? RuntimeMethod("Alloc", 1);
+        //
+        // AN OBJECT WHOSE VTABLE IS STORED NEXT comes from AllocObject: the
+        // collector finds its references through the descriptor that vtable
+        // names, not by trying every word (Gc.KindObject). Only where the
+        // vtable really is the first thing written -- a class instance, a box,
+        // a closure, an array -- and never a struct's block, a cell or a
+        // coroutine's frame, whose words no descriptor describes.
+        MethodSymbol? alloc = (leaf ? RuntimeMethod("AllocLeaf", 1) : null)
+                           ?? (described ? RuntimeMethod("AllocObject", 1) : null)
+                           ?? RuntimeMethod("Alloc", 1);
         if (alloc is null)
         {
             Error(at, $"allocation needs {RuntimeType}.Alloc, which no compiled source provides; compile with the system library");
@@ -980,7 +1058,7 @@ public sealed partial class Lowering
             value = CopyStruct(at, value, inner.Symbol!);
         }
         VReg cell = Allocate(at, Math.Max(_t.WordSize, inner.Size));
-        _e.Store(R(cell), R(value), 0, LoadSize(inner));
+        StoreNew(cell, value, 0, inner);
         return cell;
     }
 
@@ -998,7 +1076,7 @@ public sealed partial class Lowering
             {
                 VReg value = EvalAs(written[i], element);
                 int stride = Math.Max(1, element.Size);
-                _e.Store(R(array), R(value), _t.ArrayHeaderBytes + (long)i * stride, LoadSize(element));
+                StoreNew(array, value, _t.ArrayHeaderBytes + (long)i * stride, element);
             }
             return array;
         }
@@ -1013,7 +1091,7 @@ public sealed partial class Lowering
         // `new object()`: a header and nothing else, the thing to lock on.
         if (sym is null && type.Prim == Prim.Any && nw.Args.Count == 0)
         {
-            VReg bare = Allocate(nw, _t.ObjectHeaderBytes);
+            VReg bare = Allocate(nw, _t.ObjectHeaderBytes, described: true);
             _e.Store(R(bare), new SymOperand(ObjectDescriptor(), _t.DescriptorBytes), 0, _t.WordSize);
             return bare;
         }
@@ -1028,7 +1106,7 @@ public sealed partial class Lowering
         TouchType(sym);
 
         int size = Math.Max(sym.Kind == TypeKind.Class ? _t.ObjectHeaderBytes : 1, sym.InstanceSize);
-        VReg obj = Allocate(nw, size);
+        VReg obj = Allocate(nw, size, described: sym.Kind == TypeKind.Class);
 
         if (sym.Kind == TypeKind.Class)
         {
@@ -1101,8 +1179,8 @@ public sealed partial class Lowering
         CheckArrayCount(count, stride);
         VReg bytes = stride == 1 ? count : _e.Binary(Opcode.Mul, count, stride);
         VReg total = _e.Binary(Opcode.Add, WordOf(bytes), _t.ArrayHeaderBytes);
-        VReg array = AllocateDynamic(at, total, LeafElement(element));
-        string desc = SequenceDescriptor(ElementKey(element), stride, isString: false);
+        VReg array = AllocateDynamic(at, total, LeafElement(element), described: true);
+        string desc = SequenceDescriptor(ElementKey(element), stride, isString: false, elementType: element);
         _e.Store(R(array), new SymOperand(desc, _t.DescriptorBytes), 0, _t.WordSize);
         _e.Emit(Opcode.InitArrayLength, null, R(array), R(count));
 
@@ -1125,7 +1203,7 @@ public sealed partial class Lowering
             _e.SetBlock(body);
             VReg block = NewStruct(at, element.Symbol!);
             VReg slot = _e.Binary(Opcode.Add, array, WordOf(_e.Binary(Opcode.Mul, index, stride)));
-            _e.Store(R(slot), R(block), _t.ArrayHeaderBytes, _t.WordSize);
+            StoreNewReference(slot, block, _t.ArrayHeaderBytes);
             _e.CopyTo(index, R(_e.Binary(Opcode.Add, index, 1)));
             _e.Jump(top);
             _e.SetBlock(done);
@@ -1258,7 +1336,7 @@ public sealed partial class Lowering
     /// <summary>A lambda is an object made where it was written, holding what it captured.</summary>
     private VReg EmitLambda(LambdaExpr lam, ClosureInfo made)
     {
-        VReg obj = Allocate(lam, Math.Max(_t.ObjectHeaderBytes, made.Type.InstanceSize));
+        VReg obj = Allocate(lam, Math.Max(_t.ObjectHeaderBytes, made.Type.InstanceSize), described: true);
         _e.Store(R(obj), VtableOf(made.Type), 0, _t.WordSize);
 
         foreach ((FieldSymbol f, Sym from) in made.Captures)
@@ -1303,7 +1381,14 @@ public sealed partial class Lowering
                 value = LoadPlace(p);
             }
 
-            _e.Store(R(obj), R(value), f.Offset, f.Boxed ? _t.WordSize : LoadSize(f.Type));
+            if (f.Boxed)
+            {
+                StoreNewReference(obj, value, f.Offset);
+            }
+            else
+            {
+                StoreNew(obj, value, f.Offset, f.Type);
+            }
         }
 
         return obj;
@@ -1313,7 +1398,7 @@ public sealed partial class Lowering
     private VReg EmitWith(WithExpr copy, TypeSymbol shape)
     {
         VReg src = Eval(copy.Source);
-        VReg obj = Allocate(copy, Math.Max(_t.ObjectHeaderBytes, shape.InstanceSize));
+        VReg obj = Allocate(copy, Math.Max(_t.ObjectHeaderBytes, shape.InstanceSize), described: shape.Kind == TypeKind.Class);
         if (shape.Kind == TypeKind.Class)
         {
             _e.Store(R(obj), VtableOf(shape), 0, _t.WordSize);
@@ -1337,7 +1422,7 @@ public sealed partial class Lowering
                 {
                     v = CopyStruct(copy, v, f.Type.Symbol!);
                 }
-                _e.Store(R(obj), R(v), f.Offset, LoadSize(f.Type));
+                StoreNew(obj, v, f.Offset, f.Type);
             }
         }
 
@@ -1522,7 +1607,7 @@ public sealed partial class Lowering
         _e.Branch(obj, some, end);
         _e.SetBlock(some);
         VReg vt = _e.Load(IrTypes.Word, obj, 0);
-        VReg wanted = _e.Address(SequenceDescriptor(ElementKey(element), Math.Max(1, element.Size), isString: false),
+        VReg wanted = _e.Address(SequenceDescriptor(ElementKey(element), Math.Max(1, element.Size), isString: false, elementType: element),
                                  _t.DescriptorBytes);
         _e.CopyTo(result, R(_e.Binary(Opcode.Eq, R(vt), R(wanted), IrType.I32)));
         if (element.Prim == Prim.Any && element.ArrayRank == 0)
@@ -1536,6 +1621,18 @@ public sealed partial class Lowering
             VReg refs = _e.Binary(Opcode.And, gc, GcElementsAreReferences);
             VReg anyRefs = _e.Binary(Opcode.Ne, R(refs), Imm(0, IrTypes.Word), IrType.I32);
             _e.CopyTo(result, R(_e.Binary(Opcode.And, R(sequence), R(anyRefs), IrType.I32)));
+        }
+        // COVARIANCE BETWEEN REFERENCE ELEMENTS: a Dog[] is an Animal[]. Not
+        // the exact descriptor, then asked of the element's (Runtime.ArrayOf).
+        else if (ElementDescriptor(element.AsNonNullable()) is string wantedElement && RuntimeMethod("ArrayOf", 2) is MethodSymbol arrayOf)
+        {
+            Block other = _f.NewBlock("arrcov");
+            _e.Branch(result, end, other);
+            _e.SetBlock(other);
+            Require(arrayOf);
+            VReg answer = _e.Call(CallLabel(arrayOf), IrTypes.Of(arrayOf.Returns),
+                R(AsParam(obj, arrayOf.Params[0].Type)), R(AsParam(_e.Address(wantedElement), arrayOf.Params[1].Type)))!;
+            _e.CopyTo(result, R(answer.Type == IrType.I32 ? answer : _e.Unary(Opcode.Trunc64, R(answer), IrType.I32)));
         }
         _e.Jump(end);
         _e.SetBlock(end);
@@ -2177,6 +2274,11 @@ public sealed partial class Lowering
                 return LoadPlace(new MemPlace(R(addr), 0, type));
             }
 
+            case UnOp.AddressOf when _b.MethodAddresses.TryGetValue(u, out MethodSymbol? addressed):
+                // `&Method`: the function pointer is the method's address.
+                Require(addressed);
+                return _e.Address(CallLabel(addressed));
+
             case UnOp.AddressOf:
                 return AddressOf(u, u.Operand);
 
@@ -2204,6 +2306,13 @@ public sealed partial class Lowering
                 VReg v = Eval(u.Operand);
                 return _e.Binary(Opcode.Eq, R(v), Imm(0, v.Type), IrType.I32);
             }
+
+            // `+x`: the value, promoted (a lifted one through its cell).
+            case UnOp.Plus when _b.TypeOf(u.Operand).IsNullableValue:
+                return Eval(u.Operand);
+
+            case UnOp.Plus:
+                return EvalAs(u.Operand, NumericRules.Unary(_b.TypeOf(u.Operand)));
 
             case UnOp.BitNot:
             {
@@ -2376,7 +2485,14 @@ public sealed partial class Lowering
         return EvalAs(value, storedAs);
     }
 
-    private VReg StructReference(Expr target, Type type)
+    /// <summary>
+    /// <paramref name="fresh"/> for a variable the argument DECLARES -- `out
+    /// var d`, `out Pair d`, `out _` -- which C# makes new each time the
+    /// declaration runs: it gets a zeroed block of its own rather than
+    /// whatever its slot last held, which in a loop is the previous
+    /// iteration's struct and before any, whatever was in the frame.
+    /// </summary>
+    private VReg StructReference(Expr target, Type type, bool fresh = false)
     {
         if (target is NameExpr n && _b.Resolved.TryGetValue(n, out Sym? s) && s is ParamSym { ByRef: true } passed)
         {
@@ -2390,6 +2506,12 @@ public sealed partial class Lowering
         if (place is MemPlace { Inline: true })
         {
             return LoadPlace(place);
+        }
+        if (fresh)
+        {
+            VReg made = NewStruct(target, type.Symbol!);
+            StorePlace(place, made);
+            return made;
         }
         VReg held = LoadPlace(place);
         VReg result = _f.NewReg(IrTypes.Word, "sref");
@@ -2491,14 +2613,18 @@ public sealed partial class Lowering
 
         if (!againstNull && (left.Prim == Prim.String || right.Prim == Prim.String))
         {
-            // `"" + e` FOR AN ENUM IS THE ENUM'S NAME and nothing else, and
-            // that is what `e.ToString()` is written as: joining the empty
-            // string to it would make Concat copy a string the table already
-            // holds. Only for an enum, because for anything else the empty
-            // string is doing work -- `"" + (string)null` is "", not null.
-            if (b.Op == BinOp.Add && Empty(b.Left) && right.Symbol is { Kind: TypeKind.Enum })
+            // A CHAIN IS ONE JOIN. `a + b + c + d` was three calls, each making
+            // a string only to copy it into the next; flattened, the parts are
+            // made text left to right, adjacent literals are joined now -- so
+            // `"ab" + "cd"` IS the literal "abcd", as C# makes it -- an empty
+            // one is dropped (`"" + e` for an enum is its name, the table's own
+            // string, and `"" + s` is s), and one Concat makes the rest in one
+            // allocation (EmitConcat).
+            if (b.Op == BinOp.Add)
             {
-                return Stringify(b.Right, Eval(b.Right), right);
+                List<Expr> parts = new();
+                ConcatParts(b, parts);
+                return EmitConcat(b, parts);
             }
 
             // EQUALITY TAKES A NULL STRING AS IT IS. String.Equals answers for
@@ -2523,7 +2649,7 @@ public sealed partial class Lowering
         // AND ARITHMETIC IS LIFTED: `a + b` over an `int?` is null when either
         // side is, and the sum, in a new cell, when both have a value.
         if (b.Op is BinOp.Add or BinOp.Sub or BinOp.Mul or BinOp.Div or BinOp.Rem
-                or BinOp.And or BinOp.Or or BinOp.Xor or BinOp.Shl or BinOp.Shr
+                or BinOp.And or BinOp.Or or BinOp.Xor or BinOp.Shl or BinOp.Shr or BinOp.UShr
             && (left.IsNullableValue || right.IsNullableValue)
             && left.Prim != Prim.NullLiteral && right.Prim != Prim.NullLiteral
             && !(left.Prim == Prim.String || right.Prim == Prim.String))
@@ -2852,14 +2978,14 @@ public sealed partial class Lowering
     /// <summary>The C# binary numeric promotion, with shifts taking their width from the left alone.</summary>
     private static Type OperandPromotion(BinOp op, Type left, Type right)
     {
-        Type l = left.Symbol is { Kind: TypeKind.Enum } enumLeft ? new Type { Prim = enumLeft.EnumUnderlying } : left;
-        Type r = right.Symbol is { Kind: TypeKind.Enum } enumRight ? new Type { Prim = enumRight.EnumUnderlying } : right;
+        Type l = left.IsEnumValue && left.Symbol is { } enumLeft ? new Type { Prim = enumLeft.EnumUnderlying } : left;
+        Type r = right.IsEnumValue && right.Symbol is { } enumRight ? new Type { Prim = enumRight.EnumUnderlying } : right;
         if (l.Prim == Prim.Bool)
             l = Type.I32;
         if (r.Prim == Prim.Bool)
             r = Type.I32;
 
-        if (op is BinOp.Shl or BinOp.Shr)
+        if (op is BinOp.Shl or BinOp.Shr or BinOp.UShr)
         {
             return NumericRules.Unary(l);
         }
@@ -2873,7 +2999,7 @@ public sealed partial class Lowering
     }
 
     private static Type RightOperandPromotion(BinOp op, Type right, Type promoted)
-        => op is BinOp.Shl or BinOp.Shr ? Type.I32 : promoted;
+        => op is BinOp.Shl or BinOp.Shr or BinOp.UShr ? Type.I32 : promoted;
 
     private static Type ResultTypeOf(BinOp op, Type promoted)
         => op is BinOp.Eq or BinOp.Ne or BinOp.Lt or BinOp.Gt or BinOp.Le or BinOp.Ge ? Type.Bool : promoted;
@@ -2924,6 +3050,7 @@ public sealed partial class Lowering
             case BinOp.Xor: return _e.Binary(Opcode.Xor, l, r);
             case BinOp.Shl: return Canonical(_e.Binary(Opcode.Shl, R(l), R(r), l.Type), operand);
             case BinOp.Shr: return _e.Binary(un ? Opcode.ShrU : Opcode.ShrS, R(l), R(r), l.Type);
+            case BinOp.UShr: return _e.Binary(Opcode.ShrU, R(l), R(r), l.Type);
 
             case BinOp.Div:
             case BinOp.Rem:
@@ -3148,8 +3275,13 @@ public sealed partial class Lowering
     {
         if (_b.Types.TryGetValue(Prelude.StringType, out TypeSymbol? type))
         {
-            MethodSymbol? found = type.Methods
-                .FirstOrDefault(m => m.Name == method && m.Static && m.Params.Count == argCount);
+            // THE ALL-STRING OVERLOAD when there are several of the arity:
+            // Concat has (string, string) beside (object?, object?) and a
+            // span pair, and `a + b` means the first.
+            List<MethodSymbol> named = type.Methods
+                .Where(m => m.Name == method && m.Static && m.Params.Count == argCount).ToList();
+            MethodSymbol? found = named.FirstOrDefault(m => m.Params.All(p => p.Type.Prim == Prim.String))
+                                  ?? named.FirstOrDefault();
             if (found is not null)
             {
                 Require(found);
@@ -3232,8 +3364,83 @@ public sealed partial class Lowering
         return _e.Binary(Opcode.Eq, R(answer), Imm(0, answer.Type), IrType.I32);
     }
 
-    /// <summary>Whether an expression is the empty string literal.</summary>
-    private static bool Empty(Expr e) => e is LiteralExpr { Kind: Lit.Str, Text: "" };
+    /// <summary>
+    /// The operands of a chain of string joins, left to right: a `+` whose
+    /// either side is a string and that the checker did not make a call of (a
+    /// user-defined operator) is a join, and its operands are the chain's.
+    /// </summary>
+    private void ConcatParts(Expr e, List<Expr> parts)
+    {
+        if (e is BinaryExpr { Op: BinOp.Add } join && !_b.Rewrites.ContainsKey(join)
+            && (_b.TypeOf(join.Left).Prim == Prim.String || _b.TypeOf(join.Right).Prim == Prim.String))
+        {
+            ConcatParts(join.Left, parts);
+            ConcatParts(join.Right, parts);
+            return;
+        }
+        parts.Add(e);
+    }
+
+    /// <summary>
+    /// A flattened chain of joins (ConcatParts): adjacent string literals
+    /// joined here, as C# joins constant strings; an empty literal dropped;
+    /// every other part made text in order (Stringify); and the whole made
+    /// once -- String.Concat of two, three or four, or of an array beyond
+    /// that, which does not outlive the call and so is a frame slot, not a
+    /// heap object (Escape).
+    /// </summary>
+    private VReg EmitConcat(Node at, List<Expr> parts)
+    {
+        List<object> pieces = new();       // string: a literal's text; VReg: a part made text
+        foreach (Expr part in parts)
+        {
+            if (part is LiteralExpr { Kind: Lit.Str } literal && !_b.Rewrites.ContainsKey(part))
+            {
+                if (pieces.Count > 0 && pieces[^1] is string before)
+                    pieces[^1] = before + literal.Text;
+                else
+                    pieces.Add(literal.Text);
+                continue;
+            }
+            pieces.Add(Stringify(part, Eval(part), _b.TypeOf(part)));
+        }
+        pieces.RemoveAll(p => p is "");
+        if (pieces.Count == 0)
+        {
+            return _e.Address(InternString(""));
+        }
+        List<VReg> made = pieces.Select(p => p is string text ? _e.Address(InternString(text)) : (VReg)p).ToList();
+        if (made.Count == 1)
+        {
+            return made[0];
+        }
+        if (made.Count == 2)
+        {
+            return StringBinary(at, BinOp.Add, made[0], made[1]);
+        }
+        if (made.Count <= 4 && StringMethod(at, Prelude.ConcatMethod, made.Count, "joining strings with '+'") is MethodSymbol some)
+        {
+            return _e.Call(CallLabel(some), IrTypes.Of(some.Returns), made.Select(R).ToArray())!;
+        }
+        MethodSymbol? many = _b.Types.TryGetValue(Prelude.StringType, out TypeSymbol? strings)
+            ? strings.Methods.FirstOrDefault(m => m.Name == Prelude.ConcatMethod && m.Static && m.Params.Count == 1
+                                                && m.Params[0].Type is { IsArray: true, Element.Prim: Prim.String })
+            : null;
+        if (many is null)
+        {
+            VReg joined = made[0];
+            for (int i = 1; i < made.Count; i++) joined = StringBinary(at, BinOp.Add, joined, made[i]);
+            return joined;
+        }
+        Require(many);
+        VReg array = AllocateArray(at, _e.Const(made.Count, IrType.I32), Type.String);
+        for (int i = 0; i < made.Count; i++)
+        {
+            _e.Store(R(array), R(made[i]), _t.ArrayHeaderBytes + i * _t.WordSize, _t.WordSize);
+        }
+        return _e.Call(CallLabel(many), IrTypes.Of(many.Returns), R(array))!;
+    }
+
 
     /// <summary>A non-string operand of a string expression rendered as text.</summary>
     private VReg Stringify(Expr at, VReg v, Type type)

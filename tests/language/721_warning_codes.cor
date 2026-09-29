@@ -1,0 +1,85 @@
+// test: warning_codes
+// expect-exit: 0
+// expect-compile-warning: warning CS8600: initialiser for 'fromLiteral'
+// expect-compile-warning: warning CS8600: initialiser for 'fromMaybe'
+// expect-compile-warning: warning CS8600: assignment to a local
+// expect-compile-warning: warning CS8601: assignment
+// expect-compile-warning: warning CS8625: assignment
+// expect-compile-warning: warning CS8604: argument
+// expect-compile-warning: warning CS8625: argument
+// expect-compile-warning: warning CS8603:
+// expect-compile-warning: warning CS8509:
+// expect-compile-warning: warning CS1030: this is a warning directive
+// expect-compile-warning: warning CS8602:
+// expect-no-compile-warning: 721_warning_codes.cor(75,
+// expect-no-compile-warning: 721_warning_codes.cor(78,
+// expect-no-compile-warning: 721_warning_codes.cor(81,
+// expect-output:
+// green null-literal=True from-maybe=True assigned=True field=True arg=True returned=True
+// loud=5 quiet=5 numbered=5
+//
+// Every warning carries Roslyn's code for the condition, printed as .NET
+// prints it. Which code is Roslyn's own answer, from `dotnet build` of the same
+// lines: into a local -- declared or assigned, a null literal or a maybe-null
+// value -- CS8600; into a field CS8601, or CS8625 for a null literal; an
+// argument CS8604 (CS8625 for null); a return CS8603; a switch expression
+// missing a value CS8509; #warning CS1030. `#pragma warning disable` silences
+// a code by name, by number, or every code, until the matching restore: the
+// three dereferences between them say nothing, the one after says CS8602.
+
+using System;
+
+class Holder { public string Field = ""; }
+
+class Program
+{
+    enum Color { Red, Green, Blue }
+
+    static string? MaybeNull() => null;
+
+    static bool TakesString(string s) => s == null;
+
+    static string? Kept(string s) => s;
+
+    static string ReturnsMaybe(string? maybe) => maybe;
+
+    static string Name(Color c) => c switch
+    {
+        Color.Red => "red",
+        Color.Green => "green",
+    };
+
+    static void Main()
+    {
+        string? maybe = MaybeNull();
+        string fromLiteral = null;
+        string fromMaybe = maybe;
+        string assigned = "";
+        assigned = maybe;
+        Holder h = new Holder();
+        h.Field = maybe;
+        bool field = h.Field == null;
+        h.Field = null;
+        bool arg = TakesString(maybe);
+        TakesString(null);
+        bool returned = ReturnsMaybe(maybe) == null;
+#warning this is a warning directive
+        Console.WriteLine(Name(Color.Green) + " null-literal=" + (fromLiteral == null) + " from-maybe=" + (fromMaybe == null)
+            + " assigned=" + (assigned == null) + " field=" + field + " arg=" + arg + " returned=" + returned);
+
+        string? loud = Kept("hello");
+        string? quiet = Kept("world");
+        string? numbered = Kept("again");
+        string? after = Kept("yes");
+#pragma warning disable CS8602
+        int l = loud.Length;
+#pragma warning restore CS8602
+#pragma warning disable
+        int q = quiet.Length;
+#pragma warning restore
+#pragma warning disable 8602
+        int n = numbered.Length;
+#pragma warning restore 8602
+        Console.WriteLine("loud=" + l + " quiet=" + q + " numbered=" + n + (after.Length > 0 ? "" : "?"));
+    }
+}

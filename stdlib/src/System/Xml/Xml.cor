@@ -1,0 +1,1943 @@
+// System.Xml and System.Xml.Linq, as .NET spells them: XmlReader and its
+// settings, and the LINQ to XML tree -- XName, XNamespace, XAttribute, XText,
+// XComment, XElement, XDocument -- with the parser that builds one and the
+// writer that prints one.
+//
+// THE READER HOLDS THE DOCUMENT; THE TREE PARSES IT. .NET's XmlReader is a
+// pull parser and XDocument.Load walks it. Nothing here pulls nodes one at a
+// time -- every caller loads a whole document -- so XmlReader.Create reads
+// the file and XDocument.Load parses its text in one pass, keeping what the
+// settings and LoadOptions say: DtdProcessing.Prohibit refuses a DOCTYPE,
+// LoadOptions.PreserveWhitespace keeps whitespace-only text, SetLineInfo
+// records where every element and attribute began (IXmlLineInfo).
+//
+// NAMES ARE ATOMISED, as .NET's are: one XNamespace per URI and one XName per
+// local name in it, so two names compare by reference and `==` on XName is
+// the reference comparison .NET declares.
+//
+// THE PRINTED FORM is XmlWriter's: two-space indentation, `<a />` for an
+// empty element, no indentation inside an element that holds text, and
+// `<?xml version="1.0" encoding="utf-8"?>` before a document saved to a file.
+
+namespace System.Xml
+{
+    /// <summary>What a reader does with a DOCTYPE.</summary>
+    public enum DtdProcessing
+    {
+        Prohibit = 0,
+        Ignore = 1,
+        Parse = 2,
+    }
+
+    /// <summary>
+    /// Resolves external resources. Nothing here fetches one: the only use
+    /// is `XmlResolver = null`, which is also what the parser does anyway.
+    /// </summary>
+    public abstract class XmlResolver
+    {
+    }
+
+    /// <summary>The settings XmlReader.Create is given.</summary>
+    public sealed class XmlReaderSettings
+    {
+        public DtdProcessing DtdProcessing { get; set; } = DtdProcessing.Prohibit;
+        public XmlResolver? XmlResolver { get; set; }
+        public bool IgnoreComments { get; set; }
+        public bool IgnoreWhitespace { get; set; }
+        public bool IgnoreProcessingInstructions { get; set; }
+    }
+
+    /// <summary>Where a node was in the text it was read from.</summary>
+    public interface IXmlLineInfo
+    {
+        bool HasLineInfo();
+        int LineNumber { get; }
+        int LinePosition { get; }
+    }
+
+    /// <summary>Text that is not well-formed XML, and where.</summary>
+    public class XmlException : SystemException
+    {
+        public int LineNumber { get; }
+        public int LinePosition { get; }
+
+        public XmlException() : base("An XML error has occurred.") { }
+
+        public XmlException(string? message) : base(message ?? "An XML error has occurred.") { }
+
+        public XmlException(string? message, Exception? innerException) : base(message ?? "An XML error has occurred.", innerException) { }
+
+        public XmlException(string? message, Exception? innerException, int lineNumber, int linePosition)
+            : base(Located(message, lineNumber, linePosition), innerException)
+        {
+            LineNumber = lineNumber;
+            LinePosition = linePosition;
+        }
+
+        private static string Located(string? message, int line, int position)
+            => (message ?? "An XML error has occurred.") + " Line " + line + ", position " + position + ".";
+    }
+
+    /// <summary>
+    /// A document to be read. Create opens a file under settings; the tree
+    /// (XDocument.Load) is what reads it.
+    /// </summary>
+    public abstract class XmlReader : IDisposable
+    {
+        internal abstract string Text { get; }
+        internal abstract XmlReaderSettings Settings { get; }
+
+        public abstract string BaseURI { get; }
+
+        public static XmlReader Create(string inputUri) => Create(inputUri, null);
+
+        public static XmlReader Create(string inputUri, XmlReaderSettings? settings)
+        {
+            ArgumentNullException.ThrowIfNull(inputUri);
+            return new XmlTextReaderImpl(System.IO.File.ReadAllText(inputUri), settings ?? new XmlReaderSettings(), inputUri);
+        }
+
+        public static XmlReader Create(System.IO.TextReader input) => Create(input, null);
+
+        public static XmlReader Create(System.IO.TextReader input, XmlReaderSettings? settings)
+        {
+            ArgumentNullException.ThrowIfNull(input);
+            return new XmlTextReaderImpl(input.ReadToEnd(), settings ?? new XmlReaderSettings(), "");
+        }
+
+        public void Dispose()
+        {
+            Dispose(true);
+        }
+
+        protected virtual void Dispose(bool disposing)
+        {
+        }
+    }
+
+    internal sealed class XmlTextReaderImpl : XmlReader
+    {
+        private readonly string _text;
+        private readonly XmlReaderSettings _settings;
+        private readonly string _uri;
+
+        internal XmlTextReaderImpl(string text, XmlReaderSettings settings, string uri)
+        {
+            _text = text;
+            _settings = settings;
+            _uri = uri;
+        }
+
+        internal override string Text => _text;
+        internal override XmlReaderSettings Settings => _settings;
+        public override string BaseURI => _uri;
+    }
+}
+
+namespace System.Xml.Linq
+{
+    using System.Collections.Generic;
+    using System.Text;
+    using System.Xml;
+
+    [Flags]
+    public enum LoadOptions
+    {
+        None = 0,
+        PreserveWhitespace = 1,
+        SetBaseUri = 2,
+        SetLineInfo = 4,
+    }
+
+    [Flags]
+    public enum SaveOptions
+    {
+        None = 0,
+        DisableFormatting = 1,
+        OmitDuplicateNamespaces = 2,
+    }
+
+    /// <summary>An XML namespace: one object per URI.</summary>
+    public sealed class XNamespace
+    {
+        private static readonly object Gate = new();
+        private static readonly Dictionary<string, XNamespace> Known = new(StringComparer.Ordinal);
+
+        private readonly Dictionary<string, XName> _names = new(StringComparer.Ordinal);
+
+        public string NamespaceName { get; }
+
+        private XNamespace(string name)
+        {
+            NamespaceName = name;
+        }
+
+        public static XNamespace None { get; } = Get("");
+        public static XNamespace Xml { get; } = Get("http://www.w3.org/XML/1998/namespace");
+        public static XNamespace Xmlns { get; } = Get("http://www.w3.org/2000/xmlns/");
+
+        public static XNamespace Get(string namespaceName)
+        {
+            ArgumentNullException.ThrowIfNull(namespaceName);
+            lock (Gate)
+            {
+                if (!Known.TryGetValue(namespaceName, out XNamespace? found))
+                {
+                    found = new XNamespace(namespaceName);
+                    Known[namespaceName] = found;
+                }
+                return found;
+            }
+        }
+
+        public XName GetName(string localName)
+        {
+            ArgumentNullException.ThrowIfNull(localName);
+            lock (Gate)
+            {
+                if (!_names.TryGetValue(localName, out XName? found))
+                {
+                    found = new XName(this, localName);
+                    _names[localName] = found;
+                }
+                return found;
+            }
+        }
+
+        public static implicit operator XNamespace(string namespaceName) => Get(namespaceName);
+
+        public static XName operator +(XNamespace ns, string localName) => ns.GetName(localName);
+
+        public static bool operator ==(XNamespace? left, XNamespace? right) => (object?)left == (object?)right;
+
+        public static bool operator !=(XNamespace? left, XNamespace? right) => (object?)left != (object?)right;
+
+        public override bool Equals(object? obj) => (object)this == obj;
+
+        public override int GetHashCode() => NamespaceName.GetHashCode();
+
+        public override string ToString() => NamespaceName;
+    }
+
+    /// <summary>A name: a local name in a namespace, one object per pair.</summary>
+    public sealed class XName : IEquatable<XName>
+    {
+        public string LocalName { get; }
+        public XNamespace Namespace { get; }
+        public string NamespaceName => Namespace.NamespaceName;
+
+        internal XName(XNamespace ns, string localName)
+        {
+            Namespace = ns;
+            LocalName = localName;
+        }
+
+        /// <summary>`local` or the expanded `{namespace}local`.</summary>
+        public static XName Get(string expandedName)
+        {
+            ArgumentNullException.ThrowIfNull(expandedName);
+            if (expandedName.Length > 0 && expandedName[0] == '{')
+            {
+                int close = expandedName.IndexOf('}');
+                if (close < 1 || close == expandedName.Length - 1)
+                {
+                    throw new XmlException("The '" + expandedName + "' name is not a valid expanded name.");
+                }
+                return XNamespace.Get(expandedName.Substring(1, close - 1)).GetName(expandedName.Substring(close + 1));
+            }
+            return XNamespace.None.GetName(expandedName);
+        }
+
+        public static XName Get(string localName, string namespaceName) => XNamespace.Get(namespaceName).GetName(localName);
+
+        public static implicit operator XName(string expandedName) => Get(expandedName);
+
+        public static bool operator ==(XName? left, XName? right) => (object?)left == (object?)right;
+
+        public static bool operator !=(XName? left, XName? right) => (object?)left != (object?)right;
+
+        public bool Equals(XName? other) => (object)this == (object?)other;
+
+        public override bool Equals(object? obj) => (object)this == obj;
+
+        public override int GetHashCode() => LocalName.GetHashCode() ^ Namespace.GetHashCode();
+
+        public override string ToString() => Namespace.NamespaceName.Length == 0 ? LocalName : "{" + Namespace.NamespaceName + "}" + LocalName;
+    }
+
+    /// <summary>A node or an attribute: its parent and where it was read.</summary>
+    public abstract class XObject : IXmlLineInfo
+    {
+        internal XContainer? _parent;
+        internal int _line;
+        internal int _position;
+
+        public XElement? Parent => _parent as XElement;
+
+        public XDocument? Document
+        {
+            get
+            {
+                XObject at = this;
+                while (at._parent is not null)
+                {
+                    at = at._parent;
+                }
+                return at as XDocument;
+            }
+        }
+
+        bool IXmlLineInfo.HasLineInfo() => _line != 0;
+
+        int IXmlLineInfo.LineNumber => _line;
+
+        int IXmlLineInfo.LinePosition => _position;
+    }
+
+    /// <summary>A node in a tree: text, a comment, an element, a document.</summary>
+    public abstract class XNode : XObject
+    {
+        public XNode? NextNode
+        {
+            get
+            {
+                if (_parent is null)
+                {
+                    return null;
+                }
+                List<XNode> siblings = _parent._nodes;
+                int at = siblings.IndexOf(this);
+                return at + 1 < siblings.Count ? siblings[at + 1] : null;
+            }
+        }
+
+        public XNode? PreviousNode
+        {
+            get
+            {
+                if (_parent is null)
+                {
+                    return null;
+                }
+                int at = _parent._nodes.IndexOf(this);
+                return at > 0 ? _parent._nodes[at - 1] : null;
+            }
+        }
+
+        public IEnumerable<XElement> Ancestors()
+        {
+            for (XElement? up = Parent; up is not null; up = up.Parent)
+            {
+                yield return up;
+            }
+        }
+
+        public IEnumerable<XElement> Ancestors(XName? name)
+        {
+            for (XElement? up = Parent; up is not null; up = up.Parent)
+            {
+                if (up.Name == name)
+                {
+                    yield return up;
+                }
+            }
+        }
+
+        /// <summary>Takes the node out of its parent.</summary>
+        public void Remove()
+        {
+            if (_parent is null)
+            {
+                throw new InvalidOperationException("The parent is missing.");
+            }
+            _parent._nodes.Remove(this);
+            _parent = null;
+        }
+
+        public override string ToString() => ToString(SaveOptions.None);
+
+        public string ToString(SaveOptions options)
+        {
+            StringBuilder text = new();
+            WriteTo(text, (options & SaveOptions.DisableFormatting) == 0, 0);
+            return text.ToString();
+        }
+
+        /// <summary>The node as XmlWriter prints it, indented to depth when indent.</summary>
+        internal abstract void WriteTo(StringBuilder text, bool indent, int depth);
+
+        /// <summary>A copy with no parent, what Add makes of a node that already has one.</summary>
+        internal abstract XNode Clone();
+    }
+
+    /// <summary>Character data.</summary>
+    public class XText : XNode
+    {
+        internal string _value;
+
+        public XText(string value)
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            _value = value;
+        }
+
+        public XText(XText other)
+        {
+            ArgumentNullException.ThrowIfNull(other);
+            _value = other._value;
+        }
+
+        public string Value
+        {
+            get => _value;
+            set
+            {
+                ArgumentNullException.ThrowIfNull(value);
+                _value = value;
+            }
+        }
+
+        internal override void WriteTo(StringBuilder text, bool indent, int depth) => XmlText.Escape(text, _value, false);
+
+        internal override XNode Clone() => new XText(this);
+    }
+
+    /// <summary>A CDATA section: text printed as written.</summary>
+    public class XCData : XText
+    {
+        public XCData(string value) : base(value) { }
+
+        public XCData(XCData other) : base(other) { }
+
+        internal override void WriteTo(StringBuilder text, bool indent, int depth)
+        {
+            text.Append("<![CDATA[").Append(_value.Replace("]]>", "]]]]><![CDATA[>")).Append("]]>");
+        }
+
+        internal override XNode Clone() => new XCData(this);
+    }
+
+    /// <summary>A comment.</summary>
+    public class XComment : XNode
+    {
+        private string _value;
+
+        public XComment(string value)
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            _value = value;
+        }
+
+        public XComment(XComment other)
+        {
+            ArgumentNullException.ThrowIfNull(other);
+            _value = other._value;
+        }
+
+        public string Value
+        {
+            get => _value;
+            set
+            {
+                ArgumentNullException.ThrowIfNull(value);
+                _value = value;
+            }
+        }
+
+        internal override void WriteTo(StringBuilder text, bool indent, int depth)
+        {
+            text.Append("<!--").Append(_value).Append("-->");
+        }
+
+        internal override XNode Clone() => new XComment(this);
+    }
+
+    /// <summary>A processing instruction: `&lt;?target data?&gt;`.</summary>
+    public class XProcessingInstruction : XNode
+    {
+        public string Target { get; set; }
+        public string Data { get; set; }
+
+        public XProcessingInstruction(string target, string data)
+        {
+            ArgumentNullException.ThrowIfNull(target);
+            ArgumentNullException.ThrowIfNull(data);
+            Target = target;
+            Data = data;
+        }
+
+        public XProcessingInstruction(XProcessingInstruction other) : this(other.Target, other.Data) { }
+
+        internal override void WriteTo(StringBuilder text, bool indent, int depth)
+        {
+            text.Append("<?").Append(Target);
+            if (Data.Length > 0)
+            {
+                text.Append(' ').Append(Data);
+            }
+            text.Append("?>");
+        }
+
+        internal override XNode Clone() => new XProcessingInstruction(this);
+    }
+
+    /// <summary>A node that holds nodes: an element or a document.</summary>
+    public abstract class XContainer : XNode
+    {
+        internal readonly List<XNode> _nodes = new();
+
+        public XNode? FirstNode => _nodes.Count > 0 ? _nodes[0] : null;
+
+        public XNode? LastNode => _nodes.Count > 0 ? _nodes[_nodes.Count - 1] : null;
+
+        public IEnumerable<XNode> Nodes()
+        {
+            foreach (XNode node in _nodes.ToArray())
+            {
+                yield return node;
+            }
+        }
+
+        public IEnumerable<XElement> Elements()
+        {
+            foreach (XNode node in _nodes.ToArray())
+            {
+                if (node is XElement element)
+                {
+                    yield return element;
+                }
+            }
+        }
+
+        public IEnumerable<XElement> Elements(XName? name)
+        {
+            foreach (XNode node in _nodes.ToArray())
+            {
+                if (node is XElement element && element.Name == name)
+                {
+                    yield return element;
+                }
+            }
+        }
+
+        public XElement? Element(XName name)
+        {
+            foreach (XNode node in _nodes)
+            {
+                if (node is XElement element && element.Name == name)
+                {
+                    return element;
+                }
+            }
+            return null;
+        }
+
+        public IEnumerable<XElement> Descendants()
+        {
+            List<XElement> found = new();
+            CollectDescendants(found, null);
+            return found;
+        }
+
+        public IEnumerable<XElement> Descendants(XName? name)
+        {
+            List<XElement> found = new();
+            if (name is not null)
+            {
+                CollectDescendants(found, name);
+            }
+            return found;
+        }
+
+        public IEnumerable<XNode> DescendantNodes()
+        {
+            List<XNode> found = new();
+            CollectNodes(found);
+            return found;
+        }
+
+        internal void CollectDescendants(List<XElement> found, XName? name)
+        {
+            foreach (XNode node in _nodes)
+            {
+                if (node is XElement element)
+                {
+                    if (name is null || element.Name == name)
+                    {
+                        found.Add(element);
+                    }
+                    element.CollectDescendants(found, name);
+                }
+            }
+        }
+
+        private void CollectNodes(List<XNode> found)
+        {
+            foreach (XNode node in _nodes)
+            {
+                found.Add(node);
+                if (node is XContainer inner)
+                {
+                    inner.CollectNodes(found);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Adds content as .NET does: a node (copied if it already has a
+        /// parent), an attribute to an element, text for a string or any
+        /// other value, each item of a sequence, nothing for null.
+        /// </summary>
+        public void Add(object? content)
+        {
+            if (content is null)
+            {
+                return;
+            }
+            if (content is XNode node)
+            {
+                AddNode(node._parent is null ? node : node.Clone());
+                return;
+            }
+            if (content is XAttribute attribute)
+            {
+                AddAttribute(attribute);
+                return;
+            }
+            if (content is string text)
+            {
+                AddString(text);
+                return;
+            }
+            if (content is object?[] many)
+            {
+                foreach (object? item in many)
+                {
+                    Add(item);
+                }
+                return;
+            }
+            if (content is IEnumerable<XNode> nodes)
+            {
+                foreach (XNode item in nodes)
+                {
+                    Add(item);
+                }
+                return;
+            }
+            if (content is IEnumerable<XAttribute> attributes)
+            {
+                foreach (XAttribute item in attributes)
+                {
+                    Add(item);
+                }
+                return;
+            }
+            if (content is IEnumerable<object?> objects)
+            {
+                foreach (object? item in objects)
+                {
+                    Add(item);
+                }
+                return;
+            }
+            AddString(XmlText.FromValue(content));
+        }
+
+        public void Add(params object?[] content)
+        {
+            foreach (object? item in content)
+            {
+                Add(item);
+            }
+        }
+
+        public void RemoveNodes()
+        {
+            foreach (XNode node in _nodes)
+            {
+                node._parent = null;
+            }
+            _nodes.Clear();
+        }
+
+        internal virtual void AddAttribute(XAttribute attribute)
+        {
+            throw new ArgumentException("An attribute cannot be added to content.");
+        }
+
+        /// <summary>Text joins the text node before it, as .NET's does.</summary>
+        internal void AddString(string text)
+        {
+            if (text.Length == 0)
+            {
+                return;
+            }
+            if (_nodes.Count > 0 && _nodes[_nodes.Count - 1] is XText last && last is not XCData)
+            {
+                last._value += text;
+                return;
+            }
+            AddNode(new XText(text));
+        }
+
+        internal void AddNode(XNode node)
+        {
+            node._parent = this;
+            _nodes.Add(node);
+        }
+    }
+
+    /// <summary>An element: a name, attributes and content.</summary>
+    public class XElement : XContainer
+    {
+        private XName _name;
+        internal readonly List<XAttribute> _attributes = new();
+
+        public XElement(XName name)
+        {
+            ArgumentNullException.ThrowIfNull(name);
+            _name = name;
+        }
+
+        public XElement(XName name, object? content) : this(name)
+        {
+            Add(content);
+        }
+
+        public XElement(XName name, params object?[] content) : this(name)
+        {
+            Add(content);
+        }
+
+        /// <summary>A deep copy with no parent.</summary>
+        public XElement(XElement other)
+        {
+            ArgumentNullException.ThrowIfNull(other);
+            _name = other._name;
+            foreach (XAttribute attribute in other._attributes)
+            {
+                AddAttribute(new XAttribute(attribute));
+            }
+            foreach (XNode node in other._nodes)
+            {
+                AddNode(node.Clone());
+            }
+        }
+
+        public XName Name
+        {
+            get => _name;
+            set
+            {
+                ArgumentNullException.ThrowIfNull(value);
+                _name = value;
+            }
+        }
+
+        public bool HasAttributes => _attributes.Count > 0;
+
+        public bool HasElements
+        {
+            get
+            {
+                foreach (XNode node in _nodes)
+                {
+                    if (node is XElement)
+                    {
+                        return true;
+                    }
+                }
+                return false;
+            }
+        }
+
+        public bool IsEmpty => _nodes.Count == 0;
+
+        public XAttribute? FirstAttribute => _attributes.Count > 0 ? _attributes[0] : null;
+
+        public XAttribute? LastAttribute => _attributes.Count > 0 ? _attributes[_attributes.Count - 1] : null;
+
+        /// <summary>Every piece of text inside, in document order.</summary>
+        public string Value
+        {
+            get
+            {
+                StringBuilder text = new();
+                AppendText(this, text);
+                return text.ToString();
+            }
+            set
+            {
+                ArgumentNullException.ThrowIfNull(value);
+                RemoveNodes();
+                AddString(value);
+            }
+        }
+
+        private static void AppendText(XContainer container, StringBuilder text)
+        {
+            foreach (XNode node in container._nodes)
+            {
+                if (node is XText piece)
+                {
+                    text.Append(piece._value);
+                }
+                else if (node is XElement inner)
+                {
+                    AppendText(inner, text);
+                }
+            }
+        }
+
+        public XAttribute? Attribute(XName name)
+        {
+            foreach (XAttribute attribute in _attributes)
+            {
+                if (attribute.Name == name)
+                {
+                    return attribute;
+                }
+            }
+            return null;
+        }
+
+        public IEnumerable<XAttribute> Attributes()
+        {
+            foreach (XAttribute attribute in _attributes.ToArray())
+            {
+                yield return attribute;
+            }
+        }
+
+        public IEnumerable<XAttribute> Attributes(XName? name)
+        {
+            foreach (XAttribute attribute in _attributes.ToArray())
+            {
+                if (attribute.Name == name)
+                {
+                    yield return attribute;
+                }
+            }
+        }
+
+        public IEnumerable<XElement> AncestorsAndSelf()
+        {
+            for (XElement? at = this; at is not null; at = at.Parent)
+            {
+                yield return at;
+            }
+        }
+
+        public IEnumerable<XElement> DescendantsAndSelf()
+        {
+            List<XElement> found = new() { this };
+            CollectDescendants(found, null);
+            return found;
+        }
+
+        public IEnumerable<XElement> DescendantsAndSelf(XName? name)
+        {
+            List<XElement> found = new();
+            if (name is null)
+            {
+                return found;
+            }
+            if (_name == name)
+            {
+                found.Add(this);
+            }
+            CollectDescendants(found, name);
+            return found;
+        }
+
+        /// <summary>Sets, adds or (for null) removes an attribute.</summary>
+        public void SetAttributeValue(XName name, object? value)
+        {
+            XAttribute? existing = Attribute(name);
+            if (value is null)
+            {
+                existing?.Remove();
+            }
+            else if (existing is not null)
+            {
+                existing.Value = XmlText.FromValue(value);
+            }
+            else
+            {
+                AddAttribute(new XAttribute(name, value));
+            }
+        }
+
+        public void RemoveAttributes()
+        {
+            foreach (XAttribute attribute in _attributes)
+            {
+                attribute._parent = null;
+            }
+            _attributes.Clear();
+        }
+
+        public void RemoveAll()
+        {
+            RemoveAttributes();
+            RemoveNodes();
+        }
+
+        internal override void AddAttribute(XAttribute attribute)
+        {
+            if (attribute._parent is not null)
+            {
+                attribute = new XAttribute(attribute);
+            }
+            if (Attribute(attribute.Name) is not null)
+            {
+                throw new InvalidOperationException("Duplicate attribute.");
+            }
+            attribute._parent = this;
+            _attributes.Add(attribute);
+        }
+
+        public static XElement Load(string uri) => Load(uri, LoadOptions.None);
+
+        public static XElement Load(string uri, LoadOptions options)
+            => XDocument.Load(uri, options).Root ?? throw new XmlException("Root element is missing.");
+
+        public static XElement Parse(string text) => Parse(text, LoadOptions.None);
+
+        public static XElement Parse(string text, LoadOptions options)
+            => XDocument.Parse(text, options).Root ?? throw new XmlException("Root element is missing.");
+
+        public void Save(string fileName) => Save(fileName, SaveOptions.None);
+
+        public void Save(string fileName, SaveOptions options)
+        {
+            StringBuilder text = new();
+            text.Append("<?xml version=\"1.0\" encoding=\"utf-8\"?>");
+            bool indent = (options & SaveOptions.DisableFormatting) == 0;
+            if (indent)
+            {
+                text.Append('\n');
+            }
+            WriteTo(text, indent, 0);
+            System.IO.File.WriteAllText(fileName, text.ToString());
+        }
+
+        public static explicit operator string?(XElement? element) => element?.Value;
+
+        /// <summary>
+        /// The prefix a namespace is written with here: none for the default
+        /// namespace in scope, else the one an xmlns:p attribute on this element
+        /// or an ancestor gave it. Null when nothing in scope names it.
+        /// </summary>
+        internal string? PrefixOf(XNamespace ns, bool forAttribute)
+        {
+            if (ns == XNamespace.Xml)
+            {
+                return "xml";
+            }
+            for (XElement? at = this; at is not null; at = at.Parent)
+            {
+                foreach (XAttribute attribute in at._attributes)
+                {
+                    if (attribute.Name.Namespace == XNamespace.Xmlns && attribute.Value == ns.NamespaceName)
+                    {
+                        return attribute.Name.LocalName;
+                    }
+                    if (!forAttribute && attribute.Name == XNamespace.None.GetName("xmlns"))
+                    {
+                        if (attribute.Value == ns.NamespaceName)
+                        {
+                            return "";
+                        }
+                    }
+                }
+            }
+            return ns == XNamespace.None ? "" : null;
+        }
+
+        /// <summary>
+        /// The name as written: prefixed when its namespace has a prefix in
+        /// scope, bare when it is the default. A namespace nothing declares is
+        /// declared on this element as the default, the way XmlWriter does.
+        /// </summary>
+        private string Written(XName name, bool forAttribute, StringBuilder declarations)
+        {
+            if (forAttribute && name.Namespace == XNamespace.Xmlns)
+            {
+                return "xmlns:" + name.LocalName;
+            }
+            if (forAttribute && name.Namespace == XNamespace.None)
+            {
+                return name.LocalName;
+            }
+            string? prefix = PrefixOf(name.Namespace, forAttribute);
+            if (prefix is null)
+            {
+                if (forAttribute)
+                {
+                    prefix = "p" + (declarations.Length + 1);
+                    declarations.Append(" xmlns:").Append(prefix).Append("=\"");
+                    XmlText.Escape(declarations, name.NamespaceName, true);
+                    declarations.Append('"');
+                    return prefix + ":" + name.LocalName;
+                }
+                declarations.Append(" xmlns=\"");
+                XmlText.Escape(declarations, name.NamespaceName, true);
+                declarations.Append('"');
+                return name.LocalName;
+            }
+            return prefix.Length == 0 ? name.LocalName : prefix + ":" + name.LocalName;
+        }
+
+        internal override void WriteTo(StringBuilder text, bool indent, int depth)
+        {
+            StringBuilder declarations = new();
+            string tag = Written(_name, false, declarations);
+            text.Append('<').Append(tag);
+            StringBuilder attributes = new();
+            foreach (XAttribute attribute in _attributes)
+            {
+                attributes.Append(' ').Append(Written(attribute.Name, true, declarations)).Append("=\"");
+                XmlText.Escape(attributes, attribute.Value, true);
+                attributes.Append('"');
+            }
+            text.Append(attributes.ToString()).Append(declarations.ToString());
+
+            if (_nodes.Count == 0)
+            {
+                text.Append(" />");
+                return;
+            }
+            text.Append('>');
+
+            // Text inside switches indentation off for everything within,
+            // as XmlWriter does: indenting would change the text.
+            bool mixed = false;
+            foreach (XNode node in _nodes)
+            {
+                if (node is XText)
+                {
+                    mixed = true;
+                    break;
+                }
+            }
+            bool inner = indent && !mixed;
+            foreach (XNode node in _nodes)
+            {
+                if (inner)
+                {
+                    XmlText.NewLine(text, depth + 1);
+                }
+                node.WriteTo(text, inner, depth + 1);
+            }
+            if (inner)
+            {
+                XmlText.NewLine(text, depth);
+            }
+            text.Append("</").Append(tag).Append('>');
+        }
+
+        internal override XNode Clone() => new XElement(this);
+    }
+
+    /// <summary>An attribute: a name and a value.</summary>
+    public class XAttribute : XObject
+    {
+        private string _value;
+
+        public XAttribute(XName name, object value)
+        {
+            ArgumentNullException.ThrowIfNull(name);
+            ArgumentNullException.ThrowIfNull(value);
+            Name = name;
+            _value = XmlText.FromValue(value);
+        }
+
+        public XAttribute(XAttribute other)
+        {
+            ArgumentNullException.ThrowIfNull(other);
+            Name = other.Name;
+            _value = other._value;
+        }
+
+        public XName Name { get; }
+
+        public bool IsNamespaceDeclaration
+            => Name.Namespace == XNamespace.Xmlns || (Name.Namespace == XNamespace.None && Name.LocalName == "xmlns");
+
+        public string Value
+        {
+            get => _value;
+            set
+            {
+                ArgumentNullException.ThrowIfNull(value);
+                _value = value;
+            }
+        }
+
+        public XAttribute? NextAttribute
+        {
+            get
+            {
+                if (Parent is not XElement owner)
+                {
+                    return null;
+                }
+                int at = owner._attributes.IndexOf(this);
+                return at + 1 < owner._attributes.Count ? owner._attributes[at + 1] : null;
+            }
+        }
+
+        public void Remove()
+        {
+            if (Parent is not XElement owner)
+            {
+                throw new InvalidOperationException("The parent is missing.");
+            }
+            owner._attributes.Remove(this);
+            _parent = null;
+        }
+
+        public override string ToString()
+        {
+            StringBuilder text = new();
+            text.Append(Name.Namespace == XNamespace.None ? Name.LocalName : Name.ToString()).Append("=\"");
+            XmlText.Escape(text, _value, true);
+            return text.Append('"').ToString();
+        }
+
+        public static explicit operator string?(XAttribute? attribute) => attribute?._value;
+    }
+
+    /// <summary>The `&lt;?xml ...?&gt;` declaration.</summary>
+    public class XDeclaration
+    {
+        public string? Version { get; set; }
+        public string? Encoding { get; set; }
+        public string? Standalone { get; set; }
+
+        public XDeclaration(string? version, string? encoding, string? standalone)
+        {
+            Version = version;
+            Encoding = encoding;
+            Standalone = standalone;
+        }
+
+        public XDeclaration(XDeclaration other) : this(other.Version, other.Encoding, other.Standalone) { }
+
+        public override string ToString()
+        {
+            StringBuilder text = new("<?xml");
+            if (Version is not null)
+            {
+                text.Append(" version=\"").Append(Version).Append('"');
+            }
+            if (Encoding is not null)
+            {
+                text.Append(" encoding=\"").Append(Encoding).Append('"');
+            }
+            if (Standalone is not null)
+            {
+                text.Append(" standalone=\"").Append(Standalone).Append('"');
+            }
+            return text.Append("?>").ToString();
+        }
+    }
+
+    /// <summary>A document: a declaration and one root element among its nodes.</summary>
+    public class XDocument : XContainer
+    {
+        public XDeclaration? Declaration { get; set; }
+
+        public XDocument()
+        {
+        }
+
+        public XDocument(params object?[] content)
+        {
+            Add(content);
+        }
+
+        public XDocument(XDeclaration? declaration, params object?[] content)
+        {
+            Declaration = declaration;
+            Add(content);
+        }
+
+        public XDocument(XDocument other)
+        {
+            ArgumentNullException.ThrowIfNull(other);
+            Declaration = other.Declaration is null ? null : new XDeclaration(other.Declaration);
+            foreach (XNode node in other._nodes)
+            {
+                AddNode(node.Clone());
+            }
+        }
+
+        public XElement? Root
+        {
+            get
+            {
+                foreach (XNode node in _nodes)
+                {
+                    if (node is XElement root)
+                    {
+                        return root;
+                    }
+                }
+                return null;
+            }
+        }
+
+        public static XDocument Load(string uri) => Load(uri, LoadOptions.None);
+
+        public static XDocument Load(string uri, LoadOptions options)
+        {
+            using XmlReader reader = XmlReader.Create(uri, new XmlReaderSettings { DtdProcessing = DtdProcessing.Parse });
+            return Load(reader, options);
+        }
+
+        public static XDocument Load(XmlReader reader) => Load(reader, LoadOptions.None);
+
+        public static XDocument Load(XmlReader reader, LoadOptions options)
+        {
+            ArgumentNullException.ThrowIfNull(reader);
+            return new XmlTreeReader(reader.Text, reader.Settings, options).Read();
+        }
+
+        public static XDocument Parse(string text) => Parse(text, LoadOptions.None);
+
+        public static XDocument Parse(string text, LoadOptions options)
+        {
+            ArgumentNullException.ThrowIfNull(text);
+            return new XmlTreeReader(text, new XmlReaderSettings { DtdProcessing = DtdProcessing.Parse }, options).Read();
+        }
+
+        public void Save(string fileName) => Save(fileName, SaveOptions.None);
+
+        public void Save(string fileName, SaveOptions options)
+        {
+            StringBuilder text = new();
+            bool indent = (options & SaveOptions.DisableFormatting) == 0;
+            XDeclaration declaration = Declaration ?? new XDeclaration("1.0", "utf-8", null);
+            text.Append(new XDeclaration(declaration.Version ?? "1.0", "utf-8", declaration.Standalone).ToString());
+            foreach (XNode node in _nodes)
+            {
+                if (indent)
+                {
+                    text.Append('\n');
+                }
+                node.WriteTo(text, indent, 0);
+            }
+            System.IO.File.WriteAllText(fileName, text.ToString());
+        }
+
+        internal override void AddAttribute(XAttribute attribute)
+        {
+            throw new ArgumentException("An attribute cannot be added to a document.");
+        }
+
+        internal override void WriteTo(StringBuilder text, bool indent, int depth)
+        {
+            bool first = true;
+            foreach (XNode node in _nodes)
+            {
+                if (indent && !first)
+                {
+                    text.Append('\n');
+                }
+                node.WriteTo(text, indent, 0);
+                first = false;
+            }
+        }
+
+        internal override XNode Clone() => new XDocument(this);
+    }
+
+    /// <summary>LINQ to XML's operators over sequences of nodes.</summary>
+    public static class Extensions
+    {
+        public static IEnumerable<XElement> Elements<T>(this IEnumerable<T?> source) where T : XContainer
+        {
+            ArgumentNullException.ThrowIfNull(source);
+            foreach (T? container in source)
+            {
+                if (container is not null)
+                {
+                    foreach (XElement element in container.Elements())
+                    {
+                        yield return element;
+                    }
+                }
+            }
+        }
+
+        public static IEnumerable<XElement> Elements<T>(this IEnumerable<T?> source, XName? name) where T : XContainer
+        {
+            ArgumentNullException.ThrowIfNull(source);
+            foreach (T? container in source)
+            {
+                if (container is not null)
+                {
+                    foreach (XElement element in container.Elements(name))
+                    {
+                        yield return element;
+                    }
+                }
+            }
+        }
+
+        public static IEnumerable<XElement> Descendants<T>(this IEnumerable<T?> source) where T : XContainer
+        {
+            ArgumentNullException.ThrowIfNull(source);
+            foreach (T? container in source)
+            {
+                if (container is not null)
+                {
+                    foreach (XElement element in container.Descendants())
+                    {
+                        yield return element;
+                    }
+                }
+            }
+        }
+
+        public static IEnumerable<XAttribute> Attributes(this IEnumerable<XElement?> source)
+        {
+            ArgumentNullException.ThrowIfNull(source);
+            foreach (XElement? element in source)
+            {
+                if (element is not null)
+                {
+                    foreach (XAttribute attribute in element.Attributes())
+                    {
+                        yield return attribute;
+                    }
+                }
+            }
+        }
+
+        public static IEnumerable<XAttribute> Attributes(this IEnumerable<XElement?> source, XName? name)
+        {
+            ArgumentNullException.ThrowIfNull(source);
+            foreach (XElement? element in source)
+            {
+                if (element is not null)
+                {
+                    foreach (XAttribute attribute in element.Attributes(name))
+                    {
+                        yield return attribute;
+                    }
+                }
+            }
+        }
+    }
+
+    /// <summary>Escaping and value formatting as XmlWriter and XmlConvert do them.</summary>
+    internal static class XmlText
+    {
+        internal static void NewLine(StringBuilder text, int depth)
+        {
+            text.Append('\n');
+            for (int i = 0; i < depth; i++)
+            {
+                text.Append("  ");
+            }
+        }
+
+        internal static void Escape(StringBuilder text, string value, bool attribute)
+        {
+            foreach (char c in value)
+            {
+                switch (c)
+                {
+                    case '&': text.Append("&amp;"); break;
+                    case '<': text.Append("&lt;"); break;
+                    case '>': text.Append("&gt;"); break;
+                    case '"' when attribute: text.Append("&quot;"); break;
+                    case '\n' when attribute: text.Append("&#xA;"); break;
+                    case '\r': text.Append("&#xD;"); break;
+                    case '\t' when attribute: text.Append("&#x9;"); break;
+                    default: text.Append(c); break;
+                }
+            }
+        }
+
+        /// <summary>A value as XmlConvert writes it: booleans in lower case,
+        /// numbers in the invariant culture.</summary>
+        internal static string FromValue(object value)
+        {
+            return value switch
+            {
+                string s => s,
+                bool b => b ? "true" : "false",
+                double d => d.ToString("R", System.Globalization.CultureInfo.InvariantCulture),
+                float f => f.ToString("R", System.Globalization.CultureInfo.InvariantCulture),
+                _ => value.ToString() ?? "",
+            };
+        }
+    }
+
+    /// <summary>
+    /// The parser: XML 1.0 text into a tree, namespaces resolved, entity and
+    /// character references expanded, line endings normalised to \n.
+    /// </summary>
+    internal sealed class XmlTreeReader
+    {
+        private readonly string _text;
+        private readonly XmlReaderSettings _settings;
+        private readonly bool _whitespace;
+        private readonly bool _lines;
+        private int _at;
+        private int _line = 1;
+        private int _lineStart;
+
+        internal XmlTreeReader(string text, XmlReaderSettings settings, LoadOptions options)
+        {
+            _text = text.Replace("\r\n", "\n").Replace('\r', '\n');
+            _settings = settings;
+            _whitespace = (options & LoadOptions.PreserveWhitespace) != 0 && !settings.IgnoreWhitespace;
+            _lines = (options & LoadOptions.SetLineInfo) != 0;
+            if (_text.Length > 0 && _text[0] == '﻿')
+            {
+                _at = 1;
+                _lineStart = 1;
+            }
+        }
+
+        private XmlException Error(string message)
+            => new XmlException(message, null, _line, _at - _lineStart + 1);
+
+        private bool Done => _at >= _text.Length;
+
+        private char Cur => _at < _text.Length ? _text[_at] : '\0';
+
+        private bool Starts(string what) => string.CompareOrdinal(_text, _at, what, 0, what.Length) == 0;
+
+        private void Advance(int count)
+        {
+            for (int i = 0; i < count && _at < _text.Length; i++)
+            {
+                if (_text[_at] == '\n')
+                {
+                    _line++;
+                    _lineStart = _at + 1;
+                }
+                _at++;
+            }
+        }
+
+        private void Expect(string what)
+        {
+            if (!Starts(what))
+            {
+                throw Error("'" + what + "' is expected.");
+            }
+            Advance(what.Length);
+        }
+
+        private static bool IsSpace(char c) => c is ' ' or '\t' or '\n' or '\r';
+
+        private void SkipSpace()
+        {
+            while (!Done && IsSpace(Cur))
+            {
+                Advance(1);
+            }
+        }
+
+        private static bool IsNameStart(char c) => char.IsLetter(c) || c == '_' || c == ':' || c > '¿';
+
+        private static bool IsNameChar(char c) => IsNameStart(c) || char.IsDigit(c) || c is '-' or '.' || c == '·';
+
+        private string ReadName()
+        {
+            if (Done || !IsNameStart(Cur))
+            {
+                throw Error("Name cannot begin with the '" + Cur + "' character.");
+            }
+            int start = _at;
+            while (!Done && IsNameChar(Cur))
+            {
+                Advance(1);
+            }
+            return _text.Substring(start, _at - start);
+        }
+
+        private void Mark(XObject node, int line, int position)
+        {
+            if (_lines)
+            {
+                node._line = line;
+                node._position = position;
+            }
+        }
+
+        internal XDocument Read()
+        {
+            XDocument document = new();
+            if (Starts("<?xml") && _at + 5 < _text.Length && IsSpace(_text[_at + 5]))
+            {
+                document.Declaration = ReadDeclaration();
+            }
+            bool rooted = false;
+            while (true)
+            {
+                int before = _at;
+                SkipSpace();
+                if (Done)
+                {
+                    break;
+                }
+                if (Starts("<!--"))
+                {
+                    XComment? comment = ReadComment();
+                    if (comment is not null)
+                    {
+                        document.AddNode(comment);
+                    }
+                }
+                else if (Starts("<?"))
+                {
+                    XProcessingInstruction? instruction = ReadInstruction();
+                    if (instruction is not null)
+                    {
+                        document.AddNode(instruction);
+                    }
+                }
+                else if (Starts("<!DOCTYPE"))
+                {
+                    if (rooted)
+                    {
+                        throw Error("Unexpected DTD declaration.");
+                    }
+                    ReadDoctype();
+                }
+                else if (Cur == '<')
+                {
+                    if (rooted)
+                    {
+                        throw Error("There are multiple root elements.");
+                    }
+                    document.AddNode(ReadElement(null));
+                    rooted = true;
+                }
+                else
+                {
+                    _at = before;
+                    throw Error("Data at the root level is invalid.");
+                }
+            }
+            if (!rooted)
+            {
+                throw Error("Root element is missing.");
+            }
+            return document;
+        }
+
+        private XDeclaration ReadDeclaration()
+        {
+            Expect("<?xml");
+            string? version = null;
+            string? encoding = null;
+            string? standalone = null;
+            while (true)
+            {
+                SkipSpace();
+                if (Starts("?>"))
+                {
+                    Advance(2);
+                    break;
+                }
+                string name = ReadName();
+                SkipSpace();
+                Expect("=");
+                SkipSpace();
+                string value = ReadQuoted(false);
+                switch (name)
+                {
+                    case "version": version = value; break;
+                    case "encoding": encoding = value; break;
+                    case "standalone": standalone = value; break;
+                    default: throw Error("'" + name + "' is an invalid attribute of the XML declaration.");
+                }
+            }
+            return new XDeclaration(version, encoding, standalone);
+        }
+
+        private void ReadDoctype()
+        {
+            if (_settings.DtdProcessing == DtdProcessing.Prohibit)
+            {
+                throw Error("For security reasons DTD is prohibited in this XML document. To enable DTD processing set the DtdProcessing property on XmlReaderSettings to Parse and pass the settings into XmlReader.Create method.");
+            }
+            // Skipped, internal subset and all: no entity it declares is
+            // expanded, which is also what DtdProcessing.Ignore means.
+            Expect("<!DOCTYPE");
+            int depth = 0;
+            char quote = '\0';
+            while (!Done)
+            {
+                char c = Cur;
+                Advance(1);
+                if (quote != '\0')
+                {
+                    if (c == quote)
+                    {
+                        quote = '\0';
+                    }
+                }
+                else if (c is '"' or '\'')
+                {
+                    quote = c;
+                }
+                else if (c == '[')
+                {
+                    depth++;
+                }
+                else if (c == ']')
+                {
+                    depth--;
+                }
+                else if (c == '>' && depth == 0)
+                {
+                    return;
+                }
+            }
+            throw Error("Unexpected end of file while parsing DOCTYPE.");
+        }
+
+        private XComment? ReadComment()
+        {
+            Expect("<!--");
+            int end = _text.IndexOf("-->", _at, StringComparison.Ordinal);
+            if (end < 0)
+            {
+                throw Error("Unexpected end of file while parsing Comment.");
+            }
+            string value = _text.Substring(_at, end - _at);
+            Advance(end + 3 - _at);
+            return _settings.IgnoreComments ? null : new XComment(value);
+        }
+
+        private XProcessingInstruction? ReadInstruction()
+        {
+            Expect("<?");
+            string target = ReadName();
+            if (string.Equals(target, "xml", StringComparison.OrdinalIgnoreCase))
+            {
+                throw Error("Unexpected XML declaration. The XML declaration must be the first node in the document.");
+            }
+            SkipSpace();
+            int end = _text.IndexOf("?>", _at, StringComparison.Ordinal);
+            if (end < 0)
+            {
+                throw Error("Unexpected end of file while parsing processing instruction.");
+            }
+            string data = _text.Substring(_at, end - _at);
+            Advance(end + 2 - _at);
+            return _settings.IgnoreProcessingInstructions ? null : new XProcessingInstruction(target, data);
+        }
+
+        /// <summary>An attribute value, references expanded and, for an
+        /// attribute, literal whitespace made spaces (XML 1.0 3.3.3).</summary>
+        private string ReadQuoted(bool normalise)
+        {
+            char quote = Cur;
+            if (quote is not ('"' or '\''))
+            {
+                throw Error("'\"' is expected.");
+            }
+            Advance(1);
+            StringBuilder value = new();
+            while (true)
+            {
+                if (Done)
+                {
+                    throw Error("Unexpected end of file while parsing an attribute value.");
+                }
+                char c = Cur;
+                if (c == quote)
+                {
+                    Advance(1);
+                    return value.ToString();
+                }
+                if (c == '<')
+                {
+                    throw Error("'<', hexadecimal value 0x3C, is an invalid attribute character.");
+                }
+                if (c == '&')
+                {
+                    ReadReference(value);
+                    continue;
+                }
+                value.Append(normalise && IsSpace(c) ? ' ' : c);
+                Advance(1);
+            }
+        }
+
+        private void ReadReference(StringBuilder into)
+        {
+            Expect("&");
+            if (Cur == '#')
+            {
+                Advance(1);
+                bool hex = Cur == 'x';
+                if (hex)
+                {
+                    Advance(1);
+                }
+                int start = _at;
+                while (!Done && Cur != ';')
+                {
+                    Advance(1);
+                }
+                string digits = _text.Substring(start, _at - start);
+                Expect(";");
+                if (digits.Length == 0 || !int.TryParse(digits, hex ? System.Globalization.NumberStyles.AllowHexSpecifier : System.Globalization.NumberStyles.None,
+                        System.Globalization.CultureInfo.InvariantCulture, out int code) || code < 0 || code > 0x10FFFF)
+                {
+                    throw Error("Invalid character reference.");
+                }
+                into.Append(char.ConvertFromUtf32(code));
+                return;
+            }
+            string name = ReadName();
+            Expect(";");
+            switch (name)
+            {
+                case "lt": into.Append('<'); break;
+                case "gt": into.Append('>'); break;
+                case "amp": into.Append('&'); break;
+                case "quot": into.Append('"'); break;
+                case "apos": into.Append('\''); break;
+                default: throw Error("Reference to undeclared entity '" + name + "'.");
+            }
+        }
+
+        /// <summary>A prefix or the default namespace as the scope has it.</summary>
+        private XNamespace Resolve(string? prefix, List<(string Prefix, string Uri)> scope, bool attribute)
+        {
+            if (prefix is null)
+            {
+                if (attribute)
+                {
+                    return XNamespace.None;
+                }
+                for (int i = scope.Count - 1; i >= 0; i--)
+                {
+                    if (scope[i].Prefix.Length == 0)
+                    {
+                        return XNamespace.Get(scope[i].Uri);
+                    }
+                }
+                return XNamespace.None;
+            }
+            if (prefix == "xml")
+            {
+                return XNamespace.Xml;
+            }
+            if (prefix == "xmlns")
+            {
+                return XNamespace.Xmlns;
+            }
+            for (int i = scope.Count - 1; i >= 0; i--)
+            {
+                if (scope[i].Prefix == prefix)
+                {
+                    return XNamespace.Get(scope[i].Uri);
+                }
+            }
+            throw Error("'" + prefix + "' is an undeclared prefix.");
+        }
+
+        private static (string? Prefix, string Local) Split(string name)
+        {
+            int colon = name.IndexOf(':');
+            return colon < 0 ? (null, name) : (name.Substring(0, colon), name.Substring(colon + 1));
+        }
+
+        private XElement ReadElement(List<(string Prefix, string Uri)>? outer)
+        {
+            Expect("<");
+            int line = _line;
+            int position = _at - _lineStart + 1;
+            string tag = ReadName();
+
+            List<(string Name, string Value, int Line, int Position)> written = new();
+            while (true)
+            {
+                bool spaced = !Done && IsSpace(Cur);
+                SkipSpace();
+                if (Starts("/>") || Cur == '>')
+                {
+                    break;
+                }
+                if (!spaced)
+                {
+                    throw Error("'" + Cur + "' is an unexpected token. The expected token is '/>' or '>'.");
+                }
+                int attributeLine = _line;
+                int attributePosition = _at - _lineStart + 1;
+                string name = ReadName();
+                SkipSpace();
+                Expect("=");
+                SkipSpace();
+                string value = ReadQuoted(true);
+                foreach ((string Name, string Value, int Line, int Position) seen in written)
+                {
+                    if (seen.Name == name)
+                    {
+                        throw Error("'" + name + "' is a duplicate attribute name.");
+                    }
+                }
+                written.Add((name, value, attributeLine, attributePosition));
+            }
+
+            // The namespaces this element declares are in scope for its own
+            // name and attributes as well as for its content.
+            List<(string Prefix, string Uri)> scope = outer ?? new();
+            int declared = 0;
+            foreach ((string Name, string Value, int Line, int Position) attribute in written)
+            {
+                if (attribute.Name == "xmlns")
+                {
+                    scope.Add(("", attribute.Value));
+                    declared++;
+                }
+                else if (attribute.Name.StartsWith("xmlns:", StringComparison.Ordinal))
+                {
+                    scope.Add((attribute.Name.Substring(6), attribute.Value));
+                    declared++;
+                }
+            }
+
+            (string? tagPrefix, string tagLocal) = Split(tag);
+            XElement element = new(Resolve(tagPrefix, scope, false).GetName(tagLocal));
+            Mark(element, line, position);
+            foreach ((string Name, string Value, int Line, int Position) attribute in written)
+            {
+                (string? prefix, string local) = Split(attribute.Name);
+                XName name = Resolve(prefix, scope, true).GetName(local);
+                XAttribute made = new(name, attribute.Value);
+                Mark(made, attribute.Line, attribute.Position);
+                element.AddAttribute(made);
+            }
+
+            if (Starts("/>"))
+            {
+                Advance(2);
+            }
+            else
+            {
+                Expect(">");
+                ReadContent(element, scope);
+                Expect("</");
+                string closing = ReadName();
+                if (closing != tag)
+                {
+                    throw Error("The '" + tag + "' start tag on line " + line + " position " + position + " does not match the end tag of '" + closing + "'.");
+                }
+                SkipSpace();
+                Expect(">");
+            }
+            scope.RemoveRange(scope.Count - declared, declared);
+            return element;
+        }
+
+        private void ReadContent(XElement element, List<(string Prefix, string Uri)> scope)
+        {
+            StringBuilder text = new();
+            int textLine = 0;
+            int textPosition = 0;
+
+            void Flush()
+            {
+                if (text.Length == 0)
+                {
+                    return;
+                }
+                string value = text.ToString();
+                text.Clear();
+                if (!_whitespace && string.IsNullOrWhiteSpace(value))
+                {
+                    return;
+                }
+                if (element.LastNode is XText last && last is not XCData)
+                {
+                    last._value += value;
+                    return;
+                }
+                XText made = new(value);
+                Mark(made, textLine, textPosition);
+                element.AddNode(made);
+            }
+
+            while (true)
+            {
+                if (Done)
+                {
+                    throw Error("Unexpected end of file has occurred. The following elements are not closed: " + element.Name.LocalName + ".");
+                }
+                if (Starts("</"))
+                {
+                    Flush();
+                    return;
+                }
+                if (Starts("<!--"))
+                {
+                    Flush();
+                    XComment? comment = ReadComment();
+                    if (comment is not null)
+                    {
+                        element.AddNode(comment);
+                    }
+                }
+                else if (Starts("<![CDATA["))
+                {
+                    Flush();
+                    Advance(9);
+                    int end = _text.IndexOf("]]>", _at, StringComparison.Ordinal);
+                    if (end < 0)
+                    {
+                        throw Error("Unexpected end of file while parsing CDATA section.");
+                    }
+                    element.AddNode(new XCData(_text.Substring(_at, end - _at)));
+                    Advance(end + 3 - _at);
+                }
+                else if (Starts("<?"))
+                {
+                    Flush();
+                    XProcessingInstruction? instruction = ReadInstruction();
+                    if (instruction is not null)
+                    {
+                        element.AddNode(instruction);
+                    }
+                }
+                else if (Cur == '<')
+                {
+                    Flush();
+                    element.AddNode(ReadElement(scope));
+                }
+                else
+                {
+                    if (text.Length == 0)
+                    {
+                        textLine = _line;
+                        textPosition = _at - _lineStart + 1;
+                    }
+                    if (Cur == '&')
+                    {
+                        ReadReference(text);
+                    }
+                    else
+                    {
+                        text.Append(Cur);
+                        Advance(1);
+                    }
+                }
+            }
+        }
+    }
+}

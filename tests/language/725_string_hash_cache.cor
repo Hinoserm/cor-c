@@ -1,0 +1,57 @@
+// test: string_hash_cache
+// expect-exit: 0
+// expect-output:
+// 7 of 8
+// 1786785 True False
+// True False 3
+// True True 1
+// 5000,5000
+//
+// A string's hash is worked out once and kept in its header; a literal's is
+// written in by the compiler, since a literal is read-only data. A literal and
+// the same characters built at run time must hash alike through every door --
+// GetHashCode, StringComparer.Ordinal, EqualityComparer<string>.Default -- and
+// tables keyed by strings, ordinal or folded, must find them. Expected output
+// is real .NET's.
+
+using System;
+using System.Collections.Generic;
+using System.Text;
+
+static class Program
+{
+    static string Built(string a, string b) => new StringBuilder(a).Append(b).ToString();
+
+    static void Main()
+    {
+        string[] literals = { "", "a", "abc", "hello world", "été", "😀", "with\0nul", "Z" };
+        int same = 0;
+        foreach (string lit in literals)
+        {
+            string made = lit.Length == 0 ? new string('x', 0) : Built(lit.Substring(0, 1), lit.Substring(1));
+            if (!ReferenceEquals(made, lit) && made == lit && made.GetHashCode() == lit.GetHashCode()
+                && StringComparer.Ordinal.GetHashCode(made) == StringComparer.Ordinal.GetHashCode(lit)
+                && EqualityComparer<string>.Default.GetHashCode(made) == lit.GetHashCode()
+                && made.GetHashCode() == made.GetHashCode())
+                same++;
+        }
+        Console.WriteLine(same + " of " + literals.Length);
+
+        Dictionary<string, int> table = new();
+        for (int i = 0; i < 5000; i++) table["k" + i] = i;
+        long sum = 0;
+        for (int i = 0; i < 5000; i += 7) sum += table[Built("k", i.ToString())];
+        Console.WriteLine(sum + " " + table.ContainsKey("k4999") + " " + table.ContainsKey("k5000"));
+
+        HashSet<string> words = new() { "alpha", "beta", "gamma" };
+        Console.WriteLine(words.Contains(Built("al", "pha")) + " " + words.Contains("delta") + " " + words.Count);
+
+        Dictionary<string, int> folded = new(StringComparer.OrdinalIgnoreCase) { ["Key"] = 1 };
+        Console.WriteLine(folded.ContainsKey("KEY") + " " + folded.ContainsKey(Built("k", "ey")) + " " + folded["kEy"]);
+
+        string s = "cache";
+        int first = s.GetHashCode();
+        for (int i = 0; i < 3; i++) if (s.GetHashCode() != first) Console.WriteLine("changed");
+        Console.WriteLine(string.Join(",", new SortedSet<string>(table.Keys).Count, table.Count));
+    }
+}

@@ -44,6 +44,13 @@ internal sealed class ElfBuffer
         Bytes(s);
     }
 
+    public void U64(ulong v)
+    {
+        Span<byte> s = stackalloc byte[8];
+        BinaryPrimitives.WriteUInt64LittleEndian(s, v);
+        Bytes(s);
+    }
+
     public void U32(uint v)
     {
         Span<byte> s = stackalloc byte[4];
@@ -107,5 +114,31 @@ internal sealed class ElfBuffer
             _chunks[i].AsSpan(0, n).CopyTo(made.AsSpan(from, n));
         }
         return made;
+    }
+
+    public void PatchU16(int offset, ushort v)
+    {
+        if (offset < 0 || offset + 2 > _length) throw new ArgumentOutOfRangeException(nameof(offset));
+        Chunk(offset)[offset & (ChunkBytes - 1)] = (byte)v;
+        Chunk(offset + 1)[(offset + 1) & (ChunkBytes - 1)] = (byte)(v >> 8);
+    }
+
+    /// <summary>
+    /// The bytes written out a chunk at a time: an object of any size goes to
+    /// its file without ever being one array, which on a 32-bit heap is a
+    /// contiguous run of address space a large unit's object can fail to get.
+    /// </summary>
+    public void WriteTo(Stream output)
+    {
+        for (int i = 0; i < _chunks.Count && (i << ChunkShift) < _length; i++)
+        {
+            int from = i << ChunkShift;
+            output.Write(_chunks[i], 0, Math.Min(ChunkBytes, _length - from));
+        }
+        // Zeros past the last chunk made (Zeros only moves the length).
+        for (int at = _chunks.Count << ChunkShift; at < _length; at += ChunkBytes)
+        {
+            output.Write(new byte[Math.Min(ChunkBytes, _length - at)]);
+        }
     }
 }

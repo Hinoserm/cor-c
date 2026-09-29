@@ -1,0 +1,86 @@
+// test: caller_info
+// expect-exit: 0
+// expect-output:
+// Main@67:695_caller_info.cor
+// Named@63:695_caller_info.cor
+// [x + 1][Math.Max(x, 2)]
+// [x*2][]
+// ["s".Length][1]
+// (x * 10)
+// d7:.ctor:42 b:Main:74
+// circle
+// Main@76:695_caller_info.cor
+// Value cannot be null. (Parameter 'missing') | missing
+// x - 5 ('-2') must be a non-negative value. (Parameter 'x - 5')
+// Actual value was -2.
+// The value cannot be an empty string. (Parameter '""')
+// Cannot access a disposed object.
+// Object name: 'Thing'.
+// too big (Parameter 'n') | n
+//
+// C#'s caller-information attributes: an optional parameter marked
+// [CallerMemberName], [CallerFilePath], [CallerLineNumber] or
+// [CallerArgumentExpression] that a call leaves out is passed the calling
+// member (a property's name from its getter, .ctor from a constructor,
+// the enclosing member from a lambda), the file, the line, or the source
+// text of another argument -- as written, comments aside, and null where it
+// was not written. Through named arguments, an extension's receiver,
+// constructor initialisers with named arguments, and a record's base call;
+// and .NET's argument guards, which name the argument with it.
+
+using System;
+using System.Runtime.CompilerServices;
+
+class Base
+{
+    public string Made;
+    public Base(string what, [CallerMemberName] string member = "", [CallerLineNumber] int line = 0) { Made = $"{what}:{member}:{line}"; }
+}
+
+class Derived : Base
+{
+    public Derived(int n) : base(what: "d" + n) { }
+    public Derived() : this(7) { }
+}
+
+record Shape(string Kind);
+record Circle(double R) : Shape(Kind: "circle");
+
+static class Guard
+{
+    public static string Named<T>(this T value, [CallerArgumentExpression("value")] string? text = null) => text ?? "?";
+}
+
+static class P
+{
+    static string Where([CallerMemberName] string member = "", [CallerLineNumber] int line = 0, [CallerFilePath] string file = "")
+        => $"{member}@{line}:{System.IO.Path.GetFileName(file)}";
+
+    static string Text(int a, int b = 0, [CallerArgumentExpression("a")] string? ta = null, [CallerArgumentExpression("b")] string? tb = null)
+        => $"[{ta}][{tb}]";
+
+    static int Prop => Where().Length;
+    static string Named => Where();
+
+    static int Main()
+    {
+        Console.WriteLine(Where());
+        Console.WriteLine(Named);
+        int x = 3;
+        Console.WriteLine(Text(x + 1 /* note */, b: Math.Max(x, 2)));
+        Console.WriteLine(Text(  x*2  ));
+        Console.WriteLine(Text(b: 1, a: "s".Length));
+        Console.WriteLine((x * 10).Named());
+        Console.WriteLine(new Derived().Made + " " + new Base("b").Made);
+        Console.WriteLine(new Circle(2).Kind);
+        Func<string> later = () => Where();
+        Console.WriteLine(later());
+        string? missing = null;
+        try { ArgumentNullException.ThrowIfNull(missing); } catch (ArgumentNullException e) { Console.WriteLine(e.Message + " | " + e.ParamName); }
+        try { ArgumentOutOfRangeException.ThrowIfNegative(x - 5); } catch (ArgumentOutOfRangeException e) { Console.WriteLine(e.Message); }
+        try { ArgumentException.ThrowIfNullOrEmpty(""); } catch (ArgumentException e) { Console.WriteLine(e.Message); }
+        try { throw new ObjectDisposedException("Thing"); } catch (ObjectDisposedException e) { Console.WriteLine(e.Message); }
+        try { throw new ArgumentOutOfRangeException("n", "too big"); } catch (ArgumentException e) { Console.WriteLine(e.Message + " | " + e.ParamName); }
+        return 0;
+    }
+}

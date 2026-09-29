@@ -1,0 +1,95 @@
+// test: generational_old_to_young
+// expect-exit: 0
+// timeout: 60
+// expect-output:
+// 22036 639 440 50 2561 3476321
+//
+// Old structures built early and kept through many collections are handed
+// young objects -- by field stores, array stores, dictionary inserts, and an
+// iterator suspended across collections. Minor collections must find every
+// one of them through the cards or the held roots. Output checked against
+// .NET.
+
+using System;
+using System.Collections.Generic;
+
+class Node
+{
+    public Node? Next;
+    public string Name;
+    public int[] Payload;
+    public Node(string name, int size) { Name = name; Payload = new int[size]; Payload[0] = name.Length; }
+}
+
+class Pair
+{
+    public Node? A;
+    public Node? B;
+    public List<string> Tags = new();
+}
+
+static class Program
+{
+    static IEnumerable<string> Slowly(int n)
+    {
+        List<string> held = new();
+        for (int i = 0; i < n; i++)
+        {
+            held.Add("step" + i);
+            for (int k = 0; k < 200; k++) held.Add(new string('x', k % 5));
+            held.RemoveRange(held.Count - 200, 200);
+            yield return held[held.Count - 1] + "/" + held.Count;
+        }
+    }
+
+    static long Check(Node? head)
+    {
+        long sum = 0;
+        for (Node? n = head; n != null; n = n.Next) sum += n.Payload[0] + n.Name.Length;
+        return sum;
+    }
+
+    static void Main()
+    {
+        // Old structures: built, then survive many collections.
+        Node[] table = new Node[2000];
+        for (int i = 0; i < table.Length; i++) table[i] = new Node("n" + i, 4);
+        Pair[] pairs = new Pair[500];
+        for (int i = 0; i < pairs.Length; i++) pairs[i] = new Pair();
+        Dictionary<string, Node> byName = new();
+        IEnumerator<string> walker = Slowly(300).GetEnumerator();
+        long churn = 0;
+
+        for (int round = 0; round < 60; round++)
+        {
+            // Garbage, to force collections.
+            for (int g = 0; g < 20000; g++) churn += new Node("g" + (g % 97), 8).Name.Length;
+
+            // Young objects stored into old ones.
+            for (int i = 0; i < table.Length; i += 7)
+                table[i] = new Node("r" + round + "_" + i, 3) { Next = table[(i + 1) % table.Length] };
+            Pair p = pairs[round % pairs.Length];
+            p.A = new Node("a" + round, 2);
+            Interlocked.Exchange(ref p.B, new Node("b" + round, 2));
+            p.Tags.Add("t" + round);
+            byName["k" + (round % 50)] = new Node("d" + round, 5);
+
+            // Initialised across an allocation: the outer object is made first.
+            pairs[(round * 3) % pairs.Length] = new Pair { A = new Node("x" + round, 6), B = new Node("y" + round, 7) };
+
+            // An iterator suspended across the churn.
+            if (walker.MoveNext()) churn += walker.Current.Length;
+        }
+
+        GC.Collect();
+        long total = 0;
+        foreach (Node n in table) total += Check(n) % 1000003;
+        long pairSum = 0;
+        foreach (Pair p in pairs) pairSum += (p.A?.Name.Length ?? 0) + (p.B?.Payload[0] ?? 0) + p.Tags.Count;
+        long dict = 0;
+        foreach (var kv in byName) dict += kv.Key.Length + kv.Value.Name.Length + kv.Value.Payload[0];
+        int more = 0;
+        while (walker.MoveNext()) more += walker.Current.Length;
+        Console.WriteLine(total + " " + pairSum + " " + dict + " " + byName.Count + " " + more + " " + churn);
+    }
+}

@@ -26,6 +26,38 @@ public sealed class Module
     public HashSet<string> Imports { get; } = new(StringComparer.Ordinal);
 
     /// <summary>
+    /// Runtime routines the program provides that the optimiser may add calls
+    /// to -- the frees an owned object's lifetime ends in -- whether this
+    /// module defines them or another unit of the program does. A source
+    /// compiled on its own has the runtime's declarations but not its bodies,
+    /// and asking only whether the body is here said no in every unit but
+    /// the runtime's own: nothing was ever freed by the compiler in a
+    /// separately compiled project.
+    /// </summary>
+    public HashSet<string> RuntimeHelpers { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// What the escape pass could not decide without the other units, for
+    /// the link to finish (Escape's hints; Lto.LifetimeHints). Written into
+    /// the object beside its IR.
+    /// </summary>
+    public Corsac.Lang.Lto.LifetimeHints? LifetimeHints { get; set; }
+
+    /// <summary>
+    /// Whether the object this module becomes carries link-time hints: the
+    /// driver says so before optimising. Without them nothing may call a
+    /// symbol only the link defines, and there is nothing to leave hints for.
+    /// </summary>
+    public bool LeavesLinkHints { get; set; }
+
+    /// <summary>
+    /// Call sites no inliner may fold away: the allocations the link may yet
+    /// place or free (Escape's pending hints), which it must still be able
+    /// to tell from any other call when it reads this module's IR back.
+    /// </summary>
+    public HashSet<Instr> KeepCalls { get; } = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>
     /// Drops everything a shared object already contains, so that a program
     /// linked against one carries no second copy of it. Answers how many
     /// definitions went.
@@ -38,6 +70,20 @@ public sealed class Module
     /// own: that is a program shadowing a library type, and the program's is
     /// the one it meant.
     /// </summary>
+    /// <summary>
+    /// The class library's definitions will be given away to shared objects
+    /// (Provided): its code is here to be read, not emitted, so no pass may
+    /// make a new definition out of it that no library exports.
+    /// </summary>
+    public bool LibraryCodeIsShared { get; set; }
+
+    /// <summary>
+    /// The C libraries this module's [DllImport] methods call into, by the
+    /// name the declaration gave. The object records them (.corsac.native)
+    /// and the link makes the program a dynamic one that needs them.
+    /// </summary>
+    public HashSet<string> NativeLibraries { get; } = new(StringComparer.Ordinal);
+
     public int Provided(IReadOnlySet<string> provided)
     {
         ArgumentNullException.ThrowIfNull(provided);

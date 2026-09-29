@@ -1,0 +1,123 @@
+// test: selfhost_language_gaps
+// expect-exit: 0
+// expect-output:
+// rem 4 1 0.08487687421760604 -1.5 1.5
+// bool True False True False
+// inf True True False
+// switch byte on off
+// enum True False
+// long 5
+// event 2 1
+// convert 7 True 2.5 text
+// lambda 3 bb
+// coalesce k 9
+// global 42
+// memory 3
+//
+// Language forms the compiler's own source is written in: exact floating
+// remainder, bool's parsing, byte subjects with int constants, Enum.IsDefined
+// on a value, Array.LongLength, events with accessors, conversion operators
+// that differ in what they return, a block lambda's inferred result, a
+// conditional lambda argument, `?? throw` on a nullable tuple, global:: past
+// a member of the same name, and an array passed as Memory<T>.
+
+namespace Probe.Inner
+{
+    public static class Cpu
+    {
+        public static int Parse(int x) => x + 1;
+    }
+}
+
+namespace Probe
+{
+    public class Target
+    {
+        public static Target Probe = new Target();
+        public int Profile { get; set; } = global::Probe.Inner.Cpu.Parse(41);
+    }
+}
+
+enum Shade { Light = 1, Dark = 2 }
+
+class Box
+{
+    public int Value;
+    public Box(int value) { Value = value; }
+    public static explicit operator int(Box b) => b.Value;
+    public static explicit operator bool(Box b) => b.Value != 0;
+    public static explicit operator double(Box b) => b.Value / 2.0;
+    public static implicit operator string(Box b) => "text";
+}
+
+class Alarm
+{
+    List<Action> _handlers = new List<Action>();
+    public int Added;
+
+    public event Action Rang
+    {
+        add { _handlers.Add(value); Added = Added + 1; }
+        remove { _handlers.Remove(value); }
+    }
+
+    public int Count => _handlers.Count;
+}
+
+static class Program
+{
+    static string Pick(Func<int, string>? make, int n) => make == null ? "none" : make(n);
+
+    static int Main()
+    {
+        Console.WriteLine("rem " + (1e22 % 7.0) + " " + (1e300 % 7.0) + " " + (1e20 % 0.1) + " " + (-7.5 % 2.0) + " " + (5.5 % 2.0));
+
+        bool.TryParse("  true ", out bool parsed);
+        bool bad = bool.TryParse("yes", out bool unused);
+        Console.WriteLine("bool " + parsed + " " + bad + " " + bool.Parse("TRUE") + " " + bool.Parse("false"));
+
+        Console.WriteLine("inf " + double.IsPositiveInfinity(1.0 / 0.0) + " " + double.IsNegativeInfinity(-1.0 / 0.0) + " " + double.IsPositiveInfinity(1e308));
+
+        byte flag = 1;
+        string word = flag switch { 0 => "off", 1 => "on", _ => "?" };
+        byte other = 0;
+        string word2 = other switch { 0 => "off", 1 => "on", _ => "?" };
+        Console.WriteLine("switch byte " + word + " " + word2);
+
+        Shade shade = Shade.Dark;
+        Console.WriteLine("enum " + Enum.IsDefined(shade) + " " + Enum.IsDefined((Shade)7));
+
+        int[] five = new int[5];
+        Console.WriteLine("long " + five.LongLength);
+
+        Alarm alarm = new Alarm();
+        Action ring = () => { };
+        alarm.Rang += ring;
+        alarm.Rang += () => { };
+        alarm.Rang -= ring;
+        Console.WriteLine("event " + alarm.Added + " " + alarm.Count);
+
+        Box box = new Box(7);
+        string asText = box;
+        Console.WriteLine("convert " + (int)box + " " + (bool)box + " " + (double)(new Box(5)) + " " + asText);
+
+        List<string> lines = new List<string> { "a", "bb", "ccc" };
+        var longest = lines.Select(line =>
+        {
+            int n = line.Length;
+            return (Length: n, Text: line);
+        }).OrderByDescending(x => x.Length).ToArray();
+        bool twice = true;
+        Console.WriteLine("lambda " + longest[0].Length + " " + Pick(twice ? n => lines[n] : null, 1));
+
+        (string, int)? found = ("k", 9);
+        (string key, int count) = found ?? throw new InvalidOperationException("none");
+        Console.WriteLine("coalesce " + key + " " + count);
+
+        Console.WriteLine("global " + new Probe.Target().Profile);
+
+        Memory<byte> memory = new byte[3];
+        Console.WriteLine("memory " + memory.Length);
+        return 0;
+    }
+}

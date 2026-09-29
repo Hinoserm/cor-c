@@ -10,9 +10,14 @@ public sealed class IntegerReassociate : IPass
 
     public void Run(Function f)
     {
+        // One table for the function, emptied at each block, and the stale
+        // entries found without a query per definition: this runs on every
+        // instruction of every function on every round.
+        Dictionary<VReg, Expression> known = new();
+        List<VReg> stale = new();
         foreach (var block in f.Blocks)
         {
-            Dictionary<VReg, Expression> known = new();
+            known.Clear();
             for (int k = 0; k < block.Instrs.Count; k++)
             {
                 Instr i = block.Instrs[k];
@@ -36,8 +41,13 @@ public sealed class IntegerReassociate : IPass
                 }
                 if (i.Dest is not { } dest) continue;
                 known.Remove(dest);
-                foreach (var stale in known.Where(p => p.Value.Source is RegOperand source && source.Reg == dest)
-                    .Select(p => p.Key).ToArray()) known.Remove(stale);
+                if (known.Count != 0)
+                {
+                    foreach (var pair in known)
+                        if (pair.Value.Source is RegOperand source && source.Reg == dest) stale.Add(pair.Key);
+                    foreach (VReg gone in stale) known.Remove(gone);
+                    stale.Clear();
+                }
                 if (expression is not null && expression.Source is RegOperand input && input.Reg != dest)
                 {
                     if (known.Count >= 128) known.Clear();
@@ -50,7 +60,7 @@ public sealed class IntegerReassociate : IPass
     private static Expression? Read(Instr i)
     {
         if (i.Dest?.Type is not (IrType.I32 or IrType.I64) || i.Operands.Count != 2
-            || i.Operands.Any(o => o.Type != i.Dest.Type)
+            || i.Operands[0].Type != i.Dest.Type || i.Operands[1].Type != i.Dest.Type
             || i.Op is not (Opcode.Add or Opcode.Sub or Opcode.Mul or Opcode.And or Opcode.Or or Opcode.Xor)) return null;
         Operand source = i.Operands[0], constant = i.Operands[1];
         if (i.Op != Opcode.Sub && source is ImmOperand) (source, constant) = (constant, source);

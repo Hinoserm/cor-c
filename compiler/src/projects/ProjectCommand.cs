@@ -21,9 +21,10 @@ public static class ProjectCommand
 
     public static int Run(string[] arguments)
     {
-        string? path = null, output = null, framework = null;
+        string? path = null, output = null, framework = null, targetName = null;
         string configuration = "Release";
         int workers = Environment.ProcessorCount;
+        bool linkOnly = false, runtimeOnly = false;
         List<string> profileArguments = new();
         for (int i = 0; i < arguments.Length; i++)
         {
@@ -34,6 +35,20 @@ public static class ProjectCommand
                 case "--configuration": configuration = Value(); break;
                 case "--framework": framework = Value(); break;
                 case "--jobs": workers = int.Parse(Value()); break;
+                // THE OBJECTS AS THEY ARE, LINKED AGAIN. A fix in the linker
+                // changes the compiler's identity, which every unit's stamp
+                // carries, so an ordinary build recompiles the whole project
+                // to try one link. This links what was last compiled and
+                // compiles nothing; an object that is missing is an error.
+                case "--link-only": linkOnly = true; break;
+                // AND THE RUNTIME WITH IT: runtime.o compiled again when its
+                // sources changed, the units kept. Sound for a change to the
+                // runtime's own non-generic code -- the collector, the
+                // scheduler -- which no unit copies; a change to a library
+                // generic, whose body every unit using it holds, needs the
+                // units too.
+                case "--runtime-only": linkOnly = runtimeOnly = true; break;
+                case "--target": targetName = Value(); break;
                 case "--cpu": case "--tune": case "--fpu":
                     profileArguments.Add(arguments[i]); profileArguments.Add(Value()); break;
                 case "--enable-mmx": case "--disable-mmx": case "--enable-3dnow": case "--disable-3dnow":
@@ -55,7 +70,19 @@ public static class ProjectCommand
         foreach (var property in new[] { ("CorCCpu", "--cpu="), ("CorCTune", "--tune="), ("CorCFpu", "--fpu=") })
             if (project.Properties.TryGetValue(property.Item1, out string? value) && value.Length != 0) defaults.Add(property.Item2 + value);
         defaults.AddRange(profileArguments);
-        string[] cpuArguments = global::Corsac.Lang.X86.X86Cpu.Parse(defaults).Contract.Arguments();
+        if (targetName is null && project.Properties.TryGetValue("CorCTarget", out string? projectTarget) && projectTarget.Length != 0)
+            targetName = projectTarget;
+        Target target = targetName is null ? Target.X86
+            : Target.ByName(targetName) ?? throw new ArgumentException("unknown target '" + targetName + "'");
+        // Every unit is compiled for the target; in long mode the one CPU is
+        // the K8 and the i386 profile options do not apply.
+        string[] cpuArguments = target == Target.X86_64
+            ? (profileArguments.Count == 0 ? new[] { "--target", "x86-64", "--cpu", "k8" }
+                : throw new ArgumentException("--cpu/--tune/--fpu and the MMX/3DNow! switches are for the i386 target"))
+            : global::Corsac.Lang.X86.X86Cpu.Parse(defaults).Contract.Arguments();
+        // The link validates each object's CPU contract against the i386
+        // profile; a long-mode object carries its own (k8/sse2).
+        string[] linkArguments = target == Target.X86_64 ? Array.Empty<string>() : cpuArguments;
         if (project.OutputType is not ("Exe" or "WinExe")) throw new InvalidDataException("Standalone native library packaging is not yet implemented");
         string directory = Path.GetDirectoryName(project.Path)!;
         string work = Path.Combine(directory, "obj", "cor-c", configuration, project.Framework);
@@ -103,8 +130,8 @@ public static class ProjectCommand
             if (!node.Usings.SequenceEqual(project.Usings))
                 throw new InvalidDataException("Referenced projects with different global usings are not yet supported: " + node.Path);
         Parser.ProjectUsings = project.Usings;
-        SourceIndexBuilder.Write(index, owners.Keys, project.AssemblyName, fileSymbols: symbols);
-        string[] libraries = Driver.DefaultLibraries(Target.X86).ToArray();
+        if (!linkOnly || !File.Exists(index)) SourceIndexBuilder.Write(index, owners.Keys, project.AssemblyName, fileSymbols: symbols);
+        string[] libraries = Driver.DefaultLibraries(target).ToArray();
         if (libraries.Length == 0) throw new InvalidDataException("The native runtime sources were not found");
         string toolchain = ProjectState.Digest(ToolIdentity(typeof(Driver).Assembly) + "\n" + ToolIdentity(typeof(ObjectLinkCommand).Assembly));
         string libraryState = ProjectState.Digest(string.Join("\n", libraries.Select(ProjectState.FileIdentity)));
@@ -117,29 +144,68 @@ public static class ProjectCommand
         List<string> runtimeArgs = new() { "compile", "--nostdlib", "--lib", "--obj", "--jobs", workers.ToString(), "--decl-index", index, "--assembly", project.AssemblyName };
         runtimeArgs.AddRange(libraries);
         runtimeArgs.AddRange(cpuArguments);
-        if (!Compile(runtimeArgs, runtime, ProjectState.Digest(settings), index)) return 1;
+        if (linkOnly && !runtimeOnly)
+        {
+            if (!File.Exists(runtime)) throw new InvalidDataException("--link-only: the runtime object was never compiled: " + runtime);
+        }
+        else if (!Compile(runtimeArgs, runtime, ProjectState.Digest(settings), index)) return 1;
         List<string> objects = new() { runtime };
         int changed = 0;
+
+        // THE SOURCES IN PARALLEL, through compile-project -- the unit
+        // compiler the OS build uses: one process, a worker per unit, the
+        // declaration index and lexed headers shared between them, and a
+        // unit skipped when its receipt and stamp (its source, its options,
+        // this compiler) say its object is current. Units are handed over in
+        // groups that share their options: a project's defines and warning
+        // mode, and the entry unit, which names the program's Main.
+        Dictionary<string, (List<string> Args, List<(string Source, string Object)> Units, bool Entry)> groups = new(StringComparer.Ordinal);
         foreach (var owned in owners.OrderBy(pair => pair.Key, StringComparer.Ordinal))
         {
             string source = owned.Key; EvaluatedProject owner = owned.Value;
-            string destination = Path.Combine(work, ProjectState.Digest(source)[..24] + ".o");
             if (ProjectState.FileIdentity(source) != generation[source]) throw new InvalidDataException("Source changed during project compilation: " + source);
-            string signature = ProjectState.Digest(settings + "\n" + generation[source] + "\n" + string.Join(";", owner.Defines)
-                + "\n" + owner.WarningsAsErrors + "\n" + entries[0].Type);
-            List<string> args = new() { "compile", "--nostdlib", "--obj", "--jobs", workers.ToString(), "--decl-index", index,
-                "--assembly", project.AssemblyName, source };
-            args.AddRange(cpuArguments);
-            if (source != entries[0].Path) args.Add("--lib");
-            else { args.Add("--main-type"); args.Add(entries[0].Type); }
-            if (!owner.WarningsAsErrors) args.Add("-Wno-error");
-            foreach (string define in owner.Defines) { args.Add("--define"); args.Add(define); }
-            foreach (string use in owner.Usings) { args.Add("--using"); args.Add(use); }
-            foreach (string library in libraries) { args.Add("--ref"); args.Add(library); }
-            bool current = Current(destination, signature, index);
-            if (!Compile(args, destination, signature, index)) return 1;
-            if (!current) changed++;
+            string destination = Path.Combine(work, ProjectState.Digest(source)[..24] + ".o");
+            bool entry = source == entries[0].Path;
+            List<string> options = new() { "--nostdlib", "--obj", "--decl-index", index, "--assembly", project.AssemblyName };
+            options.AddRange(cpuArguments);
+            if (entry) { options.Add("--main-type"); options.Add(entries[0].Type); }
+            if (!owner.WarningsAsErrors) options.Add("-Wno-error");
+            foreach (string define in owner.Defines) { options.Add("--define"); options.Add(define); }
+            foreach (string use in owner.Usings) { options.Add("--using"); options.Add(use); }
+            foreach (string library in libraries) { options.Add("--ref"); options.Add(library); }
+            string key = (entry ? "entry\n" : "lib\n") + string.Join("\n", options);
+            if (!groups.TryGetValue(key, out var group))
+            {
+                group = (options, new List<(string, string)>(), entry);
+                groups[key] = group;
+            }
+            group.Units.Add((source, destination));
             objects.Add(destination);
+        }
+        foreach (var group in groups.Values)
+        {
+            if (linkOnly)
+            {
+                foreach ((string Source, string Object) unit in group.Units)
+                    if (!File.Exists(unit.Object)) throw new InvalidDataException("--link-only: " + unit.Source + " was never compiled (" + unit.Object + ")");
+                continue;
+            }
+            string list = Path.Combine(work, "units-" + ProjectState.Digest(string.Join("\n", group.Args))[..16] + ".tsv");
+            File.WriteAllLines(list, group.Units.Select(unit => unit.Source + "\t" + unit.Object + "\t" + unit.Object + ".deps\t" + (group.Entry ? "entry" : "lib")));
+            Dictionary<string, DateTime> before = group.Units.ToDictionary(unit => unit.Object,
+                unit => File.Exists(unit.Object) ? File.GetLastWriteTimeUtc(unit.Object) : DateTime.MinValue, StringComparer.Ordinal);
+            int processes = Processes(workers, group.Units.Count);
+            if (processes > 1)
+            {
+                if (!InProcesses(list, group.Units, group.Entry, group.Args, processes, workers)) return 1;
+            }
+            else
+            {
+                List<string> args = new() { "--units", list, "--jobs", workers.ToString() };
+                args.AddRange(group.Args);
+                if (ProjectCompile.Run(args.ToArray()) != 0) return 1;
+            }
+            changed += group.Units.Count(unit => File.GetLastWriteTimeUtc(unit.Object) != before[unit.Object]);
         }
         foreach (var source in generation)
             if (ProjectState.FileIdentity(source.Key) != source.Value) throw new InvalidDataException("Source changed during project compilation: " + source.Key);
@@ -151,7 +217,7 @@ public static class ProjectCommand
         {
             string temporary = output + "." + Guid.NewGuid().ToString("N");
             List<string> link = new() { "link" }; link.AddRange(objects); link.Add("-o"); link.Add(temporary);
-            link.AddRange(cpuArguments);
+            link.AddRange(linkArguments);
             try
             {
                 if (Driver.Run(link.ToArray()) != 0) return 1;
@@ -162,6 +228,96 @@ public static class ProjectCommand
         }
         Console.Error.WriteLine("project: " + changed + "/" + owners.Count + " source units rebuilt; output " + output);
         return 0;
+    }
+
+    /// <summary>
+    /// How many processes to spread a group of units over. One, as a rule:
+    /// the units share a process's caches and its heap. But a 32-bit process
+    /// has four gigabytes of address space at most, and the self-hosted
+    /// compiler holds a gigabyte for a unit -- so on a machine with the cores
+    /// and the memory for several such spaces, a single process compiles one
+    /// unit at a time and leaves the rest idle. There the group is dealt out
+    /// to child processes of this same compiler, each with a space of its
+    /// own. A small machine -- one processor, or memory for one space --
+    /// compiles in process as before. What is compiled never changes: every
+    /// unit is compiled on its own, with the same options, wherever it runs.
+    ///
+    /// ONE UNIT AT A TIME IN EACH. Two workers to a child put two of the
+    /// largest units in one four-gigabyte space, and a stage-2 child ran out
+    /// of it with 1.8 GB live in a 4.1 GB heap. A worker is a process of its
+    /// own instead, as many as the machine has spaces for.
+    /// </summary>
+    private static int Processes(int workers, int units)
+    {
+        const long Space = 4L * 1024 * 1024 * 1024;
+        if (Environment.Is64BitProcess || workers < 2 || units < 2 || Environment.ProcessPath is null) return 1;
+        long memory = Corsac.Lang.Lto.MachineMemory.MachineAvailable();
+        int spaces = (int)Math.Min(int.MaxValue, memory / Space);
+        return Math.Max(1, Math.Min(Math.Min(workers, spaces), units));
+    }
+
+    /// <summary>
+    /// A group's units dealt out to `processes` child compile-project runs of
+    /// this compiler, largest first and in turn so each gets its share of the
+    /// big ones, each with its share of the workers. Their output is this
+    /// process's; answers whether every one succeeded.
+    /// </summary>
+    private static bool InProcesses(string list, List<(string Source, string Object)> units, bool entry, List<string> options,
+        int processes, int workers)
+    {
+        List<(string Source, string Object)>[] shares = new List<(string Source, string Object)>[processes];
+        for (int i = 0; i < processes; i++) shares[i] = new();
+        int turn = 0;
+        foreach (var unit in units.OrderByDescending(unit => new FileInfo(unit.Source).Length).ThenBy(unit => unit.Source, StringComparer.Ordinal))
+        {
+            shares[turn].Add(unit);
+            turn = (turn + 1) % processes;
+        }
+        // One worker each (Processes): a 32-bit space holds one large unit.
+        int each = 1;
+        List<(System.Diagnostics.Process Child, string Share)> children = new();
+        for (int i = 0; i < processes; i++)
+        {
+            if (shares[i].Count == 0) continue;
+            string share = list[..^4] + "-" + i + ".tsv";
+            File.WriteAllLines(share, shares[i].Select(unit => unit.Source + "\t" + unit.Object + "\t" + unit.Object + ".deps\t" + (entry ? "entry" : "lib")));
+            System.Diagnostics.ProcessStartInfo start = new() { FileName = Environment.ProcessPath!, UseShellExecute = false };
+            // The same executable: its identity, hashed once here.
+            start.Environment[ProjectCompile.IdentityVariable] = ProjectCompile.CompilerIdentity();
+            start.ArgumentList.Add("compile-project");
+            start.ArgumentList.Add("--units"); start.ArgumentList.Add(share);
+            start.ArgumentList.Add("--jobs"); start.ArgumentList.Add(each.ToString());
+            foreach (string option in options) start.ArgumentList.Add(option);
+            children.Add((System.Diagnostics.Process.Start(start)!, share));
+        }
+        // EACH ONE WATCHED ON ITS OWN, and a failure said the moment it
+        // happens. Waited on in turn, a child killed by a signal -- which
+        // writes nothing, the kernel does the talking -- was not noticed
+        // until every child before it had finished, and then only as a
+        // failed build with no word of which process or why.
+        bool ok = true;
+        object gate = new();
+        List<Thread> waits = new();
+        foreach ((System.Diagnostics.Process child, string share) in children)
+        {
+            Thread wait = new(() =>
+            {
+                child.WaitForExit();
+                int code = child.ExitCode;
+                if (code == 0) return;
+                lock (gate)
+                {
+                    ok = false;
+                    Console.Error.WriteLine("corc: the compile-project process for " + share + " (pid " + child.Id + ") "
+                        + (code > 128 ? "was killed by signal " + (code - 128) : "exited with code " + code)
+                        + "; units of it not yet compiled are not built");
+                }
+            });
+            wait.Start();
+            waits.Add(wait);
+        }
+        foreach (Thread wait in waits) wait.Join();
+        return ok;
     }
 
     private static bool Current(string output, string signature, string index)

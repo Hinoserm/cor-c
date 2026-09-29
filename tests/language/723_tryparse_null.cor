@@ -1,0 +1,46 @@
+// test: tryparse_null
+// expect-exit: 0
+// expect-output:
+// False 0
+// False 0
+// False 0
+// False 0
+// False 0
+// False 0
+// False False
+// False 00000000-0000-0000-0000-000000000000
+// False True
+// False 0
+// False 00:00:00
+// True 42
+// False 0
+//
+// TryParse of no string at all is false with the default, as .NET's
+// `string?` overloads answer: the native compiler read the length of an unset
+// environment variable (CORC_DECL_BUDGET) and faulted on the way into stage 2's
+// units. Expected output is real .NET's.
+
+using System;
+using System.Globalization;
+using System.Numerics;
+
+static class Program
+{
+    static void Main()
+    {
+        string? none = Environment.GetEnvironmentVariable("CORC_NO_SUCH_VARIABLE_EVER");
+        Console.WriteLine(long.TryParse(none, out long l) + " " + l);
+        Console.WriteLine(int.TryParse(none, out int i) + " " + i);
+        Console.WriteLine(uint.TryParse(none, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out uint u) + " " + u);
+        Console.WriteLine(double.TryParse(none, out double d) + " " + d);
+        Console.WriteLine(byte.TryParse(none, out byte b) + " " + b);
+        Console.WriteLine(ulong.TryParse(none, out ulong ul) + " " + ul);
+        Console.WriteLine(bool.TryParse(none, out bool bo) + " " + bo);
+        Console.WriteLine(Guid.TryParse(none, out Guid g) + " " + g);
+        Console.WriteLine(Version.TryParse(none, out Version? v) + " " + (v is null));
+        Console.WriteLine(BigInteger.TryParse(none, out BigInteger big) + " " + big);
+        Console.WriteLine(TimeSpan.TryParse(none, out TimeSpan t) + " " + t);
+        Console.WriteLine(long.TryParse("42", out long ok) + " " + ok);
+        Console.WriteLine(long.TryParse("", out long empty) + " " + empty);
+    }
+}

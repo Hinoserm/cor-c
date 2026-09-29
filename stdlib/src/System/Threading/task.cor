@@ -82,7 +82,10 @@ static class Sched
 {
     const int Capacity = 256;
 
-    static long[] _ready;
+    // THE RING IS A BLOCK OF WORDS, not a long[]: what it holds are tasks'
+    // addresses, which must keep them alive, and the collector reads an array
+    // of numbers as numbers. A block made by Heap.Alloc is read word by word.
+    static long _ready;
     static int _head;
     static int _tail;
     static bool _made;
@@ -108,7 +111,8 @@ static class Sched
     {
         if (!_made)
         {
-            _ready = new long[Capacity];
+            _ready = Heap.Alloc(Capacity * 8);
+            for (int i = 0; i < Capacity; i++) { Sys.Poke(_ready + i * 8, 0); }
             _head = 0;
             _tail = 0;
             _lockAt = Heap.Alloc(8);
@@ -203,7 +207,7 @@ static class Sched
             return false;
         }
 
-        _ready[_tail] = t;
+        Sys.Poke(_ready + _tail * 8, t);
         _tail = next;
         Release(was);
         return true;
@@ -228,7 +232,7 @@ static class Sched
             return 0;
         }
 
-        long t = _ready[_head];
+        long t = Sys.Peek(_ready + _head * 8);
         _head = _head + 1;
 
         if (_head == Capacity)

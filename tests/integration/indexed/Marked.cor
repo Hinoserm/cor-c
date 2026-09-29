@@ -1,0 +1,6 @@
+// A header with no namespace whose base lives in one, named bare: how the
+// class library's Stream names System.IAsyncDisposable.
+public abstract class Marked : IMark
+{
+    public int Size;
+}

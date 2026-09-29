@@ -323,7 +323,7 @@ public class Font : IDisposable
             Rune rune;
             int taken;
 
-            if (!Rune.TryDecodeFromUtf8(text, i, out rune, out taken)) { taken = 1; rune = new Rune('?'); }
+            if (Rune.TryGetRuneAt(text, i, out rune)) { taken = rune.Utf16SequenceLength; } else { taken = 1; rune = new Rune('?'); }
             i += taken;
 
             int glyph = scaled.Face.GlyphIndex(rune.Value);
@@ -672,7 +672,7 @@ public class Graphics : IDisposable
             Rune rune;
             int taken;
 
-            if (!Rune.TryDecodeFromUtf8(s, i, out rune, out taken)) { taken = 1; rune = new Rune('?'); }
+            if (Rune.TryGetRuneAt(s, i, out rune)) { taken = rune.Utf16SequenceLength; } else { taken = 1; rune = new Rune('?'); }
             i += taken;
 
             if (rune.Value == '\n') { penX = x; lineTop += lineHeight; previousGlyph = -1; continue; }
@@ -802,7 +802,7 @@ public class Graphics : IDisposable
             Rune rune;
             int taken;
 
-            if (!Rune.TryDecodeFromUtf8(s, i, out rune, out taken)) { taken = 1; rune = new Rune('?'); }
+            if (Rune.TryGetRuneAt(s, i, out rune)) { taken = rune.Utf16SequenceLength; } else { taken = 1; rune = new Rune('?'); }
             i += taken;
 
             if (rune.Value == '\n') { penX = x; lineTop += lineHeight; previousGlyph = -1; continue; }
@@ -931,7 +931,7 @@ public class Graphics : IDisposable
             Rune rune;
             int taken;
 
-            if (!Rune.TryDecodeFromUtf8(s, i, out rune, out taken)) { taken = 1; rune = new Rune('?'); }
+            if (Rune.TryGetRuneAt(s, i, out rune)) { taken = rune.Utf16SequenceLength; } else { taken = 1; rune = new Rune('?'); }
             i += taken;
 
             if (rune.Value == '\n') { lines++; if (run > widest) { widest = run; } run = 0; previousGlyph = -1; continue; }

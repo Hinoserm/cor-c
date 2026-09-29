@@ -37,13 +37,19 @@ public static class AsyncTransform
         {
             if (f.Async is AsyncFrame frame)
             {
-                int size = Transform(f, frame, wordSize);
+                // THE FRAME IS SAVED WITHOUT A BARRIER, word by word into the
+                // machine at each suspension; its cards are marked there, when
+                // the runtime has a card table to mark (Gc, generations).
+                string? cards = m.RuntimeHelpers.Contains(CardMarkObject) ? CardMarkObject : null;
+                int size = Transform(f, frame, wordSize, cards);
                 DataItem? item = m.Data.FirstOrDefault(d => d.Name == frame.SizeSymbol);
                 if (item is not null)
                 {
                     for (int i = 0; i < wordSize; i++)
                     {
-                        item.Bytes[i] = (byte)(size >> (8 * i));
+                        // As a long: an int's shift count is taken mod 32, and
+                        // an eight-byte word's top half would repeat its bottom.
+                        item.Bytes[i] = (byte)((long)size >> (8 * i));
                     }
                 }
             }
@@ -65,8 +71,12 @@ public static class AsyncTransform
         throw new InvalidOperationException($"{f.Name}: a suspension marker went missing");
     }
 
-    private static int Transform(Function f, AsyncFrame frame, int wordSize)
+    /// <summary>Runtime.CardMarkObject: every card of an object, from its payload address.</summary>
+    public const string CardMarkObject = "m_Runtime_CardMarkObject_1_V$I64";
+
+    private static int Transform(Function f, AsyncFrame frame, int wordSize, string? cards)
     {
+        frame.Lowered = true;
         VReg machine = frame.StateMachine;
         IrType word = wordSize == 8 ? IrType.I64 : IrType.I32;
         int next = Align(frame.FieldsStart, 8);
@@ -127,7 +137,7 @@ public static class AsyncTransform
                 {
                     registers[i.Dest.Id] = i.Dest;
                 }
-                foreach (VReg u in IrInfo.Uses(i))
+                foreach (Operand uOperand in (i).Operands) if (uOperand is RegOperand { Reg: var u })
                 {
                     registers[u.Id] = u;
                 }
@@ -210,6 +220,17 @@ public static class AsyncTransform
                     Operands = { new RegOperand(machine), new RegOperand(v) },
                 });
             }
+            if (cards is not null && resume.Live.Count > 0)
+            {
+                // The runtime takes a long; on 32-bit the machine is a word.
+                VReg at = machine;
+                if (machine.Type != IrType.I64)
+                {
+                    at = f.NewReg(IrType.I64, "cardp");
+                    saves.Add(new Instr { Op = Opcode.ZExt32, Dest = at, Operands = { new RegOperand(machine) } });
+                }
+                saves.Add(new Instr { Op = Opcode.Call, Callee = cards, Operands = { new RegOperand(at) } });
+            }
             saves.Add(new Instr
             {
                 Op = Opcode.Store, Size = 4, Offset = frame.StateOffset,
@@ -222,7 +243,9 @@ public static class AsyncTransform
             (Block rb, int r) = Locate(f, resume.Instr);
             List<Instr> after = rb.Instrs.GetRange(r + 1, rb.Instrs.Count - r - 1);
             rb.Instrs.RemoveRange(r, rb.Instrs.Count - r);
-            rb.Instrs.Add(new Instr { Op = Opcode.Ret });
+            Instr leave = new() { Op = Opcode.Ret };
+            if (frame.SuspendResult is Operand produced) leave.Operands.Add(produced);
+            rb.Instrs.Add(leave);
 
             Block resumeBlock = f.NewBlock($"resume{state}_");
             foreach (VReg v in resume.Live)

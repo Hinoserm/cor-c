@@ -72,6 +72,10 @@ static class Program
             if (!row.StartsWith("   at ")) { continue; }
 
             string name = row.Substring(6);
+            int cut = name.IndexOf('(');
+            if (cut >= 0) { name = name.Substring(0, cut); }
+            cut = name.IndexOf(' ');
+            if (cut >= 0) { name = name.Substring(0, cut); }
             if (name == last) { continue; }
             last = name;
 

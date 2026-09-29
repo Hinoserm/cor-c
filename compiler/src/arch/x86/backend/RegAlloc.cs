@@ -814,9 +814,14 @@ internal sealed class Allocator
             b.Instrs.Clear();
             b.Instrs.AddRange(outList);
         }
+        // A FUNCTION THAT CATCHES SAVES THEM ALL: a throw restores only ESP
+        // and EBP, so the registers the unwound frames saved and used reach
+        // its landing pad as they left them, and only an epilogue that
+        // restores every one gives its caller back what it had.
+        bool catches = _m.Blocks.Any(b => b.Source?.IsLandingPad == true);
         foreach (Gpr g in new[] { Gpr.Ebx, Gpr.Esi, Gpr.Edi })
         {
-            if (saved.Contains((int)g))
+            if (catches || saved.Contains((int)g))
             {
                 _m.SavedRegs.Add(g);
             }
@@ -844,21 +849,27 @@ internal sealed class Allocator
         Safepoint map = new();
         foreach (int v in live)
         {
-            if (v < 8 || _m.WideHalves.Contains(v) || _remat[v] is not null)
+            // HALF OF A LONG COUNTS. On i386 the runtime keeps many an address
+            // in a long -- a block the allocator answered, a word it read out
+            // of an object -- and the collector now marks a register only
+            // where the map says it is live: a long's low half in EBX across
+            // a call that allocates is a reference as far as it can tell.
+            if (v < 8 || _remat[v] is not null)
             {
                 continue;
             }
-            if (_spilledFrom[v] <= index || _assigned[v] < 0)
+            // ITS SLOT WHEREVER IT HAS ONE, and its register besides when that
+            // register survives the call. The collector reads a frame by this
+            // map now, and a value spilled at its definition but counted as
+            // still in its register until a later point was in neither list:
+            // a tuple kept at -64 across three calls was swept from under the
+            // frame that held it. A slot listed before it is written costs a
+            // stale word read; a slot left out costs the object.
+            if (_slot[v] != 0)
             {
-                if (_slot[v] != 0)
-                {
-                    map.SlotOffsets.Add(_slot[v]);
-                }
-                continue;
+                map.SlotOffsets.Add(_slot[v]);
             }
-            // Only a callee-saved register survives a call; anything else
-            // here would mean the busy marks at calls were not honoured.
-            if (_assigned[v] is (int)Gpr.Ebx or (int)Gpr.Esi or (int)Gpr.Edi)
+            if (_spilledFrom[v] > index && _assigned[v] is (int)Gpr.Ebx or (int)Gpr.Esi or (int)Gpr.Edi)
             {
                 map.Registers |= 1u << _assigned[v];
             }
@@ -872,7 +883,7 @@ internal sealed class Allocator
         List<MInstr> before = new();
         List<MInstr> after = new();
         HashSet<int> done = new();
-        MInstr n = new(i.Op) { Width = i.Width, Cond = i.Cond, Lock = i.Lock, Table = i.Table, CallReloc = i.CallReloc, Line = i.Line };
+        MInstr n = new(i.Op) { Width = i.Width, Cond = i.Cond, Lock = i.Lock, Table = i.Table, CallReloc = i.CallReloc, Line = i.Line, Native = i.Native };
 
         if (_liveAtCall.TryGetValue(index, out List<int>? live))
         {

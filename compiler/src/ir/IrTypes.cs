@@ -25,7 +25,7 @@ public static class IrTypes
         // declaration said otherwise: `enum E : long` is carried in sixty-four
         // bits, and carrying it in thirty-two would drop the top half of every
         // member that needed them.
-        if (t.Symbol is { Kind: TypeKind.Enum } counted)
+        if (t.IsEnumValue && t.Symbol is { } counted)
         {
             return counted.EnumUnderlying is Prim.I64 or Prim.U64 ? IrType.I64 : IrType.I32;
         }
@@ -42,7 +42,10 @@ public static class IrTypes
             Prim.NInt or Prim.NUInt => Word,
             Prim.F32 => IrType.F32,
             Prim.F64 => IrType.F64,
-            Prim.String or Prim.Type or Prim.Any or Prim.NullLiteral => Word,
+            // An unresolved type is a word as Target.SizeOf says it is, so a
+            // tuple shape made while binding speculatively still loads and
+            // stores what it lays out.
+            Prim.String or Prim.Type or Prim.Any or Prim.NullLiteral or Prim.Error => Word,
             _ => IrType.I32,
         };
     }

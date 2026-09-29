@@ -43,6 +43,13 @@ public sealed class Monomorphiser
     /// </summary>
     public const string CanonName = "__canon";
 
+    /// <summary>
+    /// How many specialised types this process has made, and how many members
+    /// they carried: what a unit's imported generics cost, printed with the
+    /// declaration statistics.
+    /// </summary>
+    public static long Specialisations, SpecialisedMembers;
+
     /// <summary>Names that are NOT a machine word: narrower, or in the other bank.</summary>
     private static readonly HashSet<string> Narrow = new(StringComparer.Ordinal)
     {
@@ -101,13 +108,23 @@ public sealed class Monomorphiser
     /// Driven from outside because only the CHECKER knows what T is: a call
     /// says `list.Where(n => n.Ready)` and never says Node anywhere.
     /// </summary>
-    public static MethodDecl Specialise(MethodDecl template, IReadOnlyList<TypeRef> args, string name)
+    /// <param name="valueTypes">The names of the unit's structs and enums,
+    /// specialisations included: a `T?` over one of them stays the value
+    /// type (Sub's rule for an unconstrained T), which this copy cannot tell
+    /// from the arguments' names alone.</param>
+    public static MethodDecl Specialise(MethodDecl template, IReadOnlyList<TypeRef> args, string name,
+                                        IEnumerable<string>? valueTypes = null)
     {
         Monomorphiser m = new("<specialise>");
+        if (valueTypes is not null)
+        {
+            m._byValue.UnionWith(valueTypes);
+        }
         Dictionary<string, TypeRef> map = new(StringComparer.Ordinal);
 
         for (int i = 0; i < template.TypeParams.Count && i < args.Count; i++)
         {
+            m.Settled(args[i]);
             map[template.TypeParams[i].Name] = args[i];
         }
 
@@ -115,7 +132,34 @@ public sealed class Monomorphiser
 
         made.TypeParams.Clear();
         made.Name = name;
-        return made;
+
+        // A COPY IS NEVER VIRTUAL. A generic virtual method has no slot for its
+        // copies to take (MethodSymbol.GenericVirtual): a call reaches them
+        // through a dispatch by type, and a copy left `virtual` or `override`
+        // was given a slot of its own -- a different vtable in every unit
+        // that happened to make a different set of copies.
+        //
+        // NOR AN EXPLICIT IMPLEMENTATION, for the same reason: the interface
+        // member it implements is the generic one, which the dispatch finds by
+        // the template; the copy is an ordinary method of its class, found by
+        // its own name.
+        const Mods dispatch = Mods.Virtual | Mods.Override | Mods.Abstract;
+        if ((made.Mods & dispatch) == 0 && made.ExplicitInterface is null)
+        {
+            return made;
+        }
+
+        MethodDecl plain = new()
+        {
+            Name = made.Name, Mods = made.Mods & ~dispatch, Returns = made.Returns, IsCtor = made.IsCtor,
+            Body = made.Body, Init = made.Init, VtableSlotHint = -1, NotNullIfNotNull = made.NotNullIfNotNull,
+            ExplicitInterface = null, Line = made.Line, Col = made.Col,
+            LocalCopy = made.LocalCopy, File = made.File, TemplateIndex = made.TemplateIndex,
+            Scope = made.Scope, Namespace = made.Namespace, OwnedImplementation = made.OwnedImplementation,
+        };
+        plain.Attributes.AddRange(made.Attributes);
+        plain.Params.AddRange(made.Params);
+        return plain;
     }
 
     /// <summary>The name a specialised method gets, readable on purpose.</summary>
@@ -163,6 +207,16 @@ public sealed class Monomorphiser
     /// </summary>
     private TypeRef Qualify(TypeRef r)
     {
+        // SPELT WHERE IT WAS WRITTEN already: a type argument, and every copy
+        // made of it in substituting it, is never read again from the scope of
+        // the template it was spliced into (Settled). Read again, a program's
+        // `Version` inside ReadOnlyCollection<T> -- declared in a namespace
+        // beneath System -- became System.Version, and the copy's interfaces
+        // were IList<System.Version>.
+        if (_settled.Contains(r))
+        {
+            return r;
+        }
         List<TypeRef> args = r.Args.Count == 0 ? r.Args : r.Args.Select(Qualify).ToList();
         List<TypeRef>? useArgs = r.UseArgs?.Select(Qualify).ToList();
         string full = Path(r.Name);
@@ -199,6 +253,11 @@ public sealed class Monomorphiser
         // was written in -- the same walk the checker makes, and it has to be
         // the same or a type argument is mangled under one name and looked for
         // under another.
+        // The library's global code finds its own moved type first (MoveToSystem).
+        if (_libraryCode && _inNamespace.Length == 0 && _movedToSystem.ContainsKey(name))
+        {
+            return _movedToSystem[name];
+        }
         foreach (string from in new[] { _scope, _inNamespace })
         {
             for (string at = from; at.Length > 0; )
@@ -226,6 +285,27 @@ public sealed class Monomorphiser
         if (Named("", name) is string outermost)
         {
             return outermost;
+        }
+
+        // WRITTEN WITH ITS NAMESPACE, a library type is still the one the
+        // checker finds without it: the library declares its types with no
+        // namespace, and the checker trims a qualifier that names no type
+        // (Binder.NamesType). Kept as written, `(System.Text.StringBuilder,
+        // int)` was mangled one way where it was written and another where
+        // the checker closed a template over the tuple it resolved -- and
+        // List<T>.Enumerator over it was named by neither, left as the
+        // template, with its MoveNext undefined at the link.
+        for (int dot = name.IndexOf('.'); dot > 0; dot = name.IndexOf('.', dot + 1))
+        {
+            if (_paths.Contains(name[..dot]))
+            {
+                break;                          // a type's nested name, not a namespace
+            }
+            string rest = name[(dot + 1)..];
+            if (_paths.Contains(rest))
+            {
+                return rest;
+            }
         }
 
         return _soleNested.TryGetValue(name, out string? sole) && sole is not null ? sole : name;
@@ -282,18 +362,14 @@ public sealed class Monomorphiser
             return false;
         }
 
-        // nint and nuint are a machine word BY DEFINITION, whatever the word is.
-        if (r.Name is "nint" or "nuint")
+        // A NUMBER THE SIZE OF A WORD IS STILL A NUMBER. The one compiled copy
+        // treats its T as a reference -- `held + " "` reads the vtable and calls
+        // ToString through it -- so nint, nuint, and long where the word is 64
+        // bits, get copies of their own as int does. Sharing theirs with the
+        // references ran a long's value as an object's address.
+        if (r.Name is "nint" or "nuint" or "long" or "ulong")
         {
-            return true;
-        }
-
-        // A long is word-shaped only where the word is 64 bits. On a 32-bit
-        // target it is a register pair, and code compiled over one word
-        // cannot carry it.
-        if (r.Name is "long" or "ulong")
-        {
-            return Target.Current.NativeI64;
+            return false;
         }
 
         return r.Name is "string" or "object" or CanonName
@@ -310,9 +386,57 @@ public sealed class Monomorphiser
         // every use of the other arity was reported as taking the wrong number
         // of type arguments. The CLR does exactly this and calls them Func`2
         // and Func`3; the backtick is the only part not worth copying.
+        // A PROGRAM'S TYPE AND THE LIBRARY'S OF ONE NAME, generic or not: the
+        // program's is the name's in the program, and the library's moves into
+        // System (MoveToSystem), where the library's code finds it first
+        // (Path, GenericPath) -- so that `IEquatable<Index>` written in the
+        // library's Index is IEquatable<System.Index>, a specialisation of its
+        // own, and never the program's. Moved here, before any path is known,
+        // so that every path is its moved one.
+        HashSet<string> programs = new(unit.Types.Where(t => !t.FromLibrary && t.Outer is null)
+            .Select(t => Arity(t.Name, t.TypeParams.Count)), StringComparer.Ordinal);
+        foreach (TypeDecl t in unit.Types.Where(t => t.FromLibrary && t.Outer is null && t.Namespace.Length == 0).ToList())
+        {
+            if (programs.Contains(Arity(t.Name, t.TypeParams.Count))) MoveToSystem(t);
+        }
+        if (_movedToSystem.Count > 0)
+        {
+            foreach (TypeDecl t in unit.Types.Where(t => t.FromLibrary && t.Outer is not null))
+            {
+                if (MovedPath(t.Outer!) is not string outer) continue;
+                t.Outer = outer;
+                if (t.Namespace.Length == 0) t.Namespace = "System";
+            }
+        }
+
         foreach (TypeDecl t in unit.Types.Where(t => t.TypeParams.Count > 0))
         {
-            _generic[Arity(TemplatePath(t), t.TypeParams.Count)] = t;
+            string key = Arity(TemplatePath(t), t.TypeParams.Count);
+            // A PROGRAM'S TEMPLATE AND THE LIBRARY'S OF ONE NAME: the program's
+            // is the name's in the program, and the library's moves into
+            // System, where the library's own code finds it first (GenericPath;
+            // Binder.MoveToSystem is the same for a type that is not generic).
+            if (_generic.TryGetValue(key, out TypeDecl? other) && other.FromLibrary != t.FromLibrary)
+            {
+                TypeDecl library = other.FromLibrary ? other : t;
+                _generic[key] = other.FromLibrary ? t : other;
+                MoveToSystem(library);
+                continue;
+            }
+            _generic[key] = t;
+        }
+        // Templates nested in one moved go with it.
+        if (_movedToSystem.Count > 0)
+        {
+            foreach (TypeDecl t in unit.Types.Where(t => t.FromLibrary && t.Outer is not null && t.TypeParams.Count > 0).ToList())
+            {
+                if (MovedPath(t.Outer!) is not string moved) continue;
+                string was = Arity(TemplatePath(t), t.TypeParams.Count);
+                if (_generic.TryGetValue(was, out TypeDecl? held) && ReferenceEquals(held, t)) _generic.Remove(was);
+                t.Outer = moved;
+                if (t.Namespace.Length == 0) t.Namespace = "System";
+                _generic[Arity(TemplatePath(t), t.TypeParams.Count)] = t;
+            }
         }
 
         // WHICH NAMES ARE A MACHINE WORD, gathered before anything is
@@ -399,6 +523,13 @@ public sealed class Monomorphiser
         output.TupleNamings.AddRange(unit.TupleNamings);
         output.RegistrySchemas.AddRange(unit.RegistrySchemas);
 
+        // Expansion builds a NEW unit rather than editing this one in place,
+        // and the binder that reads warnings out of it -- the only reader of
+        // Pragmas -- only ever sees the expanded copy. Left behind here, a
+        // `#pragma warning disable` would parse correctly and then silence
+        // nothing.
+        output.Pragmas.AddRange(unit.Pragmas);
+
         foreach ((string path, string key) in unit.RegistryKeys)
         {
             output.RegistryKeys[path] = key;
@@ -441,17 +572,35 @@ public sealed class Monomorphiser
 
             for (int i = 0; i < job.Template.TypeParams.Count && i < job.Args.Count; i++)
             {
+                Settled(job.Args[i]);
                 map[job.Template.TypeParams[i].Name] = job.Args[i];
             }
 
-            TypeDecl made = RewriteDecl(job.Template, map, job.Name);
+            // A WORD-SHAPED COPY TAKES NO BODIES. Canon names the one copy
+            // whose instructions serve it, the checker skips its bodies and
+            // the lowering emits none (Binder.CheckBodies), so a copied body
+            // was a whole method's tree held for nothing -- and the walk over
+            // it queued the instantiations that body would have needed, which
+            // the canonical body already asks for over the machine word.
+            // Across a compiler's worth of List, Dictionary and HashSet over
+            // reference types that was most of the declarations in memory.
+            _bodiesElsewhere = job.Canon != null;
+            TypeDecl made;
+            try
+            {
+                made = RewriteDecl(job.Template, map, job.Name);
+            }
+            finally
+            {
+                _bodiesElsewhere = false;
+            }
 
             // WHERE ITS CODE LIVES, which is the whole of code sharing.
             //
             // The declaration is complete either way -- every field, every
-            // signature, every body -- because that is what checks the caller
-            // and lays out the object. Canon says only that the INSTRUCTIONS
-            // are somewhere else, and External says that somewhere else is
+            // signature -- because that is what checks the caller and lays
+            // out the object. Canon says only that the INSTRUCTIONS are
+            // somewhere else, and External says that somewhere else is
             // another image.
             made.External = job.External;
             made.Canon = job.Canon;
@@ -474,6 +623,8 @@ public sealed class Monomorphiser
 
             _made[job.Name] = made;
             output.Types.Add(made);
+            Specialisations++;
+            SpecialisedMembers += made.Members.Count;
         }
         // AND AGAIN AFTER THE SPECIALISATIONS. Rewriting the queue above names
         // templates too -- EqualityComparer`1 reached only from a specialised
@@ -561,6 +712,55 @@ public sealed class Monomorphiser
     private static string TemplatePath(TypeDecl type)
         => type.Outer is null ? type.Name : type.Outer + "." + type.Name;
 
+    /// <summary>Type arguments already spelt where they were written, and their copies (Qualify).</summary>
+    private readonly HashSet<TypeRef> _settled = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>A type argument, and everything inside it, as spelt where it was written.</summary>
+    private void Settled(TypeRef r)
+    {
+        if (!_settled.Add(r))
+        {
+            return;
+        }
+        foreach (TypeRef a in r.Args)
+        {
+            Settled(a);
+        }
+        if (r.UseArgs is not null)
+        {
+            foreach (TypeRef a in r.UseArgs)
+            {
+                Settled(a);
+            }
+        }
+    }
+
+    /// <summary>Paths of library templates moved into System: old path to new.</summary>
+    private readonly Dictionary<string, string> _movedToSystem = new(StringComparer.Ordinal);
+
+    /// <summary>Whether the declaration being rewritten is the library's.</summary>
+    private bool _libraryCode;
+
+    private void MoveToSystem(TypeDecl library)
+    {
+        string before = TemplatePath(library);
+        library.MovedToSystem = true;
+        library.Outer = library.Outer is null ? "System" : "System." + library.Outer;
+        if (library.Namespace.Length == 0) library.Namespace = "System";
+        _movedToSystem[before] = TemplatePath(library);
+        if (library.TypeParams.Count > 0) _generic[Arity(TemplatePath(library), library.TypeParams.Count)] = library;
+    }
+
+    private string? MovedPath(string path)
+    {
+        foreach ((string before, string after) in _movedToSystem)
+        {
+            if (path == before) return after;
+            if (path.StartsWith(before + ".", StringComparison.Ordinal)) return after + path.Substring(before.Length);
+        }
+        return null;
+    }
+
     private string? GenericPath(string name, int arity, Node location)
     {
         bool Candidate(string candidate)
@@ -591,6 +791,12 @@ public sealed class Monomorphiser
             }
             return found;
         }
+        // THE LIBRARY'S GLOBAL CODE IS SYSTEM'S, once a template of its has
+        // been moved there for a program's of the same name.
+        if (_libraryCode && _inNamespace.Length == 0 && _movedToSystem.ContainsKey(name) && Candidate(_movedToSystem[name]))
+        {
+            return _movedToSystem[name];
+        }
         foreach (string from in new[] { _scope, _inNamespace })
             for (string scope = from; scope.Length > 0; )
             {
@@ -608,6 +814,13 @@ public sealed class Monomorphiser
         // namespaces are not a tree here and the qualifier has nothing to
         // select between.
         int cut = name.LastIndexOf('.');
+        // Qualified by a System namespace: the library's, where a program has
+        // taken the simple name (MoveToSystem).
+        if (cut >= 0 && name.StartsWith("System.", StringComparison.Ordinal)
+            && _generic.ContainsKey(Arity("System." + name[(cut + 1)..], arity)))
+        {
+            return "System." + name[(cut + 1)..];
+        }
         return cut < 0 ? null : GenericPath(name[(cut + 1)..], arity, location);
     }
 
@@ -722,6 +935,10 @@ public sealed class Monomorphiser
          ? new TypeRef { Name = CanonName, Nullable = r.Nullable, Line = r.Line, Col = r.Col }
          : r;
 
+    /// <summary>Whether a type mentions a type parameter of the method being copied.</summary>
+    private bool MentionsMethodParameter(TypeRef a)
+        => (a.Args.Count == 0 && _methodParams.Contains(a.Name)) || a.Args.Any(MentionsMethodParameter);
+
     private TypeRef Sub(TypeRef r, Dictionary<string, TypeRef> map)
     {
         // A bare type parameter becomes whatever it was bound to, keeping any
@@ -760,11 +977,18 @@ public sealed class Monomorphiser
             //
             // A '?' written at the USE site -- `Pick<string?>` -- is the
             // bound type's own and is kept.
+            // A STRUCT SPECIALISATION IS A VALUE TOO: `KeyValuePair<string,
+            // Source>` arrives as the copy `KeyValuePair$string$Source` or as
+            // the template's name with its arguments, and MinBy's `T?` over it
+            // is still the pair, not a cell holding one.
             bool valueBound = bound.ArrayRank == 0 && bound.PointerDepth == 0
                 && (Narrow.Contains(bound.Name) || _byValue.Contains(bound.Name)
-                    || bound.Name is "long" or "ulong" or "nint" or "nuint" or "decimal");
+                    || bound.Name is "long" or "ulong" or "nint" or "nuint" or "decimal"
+                    || _made.TryGetValue(bound.Name, out TypeDecl? madeDecl) && madeDecl.Kind is TypeKind.Struct or TypeKind.Enum
+                    || bound.Args.Count > 0 && _generic.TryGetValue(Arity(bound.Name, bound.Args.Count), out TypeDecl? template)
+                       && template.Kind == TypeKind.Struct);
 
-            return new TypeRef
+            TypeRef substituted = new TypeRef
             {
                 Name = bound.Name,
                 ArrayRank = r.ArrayRank + bound.ArrayRank,
@@ -789,6 +1013,8 @@ public sealed class Monomorphiser
                 TupleNames = bound.TupleNames is null ? null : new List<string>(bound.TupleNames),
                 Line = r.Line, Col = r.Col,
             };
+            _settled.Add(substituted);
+            return substituted;
         }
 
         // A TUPLE TYPE IS NEVER INSTANTIATED. There is no template called
@@ -877,7 +1103,15 @@ public sealed class Monomorphiser
             _tupleNamings.Add(named);
         }
 
-        ArrayIsASequence(r);
+        // AN ARRAY'S SEQUENCES OVER THE ARGUMENTS IT HAS NOW. The reference as
+        // written names the template's own parameters: `KeyValuePair<K, V>[]`
+        // in Dictionary<K, V>, copied for int and long, is an array of
+        // KeyValuePair<int, long> -- asked with the written K and V, it made
+        // IEnumerable<KeyValuePair<K, V>> for parameters no scope has.
+        if (!open)
+        {
+            ArrayIsASequence(r, args);
+        }
 
         string name = args.Count > 0 && !open ? Instantiate(r.Name, args, r) : r.Name;
 
@@ -915,7 +1149,7 @@ public sealed class Monomorphiser
     /// Only the interface, which is a descriptor and no code. What answers its
     /// members is the view the checker writes over the array itself.
     /// </summary>
-    private void ArrayIsASequence(TypeRef r)
+    private void ArrayIsASequence(TypeRef r, List<TypeRef> args)
     {
         if (r.ArrayRank != 1 || r.Name.Length == 0 || _methodParams.Contains(r.Name))
         {
@@ -924,7 +1158,7 @@ public sealed class Monomorphiser
 
         TypeRef element = new()
         {
-            Name = r.Name, Args = r.Args, Nullable = r.ElementNullable,
+            Name = r.Name, Args = args, Nullable = r.ElementNullable,
             PointerDepth = r.PointerDepth, TupleNames = r.TupleNames,
             Line = r.Line, Col = r.Col,
         };
@@ -974,10 +1208,12 @@ public sealed class Monomorphiser
         string wasScope = _scope;
         string wasNamespace = _inNamespace;
         FileScope? wasUsings = _usings;
+        bool wasLibrary = _libraryCode;
 
         _scope = d.Outer is null ? d.Name : d.Outer + "." + d.Name;
         _inNamespace = d.Namespace;
         _usings = d.Scope;
+        _libraryCode = d.FromLibrary;
 
         try
         {
@@ -988,6 +1224,7 @@ public sealed class Monomorphiser
             _scope = wasScope;
             _inNamespace = wasNamespace;
             _usings = wasUsings;
+            _libraryCode = wasLibrary;
         }
     }
 
@@ -1017,6 +1254,7 @@ public sealed class Monomorphiser
             IsDelegate = d.IsDelegate,
             InitialisersPlaced = d.InitialisersPlaced,
             FromLibrary = d.FromLibrary,
+            MovedToSystem = d.MovedToSystem,
             External = d.External && d.TypeParams.Count == 0,
 
             // A SPECIALISATION IS COMPILED WHERE IT IS ASKED FOR, for the
@@ -1109,6 +1347,20 @@ public sealed class Monomorphiser
         return made;
     }
 
+    /// <summary>
+    /// Whether the declaration being copied is a word-shaped specialisation,
+    /// whose bodies live in the canonical copy. Its bodies are copied as the
+    /// empty markers the parser leaves for a skipped body, so every "has a
+    /// body" question still has its answer. A generic method's body is kept:
+    /// it is the template that method is specialised from, per call.
+    /// </summary>
+    private bool _bodiesElsewhere;
+
+    private Block? Body(Block? body, Dictionary<string, TypeRef> map, bool template = false)
+        => body is null ? null
+         : _bodiesElsewhere && !template ? new Block { Line = body.Line, Col = body.Col }
+         : (Block)Rewrite(body, map);
+
     private MemberDecl RewriteMember(MemberDecl m, Dictionary<string, TypeRef> map, string owner)
     {
         switch (m)
@@ -1120,6 +1372,7 @@ public sealed class Monomorphiser
                     Name = f.Name, Mods = f.Mods, Type = Sub(f.Type, map),
                     Init = f.Init is null ? null : Rewrite(f.Init, map),
                     DeclaredInit = f.DeclaredInit is null ? null : Rewrite(f.DeclaredInit, map),
+                    StaticData = f.StaticData,
                     VtableSlotHint = f.VtableSlotHint,
                     Line = f.Line, Col = f.Col,
                 };
@@ -1133,8 +1386,8 @@ public sealed class Monomorphiser
                 PropertyDecl copy = new()
                 {
                     Name = p.Name, Mods = p.Mods, Type = Sub(p.Type, map),
-                    Getter = p.Getter is null ? null : (Block)Rewrite(p.Getter, map),
-                    Setter = p.Setter is null ? null : (Block)Rewrite(p.Setter, map),
+                    Getter = Body(p.Getter, map),
+                    Setter = Body(p.Setter, map),
                     Auto = p.Auto, HasSetter = p.HasSetter,
                     Init = p.Init is null ? null : Rewrite(p.Init, map),
                     VtableSlotHint = p.VtableSlotHint,
@@ -1156,7 +1409,7 @@ public sealed class Monomorphiser
                     {
                         Name = ip.Name, Type = Sub(ip.Type, map),
                         IsRef = ip.IsRef, IsOut = ip.IsOut, IsReadOnlyRef = ip.IsReadOnlyRef,
-                        NotNullWhen = ip.NotNullWhen,
+                        NotNullWhen = ip.NotNullWhen, Caller = ip.Caller, CallerArgument = ip.CallerArgument,
                         Line = ip.Line, Col = ip.Col,
                     });
                 }
@@ -1180,7 +1433,7 @@ public sealed class Monomorphiser
                     Mods = md.Mods,
                     Returns = md.Returns is null ? null : Sub(md.Returns, map),
                     IsCtor = md.IsCtor,
-                    Body = md.Body is null ? null : (Block)Rewrite(md.Body, map),
+                    Body = Body(md.Body, map, template: md.TypeParams.Count > 0),
                     Init = md.Init is null ? null : RewriteCtorInit(md.Init, map),
                     VtableSlotHint = md.VtableSlotHint,
                     NotNullIfNotNull = md.NotNullIfNotNull,
@@ -1205,7 +1458,7 @@ public sealed class Monomorphiser
                     {
                         Name = p.Name, Type = Sub(p.Type, map), IsRef = p.IsRef, IsOut = p.IsOut,
                         IsReadOnlyRef = p.IsReadOnlyRef, IsParams = p.IsParams, IsThis = p.IsThis,
-                        NotNullWhen = p.NotNullWhen,
+                        NotNullWhen = p.NotNullWhen, Caller = p.Caller, CallerArgument = p.CallerArgument,
                         Default = p.Default is null ? null : Rewrite(p.Default, map),
                         Line = p.Line, Col = p.Col,
                     });
@@ -1222,6 +1475,7 @@ public sealed class Monomorphiser
                 // for exactly one round and the call went back to being an
                 // import of a symbol nothing provides.
                 made.LocalCopy = md.LocalCopy;
+                made.Fresh = md.Fresh;
                 made.File = md.File;
                 made.TemplateIndex = md.TemplateIndex;
 
@@ -1235,12 +1489,14 @@ public sealed class Monomorphiser
 
     private CtorInit RewriteCtorInit(CtorInit init, Dictionary<string, TypeRef> map)
     {
-        CtorInit made = new() { IsThis = init.IsThis, Line = init.Line, Col = init.Col };
+        CtorInit made = new() { IsThis = init.IsThis, Spans = init.Spans, Source = init.Source, Line = init.Line, Col = init.Col };
 
         foreach (Expr a in init.Args)
         {
             made.Args.Add(Rewrite(a, map));
         }
+        made.ArgNames.AddRange(init.ArgNames);
+        made.ArgumentOrder.AddRange(init.ArgumentOrder);
         return made;
     }
 
@@ -1271,7 +1527,7 @@ public sealed class Monomorphiser
         {
             case Block b:
             {
-                Block made = new() { Line = b.Line, Col = b.Col, ArithmeticContext = b.ArithmeticContext };
+                Block made = new() { Line = b.Line, Col = b.Col, ArithmeticContext = b.ArithmeticContext, Iterator = b.Iterator };
                 made.GenericLocals.AddRange(b.GenericLocals);
 
                 foreach (Stmt inner in b.Statements)
@@ -1359,6 +1615,9 @@ public sealed class Monomorphiser
 
             case ReturnStmt r:
                 return new ReturnStmt { Value = r.Value is null ? null : Rewrite(r.Value, map), Line = r.Line, Col = r.Col };
+
+            case YieldStmt y:
+                return new YieldStmt { Value = y.Value is null ? null : Rewrite(y.Value, map), Line = y.Line, Col = y.Col };
 
             case ThrowStmt t:
                 return new ThrowStmt { Value = Rewrite(t.Value, map), IsRethrow = t.IsRethrow, Line = t.Line, Col = t.Col };
@@ -1568,7 +1827,30 @@ public sealed class Monomorphiser
                 }
 
                 List<TypeRef> args = n.TypeArgs.Select(a => Sub(a, map)).ToList();
-                return new NameExpr { Name = Instantiate(n.Name, args, n), Global = n.Global, Line = n.Line, Col = n.Col };
+
+                // OPEN WHILE THE METHOD'S OWN TYPE PARAMETERS ARE IN IT, as Sub
+                // keeps a type open: `Comparer<T>.Default` inside a generic
+                // method is instantiated in each copy of the method, where T is
+                // bound. Instantiated here, it made a Comparer$T whose T nothing
+                // declares.
+                if (args.Any(MentionsMethodParameter))
+                {
+                    NameExpr open = new() { Name = n.Name, Global = n.Global, Line = n.Line, Col = n.Col };
+                    open.TypeArgs.AddRange(args);
+                    return open;
+                }
+                // AND KEPT WITH ITS ARGUMENTS WHERE NO TEMPLATE IS HERE TO
+                // MAKE IT: a generic method's copy for one call is made without
+                // the templates, and the checker resolves the name there
+                // (Binder.CheckName) as it would a written type.
+                string made = Instantiate(n.Name, args, n);
+                if (made == n.Name)
+                {
+                    NameExpr kept = new() { Name = n.Name, Global = n.Global, Line = n.Line, Col = n.Col };
+                    kept.TypeArgs.AddRange(args);
+                    return kept;
+                }
+                return new NameExpr { Name = made, Global = n.Global, Line = n.Line, Col = n.Col };
             }
 
             case MemberExpr m:
@@ -1576,7 +1858,7 @@ public sealed class Monomorphiser
                 MemberExpr made = new()
                 {
                     Target = Rewrite(m.Target, map), Name = m.Name,
-                    NullConditional = m.NullConditional,
+                    NullConditional = m.NullConditional, Else = m.Else,
 
                     // AND THE GUARD, which says the null test protecting this
                     // read has already been made -- by the property pattern
@@ -1605,7 +1887,7 @@ public sealed class Monomorphiser
                     target = named;
                 }
                 else target = Rewrite(c.Target, map);
-                CallExpr made = new() { Target = target, Line = c.Line, Col = c.Col };
+                CallExpr made = new() { Target = target, FormatHole = c.FormatHole, Line = c.Line, Col = c.Col };
 
                 foreach (Expr a in c.Args)
                 {
@@ -1619,6 +1901,8 @@ public sealed class Monomorphiser
                 // moment it is not.
                 made.ArgNames.AddRange(c.ArgNames);
                 made.LocalArgumentOrder.AddRange(c.LocalArgumentOrder);
+                made.Spans = c.Spans;
+                made.Source = c.Source;
                 made.ResultTupleNames = c.ResultTupleNames is null ? null : new List<string>(c.ResultTupleNames);
                 made.ResultTypeUse = c.ResultTypeUse is null ? null : Sub(c.ResultTypeUse, map);
                 if (c.ArgumentTypeUses is not null)
@@ -1637,7 +1921,7 @@ public sealed class Monomorphiser
 
             case IndexExpr ix:
             {
-                IndexExpr made = new() { Target = Rewrite(ix.Target, map), Line = ix.Line, Col = ix.Col };
+                IndexExpr made = new() { Target = Rewrite(ix.Target, map), NullConditional = ix.NullConditional, Line = ix.Line, Col = ix.Col };
 
                 foreach (Expr a in ix.Args)
                 {
@@ -1691,7 +1975,7 @@ public sealed class Monomorphiser
                         Binding = arm.Binding,
                         When = arm.When is null ? null : Rewrite(arm.When, map),
                         Discard = arm.Discard, Result = Rewrite(arm.Result, map),
-                        Line = arm.Line, Col = arm.Col,
+                        Fallback = arm.Fallback, Line = arm.Line, Col = arm.Col,
                     });
                 }
                 return made;
@@ -1712,7 +1996,7 @@ public sealed class Monomorphiser
                         Name = p.Name, Type = Sub(p.Type, map), IsRef = p.IsRef,
                         IsOut = p.IsOut, IsReadOnlyRef = p.IsReadOnlyRef,
                         IsParams = p.IsParams, IsThis = p.IsThis,
-                        NotNullWhen = p.NotNullWhen,
+                        NotNullWhen = p.NotNullWhen, Caller = p.Caller, CallerArgument = p.CallerArgument,
                         Default = p.Default is null ? null : Rewrite(p.Default, map),
                         Line = p.Line, Col = p.Col,
                     });
@@ -1751,6 +2035,8 @@ public sealed class Monomorphiser
                     made.Args.Add(Rewrite(a, map));
                 }
                 made.ArgNames.AddRange(nw.ArgNames);
+                made.Spans = nw.Spans;
+                made.Source = nw.Source;
                 made.ArgumentOrder.AddRange(nw.ArgumentOrder);
 
                 // AND THE ARRAY'S ELEMENTS. `new[] { a, b }` is the whole of
@@ -1791,7 +2077,7 @@ public sealed class Monomorphiser
             case SuppressExpr sure:
                 return new SuppressExpr
                 {
-                    Operand = Rewrite(sure.Operand, map), Line = sure.Line, Col = sure.Col,
+                    Operand = Rewrite(sure.Operand, map), OpensCell = sure.OpensCell, Line = sure.Line, Col = sure.Col,
                 };
 
             case ThrowExpr th:
@@ -1812,8 +2098,15 @@ public sealed class Monomorphiser
                     Line = pat.Line, Col = pat.Col,
                 };
 
+            case SequenceExpr seq:
+                return new SequenceExpr
+                {
+                    Effect = Rewrite(seq.Effect, map), Value = Rewrite(seq.Value, map),
+                    Line = seq.Line, Col = seq.Col,
+                };
+
             case SubjectExpr subject:
-                return new SubjectExpr { Line = subject.Line, Col = subject.Col };
+                return new SubjectExpr { Outer = subject.Outer, Line = subject.Line, Col = subject.Col };
 
             case TupleExpr tup:
             {

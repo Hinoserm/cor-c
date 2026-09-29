@@ -87,7 +87,12 @@ public sealed class Builder
     }
 
     public VReg Binary(Opcode op, VReg a, VReg b) => Binary(op, R(a), R(b), ResultOf(op, a.Type));
-    public VReg Binary(Opcode op, VReg a, long imm) => Binary(op, R(a), new ImmOperand(imm, a.Type), ResultOf(op, a.Type));
+    // A SHIFT COUNTS IN 32 BITS, whatever it shifts: the IR's rule, which
+    // the verifier holds an imported function to. Typed as the shifted
+    // register, a 64-bit address shifted into a card index carried an I64
+    // count, and every unit's barrier failed its link-time import in long mode.
+    public VReg Binary(Opcode op, VReg a, long imm)
+        => Binary(op, R(a), new ImmOperand(imm, op is Opcode.Shl or Opcode.ShrU or Opcode.ShrS ? IrType.I32 : a.Type), ResultOf(op, a.Type));
 
     public VReg Unary(Opcode op, Operand a, IrType result)
     {
@@ -144,10 +149,10 @@ public sealed class Builder
     public VReg? Call(string callee, IrType returns, IEnumerable<VReg> args)
         => Call(callee, returns, args.Select(a => (Operand)R(a)).ToArray());
 
-    public VReg? CallIndirect(Operand target, IrType returns, IEnumerable<Operand> args)
+    public VReg? CallIndirect(Operand target, IrType returns, IEnumerable<Operand> args, string? marker = null)
     {
         VReg? d = returns == IrType.Void ? null : Function.NewReg(returns);
-        Instr i = new() { Op = Opcode.CallIndirect, Dest = d };
+        Instr i = new() { Op = Opcode.CallIndirect, Dest = d, Callee = marker };
         i.Operands.Add(target);
         i.Operands.AddRange(args);
         Append(i);
@@ -183,7 +188,16 @@ public sealed class Builder
     public void Branch(Operand cond, Block ifTrue, Block ifFalse)
         => Append(new Instr { Op = Opcode.Branch, Operands = { cond }, Targets = { ifTrue, ifFalse } });
 
-    public void Branch(VReg cond, Block ifTrue, Block ifFalse) => Branch(R(cond), ifTrue, ifFalse);
+    /// <summary>
+    /// A branch tests a 32-bit condition; a wider value (a pointer in long
+    /// mode) is compared with zero first.
+    /// </summary>
+    public void Branch(VReg cond, Block ifTrue, Block ifFalse)
+    {
+        if (cond.Type == IrType.I64)
+            cond = Binary(Opcode.Ne, R(cond), new ImmOperand(0, IrType.I64), IrType.I32);
+        Branch(R(cond), ifTrue, ifFalse);
+    }
 
     public void Switch(Operand index, IReadOnlyList<Block> targets, Block fallback)
     {

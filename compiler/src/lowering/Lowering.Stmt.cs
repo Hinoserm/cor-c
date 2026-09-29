@@ -245,6 +245,10 @@ public sealed partial class Lowering
                 EmitSwitch(sw);
                 break;
 
+            case YieldStmt y:
+                EmitYield(y);
+                break;
+
             case ReturnStmt r:
             {
                 if (r.Value is not null && _method is not null && _returnValue is not null)
@@ -409,8 +413,8 @@ public sealed partial class Lowering
 
         _e.SetBlock(body);
         // No bounds check: the loop's own test is the bound.
-        int stride = sequenceType.Prim == Prim.String ? 1 : Math.Max(1, element.Size);
-        Type stored = sequenceType.Prim == Prim.String ? Type.U8 : element;
+        int stride = sequenceType.Prim == Prim.String ? 2 : Math.Max(1, element.Size);
+        Type stored = sequenceType.Prim == Prim.String ? Type.Char : element;
         VReg scaled = stride == 1 ? index : _e.Binary(Opcode.Mul, index, stride);
         VReg addr = _e.Binary(Opcode.Add, seq, WordOf(scaled));
         VReg value = LoadPlace(new MemPlace(new RegOperand(addr), _t.ArrayHeaderBytes, stored));
@@ -422,7 +426,7 @@ public sealed partial class Lowering
             && _symCells.TryGetValue(named, out VReg? cell) && cell is not null)
         {
             _e.CopyTo(cell, new RegOperand(Allocate(fe, Math.Max(_t.WordSize, Math.Max(1, element.Size)))));
-            _e.Store(new RegOperand(cell), new RegOperand(value), 0, LoadSize(element));
+            StoreNew(cell, value, 0, element);
         }
         else
         {
@@ -472,7 +476,7 @@ public sealed partial class Lowering
 
         if (TryDenseSwitch(sw, bodies, fallback, out long minimum, out Block[] table))
         {
-            VReg key = of.Prim is Prim.I64 or Prim.U64 ? _e.Unary(Opcode.Trunc64, held) : held;
+            VReg key = IsWideInteger(of) ? _e.Unary(Opcode.Trunc64, held) : held;
             if (minimum != 0)
             {
                 key = _e.Binary(Opcode.Sub, key, minimum);
@@ -661,7 +665,7 @@ public sealed partial class Lowering
             string site = "   at " + (_f.Display ?? _f.Name);
             string file = _f.SourceFile ?? at.File;
             if (!string.IsNullOrEmpty(file)) site += " in " + file + ":line " + at.Line;
-            _e.Call(CallLabel(capture), IrType.Void, R(obj), R(Widen(frame)), new SymOperand(InternString(site + "\n")));
+            _e.Call(CallLabel(capture), IrType.Void, R(obj), R(Widen(frame)), new SymOperand(InternString(site)));
         }
 
         Rethrow(obj, at);

@@ -35,6 +35,7 @@ public static class Roles
             case MOp.MovFromCr:
             case MOp.GotPc:
             case MOp.GsSelf:
+            case MOp.GetGs:
                 return operand == 0 ? Role.Def : Role.Use;
             case MOp.Add:
             case MOp.Adc:
@@ -64,131 +65,134 @@ public static class Roles
         }
     }
 
+    // WHAT THESE ANSWER IS FIXED BY THE OPCODE, so it is a table shared by every
+    // call. As iterators they made an object for every instruction the
+    // register allocator looked at, twice.
+    private static readonly Gpr[] NoneGpr_ = new Gpr[0];
+    private static readonly Gpr[] Gpr_ImplicitUses0 = { Gpr.Ecx };
+    private static readonly Gpr[] Gpr_ImplicitUses1 = { Gpr.Ecx, Gpr.Eax, Gpr.Edx };
+    private static readonly Gpr[] Gpr_ImplicitUses2 = { Gpr.Eax, Gpr.Ecx };
+    private static readonly Gpr[] Gpr_ImplicitUses3 = { Gpr.Eax };
+    private static readonly Gpr[] Gpr_ImplicitUses4 = { Gpr.Eax };
+    private static readonly Gpr[] Gpr_ImplicitUses5 = { Gpr.Eax, Gpr.Edx };
+    private static readonly Gpr[] Gpr_ImplicitUses6 = { Gpr.Eax };
+    private static readonly Gpr[] Gpr_ImplicitUses7 = { Gpr.Esi, Gpr.Edi, Gpr.Ecx };
+    private static readonly Gpr[] Gpr_ImplicitUses8 = { Gpr.Eax, Gpr.Edi, Gpr.Ecx };
+    private static readonly Gpr[] Gpr_ImplicitUses9 = { Gpr.Eax };
+    private static readonly Gpr[] Gpr_ImplicitUses10 = { Gpr.Edx };
+    private static readonly Gpr[] Gpr_ImplicitUses11 = { Gpr.Edx, Gpr.Eax };
+    private static readonly Gpr[] Gpr_ImplicitUses12 = { Gpr.Eax };
+    private static readonly Gpr[] Gpr_ImplicitUses13 = { Gpr.Edx, Gpr.Edi, Gpr.Ecx };
+    private static readonly Gpr[] Gpr_ImplicitUses14 = { Gpr.Edx, Gpr.Esi, Gpr.Ecx };
+    private static readonly Gpr[] Gpr_ImplicitUses15 = { Gpr.Eax, Gpr.Ebx, Gpr.Ecx, Gpr.Edx, Gpr.Esi, Gpr.Edi, Gpr.Ebp };
+    private static readonly Gpr[] Gpr_ImplicitUses16 = { Gpr.Eax, Gpr.Edx };
+    private static readonly Gpr[] Gpr_ImplicitDefs0 = { Gpr.Eax, Gpr.Edx };
+    private static readonly Gpr[] Gpr_ImplicitDefs1 = { Gpr.Eax, Gpr.Ebx, Gpr.Ecx, Gpr.Edx };
+    private static readonly Gpr[] Gpr_ImplicitDefs2 = { Gpr.Eax };
+    private static readonly Gpr[] Gpr_ImplicitDefs3 = { Gpr.Edx };
+    private static readonly Gpr[] Gpr_ImplicitDefs4 = { Gpr.Eax, Gpr.Edx };
+    private static readonly Gpr[] Gpr_ImplicitDefs5 = { Gpr.Eax };
+    private static readonly Gpr[] Gpr_ImplicitDefs6 = { Gpr.Esi, Gpr.Edi, Gpr.Ecx };
+    private static readonly Gpr[] Gpr_ImplicitDefs7 = { Gpr.Edi, Gpr.Ecx };
+    private static readonly Gpr[] Gpr_ImplicitDefs8 = { Gpr.Eax };
+    private static readonly Gpr[] Gpr_ImplicitDefs9 = { Gpr.Eax, Gpr.Ecx, Gpr.Edx };
+    private static readonly Gpr[] Gpr_ImplicitDefs10 = { Gpr.Eax };
+    private static readonly Gpr[] Gpr_ImplicitDefs11 = { Gpr.Edi, Gpr.Ecx };
+    private static readonly Gpr[] Gpr_ImplicitDefs12 = { Gpr.Esi, Gpr.Ecx };
+
     /// <summary>Registers an instruction reads without naming them.</summary>
-    public static IEnumerable<Gpr> ImplicitUses(MInstr i)
+    public static Gpr[] ImplicitUses(MInstr i)
     {
         switch (i.Op)
         {
+            case MOp.Rdmsr:
+                return Gpr_ImplicitUses0;
+            case MOp.Wrmsr:
+                return Gpr_ImplicitUses1;
+            case MOp.Cpuid:
+                return Gpr_ImplicitUses2;
             case MOp.Cdq:
-                yield return Gpr.Eax;
-                break;
+                return Gpr_ImplicitUses3;
             case MOp.Mul:
             case MOp.ImulWide:
-                yield return Gpr.Eax;
-                break;
+                return Gpr_ImplicitUses4;
             case MOp.Div:
             case MOp.Idiv:
-                yield return Gpr.Eax;
-                yield return Gpr.Edx;
-                break;
+                return Gpr_ImplicitUses5;
             case MOp.Cmpxchg:
-                yield return Gpr.Eax;
-                break;
+                return Gpr_ImplicitUses6;
             case MOp.RepMovsb:
             case MOp.RepMovsd:
-                yield return Gpr.Esi;
-                yield return Gpr.Edi;
-                yield return Gpr.Ecx;
-                break;
+                return Gpr_ImplicitUses7;
             case MOp.RepStosb:
             case MOp.RepStosd:
-                yield return Gpr.Eax;
-                yield return Gpr.Edi;
-                yield return Gpr.Ecx;
-                break;
+                return Gpr_ImplicitUses8;
             case MOp.Sahf:
-                yield return Gpr.Eax;
-                break;
+                return Gpr_ImplicitUses9;
             case MOp.In:
-                yield return Gpr.Edx;
-                break;
+                return Gpr_ImplicitUses10;
             case MOp.Out:
-                yield return Gpr.Edx;
-                yield return Gpr.Eax;
-                break;
+                return Gpr_ImplicitUses11;
             case MOp.LoadSegments:
-                yield return Gpr.Eax;
-                break;
+                return Gpr_ImplicitUses12;
             case MOp.RepInsw:
-                yield return Gpr.Edx;
-                yield return Gpr.Edi;
-                yield return Gpr.Ecx;
-                break;
+                return Gpr_ImplicitUses13;
             case MOp.RepOutsw:
-                yield return Gpr.Edx;
-                yield return Gpr.Esi;
-                yield return Gpr.Ecx;
-                break;
+                return Gpr_ImplicitUses14;
             case MOp.SyscallTrap:
                 // Linux reads six arguments; the sixth is in EBP, which the
                 // selector borrows around the trap when there is one.
-                yield return Gpr.Eax;
-                yield return Gpr.Ebx;
-                yield return Gpr.Ecx;
-                yield return Gpr.Edx;
-                yield return Gpr.Esi;
-                yield return Gpr.Edi;
-                yield return Gpr.Ebp;
-                break;
+                return Gpr_ImplicitUses15;
             case MOp.Epilogue:
                 // The return value is already in place; keep it alive through the pops.
-                yield return Gpr.Eax;
-                yield return Gpr.Edx;
-                break;
+                return Gpr_ImplicitUses16;
+            default:
+                return NoneGpr_;
         }
     }
 
     /// <summary>Registers an instruction writes without naming them.</summary>
-    public static IEnumerable<Gpr> ImplicitDefs(MInstr i)
+    public static Gpr[] ImplicitDefs(MInstr i)
     {
         switch (i.Op)
         {
+            case MOp.Rdmsr:
+            case MOp.Rdtsc:
+                return Gpr_ImplicitDefs0;
+            case MOp.Cpuid:
+                return Gpr_ImplicitDefs1;
+            case MOp.LoadCs:
+                return Gpr_ImplicitDefs2;
             case MOp.Cdq:
-                yield return Gpr.Edx;
-                break;
+                return Gpr_ImplicitDefs3;
             case MOp.Mul:
             case MOp.ImulWide:
             case MOp.Div:
             case MOp.Idiv:
-                yield return Gpr.Eax;
-                yield return Gpr.Edx;
-                break;
+                return Gpr_ImplicitDefs4;
             case MOp.Cmpxchg:
-                yield return Gpr.Eax;
-                break;
+                return Gpr_ImplicitDefs5;
             case MOp.RepMovsb:
             case MOp.RepMovsd:
-                yield return Gpr.Esi;
-                yield return Gpr.Edi;
-                yield return Gpr.Ecx;
-                break;
+                return Gpr_ImplicitDefs6;
             case MOp.RepStosb:
             case MOp.RepStosd:
-                yield return Gpr.Edi;
-                yield return Gpr.Ecx;
-                break;
+                return Gpr_ImplicitDefs7;
             case MOp.Fnstsw:
-                yield return Gpr.Eax;
-                break;
+                return Gpr_ImplicitDefs8;
             case MOp.Call:
             case MOp.CallInd:
                 // cdecl: the callee may destroy these.
-                yield return Gpr.Eax;
-                yield return Gpr.Ecx;
-                yield return Gpr.Edx;
-                break;
+                return Gpr_ImplicitDefs9;
             case MOp.SyscallTrap:
             case MOp.In:
-                yield return Gpr.Eax;
-                break;
+                return Gpr_ImplicitDefs10;
             case MOp.RepInsw:
-                yield return Gpr.Edi;
-                yield return Gpr.Ecx;
-                break;
+                return Gpr_ImplicitDefs11;
             case MOp.RepOutsw:
-                yield return Gpr.Esi;
-                yield return Gpr.Ecx;
-                break;
+                return Gpr_ImplicitDefs12;
+            default:
+                return NoneGpr_;
         }
     }
 }

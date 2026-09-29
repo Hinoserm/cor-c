@@ -5,6 +5,7 @@
 #   tests/lang/run.sh            run every tests/lang/*.cor
 #   tests/lang/run.sh strings    run the one whose file is *strings*.cor
 #   tests/lang/run.sh -v hello   also show the compiler's output
+#   tests/lang/run.sh --target=x86-64   every test compiled for long mode
 #   tests/lang/run.sh --opt-size  exercise size-oriented compilation
 #   tests/lang/run.sh --experimental-batch  exercise the staged optimizer group
 #
@@ -41,6 +42,10 @@ for arg in "$@"; do
             ;;
         --opt-size|--experimental-batch)
             compiler_flags+=("$arg")
+            ;;
+        --target=*)
+            # Every test compiled for this target: x86 (the default) or x86-64.
+            compiler_flags+=("--target" "${arg#--target=}")
             ;;
         -h|--help)
             sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
@@ -198,6 +203,26 @@ for f in "${tests[@]}"; do
             failed=$((failed + 1))
             failed_names="$failed_names $name"
         fi
+        continue
+    fi
+    # WHAT THE COMPILER WARNS, when that is the point of the test: each
+    # "// expect-compile-warning: <text>" line must be in the compile output
+    # and each "// expect-no-compile-warning: <text>" must not -- the code and
+    # line of a diagnostic, or its absence under #pragma warning disable.
+    warn_miss=""
+    while IFS= read -r want; do
+        [ -n "$want" ] && ! grep -qF -- "$want" "$work/$name.compile" && warn_miss="$warn_miss
+    missing warning: $want"
+    done < <(sed -n 's|^// expect-compile-warning: ||p' "$f")
+    while IFS= read -r unwanted; do
+        [ -n "$unwanted" ] && grep -qF -- "$unwanted" "$work/$name.compile" && warn_miss="$warn_miss
+    unexpected warning: $unwanted"
+    done < <(sed -n 's|^// expect-no-compile-warning: ||p' "$f")
+    if [ -n "$warn_miss" ]; then
+        echo "FAIL $name (compiler diagnostics)$warn_miss"
+        sed "s/^/    /" "$work/$name.compile" | head -30
+        failed=$((failed + 1))
+        failed_names="$failed_names $name"
         continue
     fi
     if [ "$cc_status" -ne 0 ] || [ ! -x "$exe" ]; then

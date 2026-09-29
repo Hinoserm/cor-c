@@ -1,0 +1,8 @@
+namespace SeparateLibrary;
+
+// The unit that carries the runtime and the class library into the library
+// object: compiled with --lib, it brings every library source with it.
+public static class Anchor
+{
+    public static int Touch;
+}

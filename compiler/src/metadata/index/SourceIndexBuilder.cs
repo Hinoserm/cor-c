@@ -7,7 +7,24 @@ namespace Corsac.Lang.Metadata;
 /// <summary>Indexes one source at a time, with ordinary method bodies omitted by the parser.</summary>
 public static class SourceIndexBuilder
 {
+    private sealed record Identity(string Written, string Canonical);
+    private static Identity? _identity;
+
+    /// <summary>
+    /// The canonical spelling of an assembly's identity. Every index query
+    /// begins with it, thousands per unit and nearly always for the one
+    /// assembly being compiled, so the last answer is kept.
+    /// </summary>
     public static string AssemblyIdentity(string identity)
+    {
+        Identity? last = _identity;
+        if (last is not null && last.Written == identity) return last.Canonical;
+        string canonical = Canonical(identity);
+        _identity = new Identity(identity, canonical);
+        return canonical;
+    }
+
+    private static string Canonical(string identity)
     {
         AssemblyName name = new(identity);
         if (string.IsNullOrWhiteSpace(name.Name)) throw new ArgumentException("Assembly identity needs a name");
@@ -106,11 +123,29 @@ public static class SourceIndexBuilder
                         ConditionalSymbols = (activeSymbols ?? Array.Empty<string>()).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray(),
                     }.Encode();
                     yield return new DeclarationRecord("B:" + identity + "\n" + Binder.TypeKey(type), Encoding.UTF8.GetBytes(key));
+                    // AND BY ITS SIMPLE NAME, when its key is qualified -- by a
+                    // namespace or an outer type -- for the bare mention that
+                    // only the binder's Sole answers (IndexedDeclarations.Sole).
+                    if (type.Outer is not null)
+                        yield return new DeclarationRecord("S:" + identity + "\n" + type.Name, Encoding.UTF8.GetBytes(key));
                     foreach (string method in type.Members.OfType<MethodDecl>()
                         .Where(method => method.Mods.HasFlag(Mods.Static) && method.Params.FirstOrDefault()?.IsThis == true)
                         .Select(method => method.Name).Distinct(StringComparer.Ordinal))
                         yield return new DeclarationRecord("E:" + identity + "\n" + type.Namespace + "\n" + method,
                             Encoding.UTF8.GetBytes(key));
+                    // AND EVERY GENERIC INSTANCE METHOD BY NAME AND ARITY, so a
+                    // call to a generic virtual method can find every class
+                    // that overrides or implements it wherever it is declared
+                    // (IndexedDeclarations.RequireOverrides). Instance methods
+                    // of any kind, not only those written `override`: a class
+                    // implements an interface's generic method without saying
+                    // so.
+                    foreach (string method in type.Members.OfType<MethodDecl>()
+                        .Where(method => method.TypeParams.Count > 0 && !method.Mods.HasFlag(Mods.Static))
+                        .Select(method => (method.ExplicitInterface is null ? method.Name : method.Name[(method.Name.LastIndexOf('.') + 1)..])
+                                        + "`" + method.TypeParams.Count)
+                        .Distinct(StringComparer.Ordinal))
+                        yield return new DeclarationRecord("G:" + identity + "\n" + method, Encoding.UTF8.GetBytes(key));
                     if (type.Kind == TypeKind.Interface) yield return InterfaceFamilies.Record(key, type, librarySource?.Invoke(path) ?? true);
                 }
             }

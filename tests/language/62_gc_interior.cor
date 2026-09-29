@@ -50,14 +50,14 @@ static class Program
         {
             values[i] = 1000 + i;
         }
-        return Sys.Word(values) + 16 + at * 4;
+        return Sys.ArrayData(values) + at * 4;
     }
 
     static long MakeStaticInterior()
     {
         long[] values = new long[64];
         values[10] = 42;
-        return Sys.Word(values) + 16 + 10 * 8;
+        return Sys.ArrayData(values) + 10 * 8;
     }
 
     static ReadOnlySpan<int> MakeSpan()

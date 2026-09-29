@@ -145,6 +145,14 @@ static class UnixProcess
 
     /// The program named on PATH when its name has no slash, as execvp(3)
     /// and .NET's UseShellExecute=false both do.
+    /// Whether `path` names a regular file this process may run: access(2)'s
+    /// X_OK, which a directory also passes, so its type is asked too.
+    public static bool IsExecutable(string path)
+    {
+        long mode = Os.ModeOf(path);
+        return mode >= 0 && (mode & 0xF000) == 0x8000 && Os.Access(path, 1) == 0;
+    }
+
     public static string Find(string name)
     {
         if (name.IndexOf('/') >= 0)

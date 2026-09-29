@@ -22,36 +22,18 @@
 
 static partial class Os
 {
-    /// The address of a string's or byte array's first byte.
-    private static long BytesOf(string s)
-    {
-        return Platform.Linear(Sys.ArrayData(s));
-    }
 
     private static long BytesOf(byte[] b)
     {
         return Platform.Linear(Sys.ArrayData(b));
     }
 
-    /// A copy of `s` with a zero byte after it, which is what the kernel
-    /// means by a path. The block from Sys.NewBytes is zeroed by the
-    /// allocator; the store is there so nothing depends on that.
-    ///
-    /// A byte loop rather than Sys.Copy: a path is short, and the block
-    /// copy the backend selects for Sys.Copy (rep movsb) mis-assigns its
-    /// registers as of this writing when an operand already sits in one of
-    /// them. The loop is correct on any backend and costs nothing here.
-    private static string CString(string s)
+    /// `s` as UTF-8 with a zero byte after it, which is what the kernel
+    /// means by a path: a string is UTF-16 code units, and a path a Unix
+    /// kernel is handed is bytes.
+    private static byte[] CString(string s)
     {
-        int n = s.Length;
-        string c = Sys.NewBytes(n + 1);
-
-        for (int i = 0; i < n; i++)
-        {
-            Sys.SetByte(c, i, Sys.GetByte(s, i));
-        }
-        Sys.SetByte(c, n, 0);
-        return c;
+        return Utf8Transcoder.EncodeTerminated(s);
     }
 
     /// inotify_init1(2): a descriptor that is told of changes to the files
@@ -66,7 +48,7 @@ static partial class Os
     /// descriptor, the same one again for a path watched already.
     public static int InotifyAddWatch(int fd, string path, long mask)
     {
-        string c = CString(path);
+        byte[] c = CString(path);
         return (int)Err.Result(Sys.Syscall(Call.InotifyAddWatch, fd, BytesOf(c), mask & 0xFFFFFFFF));
     }
 
@@ -80,7 +62,7 @@ static partial class Os
     /// otherwise, exactly as open(2)'s third argument is.
     public static int Open(string path, int flags, int mode)
     {
-        string c = CString(path);
+        byte[] c = CString(path);
         return (int)Err.Result(Sys.Syscall(Call.Open, BytesOf(c), flags, mode));
     }
 
@@ -140,9 +122,9 @@ static partial class Os
         return Platform.Linear(Sys.ArrayData(b));
     }
 
-    /// A copy of `s` with a zero byte after it, for the calls that take a
+    /// `s` as UTF-8 with a zero byte after it, for the calls that take a
     /// path. Public for the same reason AddressOf is.
-    public static string CStr(string s)
+    public static byte[] CStr(string s)
     {
         return CString(s);
     }
@@ -155,6 +137,10 @@ static partial class Os
     /// answer into a buffer, which is why this one needs eight bytes of room.
     public static long Lseek(int fd, long offset, int whence)
     {
+#if TARGET_AMD64
+        // Long mode's lseek takes and answers the whole 64-bit offset.
+        return Err.Result(Sys.Syscall(Call.Lseek, fd, offset, whence));
+#else
         byte[] where = new byte[8];
         long got = Err.Result(Sys.Syscall(Call.LlSeek, fd,
             (offset >> 32) & 0xFFFFFFFF, offset & 0xFFFFFFFF,
@@ -165,6 +151,7 @@ static partial class Os
             return got;
         }
         return Raw.I64(where, 0);
+#endif
     }
 
     /// Where the descriptor is now, without moving it.
@@ -206,10 +193,34 @@ static partial class Os
         return (int)Err.Result(Sys.Syscall(Call.Ftruncate, fd, length, 0));
     }
 
+    /// flock(2): an advisory lock on the whole file (LOCK_SH 1, LOCK_EX 2,
+    /// LOCK_UN 8, LOCK_NB 4 not to wait). 0, or a negative errno -- EAGAIN
+    /// when LOCK_NB and somebody else holds a conflicting lock.
+    public static int Flock(int fd, int operation)
+    {
+        return (int)Err.Result(Sys.Syscall(Call.Flock, fd, operation, 0));
+    }
+
+    /// fsync(2): the file's data and metadata on the device before it returns.
+    public static int Fsync(int fd)
+    {
+        return (int)Err.Result(Sys.Syscall(Call.Fsync, fd, 0, 0));
+    }
+
+    /// ftruncate64(2), the length split into two words as the i386 call takes it.
+    public static int Ftruncate(int fd, long length)
+    {
+#if TARGET_AMD64
+        return (int)Err.Result(Sys.Syscall(Call.Ftruncate, fd, length, 0));
+#else
+        return (int)Err.Result(Sys.Syscall(Call.Ftruncate64, fd, length & 0xFFFFFFFF, (length >> 32) & 0xFFFFFFFF));
+#endif
+    }
+
     public static int Stat(string path, byte[] into)
     {
         StatBuf.Check(into);
-        string c = CString(path);
+        byte[] c = CString(path);
         return (int)Err.Result(Sys.Syscall(Call.Stat64, BytesOf(c), AddressOf(into), 0));
     }
 
@@ -217,7 +228,7 @@ static partial class Os
     public static int Lstat(string path, byte[] into)
     {
         StatBuf.Check(into);
-        string c = CString(path);
+        byte[] c = CString(path);
         return (int)Err.Result(Sys.Syscall(Call.Lstat64, BytesOf(c), AddressOf(into), 0));
     }
 
@@ -268,7 +279,7 @@ static partial class Os
 
     public static int Unlink(string path)
     {
-        string c = CString(path);
+        byte[] c = CString(path);
         return (int)Err.Result(Sys.Syscall(Call.Unlink, BytesOf(c), 0, 0));
     }
 
@@ -278,14 +289,14 @@ static partial class Os
     /// would find.
     public static int Rename(string from, string to)
     {
-        string a = CString(from);
-        string b = CString(to);
+        byte[] a = CString(from);
+        byte[] b = CString(to);
         return (int)Err.Result(Sys.Syscall(Call.Rename, BytesOf(a), BytesOf(b), 0));
     }
 
     public static int Mkdir(string path, int mode)
     {
-        string c = CString(path);
+        byte[] c = CString(path);
         return (int)Err.Result(Sys.Syscall(Call.Mkdir, BytesOf(c), mode, 0));
     }
 
@@ -297,13 +308,13 @@ static partial class Os
 
     public static int Rmdir(string path)
     {
-        string c = CString(path);
+        byte[] c = CString(path);
         return (int)Err.Result(Sys.Syscall(Call.Rmdir, BytesOf(c), 0, 0));
     }
 
     public static int Chmod(string path, int mode)
     {
-        string c = CString(path);
+        byte[] c = CString(path);
         return (int)Err.Result(Sys.Syscall(Call.Chmod, BytesOf(c), mode, 0));
     }
 
@@ -311,7 +322,7 @@ static partial class Os
     /// write and read.
     public static int Access(string path, int mode)
     {
-        string c = CString(path);
+        byte[] c = CString(path);
         return (int)Err.Result(Sys.Syscall(Call.Access, BytesOf(c), mode, 0));
     }
 
@@ -319,22 +330,22 @@ static partial class Os
     /// names. Not a copy -- the two names are the same file thereafter.
     public static int Link(string existing, string name)
     {
-        string a = CString(existing);
-        string b = CString(name);
+        byte[] a = CString(existing);
+        byte[] b = CString(name);
         return (int)Err.Result(Sys.Syscall(Call.Link, BytesOf(a), BytesOf(b), 0));
     }
 
     public static int Symlink(string target, string name)
     {
-        string a = CString(target);
-        string b = CString(name);
+        byte[] a = CString(target);
+        byte[] b = CString(name);
         return (int)Err.Result(Sys.Syscall(Call.Symlink, BytesOf(a), BytesOf(b), 0));
     }
 
     /// Where a symbolic link points, or null when it is not one.
     public static string? Readlink(string path)
     {
-        string c = CString(path);
+        byte[] c = CString(path);
         byte[] room = new byte[4096];
         int n = (int)Err.Result(Sys.Syscall(Call.Readlink, BytesOf(c), AddressOf(room), room.Length));
 
@@ -417,49 +428,58 @@ static partial class Os
     /// `follow` false changes a symbolic link itself.
     public static int Utimensat(string path, long atimeSeconds, long atimeNanos, long mtimeSeconds, long mtimeNanos, bool follow)
     {
-        byte[] times = new byte[16];
-        Raw.SetU32(times, 0, atimeSeconds < 0 ? 0 : atimeSeconds);
-        Raw.SetU32(times, 4, atimeSeconds < 0 ? 1073741822 : atimeNanos);   // UTIME_OMIT
-        Raw.SetU32(times, 8, mtimeSeconds < 0 ? 0 : mtimeSeconds);
-        Raw.SetU32(times, 12, mtimeSeconds < 0 ? 1073741822 : mtimeNanos);
+        // Two timespecs, access then modification.
+        byte[] times = new byte[2 * TimeSpec.Bytes];
+        byte[] one = TimeSpec.Room();
+        TimeSpec.Set(one, atimeSeconds < 0 ? 0 : atimeSeconds, atimeSeconds < 0 ? 1073741822 : atimeNanos);   // UTIME_OMIT
+        for (int i = 0; i < TimeSpec.Bytes; i++) times[i] = one[i];
+        TimeSpec.Set(one, mtimeSeconds < 0 ? 0 : mtimeSeconds, mtimeSeconds < 0 ? 1073741822 : mtimeNanos);
+        for (int i = 0; i < TimeSpec.Bytes; i++) times[TimeSpec.Bytes + i] = one[i];
         return (int)Err.Result(Sys.Syscall(Call.Utimensat, -100, BytesOf(CString(path)), AddressOf(times), follow ? 0 : 0x100, 0, 0));
     }
 
     /// chown(2), by name, following symbolic links.
     public static int Chown(string path, int uid, int gid)
     {
-        string c = CString(path);
+        byte[] c = CString(path);
         return (int)Err.Result(Sys.Syscall(Call.Chown, BytesOf(c), uid, gid));
+    }
+
+    /// lchown(2): as Chown, but of a symbolic link itself rather than what
+    /// it names.
+    public static int Lchown(string path, int uid, int gid)
+    {
+        byte[] c = CString(path);
+        return (int)Err.Result(Sys.Syscall(Call.Lchown, BytesOf(c), uid, gid));
     }
 
     /// statfs64(2): how big a filing system is and how much of it is left.
     public static int Statfs(string path, byte[] into)
     {
         StatFs.Check(into);
-        string c = CString(path);
+        byte[] c = CString(path);
+#if TARGET_AMD64
+        return (int)Err.Result(Sys.Syscall(Call.Statfs64, BytesOf(c), BytesOf(into), 0));
+#else
         return (int)Err.Result(Sys.Syscall(Call.Statfs64, BytesOf(c),
                                                 StatFs.Bytes, BytesOf(into)));
+#endif
     }
 
     public static int Fstatfs(int fd, byte[] into)
     {
         StatFs.Check(into);
+#if TARGET_AMD64
+        return (int)Err.Result(Sys.Syscall(Call.Fstatfs64, fd, BytesOf(into), 0));
+#else
         return (int)Err.Result(Sys.Syscall(Call.Fstatfs64, fd,
                                                 StatFs.Bytes, BytesOf(into)));
+#endif
     }
 
     public static int Close(long fd)
     {
         return Close((int)fd);
-    }
-
-    public static long Read(long fd, string into, long count)
-    {
-        if (count < 0 || count > into.Length)
-        {
-            throw new IndexOutOfRangeException("read range is outside its buffer");
-        }
-        return Err.Result(Platform.Blocking(Call.Read, fd, BytesOf(into), count));
     }
 
     public static long Write(long fd, string s)

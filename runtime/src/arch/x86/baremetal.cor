@@ -95,6 +95,42 @@ static class Platform
         return Sys.Syscall(n, a, b, c, d, e, f);
     }
 
+    /// The collector's checked mode for the compiler's frees (Gc.VerifyFree)
+    /// is a hosted test's: a machine without an environment never asks for it.
+    public static bool VerifyFrees()
+    {
+        return false;
+    }
+
+    public static long IgnoreFrees()
+    {
+        return 0;
+    }
+
+    public static bool VerifyFieldFrees()
+    {
+        return false;
+    }
+
+    public static bool FreeLog()
+    {
+        return false;
+    }
+
+    public static long SkippedFreePaths()
+    {
+        return 0;
+    }
+
+    public static bool GuardReleases()
+    {
+        return false;
+    }
+
+    public static void Guard(long at, long bytes)
+    {
+    }
+
     /// Where the bump region begins and ends. Zero means "not yet decided",
     /// and the first call to Map decides it.
     private static long _at;
@@ -217,7 +253,7 @@ static class Platform
 
     public static void SetThreadBlock(long block)
     {
-        Sys.PokeWord(block + Tls.Self, block);
+        Sys.Poke(block + Tls.Self, block);
         Sys.SetThreadBlock(block);
     }
 
@@ -249,6 +285,107 @@ static class Platform
         }
     }
 
+    // ---- the machine's memory, for GC.GetGCMemoryInfo ------------------------
+
+    /// Unknown to the runtime: the kernel's own allocator owns the machine's
+    /// memory, and the collector's heap is what it was given (Gc's cap).
+    public static long TotalMemory()
+    {
+        return 0;
+    }
+
+    public static long AvailableMemory()
+    {
+        return 0;
+    }
+
+    /// A freestanding image's mappings are its own frames, taken whole: the
+    /// collector keeps no card table here, and collects the whole heap.
+    public const bool MapsCommitLazily = false;
+
+    public static bool VerifyGenerations()
+    {
+        return false;
+    }
+
+    public static bool GcCensus()
+    {
+        return false;
+    }
+
+    public static long GcThreshold()
+    {
+        return 0;
+    }
+
+    public static long GcNursery()
+    {
+        return 0;
+    }
+
+    public static long HeapLimit()
+    {
+        return 0;
+    }
+
+    public static bool AllocSample()
+    {
+        return false;
+    }
+
+    public static bool GcDeadCensus()
+    {
+        return false;
+    }
+
+    public static bool HeapCheck()
+    {
+        return false;
+    }
+
+    /// No process address space to speak of: a kernel's heap has its cap.
+    /// No signals to report a fault through: an exception handler is the
+    /// kernel's own.
+    public static void ArmFaultReport()
+    {
+    }
+
+    public static long AddressSpace()
+    {
+        return 0;
+    }
+
+    /// No control groups: a kernel's heap has the cap its kernel gives it.
+    public static long MemoryLimit()
+    {
+        return 0;
+    }
+
+    /// Unknown here too: a kernel's collector is paced by its cap (Gc).
+    public static long FreeMemoryQuietly()
+    {
+        return 0;
+    }
+
+    // ---- what Monitor asks (core threading.cor) ----------------------------
+
+    /// No identity: a kernel's thread block is a processor's, and a task
+    /// holding a lock may resume on another. Monitor is then the spin lock it
+    /// always was here -- held or free, no owner, nobody asleep on it.
+    public static long MonitorOwner()
+    {
+        return 0;
+    }
+
+    public static void MonitorBlock(long at, long value)
+    {
+        Sys.Pause();
+    }
+
+    public static void MonitorWake(long at)
+    {
+    }
+
     /// Asks every thread still running to stop for a collection: nothing
     /// on one thread, and on a kernel an interrupt to every other processor
     /// that is running managed code (StopHook, installed by the kernel).
@@ -270,9 +407,18 @@ static class Platform
         long a = _spill + 1;
         long b = _spill + 2;
         long c = _spill + 3;
+#if TARGET_64BIT
+        long d = _spill + 4;
+        long e = _spill + 5;
+        long f = _spill + 6;
+#endif
         GcThreads.Spill(mode, Sys.Stack(), Sys.FramePointer());
         GcThreads.SafePoint(mode);
+#if TARGET_64BIT
+        _spill = a + b + c + d + e + f;
+#else
         _spill = a + b + c;
+#endif
     }
 
     /// Enters a collection with every callee-saved register on the stack.
@@ -296,8 +442,18 @@ static class Platform
         long a = _spill + 1;
         long b = _spill + 2;
         long c = _spill + 3;
+#if TARGET_64BIT
+        // Long mode keeps five callee-saved registers (RBX, R12-R15) and a
+        // long fits one, so six values across the call are what fills them.
+        long d = _spill + 4;
+        long e = _spill + 5;
+        long f = _spill + 6;
+        Gc.CollectInner();
+        _spill = a + b + c + d + e + f;
+#else
         Gc.CollectInner();
         _spill = a + b + c;
+#endif
     }
 
     /// Ends the program. There is nothing to return to, so this stops.
@@ -358,22 +514,24 @@ static partial class Os
     /// One processor: a machine with no operating system runs one thread.
     public static int ProcessorCount() { return 1; }
 
-    /// Everything written goes to the console whatever the descriptor.
+    /// Everything written goes to the console whatever the descriptor, as
+    /// the string's UTF-8; answers how many bytes that was.
     public static int Write(int fd, string s)
     {
-        Platform.WriteBytes(fd, Sys.ArrayData(s), s.Length);
-        return s.Length;
+        byte[] bytes = Utf8Transcoder.Encode(s, 0, s.Length);
+        Platform.WriteBytes(fd, Sys.ArrayData(bytes), bytes.Length);
+        return bytes.Length;
     }
 
     public static void Print(string s)
     {
-        Platform.WriteBytes(1, Sys.ArrayData(s), s.Length);
+        Write(1, s);
     }
 
     public static void PrintLine(string s)
     {
-        Platform.WriteBytes(1, Sys.ArrayData(s), s.Length);
-        Platform.WriteBytes(1, Sys.ArrayData("\n"), 1);
+        Write(1, s);
+        Write(1, "\n");
     }
 
     /// Stops the program with `code`, which is what returning from Main does.

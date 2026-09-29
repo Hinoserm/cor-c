@@ -187,15 +187,39 @@ class ConsoleKeyInfo
     }
 }
 
+/// Which key combination interrupted the process.
+enum ConsoleSpecialKey
+{
+    ControlC = 0,
+    ControlBreak = 1,
+}
+
+/// What a CancelKeyPress handler is told, and how it says the process is to
+/// go on: Cancel set keeps it running.
 class ConsoleCancelEventArgs
 {
-    public bool Cancel;
-    public PosixSignal SpecialKey;
+    readonly ConsoleSpecialKey _key;
+
+    public ConsoleCancelEventArgs(ConsoleSpecialKey specialKey)
+    {
+        _key = specialKey;
+    }
+
+    public bool Cancel { get; set; }
+
+    public ConsoleSpecialKey SpecialKey => _key;
 }
 
 interface ConsoleCancelEventHandler
 {
     void Invoke(object? sender, ConsoleCancelEventArgs e);
+}
+
+/// The sixteen console colours, numbered as .NET numbers them.
+enum ConsoleColor
+{
+    Black = 0, DarkBlue = 1, DarkGreen = 2, DarkCyan = 3, DarkRed = 4, DarkMagenta = 5, DarkYellow = 6, Gray = 7,
+    DarkGray = 8, Blue = 9, Green = 10, Cyan = 11, Red = 12, Magenta = 13, Yellow = 14, White = 15,
 }
 
 static class Console
@@ -213,8 +237,13 @@ static class Console
         {
             if (_out == null)
             {
+                // ALWAYS FLUSHED, as .NET's console writer is: what was
+                // written is out before the next line runs, whether the
+                // output is a terminal or a pipe -- and nothing waits in a
+                // buffer for a fork to copy into the child, which printed
+                // it a second time.
                 StreamWriter w = new StreamWriter(new FileStream(Fd.Out, FileAccess.Write, false));
-                w.AutoFlush = Os.IsTty(Fd.Out);
+                w.AutoFlush = true;
                 _out = w;
                 // WHAT IS FLUSHED WHEN THE PROCESS ENDS. The address goes
                 // to the runtime, which is below every library and calls it
@@ -327,86 +356,110 @@ static class Console
         }
     }
 
+    // ---- colour and the cursor -------------------------------------------------
+
+    /// COLOURS AND THE CURSOR ARE ESCAPE SEQUENCES, as .NET writes them on a
+    /// Unix terminal from its terminfo entry -- these are xterm's. Written
+    /// through Out, so they stay in order with text Out is still holding, and
+    /// only to a terminal: a redirected output gets the text alone, as it
+    /// does from .NET. A colour reads back as the last one set, and as -1
+    /// (.NET's unknown colour) before any is.
+    static ConsoleColor _foreground = (ConsoleColor)(-1);
+    static ConsoleColor _background = (ConsoleColor)(-1);
+
+    public static ConsoleColor ForegroundColor
+    {
+        get { return _foreground; }
+        set { Colour(value, 30, "ForegroundColor"); _foreground = value; }
+    }
+
+    public static ConsoleColor BackgroundColor
+    {
+        get { return _background; }
+        set { Colour(value, 40, "BackgroundColor"); _background = value; }
+    }
+
+    public static void ResetColor()
+    {
+        _foreground = (ConsoleColor)(-1);
+        _background = (ConsoleColor)(-1);
+        Escape("\u001b[39;49m");
+    }
+
+    public static void Clear() { Escape("\u001b[H\u001b[2J"); }
+
+    public static void SetCursorPosition(int left, int top)
+    {
+        if (left < 0 || left >= short.MaxValue) throw new ArgumentOutOfRangeException("left", left, "The value must be greater than or equal to zero and less than the console's buffer size in that dimension.");
+        if (top < 0 || top >= short.MaxValue) throw new ArgumentOutOfRangeException("top", top, "The value must be greater than or equal to zero and less than the console's buffer size in that dimension.");
+        Escape("\u001b[" + (top + 1) + ";" + (left + 1) + "H");
+    }
+
+    /// Settable only, as on .NET's Unix console: a terminal cannot be asked.
+    public static bool CursorVisible
+    {
+        get { throw new PlatformNotSupportedException("Operation is not supported on this platform."); }
+        set { Escape(value ? "\u001b[?25h" : "\u001b[?25l"); }
+    }
+
+    /// The ANSI colour index .NET's ConsoleColor maps to: dark colours are
+    /// 30-37 (40-47 behind), bright ones 90-97 (100-107).
+    static void Colour(ConsoleColor colour, int dark, string name)
+    {
+        int n = (int)colour;
+        if (n < 0 || n > 15) throw new ArgumentException("The ConsoleColor enum value was not defined on that enum. Please use a defined color from the enum.", name);
+        int[] ansi = { 0, 4, 2, 6, 1, 5, 3, 7 };
+        int code = n < 8 ? dark + ansi[n] : dark + 60 + ansi[n - 8];
+        Escape("\u001b[" + code + "m");
+    }
+
+    static void Escape(string sequence)
+    {
+        if (!Os.IsTty(Fd.Out)) return;
+        Out.Write(sequence);
+        Out.Flush();
+    }
+
     // ---- writing --------------------------------------------------------------
+    // .NET's set: each one to Out's own overload of the same, so a writer
+    // put there with SetOut sees exactly the call that was made.
 
-    public static void Write(string value)
-    {
-        Out.Write(value);
-    }
+    public static void Write(bool value) { Out.Write(value); }
+    public static void Write(char value) { Out.Write(value); }
+    public static void Write(char[]? value) { Out.Write(value); }
+    public static void Write(int value) { Out.Write(value); }
+    public static void Write(uint value) { Out.Write(value); }
+    public static void Write(long value) { Out.Write(value); }
+    public static void Write(ulong value) { Out.Write(value); }
+    public static void Write(float value) { Out.Write(value); }
+    public static void Write(double value) { Out.Write(value); }
+    public static void Write(string? value) { Out.Write(value); }
+    public static void Write(object? value) { Out.Write(value); }
+    public static void Write(char[] buffer, int index, int count) { Out.Write(buffer, index, count); }
+    public static void Write(ReadOnlySpan<char> value) { Out.Write(value); }
+    public static void Write(string format, object? arg0) { Out.Write(format, arg0); }
+    public static void Write(string format, object? arg0, object? arg1) { Out.Write(format, arg0, arg1); }
+    public static void Write(string format, object? arg0, object? arg1, object? arg2) { Out.Write(format, arg0, arg1, arg2); }
+    public static void Write(string format, params object?[] arg) { Out.Write(format, arg); }
 
-    public static void Write(char value)
-    {
-        Out.Write(value);
-    }
-
-    public static void Write(long value)
-    {
-        Out.Write(value);
-    }
-
-    public static void Write(ulong value)
-    {
-        Out.Write(value);
-    }
-
-    public static void Write(int value)
-    {
-        Out.Write((long)value);
-    }
-
-    public static void Write(bool value)
-    {
-        Out.Write(value ? "True" : "False");
-    }
-
-    public static void WriteLine()
-    {
-        Out.WriteLine();
-    }
-
-    public static void WriteLine(string value)
-    {
-        Out.WriteLine(value);
-    }
-
-    public static void WriteLine(char value)
-    {
-        Out.Write(value);
-        Out.WriteLine();
-    }
-
-    public static void WriteLine(long value)
-    {
-        Out.WriteLine(value);
-    }
-
-    public static void WriteLine(ulong value)
-    {
-        Out.WriteLine(value);
-    }
-
-    public static void WriteLine(int value)
-    {
-        Out.WriteLine((long)value);
-    }
-
-    public static void WriteLine(bool value)
-    {
-        Out.WriteLine(value ? "True" : "False");
-    }
-
-    /// Console.WriteLine(object) and Write(object): whatever it is, as its own
-    /// ToString says it -- an enum by the member's name, as .NET prints it, and
-    /// nothing at all for null.
-    public static void WriteLine(object? value)
-    {
-        Out.WriteLine(value == null ? "" : "" + value);
-    }
-
-    public static void Write(object? value)
-    {
-        Out.Write(value == null ? "" : "" + value);
-    }
+    public static void WriteLine() { Out.WriteLine(); }
+    public static void WriteLine(bool value) { Out.WriteLine(value); }
+    public static void WriteLine(char value) { Out.WriteLine(value); }
+    public static void WriteLine(char[]? value) { Out.WriteLine(value); }
+    public static void WriteLine(int value) { Out.WriteLine(value); }
+    public static void WriteLine(uint value) { Out.WriteLine(value); }
+    public static void WriteLine(long value) { Out.WriteLine(value); }
+    public static void WriteLine(ulong value) { Out.WriteLine(value); }
+    public static void WriteLine(float value) { Out.WriteLine(value); }
+    public static void WriteLine(double value) { Out.WriteLine(value); }
+    public static void WriteLine(string? value) { Out.WriteLine(value); }
+    public static void WriteLine(object? value) { Out.WriteLine(value); }
+    public static void WriteLine(char[] buffer, int index, int count) { Out.WriteLine(buffer, index, count); }
+    public static void WriteLine(ReadOnlySpan<char> value) { Out.WriteLine(value); }
+    public static void WriteLine(string format, object? arg0) { Out.WriteLine(format, arg0); }
+    public static void WriteLine(string format, object? arg0, object? arg1) { Out.WriteLine(format, arg0, arg1); }
+    public static void WriteLine(string format, object? arg0, object? arg1, object? arg2) { Out.WriteLine(format, arg0, arg1, arg2); }
+    public static void WriteLine(string format, params object?[] arg) { Out.WriteLine(format, arg); }
 
     public static void Flush()
     {
@@ -631,23 +684,40 @@ static class Console
         set { _controlCAsInput = value; }
     }
 
-    /// .NET's event: raised on SIGINT. A handler that sets Cancel keeps
-    /// the process alive; otherwise it exits, as .NET's does.
-    public static void AddCancelKeyPress(ConsoleCancelEventHandler handler)
+    /// .NET's event: raised on Control-C (SIGINT). A handler that sets
+    /// Cancel keeps the process alive; otherwise it exits, as .NET's does.
+    /// The signal is taken only while there is a handler: with none, it
+    /// ends the process at once, as it would have without this.
+    public static event ConsoleCancelEventHandler? CancelKeyPress
     {
-        if (_cancel == null)
+        add
         {
-            _cancel = new List<ConsoleCancelEventHandler>();
-            _cancelRegistration = PosixSignalRegistration.Create(PosixSignal.SIGINT, new CancelRelay());
+            if (value == null)
+            {
+                return;
+            }
+            if (_cancel == null)
+            {
+                _cancel = new List<ConsoleCancelEventHandler>();
+            }
+            if (_cancelRegistration == null)
+            {
+                _cancelRegistration = PosixSignalRegistration.Create(PosixSignal.SIGINT, new CancelRelay());
+            }
+            _cancel.Add(value);
         }
-        _cancel.Add(handler);
-    }
-
-    public static void RemoveCancelKeyPress(ConsoleCancelEventHandler handler)
-    {
-        if (_cancel != null)
+        remove
         {
-            _cancel.Remove(handler);
+            if (value == null || _cancel == null)
+            {
+                return;
+            }
+            _cancel.Remove(value);
+            if (_cancel.Count == 0 && _cancelRegistration != null)
+            {
+                _cancelRegistration.Dispose();
+                _cancelRegistration = null;
+            }
         }
     }
 
@@ -655,8 +725,7 @@ static class Console
     {
         public void Invoke(PosixSignalContext context)
         {
-            ConsoleCancelEventArgs e = new ConsoleCancelEventArgs();
-            e.SpecialKey = context.Signal;
+            ConsoleCancelEventArgs e = new ConsoleCancelEventArgs(context.Signal == PosixSignal.SIGQUIT ? ConsoleSpecialKey.ControlBreak : ConsoleSpecialKey.ControlC);
             List<ConsoleCancelEventHandler>? handlers = _cancel;
             if (handlers != null)
             {

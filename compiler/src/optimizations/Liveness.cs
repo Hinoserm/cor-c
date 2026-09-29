@@ -24,6 +24,7 @@ public sealed class Liveness
 {
     public Cfg Cfg { get; }
     private readonly int _words;
+    private readonly int _registers;
     private readonly Dictionary<Block, ulong[]> _in = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<Block, ulong[]> _out = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<int, VReg> _regs = new();
@@ -37,7 +38,8 @@ public sealed class Liveness
     {
         Cfg = cfg;
         Function f = cfg.Function;
-        _words = (f.RegCount + 63) >> 6;
+        _registers = f.RegCount;
+        _words = (_registers + 63) >> 6;
 
         // Per-block use (read before any write in the block) and def sets,
         // computed once; the iteration only combines them.
@@ -70,7 +72,7 @@ public sealed class Liveness
                 }
                 else
                 {
-                    foreach (VReg r in IrInfo.Uses(i))
+                    foreach (Operand rOperand in (i).Operands) if (rOperand is RegOperand { Reg: var r })
                     {
                         _regs[r.Id] = r;
                         if (!Test(d, r.Id))
@@ -134,6 +136,9 @@ public sealed class Liveness
     public bool IsLiveIn(Block b, VReg r) => Test(_in[b], r.Id);
     public bool IsLiveOut(Block b, VReg r) => Test(_out[b], r.Id);
 
+    /// <summary>Whether the register existed when this analysis was made; one made since has no answer here.</summary>
+    public bool Tracks(VReg r) => r.Id < _registers;
+
     public IEnumerable<VReg> LiveIn(Block b) => Enumerate(_in[b]);
     public IEnumerable<VReg> LiveOut(Block b) => Enumerate(_out[b]);
 
@@ -142,15 +147,21 @@ public sealed class Liveness
     /// registers live immediately after it. What an allocator or a dead
     /// store pass wants; the set is reused between yields, so copy it to
     /// keep it.
+    ///
+    /// With <paramref name="skipNewer"/>, registers made after the analysis
+    /// are left out instead of being an error: a pass that inserts only
+    /// bookkeeping of its own -- new registers, no new blocks, no new reads
+    /// of older ones -- may keep asking about the older registers, whose
+    /// answers stay right or err toward live.
     /// </summary>
-    public IEnumerable<(Instr Instr, ulong[] LiveAfter)> WalkBackwards(Block b)
+    public IEnumerable<(Instr Instr, ulong[] LiveAfter)> WalkBackwards(Block b, bool skipNewer = false)
     {
         ulong[] live = (ulong[])_out[b].Clone();
         for (int k = b.Instrs.Count - 1; k >= 0; k--)
         {
             Instr i = b.Instrs[k];
             yield return (i, live);
-            if (i.Dest is not null)
+            if (i.Dest is not null && (!skipNewer || i.Dest.Id < _registers))
             {
                 Clear(live, i.Dest.Id);
             }
@@ -158,9 +169,12 @@ public sealed class Liveness
             {
                 continue;       // its reads belong to the predecessors
             }
-            foreach (VReg r in IrInfo.Uses(i))
+            foreach (Operand rOperand in (i).Operands) if (rOperand is RegOperand { Reg: var r })
             {
-                Set(live, r.Id);
+                if (!skipNewer || r.Id < _registers)
+                {
+                    Set(live, r.Id);
+                }
             }
         }
     }

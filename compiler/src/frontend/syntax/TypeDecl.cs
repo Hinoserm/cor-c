@@ -41,6 +41,15 @@ public sealed class TypeDecl : Node
     /// before that constructor exists.
     /// </summary>
     public List<Expr> BaseArgs { get; } = new();
+
+    /// <summary>The names written before <see cref="BaseArgs"/>, as <see cref="CtorInit.ArgNames"/>.</summary>
+    public List<string?> BaseArgNames { get; } = new();
+
+    /// <summary>Where <see cref="BaseArgs"/> were written, as <see cref="CtorInit.Spans"/>.</summary>
+    public int[]? BaseSpans { get; set; }
+
+    /// <summary>The text <see cref="BaseSpans"/> index.</summary>
+    public string? BaseSource { get; set; }
     public List<MemberDecl> Members { get; } = new();
     /// <summary>Enum members, when this is an enum.</summary>
     public List<EnumMember> EnumMembers { get; } = new();
@@ -89,12 +98,23 @@ public sealed class TypeDecl : Node
     ///
     /// .NET puts its own List and Stack in System.Collections.Generic, so a
     /// program that declares a Stack of its own in the global namespace gets
-    /// its own -- the one it wrote wins over the one it merely referenced.
-    /// Namespaces are flattened here, so the same answer is reached by asking
-    /// where a declaration came from: a source the driver links by default is
-    /// the library, and anything the programmer named is the program.
+    /// its own -- the one it wrote wins over the one it merely referenced --
+    /// in its own code, while the library's code keeps the library's. The
+    /// library's global types are System's here: one whose name a program's
+    /// takes is moved into System (Binder.MoveToSystem, and the monomorphiser
+    /// for a template), and the library's code looks there first. A source
+    /// the driver links by default is the library, and anything the
+    /// programmer named is the program.
     /// </summary>
     public bool FromLibrary { get; set; }
+
+    /// <summary>
+    /// A library type moved into System because a program's type took its
+    /// name (Binder.MoveToSystem, Monomorphiser.MoveToSystem). Kept on the
+    /// declaration, because the move outlives the pass that made it: the
+    /// library's own code finds exactly these in System first.
+    /// </summary>
+    public bool MovedToSystem { get; set; }
 
     /// <summary>
     /// Where this declaration began and ended in its file.

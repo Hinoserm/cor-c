@@ -1,0 +1,68 @@
+// test: string_concat_chains
+// expect-exit: 0
+// expect-output:
+// abc71.5TrueNode#t!
+// xyzabwv
+// 3three45
+// p3abc201q
+// 1234567
+// 1,2,n3,4,5,n6,7
+// [<u|v>]#u#v
+// Leaf
+// 0
+// 0,0;1,1;2,4;3,9;4,16;
+// acwxyz1345
+// const5const
+// True
+//
+// A chain of string joins is one join: its parts made text left to right,
+// adjacent literals joined when compiled (so "ab" + "cd" is the interned
+// "abcd", as C# makes it), empty literals dropped, and the rest made in one
+// allocation. Evaluation order, nulls, chars, numbers, an enum, a user-defined
+// + inside a chain, and chains longer than four. Expected output is real .NET's.
+
+using System;
+using System.Collections.Generic;
+
+readonly struct Tag
+{
+    public readonly string Name;
+    public Tag(string name) { Name = name; }
+    public static string operator +(Tag a, Tag b) => "<" + a.Name + "|" + b.Name + ">";
+    public override string ToString() => "#" + Name;
+}
+
+enum Kind { Leaf, Node }
+
+static class Program
+{
+    static readonly List<string> Log = new();
+    static string Step(string s) { Log.Add(s); return s; }
+    static int Count(int n) { Log.Add("n" + n); return n; }
+
+    static void Main()
+    {
+        string? none = null;
+        string a = "a", b = "b";
+        char c = 'c';
+        int n = 7;
+        object o = new Tag("t");
+        Console.WriteLine(a + b + c + n + none + 1.5 + true + Kind.Node + o + "!");
+        Console.WriteLine("x" + "y" + "z" + a + "" + "" + b + "w" + "v");
+        Console.WriteLine(1 + 2 + "three" + 4 + 5);
+        Console.WriteLine("p" + (1 + 2) + (a + (b + c)) + ('d' + 'e') + "q");
+        Console.WriteLine(Step("1") + Step("2") + Count(3) + Step("4") + Step("5") + Count(6) + Step("7"));
+        Console.WriteLine(string.Join(",", Log));
+        Tag t1 = new("u"), t2 = new("v");
+        Console.WriteLine("[" + (t1 + t2) + "]" + t1 + "" + t2);
+        Console.WriteLine("" + Kind.Leaf);
+        Console.WriteLine((none + none + none).Length);
+        string s = "";
+        for (int i = 0; i < 5; i++) s = s + i + "," + (i * i) + ";";
+        Console.WriteLine(s);
+        Console.WriteLine(string.Concat("a", null, "c") + string.Concat("w", "x", "y", "z") + string.Concat(new[] { "1", null, "3", "4", "5" }));
+        const string K = "con" + "st";
+        Console.WriteLine(K + K.Length + (object)K);
+        Console.WriteLine(ReferenceEquals("ab" + "cd", "abcd"));
+    }
+}

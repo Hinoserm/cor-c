@@ -1,0 +1,15 @@
+// test: tuple_null_untyped
+// expect-compile-error: tuple element 2 is null, and nothing here says what type it should be
+//
+// C# gives `(1, null)` no natural type: with nothing to convert it to, the
+// null element has no type, and a tuple class cannot have a field of the type
+// of null.
+
+static class Program
+{
+    static int Main()
+    {
+        var pair = (1, null);
+        return 0;
+    }
+}

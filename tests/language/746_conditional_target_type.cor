@@ -1,0 +1,38 @@
+// test: conditional target type
+// expect-exit: 0
+// expect-output:
+// list 3 first 1
+// array 2 first 7
+// enumerable 2
+//
+// A conditional whose arms have no type in common that one converts to --
+// a List<int> and an int[] -- takes the type it is wanted as, as C#'s
+// target-typed conditional does: returned as an IReadOnlyList<int>, it is
+// one, whichever arm ran, and not whatever interface the two happen to
+// share first.
+
+using System.Collections.Generic;
+
+static class Program
+{
+    static IReadOnlyList<int> Pick(bool useList, List<int> list)
+        => useList ? list : new int[] { 7, 8 };
+
+    static IEnumerable<int> Walk(bool useList, List<int> list)
+    {
+        return useList ? list : new int[] { 5, 6 };
+    }
+
+    static int Main()
+    {
+        List<int> list = new() { 1, 2, 3 };
+        IReadOnlyList<int> a = Pick(true, list);
+        IReadOnlyList<int> b = Pick(false, list);
+        System.Console.WriteLine("list " + a.Count + " first " + a[0]);
+        System.Console.WriteLine("array " + b.Count + " first " + b[0]);
+        int n = 0;
+        foreach (int x in Walk(false, list)) n++;
+        System.Console.WriteLine("enumerable " + n);
+        return 0;
+    }
+}

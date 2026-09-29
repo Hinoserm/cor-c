@@ -68,7 +68,7 @@ public static class LandingPadHomes
                 {
                     registers[i.Dest.Id] = i.Dest;
                 }
-                foreach (VReg u in IrInfo.Uses(i))
+                foreach (Operand uOperand in (i).Operands) if (uOperand is RegOperand { Reg: var u })
                 {
                     registers[u.Id] = u;
                 }

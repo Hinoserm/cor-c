@@ -7,14 +7,20 @@
 // collections 0
 // heap steady True
 //
-// The free lists are segregated by size: one list per eight-byte class up to
-// 256 bytes. Two hundred and fifty-six small blocks of mixed sizes are
+// The free lists are segregated by size: a page and a list for each class
+// (Gc, "size classes"). Two hundred and fifty-six small blocks of mixed sizes are
 // allocated, every other one below the top of the heap is freed -- leaving
 // holes that cannot coalesce, because a live block sits between each pair --
 // and then the same sizes are
 // asked for again. Every one of them must come back out of a hole rather than
-// off the bump pointer, which is what a size class is for: without one, a
+// from fresh memory, which is what a size class is for: without one, a
 // request walks a single list of slightly-wrong sizes and carves it finer.
+// "From a hole" is being one of the blocks freed, wherever it lies.
+//
+// The thread's buffer is retired first. A buffer with room answers before the
+// free index is asked (Gc.AllocKind), so the holes are for the requests made
+// when it has none -- and before any collection there is no chunk being
+// recycled to ask first (Gc.NextHole).
 
 static class Program
 {
@@ -57,6 +63,10 @@ static class Program
             live[i] = 0;
         }
 
+        GcLock.Enter();
+        Gc.Retire(Sys.ThreadBlock());
+        GcLock.Exit();
+
         long startHeap = Gc.HeapBytes;
         long fromHoles = 0;
         long fresh = 0;
@@ -64,8 +74,17 @@ static class Program
         for (int i = 1; i < 254; i = i + 2)
         {
             long at = Runtime.Alloc(SizeFor(i));
+            bool reused = false;
 
-            if (at <= top)
+            for (int h = 0; h < holeCount; h++)
+            {
+                if (holes[h] == at)
+                {
+                    reused = true;
+                }
+            }
+
+            if (reused)
             {
                 fromHoles = fromHoles + 1;
             }

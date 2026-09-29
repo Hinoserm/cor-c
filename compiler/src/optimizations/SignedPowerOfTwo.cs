@@ -10,9 +10,13 @@ public sealed class SignedPowerOfTwo : IPass
     {
         foreach (var block in f.Blocks)
         {
-            List<Instr> result = new();
-            foreach (Instr i in block.Instrs)
+            // A BLOCK IS COPIED ONLY ONCE THERE IS A DIVISION TO REWRITE in
+            // it. Nearly none has one, and every block of every function was
+            // copied instruction by instruction on every round of the pipeline.
+            List<Instr>? result = null;
+            for (int n = 0; n < block.Instrs.Count; n++)
             {
+                Instr i = block.Instrs[n];
                 // On targets without native I64, lowering spells language
                 // division as these compiler-owned arithmetic helpers. They
                 // obey the same signed quotient/remainder contract; unrelated
@@ -27,18 +31,19 @@ public sealed class SignedPowerOfTwo : IPass
                     };
                 if (operation is not (Opcode.DivS or Opcode.RemS) || i.Dest?.Type is not (IrType.I32 or IrType.I64)
                     || i.Operands.Count != 2 || i.Operands[1] is not ImmOperand divisor)
-                { result.Add(i); continue; }
+                { result?.Add(i); continue; }
                 // Let ordinary folding evaluate a wholly constant IR divide
                 // directly instead of expanding it into a chain needing more
                 // propagation rounds. Runtime calls have no such folder.
                 if (i.Op != Opcode.Call && i.Operands[0] is ImmOperand)
-                { result.Add(i); continue; }
+                { result?.Add(i); continue; }
                 IrType type = i.Dest.Type;
                 long signed = type == IrType.I32 ? unchecked((int)divisor.Value) : divisor.Value;
                 ulong magnitude = signed < 0 ? unchecked(0UL - (ulong)signed) : (ulong)signed;
                 // Leave zero and +/-1 alone, including MinValue/-1 overflow.
                 if (magnitude < 2 || (magnitude & (magnitude - 1)) != 0)
-                { result.Add(i); continue; }
+                { result?.Add(i); continue; }
+                result ??= block.Instrs.GetRange(0, n);
                 int shift = System.Numerics.BitOperations.TrailingZeroCount(magnitude);
                 VReg sign = Binary(Opcode.ShrS, i.Operands[0], new ImmOperand(type == IrType.I64 ? 63 : 31, IrType.I32));
                 VReg bias = Binary(Opcode.And, new RegOperand(sign), new ImmOperand((long)(magnitude - 1), type));
@@ -63,11 +68,11 @@ public sealed class SignedPowerOfTwo : IPass
                 VReg Binary(Opcode op, Operand a, Operand b)
                 {
                     VReg value = f.NewReg(type, "pow2div");
-                    result.Add(new Instr { Op = op, Dest = value, Line = i.Line, Operands = { a, b } });
+                    result!.Add(new Instr { Op = op, Dest = value, Line = i.Line, Operands = { a, b } });
                     return value;
                 }
             }
-            block.Instrs.Clear(); block.Instrs.AddRange(result);
+            if (result is not null) { block.Instrs.Clear(); block.Instrs.AddRange(result); }
         }
     }
 }

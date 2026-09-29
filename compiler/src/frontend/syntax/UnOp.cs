@@ -14,4 +14,8 @@ public enum UnOp : byte
     /// <summary>C# checked and unchecked arithmetic contexts.</summary>
     Checked,
     Unchecked,
+
+    /// <summary><c>+x</c>: the value, promoted as the numeric operators promote
+    /// (`+b` of a byte is an int), or a type's own op_UnaryPlus.</summary>
+    Plus,
 }

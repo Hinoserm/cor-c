@@ -81,6 +81,12 @@ public static partial class Program
         Try("inline: constant branch budget preserves runtime calls and growth limits", ConstantBranchInlining);
         Try("scalar objects: widths, initialization and conservative escape barriers", ScalarObjectBoundaries);
         Try("escape: owned allocations preserve long free-call ABI", OwnedFreeAbi);
+        Try("escape: recursion cycles solved to their least fixed point", EscapeCycles);
+        Try("escape: a fresh function's result is owned by its caller", FreshReturnOwnership);
+        Try("escape: a callee-filled field dies with its owner", CalleeFilledField);
+        Try("escape: one liveness judges every allocation in a function", EscapeSharedLiveness);
+        Try("escape: calls into other units become conditions for the link", EscapeLinkHints);
+        Try("escape: a variable fed by another unit's function waits for the link", OwnedVariableWaits);
         Try("local copies: reassignment, branches, joins and loops preserve values", LocalCopyBoundaries);
         Try("division reuse: signed results and redefinition barriers", DivisionReuseBoundaries);
         Try("integer chains: modular constants and mutable-source barriers", IntegerChainBoundaries);
@@ -114,6 +120,7 @@ public static partial class Program
         Try("peephole: compare inversion refused across a redefinition", CompareInversionRefused);
         Try("verify: missing terminator and bad types are reported", VerifierCatches);
         Try("liveness: loop-carried register is live around the loop", LivenessLoop);
+        Try("liveness: registers made after the analysis are skipped, older answers kept", LivenessNewerRegisters);
         Try("cfg: dominators and reverse postorder", CfgQueries);
         Try("pipeline: trace hook fires per pass", PipelineTrace);
         Try("ssa: loop gets header phis and every register one definition", SsaLoop);
@@ -481,6 +488,252 @@ public static partial class Program
         SameResults(SwitchLoop, Inputs, new LocalCopies());
     }
 
+    // The free helpers the escape pass needs to see in a module before it
+    // frees anything itself.
+    private static void AddFreeHelpers(Module module)
+    {
+        Function free = new(Escape.Freer, IrType.Void);
+        free.Params.Add(free.NewReg(IrType.I64));
+        new Builder(free, free.NewBlock("entry")).Ret();
+        module.Functions.Add(free);
+        Function field = new(Escape.FieldFreer, IrType.Void);
+        field.Params.Add(field.NewReg(IrType.I64)); field.Params.Add(field.NewReg(IrType.I64));
+        new Builder(field, field.NewBlock("entry")).Ret();
+        module.Functions.Add(field);
+    }
+
+    private static void EscapeCycles()
+    {
+        // walk(p, n) -> step(p, n) -> walk(p, n): a two-function cycle that
+        // hands the caller's object round. Read-only, the object stays in the
+        // caller's frame; stored anywhere on the cycle, it stays on the heap.
+        foreach (string mode in new[] { "read", "retain" })
+        {
+            Module module = new("cycle-" + mode);
+            (Function f, Builder b) = Fn(IrType.I32);
+            module.Functions.Add(f); module.Entry = f.Name;
+            VReg obj = b.Unary(Opcode.Trunc64, b.Call(Escape.Allocator, IrType.I64, new ImmOperand(24, IrType.I64))!);
+            b.Ret(new RegOperand(b.Call("walk", IrType.I32, new RegOperand(obj))!));
+            foreach ((string name, string next) in new[] { ("walk", "step"), ("step", "walk") })
+            {
+                Function g = new(name, IrType.I32);
+                VReg p = g.NewReg(IrType.I32); g.Params.Add(p);
+                Builder gb = new(g, g.NewBlock("entry"));
+                if (mode == "retain" && name == "step") gb.Store(new SymOperand("kept-object"), new RegOperand(p), 0, 4);
+                VReg read = gb.Load(IrType.I32, p, 8, 4, false);
+                VReg deeper = gb.Call(next, IrType.I32, new RegOperand(p))!;
+                gb.Ret(new RegOperand(gb.Binary(Opcode.Add, read, deeper)));
+                module.Functions.Add(g);
+            }
+            Escape pass = new(); pass.Run(module);
+            Verifier.Check(f, "cycle caller " + mode);
+            Assert(pass.Promoted == (mode == "read" ? 1 : 0), mode + ": the cycle's summary decides the object's place");
+        }
+    }
+
+    private static void EscapeSharedLiveness()
+    {
+        // In one loop: a scratch object, dead before the loop comes round, and
+        // a second object the next iteration still reads through `held`. The
+        // scratch one is promoted first; the second is then judged against
+        // the analysis made before that promotion and must still be refused.
+        Module module = new("shared-liveness");
+        (Function f, Builder b) = Fn(IrType.I64, IrType.I32);
+        module.Functions.Add(f); module.Entry = f.Name;
+        Block body = f.NewBlock("body");
+        Block exit = f.NewBlock("exit");
+        VReg n = b.Reg(IrType.I32, "n");
+        VReg held = b.Reg(IrType.I32, "held");
+        VReg sum = b.Reg(IrType.I64, "sum");
+        b.CopyTo(n, new ImmOperand(0, IrType.I32));
+        b.CopyTo(held, new ImmOperand(0, IrType.I32));
+        b.CopyTo(sum, new ImmOperand(0, IrType.I64));
+        b.Jump(body);
+        b.SetBlock(body);
+        VReg scratch = b.Unary(Opcode.Trunc64, b.Call(Escape.Allocator, IrType.I64, new ImmOperand(16, IrType.I64))!);
+        b.Store(new RegOperand(scratch), new RegOperand(sum), 0, 8);
+        VReg kept = b.Unary(Opcode.Trunc64, b.Call(Escape.Allocator, IrType.I64, new ImmOperand(16, IrType.I64))!);
+        b.Store(new RegOperand(kept), new RegOperand(b.Load(IrType.I64, scratch, 0, 8)), 0, 8);
+        b.CopyTo(sum, new RegOperand(b.Load(IrType.I64, held, 0, 8)));   // last iteration's object, read after this one is made
+        b.CopyTo(held, new RegOperand(kept));
+        b.CopyTo(n, new RegOperand(b.Binary(Opcode.Add, n, 1)));
+        b.Branch(b.Binary(Opcode.LtS, n, f.Params[0]), body, exit);
+        b.SetBlock(exit);
+        b.Ret(new RegOperand(sum));
+
+        Escape pass = new(); pass.Run(module);
+        Verifier.Check(f, "shared liveness");
+        Assert(pass.Promoted == 1, "the scratch object is promoted, the carried one is not");
+        int allocations = f.Blocks.SelectMany(x => x.Instrs).Count(x => x.Op == Opcode.Call && x.Callee == Escape.Allocator);
+        Assert(allocations == 1, "the carried object stays an allocation");
+    }
+
+    private static void EscapeLinkHints()
+    {
+        // lend: an object handed to `ext`, which this unit does not define.
+        // pass(p): hands its parameter to `ext` too. relay(): returns what
+        // `make` returns, also another unit's. Nothing is decided here; the
+        // link is told what would decide it.
+        Module module = new("hints") { LeavesLinkHints = true };
+        (Function lend, Builder b) = Fn(IrType.I64);
+        lend.Exported = true;
+        module.Functions.Add(lend); module.Entry = lend.Name;
+        Instr? alloc = null;
+        VReg obj = b.Unary(Opcode.Trunc64, b.Call(Escape.Allocator, IrType.I64, new ImmOperand(24, IrType.I64))!);
+        foreach (Block block in lend.Blocks) foreach (Instr i in block.Instrs) if (i.Op == Opcode.Call) alloc = i;
+        b.Call("ext", IrType.Void, new RegOperand(obj));
+        b.Ret(new RegOperand(b.Load(IrType.I64, obj, 8, 8)));
+
+        Function pass = new("pass", IrType.Void) { Exported = true };
+        VReg p = pass.NewReg(IrType.I32); pass.Params.Add(p);
+        Builder pb = new(pass, pass.NewBlock("entry"));
+        pb.Call("ext", IrType.Void, new RegOperand(p));
+        pb.Ret();
+        module.Functions.Add(pass);
+
+        Function relay = new("relay", IrType.I32) { Exported = true };
+        Builder rb = new(relay, relay.NewBlock("entry"));
+        VReg made = rb.Call("make", IrType.I32)!;
+        rb.Ret(new RegOperand(made));
+        module.Functions.Add(relay);
+
+        Escape escape = new(); escape.Run(module);
+        Verifier.Check(lend, "hinted lend");
+        Assert(escape.Promoted == 0, "an object lent to another unit stays on the heap in this unit");
+        Corsac.Lang.Lto.LifetimeHints hints = module.LifetimeHints!;
+        Assert(hints.Pending.Count == 1 && hints.Pending[0].Stays.Single() == ("ext", 0) && hints.Pending[0].Fresh.Count == 0,
+            "the lent object's pending condition names ext's parameter");
+        Assert(alloc is not null && module.KeepCalls.Contains(alloc), "the pending allocation is kept from the inliner");
+        var passHint = hints.Functions.Single(f => f.Name == "pass");
+        Assert(passHint.Parameters.Single() is { } c && c.Stays.Single() == ("ext", 0), "a parameter handed on is a condition, not an escape");
+        var relayHint = hints.Functions.Single(f => f.Name == "relay");
+        Assert(relayHint.Fresh is { } fresh && fresh.Fresh.Single() == "make" && fresh.Stays.Count == 0, "a result from another unit is fresh if its maker is");
+        Assert(escape.FreshFunctions == 0, "nothing is fresh in this unit alone");
+
+        // The link says ext keeps nothing: lend's object goes in its frame.
+        Corsac.Lang.Lto.LifetimeFacts facts = new();
+        facts.Escapes["ext"] = new[] { false };
+        Assert(Escape.RunAtLink(lend, new Escape.LinkFacts(facts)) == 1, "with the link's answer the object is placed");
+        Verifier.Check(lend, "lend at link");
+        Assert(!lend.Blocks.SelectMany(x => x.Instrs).Any(i => i.Op == Opcode.Call && i.Callee == Escape.Allocator), "no allocation left");
+    }
+
+    private static void OwnedVariableWaits()
+    {
+        // s = next(s), again and again, where `next` is another unit's: this
+        // unit cannot tell that next hands over a fresh object or keeps
+        // nothing it is handed, so s is not owned here -- it is pending on
+        // exactly that. A call to an intrinsic never becomes a condition.
+        Module module = new("waits") { LeavesLinkHints = true };
+        (Function f, Builder b) = Fn(IrType.I32, IrType.I32);
+        f.Exported = true;
+        module.Functions.Add(f); module.Entry = f.Name;
+        Block loop = f.NewBlock("loop"), done = f.NewBlock("done");
+        VReg s = b.Reg(IrType.I32, "s");
+        VReg n = b.Reg(IrType.I32, "n");
+        b.CopyTo(s, new ImmOperand(0, IrType.I32));
+        b.CopyTo(n, new ImmOperand(0, IrType.I32));
+        b.Jump(loop);
+        b.SetBlock(loop);
+        VReg made = b.Call("next", IrType.I32, new RegOperand(s))!;
+        b.CopyTo(s, new RegOperand(made));
+        VReg block = b.Call("__x86.i.threadblock", IrType.I32)!;
+        b.Store(new RegOperand(block), new RegOperand(n), 0, 4);
+        b.CopyTo(n, new RegOperand(b.Binary(Opcode.Add, n, 1)));
+        b.Branch(b.Binary(Opcode.LtS, n, f.Params[0]), loop, done);
+        b.SetBlock(done);
+        b.Ret(new RegOperand(b.Load(IrType.I32, s, 0, 4)));
+        foreach (string helper in new[] { Escape.Freer, Escape.ReplacedFreer })
+        {
+            Function h = new(helper, IrType.Void);
+            h.Params.Add(h.NewReg(IrType.I64));
+            if (helper == Escape.ReplacedFreer) h.Params.Add(h.NewReg(IrType.I64));
+            new Builder(h, h.NewBlock("entry")).Ret();
+            module.Functions.Add(h);
+        }
+        Escape escape = new(); escape.Run(module);
+        Verifier.Check(f, "waiting variable");
+        Assert(!f.Blocks.SelectMany(x => x.Instrs).Any(i => i.Callee == Escape.ReplacedFreer), "not owned by this unit alone");
+        var pending = module.LifetimeHints!.Pending;
+        Assert(pending.Any(c => c.Fresh.Contains("next") && c.Stays.Contains(("next", 0))),
+            "pending on next handing over a fresh object and keeping its argument's");
+        Assert(pending.All(c => !c.Fresh.Any(Escape.IsIntrinsic) && !c.Stays.Any(x => Escape.IsIntrinsic(x.Callee))),
+            "no intrinsic is ever a condition");
+
+        // With the link's answer the same function owns s.
+        Corsac.Lang.Lto.LifetimeFacts facts = new();
+        facts.Escapes["next"] = new[] { false };
+        facts.Fresh.Add("next");
+        facts.Helpers.Add(Escape.Freer); facts.Helpers.Add(Escape.ReplacedFreer);
+        Assert(Escape.RunAtLink(f, new Escape.LinkFacts(facts)) >= 1, "owned once the link answers");
+        Verifier.Check(f, "waiting variable at link");
+        Assert(f.Blocks.SelectMany(x => x.Instrs).Any(i => i.Callee == Escape.ReplacedFreer), "the previous value is given back at each assignment");
+    }
+
+    private static void FreshReturnOwnership()
+    {
+        // make(n) allocates n bytes and returns them; the caller reads one word.
+        // Fresh, the caller owns and frees the result; kept in a static by make,
+        // it is neither fresh nor freed.
+        foreach (string mode in new[] { "fresh", "kept" })
+        {
+            Module module = new("fresh-" + mode);
+            (Function f, Builder b) = Fn(IrType.I64, IrType.I64);
+            module.Functions.Add(f); module.Entry = f.Name;
+            VReg made = b.Call("make", IrType.I32, new RegOperand(f.Params[0]))!;
+            b.Ret(new RegOperand(b.Load(IrType.I64, made, 16, 8)));
+            Function make = new("make", IrType.I32);
+            VReg n = make.NewReg(IrType.I64); make.Params.Add(n);
+            Builder mb = new(make, make.NewBlock("entry"));
+            VReg at = mb.Unary(Opcode.Trunc64, mb.Call(Escape.Allocator, IrType.I64, new RegOperand(n))!);
+            mb.Store(new RegOperand(at), new ImmOperand(7, IrType.I64), 16, 8);
+            if (mode == "kept") mb.Store(new SymOperand("kept-array"), new RegOperand(at), 0, 4);
+            mb.Ret(new RegOperand(at));
+            module.Functions.Add(make);
+            AddFreeHelpers(module);
+            Escape pass = new(); pass.Run(module);
+            Verifier.Check(f, "fresh caller " + mode); Verifier.Check(make, "fresh callee " + mode);
+            Assert(pass.FreshFunctions == (mode == "fresh" ? 1 : 0), mode + ": make is summarised as it is");
+            Assert(pass.OwnedReturns == (mode == "fresh" ? 1 : 0), mode + ": the caller owns only a fresh result");
+            int frees = f.Blocks.SelectMany(x => x.Instrs).Count(i => i.Callee == Escape.Freer);
+            Assert(mode == "fresh" ? frees >= 1 : frees == 0, mode + ": frees placed only for an owned result");
+        }
+    }
+
+    private static void CalleeFilledField()
+    {
+        // fill(o) makes a child array and stores it at o+8. The caller's owner
+        // is a frame slot; with fill keeping nothing else the field is freed
+        // with the owner, and with fill also keeping the child it is not.
+        foreach (string mode in new[] { "owned", "leaked" })
+        {
+            Module module = new("fields-" + mode);
+            (Function f, Builder b) = Fn(IrType.I64, IrType.I64);
+            module.Functions.Add(f); module.Entry = f.Name;
+            VReg owner = b.Unary(Opcode.Trunc64, b.Call(Escape.Allocator, IrType.I64, new ImmOperand(16, IrType.I64))!);
+            b.Call("fill", IrType.Void, new RegOperand(owner), new RegOperand(f.Params[0]));
+            VReg child = b.Load(IrType.I32, owner, 8, 4, false);
+            b.Ret(new RegOperand(b.Load(IrType.I64, child, 16, 8)));
+            Function fill = new("fill", IrType.Void);
+            VReg o = fill.NewReg(IrType.I32); fill.Params.Add(o);
+            VReg size = fill.NewReg(IrType.I64); fill.Params.Add(size);
+            Builder fb = new(fill, fill.NewBlock("entry"));
+            VReg made = fb.Unary(Opcode.Trunc64, fb.Call(Escape.Allocator, IrType.I64, new RegOperand(size))!);
+            fb.Store(new RegOperand(made), new ImmOperand(5, IrType.I64), 16, 8);
+            fb.Store(new RegOperand(o), new RegOperand(made), 8, 4);
+            if (mode == "leaked") fb.Store(new SymOperand("kept-child"), new RegOperand(made), 0, 4);
+            fb.Ret();
+            module.Functions.Add(fill);
+            AddFreeHelpers(module);
+            Escape pass = new(); pass.Run(module);
+            Verifier.Check(f, "field owner " + mode); Verifier.Check(fill, "field filler " + mode);
+            Assert(pass.Promoted == 1, mode + ": the owner is a frame slot either way");
+            Assert(pass.FieldsOwned == (mode == "owned" ? 1 : 0), mode + ": the field is freed only when nothing else keeps it");
+            int fieldFrees = f.Blocks.SelectMany(x => x.Instrs).Count(i => i.Callee == Escape.FieldFreer);
+            Assert(mode == "owned" ? fieldFrees >= 1 : fieldFrees == 0, mode + ": field frees placed accordingly");
+        }
+    }
+
     private static void OwnedFreeAbi()
     {
         Module module = new("owned-abi");
@@ -498,9 +751,43 @@ public static partial class Program
         Assert(pass.Owned == 1, "dynamic local allocation is owned");
         Verifier.Check(f, "owned allocation ABI");
         Instr[] calls = f.Blocks.SelectMany(x => x.Instrs).Where(i => i.Callee == Escape.Freer).ToArray();
-        Assert(calls.Length == 2, "free before replacement and at return");
+        // Dead within the block that made it: one free, right after the load
+        // that is its last use, and no slot.
+        Assert(calls.Length == 1, "an object dead in its own block is freed once");
+        List<Instr> body = f.Blocks[0].Instrs;
+        int freeAt = body.IndexOf(calls[0]), loadAt = body.FindIndex(i => i.Op == Opcode.Load);
+        Assert(freeAt > loadAt && freeAt < body.Count - 1, "the free follows the last use and precedes the return");
+        Assert(f.Slots.Count == 0, "no slot for an object freed at its last use");
         Assert(calls.All(i => i.Operands.Count == 1 && i.Operands[0].Type == IrType.I64),
             "every compiler-inserted free receives a complete long address");
+
+        // In a loop, used in the next block too: the slot, last time's object
+        // given back before the next is made, and the last at the return.
+        Module looped = new("owned-loop");
+        (Function g, Builder lb) = Fn(IrType.I64, IrType.I64);
+        looped.Functions.Add(g); looped.Entry = g.Name;
+        Block head = g.NewBlock("head"), next = g.NewBlock("next"), done = g.NewBlock("done");
+        VReg n = lb.Reg(IrType.I64, "n");
+        lb.CopyTo(n, new ImmOperand(0, IrType.I64));
+        lb.Jump(head);
+        lb.SetBlock(head);
+        VReg made = lb.Unary(Opcode.Trunc64, lb.Call(Escape.Allocator, IrType.I64, new RegOperand(g.Params[0]))!);
+        lb.Store(new RegOperand(made), new RegOperand(n), 0, 8);
+        lb.Jump(next);
+        lb.SetBlock(next);
+        lb.CopyTo(n, new RegOperand(lb.Binary(Opcode.Add, lb.Load(IrType.I64, made, 0, 8), 1)));
+        lb.Branch(lb.Binary(Opcode.LtS, n, 10), head, done);
+        lb.SetBlock(done);
+        lb.Ret(new RegOperand(n));
+        Function loopFree = new(Escape.Freer, IrType.Void);
+        loopFree.Params.Add(loopFree.NewReg(IrType.I64));
+        new Builder(loopFree, loopFree.NewBlock("entry")).Ret();
+        looped.Functions.Add(loopFree);
+        Escape loopPass = new(); loopPass.Run(looped);
+        Verifier.Check(g, "owned loop allocation");
+        Instr[] loopCalls = g.Blocks.SelectMany(x => x.Instrs).Where(i => i.Callee == Escape.Freer).ToArray();
+        Assert(loopPass.Owned == 1 && loopCalls.Length == 2, "a repeating site gives last time's back, and the last at the return");
+        Assert(loopCalls.All(i => i.Operands.Count == 1 && i.Operands[0].Type == IrType.I64), "loop frees receive a complete long address");
     }
 
     private static void ScalarObjectBoundaries()
@@ -1353,6 +1640,35 @@ public static partial class Program
         Assert(!live.IsLiveIn(f.Entry, i), "i is defined before use in entry");
         Assert(live.LiveOut(exit).Count() == 0, "nothing live after ret");
         Assert(live.LiveIn(body).Count() == 3, "body live-in count");
+    }
+
+    private static void LivenessNewerRegisters()
+    {
+        // A pass that adds bookkeeping of its own keeps asking the analysis it
+        // made first; the new registers must neither throw nor change it.
+        (Function f, Builder b) = Fn(IrType.I32, IrType.I32);
+        Block body = f.NewBlock("body");
+        Block exit = f.NewBlock("exit");
+        VReg i = b.Reg(IrType.I32, "i");
+        b.CopyTo(i, new ImmOperand(0, IrType.I32));
+        b.Jump(body);
+        b.SetBlock(body);
+        b.CopyTo(i, new RegOperand(b.Binary(Opcode.Add, i, 1)));
+        b.Branch(b.Binary(Opcode.LtS, i, f.Params[0]), body, exit);
+        b.SetBlock(exit);
+        b.Ret(new RegOperand(i));
+
+        Liveness live = new(f);
+        VReg late = f.NewReg(IrType.I32, "late");
+        for (int k = 0; k < 200; k++) f.NewReg(IrType.I32, "pad");  // past the analysis's last bit-vector word
+        VReg later = f.NewReg(IrType.I32, "later");
+        body.Instrs.Insert(0, new Instr { Op = Opcode.Copy, Dest = late, Operands = { new RegOperand(i) } });
+        body.Instrs.Insert(1, new Instr { Op = Opcode.Add, Dest = later, Operands = { new RegOperand(late), new RegOperand(i) } });
+        Assert(live.Tracks(i) && !live.Tracks(late) && !live.Tracks(later), "only registers from before the analysis are tracked");
+        bool iLive = false;
+        foreach ((Instr instr, ulong[] after) in live.WalkBackwards(body, skipNewer: true))
+            if (ReferenceEquals(instr, body.Instrs[1])) iLive = Liveness.Test(after, i.Id);
+        Assert(iLive, "an older register keeps its answer past the new instructions");
     }
 
     private static void CfgQueries()

@@ -15,3 +15,12 @@ snapshots the checkout's committed revision into a private directory under
 `build/`, records its revision, and builds the image there. It does not update
 the checkout or use its uncommitted files. Update the dedicated checkout
 explicitly when a newer OS revision is wanted.
+
+## Separate units
+
+`separate-units.sh` compiles language tests the way the OS builds its
+programs: each test as one unit against the library's declarations
+(`--ref`, `--decl-index`), linked with a runtime and class library object
+compiled once, apart. It runs a regression set by default, `all` for every
+language test, or the tests it is given. Every language test must pass this
+way as well as compiled whole.

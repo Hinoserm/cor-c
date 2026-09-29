@@ -80,6 +80,10 @@ public sealed class Inline : IParallelModulePass
     /// still carries none of it.
     /// </summary>
     public bool KeepFreeHelper { get; init; }
+
+    /// <summary>Functions never inlined in this run, by label (the link's first round keeps the allocators).</summary>
+    public IReadOnlyCollection<string> Keep { get; init; } = Array.Empty<string>();
+
     public int Workers { get; set; } = 1;
 
     public void Run(Module m)
@@ -112,7 +116,13 @@ public sealed class Inline : IParallelModulePass
         if (KeepFreeHelper)
         {
             addressTaken.Add(Escape.Freer);
+            addressTaken.Add(Escape.FieldFreer);
+            addressTaken.Add(Escape.ReplacedFreer);
+            // What a barrier on a replaced object becomes (ScalarObjects).
+            addressTaken.Add(Escape.ValueBarrier);
         }
+        addressTaken.UnionWith(Keep);
+        _keepCalls = m.KeepCalls;
 
         // Bottom-up over the call graph: callees before callers, so a leaf
         // reaches its caller's caller already folded in. Functions in a
@@ -130,6 +140,8 @@ public sealed class Inline : IParallelModulePass
 
         RemoveDeadFunctions(m, addressTaken);
     }
+
+    private IReadOnlySet<Instr> _keepCalls = new HashSet<Instr>();
 
     private sealed class Analyses
     {
@@ -183,7 +195,7 @@ public sealed class Inline : IParallelModulePass
                 for (int i = 0; i < b.Instrs.Count; i++)
                 {
                     Instr call = b.Instrs[i];
-                    if (call.Op != Opcode.Call || call.Callee is null)
+                    if (call.Op != Opcode.Call || call.Callee is null || _keepCalls.Contains(call))
                     {
                         continue;
                     }
@@ -191,7 +203,10 @@ public sealed class Inline : IParallelModulePass
                     {
                         continue;
                     }
-                    if (!Inlineable(callee, addressTaken) || recursive.Contains(callee))
+                    // The collector's own notes stay calls: the escape rules
+                    // know them by name, and inlined their ring store reads
+                    // as the reported object escaping.
+                    if (!Inlineable(callee, addressTaken) || recursive.Contains(callee) || Escape.IsCollectorLeaf(callee.Name))
                     {
                         continue;
                     }
@@ -284,7 +299,19 @@ public sealed class Inline : IParallelModulePass
     /// <summary>Whether a body can be moved into a caller at all.</summary>
     internal static bool Inlineable(Function callee, HashSet<string> addressTaken)
     {
-        if (callee.Blocks.Count == 0 || addressTaken.Contains(callee.Name) || callee.Async is not null)
+        if (callee.Blocks.Count == 0 || addressTaken.Contains(callee.Name) || callee.Async is not null || callee.NoInlining)
+        {
+            return false;
+        }
+
+        // A NOTE TO THE COLLECTOR STAYS A CALL: the write barrier's slow path
+        // and what it reports with (Escape.IsCollectorNote). Escape analysis
+        // knows such a call keeps no pointer the program can use; spliced in,
+        // its body is a store of the reference into the collector's log, and
+        // every object whose field a barrier guarded escaped. Whether that
+        // happened was the inliner's size arithmetic of the day. The fast path
+        // -- the Marking test -- is already inline at every store.
+        if (Escape.IsCollectorNote(callee.Name))
         {
             return false;
         }
@@ -592,8 +619,12 @@ public sealed class Inline : IParallelModulePass
     /// it everywhere it was wanted. Exported symbols a library must keep
     /// are not touched.
     /// </summary>
-    private static void RemoveDeadFunctions(Module m, HashSet<string> addressTaken)
+    internal static void RemoveDeadFunctions(Module m, HashSet<string> addressTaken)
     {
+        // A COROUTINE'S CARD MARK IS CALLED FROM CODE NOT YET WRITTEN: the
+        // suspensions become saves and calls after the optimiser has finished
+        // (AsyncTransform), so while any function is one, its helper stays.
+        bool coroutines = m.Functions.Any(fn => fn.Async is not null);
         bool changed = true;
         while (changed)
         {
@@ -602,7 +633,8 @@ public sealed class Inline : IParallelModulePass
             for (int i = m.Functions.Count - 1; i >= 0; i--)
             {
                 Function f = m.Functions[i];
-                if (f.Name == m.Entry || addressTaken.Contains(f.Name) || callers.GetValueOrDefault(f.Name) > 0)
+                if (f.Name == m.Entry || addressTaken.Contains(f.Name) || callers.GetValueOrDefault(f.Name) > 0
+                    || (coroutines && f.Name == AsyncTransform.CardMarkObject))
                 {
                     continue;
                 }

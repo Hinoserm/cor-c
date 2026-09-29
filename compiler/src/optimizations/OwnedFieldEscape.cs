@@ -130,6 +130,13 @@ internal sealed class OwnedFieldEscape
                 }
                 continue;
             }
+            // THE COLLECTOR TOLD OF A STORE (the write barrier): it reads the
+            // field's old value for the collector and keeps no pointer the
+            // program can use -- the rule Escape keeps for the same call. Its
+            // argument is the field's address as the target's word, which on
+            // i386 passes through a widening that hid it from the callee
+            // walk below, and in long mode did not.
+            if (i.Op == Opcode.Call && Escape.IsCollectorNote(i.Callee)) continue;
             if (i.Op == Opcode.Call)
             {
                 if (i.Callee is null || !_functions.TryGetValue(i.Callee, out Function? callee)) return false;

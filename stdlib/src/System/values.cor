@@ -94,7 +94,7 @@ struct Guid {
 
         if (format == null || format.Length == 0) { format = "D"; }
 
-        char kind = (char)Sys.GetByte(format, 0);
+        char kind = Sys.GetChar(format, 0);
         string plain = String.Concat(
             Hex(b, 3), String.Concat(Hex(b, 2), String.Concat(Hex(b, 1), Hex(b, 0))));
         string second = String.Concat(Hex(b, 5), Hex(b, 4));
@@ -157,14 +157,16 @@ struct Guid {
         return made;
     }
 
-    public static bool TryParse(string text, out Guid value) {
+    public static bool TryParse(string? text, out Guid value) {
+        // .NET's answer for no string at all: false, and the default.
+        if (text is null) { value = default; return false; }
         value = Empty;
         if (text == null) { return false; }
 
         StringBuilder digits = new StringBuilder();
 
         for (int i = 0; i < text.Length; i++) {
-            char c = (char)Sys.GetByte(text, i);
+            char c = Sys.GetChar(text, i);
 
             if (c == '-' || c == '{' || c == '}' || c == '(' || c == ')' || c == ' ') { continue; }
             if (Digit(c) < 0) { return false; }
@@ -178,8 +180,8 @@ struct Guid {
         int[] order = new int[] { 3, 2, 1, 0, 5, 4, 7, 6, 8, 9, 10, 11, 12, 13, 14, 15 };
 
         for (int i = 0; i < 16; i++) {
-            int hi = Digit((char)Sys.GetByte(all, i * 2));
-            int lo = Digit((char)Sys.GetByte(all, i * 2 + 1));
+            int hi = Digit(Sys.GetChar(all, i * 2));
+            int lo = Digit(Sys.GetChar(all, i * 2 + 1));
 
             bytes[order[i]] = (byte)(hi * 16 + lo);
         }
@@ -292,7 +294,9 @@ namespace System
 
         /// NULL WHEN IT FAILS, which is why the out parameter is nullable: .NET
         /// declares this one `out Version? result` for the same reason.
-        public static bool TryParse(string text, out Version? value) {
+        public static bool TryParse(string? text, out Version? value) {
+            // .NET's answer for no string at all: false, and the default.
+            if (text is null) { value = default; return false; }
             value = null;
             if (text == null || text.Length == 0) { return false; }
 

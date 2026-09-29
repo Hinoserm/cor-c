@@ -1,0 +1,43 @@
+// test: trace_named_after_unwind
+// expect-exit: 0
+// expect-output:
+// Inner True Middle True Main True
+// deep 30
+// same True
+// text True
+//
+// A throw records where it was, and the names come when the trace is read,
+// as .NET's do. Read long after the frames that threw are gone -- the stack
+// reused by deeper calls since -- the trace still names them, reading it
+// twice gives the same text, and ToString carries it. The two throwing
+// methods say [MethodImpl(MethodImplOptions.NoInlining)], which keeps each
+// its own frame -- without it Middle is folded into Main, in .NET's Release
+// builds as here. Output checked against .NET.
+
+using System;
+using System.Runtime.CompilerServices;
+
+static class Program
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Inner() => throw new InvalidOperationException("no");
+
+    [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.NoOptimization)]
+    static void Middle() => Inner();
+
+    static int Deep(int n) => n == 0 ? 0 : 1 + Deep(n - 1);
+
+    static void Main()
+    {
+        Exception? caught = null;
+        try { Middle(); }
+        catch (Exception e) { caught = e; }
+
+        Deep(200);
+        string trace = caught!.StackTrace!;
+        Console.WriteLine("Inner " + trace.Contains("Inner") + " Middle " + trace.Contains("Middle") + " Main " + trace.Contains("Main"));
+        Console.WriteLine("deep " + Deep(30));
+        Console.WriteLine("same " + (caught.StackTrace == trace));
+        Console.WriteLine("text " + caught.ToString().Contains("Inner"));
+    }
+}

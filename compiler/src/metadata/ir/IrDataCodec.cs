@@ -9,9 +9,9 @@ public static class IrDataCodec
         if (item.Zero && item.Bytes.Any(value => value != 0)) throw new InvalidDataException("Nonzero bytes in zero-filled IR data");
         using MemoryStream stream = new();
         using BinaryWriter writer = new(stream, IrBinary.Utf8, leaveOpen: true);
-        writer.Write(1); IrBinary.Text(writer, item.Name); writer.Write(item.Align);
+        writer.Write(2); IrBinary.Text(writer, item.Name); writer.Write(item.Align);
         writer.Write(item.ReadOnly); writer.Write(item.Zero); writer.Write(item.Exported);
-        writer.Write(item.FromLibrary); writer.Write(item.Coalescible);
+        writer.Write(item.FromLibrary); writer.Write(item.Coalescible); writer.Write(item.NoReferences);
         writer.Write(item.Bytes.Length);
         if (!item.Zero) writer.Write(item.Bytes);
         writer.Write(item.Relocs.Count);
@@ -28,16 +28,18 @@ public static class IrDataCodec
         using BinaryReader reader = new(stream, IrBinary.Utf8);
         try
         {
-            if (reader.ReadInt32() != 1) throw new InvalidDataException("Unsupported IR data version");
+            int version = reader.ReadInt32();
+            if (version is not (1 or 2)) throw new InvalidDataException("Unsupported IR data version");
             string name = IrBinary.Name(reader, budget); int align = reader.ReadInt32();
             bool readOnly = IrBinary.Flag(reader), zero = IrBinary.Flag(reader), exported = IrBinary.Flag(reader);
             bool library = IrBinary.Flag(reader), coalescible = IrBinary.Flag(reader);
+            bool noReferences = version >= 2 && IrBinary.Flag(reader);
             int size = reader.ReadInt32();
             if (align < 1 || align > 4096 || (align & (align - 1)) != 0 || size < 0 || size > maximumBytes
                 || !zero && size > stream.Length - stream.Position) throw new InvalidDataException("Invalid IR data layout");
             budget.Charge(size, 1, "data bytes");
             byte[] bytes = zero ? new byte[size] : reader.ReadBytes(size);
-            DataItem item = new(name, bytes) { Align = align, ReadOnly = readOnly, Zero = zero, Exported = exported, FromLibrary = library, Coalescible = coalescible };
+            DataItem item = new(name, bytes) { Align = align, ReadOnly = readOnly, Zero = zero, Exported = exported, FromLibrary = library, Coalescible = coalescible, NoReferences = noReferences };
             int relocations = IrBinary.Count(reader);
             budget.Charge(relocations, 48, "data relocations");
             for (int i = 0; i < relocations; i++)

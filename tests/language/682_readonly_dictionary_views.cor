@@ -1,0 +1,42 @@
+// test: readonly_dictionary_views
+// expect-exit: 0
+// expect-output:
+// Dictionary 2 a,b 1,2
+// SortedDictionary 2 a,b 1,2
+// ReadOnlyDictionary 2 a,b 1,2
+//
+// Keys and Values through IReadOnlyDictionary, on every dictionary that says
+// it is one. The class's own properties answer lists; the interface's answer
+// sequences, so each class implements the two explicitly -- and one that did
+// not was a type the shared library copy refused to compile.
+
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+
+static class Program
+{
+    static void Show(string name, IReadOnlyDictionary<string, int> map)
+    {
+        List<string> keys = new List<string>();
+        foreach (string key in map.Keys) keys.Add(key);
+        keys.Sort();
+        List<int> values = new List<int>();
+        foreach (int value in map.Values) values.Add(value);
+        values.Sort();
+        Console.WriteLine(name + " " + map.Count + " " + string.Join(",", keys) + " " + string.Join(",", values));
+    }
+
+    static int Main()
+    {
+        Dictionary<string, int> plain = new Dictionary<string, int>();
+        plain["b"] = 2;
+        plain["a"] = 1;
+        SortedDictionary<string, int> sorted = new SortedDictionary<string, int>();
+        sorted["b"] = 2;
+        sorted["a"] = 1;
+        Show("Dictionary", plain);
+        Show("SortedDictionary", sorted);
+        Show("ReadOnlyDictionary", new ReadOnlyDictionary<string, int>(plain));
+        return 0;
+    }
+}

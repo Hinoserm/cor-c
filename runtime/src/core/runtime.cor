@@ -33,13 +33,16 @@
 class DivideByZeroException : ArithmeticException
 {
     public DivideByZeroException() : base("Attempted to divide by zero.") { }
-    public DivideByZeroException(string message) : base(message) { }
+    public DivideByZeroException(string? message) : base(message) { }
+    public DivideByZeroException(string? message, Exception? innerException) : base(message, innerException) { }
 }
 
 /// A cast to a class or interface the object is not.
 class InvalidCastException : SystemException
 {
-    public InvalidCastException(string message) : base(message) { }
+    public InvalidCastException(string? message) : base(message) { }
+    public InvalidCastException() : base("Specified cast is not valid.") { }
+    public InvalidCastException(string? message, Exception? innerException) : base(message, innerException) { }
 }
 
 /// A member was reached through null. The compiler does not yet raise this
@@ -48,7 +51,59 @@ class InvalidCastException : SystemException
 class NullReferenceException : SystemException
 {
     public NullReferenceException() : base("Object reference not set to an instance of an object.") { }
-    public NullReferenceException(string message) : base(message) { }
+    public NullReferenceException(string? message) : base(message) { }
+    public NullReferenceException(string? message, Exception? innerException) : base(message, innerException) { }
+}
+
+/// A member that cannot be reached: .NET's base for the missing-member family.
+class MemberAccessException : SystemException
+{
+    public MemberAccessException() : base("Cannot access member.") { }
+    public MemberAccessException(string? message) : base(message) { }
+    public MemberAccessException(string? message, Exception? innerException) : base(message, innerException) { }
+}
+
+class MissingMemberException : MemberAccessException
+{
+    public MissingMemberException() : base("Attempted to access a missing member.") { }
+    public MissingMemberException(string? message) : base(message) { }
+    public MissingMemberException(string? message, Exception? innerException) : base(message, innerException) { }
+}
+
+/// A method with no code to run. The compiler raises it for a generic virtual
+/// method called on an object whose class overrides it but was not visible to
+/// the code that made the call, so no copy of the override exists for that type
+/// argument -- what an ahead-of-time compiler cannot make after the fact.
+class MissingMethodException : MissingMemberException
+{
+    public MissingMethodException() : base("Attempted to access a missing method.") { }
+    public MissingMethodException(string? message) : base(message) { }
+    public MissingMethodException(string? message, Exception? innerException) : base(message, innerException) { }
+}
+
+/// THE MACHINE WORD, for every layout the runtime keeps itself: a pointer, a
+/// length, a slot of the thread block, a word of the collector's headers.
+/// Sys.Peek and Sys.Poke move exactly one of these; Sys.PeekWord and
+/// Sys.PokeWord move 32 bits whatever the machine, and are for data that is
+/// 32 bits by its own definition. Chosen by the target's conditional symbol,
+/// as .NET's CoreLib chooses its own pointer-sized layouts.
+static class WordSize
+{
+#if TARGET_64BIT
+    public const long Bytes = 8;
+    public const int Shift = 3;
+
+    /// What an address is, as a number: the whole word.
+    public const long AddressMask = -1;
+#else
+    public const long Bytes = 4;
+    public const int Shift = 2;
+
+    /// What an address is, as a number: the low 32 bits, unsigned. Sys.Peek
+    /// sign-extends a 32-bit word, and an address above 2 GiB must not
+    /// compare below one under it.
+    public const long AddressMask = 0xFFFFFFFF;
+#endif
 }
 
 /// The shape of a thread's block of runtime state.
@@ -67,44 +122,46 @@ class NullReferenceException : SystemException
 /// thread and nothing to switch.
 static class Tls
 {
+    // Every field is a word slot, numbered as lowering numbers them (its Tls*
+    // constants are these slots times four, scaled by the word): 34 slots.
     /// The block's own address. First, because gs:[0] is how it is found.
-    public const long Self = 0;
+    public const long Self = 0 * WordSize.Bytes;
 
     /// The innermost handler record on this thread, or 0.
-    public const long Handler = 4;
+    public const long Handler = 1 * WordSize.Bytes;
 
     /// The top of this thread's stack: where a stack scan ends.
-    public const long StackBase = 8;
+    public const long StackBase = 2 * WordSize.Bytes;
 
     /// The stack pointer this thread stopped at; only meaningful while
     /// State says it is stopped.
-    public const long StackLimit = 12;
+    public const long StackLimit = 3 * WordSize.Bytes;
 
     /// This thread's allocation buffer: where it bumps, and where it may not.
-    public const long AllocPtr = 16;
-    public const long AllocLimit = 20;
+    public const long AllocPtr = 4 * WordSize.Bytes;
+    public const long AllocLimit = 5 * WordSize.Bytes;
 
     /// What the kernel calls this thread.
-    public const long ThreadId = 24;
+    public const long ThreadId = 6 * WordSize.Bytes;
 
     /// 0 while the thread is running, 1 while it is stopped for a collection
     /// or waiting on something only another thread can answer.
-    public const long State = 28;
+    public const long State = 7 * WordSize.Bytes;
 
     /// The first byte of the buffer, so that a free of the block on top of it
     /// can tell its own buffer from somebody else's memory.
-    public const long AllocBase = 32;
+    public const long AllocBase = 8 * WordSize.Bytes;
 
     /// The limit the collector took away, so that the buffer's tail can still
     /// be found and given back when the thread has stopped.
-    public const long AllocSaved = 36;
+    public const long AllocSaved = 9 * WordSize.Bytes;
 
     /// Sixteen bytes a system call can be handed a structure in, without an
     /// allocation: a thread sets its own block up before it may allocate.
-    public const long Scratch = 40;
+    public const long Scratch = 10 * WordSize.Bytes;
 
     /// Type-initialization record this thread is currently waiting on, or 0.
-    public const long TypeInitWait = 56;
+    public const long TypeInitWait = 14 * WordSize.Bytes;
 
     /// Nonzero while this thread is inside the allocator's fast path: the
     /// few instructions between reading its buffer's limit and bumping its
@@ -112,19 +169,19 @@ static class Tls
     /// kernel's processors) may not stop one HERE -- it has passed the
     /// limit check and is about to write an object into a buffer the
     /// collector is about to retire -- and asks again a moment later.
-    public const long InAlloc = 64;
+    public const long InAlloc = 16 * WordSize.Bytes;
 
     /// The collector's last handshake round this thread has answered
     /// (GcThreads): a thread whose number is behind the collector's owes it
     /// a piece of work -- the objects of its own allocation buffer, or its
     /// own stack -- which it does at its next safepoint, or which the
     /// collector does for it while it is blocked. Never a stop.
-    public const long Epoch = 68;
+    public const long Epoch = 17 * WordSize.Bytes;
 
     /// Set by a kernel that has arranged for this thread to answer a
     /// handshake the moment it resumes (an interrupted GUI kernel thread),
     /// so that it is not arranged twice; cleared by the answer.
-    public const long HandshakeArmed = 72;
+    public const long HandshakeArmed = 18 * WordSize.Bytes;
 
     /// The registers of a thread that went blocked. Platform.SafePoint pushes
     /// every callee-saved register in its own frame -- and then returns,
@@ -133,18 +190,108 @@ static class Tls
     /// wait would be nowhere the collector reads. So the frame is copied
     /// here as the thread says it is stopped (GcThreads.Spill), and read with
     /// its stack while it is (Gc.ScanStack). SpillCount words from Spill.
-    public const long SpillCount = 76;
-    public const long Spill = 80;
+    public const long SpillCount = 19 * WordSize.Bytes;
+    public const long Spill = 20 * WordSize.Bytes;
     public const long SpillMax = 12;
 
     /// The bytes this thread has allocated, as two words, low then high: its
     /// retired allocation buffers' used parts and its large blocks. What is
     /// in its current buffer is AllocPtr - AllocBase on top
     /// (GC.GetAllocatedBytesForCurrentThread).
-    public const long Allocated = 128;
+    public const long Allocated = 32 * WordSize.Bytes;
+
+    /// errno as the last [DllImport] with SetLastError = true left it: .NET's
+    /// Marshal.GetLastPInvokeError, which is per thread.
+    public const long LastError = 34 * WordSize.Bytes;
+
+    /// This thread's size-class cache (Gc, "size classes"): a mapped table,
+    /// two words a class -- the page it owns and the head of that page's
+    /// free blocks it may take with no lock -- or 0 until it first needs one.
+    /// A handshake takes it away as it takes the buffer limit, so that the
+    /// next small allocation comes to the slow path and answers; the real
+    /// one is kept in ClassesSaved meanwhile.
+    public const long Classes = 35 * WordSize.Bytes;
+    public const long ClassesSaved = 36 * WordSize.Bytes;
+
+    /// The bytes this thread has taken off its class lists, less what it
+    /// freed back onto them, since the collector last counted them in
+    /// (Gc.FoldClassBytes): the pressure a small allocation adds, kept
+    /// where only this thread writes it.
+    public const long ClassBytes = 37 * WordSize.Bytes;
 
     /// The size of the block. The compiler lays the first one down in .bss.
-    public const long Bytes = 136;
+    public const long Bytes = 38 * WordSize.Bytes;
+}
+
+/// WHERE THE ALLOCATIONS COME FROM (CORSAC_ALLOC_SAMPLE=1): every sixteenth
+/// allocation (Runtime.AllocHook) is charged, bytes and count, to the return
+/// address of the call that made it and to that call's own caller, in a
+/// fixed table of the operating system's; the table is printed as the
+/// process ends, for tools/sym to name. Nothing here allocates.
+static class AllocSamples
+{
+    const long Slots = 65536;           // entries of four words: site, caller, bytes, count
+    static long _table;
+    static long _lost;
+
+    public static void Start()
+    {
+        if (!Platform.AllocSample()) return;
+        _table = Platform.Map(Slots * 4 * WordSize.Bytes);
+        if (_table == 0) return;
+        Runtime.AllocHook = Sys.AddressOf(AllocSamples.Record);
+    }
+
+    static void Record(long fp, long bytes, long unused)
+    {
+        long site = Sys.Peek(fp + WordSize.Bytes);
+        long up = Sys.Peek(fp) & WordSize.AddressMask;
+        long caller = up != 0 ? Sys.Peek(up + WordSize.Bytes) : 0;
+        long h = ((site >> 2) ^ (caller << 3)) * 40503 & (Slots - 1);
+        for (long probe = 0; probe < 64; probe++)
+        {
+            long e = _table + ((h + probe) & (Slots - 1)) * 4 * WordSize.Bytes;
+            long at = Sys.Peek(e);
+            if (at == 0)
+            {
+                Sys.Poke(e, site);
+                Sys.Poke(e + WordSize.Bytes, caller);
+                at = site;
+            }
+            if (at == site && Sys.Peek(e + WordSize.Bytes) == caller)
+            {
+                Sys.Poke(e + 2 * WordSize.Bytes, Sys.Peek(e + 2 * WordSize.Bytes) + bytes);
+                Sys.Poke(e + 3 * WordSize.Bytes, Sys.Peek(e + 3 * WordSize.Bytes) + 1);
+                return;
+            }
+        }
+        _lost = _lost + 1;
+    }
+
+    public static void Dump()
+    {
+        long table = _table;
+        if (table == 0) return;
+        _table = 0;
+        Runtime.AllocHook = 0;
+        for (long i = 0; i < Slots; i++)
+        {
+            long e = table + i * 4 * WordSize.Bytes;
+            if (Sys.Peek(e) == 0) continue;
+            Gc.SayNumber("alloc sample site ", Sys.Peek(e));
+            Gc.SayNumber("alloc sample caller ", Sys.Peek(e + WordSize.Bytes));
+            Gc.SayNumber("alloc sample bytes ", Sys.Peek(e + 2 * WordSize.Bytes));
+            Gc.SayNumber("alloc sample count ", Sys.Peek(e + 3 * WordSize.Bytes));
+        }
+        Gc.SayNumber("alloc sample lost ", _lost);
+    }
+}
+
+/// What stops a suspended iterator from inside when it is disposed; never
+/// seen outside MoveNext.
+sealed class IteratorStopSignal : Exception
+{
+    public IteratorStopSignal() : base("The iterator was disposed.") { }
 }
 
 static class Runtime
@@ -155,7 +302,7 @@ static class Runtime
     /// the same captured words, which for an instance method is the target.
     /// The object's size is the second word of its descriptor, and the
     /// descriptor sits DescriptorBytes before the vtable the object points
-    /// at. 32-bit layout, like the collector.
+    /// at: twelve words before it, the size in the second.
     public static bool SameClosure(object? a, object? b)
     {
         long pa = Sys.Word(a);
@@ -164,8 +311,8 @@ static class Runtime
         if (pa == 0 || pb == 0) return false;
         long vt = Sys.Peek(pa);
         if (vt != Sys.Peek(pb)) return false;
-        long size = Sys.Peek(vt - 48 + 4);
-        for (long at = 8; at + 4 <= size; at += 4)
+        long size = Sys.Peek(vt - 12 * WordSize.Bytes + WordSize.Bytes);
+        for (long at = 2 * WordSize.Bytes; at + WordSize.Bytes <= size; at += WordSize.Bytes)
         {
             if (Sys.Peek(pa + at) != Sys.Peek(pb + at)) return false;
         }
@@ -279,13 +426,13 @@ static class Runtime
     /// says it is running, with EndBlocking, once its block is its own.
     public static void RegisterThread(long block, long stackTop)
     {
-        Sys.PokeWord(block + Tls.Self, block);
-        Sys.PokeWord(block + Tls.StackBase, stackTop);
-        Sys.PokeWord(block + Tls.StackLimit, stackTop);
-        Sys.PokeWord(block + Tls.SpillCount, 0);
-        Sys.PokeWord(block + Tls.Allocated, 0);
-        Sys.PokeWord(block + Tls.Allocated + 4, 0);
-        Sys.PokeWord(block + Tls.State, 1);
+        Sys.Poke(block + Tls.Self, block);
+        Sys.Poke(block + Tls.StackBase, stackTop);
+        Sys.Poke(block + Tls.StackLimit, stackTop);
+        Sys.Poke(block + Tls.SpillCount, 0);
+        Sys.Poke(block + Tls.Allocated, 0);
+        Sys.Poke(block + Tls.Allocated + WordSize.Bytes, 0);
+        Sys.Poke(block + Tls.State, 1);
         GcThreads.Register(block);
     }
 
@@ -299,8 +446,8 @@ static class Runtime
     {
         long block = Sys.ThreadBlock();
 
-        Sys.PokeWord(block + Tls.StackLimit, Sys.PeekWord(block + Tls.StackBase));
-        Sys.PokeWord(block + Tls.SpillCount, 0);
+        Sys.Poke(block + Tls.StackLimit, Sys.Peek(block + Tls.StackBase));
+        Sys.Poke(block + Tls.SpillCount, 0);
         Sys.AtomicSwap(block + Tls.State, 1);
     }
 
@@ -367,7 +514,7 @@ static class Runtime
     public static bool AnswerOwed()
     {
         long block = Sys.ThreadBlock();
-        return Sys.PeekWord(block + Tls.State) == 0 && Sys.PeekWord(block + Tls.InAlloc) == 0
+        return Sys.Peek(block + Tls.State) == 0 && Sys.Peek(block + Tls.InAlloc) == 0
             && !GcLock.HeldByMe() && GcThreads.Owes(block);
     }
 
@@ -383,7 +530,7 @@ static class Runtime
     /// stop hook has to interrupt.
     public static bool ThreadOwes(long block)
     {
-        return Sys.PeekWord(block + Tls.State) == 0 && GcThreads.Owes(block);
+        return Sys.Peek(block + Tls.State) == 0 && GcThreads.Owes(block);
     }
 
     /// A safepoint: the open round answered, if this thread owes it.
@@ -403,7 +550,7 @@ static class Runtime
     /// collector sees it: the ones a stop hook has to interrupt.
     public static bool ThreadRunning(long block)
     {
-        return Sys.PeekWord(block + Tls.State) == 0;
+        return Sys.Peek(block + Tls.State) == 0;
     }
 
     /// The heap: the garbage-collected one in lib/rt/gc.cor. This is the
@@ -431,6 +578,15 @@ static class Runtime
     {
         if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes, 0);
         return Gc.AllocLeaf(bytes);
+    }
+
+    /// The same for an object whose vtable the compiler stores next -- a class
+    /// instance, a box, a closure, an array: the collector reads its
+    /// references from its descriptor instead of guessing them from every word.
+    public static long AllocObject(long bytes)
+    {
+        if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes, 0);
+        return Gc.AllocObject(bytes);
     }
 
     /// The heap for a program that needs no collector. When escape analysis
@@ -507,7 +663,91 @@ static class Runtime
     /// the correct answer for a region that is never reclaimed.
     public static void Free(long at)
     {
+        if (Gc.IgnoredFrees == 'p')
+        {
+            return;
+        }
         Gc.Free(at);
+    }
+
+    /// Gives back what an owned variable held before it was assigned
+    /// `current` (Escape's owned variables): nothing when it is the same
+    /// object, which a variable assigned twice from one register holds; a
+    /// null or a string literal, which is no heap block, is ignored by Free.
+    public static void FreeReplaced(long old, long current)
+    {
+        if (old != current && Gc.IgnoredFrees != 'r')
+        {
+            Gc.Free(old);
+        }
+    }
+
+    /// Gives back what the reference field at `offset` of the object at `at`
+    /// refers to, just before the object itself is given back: a field the
+    /// optimiser has proved holds only objects made for it and reachable
+    /// through it alone (Escape's owned fields) -- a List's array, freed with
+    /// the List. Nothing for a null object or an empty field.
+    public static void FreeField(long at, long offset)
+    {
+        if (at == 0 || Gc.IgnoredFrees == 'f')
+        {
+            return;
+        }
+        Gc.VerifyFieldOwner(at, offset);
+        long held = Sys.Peek(at + offset);
+        if (held != 0)
+        {
+            if (FreeLogRing != 0)
+            {
+                LogFree(held, at, offset, Sys.Peek(Sys.FramePointer() + WordSize.Bytes));
+            }
+            if (Gc.VerifyingFieldFrees)
+            {
+                Gc.FreeFieldChecked(held);
+                return;
+            }
+            Gc.Free(held);
+        }
+    }
+
+    // THE FIELD FREES, LOGGED (CORSAC_FREE_LOG). A ring of the last entries,
+    // four words each -- what was freed, whose field it was, the offset, and
+    // the return address into the code that freed it -- whose first word
+    // counts them. Nothing reads it here: a debugger or a scan of the process
+    // looks for a freed block something live still points at, and the entry
+    // names the free that took it.
+    public const long FreeLogEntries = 1048576;
+    public static long FreeLogRing;
+
+    public static void StartFreeLog()
+    {
+        FreeLogRing = Platform.Map((FreeLogEntries * 4 + 1) * WordSize.Bytes);
+    }
+
+    /// A plain free, logged (Gc.Free): the block and the two calls it came
+    /// through.
+    public static void LogPlainFree(long held, long caller, long site)
+    {
+        LogFree(held, 0, caller, site);
+    }
+
+    static void LogFree(long held, long owner, long offset, long site)
+    {
+        long n = Sys.AtomicAdd(FreeLogRing, 1) % FreeLogEntries;
+        long entry = FreeLogRing + (1 + n * 4) * WordSize.Bytes;
+        Sys.Poke(entry, held);
+        Sys.Poke(entry + WordSize.Bytes, owner);
+        Sys.Poke(entry + 2 * WordSize.Bytes, offset);
+        Sys.Poke(entry + 3 * WordSize.Bytes, site);
+    }
+
+    /// What a field free becomes when the link finds the field is not clean
+    /// after all: nothing. A unit compiled on its own cannot tell whether a
+    /// field another unit fills holds only objects made for it; it calls a
+    /// symbol of its own there, and the link makes that symbol FreeField or
+    /// this (Escape's field sites, the link's lifetime hints).
+    public static void KeepField(long at, long offset)
+    {
     }
 
     /// Nonzero while a collection marks with the other threads running. The
@@ -517,9 +757,42 @@ static class Runtime
 
     /// What compiled code calls before storing the reference `value` at
     /// `slot`, while Marking is set. See Gc.Barrier.
+    /// THE CARD TABLE, or 0: one byte for every kilobyte of the address space,
+    /// set when a reference is stored into that kilobyte (Gc, generations).
+    /// The compiler emits the mark after every store of a reference, as it
+    /// emits the Marking test before it; CardMark is the same for the stores
+    /// the library makes by hand (Interlocked).
+    public static long Cards;
+    public const int CardShift = 10;
+
+    /// Every card of the object a payload belongs to: what a coroutine's
+    /// frame is saved into at a suspension, without a barrier (AsyncTransform).
+    public static void CardMarkObject(long payload)
+    {
+        Gc.CardMarkObject(payload);
+    }
+
+    public static void CardMark(long slot)
+    {
+        long cards = Cards;
+        if (cards != 0)
+        {
+            Sys.PokeByte(cards + ((slot & WordSize.AddressMask) >> CardShift), 1);
+        }
+    }
+
     public static void WriteBarrier(long slot, long value)
     {
         Gc.Barrier(slot, value);
+    }
+
+    /// The same, told the reference being overwritten rather than where it
+    /// is: what a barrier becomes when the object it guarded no longer lives
+    /// in memory -- the optimiser kept its fields in registers
+    /// (ScalarObjects), so the old reference is a register's value.
+    public static void WriteBarrierValues(long old, long value)
+    {
+        Gc.BarrierValues(old, value);
     }
 
     /// Free for a program that links no collector, so that the optimiser can
@@ -569,6 +842,7 @@ static class Runtime
         _imagesBegun = _imagesBegun + 1;
         RegisterRoots(dataStart, dataEnd);
         RegisterFrames(frames);
+        Platform.ArmFaultReport();
     }
 
     // WHO RUNS A LIBRARY'S INITIALISER. On Linux the dynamic linker does,
@@ -597,7 +871,10 @@ static class Runtime
     /// this library could not name -- its own _DYNAMIC is its own.
     public static void StartImages(long dynamic)
     {
-        if (_imagesBegun != 0 || dynamic == 0)
+        // Kept whoever runs the initialisers: it is where NativeSymbol finds
+        // the link map later.
+        _programDynamic = dynamic;
+        if (_imagesBegun != 0 || dynamic == 0 || Interpreted())
         {
             return;
         }
@@ -609,15 +886,51 @@ static class Runtime
             return;
         }
 
-        // struct r_debug { int r_version; struct link_map *r_map; ... }
-        long image = Sys.PeekWord(debug + 4);
+        // struct r_debug { int r_version; struct link_map *r_map; ... }: the
+        // map is the second word, the int padded to one where words are 8.
+        long image = Sys.Peek(debug + WordSize.Bytes);
 
         while (image != 0)
         {
-            // struct link_map { Elf32_Addr l_addr; char *l_name;
-            //                   Elf32_Dyn *l_ld; link_map *l_next, *l_prev; }
-            RunInitialiser(Sys.PeekWord(image + 8), Sys.PeekWord(image));
-            image = Sys.PeekWord(image + 12);
+            // struct link_map { ElfN_Addr l_addr; char *l_name;
+            //                   ElfN_Dyn *l_ld; link_map *l_next, *l_prev; }
+            RunInitialiser(Sys.Peek(image + 2 * WordSize.Bytes), Sys.Peek(image));
+            image = Sys.Peek(image + 3 * WordSize.Bytes);
+        }
+    }
+
+    /// Whether an interpreter (ld-linux) loaded this program, and so ran
+    /// every library's initialisers before the entry stub: AT_BASE, the
+    /// interpreter's address, in the auxiliary vector above the environment.
+    /// No image having introduced itself is not enough to say otherwise --
+    /// a program linked only against the C library has none of this
+    /// runtime's images, and running the C library's initialiser a second
+    /// time, with no arguments, clears its environment.
+    static bool Interpreted()
+    {
+        long stack = Sys.Peek(Sys.ThreadBlock() + Tls.StackBase);
+        if (stack == 0)
+        {
+            return false;
+        }
+        long at = stack + (Sys.Peek(stack) + 2) * WordSize.Bytes;     // past argc, argv and its NULL
+        while (Sys.Peek(at) != 0)
+        {
+            at = at + WordSize.Bytes;                                  // the environment
+        }
+        at = at + WordSize.Bytes;
+        while (true)
+        {
+            long type = Sys.Peek(at);
+            if (type == 0)
+            {
+                return false;
+            }
+            if (type == 7)                                             // AT_BASE
+            {
+                return Sys.Peek(at + WordSize.Bytes) != 0;
+            }
+            at = at + 2 * WordSize.Bytes;
         }
     }
 
@@ -628,7 +941,8 @@ static class Runtime
 
         while (true)
         {
-            long tag = Sys.PeekWord(at);
+            // ElfN_Dyn: a tag word and a value word.
+            long tag = Sys.Peek(at);
 
             if (tag == DtNull)
             {
@@ -637,9 +951,9 @@ static class Runtime
 
             if (tag == want)
             {
-                return Sys.PeekWord(at + 4);
+                return Sys.Peek(at + WordSize.Bytes);
             }
-            at = at + 8;
+            at = at + 2 * WordSize.Bytes;
         }
     }
 
@@ -663,15 +977,327 @@ static class Runtime
         long array = Tag(dynamic, DtInitArray);
         long bytes = Tag(dynamic, DtInitArraySize);
 
-        for (long i = 0; i < bytes; i = i + 4)
+        for (long i = 0; i < bytes; i = i + WordSize.Bytes)
         {
-            long one = Sys.PeekWord(array + bias + i);
+            long one = Sys.Peek(array + bias + i);
 
             if (one != 0)
             {
                 Sys.Call(one, 0, 0, 0);
             }
         }
+    }
+
+    // ---- calls into C -----------------------------------------------------
+    //
+    // A [DllImport] method's body (Lowering.Native) calls EnterNative, the C
+    // function, and LeaveNative. Between the two the thread counts as
+    // stopped, exactly as a thread waiting in a system call does: C does not
+    // allocate from this heap, so a collection has no reason to wait for it,
+    // and its callee-saved registers -- which C preserves -- were copied into
+    // its block as it said so.
+    //
+    // ON i386, GS TOO. The C library's thread pointer is GS on i386, as the
+    // runtime's is; the kernel keeps one base per thread per GDT slot, so each
+    // of the two is a selector that means the right thing in every thread,
+    // and swapping them is one segment load each way. On x86-64 the runtime's
+    // is GS and C's is FS, and nothing moves.
+
+    static long _programDynamic;
+
+    /// i386: the selector GS held when the process began -- the C library's
+    /// thread pointer under ld-linux, zero in a program nobody else set up.
+    public static long NativeGs;
+
+    /// i386: the selector of the runtime's own thread blocks.
+    public static long ManagedGs;
+
+    public static void EnterNative()
+    {
+        BeginBlocking();
+#if !TARGET_64BIT
+        if (NativeGs != 0)
+        {
+            Sys.SetGs(NativeGs);
+        }
+#endif
+    }
+
+    public static void LeaveNative()
+    {
+#if !TARGET_64BIT
+        if (NativeGs != 0)
+        {
+            Sys.SetGs(ManagedGs);
+        }
+#endif
+        EndBlocking();
+    }
+
+    /// THE PROGRAM, ENTERED THROUGH THE C LIBRARY when one is loaded (see
+    /// the entry stub): __libc_start_main(main, argc, argv, init, fini,
+    /// rtld_fini, stack_end) sets up C's environment, streams and program
+    /// name, registers the loader's finaliser, and calls `main` -- which is
+    /// the entry stub's own continuation -- and never comes back here. With
+    /// no C library loaded this returns and the entry stub carries on.
+    public static void StartC(long loaderFini, long stack, long main)
+    {
+        long start = NativeSymbol("__libc_start_main");
+        if (start == 0)
+        {
+            return;
+        }
+        EnterNative();
+        Sys.CallNative(start, main, Sys.Peek(stack), stack + WordSize.Bytes, 0, 0, loaderFini, stack);
+    }
+
+    /// The first thing a function C calls does: GS back to the runtime's on
+    /// i386, and running again, as far as a collection is concerned.
+    public static void ReturnFromC()
+    {
+#if !TARGET_64BIT
+        if (NativeGs != 0)
+        {
+            Sys.SetGs(ManagedGs);
+        }
+#endif
+        EndBlocking();
+    }
+
+    /// A C function the runtime found for itself (NativeSymbol), called with
+    /// C's rules and the same handshake a [DllImport] makes.
+    public static long CallC(long fn, long a, long b, long c, long d)
+    {
+        EnterNative();
+        long r = Sys.CallNative(fn, a, b, c, d);
+        LeaveNative();
+        return r;
+    }
+
+    /// A string as C reads one: its UTF-8 bytes and a NUL, in an array of its
+    /// own that the caller keeps alive for the length of the call.
+    public static byte[]? NativeString(string? s)
+    {
+        if (s == null)
+        {
+            return null;
+        }
+        return Utf8Transcoder.EncodeTerminated(s);
+    }
+
+    /// The address of an array's first element, or zero for null: what C's
+    /// pointer to it is.
+    public static long NativeData(object? array)
+    {
+        if (array == null)
+        {
+            return 0;
+        }
+        return Sys.ArrayData(array);
+    }
+
+    /// errno, as a SetLastError import left it, for Marshal.GetLastPInvokeError.
+    public static void SetNativeError(int error)
+    {
+        Sys.Poke(Sys.ThreadBlock() + Tls.LastError, error);
+    }
+
+    public static int NativeError()
+    {
+        return (int)Sys.Peek(Sys.ThreadBlock() + Tls.LastError);
+    }
+
+    // FINDING A C FUNCTION AT RUN TIME. The link map (StartImages) lists every
+    // image the loader mapped; each has a dynamic section with its symbol
+    // table and a hash table over it -- GNU's, which is all current C
+    // libraries build, or SysV's, which this linker writes. Addresses in the
+    // dynamic sections are relocated in place by ld-linux and not by a
+    // kernel's loader, so one smaller than the image's bias is an offset.
+
+    const long DtHash = 4;
+    const long DtStrTab = 5;
+    const long DtSymTab = 6;
+    const long DtGnuHash = 0x6ffffef5;
+    const long DtVersym = 0x6ffffff0;
+
+    /// The address of the C symbol `name` in the images the loader mapped,
+    /// or zero: none, or a program linked statically.
+    public static long NativeSymbol(string name)
+    {
+        if (_programDynamic == 0)
+        {
+            return 0;
+        }
+        long debug = Tag(_programDynamic, DtDebug);
+        if (debug == 0)
+        {
+            return 0;
+        }
+        long image = Sys.Peek(debug + WordSize.Bytes);
+        while (image != 0)
+        {
+            long found = SymbolIn(Sys.Peek(image + 2 * WordSize.Bytes), Sys.Peek(image), name);
+            if (found != 0)
+            {
+                return found;
+            }
+            image = Sys.Peek(image + 3 * WordSize.Bytes);
+        }
+        return 0;
+    }
+
+    static long Located(long value, long bias)
+    {
+        return value != 0 && value < bias ? value + bias : value;
+    }
+
+    static long SymbolIn(long dynamic, long bias, string name)
+    {
+        if (dynamic == 0)
+        {
+            return 0;
+        }
+        long strings = Located(Tag(dynamic, DtStrTab), bias);
+        long symbols = Located(Tag(dynamic, DtSymTab), bias);
+        if (strings == 0 || symbols == 0)
+        {
+            return 0;
+        }
+        long versions = Located(Tag(dynamic, DtVersym), bias);
+        long gnu = Located(Tag(dynamic, DtGnuHash), bias);
+        if (gnu != 0)
+        {
+            return GnuLookup(gnu, symbols, strings, versions, bias, name);
+        }
+        long sysv = Located(Tag(dynamic, DtHash), bias);
+        if (sysv != 0)
+        {
+            return SysvLookup(sysv, symbols, strings, versions, bias, name);
+        }
+        return 0;
+    }
+
+    /// GNU's hash: h * 33 + c from 5381, a bucket per hash, and a chain whose
+    /// entries hold the hash with the low bit set on the last one.
+    static long GnuLookup(long table, long symbols, long strings, long versions, long bias, string name)
+    {
+        // OVER THE NAME'S UTF-8, which is what the symbol table holds.
+        byte[] bytes = Utf8Transcoder.Encode(name, 0, name.Length);
+        long h = 5381;
+        for (int i = 0; i < bytes.Length; i++)
+        {
+            h = (h * 33 + bytes[i]) & 0xFFFFFFFF;
+        }
+        long buckets = Sys.PeekWord(table);
+        long first = Sys.PeekWord(table + 4);
+        long bloom = Sys.PeekWord(table + 8);
+        if (buckets == 0)
+        {
+            return 0;
+        }
+        long bucketAt = table + 16 + bloom * WordSize.Bytes;
+        long chainAt = bucketAt + buckets * 4;
+        long index = Sys.PeekWord(bucketAt + (h % buckets) * 4);
+        if (index < first)
+        {
+            return 0;
+        }
+        while (true)
+        {
+            long link = Sys.PeekWord(chainAt + (index - first) * 4);
+            if ((link | 1) == (h | 1))
+            {
+                long found = Matching(symbols, strings, versions, bias, index, name);
+                if (found != 0)
+                {
+                    return found;
+                }
+            }
+            if ((link & 1) != 0)
+            {
+                return 0;
+            }
+            index = index + 1;
+        }
+    }
+
+    /// SysV's: buckets and chains of symbol indices under the ELF hash.
+    static long SysvLookup(long table, long symbols, long strings, long versions, long bias, string name)
+    {
+        byte[] bytes = Utf8Transcoder.Encode(name, 0, name.Length);
+        long h = 0;
+        for (int i = 0; i < bytes.Length; i++)
+        {
+            h = ((h << 4) + bytes[i]) & 0xFFFFFFFF;
+            long g = h & 0xF0000000;
+            if (g != 0)
+            {
+                h = h ^ (g >> 24);
+            }
+            h = h & ~g & 0xFFFFFFFF;
+        }
+        long buckets = Sys.PeekWord(table);
+        if (buckets == 0)
+        {
+            return 0;
+        }
+        long chainAt = table + 8 + buckets * 4;
+        long index = Sys.PeekWord(table + 8 + (h % buckets) * 4);
+        while (index != 0)
+        {
+            long found = Matching(symbols, strings, versions, bias, index, name);
+            if (found != 0)
+            {
+                return found;
+            }
+            index = Sys.PeekWord(chainAt + index * 4);
+        }
+        return 0;
+    }
+
+    /// Symbol `index`'s address when it is `name`, defined, and the default
+    /// version of it; an IFUNC's resolver is asked for the real one.
+    static long Matching(long symbols, long strings, long versions, long bias, long index, string name)
+    {
+#if TARGET_64BIT
+        long symbol = symbols + index * 24;
+        long info = Sys.PeekByte(symbol + 4);
+        long section = Sys.PeekHalf(symbol + 6);
+        long value = Sys.Peek(symbol + 8);
+#else
+        long symbol = symbols + index * 16;
+        long info = Sys.PeekByte(symbol + 12);
+        long section = Sys.PeekHalf(symbol + 14);
+        long value = Sys.Peek(symbol + 4);
+#endif
+        if (section == 0 || value == 0)
+        {
+            return 0;
+        }
+        long text = strings + Sys.PeekWord(symbol);
+        byte[] bytes = Utf8Transcoder.Encode(name, 0, name.Length);
+        for (int i = 0; i < bytes.Length; i++)
+        {
+            if (Sys.PeekByte(text + i) != bytes[i])
+            {
+                return 0;
+            }
+        }
+        if (Sys.PeekByte(text + bytes.Length) != 0)
+        {
+            return 0;
+        }
+        // A hidden version (bit 15) is an old one kept for old programs.
+        if (versions != 0 && (Sys.PeekHalf(versions + index * 2) & 0x8000) != 0)
+        {
+            return 0;
+        }
+        long address = value + bias;
+        if ((info & 15) == 10)                  // STT_GNU_IFUNC
+        {
+            address = CallC(address, 0, 0, 0, 0);
+        }
+        return address;
     }
 
     // ---- the frame tables of the other images -----------------------------
@@ -693,6 +1319,24 @@ static class Runtime
     static long _tables;
     static long _tableCount;
 
+    /// How many image directories and tables are registered, and the i-th:
+    /// the collector reads the stack maps they name (Gc, precise registers).
+    /// This image's own directory first (Sys.FrameDirectory), then every
+    /// other image's in the order they introduced themselves.
+    public static long MetadataCount()
+    {
+        return _tableCount + 1;
+    }
+
+    public static long Metadata(long i)
+    {
+        if (i == 0)
+        {
+            return Sys.FrameDirectory();
+        }
+        return i - 1 < _tableCount ? Sys.Peek(_tables + (i - 1) * WordSize.Bytes) : 0;
+    }
+
     /// Registers an image directory or an explicitly supplied individual frame
     /// table. Both are current metadata kinds, distinguished by their magic.
     public static bool RegisterFrames(long table)
@@ -705,7 +1349,7 @@ static class Runtime
         if (Sys.PeekWord(table) != TableMagic && Sys.PeekWord(table) != DirectoryMagic) { return false; }
         for (long i = 0; i < _tableCount; i++)
         {
-            if (Sys.PeekWord(_tables + i * 4) == table) { return true; }
+            if (Sys.Peek(_tables + i * WordSize.Bytes) == table) { return true; }
         }
 
         if (_tables == 0)
@@ -722,7 +1366,7 @@ static class Runtime
         {
             return false;
         }
-        Sys.Poke(_tables + _tableCount * 4, table);
+        Sys.Poke(_tables + _tableCount * WordSize.Bytes, table);
         _tableCount = _tableCount + 1;
         return true;
     }
@@ -764,6 +1408,7 @@ static class Runtime
     /// road out of every program.
     public static void AtExit()
     {
+        AllocSamples.Dump();
         long f = _atExit;
 
         if (f != 0)
@@ -806,15 +1451,10 @@ static class Runtime
     //
     // A string or array is a 16-byte header -- vtable, sync word, count, pad --
     // followed by the elements (docs/software/X86-BACKEND.md, "Arrays and
-    // strings"). Sys.Word(s) is the object's address, so its bytes start at
+    // strings"): a byte array's bytes, a string's UTF-16 code units.
+    // Sys.Word(s) is the object's address, so its elements start at
     // Sys.ArrayData(s): the header in front of them is the compiler's to
     // know, so nothing here hard-codes it.
-
-    /// The address of a string's (or byte array's) first byte.
-    public static long BytesOf(string s)
-    {
-        return Sys.ArrayData(s);
-    }
 
     // ---- printing --------------------------------------------------------
     //
@@ -825,9 +1465,59 @@ static class Runtime
     const int StdOut = 1;
     const int StdErr = 2;
 
+    /// ASCII text to a descriptor WITHOUT ALLOCATING, for the paths that
+    /// report the allocator's own failure. A UTF-16 unit below 0x80 has its
+    /// ASCII byte first, little end first, so each is written from where it
+    /// lies in the string -- a byte at a time, which costs a system call per
+    /// character and is fine for a message that ends a program. A unit
+    /// outside ASCII is written as '?'.
+    public static void WriteLiteral(int fd, string text)
+    {
+        long units = Sys.StringData(text);
+        long question = Sys.StringData("?");
+
+        for (int i = 0; i < text.Length; i++)
+        {
+            long at = Sys.GetChar(text, i) < 0x80 ? units + 2 * i : question;
+            Platform.WriteBytes(fd, at, 1);
+        }
+    }
+
+    /// A string to a descriptor, as its UTF-8 -- through a fixed block that
+    /// escape analysis keeps in the frame, a chunk at a time, so that printing
+    /// allocates nothing and a program that only prints never meets the
+    /// collector. A chunk never ends between the two halves of a surrogate
+    /// pair, which are one character and one UTF-8 sequence.
+    public static void WriteText(int fd, string s)
+    {
+        byte[] block = new byte[WriteChunkBytes];
+        int at = 0;
+
+        while (at < s.Length)
+        {
+            int take = s.Length - at;
+            if (take > WriteChunkBytes / 3)
+            {
+                take = WriteChunkBytes / 3;
+                int last = Sys.GetChar(s, at + take - 1);
+                if (last >= 0xD800 && last <= 0xDBFF)
+                {
+                    take = take - 1;
+                }
+            }
+            int n = Utf8Transcoder.Encode(s, at, take, block, 0);
+            WriteBytes(fd, Sys.ArrayData(block), n);
+            at = at + take;
+        }
+    }
+
+    // Three bytes per unit at most (a pair is four bytes for two units), so a
+    // chunk of a third as many units always fits.
+    const int WriteChunkBytes = 384;
+
     public static void Print(string s)
     {
-        WriteBytes(StdOut, BytesOf(s), s.Length);
+        WriteText(StdOut, s);
     }
 
     public static void PrintLine()
@@ -837,16 +1527,20 @@ static class Runtime
 
     // The printing routines build their text in a LOCAL block, never a
     // cached one: a static holding a buffer is an escape by definition, and
-    // escape analysis turns a local Sys.NewBytes into a frame slot, so a
-    // local costs nothing and keeps the collector out of programs that only
-    // print.
+    // escape analysis turns a local allocation into a frame slot, so a local
+    // costs nothing and keeps the collector out of programs that only print.
+    //
+    // WHAT GOES TO THE DESCRIPTOR IS UTF-8. A string is UTF-16 code units, as
+    // C#'s is, and a terminal, a pipe and a file all mean bytes; the encoding
+    // between the two is made here, once, on the way out (Utf8.Encode).
 
-    /// One byte.
+    /// One UTF-16 code unit, as its UTF-8. A lone surrogate has no UTF-8 of its
+    /// own and is written as U+FFFD, which is what .NET's encoder makes of one.
     public static void PrintChar(int c)
     {
-        string one = Sys.NewBytes(1);
-        Sys.SetByte(one, 0, c & 255);
-        WriteBytes(StdOut, BytesOf(one), 1);
+        string one = Sys.NewChars(1);
+        Sys.SetChar(one, 0, c);
+        Print(one);
     }
 
     /// Decimal, signed, with long.MinValue handled: the digits are produced
@@ -854,9 +1548,11 @@ static class Runtime
     /// negating long.MinValue would.
     public static void PrintInt(long v)
     {
-        string text = Sys.NewBytes(DigitsBytes);
-        int n = FormatDecimal(text, 0, v, DigitsBytes);
-        WriteBytes(StdOut, BytesOf(text), n);
+        byte[] text = new byte[DigitsBytes];
+        string digits = Sys.NewChars(DigitsBytes);
+        int n = FormatDecimal(digits, 0, v, DigitsBytes);
+        for (int i = 0; i < n; i++) { text[i] = (byte)Sys.GetChar(digits, i); }
+        WriteBytes(StdOut, Sys.ArrayData(text), n);
     }
 
     /// Sixteen hex digits, zero padded, no prefix -- the shape a debugger
@@ -864,18 +1560,18 @@ static class Runtime
     /// other.
     public static void PrintHex(long v)
     {
-        string text = Sys.NewBytes(16);
+        byte[] text = new byte[16];
         ulong bits = (ulong)v;
         int i = 15;
 
         while (i >= 0)
         {
             int nibble = (int)(bits & (ulong)15);
-            Sys.SetByte(text, i, nibble < 10 ? 48 + nibble : 87 + nibble);
+            text[i] = (byte)(nibble < 10 ? 48 + nibble : 87 + nibble);
             bits = bits >> 4;
             i = i - 1;
         }
-        WriteBytes(StdOut, BytesOf(text), 16);
+        WriteBytes(StdOut, Sys.ArrayData(text), 16);
     }
 
     // Twenty digits and a sign is the most a long ever needs.
@@ -915,14 +1611,14 @@ static class Runtime
         }
 
         // Digits into a local block, least first, from the top down.
-        string scratch = Sys.NewBytes(DigitsBytes);
+        byte[] scratch = new byte[DigitsBytes];
         int end = DigitsBytes;
         int begin = end;
 
         if (magnitude == (ulong)0)
         {
             begin = begin - 1;
-            Sys.SetByte(scratch, begin, 48);
+            scratch[begin] = 48;
         }
 
         while (magnitude != (ulong)0)
@@ -932,14 +1628,14 @@ static class Runtime
             ulong q = UDiv(magnitude, (ulong)10);
             int digit = (int)(magnitude - q * (ulong)10);
             begin = begin - 1;
-            Sys.SetByte(scratch, begin, 48 + digit);
+            scratch[begin] = (byte)(48 + digit);
             magnitude = q;
         }
 
         if (negative)
         {
             begin = begin - 1;
-            Sys.SetByte(scratch, begin, 45);
+            scratch[begin] = 45;
         }
 
         int length = end - begin;
@@ -947,7 +1643,7 @@ static class Runtime
 
         for (int i = 0; i < take; i++)
         {
-            Sys.SetByte(dst, at + i, Sys.GetByte(scratch, begin + i));
+            Sys.SetChar(dst, at + i, scratch[begin + i]);
         }
         return take;
     }
@@ -1162,9 +1858,7 @@ static class Runtime
         int length = 0;
         while (Sys.PeekByte(at + length) != 0) { length = length + 1; }
 
-        string made = Sys.NewBytes(length);
-        for (int i = 0; i < length; i++) { Sys.SetByte(made, i, (int)Sys.PeekByte(at + i)); }
-        return made;
+        return Utf8Transcoder.Decode(at, length);
     }
 
     /// THE TABLE ENTRY AN ADDRESS FALLS IN: where its name and its source
@@ -1179,7 +1873,7 @@ static class Runtime
         if (LookupMetadata(Sys.FrameDirectory(), address, out name, out file, out program, out offset)) { return true; }
 
         for (long i = 0; i < _tableCount; i++) {
-            if (LookupMetadata(Sys.PeekWord(_tables + i * 4), address, out name, out file, out program, out offset)) { return true; }
+            if (LookupMetadata(Sys.Peek(_tables + i * WordSize.Bytes), address, out name, out file, out program, out offset)) { return true; }
         }
         return false;
     }
@@ -1195,10 +1889,24 @@ static class Runtime
         if (count > 100000) { return false; }
         for (long i = 0; i < count; i++) {
             long record = metadata + 16 + i * 16;
-            long table = Sys.PeekWord(record);
+            long table = TableAddress(record);
             if (table != 0 && Sys.PeekWord(record + 4) >= 20 && LookupIn(table, address, out name, out file, out program, out offset)) { return true; }
         }
         return false;
+    }
+
+    /// AN ADDRESS THE LINK WROTE INTO A TABLE: on i386 the address itself;
+    /// in long mode the distance from the word to it, signed, so a shared
+    /// object loaded anywhere in 64-bit space needs no loader relocation to
+    /// describe its own code. Zero is none either way.
+    static long TableAddress(long at) {
+        long held = Sys.PeekWord(at);
+#if TARGET_64BIT
+        if (held == 0) { return 0; }
+        return at + (long)(int)held;
+#else
+        return held;
+#endif
     }
 
     /// The same, in one table. The line program is an absolute address into
@@ -1213,7 +1921,7 @@ static class Runtime
         if (Sys.PeekWord(table) != TableMagic) { return false; }
 
         long count = Sys.PeekWord(table + 4);
-        long walk = Sys.PeekWord(table + 8);
+        long walk = TableAddress(table + 8);
         long strings = table + Sys.PeekWord(table + 12);
         long at = table + 20;
 
@@ -1287,26 +1995,63 @@ static class Runtime
     /// own frame pointer -- one instruction -- and the answer does not depend on
     /// what was inlined into what.
     public static string Trace(long from) {
-        StringBuilder made = new StringBuilder();
+        return TraceOf(Frames(from));
+    }
+
+    /// The return addresses of the frames above `from`, newest first: what a
+    /// trace is made of, taken while the stack still holds them. Naming them
+    /// waits for somebody to read the trace (TraceOf), as .NET's does -- a
+    /// throw pays for a walk of the frame chain, not for a search of the
+    /// image's function table per frame, which made every exception a
+    /// program caught and forgot cost thousands of lookups.
+    public static long[] Frames(long from) {
+        int count = 0;
         long frame = from;
-        int taken = 0;
-
-        while (frame != 0 && taken < TraceDepth) {
-            long next = Sys.PeekWord(frame);
-            long ret = Sys.PeekWord(frame + 4);
-            if (ret == 0) { break; }
-
-            // The chain runs towards the top of the stack. Anything else is a
-            // frame somebody built by hand, or rubbish, and following it would
-            // read whatever memory that number points at.
-            if (next != 0 && next <= frame) { break; }
-
-            string? said = Frame(ret - 1);
-            if (said == null) { break; }
-            made.Append(said);
-            made.Append('\n');
-            taken = taken + 1;
+        while (count < TraceDepth) {
+            long next = StepFrame(frame);
+            if (next == -1) { break; }
+            count = count + 1;
             frame = next;
+        }
+
+        long[] frames = new long[count];
+        frame = from;
+        for (int i = 0; i < count; i++) {
+            frames[i] = Sys.Peek(frame + WordSize.Bytes);
+            frame = Sys.Peek(frame);
+        }
+        return frames;
+    }
+
+    /// The caller's frame of `frame`, 0 at the chain's end, or -1 when this
+    /// frame is not one to read: none, no return address, or a link that does
+    /// not run towards the top of the stack -- a frame somebody built by hand,
+    /// or rubbish, and following it would read whatever memory it points at.
+    /// [frame] is the caller's frame pointer, the word after it the return
+    /// address: the chain every prologue here builds.
+    static long StepFrame(long frame) {
+        if (frame == 0) { return -1; }
+        long next = Sys.Peek(frame);
+        if (Sys.Peek(frame + WordSize.Bytes) == 0) { return -1; }
+        if (next != 0 && next <= frame) { return -1; }
+        return next;
+    }
+
+    /// The frames Frames took, named: one line a frame in .NET's wording, up
+    /// to the first address no function this image describes contains.
+    public static string TraceOf(long[] frames) {
+        StringBuilder made = new StringBuilder();
+
+        for (int i = 0; i < frames.Length; i++) {
+            string? said = Frame(frames[i] - 1);
+            if (said == null) { break; }
+
+            // ONLY METHODS, as .NET lists only managed frames: the entry stub
+            // and the runtime's assembly helpers are named without a type.
+            if (said.IndexOf('.') >= 0) {
+                if (made.Length > 0) { made.Append('\n'); }
+                made.Append(said);
+            }
         }
         return made.ToString();
     }
@@ -1327,8 +2072,10 @@ static class Runtime
         int taken = 0;
 
         while (frame != 0 && taken < TraceDepth) {
-            long next = Sys.PeekWord(frame);
-            long ret = Sys.PeekWord(frame + 4);
+            // [frame] is the caller's frame pointer, the word after it the
+            // return address: the chain every prologue here builds.
+            long next = Sys.Peek(frame);
+            long ret = Sys.Peek(frame + WordSize.Bytes);
             if (ret == 0) { break; }
             if (next != 0 && next <= frame) { break; }
 
@@ -1348,10 +2095,130 @@ static class Runtime
         }
     }
 
+    /// The fault report armed (Platform.ArmFaultReport): called by a static
+    /// program's entry stub and by BeginImage, once is enough.
+    public static void ArmFaultReport() {
+        Platform.ArmFaultReport();
+    }
+
+    /// A FAULT NOTHING CAN CATCH, said as .NET says one: its message, the
+    /// address the fault was at and the instruction that made it, then the
+    /// stack from the faulting function outward. The platform's fault handler
+    /// calls it (Platform.ArmFaultReport), with a scratch page of its own
+    /// for the digits; nothing here allocates.
+    public static void ReportFault(long address, long pc, long frame, long digits, long registers, int count) {
+        SayLiteral(StdErr, "Fatal error. System.AccessViolationException: Attempted to read or write protected memory. This is often an indication that other memory is corrupt.\n");
+        SayLiteral(StdErr, "   fault at 0x");
+        SayHex(digits, address);
+        SayLiteral(StdErr, ", instruction at 0x");
+        SayHex(digits, pc);
+        SayLiteral(StdErr, "\n");
+        // THE REGISTERS as the fault left them, in the kernel's order: the
+        // object a bad read went through is nearly always in one of them.
+        if (registers != 0) {
+            SayLiteral(StdErr, "   registers");
+            for (int i = 0; i < count; i++) {
+                SayLiteral(StdErr, " ");
+                SayHex(digits, Sys.Peek(registers + i * WordSize.Bytes) & WordSize.AddressMask);
+            }
+            SayLiteral(StdErr, "\n");
+        }
+
+        long name;
+        long file;
+        long program;
+        long offset;
+
+        if (Lookup(pc, out name, out file, out program, out offset)) {
+            SayLiteral(StdErr, "   at ");
+            SayText(StdErr, name);
+            SayLiteral(StdErr, "\n");
+        }
+        SayTrace(StdErr, frame);
+        Gc.SayState();
+        // AND WHETHER THE PROGRAM FREED IT (CORSAC_FREE_LOG): every register
+        // and the address itself looked for among the last frees, a block
+        // freed at or just below it named with the frees that took it. A
+        // fault through an object the program gave back is the compiler's;
+        // one through an object nobody freed is the collector's.
+        if (FreeLogRing != 0) {
+            FreedNear(digits, address);
+            if (registers != 0) {
+                for (int i = 0; i < count; i++) {
+                    FreedNear(digits, Sys.Peek(registers + i * WordSize.Bytes) & WordSize.AddressMask);
+                }
+            }
+        }
+    }
+
+    /// The frees in the log of a block at or up to a kilobyte below `value`,
+    /// newest first, at most four.
+    static void FreedNear(long digits, long value) {
+        if (value < 4096) {
+            return;
+        }
+        long total = Sys.Peek(FreeLogRing) & WordSize.AddressMask;
+        long have = total < FreeLogEntries ? total : FreeLogEntries;
+        long found = 0;
+        long back = 0;
+        while (back < have && found < 4) {
+            long n = (total - 1 - back) % FreeLogEntries;
+            long entry = FreeLogRing + (1 + n * 4) * WordSize.Bytes;
+            long held = Sys.Peek(entry) & WordSize.AddressMask;
+            if (held != 0 && value >= held - 16 && value < held + 1024) {
+                SayLiteral(StdErr, "   0x");
+                SayHex(digits, value);
+                SayLiteral(StdErr, " is in a block freed ");
+                SayHex(digits, back);
+                SayLiteral(StdErr, " frees ago, at 0x");
+                SayHex(digits, held);
+                long owner = Sys.Peek(entry + WordSize.Bytes) & WordSize.AddressMask;
+                if (owner != 0) {
+                    SayLiteral(StdErr, ", a field of 0x");
+                    SayHex(digits, owner);
+                }
+                SayLiteral(StdErr, "\n");
+                SayFrame(StdErr, Sys.Peek(entry + 3 * WordSize.Bytes) & WordSize.AddressMask);
+                if (owner == 0) {
+                    SayFrame(StdErr, Sys.Peek(entry + 2 * WordSize.Bytes) & WordSize.AddressMask);
+                }
+                found = found + 1;
+            }
+            back = back + 1;
+        }
+    }
+
+    /// A word in hexadecimal, every digit, spelled in `digits` and written.
+    static void SayHex(long digits, long value) {
+        int count = WordSize.Bytes * 2;
+        for (int i = 0; i < count; i++) {
+            long nibble = (value >> ((count - 1 - i) * 4)) & 15;
+            Sys.PokeByte(digits + i, nibble < 10 ? 48 + nibble : 87 + nibble);
+        }
+        Platform.WriteBytes(StdErr, digits, count);
+    }
+
+    /// The function an address lies in, on a line of its own, allocating
+    /// nothing: the collector's checked mode names a free site with it.
+    public static void SayFrame(int fd, long address) {
+        long name;
+        long file;
+        long program;
+        long offset;
+
+        SayLiteral(fd, "   at ");
+        if (Lookup(address, out name, out file, out program, out offset)) {
+            SayText(fd, name);
+        } else {
+            SayLiteral(fd, "?");
+        }
+        SayLiteral(fd, "\n");
+    }
+
     /// A string the compiler laid out in the image, which is data and not an
     /// object this heap made: printing it allocates nothing.
     static void SayLiteral(int fd, string text) {
-        Platform.WriteBytes(fd, Sys.ArrayData(text), text.Length);
+        WriteLiteral(fd, text);
     }
 
     /// A zero-terminated run of bytes in the image, written where it lies.
@@ -1368,9 +2235,10 @@ static class Runtime
     /// frame pointer and source site. The frame chain begins with its callers;
     /// the explicit site preserves the leaf even when Capture is inlined.
     public static void Capture(object thrown, long frame, string site) {
+        // The iterator stop signal has no reader to show a trace to.
+        if (thrown is IteratorStopSignal) { return; }
         if (thrown is Exception) {
-            Exception e = (Exception)thrown;
-            e.Trace$ = String.Concat(site, Trace(frame));
+            ((Exception)thrown).Thrown$(site, Frames(frame));
         }
     }
 
@@ -1383,7 +2251,7 @@ static class Runtime
     {
         // Do not recursively retry an output buffer which caused the failure.
         _atExit = 0;
-        WriteBytes(StdErr, BytesOf("Unhandled exception. "), 21);
+        WriteText(StdErr, "Unhandled exception. ");
 
         // An Exception prints as its type name and its message, written
         // piece by piece: building `type + ": " + message` would drag
@@ -1395,16 +2263,16 @@ static class Runtime
             Exception e = (Exception)exception;
             string name = e.GetType().Name;
             string message = e.Message;
-            WriteBytes(StdErr, BytesOf(name), name.Length);
-            WriteBytes(StdErr, BytesOf(": "), 2);
-            WriteBytes(StdErr, BytesOf(message), message.Length);
+            WriteText(StdErr, name);
+            WriteText(StdErr, ": ");
+            WriteText(StdErr, message);
         }
         else
         {
             string text = "" + exception;
-            WriteBytes(StdErr, BytesOf(text), text.Length);
+            WriteText(StdErr, text);
         }
-        WriteBytes(StdErr, BytesOf("\n"), 1);
+        WriteText(StdErr, "\n");
 
         // AND WHERE IT CAME FROM, as it was at the throw. Walking now would
         // very nearly do -- nothing unwinds before this is called -- but the
@@ -1413,7 +2281,7 @@ static class Runtime
         string trace = "";
         if (exception is Exception) { trace = ((Exception)exception).StackTrace; }
         if (trace.Length == 0) { trace = Trace(Sys.FramePointer()); }
-        WriteBytes(StdErr, BytesOf(trace), trace.Length);
+        WriteText(StdErr, trace);
         // At once: an unhandled exception ends the process whatever threads
         // it has, as .NET's does.
         Platform.Exit(134);
@@ -1426,6 +2294,140 @@ static class Runtime
     public static void IndexOutOfRange()
     {
         throw new IndexOutOfRangeException("Index was outside the bounds of the array.");
+    }
+
+    // ---- array covariance ------------------------------------------------
+    //
+    // A Dog[] may be held as an Animal[] -- C# allows it -- and then a Cat
+    // stored into it is refused at run time. An array's descriptor names its
+    // element's (word DescElementWord); a store the compiler cannot prove
+    // safe, into an array whose type is not exactly the one written, comes
+    // here (Lowering, StoreCheck).
+
+    const long DescWordsHere = 12;
+    const long DescDepthWord = 2;
+    const long DescDisplayWord = 3;
+    const long DescInterfacesWord = 4;
+    const long DescFlagsWordHere = 6;
+    const long DescElementWord = 10;
+
+    /// The store of `value` into `array`: refused with ArrayTypeMismatchException
+    /// unless the value is of the array's element type or derives from it.
+    public static void ArrayStoreCheck(long array, long value)
+    {
+        if (array == 0 || value == 0)
+        {
+            return;
+        }
+        long w = WordSize.Bytes;
+        long desc = (Sys.Peek(array) & WordSize.AddressMask) - DescWordsHere * w;
+        long element = Sys.Peek(desc + DescElementWord * w) & WordSize.AddressMask;
+        if (element == 0)
+        {
+            return;
+        }
+        long of = (Sys.Peek(value) & WordSize.AddressMask) - DescWordsHere * w;
+        if (!DescribedAs(of, element))
+        {
+            throw new ArrayTypeMismatchException();
+        }
+    }
+
+    /// Whether an object is an array whose elements are of `element` or
+    /// derive from it: `animals is Animal[]` for a Dog[] (ArrayTest).
+    public static bool ArrayOf(long array, long element)
+    {
+        if (array == 0)
+        {
+            return false;
+        }
+        long w = WordSize.Bytes;
+        long desc = (Sys.Peek(array) & WordSize.AddressMask) - DescWordsHere * w;
+        if ((Sys.Peek(desc + DescFlagsWordHere * w) & 3) != 1)
+        {
+            return false;
+        }
+        long had = Sys.Peek(desc + DescElementWord * w) & WordSize.AddressMask;
+        return had != 0 && DescribedAs(had, element);
+    }
+
+    /// Whether the type a descriptor describes is `want`'s, derives from it,
+    /// or implements it -- the tests Lowering.TypeTest makes inline, taken
+    /// with both types known only at run time -- and, for two arrays, whether
+    /// the one's elements are the other's, as covariance has it.
+    public static bool DescribedAs(long desc, long want)
+    {
+        if (desc == want)
+        {
+            return true;
+        }
+        long w = WordSize.Bytes;
+        // A class's depth is its place in its chain; an interface's and an
+        // array's is -1.
+        long wantDepth = (long)(int)Sys.Peek(want + DescDepthWord * w);
+        if (wantDepth >= 0)
+        {
+            long depth = (long)(int)Sys.Peek(desc + DescDepthWord * w);
+            if (depth < wantDepth)
+            {
+                return false;
+            }
+            long display = Sys.Peek(desc + DescDisplayWord * w) & WordSize.AddressMask;
+            return display != 0 && (Sys.Peek(display + wantDepth * w) & WordSize.AddressMask) == want;
+        }
+        long faces = Sys.Peek(desc + DescInterfacesWord * w) & WordSize.AddressMask;
+        if (faces != 0)
+        {
+            for (long at = faces; ; at = at + w)
+            {
+                long face = Sys.Peek(at) & WordSize.AddressMask;
+                if (face == 0) break;
+                if (face == want) return true;
+            }
+        }
+        // Two arrays of references: covariance, element by element.
+        if ((Sys.Peek(desc + DescFlagsWordHere * w) & 3) == 1 && (Sys.Peek(want + DescFlagsWordHere * w) & 3) == 1)
+        {
+            long had = Sys.Peek(desc + DescElementWord * w) & WordSize.AddressMask;
+            long wanted = Sys.Peek(want + DescElementWord * w) & WordSize.AddressMask;
+            return had != 0 && wanted != 0 && DescribedAs(had, wanted);
+        }
+        return false;
+    }
+
+    // ---- iterators (Lowering.Iterator) -----------------------------------
+
+    /// An iterator's Reset, which C# iterators do not support.
+    public static void IteratorReset()
+    {
+        throw new NotSupportedException("Specified method is not supported.");
+    }
+
+    /// The signal Dispose resumes a suspended iterator with: thrown at the
+    /// yield it stopped at, it runs the finally blocks around it and is
+    /// caught by MoveNext itself (IteratorStopping).
+    /// ONE SIGNAL, made once and thrown each time: an iterator stopped early
+    /// is routine -- every Any, All and First over a lazy sequence disposes
+    /// one mid-way -- and a fresh exception each time, with the trace Capture
+    /// walks for it, made that the most expensive thing the compiler did.
+    /// Nothing ever sees it but the finally blocks it runs and MoveNext's
+    /// own handler: C# allows no catch around a yield.
+    static IteratorStopSignal? _stopSignal;
+
+    public static void IteratorStop()
+    {
+        IteratorStopSignal? signal = _stopSignal;
+        if (signal is null)
+        {
+            signal = new IteratorStopSignal();
+            _stopSignal = signal;
+        }
+        throw signal;
+    }
+
+    public static bool IteratorStopping(object thrown)
+    {
+        return thrown is IteratorStopSignal;
     }
 
     public static void DivideByZero()
@@ -1456,6 +2458,12 @@ static class Runtime
         // `object` in this dialect.) The type it was meant to be is on the
         // line that threw.
         throw new InvalidCastException("Unable to cast object '" + o + "' to the requested type.");
+    }
+
+    public static void GenericVirtualMissing(object o, string method)
+    {
+        throw new MissingMethodException("No compiled implementation of the generic virtual method '" + method
+            + "' for object '" + o + "'.");
     }
 
     // ---- 64-bit division on a 32-bit machine -----------------------------------
@@ -1774,49 +2782,91 @@ static class Runtime
     /// which is exact when the quotient is small and loses low bits when a is
     /// enormous relative to b; a loop of exact subtractions would fix that at
     /// a cost no caller here has asked for.
-    public static double Remainder(double a, double b)
+    public static double Remainder(double x, double y)
     {
-        if (IsNaN(a) || IsNaN(b) || IsInfinite(a) || b == 0.0)
+        // EXACTLY, as C#'s `%` and C's fmod are: x - n*y with n the quotient
+        // truncated, and no rounding anywhere -- the result is always
+        // representable. `x - Trunc(x / y) * y` is not that once the
+        // quotient passes 2^53: 1e300 % 3.0 came out as whatever the rounded
+        // product left behind. So the mantissas are divided the long way,
+        // one bit of the quotient per step, as a C library does it.
+        ulong ux = (ulong)Sys.Bits(x);
+        ulong uy = (ulong)Sys.Bits(y);
+        int ex = (int)((ux >> 52) & 0x7FF);
+        int ey = (int)((uy >> 52) & 0x7FF);
+        ulong sign = ux & 0x8000000000000000;
+
+        // y zero, y NaN, or x infinite or NaN: NaN (x NaN or y NaN propagate).
+        if ((uy << 1) == 0 || IsNaN(y) || ex == 0x7FF)
         {
-            return NaN();
+            return IsNaN(x) ? x : IsNaN(y) ? y : NaN();
         }
-        if (IsInfinite(b))
+        // |x| no greater than |y|: x itself, or a zero of x's sign.
+        if ((ux << 1) <= (uy << 1))
         {
-            return a;
+            return (ux << 1) == (uy << 1) ? 0.0 * x : x;
         }
 
-        double q = Trunc(a / b);
-        double r = a - q * b;
-
-        // Rounding in the quotient can push r one step past where it belongs;
-        // one correction puts it back in (-|b|, |b|) with the dividend's sign.
-        double mag = b < 0.0 ? 0.0 - b : b;
-
-        if (a >= 0.0)
+        // Both to a 53-bit integer mantissa with the implicit bit, a
+        // subnormal normalised by shifting and lowering its exponent.
+        ulong mx;
+        if (ex == 0)
         {
-            if (r < 0.0)
-            {
-                r = r + mag;
-            }
-            if (r >= mag)
-            {
-                r = r - mag;
-            }
+            for (ulong t = ux << 12; (t >> 63) == 0; t = t << 1) ex = ex - 1;
+            mx = ux << (1 - ex);
         }
         else
         {
-            if (r > 0.0)
-            {
-                r = r - mag;
-            }
-            if (r <= 0.0 - mag)
-            {
-                r = r + mag;
-            }
+            mx = (ux & 0x000FFFFFFFFFFFFF) | 0x0010000000000000;
         }
-        return r;
+        ulong my;
+        if (ey == 0)
+        {
+            for (ulong t = uy << 12; (t >> 63) == 0; t = t << 1) ey = ey - 1;
+            my = uy << (1 - ey);
+        }
+        else
+        {
+            my = (uy & 0x000FFFFFFFFFFFFF) | 0x0010000000000000;
+        }
+
+        // The remainder, one exponent step at a time.
+        for (; ex > ey; ex = ex - 1)
+        {
+            ulong d = mx - my;
+            if ((d >> 63) == 0)
+            {
+                if (d == 0) return 0.0 * x;
+                mx = d;
+            }
+            mx = mx << 1;
+        }
+        ulong last = mx - my;
+        if ((last >> 63) == 0)
+        {
+            if (last == 0) return 0.0 * x;
+            mx = last;
+        }
+        while ((mx >> 52) == 0)
+        {
+            mx = mx << 1;
+            ex = ex - 1;
+        }
+
+        // Back to a double: normal with its exponent, or subnormal shifted down.
+        if (ex > 0)
+        {
+            mx = (mx - 0x0010000000000000) | ((ulong)ex << 52);
+        }
+        else
+        {
+            mx = mx >> (1 - ex);
+        }
+        return Sys.FromBits((long)(mx | sign));
     }
 
+    /// Exact in single precision too: a float's remainder, taken exactly in
+    /// double, is exactly representable as a float.
     public static float RemainderSingle(float a, float b)
     {
         return (float)Remainder((double)a, (double)b);
@@ -1825,8 +2875,9 @@ static class Runtime
     // ---- raw memory ------------------------------------------------------------
 
     /// memcmp over raw addresses: the sign of the first differing byte taken
-    /// as UNSIGNED, or zero when all `count` bytes agree. String comparison,
-    /// equality and Sys.CompareBytes all come here.
+    /// as UNSIGNED, or zero when all `count` bytes agree: Sys.CompareBytes.
+    /// Strings have their own (StringEqual, StringCompare), which walk code
+    /// units in pairs.
     public static int CompareBytes(long a, long b, long count)
     {
         long i = 0;
@@ -2178,19 +3229,19 @@ static class Runtime
     // a long argument position is typed long and is correct -- verified
     // against the standard check values.
 
-    static string _crcTable;      // 256 x 4 bytes, little-endian, IEEE
-    static string _crcTableC;     // the same for Castagnoli
+    static uint[] _crcTable;      // 256 entries, IEEE
+    static uint[] _crcTableC;     // the same for Castagnoli
 
-    private static string CrcTable(long polynomial)
+    private static uint[] CrcTable(long polynomial)
     {
-        string table = polynomial == 0xEDB88320 ? _crcTable : _crcTableC;
+        uint[] table = polynomial == 0xEDB88320 ? _crcTable : _crcTableC;
 
         if (table != null)
         {
             return table;
         }
 
-        table = Sys.NewBytes(1024);
+        table = new uint[256];
 
         for (int n = 0; n < 256; n++)
         {
@@ -2207,7 +3258,7 @@ static class Runtime
                     crc = crc >> 1;
                 }
             }
-            PutWord(table, n * 4, crc);
+            table[n] = (uint)crc;
         }
 
         if (polynomial == 0xEDB88320)
@@ -2221,21 +3272,6 @@ static class Runtime
         return table;
     }
 
-    private static long GetWord(string s, int at)
-    {
-        return Sys.GetByte(s, at)
-             | (Sys.GetByte(s, at + 1) << 8)
-             | (Sys.GetByte(s, at + 2) << 16)
-             | ((long)Sys.GetByte(s, at + 3) << 24);
-    }
-
-    private static void PutWord(string s, int at, long v)
-    {
-        Sys.SetByte(s, at, (int)(v & 255));
-        Sys.SetByte(s, at + 1, (int)((v >> 8) & 255));
-        Sys.SetByte(s, at + 2, (int)((v >> 16) & 255));
-        Sys.SetByte(s, at + 3, (int)((v >> 24) & 255));
-    }
 
     public static long Checksum(long at, long bytes, int kind, long seed)
     {
@@ -2287,14 +3323,14 @@ static class Runtime
 
         if (selector == 2 || selector == 4)
         {
-            string table = CrcTable(selector == 2 ? 0x82F63B78 : 0xEDB88320);
+            uint[] table = CrcTable(selector == 2 ? 0x82F63B78 : 0xEDB88320);
             long crc = begun ? (seed & mask32) : ((~seed) & mask32);
             long i = 0;
 
             while (i < bytes)
             {
                 int index = (int)((crc ^ Sys.PeekByte(at + i)) & 255);
-                crc = (crc >> 8) ^ GetWord(table, index * 4);
+                crc = (crc >> 8) ^ (long)table[index];
                 i = i + 1;
             }
             return (~crc) & mask32;
@@ -2376,18 +3412,19 @@ static class Runtime
     //
     // The old machine had a string unit; std.cor reaches it through Sys.String*
     // and these are those operations in software. Each takes an exact span --
-    // a start and a count -- and does no checking of its own: String above
-    // checks, and a caller that comes straight here is a caller that asked to.
+    // a start and a count, in UTF-16 code units -- and does no checking of its
+    // own: String above checks, and a caller that comes straight here is a
+    // caller that asked to.
 
-    /// The index of the first byte equal to `value` in s[at, at + count), or -1.
+    /// The index of the first code unit equal to `value` in s[at, at + count), or -1.
     public static int StringFind(string s, int at, int value, int count)
     {
-        int v = value & 255;
+        int v = value & 0xFFFF;
         int end = at + count;
 
         for (int i = at; i < end; i++)
         {
-            if (Sys.GetByte(s, i) == v)
+            if (Sys.GetChar(s, i) == v)
             {
                 return i;
             }
@@ -2395,16 +3432,16 @@ static class Runtime
         return -1;
     }
 
-    /// The same walking DOWN from `at` for `count` bytes, so LastIndexOf
+    /// The same walking DOWN from `at` for `count` units, so LastIndexOf
     /// passes the last index and the length.
     public static int StringFindReverse(string s, int at, int value, int count)
     {
-        int v = value & 255;
+        int v = value & 0xFFFF;
         int i = at;
 
         while (count > 0 && i >= 0)
         {
-            if (Sys.GetByte(s, i) == v)
+            if (Sys.GetChar(s, i) == v)
             {
                 return i;
             }
@@ -2415,7 +3452,7 @@ static class Runtime
     }
 
     /// Where `what` (from whatAt to its end) first occurs in s within the
-    /// `count` bytes from `at`, or -1. An empty needle is found at `at`, as
+    /// `count` units from `at`, or -1. An empty needle is found at `at`, as
     /// the old unit answered and as String.IndexOf expects.
     public static int StringSearch(string s, int at, string what, int whatAt, int count)
     {
@@ -2430,19 +3467,19 @@ static class Runtime
             return -1;
         }
 
-        int first = Sys.GetByte(what, whatAt);
+        int first = Sys.GetChar(what, whatAt);
         int last = at + count - needle;
 
         for (int i = at; i <= last; i++)
         {
-            if (Sys.GetByte(s, i) != first)
+            if (Sys.GetChar(s, i) != first)
             {
                 continue;
             }
 
             int k = 1;
 
-            while (k < needle && Sys.GetByte(s, i + k) == Sys.GetByte(what, whatAt + k))
+            while (k < needle && Sys.GetChar(s, i + k) == Sys.GetChar(what, whatAt + k))
             {
                 k = k + 1;
             }
@@ -2454,45 +3491,103 @@ static class Runtime
         return -1;
     }
 
-    /// ASCII case, IN PLACE, over the span; answers the count. Only A-Z and
-    /// a-z move: strings are bytes here and anything above 127 is a piece of
-    /// a UTF-8 sequence that has no single-byte case.
-    public static int StringLower(string s, int at, int count)
+    /// ORDINAL ORDER of two spans of the same length: the first code unit that
+    /// differs decides, by its value, which is .NET's string.CompareOrdinal.
+    /// Answers the difference of those two units, or 0.
+    ///
+    /// Equal pairs of units are passed over as one 32-bit load each
+    /// (Sys.GetCharPair); the pair that differs, or the unit left over, is
+    /// read a unit at a time for the order.
+    public static int StringCompare(string a, int aAt, string b, int bAt, int count)
     {
-        int end = at + count;
+        int i = 0;
+        int pairs = count - 1;
 
-        for (int i = at; i < end; i++)
+        while (i < pairs && Sys.GetCharPair(a, aAt + i) == Sys.GetCharPair(b, bAt + i))
         {
-            int c = Sys.GetByte(s, i);
+            i = i + 2;
+        }
+        for (; i < count; i++)
+        {
+            int x = Sys.GetChar(a, aAt + i);
+            int y = Sys.GetChar(b, bAt + i);
 
-            if (c >= 65 && c <= 90)
+            if (x != y)
             {
-                Sys.SetByte(s, i, c + 32);
+                return x - y;
             }
         }
+        return 0;
+    }
+
+    /// Whether two spans of `count` code units are the same units: two at a
+    /// time, one 32-bit load from each (Sys.GetCharPair), with a 32-bit
+    /// cursor, then the unit left over. Every string equality comes here --
+    /// String.Equals, ==, the tables' key match, StartsWith and EndsWith.
+    public static bool StringEqual(string a, int aAt, string b, int bAt, int count)
+    {
+        int i = 0;
+        int pairs = count - 1;
+
+        while (i < pairs)
+        {
+            if (Sys.GetCharPair(a, aAt + i) != Sys.GetCharPair(b, bAt + i))
+            {
+                return false;
+            }
+            i = i + 2;
+        }
+        return i >= count || Sys.GetChar(a, aAt + i) == Sys.GetChar(b, bAt + i);
+    }
+
+    /// Invariant case, IN PLACE, over the span; answers the count. Each
+    /// character is mapped as .NET's ToLowerInvariant maps a string: a unit
+    /// alone, or a surrogate pair as the one character it spells (its case
+    /// partner is always a pair too). An unpaired surrogate has no case.
+    public static int StringLower(string s, int at, int count)
+    {
+        MapCase(s, at, count, false);
         return count;
     }
 
     public static int StringUpper(string s, int at, int count)
     {
-        int end = at + count;
-
-        for (int i = at; i < end; i++)
-        {
-            int c = Sys.GetByte(s, i);
-
-            if (c >= 97 && c <= 122)
-            {
-                Sys.SetByte(s, i, c - 32);
-            }
-        }
+        MapCase(s, at, count, true);
         return count;
     }
 
-    /// FNV-1a over the bytes of the span, starting from `seed`: xor the byte
-    /// in, multiply by the 64-bit FNV prime. The old unit did exactly this,
-    /// and StringComparer's fold-to-lower path in std.cor repeats it by hand,
-    /// so the two must agree byte for byte.
+    private static void MapCase(string s, int at, int count, bool upper)
+    {
+        int end = at + count;
+        int i = at;
+
+        while (i < end)
+        {
+            int c = Sys.GetChar(s, i);
+
+            if (c >= 0xD800 && c <= 0xDBFF && i + 1 < end)
+            {
+                int d = Sys.GetChar(s, i + 1);
+
+                if (d >= 0xDC00 && d <= 0xDFFF)
+                {
+                    int point = 0x10000 + ((c - 0xD800) << 10) + (d - 0xDC00);
+                    int mapped = upper ? UnicodeCase.Upper(point) : UnicodeCase.Lower(point);
+                    Sys.SetChar(s, i, 0xD800 + ((mapped - 0x10000) >> 10));
+                    Sys.SetChar(s, i + 1, 0xDC00 + ((mapped - 0x10000) & 0x3FF));
+                    i = i + 2;
+                    continue;
+                }
+            }
+            Sys.SetChar(s, i, upper ? UnicodeCase.Upper(c) : UnicodeCase.Lower(c));
+            i = i + 1;
+        }
+    }
+
+    /// FNV-1a over the code units of the span, starting from `seed`: xor the
+    /// unit in, multiply by the 64-bit FNV prime. StringComparer's
+    /// fold-to-lower path in the standard library repeats it by hand, so the
+    /// two must agree unit for unit.
     public static long StringHash(string s, int at, int count, long seed)
     {
         long h = seed;
@@ -2500,25 +3595,83 @@ static class Runtime
 
         for (int i = at; i < end; i++)
         {
-            h = (h ^ Sys.GetByte(s, i)) * 0x100000001B3;
+            h = (h ^ Sys.GetChar(s, i)) * 0x100000001B3;
         }
         return h;
     }
 
-    /// Sets `count` bytes from dstAt to the low byte of `value`; answers count.
+    /// A WHOLE STRING'S HASH, worked out once and kept: a string cannot
+    /// change, so the hash it had it has for ever, and a compiler asks the
+    /// same names for theirs thousands of times over. It is kept in the four
+    /// bytes after the count, which the header pads to eight-byte elements
+    /// and nothing else uses; 0 there means not yet worked out, so a hash
+    /// that comes out 0 is kept as 1. A literal's is written in by the
+    /// compiler (Lowering.InternString), because a literal lives in read-only
+    /// data and must never be written here.
+    ///
+    /// 32-bit FNV-1a over the code units: one 32-bit multiply a unit where
+    /// the 64-bit one was three on this processor, for a hash that is an int
+    /// all the same. Every hash of a whole string -- string.GetHashCode,
+    /// StringComparer.Ordinal, the tables' KeyHash -- is this one, so they
+    /// agree; nothing the compiler writes depends on its value.
+    public static int StringHashCode(string s)
+    {
+        long at = Sys.Word(s) + StringHashAt;
+        long cached = Sys.PeekWord(at);
+        if (cached != 0)
+        {
+            return (int)cached;
+        }
+        uint h = 2166136261;
+        int n = s.Length;
+        int pairs = n - 1;
+        int i = 0;
+        // A pair of units a load, each still hashed on its own: the low half
+        // is the first unit on this little-endian machine.
+        while (i < pairs)
+        {
+            uint two = (uint)Sys.GetCharPair(s, i);
+            h = (h ^ (two & 0xFFFF)) * 16777619;
+            h = (h ^ (two >> 16)) * 16777619;
+            i = i + 2;
+        }
+        if (i < n)
+        {
+            h = (h ^ (uint)Sys.GetChar(s, i)) * 16777619;
+        }
+        if (h == 0)
+        {
+            h = 1;
+        }
+        Sys.PokeWord(at, h);
+        return (int)h;
+    }
+
+    const long StringHashAt = 2 * WordSize.Bytes + 4;
+
+    /// Whether two strings' hashes are both already known and are different
+    /// -- then they differ, whatever their units. Neither is worked out here.
+    public static bool KnownHashesDiffer(string a, string b)
+    {
+        long x = Sys.PeekWord(Sys.Word(a) + StringHashAt);
+        long y = Sys.PeekWord(Sys.Word(b) + StringHashAt);
+        return x != 0 && y != 0 && x != y;
+    }
+
+    /// Sets `count` code units from dstAt to `value`; answers count.
     public static int StringFill(string dst, int dstAt, int value, int count)
     {
-        int v = value & 255;
+        int v = value & 0xFFFF;
         int end = dstAt + count;
 
         for (int i = dstAt; i < end; i++)
         {
-            Sys.SetByte(dst, i, v);
+            Sys.SetChar(dst, i, v);
         }
         return count;
     }
 
-    /// The decimal text of `value` into dst at `at`, up to `capacity` bytes;
+    /// The decimal text of `value` into dst at `at`, up to `capacity` units;
     /// answers how many were written. See FormatDecimal for the edges.
     public static int StringFormat(string dst, int at, long value, int capacity)
     {
@@ -2526,7 +3679,7 @@ static class Runtime
     }
 
     /// Parses an optional sign and decimal digits from the span and answers
-    /// the value; stops at the first byte that is not a digit. A sign with no
+    /// the value; stops at the first unit that is not a digit. A sign with no
     /// digit after it is zero. The old unit faulted on overflow; this one
     /// wraps, which is the unchecked C# result of the same multiply-and-add.
     public static long StringNumber(string s, int at, int count)
@@ -2537,7 +3690,7 @@ static class Runtime
 
         if (i < end)
         {
-            int c = Sys.GetByte(s, i);
+            int c = Sys.GetChar(s, i);
 
             if (c == 45)
             {
@@ -2554,7 +3707,7 @@ static class Runtime
 
         while (i < end)
         {
-            int c = Sys.GetByte(s, i);
+            int c = Sys.GetChar(s, i);
 
             if (c < 48 || c > 57)
             {
@@ -2573,9 +3726,9 @@ static class Runtime
         return 0 - value;
     }
 
-    /// Copies `count` bytes, correct when the two spans overlap in either
-    /// direction (a byte copy upward is safe when the destination is below
-    /// the source, and downward when it is above); answers count.
+    /// Copies `count` code units, correct when the two spans overlap in either
+    /// direction (a copy upward is safe when the destination is below the
+    /// source, and downward when it is above); answers count.
     public static int StringCopy(string dst, int dstAt, string src, int srcAt, int count)
     {
         if (count <= 0)
@@ -2587,14 +3740,14 @@ static class Runtime
         {
             for (int i = count - 1; i >= 0; i = i - 1)
             {
-                Sys.SetByte(dst, dstAt + i, Sys.GetByte(src, srcAt + i));
+                Sys.SetChar(dst, dstAt + i, Sys.GetChar(src, srcAt + i));
             }
             return count;
         }
 
         for (int i = 0; i < count; i++)
         {
-            Sys.SetByte(dst, dstAt + i, Sys.GetByte(src, srcAt + i));
+            Sys.SetChar(dst, dstAt + i, Sys.GetChar(src, srcAt + i));
         }
         return count;
     }

@@ -21,7 +21,18 @@ set -u
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
 corc="${CORC:-$root/compiler/bin/managed/Release/net10.0/corc}"
-libdir="${OUT:-$root/build/lib}"
+target_name="${TARGET:-x86}"
+case "$target_name" in
+    x86)
+        target_args=(); libdir="${OUT:-$root/build/lib}"
+        reloc_prefix=R_386_; accepted="R_386_RELATIVE R_386_32 R_386_PC32 R_386_GLOB_DAT R_386_JUMP_SLOT"
+        interpreter=/lib/ld-linux.so.2 ;;
+    x86-64|x86_64|amd64|x64)
+        target_args=(--target x86-64 --cpu k8); libdir="${OUT:-$root/build/lib64}"
+        reloc_prefix=R_X86_64_; accepted="R_X86_64_RELATIVE R_X86_64_64 R_X86_64_GLOB_DAT R_X86_64_JUMP_SLOT"
+        interpreter=/lib64/ld-linux-x86-64.so.2 ;;
+    *) echo "unknown TARGET '$target_name'" >&2; exit 2 ;;
+esac
 filter="${1:-}"
 mkdir -p "$root/build"
 work="$(mktemp -d "$root/build/shared.XXXXXX")"
@@ -34,7 +45,7 @@ failed_names=""
 ok() { passed=$((passed + 1)); printf 'PASS %s\n' "$1"; }
 bad() { failed=$((failed + 1)); failed_names="$failed_names $1"; printf 'FAIL %s (%s)\n' "$1" "$2"; }
 
-if [ "${SKIP_LIBRARY_BUILD:-0}" != 1 ] && ! OUT="$libdir" bash "$root/tests/integration/build-libraries.sh" > "$work/libs.log" 2>&1; then
+if [ "${SKIP_LIBRARY_BUILD:-0}" != 1 ] && ! TARGET="$target_name" OUT="$libdir" bash "$root/tests/integration/build-libraries.sh" > "$work/libs.log" 2>&1; then
     sed 's/^/    /' "$work/libs.log"
     echo "the shared libraries did not build" >&2
     exit 2
@@ -55,17 +66,16 @@ check_image() {
         ok "$name text has no relocations"
     fi
 
-    local kinds; kinds="$(awk 'NR > 3 && $3 ~ /^R_386_/ { print $3 }' <<< "$rel" | sort -u | tr '\n' ' ')"
+    local kinds; kinds="$(awk -v p="$reloc_prefix" 'NR > 3 && index($3, p) == 1 { print $3 }' <<< "$rel" | sort -u | tr '\n' ' ')"
     local bad_kind=0 one
     for one in $kinds; do
         case "$one" in
-            R_386_RELATIVE|R_386_32|R_386_PC32|R_386_GLOB_DAT|R_386_JUMP_SLOT) ;;
-            *) bad_kind=1; bad "$name" "relocation $one is not one the loader accepts" ;;
+            *) [[ " $accepted " == *" $one "* ]] || { bad_kind=1; bad "$name" "relocation $one is not one the loader accepts"; } ;;
         esac
     done
-    [ "$bad_kind" = 0 ] && ok "$name uses only the five relocation types"
+    [ "$bad_kind" = 0 ] && ok "$name uses only the relocation types the loader accepts"
 
-    if grep -q "R_386_COPY" <<< "$rel"; then
+    if grep -q "${reloc_prefix}COPY" <<< "$rel"; then
         bad "$name" "a copy relocation: a type's identity would be two addresses"
     else
         ok "$name has no copy relocation"
@@ -90,8 +100,8 @@ check_image() {
             grep -qE "^ *Type: *DYN" <<< "$hdr" && ok "$name is ET_DYN" || bad "$name" "not ET_DYN"
             ;;
         exe)
-            grep -q "/lib/ld-linux.so.2" <<< "$hdr" && ok "$name names the interpreter" \
-                || bad "$name" "no PT_INTERP=/lib/ld-linux.so.2"
+            grep -q "$interpreter" <<< "$hdr" && ok "$name names the interpreter" \
+                || bad "$name" "no PT_INTERP=$interpreter"
             grep -q "(DEBUG)" <<< "$dyn" && ok "$name has DT_DEBUG for the link map" \
                 || bad "$name" "no DT_DEBUG: a loader that cannot call into the program has nowhere to put the link map"
             ;;
@@ -122,7 +132,7 @@ for source in "$root"/tests/language/6[2-9][0-9]_shared_*.cor "$root/tests/langu
     fi
 
     exe="$work/$name"
-    if ! "$corc" compile --dynamic --libdir "$libdir" "$source" -o "$exe" > "$work/$name.cc" 2>&1; then
+    if ! "$corc" compile --dynamic "${target_args[@]}" --libdir "$libdir" "$source" -o "$exe" > "$work/$name.cc" 2>&1; then
         sed 's/^/    /' "$work/$name.cc" | head -20
         bad "$name" "did not compile"
         continue

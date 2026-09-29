@@ -768,43 +768,212 @@ the old backend used, so `corc syms` is unchanged.
 
 ## Memory
 
-Memory management is invisible to the programmer, as in real C#, and it
-is the compiler's job. A program never frees anything, never sizes a
-heap, and never names an allocator: `new` is all there is. What makes
-that painless, fast, resistant to fragmentation and infallible is that
-the compiler and the collector are designed together. This is not a
-C-alike with a library bolted on; the collector is part of the toolchain.
+Memory management is invisible to the programmer, as in real C#, and it is
+the compiler's job. A program never frees anything, never sizes a heap and
+never names an allocator: `new` is all there is. What makes that cheap on a
+486 with 32 MB and still quick on a server with many gigabytes is that the
+compiler and the memory library are designed together, and that the heap
+is the LAST place an object goes, not the first.
 
-**The design: a precise, generational, moving collector.**
+**Where an object lives, in order of preference.**
 
-- **Precise.** The collector knows exactly which words are references.
-  Every object already carries a type descriptor; the descriptor gains a
-  reference map (which fields hold pointers), arrays of references are
-  marked as such, and the backend emits a stack map at every call site
-  and safepoint saying which stack slots and registers hold references.
-  Nothing is retained by accident, so a program that drops its last
-  reference gets the memory back -- infallible in the sense that leaks
-  through false retention cannot happen.
-- **Moving.** Because every reference is known, objects can be moved.
-  The young generation is a copying nursery: allocation is a pointer
-  bump into a thread-local region, inlined by the compiler as a few
-  instructions with a call only on the slow path, and a nursery
-  collection copies the survivors out. The old generation is compacted
-  when it fragments. Fragmentation is therefore a condition the collector
-  removes, not one the program lives with.
-- **Generational.** Most objects die young and are never copied at all.
-  The compiler emits a write barrier on every store of a reference into
-  a heap object -- a card mark, a few instructions -- so the old
-  generation's pointers into the nursery are known without scanning it.
-- **Safepoints.** The compiler emits a poll at loop back-edges and every
-  call is a safepoint, so a collection can begin at a point where the
-  stack maps are exact. On a multiprocessor this is also how every thread
-  is brought to a known state.
+0. **Static data.** What is known when the program is compiled is laid down
+   in the image and never built: every string literal (with its hash already
+   worked out, below), and every static array of literals (below). A
+   deliberate departure from .NET, which builds such tables at run time.
+1. **The frame.** An object whose reference never leaves the function that
+   made it -- a scratch buffer, an enumerator, a small array, a closure
+   called and dropped -- is a frame slot, up to a kilobyte.
+2. **Owned.** An object with one owner and a last use the compiler can find
+   is freed there, by a free the compiler inserts.
+3. **The collector.** Whatever is left, where lifetime depends on data.
+
+The collector is linked only when tier 3 is non-empty after whole-program
+analysis (`Module.NeedsHeap`); a program without it gets a bump region.
+
+**Tier 0: static arrays of constants.** A static field -- `readonly` or not --
+whose initialiser is a one-dimensional array of a keyword element type
+(`bool`, `char`, the integers, `float`, `double`, `string`) written with
+literals only, each in range, is recognised from its declaration
+(`Binder.StaticArrayOf`) and kept off the type's initialiser
+(`FieldDecl.StaticData`). Lowering lays the array down in the data section
+exactly as the heap would hold one -- the vtable of its sequence
+descriptor, the count, the elements, a string element as its literal --
+and the field's word as its address (`Lowering.StaticArrayData`). The table
+exists before any code runs; a type whose only static state is such tables
+needs no initialiser at all, so no check guards every touch of it. The
+array stays writable, as a C# array is. For a `static readonly` field of a
+type with no static constructor, the field's own word is read-only data, and
+`ReadOnlyFold` turns every load of it into the table's address: the field
+costs nothing to read. Anything else -- an enum element, a named constant,
+an expression -- is initialised at run time as before, and checked there.
+
+
+**How the tiers are decided, today.** `Lang/Opt/Escape.cs` runs after
+inlining and propagation. An allocation with an immediate size whose
+address never escapes (stored, returned, passed to a callee whose parameter
+escapes, or passed to an indirect callee) becomes a frame slot; one whose
+size is dynamic becomes `Alloc` paired with `Free` on every exit path.
+Callees are summarised bottom-up over the call graph so an object handed
+to `Runtime.Print` or a helper that only reads it does not escape. A cycle
+of calls (a recursive family) is summarised as a whole, to the least fixed
+point: every parameter on the cycle starts as staying put, and the members
+are summarised again until nothing changes, so a value that only travels
+round the cycle does not escape and one kept anywhere on it does.
+
+Tier 2 has two rules today, both in the same pass:
+
+- *Fresh returns.* A function whose every return hands over an object it
+  made -- or one a fresh callee handed it, or null -- and which lets that
+  object go no other way is summarised as returning fresh. At a call to it
+  the result is an owned allocation of the caller: `Free` at its last use,
+  and in a loop the previous result is given back *after* the call, since
+  the call may read it (`x = Grow(x)`). Chains of helpers compose. A result
+  assigned to a variable that has another definition too (the loop-carried
+  `x` of that example) is not followed by this rule; the next one takes it.
+- *Owned variables* (`EscapeVariables.cs`). A variable assigned again and
+  again (`s = s + part`, `x = Grow(x)`) whose every value is null, static
+  data or a fresh object, and nothing it holds escapes, owns what it holds:
+  each assignment gives back the previous value (`Runtime.FreeReplaced`,
+  which skips the same object assigned twice) provided nothing that could
+  still hold it is live there, and every return gives back the last.
+- *Owned fields* (`EscapeFields.cs`). A reference field of an owned object
+  is freed with it (`Runtime.FreeField`, just before the object's own free)
+  when every piece of code that touches the field -- the owner's function,
+  each callee the object reaches (a per-parameter field summary), and the
+  fresh function that filled it -- stores only fresh objects there, null,
+  or what it just loaded from the same field; lets nothing loaded from it
+  escape; and uses the object only at constant offsets. A `List`'s array
+  dies with the `List`. What a field held before it was overwritten (the
+  arrays a `List` grew out of) is still the collector's.
+
+Every one of these lifetime proofs asks liveness whether anything still
+holds an object where it dies. A landing pad has no predecessors in the
+control-flow graph -- an exception reaches its catch from anywhere in the
+try -- so a register a handler reads before writing is taken to be live at
+every point of the function, and an object a handler may read is never
+freed early.
+
+`corc --stats` prints the counts: objects in frames, objects freed by the
+compiler and how many of those were fresh returns, fresh functions, and
+fields freed with their owner, and reassigned variables owned.
+
+
+**The collector.** `runtime/src/core/gc.cor`. A mark-sweep collector over a
+free-list heap, NON-MOVING, and concurrent: nobody is ever stopped. A
+collection with one thread runs start to end on it; one with several runs
+while every thread keeps working, and asks each, in handshake rounds at its
+next safepoint, for the part only it can do -- record where the objects in
+its allocation buffer start, mark from its own stack and registers.
+Between, a snapshot-at-the-beginning barrier the compiler emits before every
+store of a reference (`Runtime.Marking` tested, `Runtime.WriteBarrier`
+called while it is set) reports what a store overwrites, so everything
+reachable when the mark began is marked whatever is unlinked meanwhile,
+and what is allocated meanwhile is kept by the sweep. The sweep then runs a
+chunk at a time with the world running; a chunk found wholly dead goes back
+to the operating system.
+
+- *Precise where it can be, conservative where it must be.* A class
+  instance, a box, a closure and an array are allocated through
+  `Runtime.AllocObject`, which tags the block (`Gc.KindObject`); the
+  collector reads such a block's references off its descriptor -- the
+  reference map a class descriptor carries, or, for an array whose
+  descriptor says its elements are references, the elements -- and looks
+  at nothing else in it (`Gc.ScanObject`). The map names every field a
+  store treats as a reference: a class, an interface, an array, a string, a
+  struct's block, and a field typed `object` or by a type parameter. Strings and arrays of bytes,
+  characters and floating point come from `Runtime.AllocLeaf` and are never
+  read at all. Everything else the compiler allocates -- a struct's block, a
+  nullable or captured-variable cell, a coroutine's frame -- is scanned word
+  by word, as are the stacks, the registers and the statics. A block whose
+  descriptor cannot be read (no vtable yet, a word that is not one) falls
+  back to word-by-word, which is never wrong.
+- *Paced by the machine.* The next collection comes when between one and
+  three times the live size has been allocated since the last
+  (`Gc.NextThreshold`): at least the live size, the old pace and all a
+  small board can spare; up to three times it where half of what the
+  operating system reports free (or half of what a heap cap leaves) allows.
+  On 32-bit, never more than half of what the address space leaves: the
+  heap is kept under 3.25 GB under a 64-bit kernel, whose 32-bit processes
+  have all four gigabytes, and under 2.5 GB under a 32-bit kernel's three
+  (`Gc.HeapCeiling`, set as the heap starts from `Platform.AddressSpace`),
+  because a process's code, stacks and tables share that space. Under a hard limit --
+  the ceiling, or a cap -- the floor of one live size gives way: near the
+  limit collections come sooner, rather than the heap outgrowing it. And
+  the ceiling is where growth waits for a collection: a chunk that would
+  pass it, with a pace's worth allocated since the last cycle, is refused
+  until a major collection has run (`Gc.GrowthWaits`); straight after one,
+  growth is allowed, so the ceiling slows a heap and never stops one. A
+  chunk the system will not give is answered with a collection, never a
+  failure while one could help.
+- *A mark queue sized to the heap.* The grey queue starts at 256 KB; a
+  cycle that overflows it (and finishes by rescanning the heap, which needs
+  no memory) asks the next cycle for four times it, as far as a
+  thirty-second of the heap (`Gc.FitMarkQueue`). A small heap never grows
+  it; a compiler's does, once.
+- *Its own memory is the system's.* The queue, the barrier ring, the chunk
+  index and the free-memory probe are mappings of their own, never heap
+  blocks, and nothing on the collection path allocates -- nor maps: a
+  chunk's start table is mapped with the chunk, because the collection
+  that would have to map it is the one the address space ran out for.
+
+**Memory is a pace, never an answer.** The toolchain builds the system on a
+machine of 128 MB as on one of many gigabytes, and builds the SAME system:
+memory decides how work is batched and how much runs at once, never what is
+decided. The collector's pacing changes when it runs, not what a program
+computes. The build admits units by what the process can hold
+(`ProjectCompile`, `Lto.MachineMemory`), which reads `GC.GetGCMemoryInfo()`
+-- whose total is the machine's memory, a heap cap, or the 32-bit heap
+ceiling, whichever is least -- so a 32-bit compiler on a large server runs
+fewer units at once instead of running out of address space. Every limit
+that shapes output is a fixed constant.
+
+**Strings.** A string cannot change, so everything about it that costs
+anything is done once. A literal is static data (tier 0), and its header
+carries its hash, worked out by the compiler. Any other string works its
+hash out the first time it is asked and keeps it in the four header bytes
+after the count, which the header pads anyway (`Runtime.StringHashCode`;
+0 means not yet, and a hash that comes out 0 is kept as 1). The hash is
+32-bit FNV-1a over the code units -- one 32-bit multiply per unit -- and
+every whole-string hash (`string.GetHashCode`, `StringComparer.Ordinal`,
+the tables' key hash) is that one. No output depends on a hash's value: the
+compiler hosted by .NET, whose string hashes are randomised, and the
+compiler compiled by itself write the same bytes.
+
+**The contract between the compiler and the memory library.** Named by
+mangled name and arity; the library provides them.
+
+- `Runtime.Alloc(long) : long` -- a zeroed, 8-aligned block, scanned word by
+  word. `Runtime.AllocLeaf` -- the same, never scanned.
+  `Runtime.AllocObject` -- the same, scanned by the descriptor its first
+  word will name; called exactly where the compiler stores a vtable next.
+  All three bump in a thread's own buffer and enter the locked slow path
+  only to refill it or to collect.
+- `Runtime.AllocBump(long) : long` -- a block from a region never collected,
+  what a program without a collector links instead.
+- `Runtime.Free`, `Runtime.FreeReplaced`, `Runtime.FreeField` -- the frees
+  the compiler inserts for tiers 1 and 2; a pointer outside the heap, or 0,
+  is ignored.
+- `Runtime.Marking` and `Runtime.WriteBarrier(slot, value)` -- the
+  concurrent mark's barrier (above). `Runtime.WriteBarrierValues(old, value)`
+  is its form for a store the optimiser has replaced with registers.
+- `Runtime.Cards`, `Runtime.CardMark(slot)` and
+  `Runtime.CardMarkObject(payload)` -- the generational card marks (below):
+  the table, or 0 where there are no generations; the mark after a store of
+  a reference; every card of a coroutine's machine after a suspension.
+- Small blocks (to 256 bytes) come from exact-size free lists; larger free
+  blocks from lists in eight bins to each power of two, with a bitmap of
+  the non-empty bins (a two-level segregated fit): a fit looks at the first
+  few blocks of its own bin, then takes the head of the next non-empty one,
+  so linking, unlinking and fitting cost the same whatever the heap holds.
+
 
 **The stack map table, as emitted today.** Its own section,
 `.corsac.stackmaps`, read-only data bracketed by the object-local symbols
 `__corsac_stackmaps` and `__corsac_stackmaps_end`. Each object owns one complete
-table, including its own relative bitmap offsets. The boundaries are not global
+table, including its own relative bitmap offsets; call sites whose frames hold
+the same slots share one bitmap, so an offset may be named by many entries (a
+reader follows it, never assumes the pool runs in entry order). The boundaries are not global
 definitions: independently compiled objects must not collide or bind to each
 other's table. The allocated bytes merge into `.rodata` in the final image.
 The current conservative collector does not consume these tables. A future
@@ -848,123 +1017,133 @@ than a scan. A return address is looked up by equality against base plus
 the entry's word, and a frame whose return address is not in the table
 is a frame this compiler did not emit.
 
+**Array covariance.** A Dog[] may be held as an Animal[], as C# allows, and a
+store into an array whose element type is written as `object`, an interface
+or a class that is not sealed is checked: nothing when the value is null or
+the array is exactly the type written (one load and a compare), and
+otherwise `Runtime.ArrayStoreCheck`, which throws ArrayTypeMismatchException
+for a Cat. An array descriptor names its element's descriptor (word 10) for
+that and for `is Animal[]` (`Runtime.ArrayOf`). A departure from .NET: a
+store into an array whose element is a type parameter is not checked. In
+shared generic code that element is a word of any type, List&lt;T&gt; stores into
+its T[] at every Add, and the check there would cost every list on a slow
+processor; a covariant array reaches a generic method's store only through a
+cast .NET itself would have to check at the store.
+
 **The interim rule for what is a reference.** On x86 a reference and an
 `int` are both `IrType.I32`, so the IR does not distinguish them. Until it
 does, a stack map lists EVERY live 32-bit value at the call except the two
 halves of a 64-bit integer, which the selector marks as it makes them, and
 except a value the allocator re-makes from a constant. The table is
 therefore a SUPERSET of the truth: safe for a non-moving collector to scan,
-and not safe to move on. That is the reason the write barrier and the
-safepoint poll are off. Narrowing it means tagging reference-typed IR
-registers; the format above does not change when that lands.
+and not safe to move on -- which is why the collector does not move
+anything and reads the stacks word by word rather than through these
+tables. Narrowing it means tagging reference-typed IR registers; the format
+above does not change when that lands. (The backend's own `WriteBarriers`
+and `SafepointPolls` flags stay off: the barrier the collector uses is
+emitted by lowering, and threads reach their safepoints at allocation and
+at blocking calls.)
 
-**Where the barriers and polls go.** Two backend flags, both false:
-`X86Backend.WriteBarriers` and `X86Backend.SafepointPolls`, beside
-`X86Backend.StackMaps`, which is true. The barrier belongs in Select.cs,
-in the Store cases that write a word through an object pointer -- a card
-mark on the object's address, a few instructions, no call. The poll
-belongs in Select.cs too, where a jump to an already-emitted block is
-selected: that is a back-edge, and a poll there plus a map at every call
-is what makes every thread reachable at a point where the maps are exact.
 
-**What the compiler emits, then:** reference maps in descriptors, stack
-maps, inlined allocation fast paths, write barriers, safepoint polls.
-These are all backend and lowering work, designed in from now rather than
-retrofitted; the IR carries the information (an allocation is `Alloc`,
-a reference store is a store of a word-typed reference, both are
-already distinguishable) and the backend's frame layout already knows
-which slots hold what.
+**Generations.** Most of what a program allocates is dead by the next
+collection, and a collection that marks the whole live heap, builds every
+chunk's start table and sweeps every chunk pays for the whole heap to learn
+that. So the collector is generational -- still non-moving, since the stacks
+are read word by word and nothing may move -- by STICKY MARKS: a block that
+survives a collection keeps its mark and scanned flags and is OLD; one
+allocated since carries neither and is YOUNG. A chunk allocated in since the
+last collection is young (`HeapChunks.IsYoung`); the others hold only old
+blocks.
 
-**The collector is the last resort, not the first.** The compiler sees
-every allocation, and most objects have lifetimes it can prove. Memory is
-managed in tiers, and a program pays only for the tiers it needs:
-
-1. **Local.** An object whose reference never escapes the function that
-   made it -- the scratch buffer a number is formatted into, an
-   enumerator, a closure called and dropped -- is allocated on the stack
-   or freed at scope exit. Escape analysis over the IR decides this, after
-   inlining, when the whole lifetime is in view.
-2. **Owned.** An object with one owner and a last use the compiler can
-   find -- stored in a field the owner drops, passed down and never
-   kept -- is freed by a free the compiler inserts at that last use.
-3. **Shared.** Whatever remains, where lifetime depends on data, is the
-   collector's.
-
-The collector is linked only when tier 3 is non-empty after whole-program
-analysis. A hello world, whose every allocation is tier 1, links no
-collector and no heap beyond a bump region. The tiers are decided by the
-optimiser, which is why the memory library, the inliner and escape
-analysis are designed together rather than bolted on.
-
-**The contract between the compiler and the memory library.** The
-compiler names these by mangled name and arity; the library provides them.
-
-- `Runtime.Alloc(long bytes) : long` -- a zeroed block, 8-aligned. What
-  `new` lowers to. When the collector is linked this is the collector's
-  allocator; the bootstrap fast path bumps within a thread-local arena.
-  Fitting free-bin hints, exhausted arenas and collection pressure enter
-  the locked slow path.
-- `Runtime.AllocBump(long bytes) : long` -- a zeroed block from a bump
-  region that is never collected. What a program links when it needs no
-  collector: every object is tier 1 or dies with the process.
-- `Runtime.Free(long at)` -- returns a block from `Alloc` to the heap now,
-  coalescing with free neighbours and tolerating 0. Boundary tags locate
-  neighbours directly; exact-bin unlink is O(1), and large-bin AVL index
-  updates are O(log n). Emitted by the
-  compiler for tier-1 objects whose size is not a constant (so they cannot
-  be frame slots) and for tier-2 owned objects at their last use. Present
-  and correct whether or not the collector is linked.
-- `Module.NeedsHeap` -- decided by escape analysis after inlining, over
-  every function reachable from the entry: true iff some allocation is
-  tier 3. The driver links `gc.cor` only then, and the statistics output
-  (`--stats`) says which.
-- Small blocks (<= 256 bytes) come from size-class free lists so a hot
-  allocation is O(1) and does not fragment the general region.
-- Larger free blocks are indexed by size and address in AVL trees within
-  power-of-two bins. Tree metadata occupies free payload, not additional
-  allocated headers. Published maximum-size hints let the allocation fast
-  path decide whether reuse is possible without walking a concurrent tree;
-  all tree mutations and the actual reuse occur under the heap lock.
-
-**How the tiers are decided, today.** `Lang/Opt/Escape.cs` runs after
-inlining and propagation. An allocation with an immediate size whose
-address never escapes (stored, returned, passed to a callee whose parameter
-escapes, or passed to an indirect callee) becomes a frame slot; one whose
-size is dynamic becomes `Alloc` paired with `Free` on every exit path.
-Callees are summarised bottom-up over the call graph so an object handed
-to `Runtime.Print` or a helper that only reads it does not escape. Tier 2
-is the next step: an object that escapes only into a tier-1 owner, or
-whose last use is findable, is freed there.
-
-**The precise collector's tables.** The reference map of each class lives
-behind its descriptor and the array descriptor flags whether elements are
-references; every call site has a stack map naming the frame slots and
-callee-saved registers that hold references, in `.corsac.meta`. The exact
-encodings are in the sections that define them. Write barriers and
-safepoint polls are a backend option, off until the collector reads the
-tables.
-
-**The bootstrap.** Until the precise collector lands, the memory library
-on Linux is a free-list heap with a conservative mark-sweep collector
-adapted from the kernel's, scanning the stack, the registers and the
-statics between the linker's `__data_start` and `_end`. It exists so
-the toolchain can be brought up and tested without waiting for stack
-maps; it remains distinct from the planned precise collector. Its current
-allocation arenas and free-block indexes do not make marking precise.
-During stop-the-world marking, per-page anchors bound interior-pointer
-lookup to a nearby block boundary. They are rebuilt after allocation-buffer
-retirement and disabled before sweep changes boundaries. Missing metadata
-falls back to the full block walk; no possible root is discarded for lack
-of an index. Anchor mappings are released with their chunks and accounted
-separately from the managed heap cap. Chunk growth itself is page-rounded
-and falls back from the preferred quantum to the request-sized mapping.
-
-**The seam that survives.** Whatever the collector, the program's side
-of it is one thing: `new`. On CORSAC the same collector is free to use
-whatever the kernel and the hardware offer -- per-process regions the
-kernel reclaims, kernel-assisted marking, an asynchronous multiprocessor
-doing the copying on another core -- and the compiler's contribution is
-the same maps and barriers.
+- *A minor collection* marks from the ordinary roots, from the cards, and
+  from the blocks the stacks held at the last collection, and follows no
+  pointer into an old chunk. It builds start tables for, and sweeps, only
+  the young chunks; an old chunk's live counts are carried from its last
+  sweep and its free lists are left alone. Survivors are stamped marked and
+  become old where they stand.
+- *The cards* are a byte for each kilobyte of the address space
+  (`Runtime.Cards`, four megabytes reserved, a page committed for every four
+  megabytes of heap). The compiler sets one after every store of a
+  reference into memory -- after, so no collection can clear it between the
+  mark and the store: `Runtime.CardMark(slot)` stays a note to the collector
+  through the lifetime passes and is written out by the last pass
+  (`CardMarks`) as a load of the table, a test, a shift and a byte store.
+  A coroutine saves its frame into its state machine word by word at each
+  suspension and marks the machine's cards there once
+  (`Runtime.CardMarkObject`); `Interlocked`'s reference exchanges mark
+  theirs. The stores that fill a block just made -- an array initialiser's
+  elements, a box, a cell, a struct's own block, a state machine's fields
+  -- take no barrier (nothing in a new block is overwritten) but do take
+  the card: a collection can fall between the allocation and them, find
+  the block and make it old. Array copies and list shifts are element
+  stores and need nothing more. An object the optimiser keeps in registers
+  (`ScalarObjects`) has no field in the heap, and its card marks go with it.
+- *Taken at the snapshot.* When a cycle's start tables are built, with the
+  heap lock held, every set card is cleared (`Gc.TakeCards`), and a store
+  made after that -- above all of an object allocated after it, which the
+  cycle keeps but cannot mark -- leaves its card set for the next cycle. A
+  minor cycle moves the cards it clears to a second table and reads those
+  kilobytes while marking (`ScanTakenCards`), once the start tables are
+  whole. In an OLD chunk every block is old and the kilobyte is read word by
+  word. In a YOUNG chunk a card is taken only over an old object: every
+  store that fills a new object sets a card, so nearly every kilobyte
+  allocated since the last cycle has one, and none needs reading. The
+  snapshot walk flags every card an old non-leaf block lies in, set or not
+  (a store may land between the walk and the taking), and only a set card
+  so flagged -- or one over a thread's buffer, which the walk steps over --
+  is kept. It is read block by block (`ScanCardBlocks`): only the old
+  blocks, and of each only the words its descriptor calls references that
+  lie in the kilobyte; a leaf, or an array of integers, not at all. The young
+  blocks there are never roots: read as roots, every young object a dead one
+  pointed at would be kept, and made old. Nothing is queued but the young
+  objects found, so a heap of written old objects does not overflow the
+  mark queue.
+- *And again after the first round.* A store whose barrier found marking
+  off just before the snapshot reports nothing, and its card may be set
+  just after the cards were taken. By the end of a concurrent cycle's first
+  handshake round every thread has passed a safepoint, and no safepoint
+  falls between a barrier's test and the card mark after its store; so a
+  minor cycle then reads every card set since as well (`Gc.PeekCards`),
+  and leaves them set for the next cycle, which must read what was stored
+  after the snapshot too.
+- *The blocks the stacks held.* The compiler initialises a fresh object
+  without a barrier, and a collection can fall between its allocation and
+  those stores; it is on a stack then. So each cycle records every block a
+  stack or a register reached (`Gc.Hold`, 32,768 entries) and the next
+  minor one re-scans them (`RescanHeld`). A full record makes the next cycle
+  major.
+- *A major collection* clears every mark as it builds the start tables and
+  then runs as a whole-heap one; its survivors keep their marks. One runs
+  when the live heap has grown by the pacing's measure since the last major
+  (`Gc.NextIsMinor`), on `GC.Collect`, when memory ran out, and after
+  anything that makes the old generation's marks doubtful: an abandoned
+  cycle, an overflowed record.
+- *Young objects in few chunks.* A minor cycle walks each young chunk
+  whole, so what it costs is how many chunks the cycle's allocation
+  touched. So after each collection a thread's buffer is refilled from the
+  holes of one chunk at a time, in address order, chunks at least an
+  eighth free taken in turn (`Gc.NextHole`), and only holes of four cards or
+  more, so that young objects do not share cards with old blocks and make
+  the next minor cycle read those. A chunk whose largest hole at its last
+  sweep was smaller is passed by unwalked (`HeapChunks.LargestHole`). Only
+  when no chunk is left does a
+  request take an exact-size hole from the free index, wherever it lies,
+  or a fresh buffer. A buffer with room always answers first: the free
+  index is never consulted on the fast path. A minor sweep leaves on its list a hole nothing beside it
+  died to widen (`Gc.CloseDeadRun`).
+- *Paced apart.* Between minor collections a program allocates a quarter of
+  what the pacing would allow between whole-heap ones, within [the minimum
+  threshold, 64 MB] (`Gc.Nursery`): a small board collects its nursery often
+  and cheaply, a server lets it grow.
+- *Where it runs.* 32-bit, on a platform whose mappings commit only the
+  pages touched (`Platform.MapsCommitLazily`): Linux. Elsewhere -- the bare
+  machine, long mode -- `Runtime.Cards` stays 0, every card mark is a load
+  and a not-taken branch, and every collection is major.
+- *Checked on request.* `CORSAC_GC_VERIFY=1` makes every minor cycle, once
+  marked, walk every old block for a pointer to an unmarked young one and
+  report it with its card (`Gc.VerifyMinor`). It reads each block by the
+  marker's own rules (`Gc.MarkerReads`) -- an object by its reference map
+  -- so a number in an int field is never reported as a pointer.
 
 ## The runtime
 
@@ -981,13 +1160,13 @@ at another tree and `--no-default-libs` turns the set off.
   `InvalidCast`), 64-bit division and remainder, the byte and string
   routines the prelude's `Sys.*` intrinsics fall back to (`CompareBytes`,
   `StringFormat`, `Checksum`, ...).
-- `lib/rt/gc.cor`: the collector. Today the conservative bootstrap; the
-  precise one replaces it behind the same `Alloc`. It takes memory from
-  the platform in chunks and, since 2026-09-17, gives it back: after a
-  collection a chunk with nothing live in it is released whole through
-  `Platform.Unmap` (`munmap` on Linux; in the kernel, the pages unmapped
-  and their frames freed), so a program's memory follows its live set
-  down as well as up. Its own failure path allocates nothing and says
+- `runtime/src/core/gc.cor`: the collector (Memory, above): concurrent,
+  non-moving, precise for objects and conservative for roots, paced by the
+  machine. It takes memory from the platform in chunks and gives it back:
+  after a collection a chunk with nothing live in it is released whole
+  through `Platform.Unmap` (`munmap` on Linux; in the kernel, the pages
+  unmapped and their frames freed), so a program's memory follows its live
+  set down as well as up. Its own failure path allocates nothing and says
   what it asked for, how big the heap was, and why the platform refused.
 - `lib/threading.cor`: `Task`, `Task<T>`, the awaiters, the scheduler and
   its timers, cancellation, `Thread` and the pool. The single-threaded

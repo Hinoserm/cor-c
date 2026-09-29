@@ -7,7 +7,15 @@ namespace Corsac.Lang;
 
 public static class ManagedLayouts
 {
-    public static void Attach(ObjectFile obj, BindResult bound)
+    public static void Attach(ObjectFile obj, BindResult bound, bool library = true)
+        => ManagedLayoutContract.Attach(obj, Capture(bound, library));
+
+    /// <summary>
+    /// The records, taken while the binding is at hand: a unit's syntax and
+    /// symbols can then be let go before it is optimised and generated,
+    /// and the records written into the object at the end.
+    /// </summary>
+    public static List<ManagedTypeLayout> Capture(BindResult bound, bool library = true)
     {
         // WHAT THIS UNIT HAS AN OPINION ABOUT. Every type the binder
         // materialised used to be described here, which made the section
@@ -21,10 +29,19 @@ public static class ManagedLayouts
         // the check that publishes the layout -- and so is everything a
         // described type is built out of, because its own record names its
         // base and its interfaces and a reader is entitled to look them up.
+        //
+        // A CLASS LIBRARY'S TYPE IS A PROGRAM'S ONLY WHEN IT USES IT. A program
+        // compiled against the library's sources (--ref) holds those
+        // declarations as its own, and a type of the program's that shares a
+        // library type's name replaces it there (namespaces are flattened):
+        // the library's Seat, described by the program, returned the
+        // program's Point and disagreed with the library's own object about a
+        // type the program never touched. A library unit still describes
+        // every type it defines; a program describes library types it uses.
         HashSet<TypeSymbol> described = new(ReferenceEqualityComparer.Instance);
         Queue<TypeSymbol> pending = new();
         foreach (TypeSymbol type in bound.Types.Values.Distinct())
-            if (type.Used || type.Decl is { Elsewhere: false })
+            if (type.Used || type.Decl is { Elsewhere: false } && (library || !type.Decl.FromLibrary))
                 pending.Enqueue(type);
         while (pending.Count != 0)
         {
@@ -79,8 +96,20 @@ public static class ManagedLayouts
                         + " depth=" + type.Depth + " base=" + (type.Base?.Key ?? "")
                         + " interfaces=[" + string.Join(",", type.Interfaces.OrderBy(f => f.Key, StringComparer.Ordinal).Select(f => f.Key)) + "]"
                         + " impls=[" + string.Join(",", type.InterfaceImplementations.OrderBy(pair => pair.Key).Select(pair => pair.Key + "=>" + Lowering.Label(pair.Value))) + "]");
-                    foreach (MethodSymbol method in type.Methods.Where(m => m.VtableSlot >= 0).OrderBy(m => m.VtableSlot))
-                        Console.Error.WriteLine("  slot " + method.VtableSlot + " " + method.Name + "/" + method.Params.Count);
+                    Console.Error.WriteLine("  delegate=" + (type.Decl?.IsDelegate == true) + " mods=" + (int)(type.Decl?.Mods ?? Mods.None));
+                    foreach (FieldSymbol field in type.Fields.Where(field => !field.Static).OrderBy(field => field.Name, StringComparer.Ordinal))
+                        Console.Error.WriteLine("  field " + field.Name + " " + field.Type + "|" + (field.Type.Symbol?.Key ?? "") + " @" + field.Offset
+                            + " boxed=" + field.Boxed + " volatile=" + field.Volatile + " required=" + field.Required + " inline=" + field.Inline);
+                    foreach (MethodSymbol method in type.Methods.Where(m => m.VtableSlot >= 0 && m.Decl?.LocalCopy != true).OrderBy(m => m.VtableSlot))
+                        Console.Error.WriteLine("  slot " + method.VtableSlot + " " + method.Name + " " + method.Returns + "|" + (method.Returns.Symbol?.Key ?? "")
+                            + " static=" + method.Static + " ctor=" + method.IsCtor + " abstract=" + method.Abstract + " ("
+                            + string.Join(", ", method.Params.Select(p => p.Type + "|" + (p.Type.Symbol?.Key ?? "") + (p.ByRef ? " ref" : "") + (p.ReadOnly ? " in" : ""))) + ")");
+                    foreach (FieldSymbol field in type.Fields.Where(field => field.Static))
+                        Console.Error.WriteLine("  static " + field.Name + " " + field.Type + "|" + (field.Type.Symbol?.Key ?? ""));
+                    foreach (MethodSymbol method in type.Methods.Where(m => m.Decl?.LocalCopy != true && m.TypeParams.Count == 0))
+                        Console.Error.WriteLine("  method " + Lowering.Label(method) + " " + method.Returns + "|" + (method.Returns.Symbol?.Key ?? "")
+                            + " mods=" + (int)(method.Decl?.Mods ?? Mods.None) + " ("
+                            + string.Join(", ", method.Params.Select(p => p.Type + "|" + (p.Type.Symbol?.Key ?? "") + (p.ByRef ? " ref" : "") + (p.ReadOnly ? " in" : ""))) + ")");
                 }
                 yield return new ManagedTypeLayout("type:" + type.Key, SHA256.HashData(stream.ToArray()));
                 foreach (FieldSymbol field in type.Fields.Where(field => field.Static))
@@ -100,6 +129,6 @@ public static class ManagedLayouts
                 }
             }
         }
-        ManagedLayoutContract.Attach(obj, Records());
+        return Records().ToList();
     }
 }

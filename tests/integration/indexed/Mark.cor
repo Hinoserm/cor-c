@@ -1,0 +1,6 @@
+namespace Marks
+{
+    public interface IMark
+    {
+    }
+}

@@ -34,9 +34,10 @@ public static class Prelude
     // The block primitives. These are what let String live in the standard
     // library as ordinary source rather than being emitted by the compiler
     // behind the author's back.
-    public const string NewBytes = "NewBytes";
-    public const string GetByte = "GetByte";
-    public const string SetByte = "SetByte";
+    public const string NewChars = "NewChars";
+    public const string GetChar = "GetChar";
+    public const string GetCharPair = "GetCharPair";
+    public const string SetChar = "SetChar";
     public const string Copy = "Copy";
     public const string CopyNoOverlap = "CopyNoOverlap";
     public const string CompareBytes = "CompareBytes";
@@ -433,22 +434,29 @@ public static class Prelude
             public static int SingleBits(float x) { return 0; }
             public static float FromSingleBits(int x) { return 0; }
 
-            // A string and a byte array are the same shape: a length word and
-            // that many bytes. These five are the whole of what the machine
-            // offers for building one, and String is written on top of them.
-            public static string NewBytes(int length) { return ""; }
-            public static int GetByte(string s, int at) { return 0; }
-            public static void SetByte(string s, int at, int value) { }
+            // A STRING IS UTF-16 CODE UNITS, as C#'s is: a length word counting
+            // them and that many two-byte units after it. These three are the
+            // whole of what the machine offers for building one, and String is
+            // written on top of them. What a string MEANS as bytes -- a path, a
+            // line on a terminal -- is an encoding, and System.Text makes it.
+            public static string NewChars(int length) { return ""; }
+            public static char GetChar(string s, int at) { return (char)0; }
+            // Two units at once, `at` and `at + 1`, as one 32-bit load: the
+            // string routines compare a pair at a time and look at single
+            // units only where a pair differs or one is left over.
+            public static int GetCharPair(string s, int at) { return 0; }
+            public static void SetChar(string s, int at, int value) { }
             // AND WITH A MACHINE-WORD CURSOR. An index is an int in C# because
             // an array's length is, and String keeps to that; these are the
             // machine underneath, where an address is sixty-four bits and a
-            // walk over bytes counts in the width the registers are. System
+            // walk over a string counts in the width the registers are. System
             // .Array does the same thing for the same reason -- Copy has both
-            // an int and a long overload -- and without it every byte loop in a
+            // an int and a long overload -- and without it every loop in a
             // program that counts in words casts at each step, or keeps a
             // second cursor beside the first.
-            public static int GetByte(string s, long at) { return 0; }
-            public static void SetByte(string s, long at, int value) { }
+            public static char GetChar(string s, long at) { return (char)0; }
+            public static void SetChar(string s, long at, int value) { }
+            // A string's cursors and count are in chars; a byte array's, bytes.
             public static void Copy(string dst, int dstAt, string src, int srcAt, int count) { }
             public static void Copy(byte[] dst, int dstAt, byte[] src, int srcAt, int count) { }
             // Like Copy, but the two source ranges must not overlap.  It gives
@@ -457,7 +465,7 @@ public static class Prelude
             // memmove semantics.
             public static void CopyNoOverlap(string dst, int dstAt, string src, int srcAt, int count) { }
             public static void CopyNoOverlap(byte[] dst, int dstAt, byte[] src, int srcAt, int count) { }
-            public static int CompareBytes(string a, int aAt, string b, int bAt, int count) { return 0; }
+            public static int CompareBytes(byte[] a, int aAt, byte[] b, int bAt, int count) { return 0; }
 
             // Unit 0x0a. These are deliberately low-level: their cursor and
             // count arguments name an exact span, while String supplies the
@@ -823,6 +831,18 @@ public static class Prelude
             // table, a card's driver ROM -- are not methods this program
             // declared.
             public static long Call(long fn, long a, long b, long c) { return 0; }
+            // A C function by its address, with C's rules for the call: the
+            // stack sixteen-aligned on i386, the vector count in AL on
+            // x86-64. What the runtime uses for what it finds in the C
+            // library at run time -- pthread_create, exit.
+            public static long CallNative(long fn) { return 0; }
+            public static long CallNative(long fn, long a) { return 0; }
+            public static long CallNative(long fn, long a, long b) { return 0; }
+            public static long CallNative(long fn, long a, long b, long c) { return 0; }
+            public static long CallNative(long fn, long a, long b, long c, long d) { return 0; }
+            public static long CallNative(long fn, long a, long b, long c, long d, long e) { return 0; }
+            public static long CallNative(long fn, long a, long b, long c, long d, long e, long f) { return 0; }
+            public static long CallNative(long fn, long a, long b, long c, long d, long e, long f, long g) { return 0; }
 
             // Five arguments, for calling a routine somebody else designed --
             // a card driver takes slot, block, address, count and position.
@@ -947,6 +967,21 @@ public static class Prelude
             // protected-mode entry does immediately after the far jump that
             // set CS.
             public static void LoadSegments(int dataSelector) { }
+            // CS, which no mov can load: a far return to the next instruction.
+            public static void LoadCodeSegment(int codeSelector) { }
+            // The task register (ltr): the TSS a privilege change finds its stack in.
+            public static void LoadTaskRegister(int selector) { }
+            // rdmsr / wrmsr: a model-specific register, all 64 bits of it --
+            // on x86-64 how a kernel reaches EFER, the GS base and the
+            // syscall entry.
+            public static long ReadMsr(int msr) { return 0; }
+            public static void WriteMsr(int msr, long value) { }
+            // cpuid: EAX, EBX, ECX and EDX of the leaf, as four ints at `into`.
+            public static void Cpuid(int leaf, int subleaf, long into) { }
+            // rdtsc: the time-stamp counter.
+            public static long ReadTsc() { return 0; }
+            // swapgs: the kernel's GS base for the user's, on x86-64.
+            public static void SwapGs() { }
 
             // Stops this processor until an interrupt arrives.
             //
@@ -1025,15 +1060,20 @@ public static class Prelude
             // instead, after making the descriptor.
             public static void SetThreadBlock(long block) { }
             public static void SetGs(long selector) { }
+            public static long GetGs() { return 0; }
             // The bounds of the program's static data, for a collector that
             // scans statics as roots: the linker defines the symbols.
             // Whether a reference is a string, read from its descriptor: what
             // lets a container compare string keys by their text without the
             // language having a root object type to ask.
-            // The address of the first element of an array or the first byte
-            // of a string. The header in front of it is the target's business;
-            // code that needs the raw bytes asks here instead of adding a number.
+            // The address of the first element of an array. The header in front
+            // of it is the target's business; code that needs the raw bytes asks
+            // here instead of adding a number. NOT OF A STRING: its elements are
+            // UTF-16 code units, and code that meant its bytes means an encoding.
             public static long ArrayData(object array) { return 0; }
+            // The address of a string's first UTF-16 code unit, for code that
+            // wants exactly those -- a Win32 W function's LPCWSTR.
+            public static long StringData(string s) { return 0; }
             // The address of an object's synchronisation word, for a monitor.
             public static long SyncWord(object o) { return 0; }
             public static bool IsString(object x) { return false; }

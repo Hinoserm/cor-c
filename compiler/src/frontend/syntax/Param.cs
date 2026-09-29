@@ -47,4 +47,14 @@ public sealed class Param : Node
     /// means something else or nothing at all.
     /// </summary>
     public Expr? Default { get; set; }
+
+    /// <summary>
+    /// [CallerMemberName], [CallerFilePath], [CallerLineNumber] or
+    /// [CallerArgumentExpression]: what a call that leaves this optional
+    /// argument out passes instead of its default.
+    /// </summary>
+    public CallerInfo Caller { get; init; }
+
+    /// <summary>For [CallerArgumentExpression]: the parameter whose argument's source text is passed.</summary>
+    public string? CallerArgument { get; init; }
 }

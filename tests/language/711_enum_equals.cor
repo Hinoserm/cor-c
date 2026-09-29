@@ -1,0 +1,22 @@
+// test: enum_equals
+// expect-exit: 0
+// expect-output:
+// True False True False False
+// 2 2 False
+//
+// An enum's Equals and GetHashCode are System.Enum's: by type and value, and
+// the underlying number. Expected output is real .NET's.
+
+using System;
+enum Kind { Class, Struct, Interface }
+[Flags] enum Bits : byte { A = 1, B = 2 }
+static class Program
+{
+    static void Main()
+    {
+        Kind k = Kind.Interface;
+        object boxedOther = Kind.Interface;
+        Console.WriteLine(k.Equals(Kind.Interface) + " " + k.Equals(Kind.Class) + " " + k.Equals(boxedOther) + " " + k.Equals(2) + " " + k.Equals(null));
+        Console.WriteLine(k.GetHashCode() + " " + Bits.B.GetHashCode() + " " + (!k.Equals(Kind.Interface)));
+    }
+}

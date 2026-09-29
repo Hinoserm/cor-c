@@ -94,6 +94,26 @@ public sealed class Lexer
         // something and let them be ordinary words everywhere else.
     };
 
+    /// <summary>
+    /// Every keyword's one string, which each file's names are looked up in
+    /// before its own table: the words every file shares are the ones that
+    /// repeat most. Filled here, before any lexer runs, and only read after.
+    /// </summary>
+    private static readonly NameTable KeywordNames = CreateKeywordNames();
+    private static NameTable CreateKeywordNames()
+    {
+        NameTable table = new(Keywords.Count);
+        foreach (string keyword in Keywords.Keys) table.Add(keyword);
+        return table;
+    }
+
+    /// <summary>
+    /// This file's names, each cut out of the source once. Made at the first
+    /// name, and never by TokenEnd's one-token lexers, which only measure.
+    /// </summary>
+    private NameTable? _names;
+    private bool _measuring;
+
     private readonly string _src;
     private readonly string _file;
     private int _pos;
@@ -112,6 +132,13 @@ public sealed class Lexer
 
     /// <summary>One `#if` and the branches under it, innermost last.</summary>
     private readonly List<Conditional> _conditionals = new();
+
+    /// <summary>
+    /// Every `#pragma warning disable`/`restore` this file's directives ask
+    /// for, in the order they were read. See PragmaWarnings for how a later
+    /// reader turns this into "is this code suppressed at this line".
+    /// </summary>
+    public List<PragmaWarning> Pragmas { get; } = new();
 
     private sealed class Conditional
     {
@@ -151,8 +178,21 @@ public sealed class Lexer
                  : new HashSet<string>(symbols, StringComparer.Ordinal);
     }
 
+    /// <summary>
+    /// Where the token that starts at <paramref name="pos"/> ends: its raw
+    /// text, quotes and escapes and all, where a token's Text is its value.
+    /// </summary>
+    public static int TokenEnd(string source, int pos)
+    {
+        Lexer one = new(source) { _measuring = true };
+        one._pos = pos;
+        one.Next();
+        return one.Position;
+    }
+
     public static List<Token> Tokenize(string source, string file = "<source>", int line = 1, int col = 1,
-                                       IReadOnlyCollection<string>? symbols = null)
+                                       IReadOnlyCollection<string>? symbols = null,
+                                       List<PragmaWarning>? pragmas = null)
     {
         Lexer lexer = new(source, file, line, col, symbols);
         List<Token> tokens = new(Math.Min(4096, source.Length / 4 + 1));
@@ -164,6 +204,11 @@ public sealed class Lexer
 
             if (t.Kind == Tok.End)
             {
+                // Handed back only when a caller asked (most do not: only
+                // the top-level parse of a real file cares, not the little
+                // sub-lexes this compiler runs over generated or
+                // interpolated text).
+                pragmas?.AddRange(lexer.Pragmas);
                 return tokens;
             }
         }
@@ -515,13 +560,25 @@ public sealed class Lexer
                 throw Error(rest.Length == 0 ? "#error" : rest, line, col);
 
             case "warning":
-                Console.Error.WriteLine($"{_file}({line},{col}): warning: {rest}");
+                // CS1030, C#'s own code for this directive. `#pragma warning
+                // disable CS1030` reaches it the same as any other warning,
+                // checked against what THIS FILE's own directives have said
+                // up to this exact line -- the only pragmas that can matter,
+                // since lexing is one pass forward and nothing later has
+                // been read yet.
+                if (!PragmaWarnings.IsSuppressed(Pragmas, _file, "CS1030", line))
+                {
+                    Console.Error.WriteLine($"{_file}({line},{col}): warning CS1030: {rest}");
+                }
+                return;
+
+            case "pragma":
+                Pragma(rest, line);
                 return;
 
             case "nullable":
             case "region":
             case "endregion":
-            case "pragma":
             case "line":
                 return;                         // nothing about meaning
 
@@ -685,6 +742,45 @@ public sealed class Lexer
         return (comment < 0 ? text : text[..comment]).Trim();
     }
 
+    /// <summary>
+    /// `#pragma warning disable/restore`, the only pragma this compiler acts
+    /// on -- `checksum`, and anything else after `#pragma` it does not know,
+    /// is read for nothing, the same as before this existed.
+    /// </summary>
+    private void Pragma(string rest, int line)
+    {
+        string[] words = rest.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+
+        if (words.Length < 2 || words[0] != "warning" || (words[1] != "disable" && words[1] != "restore"))
+        {
+            return;
+        }
+
+        bool disabled = words[1] == "disable";
+        string codesText = words.Length > 2 ? string.Join(" ", words, 2, words.Length - 2) : "";
+        string[] codes = codesText.Split(new[] { ',', ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+
+        // THE BARE FORM, `#pragma warning disable` with no codes, means
+        // every code -- C# allows it, for a region that is wrong in more
+        // than one nameable way.
+        if (codes.Length == 0)
+        {
+            Pragmas.Add(new PragmaWarning(_file, line, null, disabled));
+            return;
+        }
+
+        foreach (string raw in codes)
+        {
+            // C# ALSO ACCEPTS THE BARE NUMBER, `#pragma warning disable
+            // 8602`, without the `CS`. Normalise both spellings to one so
+            // every later comparison is a plain string equality.
+            string code = raw.Length > 2 && (raw[0] is 'C' or 'c') && (raw[1] is 'S' or 's')
+                ? "CS" + raw[2..]
+                : "CS" + raw;
+            Pragmas.Add(new PragmaWarning(_file, line, code, disabled));
+        }
+    }
+
     /// <summary>The one name `#define` and `#undef` take.</summary>
     private string Symbol(string text, int line, int col)
     {
@@ -748,7 +844,8 @@ public sealed class Lexer
             Advance();
         }
 
-        string text = _src[start.._pos];
+        string text = _measuring ? _src[start.._pos]
+            : (_names ??= new NameTable(1024, KeywordNames)).Get(_src, start, _pos - start);
         return new Token(!verbatim && Keywords.TryGetValue(text, out Tok kw) ? kw : Tok.Ident,
                          text, line, col, start);
     }
@@ -1093,8 +1190,37 @@ public sealed class Lexer
                 return new Token(Tok.Str, sb.ToString(), line, col, start);
             }
 
+            if (Cur == '\\' && Peek() == 'U')
+            {
+                sb.Append(char.ConvertFromUtf32(LongEscape()));
+                continue;
+            }
             sb.Append(Cur == '\\' ? Escape() : ReadChar());
         }
+    }
+
+    /// `\U` and eight hexadecimal digits: a code point, which a string holds
+    /// as two UTF-16 units past the basic plane.
+    private int LongEscape()
+    {
+        int line = _line, col = _col;
+        Advance();
+        Advance();
+        int value = 0;
+        for (int i = 0; i < 8; i++)
+        {
+            if (Done || !Uri.IsHexDigit(Cur))
+            {
+                throw Error(@"\U needs exactly eight hexadecimal digits", line, col);
+            }
+            value = value * 16 + Convert.ToInt32(Cur.ToString(), 16);
+            Advance();
+        }
+        if (value > 0x10FFFF)
+        {
+            throw Error(@"\U names no character past U+10FFFF", line, col);
+        }
+        return value;
     }
 
     /// An interpolated string, kept RAW.
@@ -1203,7 +1329,22 @@ public sealed class Lexer
             throw Error("empty character literal", line, col);
         }
 
-        char value = Cur == '\\' ? Escape() : ReadChar();
+        char value;
+        if (Cur == '\\' && Peek() == 'U')
+        {
+            // A char holds one UTF-16 unit: \U names one only within the
+            // basic plane, as C# allows it in a character literal.
+            int point = LongEscape();
+            if (point > 0xFFFF)
+            {
+                throw Error("character literal holds more than one character", line, col);
+            }
+            value = (char)point;
+        }
+        else
+        {
+            value = Cur == '\\' ? Escape() : ReadChar();
+        }
 
         if (Cur != '\'')
         {
@@ -1296,7 +1437,21 @@ public sealed class Lexer
         char n = Peek();
         char n2 = Peek(2);
 
-        // Longest match first, so >>= does not lex as >> then =.
+        // Longest match first, so >>= does not lex as >> then =, and `>>>=`
+        // is the one four-character operator.
+        if (c == '>' && n == '>' && n2 == '>')
+        {
+            Advance();
+            Advance();
+            Advance();
+            if (Cur == '=')
+            {
+                Advance();
+                return new Token(Tok.UShrEq, ">>>=", line, col, start);
+            }
+            return new Token(Tok.UShr, ">>>", line, col, start);
+        }
+
         foreach ((string text, Tok kind) in ThreePunctuation)
         {
             if (c == text[0] && n == text[1] && n2 == text[2])

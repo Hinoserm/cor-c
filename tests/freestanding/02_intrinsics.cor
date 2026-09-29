@@ -1,0 +1,67 @@
+// test: machine intrinsics -- the unprivileged ones run, the privileged ones assemble
+// expect-exit: 0
+// expect-output:
+// vendor known True
+// tsc advances True
+// max leaf positive True
+// expect-asm-x86-64: Privileged: lgdt lidt invlpg %cr3 %cr0 wrmsr rdmsr swapgs ltr insw outsw lretq %ds hlt cli sti
+// expect-asm-x86: Privileged: lgdt lidt invlpg %cr3 %cr0 wrmsr rdmsr ltr insw outsw lret %ds hlt cli sti
+//
+// CPUID, RDTSC and PAUSE are allowed in ring 3, so they are run and their
+// answers checked. The rest -- descriptor tables, control registers, MSRs,
+// the task register, string port I/O, the segment registers -- would fault
+// in a process, so they are compiled into Privileged, which never runs, and
+// the test runner reads its disassembly for each instruction.
+
+static class Program
+{
+    static int Main()
+    {
+        Host.Start(1024 * 1024);
+
+        byte[] regs = new byte[16];
+        Sys.Cpuid(0, 0, Sys.ArrayData(regs));
+        string vendor = "";
+        int[] order = new int[] { 4, 12, 8 };                       // EBX, EDX, ECX
+        foreach (int at in order)
+            for (int i = 0; i < 4; i++) vendor = vendor + (char)regs[at + i];
+        bool known = vendor == "GenuineIntel" || vendor == "AuthenticAMD" || vendor == "HygonGenuine"
+                  || vendor == "CentaurHauls" || vendor == "  Shanghai  " || vendor == "TCGTCGTCGTCG" || vendor == "KVMKVMKVM\0\0\0";
+        Host.Line("vendor known " + known);
+
+        long first = Sys.ReadTsc();
+        for (int i = 0; i < 1000; i++) Sys.Pause();
+        long second = Sys.ReadTsc();
+        Host.Line("tsc advances " + (second > first));
+        Host.Line("max leaf positive " + (regs[0] + regs[1] + regs[2] + regs[3] > 0));
+
+        if (regs[15] == 0x7F && regs[14] == 0x7F) Privileged(regs.Length);
+        Host.Done(0);
+        return 0;
+    }
+
+    /// Never run: every instruction here needs ring 0.
+    static void Privileged(int n)
+    {
+        byte[] table = new byte[16];
+        long at = Sys.ArrayData(table);
+        Sys.Lgdt(at);
+        Sys.Lidt(at);
+        Sys.Invlpg(at);
+        long cr3 = Sys.ReadCr(3);
+        Sys.WriteCr(3, cr3);
+        Sys.WriteCr(0, Sys.ReadCr(0) | 1);
+        Sys.WriteMsr(0x10, Sys.ReadMsr(0x1B) + n);
+#if TARGET_64BIT
+        Sys.SwapGs();
+#endif
+        Sys.LoadTaskRegister(0x28);
+        Sys.PortInString16(0x1F0, at, 8);
+        Sys.PortOutString16(0x1F0, at, 8);
+        Sys.LoadCodeSegment(0x08);
+        Sys.LoadSegments(0x10);
+        Sys.Cli();
+        Sys.Sti();
+        Sys.Hlt();
+    }
+}

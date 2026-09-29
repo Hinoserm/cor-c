@@ -1,0 +1,38 @@
+// test: lock across threads
+// expect-exit: 0
+// expect-output:
+// total 40000
+// entered False
+//
+// A lock taken and let go on worker threads: the owner written into the
+// object's word is the thread's block address, and read back whole. Read
+// back as 32 bits of it, a 64-bit thread's exit said it held nothing.
+
+using System.Threading;
+
+static class Program
+{
+    static readonly object Gate = new();
+    static int _total;
+
+    static void Work()
+    {
+        for (int i = 0; i < 10000; i++)
+        {
+            lock (Gate)
+            {
+                _total = _total + 1;
+            }
+        }
+    }
+
+    static int Main()
+    {
+        Thread[] threads = new Thread[4];
+        for (int i = 0; i < threads.Length; i++) { threads[i] = new Thread(Work); threads[i].Start(); }
+        foreach (Thread t in threads) t.Join();
+        System.Console.WriteLine("total " + _total);
+        System.Console.WriteLine("entered " + Monitor.IsEntered(Gate));
+        return 0;
+    }
+}

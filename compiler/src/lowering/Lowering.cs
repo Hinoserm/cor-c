@@ -1,4 +1,5 @@
 #nullable enable
+using System.Globalization;
 using System.Text;
 using Corsac.Lang.Ir;
 using Corsac.Lang.X86;
@@ -136,6 +137,10 @@ public sealed partial class Lowering
     {
         Lowering l = new(bound, file, library);
         l.Run(unit);
+        // The frees the lifetime passes may add (Escape), by the label they
+        // call: declared is enough, the body may be another unit's.
+        foreach ((string helper, int arity) in new[] { ("Free", 1), ("FreeField", 2), ("FreeReplaced", 2), ("KeepField", 2), ("CardMarkObject", 1) })
+            if (l.RuntimeMethod(helper, arity) is MethodSymbol provided) l._m.RuntimeHelpers.Add(Label(provided));
         errors.AddRange(l.Errors);
         if (entries is not null)
         {
@@ -162,10 +167,13 @@ public sealed partial class Lowering
     /// so `corc syms` and every library header keep working.
     /// </summary>
     public static string Label(MethodSymbol m)
-        => m.Params.Count == 0
+        => (m.Params.Count == 0
          ? $"m_{Owner(m)}_{m.Name}_0"
          : $"m_{Owner(m)}_{m.Name}_{m.Params.Count}_"
-         + string.Join("_", m.Params.Select(p => (p.ByRef ? "R$" : "") + Mangle(p.Type)));
+         + string.Join("_", m.Params.Select(p => (p.ByRef ? "R$" : "") + Mangle(p.Type))))
+         // A CONVERSION OPERATOR IS ALSO WHAT IT MAKES: JsonNode's explicit
+         // operators to bool, int, long and double all take one JsonNode.
+         + (m.Name is "op_Implicit" or "op_Explicit" ? "_to_" + Mangle(m.Returns) : "");
 
     private static string Owner(MethodSymbol m) => m.Owner.Key.Replace('.', '$');
 
@@ -217,12 +225,63 @@ public sealed partial class Lowering
     private static bool IsLibrary(TypeSymbol? t) => t?.Decl?.FromLibrary ?? false;
 
     /// <summary>
+    /// Whether the method says `[MethodImpl(MethodImplOptions.NoInlining)]`:
+    /// by the flag's name, alone or among others, or by a number with its bit
+    /// (8) set.
+    /// </summary>
+    private static bool NoInlining(MethodDecl decl)
+    {
+        foreach (AttributeRef a in decl.Attributes)
+        {
+            if (a.Target.Length != 0 || a.Name is not ("MethodImpl" or "MethodImplAttribute")) continue;
+            foreach (AttributeArgument argument in a.Arguments)
+            {
+                foreach (string word in argument.Words)
+                {
+                    if (word == "NoInlining") return true;
+                    bool hex = word.StartsWith("0x", StringComparison.OrdinalIgnoreCase);
+                    if (long.TryParse(hex ? word[2..] : word, hex ? NumberStyles.HexNumber : NumberStyles.Integer,
+                                      CultureInfo.InvariantCulture, out long value) && (value & 8) != 0)
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
     /// What a method is CALLED in a stack trace: `Type.Method`, the way it was
     /// written, rather than the mangled label the linker knows it by. A
     /// constructor is spelled the way .NET spells one.
     /// </summary>
+    /// <summary>
+    /// A method as a .NET stack trace names it: `Program.Scale(Int32 by,
+    /// String[] names)`, `Point..ctor(Double x)`, parameters by their
+    /// runtime type's short name, `&amp;` after one passed by reference.
+    /// </summary>
     private static string Display(MethodSymbol m)
-        => m.IsCtor ? $"{m.Owner.Name}..ctor" : $"{m.Owner.Name}.{m.Name}";
+        => (m.IsCtor ? $"{m.Owner.Name}..ctor" : $"{m.Owner.Name}.{m.Name}")
+         + "(" + string.Join(", ", m.Params.Select(p => FrameTypeName(p.Type) + (p.ByRef ? "&" : "") + " " + p.Name)) + ")";
+
+    /// <summary>A parameter's type as a .NET frame writes it: Int32, String, List`1, Int32[], Nullable`1.</summary>
+    private static string FrameTypeName(Type t)
+    {
+        if (t.IsArray && t.Element is Type element) return FrameTypeName(element) + string.Concat(Enumerable.Repeat("[]", t.ArrayRank));
+        if (t.IsNullableValue) return "Nullable`1";
+        if (t.IsPointer) return FrameTypeName(t.Pointee ?? Type.Void) + "*";
+        if (t.Symbol is TypeSymbol named)
+        {
+            string name = named.Decl is { Template: string template, TemplateArgs.Count: > 0 } made
+                ? template + "`" + made.TemplateArgs.Count : named.Name;
+            int dot = name.LastIndexOf('.');
+            return dot < 0 ? name : name[(dot + 1)..];
+        }
+        if (t.ParamName is string generic) return generic;
+        string full = RuntimeName(t);
+        return full.StartsWith("System.", StringComparison.Ordinal) ? full["System.".Length..] : full;
+    }
 
     // ---- the thread block ------------------------------------------------------
     //
@@ -258,7 +317,7 @@ public sealed partial class Lowering
     public const int TlsAllocLimit = 20;
     public const int TlsThreadId = 24;
     public const int TlsState = 28;
-    public const int TlsBytes = 136;
+    public const int TlsBytes = 152;
 
     /// <summary>The type the runtime library provides its hooks in.</summary>
     public const string RuntimeType = "Runtime";
@@ -385,7 +444,7 @@ public sealed partial class Lowering
             // is one thread block for the process and it is the library's,
             // and a program carrying a second one would have a handler chain
             // and an allocation buffer nothing else could see.
-            _m.Data.Add(new DataItem(ThreadBlock0, new byte[TlsBytes]) { Zero = true, Align = _t.WordSize, FromLibrary = true });
+            _m.Data.Add(new DataItem(ThreadBlock0, new byte[TlsBytes / 4 * _t.WordSize]) { Zero = true, Align = _t.WordSize, FromLibrary = true });
             _m.Data.Add(new DataItem(ThreadBlockSelf, new byte[_t.WordSize]) { Zero = true, Align = _t.WordSize, FromLibrary = true });
         }
 
@@ -397,12 +456,92 @@ public sealed partial class Lowering
                 continue;
             }
             int size = Math.Max(1, f.Type.Size);
+            if (StaticArrayData(f) is string table)
+            {
+                // A `static readonly` table's field is never written again, so
+                // its word is read-only data and every load of it folds to the
+                // table's address (ReadOnlyFold). Unless the type has a static
+                // constructor: C# lets that assign a readonly static even when
+                // it has an initialiser, and the word must stay writable.
+                bool fixedField = f.Owner.Decl is TypeDecl declaring
+                    && declaring.Members.OfType<FieldDecl>().Any(d => d.Name == f.Name && d.Mods.HasFlag(Mods.Readonly))
+                    && !declaring.Members.OfType<MethodDecl>().Any(m => (m.IsCtor && m.Mods.HasFlag(Mods.Static))
+                                                                     || m.Name == "StaticConstructorBody$");
+                DataItem holder = new(StaticSymbol(f), new byte[size])
+                {
+                    Align = AlignFor(size, _t.Align64), FromLibrary = IsLibrary(f.Owner), ReadOnly = fixedField,
+                };
+                holder.Relocs.Add(new DataReloc(0, table, 0));
+                _m.Data.Add(holder);
+                continue;
+            }
             _m.Data.Add(new DataItem(StaticSymbol(f), new byte[size])
             {
                 Zero = true, Align = AlignFor(size, _t.Align64), FromLibrary = IsLibrary(f.Owner),
                 Coalescible = f.Owner.Decl?.Specialised == true,
             });
         }
+    }
+
+    /// <summary>
+    /// A STATIC ARRAY OF CONSTANTS AS DATA (FieldDecl.StaticData): the array
+    /// object laid down exactly as the heap would hold it -- the vtable of its
+    /// sequence descriptor, the count, the elements -- in the writable data
+    /// section, since a C# array may be written. Answers its symbol, or null
+    /// when the field is not one. The collector never frees it: it is not in
+    /// the heap, and a pointer outside the heap is no block (Gc.BlockForPointer);
+    /// the data section is read as roots, so what a program stores into a
+    /// string table later is kept.
+    /// </summary>
+    private string? StaticArrayData(FieldSymbol f)
+    {
+        if (f.Owner.Decl is not TypeDecl owner
+            || owner.Members.OfType<FieldDecl>().FirstOrDefault(d => d.Name == f.Name && d.StaticData is not null) is not { StaticData: { } table }
+            || f.Type.Element is not Type element)
+        {
+            return null;
+        }
+        int w = _t.WordSize;
+        int stride = Math.Max(1, element.Size);
+        int count = table.Count;
+        int bytes = _t.ArrayHeaderBytes + stride * count;
+        bytes = (bytes + w - 1) / w * w;
+        byte[] block = new byte[Math.Max(bytes, _t.ArrayHeaderBytes + w)];
+        WriteWord(block, _t.ArrayCountOffset, count);
+        string sym = "sa_" + StaticSymbol(f);
+        DataItem item = new(sym, block)
+        {
+            Align = _t.Align64, FromLibrary = IsLibrary(f.Owner), Exported = false,
+            NoReferences = table.Element != "string" && !MayHoldReference(element),
+        };
+        item.Relocs.Add(new DataReloc(0, SequenceDescriptor(ElementKey(element), stride, isString: false, elementType: element), _t.DescriptorBytes));
+        for (int i = 0; i < count; i++)
+        {
+            int at = _t.ArrayHeaderBytes + i * stride;
+            switch (table.Element)
+            {
+                case "string":
+                    if (table.Strings[i] is string text)
+                    {
+                        item.Relocs.Add(new DataReloc(at, InternString(text), 0));
+                    }
+                    break;
+                case "float":
+                    BitConverter.TryWriteBytes(block.AsSpan(at, 4), (float)table.Reals[i]);
+                    break;
+                case "double":
+                    BitConverter.TryWriteBytes(block.AsSpan(at, 8), table.Reals[i]);
+                    break;
+                default:
+                    for (int b = 0; b < stride; b++)
+                    {
+                        block[at + b] = (byte)(table.Integers[i] >> (8 * b));
+                    }
+                    break;
+            }
+        }
+        _m.Data.Add(item);
+        return sym;
     }
 
     /// <summary>
@@ -500,12 +639,27 @@ public sealed partial class Lowering
     /// </summary>
     private MethodSymbol Canonical(MethodSymbol m)
     {
-        if (m.Owner.Decl?.Canon is not string canon || m.Decl is null || m.Decl.TemplateIndex < 0)
+        if (m.Owner.Decl?.Canon is not string canon || m.Decl is null)
         {
             return m;
         }
         if (!_b.Types.TryGetValue(canon, out TypeSymbol? owner))
         {
+            return m;
+        }
+        // A CONSTRUCTOR NOBODY WROTE has no place in the template: a type with
+        // field initialisers and no constructor is given one (Binder's
+        // Initialisers) on the copy itself when the copy was made before the
+        // template had it. The canonical copy was given its own the same way,
+        // and a copy's members are never emitted -- the call has to reach
+        // that one, or it names a symbol nothing defines (Shelf<string>, made
+        // in one round of specialisation, calling a constructor only the
+        // canonical Shelf has).
+        if (m.Decl.TemplateIndex < 0)
+        {
+            if (!m.IsCtor) return m;
+            foreach (MethodSymbol c in owner.Methods)
+                if (c.IsCtor && c.Static == m.Static && c.Decl is { TemplateIndex: < 0 } && c.Params.Count == m.Params.Count) return c;
             return m;
         }
         MethodSymbol? byName = null;
@@ -623,9 +777,15 @@ public sealed partial class Lowering
         //
         // Freestanding, nobody left anything there: see Freestanding above.
         VReg? entrySp = null;
+        VReg? loaderFini = null;
 
         if (!Freestanding)
         {
+            // The loader's finaliser, in RDX/EDX at the first instruction
+            // (the System V process entry): what C's startup registers so the
+            // libraries' destructors run at exit. First, before anything can
+            // use the register.
+            loaderFini = e.Call(MachineIntrinsics.LoaderFini, IrTypes.Word)!;
             VReg fp = e.Reg(IrTypes.Word, "fp");
             e.Emit(Opcode.FramePointer, fp);
             entrySp = e.Binary(Opcode.Add, fp, Target.Current.WordSize);
@@ -673,7 +833,7 @@ public sealed partial class Lowering
             // ours: the frame pointer plus the pushed word is the top.
             VReg top = e.Reg(IrTypes.Word, "fp");
             e.Emit(Opcode.FramePointer, top);
-            e.Store(only, e.Binary(Opcode.Add, top, Target.Current.WordSize), TlsStackBase);
+            e.Store(only, e.Binary(Opcode.Add, top, Target.Current.WordSize), TlsStackBase / 4 * Target.Current.WordSize);
         }
 
         // Linux: the block goes behind a GDT entry and GS names it. This is
@@ -691,7 +851,7 @@ public sealed partial class Lowering
         // which is where the collector's scan of it ends.
         if (entrySp is not null && initializedThreadBlock)
         {
-            e.Store(ThreadBlockOf(e), entrySp, TlsStackBase);
+            e.Store(ThreadBlockOf(e), entrySp, TlsStackBase / 4 * Target.Current.WordSize);
         }
 
         // The collector cannot scan a stack it does not know about; the main
@@ -702,11 +862,21 @@ public sealed partial class Lowering
             e.Call(CallLabel(join), IrType.Void);
         }
 
+        // A FAULT SAYS WHERE IT WAS, from the first instruction of the
+        // program's own: the runtime's report of a segmentation fault, as
+        // .NET's (Runtime.ArmFaultReport). A shared image arms it as it
+        // begins; a static one has no BeginImage and arms it here.
+        if (!Freestanding && RuntimeMethod("ArmFaultReport", 0) is MethodSymbol arm)
+        {
+            Require(arm);
+            e.Call(CallLabel(arm), IrType.Void);
+        }
+
         // WITH A SHARED RUNTIME, THIS IMAGE INTRODUCES ITSELF. The library's
         // `__data_start`, `_end` and `__corsac_frames` are the library's own,
         // and nothing in it can discover a second image; the program's
         // statics would never be scanned and its frames would have no names.
-        if (Dynamic)
+        if (Dynamic || AnyNativeImports())
         {
             // The libraries first, if nobody else ran their initialisers --
             // which is the case under a loader that cannot call into the
@@ -717,7 +887,7 @@ public sealed partial class Lowering
             {
                 Require(images);
                 e.Call(CallLabel(images), IrType.Void,
-                    new RegOperand(e.Unary(Opcode.ZExt32, e.Address("_DYNAMIC"))));
+                    new RegOperand(WordAddress(e, "_DYNAMIC")));
             }
             EmitBeginImage(e);
         }
@@ -731,6 +901,73 @@ public sealed partial class Lowering
 
         Require(entry);
 
+        // UNDER A C LIBRARY, C'S STARTUP RUNS FIRST. A dynamically linked C
+        // program is entered through __libc_start_main, and so is this one
+        // when a C library is loaded: it is what sets up the C library's
+        // environment, program name and standard streams, and registers the
+        // loader's finaliser so every library's destructors run at exit.
+        // It calls back into __corsac_c_main, which runs Main exactly as
+        // below. With no C library loaded StartC comes straight back, and the
+        // program carries on here.
+        if (!Freestanding && (Dynamic || AnyNativeImports()) && entrySp is not null && loaderFini is not null
+            && RuntimeMethod("StartC", 3) is MethodSymbol startC)
+        {
+            Function cMain = new(CMainName, IrType.I32);
+            cMain.Params.Add(cMain.NewReg(IrTypes.Word, "argc"));
+            cMain.Params.Add(cMain.NewReg(IrTypes.Word, "argv"));
+            cMain.Params.Add(cMain.NewReg(IrTypes.Word, "envp"));
+            Builder ce = new(cMain, cMain.NewBlock("entry"));
+            if (RuntimeMethod("ReturnFromC", 0) is MethodSymbol back)
+            {
+                Require(back);
+                ce.Call(CallLabel(back), IrType.Void);
+            }
+            EmitRunMain(entry, cMain, ce);
+            _m.Functions.Add(cMain);
+
+            Require(startC);
+            e.Call(CallLabel(startC), IrType.Void,
+                new RegOperand(loaderFini), new RegOperand(entrySp), new RegOperand(e.Address(CMainName)));
+        }
+
+        EmitRunMain(entry, f, e);
+
+        // The optimiser rewrites allocations after lowering -- an owned
+        // object gains a Free, a program that needs no collector has its
+        // Alloc retargeted to AllocBump -- and the worklist only lowers what
+        // the program reaches. These are reached by the optimiser, so they
+        // are rooted here; the inliner drops whichever end up unused.
+        foreach (string helper in new[] { "AllocBump", "Free", "FreeBump" })
+        {
+            if (RuntimeMethod(helper, 1) is MethodSymbol rooted)
+            {
+                Require(rooted);
+            }
+        }
+        // And the free of an owned object's field (Escape's owned fields),
+        // and of an owned variable's previous value (owned variables).
+        if (RuntimeMethod("FreeField", 2) is MethodSymbol fieldFree)
+        {
+            Require(fieldFree);
+        }
+        if (RuntimeMethod("FreeReplaced", 2) is MethodSymbol replacedFree)
+        {
+            Require(replacedFree);
+        }
+
+        _m.Functions.Add(f);
+        _m.Entry = EntryName;
+    }
+
+    /// <summary>What C's startup calls as main when it runs first: see EmitEntry.</summary>
+    private const string CMainName = "__corsac_c_main";
+
+    /// <summary>
+    /// The rest of the entry, from Main's own type on: into <paramref name="f"/>,
+    /// which is the entry stub or the C library's main.
+    /// </summary>
+    private void EmitRunMain(MethodSymbol entry, Function f, Builder e)
+    {
         // WHAT MAIN WAS DECLARED TO TAKE. `static int Main(string[] args)` is
         // one of the four shapes C# allows, and the stub called it with no
         // arguments at all: the program read whatever the register happened to
@@ -740,6 +977,10 @@ public sealed partial class Lowering
         // args and Environment.GetCommandLineArgs in .NET too.
         _f = f;
         _e = e;
+        // A block made on demand for this function belongs to it alone: the
+        // entry stub and the C library's main are both written from here,
+        // and a bounds check in the second must not jump into the first.
+        _boundsFail = null;
 
         // MAIN'S OWN TYPE IS TOUCHED BEFORE MAIN RUNS, which is what C# does
         // and what the three ordinary triggers cannot do: a static method of a
@@ -799,22 +1040,6 @@ public sealed partial class Lowering
             e.Syscall(new ImmOperand(1, IrTypes.Word), new[] { code });
         }
         e.Unreachable();
-
-        // The optimiser rewrites allocations after lowering -- an owned
-        // object gains a Free, a program that needs no collector has its
-        // Alloc retargeted to AllocBump -- and the worklist only lowers what
-        // the program reaches. These are reached by the optimiser, so they
-        // are rooted here; the inliner drops whichever end up unused.
-        foreach (string helper in new[] { "AllocBump", "Free", "FreeBump" })
-        {
-            if (RuntimeMethod(helper, 1) is MethodSymbol rooted)
-            {
-                Require(rooted);
-            }
-        }
-
-        _m.Functions.Add(f);
-        _m.Entry = EntryName;
     }
 
     /// <summary>
@@ -876,9 +1101,20 @@ public sealed partial class Lowering
         }
         Require(begin);
         e.Call(CallLabel(begin), IrType.Void,
-            new RegOperand(e.Unary(Opcode.ZExt32, e.Address("__data_start"))),
-            new RegOperand(e.Unary(Opcode.ZExt32, e.Address("_end"))),
-            new RegOperand(e.Unary(Opcode.ZExt32, e.Address(ManagedDirectory.Symbol))));
+            new RegOperand(WordAddress(e, "__data_start")),
+            new RegOperand(WordAddress(e, "_end")),
+            new RegOperand(WordAddress(e, ManagedDirectory.Symbol)));
+    }
+
+    /// <summary>
+    /// A symbol's address as the `long` the runtime's hooks take: widened
+    /// from i386's 32-bit word, and already that in long mode, where
+    /// widening would cut it to its low half.
+    /// </summary>
+    private static VReg WordAddress(Builder e, string symbol)
+    {
+        VReg address = e.Address(symbol);
+        return address.Type == IrType.I32 ? e.Unary(Opcode.ZExt32, address) : address;
     }
 
     /// <summary>A hook the runtime library provides, found by name and arity.</summary>
@@ -915,8 +1151,8 @@ public sealed partial class Lowering
     // ---- strings, descriptors and vtables ---------------------------------------
 
     /// <summary>
-    /// A string literal as data: the array header and the bytes, interned by
-    /// content so two spellings of one text are one object.
+    /// A string literal as data: the array header and the UTF-16 code units,
+    /// interned by content so two spellings of one text are one object.
     /// </summary>
     private string InternString(string text)
     {
@@ -925,10 +1161,20 @@ public sealed partial class Lowering
             return sym;
         }
 
-        byte[] bytes = Encoding.UTF8.GetBytes(text);
-        byte[] block = new byte[_t.ArrayHeaderBytes + bytes.Length];
-        WriteWord(block, _t.ArrayCountOffset, bytes.Length);
-        bytes.CopyTo(block, _t.ArrayHeaderBytes);
+        byte[] block = new byte[_t.ArrayHeaderBytes + 2 * text.Length];
+        WriteWord(block, _t.ArrayCountOffset, text.Length);
+        // ITS HASH, WRITTEN IN NOW: a literal is read-only data, and the
+        // runtime keeps a string's hash in these four bytes the first time it
+        // is asked (Runtime.StringHashCode) -- which must find it already here.
+        uint hash = 2166136261;
+        foreach (char unit in text) hash = (hash ^ unit) * 16777619;
+        if (hash == 0) hash = 1;
+        for (int i = 0; i < 4; i++) block[_t.ArrayCountOffset + 4 + i] = (byte)(hash >> (8 * i));
+        for (int i = 0; i < text.Length; i++)
+        {
+            block[_t.ArrayHeaderBytes + 2 * i] = (byte)text[i];
+            block[_t.ArrayHeaderBytes + 2 * i + 1] = (byte)(text[i] >> 8);
+        }
 
         // Named and registered BEFORE the descriptor is asked for, because the
         // descriptor's own name is a string and asking for it comes back here.
@@ -936,7 +1182,7 @@ public sealed partial class Lowering
         _strings[text] = sym;
         DataItem item = new(sym, block) { ReadOnly = true, Align = _t.Align64, Exported = false };
         _m.Data.Add(item);
-        item.Relocs.Add(new DataReloc(0, SequenceDescriptor("byte", 1, isString: true), _t.DescriptorBytes));
+        item.Relocs.Add(new DataReloc(0, StringDescriptor(), _t.DescriptorBytes));
         return sym;
     }
 
@@ -950,7 +1196,34 @@ public sealed partial class Lowering
 
     private const int DescName = 0, DescSize = 1, DescDepth = 2, DescDisplay = 3,
                       DescInterfaces = 4, DescSelf = 5, DescFlags = 6, DescPayload = 7,
-                      DescRefMap = 8, DescGcFlags = 9;
+                      DescRefMap = 8, DescGcFlags = 9, DescElement = 10;
+
+    /// <summary>
+    /// The descriptor an array of these names as its element's (DescElement):
+    /// a class's, an interface's, a string's, an inner array's; null for
+    /// object, which every reference is, and for a value type.
+    /// </summary>
+    private string? ElementDescriptor(Type element)
+    {
+        if (element.IsArray && element.Element is Type inner)
+        {
+            return SequenceDescriptor(ElementKey(inner), Math.Max(1, inner.Size), isString: false, elementType: inner);
+        }
+        if (element.Prim == Prim.String)
+        {
+            return StringDescriptor();
+        }
+        if (element.IsPointer || element.IsNullableValue)
+        {
+            return null;
+        }
+        return element.Symbol switch
+        {
+            { Kind: TypeKind.Class } c => ClassDescriptor(c),
+            { Kind: TypeKind.Interface } i => InterfaceDescriptor(i),
+            _ => null,
+        };
+    }
 
     /// <summary>
     /// Bit 0 of the GC flags word: the elements of this sequence are
@@ -1000,7 +1273,14 @@ public sealed partial class Lowering
 
         foreach ((int offset, Corsac.Lang.Type ty) in fields)
         {
-            if (!HoldsReference(ty) || offset % w != 0)
+            // EVERY FIELD A STORE TREATS AS A REFERENCE (MayHoldReference):
+            // a class, an array, a string -- and an `object`, and a type
+            // parameter's, which HoldsReference leaves out. Left off the map,
+            // an object held only in `object gate = new()` was never marked,
+            // and the next collection gave its memory to something else.
+            bool traced = HoldsReference(ty)
+                || ((ty.Prim is Prim.Any || ty.ParamName is not null) && !ty.IsPointer && LoadSize(ty) == w);
+            if (!traced || offset % w != 0)
             {
                 continue;
             }
@@ -1036,7 +1316,84 @@ public sealed partial class Lowering
     /// array it names. A Nullable value's `?` stays: an `int?[]` holds cells,
     /// and is a different array.
     /// </summary>
-    private static string ElementKey(Type element) => Unannotated(element).ToString();
+    /// <summary>
+    /// What an array's descriptor is keyed and named by: its element, spelt
+    /// by the element type's KEY -- `Corsac.Lang.Ir.Operand`, not `Operand`.
+    /// Spelt by simple name, two types called Operand in two namespaces
+    /// shared one array descriptor, so `x is Operand[]` could not tell their
+    /// arrays apart; once the descriptor named its element's, the two units
+    /// that made it made it differently and the link refused the pair.
+    /// </summary>
+    private static string ElementKey(Type element) => Keyed(Unannotated(element));
+
+    private static string Keyed(Type t)
+    {
+        if (t.IsArray && t.Element is Type inner)
+        {
+            return Keyed(inner) + string.Concat(Enumerable.Repeat("[]", t.ArrayRank)) + (t.Nullable ? "?" : "");
+        }
+        if (t.Symbol is not TypeSymbol named)
+        {
+            return t.ToString();
+        }
+        string s = named.Key;
+        if (t.Args.Count > 0)
+        {
+            s += "<" + string.Join(", ", t.Args.Select(Keyed)) + ">";
+        }
+        s += new string('*', t.PointerDepth);
+        return t.Nullable ? s + "?" : s;
+    }
+
+    /// <summary>
+    /// An element key as .NET names the type: `System.Int32` for `int`, and
+    /// `System.Int32[]` for `int[]`, which is what an array's GetType() says.
+    /// A declared type's key is already its name.
+    /// </summary>
+    /// <summary>
+    /// What .NET's Type.FullName answers for a declared type: its namespace
+    /// and then its name, a nested type after its outer ones with `+` --
+    /// `System.IO.IOException`, `Corsac.Lang.Parser+State`. The library's
+    /// global types are System's, as they are to the checker
+    /// (Binder.MoveToSystem): `System.NotSupportedException`. A
+    /// specialisation, a tuple or a closure keeps the name it was made with.
+    /// Type.Name is the part after the last `.` or `+` (String.TypeName).
+    /// </summary>
+    private static string FullTypeName(TypeSymbol t)
+    {
+        if (t.Decl is not TypeDecl d || d.Specialised || t.Structural)
+        {
+            return t.Name;
+        }
+        string space = d.Namespace.Length > 0 ? d.Namespace : d.FromLibrary ? "System" : "";
+        // The outer types: the declaration's path less its namespace.
+        string outer = d.Outer ?? "";
+        if (space.Length > 0 && (outer == space || outer.StartsWith(space + ".", StringComparison.Ordinal)))
+        {
+            outer = outer.Length == space.Length ? "" : outer[(space.Length + 1)..];
+        }
+        else if (d.Namespace.Length > 0 && (outer == d.Namespace || outer.StartsWith(d.Namespace + ".", StringComparison.Ordinal)))
+        {
+            outer = outer.Length == d.Namespace.Length ? "" : outer[(d.Namespace.Length + 1)..];
+        }
+        string nested = outer.Length > 0 ? outer.Replace('.', '+') + "+" + t.Name : t.Name;
+        return space.Length > 0 ? space + "." + nested : nested;
+    }
+
+    private static string DotNetName(string key)
+    {
+        if (key.EndsWith("[]", StringComparison.Ordinal)) return DotNetName(key[..^2]) + "[]";
+        return key switch
+        {
+            "bool" => "System.Boolean", "byte" => "System.Byte", "sbyte" => "System.SByte",
+            "short" => "System.Int16", "ushort" => "System.UInt16", "int" => "System.Int32",
+            "uint" => "System.UInt32", "long" => "System.Int64", "ulong" => "System.UInt64",
+            "nint" => "System.IntPtr", "nuint" => "System.UIntPtr", "float" => "System.Single",
+            "double" => "System.Double", "char" => "System.Char", "string" => "System.String",
+            "object" => "System.Object",
+            _ => key,
+        };
+    }
 
     private static Type Unannotated(Type t)
     {
@@ -1056,7 +1413,10 @@ public sealed partial class Lowering
     /// array's vtable holds only object's own virtuals; what matters most is
     /// that every array of bytes shares one, so `GetType` and the flags agree.
     /// </summary>
-    private string SequenceDescriptor(string element, int stride, bool isString, bool? elementsAreReferences = null)
+    /// <summary>A string's descriptor: a sequence of two-byte UTF-16 code units.</summary>
+    private string StringDescriptor() => SequenceDescriptor("char", 2, isString: true);
+
+    private string SequenceDescriptor(string element, int stride, bool isString, bool? elementsAreReferences = null, Type? elementType = null)
     {
         string key = (isString ? "string" : element) + ":" + stride;
         bool elemRefs = elementsAreReferences ?? (!isString && ElementNameIsReference(element));
@@ -1087,8 +1447,26 @@ public sealed partial class Lowering
         DataItem item = new(sym, d) { ReadOnly = true, Align = _t.Align64, FromLibrary = true, Coalescible = true };
         _sequenceDescriptors[key] = sym;
         _m.Data.Add(item);
-        item.Relocs.Add(new DataReloc(DescName * w, InternString(isString ? "string" : element + "[]"), 0));
+        item.Relocs.Add(new DataReloc(DescName * w, InternString(isString ? "System.String" : DotNetName(element) + "[]"), 0));
         item.Relocs.Add(new DataReloc(DescSelf * w, sym, 0));
+        // ITS ELEMENT'S DESCRIPTOR, for covariance at run time: whether a
+        // value may be stored in it (Runtime.ArrayStoreCheck) and whether it
+        // is an array of a base type (Runtime.ArrayOf). None for an element
+        // anything may be -- object -- and none for a value type, whose
+        // arrays are never covariant.
+        if (!isString && elementType is not null && ElementDescriptor(elementType.AsNonNullable()) is string elementDesc)
+        {
+            item.Relocs.Add(new DataReloc(DescElement * w, elementDesc, 0));
+        }
+
+        // AN EMPTY INTERFACE LIST, the terminator alone, so `is` and `as`
+        // against an interface answer no for a sequence rather than read a
+        // list that is not there. An array reaches its sequence interfaces
+        // through a view made where it is converted (Binder.ArrayView); held
+        // as object, it has no table to dispatch them through.
+        DataItem faces = new("sf_" + sym, new byte[w]) { ReadOnly = true, Exported = false };
+        _m.Data.Add(faces);
+        item.Relocs.Add(new DataReloc(DescInterfaces * w, faces.Name, 0));
         if (slots > 0)
         {
             item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.ToStringSlot * w, ObjectToStringStub(), 0));
@@ -1118,7 +1496,22 @@ public sealed partial class Lowering
 
         if (prim == Prim.String)
         {
-            return SequenceDescriptor("byte", 1, isString: true);
+            return StringDescriptor();
+        }
+
+        // `typeof(object)` is what `new object().GetType()` reads.
+        if (prim == Prim.Any)
+        {
+            return ObjectDescriptor();
+        }
+
+        // A VALUE'S TYPE IS ITS BOX'S, which is what GetType() on one reads:
+        // `((object)5).GetType() == typeof(int)` holds, as it does in .NET,
+        // only if the two are one descriptor.
+        Type primitive = new() { Prim = prim };
+        if (Boxable(primitive))
+        {
+            return BoxDescriptor(primitive);
         }
 
         if (_primitiveDescriptors.TryGetValue(prim, out string? sym))
@@ -1138,7 +1531,7 @@ public sealed partial class Lowering
         DataItem item = new(sym, d) { ReadOnly = true, Align = _t.Align64, FromLibrary = true, Coalescible = true };
 
         _m.Data.Add(item);
-        item.Relocs.Add(new DataReloc(DescName * w, InternString(named), 0));
+        item.Relocs.Add(new DataReloc(DescName * w, InternString("System." + named), 0));
         item.Relocs.Add(new DataReloc(DescSelf * w, sym, 0));
         return sym;
     }
@@ -1161,6 +1554,8 @@ public sealed partial class Lowering
         Prim.F32 => "Single",
         Prim.F64 => "Double",
         Prim.Char => "Char",
+        Prim.Void => "Void",
+        Prim.Any => "Object",
         _ => "String",
     };
 
@@ -1252,7 +1647,7 @@ public sealed partial class Lowering
 
         DataItem item = new(sym, d) { ReadOnly = true, Align = _t.Align64, FromLibrary = IsLibrary(t), Coalescible = t.Decl?.Specialised == true };
         _m.Data.Add(item);
-        item.Relocs.Add(new DataReloc(DescName * w, InternString(t.Name), 0));
+        item.Relocs.Add(new DataReloc(DescName * w, InternString(FullTypeName(t)), 0));
         item.Relocs.Add(new DataReloc(DescSelf * w, sym, 0));
         return sym;
     }
@@ -1316,7 +1711,7 @@ public sealed partial class Lowering
         DataItem item = new(sym, block) { ReadOnly = true, Align = _t.Align64, FromLibrary = IsLibrary(t), Coalescible = t.Structural || t.Decl?.Specialised == true,
             Exported = t.Decl?.LocalOnly != true };
         _m.Data.Add(item);
-        item.Relocs.Add(new DataReloc(DescName * w, InternString(t.Name), 0));
+        item.Relocs.Add(new DataReloc(DescName * w, InternString(FullTypeName(t)), 0));
         item.Relocs.Add(new DataReloc(DescSelf * w, sym, 0));
 
         // The reference map covers the whole instance, base fields included:
@@ -1373,6 +1768,11 @@ public sealed partial class Lowering
             // address at link time, which lowering cannot know); a symbol
             // is the closest stand-in available here, and it is what makes
             // the layout deterministic across a rebuild.
+            // Named first, in closure order, and then sorted by the names: a
+            // descriptor is MADE the first time it is named, so naming them
+            // inside the comparison made them in whatever order the sort
+            // happened to compare in.
+            foreach (TypeSymbol face in faces) InterfaceDescriptor(face);
             faces.Sort((a, b) => string.CompareOrdinal(InterfaceDescriptor(a), InterfaceDescriptor(b)));
             byte[] arr = new byte[(faces.Count + 1) * w];
             DataItem ifc = new("f_" + TypeKey(t), arr) { ReadOnly = true, Exported = false };
@@ -1408,7 +1808,7 @@ public sealed partial class Lowering
             }
             else if (i == _b.ToStringSlot && t.Kind == TypeKind.Class)
             {
-                target = ObjectToStringStub();
+                target = IsTupleShape(t) ? TupleToString(t) : ObjectToStringStub();
             }
             else
             {
@@ -1518,7 +1918,22 @@ public sealed partial class Lowering
         {
             FieldSymbol cursor = view.Fields[1];
 
-            if (m.Name == "MoveNext")
+            if (m.Name == "Dispose")
+            {
+                e.Ret(null);
+            }
+            else if (m.Name == "Reset")
+            {
+                e.Store(new RegOperand(self), Imm(-1, IrType.I32), cursor.Offset, 4);
+                e.Ret(null);
+            }
+            else if (m.ExplicitMember == "get_Current")
+            {
+                // IEnumerator's Current, an object: the element boxed.
+                VReg value = LoadElement(items, e.Load(IrType.I32, self, cursor.Offset), of, At(m));
+                e.Ret(new RegOperand(Boxable(of) ? BoxValue(At(m), value, of) : value));
+            }
+            else if (m.Name == "MoveNext")
             {
                 VReg next = e.Binary(Opcode.Add, e.Load(IrType.I32, self, cursor.Offset), 1);
 
@@ -1545,10 +1960,13 @@ public sealed partial class Lowering
         // way this view is. An array borrows nothing from a list: the standard
         // library's ListEnumerator belongs to a List<T> this program may never
         // have made.
-        if (m.Name == "GetEnumerator" && m.Params.Count == 0)
+        if ((m.ExplicitMember ?? m.Name) == "GetEnumerator" && m.Params.Count == 0)
         {
-            TypeSymbol walker = _b.Types[$"ArrayEnumerator${m.Returns.Symbol!.Name}"];
-            VReg made = Allocate(At(m), Math.Max(_t.ObjectHeaderBytes, walker.InstanceSize));
+            // The non-generic GetEnumerator hands back the same walker, which
+            // is an IEnumerator as well as the IEnumerator<T> it was made for.
+            MethodSymbol typed = view.Methods.First(x => x.Name == "GetEnumerator" && x.Params.Count == 0);
+            TypeSymbol walker = _b.Types[$"ArrayEnumerator${typed.Returns.Symbol!.Name}"];
+            VReg made = Allocate(At(m), Math.Max(_t.ObjectHeaderBytes, walker.InstanceSize), described: true);
 
             e.Store(new RegOperand(made), VtableOf(walker), 0, _t.WordSize);
             e.Store(new RegOperand(made), new RegOperand(items), walker.Fields[0].Offset, _t.WordSize);

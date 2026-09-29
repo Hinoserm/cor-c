@@ -10,6 +10,9 @@ namespace Corsac.Lang;
 /// suppression operator and no "unknown" state: a language that lets you shrug
 /// at null has the same bugs as one without the feature, plus the annotations.
 /// </summary>
+/// <summary>A function pointer's signature: its parameters, its result, and whether it is C's (unmanaged).</summary>
+public sealed record FunctionPointer(IReadOnlyList<Type> Params, Type Returns, bool Unmanaged);
+
 public sealed class Type : IEquatable<Type>
 {
     public Prim Prim { get; init; }
@@ -52,6 +55,14 @@ public sealed class Type : IEquatable<Type>
 
     /// <summary>What this points at, one star fewer.</summary>
     public Type? Pointee { get; init; }
+
+    /// <summary>
+    /// A FUNCTION POINTER, C# 9's `delegate* unmanaged<int, int, int>`: an
+    /// address, held and converted exactly as an nint is (Prim is NInt), and
+    /// callable through its signature. Not part of equality, as tuple element
+    /// names are not: two function pointers are the same machine word.
+    /// </summary>
+    public FunctionPointer? Function { get; init; }
 
     public static readonly Type Void   = new() { Prim = Prim.Void };
     public static readonly Type Bool   = new() { Prim = Prim.Bool };
@@ -173,6 +184,14 @@ public sealed class Type : IEquatable<Type>
         => Nullable && !IsReference && !IsError
         && Prim != Prim.NullLiteral && Prim != Prim.Any && ParamName is null;
 
+    /// <summary>
+    /// An enum carried as its underlying integer: not an `E?` (a cell), an
+    /// `E*` (an address) or an `E[]` (an array), which keep the enum's symbol
+    /// but are each a word. Sizing a `byte`-backed `E?` field as one byte read
+    /// the low byte of the cell's address and then used it as the address.
+    /// </summary>
+    public bool IsEnumValue => Symbol is { Kind: TypeKind.Enum } && !IsNullableValue && !IsPointer && !IsArray;
+
     /// <summary>This type with the '?' taken off, for the value inside the cell.</summary>
     public Type Underlying => AsNonNullable();
 
@@ -183,14 +202,14 @@ public sealed class Type : IEquatable<Type>
     {
         Prim = Prim, Symbol = Symbol, Nullable = nullable, Element = Element,
         ArrayRank = ArrayRank, Args = Args, ParamName = ParamName,
-        Names = Names, PointerDepth = PointerDepth, Pointee = Pointee, UseArgs = UseArgs,
+        Names = Names, PointerDepth = PointerDepth, Pointee = Pointee, UseArgs = UseArgs, Function = Function,
     };
 
     public Type WithNames(IReadOnlyList<string>? names) => new()
     {
         Prim = Prim, Symbol = Symbol, Nullable = Nullable, Element = Element,
         ArrayRank = ArrayRank, Args = Args, ParamName = ParamName,
-        Names = names, PointerDepth = PointerDepth, Pointee = Pointee, UseArgs = UseArgs,
+        Names = names, PointerDepth = PointerDepth, Pointee = Pointee, UseArgs = UseArgs, Function = Function,
     };
 
     /// <summary>
@@ -237,7 +256,7 @@ public sealed class Type : IEquatable<Type>
     // own width. Treating int? as four bytes truncated the cell address on a
     // load; it only appeared to work while image layout happened to leave the
     // allocation below 4 GiB.
-    public int Size => Symbol is { Kind: TypeKind.Enum } counted
+    public int Size => IsEnumValue && Symbol is { } counted
         ? Target.Current.SizeOf(counted.EnumUnderlying)
         : IsPointer || IsNullableValue || IsReference || IsArray || Symbol is not null
         ? Target.Current.WordSize

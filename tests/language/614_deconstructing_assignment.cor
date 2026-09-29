@@ -72,7 +72,7 @@ static class Program
         Line("once " + _reads);
 
         List<string> names = new List<string> { "a", "bb" };
-        List<int> lengths = names.Select(Twice);
+        List<int> lengths = names.Select(Twice).ToList();
 
         Line("group " + lengths[0] + " " + lengths[1]);
 

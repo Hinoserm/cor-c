@@ -8,11 +8,17 @@ public sealed class CarryRecognition : IPass
     public string Name => "carry-recognition";
     public void Run(Function f)
     {
+        // A carry is recognised at `x & 1`; a function without one -- most --
+        // needs neither the definitions nor the use counts gathered.
+        if (!f.Blocks.Exists(block => block.Instrs.Exists(i => i.Op == Opcode.And && i.Operands.Count == 2
+                && i.Dest?.Type is IrType.I32 or IrType.I64
+                && (IrInfo.IsImm(i.Operands[1], 1) || IrInfo.IsImm(i.Operands[0], 1)))))
+            return;
         Defs defs = new(f);
         Dictionary<VReg, int> uses = new();
         foreach (var block in f.Blocks)
             foreach (Instr i in block.Instrs)
-                foreach (VReg r in IrInfo.Uses(i)) uses[r] = uses.GetValueOrDefault(r) + 1;
+                foreach (Operand rOperand in (i).Operands) if (rOperand is RegOperand { Reg: var r }) uses[r] = uses.GetValueOrDefault(r) + 1;
         Dictionary<Instr, List<Instr>> replacements = new();
         foreach (var block in f.Blocks)
         for (int k = 0; k < block.Instrs.Count; k++)
@@ -65,7 +71,7 @@ public sealed class CarryRecognition : IPass
                 if (site is null || site.Value.Block != block || site.Value.Index >= k) return null;
                 Instr node = block.Instrs[site.Value.Index];
                 if (node.Op != op || node.Operands.Count != (op == Opcode.Not ? 1 : 2)) return null;
-                foreach (VReg input in IrInfo.Uses(node))
+                foreach (Operand inputOperand in (node).Operands) if (inputOperand is RegOperand { Reg: var input })
                     if (!defs.CanForward(input, block, site.Value.Index, block, k)) return null;
                 return node;
             }

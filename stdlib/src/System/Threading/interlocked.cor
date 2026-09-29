@@ -99,7 +99,12 @@ public static class Interlocked
         long at = Sys.AddressOf(ref location);
         long word = Sys.Word(value);
         if (Runtime.Marking != 0) Runtime.WriteBarrier(at, word);
-        return (T)Sys.FromWord(Sys.AtomicSwap(at, word));
+        T old = (T)Sys.FromWord(Sys.AtomicSwap(at, word));
+        // After the store, as the compiler places its own card mark: a
+        // reference an old object is given is found by the next minor
+        // collection through its card (Gc, generations).
+        Runtime.CardMark(at);
+        return old;
     }
 
     public static T CompareExchange<T>(ref T location, T value, T comparand) where T : class?
@@ -107,7 +112,9 @@ public static class Interlocked
         long at = Sys.AddressOf(ref location);
         long word = Sys.Word(value);
         if (Runtime.Marking != 0) Runtime.WriteBarrier(at, word);
-        return (T)Sys.FromWord(Sys.Cas(at, Sys.Word(comparand), word));
+        T seen = (T)Sys.FromWord(Sys.Cas(at, Sys.Word(comparand), word));
+        Runtime.CardMark(at);
+        return seen;
     }
 
     // ---- ordering ----------------------------------------------------------------------

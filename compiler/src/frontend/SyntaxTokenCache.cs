@@ -66,8 +66,8 @@ public sealed class SyntaxTokenCache
         }
         // Most parses allocate no token copy. Generic >> speculation gets a
         // private copy lazily; no mutable token list or AST crosses workers.
-        return snapshot is null ? new Parser(tokens!, file, declarationsOnly, includeTemplateBodies).ParseUnit()
-            : new Parser(snapshot, file, declarationsOnly, includeTemplateBodies).ParseUnit();
+        return snapshot is null ? new Parser(tokens!, file, declarationsOnly, includeTemplateBodies) { Source = text }.ParseUnit()
+            : new Parser(snapshot, file, declarationsOnly, includeTemplateBodies) { Source = text }.ParseUnit();
     }
 
     public void Clear() { lock (gate) { entries.Clear(); bytes = 0; } }

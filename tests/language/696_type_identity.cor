@@ -1,0 +1,31 @@
+// test: type_identity
+// expect-exit: 0
+// expect-output:
+// True True True True
+// System.Int32 Int32 System.Byte Double
+// Object System.Object System.Void True
+// True False Hue System.String
+//
+// A value's type is its box's: GetType() on a boxed value, GetType() on the
+// value itself (which boxes it), and typeof of the primitive are one
+// descriptor, named as .NET names it -- System.Int32, not int. typeof(object)
+// is what an object's GetType() reads, and typeof(void) is a type too.
+
+using System;
+
+enum Hue { Red }
+
+static class Program
+{
+    static int Main()
+    {
+        object boxed = 5;
+        int n = 7;
+        Console.WriteLine($"{boxed.GetType() == typeof(int)} {n.GetType() == typeof(int)} {((object)(byte)1).GetType() == typeof(byte)} {3.5.GetType() == typeof(double)}");
+        Console.WriteLine($"{typeof(int).FullName} {typeof(int).Name} {((object)(byte)2).GetType().FullName} {2.0.GetType().Name}");
+        Console.WriteLine($"{typeof(object).Name} {new object().GetType().FullName} {typeof(void).FullName} {new object().GetType() == typeof(object)}");
+        object hue = Hue.Red;
+        Console.WriteLine($"{hue.GetType() == typeof(Hue)} {boxed.GetType() == typeof(long)} {hue.GetType().Name} {"s".GetType().FullName}");
+        return 0;
+    }
+}

@@ -16,7 +16,10 @@ public static class LinkTimeOptimizer
         Dictionary<string, (ObjectFile Object, Symbol Symbol)> globals = new(StringComparer.Ordinal);
         Dictionary<ObjectFile, OptimizationSummary> summaries = new();
         Dictionary<ObjectFile, Dictionary<string, int>> constants = new();
-        foreach (var input in inputs.OrderBy(value => value.Name, StringComparer.Ordinal))
+        // IN LINK ORDER, not by name: an object's name is a digest of its
+        // source's full path, and the same tree checked out elsewhere was
+        // ordered otherwise -- other owners, other symbol order, other bytes.
+        foreach (var input in inputs)
         {
             foreach (Symbol symbol in input.Object.Symbols.Where(s => s.IsDefined && s.Global))
                 globals.TryAdd(symbol.Name, (input.Object, symbol));
@@ -51,7 +54,7 @@ public static class LinkTimeOptimizer
             {
                 Relocation[] matches = text.Relocs.Where(r => r.Offset == call.Offset).ToArray();
                 if (call.Offset > text.Bytes.Count - 4 || text.Bytes[call.Offset - 1] != 0xe8
-                    || matches.Length != 1 || matches[0].Kind != RelocKind.Rel32 || matches[0].Addend != -4
+                    || matches.Length != 1 || matches[0].Kind is not (RelocKind.Rel32 or RelocKind.Plt32) || matches[0].Addend != -4
                     || matches[0].Symbol != call.Symbol
                     || text.Relocs.Any(r => r.Offset != call.Offset && r.Offset < call.Offset + 4 && r.Offset + 4 > call.Offset - 1))
                     throw new ElfFormatException(input.Name + ": invalid LTO direct call " + call.Symbol);
@@ -72,7 +75,8 @@ public static class LinkTimeOptimizer
             change.Text.Relocs.Remove(change.Relocation);
         }
         // Summaries describe pre-link code. Do not leave stale summaries in output objects.
-        foreach (var input in inputs) input.Object.Sections.RemoveAll(s => s.Name == OptimizationSummary.SectionName || s.Name == IrArchive.SectionName);
+        foreach (var input in inputs) input.Object.Sections.RemoveAll(s => s.Name == OptimizationSummary.SectionName || s.Name == IrArchive.SectionName
+            || s.Name == LifetimeHints.SectionName);
         return enabled ? changes.Count : 0;
     }
 }

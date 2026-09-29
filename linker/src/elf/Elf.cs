@@ -13,6 +13,15 @@ namespace Corsac.Lang.Elf;
 internal static class Elf
 {
     public const int HeaderSize = 52;
+    // ELF64: the header, a program header, a section header and a symbol.
+    public const int Header64Size = 64;
+    public const int ProgramHeader64Size = 56;
+    public const int SectionHeader64Size = 64;
+    public const int Symbol64Size = 24;
+    public const byte Class64 = 2;
+    public const ushort MachineX86_64 = 62;
+    /// <summary>Where a non-PIE x86-64 executable is loaded, as GNU ld puts it.</summary>
+    public const uint DefaultLoadAddress64 = 0x400000;
     public const int ProgramHeaderSize = 32;
     public const int SectionHeaderSize = 40;
     public const int SymbolSize = 16;
@@ -128,6 +137,11 @@ internal static class Elf
 
     /// <summary>The program interpreter a dynamically linked i386 Linux program names.</summary>
     public const string DefaultInterpreter = "/lib/ld-linux.so.2";
+    /// <summary>The x86-64 loader, where every long-mode Linux distribution puts it.</summary>
+    public const string DefaultInterpreter64 = "/lib64/ld-linux-x86-64.so.2";
+    public const int DtRela = 7;
+    public const int DtRelaSz = 8;
+    public const int DtRelaEnt = 9;
 
     /// <summary>The SysV hash of a symbol name, as the ELF specification defines it.</summary>
     public static uint HashName(string name)
@@ -159,6 +173,15 @@ internal static class Elf
     /// the object writer and dropped by the reader, so a round trip is exact.
     /// </summary>
     public const string GnuStackNote = ".note.GNU-stack";
+
+    public static ulong AlignUp(ulong value, ulong align)
+    {
+        if (align <= 1)
+        {
+            return value;
+        }
+        return checked((value + align - 1) / align * align);
+    }
 
     public static uint AlignUp(uint value, uint align)
     {

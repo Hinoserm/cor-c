@@ -1,0 +1,301 @@
+// test: owned fields
+// expect-exit: 0
+// expect-output:
+// lists 1414513
+// holders 1240500
+// freed True
+// collections 0
+// shared 5 6 7
+// leaked 99 99
+// pairs 4 4 16000
+// previous 4495501
+//
+// What an owned object holds in its reference fields dies with it (Escape's
+// owned fields). A List made and dropped here, and one handed over by a
+// builder, give back their arrays with themselves -- the array was made in
+// List.Grow and stored in a field there, which the callee's summary records
+// as a fresh object in that field. A Holder handed over by a helper gives
+// back what the helper put in it. And what must never be freed is read back
+// after thousands of frees that would have reused its memory: a field holding
+// a shared static array; a field whose array a callee also keeps in a static;
+// one array stored in two fields (freeing both would free it twice); and an
+// array loaded from last time's holder and still in use when the next one is
+// made. Only the lists' outgrown arrays are the collector's, so the collection
+// check covers the holders alone.
+
+using System.Collections.Generic;
+
+class Holder
+{
+    public long[] Items = null!;
+    public long Tag;
+}
+
+class Pair
+{
+    public long[] A = null!;
+    public long[] B = null!;
+}
+
+static class Program
+{
+    static long[] _shared = new long[] { 5, 6, 7 };
+    static long[]? _leak;
+    static long _sinkTag;
+
+    static List<int> Build(int n)
+    {
+        List<int> l = new List<int>();
+        for (int i = 0; i < n; i++) l.Add(i * 2 + (n & 1) + (n & 2) + (n & 4) + (n & 8) + (n & 16));
+        l.Add(n); l.Add(n + 1); l.Add(n + 2); l.Add(n + 3); l.Add(n + 4); l.Add(n + 5);
+        l.Add(n); l.Add(n + 1); l.Add(n + 2); l.Add(n + 3); l.Add(n + 4); l.Add(n + 5);
+        return l;
+    }
+
+    // Padded past the inliner's limits and called from two places: a real
+    // call, so the fresh summary carries what it put in the field.
+    static Holder MakeHolder(int n)
+    {
+        Holder h = new Holder();
+        long[] items = new long[n + 3];
+        items[0] = n;
+        items[0 % items.Length] = items[0 % items.Length] + (n ^ 1) - (n ^ 1);
+        items[1 % items.Length] = items[1 % items.Length] + (n ^ 8) - (n ^ 8);
+        items[2 % items.Length] = items[2 % items.Length] + (n ^ 15) - (n ^ 15);
+        items[3 % items.Length] = items[3 % items.Length] + (n ^ 22) - (n ^ 22);
+        items[4 % items.Length] = items[4 % items.Length] + (n ^ 29) - (n ^ 29);
+        items[5 % items.Length] = items[5 % items.Length] + (n ^ 36) - (n ^ 36);
+        items[6 % items.Length] = items[6 % items.Length] + (n ^ 43) - (n ^ 43);
+        items[7 % items.Length] = items[7 % items.Length] + (n ^ 50) - (n ^ 50);
+        items[8 % items.Length] = items[8 % items.Length] + (n ^ 57) - (n ^ 57);
+        items[9 % items.Length] = items[9 % items.Length] + (n ^ 64) - (n ^ 64);
+        items[10 % items.Length] = items[10 % items.Length] + (n ^ 71) - (n ^ 71);
+        items[11 % items.Length] = items[11 % items.Length] + (n ^ 78) - (n ^ 78);
+        items[12 % items.Length] = items[12 % items.Length] + (n ^ 85) - (n ^ 85);
+        items[13 % items.Length] = items[13 % items.Length] + (n ^ 92) - (n ^ 92);
+        items[14 % items.Length] = items[14 % items.Length] + (n ^ 99) - (n ^ 99);
+        items[15 % items.Length] = items[15 % items.Length] + (n ^ 106) - (n ^ 106);
+        items[16 % items.Length] = items[16 % items.Length] + (n ^ 113) - (n ^ 113);
+        items[17 % items.Length] = items[17 % items.Length] + (n ^ 120) - (n ^ 120);
+        items[18 % items.Length] = items[18 % items.Length] + (n ^ 127) - (n ^ 127);
+        items[19 % items.Length] = items[19 % items.Length] + (n ^ 134) - (n ^ 134);
+        items[20 % items.Length] = items[20 % items.Length] + (n ^ 141) - (n ^ 141);
+        items[21 % items.Length] = items[21 % items.Length] + (n ^ 148) - (n ^ 148);
+        items[22 % items.Length] = items[22 % items.Length] + (n ^ 155) - (n ^ 155);
+        items[23 % items.Length] = items[23 % items.Length] + (n ^ 162) - (n ^ 162);
+        items[24 % items.Length] = items[24 % items.Length] + (n ^ 169) - (n ^ 169);
+        items[25 % items.Length] = items[25 % items.Length] + (n ^ 176) - (n ^ 176);
+        items[26 % items.Length] = items[26 % items.Length] + (n ^ 183) - (n ^ 183);
+        items[27 % items.Length] = items[27 % items.Length] + (n ^ 190) - (n ^ 190);
+        items[28 % items.Length] = items[28 % items.Length] + (n ^ 197) - (n ^ 197);
+        items[29 % items.Length] = items[29 % items.Length] + (n ^ 204) - (n ^ 204);
+        items[30 % items.Length] = items[30 % items.Length] + (n ^ 211) - (n ^ 211);
+        items[31 % items.Length] = items[31 % items.Length] + (n ^ 218) - (n ^ 218);
+        items[32 % items.Length] = items[32 % items.Length] + (n ^ 225) - (n ^ 225);
+        items[33 % items.Length] = items[33 % items.Length] + (n ^ 232) - (n ^ 232);
+        items[34 % items.Length] = items[34 % items.Length] + (n ^ 239) - (n ^ 239);
+        items[35 % items.Length] = items[35 % items.Length] + (n ^ 246) - (n ^ 246);
+        items[36 % items.Length] = items[36 % items.Length] + (n ^ 253) - (n ^ 253);
+        items[37 % items.Length] = items[37 % items.Length] + (n ^ 260) - (n ^ 260);
+        items[38 % items.Length] = items[38 % items.Length] + (n ^ 267) - (n ^ 267);
+        items[39 % items.Length] = items[39 % items.Length] + (n ^ 274) - (n ^ 274);
+        h.Items = items;
+        h.Tag = n;
+        return h;
+    }
+
+    // The field holds a shared array: dirty, never freed.
+    static Holder SharedHolder(int n)
+    {
+        Holder h = new Holder();
+        h.Items = _shared;
+        h.Tag = n;
+        long[] t = new long[4];
+        t[0 % t.Length] = t[0 % t.Length] + (n ^ 1) - (n ^ 1);
+        t[1 % t.Length] = t[1 % t.Length] + (n ^ 8) - (n ^ 8);
+        t[2 % t.Length] = t[2 % t.Length] + (n ^ 15) - (n ^ 15);
+        t[3 % t.Length] = t[3 % t.Length] + (n ^ 22) - (n ^ 22);
+        t[4 % t.Length] = t[4 % t.Length] + (n ^ 29) - (n ^ 29);
+        t[5 % t.Length] = t[5 % t.Length] + (n ^ 36) - (n ^ 36);
+        t[6 % t.Length] = t[6 % t.Length] + (n ^ 43) - (n ^ 43);
+        t[7 % t.Length] = t[7 % t.Length] + (n ^ 50) - (n ^ 50);
+        t[8 % t.Length] = t[8 % t.Length] + (n ^ 57) - (n ^ 57);
+        t[9 % t.Length] = t[9 % t.Length] + (n ^ 64) - (n ^ 64);
+        t[10 % t.Length] = t[10 % t.Length] + (n ^ 71) - (n ^ 71);
+        t[11 % t.Length] = t[11 % t.Length] + (n ^ 78) - (n ^ 78);
+        t[12 % t.Length] = t[12 % t.Length] + (n ^ 85) - (n ^ 85);
+        t[13 % t.Length] = t[13 % t.Length] + (n ^ 92) - (n ^ 92);
+        t[14 % t.Length] = t[14 % t.Length] + (n ^ 99) - (n ^ 99);
+        t[15 % t.Length] = t[15 % t.Length] + (n ^ 106) - (n ^ 106);
+        t[16 % t.Length] = t[16 % t.Length] + (n ^ 113) - (n ^ 113);
+        t[17 % t.Length] = t[17 % t.Length] + (n ^ 120) - (n ^ 120);
+        t[18 % t.Length] = t[18 % t.Length] + (n ^ 127) - (n ^ 127);
+        t[19 % t.Length] = t[19 % t.Length] + (n ^ 134) - (n ^ 134);
+        t[20 % t.Length] = t[20 % t.Length] + (n ^ 141) - (n ^ 141);
+        t[21 % t.Length] = t[21 % t.Length] + (n ^ 148) - (n ^ 148);
+        t[22 % t.Length] = t[22 % t.Length] + (n ^ 155) - (n ^ 155);
+        t[23 % t.Length] = t[23 % t.Length] + (n ^ 162) - (n ^ 162);
+        t[24 % t.Length] = t[24 % t.Length] + (n ^ 169) - (n ^ 169);
+        t[25 % t.Length] = t[25 % t.Length] + (n ^ 176) - (n ^ 176);
+        t[26 % t.Length] = t[26 % t.Length] + (n ^ 183) - (n ^ 183);
+        t[27 % t.Length] = t[27 % t.Length] + (n ^ 190) - (n ^ 190);
+        t[28 % t.Length] = t[28 % t.Length] + (n ^ 197) - (n ^ 197);
+        t[29 % t.Length] = t[29 % t.Length] + (n ^ 204) - (n ^ 204);
+        t[30 % t.Length] = t[30 % t.Length] + (n ^ 211) - (n ^ 211);
+        t[31 % t.Length] = t[31 % t.Length] + (n ^ 218) - (n ^ 218);
+        t[32 % t.Length] = t[32 % t.Length] + (n ^ 225) - (n ^ 225);
+        t[33 % t.Length] = t[33 % t.Length] + (n ^ 232) - (n ^ 232);
+        t[34 % t.Length] = t[34 % t.Length] + (n ^ 239) - (n ^ 239);
+        t[35 % t.Length] = t[35 % t.Length] + (n ^ 246) - (n ^ 246);
+        t[36 % t.Length] = t[36 % t.Length] + (n ^ 253) - (n ^ 253);
+        t[37 % t.Length] = t[37 % t.Length] + (n ^ 260) - (n ^ 260);
+        t[38 % t.Length] = t[38 % t.Length] + (n ^ 267) - (n ^ 267);
+        t[39 % t.Length] = t[39 % t.Length] + (n ^ 274) - (n ^ 274);
+        h.Tag = h.Tag + t[0] - t[0];
+        return h;
+    }
+
+    // Keeps the field's array: dirty for every holder handed to it.
+    static void Leak(Holder h)
+    {
+        _leak = h.Items;
+        long[] t = new long[4];
+        t[0 % t.Length] = t[0 % t.Length] + (h.Tag ^ 1) - (h.Tag ^ 1);
+        t[1 % t.Length] = t[1 % t.Length] + (h.Tag ^ 8) - (h.Tag ^ 8);
+        t[2 % t.Length] = t[2 % t.Length] + (h.Tag ^ 15) - (h.Tag ^ 15);
+        t[3 % t.Length] = t[3 % t.Length] + (h.Tag ^ 22) - (h.Tag ^ 22);
+        t[4 % t.Length] = t[4 % t.Length] + (h.Tag ^ 29) - (h.Tag ^ 29);
+        t[5 % t.Length] = t[5 % t.Length] + (h.Tag ^ 36) - (h.Tag ^ 36);
+        t[6 % t.Length] = t[6 % t.Length] + (h.Tag ^ 43) - (h.Tag ^ 43);
+        t[7 % t.Length] = t[7 % t.Length] + (h.Tag ^ 50) - (h.Tag ^ 50);
+        t[8 % t.Length] = t[8 % t.Length] + (h.Tag ^ 57) - (h.Tag ^ 57);
+        t[9 % t.Length] = t[9 % t.Length] + (h.Tag ^ 64) - (h.Tag ^ 64);
+        t[10 % t.Length] = t[10 % t.Length] + (h.Tag ^ 71) - (h.Tag ^ 71);
+        t[11 % t.Length] = t[11 % t.Length] + (h.Tag ^ 78) - (h.Tag ^ 78);
+        t[12 % t.Length] = t[12 % t.Length] + (h.Tag ^ 85) - (h.Tag ^ 85);
+        t[13 % t.Length] = t[13 % t.Length] + (h.Tag ^ 92) - (h.Tag ^ 92);
+        t[14 % t.Length] = t[14 % t.Length] + (h.Tag ^ 99) - (h.Tag ^ 99);
+        t[15 % t.Length] = t[15 % t.Length] + (h.Tag ^ 106) - (h.Tag ^ 106);
+        t[16 % t.Length] = t[16 % t.Length] + (h.Tag ^ 113) - (h.Tag ^ 113);
+        t[17 % t.Length] = t[17 % t.Length] + (h.Tag ^ 120) - (h.Tag ^ 120);
+        t[18 % t.Length] = t[18 % t.Length] + (h.Tag ^ 127) - (h.Tag ^ 127);
+        t[19 % t.Length] = t[19 % t.Length] + (h.Tag ^ 134) - (h.Tag ^ 134);
+        t[20 % t.Length] = t[20 % t.Length] + (h.Tag ^ 141) - (h.Tag ^ 141);
+        t[21 % t.Length] = t[21 % t.Length] + (h.Tag ^ 148) - (h.Tag ^ 148);
+        t[22 % t.Length] = t[22 % t.Length] + (h.Tag ^ 155) - (h.Tag ^ 155);
+        t[23 % t.Length] = t[23 % t.Length] + (h.Tag ^ 162) - (h.Tag ^ 162);
+        t[24 % t.Length] = t[24 % t.Length] + (h.Tag ^ 169) - (h.Tag ^ 169);
+        t[25 % t.Length] = t[25 % t.Length] + (h.Tag ^ 176) - (h.Tag ^ 176);
+        t[26 % t.Length] = t[26 % t.Length] + (h.Tag ^ 183) - (h.Tag ^ 183);
+        t[27 % t.Length] = t[27 % t.Length] + (h.Tag ^ 190) - (h.Tag ^ 190);
+        t[28 % t.Length] = t[28 % t.Length] + (h.Tag ^ 197) - (h.Tag ^ 197);
+        t[29 % t.Length] = t[29 % t.Length] + (h.Tag ^ 204) - (h.Tag ^ 204);
+        t[30 % t.Length] = t[30 % t.Length] + (h.Tag ^ 211) - (h.Tag ^ 211);
+        t[31 % t.Length] = t[31 % t.Length] + (h.Tag ^ 218) - (h.Tag ^ 218);
+        t[32 % t.Length] = t[32 % t.Length] + (h.Tag ^ 225) - (h.Tag ^ 225);
+        t[33 % t.Length] = t[33 % t.Length] + (h.Tag ^ 232) - (h.Tag ^ 232);
+        t[34 % t.Length] = t[34 % t.Length] + (h.Tag ^ 239) - (h.Tag ^ 239);
+        t[35 % t.Length] = t[35 % t.Length] + (h.Tag ^ 246) - (h.Tag ^ 246);
+        t[36 % t.Length] = t[36 % t.Length] + (h.Tag ^ 253) - (h.Tag ^ 253);
+        t[37 % t.Length] = t[37 % t.Length] + (h.Tag ^ 260) - (h.Tag ^ 260);
+        t[38 % t.Length] = t[38 % t.Length] + (h.Tag ^ 267) - (h.Tag ^ 267);
+        t[39 % t.Length] = t[39 % t.Length] + (h.Tag ^ 274) - (h.Tag ^ 274);
+        _sinkTag = _sinkTag + t[1] - t[1];
+    }
+
+    static Pair MakePair(int n)
+    {
+        Pair p = new Pair();
+        long[] x = new long[n];
+        x[0] = n;
+        p.A = x;
+        p.B = x;
+        return p;
+    }
+
+    static int Main()
+    {
+        long lists = 0;
+        for (int k = 0; k < 3000; k++)
+        {
+            List<int> l = Build(200 + (k & 3));
+            lists = lists + l[k % 200] + l.Count;
+        }
+        List<int> once = Build(7);
+        lists = lists + once[3];
+        for (int k = 0; k < 3000; k++)
+        {
+            List<int> local = new List<int>();
+            for (int i = 0; i < 100 + (k & 7); i++) local.Add(i);
+            lists = lists + local[k % 100];
+        }
+        Sys.Print("lists "); Sys.PrintInt(lists); Sys.PrintLine();
+
+        long before = Gc.Frees, collected = Gc.Collections;
+        long holders = 0;
+        for (int k = 0; k < 3000; k++)
+        {
+            Holder h = MakeHolder(200 + (k & 7));
+            holders = holders + h.Items[0] + h.Tag + h.Items.Length - 200;
+        }
+        Holder h2 = MakeHolder(9);
+        holders = holders + h2.Items[0] - 9;
+        Sys.Print("holders "); Sys.PrintInt(holders); Sys.PrintLine();
+        Sys.Print("freed ");
+        if (Gc.Frees - before >= 5990) Sys.Print("True"); else Sys.Print("False");
+        Sys.PrintLine();
+        Sys.Print("collections "); Sys.PrintInt(Gc.Collections - collected); Sys.PrintLine();
+
+        long shared = 0;
+        for (int k = 0; k < 2000; k++)
+        {
+            Holder s = SharedHolder(k);
+            shared = shared + s.Items[1] + s.Tag;
+        }
+        Holder s2 = SharedHolder(1);
+        shared = shared + s2.Items[2] - shared;
+
+        for (int k = 0; k < 2000; k++)
+        {
+            Holder lk = MakeHolder(10);
+            lk.Items[1] = 99;
+            Leak(lk);
+        }
+        Holder lk2 = MakeHolder(10);
+        lk2.Items[1] = 99;
+        Leak(lk2);
+
+        long pairs = 0;
+        for (int k = 0; k < 2000; k++)
+        {
+            Pair p = MakePair(4);
+            pairs = pairs + p.A.Length + p.B[0];
+        }
+        Pair p2 = MakePair(4);
+
+        long previous = 0;
+        long[]? last = null;
+        for (int k = 0; k < 3000; k++)
+        {
+            Holder h = MakeHolder(k);
+            if (last != null) previous = previous + last[0];
+            last = h.Items;
+        }
+
+        // Churn: memory a wrong free gave back is reused here.
+        long[][] junk = new long[400][];
+        for (int k = 0; k < 6000; k++)
+        {
+            long[] j = new long[(k % 24) + 1];
+            for (int i = 0; i < j.Length; i++) j[i] = -1;
+            junk[k % 400] = j;
+        }
+        _sinkTag = _sinkTag + junk[5][0];
+
+        Sys.Print("shared "); Sys.PrintInt(_shared[0]); Sys.Print(" "); Sys.PrintInt(_shared[1]); Sys.Print(" "); Sys.PrintInt(_shared[2]); Sys.PrintLine();
+        Sys.Print("leaked "); Sys.PrintInt(_leak![1]); Sys.Print(" "); Sys.PrintInt(lk2.Items[1]); Sys.PrintLine();
+        Sys.Print("pairs "); Sys.PrintInt(p2.A[0]); Sys.Print(" "); Sys.PrintInt(p2.B[0]); Sys.Print(" "); Sys.PrintInt(pairs); Sys.PrintLine();
+        Sys.Print("previous "); Sys.PrintInt(previous + (last![0] & 0)); Sys.PrintLine();
+        return 0;
+    }
+}

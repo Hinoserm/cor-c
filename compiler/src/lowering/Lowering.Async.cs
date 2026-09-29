@@ -80,7 +80,6 @@ public sealed partial class Lowering
             Key = name,
             Kind = TypeKind.Class,
             Decl = new TypeDecl { Name = name, Kind = TypeKind.Class, LocalOnly = true },
-            Depth = 0,
         };
         machine.Interfaces.Add(action);
 
@@ -162,17 +161,23 @@ public sealed partial class Lowering
             task = NewObject(decl, m.Returns);
             if (task is not null)
             {
-                _e.Store(R(machine), R(task), TaskField, _t.WordSize);
+                StoreNewReference(machine, task, TaskField);
             }
         }
 
         if (self is not null)
         {
-            _e.Store(R(machine), R(self), ReceiverField, _t.WordSize);
+            StoreNewReference(machine, self, ReceiverField);
         }
         for (int i = 0; i < args.Count; i++)
         {
             _e.Store(R(machine), R(args[i]), am.ParamOffsets[i], args[i].Type.Bytes());
+            // An argument the word size may be a reference; marking the card
+            // of one that is not costs a byte store and nothing else.
+            if (args[i].Type == IrTypes.Word)
+            {
+                CardMarkAt(R(machine), am.ParamOffsets[i]);
+            }
         }
 
         Require(am.MoveNext);
@@ -189,7 +194,7 @@ public sealed partial class Lowering
             Error(at, $"'{type}' is not a type an async method can return");
             return null;
         }
-        VReg obj = Allocate(at, Math.Max(_t.ObjectHeaderBytes, sym.InstanceSize));
+        VReg obj = Allocate(at, Math.Max(_t.ObjectHeaderBytes, sym.InstanceSize), described: true);
         _e.Store(R(obj), VtableOf(sym), 0, _t.WordSize);
         MethodSymbol? ctor = sym.Methods.FirstOrDefault(c => c.IsCtor && c.Params.Count == 0);
         if (ctor is not null)
@@ -213,6 +218,12 @@ public sealed partial class Lowering
         _decl = decl;
         _in = m.Owner.Decl?.File ?? decl.File ?? "";
 
+        // SUSPENSION POINTS ARE NUMBERED PER FUNCTION, from zero: the markers'
+        // numbers are in the IR a shared copy is certified by (Definition-
+        // Semantics), and counted across the unit they said how many other
+        // state machines the unit happened to lower first.
+        int outsideAwaits = _awaitPoints;
+        _awaitPoints = 0;
         _f = new Function(Label(am.MoveNext), IrType.Void) { SourceFile = _in, Line = decl.Line, Display = Display(am.MoveNext), FromLibrary = IsLibrary(am.MoveNext.Owner), Exported = false };
         Block entry = _f.NewBlock("entry");
         _e = new Builder(_f, entry);
@@ -220,6 +231,7 @@ public sealed partial class Lowering
         VReg machine = _f.NewReg(IrTypes.Word, "machine");
         _f.Params.Add(machine);
         _stateMachine = machine;
+        RequireCardMarkObject();
         _f.Async = new AsyncFrame
         {
             StateMachine = machine,
@@ -326,6 +338,7 @@ public sealed partial class Lowering
         _stateMachine = null;
         _method = null;
         _decl = null;
+        _awaitPoints = outsideAwaits;
     }
 
     private MethodSymbol? AsyncRuntimeMethod(Node at, string name, int arity)

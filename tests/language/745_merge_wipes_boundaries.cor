@@ -1,0 +1,73 @@
+// test: a block freed and merged with free neighbours on both sides leaves no header behind for the collector to find
+// expect-exit: 0
+// expect-output:
+// child exit 0
+// minor cycle ran True
+//
+// Gc.Merge rewrote only the outer header and footer of what it joined. A
+// block freed between two free neighbours kept its own header, kind and
+// footer inside the new free block -- agreeing on a size, and, for an old
+// block, still marked. The record of the blocks the stacks held at the last
+// collection (Gc.RescanHeld) found that header where the held block had been
+// and scanned what lay behind it as the object's fields. Unpoisoned, that
+// only kept dead objects alive; with every freed block filled with the
+// checked pattern (CORSAC_FREE_PATHS=p) the pattern was read as a vtable and
+// the process faulted at 0xfeeefed2. The program runs itself as that child.
+using System;
+using System.Diagnostics;
+
+static class Program
+{
+    static long _sink;
+    static long _garbage;
+
+    static int Child()
+    {
+        // Three objects side by side, made old by a whole collection taken
+        // while the middle one is held on the stack.
+        long a = Runtime.AllocObject(48);
+        long b = Runtime.AllocObject(48);
+        long c = Runtime.AllocObject(48);
+        if (b != a + 64 || c != b + 64)
+        {
+            Console.WriteLine("not side by side");
+            return 3;
+        }
+        GC.Collect();
+        _sink = b;
+        // The two outer ones freed first, then the middle one: it is merged
+        // with both, and its own header ends up inside the free block.
+        Runtime.Free(a);
+        Runtime.Free(c);
+        Runtime.Free(b);
+        _sink = 0;
+        // Garbage until a minor cycle reads what the stacks held last time:
+        // blocks of a chunk of their own each, so that none is carved out of
+        // the free block the three became, which would clear what is in it.
+        long minors = Gc.MinorCollections;
+        for (int i = 0; i < 100000 && Gc.MinorCollections == minors; i++)
+        {
+            _garbage = Runtime.Alloc(70000);
+        }
+        return Gc.MinorCollections != minors ? 0 : 4;
+    }
+
+    static int Main(string[] args)
+    {
+        if (args.Length == 1 && args[0] == "child")
+        {
+            return Child();
+        }
+        ProcessStartInfo info = new ProcessStartInfo(Environment.ProcessPath!);
+        info.ArgumentList.Add("child");
+        info.Environment["CORSAC_FREE_PATHS"] = "p";
+        info.RedirectStandardOutput = true;
+        Process child = Process.Start(info)!;
+        string said = child.StandardOutput.ReadToEnd();
+        child.WaitForExit();
+        Console.WriteLine("child exit " + child.ExitCode);
+        Console.WriteLine("minor cycle ran " + (child.ExitCode != 4));
+        if (said.Length != 0) Console.WriteLine(said);
+        return 0;
+    }
+}

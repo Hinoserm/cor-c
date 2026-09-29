@@ -278,7 +278,7 @@ public sealed class Peephole : IPass
         {
             return false;
         }
-        foreach (VReg r in IrInfo.Uses(at.Value.Block.Instrs[at.Value.Index]))
+        foreach (Operand rOperand in (at.Value.Block.Instrs[at.Value.Index]).Operands) if (rOperand is RegOperand { Reg: var r })
         {
             if (!defs.CanForward(r, at.Value.Block, at.Value.Index, b, k))
             {

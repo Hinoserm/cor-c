@@ -1,0 +1,50 @@
+// test: nullable values in the library's comparers
+// expect-exit: 0
+// expect-output:
+// box Def { Obj = a, Offset = 4 } null
+// records True False
+// comparer True False True True
+// hash True
+// set 2 True True
+// map one none
+// list 1 2 -1
+// order null,1,3
+//
+// A nullable value handed where an object is wanted is boxed, as C# boxes
+// it: null when it has no value, the value's box when it has. The library's
+// default comparers -- and so every set, table, list search and sort over a
+// T? -- see the value, not the address of the cell holding it; a record with
+// a nullable struct field compares by that field's value. (The linker's
+// records hold a Definition? each.)
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+readonly record struct Def(string Obj, uint Offset);
+sealed record Sym(string Name, Def? Where);
+
+static class Program
+{
+    static string Show(object? o) => o is null ? "null" : o.ToString()!;
+
+    static int Main()
+    {
+        Def? some = new Def("a", 4), same = new Def("a", 4), other = new Def("b", 8), none = null;
+        Console.WriteLine("box " + Show(some) + " " + Show(none));
+        Console.WriteLine("records " + (new Sym("x", some) == new Sym("x", same)) + " " + (new Sym("x", some) == new Sym("x", none)));
+        IEqualityComparer<Def?> eq = EqualityComparer<Def?>.Default;
+        Console.WriteLine("comparer " + eq.Equals(some, same) + " " + eq.Equals(some, none) + " " + eq.Equals(none, null) + " " + !eq.Equals(some, other));
+        Console.WriteLine("hash " + (eq.GetHashCode(some) == eq.GetHashCode(same)));
+        HashSet<Def?> set = new() { some, same, none };
+        Console.WriteLine("set " + set.Count + " " + set.Contains(new Def("a", 4)) + " " + set.Contains(null));
+        Dictionary<Def?, string> map = new() { [some] = "one", [none] = "none" };
+        Console.WriteLine("map " + map[same] + " " + map[null]);
+        List<Def?> list = new() { other, some, none };
+        Console.WriteLine("list " + list.IndexOf(same) + " " + list.IndexOf(null) + " " + list.IndexOf(new Def("z", 0)));
+        List<int?> numbers = new() { 3, null, 1 };
+        numbers.Sort();
+        Console.WriteLine("order " + string.Join(",", numbers.Select(n => n is null ? "null" : n.Value.ToString())));
+        return 0;
+    }
+}

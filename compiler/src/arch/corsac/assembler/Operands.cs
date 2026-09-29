@@ -30,8 +30,17 @@ internal sealed class Operand
 {
     public OperandKind Kind;
 
-    /// <summary>1, 2 or 4. Zero when a memory reference carried no size keyword.</summary>
+    /// <summary>1, 2, 4 or 8. Zero when a memory reference carried no size keyword.</summary>
     public int Size;
+
+    /// <summary>
+    /// A byte register that only exists with a REX prefix: spl, bpl, sil,
+    /// dil (numbers 4-7, which without one are ah, ch, dh, bh).
+    /// </summary>
+    public bool Rex8;
+
+    /// <summary>A memory reference relative to the next instruction: `[rip + label]`.</summary>
+    public bool RipRelative;
 
     /// <summary>True when a <c>byte</c>/<c>word</c>/<c>dword</c> keyword said the size outright.</summary>
     public bool SizeGiven;
@@ -43,7 +52,7 @@ internal sealed class Operand
     public int Base = -1;
     public int Index = -1;
     public int Scale = 1;
-    public int AddrSize;             // 16 or 32
+    public int AddrSize;             // 16, 32 or 64
     public int Segment = -1;         // segment override, -1 for none
     public string Disp = "";         // displacement expression, "" for none
     public bool HasDisp;
@@ -70,6 +79,34 @@ internal static class Operands
     public static readonly string[] Reg32 = { "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi" };
     public static readonly string[] SegReg = { "es", "cs", "ss", "ds", "fs", "gs" };
 
+    // ---- long mode ----------------------------------------------------------
+    public static readonly string[] Reg64 =
+    {
+        "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
+    };
+    public static readonly string[] Reg32Extended = { "r8d", "r9d", "r10d", "r11d", "r12d", "r13d", "r14d", "r15d" };
+    public static readonly string[] Reg16Extended = { "r8w", "r9w", "r10w", "r11w", "r12w", "r13w", "r14w", "r15w" };
+    public static readonly string[] Reg8Extended = { "r8b", "r9b", "r10b", "r11b", "r12b", "r13b", "r14b", "r15b" };
+    public static readonly string[] Reg8Rex = { "spl", "bpl", "sil", "dil" };
+
+    /// <summary>A long-mode general register: its number (0-15), its size in bytes, and whether it needs a REX to exist.</summary>
+    public static bool LongRegister(string name, out int reg, out int size, out bool rex8)
+    {
+        rex8 = false;
+        reg = Find(Reg64, name); size = 8;
+        if (reg >= 0) return true;
+        reg = Find(Reg32Extended, name); size = 4;
+        if (reg >= 0) { reg += 8; return true; }
+        reg = Find(Reg16Extended, name); size = 2;
+        if (reg >= 0) { reg += 8; return true; }
+        reg = Find(Reg8Extended, name); size = 1;
+        if (reg < 0 && name.Length > 2 && name[0] == 'r' && name.EndsWith('l')) reg = Find(Reg8Extended, name[..^1] + "b");
+        if (reg >= 0) { reg += 8; return true; }
+        reg = Find(Reg8Rex, name);
+        if (reg >= 0) { reg += 4; rex8 = true; return true; }
+        return false;
+    }
+
     /// <summary>The prefix byte that selects each segment register.</summary>
     public static readonly byte[] SegPrefix = { 0x26, 0x2E, 0x36, 0x3E, 0x64, 0x65 };
 
@@ -87,7 +124,7 @@ internal static class Operands
 
     /// <summary>True when the text names a register of any kind.</summary>
     public static bool IsRegisterName(string name)
-        => Find(Reg8, name) >= 0 || Find(Reg16, name) >= 0 || Find(Reg32, name) >= 0
+        => Find(Reg8, name) >= 0 || Find(Reg16, name) >= 0 || Find(Reg32, name) >= 0 || LongRegister(name, out _, out _, out _)
            || Find(SegReg, name) >= 0 || ControlNumber(name) >= 0 || MmxNumber(name) >= 0
            || FloatNumber(name) >= 0 || SpecialNumber(name, "dr") >= 0 || SpecialNumber(name, "tr") >= 0;
 
@@ -105,7 +142,7 @@ internal static class Operands
         => name.Length == 3 && name.StartsWith("mm") && name[2] >= '0' && name[2] <= '7' ? name[2] - '0' : -1;
 
     private static int ControlNumber(string name)
-        => name switch { "cr0" => 0, "cr2" => 2, "cr3" => 3, "cr4" => 4, _ => -1 };
+        => name switch { "cr0" => 0, "cr2" => 2, "cr3" => 3, "cr4" => 4, "cr8" => 8, _ => -1 };
 
     /// <summary>
     /// Parses one operand. <paramref name="bits"/> is the current default size,
@@ -166,6 +203,21 @@ internal static class Operands
         {
             if (op.SizeGiven && op.Size != 8) throw new AsmException(file, line, "MMX registers are 64 bits");
             op.Kind = OperandKind.Mmx; op.Reg = mm; op.Size = 8;
+            return op;
+        }
+
+        if (LongRegister(name, out int wide, out int wideSize, out bool rex8))
+        {
+            if (bits != 64)
+            {
+                throw new AsmException(file, line, $"'{name}' is a long-mode register; it needs .bits 64");
+            }
+            op.Kind = OperandKind.Register;
+            // spl..dil carry bit 4: every encoding masks the number to its
+            // three bits, and the REX logic reads the fourth and fifth.
+            op.Reg = wide | (rex8 ? 16 : 0);
+            op.Size = wideSize;
+            op.Rex8 = rex8;
             return op;
         }
 
@@ -338,6 +390,37 @@ internal static class Operands
             int r16 = Find(Reg16, lower);
             int r32 = Find(Reg32, lower);
 
+            // [rip + label]: relative to the next instruction, and nothing
+            // else may be added to it but a displacement.
+            if (lower == "rip")
+            {
+                if (bits != 64 || sign < 0 || scale != 1)
+                {
+                    throw new AsmException(file, line, $"'{op.Text}': rip is an address only in 64-bit code, and only added once");
+                }
+                op.RipRelative = true;
+                addrSize = 64;
+                continue;
+            }
+
+            if (LongRegister(lower, out int longReg, out int longSize, out bool longRex8) && !longRex8 && longSize >= 4 && bits == 64
+                && (longSize == 8 || longReg >= 8))
+            {
+                if (sign < 0)
+                {
+                    throw new AsmException(file, line, $"a register cannot be subtracted in '{op.Text}'");
+                }
+                int longAddr = longSize * 8;
+                if (addrSize != 0 && addrSize != longAddr)
+                {
+                    throw new AsmException(file, line, $"'{op.Text}' mixes {addrSize}-bit and {longAddr}-bit registers in one address");
+                }
+                addrSize = longAddr;
+                regs.Add(longReg);
+                scales.Add(scale);
+                continue;
+            }
+
             if (r16 >= 0 || r32 >= 0)
             {
                 if (sign < 0)
@@ -374,6 +457,11 @@ internal static class Operands
         if (regs.Count > 2)
         {
             throw new AsmException(file, line, $"'{op.Text}' names more than two registers");
+        }
+
+        if (op.RipRelative && regs.Count > 0)
+        {
+            throw new AsmException(file, line, $"'{op.Text}' adds a register to rip, which cannot be encoded");
         }
 
         if (op.AddrSize == 16)

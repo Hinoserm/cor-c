@@ -27,9 +27,18 @@ public static class Frontend
         while (true)
         {
             if (declarations is not null) declarations.Passes++;
-            try { return CompileCore(paths, name, library, libraryPaths, symbols, elsewherePaths, workers, declarations); }
+            // A PASS THAT ENDS IN A DEMAND IS THROWN AWAY WHOLE, so what the
+            // discarded ones cost is its own line in CORC_REPORT_PASSES.
+            Meter pass = Meter.Start();
+            try
+            {
+                var done = CompileCore(paths, name, library, libraryPaths, symbols, elsewherePaths, workers, declarations);
+                pass.Stop("front:pass-kept");
+                return done;
+            }
             catch (DeclarationDemand demand) when (declarations is not null)
             {
+                pass.Stop("front:pass-discarded");
                 if (Environment.GetEnvironmentVariable("CORC_TRACE_DEMAND") is not null)
                     Console.Error.WriteLine("pass " + declarations.Passes + " demanded " + demand.Keys.Count + ": "
                         + string.Join(", ", demand.Keys.Select(k => k.Split('\n').Last())));
@@ -90,7 +99,9 @@ public static class Frontend
 #endif
         try
         {
+            Meter parsing = Meter.Start();
             CompilationUnit[] parsed = ParseSources(sources, symbols, workers, declarations?.Tokens);
+            parsing.Stop("front:parse");
             int sourceIndex = 0;
             foreach ((string file, string? path, bool isLibrary, bool isElsewhere) in sources)
             {
@@ -121,10 +132,22 @@ public static class Frontend
                 }
 
                 unit.Types.AddRange(one.Types);
+
+                // Retagged the same way decl.File is above: this loop's own
+                // `file` is the name a diagnostic will actually be stamped
+                // with, and stamping the pragma table with anything else
+                // would leave a `#pragma warning disable` unable to find the
+                // warnings it was written to silence.
+                foreach (PragmaWarning p in one.Pragmas)
+                {
+                    unit.Pragmas.Add(p with { File = file });
+                }
+
                 // Ownership has moved to unit. Do not keep the original
                 // compilation roots alive through a stale parser-array slot.
                 one.Types.Clear();
                 one.Usings.Clear();
+                one.Pragmas.Clear();
                 parsed[sourceIndex - 1] = null!;
             }
             sources.Clear();
@@ -162,7 +185,9 @@ public static class Frontend
         }
 
         IReadOnlyList<CompileError> generic;
+        Meter expanding = Meter.Start();
         unit = Monomorphiser.Expand(unit, name, library, out generic, declarations is null ? null : declarations.Require);
+        expanding.Stop("front:expand");
 
         if (Report(generic))
         {
@@ -172,40 +197,108 @@ public static class Frontend
 #if COR_SELFHOST_BENCHMARK
         Program.BenchmarkStage("bind-initial");
 #endif
+        Meter binding = Meter.Start();
         BindResult bound = Binder.Bind(unit, name, declarations is null ? null : declarations.Require, declarations?.Interfaces,
-            declarations is null ? null : declarations.RequireExtensions, declarations?.LibraryInterfaces);
+            declarations is null ? null : declarations.RequireExtensions, declarations?.LibraryInterfaces,
+                declarations is null ? null : declarations.RequireOverrides);
+        binding.Stop("front:bind");
 
         // The checker's first pass discovers which generic methods were called
         // with which type arguments; each becomes a copy, and the whole thing
         // goes round again because a copy's body can ask for more. Bounded,
         // because a method that instantiates itself deeper every time has no
         // fixed point.
-        for (int round = 0; round < 8 && bound.Errors.Count == 0 && bound.Wanted.Count > 0; round++)
+        //
+        // ONLY THE NEW BODIES BETWEEN ROUNDS. What a round adds -- the copies,
+        // and the methods of any specialised type they brought in -- is all
+        // that can want a copy not yet made, so the rounds that close the set
+        // of copies check only those (Binder.BindFresh), and one full binding
+        // follows. A full binding each round checked every body in the unit
+        // again to find a handful of new wants. Should the full binding still
+        // want something, the rounds begin again from it.
+        for (int round = 0; round < 8 && bound.Errors.Count == 0 && (bound.Wanted.Count > 0 || bound.WantedOverrides.Count > 0); round++)
         {
-#if COR_SELFHOST_BENCHMARK
-            Program.BenchmarkStage("specialise-" + round);
-#endif
-            if (!Specialise(unit, bound))
+            bool made = false;
+            for (int step = 0; step < 8 && bound.Errors.Count == 0 && (bound.Wanted.Count > 0 || bound.WantedOverrides.Count > 0); step++)
             {
-                break;
+#if COR_SELFHOST_BENCHMARK
+                Program.BenchmarkStage("specialise-" + round + "-" + step);
+#endif
+                HashSet<string> known = new(unit.Types.Select(t => t.Name), StringComparer.Ordinal);
+                if (!Specialise(unit, bound))
+                {
+                    break;
+                }
+                made = true;
+
+                // The previous round is no longer an input. Keeping its maps
+                // until the replacement binding returns doubles graph pressure.
+                bound.ReleaseForRebind();
+
+                Meter again = Meter.Start();
+                unit = Monomorphiser.Expand(unit, name, library, out generic, declarations is null ? null : declarations.Require);
+                again.Stop("front:expand-round");
+
+                if (Report(generic))
+                {
+                    return null;
+                }
+
+                // Every member, properties too: their accessors are bodies
+                // the binder makes from them, and take the flag with them.
+                foreach (TypeDecl t in unit.Types)
+                {
+                    if (known.Contains(t.Name)) continue;
+                    foreach (MemberDecl m in t.Members) m.Fresh = true;
+                }
+
+                Meter fresh = Meter.Start();
+                bound = Binder.Bind(unit, name, declarations is null ? null : declarations.Require, declarations?.Interfaces,
+                    declarations is null ? null : declarations.RequireExtensions, declarations?.LibraryInterfaces,
+                    declarations is null ? null : declarations.RequireOverrides, freshOnly: true);
+                fresh.Stop("front:bind-fresh");
+
+                foreach (TypeDecl t in unit.Types)
+                {
+                    foreach (MemberDecl m in t.Members) m.Fresh = false;
+                }
             }
 
-            // The previous round is no longer an input. Keeping its maps
-            // until the replacement binding returns doubles graph pressure.
-            bound.ReleaseForRebind();
-
-            unit = Monomorphiser.Expand(unit, name, library, out generic, declarations is null ? null : declarations.Require);
-
-            if (Report(generic))
+            if (!made)
             {
-                return null;
+                break;
             }
 
 #if COR_SELFHOST_BENCHMARK
             Program.BenchmarkStage("bind-" + round);
 #endif
+            bound.ReleaseForRebind();
+            Meter rebinding = Meter.Start();
             bound = Binder.Bind(unit, name, declarations is null ? null : declarations.Require, declarations?.Interfaces,
-                declarations is null ? null : declarations.RequireExtensions, declarations?.LibraryInterfaces);
+                declarations is null ? null : declarations.RequireExtensions, declarations?.LibraryInterfaces,
+                declarations is null ? null : declarations.RequireOverrides);
+            rebinding.Stop("front:bind-round");
+            if (Environment.GetEnvironmentVariable("CORC_TRACE_WANTS") is not null)
+            {
+                foreach (var w in bound.Wanted)
+                    Console.Error.WriteLine("full bind still wants " + w.Item2.Name + " in " + w.Item1.Line + " of " + w.Item2.File);
+                foreach (var w in bound.WantedOverrides)
+                    Console.Error.WriteLine("full bind still wants override " + w.Item1.Name + "." + w.Item2.Name + " as " + w.Item4);
+            }
+        }
+
+        // WHAT THE UNIT GREW TO, for CORC_REPORT_UNIT: its declarations after
+        // expansion by kind, and the members each kind carries -- where a
+        // unit's memory goes before a line of it is lowered.
+        if (Environment.GetEnvironmentVariable("CORC_REPORT_UNIT") is not null)
+        {
+            foreach (var group in unit.Types.GroupBy(t => t.TypeParams.Count > 0 ? "template"
+                         : t.Canon is not null ? "shared-copy" : t.Specialised ? "specialised" : t.SignatureOnly ? "imported" : "own"))
+            {
+                Console.Error.WriteLine("unit " + group.Key + ": " + group.Count() + " types, "
+                    + group.Sum(t => t.Members.Count) + " members, "
+                    + group.Sum(t => t.Members.OfType<MethodDecl>().Count(m => m.Body is { Statements.Count: > 0 })) + " with bodies");
+            }
         }
 
         // WARNINGS ARE ERRORS. Every warning the binder raises is a statement
@@ -217,7 +310,10 @@ public static class Frontend
         {
             if (WarningsAreErrors)
             {
-                Console.Error.WriteLine(warning.ToString().Replace("): warning: ", "): error: "));
+                // Every warning now carries a code -- "): warning CS8602: " --
+                // so the word alone, not the colon that used to sit right
+                // after it, is what marks where "error" replaces "warning".
+                Console.Error.WriteLine(warning.ToString().Replace("): warning ", "): error "));
             }
             else
             {
@@ -255,7 +351,7 @@ public static class Frontend
         if (workers <= 1)
         {
             for (int i = 0; i < sources.Count; i++)
-                parsed[i] = ParseSource(sources[i].Name, sources[i].Path, symbols, tokens);
+                parsed[i] = ParseSource(sources[i].Name, sources[i].Path, symbols, tokens, sources[i].Elsewhere);
             return parsed;
         }
         CompileError?[] failures = new CompileError?[sources.Count];
@@ -268,7 +364,7 @@ public static class Frontend
             {
                 for (int i = lane; i < sources.Count; i += active)
                 {
-                    try { parsed[i] = ParseSource(sources[i].Name, sources[i].Path, symbols, tokens); }
+                    try { parsed[i] = ParseSource(sources[i].Name, sources[i].Path, symbols, tokens, sources[i].Elsewhere); }
                     catch (CompileError error) { failures[i] = error; }
                 }
             });
@@ -280,13 +376,25 @@ public static class Frontend
         return parsed;
     }
 
-    private static CompilationUnit ParseSource(string name, string? path, IReadOnlyCollection<string>? symbols, SyntaxTokenCache? tokens = null)
+    /// <summary>
+    /// One source, parsed. A source compiled ELSEWHERE -- a --ref library,
+    /// the whole runtime and class library to every unit of a project -- is
+    /// read as the declaration index reads its slices: every declaration, its
+    /// constants and initialisers, and the bodies of templates, which copies
+    /// are made from here; not the bodies of its ordinary methods, which this
+    /// compilation never checks or emits. Kept, they were most of a unit's
+    /// syntax tree, held for the whole compilation and copied whole by every
+    /// round of generic expansion.
+    /// </summary>
+    private static CompilationUnit ParseSource(string name, string? path, IReadOnlyCollection<string>? symbols,
+        SyntaxTokenCache? tokens = null, bool elsewhere = false)
     {
         // Source text belongs to the active parser, not the project. Retain
         // paths in the queue so completed files release their text before the
         // next file is read. At most one source buffer per worker is live.
         string text = path is null ? Prelude.Source : File.ReadAllText(path);
-        return tokens is null ? Parser.ParseText(text, name, symbols) : tokens.Parse(text, name, symbols);
+        return tokens is null ? Parser.ParseText(text, name, symbols, elsewhere, elsewhere)
+            : tokens.Parse(text, name, symbols, elsewhere, elsewhere);
     }
 
     private static bool Report(IReadOnlyList<CompileError> errors)
@@ -320,14 +428,62 @@ public static class Frontend
     {
         bool made = false;
 
+        // WHICH NAMES ARE VALUE TYPES, for the copies' `T?` (Monomorphiser.Specialise).
+        HashSet<string> values = new(StringComparer.Ordinal);
+        foreach (Lang.TypeDecl t in unit.Types)
+        {
+            if (t.Kind is Lang.TypeKind.Struct or Lang.TypeKind.Enum)
+            {
+                values.Add(t.Name);
+                if (t.Outer is not null) values.Add(t.Outer + "." + t.Name);
+            }
+        }
+
+        // A copy in the canonical class too, when the owner shares its code
+        // with one (see the comment where it is called); answers whether it
+        // made one.
+        bool CanonicalTwin(Lang.TypeDecl owner, Lang.MethodDecl template, List<Lang.TypeRef> args, string wanted)
+        {
+            if (owner.Canon is string canonical)
+            {
+                Lang.TypeDecl? shared = unit.Types.FirstOrDefault(t => t.Name == canonical);
+
+                if (shared is not null && !shared.Members.Any(m => m.Name == wanted))
+                {
+                    Lang.MethodDecl? origin = shared.Members.OfType<Lang.MethodDecl>()
+                        .FirstOrDefault(m => m.Name == template.Name
+                            && m.TypeParams.Count == template.TypeParams.Count
+                            && (template.TemplateIndex < 0 || m.TemplateIndex == template.TemplateIndex));
+
+                    if (origin is not null)
+                    {
+                        Lang.MethodDecl twin = Lang.Monomorphiser.Specialise(origin, args, wanted, values);
+
+                        twin.File = origin.File;
+                        twin.LocalCopy = true;
+                        twin.Fresh = true;
+                        shared.Members.Add(twin);
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        // WHOSE MEMBER IS IT? The template is a member of exactly one
+        // declaration, and the copy goes beside it so the call reaches it the
+        // same way -- same receiver, same static class. Found by a map made
+        // once: searching every type's members for every call was a scan of
+        // the whole unit per want.
+        Dictionary<Lang.MemberDecl, Lang.TypeDecl> owners = new(ReferenceEqualityComparer.Instance);
+        foreach (Lang.TypeDecl t in unit.Types)
+        {
+            foreach (Lang.MemberDecl m in t.Members) owners.TryAdd(m, t);
+        }
+
         foreach ((Lang.CallExpr call, Lang.MethodDecl template, List<Lang.TypeRef> args) in bound.Wanted)
         {
-            // WHOSE MEMBER IS IT? The template is a member of exactly one
-            // declaration, and the copy goes beside it so the call reaches it
-            // the same way -- same receiver, same static class.
-            Lang.TypeDecl? owner = unit.Types.FirstOrDefault(t => t.Members.Contains(template));
-
-            if (owner is null)
+            if (!owners.TryGetValue(template, out Lang.TypeDecl? owner))
             {
                 continue;
             }
@@ -344,7 +500,7 @@ public static class Frontend
 
             if (!owner.Members.Any(m => m.Name == wanted))
             {
-                Lang.MethodDecl copy = Lang.Monomorphiser.Specialise(template, args, wanted);
+                Lang.MethodDecl copy = Lang.Monomorphiser.Specialise(template, args, wanted, values);
 
                 copy.File = template.File;
 
@@ -356,6 +512,7 @@ public static class Frontend
                 // check above, so this line is reached exactly when the copy
                 // has to be made here.
                 copy.LocalCopy = true;
+                copy.Fresh = true;
                 owner.Members.Add(copy);
                 made = true;
             }
@@ -375,28 +532,7 @@ public static class Frontend
             // so its body is written over __canon rather than over Person, and
             // it is given the same name so the redirect -- which matches on
             // index and name together -- finds it.
-            if (owner.Canon is string canonical)
-            {
-                Lang.TypeDecl? shared = unit.Types.FirstOrDefault(t => t.Name == canonical);
-
-                if (shared is not null && !shared.Members.Any(m => m.Name == wanted))
-                {
-                    Lang.MethodDecl? origin = shared.Members.OfType<Lang.MethodDecl>()
-                        .FirstOrDefault(m => m.Name == template.Name
-                            && m.TypeParams.Count == template.TypeParams.Count
-                            && (template.TemplateIndex < 0 || m.TemplateIndex == template.TemplateIndex));
-
-                    if (origin is not null)
-                    {
-                        Lang.MethodDecl twin = Lang.Monomorphiser.Specialise(origin, args, wanted);
-
-                        twin.File = origin.File;
-                        twin.LocalCopy = true;
-                        shared.Members.Add(twin);
-                        made = true;
-                    }
-                }
-            }
+            made |= CanonicalTwin(owner, template, args, wanted);
 
             // AND THE CALL NAMES THE COPY. The receiver and the arguments are
             // untouched; only which member is being asked for changes.
@@ -410,6 +546,28 @@ public static class Frontend
                     bare.Name = wanted;
                     break;
             }
+        }
+
+        // THE OVERRIDES A GENERIC VIRTUAL CALL MAY LAND ON, which no call
+        // names: the call keeps naming the method and is dispatched among
+        // these by type (Binder.GenericVirtualCall). Made beside their
+        // templates exactly as the copies above are, under the name the
+        // binder looks for.
+        foreach ((Lang.TypeDecl owner, Lang.MethodDecl template, List<Lang.TypeRef> args, string wanted) in bound.WantedOverrides)
+        {
+            if (!unit.Types.Contains(owner) || owner.Members.Any(m => m.Name == wanted))
+            {
+                continue;
+            }
+
+            Lang.MethodDecl copy = Lang.Monomorphiser.Specialise(template, args, wanted, values);
+
+            copy.File = template.File;
+            copy.LocalCopy = true;
+            copy.Fresh = true;
+            owner.Members.Add(copy);
+            made = true;
+            made |= CanonicalTwin(owner, template, args, wanted);
         }
         return made;
     }
@@ -509,5 +667,32 @@ public static class Frontend
 
         unit.Types.Clear();
         unit.Types.AddRange(merged);
+    }
+}
+
+/// <summary>
+/// Time and allocation over a stretch of the front end, reported with the
+/// optimiser's passes when CORC_REPORT_PASSES is set, and nothing otherwise.
+/// </summary>
+internal readonly struct Meter
+{
+    private readonly long _ticks;
+    private readonly long _bytes;
+
+    private Meter(long ticks, long bytes)
+    {
+        _ticks = ticks;
+        _bytes = bytes;
+    }
+
+    public static Meter Start() => Corsac.Lang.Opt.Pipeline.Accounting
+        ? new Meter(System.Diagnostics.Stopwatch.GetTimestamp(), GC.GetTotalAllocatedBytes())
+        : default;
+
+    public void Stop(string name)
+    {
+        if (!Corsac.Lang.Opt.Pipeline.Accounting) return;
+        Corsac.Lang.Opt.Pipeline.Account(name, System.Diagnostics.Stopwatch.GetTimestamp() - _ticks,
+            GC.GetTotalAllocatedBytes() - _bytes);
     }
 }

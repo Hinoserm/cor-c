@@ -12,4 +12,12 @@ namespace Corsac.Lang;
 public sealed class SuppressExpr : Expr
 {
     public required Expr Operand { get; init; }
+
+    /// <summary>
+    /// Written by the binder's rewrite of `x?.M()`, whose receiver is the
+    /// value `x` was found to hold: for a nullable value type that is the
+    /// value inside the cell, which a plain `x!` -- still a `T?` in C# -- is
+    /// not.
+    /// </summary>
+    public bool OpensCell { get; init; }
 }

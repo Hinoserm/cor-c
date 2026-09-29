@@ -1,0 +1,21 @@
+// test: nullable_type_arguments
+// expect-exit: 0
+// expect-output:
+// 2 1 k
+//
+// new[] { "a", null } is a string?[], and a parameter declared with a nullable
+// type argument is itself not null. Expected output is real .NET's.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+static class Program
+{
+    static int Count(IEnumerable<string?> items) => items.Count(s => s != null);
+    static int Len(List<string?> items) => items.Count;
+    static string First(Dictionary<string, string?> d) => d.Keys.First();
+    static void Main()
+    {
+        Console.WriteLine(Count(new[] { "a", null, "b" }) + " " + Len(new List<string?> { null }) + " " + First(new() { ["k"] = null }));
+    }
+}

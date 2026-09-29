@@ -1,11 +1,13 @@
 // The Linux system-call library: the ONLY file that knows the program is a
-// Linux i386 process.
+// Linux process, i386 or x86-64.
 //
-// Everything here is an `int 0x80` through Sys.Syscall, the one intrinsic the
+// Everything here is a system call through Sys.Syscall, the one intrinsic the
 // compiler provides for reaching the kernel (docs/software/X86-BACKEND.md,
-// "Linux is a target, not a model"). The number goes in EAX and the arguments
-// in EBX, ECX, EDX, ESI, EDI, EBP -- the backend does that; this file only
-// says which number and what to pass.
+// "Linux is a target, not a model"): `int 0x80` with the number in EAX and
+// the arguments in EBX, ECX, EDX, ESI, EDI, EBP on i386, `syscall` with them
+// in RAX and RDI, RSI, RDX, R10, R8, R9 in long mode. The backend does that;
+// this file only says which number and what to pass, and where the two ABIs
+// ask for different shapes it says so under TARGET_AMD64.
 //
 //   corc compile lib/std.cor lib/rt/runtime.cor lib/sys/linux.cor program.cor -o program
 //
@@ -61,7 +63,16 @@ static class SockCall
 /// somebody turns on a second option.
 static class Cmsg
 {
+    // struct cmsghdr: a size_t length, then two ints, padded to a word.
+#if TARGET_64BIT
+    public const int HeaderBytes = 16;
+    const int LevelAt = 8;
+    const int Align = 7;
+#else
     public const int HeaderBytes = 12;
+    const int LevelAt = 4;
+    const int Align = 3;
+#endif
 
     // The levels and types a program on this machine actually reads.
     public const int LevelIp = 0;               // SOL_IP
@@ -84,23 +95,23 @@ static class Cmsg
             return -1;
         }
 
-        int next = at + (int)((length + 3) & ~3);
+        int next = at + (int)((length + Align) & ~Align);
         return next + HeaderBytes <= controlBytes ? next : -1;
     }
 
     public static long Length(byte[] control, int at)
     {
-        return Raw.U32(control, at);
+        return Raw.Word(control, at);
     }
 
     public static int Level(byte[] control, int at)
     {
-        return (int)Raw.I32(control, at + 4);
+        return (int)Raw.I32(control, at + LevelAt);
     }
 
     public static int Type(byte[] control, int at)
     {
-        return (int)Raw.I32(control, at + 8);
+        return (int)Raw.I32(control, at + LevelAt + 4);
     }
 
     /// Where this header's data starts.
@@ -140,6 +151,155 @@ static class Platform
         return raw;
     }
 
+    /// Whether the process was started with CORSAC_VERIFY_FREES set to
+    /// anything but 0: the collector's checked mode for the compiler's frees
+    /// (Gc.VerifyFree). Read straight from the environment on the entry
+    /// stack, with nothing allocated -- so only on the MAIN thread, whose
+    /// entry stack is the loader's (the collector asks once, as it starts).
+    /// CORSAC_GC_VERIFY=1: the collector checks, after each minor cycle's
+    /// mark, that no old object points at a young one it is about to sweep.
+    public static bool VerifyGenerations() => EnvironmentFlag("CORSAC_GC_VERIFY=");
+
+    /// CORSAC_GC_CENSUS=1: every whole collection counts what it found live,
+    /// by type, and says the largest on standard error.
+    public static bool GcCensus() => EnvironmentFlag("CORSAC_GC_CENSUS=");
+
+    /// CORSAC_GC_CENSUS=2: the census also counts what every sweep found dead.
+    public static bool GcDeadCensus() => EnvironmentByte("CORSAC_GC_CENSUS=") == '2';
+
+    /// CORSAC_GC_THRESHOLD=<bytes>: collect at least that often, whatever the
+    /// pacing says -- every call site a collection may fall under, tried.
+    public static long GcThreshold() => EnvironmentNumber("CORSAC_GC_THRESHOLD=");
+
+    /// CORSAC_GC_NURSERY=<bytes>: allocate that much between minor cycles,
+    /// whatever the pacing says -- for measuring what a nursery's size costs.
+    public static long GcNursery() => EnvironmentNumber("CORSAC_GC_NURSERY=");
+
+    /// CORSAC_HEAP_LIMIT=<bytes>: the heap's hard limit, as a container's
+    /// memory.max would set it -- for trying a small machine on a big one.
+    public static long HeapLimit() => EnvironmentNumber("CORSAC_HEAP_LIMIT=");
+
+    /// CORSAC_ALLOC_SAMPLE=1: where the allocations come from, sampled and
+    /// printed as the process ends (AllocSamples).
+    public static bool AllocSample() => EnvironmentFlag("CORSAC_ALLOC_SAMPLE=");
+
+    /// CORSAC_HEAP_CHECK=1: the heap's structure checked as every collection
+    /// begins and ends -- every chunk's chain, every buffer's, and the free
+    /// lists against what the walks found -- and the first faults said.
+    public static bool HeapCheck() => EnvironmentFlag("CORSAC_HEAP_CHECK=");
+
+    public static bool VerifyFrees() => EnvironmentFlag("CORSAC_VERIFY_FREES=") && EnvironmentByte("CORSAC_VERIFY_FREES=") != 'f';
+
+    /// CORSAC_VERIFY_FREES=f: only the fields freed with their owner
+    /// (Runtime.FreeField) are checked -- poisoned, kept, their free recorded
+    /// -- and every other free gives its block back as usual, so the heap is
+    /// reused the way an unchecked run reuses it.
+    public static bool VerifyFieldFrees() => EnvironmentByte("CORSAC_VERIFY_FREES=") == 'f';
+
+    /// CORSAC_FREE_LOG=1: every field free the compiler wrote is recorded in a
+    /// ring (Runtime.FreeLog), for a debugger or a scan of the process to
+    /// find the free that took an object still in use.
+    public static bool FreeLog() => EnvironmentFlag("CORSAC_FREE_LOG=");
+
+    /// CORSAC_GUARD_RELEASES=1: a chunk the heap releases is made
+    /// inaccessible instead of unmapped (Guard), and a dedicated one released
+    /// by a free says who freed it: a stale reference to what was in it
+    /// faults at its first use, in the fault report's stack.
+    public static bool GuardReleases() => EnvironmentFlag("CORSAC_GUARD_RELEASES=");
+
+    /// CORSAC_IGNORE_FREES: which frees the compiler wrote are ignored, the
+    /// collector finding that garbage instead. What it is for is telling a
+    /// fault that a free makes from one the collector makes, and then which
+    /// kind of free: 1 (or anything else) all of them; p the plain frees at
+    /// a last use (Runtime.Free); f the fields freed with their owner
+    /// (Runtime.FreeField); r what an owned variable held before it was
+    /// assigned (Runtime.FreeReplaced). 0, or unset, none.
+    public static long IgnoreFrees()
+    {
+        long first = EnvironmentByte("CORSAC_IGNORE_FREES=");
+        return first == 48 ? 0 : first;
+    }
+
+    /// CORSAC_FREE_PATHS: the ways a free gives a block back that are
+    /// skipped, the block left to the collector instead -- a diagnostic, for
+    /// finding which of them corrupts. Letters: t the top of the thread's own
+    /// buffer, i a block freed in place in another thread's buffer, b the
+    /// bump pointer's top, d a dedicated chunk released, m a block merged
+    /// into the free lists. As a mask: t 1, i 2, b 4, d 8, m 16. And p 32:
+    /// every block freed is filled with the checked mode's pattern before it
+    /// goes back -- the two paths that hand the bytes straight back to the
+    /// bump pointer (t, b) skipped -- so a read after a free and before the
+    /// reuse faults on the pattern, and a fault that does not is the heap's.
+    /// And P 64: every run of dead blocks a sweep gives back is filled with
+    /// the pattern too, so an object swept while something still used it --
+    /// a root the stack maps missed -- is read as the pattern at once.
+    public static long SkippedFreePaths()
+    {
+        long at = EnvironmentValue("CORSAC_FREE_PATHS=");
+        long mask = 0;
+        while (at != 0 && Sys.PeekByte(at) != 0)
+        {
+            long c = Sys.PeekByte(at);
+            mask = mask | (c == 't' ? 1 : c == 'i' ? 2 : c == 'b' ? 4 : c == 'd' ? 8 : c == 'm' ? 16 : c == 'p' ? 32 : c == 'P' ? 64 : 0);
+            at = at + 1;
+        }
+        return mask;
+    }
+
+    /// `key` (ending in '=') read from the environment as a decimal number,
+    /// or 0 when it is not set.
+    static long EnvironmentNumber(string key)
+    {
+        long at = EnvironmentValue(key);
+        long value = 0;
+        while (at != 0 && Sys.PeekByte(at) >= 48 && Sys.PeekByte(at) <= 57)
+        {
+            value = value * 10 + Sys.PeekByte(at) - 48;
+            at = at + 1;
+        }
+        return value;
+    }
+
+    /// Whether `key` (ending in '=') is set in the environment to something
+    /// other than nothing or 0, read from the loader's stack.
+    static bool EnvironmentFlag(string key)
+    {
+        long first = EnvironmentByte(key);
+        return first != 0 && first != 48;
+    }
+
+    /// The first byte of `key`'s value (`key` ends in '='), or 0 when it is
+    /// unset or empty.
+    static long EnvironmentByte(string key)
+    {
+        long at = EnvironmentValue(key);
+        return at == 0 ? 0 : Sys.PeekByte(at);
+    }
+
+    /// Where `key`'s value begins in the environment, or 0 when it is unset.
+    static long EnvironmentValue(string key)
+    {
+        long env = Os.EnvironAddress();
+        while (true)
+        {
+            long text = Sys.Peek(env) & WordSize.AddressMask;
+            if (text == 0)
+            {
+                return 0;
+            }
+            int i = 0;
+            while (i < key.Length && Sys.PeekByte(text + i) == key[i])
+            {
+                i = i + 1;
+            }
+            if (i == key.Length)
+            {
+                return text + i;
+            }
+            env = env + WordSize.Bytes;
+        }
+    }
+
     /// The address the kernel is to be handed for `at`: a Linux process's
     /// memory is flat, so the same one.
     public static long Linear(long at)
@@ -163,11 +323,11 @@ static class Platform
     {
         if (_traceDigits == 0)
         {
-            long got = Sys.Syscall(Call.Mmap2, 0, 4096, 3, 0x22, 0 - 1, 0);
+            long got = Sys.Syscall(Call.Mmap, 0, 4096, 3, 0x22, 0 - 1, 0);
             _traceDigits = Result(got) > 0 ? Result(got) : 0 - 1;
         }
 
-        WriteBytes(2, Sys.ArrayData(label), label.Length);
+        Runtime.WriteLiteral(2, label);
 
         if (_traceDigits > 0)
         {
@@ -196,8 +356,7 @@ static class Platform
             WriteBytes(2, _traceDigits + at, 24 - at);
         }
 
-        string end = "\n";
-        WriteBytes(2, Sys.ArrayData(end), 1);
+        Runtime.WriteLiteral(2, "\n");
     }
 
     /// Memory given back to the kernel: munmap(2). What the collector does
@@ -207,11 +366,24 @@ static class Platform
         Sys.Syscall(Call.Munmap, at, bytes, 0);
     }
 
+    /// Memory made unreadable and unwritable and its address kept: a fresh
+    /// PROT_NONE mapping over it. What a released chunk becomes under CORSAC_GUARD_RELEASES,
+    /// so that its address is never handed out again and the first use of it
+    /// faults where it happens.
+    public static void Guard(long at, long bytes)
+    {
+        // Mapped over, not protected: MAP_FIXED | MAP_NORESERVE with
+        // PROT_NONE keeps the addresses reserved and gives the pages back.
+        // Protected, every guarded chunk stayed resident, and a build ran
+        // the machine out of memory.
+        Sys.Syscall(Call.Mmap, at, bytes, 0, 0x22 | 0x10 | 0x4000, 0 - 1, 0);
+    }
+
     public static long Map(long bytes)
     {
         // PROT_READ | PROT_WRITE = 3; MAP_PRIVATE | MAP_ANONYMOUS = 0x22;
         // no file (-1), offset 0.
-        long got = Sys.Syscall(Call.Mmap2, 0, bytes, 3, 0x22, 0 - 1, 0);
+        long got = Sys.Syscall(Call.Mmap, 0, bytes, 3, 0x22, 0 - 1, 0);
         long answer = Result(got);
 
         if (answer < 0)
@@ -219,13 +391,13 @@ static class Platform
             // Said here, without allocating (this is the allocator's own
             // failure path): the kernel's log has the numbers.
             string text = "mmap refused by the kernel\n";
-            WriteBytes(2, Sys.ArrayData(text), text.Length);
+            Runtime.WriteLiteral(2, text);
             return 0;
         }
         if (answer == 0)
         {
             string zero = "mmap answered address 0\n";
-            WriteBytes(2, Sys.ArrayData(zero), zero.Length);
+            Runtime.WriteLiteral(2, zero);
         }
         return answer;
     }
@@ -250,11 +422,43 @@ static class Platform
     {
         // The collector times its pauses by this system's clock.
         Gc.PauseClock = Sys.AddressOf(Clock.NowMicroseconds);
-        Sys.PokeWord(block + Tls.Self, block);
+        Sys.Poke(block + Tls.Self, block);
+
+#if TARGET_AMD64
+        // LONG MODE KEEPS A BASE REGISTER PER THREAD FOR THIS: GS, set with
+        // arch_prctl(ARCH_SET_GS), saved and restored by the kernel on every
+        // switch. Not FS, which is glibc's thread pointer: a program that
+        // calls into C (a [DllImport]) runs C code on this thread, and that
+        // code finds errno, its allocator's caches and its stack canary
+        // through FS. No descriptor, no selector: the block's own first word
+        // is still its address, so gs:[0] answers it.
+        if (Result(Sys.Syscall(Call.ArchPrctl, Call.ArchSetGs, block, 0)) < 0)
+        {
+            Runtime.WriteLiteral(2, "arch_prctl(ARCH_SET_GS) failed: this kernel cannot give a thread its own block\n");
+            Exit(134);
+        }
+#else
 
         long desc = block + Tls.Scratch;
 
-        Sys.PokeWord(desc, 0 - 1);              // entry_number: any free one
+        // THE C LIBRARY'S SELECTOR, taken before this replaces it: under
+        // ld-linux, GS already names glibc's thread pointer, and a call into
+        // C puts it back for the length of the call (Runtime.EnterNative).
+        // Only the first time -- a later thread starts with the runtime's.
+        long entry = 0 - 1;                     // entry_number: any free one
+        if (Runtime.ManagedGs == 0)
+        {
+            Runtime.NativeGs = Sys.GetGs();
+        }
+        else
+        {
+            // The same slot in every thread, so one selector means each
+            // thread's own block: a thread made by pthread_create inherits
+            // the slot as its creator left it, and asking for "any" would
+            // give it another.
+            entry = Runtime.ManagedGs >> 3;
+        }
+        Sys.PokeWord(desc, entry);
         Sys.PokeWord(desc + 4, block);          // base_addr
         Sys.PokeWord(desc + 8, 0xFFFFF);        // limit: the whole space, in pages
         // seg_32bit | limit_in_pages | useable; a writable data segment that
@@ -265,11 +469,14 @@ static class Platform
         {
             string text = "set_thread_area failed: this kernel cannot give a thread its own block\n";
 
-            WriteBytes(2, Sys.ArrayData(text), text.Length);
+            Runtime.WriteLiteral(2, text);
             Exit(134);
         }
 
-        Sys.SetGs((Sys.PeekWord(desc) << 3) | 3);
+        long selector = (Sys.PeekWord(desc) << 3) | 3;
+        Runtime.ManagedGs = selector;
+        Sys.SetGs(selector);
+#endif
     }
 
     // ---- waiting ---------------------------------------------------------------
@@ -292,6 +499,328 @@ static class Platform
     public static void Wake(long at, long count)
     {
         Sys.Syscall(Call.Futex, at, 129, count, 0, 0, 0);
+    }
+
+    // ---- the machine's memory, for GC.GetGCMemoryInfo ------------------------
+
+    /// sysinfo(2)'s totalram and freeram, in bytes: what the machine has and
+    /// what it has free (the kernel's view, which leaves out reclaimable
+    /// caches -- MemAvailable counts those, and is read where a caller wants
+    /// it).
+    public static long TotalMemory()
+    {
+        return SysinfoBytes(SysinfoTotal);
+    }
+
+    public static long AvailableMemory()
+    {
+        return SysinfoBytes(SysinfoFree);
+    }
+
+    /// Whether a mapping costs only the pages that are touched: the kernel
+    /// commits anonymous memory as it is first written, so the collector may
+    /// reserve a card table for the whole address space (Gc, generations).
+    public const bool MapsCommitLazily = true;
+
+    /// Free memory as the collector may ask it: with the heap held, so without
+    /// allocating (SysinfoBytes answers into a page of the system's own).
+    public static long FreeMemoryQuietly()
+    {
+        return SysinfoBytes(SysinfoFree) + SysinfoBytes(SysinfoBuffers);
+    }
+
+    /// THE MEMORY THE PROCESS'S CONTROL GROUP MAY USE, or 0 when it has no
+    /// limit: what .NET reads to size its heap in a container, and what a
+    /// machine's free memory does not show -- a process capped at 256 MB on a
+    /// server with 48 GB free would otherwise pace itself for 48. cgroup v2's
+    /// memory.max, the smallest along the group's path, since a parent's
+    /// limit binds its children; or v1's memory.limit_in_bytes. Read once, at
+    /// the heap's start, with raw calls into a page of the system's own:
+    /// nothing here allocates.
+    /// How much address space a 32-bit process has: four gigabytes under a
+    /// 64-bit kernel, three under a 32-bit one -- uname's machine, x86_64 or
+    /// not. Asked once, at the heap's start, into a page of the system's own:
+    /// nothing here allocates. Zero when uname says nothing.
+    public static long AddressSpace()
+    {
+        long page = Map(4096);
+        if (page == 0)
+        {
+            return 0;
+        }
+        long space = 0;
+        if (Result(Sys.Syscall(Call.Uname, page, 0, 0)) == 0)
+        {
+            // struct utsname: six fields of 65 bytes; the machine is the fifth.
+            long machine = page + 4 * 65;
+            bool wide = Sys.PeekByte(machine) == 120 && Sys.PeekByte(machine + 1) == 56 && Sys.PeekByte(machine + 2) == 54
+                     && Sys.PeekByte(machine + 3) == 95 && Sys.PeekByte(machine + 4) == 54 && Sys.PeekByte(machine + 5) == 52
+                     && Sys.PeekByte(machine + 6) == 0;
+            space = wide ? 4294967296 : 3221225472;
+        }
+        Unmap(page, 4096);
+        return space;
+    }
+
+    // ---- a fault no program survives -----------------------------------------
+    //
+    // A SEGMENTATION FAULT SAYS WHERE IT WAS, as .NET's runtime has one say:
+    // "Fatal error. System.AccessViolationException", the address and the
+    // stack, on standard error (Runtime.ReportFault) -- and then the process
+    // dies of the signal all the same: the default action, a core where one
+    // is asked for, and 128 + the signal to whatever waits on it. Without
+    // it a compile process of a project build died of one with nothing in
+    // any log; only the kernel's ring buffer had a pid and an address.
+    //
+    // Armed once, as the first image begins, on a page of the system's own
+    // that holds the kernel's sigaction, a signal set and the digits the
+    // report spells numbers in: nothing here allocates, because the fault
+    // may be in the allocator. The handler never returns, so it needs no
+    // sigreturn trampoline; it puts the default action back itself rather
+    // than trusting SA_RESETHAND to have, unblocks the signal and sends it
+    // again, and ends the process outright if that did not.
+    static long _faultPage;
+    static long _faulting;
+
+    const int SignalBus = 7;
+    const int SignalSegv = 11;
+
+    public static void ArmFaultReport()
+    {
+        if (_faultPage != 0)
+        {
+            return;
+        }
+        long page = Map(4096);
+        if (page == 0)
+        {
+            return;
+        }
+        _faultPage = page;
+        // The kernel's sigaction: handler, flags, restorer, mask, a word
+        // each but the mask. SA_SIGINFO for the address and the registers;
+        // SA_RESTORER, which x86-64 insists on, naming the handler because
+        // nothing returns to it; SA_NODEFER and SA_RESETHAND, so a second
+        // fault inside the report ends the process instead of nesting.
+        long handler = Sys.AddressOf(Platform.Fault);
+        Sys.Poke(page, handler);
+        Sys.Poke(page + WordSize.Bytes, 0x00000004 | 0x04000000 | 0x40000000 | 0x80000000);
+        Sys.Poke(page + 2 * WordSize.Bytes, handler);
+        Sys.Syscall(Call.RtSigaction, SignalSegv, page, 0, 8, 0, 0);
+        Sys.Syscall(Call.RtSigaction, SignalBus, page, 0, 8, 0, 0);
+    }
+
+    /// The kernel's call on a fault: the signal, its siginfo and the
+    /// interrupted context. Reports once, then dies of the signal.
+    public static void Fault(int signal, nint info, nint context)
+    {
+        long si = (long)info & WordSize.AddressMask;
+        long uc = (long)context & WordSize.AddressMask;
+        if (_faulting == 0 && si != 0 && uc != 0)
+        {
+            _faulting = 1;
+#if TARGET_64BIT
+            // siginfo's si_addr at 16; mcontext's gregs from 40, RBP the
+            // eleventh and RIP the seventeenth.
+            long address = Sys.Peek(si + 16);
+            long pc = Sys.Peek(uc + 168);
+            long frame = Sys.Peek(uc + 120);
+            long registers = uc + 40;
+            int count = 16;
+#else
+            // siginfo's si_addr at 12; mcontext's gregs from 20, EBP the
+            // seventh and EIP the fifteenth.
+            long address = Sys.Peek(si + 12) & WordSize.AddressMask;
+            long pc = Sys.Peek(uc + 76) & WordSize.AddressMask;
+            long frame = Sys.Peek(uc + 44) & WordSize.AddressMask;
+            // EDI, ESI, EBP, ESP, EBX, EDX, ECX, EAX.
+            long registers = uc + 36;
+            int count = 8;
+#endif
+            Runtime.ReportFault(address, pc, frame, _faultPage + 256, registers, count);
+        }
+        // SIG_DFL, the signal unblocked (SIG_UNBLOCK, a set of one), and sent.
+        long page = _faultPage;
+        Sys.Poke(page, 0);
+        Sys.Poke(page + WordSize.Bytes, 0);
+        Sys.Syscall(Call.RtSigaction, signal, page, 0, 8, 0, 0);
+        Sys.Poke(page + 128, 0);
+        Sys.Poke(page + 128 + WordSize.Bytes, 0);
+        Sys.PokeByte(page + 128 + (signal - 1) / 8, 1 << ((signal - 1) % 8));
+        Sys.Syscall(Call.RtSigprocmask, 1, page + 128, 0, 8, 0, 0);
+        Sys.Syscall(Call.Kill, Sys.Syscall(Call.Getpid, 0, 0, 0, 0, 0, 0), signal, 0, 0, 0, 0);
+        Sys.Syscall(Call.ExitGroup, 128 + signal, 0, 0, 0, 0, 0);
+    }
+
+    public static long MemoryLimit()
+    {
+        long page = Map(8192);
+        if (page == 0)
+        {
+            return 0;
+        }
+        long text = page;           // /proc/self/cgroup
+        long path = page + 4096;    // the file asked for, NUL-terminated
+        long limit = 0;
+        long got = ReadInto(text, 4095, "/proc/self/cgroup", path);
+        long v2 = got > 0 ? LineAfter(text, got, "0::") : -1;
+        if (v2 >= 0)
+        {
+            long end = v2;
+            while (end < text + got && Sys.PeekByte(end) != 10) end = end + 1;
+            // The group, then each parent up to the root, whose own file
+            // does not exist.
+            while (end > v2)
+            {
+                long bytes = CgroupFile(path, v2, end, "/sys/fs/cgroup", "/memory.max", text + got + 1, page + 4096 - (text + got + 1));
+                if (bytes > 0 && (limit == 0 || bytes < limit)) limit = bytes;
+                end = end - 1;
+                while (end > v2 && Sys.PeekByte(end) != 47) end = end - 1;
+            }
+        }
+        else if (got > 0)
+        {
+            long v1 = LineAfter(text, got, ":memory:");
+            if (v1 >= 0)
+            {
+                long end = v1;
+                while (end < text + got && Sys.PeekByte(end) != 10) end = end + 1;
+                limit = CgroupFile(path, v1, end, "/sys/fs/cgroup/memory", "/memory.limit_in_bytes", text + got + 1, page + 4096 - (text + got + 1));
+                // v1 says "no limit" as a number near 2^63.
+                if (limit >= 0x7FFFFFFFFFFFF000 / 2) limit = 0;
+            }
+        }
+        Unmap(page, 8192);
+        return limit;
+    }
+
+    /// Reads the file named by `name` (built into `scratch`) into [into,
+    /// into + most); answers the bytes read, or -1.
+    static long ReadInto(long into, long most, string name, long scratch)
+    {
+        for (int i = 0; i < name.Length; i++) Sys.PokeByte(scratch + i, name[i]);
+        Sys.PokeByte(scratch + name.Length, 0);
+        return ReadPath(scratch, into, most);
+    }
+
+    static long ReadPath(long path, long into, long most)
+    {
+        long fd = Result(Sys.Syscall(Call.Open, path, 0, 0));
+        if (fd < 0)
+        {
+            return -1;
+        }
+        long got = 0;
+        while (got < most)
+        {
+            long n = Result(Sys.Syscall(Call.Read, fd, into + got, most - got));
+            if (n <= 0) break;
+            got = got + n;
+        }
+        Sys.Syscall(Call.Close, fd, 0, 0);
+        return got;
+    }
+
+    /// Where the text after `key` begins, when a line of [text, text + count)
+    /// starts with it (or, for a key starting with ':', contains it after the
+    /// line's hierarchy number); -1 when none does.
+    static long LineAfter(long text, long count, string key)
+    {
+        long line = text;
+        while (line < text + count)
+        {
+            long at = line;
+            if (key[0] == ':')
+            {
+                while (at < text + count && Sys.PeekByte(at) != 58 && Sys.PeekByte(at) != 10) at = at + 1;
+            }
+            int i = 0;
+            while (i < key.Length && at + i < text + count && Sys.PeekByte(at + i) == key[i]) i = i + 1;
+            if (i == key.Length)
+            {
+                return at + i;
+            }
+            while (line < text + count && Sys.PeekByte(line) != 10) line = line + 1;
+            line = line + 1;
+        }
+        return -1;
+    }
+
+    /// The number in `root` + [from, to) + `leaf`, or 0 for "max", for a
+    /// file that is not there, or for one that says nothing a number.
+    static long CgroupFile(long path, long from, long to, string root, string leaf, long buffer, long most)
+    {
+        long at = path;
+        for (int i = 0; i < root.Length; i++) { Sys.PokeByte(at, root[i]); at = at + 1; }
+        for (long p = from; p < to && at < path + 3000; p++) { Sys.PokeByte(at, Sys.PeekByte(p)); at = at + 1; }
+        for (int i = 0; i < leaf.Length; i++) { Sys.PokeByte(at, leaf[i]); at = at + 1; }
+        Sys.PokeByte(at, 0);
+        if (most < 32) most = 0;
+        long got = most > 0 ? ReadPath(path, buffer, most > 64 ? 64 : most) : -1;
+        long value = 0;
+        long digits = 0;
+        for (long p = buffer; p < buffer + got; p++)
+        {
+            long c = Sys.PeekByte(p);
+            if (c < 48 || c > 57) break;
+            value = value * 10 + (c - 48);
+            digits = digits + 1;
+        }
+        return digits > 0 ? value : 0;
+    }
+
+    // struct sysinfo: the unsigned longs are words, so the offsets are the
+    // word size's -- i386 and x86-64 lay it out alike, one word apart.
+    const int SysinfoTotal = 4 * WordSize.Bytes;
+    const int SysinfoFree = 5 * WordSize.Bytes;
+    const int SysinfoBuffers = 7 * WordSize.Bytes;
+#if TARGET_64BIT
+    const int SysinfoUnit = 104;
+#else
+    const int SysinfoUnit = 52;
+#endif
+
+    // A PAGE OF THE SYSTEM'S, NOT A HEAP ARRAY: the collector reads the
+    // machine's free memory as it sets the next collection's pace, holding
+    // the heap, where a `new byte[]` would ask the heap for itself. Taken
+    // once; two callers at once write the same figures into it.
+    static long _sysinfo;
+
+    static long SysinfoBytes(int field)
+    {
+        if (_sysinfo == 0)
+        {
+            _sysinfo = Map(4096);
+            if (_sysinfo == 0) return 0;
+        }
+        if (Result(Sys.Syscall(116, _sysinfo, 0, 0)) < 0)
+        {
+            return 0;
+        }
+        long unit = Sys.Peek(_sysinfo + SysinfoUnit) & 0xFFFFFFFF;
+        long count = Sys.Peek(_sysinfo + field) & WordSize.AddressMask;
+        return count * (unit == 0 ? 1 : unit);
+    }
+
+    // ---- what Monitor asks (core threading.cor) ----------------------------
+
+    /// Who holds a lock: this thread, by its thread block (word-aligned, so
+    /// bit 0 is free for Monitor's "somebody is asleep" mark).
+    public static long MonitorOwner()
+    {
+        return Sys.ThreadBlock();
+    }
+
+    /// Sleeps while the lock word still reads `value`, as a blocking region:
+    /// the collector does not wait for a thread asleep on a lock.
+    public static void MonitorBlock(long at, long value)
+    {
+        Native.Wait(at, value);
+    }
+
+    public static void MonitorWake(long at)
+    {
+        Native.Wake(at, 1);
     }
 
     /// Stops this thread at a safepoint, with every callee-saved register on
@@ -330,6 +859,14 @@ static class Platform
         // with the runtime by whoever buffered it: this library is below the
         // class library and may not name Console.
         Runtime.AtExit();
+        // And C's, when a C library is loaded: exit(3) flushes what printf
+        // buffered and runs its atexit handlers and its libraries'
+        // finalisers, then ends the process itself.
+        long cExit = Runtime.NativeSymbol("exit");
+        if (cExit != 0)
+        {
+            Runtime.CallC(cExit, code, 0, 0, 0);
+        }
         Sys.Syscall(Call.ExitGroup, code, 0, 0);
         // The kernel does not return from that; if it somehow did, the plain
         // exit is the next best thing, and after that there is nothing.
@@ -380,9 +917,10 @@ static partial class Os
     /// at all was written.
     public static int Write(int fd, string s)
     {
-        long at = BytesOf(s);
+        byte[] bytes = Utf8Transcoder.Encode(s, 0, s.Length);
+        long at = AddressOf(bytes);
         long done = 0;
-        long length = s.Length;
+        long length = bytes.Length;
 
         while (done < length)
         {
@@ -421,12 +959,12 @@ static partial class Os
     public static long EnvironAddress()
     {
         long sp = Sys.EntryStack();
-        return sp + 4 + 4 * Sys.PeekWord(sp) + 4;
+        return sp + WordSize.Bytes + WordSize.Bytes * Sys.Peek(sp) + WordSize.Bytes;
     }
 
     public static int Chdir(string path)
     {
-        string c = CString(path);
+        byte[] c = CString(path);
         return (int)Platform.Result(Sys.Syscall(Call.Chdir, BytesOf(c), 0, 0));
     }
 
@@ -599,7 +1137,7 @@ static partial class Os
     public static long MapExecutable(long bytes)
     {
         // PROT_READ | PROT_WRITE | PROT_EXEC = 7; MAP_PRIVATE | MAP_ANONYMOUS.
-        long got = Platform.Result(Sys.Syscall(Call.Mmap2, 0, bytes, 7, 0x22, 0 - 1, 0));
+        long got = Platform.Result(Sys.Syscall(Call.Mmap, 0, bytes, 7, 0x22, 0 - 1, 0));
         return got < 0 ? 0 : got;
     }
 
@@ -689,13 +1227,13 @@ static partial class Os
     public static int Mount(string source, string target, string type,
                             long flags, string? data)
     {
-        string from = CString(source);
-        string onto = CString(target);
-        string kind = CString(type);
+        byte[] from = CString(source);
+        byte[] onto = CString(target);
+        byte[] kind = CString(type);
         long options = 0;
         if (data != null)
         {
-            string extra = CString(data);
+            byte[] extra = CString(data);
             options = BytesOf(extra);
         }
         return (int)Platform.Result(Sys.Syscall(Call.Mount, BytesOf(from), BytesOf(onto),
@@ -705,7 +1243,7 @@ static partial class Os
     /// umount2(2). The flags are MNT_FORCE, MNT_DETACH and the rest.
     public static int Umount(string target, int flags)
     {
-        string c = CString(target);
+        byte[] c = CString(target);
         return (int)Platform.Result(Sys.Syscall(Call.Umount2, BytesOf(c), flags, 0));
     }
 
@@ -715,17 +1253,17 @@ static partial class Os
     ///
     /// The block is a byte[] rather than an int[] only because Raw writes
     /// words into byte[]; the kernel sees the same four bytes either way.
-    private static byte[] Vector(string[] items, string[] keep, int at)
+    private static byte[] Vector(string[] items, byte[][] keep, int at)
     {
-        byte[] block = new byte[(items.Length + 1) * 4];
+        byte[] block = new byte[(items.Length + 1) * (int)WordSize.Bytes];
 
         for (int i = 0; i < items.Length; i++)
         {
-            string c = CString(items[i]);
+            byte[] c = CString(items[i]);
             keep[at + i] = c;
-            Raw.SetU32(block, i * 4, BytesOf(c));
+            Raw.SetWord(block, i * (int)WordSize.Bytes, BytesOf(c));
         }
-        Raw.SetU32(block, items.Length * 4, 0);
+        Raw.SetWord(block, items.Length * (int)WordSize.Bytes, 0);
         return block;
     }
 
@@ -737,9 +1275,9 @@ static partial class Os
     /// straight through by address rather than copied out and back.
     public static int Exec(string path, string[] argv, string[]? envp)
     {
-        string c = CString(path);
+        byte[] c = CString(path);
         int room = argv.Length + (envp == null ? 0 : envp.Length);
-        string[] keep = new string[room];
+        byte[][] keep = new byte[room][];
 
         byte[] args = Vector(argv, keep, 0);
         long env;
@@ -771,7 +1309,12 @@ static partial class Os
         {
             throw new IndexOutOfRangeException("waitpid needs somewhere for the status");
         }
+#if TARGET_AMD64
+        // wait4(2), the only form long mode has: no resource usage wanted.
+        return (int)Platform.Result(Platform.Blocking(Call.Wait4, pid, Sys.ArrayData(status), options, 0, 0, 0));
+#else
         return (int)Platform.Result(Platform.Blocking(Call.Waitpid, pid, Sys.ArrayData(status), options));
+#endif
     }
 
     /// Waits for one child and answers the way a shell reports it: its exit
@@ -935,7 +1478,7 @@ static partial class Os
 
     public static long Mmap(long address, long length, long protection, long flags, long fd, long pages)
     {
-        return Platform.Result(Sys.Syscall(Call.Mmap2, address, length, protection, flags, fd, pages));
+        return Platform.Result(Sys.Syscall(Call.Mmap, address, length, protection, flags, fd, pages << Call.MmapOffsetShift));
     }
 
     public static int Munmap(long address, long length)
@@ -956,6 +1499,10 @@ static partial class Os
     {
         long got = Platform.Result(Platform.Blocking(direct, a, b, c, d, e, f));
 
+#if TARGET_AMD64
+        // Long mode has always had a call per operation, and no socketcall.
+        return got;
+#else
         if (got != 0 - Err.NoSys)
         {
             return got;
@@ -972,6 +1519,7 @@ static partial class Os
         Raw.SetU32(block, 16, e);
         Raw.SetU32(block, 20, f);
         return Platform.Result(Platform.Blocking(Call.SocketCall, which, AddressOf(block), 0));
+#endif
     }
 
     public static int Socket(int family, int kind, int protocol)
@@ -1094,6 +1642,31 @@ static partial class Os
             throw new IndexOutOfRangeException("recvmsg range is outside its buffer");
         }
 
+#if TARGET_64BIT
+        // The structures are the kernel's, laid out as x86-64 lays them out:
+        // an iovec of two words, and a msghdr whose name length is an int
+        // padded to the pointer after it and whose counts are words.
+        byte[] iov = new byte[16];
+        byte[] message = new byte[56];
+
+        Raw.SetI64(iov, 0, AddressOf(buffer) + at);
+        Raw.SetI64(iov, 8, count);
+
+        Raw.SetI64(message, 0, address == null ? 0 : AddressOf(address));
+        Raw.SetU32(message, 8, address == null ? 0 : address.Length);
+        Raw.SetI64(message, 16, AddressOf(iov));
+        Raw.SetI64(message, 24, 1);
+        Raw.SetI64(message, 32, control == null ? 0 : AddressOf(control));
+        Raw.SetI64(message, 40, control == null ? 0 : control.Length);
+        Raw.SetU32(message, 48, 0);
+
+        int got = (int)Sock(Call.RecvMsg, SockCall.RecvMsg, fd, AddressOf(message), flags, 0, 0, 0);
+
+        if (got >= 0)
+        {
+            controlBytes = (int)Raw.I64(message, 40);
+        }
+#else
         // The structures are the kernel's, laid out as a 32-bit machine
         // lays them out: a msghdr of seven words, and an iovec of two.
         byte[] iov = new byte[8];
@@ -1116,6 +1689,7 @@ static partial class Os
         {
             controlBytes = (int)Raw.U32(message, 20);
         }
+#endif
 
         return got;
     }
@@ -1182,17 +1756,10 @@ static partial class Os
         return n;
     }
 
-    /// A COR-C# string from a C string.
+    /// A COR-C# string from a C string: its bytes decoded as UTF-8.
     private static string FromC(long at)
     {
-        int n = CLength(at);
-        string s = Sys.NewBytes(n);
-
-        for (int i = 0; i < n; i++)
-        {
-            Sys.SetByte(s, i, (int)Sys.PeekByte(at + i));
-        }
-        return s;
+        return Utf8Transcoder.Decode(at, CLength(at));
     }
 
     /// A COR-C# string from a NUL-terminated C string at an address. Public
@@ -1218,7 +1785,7 @@ static partial class Os
         // EntryStack is ESP exactly as the kernel handed it over, before
         // _start's own prologue: argc at [sp], then the argv pointers.
         long sp = Sys.EntryStack();
-        int argc = (int)Sys.PeekWord(sp);
+        int argc = (int)Sys.Peek(sp);
 
         if (argc < 0)
         {
@@ -1229,7 +1796,7 @@ static partial class Os
 
         for (int i = 0; i < argc; i++)
         {
-            args[i] = FromC(Sys.PeekWord(sp + 4 + 4 * i));
+            args[i] = FromC(Sys.Peek(sp + WordSize.Bytes + WordSize.Bytes * i));
         }
         _args = args;
         return args;
@@ -1237,10 +1804,11 @@ static partial class Os
 
     // ---- standard input, a line at a time -----------------------------------------
 
-    static string _readAhead;      // bytes read and not yet handed out
+    static byte[] _readAhead;      // bytes read and not yet handed out
     static int _readAheadAt;
     static int _readAheadCount;
     static bool _ended;
+    static bool _afterReturn;      // the last line ended at a '\r'
 
     const int ReadAheadBytes = 1024;
 
@@ -1250,16 +1818,22 @@ static partial class Os
         return _ended;
     }
 
-    /// A line from standard input without its newline (a "\r\n" loses both),
-    /// or null when the input is finished and there is nothing left. The last
-    /// line of a file with no newline is a line.
+    /// A line from standard input without its line end, or null when the
+    /// input is finished and there is nothing left. The last line of a file
+    /// with no line end is a line.
+    ///
+    /// A LINE ENDS AT "\n", "\r" OR "\r\n", each once, as .NET's ReadLine
+    /// has it -- so a "\r" ends a line even when the "\n" that follows it
+    /// arrives in the next read. The line's bytes are UTF-8 and are decoded
+    /// as a whole, since one character may be several of them.
     ///
     /// Reads in blocks and keeps the tail, because a pipe or a file gives
     /// several lines per read and a byte-at-a-time read is a system call
     /// per character.
     public static string? ReadLine()
     {
-        StringBuilder line = new StringBuilder();
+        byte[] line = new byte[64];
+        int length = 0;
         bool any = false;
 
         while (true)
@@ -1268,18 +1842,18 @@ static partial class Os
             {
                 if (_ended)
                 {
-                    return any ? line.ToString() : null;
+                    return any ? Utf8Transcoder.Decode(line, 0, length) : null;
                 }
 
-                string buffer = _readAhead;
+                byte[] buffer = _readAhead;
 
                 if (buffer == null)
                 {
-                    buffer = Sys.NewBytes(ReadAheadBytes);
+                    buffer = new byte[ReadAheadBytes];
                     _readAhead = buffer;
                 }
 
-                long got = Read(Fd.In, BytesOf(buffer), ReadAheadBytes);
+                long got = Read(Fd.In, AddressOf(buffer), ReadAheadBytes);
 
                 if (got == 0 - Err.Intr)
                 {
@@ -1288,24 +1862,42 @@ static partial class Os
                 if (got <= 0)
                 {
                     _ended = true;
-                    return any ? line.ToString() : null;
+                    return any ? Utf8Transcoder.Decode(line, 0, length) : null;
                 }
                 _readAheadAt = 0;
                 _readAheadCount = (int)got;
             }
 
-            int ch = Sys.GetByte(_readAhead, _readAheadAt);
+            int ch = _readAhead[_readAheadAt];
             _readAheadAt = _readAheadAt + 1;
+
+            if (_afterReturn)
+            {
+                _afterReturn = false;
+                if (ch == 10)
+                {
+                    continue;
+                }
+            }
             any = true;
 
             if (ch == 10)
             {
-                return line.ToString();
+                return Utf8Transcoder.Decode(line, 0, length);
             }
-            if (ch != 13)
+            if (ch == 13)
             {
-                line.Append((char)ch);
+                _afterReturn = true;
+                return Utf8Transcoder.Decode(line, 0, length);
             }
+            if (length == line.Length)
+            {
+                byte[] wider = new byte[line.Length * 2];
+                Sys.Copy(wider, 0, line, 0, length);
+                line = wider;
+            }
+            line[length] = (byte)ch;
+            length = length + 1;
         }
     }
 }

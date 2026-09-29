@@ -1,0 +1,60 @@
+// test: tuple_arms_widen
+// expect-exit: 0
+// expect-output:
+// byte 0 255 True
+// sbyte -128 127 True
+// int -2147483648 2147483647 True
+// uint 0 4294967295 True
+// long -9223372036854775808 9223372036854775807 True
+// x 1 0 False
+// -2147483648 2147483647
+// 0 4294967295
+// -2147483648 2147483647 5 6
+// -2147483647 True 3614090360
+//
+// An arm of a switch or a conditional that is a tuple of another shape is
+// rebuilt as the whole's, element by element: (int.MinValue, int.MaxValue) as
+// an arm of a (long, long) switch is two longs. It was read as one long of
+// both ints, and when the expression was first looked at (Peek) and then taken
+// apart, the rebuilt arm kept a frame slot the real check gave to the tuple it
+// was being copied into. The self-compiled compiler's own static-array check
+// used such a switch and disagreed with the host about three tables. Expected
+// output is real .NET's.
+
+using System;
+
+static class Program
+{
+    static (long, long) Range(string element)
+    {
+        (long low, long high) = element switch
+        {
+            "byte" => (0L, 255L),
+            "sbyte" => (-128L, 127L),
+            "int" => (int.MinValue, int.MaxValue),
+            "uint" => (0L, uint.MaxValue),
+            "long" => (long.MinValue, long.MaxValue),
+            _ => (1L, 0L),
+        };
+        return (low, high);
+    }
+
+    static void Main()
+    {
+        foreach (string e in new[] { "byte", "sbyte", "int", "uint", "long", "x" })
+        {
+            (long a, long b) = Range(e);
+            Console.WriteLine(e + " " + a + " " + b + " " + (a <= b));
+        }
+        (long p, long q) = (int.MinValue, int.MaxValue);
+        Console.WriteLine(p + " " + q);
+        (long r, long s) = (0L, uint.MaxValue);
+        Console.WriteLine(r + " " + s);
+        bool flag = DateTime.Now.Year > 2000;
+        (long c1, long c2) = flag ? (int.MinValue, int.MaxValue) : (3L, 4L);
+        (long c3, long c4) = !flag ? (1L, 2L) : (5, 6);
+        Console.WriteLine(c1 + " " + c2 + " " + c3 + " " + c4);
+        long big = -(long)0x7fffffff;
+        Console.WriteLine(big + " " + (0xd76aa478 > int.MaxValue) + " " + (long)0xd76aa478);
+    }
+}

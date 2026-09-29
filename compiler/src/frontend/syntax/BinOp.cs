@@ -8,4 +8,6 @@ public enum BinOp : byte
     Eq, Ne, Lt, Gt, Le, Ge,
     AndAlso, OrElse,
     Coalesce,
+    /// <summary>`>>>`: the bits move right and zeros come in, whatever the sign.</summary>
+    UShr,
 }

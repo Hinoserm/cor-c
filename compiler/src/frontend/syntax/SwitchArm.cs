@@ -31,4 +31,12 @@ public sealed class SwitchArm : Node
     public bool Discard { get; init; }
 
     public required Expr Result { get; init; }
+
+    /// <summary>
+    /// The arm the compiler adds last: `_ => throw new
+    /// SwitchExpressionException(subject)`, which is what C# does when nothing
+    /// matched. It is no arm the author wrote, so it proves nothing about
+    /// whether the ones they did write cover every value.
+    /// </summary>
+    public bool Fallback { get; init; }
 }

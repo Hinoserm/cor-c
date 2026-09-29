@@ -29,15 +29,15 @@ class Program
         words.Add("blueberry");
         words.Add("cherry");
 
-        List<Grouping<char, string>> groups = words.GroupBy(w => (char)Sys.GetByte(w, 0));
+        IEnumerable<IGrouping<char, string>> groups = words.GroupBy(w => w[0]);
 
-        foreach (Grouping<char, string> g in groups)
+        foreach (IGrouping<char, string> g in groups)
         {
-            Console.WriteLine($"group {g.Key} {g.Count} {String.Join(",", g)}");
+            Console.WriteLine($"group {g.Key} {g.Count()} {String.Join(",", g)}");
         }
 
-        Lookup<int, string> look = words.ToLookup(w => w.Length);
-        Console.WriteLine($"lookup3={String.Join(",", look[3])} missing={look[99].Count} has6={look.Contains(6)}");
+        ILookup<int, string> look = words.ToLookup(w => w.Length);
+        Console.WriteLine($"lookup3={String.Join(",", look[3])} missing={look[99].Count()} has6={look.Contains(6)}");
         Console.WriteLine($"minby={words.MinBy(w => w.Length)} maxby={words.MaxBy(w => w.Length)}");
 
         List<int> nums = new List<int>();

@@ -1,0 +1,25 @@
+// test: interpolation_formats
+// expect-exit: 0
+// expect-output:
+// [ffffffff] [FFFFFFFF] [00ff] [00042] [1,234,567] [1,234,567.00] [3.14] [ff] []
+// [plain] [money:C] [c] [True] [s] [  007] [7    |]
+//
+// `{value:format}` formats as C#'s interpolation does: through the type's own
+// ToString(format) -- negative hex as two's complement, N with separators, F
+// with places -- through IFormattable.ToString(format, null), through a T?'s
+// value ("" for none), and a type that takes no format as it is, the format
+// ignored. With an alignment as well.
+
+using System;
+class Plain { public override string ToString() => "plain"; }
+class Money : IFormattable { public double Amount; public string ToString(string? f, IFormatProvider? p) => "money:" + f; }
+static class P
+{
+    static int Main()
+    {
+        int n = -1; long big = 1234567; double d = 3.14159; int? maybe = 255; int? none = null;
+        Console.WriteLine($"[{n:x}] [{n:X8}] [{255:x4}] [{42:D5}] [{big:N0}] [{big:N2}] [{d:F2}] [{maybe:x}] [{none:x}]");
+        Console.WriteLine($"[{new Plain():F2}] [{new Money():C}] [{'c':x}] [{true:G}] [{"s":D}] [{7,5:D3}] [{7,-5}|]");
+        return 0;
+    }
+}

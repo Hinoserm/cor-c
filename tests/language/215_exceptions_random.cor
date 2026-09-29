@@ -2,12 +2,14 @@
 // expect-exit: 0
 // expect-output:
 // message nope
-// tostring NotSupportedException: nope
-// inner IOException: disk
-// inner  ---> TimeoutException: the operation timed out
-// default the given key was not present
-// invented NotImplementedException: the method is not implemented
-// disposed Cannot access a disposed object: reader
+// tostring System.NotSupportedException: nope
+// inner System.IO.IOException: disk
+// inner  ---> System.TimeoutException: The operation has timed out.
+// inner    --- End of inner exception stack trace ---
+// default The given key was not present in the dictionary.
+// invented System.NotImplementedException: The method or operation is not implemented.
+// disposed Cannot access a disposed object.
+// Object name: 'reader'.
 // caught base True True
 // repeat True True
 // range True True True True
@@ -27,6 +29,14 @@ static class Program
         Sys.PrintLine();
     }
 
+    /// ToString's first line: the rest is the stack trace, which says
+    /// where in this file the throw was.
+    static string Head(string text)
+    {
+        int end = text.IndexOf('\n');
+        return end < 0 ? text : text.Substring(0, end);
+    }
+
     static int Main()
     {
         try
@@ -36,7 +46,7 @@ static class Program
         catch (NotSupportedException e)
         {
             Line("message " + e.Message);
-            Line("tostring " + e.ToString());
+            Line("tostring " + Head(e.ToString()));
         }
 
         try
@@ -48,7 +58,7 @@ static class Program
             string[] lines = String.Split(e.ToString(), '\n');
             foreach (string one in lines)
             {
-                Line("inner " + one);
+                if (!one.StartsWith("   at ")) Line("inner " + one);
             }
         }
 
@@ -67,7 +77,7 @@ static class Program
         }
         catch (Exception e)
         {
-            Line("invented " + e.ToString());
+            Line("invented " + Head(e.ToString()));
         }
 
         try

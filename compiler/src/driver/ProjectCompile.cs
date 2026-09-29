@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 #nullable enable
 using Corsac.Lang.Metadata;
+using Corsac.Lang.Lto;
 
 namespace Corsac;
 
@@ -24,6 +25,18 @@ public static class ProjectCompile
 {
     /// <summary>One line of the work list: what to compile and where it goes.</summary>
     private readonly record struct Unit(string Source, string Object, string Receipt, bool Entry);
+
+    /// <summary>What one more unit may need before it is started beside others (see Gated).</summary>
+    private const long UnitReserve = 64L * 1024 * 1024;
+
+    /// <summary>
+    /// The same in a 32-bit process, counted in heap rather than live bytes
+    /// (LiveHeap): what the self-hosted compiler's heap grows by for even a
+    /// small unit, whose imported declarations and binding cost the same
+    /// whatever its own size -- a 68 KB source took the heap to over a
+    /// gigabyte on its own.
+    /// </summary>
+    private const long UnitReserveNarrow = 512L * 1024 * 1024;
 
     public static int Run(string[] argv)
     {
@@ -59,7 +72,7 @@ public static class ProjectCompile
         }
 
         long declBudget = long.TryParse(Environment.GetEnvironmentVariable("CORC_DECL_BUDGET"), out long d) ? d : 32L * 1024 * 1024;
-        long tokBudget = long.TryParse(Environment.GetEnvironmentVariable("CORC_TOKEN_BUDGET"), out long t) ? t : 256L * 1024 * 1024;
+        long tokBudget = long.TryParse(Environment.GetEnvironmentVariable("CORC_TOKEN_BUDGET"), out long t) ? t : 0;
         long srcBudget = long.TryParse(Environment.GetEnvironmentVariable("CORC_SOURCE_BUDGET"), out long c) ? c : 16L * 1024 * 1024;
         using DeclarationSession session = new(index, assembly, declBudget, tokBudget, srcBudget);
         using WorkerPool? pool = WorkerPool.Open(Driver.Value(args, "--worker-pool"));
@@ -90,7 +103,18 @@ public static class ProjectCompile
         // sources otherwise keeps every object the broken one made: a
         // library's missing export stayed missing across rebuilds until the
         // objects were deleted by hand.
-        string optionsText = "3\t" + CompilerIdentity() + "\t" + string.Join('\t', common);
+        //
+        // AND THE LIBRARIES IT REFERENCES, by what is in them. A unit copies
+        // the bodies of the library generics it uses into itself, so a changed
+        // library is a changed unit whatever its own source says: stamped by
+        // the libraries' names alone, a unit kept its copy of an old
+        // ReadOnlyCollection<T> and the link met two different ones.
+        StringBuilder references = new();
+        for (int i = 0; i + 1 < args.Length; i++)
+        {
+            if (args[i] == "--ref") references.Append('\t').Append(Corsac.Projects.ProjectState.FileIdentity(args[i + 1]));
+        }
+        string optionsText = "3\t" + CompilerIdentity() + "\t" + string.Join('\t', common) + references;
         string Stamp(Unit unit)
         {
             using SHA256 sha = SHA256.Create();
@@ -181,12 +205,130 @@ public static class ProjectCompile
         //
         // Without a budget -- a compiler run by hand -- the thread count is
         // simply what was asked for.
+        //
+        // AND MEMORY, which the budget does not see. A worker the budget
+        // allows is still not started while the machine cannot hold it beside
+        // the units already running, unless no other unit is running: on a
+        // small machine the units then go through one at a time, slower and
+        // the same. What each unit compiles to never depends on it.
+        //
+        // WHAT A UNIT NEEDS IS MEASURED, not assumed, and it is measured PER
+        // BYTE OF SOURCE. One figure for every unit fits nothing: Binder.cs
+        // needs eight hundred megabytes and a two-kilobyte enum a sliver of
+        // it, so a flat reserve either runs the big ones out of memory or runs
+        // the small ones one at a time. Each collection's figure for what is
+        // live (the heap less its free fragments), above what was live with
+        // no unit running, is divided by the source bytes then being compiled;
+        // the largest rate seen, times a unit's own size, is what it is taken
+        // to need, and it is reserved with half as much again on top.
+        //
+        // AND IT IS RESERVED FOR AS LONG AS THE UNIT RUNS. Asking only whether
+        // there is room for one more NOW admits a dozen units at the start of
+        // their lives, when each holds a fraction of its peak, and they reach
+        // their peaks together: that ran a two-gigabyte heap out of memory
+        // within a minute of a clean build. So the test is whether what the
+        // process can hold -- what is still free, plus what the running units
+        // already hold -- covers every running unit's reservation and the new
+        // one's.
+        long Size(Unit unit) { try { return new FileInfo(unit.Source).Length; } catch (IOException) { return 0L; } }
+        int compiling = 0;
+        long runningBytes = 0;
+        List<long> holding = new();
+        object admit = new();
+        long baselineLive = LiveHeap();
+        long perByte = 0;
+        long seenCollection = -1;
+        // WHAT A UNIT COSTS, as the limit that binds sees it. In a 64-bit
+        // process that is memory, and a compacting collector's heap is its
+        // live bytes and little more. In a 32-bit process it is ADDRESS SPACE,
+        // and a non-moving heap takes far more of it than it holds live: the
+        // holes survivors leave, and the old garbage a generational collector
+        // keeps until its next whole-heap cycle. Measured by live bytes there,
+        // twelve threads admitted units whose heaps together ran the four
+        // gigabytes out right after the first, largest one finished.
+        static long LiveHeap()
+        {
+            GCMemoryInfo info = GC.GetGCMemoryInfo();
+            return Environment.Is64BitProcess ? info.HeapSizeBytes - info.FragmentedBytes : info.HeapSizeBytes;
+        }
+        bool measured = false;
+        long startCollection = GC.GetGCMemoryInfo().Index;
+        void Observe()
+        {
+            GCMemoryInfo info = GC.GetGCMemoryInfo();
+            if (compiling > 0 && runningBytes > 0 && info.Index != seenCollection && info.Index != startCollection)
+            {
+                seenCollection = info.Index;
+                long rate = (LiveHeap() - baselineLive) / runningBytes;
+                if (rate > perByte) perByte = rate;
+            }
+        }
+        long Needed(long bytes)
+        {
+            long need = Math.Max(Environment.Is64BitProcess ? UnitReserve : UnitReserveNarrow, perByte * bytes);
+            return need + need / 2;
+        }
+        // HALF OF IT, because what is reserved is what the units hold live,
+        // and a collected heap needs as much again for the garbage between
+        // collections -- a non-moving one more, for the holes survivors leave.
+        // Reserved against the whole, a dozen units of the self-hosted
+        // compiler held 1.6 GB live under a 32-bit process's 2.5 GB ceiling
+        // and ran its four gigabytes of address space out. On a machine of
+        // many gigabytes the half is still more than a dozen units need.
+        //
+        // In a 32-bit process the limit is the heap's ceiling and what units
+        // are booked at is heap already, garbage and holes included, so the
+        // whole of what lies above the heap the build began with is theirs.
+        long Capacity() => Environment.Is64BitProcess
+            ? (MachineMemory.Available() + Math.Max(0, GC.GetTotalMemory(false) - baselineLive)) / 2
+            : Math.Max(0, GC.GetGCMemoryInfo().TotalAvailableMemoryBytes - baselineLive);
+        // At the rate known NOW: a rate that rose after a unit was admitted
+        // raises what that unit holds, rather than leaving it booked at the
+        // figure from before anyone knew better.
+        long Reserved()
+        {
+            long sum = 0;
+            foreach (long held in holding) sum += Needed(held);
+            return sum;
+        }
+        // UNTIL A UNIT HAS BEEN SEEN THROUGH, ONE AT A TIME: a collection
+        // early in a unit sees it long before its peak, and the first dozen
+        // admitted on that were what ran out. The biggest source goes first,
+        // so the first unit measured whole is the largest there is.
         int Gated(Unit unit)
         {
-            if (pool is null) return One(unit);
-            while (!pool.TryTake()) Thread.Sleep(15);
-            try { return One(unit); }
-            finally { pool.Give(); }
+            long bytes = Math.Max(1, Size(unit));
+            lock (admit)
+            {
+                while (true)
+                {
+                    Observe();
+                    if (compiling == 0 || (measured && Capacity() >= Reserved() + Needed(bytes))) break;
+                    Monitor.Wait(admit, 15);
+                }
+                compiling++;
+                runningBytes += bytes;
+                holding.Add(bytes);
+            }
+            try
+            {
+                if (pool is null) return One(unit);
+                while (!pool.TryTake()) Thread.Sleep(15);
+                try { return One(unit); }
+                finally { pool.Give(); }
+            }
+            finally
+            {
+                lock (admit)
+                {
+                    Observe();
+                    measured = measured || seenCollection != -1;
+                    compiling--;
+                    runningBytes -= bytes;
+                    holding.Remove(bytes);
+                    Monitor.PulseAll(admit);
+                }
+            }
         }
 
         // THE ENTRY SOURCE JOINS THE QUEUE LIKE THE REST. It used to be
@@ -214,7 +356,6 @@ public static class ProjectCompile
         // the largest unit threads of its own was tried and made things
         // worse: the collector, not the scheduler, is what the last two
         // seconds are spent on, and more concurrency means more of it.
-        long Size(Unit unit) { try { return new FileInfo(unit.Source).Length; } catch (IOException) { return 0L; } }
         Unit[] rest = units.Where(unit => !unit.Entry || !dynamic)
             .OrderByDescending(Size).ThenBy(unit => unit.Source, StringComparer.Ordinal).ToArray();
         int next = -1;
@@ -256,14 +397,46 @@ public static class ProjectCompile
 
     static string? _compilerIdentity;
 
-    /// <summary>A hash of the running compiler's own executable, once per process.</summary>
-    static string CompilerIdentity()
+    /// <summary>The variable a project build hands its compile processes the compiler's identity in.</summary>
+    internal const string IdentityVariable = "CORSAC_COMPILER_IDENTITY";
+
+    /// <summary>
+    /// A hash of the running compiler's own executable, once per process --
+    /// or once per BUILD: a child compile process started by a project build
+    /// is the same executable, and is handed the hash its parent made
+    /// (IdentityVariable). Hashing the 53 MB native compiler took a third of
+    /// a second, in every one of the processes a 32-bit build starts.
+    /// </summary>
+    internal static string CompilerIdentity()
     {
         if (_compilerIdentity is not null) return _compilerIdentity;
-        string? self = Environment.ProcessPath;
-        if (self is null || !File.Exists(self)) return _compilerIdentity = "unknown";
+        if (Environment.GetEnvironmentVariable(IdentityVariable) is { Length: 64 } handed)
+        {
+            return _compilerIdentity = handed;
+        }
+        // THE COMPILER, not the program that runs it. Run as `dotnet
+        // corc.dll`, the process is the dotnet host, the same file whatever
+        // corc.dll holds: a rebuilt compiler found every receipt current and
+        // kept objects the old one made. The compiler's own assembly is part
+        // of it wherever there is one (a native build has none of its own).
+        List<string> parts = new();
+        if (Environment.ProcessPath is string self && File.Exists(self)) parts.Add(self);
+        string assembly = typeof(ProjectCompile).Assembly.Location;
+        if (assembly.Length > 0 && File.Exists(assembly)) parts.Add(assembly);
+        if (parts.Count == 0) return _compilerIdentity = "unknown";
         using SHA256 sha = SHA256.Create();
-        using FileStream stream = File.OpenRead(self);
-        return _compilerIdentity = Convert.ToHexString(sha.ComputeHash(stream));
+        // STREAMED, and each file once. A native compiler is tens of
+        // megabytes, and read whole it was one contiguous array in every
+        // process a build started -- twice, because a native image is its
+        // own assembly.
+        byte[] buffer = new byte[65536];
+        foreach (string part in parts.Distinct(StringComparer.Ordinal))
+        {
+            using FileStream file = new(part, FileMode.Open, FileAccess.Read, FileShare.Read, 1);
+            int read;
+            while ((read = file.Read(buffer, 0, buffer.Length)) > 0) sha.TransformBlock(buffer, 0, read, null, 0);
+        }
+        sha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
+        return _compilerIdentity = Convert.ToHexString(sha.Hash!);
     }
 }

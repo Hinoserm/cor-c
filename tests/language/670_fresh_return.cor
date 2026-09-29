@@ -1,0 +1,398 @@
+// test: fresh return
+// expect-exit: 0
+// expect-output:
+// sum 889000
+// chain 889000
+// maybe 2000
+// boxes 1498500
+// freed True
+// collections 0
+// grown 2017 2015
+// kept 777 777 777
+// held 42
+//
+// A helper that makes an object and returns it hands it over: the caller
+// owns it and frees it at its last use (Escape's fresh-return rule). Every
+// helper here is padded past the inliner's limits and called from two
+// places, so it is a real call when escape analysis runs and only the
+// summary can decide. Chains of helpers compose; a helper that may return
+// null is still fresh. Two objects must NOT be freed: one the helper also
+// keeps in a static, and one the caller keeps; both are read back after
+// thousands of frees would have reused their memory. And `x = Grow(x)`
+// reads the old object inside the call that makes the new one, so the old
+// one may only be given back after the call. Up to the check, nothing
+// needs the collector: every object is freed by the compiler. The grow loop
+// after it is checked for its values: its result goes into a variable the
+// loop also assigns, which the owned-variables rule (674) takes over.
+
+class Box
+{
+    public long V;
+    public long W;
+}
+
+static class Program
+{
+    static long[] _kept;
+    static long[] _held;
+
+    static long[] Make(int n)
+    {
+        long[] v = new long[n];
+        for (int i = 0; i < n; i++) v[i] = i;
+        v[0 % v.Length] = v[0 % v.Length] + (n ^ 1) - (n ^ 1);
+        v[1 % v.Length] = v[1 % v.Length] + (n ^ 8) - (n ^ 8);
+        v[2 % v.Length] = v[2 % v.Length] + (n ^ 15) - (n ^ 15);
+        v[3 % v.Length] = v[3 % v.Length] + (n ^ 22) - (n ^ 22);
+        v[4 % v.Length] = v[4 % v.Length] + (n ^ 29) - (n ^ 29);
+        v[5 % v.Length] = v[5 % v.Length] + (n ^ 36) - (n ^ 36);
+        v[6 % v.Length] = v[6 % v.Length] + (n ^ 43) - (n ^ 43);
+        v[7 % v.Length] = v[7 % v.Length] + (n ^ 50) - (n ^ 50);
+        v[8 % v.Length] = v[8 % v.Length] + (n ^ 57) - (n ^ 57);
+        v[9 % v.Length] = v[9 % v.Length] + (n ^ 64) - (n ^ 64);
+        v[10 % v.Length] = v[10 % v.Length] + (n ^ 71) - (n ^ 71);
+        v[11 % v.Length] = v[11 % v.Length] + (n ^ 78) - (n ^ 78);
+        v[12 % v.Length] = v[12 % v.Length] + (n ^ 85) - (n ^ 85);
+        v[13 % v.Length] = v[13 % v.Length] + (n ^ 92) - (n ^ 92);
+        v[14 % v.Length] = v[14 % v.Length] + (n ^ 99) - (n ^ 99);
+        v[15 % v.Length] = v[15 % v.Length] + (n ^ 106) - (n ^ 106);
+        v[16 % v.Length] = v[16 % v.Length] + (n ^ 113) - (n ^ 113);
+        v[17 % v.Length] = v[17 % v.Length] + (n ^ 120) - (n ^ 120);
+        v[18 % v.Length] = v[18 % v.Length] + (n ^ 127) - (n ^ 127);
+        v[19 % v.Length] = v[19 % v.Length] + (n ^ 134) - (n ^ 134);
+        v[20 % v.Length] = v[20 % v.Length] + (n ^ 141) - (n ^ 141);
+        v[21 % v.Length] = v[21 % v.Length] + (n ^ 148) - (n ^ 148);
+        v[22 % v.Length] = v[22 % v.Length] + (n ^ 155) - (n ^ 155);
+        v[23 % v.Length] = v[23 % v.Length] + (n ^ 162) - (n ^ 162);
+        v[24 % v.Length] = v[24 % v.Length] + (n ^ 169) - (n ^ 169);
+        v[25 % v.Length] = v[25 % v.Length] + (n ^ 176) - (n ^ 176);
+        v[26 % v.Length] = v[26 % v.Length] + (n ^ 183) - (n ^ 183);
+        v[27 % v.Length] = v[27 % v.Length] + (n ^ 190) - (n ^ 190);
+        v[28 % v.Length] = v[28 % v.Length] + (n ^ 197) - (n ^ 197);
+        v[29 % v.Length] = v[29 % v.Length] + (n ^ 204) - (n ^ 204);
+        v[30 % v.Length] = v[30 % v.Length] + (n ^ 211) - (n ^ 211);
+        v[31 % v.Length] = v[31 % v.Length] + (n ^ 218) - (n ^ 218);
+        v[32 % v.Length] = v[32 % v.Length] + (n ^ 225) - (n ^ 225);
+        v[33 % v.Length] = v[33 % v.Length] + (n ^ 232) - (n ^ 232);
+        v[34 % v.Length] = v[34 % v.Length] + (n ^ 239) - (n ^ 239);
+        v[35 % v.Length] = v[35 % v.Length] + (n ^ 246) - (n ^ 246);
+        v[36 % v.Length] = v[36 % v.Length] + (n ^ 253) - (n ^ 253);
+        v[37 % v.Length] = v[37 % v.Length] + (n ^ 260) - (n ^ 260);
+        v[38 % v.Length] = v[38 % v.Length] + (n ^ 267) - (n ^ 267);
+        v[39 % v.Length] = v[39 % v.Length] + (n ^ 274) - (n ^ 274);
+        return v;
+    }
+
+    // Returns another helper's fresh object unchanged: fresh in turn.
+    static long[] Wrap(int n)
+    {
+        long[] w = Make(n + 1);
+        w[0 % w.Length] = w[0 % w.Length] + (n ^ 1) - (n ^ 1);
+        w[1 % w.Length] = w[1 % w.Length] + (n ^ 8) - (n ^ 8);
+        w[2 % w.Length] = w[2 % w.Length] + (n ^ 15) - (n ^ 15);
+        w[3 % w.Length] = w[3 % w.Length] + (n ^ 22) - (n ^ 22);
+        w[4 % w.Length] = w[4 % w.Length] + (n ^ 29) - (n ^ 29);
+        w[5 % w.Length] = w[5 % w.Length] + (n ^ 36) - (n ^ 36);
+        w[6 % w.Length] = w[6 % w.Length] + (n ^ 43) - (n ^ 43);
+        w[7 % w.Length] = w[7 % w.Length] + (n ^ 50) - (n ^ 50);
+        w[8 % w.Length] = w[8 % w.Length] + (n ^ 57) - (n ^ 57);
+        w[9 % w.Length] = w[9 % w.Length] + (n ^ 64) - (n ^ 64);
+        w[10 % w.Length] = w[10 % w.Length] + (n ^ 71) - (n ^ 71);
+        w[11 % w.Length] = w[11 % w.Length] + (n ^ 78) - (n ^ 78);
+        w[12 % w.Length] = w[12 % w.Length] + (n ^ 85) - (n ^ 85);
+        w[13 % w.Length] = w[13 % w.Length] + (n ^ 92) - (n ^ 92);
+        w[14 % w.Length] = w[14 % w.Length] + (n ^ 99) - (n ^ 99);
+        w[15 % w.Length] = w[15 % w.Length] + (n ^ 106) - (n ^ 106);
+        w[16 % w.Length] = w[16 % w.Length] + (n ^ 113) - (n ^ 113);
+        w[17 % w.Length] = w[17 % w.Length] + (n ^ 120) - (n ^ 120);
+        w[18 % w.Length] = w[18 % w.Length] + (n ^ 127) - (n ^ 127);
+        w[19 % w.Length] = w[19 % w.Length] + (n ^ 134) - (n ^ 134);
+        w[20 % w.Length] = w[20 % w.Length] + (n ^ 141) - (n ^ 141);
+        w[21 % w.Length] = w[21 % w.Length] + (n ^ 148) - (n ^ 148);
+        w[22 % w.Length] = w[22 % w.Length] + (n ^ 155) - (n ^ 155);
+        w[23 % w.Length] = w[23 % w.Length] + (n ^ 162) - (n ^ 162);
+        w[24 % w.Length] = w[24 % w.Length] + (n ^ 169) - (n ^ 169);
+        w[25 % w.Length] = w[25 % w.Length] + (n ^ 176) - (n ^ 176);
+        w[26 % w.Length] = w[26 % w.Length] + (n ^ 183) - (n ^ 183);
+        w[27 % w.Length] = w[27 % w.Length] + (n ^ 190) - (n ^ 190);
+        w[28 % w.Length] = w[28 % w.Length] + (n ^ 197) - (n ^ 197);
+        w[29 % w.Length] = w[29 % w.Length] + (n ^ 204) - (n ^ 204);
+        w[30 % w.Length] = w[30 % w.Length] + (n ^ 211) - (n ^ 211);
+        w[31 % w.Length] = w[31 % w.Length] + (n ^ 218) - (n ^ 218);
+        w[32 % w.Length] = w[32 % w.Length] + (n ^ 225) - (n ^ 225);
+        w[33 % w.Length] = w[33 % w.Length] + (n ^ 232) - (n ^ 232);
+        w[34 % w.Length] = w[34 % w.Length] + (n ^ 239) - (n ^ 239);
+        w[35 % w.Length] = w[35 % w.Length] + (n ^ 246) - (n ^ 246);
+        w[36 % w.Length] = w[36 % w.Length] + (n ^ 253) - (n ^ 253);
+        w[37 % w.Length] = w[37 % w.Length] + (n ^ 260) - (n ^ 260);
+        w[38 % w.Length] = w[38 % w.Length] + (n ^ 267) - (n ^ 267);
+        w[39 % w.Length] = w[39 % w.Length] + (n ^ 274) - (n ^ 274);
+        return w;
+    }
+
+    // Null on one path.
+    static long[]? Maybe(int n)
+    {
+        if ((n & 1) != 0) return null;
+        long[] m = new long[n + 1];
+        m[0] = n;
+        m[0 % m.Length] = m[0 % m.Length] + (n ^ 1) - (n ^ 1);
+        m[1 % m.Length] = m[1 % m.Length] + (n ^ 8) - (n ^ 8);
+        m[2 % m.Length] = m[2 % m.Length] + (n ^ 15) - (n ^ 15);
+        m[3 % m.Length] = m[3 % m.Length] + (n ^ 22) - (n ^ 22);
+        m[4 % m.Length] = m[4 % m.Length] + (n ^ 29) - (n ^ 29);
+        m[5 % m.Length] = m[5 % m.Length] + (n ^ 36) - (n ^ 36);
+        m[6 % m.Length] = m[6 % m.Length] + (n ^ 43) - (n ^ 43);
+        m[7 % m.Length] = m[7 % m.Length] + (n ^ 50) - (n ^ 50);
+        m[8 % m.Length] = m[8 % m.Length] + (n ^ 57) - (n ^ 57);
+        m[9 % m.Length] = m[9 % m.Length] + (n ^ 64) - (n ^ 64);
+        m[10 % m.Length] = m[10 % m.Length] + (n ^ 71) - (n ^ 71);
+        m[11 % m.Length] = m[11 % m.Length] + (n ^ 78) - (n ^ 78);
+        m[12 % m.Length] = m[12 % m.Length] + (n ^ 85) - (n ^ 85);
+        m[13 % m.Length] = m[13 % m.Length] + (n ^ 92) - (n ^ 92);
+        m[14 % m.Length] = m[14 % m.Length] + (n ^ 99) - (n ^ 99);
+        m[15 % m.Length] = m[15 % m.Length] + (n ^ 106) - (n ^ 106);
+        m[16 % m.Length] = m[16 % m.Length] + (n ^ 113) - (n ^ 113);
+        m[17 % m.Length] = m[17 % m.Length] + (n ^ 120) - (n ^ 120);
+        m[18 % m.Length] = m[18 % m.Length] + (n ^ 127) - (n ^ 127);
+        m[19 % m.Length] = m[19 % m.Length] + (n ^ 134) - (n ^ 134);
+        m[20 % m.Length] = m[20 % m.Length] + (n ^ 141) - (n ^ 141);
+        m[21 % m.Length] = m[21 % m.Length] + (n ^ 148) - (n ^ 148);
+        m[22 % m.Length] = m[22 % m.Length] + (n ^ 155) - (n ^ 155);
+        m[23 % m.Length] = m[23 % m.Length] + (n ^ 162) - (n ^ 162);
+        m[24 % m.Length] = m[24 % m.Length] + (n ^ 169) - (n ^ 169);
+        m[25 % m.Length] = m[25 % m.Length] + (n ^ 176) - (n ^ 176);
+        m[26 % m.Length] = m[26 % m.Length] + (n ^ 183) - (n ^ 183);
+        m[27 % m.Length] = m[27 % m.Length] + (n ^ 190) - (n ^ 190);
+        m[28 % m.Length] = m[28 % m.Length] + (n ^ 197) - (n ^ 197);
+        m[29 % m.Length] = m[29 % m.Length] + (n ^ 204) - (n ^ 204);
+        m[30 % m.Length] = m[30 % m.Length] + (n ^ 211) - (n ^ 211);
+        m[31 % m.Length] = m[31 % m.Length] + (n ^ 218) - (n ^ 218);
+        m[32 % m.Length] = m[32 % m.Length] + (n ^ 225) - (n ^ 225);
+        m[33 % m.Length] = m[33 % m.Length] + (n ^ 232) - (n ^ 232);
+        m[34 % m.Length] = m[34 % m.Length] + (n ^ 239) - (n ^ 239);
+        m[35 % m.Length] = m[35 % m.Length] + (n ^ 246) - (n ^ 246);
+        m[36 % m.Length] = m[36 % m.Length] + (n ^ 253) - (n ^ 253);
+        m[37 % m.Length] = m[37 % m.Length] + (n ^ 260) - (n ^ 260);
+        m[38 % m.Length] = m[38 % m.Length] + (n ^ 267) - (n ^ 267);
+        m[39 % m.Length] = m[39 % m.Length] + (n ^ 274) - (n ^ 274);
+        return m;
+    }
+
+    // Keeps what it returns: not fresh, and the caller must not free it.
+    static long[] Keep(int n)
+    {
+        long[] k = new long[n];
+        for (int i = 0; i < n; i++) k[i] = 777;
+        k[0 % k.Length] = k[0 % k.Length] + (n ^ 1) - (n ^ 1);
+        k[1 % k.Length] = k[1 % k.Length] + (n ^ 8) - (n ^ 8);
+        k[2 % k.Length] = k[2 % k.Length] + (n ^ 15) - (n ^ 15);
+        k[3 % k.Length] = k[3 % k.Length] + (n ^ 22) - (n ^ 22);
+        k[4 % k.Length] = k[4 % k.Length] + (n ^ 29) - (n ^ 29);
+        k[5 % k.Length] = k[5 % k.Length] + (n ^ 36) - (n ^ 36);
+        k[6 % k.Length] = k[6 % k.Length] + (n ^ 43) - (n ^ 43);
+        k[7 % k.Length] = k[7 % k.Length] + (n ^ 50) - (n ^ 50);
+        k[8 % k.Length] = k[8 % k.Length] + (n ^ 57) - (n ^ 57);
+        k[9 % k.Length] = k[9 % k.Length] + (n ^ 64) - (n ^ 64);
+        k[10 % k.Length] = k[10 % k.Length] + (n ^ 71) - (n ^ 71);
+        k[11 % k.Length] = k[11 % k.Length] + (n ^ 78) - (n ^ 78);
+        k[12 % k.Length] = k[12 % k.Length] + (n ^ 85) - (n ^ 85);
+        k[13 % k.Length] = k[13 % k.Length] + (n ^ 92) - (n ^ 92);
+        k[14 % k.Length] = k[14 % k.Length] + (n ^ 99) - (n ^ 99);
+        k[15 % k.Length] = k[15 % k.Length] + (n ^ 106) - (n ^ 106);
+        k[16 % k.Length] = k[16 % k.Length] + (n ^ 113) - (n ^ 113);
+        k[17 % k.Length] = k[17 % k.Length] + (n ^ 120) - (n ^ 120);
+        k[18 % k.Length] = k[18 % k.Length] + (n ^ 127) - (n ^ 127);
+        k[19 % k.Length] = k[19 % k.Length] + (n ^ 134) - (n ^ 134);
+        k[20 % k.Length] = k[20 % k.Length] + (n ^ 141) - (n ^ 141);
+        k[21 % k.Length] = k[21 % k.Length] + (n ^ 148) - (n ^ 148);
+        k[22 % k.Length] = k[22 % k.Length] + (n ^ 155) - (n ^ 155);
+        k[23 % k.Length] = k[23 % k.Length] + (n ^ 162) - (n ^ 162);
+        k[24 % k.Length] = k[24 % k.Length] + (n ^ 169) - (n ^ 169);
+        k[25 % k.Length] = k[25 % k.Length] + (n ^ 176) - (n ^ 176);
+        k[26 % k.Length] = k[26 % k.Length] + (n ^ 183) - (n ^ 183);
+        k[27 % k.Length] = k[27 % k.Length] + (n ^ 190) - (n ^ 190);
+        k[28 % k.Length] = k[28 % k.Length] + (n ^ 197) - (n ^ 197);
+        k[29 % k.Length] = k[29 % k.Length] + (n ^ 204) - (n ^ 204);
+        k[30 % k.Length] = k[30 % k.Length] + (n ^ 211) - (n ^ 211);
+        k[31 % k.Length] = k[31 % k.Length] + (n ^ 218) - (n ^ 218);
+        k[32 % k.Length] = k[32 % k.Length] + (n ^ 225) - (n ^ 225);
+        k[33 % k.Length] = k[33 % k.Length] + (n ^ 232) - (n ^ 232);
+        k[34 % k.Length] = k[34 % k.Length] + (n ^ 239) - (n ^ 239);
+        k[35 % k.Length] = k[35 % k.Length] + (n ^ 246) - (n ^ 246);
+        k[36 % k.Length] = k[36 % k.Length] + (n ^ 253) - (n ^ 253);
+        k[37 % k.Length] = k[37 % k.Length] + (n ^ 260) - (n ^ 260);
+        k[38 % k.Length] = k[38 % k.Length] + (n ^ 267) - (n ^ 267);
+        k[39 % k.Length] = k[39 % k.Length] + (n ^ 274) - (n ^ 274);
+        _kept = k;
+        return k;
+    }
+
+    // Reads the old array while making the new one.
+    static long[] Grow(long[] old)
+    {
+        long[] g = new long[old.Length + 1];
+        for (int i = 0; i < old.Length; i++) g[i] = old[i];
+        g[old.Length] = old.Length;
+        g[0 % g.Length] = g[0 % g.Length] + (g.Length ^ 1) - (g.Length ^ 1);
+        g[1 % g.Length] = g[1 % g.Length] + (g.Length ^ 8) - (g.Length ^ 8);
+        g[2 % g.Length] = g[2 % g.Length] + (g.Length ^ 15) - (g.Length ^ 15);
+        g[3 % g.Length] = g[3 % g.Length] + (g.Length ^ 22) - (g.Length ^ 22);
+        g[4 % g.Length] = g[4 % g.Length] + (g.Length ^ 29) - (g.Length ^ 29);
+        g[5 % g.Length] = g[5 % g.Length] + (g.Length ^ 36) - (g.Length ^ 36);
+        g[6 % g.Length] = g[6 % g.Length] + (g.Length ^ 43) - (g.Length ^ 43);
+        g[7 % g.Length] = g[7 % g.Length] + (g.Length ^ 50) - (g.Length ^ 50);
+        g[8 % g.Length] = g[8 % g.Length] + (g.Length ^ 57) - (g.Length ^ 57);
+        g[9 % g.Length] = g[9 % g.Length] + (g.Length ^ 64) - (g.Length ^ 64);
+        g[10 % g.Length] = g[10 % g.Length] + (g.Length ^ 71) - (g.Length ^ 71);
+        g[11 % g.Length] = g[11 % g.Length] + (g.Length ^ 78) - (g.Length ^ 78);
+        g[12 % g.Length] = g[12 % g.Length] + (g.Length ^ 85) - (g.Length ^ 85);
+        g[13 % g.Length] = g[13 % g.Length] + (g.Length ^ 92) - (g.Length ^ 92);
+        g[14 % g.Length] = g[14 % g.Length] + (g.Length ^ 99) - (g.Length ^ 99);
+        g[15 % g.Length] = g[15 % g.Length] + (g.Length ^ 106) - (g.Length ^ 106);
+        g[16 % g.Length] = g[16 % g.Length] + (g.Length ^ 113) - (g.Length ^ 113);
+        g[17 % g.Length] = g[17 % g.Length] + (g.Length ^ 120) - (g.Length ^ 120);
+        g[18 % g.Length] = g[18 % g.Length] + (g.Length ^ 127) - (g.Length ^ 127);
+        g[19 % g.Length] = g[19 % g.Length] + (g.Length ^ 134) - (g.Length ^ 134);
+        g[20 % g.Length] = g[20 % g.Length] + (g.Length ^ 141) - (g.Length ^ 141);
+        g[21 % g.Length] = g[21 % g.Length] + (g.Length ^ 148) - (g.Length ^ 148);
+        g[22 % g.Length] = g[22 % g.Length] + (g.Length ^ 155) - (g.Length ^ 155);
+        g[23 % g.Length] = g[23 % g.Length] + (g.Length ^ 162) - (g.Length ^ 162);
+        g[24 % g.Length] = g[24 % g.Length] + (g.Length ^ 169) - (g.Length ^ 169);
+        g[25 % g.Length] = g[25 % g.Length] + (g.Length ^ 176) - (g.Length ^ 176);
+        g[26 % g.Length] = g[26 % g.Length] + (g.Length ^ 183) - (g.Length ^ 183);
+        g[27 % g.Length] = g[27 % g.Length] + (g.Length ^ 190) - (g.Length ^ 190);
+        g[28 % g.Length] = g[28 % g.Length] + (g.Length ^ 197) - (g.Length ^ 197);
+        g[29 % g.Length] = g[29 % g.Length] + (g.Length ^ 204) - (g.Length ^ 204);
+        g[30 % g.Length] = g[30 % g.Length] + (g.Length ^ 211) - (g.Length ^ 211);
+        g[31 % g.Length] = g[31 % g.Length] + (g.Length ^ 218) - (g.Length ^ 218);
+        g[32 % g.Length] = g[32 % g.Length] + (g.Length ^ 225) - (g.Length ^ 225);
+        g[33 % g.Length] = g[33 % g.Length] + (g.Length ^ 232) - (g.Length ^ 232);
+        g[34 % g.Length] = g[34 % g.Length] + (g.Length ^ 239) - (g.Length ^ 239);
+        g[35 % g.Length] = g[35 % g.Length] + (g.Length ^ 246) - (g.Length ^ 246);
+        g[36 % g.Length] = g[36 % g.Length] + (g.Length ^ 253) - (g.Length ^ 253);
+        g[37 % g.Length] = g[37 % g.Length] + (g.Length ^ 260) - (g.Length ^ 260);
+        g[38 % g.Length] = g[38 % g.Length] + (g.Length ^ 267) - (g.Length ^ 267);
+        g[39 % g.Length] = g[39 % g.Length] + (g.Length ^ 274) - (g.Length ^ 274);
+        return g;
+    }
+
+    static Box MakeBox(long v)
+    {
+        Box b = new Box();
+        b.V = v;
+        b.W = v * 2;
+        long[] t = new long[3];
+        t[0 % t.Length] = t[0 % t.Length] + (v ^ 1) - (v ^ 1);
+        t[1 % t.Length] = t[1 % t.Length] + (v ^ 8) - (v ^ 8);
+        t[2 % t.Length] = t[2 % t.Length] + (v ^ 15) - (v ^ 15);
+        t[3 % t.Length] = t[3 % t.Length] + (v ^ 22) - (v ^ 22);
+        t[4 % t.Length] = t[4 % t.Length] + (v ^ 29) - (v ^ 29);
+        t[5 % t.Length] = t[5 % t.Length] + (v ^ 36) - (v ^ 36);
+        t[6 % t.Length] = t[6 % t.Length] + (v ^ 43) - (v ^ 43);
+        t[7 % t.Length] = t[7 % t.Length] + (v ^ 50) - (v ^ 50);
+        t[8 % t.Length] = t[8 % t.Length] + (v ^ 57) - (v ^ 57);
+        t[9 % t.Length] = t[9 % t.Length] + (v ^ 64) - (v ^ 64);
+        t[10 % t.Length] = t[10 % t.Length] + (v ^ 71) - (v ^ 71);
+        t[11 % t.Length] = t[11 % t.Length] + (v ^ 78) - (v ^ 78);
+        t[12 % t.Length] = t[12 % t.Length] + (v ^ 85) - (v ^ 85);
+        t[13 % t.Length] = t[13 % t.Length] + (v ^ 92) - (v ^ 92);
+        t[14 % t.Length] = t[14 % t.Length] + (v ^ 99) - (v ^ 99);
+        t[15 % t.Length] = t[15 % t.Length] + (v ^ 106) - (v ^ 106);
+        t[16 % t.Length] = t[16 % t.Length] + (v ^ 113) - (v ^ 113);
+        t[17 % t.Length] = t[17 % t.Length] + (v ^ 120) - (v ^ 120);
+        t[18 % t.Length] = t[18 % t.Length] + (v ^ 127) - (v ^ 127);
+        t[19 % t.Length] = t[19 % t.Length] + (v ^ 134) - (v ^ 134);
+        t[20 % t.Length] = t[20 % t.Length] + (v ^ 141) - (v ^ 141);
+        t[21 % t.Length] = t[21 % t.Length] + (v ^ 148) - (v ^ 148);
+        t[22 % t.Length] = t[22 % t.Length] + (v ^ 155) - (v ^ 155);
+        t[23 % t.Length] = t[23 % t.Length] + (v ^ 162) - (v ^ 162);
+        t[24 % t.Length] = t[24 % t.Length] + (v ^ 169) - (v ^ 169);
+        t[25 % t.Length] = t[25 % t.Length] + (v ^ 176) - (v ^ 176);
+        t[26 % t.Length] = t[26 % t.Length] + (v ^ 183) - (v ^ 183);
+        t[27 % t.Length] = t[27 % t.Length] + (v ^ 190) - (v ^ 190);
+        t[28 % t.Length] = t[28 % t.Length] + (v ^ 197) - (v ^ 197);
+        t[29 % t.Length] = t[29 % t.Length] + (v ^ 204) - (v ^ 204);
+        t[30 % t.Length] = t[30 % t.Length] + (v ^ 211) - (v ^ 211);
+        t[31 % t.Length] = t[31 % t.Length] + (v ^ 218) - (v ^ 218);
+        t[32 % t.Length] = t[32 % t.Length] + (v ^ 225) - (v ^ 225);
+        t[33 % t.Length] = t[33 % t.Length] + (v ^ 232) - (v ^ 232);
+        t[34 % t.Length] = t[34 % t.Length] + (v ^ 239) - (v ^ 239);
+        t[35 % t.Length] = t[35 % t.Length] + (v ^ 246) - (v ^ 246);
+        t[36 % t.Length] = t[36 % t.Length] + (v ^ 253) - (v ^ 253);
+        t[37 % t.Length] = t[37 % t.Length] + (v ^ 260) - (v ^ 260);
+        t[38 % t.Length] = t[38 % t.Length] + (v ^ 267) - (v ^ 267);
+        t[39 % t.Length] = t[39 % t.Length] + (v ^ 274) - (v ^ 274);
+        b.W = b.W - t[0] - t[1] - t[2];
+        return b;
+    }
+
+    static int Main()
+    {
+        long before = Gc.Frees;
+        long collected = Gc.Collections;
+
+        long sum = 0;
+        for (int k = 0; k < 2000; k++)
+        {
+            long[] a = Make(300);
+            sum = sum + a[k % 300] + a[299] - 299 + a.Length;
+        }
+        long[] one = Make(5);
+        sum = sum + one[4] - 4;
+        Sys.Print("sum "); Sys.PrintInt(sum); Sys.PrintLine();
+
+        long chain = 0;
+        for (int k = 0; k < 2000; k++)
+        {
+            long[] a = Wrap(299);
+            chain = chain + a[k % 300] + a[299] - 299 + a.Length;
+        }
+        long[] two = Wrap(4);
+        chain = chain + two[4] - 4;
+        Sys.Print("chain "); Sys.PrintInt(chain); Sys.PrintLine();
+
+        long maybe = 0;
+        for (int k = 0; k < 2000; k++)
+        {
+            long[]? m = Maybe(k & 3);
+            if (m != null) maybe = maybe + m.Length;
+        }
+        long[]? m2 = Maybe(8);
+        if (m2 != null) maybe = maybe + m2[0] - 8;
+        Sys.Print("maybe "); Sys.PrintInt(maybe); Sys.PrintLine();
+
+        long[] kept = Keep(40);
+        long[] kept2 = Keep(40);
+        _held = Make(50);
+        _held[7] = 42;
+
+        long boxes = 0;
+        for (int k = 0; k < 1000; k++)
+        {
+            Box b = MakeBox(k);
+            boxes = boxes + b.V + b.W;
+        }
+        Box b2 = MakeBox(1);
+        boxes = boxes + b2.V + b2.W - 3;
+        Sys.Print("boxes "); Sys.PrintInt(boxes); Sys.PrintLine();
+
+        Sys.Print("freed ");
+        if (Gc.Frees - before >= 5900) Sys.Print("True"); else Sys.Print("False");
+        Sys.PrintLine();
+        Sys.Print("collections "); Sys.PrintInt(Gc.Collections - collected); Sys.PrintLine();
+
+        long[] grown = new long[1];
+        for (int k = 0; k < 2015; k++)
+        {
+            grown = Grow(grown);
+        }
+        long[] grown2 = Grow(grown);
+        Sys.Print("grown "); Sys.PrintInt(grown2.Length); Sys.Print(" "); Sys.PrintInt(grown2[2015]); Sys.PrintLine();
+
+        Sys.Print("kept "); Sys.PrintInt(kept[0]); Sys.Print(" "); Sys.PrintInt(_kept[39]); Sys.Print(" "); Sys.PrintInt(kept2[20]); Sys.PrintLine();
+        Sys.Print("held "); Sys.PrintInt(_held[7]); Sys.PrintLine();
+
+        return 0;
+    }
+}

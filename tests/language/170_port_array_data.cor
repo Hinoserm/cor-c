@@ -1,10 +1,10 @@
 // test: array data on this target
 // expect-exit: 0
 // expect-output:
-// header 16
+// header is the target's
 // payload matches
 // string payload matches
-// object header 8
+// object header is the target's
 //
 // THE MISTAKE THIS PORT WAS MOSTLY ABOUT. os/ had 391 sites spelling the
 // address of an array's first element as `Sys.Word(x) + 24`, because the old
@@ -13,16 +13,26 @@
 // there compiles perfectly and answers the wrong bytes.
 //
 // Sys.ArrayData asks the target, which is why the port is a rewrite to it and
-// not a rewrite to `+ 16`.
+// not a rewrite to `+ 16`. The headers are the target's: 16 and 8 bytes on
+// i386, 24 and 16 in long mode, where every word in them is eight.
 
 class Program
 {
+#if TARGET_64BIT
+    const long ArrayHeader = 24;
+    const long ObjectHeader = 16;
+#else
+    const long ArrayHeader = 16;
+    const long ObjectHeader = 8;
+#endif
+
     static int Main()
     {
         byte[] b = new byte[8];
 
         Console.Write("header ");
-        Console.WriteLine(Sys.ArrayData(b) - Sys.Word(b));
+        long header = Sys.ArrayData(b) - Sys.Word(b);
+        Console.WriteLine(header == ArrayHeader ? "is the target's" : "is " + header);
 
         for (int i = 0; i < b.Length; i++)
         {
@@ -43,22 +53,23 @@ class Program
         }
         Console.WriteLine(same ? "payload matches" : "payload DIFFERS");
 
-        // A string is a byte array with a flag, and its payload is found the
-        // same way -- which is what Os.Write(fd, string) relies on.
-        string s = "abc";
-        long sat = Sys.ArrayData(s);
+        // A string is UTF-16 code units, as C#'s is, and its payload is found
+        // the same way, by Sys.StringData: two bytes a unit, little end first.
+        string s = "ab\u00E9";
+        long sat = Sys.StringData(s);
 
-        Console.WriteLine(Sys.PeekByte(sat) == 97 && Sys.PeekByte(sat + 1) == 98
-                       && Sys.PeekByte(sat + 2) == 99
+        Console.WriteLine(Sys.PeekByte(sat) == 97 && Sys.PeekByte(sat + 1) == 0
+                       && Sys.PeekByte(sat + 2) == 98 && Sys.PeekByte(sat + 4) == 0xE9
+                       && sat - Sys.Word(s) == Sys.ArrayData(b) - Sys.Word(b)
                         ? "string payload matches" : "string payload DIFFERS");
 
-        // And an object's header is eight, not sixteen: the other half of the
-        // same change.
+        // And an object's header is two words: the other half of the same
+        // change.
         Cell c = new Cell();
 
         c.Value = 0x11223344;
         Console.Write("object header ");
-        Console.WriteLine(Sys.PeekWord(Sys.Word(c) + 8) == 0x11223344 ? 8 : -1);
+        Console.WriteLine(Sys.PeekWord(Sys.Word(c) + ObjectHeader) == 0x11223344 ? "is the target's" : "is not two words");
         return 0;
     }
 }

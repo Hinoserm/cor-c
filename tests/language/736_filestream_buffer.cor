@@ -1,0 +1,74 @@
+// test: filestream_buffer
+// expect-exit: 0
+// expect-output:
+// pos 10000 len 10000
+// read 100 101 pos 102
+// pos 103
+// back 100 101 7
+// tail 1000 215 210 end -1
+// cut 150 pos 150
+// file 150 0 49 7
+// binary 4498500 s2999 28890 28890
+// seen 10
+// memory 6 1 2 0 9
+//
+// A FileStream opened by path is buffered, as .NET's is: 4096 bytes, and a
+// buffer size of 0 or 1 turns it off. Position, Seek, Length and SetLength
+// answer for the reader or writer, not for the descriptor, which is ahead
+// of a reader and behind a writer; a write after a read lands where the
+// reader was; disposing writes out what is held. MemoryStream's single-byte
+// reads and writes follow its own rules (a write past the end zero-fills).
+// Output checked against .NET.
+
+using System;
+using System.IO;
+using System.Text;
+
+static class Program
+{
+    static void Main()
+    {
+        string path = Path.Combine(Path.GetTempPath(), "fsbuf-" + Environment.ProcessId + ".bin");
+        using (FileStream w = new FileStream(path, FileMode.Create, FileAccess.ReadWrite))
+        {
+            for (int i = 0; i < 10000; i++) w.WriteByte((byte)(i % 251));
+            Console.WriteLine("pos " + w.Position + " len " + w.Length);
+            w.Seek(100, SeekOrigin.Begin);
+            Console.WriteLine("read " + w.ReadByte() + " " + w.ReadByte() + " pos " + w.Position);
+            w.WriteByte(7);
+            Console.WriteLine("pos " + w.Position);
+            w.Seek(-3, SeekOrigin.Current);
+            Console.WriteLine("back " + w.ReadByte() + " " + w.ReadByte() + " " + w.ReadByte());
+            byte[] big = new byte[5000];
+            w.Position = 9000;
+            int n = w.Read(big, 0, big.Length);
+            Console.WriteLine("tail " + n + " " + big[0] + " " + big[999] + " end " + w.ReadByte());
+            w.SetLength(150);
+            Console.WriteLine("cut " + w.Length + " pos " + w.Position);
+        }
+        byte[] all = File.ReadAllBytes(path);
+        Console.WriteLine("file " + all.Length + " " + all[0] + " " + all[49] + " " + all[102]);
+
+        using (BinaryWriter bw = new BinaryWriter(new FileStream(path, FileMode.Create)))
+        {
+            for (int i = 0; i < 3000; i++) { bw.Write(i); bw.Write("s" + i); }
+        }
+        using (BinaryReader br = new BinaryReader(new FileStream(path, FileMode.Open)))
+        {
+            long sum = 0; string last = "";
+            for (int i = 0; i < 3000; i++) { sum += br.ReadInt32(); last = br.ReadString(); }
+            Console.WriteLine("binary " + sum + " " + last + " " + br.BaseStream.Position + " " + br.BaseStream.Length);
+        }
+
+        using (FileStream a = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read, 1))
+        {
+            a.Write(Encoding.ASCII.GetBytes("unbuffered"), 0, 10);
+            Console.WriteLine("seen " + new FileInfo(path).Length);
+        }
+        MemoryStream m = new MemoryStream();
+        m.WriteByte(1); m.WriteByte(2); m.Position = 5; m.WriteByte(9);
+        m.Position = 0;
+        Console.WriteLine("memory " + m.Length + " " + m.ReadByte() + " " + m.ReadByte() + " " + m.ReadByte() + " " + m.ToArray()[5]);
+        File.Delete(path);
+    }
+}

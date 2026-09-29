@@ -18,6 +18,17 @@ public sealed class DataItem
     public bool Exported { get; init; } = true;
     public bool Coalescible { get; init; }
 
+    /// <summary>
+    /// Writable, but never holding a reference: a static array of numbers
+    /// (Lowering.StaticArrayData). It goes to a section of its own outside the
+    /// statics the collector reads as roots (__data_start.._end): read there,
+    /// a table of constants -- SHA-256's, a CRC's -- was a list of words that
+    /// look like addresses on i386, where the heap is most of the address
+    /// space, and each kept whatever object lay there and everything it
+    /// reached. One compile process kept 466 MB through one such table.
+    /// </summary>
+    public bool NoReferences { get; init; }
+
     /// <summary>The class library's rather than the program's; see Function.FromLibrary.</summary>
     public bool FromLibrary { get; init; }
 

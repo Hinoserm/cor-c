@@ -83,6 +83,9 @@ public sealed class X86Backend : IBackend
 
     /// <summary>The section stack maps go in, and the symbols the runtime finds them by.</summary>
     public const string StackMapSection = ".corsac.stackmaps";
+
+    /// <summary>Writable data with no references in it: outside the collector's roots.</summary>
+    public const string NumbersSection = ".data.corsac.numbers";
     public const string StackMapStart = "__corsac_stackmaps";
     public const string StackMapEnd = "__corsac_stackmaps_end";
 
@@ -114,6 +117,18 @@ public sealed class X86Backend : IBackend
         Section data = new(".data", SectionKind.Data);
         Section relocatedConstants = new(".data.rel.ro", SectionKind.Data);
         Section bss = new(".bss", SectionKind.Uninitialised);
+        // Writable data that holds no reference (DataItem.NoReferences), in a
+        // section the linker places outside the statics read as roots.
+        Section? numbers = null;
+        Section Numbers()
+        {
+            if (numbers is null)
+            {
+                numbers = new Section(NumbersSection, SectionKind.Data);
+                obj.Sections.Add(numbers);
+            }
+            return numbers;
+        }
         obj.Sections.Add(text);
         obj.Sections.Add(rodata);
         obj.Sections.Add(data);
@@ -124,7 +139,7 @@ public sealed class X86Backend : IBackend
         Encoder encoder = new(text);
         List<FrameTable.Entry> frames = new();
         FunctionSizes.Clear();
-        List<(string Function, int Return, int At, Safepoint? Map, int FrameSize)> maps = new();
+        List<(string Function, int Return, int At, Safepoint? Map, int FrameSize, uint Saved, List<int> Objects)> maps = new();
 
         // GOTOFF is sound only for a name this object defines and does not
         // export: anything exported can be interposed at load time, and then
@@ -215,10 +230,14 @@ public sealed class X86Backend : IBackend
                         {
                             long cost = FunctionLoadBytes?.Invoke(first + count)
                                 ?? throw new InvalidOperationException("Deferred functions require memory costs");
-                            if (cost <= 0 || cost > FunctionMemoryBudget)
-                                throw new InvalidDataException("Function exceeds backend working budget: " + module.Functions[first + count].Name);
-                            if (cost > FunctionMemoryBudget - bytes) break;
+                            if (cost <= 0)
+                                throw new InvalidDataException("Function has no backend working cost: " + module.Functions[first + count].Name);
+                            if (count > 0 && cost > FunctionMemoryBudget - bytes) break;
                             bytes += cost; count++;
+                            // Bigger than the whole budget: compiled alone, as
+                            // slowly as it must be, never refused. The batch
+                            // sizes the work, not the code.
+                            if (cost > FunctionMemoryBudget) break;
                         }
                     }
                     batchStart = first; batchEnd = first + count;
@@ -288,9 +307,10 @@ public sealed class X86Backend : IBackend
 
             if (StackMaps)
             {
+                List<int>? objects = null;
                 foreach ((MInstr call, int ret) in encoder.CallSites)
                 {
-                    maps.Add((f.Name, ret, start + ret, m.Safepoints.GetValueOrDefault(call), m.Frame.Size));
+                    maps.Add((f.Name, ret, start + ret, m.Safepoints.GetValueOrDefault(call), m.Frame.Size, SavedMask(m), objects ??= ObjectWords(m)));
                 }
             }
 
@@ -344,7 +364,7 @@ public sealed class X86Backend : IBackend
                 && (PositionIndependent || d.Relocs.Any(r => imported.Contains(r.Symbol)));
             // Immutable relocations need loader writes, not conservative
             // heap-root scanning. Keep them distinct from mutable statics.
-            Section s = d.Zero ? bss : d.ReadOnly ? (loaderWrites ? relocatedConstants : rodata) : data;
+            Section s = d.Zero ? bss : d.ReadOnly ? (loaderWrites ? relocatedConstants : rodata) : d.NoReferences ? Numbers() : data;
             int align = Math.Max(d.Align, 1);
             long offset;
             if (d.Zero)
@@ -480,6 +500,7 @@ public sealed class X86Backend : IBackend
         try
         {
             Allocator.Run(m);
+            Layout.Run(m);
             Peephole.Run(m);
         }
         catch (InvalidOperationException e)
@@ -519,7 +540,42 @@ public sealed class X86Backend : IBackend
     /// ordering is the runtime's to do once at startup if it wants a binary
     /// search rather than a scan.
     /// </summary>
-    private static void EmitStackMaps(ObjectFile obj, List<(string Function, int Return, int At, Safepoint? Map, int FrameSize)> maps, HashSet<string> defined, bool pic)
+    /// <summary>
+    /// The callee-saved registers a function's prologue pushes, by hardware
+    /// number: after `push ebp; mov ebp, esp; sub esp, FrameSize` they are
+    /// pushed in the order EBX, ESI, EDI, so the k-th of them present is at
+    /// EBP - FrameSize - 4(k+1). The collector reads them to find where a
+    /// caller's register value was kept, and so which saved words are values
+    /// some frame still holds live and which are stale copies.
+    /// </summary>
+    private static uint SavedMask(MFunction m)
+    {
+        uint mask = 0;
+        foreach (Gpr g in m.SavedRegs)
+        {
+            mask |= 1u << (int)g;
+        }
+        return mask;
+    }
+
+    /// <summary>
+    /// Every word of a function's IR frame slots, as EBP offsets: what the
+    /// collector reads as it is, beside the live spill slots a map names.
+    /// </summary>
+    private static List<int> ObjectWords(MFunction m)
+    {
+        SortedSet<int> words = new();
+        foreach ((int offset, int bytes) in m.Frame.SlotRanges())
+        {
+            for (int at = offset & ~3; at < offset + bytes; at += 4)
+            {
+                if (at < 0) words.Add(at);
+            }
+        }
+        return words.ToList();
+    }
+
+    private static void EmitStackMaps(ObjectFile obj, List<(string Function, int Return, int At, Safepoint? Map, int FrameSize, uint Saved, List<int> Objects)> maps, HashSet<string> defined, bool pic)
     {
         // The base is a relocation, so in a shared object the page holding
         // the header is written by the loader; writable in that mode, as the
@@ -537,9 +593,14 @@ public sealed class X86Backend : IBackend
         }
 
         Word(0x314d5343);       // 'CSM1'
-        Word(2);
+        // Version 4: an entry is five words -- the return offset; the live
+        // registers, the registers the prologue saves from bit 16, and bit 31
+        // for a call with no map (its frame is read whole); the live spill
+        // slots' bitmap; the frame size; and the function's IR frame slots'
+        // bitmap, the words the collector reads as they are.
+        Word(4);
         Word(maps.Count);
-        Word(16);
+        Word(20);
         // The base: the start of the first function that has a call site.
         // Its section offset is that entry's offset less its return offset,
         // which is what every later entry is measured from.
@@ -547,18 +608,17 @@ public sealed class X86Backend : IBackend
         if (maps.Count > 0) s.Relocs.Add(new Relocation(s.Bytes.Count, maps[0].Function, 0, RelocKind.Abs32));
         Word(0);
 
-        // The bitmaps are sized first so an entry can name where its own one
-        // will land: the pool starts right after the fixed-size entries.
+        // The bitmaps are laid out after the fixed-size entries, one copy of
+        // each: a bit for each word under EBP, bit b the word at -4(b+1).
         List<uint[]> pool = new();
-        int[] at = new int[maps.Count];
-        int poolStart = 20 + maps.Count * 16;
+        Dictionary<string, int> shared = new(StringComparer.Ordinal);
+        int poolStart = 20 + maps.Count * 20;
         int poolWords = 0;
-        for (int i = 0; i < maps.Count; i++)
+        int Bitmap(List<int> slots)
         {
-            List<int> slots = maps[i].Map?.SlotOffsets ?? new List<int>();
             if (slots.Count == 0)
             {
-                continue;
+                return 0;
             }
             int top = 0;
             foreach (int off in slots)
@@ -571,17 +631,32 @@ public sealed class X86Backend : IBackend
                 int bit = -off / 4 - 1;
                 bits[bit / 32] |= 1u << (bit % 32);
             }
-            at[i] = poolStart + poolWords * 4;
+            string key = string.Join(',', bits);
+            if (shared.TryGetValue(key, out int existing))
+            {
+                return existing;
+            }
+            int at = poolStart + poolWords * 4;
+            shared.Add(key, at);
             poolWords += 1 + bits.Length;
             pool.Add(bits);
+            return at;
+        }
+        int[] live = new int[maps.Count];
+        int[] objects = new int[maps.Count];
+        for (int i = 0; i < maps.Count; i++)
+        {
+            live[i] = Bitmap(maps[i].Map?.SlotOffsets ?? new List<int>());
+            objects[i] = Bitmap(maps[i].Objects);
         }
 
         for (int i = 0; i < maps.Count; i++)
         {
             Word(maps[i].At - baseAt);
-            Word(maps[i].Map?.Registers ?? 0);
-            Word(at[i]);
+            Word((maps[i].Map is null ? 0x800000FFu : maps[i].Map!.Registers) | maps[i].Saved << 16);
+            Word(live[i]);
             Word(maps[i].FrameSize);
+            Word(objects[i]);
         }
         foreach (uint[] bits in pool)
         {

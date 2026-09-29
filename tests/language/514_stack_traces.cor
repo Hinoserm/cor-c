@@ -80,6 +80,8 @@ static class Program
             string name = String.Substring(row, 6, row.Length - 6);
             int space = String.IndexOf(name, ' ', 0);
             if (space >= 0) { name = String.Substring(name, 0, space); }
+            int open = String.IndexOf(name, '(', 0);
+            if (open >= 0) { name = String.Substring(name, 0, open); }
 
             // A run of the same name is one frame as far as this is
             // concerned: the helpers recurse, so each appears twice.

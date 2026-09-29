@@ -26,6 +26,9 @@ public static class IrReachabilityTests
         vectors.Relocs.Add(new Relocation(0, "unused", 0, RelocKind.Abs32)); native.Sections.Add(vectors);
         keep = IrReachability.Find(new[] { ("managed", managed), ("native", native) }, archives, owners, "entry")[managed];
         if (!keep.Contains("F:unused")) throw new Exception("Native vector relocation was not retained as a root");
-        Console.WriteLine("  closed-image reachability: code, private data, callbacks and native vectors passed");
+        // A routine only the link will refer to (a field site's target) is kept when named as a root.
+        keep = IrReachability.Find(new[] { ("managed", managed) }, archives, owners, "entry", new[] { "unused" })[managed];
+        if (!keep.Contains("F:unused")) throw new Exception("An extra root was not retained");
+        Console.WriteLine("  closed-image reachability: code, private data, callbacks, native vectors and link roots passed");
     }
 }

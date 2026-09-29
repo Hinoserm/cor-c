@@ -117,6 +117,18 @@ public sealed partial class Lowering
             return;
         }
 
+        if (_iterators.TryGetValue(m, out IteratorMethod? iterating))
+        {
+            EmitIteratorMoveNext(iterating);
+            return;
+        }
+
+        if (decl.Body is { Iterator: true })
+        {
+            EmitIteratorKickoff(m, decl);
+            return;
+        }
+
         if (m.Async)
         {
             EmitKickoff(m, decl);
@@ -128,6 +140,7 @@ public sealed partial class Lowering
             SourceFile = _in, Line = decl.Line, Display = Display(m), FromLibrary = IsLibrary(m.Owner),
             Coalescible = decl.LocalCopy || m.Owner.Decl?.Specialised == true,
             Exported = m.Owner.Decl?.LocalOnly != true,
+            NoInlining = NoInlining(decl),
         };
         Block entry = _f.NewBlock("entry");
         _e = new Builder(_f, entry);
@@ -188,10 +201,22 @@ public sealed partial class Lowering
 
             if (chained is not null)
             {
+                // Named arguments are evaluated where they were written and
+                // passed where they belong, as `new`'s are.
                 List<Operand> args = new() { new RegOperand(_this!) };
-                for (int i = 0; i < decl.Init.Args.Count; i++)
+                if (decl.Init.ArgumentOrder.Count != 0)
                 {
-                    args.Add(new RegOperand(EvalAs(decl.Init.Args[i], chained.Params[i])));
+                    Operand[] prepared = new Operand[decl.Init.Args.Count];
+                    foreach (int index in decl.Init.ArgumentOrder)
+                        prepared[index] = new RegOperand(EvalAs(decl.Init.Args[index], chained.Params[index]));
+                    args.AddRange(prepared);
+                }
+                else
+                {
+                    for (int i = 0; i < decl.Init.Args.Count; i++)
+                    {
+                        args.Add(new RegOperand(EvalAs(decl.Init.Args[i], chained.Params[i])));
+                    }
                 }
                 CallDirect(chained, IrType.Void, args);
             }
@@ -206,7 +231,16 @@ public sealed partial class Lowering
             CallDirect(inherited, IrType.Void, new List<Operand> { new RegOperand(_this!) });
         }
 
-        EmitStmt(decl.Body!);
+        VReg? fromC = CalledByC(m) ? EnterFromC(decl) : null;
+
+        if (NativeImportOf(m) is NativeImport native)
+        {
+            EmitNativeBody(m, native);
+        }
+        else
+        {
+            EmitStmt(decl.Body!);
+        }
 
         if (!_e.Closed)
         {
@@ -217,6 +251,10 @@ public sealed partial class Lowering
         }
 
         _e.SetBlock(_returnBlock);
+        if (fromC is not null)
+        {
+            LeaveToC(decl, fromC);
+        }
         _e.Ret(_returnValue is null ? null : new RegOperand(_returnValue));
 
         _m.Functions.Add(_f);
@@ -427,6 +465,12 @@ public sealed partial class Lowering
                     yield return r.Value;
                 }
                 break;
+            case YieldStmt y:
+                if (y.Value is not null)
+                {
+                    yield return y.Value;
+                }
+                break;
             case ThrowStmt t: yield return t.Value; break;
             case SwitchStmt sw:
                 yield return sw.Subject;
@@ -479,6 +523,7 @@ public sealed partial class Lowering
                 break;
             case FromEndExpr fe2: yield return fe2.Offset; break;
             case PatternExpr p: yield return p.Subject; yield return p.Test; break;
+            case SequenceExpr q: yield return q.Effect; yield return q.Value; break;
             case SuppressExpr s: yield return s.Operand; break;
             case MemberExpr m: yield return m.Target; break;
             case CallExpr c: yield return c.Target; foreach (Expr a in c.Args) yield return a; break;
@@ -552,7 +597,8 @@ public sealed partial class Lowering
     {
         if (!_localRegs.TryGetValue(d, out VReg? r))
         {
-            Type t = _b.LocalType.TryGetValue(d, out Type? declared) ? declared : Type.I32;
+            Type t = _b.LocalType.TryGetValue(d, out Type? declared) ? declared
+                   : d.Init is not null ? _b.TypeOf(d.Init) : Type.I32;
             bool boxed = _b.BoxedLocals.Contains(d);
             r = _f.NewReg(boxed ? IrTypes.Word : IrTypes.Of(t), d.Name);
             _localRegs[d] = r;
@@ -571,15 +617,12 @@ public sealed partial class Lowering
         {
             return d;
         }
-        foreach ((LocalDecl decl, LocalSym sym) in _b.LocalSymbols)
+        LocalDecl? found = _b.DeclOf(l);
+        if (found is not null)
         {
-            if (ReferenceEquals(sym, l))
-            {
-                _slotDecl[l.Slot] = decl;
-                return decl;
-            }
+            _slotDecl[l.Slot] = found;
         }
-        return null;
+        return found;
     }
 
     // ---- places: where an lvalue is -------------------------------------------------
@@ -599,7 +642,7 @@ public sealed partial class Lowering
     /// the bytes there ARE the struct, so its value is their address and a
     /// store copies bytes in.
     /// </summary>
-    private sealed record MemPlace(Operand Address, long Offset, Type Type, bool Volatile = false, bool Inline = false) : Place(Type);
+    private sealed record MemPlace(Operand Address, long Offset, Type Type, bool Volatile = false, bool Inline = false, VReg? CovariantArray = null) : Place(Type);
 
     private VReg LoadPlace(Place p)
     {
@@ -660,8 +703,13 @@ public sealed partial class Lowering
                 {
                     _e.Emit(Opcode.Fence, null);
                 }
+                if (m.CovariantArray is VReg array)
+                {
+                    StoreCheck(array, value, m.Type);
+                }
                 ReferenceBarrier(m, value);
                 _e.Store(m.Address, new RegOperand(value), m.Offset, LoadSize(m.Type));
+                CardMark(m, value);
                 break;
         }
     }
@@ -705,6 +753,12 @@ public sealed partial class Lowering
         }
 
         Require(barrier);
+        // AND ITS VALUE FORM, which the optimiser makes of a barrier whose
+        // object it keeps in registers (ScalarObjects); present, so that it can.
+        if (RuntimeMethod("WriteBarrierValues", 2) is MethodSymbol values)
+        {
+            Require(values);
+        }
         _statics.Add(flag);
 
         Block report = _f.NewBlock("barrier");
@@ -729,6 +783,139 @@ public sealed partial class Lowering
     }
 
     private bool _inBarrier;
+
+    /// <summary>
+    /// Whether an array whose elements are written as this type may be one
+    /// of a type derived from it, so that a store into it must be checked:
+    /// object, an interface, a class that is not sealed. Not a sealed class
+    /// or a string -- nothing derives from them -- nor a value type; and not
+    /// a type parameter's, which in shared generic code is a word of any
+    /// type: List&lt;T&gt; stores into its T[] at every Add, and the check
+    /// there would cost every list on a slow processor what .NET's own
+    /// shared code pays (a departure recorded in X86-BACKEND.md).
+    /// </summary>
+    private static bool MayBeCovariant(Type element)
+        => element.ParamName is null && !element.IsNullableValue && !element.IsPointer
+        && (element.Prim == Prim.Any
+            || element.Symbol is { Kind: TypeKind.Interface }
+            || element.Symbol is { Kind: TypeKind.Class } c && c.Decl is { } d && !d.Mods.HasFlag(Mods.Sealed) && !c.Structural);
+
+    /// <summary>
+    /// THE COVARIANT STORE'S CHECK: a value stored into an array that may be
+    /// one of a derived element type. Nothing when the value is null or the
+    /// array is exactly the type written -- one load and one compare -- and
+    /// otherwise Runtime.ArrayStoreCheck, which refuses a Cat stored into a
+    /// Dog[] held as an Animal[] with ArrayTypeMismatchException.
+    /// </summary>
+    private void StoreCheck(VReg array, VReg value, Type element)
+    {
+        if (RuntimeMethod("ArrayStoreCheck", 2) is not MethodSymbol check || value.Type != IrTypes.Word)
+        {
+            return;
+        }
+        Block notNull = _f.NewBlock("stchk");
+        Block slow = _f.NewBlock("stslow");
+        Block done = _f.NewBlock("stdone");
+        _e.Branch(value, notNull, done);
+        _e.SetBlock(notNull);
+        VReg vt = _e.Load(IrTypes.Word, array, 0);
+        VReg exact = _e.Address(SequenceDescriptor(ElementKey(element), Math.Max(1, element.Size), isString: false, elementType: element), _t.DescriptorBytes);
+        _e.Branch(_e.Binary(Opcode.Eq, R(vt), R(exact), IrType.I32), done, slow);
+        _e.SetBlock(slow);
+        Require(check);
+        _e.Call(CallLabel(check), IrType.Void, R(AsParam(array, check.Params[0].Type)), R(AsParam(value, check.Params[1].Type)));
+        _e.Jump(done);
+        _e.SetBlock(done);
+    }
+
+    /// <summary>
+    /// A coroutine saves its frame into its machine at each suspension and
+    /// marks the machine's cards there (AsyncTransform), when the runtime has
+    /// cards: the helper it calls is then part of the program.
+    /// </summary>
+    private void RequireCardMarkObject()
+    {
+        if (_b.Types.TryGetValue(RuntimeType, out TypeSymbol? rt) && rt.Fields.Any(f => f.Static && f.Name == "Cards")
+            && RuntimeMethod("CardMarkObject", 1) is MethodSymbol helper)
+        {
+            Require(helper);
+        }
+    }
+
+    /// <summary>
+    /// THE CARD MARK, after the store, as a generational collector needs it:
+    /// the byte for the kilobyte the reference went into is set, so the next
+    /// minor collection reads that kilobyte for pointers old objects hold into
+    /// young ones (Gc, generations). A load of <c>Runtime.Cards</c>, a test, a
+    /// shift, an add and a byte store; nothing when the table is 0 -- a
+    /// freestanding image, a 64-bit one, one whose collector has no
+    /// generations. After, not before: a collection that clears the card
+    /// between a mark and the store it stands for would miss the store.
+    /// Where the Marking test is omitted -- the collector's own code, a
+    /// runtime without Cards -- so is this.
+    /// </summary>
+    private void CardMark(MemPlace m, VReg value)
+    {
+        if (!MayHoldReference(m.Type) || value.Type != IrTypes.Word)
+        {
+            return;
+        }
+        CardMarkAt(m.Address, m.Offset);
+    }
+
+    /// <summary>
+    /// A reference written straight into a block being made -- an array's
+    /// elements, a box, a cell, a struct's own block, a state machine's
+    /// fields -- which takes no barrier (the block is new: nothing in it is
+    /// overwritten) but DOES take the card mark. A collection can fall
+    /// between the block's allocation and these stores, and find it and make
+    /// it old; the stores that follow are old-to-young pointers like any
+    /// other, and the card is how the next minor collection hears of them.
+    /// </summary>
+    private void StoreNew(VReg block, VReg value, long offset, Type type)
+    {
+        _e.Store(R(block), R(value), offset, LoadSize(type));
+        CardMark(new MemPlace(R(block), offset, type), value);
+    }
+
+    /// <summary>StoreNew for a word the caller knows is a reference -- a struct's block, an object.</summary>
+    private void StoreNewReference(VReg block, VReg value, long offset)
+    {
+        _e.Store(R(block), R(value), offset, _t.WordSize);
+        CardMarkAt(R(block), offset);
+    }
+
+    private void CardMarkAt(Operand address, long offset)
+    {
+        if (_inBarrier)
+        {
+            return;
+        }
+        if (!_b.Types.TryGetValue(RuntimeType, out TypeSymbol? rt)
+            || rt.Fields.FirstOrDefault(f => f.Static && f.Name == "Cards") is not FieldSymbol cards)
+        {
+            return;
+        }
+        if (_method is { Owner.Name: "Gc" or "GcThreads" or "GcLock" or "GcRoots" or "HeapChunks" or "Runtime" or "Platform" })
+        {
+            return;
+        }
+        if (RuntimeMethod("CardMark", 1) is not MethodSymbol mark)
+        {
+            return;
+        }
+        // A CALL UNTIL THE LAST PASS, which writes it out (CardMarks): to the
+        // lifetime passes it is a note to the collector, as the barrier is.
+        _statics.Add(cards);
+        Require(mark);
+        VReg slot = RegOf(address);
+        if (offset != 0)
+        {
+            slot = _e.Binary(Opcode.Add, slot, offset);
+        }
+        VReg arg = IrTypes.Of(mark.Params[0].Type) == IrType.I64 && slot.Type != IrType.I64 ? _e.Unary(Opcode.ZExt32, slot) : slot;
+        _e.Call(CallLabel(mark), IrType.Void, R(arg));
+    }
 
     /// <summary>Whether a stored value of this type may be a reference the collector follows.</summary>
     private bool MayHoldReference(Type t)
@@ -947,8 +1134,8 @@ public sealed partial class Lowering
     /// </summary>
     private MemPlace ElementPlace(VReg basis, VReg index, Type sequence, Type element, Node at)
     {
-        int stride = Math.Max(1, sequence.Prim == Prim.String ? 1 : element.Size);
-        Type stored = sequence.Prim == Prim.String ? Type.U8 : element;
+        int stride = Math.Max(1, sequence.Prim == Prim.String ? 2 : element.Size);
+        Type stored = sequence.Prim == Prim.String ? Type.Char : element;
 
         if (sequence.IsPointer)
         {
@@ -960,7 +1147,8 @@ public sealed partial class Lowering
         BoundsCheck(basis, index, at, sequence.IsArray);
         VReg scaled2 = stride == 1 ? index : _e.Binary(Opcode.Mul, index, stride);
         VReg addr2 = _e.Binary(Opcode.Add, basis, WordOf(scaled2));
-        return new MemPlace(new RegOperand(addr2), _t.ArrayHeaderBytes, stored);
+        return new MemPlace(new RegOperand(addr2), _t.ArrayHeaderBytes, stored,
+            CovariantArray: sequence.IsArray && MayBeCovariant(stored) ? basis : null);
     }
 
     private void BoundsCheck(VReg array, VReg index, Node at, bool managedArray)

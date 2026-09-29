@@ -30,6 +30,13 @@ public sealed class Function
     public bool FromLibrary { get; init; }
 
     /// <summary>
+    /// `[MethodImpl(MethodImplOptions.NoInlining)]`: every call stays a call,
+    /// so the method keeps its own frame in a stack trace and its own entry
+    /// for a profiler, as the attribute promises in .NET.
+    /// </summary>
+    public bool NoInlining { get; init; }
+
+    /// <summary>
     /// Set on the body of an async method: the function suspends at its
     /// `__suspend`/`__resume` markers, and the async transform turns it into
     /// a resumable state machine before any backend sees it.

@@ -224,7 +224,7 @@ class IPAddress
         int digits = 0;
         for (int i = 0; i <= text.Length; i++)
         {
-            int c = i == text.Length ? '.' : Sys.GetByte(text, i);
+            int c = i == text.Length ? '.' : Sys.GetChar(text, i);
             if (c == '.')
             {
                 if (digits == 0 || n >= 4 || value > 255)
@@ -658,10 +658,8 @@ static class DnsMessage
                 name = name + ".";
             }
 
-            for (int i = 0; i < count; i++)
-            {
-                name = name + (char)(m[at + 1 + i] & 255);
-            }
+            // A label's bytes are UTF-8, as the resolver was given them.
+            name = name + Utf8Transcoder.Decode(m, at + 1, count);
 
             at = at + 1 + count;
         }
@@ -696,7 +694,11 @@ static class DnsMessage
         {
             int dot = name.IndexOf('.', start);
             int end = dot < 0 ? name.Length : dot;
-            int count = end - start;
+
+            // A label is bytes on the wire: its UTF-8, which is what .NET on
+            // Linux hands the resolver for a name outside ASCII.
+            byte[] label = Utf8Transcoder.Encode(name, start, end - start);
+            int count = label.Length;
 
             if (count > 63)
             {
@@ -709,7 +711,7 @@ static class DnsMessage
 
                 for (int i = 0; i < count; i++)
                 {
-                    into[at + 1 + i] = (byte)Sys.GetByte(name, start + i);
+                    into[at + 1 + i] = label[i];
                 }
 
                 at = at + 1 + count;
@@ -1565,6 +1567,35 @@ class Socket : IDisposable
             }
             Os.Fcntl(_fd, 4, value ? flags & ~O.NonBlock : flags | O.NonBlock);
         }
+    }
+
+    int _receiveTimeout;
+    int _sendTimeout;
+
+    /// How long a receive waits, in milliseconds, before it fails with a
+    /// timeout (SocketError.TimedOut); zero or less waits for ever, as .NET's
+    /// does. SO_RCVTIMEO carries a struct timeval, whose layout is the
+    /// machine's (TimeVal).
+    public int ReceiveTimeout
+    {
+        get { return _receiveTimeout; }
+        set { SetTimeout(20, value); _receiveTimeout = value <= 0 ? 0 : value; }      // SO_RCVTIMEO
+    }
+
+    /// The same for a send (SO_SNDTIMEO).
+    public int SendTimeout
+    {
+        get { return _sendTimeout; }
+        set { SetTimeout(21, value); _sendTimeout = value <= 0 ? 0 : value; }         // SO_SNDTIMEO
+    }
+
+    void SetTimeout(int option, int milliseconds)
+    {
+        if (milliseconds < -1) throw new ArgumentOutOfRangeException("value");
+        long ms = milliseconds <= 0 ? 0 : milliseconds;
+        byte[] tv = TimeVal.Room();
+        TimeVal.Set(tv, ms / 1000, (ms % 1000) * 1000);
+        SetSocketOption(1, option, tv);                                              // SOL_SOCKET
     }
 
     /// Bytes that can be read without blocking (FIONREAD).

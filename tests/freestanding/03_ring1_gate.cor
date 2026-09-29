@@ -1,0 +1,21 @@
+// test: --ring1-syscalls makes a system call CORSAC's ring-1 gate
+// flags: --ring1-syscalls
+// run: no
+// expect-asm-x86-64: Gate: int $0x83
+// expect-asm-x86: Gate: int $0x83
+//
+// A ring-1 kernel asks ring 0 for files through int 0x83, not Linux's
+// syscall or int 0x80. Compiled and read, not run: the gate is CORSAC's.
+
+static class Program
+{
+    static int Main()
+    {
+        return (int)Gate(3);
+    }
+
+    static long Gate(long n)
+    {
+        return Sys.Syscall(n, 1, 2, 3);
+    }
+}

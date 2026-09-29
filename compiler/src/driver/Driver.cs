@@ -130,7 +130,7 @@ public static class Driver
               corc link <file.o> ... -o <output> [--entry <symbol>]
               corc link @objects.list -o <output> [--entry <symbol>]
               corc index --assembly <identity> <sources...> -o <declarations.idx>
-              corc project <file.csproj> [--configuration Release] [--framework net10.0] [--jobs N] [-o output]
+              corc project <file.csproj> [--configuration Release] [--framework net10.0] [--jobs N] [--link-only | --runtime-only] [-o output]
               corc compile-project --units <units.tsv> --decl-index <idx> --assembly <identity>
               corc build [target/path] [Name=Value ...] [--file corsac.build] [--jobs N]
               corc asm --target x86-16 <file.asm> -o <output.bin>
@@ -229,18 +229,20 @@ public static class Driver
     }
 
     /// <summary>An address on the command line: hexadecimal with 0x, else decimal.</summary>
-    private static uint? Address(string text)
+    private static ulong? Address(string text)
     {
+        // 64 bits, for a long-mode kernel linked into the top of the address
+        // space; an i386 image refuses one that does not fit when it is written.
         string digits = text.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? text[2..] : text;
         if (text.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
         {
-            return uint.TryParse(digits, System.Globalization.NumberStyles.HexNumber, null, out uint hex) ? hex : null;
+            return ulong.TryParse(digits, System.Globalization.NumberStyles.HexNumber, null, out ulong hex) ? hex : null;
         }
-        if (uint.TryParse(text, out uint dec))
+        if (ulong.TryParse(text, out ulong dec))
         {
             return dec;
         }
-        return uint.TryParse(digits, System.Globalization.NumberStyles.HexNumber, null, out uint fallback) ? fallback : null;
+        return ulong.TryParse(digits, System.Globalization.NumberStyles.HexNumber, null, out ulong fallback) ? fallback : null;
     }
 
     internal static string? Value(string[] args, string name)
@@ -291,7 +293,7 @@ public static class Driver
         }
 
         string targetName = Value(args, "--target") ?? "x86-16";
-        if (targetName is not ("x86-16" or "x86_16" or "x86-32"))
+        if (targetName is not ("x86-16" or "x86_16" or "x86-32" or "x86-64" or "x86_64"))
         {
             return Fail($"unknown build target '{targetName}'");
         }
@@ -299,13 +301,13 @@ public static class Driver
         // --target names the assembler's default mode, which `.bits` in the
         // source still overrides: x86-16 for a boot sector, x86-32 for the
         // kernel's own assembly, which has no real mode left to speak of.
-        int bits = targetName == "x86-32" ? 32 : 16;
+        int bits = targetName == "x86-32" ? 32 : targetName is "x86-64" or "x86_64" ? 64 : 16;
         bool asObject = args.Contains("--obj");
         string output = Value(args, "-o") ?? Path.ChangeExtension(files[0], asObject ? ".o" : ".bin");
         Corsac.Asm.X86Assembler.Result result = Corsac.Asm.X86Assembler.AssembleFile(files[0], bits, asObject, X86Cpu.Parse(args));
         if (asObject)
         {
-            File.WriteAllBytes(output, ElfWriter.WriteObject(result.Object!));
+            ElfWriter.WriteObjectFile(result.Object!, output);
             return 0;
         }
         File.WriteAllBytes(output, result.Bytes);
@@ -394,11 +396,27 @@ public static class Driver
         }
         Target.Current = target;
 
-        X86Cpu profile = X86Cpu.Parse(args);
-        if (profile.Fpu == "none") return Fail("Software floating-point lowering is not yet complete; --fpu=none native compilation is not available yet");
-        if (profile.Name == "386") return Fail("The 386 backend instruction/runtime audit is not yet complete");
-        target.Cpu = profile.Name;
-        target.X86Profile = profile;
+        // LONG MODE IS ONE PROCESSOR BASELINE: the K8, the first AMD64. Every
+        // x86-64 processor since runs what it runs, and the 32-bit profiles'
+        // choices -- an FPU or none, MMX, 3DNow! -- do not apply.
+        bool longMode = target == Target.X86_64;
+        if (longMode)
+        {
+            string? cpuName = Value(args, "--cpu");
+            if (cpuName is not null && cpuName is not ("k8" or "x86-64"))
+            {
+                return Fail($"--cpu {cpuName}: the x86-64 target's processor is k8 (the first AMD64)");
+            }
+            target.Cpu = "k8";
+        }
+        else
+        {
+            X86Cpu profile = X86Cpu.Parse(args);
+            if (profile.Fpu == "none") return Fail("Software floating-point lowering is not yet complete; --fpu=none native compilation is not available yet");
+            if (profile.Name == "386") return Fail("The 386 backend instruction/runtime audit is not yet complete");
+            target.Cpu = profile.Name;
+            target.X86Profile = profile;
+        }
 
         // Bare metal: no operating system under the program, and therefore a
         // different platform library, no thread scheduler, and an entry stub
@@ -416,7 +434,7 @@ public static class Driver
         Corsac.Lang.Lower.Lowering.EntryClearsBss = asmEntry is null;
         Corsac.Lang.Lower.Lowering.StartupObject = Value(args, "--main-type");
 
-        uint? loadBase = null;
+        ulong? loadBase = null;
         if (Value(args, "--base") is { } baseText)
         {
             if (Address(baseText) is not { } parsed)
@@ -429,7 +447,7 @@ public static class Driver
         // --load (or --paddr) is where the loader PUTS the image; --base is
         // where it will RUN. They differ only for a kernel linked into the
         // higher half and loaded low, and the difference shows up as p_paddr.
-        uint? physicalBase = null;
+        ulong? physicalBase = null;
         string? physText = Value(args, "--load") ?? Value(args, "--paddr");
         if (physText is not null)
         {
@@ -511,6 +529,7 @@ public static class Driver
         {
             symbols.AddRange(given.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries));
         }
+        symbols.AddRange(TargetSymbols(target));
 
         // THE PROJECT'S USINGS, in every file (Parser.ProjectUsings).
         Parser.ProjectUsings = Values(args, "--using").ToList();
@@ -548,7 +567,8 @@ public static class Driver
             // else is running. What the compiler allocates does not, so a
             // change that removes repeated work shows up as a smaller number
             // whoever else is using the processors.
-            + " allocated=" + GC.GetTotalAllocatedBytes());
+            + " allocated=" + GC.GetTotalAllocatedBytes()
+            + " specialisations=" + Lang.Monomorphiser.Specialisations + " members=" + Lang.Monomorphiser.SpecialisedMembers);
         if (front is null)
         {
             return 1;
@@ -572,6 +592,7 @@ public static class Driver
         Program.BenchmarkStage("lower");
 #endif
         Module module = Lowering.Lower(front.Value.bound, front.Value.unit, name, library, errors, entries);
+        module.LibraryCodeIsShared = Corsac.Lang.Lower.Lowering.Dynamic;
         Phase("lower");
 
         if (errors.Count > 0)
@@ -584,11 +605,26 @@ public static class Driver
         }
 
         Dictionary<string, byte[]> definitionSemantics = DefinitionSemantics.Capture(module);
+
+        // THE FRONT END IS LET GO HERE. Its syntax, symbols and bindings were
+        // held to the end of the unit for two things written into the object
+        // after code generation, and they were a unit's largest structure
+        // alive through its largest phase. What those two need is taken now.
+        List<ManagedTypeLayout> layouts = ManagedLayouts.Capture(front.Value.bound, library);
+        List<RegistrySchema> schemas = new(front.Value.unit.RegistrySchemas);
+        front = null;
         if (args.Contains("--dump-ir"))
         {
             Console.Write(module.Dump());
         }
 
+        // Whether this object will carry link-time hints (Escape's), decided
+        // before optimising as it is when the object is written: an object,
+        // position-dependent, with the link-time optimizer on, linked against
+        // no shared library. Only such an object may call symbols only the
+        // link defines (field sites).
+        module.LeavesLinkHints = (args.Contains("--obj") || library) && !args.Contains("--no-lto") && !args.Contains("--no-opt")
+            && sharedLibs.Count == 0 && !(shared || args.Contains("--pic"));
         if (!args.Contains("--no-opt"))
         {
 #if COR_SELFHOST_BENCHMARK
@@ -644,6 +680,15 @@ public static class Driver
                 provided.UnionWith(mine);
             }
             module.Provided(provided);
+            // WHAT ONLY THE LIBRARY'S CODE CALLED goes with it. A library body
+            // the optimiser worked on here -- a copy of one of its callees
+            // specialised for a constant argument -- has a name the shared
+            // object does not export, and outlived the caller it was made for:
+            // a program linked against libcorsacrt carried a piece of Gc.
+            if (module.Entry is not null)
+            {
+                Corsac.Lang.Opt.Inline.RemoveDeadFunctions(module, Corsac.Lang.Opt.Inline.AddressTaken(module));
+            }
             HashSet<string> defined = new(
                 module.Functions.Select(f => f.Name).Concat(module.Data.Select(d => d.Name)),
                 StringComparer.Ordinal);
@@ -671,9 +716,21 @@ public static class Driver
         {
             x86Backend.Imported.Add(symbol);
         }
+        Corsac.Lang.X64.X64Backend x64Backend = new()
+        {
+            PositionIndependent = x86Backend.PositionIndependent,
+            Workers = workers,
+            EmitLinkSummary = x86Backend.EmitLinkSummary,
+            StackMaps = !args.Contains("--no-stackmaps"),
+        };
+        foreach (string symbol in imported)
+        {
+            x64Backend.Imported.Add(symbol);
+        }
         IBackend backend = target.Name switch
         {
             "x86" => x86Backend,
+            "x86-64" => x64Backend,
             _ => throw new NotSupportedException($"no backend for target '{target.Name}'"),
         };
 
@@ -697,14 +754,16 @@ public static class Driver
         ObjectFile obj = backend.Generate(module, backendErrors);
         Phase("codegen");
         Corsac.Lang.Opt.Pipeline.ReportAccounts();
-        new TargetContract(freestanding ? (Lowering.TlsGs ? 2u : 1u) : 0u, requiresManagedLayouts: true, requiresCodeGenerationContract: true).Attach(obj);
-        ManagedLayouts.Attach(obj, front.Value.bound);
+        new TargetContract(freestanding ? (Lowering.TlsGs ? 2u : 1u) : 0u, requiresManagedLayouts: true, requiresCodeGenerationContract: true, longMode: longMode).Attach(obj);
+        // The C libraries its [DllImport]s call, for the link to need.
+        NativeLibraries.Attach(obj, module.NativeLibraries);
+        ManagedLayoutContract.Attach(obj, layouts);
 
         // WHAT THIS PROGRAM'S SETTINGS ARE, for the kernel to read out of the
         // file rather than out of the running process -- which is why the
         // section is a note and is not loaded. docs/software/REGISTRY.md in
         // the OS repository describes both the declarations and the bytes.
-        foreach (RegistrySchema schema in front.Value.unit.RegistrySchemas)
+        foreach (RegistrySchema schema in schemas)
         {
             Section declared = new(RegistrySchema.SectionName, SectionKind.Note);
 
@@ -732,9 +791,15 @@ public static class Driver
         if (args.Contains("--stats"))
         {
             Console.Error.WriteLine($"heap: {(module.NeedsHeap ? "needed (collector linked)" : "not needed (no collector)")}");
+            var lifetimes = Corsac.Lang.Opt.Escape.LastRun;
+            Console.Error.WriteLine($"lifetimes: {lifetimes.Promoted} objects in frames, {lifetimes.Owned} freed by the compiler ({lifetimes.OwnedReturns} of them handed over by a fresh return), {lifetimes.Fresh} functions return fresh objects, {lifetimes.Fields} fields freed with their owner, {lifetimes.Variables} reassigned variables owned");
             if (backend is X86Backend x86)
             {
                 Console.Error.Write(x86.Statistics());
+            }
+            else if (backend is Corsac.Lang.X64.X64Backend x64)
+            {
+                Console.Error.Write(x64.Statistics());
             }
         }
         if (backendErrors.Count > 0)
@@ -765,8 +830,13 @@ public static class Driver
         if (args.Contains("--obj") || library)
         {
             if (x86Backend.EmitLinkSummary && !x86Backend.PositionIndependent && sharedLibs.Count == 0)
+            {
+                // The lifetime hints first: the IR archive's integrity hash
+                // covers every other section, these included.
+                if (module.LeavesLinkHints && module.LifetimeHints is { IsEmpty: false } hints) hints.Attach(obj);
                 IrUnitCodec.Attach(obj, module, x86Backend.StackMaps);
-            File.WriteAllBytes(output, ElfWriter.WriteObject(obj));
+            }
+            ElfWriter.WriteObjectFile(obj, output);
             if (Value(args, "--dependency-file") is string dependencyFile) declarations!.WriteDependencies(dependencyFile);
             Console.Error.WriteLine($"{output}: {obj.Section(".text").Size} bytes of code");
             return 0;
@@ -800,7 +870,7 @@ public static class Driver
             // --flat --obj. Keep the original metadata and --with objects.
             TargetContract.Validate(link);
             Corsac.Lang.Lto.LinkTimeOptimizer.Run(link, !args.Contains("--no-lto") && !args.Contains("--no-opt"));
-            Linker.FlatImage image = Linker.LinkFlat(link, entry, loadBase ?? 0x10000);
+            Linker.FlatImage image = Linker.LinkFlat(link, entry, checked((uint)(loadBase ?? 0x10000)));
             File.WriteAllBytes(output, image.Bytes);
             Console.Error.WriteLine(
                 $"{output}: flat image at 0x{image.Base:x}, {image.Bytes.Length} bytes "
@@ -852,6 +922,35 @@ public static class Driver
         }
         Console.Error.WriteLine($"{output}: {obj.Section(".text").Size} bytes of code, {exe.Length} bytes");
         return 0;
+    }
+
+    /// <summary>
+    /// THE TARGET'S OWN CONDITIONAL SYMBOLS, the names .NET's own class library
+    /// is written against: TARGET_64BIT or TARGET_32BIT for the width of a
+    /// word, TARGET_AMD64 or TARGET_X86 for the instruction set. The runtime
+    /// reads its pointer-sized layouts through them -- `#if TARGET_64BIT` --
+    /// exactly as CoreLib does, so one source serves both machines.
+    /// </summary>
+    internal static IEnumerable<string> TargetSymbols(Target target)
+    {
+        if (target == Target.X86_64)
+        {
+            yield return "TARGET_64BIT";
+            yield return "TARGET_AMD64";
+        }
+        else if (target == Target.X86)
+        {
+            yield return "TARGET_32BIT";
+            yield return "TARGET_X86";
+        }
+        else if (target.WordSize == 8)
+        {
+            yield return "TARGET_64BIT";
+        }
+        else
+        {
+            yield return "TARGET_32BIT";
+        }
     }
 
     /// <summary>
@@ -977,6 +1076,7 @@ public static class Driver
             Path.Combine(root, "stdlib", "src", "System", "Core.cor"),
             Path.Combine(root, "stdlib", "src", "System", "Runtime", "ExceptionServices", "ExceptionDispatchInfo.cor"),
             Path.Combine(root, "runtime", "src", "core", "runtime.cor"),
+            Path.Combine(root, "runtime", "src", "core", "unicode.cor"),
             Path.Combine(root, "runtime", "src", "core", "gc.cor"),
             Path.Combine(root, "stdlib", "src", "System", "GC.cor"),
         };
@@ -1022,7 +1122,7 @@ public static class Driver
                 "System/interop.cor", "System/Threading/interlocked.cor", "System/IO/io.cor", "System/Collections/Collections.cor",
                 "System/IO/io-streams.cor", "System/IO/timezone.cor", "System/IO/compression.cor", "System/IO/tar.cor", "System/IO/watcher.cor",
                 "System/time.cor", "System/values.cor", "System/Reflection/Assembly.cor", "System/numerics.cor",
-                "System/Text/RegularExpressions.cor", "System/console.cor", "System/environment.cor",
+                "System/Text/RegularExpressions.cor", "System/Xml/Xml.cor", "System/Text/Json/Json.cor", "System/console.cor", "System/environment.cor",
                 "System/Net/Net.cor", "System/Security/Cryptography/Cryptography.cor", "System/Security/Cryptography/Hashing.cor",
                 "System/signals.cor", "System/unix.cor", "System/process.cor", "System/power.cor",
                 "Microsoft/Win32/Registry.cor",

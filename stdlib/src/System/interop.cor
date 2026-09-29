@@ -23,36 +23,302 @@
 
 static class Marshal
 {
-    static int _lastError;
-
-    /// The errno of the last call that failed, as this process last recorded
-    /// it. .NET's is per-thread and set by the P/Invoke layer; ours is set by
-    /// the library that made the call.
+    /// The errno of the last call that failed on THIS thread, as .NET's is:
+    /// set by a [DllImport] declared with SetLastError = true, and by the
+    /// class library for the system calls it makes itself. It lives in the
+    /// thread's block (Runtime.NativeError).
     public static int GetLastPInvokeError()
     {
-        return _lastError;
+        return Runtime.NativeError();
     }
 
     public static void SetLastPInvokeError(int error)
     {
-        _lastError = error;
+        Runtime.SetNativeError(error);
     }
 
     /// The same number under the name .NET uses for it on Unix, where the
     /// "system error" and the P/Invoke error are one and the same.
     public static int GetLastSystemError()
     {
-        return _lastError;
+        return Runtime.NativeError();
     }
 
     public static void SetLastSystemError(int error)
     {
-        _lastError = error;
+        Runtime.SetNativeError(error);
     }
 
     public static string GetLastPInvokeErrorMessage()
     {
-        return GetPInvokeErrorMessage(_lastError);
+        return GetPInvokeErrorMessage(Runtime.NativeError());
+    }
+
+    // ---- memory C owns --------------------------------------------------
+    //
+    // What a [DllImport] hands back as a pointer, and what it wants one to.
+    // The collector knows nothing of any of it: AllocHGlobal is the C
+    // library's malloc when a C library is loaded (so free(3) in C may
+    // release it, and the other way round), and pages of the process's own
+    // otherwise.
+
+    /// A NUL-terminated UTF-8 string C made, as a string; null for zero.
+    public static string? PtrToStringUTF8(nint ptr)
+    {
+        if (ptr == 0)
+        {
+            return null;
+        }
+        int length = 0;
+        while (Sys.PeekByte(ptr + length) != 0)
+        {
+            length++;
+        }
+        return PtrToStringUTF8(ptr, length);
+    }
+
+    /// `byteLen` bytes of UTF-8 at `ptr`, as a string.
+    public static string PtrToStringUTF8(nint ptr, int byteLen)
+    {
+        if (ptr == 0 && byteLen != 0)
+        {
+            throw new ArgumentNullException("ptr");
+        }
+        if (byteLen < 0)
+        {
+            throw new ArgumentOutOfRangeException("byteLen");
+        }
+        return Utf8Transcoder.Decode((long)ptr, byteLen);
+    }
+
+    /// On Unix .NET reads an "ANSI" string as UTF-8, and so does this.
+    public static string? PtrToStringAnsi(nint ptr)
+    {
+        return PtrToStringUTF8(ptr);
+    }
+
+    public static string PtrToStringAnsi(nint ptr, int len)
+    {
+        return PtrToStringUTF8(ptr, len);
+    }
+
+    /// A copy of `s` as C reads one, in memory AllocHGlobal gave; free it
+    /// with FreeHGlobal. Zero for null.
+    public static nint StringToHGlobalUTF8(string? s)
+    {
+        if (s == null)
+        {
+            return 0;
+        }
+        // THE TEXT'S UTF-8, not its UTF-16 code units: what C reads.
+        byte[] bytes = Utf8Transcoder.Encode(s, 0, s.Length);
+        nint at = AllocHGlobal(bytes.Length + 1);
+        for (int i = 0; i < bytes.Length; i++)
+        {
+            Sys.PokeByte(at + i, bytes[i]);
+        }
+        Sys.PokeByte(at + bytes.Length, 0);
+        return at;
+    }
+
+    public static nint StringToHGlobalAnsi(string? s)
+    {
+        return StringToHGlobalUTF8(s);
+    }
+
+    public static nint StringToCoTaskMemUTF8(string? s)
+    {
+        return StringToHGlobalUTF8(s);
+    }
+
+    static long _malloc;
+    static long _free;
+    static long _realloc;
+    // 0 not yet asked, 1 the C library's, 2 our own pages.
+    static int _heapKind;
+
+    /// Whether AllocHGlobal and FreeHGlobal are C's malloc and free. ONE
+    /// ANSWER FOR EVERY THREAD, published in one word after the three
+    /// addresses it rests on: with each address published as it was found,
+    /// a second thread saw malloc found and free not yet, took pages of its
+    /// own for a block, and handed them to C's free later -- "free(): invalid
+    /// pointer", once in a few hundred runs of four threads starting at once.
+    /// Threads that ask together find the same addresses and write the same.
+    static bool CLibrary()
+    {
+        int kind = _heapKind;
+        if (kind == 0)
+        {
+            long malloc = Runtime.NativeSymbol("malloc");
+            long free = Runtime.NativeSymbol("free");
+            long realloc = Runtime.NativeSymbol("realloc");
+            _malloc = malloc;
+            _free = free;
+            _realloc = realloc;
+            kind = malloc != 0 && free != 0 && realloc != 0 ? 1 : 2;
+            Sys.Fence();
+            _heapKind = kind;
+        }
+        return kind == 1;
+    }
+
+    /// `cb` bytes no collector will move or free.
+    public static nint AllocHGlobal(nint cb)
+    {
+        if (cb < 0)
+        {
+            throw new ArgumentOutOfRangeException("cb");
+        }
+        long at;
+        if (CLibrary())
+        {
+            at = Runtime.CallC(_malloc, cb == 0 ? 1 : cb, 0, 0, 0);
+        }
+        else
+        {
+            // No C library to ask: pages, with the size kept in front so
+            // FreeHGlobal can give them back.
+            long bytes = (cb + 2 * WordSize.Bytes + 4095) & ~4095L;
+            long pages = Platform.Map(bytes);
+            if (pages != 0)
+            {
+                Sys.Poke(pages, bytes);
+                at = pages + 2 * WordSize.Bytes;
+            }
+            else
+            {
+                at = 0;
+            }
+        }
+        if (at == 0)
+        {
+            throw new OutOfMemoryException();
+        }
+        return (nint)at;
+    }
+
+    public static nint AllocHGlobal(int cb)
+    {
+        return AllocHGlobal((nint)cb);
+    }
+
+    public static nint AllocCoTaskMem(int cb)
+    {
+        return AllocHGlobal((nint)cb);
+    }
+
+    public static void FreeHGlobal(nint hglobal)
+    {
+        if (hglobal == 0)
+        {
+            return;
+        }
+        if (CLibrary())
+        {
+            Runtime.CallC(_free, hglobal, 0, 0, 0);
+            return;
+        }
+        long pages = hglobal - 2 * WordSize.Bytes;
+        Platform.Unmap(pages, Sys.Peek(pages));
+    }
+
+    public static void FreeCoTaskMem(nint ptr)
+    {
+        FreeHGlobal(ptr);
+    }
+
+    public static nint ReAllocHGlobal(nint pv, nint cb)
+    {
+        if (pv == 0)
+        {
+            return AllocHGlobal(cb);
+        }
+        if (CLibrary())
+        {
+            long at = Runtime.CallC(_realloc, pv, cb == 0 ? 1 : cb, 0, 0);
+            if (at == 0)
+            {
+                throw new OutOfMemoryException();
+            }
+            return (nint)at;
+        }
+        long pages = pv - 2 * WordSize.Bytes;
+        long had = Sys.Peek(pages) - 2 * WordSize.Bytes;
+        nint made = AllocHGlobal(cb);
+        long keep = had < cb ? had : cb;
+        for (long i = 0; i < keep; i++)
+        {
+            Sys.PokeByte(made + i, Sys.PeekByte(pv + i));
+        }
+        FreeHGlobal(pv);
+        return made;
+    }
+
+    public static byte ReadByte(nint ptr) { return (byte)Sys.PeekByte(ptr); }
+    public static byte ReadByte(nint ptr, int ofs) { return (byte)Sys.PeekByte(ptr + ofs); }
+    public static short ReadInt16(nint ptr) { return (short)Sys.PeekHalf(ptr); }
+    public static short ReadInt16(nint ptr, int ofs) { return (short)Sys.PeekHalf(ptr + ofs); }
+    public static int ReadInt32(nint ptr) { return (int)Sys.PeekWord(ptr); }
+    public static int ReadInt32(nint ptr, int ofs) { return (int)Sys.PeekWord(ptr + ofs); }
+    public static long ReadInt64(nint ptr) { return Sys.PeekWord(ptr) | (Sys.PeekWord(ptr + 4) << 32); }
+    public static long ReadInt64(nint ptr, int ofs) { return ReadInt64(ptr + ofs); }
+    public static nint ReadIntPtr(nint ptr) { return (nint)Sys.Peek(ptr); }
+    public static nint ReadIntPtr(nint ptr, int ofs) { return (nint)Sys.Peek(ptr + ofs); }
+
+    public static void WriteByte(nint ptr, byte val) { Sys.PokeByte(ptr, val); }
+    public static void WriteByte(nint ptr, int ofs, byte val) { Sys.PokeByte(ptr + ofs, val); }
+    public static void WriteInt16(nint ptr, short val) { Sys.PokeHalf(ptr, val); }
+    public static void WriteInt16(nint ptr, int ofs, short val) { Sys.PokeHalf(ptr + ofs, val); }
+    public static void WriteInt32(nint ptr, int val) { Sys.PokeWord(ptr, val); }
+    public static void WriteInt32(nint ptr, int ofs, int val) { Sys.PokeWord(ptr + ofs, val); }
+    public static void WriteInt64(nint ptr, long val) { Sys.PokeWord(ptr, val); Sys.PokeWord(ptr + 4, val >> 32); }
+    public static void WriteInt64(nint ptr, int ofs, long val) { WriteInt64(ptr + ofs, val); }
+    public static void WriteIntPtr(nint ptr, nint val) { Sys.Poke(ptr, val); }
+    public static void WriteIntPtr(nint ptr, int ofs, nint val) { Sys.Poke(ptr + ofs, val); }
+
+    /// Bytes between an array and memory C owns, both ways.
+    public static void Copy(byte[] source, int startIndex, nint destination, int length)
+    {
+        CheckRange(source.Length, startIndex, length);
+        for (int i = 0; i < length; i++)
+        {
+            Sys.PokeByte(destination + i, source[startIndex + i]);
+        }
+    }
+
+    public static void Copy(nint source, byte[] destination, int startIndex, int length)
+    {
+        CheckRange(destination.Length, startIndex, length);
+        for (int i = 0; i < length; i++)
+        {
+            destination[startIndex + i] = (byte)Sys.PeekByte(source + i);
+        }
+    }
+
+    public static void Copy(int[] source, int startIndex, nint destination, int length)
+    {
+        CheckRange(source.Length, startIndex, length);
+        for (int i = 0; i < length; i++)
+        {
+            Sys.PokeWord(destination + 4 * i, source[startIndex + i]);
+        }
+    }
+
+    public static void Copy(nint source, int[] destination, int startIndex, int length)
+    {
+        CheckRange(destination.Length, startIndex, length);
+        for (int i = 0; i < length; i++)
+        {
+            destination[startIndex + i] = (int)Sys.PeekWord(source + 4 * i);
+        }
+    }
+
+    static void CheckRange(int count, int start, int length)
+    {
+        if (start < 0 || length < 0 || start > count - length)
+        {
+            throw new ArgumentOutOfRangeException("length");
+        }
     }
 
     /// strerror(3), word for word, because these strings are the ones every
@@ -197,3 +463,107 @@ static class CollectionsMarshal
         return new Span<T>(list.Backing(), 0, list.Count);
     }
 }
+
+namespace System.Runtime.InteropServices
+{
+    /// A processor architecture, as .NET numbers them.
+    public enum Architecture
+    {
+        X86 = 0,
+        X64 = 1,
+        Arm = 2,
+        Arm64 = 3,
+        Wasm = 4,
+        S390x = 5,
+        LoongArch64 = 6,
+        Armv6 = 7,
+        Ppc64le = 8,
+        RiscV64 = 9,
+    }
+
+    /// An operating system, by name.
+    public readonly struct OSPlatform : IEquatable<OSPlatform>
+    {
+        readonly string _name;
+
+        OSPlatform(string name)
+        {
+            _name = name;
+        }
+
+        public static OSPlatform Linux => new OSPlatform("LINUX");
+        public static OSPlatform Windows => new OSPlatform("WINDOWS");
+        public static OSPlatform OSX => new OSPlatform("OSX");
+        public static OSPlatform FreeBSD => new OSPlatform("FREEBSD");
+
+        public static OSPlatform Create(string osPlatform)
+        {
+            if (osPlatform == null) throw new ArgumentNullException(nameof(osPlatform));
+            if (osPlatform.Length == 0) throw new ArgumentException("Value cannot be an empty string.", nameof(osPlatform));
+            return new OSPlatform(osPlatform);
+        }
+
+        public bool Equals(OSPlatform other) { return string.Equals(_name, other._name, StringComparison.OrdinalIgnoreCase); }
+
+        public override bool Equals(object? obj) { return obj is OSPlatform other && Equals(other); }
+
+        public override int GetHashCode() { return _name == null ? 0 : _name.ToUpperInvariant().GetHashCode(); }
+
+        public override string ToString() { return _name ?? ""; }
+
+        public static bool operator ==(OSPlatform left, OSPlatform right) { return left.Equals(right); }
+
+        public static bool operator !=(OSPlatform left, OSPlatform right) { return !left.Equals(right); }
+    }
+
+    /// What the program runs on and as: the system's name and release
+    /// (uname(2)), the machine's architecture, and this process's -- the
+    /// image's own, x86 or x86-64, whatever the kernel under it is.
+    public static class RuntimeInformation
+    {
+        public static bool IsOSPlatform(OSPlatform osPlatform)
+        {
+            return osPlatform == OSPlatform.Linux;
+        }
+
+        public static Architecture ProcessArchitecture => WordSize.Bytes == 8 ? Architecture.X64 : Architecture.X86;
+
+        /// The kernel's machine: an x86-64 one running this 32-bit image is X64.
+        public static Architecture OSArchitecture
+        {
+            get
+            {
+                string machine = Uname(4);
+                if (machine == "x86_64" || machine == "amd64") return Architecture.X64;
+                if (machine == "aarch64" || machine == "arm64") return Architecture.Arm64;
+                if (machine.StartsWith("armv6")) return Architecture.Armv6;
+                if (machine.StartsWith("arm")) return Architecture.Arm;
+                if (machine == "s390x") return Architecture.S390x;
+                if (machine == "ppc64le") return Architecture.Ppc64le;
+                if (machine == "loongarch64") return Architecture.LoongArch64;
+                if (machine == "riscv64") return Architecture.RiscV64;
+                return Architecture.X86;
+            }
+        }
+
+        /// The system's name, release and version, as uname -srv prints them.
+        public static string OSDescription => Uname(0) + " " + Uname(2) + " " + Uname(3);
+
+        public static string FrameworkDescription => "COR-C# runtime";
+
+        public static string RuntimeIdentifier => WordSize.Bytes == 8 ? "linux-x64" : "linux-x86";
+
+        /// One field of struct utsname: 0 sysname, 1 nodename, 2 release,
+        /// 3 version, 4 machine.
+        static string Uname(int field)
+        {
+            byte[] names = new byte[65 * 6];
+            if (Err.Result(Sys.Syscall(122, Sys.ArrayData(names), 0, 0)) < 0) return "";
+            int start = field * 65;
+            int end = start;
+            while (end < start + 65 && names[end] != 0) end++;
+            return System.Text.Encoding.UTF8.GetString(names, start, end - start);
+        }
+    }
+}
+

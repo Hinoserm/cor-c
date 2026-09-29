@@ -20,8 +20,8 @@ public static class BackendCommand
             {
                 if (Path.GetFullPath(request.Input) == Path.GetFullPath(request.Output)) throw new InvalidDataException("Backend output would overwrite input");
                 var original = ElfReader.ReadObject(File.ReadAllBytes(request.Input));
-                var result = backend.Recompile(original, request.Imports, request.Retained);
-                File.WriteAllBytes(request.Output, ElfWriter.WriteObject(result));
+                var result = backend.Recompile(original, request.Imports, request.Retained, request.Facts);
+                ElfWriter.WriteObjectFile(result, request.Output);
                 BackendProtocol.WriteResponse(writer, null);
             }
             catch (Exception error) { BackendProtocol.WriteResponse(writer, error.Message); }

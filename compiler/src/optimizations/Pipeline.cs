@@ -66,7 +66,10 @@ public sealed class Pipeline
             KeepFreeHelper = keepFree,
         };
         Pipeline p = new() { Rounds = rounds };
-        if (experimentalBatch) p.Verify = true;
+        // CORC_VERIFY_PASSES=1: the IR checked after every pass, late ones
+        // included, so a pass that breaks the IR is named where it does it
+        // and not at the link that imports the unit.
+        if (experimentalBatch || Environment.GetEnvironmentVariable("CORC_VERIFY_PASSES") == "1") p.Verify = true;
         p.Passes.Add(new ConstantFold());
         p.Passes.Add(new Narrowing());
         p.Passes.Add(new ConstantAndCopyPropagation());
@@ -119,6 +122,19 @@ public sealed class Pipeline
         p.LatePasses.Add(new ScalarObjects());
         p.LatePasses.Add(new Escape());
         p.LatePasses.Add(Inliner());
+        // The card marks written out, last: to every pass above they are a
+        // call that lets nothing go (CardMarks).
+        p.LatePasses.Add(new CardMarks());
+        // A DIAGNOSTIC SWITCH, for finding which pass a miscompile comes out
+        // of: CORC_SKIP_PASSES=Escape,Inline leaves those out of every list.
+        // Nothing is ever built with it set.
+        if (Environment.GetEnvironmentVariable("CORC_SKIP_PASSES") is { Length: > 0 } skip)
+        {
+            HashSet<string> names = new(skip.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries), StringComparer.Ordinal);
+            p.Passes.RemoveAll(pass => names.Contains(pass.GetType().Name));
+            p.ModulePasses.RemoveAll(pass => names.Contains(pass.GetType().Name));
+            p.LatePasses.RemoveAll(pass => names.Contains(pass.GetType().Name));
+        }
         return p;
     }
 
@@ -167,6 +183,10 @@ public sealed class Pipeline
 #if COR_SELFHOST_BENCHMARK
                 Corsac.Program.BenchmarkStage("opt-late-end " + p.Name);
 #endif
+                if (Verify)
+                {
+                    foreach (Function checkedFunction in m.Functions) Verifier.Check(checkedFunction, $"after {p.Name}");
+                }
             }
 #if COR_SELFHOST_BENCHMARK
             Corsac.Program.BenchmarkStage("opt-functions-final");
@@ -215,8 +235,15 @@ public sealed class Pipeline
                     + (cost.Bytes >> 20) + "MiB runs=" + cost.Runs);
     }
 
+    /// <summary>CORC_TRACE_FUNCTIONS: each function's name and size as the pipeline starts on it, for finding one that never finishes.</summary>
+    private static readonly bool TraceFunctions = Environment.GetEnvironmentVariable("CORC_TRACE_FUNCTIONS") is not null;
+
     public void Run(Function f)
     {
+        if (TraceFunctions)
+        {
+            Console.Error.WriteLine($"pipeline {f.Name} ({f.Blocks.Sum(b => b.Instrs.Count)} instructions, {f.Blocks.Count} blocks)");
+        }
         if (Verify)
         {
             Verifier.Check(f, "before optimisation");

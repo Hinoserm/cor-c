@@ -79,6 +79,7 @@ public static class Fold
                         value = v;
                         return true;
                     case UnOp.Neg: value = -v; return true;
+                    case UnOp.Plus: value = v; return true;
                     case UnOp.Not: value = v == 0 ? 1 : 0; return true;
                     case UnOp.BitNot: value = ~v; return true;
                     default: return false;
@@ -170,6 +171,14 @@ public static class Fold
 
             case BinOp.Shr:
                 if (y is < 0 or > 63) { return false; }
+                value = x >> (int)y;
+                return true;
+
+            // Unsigned only differs from signed for a negative left side, and
+            // how many zeros come in then depends on its width, which a folded
+            // number no longer carries: that one is left to run time.
+            case BinOp.UShr:
+                if (y is < 0 or > 63 || x < 0) { return false; }
                 value = x >> (int)y;
                 return true;
 

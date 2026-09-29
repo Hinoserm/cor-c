@@ -1,0 +1,46 @@
+// test: byref_delegates
+// expect-exit: 0
+// expect-output:
+// 13 4 15 True 4 True held
+//
+// ref, out and in through delegates: a lambda with out, a method group with
+// out, local functions with ref and out (their own delegate type), one in a
+// generic class capturing a local, and `T Item = default!;`.
+
+delegate bool TryIt(string s, out int v);
+class Holder<T>
+{
+    public T Item = default!;
+    public bool Fetch(out T value)
+    {
+        int calls = 0;
+        bool Get(out T got) { calls = calls + 1; got = Item; return true; }
+        bool ok = Get(out value);
+        return ok && calls == 1;
+    }
+}
+static class Program
+{
+    static bool Len(string s, out int v) { v = s.Length; return true; }
+    static int Main()
+    {
+        int bias = 10;
+        TryIt f = (string s, out int v) => { v = s.Length + bias; return true; };
+        f("abc", out int got);
+        TryIt g = Len;
+        g("abcd", out int got2);
+        int total = 0;
+        void Add(ref int into, int amount) { into = into + amount + bias; }
+        Add(ref total, 5);
+        bool Digits(string s, int least, int most, out int value)
+        {
+            value = s.Length;
+            return value >= least && value <= most;
+        }
+        bool fits = Digits("1234", 4, 4, out int four);
+        Holder<string> h = new Holder<string> { Item = "held" };
+        bool fetched = h.Fetch(out string item);
+        Console.WriteLine(got + " " + got2 + " " + total + " " + fits + " " + four + " " + fetched + " " + item);
+        return 0;
+    }
+}

@@ -44,12 +44,25 @@ public sealed class DeclarationIndex : IDisposable
             stream.ReadExactly(raw);
             for (long i = 0; i < Count; i++) offsets[i] = BitConverter.ToInt64(raw, checked((int)(i * 8)));
             offsets[Count] = table;
+            keys = new string?[Count];
+            verified = new bool[Count];
         }
         catch { reader.Dispose(); stream.Dispose(); throw; }
     }
 
     /// <summary>Where each record starts, and where the last one ends.</summary>
     private readonly long[] offsets = Array.Empty<long>();
+
+    /// <summary>
+    /// EACH RECORD CHECKED ONCE. The file does not change under an open index,
+    /// and hashing a key at every probe of the search and a payload at every
+    /// read was a twentieth of a self-hosted unit's time: the same library
+    /// records, read again for each unit, hashed again each time. A record's
+    /// key is kept once its checksum has passed, and its payload remembered as
+    /// checked; the bytes themselves are read again, not kept.
+    /// </summary>
+    private readonly string?[] keys = Array.Empty<string?>();
+    private readonly bool[] verified = Array.Empty<bool>();
 
     public IEnumerable<DeclarationRecord> Find(string key) => Range(key, false);
     public IEnumerable<DeclarationRecord> WithPrefix(string prefix) => Range(prefix, true);
@@ -92,15 +105,25 @@ public sealed class DeclarationIndex : IDisposable
         int keyLength = reader.ReadInt32(), size = reader.ReadInt32();
         CheckLengths(keyLength, size);
         if (72L + keyLength + size != end - start) throw new InvalidDataException("Declaration record length mismatch");
+        if (!payload && keys[number] is string known) return new DeclarationRecord(known, Array.Empty<byte>());
         byte[] keyDigest = ReadBytes(reader, 32);
         byte[] digest = ReadBytes(reader, 32);
         byte[] keyBytes = ReadBytes(reader, keyLength);
-        if (!SHA256.HashData(keyBytes).SequenceEqual(keyDigest)) throw new InvalidDataException("Declaration key checksum mismatch");
-        string key = Utf8.GetString(keyBytes);
-        if (key.IndexOf('\0') >= 0) throw new InvalidDataException("NUL in declaration key");
+        string? key = keys[number];
+        if (key is null)
+        {
+            if (!SHA256.HashData(keyBytes).SequenceEqual(keyDigest)) throw new InvalidDataException("Declaration key checksum mismatch");
+            key = Utf8.GetString(keyBytes);
+            if (key.IndexOf('\0') >= 0) throw new InvalidDataException("NUL in declaration key");
+            keys[number] = key;
+        }
         if (!payload) return new DeclarationRecord(key, Array.Empty<byte>());
         byte[] bytes = ReadBytes(reader, size);
-        if (!Digest(keyBytes, bytes).SequenceEqual(digest)) throw new InvalidDataException("Declaration record checksum mismatch");
+        if (!verified[number])
+        {
+            if (!Digest(keyBytes, bytes).SequenceEqual(digest)) throw new InvalidDataException("Declaration record checksum mismatch");
+            verified[number] = true;
+        }
         return new DeclarationRecord(key, bytes);
     }
 

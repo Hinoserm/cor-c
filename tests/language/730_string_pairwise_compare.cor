@@ -1,0 +1,76 @@
+// test: string_pairwise_compare
+// expect-exit: 0
+// expect-output:
+// 0 =t<f<f<f<f<f<f<f<f<f<f<f<f<f<f<f<f<f<f<f
+// 1 >f=t<f<f<f<f<f<f<f<f<f<f<f<f<f<f<f<f<f<f
+// 2 >f>f=t>f<f>f>f>f>f>f<f>f<f<f<f<f<f>f>f>f
+// 3 >f>f<f=t<f<f<f<f<f<f<f<f<f<f<f<f<f<f<f<f
+// 4 >f>f>f>f=t>f>f>f>f>f<f>f<f<f<f<f<f>f>f>f
+// 5 >f>f<f>f<f=t<f<f<f<f<f<f<f<f<f<f<f<f<f<f
+// 6 >f>f<f>f<f>f=t>f>f<f<f<f<f<f<f<f<f>f>f>f
+// 7 >f>f<f>f<f>f<f=t<f<f<f<f<f<f<f<f<f<f<f<f
+// 8 >f>f<f>f<f>f<f>f=t<f<f<f<f<f<f<f<f>f>f>f
+// 9 >f>f<f>f<f>f>f>f>f=t<f<f<f<f<f<f<f>f>f>f
+// 10 >f>f>f>f>f>f>f>f>f>f=t>f<f<f>f>f<f>f>f>f
+// 11 >f>f<f>f<f>f>f>f>f>f<f=t<f<f<f<f<f>f>f>f
+// 12 >f>f>f>f>f>f>f>f>f>f>f>f=t<f>f>f>f>f>f>f
+// 13 >f>f>f>f>f>f>f>f>f>f>f>f>f=t>f>f>f>f>f>f
+// 14 >f>f>f>f>f>f>f>f>f>f<f>f<f<f=t<f<f>f>f>f
+// 15 >f>f>f>f>f>f>f>f>f>f<f>f<f<f>f=t<f>f>f>f
+// 16 >f>f>f>f>f>f>f>f>f>f>f>f<f<f>f>f=t>f>f>f
+// 17 >f>f<f>f<f>f<f>f<f<f<f<f<f<f<f<f<f=t<f>f
+// 18 >f>f<f>f<f>f<f>f<f<f<f<f<f<f<f<f<f>f=t>f
+// 19 >f>f<f>f<f>f<f>f<f<f<f<f<f<f<f<f<f<f<f=t
+// 31 45 True True True True False
+// the quick brown fox jumps over the lazy dog|the end a|b|c-
+// 6633 False True
+// 20 True True
+// 0,1,2,3,4,8,9,9,4,3,4,2,1,2,2,2,2,2,2,2
+//
+// Equality, ordinal order and hashing read two code units a load
+// (Sys.GetCharPair): odd lengths, differences in either unit of a pair,
+// surrogates, offsets inside a string, and table keys. Output checked
+// against .NET.
+
+using System;
+using System.Collections.Generic;
+
+static class Program
+{
+    static int Sign(int x) => x < 0 ? -1 : x > 0 ? 1 : 0;
+
+    static void Main()
+    {
+        string[] words = { "", "a", "b", "ab", "ba", "abc", "abd", "abcd", "abce", "abdc", "éa", "aé",
+                           "😀", "😁", "zz", "zĀ", "Āz", "abcdefghi", "abcdefghj", "abcdefgh" };
+        int line = 0;
+        foreach (string x in words)
+        {
+            string row = "";
+            foreach (string y in words)
+            {
+                int c = Sign(string.CompareOrdinal(x, y));
+                bool e = x == y;
+                bool e2 = string.Equals(new string(x.ToCharArray()), y);
+                row += (c < 0 ? "<" : c > 0 ? ">" : "=") + (e ? "t" : "f") + (e2 == e ? "" : "!");
+            }
+            Console.WriteLine((line++) + " " + row);
+        }
+        string hay = "the quick brown fox jumps over the lazy dog, the end";
+        Console.WriteLine(hay.IndexOf("the", 1, StringComparison.Ordinal) + " " + hay.LastIndexOf("the", StringComparison.Ordinal)
+            + " " + hay.StartsWith("the q", StringComparison.Ordinal) + " " + hay.EndsWith("e end", StringComparison.Ordinal)
+            + " " + hay.EndsWith("he end", StringComparison.Ordinal) + " " + hay.Contains("lazy") + " " + hay.Contains("lazz"));
+        Console.WriteLine(string.Join("|", hay.Split(", ")) + " " + string.Join("|", "a--b--c-".Split("--")));
+        var d = new Dictionary<string, int>();
+        for (int i = 0; i < 200; i++) d["k" + i] = i;
+        int sum = 0;
+        for (int i = 0; i < 200; i += 3) sum += d["k" + i];
+        Console.WriteLine(sum + " " + d.ContainsKey("k200") + " " + d.ContainsKey("k19"));
+        var hashes = new HashSet<int>();
+        foreach (string w in words) hashes.Add(w.GetHashCode());
+        Console.WriteLine(hashes.Count + " " + ("abc".GetHashCode() == ("ab" + "c").GetHashCode()) + " " + ("abcde".GetHashCode() == new string("abcde".ToCharArray()).GetHashCode()));
+        string[] sorted = (string[])words.Clone();
+        Array.Sort(sorted, string.CompareOrdinal);
+        Console.WriteLine(string.Join(",", Array.ConvertAll(sorted, w => w.Length.ToString())));
+    }
+}

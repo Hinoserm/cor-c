@@ -59,8 +59,35 @@ public sealed partial class Binder
     {
         if (declaration.Init is not LambdaExpr lambda) return;
         bool named = call.ArgNames.Any(name => name is not null);
+
+        // A `params` TAIL IS PACKED, as a method's is: the arguments after the
+        // fixed ones become one array, unless a single one there already is
+        // the array. After the first round the call carries the array, and it
+        // converts, so it is not packed again.
+        if (!named && lambda.Params.Count > 0 && lambda.Params[^1].IsParams && call.Args.Count >= lambda.Params.Count - 1)
+        {
+            int fixedCount = lambda.Params.Count - 1;
+            Type array = Resolve(lambda.Params[^1].Type, _thisType);
+            bool expanded = call.Args.Count != lambda.Params.Count;
+            if (!expanded)
+            {
+                _quiet++;
+                Type given = CheckExpr(call.Args[^1]);
+                _quiet--;
+                expanded = !given.IsError && given.Prim != Prim.NullLiteral && !Convertible(given, array);
+            }
+            if (expanded && array.Element is Type element && RefOf(element) is TypeRef each)
+            {
+                NewExpr packed = new() { Type = each, Elements = call.Args.Skip(fixedCount).ToList(), Line = call.Line, Col = call.Col };
+                call.Args.RemoveRange(fixedCount, call.Args.Count - fixedCount);
+                call.Args.Add(packed);
+                if (call.ArgNames.Count > call.Args.Count) call.ArgNames.RemoveRange(call.Args.Count, call.ArgNames.Count - call.Args.Count);
+            }
+        }
         if (!named && call.Args.Count == lambda.Params.Count) return;
         Expr?[] placed = new Expr?[lambda.Params.Count];
+        int[] from = new int[lambda.Params.Count];
+        Array.Fill(from, -1);
         List<int> order = new();
         for (int n = 0; n < call.Args.Count; n++)
         {
@@ -71,7 +98,7 @@ public sealed partial class Binder
                 Error(call, $"invalid or duplicate argument for local function '{declaration.Name}'");
                 return;
             }
-            placed[index] = call.Args[n]; order.Add(index);
+            placed[index] = call.Args[n]; order.Add(index); from[index] = n;
         }
         for (int n = 0; n < placed.Length; n++)
         {
@@ -81,7 +108,9 @@ public sealed partial class Binder
                 Error(call, $"missing argument '{lambda.Params[n].Name}' for local function '{declaration.Name}'");
                 return;
             }
-            placed[n] = LocalDefault(declaration, lambda.Params[n]); order.Add(n);
+            placed[n] = CallerValue(lambda.Params[n], lambda.Params, CallLine(call), k => from[k] < 0 ? null : SpanText(call.Spans, call.Source, from[k] + 1))
+                        ?? LocalDefault(declaration, lambda.Params[n]);
+            order.Add(n);
         }
         call.Args.Clear(); call.Args.AddRange(placed!);
         call.ArgNames.Clear();

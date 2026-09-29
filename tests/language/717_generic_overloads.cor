@@ -1,0 +1,95 @@
+// test: generic_overloads
+// expect-exit: 0
+// expect-output:
+// generic 5
+// generic s
+// object
+// generic
+// Animal
+// Dog
+// generic 3 Int32
+// generic 2 String
+// objects 2
+// generic 2 Dog
+// generic
+// objects
+// generic[]
+// Animal[]
+// fixed 1 2
+// gfixed 2
+// 10,20,30
+// a!,b!
+// True
+// True
+// done
+//
+// A generic method competes with ordinary overloads on better conversion and
+// loses only a tie (C# 12.6.4.3): One(5) is One<int>, Three(dog) is
+// Three(Dog). A generic method's params array expands with its element type
+// inferred, so Task.WhenAll over Task<int> is WhenAll<int> and hands back the
+// values. Variance carries reference conversions only: IEnumerable<object> is
+// no IEnumerable<string>, so Seq<T>(IEnumerable<T>) beats
+// Seq(IEnumerable<object>) for a List<string>. Expected output is real .NET's.
+
+using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+
+class Animal { public override string ToString() => "animal"; }
+class Dog : Animal { public override string ToString() => "dog"; }
+
+static class Pick
+{
+    public static string One(object o) => "object";
+    public static string One<T>(T t) => "generic " + t;
+    public static string Two(Animal a) => "Animal";
+    public static string Two<T>(T t) => "generic";
+    public static string Three(Dog d) => "Dog";
+    public static string Three<T>(T t) => "generic";
+    public static string Many(params object[] items) => "objects " + items.Length;
+    public static string Many<T>(params T[] items) => "generic " + items.Length + " " + typeof(T).Name;
+    public static string Seq(IEnumerable<object> s) => "objects";
+    public static string Seq<T>(IEnumerable<T> s) => "generic";
+    public static string Arr(Animal[] a) => "Animal[]";
+    public static string Arr<T>(T[] a) where T : Animal => "generic[]";
+    public static string Fixed(int n, params string[] rest) => "fixed " + n + " " + rest.Length;
+    public static string Fixed<T>(T n, params T[] rest) => "gfixed " + rest.Length;
+}
+
+class Program
+{
+    static async Task<int> Num(int n) { await Task.Yield(); return n * 10; }
+    static async Task<string> Word(string s) { await Task.Yield(); return s + "!"; }
+
+    static async Task Main()
+    {
+        Console.WriteLine(Pick.One(5));
+        Console.WriteLine(Pick.One("s"));
+        Console.WriteLine(Pick.One((object)"s"));
+        Console.WriteLine(Pick.Two(new Dog()));
+        Console.WriteLine(Pick.Two(new Animal()));
+        Console.WriteLine(Pick.Three(new Dog()));
+        Console.WriteLine(Pick.Many(1, 2, 3));
+        Console.WriteLine(Pick.Many("a", "b"));
+        Console.WriteLine(Pick.Many("a", 1));
+        Console.WriteLine(Pick.Many(new Dog(), new Dog()));
+        Console.WriteLine(Pick.Seq(new List<string> { "x" }));
+        Console.WriteLine(Pick.Seq(new List<object> { "x" }));
+        Console.WriteLine(Pick.Arr(new Dog[1]));
+        Console.WriteLine(Pick.Arr(new Animal[1]));
+        Console.WriteLine(Pick.Fixed(1, "a", "b"));
+        Console.WriteLine(Pick.Fixed(1, 2, 3));
+
+        int[] nums = await Task.WhenAll(Num(1), Num(2), Num(3));
+        Console.WriteLine(string.Join(",", nums));
+        List<Task<string>> words = new List<Task<string>> { Word("a"), Word("b") };
+        string[] got = await Task.WhenAll(words);
+        Console.WriteLine(string.Join(",", got));
+        Task<int> first = await Task.WhenAny(Num(4), Num(5));
+        Console.WriteLine(first.Result >= 40);
+        Task plain = await Task.WhenAny(Task.Delay(1), Task.Delay(1));
+        Console.WriteLine(plain.IsCompleted);
+        await Task.WhenAll(Task.Delay(1), Num(1));
+        Console.WriteLine("done");
+    }
+}

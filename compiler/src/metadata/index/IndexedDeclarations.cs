@@ -11,6 +11,14 @@ public sealed class IndexedDeclarations : IDisposable
     private readonly HashSet<string> implementations = new(StringComparer.Ordinal);
     private readonly HashSet<string> queries = new(StringComparer.Ordinal);
     private readonly HashSet<string> resolvedExtensions = new(StringComparer.Ordinal);
+    private readonly HashSet<string> resolvedOverrides = new(StringComparer.Ordinal);
+    /// <summary>
+    /// What each binding name the binder required came to, and the two query
+    /// prefixes, spelled once: the binder asks for the same names thousands of
+    /// times a unit, and each ask built both queries afresh.
+    /// </summary>
+    private readonly Dictionary<string, string?> required = new(StringComparer.Ordinal);
+    private readonly string bindingPrefix, solePrefix;
     public long PayloadLoads => catalog.PayloadLoads;
     public SyntaxTokenCache Tokens { get; }
     public int Passes { get; set; }
@@ -30,6 +38,8 @@ public sealed class IndexedDeclarations : IDisposable
         // table, even for declarations this unit never demand-loads. Adding
         // an earlier family can move every later slot: it is an ABI input.
         queries.Add("I:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n");
+        bindingPrefix = "B:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n";
+        solePrefix = "S:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n";
         owned = ownedFiles.Select(Path.GetFullPath).ToHashSet(StringComparer.Ordinal);
     }
 
@@ -47,14 +57,41 @@ public sealed class IndexedDeclarations : IDisposable
         Interfaces = session.Interfaces;
         LibraryInterfaces = session.LibraryInterfaces;
         queries.Add("I:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n");
+        bindingPrefix = "B:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n";
+        solePrefix = "S:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n";
         owned = ownedFiles.Select(Path.GetFullPath).ToHashSet(StringComparer.Ordinal);
     }
 
     public void Require(string bindingName)
     {
-        queries.Add("B:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + bindingName);
-        string? key = catalog.BindingKey(assembly, bindingName);
+        if (!required.TryGetValue(bindingName, out string? key))
+        {
+            string query = bindingPrefix + bindingName;
+            queries.Add(query);
+            key = catalog.BindingKeyOf(query, bindingName) ?? Sole(bindingName);
+            required[bindingName] = key;
+        }
         if (key is not null && !loaded.Contains(key)) throw new DeclarationDemand(key);
+    }
+
+    /// <summary>
+    /// A bare name that only a type inside a namespace or another type
+    /// carries: the one declaration of that simple name in the index, or null
+    /// when there is none or more than one. The binder's last resort
+    /// (Binder.Sole) does this over the whole program in one compile, and is
+    /// how a file with no namespace names System.IAsyncDisposable -- keyed
+    /// `System.IAsyncDisposable`, no binding record answers the bare name,
+    /// and a unit compiled against the index refused what the same source
+    /// compiled whole accepted. Recorded as a query, so a second type of the
+    /// name, which makes it ambiguous, makes the receipt stale.
+    /// </summary>
+    private string? Sole(string name, bool asked = true)
+    {
+        if (name.Length == 0 || name.Contains('.') || name.Contains('`')) return null;
+        // Only what the binder asks is a dependency; a prefetch is a guess.
+        string query = solePrefix + name;
+        if (asked) queries.Add(query);
+        return catalog.SoleKeyOf(query);
     }
 
     public void Include(string key)
@@ -113,6 +150,7 @@ public sealed class IndexedDeclarations : IDisposable
                 int cut = simple.LastIndexOf('.');
                 key = cut < 0 ? null : catalog.BindingKey(assembly, simple[(cut + 1)..]);
             }
+            key ??= arity == 0 ? Sole(name, asked: false) : null;
         }
         catch (InvalidDataException) { key = null; }
         if (session is not null) session.Speculate((name, arity), key);
@@ -125,6 +163,56 @@ public sealed class IndexedDeclarations : IDisposable
     /// field and property types, method returns and parameters. Bodies are not
     /// walked, because an imported header is bound for its signatures only.
     /// </summary>
+    /// <summary>
+    /// Speculate, for a name written inside `space` in a file whose using
+    /// directives are `scope`: the alias it may be, then the declaration of
+    /// that name in the namespace it was written in or an enclosing one, then
+    /// in each namespace the file imports -- and only then the bare name.
+    ///
+    /// The bare name alone is no answer when two namespaces declare it. This
+    /// compiler has a Block of syntax and a Block of IR, an Operand of the IR
+    /// and of each assembler, a Section of the IR and of the linker; each was
+    /// skipped as ambiguous, left for the binder to demand, and every such
+    /// demand threw a whole pass away. Like Speculate, a guess: a wrong one
+    /// loads a declaration the unit did not need, and the binder still
+    /// demands whatever this misses.
+    /// </summary>
+    private string? SpeculateIn(string? space, FileScope? scope, string name, int arity)
+    {
+        if (name.Length == 0 || name[0] == '_' || Builtin.Contains(name)) return Speculate(name, arity);
+        bool dotted = name.Contains('.');
+        if (!dotted && arity == 0 && name.Length <= 2 && char.IsUpper(name[0])) return null;
+        if (scope is not null && !dotted)
+        {
+            foreach ((string _, string alias, string target) in scope.Aliases)
+                if (alias == name) return Speculate(target, arity);
+        }
+        // A NAME QUALIFIED FROM WHERE IT WAS WRITTEN -- `Metadata.RegistrySchema`
+        // inside Corsac.Lang -- is looked up the same way: under the enclosing
+        // namespaces and the imports, as the binder resolves it.
+        string simple = arity > 0 ? name + "`" + arity : name;
+        for (string? at = space; !string.IsNullOrEmpty(at); at = at.LastIndexOf('.') is int cut && cut > 0 ? at[..cut] : null)
+        {
+            if (Qualified(at + "." + simple) is string key) return key;
+        }
+        if (scope is not null)
+        {
+            foreach ((string _, string import) in scope.Imports)
+                if (Qualified(import + "." + simple) is string key) return key;
+        }
+        return Speculate(name, arity);
+    }
+
+    private readonly Dictionary<string, string?> qualified = new(StringComparer.Ordinal);
+
+    private string? Qualified(string name)
+    {
+        if (qualified.TryGetValue(name, out string? known)) return known;
+        string? key = catalog.BindingKey(assembly, name);
+        qualified[name] = key;
+        return key;
+    }
+
     private static IEnumerable<(string Name, int Arity)> SignatureNames(TypeDecl type)
     {
         List<(string, int)> found = new();
@@ -168,6 +256,23 @@ public sealed class IndexedDeclarations : IDisposable
         resolvedExtensions.Add(query);
     }
 
+    /// <summary>
+    /// Every declaration with a generic instance method of this name and
+    /// arity: what a call to a generic virtual method needs loaded to know
+    /// all the classes that override or implement it.
+    /// </summary>
+    public void RequireOverrides(string method, int arity)
+    {
+        string query = method + "`" + arity;
+        queries.Add("G:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + query);
+        if (resolvedOverrides.Contains(query)) return;
+        DeclarationBatch missing = new();
+        foreach (string key in catalog.OverrideKeys(assembly, query))
+            if (!loaded.Contains(key)) missing.Add(new DeclarationDemand(key));
+        missing.ThrowIfAny();
+        resolvedOverrides.Add(query);
+    }
+
     public void AddHeaders(CompilationUnit unit)
     {
         // Language operations name these helpers implicitly, without a source
@@ -181,20 +286,20 @@ public sealed class IndexedDeclarations : IDisposable
             if (key is not null && !loaded.Contains(key)) Include(key);
         }
         // A partial declaration cannot be bound from just the locally owned
-        // fragment. Demand its family before entering body binding -- ALL of
-        // them, in one demand. Asking for them one at a time threw on the
-        // first missing one, and the frontend answers a demand by discarding
-        // the unit and parsing, merging, monomorphising and binding it again:
-        // a unit whose headers named Path, DateTime, DateTimeOffset,
-        // Scheduler, Directory and File paid a whole extra round for each,
-        // discovering exactly one name per round. They are all known here.
-        DeclarationBatch partials = new();
+        // fragment, so its family is loaded before body binding -- in THIS
+        // pass, through the closure below, like every other name known here.
+        // Demanding it threw the pass away first: the frontend answers a
+        // demand by discarding the unit and parsing, merging, monomorphising
+        // and binding it again, and every unit that is one file of a partial
+        // class (most of this compiler) paid a whole pass for a name it held
+        // from the start.
         foreach (TypeDecl type in unit.Types.Where(type => type.Mods.HasFlag(Mods.Partial)))
         {
-            try { Require(Binder.TypeKey(type)); }
-            catch (DeclarationDemand demand) { partials.Add(demand); }
+            string name = Binder.TypeKey(type);
+            queries.Add("B:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + name);
+            string? key = catalog.BindingKey(assembly, name) ?? Sole(name);
+            if (key is not null) Load(key);
         }
-        partials.ThrowIfAny();
         // AND WHAT THIS UNIT'S OWN CODE NAMES. Its sources are fully parsed,
         // bodies and all, so the types it uses are knowable before binding
         // begins -- and until now nobody looked. The binder met them one
@@ -210,11 +315,11 @@ public sealed class IndexedDeclarations : IDisposable
         {
             BodyTypeNames.Walk(type, reference =>
             {
-                string? key = Speculate(reference.Name, reference.Args.Count);
+                string? key = SpeculateIn(type.Namespace, type.Scope, reference.Name, reference.Args.Count);
                 if (key is not null) Load(key);
             }, qualifier =>
             {
-                string? key = Speculate(qualifier, 0);
+                string? key = SpeculateIn(type.Namespace, type.Scope, qualifier, 0);
                 if (key is not null) Load(key);
             });
         }
@@ -300,7 +405,7 @@ public sealed class IndexedDeclarations : IDisposable
                 unit.Types.Add(root);
                 foreach ((string name, int arity) in SignatureNames(root))
                 {
-                    string? next = Speculate(name, arity);
+                    string? next = SpeculateIn(root.Namespace, root.Scope, name, arity);
                     if (next is not null && Load(next)) pending.Enqueue(next);
                 }
                 // AND WHAT ITS BODIES NAME, when the bodies came too. A
@@ -322,11 +427,11 @@ public sealed class IndexedDeclarations : IDisposable
                 // and reading it back a round later cost a round.
                 BodyTypeNames.Walk(root, reference =>
                 {
-                    string? next = Speculate(reference.Name, reference.Args.Count);
+                    string? next = SpeculateIn(root.Namespace, root.Scope, reference.Name, reference.Args.Count);
                     if (next is not null && Load(next)) pending.Enqueue(next);
                 }, qualifier =>
                 {
-                    string? next = Speculate(qualifier, 0);
+                    string? next = SpeculateIn(root.Namespace, root.Scope, qualifier, 0);
                     if (next is not null && Load(next)) pending.Enqueue(next);
                 });
             }

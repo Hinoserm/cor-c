@@ -1,0 +1,62 @@
+// test: object_field_references
+// expect-exit: 0
+// timeout: 60
+// expect-output:
+// 10003889 2000 3199880
+//
+// An object held only in a field typed `object`, or in a type
+// parameter's field, is a reference the collector must follow: the
+// reference map once left both out, and a lock gate, a boxed int and a
+// string held that way were freed and their memory handed on. Output
+// checked against .NET.
+
+using System;
+using System.Collections.Generic;
+
+class Holder
+{
+    public object Gate = new();
+    public object Boxed;
+    public object Text;
+    public Holder(int i) { Boxed = i * 3; Text = "t" + i; }
+}
+
+class Cell<T>
+{
+    public T Value;
+    public Cell(T value) { Value = value; }
+}
+
+static class Program
+{
+    static void Main()
+    {
+        List<Holder> holders = new();
+        List<Cell<string>> cells = new();
+        List<Cell<object>> objects = new();
+        for (int i = 0; i < 2000; i++)
+        {
+            holders.Add(new Holder(i));
+            cells.Add(new Cell<string>("c" + i));
+            objects.Add(new Cell<object>(new int[] { i, i + 1 }));
+        }
+        long churn = 0;
+        for (int round = 0; round < 40; round++)
+        {
+            for (int k = 0; k < 20000; k++) churn += new string('x', k % 7 + 1).Length;
+            GC.Collect();
+            holders[round * 13 % 2000].Text = "r" + round;
+            objects[round * 7 % 2000].Value = "o" + round;
+        }
+        long sum = 0;
+        int locks = 0;
+        foreach (Holder h in holders)
+        {
+            sum += (int)h.Boxed + ((string)h.Text).Length;
+            lock (h.Gate) { locks++; }
+        }
+        foreach (Cell<string> c in cells) sum += c.Value.Length;
+        foreach (Cell<object> o in objects) sum += o.Value is int[] a ? a[0] + a[1] : ((string)o.Value).Length;
+        Console.WriteLine(sum + " " + locks + " " + churn);
+    }
+}

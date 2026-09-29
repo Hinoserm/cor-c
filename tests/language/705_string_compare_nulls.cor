@@ -1,0 +1,28 @@
+// test: string_compare_nulls
+// expect-exit: 0
+// expect-output:
+// -1 1 0 -1 -1 1
+// -1 1 True False
+// -,-,a,b,c
+// obj
+//
+// String.Compare and StringComparer take nulls as .NET's do: null before
+// every string, two nulls equal, and a list with nulls sorts with them first.
+// GetHashCode of null throws. Expected output is what .NET 10 prints.
+
+using System;
+using System.Collections.Generic;
+static class P
+{
+    static int Main()
+    {
+        string? n = null;
+        Console.WriteLine($"{string.Compare(n, "a")} {string.Compare("a", n)} {string.Compare(n, n)} {string.CompareOrdinal(n, "b")} {string.Compare(n, "a", true)} {string.Compare("a", n, StringComparison.OrdinalIgnoreCase)}");
+        Console.WriteLine($"{StringComparer.Ordinal.Compare(n, "x")} {StringComparer.OrdinalIgnoreCase.Compare("x", n)} {StringComparer.OrdinalIgnoreCase.Equals(n, n)} {StringComparer.Ordinal.Equals(n, "x")}");
+        var names = new List<string?> { "b", null, "a", null, "c" };
+        names.Sort(StringComparer.Ordinal);
+        Console.WriteLine(string.Join(",", names.ConvertAll(x => x ?? "-")));
+        try { StringComparer.Ordinal.GetHashCode(null!); } catch (ArgumentNullException e) { Console.WriteLine(e.ParamName); }
+        return 0;
+    }
+}

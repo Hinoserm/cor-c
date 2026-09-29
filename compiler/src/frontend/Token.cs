@@ -51,6 +51,9 @@ public enum Tok : byte
     /// <summary>A UTF-8 string literal: `"META"u8`, which is BYTES.</summary>
     Utf8Str,
     KwDelegate,
+
+    /// <summary>`>>>` and `>>>=`, C# 11's unsigned right shift.</summary>
+    UShr, UShrEq,
 }
 
 /// <summary>
@@ -60,7 +63,13 @@ public enum Tok : byte
 /// </summary>
 /// <param name="Global">The name was written after `global::`: it is looked
 /// up from the global namespace, past any local or member of the same name.</param>
-public readonly record struct Token(Tok Kind, string Text, int Line, int Col, int Pos, bool Global = false)
+/// <remarks>
+/// A CLASS, made once and then only pointed at. As a struct holding a
+/// string it was a heap block of its own in a native build, copied into a new
+/// block by every read of a token list, every growth of one and every private
+/// copy the parser takes: most of what a native unit allocated.
+/// </remarks>
+public sealed record Token(Tok Kind, string Text, int Line, int Col, int Pos, bool Global = false)
 {
     public override string ToString() => $"{Kind}('{Text}') at {Line}:{Col}";
 }
@@ -73,15 +82,31 @@ public sealed class CompileError : Exception
     public int Col { get; }
     public bool Warning { get; }
 
+    /// <summary>
+    /// The Roslyn diagnostic code this condition shares with real C#, such
+    /// as "CS8602" -- null for an error, since this compiler does not give
+    /// its errors codes today, only its warnings, which `#pragma warning`
+    /// needs one to name.
+    /// </summary>
+    public string? Code { get; }
+
     public CompileError(string file, int line, int col, string message,
-                        bool warning = false) : base(message)
+                        bool warning = false, string? code = null) : base(message)
     {
         File = file;
         Line = line;
         Col = col;
         Warning = warning;
+        Code = code;
     }
 
+    /// <summary>
+    /// `file(line,col): warning CS8602: message`, .NET's own format, with a
+    /// code when there is one. WITH NO CODE, the colon sits right after the
+    /// word the way it always did -- kept for errors, which carry none.
+    /// </summary>
     public override string ToString()
-        => $"{File}({Line},{Col}): {(Warning ? "warning" : "error")}: {Message}";
+        => Code is null
+         ? $"{File}({Line},{Col}): {(Warning ? "warning" : "error")}: {Message}"
+         : $"{File}({Line},{Col}): {(Warning ? "warning" : "error")} {Code}: {Message}";
 }

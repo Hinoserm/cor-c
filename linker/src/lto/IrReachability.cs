@@ -6,13 +6,16 @@ namespace Corsac.Lang.Lto;
 public static class IrReachability
 {
     public static Dictionary<ObjectFile, HashSet<string>> Find(IReadOnlyList<(string Name, ObjectFile Object)> inputs,
-        IReadOnlyDictionary<ObjectFile, IrArchive> archives, IReadOnlyDictionary<string, ObjectFile> owners, string entry)
+        IReadOnlyDictionary<ObjectFile, IrArchive> archives, IReadOnlyDictionary<string, ObjectFile> owners, string entry,
+        IEnumerable<string>? roots = null)
     {
         Dictionary<ObjectFile, HashSet<string>> retained = archives.Keys.ToDictionary(obj => obj, _ => new HashSet<string>(StringComparer.Ordinal));
         Dictionary<ObjectFile, HashSet<string>> locals = inputs.ToDictionary(input => input.Object,
             input => input.Object.Symbols.Where(symbol => symbol.IsDefined && !symbol.Global).Select(symbol => symbol.Name).ToHashSet(StringComparer.Ordinal));
         Stack<(ObjectFile? Origin, string Symbol)> pending = new();
         pending.Push((null, entry));
+        // Symbols the link itself will refer to (field sites' targets).
+        foreach (string root in roots ?? Enumerable.Empty<string>()) pending.Push((null, root));
         // Without compiler IR, native code cannot be split safely. Keep all
         // of it, including every relocation and address-taken callback root.
         foreach (var input in inputs.Where(input => !archives.ContainsKey(input.Object)))

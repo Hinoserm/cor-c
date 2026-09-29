@@ -8,6 +8,12 @@ public sealed class WideProductSharing : IPass
     public string Name => "wide-product-sharing";
     public void Run(Function f)
     {
+        // Nothing to share without a 64-bit product of two registers, and
+        // the definitions of the whole function are not cheap to gather on
+        // every round for the functions -- nearly all -- that have none.
+        if (!f.Blocks.Exists(block => block.Instrs.Exists(i => i.Op == Opcode.Mul && i.Dest?.Type == IrType.I64
+                && i.Operands.Count == 2 && i.Operands[0] is RegOperand && i.Operands[1] is RegOperand)))
+            return;
         Defs defs = new(f);
         Dictionary<Instr, List<Instr>> replacements = new();
         foreach (var block in f.Blocks)

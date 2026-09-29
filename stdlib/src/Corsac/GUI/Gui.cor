@@ -386,7 +386,7 @@ public class Seat : IDrawingTarget
     void SendTitle(string title)
     {
         byte[] bytes = new byte[64];
-        for (int i = 0; i < title.Length && i < 63; i++) bytes[i] = (byte)title[i];
+        SeatText.Put(bytes, 0, 64, title);
         Ioctl(SeatIoctl.Title, Sys.ArrayData(bytes));
     }
 
@@ -464,9 +464,7 @@ public class Seat : IDrawingTarget
 
     static string Text(byte[] block, int from, int room)
     {
-        string text = "";
-        for (int i = 0; i < room && block[from + i] != 0; i++) text = text + (char)block[from + i];
-        return text;
+        return SeatText.Get(block, from, room);
     }
 
     static int Word(byte[] block, int at)
@@ -1038,7 +1036,7 @@ public class Seat : IDrawingTarget
     public void SetTitle(int handle, string title)
     {
         byte[] bytes = new byte[64];
-        for (int i = 0; i < title.Length && i < 63; i++) bytes[i] = (byte)title[i];
+        SeatText.Put(bytes, 0, 64, title);
         Flush(); Select(handle); Ioctl(SeatIoctl.Title, Sys.ArrayData(bytes));
         lock (_keep) { Kept? k = Find(handle); if (k != null) k.Title = title; }
     }
@@ -1069,9 +1067,7 @@ public class Seat : IDrawingTarget
             int xy = records[at + 12] | (records[at + 13] << 8) | (records[at + 14] << 16) | (records[at + 15] << 24);
             int wh = records[at + 16] | (records[at + 17] << 8) | (records[at + 18] << 16) | (records[at + 19] << 24);
             w.Bounds = new Rectangle(LowSigned(xy), HighSigned(xy), wh & 0xFFFF, (wh >> 16) & 0xFFFF);
-            string title = "";
-            for (int k = 0; k < 56 && records[at + 24 + k] != 0; k++) title = title + (char)records[at + 24 + k];
-            w.Title = title;
+            w.Title = SeatText.Get(records, at + 24, 56);
             result[i] = w;
         }
         return result;
@@ -1120,16 +1116,14 @@ public class Seat : IDrawingTarget
     public void InspectReply(string text)
     {
         byte[] bytes = new byte[256];
-        for (int i = 0; i < text.Length && i < 255; i++) bytes[i] = (byte)text[i];
+        SeatText.Put(bytes, 0, 256, text);
         Ioctl(SeatIoctl.InspectReply, Sys.ArrayData(bytes));
     }
     public string InspectRead()
     {
         byte[] bytes = new byte[256];
         int n = (int)Ioctl(SeatIoctl.InspectRead, Sys.ArrayData(bytes));
-        string text = "";
-        for (int i = 0; i < n && i < 255 && bytes[i] != 0; i++) text = text + (char)bytes[i];
-        return text;
+        return SeatText.Get(bytes, 0, n < 0 ? 0 : Math.Min(n, 255));
     }
     /// Ask any window's owner to close it.
     public void CloseWindow(int handle) { Flush(); Ioctl(SeatIoctl.CloseWindow, handle); }
@@ -1323,4 +1317,39 @@ public static class Shell
     internal static void RaisePointerMoved(MouseEventArgs e) { if (PointerMoved != null) PointerMoved(null!, e); }
     internal static void RaiseStartRequested() { if (StartRequested != null) StartRequested(null!, EventArgs.Empty); }
     internal static void RaiseInspected() { if (Inspected != null) Inspected(null!, EventArgs.Empty); }
+}
+
+/// TEXT IN A SEAT RECORD: a fixed field of UTF-8, ended by a zero byte when it
+/// is shorter than the field. Both sides of the seat speak it -- the GUI
+/// kernel fills its fields this way and reads ours this way -- so a title in
+/// Greek is a title in Greek on the taskbar.
+static class SeatText
+{
+    /// `text` as UTF-8 into block[at, at + room), cut at a character boundary
+    /// so that a zero byte still fits after it.
+    public static void Put(byte[] block, int at, int room, string text)
+    {
+        byte[] bytes = Utf8Transcoder.Encode(text, 0, text.Length);
+        int take = Math.Min(bytes.Length, room - 1);
+
+        // A cut inside a sequence would leave half a character: back off to
+        // the start of the sequence the cut fell in.
+        while (take > 0 && take < bytes.Length && (bytes[take] & 0xC0) == 0x80)
+        {
+            take = take - 1;
+        }
+        Array.Copy(bytes, 0, block, at, take);
+        block[at + take] = 0;
+    }
+
+    /// The UTF-8 in block[from, from + room), up to its zero byte.
+    public static string Get(byte[] block, int from, int room)
+    {
+        int length = 0;
+        while (length < room && from + length < block.Length && block[from + length] != 0)
+        {
+            length = length + 1;
+        }
+        return Utf8Transcoder.Decode(block, from, length);
+    }
 }

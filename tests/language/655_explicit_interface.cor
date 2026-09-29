@@ -40,6 +40,7 @@ public class Pair : IEnumerable<int>
     readonly List<int> _items = new List<int> { 4, 5 };
     public List<int> Items() { return _items; }
     IEnumerator<int> IEnumerable<int>.GetEnumerator() { return _items.GetEnumerator(); }
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() { return _items.GetEnumerator(); }
 }
 
 public static class Program

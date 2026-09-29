@@ -134,6 +134,34 @@ public sealed partial class BindResult
     public Dictionary<LocalDecl, LocalSym> LocalSymbols { get; }
         = new(ReferenceEqualityComparer.Instance);
 
+    /// <summary>
+    /// The declaration a local symbol came from: LocalSymbols read backwards.
+    /// Found by walking all of LocalSymbols, it was a walk of every local of
+    /// the unit for each one asked about. The reverse map is built from the
+    /// same walk, so the first declaration found is still the one answered,
+    /// and built again only when a symbol is missing from it and locals have
+    /// been added since.
+    /// </summary>
+    public LocalDecl? DeclOf(LocalSym local)
+    {
+        if (_declBySym is not null && _declBySym.TryGetValue(local, out LocalDecl? known)) return known;
+        if (_declBySym is not null && _declBySymCount == LocalSymbols.Count) return null;
+        _declBySym = new Dictionary<LocalSym, LocalDecl>(LocalSymbols.Count, new SameLocal());
+        foreach ((LocalDecl decl, LocalSym sym) in LocalSymbols) _declBySym.TryAdd(sym, decl);
+        _declBySymCount = LocalSymbols.Count;
+        return _declBySym.TryGetValue(local, out LocalDecl? found) ? found : null;
+    }
+
+    private Dictionary<LocalSym, LocalDecl>? _declBySym;
+    private int _declBySymCount = -1;
+
+    /// <summary>A local symbol is itself and no other, whatever its record fields say.</summary>
+    private sealed class SameLocal : IEqualityComparer<LocalSym>
+    {
+        public bool Equals(LocalSym? a, LocalSym? b) => ReferenceEquals(a, b);
+        public int GetHashCode(LocalSym local) => local.Slot * 31 + local.Name.Length;
+    }
+
     /// <summary>Declarations whose local a lambda captured, and which therefore
     /// need a heap cell rather than a frame slot.</summary>
     public HashSet<LocalDecl> BoxedLocals { get; } = new(ReferenceEqualityComparer.Instance);
@@ -233,6 +261,10 @@ public sealed partial class BindResult
     /// </summary>
     public Dictionary<Expr, Expr> Rewrites { get; } = new(ReferenceEqualityComparer.Instance);
 
+    /// <summary>The calls Rewrites made of user-defined conversions: their
+    /// value is the operator's result, not the expression they replace.</summary>
+    public HashSet<Expr> UserConversions { get; } = new(ReferenceEqualityComparer.Instance);
+
     /// The Add each element of a collection initialiser calls.
     public Dictionary<InitAdd, MethodSymbol> InitAdder { get; } = new(ReferenceEqualityComparer.Instance);
     public Dictionary<NewExpr, MethodSymbol> NewConstructors { get; } = new(ReferenceEqualityComparer.Instance);
@@ -294,6 +326,30 @@ public sealed partial class BindResult
     /// Calls of a VALUE rather than of a named method: `f(x)` where f holds
     /// something with an Invoke. The method recorded here is that Invoke.
     public Dictionary<CallExpr, MethodSymbol> Invocations { get; } = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>
+    /// Calls of a GENERIC VIRTUAL METHOD (MethodSymbol.GenericVirtual) and the
+    /// copies they dispatch among: for each class that overrides or implements
+    /// the method, deepest in the hierarchy first, the copy of its override at
+    /// the call's type arguments. The code generator tests the receiver
+    /// against each class in turn and calls the first that matches directly;
+    /// `Fallback` is the copy on the method's own class, or null when that one
+    /// is abstract and the receiver must have matched a class above it.
+    /// </summary>
+    public Dictionary<CallExpr, GenericDispatch> GenericDispatches { get; } = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>
+    /// Copies of generic methods that no call names but a dispatch needs: the
+    /// overrides a generic virtual call may land on (GenericDispatches). Made
+    /// beside their templates the way Wanted's are, without renaming a call.
+    /// </summary>
+    public List<(TypeDecl Owner, MethodDecl Template, List<TypeRef> Args, string Name)> WantedOverrides { get; } = new();
+
+    /// <summary>`&Method`: the static method whose address this is, as a function pointer.</summary>
+    public Dictionary<UnaryExpr, MethodSymbol> MethodAddresses { get; } = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>A call through a function pointer: the pointer's signature.</summary>
+    public Dictionary<CallExpr, FunctionPointer> PointerCalls { get; } = new(ReferenceEqualityComparer.Instance);
 
     /// Member accesses whose RECEIVER is really the first argument: `s.Trim()`
     /// calling the static `String.Trim(s)`. A primitive has no vtable to hang an
@@ -405,6 +461,7 @@ public sealed partial class BindResult
         LocalSlot.Clear();
         LocalType.Clear();
         LocalSymbols.Clear();
+        _declBySym = null;
         BoxedLocals.Clear();
         PatternSlot.Clear();
         NullablePatterns.Clear();
@@ -421,6 +478,7 @@ public sealed partial class BindResult
         InitSetter.Clear();
         InitGetter.Clear();
         Rewrites.Clear();
+        UserConversions.Clear();
         InitAdder.Clear();
         NewConstructors.Clear();
         InitIndexer.Clear();
@@ -435,6 +493,8 @@ public sealed partial class BindResult
         ArrayTypeOfs.Clear();
         GetTypes.Clear();
         Invocations.Clear();
+        GenericDispatches.Clear();
+        WantedOverrides.Clear();
         Receivers.Clear();
         ForeachSlot.Clear();
         SwitchSubject.Clear();
@@ -499,6 +559,7 @@ public sealed partial class BindResult
         CopyEntries(InitSetter, copy.InitSetter);
         CopyEntries(InitGetter, copy.InitGetter);
         CopyEntries(Rewrites, copy.Rewrites);
+        foreach (var item in UserConversions) copy.UserConversions.Add(item);
         CopyEntries(InitAdder, copy.InitAdder);
         CopyEntries(NewConstructors, copy.NewConstructors);
         CopyEntries(InitIndexer, copy.InitIndexer);
@@ -513,6 +574,8 @@ public sealed partial class BindResult
         CopyEntries(ArrayTypeOfs, copy.ArrayTypeOfs);
         foreach (var item in GetTypes) copy.GetTypes.Add(item);
         CopyEntries(Invocations, copy.Invocations);
+        CopyEntries(GenericDispatches, copy.GenericDispatches);
+        copy.WantedOverrides.AddRange(WantedOverrides);
         CopyEntries(Receivers, copy.Receivers);
         CopyEntries(ForeachSlot, copy.ForeachSlot);
         CopyEntries(SwitchSubject, copy.SwitchSubject);
@@ -540,4 +603,41 @@ public sealed partial class BindResult
         foreach (KeyValuePair<K, V> entry in source)
             destination.Add(entry.Key, entry.Value);
     }
+}
+
+/// <summary>
+/// A static array of constants (FieldDecl.StaticData): its element type,
+/// by keyword, and its values -- whole numbers (bool, char and the integers,
+/// as their bits), doubles (float and double), or strings, null for a null
+/// element.
+/// </summary>
+public sealed class StaticArray
+{
+    public required string Element { get; init; }
+    public List<long> Integers { get; } = new();
+    public List<double> Reals { get; } = new();
+    public List<string?> Strings { get; } = new();
+    public int Count => Element == "string" ? Strings.Count : Element is "float" or "double" ? Reals.Count : Integers.Count;
+}
+
+/// <summary>Where a generic virtual call may land. See BindResult.GenericDispatches.</summary>
+public sealed class GenericDispatch
+{
+    /// <summary>The method as the call names it, for the exception when nothing matches.</summary>
+    public required string Method { get; init; }
+
+    /// <summary>
+    /// Deepest class first, so the first class the receiver is decides: an
+    /// object of a class below two overriders runs the nearer one.
+    /// </summary>
+    public required List<(TypeSymbol Class, MethodSymbol Copy)> Targets { get; init; }
+    public MethodSymbol? Fallback { get; init; }
+
+    /// <summary>
+    /// The signature at the call's type arguments: what the arguments are
+    /// converted to and what comes back. The call itself is bound to the
+    /// template, whose parameters are still T.
+    /// </summary>
+    public required List<ParamSymbol> Params { get; init; }
+    public required Type Returns { get; init; }
 }

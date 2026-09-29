@@ -1,0 +1,34 @@
+// test: pattern designations, out variables in receivers, constants in lambdas
+// expect-exit: 0
+// expect-output:
+// 8 a 7
+using System;
+using System.Collections.Generic;
+using System.Linq;
+class Node { }
+sealed class Cond : Node { public int N; }
+static class Program
+{
+    static bool Pred(Cond c) => c.N > 0;
+    static int Main()
+    {
+        Node[] args = { new Cond { N = 1 }, new Node(), new Cond { N = 0 } };
+        int hits = 0;
+        for (int i = 0; i < args.Length; i++)
+        {
+            if (args[i] is Cond { } choosing && Pred(choosing))
+            {
+                hits += choosing.N;
+            }
+        }
+        Dictionary<string, string> props = new() { ["A"] = "x=1;y=2" };
+        foreach (string alias in (props.TryGetValue("A", out string? declared) ? declared : "").Split(';'))
+            hits += alias.Length;
+        const string rid = "linux";
+        string[] names = { "a", "linux-b" };
+        hits += names.Count(n => n.StartsWith(rid));
+        var pairs = names.Select(n => (Len: n.Length, Text: n)).OrderBy(p => p.Len).ToArray();
+        Console.WriteLine(hits + " " + pairs[0].Text + " " + pairs[1].Len);
+        return 0;
+    }
+}

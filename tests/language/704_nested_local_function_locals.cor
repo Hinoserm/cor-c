@@ -1,0 +1,53 @@
+// test: nested_local_function_locals
+// expect-exit: 0
+// expect-output:
+// a1a5
+// a++ b++
+//
+// A local function inside another local function keeps its own locals as
+// locals. Its body is bound for real while the enclosing one is still
+// discovering what it captures, and that discovery's floor, counted on a scope
+// stack the inner body had replaced, took the inner function's locals for
+// captures: they went to cells the reads never looked in. The stage-2 build
+// died of it in SourceIndexBuilder, whose declaration records come from a
+// recursive local function inside a local iterator.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+static class Program
+{
+    static List<string> Write(List<string> files)
+    {
+        IEnumerable<string> Records()
+        {
+            foreach (string unit in files)
+            {
+                string Name(int depth)
+                {
+                    int arity = depth + 1;
+                    return arity > 2 ? unit : Name(arity) + "+";
+                }
+                yield return Name(0);
+            }
+        }
+        return Records().ToList();
+    }
+
+    static int Main()
+    {
+        string Outer(string unit)
+        {
+            string Inner(int depth)
+            {
+                int arity = depth + 1;
+                return unit + arity;
+            }
+            return Inner(0) + Inner(4);
+        }
+        Console.WriteLine(Outer("a"));
+        Console.WriteLine(string.Join(" ", Write(new() { "a", "b" })));
+        return 0;
+    }
+}
