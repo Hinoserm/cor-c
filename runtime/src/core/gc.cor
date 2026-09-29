@@ -831,9 +831,35 @@ static class Gc
             Sys.Poke(copy + at * WordSize.Bytes, word);
             return at + 1;
         }
+        if (_census && !_minor)
+        {
+            long before = _censusMarked;
+            MarkRoot(word);
+            Drain();
+            long got = _censusMarked - before;
+            if (got >= CensusRootBytes)
+            {
+                SayNumber("gc census root: kind ", 6);
+                SayNumber("gc census root:   word ", word);
+                SayNumber("gc census root:   bytes ", got);
+                Runtime.WriteLiteral(2, "gc census root:   in the frame of\n");
+                Runtime.SayFrame(2, _keepingFor);
+                long held = BlockForPointer(word);
+                if (held != 0)
+                {
+                    SayNumber("gc census root:   its kind ", Sys.Peek(held + KindAt));
+                    SayNumber("gc census root:   its first word ", Sys.Peek(held + HeaderBytes));
+                    SayNumber("gc census root:   its size ", Sys.Peek(held) & SizeMask);
+                }
+            }
+            return at;
+        }
         MarkRoot(word);
         return at;
     }
+
+    /// The code address of the frame the walk is in, for the census.
+    static long _keepingFor;
 
     /// [from, to) of this stack, every word kept but the three saved slots.
     static long KeepRange(long from, long to, long s1, long s2, long s3, long copy, long at)
@@ -866,6 +892,7 @@ static class Gc
         while (frame != 0 && frame < to)
         {
             long entry = below != 0 ? MapEntry(Sys.Peek(below + w) & WordSize.AddressMask) : 0;
+            _keepingFor = below != 0 ? Sys.Peek(below + w) & WordSize.AddressMask : 0;
             long s1 = 0;
             long s2 = 0;
             long s3 = 0;
