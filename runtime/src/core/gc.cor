@@ -2297,6 +2297,7 @@ static class Gc
         IgnoredFrees = Platform.IgnoreFrees();
         SkippedFreePaths = Platform.SkippedFreePaths();
         GuardReleases = Platform.GuardReleases();
+        _census = Platform.GcCensus();
         if (Platform.FreeLog())
         {
             Runtime.StartFreeLog();
@@ -2800,6 +2801,112 @@ static class Gc
         Runtime.WriteLiteral(2, "gc: its field is freed now by:\n");
         Runtime.SayTrace(2, Sys.FramePointer());
         Platform.Exit(98);
+    }
+
+    // THE CENSUS (CORSAC_GC_CENSUS): what a whole sweep found live, by what
+    // it is. An object with a descriptor is counted under its vtable; a leaf
+    // (a string, an array of bytes or characters) under Leaf; a block no
+    // descriptor describes -- a struct's, a cell, a frame -- under its size,
+    // Untyped + size, because what they are is how big they are. An open
+    // table of the operating system's, so counting allocates nothing; the
+    // largest CensusShown are said as each whole cycle ends.
+    const long CensusSlots = 65536;
+    const long CensusEntry = 3 * WordSize.Bytes;       // key, bytes, blocks
+    const long CensusShown = 30;
+    const long CensusLeaf = 1;
+    const long CensusNoVtable = 2;
+    const long CensusUntyped = 0x40000000;
+    static bool _census;
+    static long _censusAt;
+
+    static void StartCensus()
+    {
+        if (_censusAt == 0)
+        {
+            _censusAt = Platform.Map(CensusSlots * CensusEntry);
+            if (_censusAt == 0)
+            {
+                return;
+            }
+        }
+        ZeroWords(_censusAt, _censusAt + CensusSlots * CensusEntry);
+    }
+
+    static void Census(long block, long size)
+    {
+        if (_censusAt == 0)
+        {
+            return;
+        }
+        long w = WordSize.Bytes;
+        long kind = Sys.Peek(block + KindAt);
+        long key;
+        if (kind == KindLeaf)
+        {
+            key = CensusLeaf;
+        }
+        else if (kind == KindObject)
+        {
+            long vt = Sys.Peek(block + HeaderBytes) & WordSize.AddressMask;
+            long desc = vt - DescWords * w;
+            key = vt != 0 && (Sys.Peek(desc + DescSelfWord * w) & WordSize.AddressMask) == desc ? vt : CensusNoVtable;
+        }
+        else
+        {
+            key = CensusUntyped + (size < 0x10000000 ? size : 0x0FFFFFFF);
+        }
+        long slot = ((key >> 3) * 0x9E3779B1) & (CensusSlots - 1);
+        long probes = 0;
+        while (probes < CensusSlots)
+        {
+            long at = _censusAt + slot * CensusEntry;
+            long there = Sys.Peek(at);
+            if (there == key || there == 0)
+            {
+                Sys.Poke(at, key);
+                Sys.Poke(at + w, Sys.Peek(at + w) + size);
+                Sys.Poke(at + 2 * w, Sys.Peek(at + 2 * w) + 1);
+                return;
+            }
+            slot = (slot + 1) & (CensusSlots - 1);
+            probes = probes + 1;
+        }
+    }
+
+    /// The largest entries, each taken out as it is said: "census bytes
+    /// blocks key", the key a vtable address, 1 for leaves, 2 for objects
+    /// with no vtable yet, or 0x40000000 plus the size of an untyped block.
+    static void SayCensus()
+    {
+        long w = WordSize.Bytes;
+        SayNumber("gc census: whole cycle, live bytes ", _liveBytes);
+        long shown = 0;
+        while (shown < CensusShown)
+        {
+            long best = -1;
+            long bestBytes = 0;
+            long slot = 0;
+            while (slot < CensusSlots)
+            {
+                long bytes = Sys.Peek(_censusAt + slot * CensusEntry + w);
+                if (bytes > bestBytes)
+                {
+                    bestBytes = bytes;
+                    best = slot;
+                }
+                slot = slot + 1;
+            }
+            if (best < 0)
+            {
+                return;
+            }
+            long at = _censusAt + best * CensusEntry;
+            SayNumber("gc census: bytes ", bestBytes);
+            SayNumber("gc census:   blocks ", Sys.Peek(at + 2 * w));
+            SayNumber("gc census:   key ", Sys.Peek(at));
+            Sys.Poke(at + w, Zero);
+            shown = shown + 1;
+        }
     }
 
     // DANGLING REFERENCES, in the checked mode: at every whole sweep, each
@@ -4223,6 +4330,10 @@ static class Gc
     {
         _liveBlocks = _sweepLive;
         _liveBytes = _sweepLiveBytes;
+        if (_census && !_minor && _censusAt != 0)
+        {
+            SayCensus();
+        }
         _sweeping = false;
         RestartRecycling();
         _snapshots = false;
@@ -4844,6 +4955,10 @@ static class Gc
         _sweepCurrentEnd = _current != 0 ? HeapChunks.End(_current) : Zero;
         _sweepLive = Zero;
         _sweepLiveBytes = Zero;
+        if (_census && !_minor)
+        {
+            StartCensus();
+        }
     }
 
     /// Every listed free block of a chunk off its list (not one freed in
@@ -5027,6 +5142,10 @@ static class Gc
                         if (_verify && !_minor && (word & FlagMark) != 0)
                         {
                             CheckDangling(block, size);
+                        }
+                        if (_census && !_minor)
+                        {
+                            Census(block, size);
                         }
 
                         // A SURVIVOR IS OLD, and keeps the marks that say so;

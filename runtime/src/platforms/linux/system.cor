@@ -143,6 +143,10 @@ static class Platform
     /// mark, that no old object points at a young one it is about to sweep.
     public static bool VerifyGenerations() => EnvironmentFlag("CORSAC_GC_VERIFY=");
 
+    /// CORSAC_GC_CENSUS=1: every whole collection counts what it found live,
+    /// by type, and says the largest on standard error.
+    public static bool GcCensus() => EnvironmentFlag("CORSAC_GC_CENSUS=");
+
     public static bool VerifyFrees() => EnvironmentFlag("CORSAC_VERIFY_FREES=") && EnvironmentByte("CORSAC_VERIFY_FREES=") != 'f';
 
     /// CORSAC_VERIFY_FREES=f: only the fields freed with their owner
