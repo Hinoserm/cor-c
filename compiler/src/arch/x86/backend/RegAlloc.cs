@@ -844,7 +844,12 @@ internal sealed class Allocator
         Safepoint map = new();
         foreach (int v in live)
         {
-            if (v < 8 || _m.WideHalves.Contains(v) || _remat[v] is not null)
+            // HALF OF A LONG COUNTS. On i386 the runtime keeps many an address
+            // in a long -- a block the allocator answered, a word it read out
+            // of an object -- and the collector now marks a register only
+            // where the map says it is live: a long's low half in EBX across
+            // a call that allocates is a reference as far as it can tell.
+            if (v < 8 || _remat[v] is not null)
             {
                 continue;
             }

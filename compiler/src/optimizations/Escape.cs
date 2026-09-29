@@ -69,6 +69,15 @@ public sealed partial class Escape : IModulePass
 
     public void Run(Module m)
     {
+        // The frees this run inserted are known to the analyses through a
+        // thread's static (_inserted); left set, it kept the last unit's IR
+        // alive for as long as the thread lived.
+        try { RunCore(m); }
+        finally { _inserted = null; }
+    }
+
+    private void RunCore(Module m)
+    {
         Dictionary<string, Function> byName = new(StringComparer.Ordinal);
         foreach (Function f in m.Functions)
         {

@@ -284,6 +284,7 @@ public sealed partial class Escape
         pass.PromoteIn(f, summaries, canFree, new OwnedFieldEscape(byName, summaries));
         if (canFree && facts.Helpers.Contains(ReplacedFreer)) pass.OwnVariables(f, summaries);
         if (canFree && facts.Helpers.Contains(FieldFreer)) pass.OwnFields(f, summaries);
+        _inserted = null;
         return pass.Promoted + pass.Owned + pass.FieldsOwned;
     }
 }

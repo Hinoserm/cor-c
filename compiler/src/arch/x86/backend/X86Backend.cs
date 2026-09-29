@@ -124,7 +124,7 @@ public sealed class X86Backend : IBackend
         Encoder encoder = new(text);
         List<FrameTable.Entry> frames = new();
         FunctionSizes.Clear();
-        List<(string Function, int Return, int At, Safepoint? Map, int FrameSize)> maps = new();
+        List<(string Function, int Return, int At, Safepoint? Map, int FrameSize, uint Saved)> maps = new();
 
         // GOTOFF is sound only for a name this object defines and does not
         // export: anything exported can be interposed at load time, and then
@@ -294,7 +294,7 @@ public sealed class X86Backend : IBackend
             {
                 foreach ((MInstr call, int ret) in encoder.CallSites)
                 {
-                    maps.Add((f.Name, ret, start + ret, m.Safepoints.GetValueOrDefault(call), m.Frame.Size));
+                    maps.Add((f.Name, ret, start + ret, m.Safepoints.GetValueOrDefault(call), m.Frame.Size, SavedMask(m)));
                 }
             }
 
@@ -524,7 +524,25 @@ public sealed class X86Backend : IBackend
     /// ordering is the runtime's to do once at startup if it wants a binary
     /// search rather than a scan.
     /// </summary>
-    private static void EmitStackMaps(ObjectFile obj, List<(string Function, int Return, int At, Safepoint? Map, int FrameSize)> maps, HashSet<string> defined, bool pic)
+    /// <summary>
+    /// The callee-saved registers a function's prologue pushes, by hardware
+    /// number: after `push ebp; mov ebp, esp; sub esp, FrameSize` they are
+    /// pushed in the order EBX, ESI, EDI, so the k-th of them present is at
+    /// EBP - FrameSize - 4(k+1). The collector reads them to find where a
+    /// caller's register value was kept, and so which saved words are values
+    /// some frame still holds live and which are stale copies.
+    /// </summary>
+    private static uint SavedMask(MFunction m)
+    {
+        uint mask = 0;
+        foreach (Gpr g in m.SavedRegs)
+        {
+            mask |= 1u << (int)g;
+        }
+        return mask;
+    }
+
+    private static void EmitStackMaps(ObjectFile obj, List<(string Function, int Return, int At, Safepoint? Map, int FrameSize, uint Saved)> maps, HashSet<string> defined, bool pic)
     {
         // The base is a relocation, so in a shared object the page holding
         // the header is written by the loader; writable in that mode, as the
@@ -542,7 +560,10 @@ public sealed class X86Backend : IBackend
         }
 
         Word(0x314d5343);       // 'CSM1'
-        Word(2);
+        // Version 3: each entry's register word also carries, from bit 16,
+        // the registers the function's prologue saves (SavedMask), and a
+        // call site with no map says every register live.
+        Word(3);
         Word(maps.Count);
         Word(16);
         // The base: the start of the first function that has a call site.
@@ -596,7 +617,7 @@ public sealed class X86Backend : IBackend
         for (int i = 0; i < maps.Count; i++)
         {
             Word(maps[i].At - baseAt);
-            Word(maps[i].Map?.Registers ?? 0);
+            Word((maps[i].Map?.Registers ?? 0xFFu) | maps[i].Saved << 16);
             Word(at[i]);
             Word(maps[i].FrameSize);
         }

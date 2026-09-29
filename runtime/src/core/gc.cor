@@ -640,6 +640,290 @@ static class Gc
         MarkAt(at);
     }
 
+    // ---- live registers, not stale ones ----------------------------------------
+    //
+    // A CALLEE-SAVED REGISTER KEEPS WHATEVER WAS LAST PUT IN IT. Every function
+    // that uses EBX, ESI or EDI saves its caller's value in its prologue and
+    // puts it back, so a pointer left in one by code long finished is carried
+    // from frame to frame -- and a new thread starts with its parent's. Read
+    // as roots, those saved words kept whole compilations alive: a compile
+    // process's stack held the binders of units it had finished, through a
+    // closure in a register nobody had used since.
+    //
+    // The compiler's stack maps (X86Backend.EmitStackMaps, version 3) say, at
+    // each call, which of the three the caller holds live and which its
+    // prologue saves where. So a thread reading its OWN stack walks the frame
+    // chain: a frame's saved registers are the values of the frame outside it
+    // (or of the first one further out that uses the register), and are
+    // marked only where that frame's map says the register is live. Every
+    // other word of every frame is read as before, a word at a time; a frame
+    // with no map -- C, a signal frame, a stub -- is read whole and forgets
+    // where the registers were. What stops being read is a dead register's
+    // saved copy, and nothing else.
+#if !TARGET_64BIT
+    const long MapMagic = 0x314D5343;       // 'CSM1'
+    const long MapVersion = 3;
+    const long DirectoryMagic = 0x52444D43; // 'CMDR'
+    const long LiveEbx = 8, LiveEsi = 64, LiveEdi = 128;
+    static long _maps;              // (return address, entry) pairs, sorted; the operating system's
+    static long _mapCount;
+    static bool _mapsBuilt;
+
+    /// Every stack map of every registered image, indexed by return address.
+    /// Once, at the first collection, with the heap lock held.
+    static void BuildMaps()
+    {
+        _mapsBuilt = true;
+        long total = 0;
+        long pass = 0;
+        while (pass < 2)
+        {
+            long filled = 0;
+            long m = 0;
+            while (m < Runtime.MetadataCount())
+            {
+                long directory = Runtime.Metadata(m);
+                m = m + 1;
+                if (directory == 0 || Sys.PeekWord(directory) != DirectoryMagic || Sys.PeekWord(directory + 4) != 1
+                    || Sys.PeekWord(directory + 12) != 16)
+                {
+                    continue;
+                }
+                long records = Sys.PeekWord(directory + 8);
+                long r = 0;
+                while (r < records && r < 100000)
+                {
+                    long record = directory + 16 + r * 16;
+                    r = r + 1;
+                    long table = Sys.PeekWord(record + 8);
+                    if (table == 0 || Sys.PeekWord(table) != MapMagic || Sys.PeekWord(table + 4) != MapVersion
+                        || Sys.PeekWord(table + 12) != 16)
+                    {
+                        continue;
+                    }
+                    long count = Sys.PeekWord(table + 8);
+                    if (pass == 0)
+                    {
+                        total = total + count;
+                        continue;
+                    }
+                    long basis = Sys.PeekWord(table + 16);
+                    long e = 0;
+                    while (e < count && filled < total)
+                    {
+                        long entry = table + 20 + e * 16;
+                        Sys.Poke(_maps + filled * 2 * WordSize.Bytes, (basis + Sys.PeekWord(entry)) & WordSize.AddressMask);
+                        Sys.Poke(_maps + filled * 2 * WordSize.Bytes + WordSize.Bytes, entry);
+                        filled = filled + 1;
+                        e = e + 1;
+                    }
+                }
+            }
+            if (pass == 0)
+            {
+                if (total == 0)
+                {
+                    return;
+                }
+                _maps = Platform.Map(total * 2 * WordSize.Bytes);
+                if (_maps == 0)
+                {
+                    return;
+                }
+            }
+            else
+            {
+                _mapCount = filled;
+            }
+            pass = pass + 1;
+        }
+        SortMaps();
+    }
+
+    static long MapKey(long i)
+    {
+        return Sys.Peek(_maps + i * 2 * WordSize.Bytes);
+    }
+
+    static void SwapMaps(long a, long b)
+    {
+        long w = WordSize.Bytes;
+        long ka = Sys.Peek(_maps + a * 2 * w);
+        long va = Sys.Peek(_maps + a * 2 * w + w);
+        Sys.Poke(_maps + a * 2 * w, Sys.Peek(_maps + b * 2 * w));
+        Sys.Poke(_maps + a * 2 * w + w, Sys.Peek(_maps + b * 2 * w + w));
+        Sys.Poke(_maps + b * 2 * w, ka);
+        Sys.Poke(_maps + b * 2 * w + w, va);
+    }
+
+    static void SiftMaps(long at, long count)
+    {
+        while (true)
+        {
+            long child = at * 2 + 1;
+            if (child >= count)
+            {
+                return;
+            }
+            if (child + 1 < count && MapKey(child + 1) > MapKey(child))
+            {
+                child = child + 1;
+            }
+            if (MapKey(at) >= MapKey(child))
+            {
+                return;
+            }
+            SwapMaps(at, child);
+            at = child;
+        }
+    }
+
+    /// In place, allocating nothing: a heap sort.
+    static void SortMaps()
+    {
+        long n = _mapCount;
+        long i = n / 2;
+        while (i > 0)
+        {
+            i = i - 1;
+            SiftMaps(i, n);
+        }
+        long end = n;
+        while (end > 1)
+        {
+            end = end - 1;
+            SwapMaps(0, end);
+            SiftMaps(0, end);
+        }
+    }
+
+    /// The map entry for a return address, or 0.
+    static long MapEntry(long ret)
+    {
+        long low = 0;
+        long high = _mapCount;
+        while (low < high)
+        {
+            long middle = low + (high - low) / 2;
+            long key = MapKey(middle);
+            if (key == ret)
+            {
+                return Sys.Peek(_maps + middle * 2 * WordSize.Bytes + WordSize.Bytes);
+            }
+            if (key < ret) low = middle + 1;
+            else high = middle;
+        }
+        return 0;
+    }
+
+    /// Whether this thread's own stack can be read with its registers' liveness.
+    public static bool PreciseRegisters()
+    {
+        return _mapCount != 0;
+    }
+
+    /// A word of this thread's own stack, kept: marked, or written into
+    /// `copy` at `at` (a stack copied at STAMP). Answers where the next goes.
+    static long KeepWord(long word, long copy, long at)
+    {
+        if (copy != 0)
+        {
+            Sys.Poke(copy + at * WordSize.Bytes, word);
+            return at + 1;
+        }
+        MarkRoot(word);
+        return at;
+    }
+
+    /// [from, to) of this stack, every word kept but the three saved slots.
+    static long KeepRange(long from, long to, long s1, long s2, long s3, long copy, long at)
+    {
+        long p = (from + WordSize.Bytes - 1) & -WordSize.Bytes;
+        while (p < to)
+        {
+            if (p != s1 && p != s2 && p != s3)
+            {
+                at = KeepWord(Sys.Peek(p), copy, at);
+            }
+            p = p + WordSize.Bytes;
+        }
+        return at;
+    }
+
+    /// THIS THREAD'S OWN STACK, [from, to), read with its registers' liveness
+    /// (above). Marks what it keeps, or, given `copy`, writes it there and
+    /// answers how many words it wrote.
+    public static long ScanOwnStack(long from, long to, long copy)
+    {
+        long w = WordSize.Bytes;
+        long atEbx = 0;
+        long atEsi = 0;
+        long atEdi = 0;
+        long at = 0;
+        long start = from;
+        long below = 0;
+        long frame = Sys.FramePointer() & WordSize.AddressMask;
+        while (frame != 0 && frame < to)
+        {
+            long entry = below != 0 ? MapEntry(Sys.Peek(below + w) & WordSize.AddressMask) : 0;
+            long s1 = 0;
+            long s2 = 0;
+            long s3 = 0;
+            if (entry != 0)
+            {
+                long regs = Sys.PeekWord(entry + 4);
+                // Its live registers at the call it is in: where the frames
+                // under it saved them.
+                if ((regs & LiveEbx) != 0 && atEbx != 0) at = KeepWord(Sys.Peek(atEbx), copy, at);
+                if ((regs & LiveEsi) != 0 && atEsi != 0) at = KeepWord(Sys.Peek(atEsi), copy, at);
+                if ((regs & LiveEdi) != 0 && atEdi != 0) at = KeepWord(Sys.Peek(atEdi), copy, at);
+                // Its own saves: the values of the frames outside it.
+                long slot = frame - Sys.PeekWord(entry + 12);
+                if ((regs & (LiveEbx << 16)) != 0) { slot = slot - w; atEbx = slot; s1 = slot; }
+                if ((regs & (LiveEsi << 16)) != 0) { slot = slot - w; atEsi = slot; s2 = slot; }
+                if ((regs & (LiveEdi << 16)) != 0) { slot = slot - w; atEdi = slot; s3 = slot; }
+            }
+            else
+            {
+                atEbx = Zero;
+                atEsi = Zero;
+                atEdi = Zero;
+            }
+            long end = frame + 2 * w;
+            if (end > start && end > from)
+            {
+                at = KeepRange(start > from ? start : from, end < to ? end : to, s1, s2, s3, copy, at);
+            }
+            if (end > start)
+            {
+                start = end;
+            }
+            long next = Sys.Peek(frame) & WordSize.AddressMask;
+            if (next <= frame)
+            {
+                break;
+            }
+            below = frame;
+            frame = next;
+        }
+        if (start < to)
+        {
+            at = KeepRange(start > from ? start : from, to, 0, 0, 0, copy, at);
+        }
+        return at;
+    }
+#else
+    public static bool PreciseRegisters()
+    {
+        return false;
+    }
+
+    public static long ScanOwnStack(long from, long to, long copy)
+    {
+        return 0;
+    }
+#endif
+
     // WHICH ROOT HOLDS WHAT (the census, a whole cycle): each root word marked
     // and the queue drained before the next, so the bytes a word newly marks
     // are the ones only it -- or it first -- reaches, and a word that holds
@@ -4292,6 +4576,12 @@ static class Gc
         {
             CheckHeap(0);
         }
+#if !TARGET_64BIT
+        if (!_mapsBuilt)
+        {
+            BuildMaps();
+        }
+#endif
 
         // An indirect call answers a word, so the clock is read modulo 2^32
         // microseconds; the difference of two is exact for any collection
@@ -4958,7 +5248,14 @@ static class Gc
 
         if (from != 0 && to > from)
         {
-            ScanRootsAttributed(from, to, 4, true);
+            if (block == Sys.ThreadBlock() && PreciseRegisters())
+            {
+                ScanOwnStack(from, to, 0);
+            }
+            else
+            {
+                ScanRootsAttributed(from, to, 4, true);
+            }
         }
     }
 
@@ -6357,7 +6654,14 @@ static class GcRoots
         {
             top = Sys.EntryStack();
         }
-        Gc.ScanRootsAttributed(Sys.Stack(), top, 1, true);
+        if (Gc.PreciseRegisters())
+        {
+            Gc.ScanOwnStack(Sys.Stack(), top, 0);
+        }
+        else
+        {
+            Gc.ScanRootsAttributed(Sys.Stack(), top, 1, true);
+        }
         Gc.ScanRootsAttributed(Sys.DataStart(), Sys.DataEnd(), 2, false);
 
         long i = 0;
@@ -7004,7 +7308,7 @@ static class GcThreads
     // words (the copy, its bytes) for each; mapped once, the count cleared at
     // every cycle. The count is in the table so that threads claim entries
     // with one atomic add on memory, as the collector's other counters are.
-    const long CopyEntry = 2 * WordSize.Bytes;
+    const long CopyEntry = 3 * WordSize.Bytes;      // the copy, the bytes written, the bytes mapped
     const long NoCopy = 0;
     static long _stackCopies;
 
@@ -7052,25 +7356,41 @@ static class GcThreads
             return;
         }
         long slot = Sys.AtomicAdd(_stackCopies, 1);
-        long copy = slot < Max ? Platform.Map(words * w) : NoCopy;
+        // Room for a live register's value in every frame beside the stack's
+        // own words (Gc.ScanOwnStack): twice them, mapped, and touched only
+        // as far as written.
+        long copy = slot < Max ? Platform.Map((2 * words + 16) * w) : NoCopy;
         if (copy == 0)
         {
             Sys.AtomicSwap(ctl + GcLock.BarrierLost, 1);
             return;
         }
-        long i = 0;
-        while (i < stackWords)
+        long kept = 0;
+        if (block == Sys.ThreadBlock() && Gc.PreciseRegisters())
         {
-            Sys.Poke(copy + i * w, Sys.Peek(start + i * w));
-            i = i + 1;
+            // Its own stack, answering STAMP itself: its live registers, not
+            // their stale copies (Gc.ScanOwnStack). Never more words than
+            // the stack has.
+            kept = Gc.ScanOwnStack(start, to, copy);
         }
-        long j = 0;
-        while (j < spilled)
+        else
         {
-            Sys.Poke(copy + (stackWords + j) * w, Sys.Peek(block + Tls.Spill + j * w));
-            j = j + 1;
+            long i = 0;
+            while (i < stackWords)
+            {
+                Sys.Poke(copy + i * w, Sys.Peek(start + i * w));
+                i = i + 1;
+            }
+            long j = 0;
+            while (j < spilled)
+            {
+                Sys.Poke(copy + (stackWords + j) * w, Sys.Peek(block + Tls.Spill + j * w));
+                j = j + 1;
+            }
+            kept = words;
         }
-        Sys.Poke(CopyAt(slot) + w, words * w);
+        Sys.Poke(CopyAt(slot) + w, kept * w);
+        Sys.Poke(CopyAt(slot) + 2 * w, (2 * words + 16) * w);
         Sys.AtomicSwap(CopyAt(slot), copy);
     }
 
@@ -7110,7 +7430,7 @@ static class GcThreads
             long copy = Sys.Peek(CopyAt(i));
             if (copy != 0)
             {
-                Platform.Unmap(copy, Sys.Peek(CopyAt(i) + WordSize.Bytes));
+                Platform.Unmap(copy, Sys.Peek(CopyAt(i) + 2 * WordSize.Bytes));
                 Sys.Poke(CopyAt(i), NoCopy);
             }
         }

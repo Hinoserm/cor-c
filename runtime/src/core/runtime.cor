@@ -1240,6 +1240,18 @@ static class Runtime
     static long _tables;
     static long _tableCount;
 
+    /// How many image directories and tables are registered, and the i-th:
+    /// the collector reads the stack maps they name (Gc, precise registers).
+    public static long MetadataCount()
+    {
+        return _tableCount;
+    }
+
+    public static long Metadata(long i)
+    {
+        return i < _tableCount ? Sys.Peek(_tables + i * WordSize.Bytes) : 0;
+    }
+
     /// Registers an image directory or an explicitly supplied individual frame
     /// table. Both are current metadata kinds, distinguished by their magic.
     public static bool RegisterFrames(long table)

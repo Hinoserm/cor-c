@@ -684,7 +684,24 @@ public sealed partial class Binder
     private List<string>? _signature;
 
     /// <summary>Accessor methods invented for properties, checked like any other body.</summary>
-    private readonly List<MethodDecl> _synthesised = new();
+    /// <summary>
+    /// The accessors made for properties, by the type they belong to. One list
+    /// of them all, filtered for each type whose bodies were checked, was a
+    /// scan of every accessor in the program for every type -- thousands of
+    /// types, tens of thousands of accessors -- and a fifth of a self-hosted
+    /// unit's time.
+    /// </summary>
+    private readonly Dictionary<TypeSymbol, List<MethodDecl>> _synthesised = new(ReferenceEqualityComparer.Instance);
+
+    private void Synthesised(TypeSymbol owner, MethodDecl accessor)
+    {
+        if (!_synthesised.TryGetValue(owner, out List<MethodDecl>? made))
+        {
+            made = new List<MethodDecl>();
+            _synthesised[owner] = made;
+        }
+        made.Add(accessor);
+    }
 
     /// <summary>Total bytes of static storage the program needs.</summary>
     public int StaticBytes => _staticNext;
@@ -2632,7 +2649,7 @@ public sealed partial class Binder
                         }
                         sym.Methods.Add(gs);
                         _r.Methods[getter] = gs;
-                        _synthesised.Add(getter);
+                        Synthesised(sym, getter);
                     }
 
                     if (setBody != null || (declared && p.HasSetter))
@@ -2673,7 +2690,7 @@ public sealed partial class Binder
                         ss.Params.Add(new ParamSymbol { Name = "value", Type = propType });
                         sym.Methods.Add(ss);
                         _r.Methods[setter] = ss;
-                        _synthesised.Add(setter);
+                        Synthesised(sym, setter);
                     }
                     break;
                 }
@@ -3539,7 +3556,10 @@ public sealed partial class Binder
         _member = null;
 
         List<MethodDecl> bodies = d.Members.OfType<MethodDecl>().ToList();
-        bodies.AddRange(_synthesised.Where(x => _r.Methods.TryGetValue(x, out MethodSymbol? ms) && ReferenceEquals(ms.Owner, sym)));
+        if (_synthesised.TryGetValue(sym, out List<MethodDecl>? accessors))
+        {
+            bodies.AddRange(accessors.Where(x => _r.Methods.TryGetValue(x, out MethodSymbol? ms) && ReferenceEquals(ms.Owner, sym)));
+        }
 
         foreach (MethodDecl md in bodies)
         {
