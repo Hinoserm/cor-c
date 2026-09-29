@@ -645,7 +645,14 @@ static class Runtime
         FreeLogRing = Platform.Map((FreeLogEntries * 4 + 1) * WordSize.Bytes);
     }
 
-    public static void LogFree(long held, long owner, long offset, long site)
+    /// A plain free, logged (Gc.Free): the block and the two calls it came
+    /// through.
+    public static void LogPlainFree(long held, long caller, long site)
+    {
+        LogFree(held, 0, caller, site);
+    }
+
+    static void LogFree(long held, long owner, long offset, long site)
     {
         long n = Sys.AtomicAdd(FreeLogRing, 1) % FreeLogEntries;
         long entry = FreeLogRing + (1 + n * 4) * WordSize.Bytes;

@@ -2439,7 +2439,7 @@ static class Gc
         {
             long fp = Sys.FramePointer();
             long caller = Sys.Peek(fp) & WordSize.AddressMask;
-            Runtime.LogFree(at, 0, caller != 0 ? Sys.Peek(caller + WordSize.Bytes) : 0, Sys.Peek(fp + WordSize.Bytes));
+            Runtime.LogPlainFree(at, caller != 0 ? Sys.Peek(caller + WordSize.Bytes) : 0, Sys.Peek(fp + WordSize.Bytes));
         }
 
         if (Verifying())
