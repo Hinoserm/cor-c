@@ -1,0 +1,21 @@
+// test: qualified base class
+// expect-exit: 0
+// expect-output:
+// True 0 x
+//
+// A base class written with its namespace names its last part, as the same
+// qualified name does as a variable's type: `class Demand : System.Exception`
+// was 'System.Exception is not a known type'.
+
+class Demand : System.Exception { }
+class Other : System.InvalidOperationException { public Other() : base("x") { } }
+static class Program
+{
+    static int Main()
+    {
+        System.Exception e = new Demand();
+        System.Collections.Generic.List<int> l = new();
+        System.Console.WriteLine((e is Demand) + " " + l.Count + " " + new Other().Message);
+        return 0;
+    }
+}
