@@ -2571,6 +2571,13 @@ static class Gc
             ZeroWords(block, _bump);
             _bump = block;
             SyncEnd();
+            // The recycling walk resumes at a block start. Left above the
+            // lowered bump pointer, it would lie inside whatever is carved
+            // there next, and read that as blocks.
+            if (_recycle == _current && _recycleAt > _bump)
+            {
+                _recycleAt = _bump;
+            }
             GcLock.Exit();
             return;
         }
@@ -2838,6 +2845,16 @@ static class Gc
 
         Stamp(block, size, FlagFree);
         Link(block);
+
+        // A MERGE REMOVES BOUNDARIES, and the recycling walk resumes at one.
+        // Swallowed into this block, the block it would have read next keeps
+        // its old header and footer inside it, and the walk would take that
+        // as a listed free block of its own: unlinked from no list, handed out
+        // as a buffer, and handed out again as part of this one.
+        if (_recycle == chunk && block < _recycleAt && _recycleAt < block + size)
+        {
+            _recycleAt = block;
+        }
     }
 
     // ---- collecting -------------------------------------------------------------
