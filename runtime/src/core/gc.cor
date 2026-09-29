@@ -2194,6 +2194,37 @@ static class Gc
         return true;
     }
 
+    /// Pages mapped a batch at a time: one answered, the rest pooled. A
+    /// page a time was a mapping and an index insert each, for tens of
+    /// thousands of them.
+    const long PageBatch = 32;
+    static long _batchTaken;        // a word for TakePages to answer in
+
+    static long TakeBatch()
+    {
+        if (_batchTaken == 0) _batchTaken = _classSize + 250 * WordSize.Bytes;
+        long first = HeapChunks.TakePages(PageBatch, _batchTaken);
+        long n = Sys.Peek(_batchTaken);
+        if (first == 0 || n == 0)
+        {
+            return 0;
+        }
+        PagesTaken = PagesTaken + n;
+        for (long k = n - 1; k >= 1; k--)
+        {
+            long page = first + k * HeapChunks.PageBytes;
+            // A class, any class, so that the sweep knows it for a page
+            // (and passes it by, pooled) rather than an empty mixed chunk.
+            HeapChunks.SetPageClass(page, 1);
+            HeapChunks.SetPooled(page, true);
+            HeapChunks.SetYoung(page, false);
+            HeapChunks.SetPageNext(page, _pool);
+            _pool = page;
+            _poolBytes = _poolBytes + HeapChunks.PageBytes;
+        }
+        return first;
+    }
+
     static long PopPool(long c)
     {
         long page = _pool;
@@ -2204,7 +2235,11 @@ static class Gc
         _pool = HeapChunks.PageNext(page);
         HeapChunks.SetPageNext(page, Zero);
         _poolBytes = _poolBytes - HeapChunks.PageBytes;
-        ZeroWords(HeapChunks.First(page), HeapChunks.PageBlockLimit(page));
+        // A page never formatted is as the operating system gave it: zero.
+        if (HeapChunks.End(page) != HeapChunks.First(page))
+        {
+            ZeroWords(HeapChunks.First(page), HeapChunks.PageBlockLimit(page));
+        }
         FormatPage(page, c);
         return page;
     }
@@ -2253,13 +2288,12 @@ static class Gc
             page = PopPool(c);
             if (page == 0)
             {
-                page = HeapChunks.TakePage();
+                page = TakeBatch();
                 if (page == 0)
                 {
                     return false;
                 }
                 FormatPage(page, c);
-                PagesTaken = PagesTaken + 1;
             }
         }
         long head = HeapChunks.PageFree(page);
@@ -7313,12 +7347,20 @@ static class HeapChunks
 
     static void IndexAdd(long chunk)
     {
+        IndexAddRun(chunk, 1, 0);
+    }
+
+    /// `n` chunks at `first`, `first + step`, ... entered together: none of
+    /// the index lies between them, so the entries around them move once.
+    static void IndexAddRun(long first, long n, long step)
+    {
         if (_indexFailed) return;
         long front = _index == 0 ? 0 : (_index - _indexBase) / WordSize.Bytes;
         long back = _indexCapacity - front - _indexCount;
-        if (front == 0 && back == 0)
+        if (front < n && back < n)
         {
             long capacity = _indexCapacity == 0 ? 1024 : _indexCapacity * 2;
+            while (capacity < _indexCount + 2 * n) capacity = capacity * 2;
             long grown = Platform.Map(capacity * WordSize.Bytes);
             if (grown == 0)
             {
@@ -7347,23 +7389,25 @@ static class HeapChunks
             front = lead;
             back = capacity - lead - _indexCount;
         }
-        long at = IndexLowerBound(chunk);
-        if (front > 0 && (at < _indexCount - at || back == 0))
+        long at = IndexLowerBound(first);
+        if (front >= n && (at < _indexCount - at || back < n))
         {
-            // The entries below it one place down, into the room in front.
-            long moved = _index - WordSize.Bytes;
+            // The entries below the run `n` places down, into the room in front.
+            long moved = _index - n * WordSize.Bytes;
             for (long i = 0; i < at; i++)
                 Sys.Poke(moved + i * WordSize.Bytes, Sys.Peek(_index + i * WordSize.Bytes));
-            Sys.Poke(moved + at * WordSize.Bytes, chunk);
+            for (long k = 0; k < n; k++)
+                Sys.Poke(moved + (at + k) * WordSize.Bytes, first + k * step);
             _index = moved;
         }
         else
         {
-            for (long i = _indexCount; i > at; i--)
-                Sys.Poke(_index + i * WordSize.Bytes, Sys.Peek(_index + (i - 1) * WordSize.Bytes));
-            Sys.Poke(_index + at * WordSize.Bytes, chunk);
+            for (long i = _indexCount - 1; i >= at; i--)
+                Sys.Poke(_index + (i + n) * WordSize.Bytes, Sys.Peek(_index + i * WordSize.Bytes));
+            for (long k = 0; k < n; k++)
+                Sys.Poke(_index + (at + k) * WordSize.Bytes, first + k * step);
         }
-        _indexCount++;
+        _indexCount = _indexCount + n;
     }
 
     static void IndexRemove(long chunk)
@@ -7531,40 +7575,63 @@ static class HeapChunks
     /// A new size-class page, zeroed, its start table inside it; or zero
     /// when the cap, the ceiling or the operating system refuses. The heap
     /// lock is held. Not yet formatted for a class (Gc.FormatPage).
-    public static long TakePage()
+    /// Up to `want` new size-class pages in one mapping, laid end to end,
+    /// each a chunk of its own and empty (its end is its first block), the
+    /// run entered in the index at once; answers the lowest, the others at
+    /// PageBytes steps above it, and how many through `taken`. Zero when the
+    /// cap, the ceiling or the operating system refuses even one. The heap
+    /// lock is held.
+    public static long TakePages(long want, long taken)
     {
+        Sys.Poke(taken, 0);
         if (Gc.GrowthWaits(PageBytes))
         {
             return 0;
         }
-        if (_cap != 0 && _heapBytes + PageBytes > _cap)
+        long n = want;
+        if (_cap != 0)
+        {
+            long room = (_cap - _heapBytes) / PageBytes;
+            if (room < n) n = room;
+        }
+        if (n < 1)
         {
             return 0;
         }
-        long raw = Platform.Map(PageBytes);
+        long raw = Platform.Map(n * PageBytes);
+        if (raw == 0 && n > 1)
+        {
+            n = 1;
+            raw = Platform.Map(PageBytes);
+        }
         if (raw == 0)
         {
             return 0;
         }
         Maps = Maps + 1;
-        Sys.Poke(raw + ChunkNext, _chunks);
-        Sys.Poke(raw + ChunkEnd, raw + ChunkBytes);
-        Sys.Poke(raw + ChunkLimit, raw + PageBytes);
-        Sys.Poke(raw + ChunkFlags, ChunkYoung);
-        Sys.Poke(raw + ChunkAnchors, PageBlockLimit(raw));
-        Sys.Poke(raw + ChunkPrevious, 0);
-        if (_chunks != 0) Sys.Poke(_chunks + ChunkPrevious, raw);
-        _chunks = raw;
-        _heapBytes = _heapBytes + PageBytes;
-        IndexAdd(raw);
+        for (long k = 0; k < n; k++)
+        {
+            long page = raw + k * PageBytes;
+            Sys.Poke(page + ChunkNext, _chunks);
+            Sys.Poke(page + ChunkPrevious, 0);
+            if (_chunks != 0) Sys.Poke(_chunks + ChunkPrevious, page);
+            Sys.Poke(page + ChunkEnd, page + ChunkBytes);
+            Sys.Poke(page + ChunkLimit, page + PageBytes);
+            Sys.Poke(page + ChunkFlags, ChunkYoung);
+            Sys.Poke(page + ChunkAnchors, PageBlockLimit(page));
+            _chunks = page;
+        }
+        _heapBytes = _heapBytes + n * PageBytes;
+        IndexAddRun(raw, n, PageBytes);
         if (_floor == 0 || raw + ChunkBytes < _floor)
         {
             _floor = raw + ChunkBytes;
         }
-        if (raw + PageBytes > _ceiling)
+        if (raw + n * PageBytes > _ceiling)
         {
-            _ceiling = raw + PageBytes;
+            _ceiling = raw + n * PageBytes;
         }
+        Sys.Poke(taken, n);
         return raw;
     }
 
