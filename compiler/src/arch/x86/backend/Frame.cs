@@ -89,4 +89,19 @@ public sealed class Frame
 
     /// <summary>A spill slot for one 32-bit virtual register.</summary>
     public int Spill() => Allocate(4, 4);
+
+    /// <summary>
+    /// The IR frame slots -- objects the lifetime passes put in the frame, the
+    /// lowering's temporaries -- as (offset, bytes): the words of the frame a
+    /// stack map does not describe, which the collector reads as they are
+    /// (X86Backend.EmitStackMaps). Spill slots are the map's; floating-point
+    /// homes and the scratch hold no reference.
+    /// </summary>
+    public IEnumerable<(int Offset, int Bytes)> SlotRanges()
+    {
+        foreach (var pair in _slots)
+        {
+            yield return (pair.Value, Math.Max(pair.Key.Bytes, 4));
+        }
+    }
 }

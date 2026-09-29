@@ -662,10 +662,13 @@ static class Gc
     // saved copy, and nothing else.
 #if !TARGET_64BIT
     const long MapMagic = 0x314D5343;       // 'CSM1'
-    const long MapVersion = 3;
+    const long MapVersion = 4;
+    const long MapEntryBytes = 20;
+    const long UnknownFrame = 0x80000000;
     const long DirectoryMagic = 0x52444D43; // 'CMDR'
     const long LiveEbx = 8, LiveEsi = 64, LiveEdi = 128;
-    static long _maps;              // (return address, entry) pairs, sorted; the operating system's
+    static long _maps;              // (return address, entry, table) records, sorted; the operating system's
+    const long MapRecord = 3 * WordSize.Bytes;
     static long _mapCount;
     static bool _mapsBuilt;
 
@@ -697,7 +700,7 @@ static class Gc
                     r = r + 1;
                     long table = Sys.PeekWord(record + 8);
                     if (table == 0 || Sys.PeekWord(table) != MapMagic || Sys.PeekWord(table + 4) != MapVersion
-                        || Sys.PeekWord(table + 12) != 16)
+                        || Sys.PeekWord(table + 12) != MapEntryBytes)
                     {
                         continue;
                     }
@@ -711,9 +714,10 @@ static class Gc
                     long e = 0;
                     while (e < count && filled < total)
                     {
-                        long entry = table + 20 + e * 16;
-                        Sys.Poke(_maps + filled * 2 * WordSize.Bytes, (basis + Sys.PeekWord(entry)) & WordSize.AddressMask);
-                        Sys.Poke(_maps + filled * 2 * WordSize.Bytes + WordSize.Bytes, entry);
+                        long entry = table + 20 + e * MapEntryBytes;
+                        Sys.Poke(_maps + filled * MapRecord, (basis + Sys.PeekWord(entry)) & WordSize.AddressMask);
+                        Sys.Poke(_maps + filled * MapRecord + WordSize.Bytes, entry);
+                        Sys.Poke(_maps + filled * MapRecord + 2 * WordSize.Bytes, table);
                         filled = filled + 1;
                         e = e + 1;
                     }
@@ -725,7 +729,7 @@ static class Gc
                 {
                     return;
                 }
-                _maps = Platform.Map(total * 2 * WordSize.Bytes);
+                _maps = Platform.Map(total * MapRecord);
                 if (_maps == 0)
                 {
                     return;
@@ -742,18 +746,19 @@ static class Gc
 
     static long MapKey(long i)
     {
-        return Sys.Peek(_maps + i * 2 * WordSize.Bytes);
+        return Sys.Peek(_maps + i * MapRecord);
     }
 
     static void SwapMaps(long a, long b)
     {
-        long w = WordSize.Bytes;
-        long ka = Sys.Peek(_maps + a * 2 * w);
-        long va = Sys.Peek(_maps + a * 2 * w + w);
-        Sys.Poke(_maps + a * 2 * w, Sys.Peek(_maps + b * 2 * w));
-        Sys.Poke(_maps + a * 2 * w + w, Sys.Peek(_maps + b * 2 * w + w));
-        Sys.Poke(_maps + b * 2 * w, ka);
-        Sys.Poke(_maps + b * 2 * w + w, va);
+        long k = 0;
+        while (k < MapRecord)
+        {
+            long held = Sys.Peek(_maps + a * MapRecord + k);
+            Sys.Poke(_maps + a * MapRecord + k, Sys.Peek(_maps + b * MapRecord + k));
+            Sys.Poke(_maps + b * MapRecord + k, held);
+            k = k + WordSize.Bytes;
+        }
     }
 
     static void SiftMaps(long at, long count)
@@ -797,8 +802,9 @@ static class Gc
         }
     }
 
-    /// The map entry for a return address, or 0.
-    static long MapEntry(long ret)
+    /// The index record for a return address -- its entry at one word, its
+    /// table at two -- or 0.
+    static long MapRecordFor(long ret)
     {
         long low = 0;
         long high = _mapCount;
@@ -808,7 +814,7 @@ static class Gc
             long key = MapKey(middle);
             if (key == ret)
             {
-                return Sys.Peek(_maps + middle * 2 * WordSize.Bytes + WordSize.Bytes);
+                return _maps + middle * MapRecord;
             }
             if (key < ret) low = middle + 1;
             else high = middle;
@@ -876,9 +882,46 @@ static class Gc
         return at;
     }
 
-    /// THIS THREAD'S OWN STACK, [from, to), read with its registers' liveness
-    /// (above). Marks what it keeps, or, given `copy`, writes it there and
-    /// answers how many words it wrote.
+    /// The words of a frame a bitmap names (bit b the word at frame - 4(b+1)),
+    /// kept -- those at or above `from` only.
+    static long KeepBitmap(long frame, long bitmap, long from, long copy, long at)
+    {
+        long words = Sys.PeekWord(bitmap);
+        long k = 0;
+        while (k < words)
+        {
+            long bits = Sys.PeekWord(bitmap + 4 + k * 4) & 0xFFFFFFFF;
+            long b = 0;
+            while (bits != 0)
+            {
+                if ((bits & 1) != 0)
+                {
+                    long slot = frame - 4 * (k * 32 + b + 1);
+                    if (slot >= from)
+                    {
+                        at = KeepWord(Sys.Peek(slot), copy, at);
+                    }
+                }
+                bits = (bits >> 1) & 0x7FFFFFFF;
+                b = b + 1;
+            }
+            k = k + 1;
+        }
+        return at;
+    }
+
+    /// THIS THREAD'S OWN STACK, [from, to), read by the stack maps. A frame
+    /// the maps know is read as they describe it: the spill slots live at its
+    /// call, its IR frame slots as they are, the arguments it is pushing, and
+    /// its callee-saved registers where the frames under it saved them, if it
+    /// holds them live -- and not its dead spill slots, the words it has not
+    /// written yet, or the saved copies of registers it does not use. What a
+    /// word left there by code long finished pointed at was kept alive by
+    /// being read: whole compilations, through a closure in a slot the frame
+    /// had not reached yet. A frame the maps do not know -- C, a signal
+    /// frame, the walk's own -- is read whole, and forgets where the
+    /// registers were. Marks what it keeps, or, given `copy`, writes it there
+    /// and answers how many words it wrote.
     public static long ScanOwnStack(long from, long to, long copy)
     {
         long w = WordSize.Bytes;
@@ -891,14 +934,14 @@ static class Gc
         long frame = Sys.FramePointer() & WordSize.AddressMask;
         while (frame != 0 && frame < to)
         {
-            long entry = below != 0 ? MapEntry(Sys.Peek(below + w) & WordSize.AddressMask) : 0;
+            long record = below != 0 ? MapRecordFor(Sys.Peek(below + w) & WordSize.AddressMask) : 0;
+            long entry = record != 0 ? Sys.Peek(record + w) : 0;
+            long table = record != 0 ? Sys.Peek(record + 2 * w) : 0;
             _keepingFor = below != 0 ? Sys.Peek(below + w) & WordSize.AddressMask : 0;
-            long s1 = 0;
-            long s2 = 0;
-            long s3 = 0;
-            if (entry != 0)
+            long end = frame + 2 * w;
+            long regs = entry != 0 ? Sys.PeekWord(entry + 4) : 0;
+            if (entry != 0 && (regs & UnknownFrame) == 0)
             {
-                long regs = Sys.PeekWord(entry + 4);
                 // Its live registers at the call it is in: where the frames
                 // under it saved them.
                 if ((regs & LiveEbx) != 0 && atEbx != 0) at = KeepWord(Sys.Peek(atEbx), copy, at);
@@ -906,20 +949,44 @@ static class Gc
                 if ((regs & LiveEdi) != 0 && atEdi != 0) at = KeepWord(Sys.Peek(atEdi), copy, at);
                 // Its own saves: the values of the frames outside it.
                 long slot = frame - Sys.PeekWord(entry + 12);
-                if ((regs & (LiveEbx << 16)) != 0) { slot = slot - w; atEbx = slot; s1 = slot; }
-                if ((regs & (LiveEsi << 16)) != 0) { slot = slot - w; atEsi = slot; s2 = slot; }
-                if ((regs & (LiveEdi << 16)) != 0) { slot = slot - w; atEdi = slot; s3 = slot; }
+                if ((regs & (LiveEbx << 16)) != 0) { slot = slot - w; atEbx = slot; }
+                if ((regs & (LiveEsi << 16)) != 0) { slot = slot - w; atEsi = slot; }
+                if ((regs & (LiveEdi << 16)) != 0) { slot = slot - w; atEdi = slot; }
+                // The arguments it is pushing, under its saved registers.
+                long lowest = start > from ? start : from;
+                if (slot > lowest)
+                {
+                    at = KeepRange(lowest, slot < to ? slot : to, 0, 0, 0, copy, at);
+                }
+                // Its spill slots live at the call, and its IR frame slots.
+                long live = Sys.PeekWord(entry + 8);
+                if (live != 0)
+                {
+                    at = KeepBitmap(frame, table + live, from, copy, at);
+                }
+                long objects = Sys.PeekWord(entry + 16);
+                if (objects != 0)
+                {
+                    at = KeepBitmap(frame, table + objects, from, copy, at);
+                }
             }
             else
             {
+                // Read whole: its saved registers among its words.
+                if (entry != 0)
+                {
+                    long regsAll = regs;
+                    if ((regsAll & LiveEbx) != 0 && atEbx != 0) at = KeepWord(Sys.Peek(atEbx), copy, at);
+                    if ((regsAll & LiveEsi) != 0 && atEsi != 0) at = KeepWord(Sys.Peek(atEsi), copy, at);
+                    if ((regsAll & LiveEdi) != 0 && atEdi != 0) at = KeepWord(Sys.Peek(atEdi), copy, at);
+                }
                 atEbx = Zero;
                 atEsi = Zero;
                 atEdi = Zero;
-            }
-            long end = frame + 2 * w;
-            if (end > start && end > from)
-            {
-                at = KeepRange(start > from ? start : from, end < to ? end : to, s1, s2, s3, copy, at);
+                if (end > start && end > from)
+                {
+                    at = KeepRange(start > from ? start : from, end < to ? end : to, 0, 0, 0, copy, at);
+                }
             }
             if (end > start)
             {
@@ -2349,6 +2416,10 @@ static class Gc
         // since the last collection is collected now, whether or not this
         // request would have fitted, so the heap tracks the live size rather
         // than the allocation rate.
+        if (_thresholdCap != 0 && _threshold > _thresholdCap)
+        {
+            _threshold = _thresholdCap;
+        }
         bool due = _since + need >= _threshold;
         if (!due && ShortHook != 0 && _since + need >= ShortThreshold() && HeapChunks.Any()
             && Sys.Call(ShortHook, 0, 0, 0) != 0)
@@ -2706,6 +2777,8 @@ static class Gc
         SkippedFreePaths = Platform.SkippedFreePaths();
         GuardReleases = Platform.GuardReleases();
         _census = Platform.GcCensus();
+        _deadCensus = _census && Platform.GcDeadCensus();
+        _thresholdCap = Platform.GcThreshold();
         _heapCheck = Platform.HeapCheck();
         if (Platform.FreeLog())
         {
@@ -3417,6 +3490,9 @@ static class Gc
     const long CensusNoVtable = 2;
     const long CensusUntyped = 0x40000000;
     static bool _census;
+    static bool _deadCensus;        // CORSAC_GC_CENSUS=2: what sweeps found dead, by type, over the run
+    static long _deadAt;
+    static long _thresholdCap;      // CORSAC_GC_THRESHOLD, or 0
     static long _censusAt;
 
     static void StartCensus()
@@ -3434,7 +3510,12 @@ static class Gc
 
     static void Census(long block, long size)
     {
-        if (_censusAt == 0)
+        CensusInto(_censusAt, block, size);
+    }
+
+    static void CensusInto(long table, long block, long size)
+    {
+        if (table == 0)
         {
             return;
         }
@@ -3459,7 +3540,7 @@ static class Gc
         long probes = 0;
         while (probes < CensusSlots)
         {
-            long at = _censusAt + slot * CensusEntry;
+            long at = table + slot * CensusEntry;
             long there = Sys.Peek(at);
             if (there == key || there == 0)
             {
@@ -3478,18 +3559,37 @@ static class Gc
     /// with no vtable yet, or 0x40000000 plus the size of an untyped block.
     static void SayCensus()
     {
-        long w = WordSize.Bytes;
         SayNumber("gc census: whole cycle, live bytes ", _liveBytes);
-        long shown = 0;
-        while (shown < CensusShown)
+        SayTable(_censusAt, "gc census: bytes ", "gc census:   blocks ", "gc census:   key ", true);
+        if (_deadCensus && _deadAt != 0)
+        {
+            Runtime.WriteLiteral(2, "gc dead census: everything swept so far\n");
+            SayTable(_deadAt, "gc dead census: bytes ", "gc dead census:   blocks ", "gc dead census:   key ", false);
+        }
+    }
+
+    /// The largest entries of a census table; `take` clears each as it is
+    /// said (the live table is made afresh every whole cycle), the dead one
+    /// keeps counting.
+    static void SayTable(long table, string bytesLabel, string blocksLabel, string keyLabel, bool take)
+    {
+        long w = WordSize.Bytes;
+        long said = 0;
+        long lastBytes = 0x7FFFFFFFFFFFFFFF;
+        long lastKey = -1;
+        while (said < CensusShown)
         {
             long best = -1;
             long bestBytes = 0;
             long slot = 0;
             while (slot < CensusSlots)
             {
-                long bytes = Sys.Peek(_censusAt + slot * CensusEntry + w);
-                if (bytes > bestBytes)
+                long bytes = Sys.Peek(table + slot * CensusEntry + w);
+                long key = Sys.Peek(table + slot * CensusEntry);
+                // Without taking entries out, the next is the largest below
+                // the last said (and, among equals, a larger key).
+                bool below = take || bytes < lastBytes || (bytes == lastBytes && key > lastKey);
+                if (below && bytes > bestBytes)
                 {
                     bestBytes = bytes;
                     best = slot;
@@ -3500,12 +3600,17 @@ static class Gc
             {
                 return;
             }
-            long at = _censusAt + best * CensusEntry;
-            SayNumber("gc census: bytes ", bestBytes);
-            SayNumber("gc census:   blocks ", Sys.Peek(at + 2 * w));
-            SayNumber("gc census:   key ", Sys.Peek(at));
-            Sys.Poke(at + w, Zero);
-            shown = shown + 1;
+            long at = table + best * CensusEntry;
+            SayNumber(bytesLabel, bestBytes);
+            SayNumber(blocksLabel, Sys.Peek(at + 2 * w));
+            SayNumber(keyLabel, Sys.Peek(at));
+            lastBytes = bestBytes;
+            lastKey = Sys.Peek(at);
+            if (take)
+            {
+                Sys.Poke(at + w, Zero);
+            }
+            said = said + 1;
         }
     }
 
@@ -5713,6 +5818,15 @@ static class Gc
                 at = at + (word & SizeMask);
             }
         }
+        if ((SkippedFreePaths & 64) != 0 && size > HeaderBytes + FooterBytes)
+        {
+            long p = start + HeaderBytes;
+            while (p < start + size - FooterBytes)
+            {
+                Sys.PokeWord(p, Poison);
+                p = p + 4;
+            }
+        }
         Stamp(start, size, FlagFree);
         Link(start);
     }
@@ -5826,6 +5940,14 @@ static class Gc
                         }
                         deadBlocks = deadBlocks + 1;
                         deadSize = deadSize + size;
+                        if (_deadCensus && (word & FlagFree) == 0)
+                        {
+                            if (_deadAt == 0)
+                            {
+                                _deadAt = Platform.Map(CensusSlots * CensusEntry);
+                            }
+                            CensusInto(_deadAt, block, size);
+                        }
                     }
                     else
                     {

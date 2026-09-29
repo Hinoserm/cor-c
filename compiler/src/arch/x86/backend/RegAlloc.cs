@@ -853,17 +853,18 @@ internal sealed class Allocator
             {
                 continue;
             }
-            if (_spilledFrom[v] <= index || _assigned[v] < 0)
+            // ITS SLOT WHEREVER IT HAS ONE, and its register besides when that
+            // register survives the call. The collector reads a frame by this
+            // map now, and a value spilled at its definition but counted as
+            // still in its register until a later point was in neither list:
+            // a tuple kept at -64 across three calls was swept from under the
+            // frame that held it. A slot listed before it is written costs a
+            // stale word read; a slot left out costs the object.
+            if (_slot[v] != 0)
             {
-                if (_slot[v] != 0)
-                {
-                    map.SlotOffsets.Add(_slot[v]);
-                }
-                continue;
+                map.SlotOffsets.Add(_slot[v]);
             }
-            // Only a callee-saved register survives a call; anything else
-            // here would mean the busy marks at calls were not honoured.
-            if (_assigned[v] is (int)Gpr.Ebx or (int)Gpr.Esi or (int)Gpr.Edi)
+            if (_spilledFrom[v] > index && _assigned[v] is (int)Gpr.Ebx or (int)Gpr.Esi or (int)Gpr.Edi)
             {
                 map.Registers |= 1u << _assigned[v];
             }

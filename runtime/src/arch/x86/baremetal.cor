@@ -306,6 +306,16 @@ static class Platform
         return false;
     }
 
+    public static long GcThreshold()
+    {
+        return 0;
+    }
+
+    public static bool GcDeadCensus()
+    {
+        return false;
+    }
+
     public static bool HeapCheck()
     {
         return false;

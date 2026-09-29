@@ -147,6 +147,13 @@ static class Platform
     /// by type, and says the largest on standard error.
     public static bool GcCensus() => EnvironmentFlag("CORSAC_GC_CENSUS=");
 
+    /// CORSAC_GC_CENSUS=2: the census also counts what every sweep found dead.
+    public static bool GcDeadCensus() => EnvironmentByte("CORSAC_GC_CENSUS=") == '2';
+
+    /// CORSAC_GC_THRESHOLD=<bytes>: collect at least that often, whatever the
+    /// pacing says -- every call site a collection may fall under, tried.
+    public static long GcThreshold() => EnvironmentNumber("CORSAC_GC_THRESHOLD=");
+
     /// CORSAC_HEAP_CHECK=1: the heap's structure checked as every collection
     /// begins and ends -- every chunk's chain, every buffer's, and the free
     /// lists against what the walks found -- and the first faults said.
@@ -194,6 +201,9 @@ static class Platform
     /// goes back -- the two paths that hand the bytes straight back to the
     /// bump pointer (t, b) skipped -- so a read after a free and before the
     /// reuse faults on the pattern, and a fault that does not is the heap's.
+    /// And P 64: every run of dead blocks a sweep gives back is filled with
+    /// the pattern too, so an object swept while something still used it --
+    /// a root the stack maps missed -- is read as the pattern at once.
     public static long SkippedFreePaths()
     {
         long at = EnvironmentValue("CORSAC_FREE_PATHS=");
@@ -201,10 +211,24 @@ static class Platform
         while (at != 0 && Sys.PeekByte(at) != 0)
         {
             long c = Sys.PeekByte(at);
-            mask = mask | (c == 't' ? 1 : c == 'i' ? 2 : c == 'b' ? 4 : c == 'd' ? 8 : c == 'm' ? 16 : c == 'p' ? 32 : 0);
+            mask = mask | (c == 't' ? 1 : c == 'i' ? 2 : c == 'b' ? 4 : c == 'd' ? 8 : c == 'm' ? 16 : c == 'p' ? 32 : c == 'P' ? 64 : 0);
             at = at + 1;
         }
         return mask;
+    }
+
+    /// `key` (ending in '=') read from the environment as a decimal number,
+    /// or 0 when it is not set.
+    static long EnvironmentNumber(string key)
+    {
+        long at = EnvironmentValue(key);
+        long value = 0;
+        while (at != 0 && Sys.PeekByte(at) >= 48 && Sys.PeekByte(at) <= 57)
+        {
+            value = value * 10 + Sys.PeekByte(at) - 48;
+            at = at + 1;
+        }
+        return value;
     }
 
     /// Whether `key` (ending in '=') is set in the environment to something
