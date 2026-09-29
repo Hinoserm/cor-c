@@ -2802,6 +2802,135 @@ static class Gc
         Platform.Exit(98);
     }
 
+    // DANGLING REFERENCES, in the checked mode: at every whole sweep, each
+    // live object read by its descriptor -- the fields that are references,
+    // the elements of an array of them -- and a reference to a block the
+    // program freed (poisoned and kept, VerifyFree) reported: the holder, its
+    // vtable, the field, and who freed what it holds. A read after a free
+    // that meets an int or a string's characters reads the pattern and goes
+    // on quietly; the reference that leads there is found here instead. The
+    // heap lock is held (SweepNext). The first DanglingMost are reported, and
+    // the process ends with 95.
+    const long DanglingMost = 12;
+    static long _danglingReports;
+
+    static void CheckDangling(long block, long size)
+    {
+        long w = WordSize.Bytes;
+        long payload = block + HeaderBytes;
+        long end = block + size - FooterBytes;
+        if (Sys.Peek(block + KindAt) != KindObject || IsPoisoned(payload, end))
+        {
+            return;
+        }
+        long vt = Sys.Peek(payload) & WordSize.AddressMask;
+        if (vt == 0)
+        {
+            return;
+        }
+        long desc = vt - DescWords * w;
+        if ((Sys.Peek(desc + DescSelfWord * w) & WordSize.AddressMask) != desc)
+        {
+            return;
+        }
+        long flags = Sys.Peek(desc + DescFlagsWord * w);
+        if ((flags & SequenceFlag) != 0)
+        {
+            if ((flags & StringFlag) != 0 || (Sys.Peek(desc + DescGcFlagsWord * w) & ElementsAreReferences) == 0
+                || Sys.Peek(desc + DescSizeWord * w) != w)
+            {
+                return;
+            }
+            long count = Sys.Peek(payload + ArrayCountAt) & 0x7FFFFFFF;
+            long first = payload + Sys.Peek(desc + DescPayloadWord * w);
+            long last = first + count * w;
+            if (last > end || last < first)
+            {
+                return;
+            }
+            long p = first;
+            while (p < last)
+            {
+                CheckDanglingField(payload, vt, p);
+                p = p + w;
+            }
+            return;
+        }
+        long map = Sys.Peek(desc + DescRefMapWord * w) & WordSize.AddressMask;
+        if (map == 0)
+        {
+            return;
+        }
+        long words = Sys.Peek(map);
+        long index = 0;
+        while (index < words)
+        {
+            long bits = Sys.Peek(map + (1 + index / 32) * w) & 0xFFFFFFFF;
+            if (((bits >> (int)(index & 31)) & 1) != 0 && payload + (index + 1) * w <= end)
+            {
+                CheckDanglingField(payload, vt, payload + index * w);
+            }
+            index = index + 1;
+        }
+    }
+
+    /// Whether [payload, end) begins with the checked mode's pattern: a block
+    /// VerifyFree took. Its kind word says leaf.
+    static bool IsPoisoned(long payload, long end)
+    {
+        return Sys.Peek(payload - HeaderBytes + KindAt) == KindLeaf && Sys.PeekWord(payload) == Poison
+            && (payload + 4 >= end || Sys.PeekWord(payload + 4) == Poison);
+    }
+
+    static void CheckDanglingField(long holder, long vt, long field)
+    {
+        long target = Sys.Peek(field) & WordSize.AddressMask;
+        if (target == 0 || (target & 7) != 0)
+        {
+            return;
+        }
+        long block = target - HeaderBytes;
+        long chunk = HeapChunks.Of(block);
+        if (chunk == 0 || block < HeapChunks.First(chunk))
+        {
+            return;
+        }
+        long word = Sys.Peek(block);
+        long size = word & SizeMask;
+        if (size < Smallest || block + size > HeapChunks.End(chunk) || (word & FlagFree) != 0
+            || Sys.Peek(block + size - FooterBytes) != word)
+        {
+            return;
+        }
+        long end = block + size - FooterBytes;
+        if (!IsPoisoned(target, end))
+        {
+            return;
+        }
+        _danglingReports = _danglingReports + 1;
+        SayNumber("gc: checked free: a live object still holds a freed block, holder ", holder);
+        SayNumber("gc:   holder's vtable ", vt);
+        SayNumber("gc:   field offset ", field - holder);
+        SayNumber("gc:   freed block ", target);
+        SayNumber("gc:   its size ", size);
+        Runtime.WriteLiteral(2, "gc: it was freed by:\n");
+        long site = end - 4;
+        while (site >= target + 8)
+        {
+            long first = Sys.PeekWord(site);
+            if (first == Poison || first == 0)
+            {
+                break;
+            }
+            Runtime.SayFrame(2, first + 0x08000000);
+            site = site - 4;
+        }
+        if (_danglingReports >= DanglingMost)
+        {
+            Platform.Exit(95);
+        }
+    }
+
     static void VerifyFree(long at)
     {
         if (at == 0)
@@ -4891,6 +5020,13 @@ static class Gc
                             CloseDeadRun(deadStart, deadSize, deadBlocks, deadListed);
                             if (deadSize > largest) largest = deadSize;
                             deadSize = Zero;
+                        }
+
+                        // CHECKED FREES: a live object still holding a block
+                        // the program freed is a free the compiler got wrong.
+                        if (_verify && !_minor && (word & FlagMark) != 0)
+                        {
+                            CheckDangling(block, size);
                         }
 
                         // A SURVIVOR IS OLD, and keeps the marks that say so;
