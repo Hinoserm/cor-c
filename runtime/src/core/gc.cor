@@ -2800,6 +2800,11 @@ static class Gc
             StartQuarantine();
         }
         SetCeiling();
+        long asked = Platform.HeapLimit();
+        if (asked != 0 && HeapChunks.Cap == 0)
+        {
+            HeapChunks.SetLimit(asked);
+        }
         if (HeapChunks.Cap == 0)
         {
             long limit = Platform.MemoryLimit();
