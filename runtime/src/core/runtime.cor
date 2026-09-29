@@ -223,6 +223,70 @@ static class Tls
     public const long Bytes = 38 * WordSize.Bytes;
 }
 
+/// WHERE THE ALLOCATIONS COME FROM (CORSAC_ALLOC_SAMPLE=1): every sixteenth
+/// allocation (Runtime.AllocHook) is charged, bytes and count, to the return
+/// address of the call that made it and to that call's own caller, in a
+/// fixed table of the operating system's; the table is printed as the
+/// process ends, for tools/sym to name. Nothing here allocates.
+static class AllocSamples
+{
+    const long Slots = 65536;           // entries of four words: site, caller, bytes, count
+    static long _table;
+    static long _lost;
+
+    public static void Start()
+    {
+        if (!Platform.AllocSample()) return;
+        _table = Platform.Map(Slots * 4 * WordSize.Bytes);
+        if (_table == 0) return;
+        Runtime.AllocHook = Sys.AddressOf(AllocSamples.Record);
+    }
+
+    static void Record(long fp, long bytes, long unused)
+    {
+        long site = Sys.Peek(fp + WordSize.Bytes);
+        long up = Sys.Peek(fp) & WordSize.AddressMask;
+        long caller = up != 0 ? Sys.Peek(up + WordSize.Bytes) : 0;
+        long h = ((site >> 2) ^ (caller << 3)) * 40503 & (Slots - 1);
+        for (long probe = 0; probe < 64; probe++)
+        {
+            long e = _table + ((h + probe) & (Slots - 1)) * 4 * WordSize.Bytes;
+            long at = Sys.Peek(e);
+            if (at == 0)
+            {
+                Sys.Poke(e, site);
+                Sys.Poke(e + WordSize.Bytes, caller);
+                at = site;
+            }
+            if (at == site && Sys.Peek(e + WordSize.Bytes) == caller)
+            {
+                Sys.Poke(e + 2 * WordSize.Bytes, Sys.Peek(e + 2 * WordSize.Bytes) + bytes);
+                Sys.Poke(e + 3 * WordSize.Bytes, Sys.Peek(e + 3 * WordSize.Bytes) + 1);
+                return;
+            }
+        }
+        _lost = _lost + 1;
+    }
+
+    public static void Dump()
+    {
+        long table = _table;
+        if (table == 0) return;
+        _table = 0;
+        Runtime.AllocHook = 0;
+        for (long i = 0; i < Slots; i++)
+        {
+            long e = table + i * 4 * WordSize.Bytes;
+            if (Sys.Peek(e) == 0) continue;
+            Gc.SayNumber("alloc sample site ", Sys.Peek(e));
+            Gc.SayNumber("alloc sample caller ", Sys.Peek(e + WordSize.Bytes));
+            Gc.SayNumber("alloc sample bytes ", Sys.Peek(e + 2 * WordSize.Bytes));
+            Gc.SayNumber("alloc sample count ", Sys.Peek(e + 3 * WordSize.Bytes));
+        }
+        Gc.SayNumber("alloc sample lost ", _lost);
+    }
+}
+
 /// What stops a suspended iterator from inside when it is disposed; never
 /// seen outside MoveNext.
 sealed class IteratorStopSignal : Exception
@@ -1344,6 +1408,7 @@ static class Runtime
     /// road out of every program.
     public static void AtExit()
     {
+        AllocSamples.Dump();
         long f = _atExit;
 
         if (f != 0)

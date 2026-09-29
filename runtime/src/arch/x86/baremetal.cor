@@ -321,6 +321,11 @@ static class Platform
         return 0;
     }
 
+    public static bool AllocSample()
+    {
+        return false;
+    }
+
     public static bool GcDeadCensus()
     {
         return false;

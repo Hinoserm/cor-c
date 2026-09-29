@@ -162,6 +162,10 @@ static class Platform
     /// memory.max would set it -- for trying a small machine on a big one.
     public static long HeapLimit() => EnvironmentNumber("CORSAC_HEAP_LIMIT=");
 
+    /// CORSAC_ALLOC_SAMPLE=1: where the allocations come from, sampled and
+    /// printed as the process ends (AllocSamples).
+    public static bool AllocSample() => EnvironmentFlag("CORSAC_ALLOC_SAMPLE=");
+
     /// CORSAC_HEAP_CHECK=1: the heap's structure checked as every collection
     /// begins and ends -- every chunk's chain, every buffer's, and the free
     /// lists against what the walks found -- and the first faults said.

@@ -3597,6 +3597,7 @@ static class Gc
             _markCount = MarkBytes / GreyEntry;
         }
         StartGenerations();
+        AllocSamples.Start();
     }
 
     /// Nothing left: the message is a literal, which is data the compiler laid
