@@ -2533,7 +2533,7 @@ static class Gc
             // Not a chunk the recycling walk may still step onto.
             if (whole == _recycleNext) _recycleNext = HeapChunks.Next(whole);
             if (whole == _recycle) _recycle = Zero;
-            HeapChunks.Release(whole);
+            HeapChunks.Release(whole, GuardReleases);
             GcLock.Exit();
             return;
         }
@@ -5390,7 +5390,7 @@ static class HeapChunks
     /// what says whether a program's heap is churning its mappings.
     public static long Maps, Releases, BigReleases;
 
-    public static void Release(long chunk)
+    public static void Release(long chunk, bool guard = false)
     {
         long size = Sys.Peek(chunk + ChunkLimit) - chunk;
         IndexRemove(chunk);
@@ -5429,7 +5429,10 @@ static class HeapChunks
             Platform.Unmap(anchors, bytes);
             _anchorBytes = _anchorBytes - bytes;
         }
-        if (Gc.GuardReleases)
+        // Only a dedicated chunk a free gives back is guarded: the sweep's
+        // empty chunks, guarded too, used up the address space of a 32-bit
+        // process in minutes, and a free is what the guard is for.
+        if (guard)
         {
             Platform.Guard(chunk, size);
             return;
