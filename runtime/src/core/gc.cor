@@ -673,6 +673,27 @@ static class Gc
                 SayNumber("gc census root:   at ", p);
                 SayNumber("gc census root:   word ", word);
                 SayNumber("gc census root:   bytes ", got);
+                // On this thread's own stack, the function whose frame it is
+                // in: the frame chain walked up to the first frame above it.
+                // A slot below frame F is F's function's: the one the frame
+                // under F returns into.
+                if (kind == 1)
+                {
+                    long below = Sys.FramePointer();
+                    long frame = below;
+                    while (frame != 0 && frame <= p)
+                    {
+                        long next = Sys.Peek(frame) & WordSize.AddressMask;
+                        if (next <= frame) { frame = 0; break; }
+                        below = frame;
+                        frame = next;
+                    }
+                    if (frame != 0)
+                    {
+                        Runtime.WriteLiteral(2, "gc census root:   in the frame of\n");
+                        Runtime.SayFrame(2, Sys.Peek(below + WordSize.Bytes) & WordSize.AddressMask);
+                    }
+                }
                 long held = BlockForPointer(word);
                 if (held != 0)
                 {
