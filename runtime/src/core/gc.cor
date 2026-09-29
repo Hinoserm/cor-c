@@ -6916,6 +6916,9 @@ static class HeapChunks
     const long ChunkPageNext = 10 * WordSize.Bytes;
     const long ChunkPagePrev = 11 * WordSize.Bytes;
     const long ChunkOwner = 12 * WordSize.Bytes;
+    // The chunk before it in the list (newer), or 0 for the newest: with
+    // thousands of pages, finding it by walking made every release a walk.
+    const long ChunkPrevious = 13 * WordSize.Bytes;
     const long ChunkBytes = 14 * WordSize.Bytes;
     const long ChunkYoung = 1;
     const long ChunkListed = 2;     // a page on its class's list
@@ -7124,8 +7127,12 @@ static class HeapChunks
         return bitmap;
     }
 #else
-    const long MegabyteShift = 20;
-    const long MegabyteMapBytes = 4096 * 4;     // a word per megabyte of 4 GiB
+    // A WORD PER 64 KB, not per megabyte: a size-class page is 32 KB, and a
+    // megabyte of them had its thirty-two walked in order for every word the
+    // marker scanned into it. At 64 KB a slot reaches two pages and perhaps
+    // the end of a larger chunk.
+    const long MegabyteShift = 16;
+    const long MegabyteMapBytes = 65536 * 4;    // a word per 64 KB of 4 GiB
     static long _snapMegabytes;
 #endif
 
@@ -7504,6 +7511,8 @@ static class HeapChunks
         Sys.Poke(raw + ChunkLimit, raw + PageBytes);
         Sys.Poke(raw + ChunkFlags, ChunkYoung);
         Sys.Poke(raw + ChunkAnchors, PageBlockLimit(raw));
+        Sys.Poke(raw + ChunkPrevious, 0);
+        if (_chunks != 0) Sys.Poke(_chunks + ChunkPrevious, raw);
         _chunks = raw;
         _heapBytes = _heapBytes + PageBytes;
         IndexAdd(raw);
@@ -7585,24 +7594,11 @@ static class HeapChunks
         long size = Sys.Peek(chunk + ChunkLimit) - chunk;
         IndexRemove(chunk);
 
-        if (_chunks == chunk)
-        {
-            _chunks = Sys.Peek(chunk + ChunkNext);
-        }
-        else
-        {
-            long walk = _chunks;
-
-            while (walk != 0 && Sys.Peek(walk + ChunkNext) != chunk)
-            {
-                walk = Sys.Peek(walk + ChunkNext);
-            }
-
-            if (walk != 0)
-            {
-                Sys.Poke(walk + ChunkNext, Sys.Peek(chunk + ChunkNext));
-            }
-        }
+        long next = Sys.Peek(chunk + ChunkNext);
+        long previous = Sys.Peek(chunk + ChunkPrevious);
+        if (previous != 0) Sys.Poke(previous + ChunkNext, next);
+        else if (_chunks == chunk) _chunks = next;
+        if (next != 0) Sys.Poke(next + ChunkPrevious, previous);
 
         if (_memo == chunk)
         {
@@ -7754,6 +7750,8 @@ static class HeapChunks
             Maps = Maps - 1;
             return 0;
         }
+        Sys.Poke(raw + ChunkPrevious, 0);
+        if (_chunks != 0) Sys.Poke(_chunks + ChunkPrevious, raw);
         _chunks = raw;
         _heapBytes = _heapBytes + ask;
         IndexAdd(raw);
