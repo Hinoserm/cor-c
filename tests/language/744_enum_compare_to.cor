@@ -1,0 +1,29 @@
+// test: an enum's CompareTo compares its underlying numbers, as System.Enum's does
+// expect-exit: 0
+// expect-output:
+// -1 0 1
+// sorted: Low Mid High
+// wide: 1
+//
+// `a.Type.CompareTo(b.Type)` on an enum was an error -- "has no member
+// 'CompareTo'" -- although every .NET enum answers it. The compiler's own
+// optimiser was the first to write one.
+using System;
+using System.Collections.Generic;
+
+enum Level { Low = 1, Mid = 5, High = 9 }
+enum Wide : ulong { Small = 1, Huge = 0xF000000000000000 }
+
+static class Program
+{
+    static int Main()
+    {
+        Level a = Level.Low, b = Level.Mid;
+        Console.WriteLine(Math.Sign(a.CompareTo(b)) + " " + a.CompareTo(Level.Low) + " " + Math.Sign(Level.High.CompareTo(b)));
+        List<Level> levels = new() { Level.High, Level.Low, Level.Mid };
+        levels.Sort((x, y) => x.CompareTo(y));
+        Console.WriteLine("sorted: " + levels[0] + " " + levels[1] + " " + levels[2]);
+        Console.WriteLine("wide: " + Math.Sign(Wide.Huge.CompareTo(Wide.Small)));
+        return 0;
+    }
+}

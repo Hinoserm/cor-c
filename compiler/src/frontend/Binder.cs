@@ -14188,6 +14188,38 @@ public sealed partial class Binder
             return CheckExpr(boxed);
         }
 
+        // AN ENUM'S CompareTo is System.Enum's: the underlying numbers
+        // compared. Given another value of the same enum, it is that.
+        if (c.Target is MemberExpr { Name: "CompareTo" } compareCall && c.Args.Count == 1
+            && CheckExpr(compareCall.Target).AsNonNullable() is { Symbol: { Kind: TypeKind.Enum } compared } comparedValue
+            && !comparedValue.IsNullableValue && compared.FindMethods("CompareTo").Count == 0
+            && CheckExpr(c.Args[0]).Equals(comparedValue)
+            && compared.EnumUnderlying switch
+            {
+                Prim.I8 => "sbyte", Prim.U8 => "byte", Prim.I16 => "short", Prim.U16 => "ushort",
+                Prim.I32 => "int", Prim.U32 => "uint", Prim.I64 => "long", Prim.U64 => "ulong",
+                _ => null,
+            } is string underlying)
+        {
+            TypeRef number = new() { Name = underlying, Line = c.Line, Col = c.Col };
+            CallExpr numbers = new()
+            {
+                Target = new MemberExpr
+                {
+                    Target = new CastExpr { Type = number, Operand = compareCall.Target, Line = c.Line, Col = c.Col },
+                    Name = "CompareTo", Line = compareCall.Line, Col = compareCall.Col,
+                },
+                Line = c.Line, Col = c.Col,
+            };
+            numbers.Args.Add(new CastExpr
+            {
+                Type = new TypeRef { Name = underlying, Line = c.Line, Col = c.Col }, Operand = c.Args[0], Line = c.Line, Col = c.Col,
+            });
+            numbers.ArgNames.AddRange(c.ArgNames);
+            _r.Rewrites[c] = numbers;
+            return CheckExpr(numbers);
+        }
+
         if (c.Target is MemberExpr { Name: "HasFlag" } flag && c.Args.Count == 1)
         {
             Type valueType = CheckExpr(flag.Target);
