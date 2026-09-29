@@ -544,6 +544,36 @@ public sealed partial class Binder
     }
 
     /// <summary>
+    /// A type entered in the unit's table, and in the simple-name index as it
+    /// goes when that is up to date: rebuilt from the whole table each time
+    /// the table grew, the index was a walk of every type for every tuple,
+    /// closure and specialisation the checker made.
+    /// </summary>
+    private void RegisterType(string key, TypeSymbol type)
+    {
+        bool current = _soleAt == _r.Types.Count && !_r.Types.ContainsKey(key);
+        _r.Types[key] = type;
+        if (current)
+        {
+            NoteSole(key, type);
+            _soleAt = _r.Types.Count;
+        }
+    }
+
+    private void NoteSole(string key, TypeSymbol type)
+    {
+        if (Enclosing(key) is null)
+        {
+            return;
+        }
+        // Ambiguous is recorded as null rather than dropped, so a second one
+        // cannot be undone by a third.
+        _sole[type.Name] = _sole.ContainsKey(type.Name) ? null : type;
+        if (IsLibraryType(type))
+            _soleLibrary[type.Name] = _soleLibrary.ContainsKey(type.Name) ? null : type;
+    }
+
+    /// <summary>
     /// The one type whose simple name is this, if there is exactly one.
     ///
     /// Kept as an index because the alternative is a scan of every declared
@@ -559,16 +589,7 @@ public sealed partial class Binder
 
             foreach ((string key, TypeSymbol type) in _r.Types)
             {
-                if (Enclosing(key) is null)
-                {
-                    continue;
-                }
-
-                // Ambiguous is recorded as null rather than dropped, so a
-                // second one cannot be undone by a third.
-                _sole[type.Name] = _sole.ContainsKey(type.Name) ? null : type;
-                if (IsLibraryType(type))
-                    _soleLibrary[type.Name] = _soleLibrary.ContainsKey(type.Name) ? null : type;
+                NoteSole(key, type);
             }
 
             _soleAt = _r.Types.Count;
@@ -1579,7 +1600,7 @@ public sealed partial class Binder
                     MoveToSystem(library);
                     TypeSymbol mine = new() { Name = d.Name, Key = key, Kind = d.Kind, Decl = d };
                     mine.TypeParams.AddRange(d.TypeParams.Select(p => p.Name));
-                    _r.Types[key] = mine;
+                    RegisterType(key, mine);
                     continue;
                 }
 
@@ -1600,7 +1621,7 @@ public sealed partial class Binder
 
             TypeSymbol sym = new() { Name = d.Name, Key = key, Kind = d.Kind, Decl = d };
             sym.TypeParams.AddRange(d.TypeParams.Select(p => p.Name));
-            _r.Types[key] = sym;
+            RegisterType(key, sym);
         }
 
         // AND NOW THE TUPLE NAMINGS, which needed the types first.
@@ -5802,7 +5823,7 @@ public sealed partial class Binder
         static string Passing(string how) => how.Length == 0 ? "by value" : "with '" + how + "'";
 
         closure.Methods.Add(run);
-        _r.Types[name2] = closure;
+        RegisterType(name2, closure);
         _r.Methods[body] = run;
         _r.Closures[lam] = new ClosureInfo(closure, fields, run);
         if (bound) _boundClosures[name2] = _r.Closures[lam];
@@ -7469,7 +7490,7 @@ public sealed partial class Binder
 
         tuple.InstanceSize = (at + 7) & ~7;
         tuple.InlineDecided = true;                    // laid out here, nothing in line
-        _r.Types[name] = tuple;
+        RegisterType(name, tuple);
         Remember(tuple, names);
         return tuple;
     }
@@ -7656,7 +7677,7 @@ public sealed partial class Binder
         // reaches these without knowing what it is holding.
         ImplementSlots(view, view.Interfaces.ToList());
 
-        _r.Types[name] = view;
+        RegisterType(name, view);
         _r.ArrayViews.Add(view);
 
         // AND SOMETHING TO WALK IT WITH. GetEnumerator has to hand back an
@@ -7703,7 +7724,7 @@ public sealed partial class Binder
         // is an IDisposable and an IEnumerator, as .NET's is.
         ImplementSlots(walker, new List<TypeSymbol> { face });
 
-        _r.Types[name] = walker;
+        RegisterType(name, walker);
         _r.ArrayViews.Add(walker);
         return walker;
     }

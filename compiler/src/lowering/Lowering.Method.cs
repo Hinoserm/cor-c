@@ -617,15 +617,12 @@ public sealed partial class Lowering
         {
             return d;
         }
-        foreach ((LocalDecl decl, LocalSym sym) in _b.LocalSymbols)
+        LocalDecl? found = _b.DeclOf(l);
+        if (found is not null)
         {
-            if (ReferenceEquals(sym, l))
-            {
-                _slotDecl[l.Slot] = decl;
-                return decl;
-            }
+            _slotDecl[l.Slot] = found;
         }
-        return null;
+        return found;
     }
 
     // ---- places: where an lvalue is -------------------------------------------------

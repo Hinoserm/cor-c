@@ -134,6 +134,34 @@ public sealed partial class BindResult
     public Dictionary<LocalDecl, LocalSym> LocalSymbols { get; }
         = new(ReferenceEqualityComparer.Instance);
 
+    /// <summary>
+    /// The declaration a local symbol came from: LocalSymbols read backwards.
+    /// Found by walking all of LocalSymbols, it was a walk of every local of
+    /// the unit for each one asked about. The reverse map is built from the
+    /// same walk, so the first declaration found is still the one answered,
+    /// and built again only when a symbol is missing from it and locals have
+    /// been added since.
+    /// </summary>
+    public LocalDecl? DeclOf(LocalSym local)
+    {
+        if (_declBySym is not null && _declBySym.TryGetValue(local, out LocalDecl? known)) return known;
+        if (_declBySym is not null && _declBySymCount == LocalSymbols.Count) return null;
+        _declBySym = new Dictionary<LocalSym, LocalDecl>(LocalSymbols.Count, new SameLocal());
+        foreach ((LocalDecl decl, LocalSym sym) in LocalSymbols) _declBySym.TryAdd(sym, decl);
+        _declBySymCount = LocalSymbols.Count;
+        return _declBySym.TryGetValue(local, out LocalDecl? found) ? found : null;
+    }
+
+    private Dictionary<LocalSym, LocalDecl>? _declBySym;
+    private int _declBySymCount = -1;
+
+    /// <summary>A local symbol is itself and no other, whatever its record fields say.</summary>
+    private sealed class SameLocal : IEqualityComparer<LocalSym>
+    {
+        public bool Equals(LocalSym? a, LocalSym? b) => ReferenceEquals(a, b);
+        public int GetHashCode(LocalSym local) => local.Slot * 31 + local.Name.Length;
+    }
+
     /// <summary>Declarations whose local a lambda captured, and which therefore
     /// need a heap cell rather than a frame slot.</summary>
     public HashSet<LocalDecl> BoxedLocals { get; } = new(ReferenceEqualityComparer.Instance);
@@ -433,6 +461,7 @@ public sealed partial class BindResult
         LocalSlot.Clear();
         LocalType.Clear();
         LocalSymbols.Clear();
+        _declBySym = null;
         BoxedLocals.Clear();
         PatternSlot.Clear();
         NullablePatterns.Clear();

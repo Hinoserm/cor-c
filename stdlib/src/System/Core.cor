@@ -5182,7 +5182,8 @@ abstract class Encoding {
     public static Encoding Latin1 => new CodePageEncoding(28591);
 
     /// What .NET Core answers for the system's default: UTF-8 without a mark.
-    public static Encoding Default => new UTF8Encoding(false);
+    static readonly Encoding _default = new UTF8Encoding(false);
+    public static Encoding Default => _default;
 
     /// The encoding a code page number names -- the Unicode forms, ASCII,
     /// Latin-1, and the Windows code pages this system carries tables for:
@@ -11414,7 +11415,10 @@ class DefaultComparer<T> : IComparer<T> {
 /// .NET's Equalitynew DefaultComparer<T>() and new DefaultComparer<T>(), which are how
 /// generic code asks for "the usual" without knowing what T is.
 class Comparer<T> {
-    public static IComparer<T> Default => new DefaultComparer<T>();
+    // ONE, as .NET has one: made at every use, a record's CompareTo and every
+    // sort paid an allocation for each comparison.
+    static readonly IComparer<T> _default = new DefaultComparer<T>();
+    public static IComparer<T> Default => _default;
 }
 
 class DefaultEqualityComparer<T> : IEqualityComparer<T> {
@@ -11433,7 +11437,10 @@ class DefaultEqualityComparer<T> : IEqualityComparer<T> {
 }
 
 class EqualityComparer<T> {
-    public static IEqualityComparer<T> Default => new DefaultEqualityComparer<T>();
+    // ONE, as .NET has one: made at every use, a record's synthesised
+    // GetHashCode allocated a comparer for each field it hashed.
+    static readonly IEqualityComparer<T> _default = new DefaultEqualityComparer<T>();
+    public static IEqualityComparer<T> Default => _default;
 }
 
 /// THE SORT ITSELF, in one place, over a plain array and a length.
@@ -12913,7 +12920,8 @@ namespace System.Collections.ObjectModel
             this.list = list;
         }
 
-        public static ReadOnlyCollection<T> Empty => new ReadOnlyCollection<T>(new List<T>());
+        static readonly ReadOnlyCollection<T> _empty = new ReadOnlyCollection<T>(new List<T>());
+        public static ReadOnlyCollection<T> Empty => _empty;
 
         public int Count => list.Count;
 
