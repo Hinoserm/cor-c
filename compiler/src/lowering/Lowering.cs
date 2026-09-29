@@ -317,7 +317,7 @@ public sealed partial class Lowering
     public const int TlsAllocLimit = 20;
     public const int TlsThreadId = 24;
     public const int TlsState = 28;
-    public const int TlsBytes = 148;
+    public const int TlsBytes = 152;
 
     /// <summary>The type the runtime library provides its hooks in.</summary>
     public const string RuntimeType = "Runtime";

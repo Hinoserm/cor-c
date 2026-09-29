@@ -213,8 +213,14 @@ static class Tls
     public const long Classes = 35 * WordSize.Bytes;
     public const long ClassesSaved = 36 * WordSize.Bytes;
 
+    /// The bytes this thread has taken off its class lists, less what it
+    /// freed back onto them, since the collector last counted them in
+    /// (Gc.FoldClassBytes): the pressure a small allocation adds, kept
+    /// where only this thread writes it.
+    public const long ClassBytes = 37 * WordSize.Bytes;
+
     /// The size of the block. The compiler lays the first one down in .bss.
-    public const long Bytes = 37 * WordSize.Bytes;
+    public const long Bytes = 38 * WordSize.Bytes;
 }
 
 /// What stops a suspended iterator from inside when it is disposed; never

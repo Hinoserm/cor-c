@@ -1487,7 +1487,9 @@ static class Gc
         if (block == 0) return 0;
         long started = Sys.Peek(block + Tls.AllocBase);
         long at = Sys.Peek(block + Tls.AllocPtr);
-        return started != 0 && at > started ? at - started : 0;
+        // And what its class lists have handed out and not yet been counted.
+        long classes = Sys.Peek(block + Tls.ClassBytes);
+        return (started != 0 && at > started ? at - started : 0) + (classes > 0 ? classes : 0);
     }
 
     /// Charges `bytes` to the program and to the thread whose block this is.
@@ -1939,6 +1941,7 @@ static class Gc
                     Sys.Poke(free, size);
                     Sys.Poke(free + KindAt, kind);
                     Sys.Poke(free + size - FooterBytes, size);
+                    Sys.Poke(tb + Tls.ClassBytes, Sys.Peek(tb + Tls.ClassBytes) + size);
                     Sys.Poke(tb + Tls.InAlloc, 0);
                     return free + HeaderBytes;
                 }
@@ -2219,15 +2222,18 @@ static class Gc
             long returned = HeapChunks.PageFree(page);
             if (returned != 0)
             {
-                long back = HeapChunks.LargestHole(page);
-                _since = _since + back;
-                Count(tb, back);
                 HeapChunks.SetPageFree(page, Zero);
                 HeapChunks.SetLargestHole(page, Zero);
                 Sys.Poke(slot + WordSize.Bytes, returned);
                 return true;
             }
             // Used up: nobody's, on no list, until a sweep finds room in it.
+            // WHILE STAMPING IS OPEN its objects are written in first, as a
+            // retired buffer's are (Retire): the snapshot stepped over it
+            // as this thread's, and this thread's STAMP answer will look
+            // only at the pages it owns then. Unstamped they were kept and
+            // never traced, and what only they held was swept.
+            if (_stamping) StampPage(page);
             HeapChunks.SetOwner(page, Zero);
             Sys.Poke(slot, Zero);
         }
@@ -2255,10 +2261,9 @@ static class Gc
         HeapChunks.SetPageFree(page, Zero);
         HeapChunks.SetOwner(page, tb);
         HeapChunks.SetYoung(page, true);
-        // Charged as a buffer is: the free bytes the thread may now take.
-        long bytes = HeapChunks.LargestHole(page);
-        _since = _since + bytes;
-        Count(tb, bytes);
+        // NOT CHARGED HERE: what the thread takes is counted as it takes it
+        // (Tls.ClassBytes). Charged a page at a time, a program touching a
+        // dozen classes was a threshold's worth of pressure at once.
         HeapChunks.SetLargestHole(page, Zero);
         Sys.Poke(slot, page);
         Sys.Poke(slot + WordSize.Bytes, head);
@@ -2284,8 +2289,7 @@ static class Gc
             long head = Sys.Peek(slot + WordSize.Bytes);
             if (head != 0)
             {
-                // What the thread never took goes back off the counter, as a
-                // retired buffer's tail does, and onto the page's bytes.
+                // What the thread never took goes onto the page's bytes.
                 long size = ClassSize(c);
                 long unused = size;
                 long tail = head;
@@ -2297,8 +2301,6 @@ static class Gc
                 Sys.Poke(tail + KindAt, HeapChunks.PageFree(page));
                 HeapChunks.SetPageFree(page, head);
                 HeapChunks.SetLargestHole(page, HeapChunks.LargestHole(page) + unused);
-                _since = _since - unused;
-                if (_since < 0) _since = Zero;
             }
             HeapChunks.SetOwner(page, Zero);
             Sys.Poke(slot, Zero);
@@ -2332,18 +2334,16 @@ static class Gc
         long cache = tb != 0 ? Sys.Peek(tb + Tls.Classes) : 0;
         if (cache == 0 && tb != 0) cache = Sys.Peek(tb + Tls.ClassesSaved);
         long slot = cache + (HeapChunks.PageClass(page) - 1) * (2 * WordSize.Bytes);
-        // ONTO THE THREAD'S OWN LIST, which was charged as a whole when the
-        // page was taken (ClassRefill): the block is back among the bytes
-        // the thread has already been counted for, as a buffer's top block
-        // is, and the pressure counter is left alone.
+        // ONTO THE THREAD'S OWN LIST, and off its count (Tls.ClassBytes):
+        // a block made and freed in a loop is no pressure at all.
         if (owner != 0 && owner == tb && cache != 0 && Sys.Peek(slot) == page)
         {
+            Sys.Poke(tb + Tls.ClassBytes, Sys.Peek(tb + Tls.ClassBytes) - size);
             Sys.Poke(block + KindAt, Sys.Peek(slot + WordSize.Bytes));
             Sys.Poke(slot + WordSize.Bytes, block);
             return;
         }
-        // Onto the page's: off the counter now, charged again with the
-        // page's free bytes (the largest-hole word) to whoever takes them.
+        // Onto the page's: off the counter now.
         _since = _since - size;
         if (_since < 0) _since = Zero;
         HeapChunks.SetLargestHole(page, HeapChunks.LargestHole(page) + size);
@@ -2353,6 +2353,21 @@ static class Gc
         {
             ListPage(page);
         }
+    }
+
+    /// This thread's small allocations counted into the pressure counter
+    /// and its allocated bytes. The heap lock is held.
+    static void FoldClassBytes(long tb)
+    {
+        long bytes = Sys.Peek(tb + Tls.ClassBytes);
+        if (bytes == 0)
+        {
+            return;
+        }
+        Sys.Poke(tb + Tls.ClassBytes, Zero);
+        _since = _since + bytes;
+        if (_since < 0) _since = Zero;
+        if (bytes > 0) Count(tb, bytes);
     }
 
     /// One block off a class cache's list, stamped as an object of `kind`.
@@ -2369,6 +2384,8 @@ static class Gc
         Sys.Poke(block, size);
         Sys.Poke(block + KindAt, kind);
         Sys.Poke(block + size - FooterBytes, size);
+        long tb = Sys.ThreadBlock();
+        Sys.Poke(tb + Tls.ClassBytes, Sys.Peek(tb + Tls.ClassBytes) + size);
         return block + HeaderBytes;
     }
 
@@ -2381,8 +2398,15 @@ static class Gc
         if (cache == 0) return;
         for (long c = 0; c < Classes; c++)
         {
-            long page = Sys.Peek(cache + c * (2 * WordSize.Bytes));
-            if (page == 0 || HeapChunks.StartsCycle(page) != _cycle) continue;
+            StampPage(Sys.Peek(cache + c * (2 * WordSize.Bytes)));
+        }
+    }
+
+    /// One owned page's objects written into the snapshot (StampPages).
+    static void StampPage(long page)
+    {
+        {
+            if (page == 0 || HeapChunks.StartsCycle(page) != _cycle) return;
             long at = HeapChunks.First(page);
             long end = HeapChunks.End(page);
             while (at < end)
@@ -3045,6 +3069,7 @@ static class Gc
             Sys.Poke(tb + Tls.Classes, Sys.Peek(tb + Tls.ClassesSaved));
             Sys.Poke(tb + Tls.ClassesSaved, Zero);
         }
+        FoldClassBytes(tb);
 
         if (!_ready)
         {
