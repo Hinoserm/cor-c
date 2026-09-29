@@ -2926,18 +2926,28 @@ static class Gc
         long w = WordSize.Bytes;
         long payload = block + HeaderBytes;
         long end = block + size - FooterBytes;
-        if (Sys.Peek(block + KindAt) != KindObject || IsPoisoned(payload, end))
+        long kind = Sys.Peek(block + KindAt);
+        if (kind == KindLeaf || IsPoisoned(payload, end))
         {
             return;
         }
         long vt = Sys.Peek(payload) & WordSize.AddressMask;
-        if (vt == 0)
-        {
-            return;
-        }
         long desc = vt - DescWords * w;
-        if ((Sys.Peek(desc + DescSelfWord * w) & WordSize.AddressMask) != desc)
+        // A BLOCK NO DESCRIPTOR DESCRIBES -- a struct's, a cell, a frame --
+        // word by word, as the marker reads it: a struct is copied a word at
+        // a time, so a reference freed out of one copy is still in the other.
+        if (kind != KindObject || vt == 0 || (Sys.Peek(desc + DescSelfWord * w) & WordSize.AddressMask) != desc)
         {
+            if (kind == KindObject)
+            {
+                return;
+            }
+            long q = payload;
+            while (q + w <= end)
+            {
+                CheckDanglingField(payload, 0, q);
+                q = q + w;
+            }
             return;
         }
         long flags = Sys.Peek(desc + DescFlagsWord * w);
