@@ -46,7 +46,7 @@ public sealed class DeclarationSession : IDisposable
     /// thread, so raising --jobs does not raise this.
     /// </summary>
     public DeclarationSession(string path, string assembly, long declarationBudgetBytes = 32 * 1024 * 1024,
-        long tokenBudgetBytes = 256 * 1024 * 1024, long sourceBudgetBytes = 16 * 1024 * 1024)
+        long tokenBudgetBytes = 16 * 1024 * 1024, long sourceBudgetBytes = 16 * 1024 * 1024)
     {
         Catalog = new DeclarationCatalog(path, declarationBudgetBytes, sourceBudgetBytes);
         Tokens = new SyntaxTokenCache(tokenBudgetBytes);
