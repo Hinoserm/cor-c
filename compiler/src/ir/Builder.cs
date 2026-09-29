@@ -87,7 +87,12 @@ public sealed class Builder
     }
 
     public VReg Binary(Opcode op, VReg a, VReg b) => Binary(op, R(a), R(b), ResultOf(op, a.Type));
-    public VReg Binary(Opcode op, VReg a, long imm) => Binary(op, R(a), new ImmOperand(imm, a.Type), ResultOf(op, a.Type));
+    // A SHIFT COUNTS IN 32 BITS, whatever it shifts: the IR's rule, which
+    // the verifier holds an imported function to. Typed as the shifted
+    // register, a 64-bit address shifted into a card index carried an I64
+    // count, and every unit's barrier failed its link-time import in long mode.
+    public VReg Binary(Opcode op, VReg a, long imm)
+        => Binary(op, R(a), new ImmOperand(imm, op is Opcode.Shl or Opcode.ShrU or Opcode.ShrS ? IrType.I32 : a.Type), ResultOf(op, a.Type));
 
     public VReg Unary(Opcode op, Operand a, IrType result)
     {
