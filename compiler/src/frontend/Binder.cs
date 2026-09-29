@@ -5496,19 +5496,27 @@ public sealed partial class Binder
                 catch (Metadata.DeclarationDemand demand) { _declarationBatch.Add(demand); }
             }
             List<MethodSymbol> found = new();
-            foreach (TypeSymbol holder in _r.Types.Values.Where(type => namespaces.Contains(type.Decl?.Namespace ?? "")))
-            foreach (MethodSymbol m in holder.Methods.Where(method => method.Name == name))
+            // Plain loops, in the same order the queries had: this is every
+            // type of the unit for every extension call looked up, and each
+            // query's closure and iterator was an allocation per look.
+            if (namespaces.Count == 0) return found;
+            foreach (TypeSymbol holder in _r.Types.Values)
             {
-                if (m.Static && m.Params.Count > 0 && m.Decl?.Params.FirstOrDefault()?.IsThis == true
-                    && (Convertible(target, m.Params[0].Type)
-                        // As an argument would be accepted: an IEnumerable<Box>
-                        // is the IEnumerable<Box?> a copy of `Elements<T>(this
-                        // IEnumerable<T?>)` takes, the annotation being no type.
-                        || Variant(target, m.Params[0].Type)
-                        || m.Params[0].Type.ParamName != null
-                        || Applies(m, m.Params[0].Type, target)))
+                if (!namespaces.Contains(holder.Decl?.Namespace ?? "")) continue;
+                foreach (MethodSymbol m in holder.Methods)
                 {
-                    found.Add(m);
+                    if (m.Name != name) continue;
+                    if (m.Static && m.Params.Count > 0 && m.Decl?.Params.FirstOrDefault()?.IsThis == true
+                        && (Convertible(target, m.Params[0].Type)
+                            // As an argument would be accepted: an IEnumerable<Box>
+                            // is the IEnumerable<Box?> a copy of `Elements<T>(this
+                            // IEnumerable<T?>)` takes, the annotation being no type.
+                            || Variant(target, m.Params[0].Type)
+                            || m.Params[0].Type.ParamName != null
+                            || Applies(m, m.Params[0].Type, target)))
+                    {
+                        found.Add(m);
+                    }
                 }
             }
             return found;

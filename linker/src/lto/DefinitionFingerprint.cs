@@ -51,10 +51,13 @@ public sealed class DefinitionIndex
     {
         if (!relocations.TryGetValue(section, out Relocation[]? sorted))
         {
-            List<Relocation> all = section.Relocs;
-            int[] order = new int[all.Count];
-            for (int i = 0; i < order.Length; i++) order[i] = i;
-            Array.Sort(order, (a, b) => all[a].Offset != all[b].Offset ? all[a].Offset.CompareTo(all[b].Offset) : a.CompareTo(b));
+            // Offsets read out once: a Relocation is a struct, and every read
+            // of one through the list was a copy of it, for every comparison.
+            Relocation[] all = section.Relocs.ToArray();
+            int[] offsets = new int[all.Length];
+            int[] order = new int[all.Length];
+            for (int i = 0; i < order.Length; i++) { order[i] = i; offsets[i] = all[i].Offset; }
+            Array.Sort(order, (a, b) => offsets[a] != offsets[b] ? offsets[a].CompareTo(offsets[b]) : a.CompareTo(b));
             sorted = new Relocation[order.Length];
             for (int i = 0; i < order.Length; i++) sorted[i] = all[order[i]];
             relocations[section] = sorted;

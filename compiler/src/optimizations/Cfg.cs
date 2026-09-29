@@ -73,17 +73,32 @@ public sealed class Cfg
                     }
                 }
             }
-            foreach (Block s in b.Successors)
+            // The terminator's targets, then its default, as Block.Successors
+            // yields them -- read here without the iterator, which was an
+            // allocation per block for every pass that builds a graph.
+            Instr? end = b.Terminator;
+            if (end is not null)
             {
-                // A Switch may list the same block many times; one edge is
-                // enough for every analysis here, and it keeps the
-                // predecessor count honest for "sole predecessor" checks.
-                List<Block> outgoing = _succs[b.Order] ??= new List<Block>(2);
-                if (!outgoing.Contains(s))
+                foreach (Block s in end.Targets)
                 {
-                    outgoing.Add(s);
-                    (_preds[s.Order] ??= new List<Block>(2)).Add(b);
+                    Edge(b, s);
                 }
+                if (end.Default is not null)
+                {
+                    Edge(b, end.Default);
+                }
+            }
+        }
+        void Edge(Block from, Block s)
+        {
+            // A Switch may list the same block many times; one edge is
+            // enough for every analysis here, and it keeps the
+            // predecessor count honest for "sole predecessor" checks.
+            List<Block> outgoing = _succs[from.Order] ??= new List<Block>(2);
+            if (!outgoing.Contains(s))
+            {
+                outgoing.Add(s);
+                (_preds[s.Order] ??= new List<Block>(2)).Add(from);
             }
         }
     
