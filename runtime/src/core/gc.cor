@@ -1488,8 +1488,7 @@ static class Gc
         long started = Sys.Peek(block + Tls.AllocBase);
         long at = Sys.Peek(block + Tls.AllocPtr);
         // And what its class lists have handed out and not yet been counted.
-        long classes = Sys.Peek(block + Tls.ClassBytes);
-        return (started != 0 && at > started ? at - started : 0) + (classes > 0 ? classes : 0);
+        return (started != 0 && at > started ? at - started : 0) + Sys.Peek(block + Tls.ClassBytes);
     }
 
     /// Charges `bytes` to the program and to the thread whose block this is.
@@ -2020,6 +2019,8 @@ static class Gc
     static long _pool;              // empty pages, through their next-page word
     static long _poolBytes;
     public static long PagesTaken, PagesPooled, PagesReleased, PagesRefilled;
+    /// Small requests that found no page and collected for one.
+    public static long ClassStarved;
 
     /// The class tables, mapped once as the heap starts.
     static bool StartClasses()
@@ -2338,20 +2339,44 @@ static class Gc
         // a block made and freed in a loop is no pressure at all.
         if (owner != 0 && owner == tb && cache != 0 && Sys.Peek(slot) == page)
         {
-            Sys.Poke(tb + Tls.ClassBytes, Sys.Peek(tb + Tls.ClassBytes) - size);
+            Uncount(tb, size);
             Sys.Poke(block + KindAt, Sys.Peek(slot + WordSize.Bytes));
             Sys.Poke(slot + WordSize.Bytes, block);
             return;
         }
-        // Onto the page's: off the counter now.
-        _since = _since - size;
-        if (_since < 0) _since = Zero;
+        // Onto the page's, and off the freeing thread's count as well: the
+        // block's allocation is most likely still in that count, not yet
+        // folded, and taken off the pressure counter first it was lost to
+        // the counter's floor of zero -- a program freeing everything it
+        // made collected every few hundred kilobytes.
+        Uncount(tb, size);
         HeapChunks.SetLargestHole(page, HeapChunks.LargestHole(page) + size);
         Sys.Poke(block + KindAt, HeapChunks.PageFree(page));
         HeapChunks.SetPageFree(page, block);
         if (owner == 0 && !HeapChunks.IsListed(page))
         {
             ListPage(page);
+        }
+    }
+
+    /// A small block freed, off the pressure it was counted as: off the
+    /// thread's unfolded count as far as that goes, the rest off the
+    /// pressure counter. The count is NEVER NEGATIVE: a word, read back on
+    /// a 32-bit processor it is unsigned, and a count of minus a kilobyte
+    /// folded in as four gigabytes of pressure -- a collection every few
+    /// allocations. The heap lock is held.
+    static void Uncount(long tb, long size)
+    {
+        long pending = tb != 0 ? Sys.Peek(tb + Tls.ClassBytes) : 0;
+        long off = pending < size ? pending : size;
+        if (off > 0)
+        {
+            Sys.Poke(tb + Tls.ClassBytes, pending - off);
+        }
+        if (size > off)
+        {
+            _since = _since - (size - off);
+            if (_since < 0) _since = Zero;
         }
     }
 
@@ -2366,8 +2391,7 @@ static class Gc
         }
         Sys.Poke(tb + Tls.ClassBytes, Zero);
         _since = _since + bytes;
-        if (_since < 0) _since = Zero;
-        if (bytes > 0) Count(tb, bytes);
+        Count(tb, bytes);
     }
 
     /// One block off a class cache's list, stamped as an object of `kind`.
@@ -2659,11 +2683,11 @@ static class Gc
 
         long size = SizeOfBlock(arena);
 
-        // The pressure counter is charged the whole buffer here, once, rather
-        // than each allocation out of it: the fast path must not touch a word
-        // another thread also writes, and the buffer is what this thread has
-        // actually taken out of the heap.
-        _since = _since + size;
+        // NOT CHARGED HERE: what the buffer hands out is charged as it is
+        // retired (Retire), so a buffer whose top block is freed and taken
+        // again in a loop costs the pressure counter nothing. Charged whole
+        // as it was taken, a loop that freed everything it made still paid
+        // a collection for every few buffers.
         Sys.Poke(block + Tls.AllocBase, arena);
         Sys.Poke(block + Tls.AllocPtr, arena);
         Sys.Poke(block + Tls.AllocLimit, arena + size);
@@ -2757,7 +2781,6 @@ static class Gc
         Retire(block);
         long size = SizeOfBlock(arena);
         ZeroWords(arena + HeaderBytes, arena + size - FooterBytes);
-        _since = _since + size;
         Sys.Poke(block + Tls.AllocBase, arena);
         Sys.Poke(block + Tls.AllocPtr, arena);
         Sys.Poke(block + Tls.AllocLimit, arena + size);
@@ -2897,6 +2920,7 @@ static class Gc
         if (started != 0 && at > started)
         {
             Count(block, at - started);
+            _since = _since + (at - started);
         }
 
         // A thread asked to answer a handshake had its limit taken away, so
@@ -2931,11 +2955,6 @@ static class Gc
         {
             return;
         }
-        // Refill charged the entire arena. Its unused tail has now been
-        // returned, so it is no longer allocation pressure. Buffers never
-        // survive a collection: retirement precedes resetting _since.
-        _since = _since - (limit - at);
-        if (_since < 0) _since = Zero;
         Stamp(at, limit - at, FlagFree);
         Link(at);
     }
@@ -3276,6 +3295,7 @@ static class Gc
                 return block + HeaderBytes;
             }
             if (attempt == 3) break;
+            ClassStarved = ClassStarved + 1;
             _forceMajor = true;
             if (_collecting) WaitOutCycle();
             else CollectLocked();
