@@ -2607,7 +2607,7 @@ static class Gc
     /// digits are written into a fixed buffer on the stack of static data.
     static long _digits;            // a page for the digits, mapped in Start
 
-    static void SayNumber(string label, long value)
+    internal static void SayNumber(string label, long value)
     {
         Runtime.WriteLiteral(2, label);
 
@@ -6723,8 +6723,7 @@ static class HeapChunks
 
         if (_cap != 0 && _heapBytes + ask > _cap)
         {
-            string capped = "heap: the cap refused a chunk\n";
-            Runtime.WriteLiteral(2, capped);
+            Gc.SayNumber("heap: the cap refused a chunk; heap bytes ", _heapBytes);
             return 0;
         }
 
