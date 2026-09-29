@@ -241,8 +241,15 @@ static class Gc
     static bool _snapshots;         // every chunk has its table for this cycle
     static bool _concurrent;        // this cycle lets the world run while marking
     static long _barrier;           // the barrier's ring, or 0
-    const long BarrierCount = 16384;        // places, two words each
-    const long BarrierBytes = BarrierCount * (2 * WordSize.Bytes);
+    // PLACES ENOUGH FOR THE STAMP ROUND. Until every thread has written its
+    // buffer's starts down (Marking 1) each store is logged, old value and
+    // new, and a ring of 16384 filled within a millisecond of a compiler's
+    // stores while a thread in a long loop had not yet come to a safepoint:
+    // thirty of a stage-2 compile's 173 cycles were given up for it, each
+    // one a whole mark thrown away and a major cycle forced after it. Two
+    // megabytes, mapped once, on either word size.
+    const long BarrierBytes = 2097152;
+    const long BarrierCount = BarrierBytes / (2 * WordSize.Bytes);  // places, two words each; a power of two
 
     public static long ConcurrentCycles;
     public static long BarrierTaken;
@@ -4223,6 +4230,10 @@ static class Gc
         //    swept from under them.
         Runtime.Marking = 1;
         _stamping = true;
+        if (!GcThreads.StartStackCopies())
+        {
+            Sys.AtomicSwap(ctl + GcLock.BarrierLost, 1);
+        }
         GcThreads.CaptureBuffers();
         BuildBlockAnchors(true);
 
@@ -4271,6 +4282,8 @@ static class Gc
         // marked by its registrar (MarkRegistered), one before is read below.
         Sys.Fence();
         TakeBarrier(false);
+        // The stacks as they were at STAMP (GcThreads.CopyStack).
+        GcThreads.ScanStackCopies();
         _rootsOnly = true;
         GcRoots.Enter();
         _rootsOnly = false;
@@ -4371,6 +4384,7 @@ static class Gc
         Runtime.Marking = 0;
         Sys.AtomicSwap(ctl + GcLock.Abort, 1);
         GcThreads.Round(GcThreads.Ack);
+        GcThreads.ReleaseStackCopies();
 
         while (Sys.Peek(ctl + GcLock.Active) != 0)
         {
@@ -6699,11 +6713,145 @@ static class GcThreads
         if (request == Stamp)
         {
             Gc.StampBuffer(block);
+            CopyStack(block, from);
         }
         else if (request == Scan)
         {
             Gc.ScanStack(block, from);
         }
+    }
+
+    // THE STACKS AS THEY WERE AT STAMP. A thread's stack is read for marking
+    // when it answers SCAN, which is later; in between it runs, and a
+    // reference it held only on its stack can go into an object made since
+    // the snapshot -- a struct's copy, a box, a cell, an array's elements,
+    // all written with no barrier because the block is new -- and off the
+    // stack. That object is a newcomer: kept by the sweep, never traced. So
+    // what it holds was marked by nothing, and swept from under it: a tuple's
+    // string copied out of a dropped tuple came back as somebody's text.
+    //
+    // So each thread's stack and saved registers are copied as it answers
+    // STAMP -- the moment its buffer's objects are written down, which is
+    // the moment its view of the heap is the snapshot's -- and the copies are
+    // marked from once pointers resolve (Marking 2). Whatever a stack held
+    // then is marked; whatever it picks up afterwards came out of the heap,
+    // where overwriting it takes the barrier. A copy that cannot be made
+    // loses the cycle, as a lost barrier report does (BarrierLost).
+    // The table: a word counting the copies claimed, then one entry of two
+    // words (the copy, its bytes) for each; mapped once, the count cleared at
+    // every cycle. The count is in the table so that threads claim entries
+    // with one atomic add on memory, as the collector's other counters are.
+    const long CopyEntry = 2 * WordSize.Bytes;
+    const long NoCopy = 0;
+    static long _stackCopies;
+
+    static long CopyAt(long i)
+    {
+        return _stackCopies + CopyEntry + i * CopyEntry;
+    }
+
+    /// Called by the collector as a concurrent cycle begins, the heap lock
+    /// held: the table ready and empty.
+    public static bool StartStackCopies()
+    {
+        if (_stackCopies == 0)
+        {
+            _stackCopies = Platform.Map((Max + 1) * CopyEntry);
+            if (_stackCopies == 0)
+            {
+                return false;
+            }
+        }
+        Sys.AtomicSwap(_stackCopies, NoCopy);
+        return true;
+    }
+
+    static void CopyStack(long block, long from)
+    {
+        long ctl = GcLock.Words();
+        long w = WordSize.Bytes;
+        long to = Sys.Peek(block + Tls.StackBase);
+        long start = (from + w - 1) & -w;
+        long stackWords = to > start ? (to - start) / w : NoCopy;
+        long spilled = Sys.Peek(block + Tls.SpillCount);
+        if (spilled < 0 || spilled > Tls.SpillMax)
+        {
+            spilled = NoCopy;
+        }
+        long words = stackWords + spilled;
+        if (words == 0)
+        {
+            return;
+        }
+        if (_stackCopies == 0)
+        {
+            Sys.AtomicSwap(ctl + GcLock.BarrierLost, 1);
+            return;
+        }
+        long slot = Sys.AtomicAdd(_stackCopies, 1);
+        long copy = slot < Max ? Platform.Map(words * w) : NoCopy;
+        if (copy == 0)
+        {
+            Sys.AtomicSwap(ctl + GcLock.BarrierLost, 1);
+            return;
+        }
+        long i = 0;
+        while (i < stackWords)
+        {
+            Sys.Poke(copy + i * w, Sys.Peek(start + i * w));
+            i = i + 1;
+        }
+        long j = 0;
+        while (j < spilled)
+        {
+            Sys.Poke(copy + (stackWords + j) * w, Sys.Peek(block + Tls.Spill + j * w));
+            j = j + 1;
+        }
+        Sys.Poke(CopyAt(slot) + w, words * w);
+        Sys.AtomicSwap(CopyAt(slot), copy);
+    }
+
+    /// Every copy marked from and given back: the collector, Marking 2, every
+    /// thread having answered STAMP.
+    public static void ScanStackCopies()
+    {
+        if (_stackCopies == 0)
+        {
+            return;
+        }
+        long count = Sys.Peek(_stackCopies);
+        if (count > Max) count = Max;
+        for (long i = 0; i < count; i++)
+        {
+            long copy = Sys.Peek(CopyAt(i));
+            if (copy != 0)
+            {
+                Gc.ScanRange(copy, copy + Sys.Peek(CopyAt(i) + WordSize.Bytes));
+            }
+        }
+        ReleaseStackCopies();
+    }
+
+    /// Every copy given back, read or not: after the scan, or for a cycle
+    /// given up.
+    public static void ReleaseStackCopies()
+    {
+        if (_stackCopies == 0)
+        {
+            return;
+        }
+        long count = Sys.Peek(_stackCopies);
+        if (count > Max) count = Max;
+        for (long i = 0; i < count; i++)
+        {
+            long copy = Sys.Peek(CopyAt(i));
+            if (copy != 0)
+            {
+                Platform.Unmap(copy, Sys.Peek(CopyAt(i) + WordSize.Bytes));
+                Sys.Poke(CopyAt(i), NoCopy);
+            }
+        }
+        Sys.AtomicSwap(_stackCopies, NoCopy);
     }
 
     /// Whether `block` owes the round that is open.
