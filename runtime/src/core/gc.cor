@@ -2574,6 +2574,7 @@ static class Gc
                     SayNumber("out of memory: first block ", SizeOfBlock(root));
                 }
             }
+            SayFreeShape();
             OutOfMemory();
         }
 
@@ -3345,6 +3346,80 @@ static class Gc
         if (_heapCheckFaults >= 8)
         {
             Platform.Exit(94);
+        }
+    }
+
+    /// WHERE AN EXHAUSTED HEAP'S BYTES ARE, for the out-of-memory report:
+    /// every chunk walked, free blocks counted by power-of-two size, live
+    /// blocks and thread buffers totalled. A heap refused at its cap with a
+    /// fraction of it live is fragmented or leaking, and this says which.
+    static void SayFreeShape()
+    {
+        if (_heapCheckTable == 0)
+        {
+            _heapCheckTable = Platform.Map(GcThreads.BufferTableBytes());
+            if (_heapCheckTable == 0) return;
+        }
+        long buffers = GcThreads.CaptureBuffersInto(_heapCheckTable);
+        long bufferBytes = 0;
+        long usedBytes = 0;
+        long freeBytes = 0;
+        long chunks = 0;
+        long tails = 0;
+        long counts = _digits + 2048;           // 32 counts, 32 byte totals
+        ZeroWords(counts, counts + 64 * WordSize.Bytes);
+        long chunk = HeapChunks.Newest();
+        while (chunk != 0)
+        {
+            chunks = chunks + 1;
+            long block = HeapChunks.First(chunk);
+            long end = chunk == _current ? _bump : HeapChunks.End(chunk);
+            tails = tails + HeapChunks.Limit(chunk) - end;
+            long step = 0;
+            while (block < end)
+            {
+                while (step < buffers && Sys.Peek(_heapCheckTable + step * (2 * WordSize.Bytes)) < block) step = step + 1;
+                if (step < buffers && Sys.Peek(_heapCheckTable + step * (2 * WordSize.Bytes)) == block)
+                {
+                    long past = Sys.Peek(_heapCheckTable + step * (2 * WordSize.Bytes) + WordSize.Bytes);
+                    bufferBytes = bufferBytes + past - block;
+                    block = past;
+                    step = step + 1;
+                    continue;
+                }
+                long word = Sys.Peek(block);
+                long size = word & SizeMask;
+                if (size < Smallest || block + size > end) break;
+                if ((word & FlagFree) != 0)
+                {
+                    long b = 0;
+                    long below = 2;
+                    while (b < 31 && below <= size)
+                    {
+                        b = b + 1;
+                        below = below * 2;
+                    }
+                    Sys.Poke(counts + b * WordSize.Bytes, Sys.Peek(counts + b * WordSize.Bytes) + 1);
+                    Sys.Poke(counts + (32 + b) * WordSize.Bytes, Sys.Peek(counts + (32 + b) * WordSize.Bytes) + size);
+                    freeBytes = freeBytes + size;
+                }
+                else usedBytes = usedBytes + size;
+                block = block + size;
+            }
+            chunk = HeapChunks.Next(chunk);
+        }
+        SayNumber("heap shape: chunks ", chunks);
+        SayNumber("heap shape: used bytes ", usedBytes);
+        SayNumber("heap shape: free bytes ", freeBytes);
+        SayNumber("heap shape: buffer bytes ", bufferBytes);
+        SayNumber("heap shape: chunk tails unbumped ", tails);
+        for (long b = 0; b < 32; b++)
+        {
+            long n = Sys.Peek(counts + b * WordSize.Bytes);
+            if (n == 0) continue;
+            SayNumber("heap shape: free blocks below 2^", b + 1);
+            SayNumber("heap shape:   count ", n);
+            SayNumber("heap shape:   bytes ", Sys.Peek(counts + (32 + b) * WordSize.Bytes));
         }
     }
 
