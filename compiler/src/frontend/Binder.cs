@@ -1209,7 +1209,7 @@ public sealed partial class Binder
             at = more.Left;
         }
         parts.Add(at);
-        StringBuilder text = new();
+        System.Text.StringBuilder text = new();
         for (int i = parts.Count - 1; i >= 0; i--)
         {
             if (ConstantText(parts[i], owner) is not { } piece) return null;
