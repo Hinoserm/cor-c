@@ -1242,14 +1242,20 @@ static class Runtime
 
     /// How many image directories and tables are registered, and the i-th:
     /// the collector reads the stack maps they name (Gc, precise registers).
+    /// This image's own directory first (Sys.FrameDirectory), then every
+    /// other image's in the order they introduced themselves.
     public static long MetadataCount()
     {
-        return _tableCount;
+        return _tableCount + 1;
     }
 
     public static long Metadata(long i)
     {
-        return i < _tableCount ? Sys.Peek(_tables + i * WordSize.Bytes) : 0;
+        if (i == 0)
+        {
+            return Sys.FrameDirectory();
+        }
+        return i - 1 < _tableCount ? Sys.Peek(_tables + (i - 1) * WordSize.Bytes) : 0;
     }
 
     /// Registers an image directory or an explicitly supplied individual frame
