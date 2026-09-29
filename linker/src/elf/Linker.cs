@@ -242,12 +242,16 @@ public static partial class Linker
             });
         }
 
-        // .bss carries no bytes, so the file ends where .data does.
-        uint size = checked((uint)(layout.Data.Size != 0 ? layout.Data.Addr + layout.Data.Size - baseAddress
-                  : layout.ReadOnlyData.Size != 0 ? layout.ReadOnlyData.Addr + layout.ReadOnlyData.Size - baseAddress
-                  : layout.Text.Size));
+        // .bss carries no bytes, so the file ends where the last section with
+        // bytes does: .data, or the numbers ahead of it, or the constants.
+        ulong last = layout.Text.Size;
+        foreach (OutputSection s in new[] { layout.ReadOnlyData, layout.Numbers, layout.Data })
+        {
+            if (s.Size != 0) last = Math.Max(last, s.Addr + s.Size - baseAddress);
+        }
+        uint size = checked((uint)last);
         byte[] image = new byte[size];
-        foreach (OutputSection s in new[] { layout.Text, layout.ReadOnlyData, layout.Data })
+        foreach (OutputSection s in new[] { layout.Text, layout.ReadOnlyData, layout.Numbers, layout.Data })
         {
             if (s.Size == 0)
             {
@@ -269,7 +273,7 @@ public static partial class Linker
         uint zeroBytes = checked((uint)(layout.Bss.Size == 0 ? 0
             : checked(layout.Bss.Addr + layout.Bss.Size - baseAddress - size)));
         return new FlatImage(image, baseAddress, checked((uint)entry.Address),
-                             layout.Text.Size, layout.ReadOnlyData.Size, layout.Data.Size, zeroBytes);
+                             layout.Text.Size, layout.ReadOnlyData.Size, layout.Numbers.Size + layout.Data.Size, zeroBytes);
     }
 
     /// <summary>
@@ -416,6 +420,14 @@ public static partial class Linker
         public OutputSection ReadOnlyData { get; } = new(".rodata", SectionKind.ReadOnlyData);
         public OutputSection Data { get; } = new(".data", SectionKind.Data);
         public OutputSection RelocatedConstants { get; } = new(".data.rel.ro", SectionKind.Data);
+
+        /// <summary>
+        /// Writable data that holds no reference -- a static array of numbers --
+        /// ahead of .data and so outside __data_start.._end, the statics the
+        /// collector reads as roots: read there, its words looked like
+        /// addresses and kept whatever the heap held at them.
+        /// </summary>
+        public OutputSection Numbers { get; } = new(".data.corsac.numbers", SectionKind.Data);
         public OutputSection Bss { get; } = new(".bss", SectionKind.Uninitialised);
         public List<OutputSection> Notes { get; } = new();
         /// <summary>Loadable sections the linker made itself, outside the RX and RW runs: the resources.</summary>
@@ -482,6 +494,7 @@ public static partial class Linker
         {
             ReadOnly.Add(Text);
             ReadOnly.Add(ReadOnlyData);
+            Writable.Add(Numbers);
             Writable.Add(Data);
             Writable.Add(Bss);
         }
@@ -494,6 +507,8 @@ public static partial class Linker
             if (s.Kind == SectionKind.Data && (s.Name == ".data.rel.ro"
                 || s.Name.StartsWith(".data.rel.ro.", StringComparison.Ordinal)))
                 return Dyn is null ? ReadOnlyData : RelocatedConstants;
+            if (s.Kind == SectionKind.Data && s.Name == ".data.corsac.numbers")
+                return Numbers;
             switch (s.Kind)
             {
                 case SectionKind.Code:

@@ -509,7 +509,11 @@ public sealed partial class Lowering
         byte[] block = new byte[Math.Max(bytes, _t.ArrayHeaderBytes + w)];
         WriteWord(block, _t.ArrayCountOffset, count);
         string sym = "sa_" + StaticSymbol(f);
-        DataItem item = new(sym, block) { Align = _t.Align64, FromLibrary = IsLibrary(f.Owner), Exported = false };
+        DataItem item = new(sym, block)
+        {
+            Align = _t.Align64, FromLibrary = IsLibrary(f.Owner), Exported = false,
+            NoReferences = table.Element != "string" && !MayHoldReference(element),
+        };
         item.Relocs.Add(new DataReloc(0, SequenceDescriptor(ElementKey(element), stride, isString: false, elementType: element), _t.DescriptorBytes));
         for (int i = 0; i < count; i++)
         {

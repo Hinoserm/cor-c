@@ -83,6 +83,9 @@ public sealed class X86Backend : IBackend
 
     /// <summary>The section stack maps go in, and the symbols the runtime finds them by.</summary>
     public const string StackMapSection = ".corsac.stackmaps";
+
+    /// <summary>Writable data with no references in it: outside the collector's roots.</summary>
+    public const string NumbersSection = ".data.corsac.numbers";
     public const string StackMapStart = "__corsac_stackmaps";
     public const string StackMapEnd = "__corsac_stackmaps_end";
 
@@ -114,6 +117,18 @@ public sealed class X86Backend : IBackend
         Section data = new(".data", SectionKind.Data);
         Section relocatedConstants = new(".data.rel.ro", SectionKind.Data);
         Section bss = new(".bss", SectionKind.Uninitialised);
+        // Writable data that holds no reference (DataItem.NoReferences), in a
+        // section the linker places outside the statics read as roots.
+        Section? numbers = null;
+        Section Numbers()
+        {
+            if (numbers is null)
+            {
+                numbers = new Section(NumbersSection, SectionKind.Data);
+                obj.Sections.Add(numbers);
+            }
+            return numbers;
+        }
         obj.Sections.Add(text);
         obj.Sections.Add(rodata);
         obj.Sections.Add(data);
@@ -348,7 +363,7 @@ public sealed class X86Backend : IBackend
                 && (PositionIndependent || d.Relocs.Any(r => imported.Contains(r.Symbol)));
             // Immutable relocations need loader writes, not conservative
             // heap-root scanning. Keep them distinct from mutable statics.
-            Section s = d.Zero ? bss : d.ReadOnly ? (loaderWrites ? relocatedConstants : rodata) : data;
+            Section s = d.Zero ? bss : d.ReadOnly ? (loaderWrites ? relocatedConstants : rodata) : d.NoReferences ? Numbers() : data;
             int align = Math.Max(d.Align, 1);
             long offset;
             if (d.Zero)
