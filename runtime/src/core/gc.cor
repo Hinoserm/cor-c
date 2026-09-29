@@ -673,6 +673,13 @@ static class Gc
                 SayNumber("gc census root:   at ", p);
                 SayNumber("gc census root:   word ", word);
                 SayNumber("gc census root:   bytes ", got);
+                long held = BlockForPointer(word);
+                if (held != 0)
+                {
+                    SayNumber("gc census root:   its kind ", Sys.Peek(held + KindAt));
+                    SayNumber("gc census root:   its first word ", Sys.Peek(held + HeaderBytes));
+                    SayNumber("gc census root:   its size ", Sys.Peek(held) & SizeMask);
+                }
             }
             p = p + WordSize.Bytes;
         }
