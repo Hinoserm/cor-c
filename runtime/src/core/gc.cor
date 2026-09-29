@@ -1918,6 +1918,34 @@ static class Gc
     {
         long tb = Sys.ThreadBlock();
         long need = (bytes + Overhead + 7) & SizeMask;
+
+        // A SMALL BLOCK OFF THIS THREAD'S LIST FOR ITS CLASS (size classes):
+        // no lock, no clearing -- a free block in a page is zero already. No
+        // cache (none yet, or a handshake took it away) or an empty list is
+        // the slow path's.
+        if (need <= ClassMax && bytes >= 0)
+        {
+            long cache = Sys.Peek(tb + Tls.Classes);
+            if (cache != 0)
+            {
+                long c = Sys.Peek(_classOf + (need >> 3) * WordSize.Bytes);
+                long slot = cache + c * (2 * WordSize.Bytes);
+                Sys.Poke(tb + Tls.InAlloc, 1);
+                long free = Sys.Peek(slot + WordSize.Bytes);
+                if (free != 0)
+                {
+                    long size = Sys.Peek(_classSize + c * WordSize.Bytes);
+                    Sys.Poke(slot + WordSize.Bytes, Sys.Peek(free + KindAt));
+                    Sys.Poke(free, size);
+                    Sys.Poke(free + KindAt, kind);
+                    Sys.Poke(free + size - FooterBytes, size);
+                    Sys.Poke(tb + Tls.InAlloc, 0);
+                    return free + HeaderBytes;
+                }
+                Sys.Poke(tb + Tls.InAlloc, 0);
+            }
+            return AllocSlow(bytes, kind);
+        }
         // Not to be stopped from outside between here and the bump
         // (Tls.InAlloc): the limit read below is the promise the buffer is
         // still this thread's, and an interrupting collector must not
@@ -1944,6 +1972,593 @@ static class Gc
         Sys.Poke(next - FooterBytes, need);
         Sys.Poke(tb + Tls.InAlloc, 0);
         return block + HeaderBytes;
+    }
+
+    // ---- size classes ----------------------------------------------------------
+    //
+    // EVERY BLOCK OF A KILOBYTE OR LESS COMES FROM A PAGE OF ITS SIZE CLASS:
+    // a 32 KB chunk (HeapChunks.PageBytes) laid out as blocks of one size,
+    // each with its header and footer as any block has, so that everything
+    // that walks a chunk -- the start table, the census, the heap check --
+    // walks a page unchanged. What a page does NOT do is merge: a block dies
+    // and goes back on its page's free list at its own size, for the next
+    // allocation of that class, wherever it lies.
+    //
+    // That is the whole point. One heap of mixed blocks bumped through by
+    // everybody left the survivors of every phase of a compiler scattered a
+    // kilobyte apart: 153 MB live in a 512 MB heap had 383 MB free in holes
+    // of 256 bytes to 4 KB, not one of them 256 KB, and a list's backing
+    // array could not be had. A free block of a class is reusable by the
+    // next object of its class whatever surrounds it, a page with nothing
+    // left alive goes back whole -- to the pool, for any class, or to the
+    // operating system -- and the heap stays near its live size.
+    //
+    // A THREAD OWNS ONE PAGE OF A CLASS AT A TIME (Tls.Classes): its free
+    // list is the thread's to pop with no lock, exactly as a buffer is the
+    // thread's to bump. So an owned page is, to the collector, a buffer: it
+    // is captured with the buffers (GcThreads.CaptureBuffersInto) and every
+    // walk steps over it; its objects are written into the snapshot by its
+    // owner (StampBuffer) and unmarked with the buffers (UnmarkBuffer); the
+    // sweep keeps it whole. Only a page nobody owns is swept, and its free
+    // list rebuilt from nothing. A page is given up when its list runs dry,
+    // when the collector that owns it starts a collection, and when its
+    // thread goes.
+    //
+    // THE PAYLOAD OF A FREE BLOCK IN A PAGE IS ZERO: the sweep and Free clear
+    // a block as it dies, so the fast path, like the bump, clears nothing.
+    // Its header is its size with FlagFree, its kind word the next free
+    // block of the list it is on, its footer its size with FlagFree.
+
+    public const long ClassMax = 1024;      // the largest block a class holds
+    public const long Classes = 39;
+    static long _classSize;         // Classes words: each class's block size
+    static long _classOf;           // ClassMax / 8 + 1 words: need >> 3 -> class
+    static long _classPages;        // Classes words: pages with room, unowned
+    static long _pool;              // empty pages, through their next-page word
+    static long _poolBytes;
+    public static long PagesTaken, PagesPooled, PagesReleased, PagesRefilled;
+
+    /// The class tables, mapped once as the heap starts.
+    static bool StartClasses()
+    {
+        long tables = Platform.Map(4096);
+        if (tables == 0)
+        {
+            return false;
+        }
+        _classSize = tables;
+        _classOf = tables + 64 * WordSize.Bytes;
+        _classPages = tables + 200 * WordSize.Bytes;
+        long size = 16;
+        long c = 0;
+        while (size <= ClassMax)
+        {
+            Sys.Poke(_classSize + c * WordSize.Bytes, size);
+            c = c + 1;
+            // Eighths of each power of two above 128: no block wastes more
+            // than an eighth of itself to its class.
+            if (size < 128) size = size + 8;
+            else if (size < 256) size = size + 16;
+            else if (size < 512) size = size + 32;
+            else size = size + 64;
+        }
+        long k = 0;
+        for (long i = 0; i <= ClassMax / 8; i++)
+        {
+            while (Sys.Peek(_classSize + k * WordSize.Bytes) < i * 8) k = k + 1;
+            Sys.Poke(_classOf + i * WordSize.Bytes, k);
+        }
+        return true;
+    }
+
+    static long ClassSize(long c)
+    {
+        return Sys.Peek(_classSize + c * WordSize.Bytes);
+    }
+
+    /// This thread's class cache, mapped at its first small allocation. The
+    /// heap lock is held.
+    static long EnsureCache(long tb)
+    {
+        long cache = Sys.Peek(tb + Tls.Classes);
+        if (cache != 0)
+        {
+            return cache;
+        }
+        cache = Sys.Peek(tb + Tls.ClassesSaved);
+        if (cache == 0)
+        {
+            cache = Platform.Map(4096);
+            if (cache == 0)
+            {
+                return 0;
+            }
+        }
+        Sys.Poke(tb + Tls.ClassesSaved, Zero);
+        Sys.Poke(tb + Tls.Classes, cache);
+        return cache;
+    }
+
+    /// A page laid out afresh as free blocks of class `c`, all on its list,
+    /// in address order. Its memory above the header is zero (fresh from the
+    /// operating system, or cleared by PopPool).
+    static void FormatPage(long page, long c)
+    {
+        long size = ClassSize(c);
+        long first = HeapChunks.First(page);
+        long n = (HeapChunks.PageBlockLimit(page) - first) / size;
+        long block = first;
+        for (long i = 0; i < n; i++)
+        {
+            Stamp(block, size, FlagFree);
+            Sys.Poke(block + KindAt, i + 1 < n ? block + size : Zero);
+            block = block + size;
+        }
+        HeapChunks.SetEnd(page, block);
+        HeapChunks.SetPageFree(page, first);
+        HeapChunks.SetPageClass(page, c + 1);
+        HeapChunks.SetLargestHole(page, n * size);
+        HeapChunks.SetLive(page, Zero, Zero);
+        HeapChunks.SetPooled(page, false);
+        // NOT THE STARTS OF WHAT WAS HERE BEFORE: an object laid where one
+        // began at this cycle's stop would be taken for that one.
+        HeapChunks.ClearStarts(page, -2);
+    }
+
+    static void ListPage(long page)
+    {
+        long list = _classPages + (HeapChunks.PageClass(page) - 1) * WordSize.Bytes;
+        long head = Sys.Peek(list);
+        HeapChunks.SetPageLinks(page, head, Zero);
+        if (head != 0) HeapChunks.SetPagePrev(head, page);
+        Sys.Poke(list, page);
+        HeapChunks.SetListed(page, true);
+    }
+
+    static void UnlistPage(long page)
+    {
+        long next = HeapChunks.PageNext(page);
+        long prev = HeapChunks.PagePrev(page);
+        if (prev != 0) HeapChunks.SetPageNext(prev, next);
+        else Sys.Poke(_classPages + (HeapChunks.PageClass(page) - 1) * WordSize.Bytes, next);
+        if (next != 0) HeapChunks.SetPagePrev(next, prev);
+        HeapChunks.SetPageLinks(page, Zero, Zero);
+        HeapChunks.SetListed(page, false);
+    }
+
+    /// The empty pages kept for reuse: a sixty-fourth of the heap, and never
+    /// fewer than a few, so that a program whose small objects come and go
+    /// does not map and unmap a page each time.
+    static long PoolLimit()
+    {
+        long share = HeapChunks.HeapBytes / 64;
+        return share > 8 * HeapChunks.PageBytes ? share : 8 * HeapChunks.PageBytes;
+    }
+
+    /// A page with nothing alive in it, off its list and pooled or given
+    /// back. Nobody owns it. The heap lock is held.
+    static void RetirePage(long page)
+    {
+        if (HeapChunks.IsListed(page)) UnlistPage(page);
+        HeapChunks.SetLive(page, Zero, Zero);
+        HeapChunks.SetYoung(page, false);
+        if (_poolBytes + HeapChunks.PageBytes <= PoolLimit() && !HeapChunks.OverCap())
+        {
+            HeapChunks.SetPooled(page, true);
+            HeapChunks.SetPageNext(page, _pool);
+            _pool = page;
+            _poolBytes = _poolBytes + HeapChunks.PageBytes;
+            PagesPooled = PagesPooled + 1;
+            return;
+        }
+        ReleaseChunk(page);
+        PagesReleased = PagesReleased + 1;
+    }
+
+    /// A chunk given back, with every walk that might be about to step onto
+    /// it moved past first. The heap lock is held and nothing is marking.
+    static void ReleaseChunk(long chunk)
+    {
+        if (_sweepAt == chunk) _sweepAt = HeapChunks.Next(chunk);
+        if (_recycleNext == chunk) _recycleNext = HeapChunks.Next(chunk);
+        if (_recycle == chunk) _recycle = Zero;
+        HeapChunks.Release(chunk);
+    }
+
+    /// Every pooled page given back to the operating system: the room a cap
+    /// leaves is wanted for something else. Never while a collection runs --
+    /// the marker's snapshot names these chunks. The heap lock is held.
+    public static bool DrainPool()
+    {
+        if (_pool == 0 || _collecting || Runtime.Marking != 0)
+        {
+            return false;
+        }
+        while (_pool != 0)
+        {
+            long page = _pool;
+            _pool = HeapChunks.PageNext(page);
+            HeapChunks.SetPageNext(page, Zero);
+            ReleaseChunk(page);
+            PagesReleased = PagesReleased + 1;
+        }
+        _poolBytes = Zero;
+        return true;
+    }
+
+    static long PopPool(long c)
+    {
+        long page = _pool;
+        if (page == 0)
+        {
+            return 0;
+        }
+        _pool = HeapChunks.PageNext(page);
+        HeapChunks.SetPageNext(page, Zero);
+        _poolBytes = _poolBytes - HeapChunks.PageBytes;
+        ZeroWords(HeapChunks.First(page), HeapChunks.PageBlockLimit(page));
+        FormatPage(page, c);
+        return page;
+    }
+
+    /// This thread's cache of class `c` given free blocks: what other
+    /// threads freed into its page, else another page -- one with room,
+    /// a pooled one, a new one. False when none can be had. The heap lock
+    /// is held.
+    static bool ClassRefill(long tb, long c)
+    {
+        long cache = EnsureCache(tb);
+        if (cache == 0)
+        {
+            return false;
+        }
+        long slot = cache + c * (2 * WordSize.Bytes);
+        long page = Sys.Peek(slot);
+        if (page != 0)
+        {
+            long returned = HeapChunks.PageFree(page);
+            if (returned != 0)
+            {
+                long back = HeapChunks.LargestHole(page);
+                _since = _since + back;
+                Count(tb, back);
+                HeapChunks.SetPageFree(page, Zero);
+                HeapChunks.SetLargestHole(page, Zero);
+                Sys.Poke(slot + WordSize.Bytes, returned);
+                return true;
+            }
+            // Used up: nobody's, on no list, until a sweep finds room in it.
+            HeapChunks.SetOwner(page, Zero);
+            Sys.Poke(slot, Zero);
+        }
+        page = Sys.Peek(_classPages + c * WordSize.Bytes);
+        if (page != 0)
+        {
+            UnlistPage(page);
+            PagesRefilled = PagesRefilled + 1;
+        }
+        else
+        {
+            page = PopPool(c);
+            if (page == 0)
+            {
+                page = HeapChunks.TakePage();
+                if (page == 0)
+                {
+                    return false;
+                }
+                FormatPage(page, c);
+                PagesTaken = PagesTaken + 1;
+            }
+        }
+        long head = HeapChunks.PageFree(page);
+        HeapChunks.SetPageFree(page, Zero);
+        HeapChunks.SetOwner(page, tb);
+        HeapChunks.SetYoung(page, true);
+        // Charged as a buffer is: the free bytes the thread may now take.
+        long bytes = HeapChunks.LargestHole(page);
+        _since = _since + bytes;
+        Count(tb, bytes);
+        HeapChunks.SetLargestHole(page, Zero);
+        Sys.Poke(slot, page);
+        Sys.Poke(slot + WordSize.Bytes, head);
+        return head != 0;
+    }
+
+    /// Every page a thread owns given up: what is left of each list goes
+    /// back to its page, and a page with room goes on its class's list. The
+    /// heap lock is held, and the thread is not in the allocator.
+    public static void RetireClasses(long tb)
+    {
+        long cache = Sys.Peek(tb + Tls.Classes);
+        if (cache == 0) cache = Sys.Peek(tb + Tls.ClassesSaved);
+        if (cache == 0 || _classSize == 0)
+        {
+            return;
+        }
+        for (long c = 0; c < Classes; c++)
+        {
+            long slot = cache + c * (2 * WordSize.Bytes);
+            long page = Sys.Peek(slot);
+            if (page == 0) continue;
+            long head = Sys.Peek(slot + WordSize.Bytes);
+            if (head != 0)
+            {
+                // What the thread never took goes back off the counter, as a
+                // retired buffer's tail does, and onto the page's bytes.
+                long size = ClassSize(c);
+                long unused = size;
+                long tail = head;
+                while (Sys.Peek(tail + KindAt) != 0)
+                {
+                    tail = Sys.Peek(tail + KindAt);
+                    unused = unused + size;
+                }
+                Sys.Poke(tail + KindAt, HeapChunks.PageFree(page));
+                HeapChunks.SetPageFree(page, head);
+                HeapChunks.SetLargestHole(page, HeapChunks.LargestHole(page) + unused);
+                _since = _since - unused;
+                if (_since < 0) _since = Zero;
+            }
+            HeapChunks.SetOwner(page, Zero);
+            Sys.Poke(slot, Zero);
+            Sys.Poke(slot + WordSize.Bytes, Zero);
+            if (HeapChunks.PageFree(page) != 0 && !HeapChunks.IsListed(page))
+            {
+                ListPage(page);
+            }
+        }
+    }
+
+    /// A thread that is going: its pages given up and its cache unmapped.
+    public static void ForgetClasses(long tb)
+    {
+        RetireClasses(tb);
+        long cache = Sys.Peek(tb + Tls.Classes);
+        if (cache == 0) cache = Sys.Peek(tb + Tls.ClassesSaved);
+        Sys.Poke(tb + Tls.Classes, Zero);
+        Sys.Poke(tb + Tls.ClassesSaved, Zero);
+        if (cache != 0) Platform.Unmap(cache, 4096);
+    }
+
+    /// A block of a page freed by hand: cleared, marked free, and onto the
+    /// freeing thread's own list when the page is its own, else onto the
+    /// page's. The heap lock is held and no collection is under way.
+    static void ClassFree(long page, long block, long size, long tb)
+    {
+        ZeroWords(block + HeaderBytes, block + size - FooterBytes);
+        Stamp(block, size, FlagFree);
+        long owner = HeapChunks.Owner(page);
+        long cache = tb != 0 ? Sys.Peek(tb + Tls.Classes) : 0;
+        if (cache == 0 && tb != 0) cache = Sys.Peek(tb + Tls.ClassesSaved);
+        long slot = cache + (HeapChunks.PageClass(page) - 1) * (2 * WordSize.Bytes);
+        // ONTO THE THREAD'S OWN LIST, which was charged as a whole when the
+        // page was taken (ClassRefill): the block is back among the bytes
+        // the thread has already been counted for, as a buffer's top block
+        // is, and the pressure counter is left alone.
+        if (owner != 0 && owner == tb && cache != 0 && Sys.Peek(slot) == page)
+        {
+            Sys.Poke(block + KindAt, Sys.Peek(slot + WordSize.Bytes));
+            Sys.Poke(slot + WordSize.Bytes, block);
+            return;
+        }
+        // Onto the page's: off the counter now, charged again with the
+        // page's free bytes (the largest-hole word) to whoever takes them.
+        _since = _since - size;
+        if (_since < 0) _since = Zero;
+        HeapChunks.SetLargestHole(page, HeapChunks.LargestHole(page) + size);
+        Sys.Poke(block + KindAt, HeapChunks.PageFree(page));
+        HeapChunks.SetPageFree(page, block);
+        if (owner == 0 && !HeapChunks.IsListed(page))
+        {
+            ListPage(page);
+        }
+    }
+
+    /// One block off a class cache's list, stamped as an object of `kind`.
+    /// Zero when the list is empty.
+    static long PopClass(long slot, long c, long kind)
+    {
+        long block = Sys.Peek(slot + WordSize.Bytes);
+        if (block == 0)
+        {
+            return 0;
+        }
+        long size = ClassSize(c);
+        Sys.Poke(slot + WordSize.Bytes, Sys.Peek(block + KindAt));
+        Sys.Poke(block, size);
+        Sys.Poke(block + KindAt, kind);
+        Sys.Poke(block + size - FooterBytes, size);
+        return block + HeaderBytes;
+    }
+
+    /// The objects in the pages a thread owns written into the snapshot, as
+    /// StampBuffer writes a buffer's.
+    static void StampPages(long tb)
+    {
+        long cache = Sys.Peek(tb + Tls.Classes);
+        if (cache == 0) cache = Sys.Peek(tb + Tls.ClassesSaved);
+        if (cache == 0) return;
+        for (long c = 0; c < Classes; c++)
+        {
+            long page = Sys.Peek(cache + c * (2 * WordSize.Bytes));
+            if (page == 0 || HeapChunks.StartsCycle(page) != _cycle) continue;
+            long at = HeapChunks.First(page);
+            long end = HeapChunks.End(page);
+            while (at < end)
+            {
+                long word = Sys.Peek(at);
+                long size = word & SizeMask;
+                if (size < Smallest || at + size > end) break;
+                if ((word & FlagFree) == 0)
+                {
+                    HeapChunks.SetStartShared(page, at);
+                    if (_generational && !_minor && (word & (FlagMark | FlagScan)) != 0)
+                    {
+                        Stamp(at, size, word & FlagMask & ~(FlagMark | FlagScan));
+                    }
+                }
+                at = at + size;
+            }
+        }
+    }
+
+    /// The marks this collection left in [at, end) of a page taken off,
+    /// where the sweep will not: without generations only.
+    static void UnmarkRange(long at, long end)
+    {
+        if (_generational) return;
+        while (at < end)
+        {
+            long word = Sys.Peek(at);
+            long size = word & SizeMask;
+            if (size < Smallest || at + size > end) return;
+            if ((word & FlagFree) == 0 && (word & (FlagMark | FlagScan)) != 0)
+            {
+                Stamp(at, size, word & FlagMask & ~(FlagMark | FlagScan));
+            }
+            at = at + size;
+        }
+    }
+
+    static void UnmarkPages(long tb)
+    {
+        long cache = Sys.Peek(tb + Tls.Classes);
+        if (cache == 0) cache = Sys.Peek(tb + Tls.ClassesSaved);
+        if (cache == 0 || _generational) return;
+        for (long c = 0; c < Classes; c++)
+        {
+            long page = Sys.Peek(cache + c * (2 * WordSize.Bytes));
+            if (page != 0) UnmarkRange(HeapChunks.First(page), HeapChunks.End(page));
+        }
+    }
+
+    /// Adds the pages a thread owns to a capture table as spans to step over;
+    /// answers the new count.
+    public static long CapturePages(long tb, long table, long count, long capacity)
+    {
+        long cache = Sys.Peek(tb + Tls.Classes);
+        if (cache == 0) cache = Sys.Peek(tb + Tls.ClassesSaved);
+        if (cache == 0) return count;
+        for (long c = 0; c < Classes && count < capacity; c++)
+        {
+            long page = Sys.Peek(cache + c * (2 * WordSize.Bytes));
+            if (page == 0) continue;
+            long from = HeapChunks.First(page);
+            long at = count;
+            while (at > 0 && Sys.Peek(table + (at - 1) * (2 * WordSize.Bytes)) > from)
+            {
+                Sys.Poke(table + at * (2 * WordSize.Bytes), Sys.Peek(table + (at - 1) * (2 * WordSize.Bytes)));
+                Sys.Poke(table + at * (2 * WordSize.Bytes) + WordSize.Bytes, Sys.Peek(table + (at - 1) * (2 * WordSize.Bytes) + WordSize.Bytes));
+                at = at - 1;
+            }
+            Sys.Poke(table + at * (2 * WordSize.Bytes), from);
+            Sys.Poke(table + at * (2 * WordSize.Bytes) + WordSize.Bytes, HeapChunks.End(page));
+            count = count + 1;
+        }
+        return count;
+    }
+
+    /// Sweeps one size-class page. The heap lock is held (or the world is
+    /// stopped). A page captured at BeginSweep, or owned since, is some
+    /// thread's buffer and kept whole; a pooled one holds nothing.
+    static void SweepPage(long page)
+    {
+        if (HeapChunks.IsPooled(page))
+        {
+            return;
+        }
+        long first = HeapChunks.First(page);
+        long end = HeapChunks.End(page);
+        long step = GcThreads.BufferAtOrAbove(first);
+        bool captured = step < GcThreads.BufferCount() && GcThreads.BufferBase(step) == first;
+        if (captured || HeapChunks.Owner(page) != 0)
+        {
+            if (!captured) UnmarkRange(first, end);
+            _sweepLive = _sweepLive + HeapChunks.LiveBlocks(page);
+            _sweepLiveBytes = _sweepLiveBytes + (end - first);
+            HeapChunks.SetYoung(page, true);
+            return;
+        }
+        long size = ClassSize(HeapChunks.PageClass(page) - 1);
+        long head = 0;
+        long tail = 0;
+        long live = 0;
+        long liveBytes = 0;
+        long freeBytes = 0;
+        bool stillYoung = false;
+        long block = first;
+        while (block + size <= end)
+        {
+            long word = Sys.Peek(block);
+            if ((word & SizeMask) != size)
+            {
+                break;
+            }
+            SweepVisits = SweepVisits + 1;
+            if ((word & FlagFree) == 0 && ((word & FlagMark) != 0 || Newcomer(page, block, word)))
+            {
+                if (_verify && !_minor && (word & FlagMark) != 0)
+                {
+                    CheckDangling(block, size);
+                }
+                if (_census && !_minor)
+                {
+                    Census(block, size);
+                }
+                if (_generational && (word & FlagMark) != 0)
+                {
+                    Stamp(block, size, FlagMark | FlagScan);
+                }
+                else
+                {
+                    Stamp(block, size, Zero);
+                    stillYoung = stillYoung || (word & FlagMark) == 0;
+                }
+                live = live + 1;
+                liveBytes = liveBytes + size;
+            }
+            else
+            {
+                if ((word & FlagFree) == 0)
+                {
+                    if (_deadCensus)
+                    {
+                        if (_deadAt == 0)
+                        {
+                            _deadAt = Platform.Map(CensusSlots * CensusEntry);
+                        }
+                        CensusInto(_deadAt, block, size);
+                    }
+                    ZeroWords(block + HeaderBytes, block + size - FooterBytes);
+                    Stamp(block, size, FlagFree);
+                }
+                Sys.Poke(block + KindAt, Zero);
+                if (tail == 0) head = block;
+                else Sys.Poke(tail + KindAt, block);
+                tail = block;
+                freeBytes = freeBytes + size;
+            }
+            block = block + size;
+        }
+        HeapChunks.SetPageFree(page, head);
+        HeapChunks.SetLive(page, live, liveBytes);
+        HeapChunks.SetLargestHole(page, freeBytes);
+        HeapChunks.SetYoung(page, stillYoung);
+        _sweepLive = _sweepLive + live;
+        _sweepLiveBytes = _sweepLiveBytes + liveBytes;
+        if (live == 0)
+        {
+            RetirePage(page);
+        }
+        else if (head != 0)
+        {
+            if (!HeapChunks.IsListed(page)) ListPage(page);
+        }
+        else if (HeapChunks.IsListed(page))
+        {
+            UnlistPage(page);
+        }
     }
 
     // ---- allocation buffers ---------------------------------------------------
@@ -2094,6 +2709,10 @@ static class Gc
     /// each step (SyncEnd keeps it there).
     static bool Recyclable(long chunk)
     {
+        if (HeapChunks.PageClass(chunk) != 0)
+        {
+            return false;
+        }
         if (HeapChunks.LargestHole(chunk) < RecycleMin)
         {
             return false;
@@ -2421,6 +3040,11 @@ static class Gc
             Sys.Poke(tb + Tls.AllocLimit, Sys.Peek(tb + Tls.AllocSaved));
             Sys.Poke(tb + Tls.AllocSaved, Zero);
         }
+        if (Sys.Peek(tb + Tls.Classes) == 0 && Sys.Peek(tb + Tls.ClassesSaved) != 0)
+        {
+            Sys.Poke(tb + Tls.Classes, Sys.Peek(tb + Tls.ClassesSaved));
+            Sys.Poke(tb + Tls.ClassesSaved, Zero);
+        }
 
         if (!_ready)
         {
@@ -2458,6 +3082,11 @@ static class Gc
                       && Sys.Call(DeferHook, 0, 0, 0) != 0;
             if (later) Deferred = Deferred + 1;
             else CollectLocked();
+        }
+
+        if (need <= ClassMax && _classSize != 0)
+        {
+            return AllocClass(tb, need, kind);
         }
 
         // A small request takes a buffer of its own and is answered from it,
@@ -2583,6 +3212,58 @@ static class Gc
         Sys.Poke(block + KindAt, kind);
         GcLock.Exit();
         return block + HeaderBytes;
+    }
+
+    /// A small block for AllocSlow: off this thread's class list, refilled
+    /// if it is empty; failing a page, from the mixed heap's free blocks;
+    /// failing those, after a collection, as the large path does. The heap
+    /// lock is held and let go.
+    static long AllocClass(long tb, long need, long kind)
+    {
+        long c = Sys.Peek(_classOf + (need >> 3) * WordSize.Bytes);
+        for (long attempt = 0; attempt < 4; attempt++)
+        {
+            long cache = EnsureCache(tb);
+            if (cache != 0)
+            {
+                long slot = cache + c * (2 * WordSize.Bytes);
+                long at = PopClass(slot, c, kind);
+                if (at == 0 && ClassRefill(tb, c))
+                {
+                    at = PopClass(slot, c, kind);
+                }
+                if (at != 0)
+                {
+                    GcLock.Exit();
+                    return at;
+                }
+            }
+            // NO PAGE TO BE HAD -- the cap, the ceiling: a free block of the
+            // mixed heap serves as well, at the class's size.
+            long block = TakeFree(ClassSize(c));
+            if (block != 0)
+            {
+                ZeroWords(block + HeaderBytes, block + SizeOfBlock(block) - FooterBytes);
+                _since = _since + SizeOfBlock(block);
+                Count(tb, SizeOfBlock(block));
+                Sys.Poke(block + KindAt, kind);
+                GcLock.Exit();
+                return block + HeaderBytes;
+            }
+            if (attempt == 3) break;
+            _forceMajor = true;
+            if (_collecting) WaitOutCycle();
+            else CollectLocked();
+            _growPast = attempt == 2;
+            if (attempt == 2) DrainPool();
+        }
+        _growPast = false;
+        SayNumber("out of memory: small request ", need);
+        SayNumber("out of memory: heap ", HeapChunks.HeapBytes);
+        SayNumber("out of memory: live bytes at last collection ", _liveBytes);
+        SayFreeShape();
+        OutOfMemory();
+        return 0;
     }
 
     /// WHAT THE COLLECTOR WAS DOING when a fault stopped the program, for
@@ -2820,7 +3501,7 @@ static class Gc
         _digits = Platform.Map(4096);
         _bins = Platform.Map(BinsBytes);
 
-        if (_bins == 0)
+        if (_bins == 0 || !StartClasses())
         {
             OutOfMemory();
         }
@@ -3022,6 +3703,16 @@ static class Gc
         }
 
         SyncEnd();
+
+        // A BLOCK OF A SIZE-CLASS PAGE goes back to its class, never merged.
+        long owning = HeapChunks.Of(block);
+        if (owning != 0 && HeapChunks.PageClass(owning) != 0)
+        {
+            Frees = Frees + 1;
+            ClassFree(owning, block, size, tb);
+            GcLock.Exit();
+            return;
+        }
 
         // The bytes go back off the pressure counter. `_since` measures how
         // much of the heap has gone out and not come back, because that is
@@ -3486,7 +4177,7 @@ static class Gc
                 {
                     CheckFault("gc heap check: a header and its footer disagree", block, Sys.Peek(block + size - FooterBytes), when);
                 }
-                if ((word & FlagFree) != 0 && !IsInPlace(block))
+                if ((word & FlagFree) != 0 && !IsInPlace(block) && HeapChunks.PageClass(chunk) == 0)
                 {
                     listed = listed + 1;
                 }
@@ -4950,6 +5641,7 @@ static class Gc
         if (PauseHook != 0) Sys.Call(PauseHook, 0, 0, 0);
 
         Retire(self);
+        RetireClasses(self);
         GcThreads.CaptureBuffers();
         _collecting = true;
         _concurrent = false;
@@ -5028,6 +5720,7 @@ static class Gc
         {
             Sys.AtomicSwap(ctl + GcLock.BarrierLost, 1);
         }
+        RetireClasses(self);
         GcThreads.CaptureBuffers();
         BuildBlockAnchors(true);
 
@@ -5410,6 +6103,7 @@ static class Gc
     /// blocked: nobody else is bumping in the buffer meanwhile.
     public static void StampBuffer(long block)
     {
+        StampPages(block);
         long at = Sys.Peek(block + Tls.AllocBase);
         long upto = Sys.Peek(block + Tls.AllocPtr);
 
@@ -5462,6 +6156,7 @@ static class Gc
     /// heap lock is held, so the buffer is not retired meanwhile.
     public static void UnmarkBuffer(long block)
     {
+        UnmarkPages(block);
         long at = Sys.Peek(block + Tls.AllocBase);
         long upto = Sys.Peek(block + Tls.AllocPtr);
 
@@ -5986,6 +6681,12 @@ static class Gc
                 return after != 0;
             }
 
+            if (HeapChunks.PageClass(chunk) != 0)
+            {
+                SweepPage(chunk);
+                return _sweepAt != 0;
+            }
+
             if (chunk != _current && chunk != _sweepCurrent && !AnyLive(chunk))
             {
                 // A MINOR SWEEP KEPT THE FREE LISTS, and this chunk's free
@@ -6160,8 +6861,25 @@ static class HeapChunks
     // The largest free run its last sweep left, so that recycling passes by
     // a chunk whose holes are all too small without walking it (Gc.NextHole).
     const long ChunkLargestHole = 7 * WordSize.Bytes;
-    const long ChunkBytes = 8 * WordSize.Bytes;
+    // A SIZE-CLASS PAGE'S WORDS (Gc, "size classes"): its class plus one (0
+    // for a chunk of mixed blocks), its free list -- the page's own while no
+    // thread owns it, the blocks other threads freed while one does -- its
+    // neighbours on its class's list of pages with room, and the thread that
+    // owns it, or 0. On a page the largest-hole word is its free bytes.
+    const long ChunkClass = 8 * WordSize.Bytes;
+    const long ChunkFree = 9 * WordSize.Bytes;
+    const long ChunkPageNext = 10 * WordSize.Bytes;
+    const long ChunkPagePrev = 11 * WordSize.Bytes;
+    const long ChunkOwner = 12 * WordSize.Bytes;
+    const long ChunkBytes = 14 * WordSize.Bytes;
     const long ChunkYoung = 1;
+    const long ChunkListed = 2;     // a page on its class's list
+    const long ChunkPooled = 4;     // an empty page kept for any class
+
+    /// A size-class page: small enough that a thread owning one of every
+    /// class holds little, large enough that the start table inside it is
+    /// a few hundred bytes of it.
+    public const long PageBytes = 32768;
 
     // What a chunk is normally: a megabyte, so the operating system is asked
     // rarely and the chunk list stays short for the collector to walk. A
@@ -6581,6 +7299,12 @@ static class HeapChunks
         get { return _heapBytes; }
     }
 
+    /// Whether one more page would pass the cap.
+    public static bool OverCap()
+    {
+        return _cap != 0 && _heapBytes + PageBytes > _cap;
+    }
+
     public static void SetLimit(long bytes)
     {
         _cap = bytes;
@@ -6612,6 +7336,141 @@ static class HeapChunks
     public static long First(long chunk)
     {
         return chunk + ChunkBytes;
+    }
+
+    // ---- size-class pages ------------------------------------------------
+
+    /// A page's class plus one, or 0 for a chunk of mixed blocks.
+    public static long PageClass(long chunk)
+    {
+        return Sys.Peek(chunk + ChunkClass);
+    }
+
+    public static void SetPageClass(long chunk, long classPlusOne)
+    {
+        Sys.Poke(chunk + ChunkClass, classPlusOne);
+    }
+
+    public static long PageFree(long chunk)
+    {
+        return Sys.Peek(chunk + ChunkFree);
+    }
+
+    public static void SetPageFree(long chunk, long head)
+    {
+        Sys.Poke(chunk + ChunkFree, head);
+    }
+
+    public static long PageNext(long chunk)
+    {
+        return Sys.Peek(chunk + ChunkPageNext);
+    }
+
+    public static long PagePrev(long chunk)
+    {
+        return Sys.Peek(chunk + ChunkPagePrev);
+    }
+
+    public static void SetPageLinks(long chunk, long next, long prev)
+    {
+        Sys.Poke(chunk + ChunkPageNext, next);
+        Sys.Poke(chunk + ChunkPagePrev, prev);
+    }
+
+    public static void SetPageNext(long chunk, long next)
+    {
+        Sys.Poke(chunk + ChunkPageNext, next);
+    }
+
+    public static void SetPagePrev(long chunk, long prev)
+    {
+        Sys.Poke(chunk + ChunkPagePrev, prev);
+    }
+
+    public static long Owner(long chunk)
+    {
+        return Sys.Peek(chunk + ChunkOwner);
+    }
+
+    public static void SetOwner(long chunk, long thread)
+    {
+        Sys.Poke(chunk + ChunkOwner, thread);
+    }
+
+    public static bool IsListed(long chunk)
+    {
+        return (Sys.Peek(chunk + ChunkFlags) & ChunkListed) != 0;
+    }
+
+    public static void SetListed(long chunk, bool listed)
+    {
+        long flags = Sys.Peek(chunk + ChunkFlags);
+        Sys.Poke(chunk + ChunkFlags, listed ? flags | ChunkListed : flags & ~ChunkListed);
+    }
+
+    public static bool IsPooled(long chunk)
+    {
+        return (Sys.Peek(chunk + ChunkFlags) & ChunkPooled) != 0;
+    }
+
+    public static void SetPooled(long chunk, bool pooled)
+    {
+        long flags = Sys.Peek(chunk + ChunkFlags);
+        Sys.Poke(chunk + ChunkFlags, pooled ? flags | ChunkPooled : flags & ~ChunkPooled);
+    }
+
+    /// The bytes a page keeps at its end for its own start table, rounded
+    /// to eight: the anchors, the cycle word and the start bits that
+    /// AnchorBytes would have mapped a page of its own for.
+    public static long PageTableBytes()
+    {
+        long anchors = (PageBytes + 4095) / 4096;
+        long starts = (PageBytes / 8 + StartBits - 1) / StartBits;
+        return ((anchors + 1 + starts) * WordSize.Bytes + 7) & -8;
+    }
+
+    /// Where a page's blocks must end: its start table lies above.
+    public static long PageBlockLimit(long chunk)
+    {
+        return chunk + PageBytes - PageTableBytes();
+    }
+
+    /// A new size-class page, zeroed, its start table inside it; or zero
+    /// when the cap, the ceiling or the operating system refuses. The heap
+    /// lock is held. Not yet formatted for a class (Gc.FormatPage).
+    public static long TakePage()
+    {
+        if (Gc.GrowthWaits(PageBytes))
+        {
+            return 0;
+        }
+        if (_cap != 0 && _heapBytes + PageBytes > _cap)
+        {
+            return 0;
+        }
+        long raw = Platform.Map(PageBytes);
+        if (raw == 0)
+        {
+            return 0;
+        }
+        Maps = Maps + 1;
+        Sys.Poke(raw + ChunkNext, _chunks);
+        Sys.Poke(raw + ChunkEnd, raw + ChunkBytes);
+        Sys.Poke(raw + ChunkLimit, raw + PageBytes);
+        Sys.Poke(raw + ChunkFlags, ChunkYoung);
+        Sys.Poke(raw + ChunkAnchors, PageBlockLimit(raw));
+        _chunks = raw;
+        _heapBytes = _heapBytes + PageBytes;
+        IndexAdd(raw);
+        if (_floor == 0 || raw + ChunkBytes < _floor)
+        {
+            _floor = raw + ChunkBytes;
+        }
+        if (raw + PageBytes > _ceiling)
+        {
+            _ceiling = raw + PageBytes;
+        }
+        return raw;
     }
 
     /// Whether anything was allocated in the chunk since the last collection.
@@ -6709,7 +7568,8 @@ static class HeapChunks
         Releases = Releases + 1;
         if (size != ChunkAsk) BigReleases = BigReleases + 1;
         long anchors = Sys.Peek(chunk + ChunkAnchors);
-        if (anchors != 0)
+        // A PAGE'S START TABLE IS INSIDE IT, and goes with it.
+        if (anchors != 0 && (anchors < chunk || anchors >= chunk + size))
         {
             long bytes = AnchorBytes(chunk);
             Platform.Unmap(anchors, bytes);
@@ -6808,6 +7668,13 @@ static class HeapChunks
         // A smaller remaining cap (or address-space hole) can still satisfy
         // this request. Count actual mapped pages against the heap cap.
         if (_cap != 0 && _heapBytes + ask > _cap) ask = minimum;
+
+        // THE POOL OF EMPTY PAGES GOES FIRST: kept to spare the mapping, it
+        // is no reason to refuse a large array its room.
+        if (_cap != 0 && _heapBytes + ask > _cap && Gc.DrainPool())
+        {
+            if (_heapBytes + ask > _cap) ask = minimum;
+        }
 
         if (_cap != 0 && _heapBytes + ask > _cap)
         {
@@ -7354,6 +8221,7 @@ static class GcThreads
 
         GcLock.Enter();
         Gc.Retire(block);
+        Gc.ForgetClasses(block);
         Settle(block);
 
         long i = 0;
@@ -7451,6 +8319,13 @@ static class GcThreads
                 {
                     Sys.Poke(block + Tls.AllocSaved, limit);
                     Sys.AtomicSwap(block + Tls.AllocLimit, 0);
+                }
+                // And its class cache: small allocations answer as well.
+                long classes = Sys.Peek(block + Tls.Classes);
+                if (classes != 0)
+                {
+                    Sys.Poke(block + Tls.ClassesSaved, classes);
+                    Sys.AtomicSwap(block + Tls.Classes, 0);
                 }
             }
             i = i + 1;
@@ -7934,6 +8809,8 @@ static class GcThreads
     // ---- the buffers in use, for the walks to step over ------------------------
 
     const long BufferMax = Max;
+    // A buffer and a page of every class for each thread.
+    const long SpanMax = Max * (Gc.Classes + 1);
     static long _buffers;           // BufferMax pairs: base, limit; sorted by base
     static long _bufferCount;
 
@@ -7945,7 +8822,7 @@ static class GcThreads
 
         if (_buffers == 0)
         {
-            _buffers = Platform.Map(BufferMax * (2 * WordSize.Bytes));
+            _buffers = Platform.Map(SpanMax * (2 * WordSize.Bytes));
 
             if (_buffers == 0)
             {
@@ -7976,7 +8853,7 @@ static class GcThreads
                 limit = Sys.Peek(block + Tls.AllocSaved);
             }
 
-            if (from != 0 && limit > from && count < BufferMax)
+            if (from != 0 && limit > from && count < SpanMax)
             {
                 // Insertion by base: a few entries, captured twice a collection.
                 long at = count;
@@ -7992,6 +8869,9 @@ static class GcThreads
                 Sys.Poke(table + at * (2 * WordSize.Bytes) + WordSize.Bytes, limit);
                 count = count + 1;
             }
+
+            // ITS PAGES TOO: a page a thread owns is its buffer as much.
+            count = Gc.CapturePages(block, table, count, SpanMax);
 
             if (_blocks == 0)
             {
@@ -8023,7 +8903,7 @@ static class GcThreads
 
     public static long BufferTableBytes()
     {
-        return BufferMax * (2 * WordSize.Bytes);
+        return SpanMax * (2 * WordSize.Bytes);
     }
 
     public static long BufferCount()

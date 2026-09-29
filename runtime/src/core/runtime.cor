@@ -204,8 +204,17 @@ static class Tls
     /// Marshal.GetLastPInvokeError, which is per thread.
     public const long LastError = 34 * WordSize.Bytes;
 
+    /// This thread's size-class cache (Gc, "size classes"): a mapped table,
+    /// two words a class -- the page it owns and the head of that page's
+    /// free blocks it may take with no lock -- or 0 until it first needs one.
+    /// A handshake takes it away as it takes the buffer limit, so that the
+    /// next small allocation comes to the slow path and answers; the real
+    /// one is kept in ClassesSaved meanwhile.
+    public const long Classes = 35 * WordSize.Bytes;
+    public const long ClassesSaved = 36 * WordSize.Bytes;
+
     /// The size of the block. The compiler lays the first one down in .bss.
-    public const long Bytes = 35 * WordSize.Bytes;
+    public const long Bytes = 37 * WordSize.Bytes;
 }
 
 /// What stops a suspended iterator from inside when it is disposed; never

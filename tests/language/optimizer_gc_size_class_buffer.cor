@@ -1,15 +1,13 @@
-// test: unrelated free size classes do not disable thread-local allocation buffers
+// test: small blocks come from size-class pages, large ones from buffers
 // expect-exit: 0
 // expect-output:
 // size-class buffer passed
 //
-// A buffer with room answers first: neither an unrelated free size nor a
-// hole of exactly the size asked for sends a request past it. Once the
-// buffer is retired, a heap with room to grow answers with a new buffer --
-// not with the hole of the request's size, which would send every request
-// after it through the heap lock one block at a time -- and the hole stays
-// in the free index. (It used to be taken there; only a heap at its cap
-// takes its holes a request at a time now.)
+// A block of a kilobyte or less comes from a page of its size class: freed,
+// it is the next block of its class this thread gets, cleared, whatever lies
+// around it; a block of another class comes from another page. A larger
+// request is still bumped out of the thread's buffer, zeroed. A thread's
+// pages given back leave the free index whole.
 static class Program
 {
     static int Main()
@@ -20,43 +18,43 @@ static class Program
         Sys.Poke(left, 111);
         Sys.Poke(right, 222);
         Sys.Poke(reusable, 333);
+        long leftPage = HeapChunks.Of(left);
+        if (leftPage == 0 || HeapChunks.PageClass(leftPage) == 0) return 1;
         Runtime.Free(reusable);
-        long thread = Sys.ThreadBlock();
-        long cursor = Sys.Peek(thread + Tls.AllocPtr);
-        long large = Runtime.Alloc(4096);
-        if (large != cursor + 2 * WordSize.Bytes) return 1;
-        for (long i = 0; i < 4096; i += WordSize.Bytes)
-            if (Sys.Peek(large + i) != 0) return 2;
-        long bumped = Sys.Peek(thread + Tls.AllocPtr);
         long again = Runtime.Alloc(32);
-        if (again == reusable || again != bumped + 2 * WordSize.Bytes) return 3;
+        if (again != reusable) return 2;
         for (long i = 0; i < 32; i += WordSize.Bytes)
-            if (Sys.Peek(again + i) != 0) return 4;
-        if (Sys.Peek(left) != 111 || Sys.Peek(right) != 222) return 5;
-        long treeHole = Runtime.Alloc(280);
-        long treeGuard = Runtime.Alloc(32);
-        Runtime.Free(treeHole);
+            if (Sys.Peek(again + i) != 0) return 3;
+        if (Sys.Peek(left) != 111 || Sys.Peek(right) != 222) return 4;
+
+        long other = Runtime.Alloc(280);
+        if (HeapChunks.Of(other) == leftPage || HeapChunks.PageClass(HeapChunks.Of(other)) == 0) return 5;
+
+        long thread = Sys.ThreadBlock();
+        long large = Runtime.Alloc(4096);
+        if (HeapChunks.PageClass(HeapChunks.Of(large)) != 0) return 6;
+        if (large < Sys.Peek(thread + Tls.AllocBase) || large >= Sys.Peek(thread + Tls.AllocPtr)) return 7;
+        for (long i = 0; i < 4096; i += WordSize.Bytes)
+            if (Sys.Peek(large + i) != 0) return 8;
+
         GcLock.Enter();
+        Gc.RetireClasses(thread);
         Gc.Retire(thread);
         GcLock.Exit();
-        long treeReuse = Runtime.Alloc(280);
-        if (treeReuse == treeHole || !Gc.CheckFreeIndex()) return 7;
-        Runtime.Free(treeReuse);
-        Runtime.Free(treeGuard);
-        Runtime.Free(again);
+        if (!Gc.CheckFreeIndex()) return 9;
+        long after = Runtime.Alloc(32);
+        if (after == left || after == right || after == again) return 10;
+        for (long i = 0; i < 32; i += WordSize.Bytes)
+            if (Sys.Peek(after + i) != 0) return 11;
+
+        Runtime.Free(after);
         Runtime.Free(large);
+        Runtime.Free(other);
+        Runtime.Free(again);
         Runtime.Free(right);
         Runtime.Free(left);
-        long marker = Runtime.Alloc(100);
-        long unused = Sys.Peek(thread + Tls.AllocLimit) - Sys.Peek(thread + Tls.AllocPtr);
-        long charged = Gc.Since;
-        GcLock.Enter();
-        Gc.Retire(thread);
-        GcLock.Exit();
-        long expected = charged > unused ? charged - unused : 0;
-        if (Gc.Since != expected) return 6;
-        Runtime.Free(marker);
         Gc.Collect();
+        if (!Gc.CheckFreeIndex()) return 12;
         Sys.Print("size-class buffer passed\n");
         return 0;
     }

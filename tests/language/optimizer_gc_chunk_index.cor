@@ -35,14 +35,14 @@ static class Program
         for (int i = count - 1; i >= 0; i -= 2)
         {
             long chunk = Sys.Peek(table + i * WordSize.Bytes);
-            if (HeapChunks.Of(chunk + 32) != chunk) return 8;
+            if (HeapChunks.Of(chunk + first) != chunk) return 8;
             HeapChunks.Release(chunk);
-            if (HeapChunks.Of(chunk + 32) != 0) return 9;
+            if (HeapChunks.Of(chunk + first) != 0) return 9;
         }
         for (int i = 0; i < count; i += 2)
         {
             long chunk = Sys.Peek(table + i * WordSize.Bytes);
-            if (HeapChunks.Of(chunk + 32) != chunk) return 10;
+            if (HeapChunks.Of(chunk + first) != chunk) return 10;
             HeapChunks.Release(chunk);
         }
         long replacement = HeapChunks.Take(64);
