@@ -6505,6 +6505,19 @@ static class Gc
                 long pages = HeapChunks.BlockAnchorCount(chunk);
                 for (long i = 0; i < pages; i++) Sys.Poke(anchors + i * WordSize.Bytes, Zero);
                 HeapChunks.ClearStarts(chunk, _cycle);
+                // A SIZE-CLASS PAGE by arithmetic, not by chain (SnapshotPage).
+                if (HeapChunks.PageClass(chunk) != 0)
+                {
+                    long first = HeapChunks.First(chunk);
+                    long at = stepping ? GcThreads.BufferAtOrAbove(first) : GcThreads.BufferCount();
+                    bool captured = at < GcThreads.BufferCount() && GcThreads.BufferBase(at) == first;
+                    if (!captured && !HeapChunks.IsPooled(chunk) && !SnapshotPage(chunk, anchors))
+                    {
+                        every = false;
+                    }
+                    chunk = HeapChunks.Next(chunk);
+                    continue;
+                }
                 long block = HeapChunks.First(chunk);
                 long end = HeapChunks.End(chunk);
                 long page = 0;
@@ -6560,6 +6573,60 @@ static class Gc
         {
             TakeCards(_minor);
         }
+    }
+
+    /// A size-class page's part of the snapshot (BuildBlockAnchors), without
+    /// walking it as a chain: every block is the class's size, so the anchor
+    /// of each 4 KB is arithmetic, and the start bits of a word's worth of
+    /// blocks are gathered and written once. What the chain walk does to each
+    /// block -- its start, its old cards, a major cycle's unmarking -- is done
+    /// here for each allocated one. The heap lock is held and nobody owns the
+    /// page. False when a header is not the class's size: the page is broken,
+    /// and so is the snapshot.
+    static bool SnapshotPage(long chunk, long anchors)
+    {
+        long size = ClassSize(HeapChunks.PageClass(chunk) - 1);
+        long first = HeapChunks.First(chunk);
+        long end = HeapChunks.End(chunk);
+        long count = HeapChunks.BlockAnchorCount(chunk);
+        for (long p = 0; p < count; p++)
+        {
+            long at = chunk + p * 4096;
+            long block = at <= first ? first : first + (at - first) / size * size;
+            Sys.Poke(anchors + p * WordSize.Bytes, block < end ? block : Zero);
+        }
+        long starts = anchors + count * WordSize.Bytes + WordSize.Bytes;
+        long wordAt = -1;
+        long bits = 0;
+        long block2 = first;
+        while (block2 < end)
+        {
+            long header = Sys.Peek(block2);
+            if ((header & SizeMask) != size)
+            {
+                return false;
+            }
+            if ((header & FlagFree) == 0)
+            {
+                long bit = (block2 - chunk) >> 3;
+                long word = bit >> (3 + WordSize.Shift);
+                if (word != wordAt)
+                {
+                    if (wordAt >= 0) Sys.Poke(starts + wordAt * WordSize.Bytes, bits);
+                    wordAt = word;
+                    bits = Sys.Peek(starts + word * WordSize.Bytes);
+                }
+                bits = bits | (One << (int)(bit & (8 * WordSize.Bytes - 1)));
+                if (_minor && (header & (FlagMark | FlagScan)) == (FlagMark | FlagScan)) OldCards(block2, size);
+                if (_generational && !_minor && (header & (FlagMark | FlagScan)) != 0)
+                {
+                    Stamp(block2, size, header & FlagMask & ~(FlagMark | FlagScan));
+                }
+            }
+            block2 = block2 + size;
+        }
+        if (wordAt >= 0) Sys.Poke(starts + wordAt * WordSize.Bytes, bits);
+        return true;
     }
 
     /// Walks every block in every chunk: unmarked ones become free, adjacent
