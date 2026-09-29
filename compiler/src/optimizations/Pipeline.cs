@@ -66,7 +66,10 @@ public sealed class Pipeline
             KeepFreeHelper = keepFree,
         };
         Pipeline p = new() { Rounds = rounds };
-        if (experimentalBatch) p.Verify = true;
+        // CORC_VERIFY_PASSES=1: the IR checked after every pass, late ones
+        // included, so a pass that breaks the IR is named where it does it
+        // and not at the link that imports the unit.
+        if (experimentalBatch || Environment.GetEnvironmentVariable("CORC_VERIFY_PASSES") == "1") p.Verify = true;
         p.Passes.Add(new ConstantFold());
         p.Passes.Add(new Narrowing());
         p.Passes.Add(new ConstantAndCopyPropagation());
@@ -180,6 +183,10 @@ public sealed class Pipeline
 #if COR_SELFHOST_BENCHMARK
                 Corsac.Program.BenchmarkStage("opt-late-end " + p.Name);
 #endif
+                if (Verify)
+                {
+                    foreach (Function checkedFunction in m.Functions) Verifier.Check(checkedFunction, $"after {p.Name}");
+                }
             }
 #if COR_SELFHOST_BENCHMARK
             Corsac.Program.BenchmarkStage("opt-functions-final");
