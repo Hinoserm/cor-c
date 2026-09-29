@@ -11013,6 +11013,17 @@ public sealed partial class Binder
                     return Joined(common);
                 }
 
+                // NO NATURAL TYPE, AND A TYPE IS WANTED: the conditional is
+                // that type, as C#'s target-typed conditional makes `found ?
+                // list : Array.Empty<T>()` an IReadOnlyList<T> where one is
+                // returned. Any interface the two share is a guess; the one
+                // asked for is the answer, and the guess may not convert to it.
+                if (_wanted is { IsError: false, IsVoid: false } target
+                    && Convertible(a2, target) && Convertible(b2, target))
+                {
+                    return Joined(target);
+                }
+
                 if (CommonInterface(a2, b2) is Type shared)
                 {
                     return Joined(shared);

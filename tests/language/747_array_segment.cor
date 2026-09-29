@@ -1,0 +1,36 @@
+// test: array segment
+// expect-exit: 0
+// expect-output:
+// count 3 offset 1 first 20
+// sum 90
+// slice 2 30 40
+// written 99
+// index 2 missing -1
+// copied 20,30,40
+// list 3
+
+using System;
+using System.Collections.Generic;
+
+static class Program
+{
+    static int Main()
+    {
+        int[] data = { 10, 20, 30, 40, 50 };
+        ArraySegment<int> window = new ArraySegment<int>(data, 1, 3);
+        Console.WriteLine("count " + window.Count + " offset " + window.Offset + " first " + window[0]);
+        int sum = 0;
+        foreach (int x in window) sum += x;
+        Console.WriteLine("sum " + sum);
+        ArraySegment<int> tail = window.Slice(1);
+        Console.WriteLine("slice " + tail.Count + " " + tail[0] + " " + tail[1]);
+        window[0] = 99;
+        Console.WriteLine("written " + data[1]);
+        Console.WriteLine("index " + window.IndexOf(40) + " missing " + window.IndexOf(10));
+        window[0] = 20;
+        Console.WriteLine("copied " + string.Join(",", window.ToArray()));
+        IReadOnlyList<int> list = window;
+        Console.WriteLine("list " + list.Count);
+        return 0;
+    }
+}
