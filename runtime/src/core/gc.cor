@@ -1308,7 +1308,8 @@ static class Gc
             long size = ClassSize(HeapChunks.PageClass(chunk) - 1);
             long first = HeapChunks.First(chunk);
             long end = HeapChunks.End(chunk);
-            long at = from <= first ? first : first + (from - first) / size * size;
+            // In 32 bits: a page is 32 KB, and a long division is a call.
+            long at = from <= first ? first : first + (long)((int)(from - first) / (int)size) * size;
             while (at < to && at < end)
             {
                 long header = Sys.Peek(at);
@@ -6617,7 +6618,7 @@ static class Gc
         for (long p = 0; p < count; p++)
         {
             long at = chunk + p * 4096;
-            long block = at <= first ? first : first + (at - first) / size * size;
+            long block = at <= first ? first : first + (long)((int)(at - first) / (int)size) * size;
             Sys.Poke(anchors + p * WordSize.Bytes, block < end ? block : Zero);
         }
         long starts = anchors + count * WordSize.Bytes + WordSize.Bytes;

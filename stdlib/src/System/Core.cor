@@ -5329,6 +5329,27 @@ abstract class Encoding {
 // that conversion, since C# spells it as an operator on the type and this has
 // no user-defined conversions yet.
 
+/// THE THROWS OF THE HOT MEMBERS, out of line, as .NET's ThrowHelper: a
+/// member with a throw in it is never inlined (an unwind cannot be), so the
+/// indexer of every list was a call. Each is a call that does not return.
+static class ThrowHelper {
+    public static void IndexOutOfRange() {
+        throw new ArgumentOutOfRangeException("index", "Index was out of range. Must be non-negative and less than the size of the collection.");
+    }
+
+    public static void CollectionModified() {
+        throw new InvalidOperationException("Collection was modified; enumeration operation may not execute.");
+    }
+
+    public static void KeyNotFound(object? key) {
+        throw new KeyNotFoundException($"The given key '{key}' was not present in the dictionary.");
+    }
+
+    public static void DuplicateKey(object? key) {
+        throw new ArgumentException($"An item with the same key has already been added. Key: {key}");
+    }
+}
+
 /// A WINDOW ON AN ARRAY, as .NET's ArraySegment<T>: the array, where the
 /// window begins and how long it is, read and written through as a list. It
 /// copies nothing -- a sorted array's run handed out as an ArraySegment is
@@ -5996,13 +6017,15 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
     // AN INDEXER, because that is what a List has in C#. Get and Set were our
     // own spelling of it, and every one of those is a place the compiler's own
     // source would have to be rewritten to compile here.
+    // THE THROW IS A CALL (ThrowHelper), as .NET's is: a member that throws
+    // is never inlined, and every list[i] in a program was a call.
     public T this[int index] {
         get {
-            if (index < 0 || index >= count) { throw new ArgumentOutOfRangeException("index", "Index was out of range. Must be non-negative and less than the size of the collection."); }
+            if ((uint)index >= (uint)count) { ThrowHelper.IndexOutOfRange(); }
             return items[index];
         }
         set {
-            if (index < 0 || index >= count) { throw new ArgumentOutOfRangeException("index", "Index was out of range. Must be non-negative and less than the size of the collection."); }
+            if ((uint)index >= (uint)count) { ThrowHelper.IndexOutOfRange(); }
             items[index] = value;
             version = version + 1;
         }
@@ -6064,7 +6087,7 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
                 return true;
             }
             if (version != list.version) {
-                throw new InvalidOperationException("Collection was modified; enumeration operation may not execute.");
+                ThrowHelper.CollectionModified();
             }
             index = list.count + 1;
             current = default(T)!;
@@ -9294,7 +9317,8 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
                 if (state[i] == 1 && Same(keys[i], key)) { return values[i]; }
                 i = (i + 1) & mask;
             }
-            throw new KeyNotFoundException($"The given key '{key}' was not present in the dictionary.");
+            ThrowHelper.KeyNotFound(key);
+            return default(V)!;
         }
         set {
             // Grow at three quarters: linear probing degrades sharply above.
@@ -9328,7 +9352,7 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
     /// A key already there is an error, as in .NET: the indexer is how a value
     /// is replaced.
     public void Add(K key, V value) {
-        if (ContainsKey(key)) throw new ArgumentException($"An item with the same key has already been added. Key: {key}");
+        if (ContainsKey(key)) ThrowHelper.DuplicateKey(key);
         this[key] = value;
     }
 
