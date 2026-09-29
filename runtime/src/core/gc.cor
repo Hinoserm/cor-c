@@ -319,6 +319,10 @@ static class Gc
     static long _majorLive;         // what the last major collection found live
     public static long MinorCollections;
     public static long MajorCollections;
+    /// Why each whole cycle was one: asked for (GC.Collect, memory, a cycle
+    /// given up, a full record of held blocks), the first, minors costing as
+    /// much, the live heap grown, or no generations at all.
+    public static long MajorsAsked, MajorsFirst, MajorsCostly, MajorsGrown, MajorsUngenerational;
     const long CardTableBytes = 4194304;
     const long NurseryMost = 67108864;
     // The blocks the stacks held: a count word, then (block, size) pairs.
@@ -2730,31 +2734,14 @@ static class Gc
     /// Os.CString in lib/sys/linux.cor); a loop is right on any backend.
     static void ZeroWords(long from, long to)
     {
-        long p = from;
-        long w = WordSize.Bytes;
-
-        // EIGHT WORDS A TURN. Every reused buffer and hole is cleared here,
-        // and on a 32-bit processor the pointer is a 64-bit number: a word at
-        // a time spent its time adding, comparing and spilling that, not
-        // storing.
-        long unrolled = to - 8 * w;
-        while (p <= unrolled)
+        // THE STRING INSTRUCTION: every reused buffer is cleared here, a
+        // buffer's worth at every refill, and a loop that stored a word at a
+        // time with a 64-bit pointer on a 32-bit processor was most of what
+        // an allocation's slow path cost. (The selector's fixed registers for
+        // `rep stos` are right now; the class library's heap uses it too.)
+        if (to > from)
         {
-            Sys.Poke(p, Zero);
-            Sys.Poke(p + w, Zero);
-            Sys.Poke(p + 2 * w, Zero);
-            Sys.Poke(p + 3 * w, Zero);
-            Sys.Poke(p + 4 * w, Zero);
-            Sys.Poke(p + 5 * w, Zero);
-            Sys.Poke(p + 6 * w, Zero);
-            Sys.Poke(p + 7 * w, Zero);
-            p = p + 8 * w;
-        }
-
-        while (p < to)
-        {
-            Sys.Poke(p, Zero);
-            p = p + w;
+            Sys.MemorySet(from, 0, to - from);
         }
     }
 
@@ -4730,6 +4717,14 @@ static class Gc
         // shorter than an hour and eleven minutes.
         FitMarkQueue();
         _minor = NextIsMinor();
+        if (!_minor)
+        {
+            if (!_generational) MajorsUngenerational = MajorsUngenerational + 1;
+            else if (_forceMajor) MajorsAsked = MajorsAsked + 1;
+            else if (_majorLive == 0) MajorsFirst = MajorsFirst + 1;
+            else if (_minorsCostly) MajorsCostly = MajorsCostly + 1;
+            else MajorsGrown = MajorsGrown + 1;
+        }
         _forceMajor = false;
         if (_generational)
         {
