@@ -16,7 +16,10 @@ public static class IrLinkOptimizer
         Dictionary<ObjectFile, LifetimeHints> hints = new();
         List<LifetimeHints> hintOrder = new();
         Dictionary<string, ObjectFile> owners = new(StringComparer.Ordinal);
-        foreach (var input in inputs.OrderBy(input => input.Name, StringComparer.Ordinal))
+        // IN LINK ORDER, not by name: an object's name is a digest of its
+        // source's full path, and the same tree checked out elsewhere was
+        // ordered otherwise -- other owners, other symbol order, other bytes.
+        foreach (var input in inputs)
         {
             IrArchive? archive = IrArchive.Read(input.Object);
             if (archive is not null) archives.Add(input.Object, archive);
@@ -102,7 +105,7 @@ public static class IrLinkOptimizer
         foreach (var replacement in replacements)
             inputs[replacement.Index] = (inputs[replacement.Index].Name, replacement.Object);
         // Final images do not carry compiler IR or stale native integrity hashes.
-        (int sites, int sitesFreed) = DefineFieldSites(inputs, hints, lifetimes);
+        (int sites, int sitesFreed) = DefineFieldSites(inputs, hintOrder, lifetimes);
         foreach (var input in inputs)
             input.Object.Sections.RemoveAll(section => section.Name == IrArchive.SectionName || section.Name == LifetimeHints.SectionName);
         if (lifetimes is not null || sites > 0)
@@ -121,10 +124,13 @@ public static class IrLinkOptimizer
     /// all of them, with the link-time optimizer off. Defined in the object
     /// that defines the routine, after any unit has been regenerated.
     /// </summary>
+    // IN INPUT ORDER (hintOrder), never a dictionary's: keyed by object, its
+    // order was the objects' identity hashes, the symbols it adds landed in a
+    // different order in each link, and no two images were the same bytes.
     private static (int Sites, int Freed) DefineFieldSites(List<(string Name, ObjectFile Object)> inputs,
-        Dictionary<ObjectFile, LifetimeHints> hints, LifetimeSolver? solver)
+        List<LifetimeHints> hints, LifetimeSolver? solver)
     {
-        if (hints.Values.All(unit => unit.FieldSites.Count == 0)) return (0, 0);
+        if (hints.All(unit => unit.FieldSites.Count == 0)) return (0, 0);
         (ObjectFile Object, Symbol Symbol)? Find(string name)
         {
             foreach (var input in inputs)
@@ -136,7 +142,7 @@ public static class IrLinkOptimizer
         var keeper = Find(LifetimeHints.FieldKeeper)
             ?? throw new ElfFormatException("Field sites need Runtime.KeepField, which no object defines");
         int sites = 0, freed = 0;
-        foreach (LifetimeHints unit in hints.Values)
+        foreach (LifetimeHints unit in hints)
             foreach ((LifetimeFields fields, List<(string Symbol, long Offset)> list) in unit.FieldSites)
             {
                 SolvedFields? solved = solver?.Solve(fields);

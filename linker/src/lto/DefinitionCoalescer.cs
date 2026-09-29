@@ -21,7 +21,12 @@ public static class DefinitionCoalescer
         List<string> errors = new();
         foreach (var pair in groups.Where(pair => pair.Value.Count > 1))
         {
-            var group = pair.Value.OrderBy(value => value.Name, StringComparer.Ordinal).ToArray();
+            // THE FIRST IN LINK ORDER keeps the definition, not the first by
+            // name: an object's name is a digest of its source's full path,
+            // so a tree checked out elsewhere chose other owners, laid its
+            // image out differently, and a compiler rebuilt from a second
+            // worktree was never the same bytes as itself.
+            var group = pair.Value.ToArray();
             if (group.Select(value => value.Name).Distinct(StringComparer.Ordinal).Count() != group.Length)
             { errors.Add("Duplicate input identity while coalescing '" + pair.Key + "'"); continue; }
             byte[]? expected = group[0].Semantic;

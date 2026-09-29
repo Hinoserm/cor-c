@@ -16,7 +16,10 @@ public static class LinkTimeOptimizer
         Dictionary<string, (ObjectFile Object, Symbol Symbol)> globals = new(StringComparer.Ordinal);
         Dictionary<ObjectFile, OptimizationSummary> summaries = new();
         Dictionary<ObjectFile, Dictionary<string, int>> constants = new();
-        foreach (var input in inputs.OrderBy(value => value.Name, StringComparer.Ordinal))
+        // IN LINK ORDER, not by name: an object's name is a digest of its
+        // source's full path, and the same tree checked out elsewhere was
+        // ordered otherwise -- other owners, other symbol order, other bytes.
+        foreach (var input in inputs)
         {
             foreach (Symbol symbol in input.Object.Symbols.Where(s => s.IsDefined && s.Global))
                 globals.TryAdd(symbol.Name, (input.Object, symbol));
