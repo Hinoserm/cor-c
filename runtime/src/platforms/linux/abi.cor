@@ -101,6 +101,7 @@ static class Call
     public const long Fstatfs64 = 138;
     public const long Reboot = 169;
     public const long Munmap = 11;
+    public const long Mprotect = 10;    // (address, length, protection)
 
     // ---- time ------------------------------------------------------------
     public const long Time = 201;
@@ -214,6 +215,7 @@ static class Call
     public const long Fstatfs64 = 269;  // (fd, size, buffer)
     public const long Reboot = 88;      // (magic1, magic2, cmd, arg)  // (dirfd, path, times[2], flags)  // (buffer, count, flags)
     public const long Munmap = 91;
+    public const long Mprotect = 125;   // (address, length, protection)
 
     // ---- time ------------------------------------------------------------
     public const long Time = 13;        // (address or 0) -> seconds since the epoch

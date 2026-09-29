@@ -2295,6 +2295,7 @@ static class Gc
         _verify = Platform.VerifyFrees();
         IgnoredFrees = Platform.IgnoreFrees();
         SkippedFreePaths = Platform.SkippedFreePaths();
+        GuardReleases = Platform.GuardReleases();
         if (Platform.FreeLog())
         {
             Runtime.StartFreeLog();
@@ -2521,6 +2522,14 @@ static class Gc
                 GcLock.Exit();
                 return;
             }
+            if (GuardReleases)
+            {
+                SayNumber("gc: guarded release of a dedicated chunk at ", whole);
+                SayNumber("gc:   its block ", block);
+                SayNumber("gc:   size ", size);
+                Runtime.WriteLiteral(2, "gc:   freed by:\n");
+                Runtime.SayTrace(2, Sys.FramePointer());
+            }
             // Not a chunk the recycling walk may still step onto.
             if (whole == _recycleNext) _recycleNext = HeapChunks.Next(whole);
             if (whole == _recycle) _recycle = Zero;
@@ -2617,6 +2626,9 @@ static class Gc
 
     /// The free paths skipped (CORSAC_FREE_PATHS, Platform.SkippedFreePaths): t 1, i 2, b 4, d 8, m 16.
     static long SkippedFreePaths;
+
+    /// Released chunks guarded rather than unmapped (CORSAC_GUARD_RELEASES).
+    public static bool GuardReleases;
     const long Poison = 0xFEEEFEEE;
 
     /// How many blocks the checked mode has taken back and filled.
@@ -5416,6 +5428,11 @@ static class HeapChunks
             long bytes = AnchorBytes(chunk);
             Platform.Unmap(anchors, bytes);
             _anchorBytes = _anchorBytes - bytes;
+        }
+        if (Gc.GuardReleases)
+        {
+            Platform.Guard(chunk, size);
+            return;
         }
         Platform.Unmap(chunk, size);
     }

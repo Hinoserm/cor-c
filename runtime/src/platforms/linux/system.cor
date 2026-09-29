@@ -150,6 +150,12 @@ static class Platform
     /// find the free that took an object still in use.
     public static bool FreeLog() => EnvironmentFlag("CORSAC_FREE_LOG=");
 
+    /// CORSAC_GUARD_RELEASES=1: a chunk the heap releases is made
+    /// inaccessible instead of unmapped (Guard), and a dedicated one released
+    /// by a free says who freed it: a stale reference to what was in it
+    /// faults at its first use, in the fault report's stack.
+    public static bool GuardReleases() => EnvironmentFlag("CORSAC_GUARD_RELEASES=");
+
     /// CORSAC_IGNORE_FREES: which frees the compiler wrote are ignored, the
     /// collector finding that garbage instead. What it is for is telling a
     /// fault that a free makes from one the collector makes, and then which
@@ -286,6 +292,15 @@ static class Platform
     public static void Unmap(long at, long bytes)
     {
         Sys.Syscall(Call.Munmap, at, bytes, 0);
+    }
+
+    /// Memory made unreadable and unwritable and kept: mprotect(2) with
+    /// PROT_NONE. What a released chunk becomes under CORSAC_GUARD_RELEASES,
+    /// so that its address is never handed out again and the first use of it
+    /// faults where it happens.
+    public static void Guard(long at, long bytes)
+    {
+        Sys.Syscall(Call.Mprotect, at, bytes, 0);
     }
 
     public static long Map(long bytes)
