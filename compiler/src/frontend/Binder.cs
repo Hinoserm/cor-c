@@ -2358,9 +2358,34 @@ public sealed partial class Binder
     /// type, which the bare name tried first found instead.
     /// </summary>
     private bool FindBase(TypeRef b, out TypeSymbol? based)
-        => b.Args.Count > 0
-            ? FindType(Arity(b.Name, b.Args.Count), out based) || FindType(b.Name, out based)
-            : FindType(b.Name, out based);
+    {
+        if (b.Args.Count > 0
+                ? FindType(Arity(b.Name, b.Args.Count), out based) || FindType(b.Name, out based)
+                : FindType(b.Name, out based))
+        {
+            return true;
+        }
+        // A QUALIFIED BASE NAMES ITS LAST PART, as a qualified type does
+        // anywhere else (ResolveCore): `class Demand : System.Exception` was
+        // 'System.Exception is not a known type', while the same name as a
+        // variable's type resolved. A library namespace deeper than System's
+        // own is the library's, as there.
+        int dot = b.Name.LastIndexOf('.');
+        if (dot < 0)
+        {
+            return false;
+        }
+        string bare = b.Name[(dot + 1)..];
+        if (b.Name.StartsWith(LibraryHome + ".", StringComparison.Ordinal) && b.Name.IndexOf('.', LibraryHome.Length + 1) >= 0
+            && TypeCandidate(b.Args.Count > 0 ? Arity(LibraryHome + "." + bare, b.Args.Count) : LibraryHome + "." + bare, out based)
+            && based is not null)
+        {
+            return true;
+        }
+        return b.Args.Count > 0
+            ? FindType(Arity(bare, b.Args.Count), out based) || FindType(bare, out based)
+            : FindType(bare, out based);
+    }
 
     /// <summary>The declaration of a type's base class, or null for an interface or nothing.</summary>
     private TypeDecl? BaseDeclOf(TypeDecl d)

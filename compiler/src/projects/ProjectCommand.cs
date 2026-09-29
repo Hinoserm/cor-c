@@ -250,7 +250,14 @@ public static class ProjectCommand
     private static int Processes(int workers, int units)
     {
         const long Space = 4L * 1024 * 1024 * 1024;
-        if (Environment.Is64BitProcess || workers < 2 || units < 2 || Environment.ProcessPath is null) return 1;
+        // IN PROCESS UNDER DOTNET ONLY: its heap copes with a dozen units at
+        // once, and one warm JIT beats twelve cold ones. A native compiler, of
+        // either word size, gives each unit a process: in long mode the in-
+        // process build ran every unit's garbage through one heap at once and
+        // took most of an hour for what the children do in minutes.
+        bool hosted = Environment.ProcessPath is string path
+            && Path.GetFileNameWithoutExtension(path).Equals("dotnet", StringComparison.OrdinalIgnoreCase);
+        if (hosted || workers < 2 || units < 2 || Environment.ProcessPath is null) return 1;
         long memory = Corsac.Lang.Lto.MachineMemory.MachineAvailable();
         int spaces = (int)Math.Min(int.MaxValue, memory / Space);
         return Math.Max(1, Math.Min(Math.Min(workers, spaces), units));

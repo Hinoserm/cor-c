@@ -445,8 +445,15 @@ class Thread
     static readonly nint[] _foreground = new nint[2];
 
     /// Big enough for the deepest call a thread body here makes, and cheap:
-    /// anonymous pages cost nothing until they are touched.
+    /// anonymous pages cost nothing until they are touched. EIGHT MEGABYTES
+    /// IN LONG MODE, where every frame is half again or twice its i386 size:
+    /// a compiler's recursive rewrite that fit a megabyte on i386 ran off the
+    /// end of one in long mode, through the thread block below it.
+#if TARGET_64BIT
+    const long StackBytes = 8388608;
+#else
     const long StackBytes = 1048576;
+#endif
 
     /// The runtime's own threads -- Task workers, the pool -- are background
     /// threads, as .NET's pool threads are.
@@ -665,6 +672,12 @@ class Thread
             throw new InvalidOperationException("threading: no memory for a thread stack");
         }
 
+        // A GUARD PAGE between the block (the mapping's first page) and the
+        // stack: a stack that runs out faults at once, where it happens, and
+        // does not write over the thread block -- which went on to hand out a
+        // null thread and fault somewhere with nothing to do with the stack.
+        Platform.Guard(stack + 4096, 4096);
+
         _stack = stack;
         _stackBytes = StackBytes;
 
@@ -675,8 +688,7 @@ class Thread
         // THE BLOCK GOES AT THE BOTTOM OF THE SAME MAPPING. The child needs it
         // before it may allocate, so it cannot be allocated by the child; it is
         // filled in here, by the parent, while the child does not exist yet.
-        // The stack grows down towards it from a megabyte above, so only a
-        // stack that has already overrun by a megabyte can reach it.
+        // The stack grows down towards it, and meets the guard page first.
         _block = stack;
 
         // Registered by the PARENT, and BEFORE the clone: a collection in the
