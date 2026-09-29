@@ -393,7 +393,14 @@ public sealed class X64Backend : IBackend
         // A function that makes a system call saves every callee-saved
         // register: the collector is entered through one, and a caller's
         // reference may be only in one of them (GcRoots.Enter).
-        m.SavesEverything = m.Blocks.Any(b => b.Instrs.Any(i => i.Op is MOp.Syscall or MOp.SoftInt));
+        // AND SO DOES ONE THAT CATCHES: a throw restores only the stack and
+        // frame pointers, so the registers the unwound frames saved and used
+        // reach the landing pad as they left them. Saved here, the catching
+        // function's epilogue puts back its caller's, whatever happened below;
+        // saved only where it uses them, a caller's reference in R15 came back
+        // as whatever the thrower's callee had put there.
+        m.SavesEverything = m.Blocks.Any(b => b.Source?.IsLandingPad == true
+            || b.Instrs.Any(i => i.Op is MOp.Syscall or MOp.SoftInt));
         try
         {
             Allocator.Run(m);

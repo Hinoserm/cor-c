@@ -1,0 +1,50 @@
+// test: registers across a caught exception
+// expect-exit: 0
+// expect-output:
+// 25
+//
+// A throw restores only the stack and frame pointers. The frames it unwinds
+// saved and used callee-saved registers, and the function that catches must
+// still give its own caller back what that caller had in them: Outer keeps
+// `at` in one across every call to Middle, which catches what Deep throws.
+// Both targets once printed garbage here, and a 64-bit corc lost a string.
+
+using System;
+using System.Runtime.CompilerServices;
+class Demand : Exception { }
+static class Program
+{
+    static int _sink;
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Deep(int n)
+    {
+        // Enough live values to use every callee-saved register, then a throw.
+        int a = n * 3, b = n * 5, c = n * 7, d = n * 11, e = n * 13, f = n * 17;
+        for (int i = 0; i < n; i++) { a += b; b += c; c += d; d += e; e += f; f += a; _sink += a ^ f; }
+        if (n > 0) throw new Demand();
+        return a + b + c + d + e + f;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static bool Middle(int n)
+    {
+        try { return Deep(n) > 0; }
+        catch (Demand) { return false; }
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Outer(string key, int rounds)
+    {
+        string? at = key;
+        int found = 0;
+        for (int r = 0; r < rounds; r++)
+        {
+            if (Middle(r + 3)) found++;
+            found += at!.Length;
+        }
+        return found;
+    }
+    static int Main()
+    {
+        System.Console.WriteLine(Outer("A.B.C", 5));
+        return 0;
+    }
+}

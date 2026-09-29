@@ -814,9 +814,14 @@ internal sealed class Allocator
             b.Instrs.Clear();
             b.Instrs.AddRange(outList);
         }
+        // A FUNCTION THAT CATCHES SAVES THEM ALL: a throw restores only ESP
+        // and EBP, so the registers the unwound frames saved and used reach
+        // its landing pad as they left them, and only an epilogue that
+        // restores every one gives its caller back what it had.
+        bool catches = _m.Blocks.Any(b => b.Source?.IsLandingPad == true);
         foreach (Gpr g in new[] { Gpr.Ebx, Gpr.Esi, Gpr.Edi })
         {
-            if (saved.Contains((int)g))
+            if (catches || saved.Contains((int)g))
             {
                 _m.SavedRegs.Add(g);
             }
