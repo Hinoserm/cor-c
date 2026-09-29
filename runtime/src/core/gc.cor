@@ -6947,7 +6947,14 @@ static class HeapChunks
     // Raw metadata, not managed objects: allocating it must not recurse into
     // the collector. Mutations, like the chunk list, hold the heap lock.
     // One word per chunk; one initial page covers a 1 GiB ordinary heap.
+    // _index is the first entry, inside a mapping at _indexBase with room at
+    // BOTH ENDS: the operating system hands mappings out top down, so a new
+    // chunk is most often the lowest yet, and an index with room only at its
+    // end moved every entry for it -- forty thousand pages of a compiler's
+    // heap, a seventh of its time. An entry goes in by moving the shorter
+    // side.
     static long _index;
+    static long _indexBase;
     static long _indexCount;
     static long _indexCapacity;
     static bool _indexFailed;
@@ -7307,7 +7314,9 @@ static class HeapChunks
     static void IndexAdd(long chunk)
     {
         if (_indexFailed) return;
-        if (_indexCount == _indexCapacity)
+        long front = _index == 0 ? 0 : (_index - _indexBase) / WordSize.Bytes;
+        long back = _indexCapacity - front - _indexCount;
+        if (front == 0 && back == 0)
         {
             long capacity = _indexCapacity == 0 ? 1024 : _indexCapacity * 2;
             long grown = Platform.Map(capacity * WordSize.Bytes);
@@ -7316,26 +7325,44 @@ static class HeapChunks
                 // Never publish an incomplete index. The authoritative list
                 // still contains every chunk and remains a correct fallback.
                 _indexFailed = true;
-                if (_index != 0) Platform.Unmap(_index, _indexCapacity * WordSize.Bytes);
+                if (_indexBase != 0) Platform.Unmap(_indexBase, _indexCapacity * WordSize.Bytes);
                 _index = 0;
+                _indexBase = 0;
                 _indexCount = 0;
                 _indexCapacity = 0;
                 return;
             }
+            // The room split between the ends.
+            long lead = (capacity - _indexCount) / 2;
             for (long i = 0; i < _indexCount; i++)
-                Sys.Poke(grown + i * WordSize.Bytes, Sys.Peek(_index + i * WordSize.Bytes));
+                Sys.Poke(grown + (lead + i) * WordSize.Bytes, Sys.Peek(_index + i * WordSize.Bytes));
             // THE OLD TABLE IS KEPT, not unmapped: a reader that had loaded
             // its address -- the collector resolving a pointer with nothing
             // held -- may still be searching it, and an unmapped page under
             // it faulted. Doubling, all the tables left behind come to less
             // than the one in use.
-            _index = grown;
+            _indexBase = grown;
+            _index = grown + lead * WordSize.Bytes;
             _indexCapacity = capacity;
+            front = lead;
+            back = capacity - lead - _indexCount;
         }
         long at = IndexLowerBound(chunk);
-        for (long i = _indexCount; i > at; i--)
-            Sys.Poke(_index + i * WordSize.Bytes, Sys.Peek(_index + (i - 1) * WordSize.Bytes));
-        Sys.Poke(_index + at * WordSize.Bytes, chunk);
+        if (front > 0 && (at < _indexCount - at || back == 0))
+        {
+            // The entries below it one place down, into the room in front.
+            long moved = _index - WordSize.Bytes;
+            for (long i = 0; i < at; i++)
+                Sys.Poke(moved + i * WordSize.Bytes, Sys.Peek(_index + i * WordSize.Bytes));
+            Sys.Poke(moved + at * WordSize.Bytes, chunk);
+            _index = moved;
+        }
+        else
+        {
+            for (long i = _indexCount; i > at; i--)
+                Sys.Poke(_index + i * WordSize.Bytes, Sys.Peek(_index + (i - 1) * WordSize.Bytes));
+            Sys.Poke(_index + at * WordSize.Bytes, chunk);
+        }
         _indexCount++;
     }
 
@@ -7344,6 +7371,16 @@ static class HeapChunks
         if (_indexFailed || _indexCount == 0) return;
         long at = IndexLowerBound(chunk);
         if (at == _indexCount || Sys.Peek(_index + at * WordSize.Bytes) != chunk) return;
+        if (at < _indexCount - 1 - at)
+        {
+            // The entries below it one place up, and the front moves up.
+            for (long i = at; i > 0; i--)
+                Sys.Poke(_index + i * WordSize.Bytes, Sys.Peek(_index + (i - 1) * WordSize.Bytes));
+            Sys.Poke(_index, 0);
+            _index = _index + WordSize.Bytes;
+            _indexCount--;
+            return;
+        }
         for (long i = at + 1; i < _indexCount; i++)
             Sys.Poke(_index + (i - 1) * WordSize.Bytes, Sys.Peek(_index + i * WordSize.Bytes));
         _indexCount--;
