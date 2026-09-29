@@ -569,6 +569,10 @@ static class Gc
     /// cheaply; a server lets it grow.
     static long Nursery(long live)
     {
+        if (_nurseryFixed != 0)
+        {
+            return _nurseryFixed;
+        }
         long n = NextThreshold(live) / 4;
         if (n < MinThreshold) n = MinThreshold;
         if (n > NurseryMost) n = NurseryMost;
@@ -2785,6 +2789,7 @@ static class Gc
         _census = Platform.GcCensus();
         _deadCensus = _census && Platform.GcDeadCensus();
         _thresholdCap = Platform.GcThreshold();
+        _nurseryFixed = Platform.GcNursery();
         _heapCheck = Platform.HeapCheck();
         if (Platform.FreeLog())
         {
@@ -3499,6 +3504,7 @@ static class Gc
     static bool _deadCensus;        // CORSAC_GC_CENSUS=2: what sweeps found dead, by type, over the run
     static long _deadAt;
     static long _thresholdCap;      // CORSAC_GC_THRESHOLD, or 0
+    static long _nurseryFixed;      // CORSAC_GC_NURSERY, or 0
     static long _censusAt;
 
     static void StartCensus()

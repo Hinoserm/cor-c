@@ -154,6 +154,10 @@ static class Platform
     /// pacing says -- every call site a collection may fall under, tried.
     public static long GcThreshold() => EnvironmentNumber("CORSAC_GC_THRESHOLD=");
 
+    /// CORSAC_GC_NURSERY=<bytes>: allocate that much between minor cycles,
+    /// whatever the pacing says -- for measuring what a nursery's size costs.
+    public static long GcNursery() => EnvironmentNumber("CORSAC_GC_NURSERY=");
+
     /// CORSAC_HEAP_CHECK=1: the heap's structure checked as every collection
     /// begins and ends -- every chunk's chain, every buffer's, and the free
     /// lists against what the walks found -- and the first faults said.

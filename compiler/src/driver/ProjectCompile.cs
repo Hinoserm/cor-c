@@ -397,10 +397,23 @@ public static class ProjectCompile
 
     static string? _compilerIdentity;
 
-    /// <summary>A hash of the running compiler's own executable, once per process.</summary>
-    static string CompilerIdentity()
+    /// <summary>The variable a project build hands its compile processes the compiler's identity in.</summary>
+    internal const string IdentityVariable = "CORSAC_COMPILER_IDENTITY";
+
+    /// <summary>
+    /// A hash of the running compiler's own executable, once per process --
+    /// or once per BUILD: a child compile process started by a project build
+    /// is the same executable, and is handed the hash its parent made
+    /// (IdentityVariable). Hashing the 53 MB native compiler took a third of
+    /// a second, in every one of the processes a 32-bit build starts.
+    /// </summary>
+    internal static string CompilerIdentity()
     {
         if (_compilerIdentity is not null) return _compilerIdentity;
+        if (Environment.GetEnvironmentVariable(IdentityVariable) is { Length: 64 } handed)
+        {
+            return _compilerIdentity = handed;
+        }
         // THE COMPILER, not the program that runs it. Run as `dotnet
         // corc.dll`, the process is the dotnet host, the same file whatever
         // corc.dll holds: a rebuilt compiler found every receipt current and

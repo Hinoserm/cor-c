@@ -282,6 +282,8 @@ public static class ProjectCommand
             string share = list[..^4] + "-" + i + ".tsv";
             File.WriteAllLines(share, shares[i].Select(unit => unit.Source + "\t" + unit.Object + "\t" + unit.Object + ".deps\t" + (entry ? "entry" : "lib")));
             System.Diagnostics.ProcessStartInfo start = new() { FileName = Environment.ProcessPath!, UseShellExecute = false };
+            // The same executable: its identity, hashed once here.
+            start.Environment[ProjectCompile.IdentityVariable] = ProjectCompile.CompilerIdentity();
             start.ArgumentList.Add("compile-project");
             start.ArgumentList.Add("--units"); start.ArgumentList.Add(share);
             start.ArgumentList.Add("--jobs"); start.ArgumentList.Add(each.ToString());

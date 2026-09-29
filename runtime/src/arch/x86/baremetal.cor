@@ -311,6 +311,11 @@ static class Platform
         return 0;
     }
 
+    public static long GcNursery()
+    {
+        return 0;
+    }
+
     public static bool GcDeadCensus()
     {
         return false;
