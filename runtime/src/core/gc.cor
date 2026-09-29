@@ -8592,16 +8592,15 @@ static class GcThreads
             // Read BEFORE looking for blocked threads: one that blocks after
             // the look moves it, and the sleep below does not happen.
             long stirs = Sys.Peek(ctl + GcLock.Stirs);
-            long pending = Sys.Peek(ctl + GcLock.Pending);
 
-            if (pending <= 0)
+            if (Pending() <= 0)
             {
                 return;
             }
 
             AnswerForStopped(epoch, request);
 
-            if (Sys.Peek(ctl + GcLock.Pending) <= 0)
+            if (Pending() <= 0)
             {
                 return;
             }
@@ -8649,9 +8648,11 @@ static class GcThreads
                         Gc.ScanRoots(block + Tls.Spill, block + Tls.Spill + Sys.Peek(block + Tls.SpillCount) * WordSize.Bytes);
                     }
                     Work(block, request, Sys.Peek(block + Tls.StackLimit));
-                    Sys.Poke(block + Tls.Epoch, epoch);
-                    Sys.AtomicAdd(ctl + GcLock.Pending, -1);
-                    AnsweredFor = AnsweredFor + 1;
+                    if (Claim(block, epoch))
+                    {
+                        Sys.AtomicAdd(ctl + GcLock.Pending, -1);
+                        AnsweredFor = AnsweredFor + 1;
+                    }
                 }
 
                 Sys.AtomicSwap(block + Tls.State, Stopped);
@@ -8681,11 +8682,30 @@ static class GcThreads
     /// state into `states`: how many there are, however many fit. Nothing is
     /// allocated -- a kernel asks this from inside a round that has gone on
     /// too long, to say which thread it waits for.
+    /// Every registered block with its state and the round it last
+    /// answered, into the three arrays: how many there are, however many
+    /// fit. Allocation-free, without the heap lock -- for a kernel's report
+    /// of a round that does not end, which must not wait on anything.
+    public static int Census(long[] blocks, long[] states, long[] epochs)
+    {
+        int n = 0;
+        long count = _count;
+        for (long i = 0; i < count && n < blocks.Length; i++)
+        {
+            long block = At(i);
+            blocks[n] = block;
+            states[n] = Sys.Peek(block + Tls.State);
+            epochs[n] = Sys.Peek(block + Tls.Epoch);
+            n = n + 1;
+        }
+        return n;
+    }
+
     public static int Owing(long[] blocks, long[] states)
     {
         long at = GcLock.Words();
         long epoch = Sys.Peek(at + GcLock.Epoch);
-        if (Sys.Peek(at + GcLock.Pending) <= 0) return 0;
+        if (Pending() <= 0) return 0;
         int n = 0;
         GcLock.Enter();
         for (long i = 0; i < _count; i++)
@@ -8852,7 +8872,7 @@ static class GcThreads
     {
         long at = GcLock.Words();
 
-        return block != 0 && Sys.Peek(at + GcLock.Pending) > 0
+        return block != 0 && Pending() > 0
             && Sys.Peek(block + Tls.Epoch) != Sys.Peek(at + GcLock.Epoch)
             && !GcLock.IsCollector(block);
     }
@@ -8890,15 +8910,49 @@ static class GcThreads
         long ctl = GcLock.Words();
         long epoch = Sys.Peek(ctl + GcLock.Epoch);
 
-        if (Sys.Peek(ctl + GcLock.Pending) <= 0 || Sys.Peek(block + Tls.Epoch) == epoch
-            || GcLock.IsCollector(block))
+        if (Pending() <= 0 || GcLock.IsCollector(block) || !Claim(block, epoch))
         {
             return;
         }
 
-        Sys.Poke(block + Tls.Epoch, epoch);
         Sys.AtomicAdd(ctl + GcLock.Pending, -1);
         Stir();
+    }
+
+    /// The round's answer for `block` taken, once: its epoch moved to the
+    /// round's by compare-and-swap, true only for the one that moved it.
+    ///
+    /// A CHECK AND THEN A STORE COUNTED ONE THREAD TWICE. A kernel sends a
+    /// thread that owes a round to answer it from wherever the thread is
+    /// (the handshake), and it can land inside this very answer, between
+    /// the check and the store: the handshake answered, then the answer it
+    /// interrupted answered again. Pending went to -1, no thread owed
+    /// anything, and the collector waited for ever -- the NT kernel's stall
+    /// at boot, csrss never serving its port.
+    static bool Claim(long block, long epoch)
+    {
+        while (true)
+        {
+            long old = Sys.Peek(block + Tls.Epoch);
+
+            if (old == epoch)
+            {
+                return false;
+            }
+
+            if ((Sys.Cas(block + Tls.Epoch, old, epoch) & 0xFFFFFFFF) == old)
+            {
+                return true;
+            }
+        }
+    }
+
+    /// Pending, as the signed word it is: a count gone below zero is a
+    /// count that is done, not four thousand million threads to wait for.
+    static long Pending()
+    {
+        long pending = Sys.Peek(GcLock.Words() + GcLock.Pending) & 0xFFFFFFFF;
+        return pending >= 0x80000000 ? pending - 0x100000000 : pending;
     }
 
     /// The collector, if it is asleep waiting for a round, woken to look.
