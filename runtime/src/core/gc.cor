@@ -2999,6 +2999,40 @@ static class Gc
             && (payload + 4 >= end || Sys.PeekWord(payload + 4) == Poison);
     }
 
+    // The pairs already reported, so that one holder a cycle after another
+    // does not use up the reports. A small ring of the operating system's.
+    const long SeenPairs = 64;
+    static long _seen;
+
+    static bool Seen(long holder, long target)
+    {
+        if (_seen == 0)
+        {
+            _seen = Platform.Map(SeenPairs * 2 * WordSize.Bytes);
+            if (_seen == 0)
+            {
+                return false;
+            }
+        }
+        long i = 0;
+        while (i < SeenPairs)
+        {
+            long at = _seen + i * 2 * WordSize.Bytes;
+            if (Sys.Peek(at) == holder && Sys.Peek(at + WordSize.Bytes) == target)
+            {
+                return true;
+            }
+            if (Sys.Peek(at) == 0)
+            {
+                Sys.Poke(at, holder);
+                Sys.Poke(at + WordSize.Bytes, target);
+                return false;
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+
     static void CheckDanglingField(long holder, long vt, long field)
     {
         long target = Sys.Peek(field) & WordSize.AddressMask;
@@ -3020,7 +3054,7 @@ static class Gc
             return;
         }
         long end = block + size - FooterBytes;
-        if (!IsPoisoned(target, end))
+        if (!IsPoisoned(target, end) || Seen(holder, target))
         {
             return;
         }
@@ -3028,6 +3062,15 @@ static class Gc
         SayNumber("gc: checked free: a live object still holds a freed block, holder ", holder);
         SayNumber("gc:   holder's vtable ", vt);
         SayNumber("gc:   field offset ", field - holder);
+        long holderSize = Sys.Peek(holder - HeaderBytes) & SizeMask;
+        SayNumber("gc:   holder's block size ", holderSize);
+        SayNumber("gc:   holder's kind word ", Sys.Peek(holder - HeaderBytes + KindAt));
+        long shown = 0;
+        while (shown < 8 && holder + (shown + 1) * WordSize.Bytes <= holder - HeaderBytes + holderSize - FooterBytes)
+        {
+            SayNumber("gc:   holder word ", Sys.Peek(holder + shown * WordSize.Bytes));
+            shown = shown + 1;
+        }
         SayNumber("gc:   freed block ", target);
         SayNumber("gc:   its size ", size);
         Runtime.WriteLiteral(2, "gc: it was freed by:\n");
