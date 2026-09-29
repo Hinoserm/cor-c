@@ -8717,6 +8717,7 @@ static class GcThreads
         }
         GcLock.Exit();
         return n;
+    }
 
     // THE STACKS AS THEY WERE AT STAMP. A thread's stack is read for marking
     // when it answers SCAN, which is later; in between it runs, and a

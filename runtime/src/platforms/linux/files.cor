@@ -48,7 +48,7 @@ static partial class Os
     /// descriptor, the same one again for a path watched already.
     public static int InotifyAddWatch(int fd, string path, long mask)
     {
-        string c = CString(path);
+        byte[] c = CString(path);
         return (int)Err.Result(Sys.Syscall(Call.InotifyAddWatch, fd, BytesOf(c), mask & 0xFFFFFFFF));
     }
 
@@ -480,15 +480,6 @@ static partial class Os
     public static int Close(long fd)
     {
         return Close((int)fd);
-    }
-
-    public static long Read(long fd, string into, long count)
-    {
-        if (count < 0 || count > into.Length)
-        {
-            throw new IndexOutOfRangeException("read range is outside its buffer");
-        }
-        return Err.Result(Platform.Blocking(Call.Read, fd, BytesOf(into), count));
     }
 
     public static long Write(long fd, string s)

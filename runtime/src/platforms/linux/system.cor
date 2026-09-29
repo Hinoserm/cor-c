@@ -134,6 +134,23 @@ static class Platform
         return Err.Result(raw);
     }
 
+    /// A call that may wait -- a read of a pipe, a terminal or a socket, a
+    /// poll, a wait for a child, a sleep -- made as a blocking one to the
+    /// collector, as Native.Wait makes a futex wait. A thread parked in the
+    /// kernel that the collector counted as running is waited for by the
+    /// first collection another thread starts, for ever: lsass's accept(2)
+    /// held every other thread of it so until its callers made their waits
+    /// this way. The stack is read where it stands meanwhile; the words the
+    /// call was handed are on it, and they keep what they point into.
+    /// Answers the kernel's raw number, as Sys.Syscall does.
+    public static long Blocking(long n, long a, long b, long c, long d = 0, long e = 0, long f = 0)
+    {
+        Runtime.BeginBlocking();
+        long raw = Sys.Syscall(n, a, b, c, d, e, f);
+        Runtime.EndBlocking();
+        return raw;
+    }
+
     /// Whether the process was started with CORSAC_VERIFY_FREES set to
     /// anything but 0: the collector's checked mode for the compiler's frees
     /// (Gc.VerifyFree). Read straight from the environment on the entry
@@ -281,22 +298,6 @@ static class Platform
             }
             env = env + WordSize.Bytes;
         }
-
-    /// A call that may wait -- a read of a pipe, a terminal or a socket, a
-    /// poll, a wait for a child, a sleep -- made as a blocking one to the
-    /// collector, as Native.Wait makes a futex wait. A thread parked in the
-    /// kernel that the collector counted as running is waited for by the
-    /// first collection another thread starts, for ever: lsass's accept(2)
-    /// held every other thread of it so until its callers made their waits
-    /// this way. The stack is read where it stands meanwhile; the words the
-    /// call was handed are on it, and they keep what they point into.
-    /// Answers the kernel's raw number, as Sys.Syscall does.
-    public static long Blocking(long n, long a, long b, long c, long d = 0, long e = 0, long f = 0)
-    {
-        Runtime.BeginBlocking();
-        long raw = Sys.Syscall(n, a, b, c, d, e, f);
-        Runtime.EndBlocking();
-        return raw;
     }
 
     /// The address the kernel is to be handed for `at`: a Linux process's
