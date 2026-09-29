@@ -241,6 +241,11 @@ public static class ProjectCommand
     /// own. A small machine -- one processor, or memory for one space --
     /// compiles in process as before. What is compiled never changes: every
     /// unit is compiled on its own, with the same options, wherever it runs.
+    ///
+    /// ONE UNIT AT A TIME IN EACH. Two workers to a child put two of the
+    /// largest units in one four-gigabyte space, and a stage-2 child ran out
+    /// of it with 1.8 GB live in a 4.1 GB heap. A worker is a process of its
+    /// own instead, as many as the machine has spaces for.
     /// </summary>
     private static int Processes(int workers, int units)
     {
@@ -248,7 +253,7 @@ public static class ProjectCommand
         if (Environment.Is64BitProcess || workers < 2 || units < 2 || Environment.ProcessPath is null) return 1;
         long memory = Corsac.Lang.Lto.MachineMemory.MachineAvailable();
         int spaces = (int)Math.Min(int.MaxValue, memory / Space);
-        return Math.Max(1, Math.Min(Math.Min(workers / 2, spaces), units));
+        return Math.Max(1, Math.Min(Math.Min(workers, spaces), units));
     }
 
     /// <summary>
@@ -268,7 +273,8 @@ public static class ProjectCommand
             shares[turn].Add(unit);
             turn = (turn + 1) % processes;
         }
-        int each = Math.Max(1, workers / processes);
+        // One worker each (Processes): a 32-bit space holds one large unit.
+        int each = 1;
         List<(System.Diagnostics.Process Child, string Share)> children = new();
         for (int i = 0; i < processes; i++)
         {
