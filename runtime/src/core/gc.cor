@@ -640,6 +640,44 @@ static class Gc
         MarkAt(at);
     }
 
+    // WHICH ROOT HOLDS WHAT (the census, a whole cycle): each root word marked
+    // and the queue drained before the next, so the bytes a word newly marks
+    // are the ones only it -- or it first -- reaches, and a word that holds
+    // CensusRootBytes or more is said: its kind (1 the collector's stack, 2 the
+    // statics, 3 a registered range, 4 a thread's stack, 5 a stack as it was
+    // at STAMP), where it is, what it holds, and how much. A stale word on a
+    // stack that keeps a whole compilation alive is found here.
+    const long CensusRootBytes = 4194304;
+    static long _censusMarked;
+
+    public static void ScanRootsAttributed(long from, long to, long kind, bool stack)
+    {
+        if (!_census || _minor)
+        {
+            if (stack) ScanRoots(from, to);
+            else ScanRange(from, to);
+            return;
+        }
+        long p = (from + WordSize.Bytes - 1) & -WordSize.Bytes;
+        while (p < to)
+        {
+            long before = _censusMarked;
+            long word = Sys.Peek(p);
+            if (stack) MarkRoot(word);
+            else MarkAt(word);
+            Drain();
+            long got = _censusMarked - before;
+            if (got >= CensusRootBytes)
+            {
+                SayNumber("gc census root: kind ", kind);
+                SayNumber("gc census root:   at ", p);
+                SayNumber("gc census root:   word ", word);
+                SayNumber("gc census root:   bytes ", got);
+            }
+            p = p + WordSize.Bytes;
+        }
+    }
+
     /// ScanRange for a stack or a thread's saved registers (MarkRoot).
     public static void ScanRoots(long from, long to)
     {
@@ -3763,6 +3801,10 @@ static class Gc
         {
             return;
         }
+        if (_census)
+        {
+            _censusMarked = _censusMarked + (Sys.Peek(block) & SizeMask);
+        }
 
         // Nothing in it to follow: scanned as soon as marked.
         if (Sys.Peek(block + KindAt) == KindLeaf)
@@ -4888,7 +4930,7 @@ static class Gc
 
         if (from != 0 && to > from)
         {
-            ScanRoots(from, to);
+            ScanRootsAttributed(from, to, 4, true);
         }
     }
 
@@ -6275,8 +6317,8 @@ static class GcRoots
         // top the thread began at. Every OTHER thread's stack is marked from
         // by that thread itself, or by the collector for it while it is
         // blocked, in the SCAN round (GcThreads) -- never by stopping it.
-        Gc.ScanRoots(Sys.Stack(), Sys.EntryStack());
-        Gc.ScanRange(Sys.DataStart(), Sys.DataEnd());
+        Gc.ScanRootsAttributed(Sys.Stack(), Sys.EntryStack(), 1, true);
+        Gc.ScanRootsAttributed(Sys.DataStart(), Sys.DataEnd(), 2, false);
 
         long i = 0;
 
@@ -6287,7 +6329,7 @@ static class GcRoots
             // in: its end is not written yet and there is nothing to scan.
             if (start != 0 && start != Claiming)
             {
-                Gc.ScanRange(start, Sys.Peek(_extra + i * (2 * WordSize.Bytes) + WordSize.Bytes));
+                Gc.ScanRootsAttributed(start, Sys.Peek(_extra + i * (2 * WordSize.Bytes) + WordSize.Bytes), 3, false);
             }
             i = i + 1;
         }
@@ -7007,7 +7049,7 @@ static class GcThreads
             long copy = Sys.Peek(CopyAt(i));
             if (copy != 0)
             {
-                Gc.ScanRange(copy, copy + Sys.Peek(CopyAt(i) + WordSize.Bytes));
+                Gc.ScanRootsAttributed(copy, copy + Sys.Peek(CopyAt(i) + WordSize.Bytes), 5, false);
             }
         }
         ReleaseStackCopies();
