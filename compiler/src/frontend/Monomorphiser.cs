@@ -395,7 +395,15 @@ public sealed class Monomorphiser
         // so that every path is its moved one.
         HashSet<string> programs = new(unit.Types.Where(t => !t.FromLibrary && t.Outer is null)
             .Select(t => Arity(t.Name, t.TypeParams.Count)), StringComparer.Ordinal);
-        foreach (TypeDecl t in unit.Types.Where(t => t.FromLibrary && t.Outer is null && t.Namespace.Length == 0).ToList())
+        // Never the prelude's: its Math is the intrinsic half of the library's
+        // Math, not a library type a program's could shadow (Binder's
+        // "EXTENDING A PRELUDE TYPE"). A unit bound from the declaration index
+        // has the library's Math as an imported header, which is not marked as
+        // the library's, and moving the prelude's aside for it put the
+        // intrinsics at System.Math -- where library code looks first -- so
+        // Math.Min(a, b) on two ints found only Min(double, double).
+        foreach (TypeDecl t in unit.Types.Where(t => t.FromLibrary && t.Outer is null && t.Namespace.Length == 0
+                                                     && t.File != "<prelude>").ToList())
         {
             if (programs.Contains(Arity(t.Name, t.TypeParams.Count))) MoveToSystem(t);
         }

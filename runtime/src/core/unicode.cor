@@ -67,8 +67,18 @@ static class Utf8Transcoder
     /// answers how many bytes. `into` must have ByteCount's worth of room.
     public static int Encode(string s, int at, int count, byte[] into, int intoAt)
     {
+        if (intoAt + ByteCount(s, at, count) > into.Length) throw new IndexOutOfRangeException();
+        return EncodeTo(s, at, count, Sys.ArrayData(into) + intoAt);
+    }
+
+    /// s[at, at + count) as UTF-8, written to memory at `address`; answers
+    /// how many bytes. Allocates nothing: what a kernel writes a message with
+    /// before it has a heap, and how a string is copied out to a user's
+    /// buffer. The memory must have ByteCount's worth of room.
+    public static int EncodeTo(string s, int at, int count, long address)
+    {
         int end = at + count;
-        int o = intoAt;
+        long o = address;
         int i = at;
 
         while (i < end)
@@ -77,15 +87,15 @@ static class Utf8Transcoder
 
             if (c < 0x80)
             {
-                into[o] = (byte)c;
+                Sys.PokeByte(o, c);
                 o = o + 1;
                 i = i + 1;
                 continue;
             }
             if (c < 0x800)
             {
-                into[o] = (byte)(0xC0 | (c >> 6));
-                into[o + 1] = (byte)(0x80 | (c & 0x3F));
+                Sys.PokeByte(o, 0xC0 | (c >> 6));
+                Sys.PokeByte(o + 1, 0x80 | (c & 0x3F));
                 o = o + 2;
                 i = i + 1;
                 continue;
@@ -95,10 +105,10 @@ static class Utf8Transcoder
 
             if (point >= 0x10000)
             {
-                into[o] = (byte)(0xF0 | (point >> 18));
-                into[o + 1] = (byte)(0x80 | ((point >> 12) & 0x3F));
-                into[o + 2] = (byte)(0x80 | ((point >> 6) & 0x3F));
-                into[o + 3] = (byte)(0x80 | (point & 0x3F));
+                Sys.PokeByte(o, 0xF0 | (point >> 18));
+                Sys.PokeByte(o + 1, 0x80 | ((point >> 12) & 0x3F));
+                Sys.PokeByte(o + 2, 0x80 | ((point >> 6) & 0x3F));
+                Sys.PokeByte(o + 3, 0x80 | (point & 0x3F));
                 o = o + 4;
                 i = i + 2;
                 continue;
@@ -107,13 +117,13 @@ static class Utf8Transcoder
             {
                 point = 0xFFFD;
             }
-            into[o] = (byte)(0xE0 | (point >> 12));
-            into[o + 1] = (byte)(0x80 | ((point >> 6) & 0x3F));
-            into[o + 2] = (byte)(0x80 | (point & 0x3F));
+            Sys.PokeByte(o, 0xE0 | (point >> 12));
+            Sys.PokeByte(o + 1, 0x80 | ((point >> 6) & 0x3F));
+            Sys.PokeByte(o + 2, 0x80 | (point & 0x3F));
             o = o + 3;
             i = i + 1;
         }
-        return o - intoAt;
+        return (int)(o - address);
     }
 
     /// s[at, at + count) as a new array of its UTF-8.

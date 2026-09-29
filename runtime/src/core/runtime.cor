@@ -2190,7 +2190,7 @@ static class Runtime
 
     /// A word in hexadecimal, every digit, spelled in `digits` and written.
     static void SayHex(long digits, long value) {
-        int count = WordSize.Bytes * 2;
+        int count = (int)(WordSize.Bytes * 2);
         for (int i = 0; i < count; i++) {
             long nibble = (value >> ((count - 1 - i) * 4)) & 15;
             Sys.PokeByte(digits + i, nibble < 10 ? 48 + nibble : 87 + nibble);

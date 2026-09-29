@@ -201,8 +201,12 @@ static class Platform
             // guess: the megabyte after the image may be the video hole,
             // the kernel's load address, or not exist. The program says,
             // from the memory map it was handed, before it allocates.
+            // With no heap there is nothing to encode into: the literal's
+            // UTF-16 units are written a byte each, the low byte first on
+            // x86, which for this ASCII text is the whole character.
             string text = "no heap: Platform.SetHeap was not called\n";
-            WriteBytes(2, Sys.ArrayData(text), text.Length);
+            long units = Sys.StringData(text);
+            for (int i = 0; i < text.Length; i++) WriteBytes(2, units + i * 2, 1);
             Exit(137);
         }
 

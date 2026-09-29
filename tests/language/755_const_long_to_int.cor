@@ -1,0 +1,16 @@
+// test: const_long_to_int
+// expect-compile-error: cannot convert 'long' to 'int'
+//
+// C# 10.2.11 narrows only an int constant implicitly: a `const long` stored
+// into an int is an error even when its value fits, as in C#. Write (int).
+
+static class Program
+{
+    const long Bytes = 4;
+
+    static int Main()
+    {
+        int count = Bytes * 2;
+        return count;
+    }
+}

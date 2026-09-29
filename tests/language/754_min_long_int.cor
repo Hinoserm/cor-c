@@ -1,0 +1,24 @@
+// test: Math.Min and Max of a long and an int
+// expect-exit: 0
+// expect-output:
+// 3 5 3 9
+//
+// A long and an int take Min(long, long), as C# chooses: the int widens to
+// long, a better conversion than both to double. Picking the double overload
+// made `long n = Math.Min(room, name.Length)` fail to compile.
+
+static class Program
+{
+    static int Main()
+    {
+        long room = 5;
+        string name = "abc";
+        long n = Math.Min(room, name.Length);
+        long m = Math.Max(room, name.Length);
+        int small = 3;
+        long x = Math.Min(small, 9L);
+        long y = Math.Max(9L, small);
+        System.Console.WriteLine(n + " " + m + " " + x + " " + y);
+        return 0;
+    }
+}

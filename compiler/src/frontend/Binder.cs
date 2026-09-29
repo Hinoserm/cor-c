@@ -1430,6 +1430,30 @@ public sealed partial class Binder
         _ => false,
     };
 
+    /// <summary>
+    /// Whether a constant converts implicitly to an integral type, at an
+    /// assignment or a call: C# 10.2.11's implicit constant expression
+    /// conversion.
+    /// An INT constant becomes any integral type that holds its value; a LONG
+    /// one only ulong, when it is not negative. Letting a long constant
+    /// narrow too made `Math.Min(9L, 3)` fit Min(int, int) as well as
+    /// Min(long, long); neither was then better than the other, and the call
+    /// fell back to the first overload, Min(double, double).
+    ///
+    /// Literals are typed long here past int's range where C# types them
+    /// uint first, so a long constant inside uint's range and outside int's
+    /// fits uint too, as the uint literal C# would have made of it.
+    /// The same rule at an assignment as at a call: `int n = WordSize.Bytes`
+    /// with Bytes a const long is an error, as it is in C#; say (int).
+    /// </summary>
+    private static bool ConstantConverts(Type from, long value, Type to) => from.Prim switch
+    {
+        Prim.I32 => to.Prim == Prim.U64 ? value >= 0 : Fits(value, to),
+        Prim.I64 => (to.Prim == Prim.U64 && value >= 0)
+                    || (to.Prim == Prim.U32 && value > int.MaxValue && value <= uint.MaxValue),
+        _ => false,
+    };
+
     /// <summary>Looks a TEXT const up on a type or any of its bases.</summary>
     private string? FindText(TypeSymbol? owner, string name)
     {
@@ -1576,7 +1600,15 @@ public sealed partial class Binder
                 // This is what .NET does with this very class: some members are
                 // intrinsified and the rest are ordinary code, and which is
                 // which is not the caller's business.
-                if (already.Decl?.File == "<prelude>")
+                //
+                // Whichever of the two is met first. A unit bound from the
+                // declaration index can meet the library's Math before the
+                // prelude's; the prelude's, not being the library's, then
+                // looked like a program's own Math, and the rule below moved
+                // the library's out of the way into System -- leaving
+                // Math.Min(double, double) the only Min, so `int n =
+                // Math.Min(a, b)` on two ints was a double.
+                if (already.Decl?.File == "<prelude>" || d.File == "<prelude>")
                 {
                     extend.Add((d, already));
                     continue;
@@ -4778,7 +4810,7 @@ public sealed partial class Binder
         // the number where a reference belonged and reading n.Value faulted on
         // address 5.
         if (at is Expr written && to.IsInteger && from.IsInteger && !to.Nullable
-            && ConstantValue(written, _thisType) is long fits && Fits(fits, to))
+            && ConstantValue(written, _thisType) is long fits && ConstantConverts(from, fits, to))
         {
             return;
         }
@@ -4956,7 +4988,7 @@ public sealed partial class Binder
         => had.IsError || (!NullableIntoValue(had, want) && (Convertible(had, want) || Variant(had, want)))
         || (written is not null && MethodGroupFits(written, want))
         || (written is not null && had.IsInteger && want.IsInteger && !want.Nullable
-            && ConstantValue(written, _thisType) is long value && Fits(value, want));
+            && ConstantValue(written, _thisType) is long value && ConstantConverts(had, value, want));
 
     /// <summary>
     /// A Nullable&lt;T&gt; where a plain value type is wanted: no implicit
@@ -14711,7 +14743,7 @@ public sealed partial class Binder
             // passed to a ushort parameter is the case that found this: the
             // literal 64 was accepted where the name for it was not.
             return had.IsInteger && want.IsInteger && !want.Nullable
-                && ConstantValue(written, _thisType) is long value && Binder.Fits(value, want);
+                && ConstantValue(written, _thisType) is long value && Binder.ConstantConverts(had, value, want);
         }
 
         bool OrdinaryFits(MethodSymbol m) => m.Params.Count == args.Count
@@ -15121,7 +15153,7 @@ public sealed partial class Binder
                 if (args[i].IsInteger && want.IsInteger && !want.Nullable
                     && want.Prim != Prim.Char && args[i].Prim != Prim.Char
                     && i < c.Args.Count && ConstantValue(c.Args[i], _thisType) is long value
-                    && Binder.Fits(value, want))
+                    && Binder.ConstantConverts(args[i], value, want))
                 {
                     continue;
                 }
