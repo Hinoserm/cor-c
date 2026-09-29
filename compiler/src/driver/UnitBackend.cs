@@ -58,6 +58,10 @@ public sealed class UnitBackend : IUnitBackend
             Function function = IrFunctionCodec.Read(archive.ReadBody(entry.Key), new IrReadBudget(entry.DecodeBytes));
             if (function.Name != header.Name || function.Exported != header.Exported)
                 throw new InvalidDataException("Deferred IR identity disagrees with native symbol");
+            // CORC_DUMP_FUNCTION=<symbol>: that function's IR as the link loads
+            // it and as it goes to the backend, on standard error.
+            bool dumping = Environment.GetEnvironmentVariable("CORC_DUMP_FUNCTION") == function.Name;
+            if (dumping) { System.Text.StringBuilder loaded = new(); function.Dump(loaded); Console.Error.WriteLine("== loaded\n" + loaded); }
             Module local = new(module.Name) { Entry = function.Name, PreserveExports = true, NeedsHeap = module.NeedsHeap };
             local.Functions.Add(function);
             foreach (IrImport import in Selected(index))
@@ -92,6 +96,7 @@ public sealed class UnitBackend : IUnitBackend
             new CardMarks().Run(local);
             local.Functions.RemoveAll(body => !ReferenceEquals(body, function));
             LandingPadHomes.Run(local);
+            if (dumping) { System.Text.StringBuilder regenerated = new(); function.Dump(regenerated); Console.Error.WriteLine("== regenerated\n" + regenerated); }
             return function;
         }
         int workers = Math.Max(1, Math.Min(64, Environment.ProcessorCount));

@@ -72,10 +72,37 @@ public sealed partial class Lowering
 
     /// <summary>Evaluates and converts to the type a slot, parameter or return wants.</summary>
     /// <summary>An argument evaluated for the parameter it fills in.</summary>
+    /// <summary>The class a non-nullable tuple type is made as, or null.</summary>
+    private static TypeSymbol? TupleShapeOf(Type t)
+        => t is { Nullable: false, Symbol: { Kind: TypeKind.Class } shape } && IsTupleShape(shape) ? shape : null;
+
+    /// <summary>
+    /// A TUPLE'S DEFAULT IS A TUPLE of zeros, not null: C#'s ValueTuple is a
+    /// value, and here each shape is a class the checker made, so its default
+    /// has to be made too. `new List&lt;(uint, ulong)&gt; { default }` held null,
+    /// and the first read of it faulted -- the 64-bit linker's section header
+    /// list begins with exactly that entry.
+    /// </summary>
+    private VReg TupleDefault(Node at, TypeSymbol shape)
+    {
+        TouchType(shape);
+        VReg made = Allocate(at, Math.Max(_t.ObjectHeaderBytes, shape.InstanceSize), described: true);
+        _e.Store(R(made), VtableOf(shape), 0, _t.WordSize);
+        InitStructFields(at, made, shape);
+        return made;
+    }
+
     private VReg EvalAs(Expr e, ParamSymbol p) => EvalAs(e, p.Type, p.ByRef, p.ReadOnly);
 
     private VReg EvalAs(Expr e, Type target, bool byRef = false, bool readOnly = false)
     {
+        // `default` WANTED AS A TUPLE is one: typed by the checker as the null
+        // literal it looks like, it was converted to the tuple's class as null.
+        if (!byRef && e is DefaultExpr && TupleShapeOf(target) is TypeSymbol tupleShape)
+        {
+            return TupleDefault(e, tupleShape);
+        }
+
         if (byRef)
         {
             // `in` TAKES A VALUE WHERE `ref` TAKES A VARIABLE. C# passes the
@@ -707,6 +734,10 @@ public sealed partial class Lowering
 
             case DefaultExpr df when IsStructValue(_b.TypeOf(df)):
                 return NewStruct(df, _b.TypeOf(df).Symbol!);
+
+            // A TUPLE'S DEFAULT IS A TUPLE of zeros (TupleDefault).
+            case DefaultExpr df when TupleShapeOf(_b.TypeOf(df)) is TypeSymbol shape:
+                return TupleDefault(df, shape);
 
             case DefaultExpr df:
             {

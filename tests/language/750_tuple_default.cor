@@ -1,0 +1,27 @@
+// test: tuple default
+// expect-exit: 0
+// expect-output:
+// 0 0 0 0
+// 7 9
+// (0, 0)
+//
+// default of a tuple type is a tuple of zeros, as C#'s ValueTuple is a value:
+// in a variable, in a collection initialiser (the 64-bit linker's section
+// header list starts with one), and written over afterwards.
+
+using System.Collections.Generic;
+
+static class Program
+{
+    static int Main()
+    {
+        (int A, long B) t = default;
+        List<(uint N, ulong F)> list = new() { default };
+        System.Console.WriteLine(t.A + " " + t.B + " " + list[0].N + " " + list[0].F);
+        t = (7, 9);
+        System.Console.WriteLine(t.A + " " + t.B);
+        (int, int) p = default;
+        System.Console.WriteLine(p.ToString());
+        return 0;
+    }
+}
