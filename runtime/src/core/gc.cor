@@ -2686,14 +2686,36 @@ static class Gc
         }
     }
 
+    // AND BY BYTES: the blocks kept are the latest up to a budget, the
+    // oldest let go past it. Kept by count alone, the field frees -- arrays,
+    // most of them -- filled a 32-bit heap's address space. Always called
+    // with the heap lock held, so the ring's counts are plain words.
+    const long QuarantineBudget = 402653184;
+    static long _quarantineHead;
+    static long _quarantineCount;
+    static long _quarantineBytes;
+
     static void Quarantine(long at)
     {
         if (_quarantine == 0)
         {
             return;
         }
-        long n = Sys.AtomicAdd(_quarantine, 1);
-        Sys.Poke(_quarantine + WordSize.Bytes + (n % _quarantineEntries) * WordSize.Bytes, at);
+        long size = Sys.Peek(at - HeaderBytes) & SizeMask;
+        while (_quarantineCount > 0 && (_quarantineCount == _quarantineEntries || _quarantineBytes + size > QuarantineBudget))
+        {
+            long oldest = _quarantine + WordSize.Bytes + _quarantineHead * WordSize.Bytes;
+            long held = Sys.Peek(oldest);
+            Sys.Poke(oldest, 0);
+            _quarantineBytes = _quarantineBytes - (Sys.Peek(held - HeaderBytes) & SizeMask);
+            _quarantineHead = (_quarantineHead + 1) % _quarantineEntries;
+            _quarantineCount = _quarantineCount - 1;
+        }
+        long slot = (_quarantineHead + _quarantineCount) % _quarantineEntries;
+        Sys.Poke(_quarantine + WordSize.Bytes + slot * WordSize.Bytes, at);
+        _quarantineCount = _quarantineCount + 1;
+        _quarantineBytes = _quarantineBytes + size;
+        Sys.Poke(_quarantine, Sys.Peek(_quarantine) + 1);
     }
 
     /// In the checked mode, a field free (Runtime.FreeField) whose OWNER has
