@@ -1745,6 +1745,11 @@ static class Gc
     // All tree/list reads occur under the heap lock held by Refill.
     static long TakeBufferFragment(long minimum)
     {
+        // As TakeFree: nothing from the lists while a minor sweep runs.
+        if (_sweeping && _minor)
+        {
+            return 0;
+        }
         long lowest = BinOf(minimum);
         long bin = PrevNonEmpty(BinOf(BufferBytes - 8));
         while (bin >= lowest)
@@ -2195,6 +2200,18 @@ static class Gc
     /// which case the caller gets it.
     static long TakeFree(long need)
     {
+        // NOT WHILE A MINOR SWEEP RUNS. It keeps the free lists, and they
+        // still name the free blocks of young chunks it has not reached: one
+        // handed out now becomes a buffer the sweep then walks into -- it was
+        // captured by no one -- stopping at the thread's bump pointer and
+        // leaving the rest of the chunk unswept and miscounted. A major sweep
+        // empties the lists first (BeginSweep) and rebuilds them as it goes,
+        // so everything on them then is swept already. The bump pointer and
+        // new chunks answer meanwhile; the sweep is short.
+        if (_sweeping && _minor)
+        {
+            return 0;
+        }
         long bin = BinOf(need);
 
         // An exact bin's head fits exactly. A large bin's blocks may be
@@ -2414,6 +2431,15 @@ static class Gc
         if (self != 0 && Sys.Peek(self + Tls.InAlloc) != 0 || GcLock.HeldByMe())
         {
             return;
+        }
+
+        // LOGGED (CORSAC_FREE_LOG), with the two calls it came through, for
+        // the fault report to look through.
+        if (Runtime.FreeLogRing != 0)
+        {
+            long fp = Sys.FramePointer();
+            long caller = Sys.Peek(fp) & WordSize.AddressMask;
+            Runtime.LogFree(at, 0, caller != 0 ? Sys.Peek(caller + WordSize.Bytes) : 0, Sys.Peek(fp + WordSize.Bytes));
         }
 
         if (Verifying())

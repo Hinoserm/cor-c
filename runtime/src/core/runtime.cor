@@ -645,7 +645,7 @@ static class Runtime
         FreeLogRing = Platform.Map((FreeLogEntries * 4 + 1) * WordSize.Bytes);
     }
 
-    static void LogFree(long held, long owner, long offset, long site)
+    public static void LogFree(long held, long owner, long offset, long site)
     {
         long n = Sys.AtomicAdd(FreeLogRing, 1) % FreeLogEntries;
         long entry = FreeLogRing + (1 + n * 4) * WordSize.Bytes;
@@ -2001,13 +2001,23 @@ static class Runtime
     /// stack from the faulting function outward. The platform's fault handler
     /// calls it (Platform.ArmFaultReport), with a scratch page of its own
     /// for the digits; nothing here allocates.
-    public static void ReportFault(long address, long pc, long frame, long digits) {
+    public static void ReportFault(long address, long pc, long frame, long digits, long registers, int count) {
         SayLiteral(StdErr, "Fatal error. System.AccessViolationException: Attempted to read or write protected memory. This is often an indication that other memory is corrupt.\n");
         SayLiteral(StdErr, "   fault at 0x");
         SayHex(digits, address);
         SayLiteral(StdErr, ", instruction at 0x");
         SayHex(digits, pc);
         SayLiteral(StdErr, "\n");
+        // THE REGISTERS as the fault left them, in the kernel's order: the
+        // object a bad read went through is nearly always in one of them.
+        if (registers != 0) {
+            SayLiteral(StdErr, "   registers");
+            for (int i = 0; i < count; i++) {
+                SayLiteral(StdErr, " ");
+                SayHex(digits, Sys.Peek(registers + i * WordSize.Bytes) & WordSize.AddressMask);
+            }
+            SayLiteral(StdErr, "\n");
+        }
 
         long name;
         long file;
@@ -2021,6 +2031,56 @@ static class Runtime
         }
         SayTrace(StdErr, frame);
         Gc.SayState();
+        // AND WHETHER THE PROGRAM FREED IT (CORSAC_FREE_LOG): every register
+        // and the address itself looked for among the last frees, a block
+        // freed at or just below it named with the frees that took it. A
+        // fault through an object the program gave back is the compiler's;
+        // one through an object nobody freed is the collector's.
+        if (FreeLogRing != 0) {
+            FreedNear(digits, address);
+            if (registers != 0) {
+                for (int i = 0; i < count; i++) {
+                    FreedNear(digits, Sys.Peek(registers + i * WordSize.Bytes) & WordSize.AddressMask);
+                }
+            }
+        }
+    }
+
+    /// The frees in the log of a block at or up to a kilobyte below `value`,
+    /// newest first, at most four.
+    static void FreedNear(long digits, long value) {
+        if (value < 4096) {
+            return;
+        }
+        long total = Sys.Peek(FreeLogRing) & WordSize.AddressMask;
+        long have = total < FreeLogEntries ? total : FreeLogEntries;
+        long found = 0;
+        long back = 0;
+        while (back < have && found < 4) {
+            long n = (total - 1 - back) % FreeLogEntries;
+            long entry = FreeLogRing + (1 + n * 4) * WordSize.Bytes;
+            long held = Sys.Peek(entry) & WordSize.AddressMask;
+            if (held != 0 && value >= held - 16 && value < held + 1024) {
+                SayLiteral(StdErr, "   0x");
+                SayHex(digits, value);
+                SayLiteral(StdErr, " is in a block freed ");
+                SayHex(digits, back);
+                SayLiteral(StdErr, " frees ago, at 0x");
+                SayHex(digits, held);
+                long owner = Sys.Peek(entry + WordSize.Bytes) & WordSize.AddressMask;
+                if (owner != 0) {
+                    SayLiteral(StdErr, ", a field of 0x");
+                    SayHex(digits, owner);
+                }
+                SayLiteral(StdErr, "\n");
+                SayFrame(StdErr, Sys.Peek(entry + 3 * WordSize.Bytes) & WordSize.AddressMask);
+                if (owner == 0) {
+                    SayFrame(StdErr, Sys.Peek(entry + 2 * WordSize.Bytes) & WordSize.AddressMask);
+                }
+                found = found + 1;
+            }
+            back = back + 1;
+        }
     }
 
     /// A word in hexadecimal, every digit, spelled in `digits` and written.

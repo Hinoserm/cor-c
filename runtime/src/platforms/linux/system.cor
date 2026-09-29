@@ -567,14 +567,19 @@ static class Platform
             long address = Sys.Peek(si + 16);
             long pc = Sys.Peek(uc + 168);
             long frame = Sys.Peek(uc + 120);
+            long registers = uc + 40;
+            int count = 16;
 #else
             // siginfo's si_addr at 12; mcontext's gregs from 20, EBP the
             // seventh and EIP the fifteenth.
             long address = Sys.Peek(si + 12) & WordSize.AddressMask;
             long pc = Sys.Peek(uc + 76) & WordSize.AddressMask;
             long frame = Sys.Peek(uc + 44) & WordSize.AddressMask;
+            // EDI, ESI, EBP, ESP, EBX, EDX, ECX, EAX.
+            long registers = uc + 36;
+            int count = 8;
 #endif
-            Runtime.ReportFault(address, pc, frame, _faultPage + 256);
+            Runtime.ReportFault(address, pc, frame, _faultPage + 256, registers, count);
         }
         // SIG_DFL, the signal unblocked (SIG_UNBLOCK, a set of one), and sent.
         long page = _faultPage;
