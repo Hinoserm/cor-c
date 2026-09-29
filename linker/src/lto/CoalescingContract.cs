@@ -16,15 +16,16 @@ public static class CoalescingContract
         if (obj.Sections.Any(section => section.Name == SectionName)) throw new ElfFormatException("Duplicate coalescing contract");
         using MemoryStream stream = new();
         using BinaryWriter writer = new(stream, Utf8, leaveOpen: true);
+        DefinitionIndex index = new(obj);
         writer.Write(0x4c414f43u); writer.Write(1); writer.Write(semantics.Count); // COAL
         foreach (var record in semantics.OrderBy(record => record.Key, StringComparer.Ordinal))
         {
-            Symbol[] symbols = obj.Symbols.Where(symbol => symbol.Name == record.Key && symbol.IsDefined && symbol.Global).ToArray();
-            if (symbols.Length != 1 || record.Value.Length != 32) throw new ElfFormatException("Invalid coalescing definition " + record.Key);
+            IReadOnlyList<Symbol> symbols = index.Globals(record.Key);
+            if (symbols.Count != 1 || record.Value.Length != 32) throw new ElfFormatException("Invalid coalescing definition " + record.Key);
             byte[] name = Utf8.GetBytes(record.Key);
             if (name.Length == 0 || name.Length > 4096 || record.Key.Contains('\0')) throw new ElfFormatException("Invalid coalescing name");
             writer.Write(name.Length); writer.Write(name); writer.Write(record.Value);
-            writer.Write(DefinitionFingerprint.Compute(obj, symbols[0]));
+            writer.Write(DefinitionFingerprint.Compute(index, symbols[0]));
         }
         Section section = new(SectionName, SectionKind.Note);
         section.Bytes.AddRange(stream.ToArray()); obj.Sections.Add(section);
@@ -44,6 +45,7 @@ public static class CoalescingContract
             int count = reader.ReadInt32();
             if (count < 0 || count > (stream.Length - stream.Position) / 69) throw new ElfFormatException("Invalid coalescing record count");
             HashSet<string> seen = new(StringComparer.Ordinal);
+            DefinitionIndex index = new(obj);
             for (int i = 0; i < count; i++)
             {
                 int length = reader.ReadInt32();
@@ -52,8 +54,8 @@ public static class CoalescingContract
                 byte[] semantic = reader.ReadBytes(32), native = reader.ReadBytes(32);
                 if (name.Contains('\0') || !seen.Add(name)) throw new ElfFormatException("Invalid or duplicate coalescing name");
                 if (obj.SuppressedDefinitions.Contains(name)) continue;
-                Symbol[] symbols = obj.Symbols.Where(symbol => symbol.Name == name && symbol.IsDefined && symbol.Global).ToArray();
-                if (symbols.Length != 1 || !DefinitionFingerprint.Compute(obj, symbols[0]).SequenceEqual(native))
+                IReadOnlyList<Symbol> symbols = index.Globals(name);
+                if (symbols.Count != 1 || !DefinitionFingerprint.Compute(index, symbols[0]).SequenceEqual(native))
                     throw new ElfFormatException("Coalescing definition integrity mismatch: " + name);
                 result.Add(name, semantic);
             }
