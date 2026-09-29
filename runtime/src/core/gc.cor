@@ -2135,8 +2135,12 @@ static class Gc
     /// does not map and unmap a page each time.
     static long PoolLimit()
     {
-        long share = HeapChunks.HeapBytes / 64;
-        return share > 8 * HeapChunks.PageBytes ? share : 8 * HeapChunks.PageBytes;
+        // WHAT THE NEXT CYCLE WILL ALLOCATE: the pages emptied by this sweep
+        // are the ones the program is about to fill again. Kept to a sixty-
+        // fourth of the heap, the rest were unmapped and mapped straight back
+        // -- a sorted index insert and removal each, a sixth of a compile.
+        long want = _threshold;
+        return want > 8 * HeapChunks.PageBytes ? want : 8 * HeapChunks.PageBytes;
     }
 
     /// A page with nothing alive in it, off its list and pooled or given
