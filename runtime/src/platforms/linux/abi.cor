@@ -128,6 +128,9 @@ static class Call
     public const long RecvFrom = 45;
     public const long RecvMsg = 47;
     public const long Shutdown = 48;
+    public const long InotifyAddWatch = 254;    // (fd, path, mask) -> wd
+    public const long InotifyRmWatch = 255;     // (fd, wd)
+    public const long InotifyInit1 = 294;       // (flags: IN_NONBLOCK 0x800, IN_CLOEXEC 0x80000) -> fd
 }
 #else
 /// The i386 system-call numbers this library uses, from asm/unistd_32.h. The

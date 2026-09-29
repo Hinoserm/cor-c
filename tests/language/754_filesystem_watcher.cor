@@ -1,0 +1,35 @@
+// test: filesystem watcher
+// expect-exit: 0
+// expect-output:
+// created True seen.txt
+//
+// FileSystemWatcher over inotify(7): a file made in a watched directory by
+// another thread is reported to WaitForChanged, by name. The inotify calls
+// are numbered per architecture; long mode had none, and no program using
+// the runtime compiled for it.
+
+using System;
+using System.IO;
+using System.Threading;
+
+static class Program
+{
+    static int Main()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "corc-watch-" + Environment.ProcessId);
+        Directory.CreateDirectory(dir);
+        using FileSystemWatcher watcher = new FileSystemWatcher(dir);
+        Thread maker = new Thread(() =>
+        {
+            Thread.Sleep(100);
+            File.WriteAllText(Path.Combine(dir, "seen.txt"), "x");
+        });
+        maker.Start();
+        WaitForChangedResult got = watcher.WaitForChanged(WatcherChangeTypes.Created, 5000);
+        maker.Join();
+        Console.WriteLine("created " + (!got.TimedOut && got.ChangeType == WatcherChangeTypes.Created) + " " + got.Name);
+        File.Delete(Path.Combine(dir, "seen.txt"));
+        Directory.Delete(dir);
+        return 0;
+    }
+}
