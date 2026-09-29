@@ -143,7 +143,13 @@ static class Platform
     /// mark, that no old object points at a young one it is about to sweep.
     public static bool VerifyGenerations() => EnvironmentFlag("CORSAC_GC_VERIFY=");
 
-    public static bool VerifyFrees() => EnvironmentFlag("CORSAC_VERIFY_FREES=");
+    public static bool VerifyFrees() => EnvironmentFlag("CORSAC_VERIFY_FREES=") && EnvironmentByte("CORSAC_VERIFY_FREES=") != 'f';
+
+    /// CORSAC_VERIFY_FREES=f: only the fields freed with their owner
+    /// (Runtime.FreeField) are checked -- poisoned, kept, their free recorded
+    /// -- and every other free gives its block back as usual, so the heap is
+    /// reused the way an unchecked run reuses it.
+    public static bool VerifyFieldFrees() => EnvironmentByte("CORSAC_VERIFY_FREES=") == 'f';
 
     /// CORSAC_FREE_LOG=1: every field free the compiler wrote is recorded in a
     /// ring (Runtime.FreeLog), for a debugger or a scan of the process to

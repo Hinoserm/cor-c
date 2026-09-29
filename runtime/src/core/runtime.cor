@@ -622,6 +622,11 @@ static class Runtime
             {
                 LogFree(held, at, offset, Sys.Peek(Sys.FramePointer() + WordSize.Bytes));
             }
+            if (Gc.VerifyingFieldFrees)
+            {
+                Gc.FreeFieldChecked(held);
+                return;
+            }
             Gc.Free(held);
         }
     }

@@ -2293,6 +2293,7 @@ static class Gc
     static void Start()
     {
         _verify = Platform.VerifyFrees();
+        VerifyingFieldFrees = Platform.VerifyFieldFrees();
         IgnoredFrees = Platform.IgnoreFrees();
         SkippedFreePaths = Platform.SkippedFreePaths();
         GuardReleases = Platform.GuardReleases();
@@ -2300,7 +2301,7 @@ static class Gc
         {
             Runtime.StartFreeLog();
         }
-        if (_verify)
+        if (_verify || VerifyingFieldFrees)
         {
             StartQuarantine();
         }
@@ -2639,6 +2640,22 @@ static class Gc
         return _verify;
     }
 
+    /// CORSAC_VERIFY_FREES=f: only field frees are checked (Runtime.FreeField).
+    public static bool VerifyingFieldFrees;
+
+    /// A field free in the checked mode for field frees: poisoned and kept,
+    /// its free recorded in it, under the heap lock.
+    public static void FreeFieldChecked(long at)
+    {
+        if (at == 0 || GcLock.HeldByMe())
+        {
+            return;
+        }
+        GcLock.Enter();
+        VerifyFree(at);
+        GcLock.Exit();
+    }
+
     // THE LAST FREES KEPT, in the checked mode. A block freed twice is found
     // by its pattern only while it is still the freed block: once the
     // collector has taken it back and handed it out again, a second free
@@ -2650,12 +2667,18 @@ static class Gc
     // large unit makes, so a free that comes long after the block's first
     // is caught too; the ring is mapped lazily and only this mode has one.
     // Its first word counts the frees.
-    const long QuarantineEntries = 16777216;
+    // Four million when only the field frees are checked, which are fewer.
+    // A plain field set in StartQuarantine: the collector has no static
+    // initialiser to run.
+    const long QuarantineAll = 16777216;
+    const long QuarantineFields = 4194304;
+    static long _quarantineEntries;
     static long _quarantine;
 
     static void StartQuarantine()
     {
-        long bytes = (QuarantineEntries + 1) * WordSize.Bytes;
+        _quarantineEntries = _verify ? QuarantineAll : QuarantineFields;
+        long bytes = (_quarantineEntries + 1) * WordSize.Bytes;
         long ring = Platform.Map(bytes);
         if (ring != 0 && Runtime.RegisterRoots(ring + WordSize.Bytes, ring + bytes))
         {
@@ -2670,7 +2693,7 @@ static class Gc
             return;
         }
         long n = Sys.AtomicAdd(_quarantine, 1);
-        Sys.Poke(_quarantine + WordSize.Bytes + (n % QuarantineEntries) * WordSize.Bytes, at);
+        Sys.Poke(_quarantine + WordSize.Bytes + (n % _quarantineEntries) * WordSize.Bytes, at);
     }
 
     /// In the checked mode, a field free (Runtime.FreeField) whose OWNER has
