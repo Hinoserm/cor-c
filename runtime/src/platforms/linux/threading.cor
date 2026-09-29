@@ -381,8 +381,10 @@ static class Native
     public static void WaitFor(long at, long expect, long nanoseconds)
     {
         long timeout = Sys.ThreadBlock() + Tls.Scratch;
-        Sys.PokeWord(timeout, nanoseconds / 1000000000);
-        Sys.PokeWord(timeout + 4, nanoseconds % 1000000000);
+        // A timespec is two words, whatever the word is: 32-bit halves at 0
+        // and 4 were a garbage timeout on every timed wait in long mode.
+        Sys.Poke(timeout, nanoseconds / 1000000000);
+        Sys.Poke(timeout + WordSize.Bytes, nanoseconds % 1000000000);
         Runtime.BeginBlocking();
         Sys.Syscall(Futex, at, FutexWait, expect, timeout, 0, 0);
         Runtime.EndBlocking();
@@ -1068,7 +1070,7 @@ static partial class Monitor
         long word = Sys.SyncWord(obj);
         long me = Owner();
 
-        if (me == 0 || (Sys.PeekWord(word) & ~Asleep) != me)
+        if (me == 0 || (Sys.Peek(word) & ~Asleep) != me)
         {
             throw new SynchronizationLockException();
         }
@@ -1144,7 +1146,7 @@ static partial class Monitor
         long word = Sys.SyncWord(obj);
         long me = Owner();
 
-        if (me == 0 || (Sys.PeekWord(word) & ~Asleep) != me)
+        if (me == 0 || (Sys.Peek(word) & ~Asleep) != me)
         {
             throw new SynchronizationLockException();
         }
@@ -1195,8 +1197,9 @@ static partial class Monitor
 /// sets -- the futex word it sleeps on.
 class MonitorWaiter
 {
-    // LAYOUT: first instance field, at Atom.FirstWord (see Atom).
-    int _signalled;
+    // LAYOUT: first instance field, at Atom.FirstWord (see Atom), and a
+    // WORD, as the other waiters' are.
+    nint _signalled;
     int _pad;
 
     public long Word;

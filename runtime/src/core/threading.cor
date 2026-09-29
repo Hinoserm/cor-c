@@ -2986,7 +2986,10 @@ static partial class Monitor
             Sys.AtomicSwap(word, 0);
             return;
         }
-        if ((Sys.PeekWord(word) & ~Asleep) != me)
+        // THE WHOLE WORD: an owner is a thread block's address, above 4 GB in
+        // long mode, and PeekWord reads 32 bits of it -- every lock taken on a
+        // 64-bit thread was "not held" by it on the way out.
+        if ((Sys.Peek(word) & ~Asleep) != me)
         {
             throw new SynchronizationLockException();
         }
@@ -3006,7 +3009,7 @@ static partial class Monitor
             throw new ArgumentNullException("obj");
         }
         long me = Owner();
-        long seen = Sys.PeekWord(Sys.SyncWord(obj));
+        long seen = Sys.Peek(Sys.SyncWord(obj));
         return me == 0 ? seen != 0 : (seen & ~Asleep) == me;
     }
 
@@ -3027,7 +3030,7 @@ static partial class Monitor
 
         while (true)
         {
-            long seen = Sys.PeekWord(word);
+            long seen = Sys.Peek(word);
 
             if (seen == 0)
             {
@@ -3350,9 +3353,11 @@ namespace System.Threading
     /// until its task is done, as Task.Wait does.
     class SemaphoreSlim : IDisposable
     {
-        // LAYOUT: these two must stay the first instance fields (see Atom).
-        int _count;
-        int _lock;
+        // LAYOUT: these two must stay the first instance fields (see Atom),
+        // and WORDS: as ints, two of them shared the first word in long mode,
+        // Atom.SecondWord fell on _max, and the gate never read free.
+        nint _count;
+        nint _lock;
 
         readonly int _max;
         readonly List<SemaphoreWaiter> _waiters = new List<SemaphoreWaiter>();
@@ -3378,7 +3383,7 @@ namespace System.Threading
             Atom.CheckLayout();
         }
 
-        public int CurrentCount => _count;
+        public int CurrentCount => (int)_count;
 
         public void Wait()
         {
@@ -3489,7 +3494,7 @@ namespace System.Threading
 
             long gate = Atom.At(this, Atom.SecondWord);
             Atom.Enter(gate);
-            int previous = _count;
+            int previous = (int)_count;
             if (_max - previous < releaseCount)
             {
                 Atom.Exit(gate);
