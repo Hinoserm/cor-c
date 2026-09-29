@@ -43,6 +43,13 @@ public sealed class Monomorphiser
     /// </summary>
     public const string CanonName = "__canon";
 
+    /// <summary>
+    /// How many specialised types this process has made, and how many members
+    /// they carried: what a unit's imported generics cost, printed with the
+    /// declaration statistics.
+    /// </summary>
+    public static long Specialisations, SpecialisedMembers;
+
     /// <summary>Names that are NOT a machine word: narrower, or in the other bank.</summary>
     private static readonly HashSet<string> Narrow = new(StringComparer.Ordinal)
     {
@@ -616,6 +623,8 @@ public sealed class Monomorphiser
 
             _made[job.Name] = made;
             output.Types.Add(made);
+            Specialisations++;
+            SpecialisedMembers += made.Members.Count;
         }
         // AND AGAIN AFTER THE SPECIALISATIONS. Rewriting the queue above names
         // templates too -- EqualityComparer`1 reached only from a specialised

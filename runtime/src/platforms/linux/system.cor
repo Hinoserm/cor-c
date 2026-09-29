@@ -147,6 +147,11 @@ static class Platform
     /// by type, and says the largest on standard error.
     public static bool GcCensus() => EnvironmentFlag("CORSAC_GC_CENSUS=");
 
+    /// CORSAC_HEAP_CHECK=1: the heap's structure checked as every collection
+    /// begins and ends -- every chunk's chain, every buffer's, and the free
+    /// lists against what the walks found -- and the first faults said.
+    public static bool HeapCheck() => EnvironmentFlag("CORSAC_HEAP_CHECK=");
+
     public static bool VerifyFrees() => EnvironmentFlag("CORSAC_VERIFY_FREES=") && EnvironmentByte("CORSAC_VERIFY_FREES=") != 'f';
 
     /// CORSAC_VERIFY_FREES=f: only the fields freed with their owner

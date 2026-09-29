@@ -2329,6 +2329,7 @@ static class Gc
         SkippedFreePaths = Platform.SkippedFreePaths();
         GuardReleases = Platform.GuardReleases();
         _census = Platform.GcCensus();
+        _heapCheck = Platform.HeapCheck();
         if (Platform.FreeLog())
         {
             Runtime.StartFreeLog();
@@ -2851,6 +2852,178 @@ static class Gc
         Runtime.WriteLiteral(2, "gc: its field is freed now by:\n");
         Runtime.SayTrace(2, Sys.FramePointer());
         Platform.Exit(98);
+    }
+
+    // THE HEAP CHECKED (CORSAC_HEAP_CHECK): as every collection begins (0)
+    // and ends (1), with the heap lock held. Every chunk's blocks walked from
+    // its first to its end, stepping over the buffers threads are bumping in:
+    // each a size that fits, a header its footer agrees with; each listed free
+    // block counted. Every thread's buffer walked from its base to its bump
+    // pointer the same way. Every free list walked, each node a whole free
+    // block of its bin (IndexBlock), linked both ways. What the walks counted
+    // listed must be what the lists hold. The first faults are said, and the
+    // process ends with 94. A diagnostic: it walks the whole heap twice a
+    // collection.
+    static bool _heapCheck;
+    static long _heapCheckTable;
+    static long _heapCheckFaults;
+
+    static void CheckFault(string what, long at, long word, long when)
+    {
+        _heapCheckFaults = _heapCheckFaults + 1;
+        Runtime.WriteLiteral(2, what);
+        SayNumber(" -- at ", at);
+        SayNumber("gc heap check:   word ", word);
+        SayNumber("gc heap check:   when (0 before, 1 after a collection) ", when);
+        SayNumber("gc heap check:   cycle ", _cycle);
+        if (_heapCheckFaults >= 8)
+        {
+            Platform.Exit(94);
+        }
+    }
+
+    static void CheckHeap(long when)
+    {
+        if (_heapCheckTable == 0)
+        {
+            _heapCheckTable = Platform.Map(GcThreads.BufferTableBytes());
+            if (_heapCheckTable == 0)
+            {
+                return;
+            }
+        }
+        long buffers = GcThreads.CaptureBuffersInto(_heapCheckTable);
+        long listed = 0;
+        long chunk = HeapChunks.Newest();
+        while (chunk != 0)
+        {
+            long block = HeapChunks.First(chunk);
+            long end = chunk == _current ? _bump : HeapChunks.End(chunk);
+            if (end > HeapChunks.Limit(chunk) || end < block)
+            {
+                CheckFault("gc heap check: a chunk's end outside it", chunk, end, when);
+                end = block;
+            }
+            long step = 0;
+            while (block < end)
+            {
+                while (step < buffers && Sys.Peek(_heapCheckTable + step * (2 * WordSize.Bytes)) < block)
+                {
+                    step = step + 1;
+                }
+                if (step < buffers && Sys.Peek(_heapCheckTable + step * (2 * WordSize.Bytes)) == block)
+                {
+                    block = Sys.Peek(_heapCheckTable + step * (2 * WordSize.Bytes) + WordSize.Bytes);
+                    step = step + 1;
+                    continue;
+                }
+                long word = Sys.Peek(block);
+                long size = word & SizeMask;
+                if (size < Smallest || block + size > end)
+                {
+                    CheckFault("gc heap check: a chunk's chain breaks", block, word, when);
+                    break;
+                }
+                if (step < buffers && Sys.Peek(_heapCheckTable + step * (2 * WordSize.Bytes)) < block + size)
+                {
+                    CheckFault("gc heap check: a buffer begins inside a block", block, Sys.Peek(_heapCheckTable + step * (2 * WordSize.Bytes)), when);
+                }
+                if (Sys.Peek(block + size - FooterBytes) != word)
+                {
+                    CheckFault("gc heap check: a header and its footer disagree", block, Sys.Peek(block + size - FooterBytes), when);
+                }
+                if ((word & FlagFree) != 0 && !IsInPlace(block))
+                {
+                    listed = listed + 1;
+                }
+                block = block + size;
+            }
+            chunk = HeapChunks.Next(chunk);
+        }
+        // THE BUFFERS, each its own chain up to where its thread has bumped.
+        // A block freed in place is free and on no list; one freed while the
+        // thread was alone is on a list.
+        long i = 0;
+        while (i < buffers)
+        {
+            long at = Sys.Peek(_heapCheckTable + i * (2 * WordSize.Bytes));
+            long upto = GcThreads.BufferPointer(at);
+            while (at < upto)
+            {
+                // Its thread bumps with no lock: the pointer moves first and
+                // the header is written after, and a free of its top block
+                // clears it before the pointer comes back. A zero is a block
+                // being made or unmade, and the walk ends there.
+                long word = Sys.Peek(at);
+                long size = word & SizeMask;
+                if (word == 0)
+                {
+                    break;
+                }
+                if (size < Smallest || at + size > upto)
+                {
+                    CheckFault("gc heap check: a buffer's chain breaks", at, word, when);
+                    break;
+                }
+                if (at + size < upto && Sys.Peek(at + size - FooterBytes) != word)
+                {
+                    CheckFault("gc heap check: a buffer's header and footer disagree", at, Sys.Peek(at + size - FooterBytes), when);
+                }
+                if ((word & FlagFree) != 0 && !IsInPlace(at))
+                {
+                    listed = listed + 1;
+                }
+                at = at + size;
+            }
+            i = i + 1;
+        }
+        // THE LISTS.
+        long nodes = 0;
+        long small = 0;
+        if (_bins != 0)
+        {
+            long bin = 0;
+            while (bin < Bins)
+            {
+                long node = BinHead(bin);
+                long previous = 0;
+                if (BinMarked(bin) != (node != 0))
+                {
+                    CheckFault("gc heap check: a bin's bit and its list disagree", bin, node, when);
+                }
+                while (node != 0)
+                {
+                    nodes = nodes + 1;
+                    if (bin <= BinOf(ExactLimit)) small = small + 1;
+                    if (!IndexBlock(node, bin))
+                    {
+                        CheckFault("gc heap check: a listed block is no free block of its bin", node, Sys.Peek(node), when);
+                        break;
+                    }
+                    if (Sys.Peek(node + HeaderBytes) != previous)
+                    {
+                        CheckFault("gc heap check: a listed block's back link is wrong", node, Sys.Peek(node + HeaderBytes), when);
+                        break;
+                    }
+                    if (nodes > listed + 1000000)
+                    {
+                        CheckFault("gc heap check: a list does not end", node, bin, when);
+                        break;
+                    }
+                    previous = node;
+                    node = Sys.Peek(node + KindAt);
+                }
+                bin = bin + 1;
+            }
+        }
+        if (nodes != listed)
+        {
+            CheckFault("gc heap check: the lists hold a different number of blocks than the walks found listed", nodes, listed, when);
+        }
+        if (small != _smallFree)
+        {
+            CheckFault("gc heap check: the small free count is wrong", small, _smallFree, when);
+        }
     }
 
     // THE CENSUS (CORSAC_GC_CENSUS): what a whole sweep found live, by what
@@ -4045,6 +4218,10 @@ static class Gc
         {
             return;
         }
+        if (_heapCheck)
+        {
+            CheckHeap(0);
+        }
 
         // An indirect call answers a word, so the clock is read modulo 2^32
         // microseconds; the difference of two is exact for any collection
@@ -4063,6 +4240,10 @@ static class Gc
         try { CollectBoth(); }
         finally
         {
+            if (_heapCheck)
+            {
+                CheckHeap(1);
+            }
             if (clock != 0)
             {
                 long took = (Sys.Call(clock, 0, 0, 0) - began) & 0xFFFFFFFF;
@@ -7148,6 +7329,25 @@ static class GcThreads
             i = i + 1;
         }
         return count;
+    }
+
+    /// The bump pointer of the registered thread whose buffer begins at
+    /// `start`, or `start` when none does. The heap lock is held.
+    public static long BufferPointer(long start)
+    {
+        if (_blocks == 0)
+        {
+            return _first != 0 && Sys.Peek(_first + Tls.AllocBase) == start ? Sys.Peek(_first + Tls.AllocPtr) : start;
+        }
+        for (long i = 0; i < _count; i++)
+        {
+            long t = At(i);
+            if (Sys.Peek(t + Tls.AllocBase) == start)
+            {
+                return Sys.Peek(t + Tls.AllocPtr);
+            }
+        }
+        return start;
     }
 
     public static long BufferTableBytes()
