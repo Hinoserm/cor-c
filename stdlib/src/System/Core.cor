@@ -9191,6 +9191,11 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         by = comparer;
     }
 
+    /// Both: sized once, keys compared the comparer's way.
+    public Dictionary(int capacity, IEqualityComparer<K>? comparer) : this(capacity) {
+        by = comparer;
+    }
+
     // The normal Dictionary copy constructor, including an explicit comparer.
     // The self-hosted assembler uses this to turn its relative code-label map
     // into the address-valued map for its second pass.  Starting from the

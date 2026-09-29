@@ -1,0 +1,24 @@
+// test: dictionary capacity comparer
+// expect-exit: 0
+// expect-output:
+// count 2 found True
+// missing False
+//
+// Dictionary(int capacity, IEqualityComparer<K>) as .NET has it: sized once,
+// its keys compared the comparer's way.
+
+using System;
+using System.Collections.Generic;
+
+static class Program
+{
+    static int Main()
+    {
+        Dictionary<string, int> table = new(100, StringComparer.OrdinalIgnoreCase);
+        table["Alpha"] = 1;
+        table["BETA"] = 2;
+        Console.WriteLine("count " + table.Count + " found " + table.ContainsKey("alpha"));
+        Console.WriteLine("missing " + table.ContainsKey("gamma"));
+        return 0;
+    }
+}
