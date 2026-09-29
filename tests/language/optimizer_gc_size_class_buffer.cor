@@ -5,8 +5,11 @@
 //
 // A buffer with room answers first: neither an unrelated free size nor a
 // hole of exactly the size asked for sends a request past it. Once the
-// buffer is retired, and before any collection has started recycling
-// chunks (Gc.NextHole), a request of a freed block's size takes that hole.
+// buffer is retired, a heap with room to grow answers with a new buffer --
+// not with the hole of the request's size, which would send every request
+// after it through the heap lock one block at a time -- and the hole stays
+// in the free index. (It used to be taken there; only a heap at its cap
+// takes its holes a request at a time now.)
 static class Program
 {
     static int Main()
@@ -37,7 +40,7 @@ static class Program
         Gc.Retire(thread);
         GcLock.Exit();
         long treeReuse = Runtime.Alloc(280);
-        if (treeReuse != treeHole || !Gc.CheckFreeIndex()) return 7;
+        if (treeReuse == treeHole || !Gc.CheckFreeIndex()) return 7;
         Runtime.Free(treeReuse);
         Runtime.Free(treeGuard);
         Runtime.Free(again);

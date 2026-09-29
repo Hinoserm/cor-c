@@ -1962,6 +1962,9 @@ static class Gc
 
     const long BufferBytes = 65536;
 
+    /// The smallest free fragment worth making a buffer of (Refill).
+    const long MinFragment = 4096;
+
     /// Queued blocks an allocating thread scans while a mark is under way.
     const long AssistBudget = 32;
 
@@ -1990,7 +1993,10 @@ static class Gc
         // buffer is a preference, not a minimum: otherwise thousands of
         // smaller holes can coexist with repeated megabyte heap growth.
         long arena = TakeFree(BufferBytes);
-        if (arena == 0) arena = TakeBufferFragment(need + Smallest);
+        // A FRAGMENT WORTH A BUFFER: at least a few kilobytes. A fragment
+        // barely larger than the request is a buffer used up by it, and the
+        // next allocation is back here.
+        if (arena == 0) arena = TakeBufferFragment(need + Smallest > MinFragment ? need + Smallest : MinFragment);
         if (arena != 0)
             ZeroWords(arena + HeaderBytes, arena + SizeOfBlock(arena) - FooterBytes);
         else arena = TakeBump(BufferBytes);
@@ -2464,10 +2470,21 @@ static class Gc
         // it is in, and that chunk is young for the next minor collection to
         // walk. Only when no chunk is left to recycle does an exact-size
         // hole from the free index win over a fresh buffer.
+        // A FULL BUFFER IS REPLACED BY A BUFFER while the heap has room to
+        // grow, never answered a block at a time. Preferring a free block of
+        // the request's exact size sent every allocation after the buffer
+        // ran out through here, under the heap lock, for as long as such
+        // blocks lasted -- the lock's release was the costliest instruction
+        // of a self-hosted compile's allocator. Only a heap that cannot grow
+        // -- at its cap, or at the 32-bit ceiling -- takes its holes one
+        // request at a time, which is what it has left. The small holes stay
+        // for the requests too large for a buffer, and for the sweep to join.
         bool room = Sys.Peek(tb + Tls.AllocPtr) != 0
             && Sys.Peek(tb + Tls.AllocPtr) + need + Smallest <= Sys.Peek(tb + Tls.AllocLimit);
+        bool tight = HeapChunks.Cap != 0 && HeapChunks.HeapBytes + BufferBytes > HeapChunks.Cap
+            || HeapCeiling != 0 && HeapChunks.HeapBytes + BufferBytes > HeapCeiling;
         if (need + Smallest <= BufferBytes
-            && (room || Recycle(tb, need) || (!HasReusableFree(need) && Refill(tb, need))))
+            && (room || Recycle(tb, need) || (!(tight && HasReusableFree(need)) && Refill(tb, need))))
         {
             long from = Sys.Peek(tb + Tls.AllocPtr);
 
