@@ -433,7 +433,7 @@ internal static class Peephole
     private static bool ForwardCopy(MInstr copy, MInstr user, HashSet<int> deadAfter)
     {
         if (!IsMov(copy) || copy.Operands[0] is not MReg a || copy.Operands[1] is not MReg b || a.Id == b.Id
-            || !deadAfter.Contains(a.Id) || !Understood(user) || user.Op == MOp.Xchg)
+            || !deadAfter.Contains(a.Id) || !Understood(user) || user.Op is MOp.Xchg or MOp.CallKeep)
         {
             return false;
         }
