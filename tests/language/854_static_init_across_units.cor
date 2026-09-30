@@ -1,0 +1,20 @@
+// test: statics made with object initialisers in another unit, read after a closed link
+// units: tests/language/support/854_units_static_init.cor
+// expect-exit: 0
+// expect-output:
+// x86 486 4 8 16 8 48 16 8 False
+// x86-64 k8 8 16 24 16 96 16 8 True
+using StaticUnits;
+
+static class Program
+{
+    static string Say(Machine m) => m.Name + " " + m.Cpu + " " + m.WordSize + " " + m.ObjectHeaderBytes + " " + m.ArrayHeaderBytes + " "
+        + m.ArrayCountOffset + " " + m.DescriptorBytes + " " + m.StaticBase + " " + m.Align64 + " " + m.NativeI64;
+
+    static int Main()
+    {
+        Console.WriteLine(Say(Machine.Current));
+        Console.WriteLine(Say(Machine.Large));
+        return 0;
+    }
+}

@@ -1,0 +1,30 @@
+// The other unit of 854_static_init_across_units: a class whose statics are objects made with initialisers.
+namespace StaticUnits;
+
+public sealed class Machine
+{
+    public required string Name { get; init; }
+    public string Cpu { get; init; } = "486";
+    public required int WordSize { get; init; }
+    public bool NativeI64 { get; init; }
+    public int ObjectHeaderBytes { get; init; }
+    public int ArrayHeaderBytes { get; init; }
+    public int ArrayCountOffset { get; init; }
+    public int DescriptorBytes { get; init; }
+    public int StaticBase { get; init; }
+    public int Align64 { get; init; }
+
+    public static readonly Machine Small = new()
+    {
+        Name = "x86", WordSize = 4, NativeI64 = false, ObjectHeaderBytes = 8, ArrayHeaderBytes = 16,
+        ArrayCountOffset = 8, DescriptorBytes = 48, StaticBase = 16, Align64 = 8,
+    };
+
+    public static readonly Machine Large = new()
+    {
+        Name = "x86-64", Cpu = "k8", WordSize = 8, NativeI64 = true, ObjectHeaderBytes = 16, ArrayHeaderBytes = 24,
+        ArrayCountOffset = 16, DescriptorBytes = 96, StaticBase = 16, Align64 = 8,
+    };
+
+    public static Machine Current { get; set; } = Small;
+}
