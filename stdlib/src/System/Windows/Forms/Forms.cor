@@ -1010,6 +1010,7 @@ public class Form : Control
     int _handle;
     bool _shown;
     bool _closed;
+    internal bool Closed { get { return _closed; } }
     FormBorderStyle _border = FormBorderStyle.Sizable;
     FormWindowState _state = FormWindowState.Normal;
     public FormStartPosition StartPosition = FormStartPosition.WindowsDefaultLocation;
@@ -5055,8 +5056,6 @@ public class MainMenu : Menu
 
 }
 
-/// A menu opened where the pointer is (.NET's ContextMenu): a control's
-/// right click opens its ContextMenu, or its parent's.
 /// .NET'S NotifyIcon: an icon in the notification area beside the clock
 /// (Windows' Shell_NotifyIcon). The seat keeps it while Visible; the bar
 /// hands presses on it back as mouse messages, raised here as .NET raises
@@ -5162,6 +5161,8 @@ public class NotifyIcon : IDisposable
     }
 }
 
+/// A menu opened where the pointer is (.NET's ContextMenu): a control's
+/// right click opens its ContextMenu, or its parent's.
 public class ContextMenu : Menu
 {
     public event EventHandler? Popup;
@@ -5736,10 +5737,16 @@ public static class Application
         if (_paintPending) PaintNow();
     }
 
+    // THE MAIN FORM, as .NET's Run(Form) takes one: its closing ends the
+    // loop, whatever other forms are open. Run() with none runs until Exit.
+    static Form? _main;
+
     public static void Run(Form main)
     {
+        _main = main;
         main.Show();
         Run();
+        _main = null;
     }
 
     /// The loop. Block for a message, dispatch it, paint what became stale,
@@ -5752,7 +5759,7 @@ public static class Application
     {
         _running = true;
         Seat seat = Seat.Current;
-        while (_running)
+        while (_running && (_main == null || !_main.Closed))
         {
             // WHAT NOBODY CAUGHT IS SHOWN, NOT SWALLOWED. An exception out of
             // a handler or a paint used to end the program with its trace

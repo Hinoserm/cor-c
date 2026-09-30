@@ -1100,7 +1100,8 @@ public class Seat : IDrawingTarget
             int at = 8 + i * 4;
             record[at] = (byte)v; record[at + 1] = (byte)(v >> 8); record[at + 2] = (byte)(v >> 16); record[at + 3] = (byte)(v >> 24);
         }
-        for (int i = 0; i < 63 && i < tip.Length; i++) record[1032 + i] = (byte)(tip[i] < 256 ? tip[i] : '?');
+        // The tip as UTF-8, as every seat text is (TrayIcons reads it so).
+        SeatText.Put(record, 1032, 64, tip);
         Flush();
         Ioctl(SeatIoctl.TraySet, Sys.ArrayData(record));
         long me = Ioctl(SeatIoctl.Whoami, 0);
@@ -1316,7 +1317,6 @@ public class Seat : IDrawingTarget
 }
 
 
-/// One shown window on the seat, as Seat.Windows() reports it.
 /// An icon in the notification area: whose, its number, its 16x16
 /// COLORREFs (-1 clear) and its tip.
 public class SeatTrayInfo
@@ -1327,6 +1327,7 @@ public class SeatTrayInfo
     public string Tip = "";
 }
 
+/// One shown window on the seat, as Seat.Windows() reports it.
 public class SeatWindowInfo
 {
     public int Handle;
