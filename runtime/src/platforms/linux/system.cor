@@ -399,6 +399,13 @@ static class Platform
     /// cache's, shared by every process that maps it and given back under
     /// pressure like any cached page. The address, and its length in
     /// `length`; 0 when it cannot be mapped (the caller reads it instead).
+    /// The processor given up to whatever else is ready (sched_yield): a
+    /// thread spinning for a lock lets its holder run (GcLock.Enter).
+    public static void Yield()
+    {
+        Sys.Syscall(Call.Sched_Yield, 0, 0, 0);
+    }
+
     public static long MapReadOnly(string path, out long length)
     {
         length = 0;
