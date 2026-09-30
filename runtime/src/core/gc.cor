@@ -9183,6 +9183,7 @@ static class GcLock
         long me = Sys.ThreadBlock();
         if (me == 0) me = 1;
 
+        long spins = 0;
         while (Sys.Cas(at, 0, me) != 0)
         {
             // A thread spinning for this lock is a thread the collector is
@@ -9190,6 +9191,15 @@ static class GcLock
             if (IsCollecting())
             {
                 GcThreads.Park();
+            }
+            // THE HOLDER MAY BE WAITING FOR A PROCESSOR, and on one processor
+            // it is certainly waiting for this one: spinning out the rest of
+            // the tick for it helps nobody. After a short spin, the processor
+            // is given up (sched_yield; a ring-1 kernel's hook), and the
+            // holder can run and let go.
+            if (++spins % 64 == 0)
+            {
+                Platform.Yield();
             }
             Sys.Pause();
         }

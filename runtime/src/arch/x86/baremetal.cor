@@ -188,6 +188,16 @@ static class Platform
         }
     }
 
+    /// The processor given up to whatever else is ready, by the hook -- a
+    /// ring-1 kernel's, which asks the kernel -- or, with none (the kernel
+    /// itself, which has no one to ask), nothing.
+    public static long YieldHook;
+
+    public static void Yield()
+    {
+        if (YieldHook != 0) Sys.Call(YieldHook, 0, 0, 0);
+    }
+
     /// A file mapped read-only by the hook -- a ring-1 kernel's, whose pages
     /// are the file cache's own -- called with the path's UTF-16 units, their
     /// count and where to write the length. No hook: 0, and the caller reads
