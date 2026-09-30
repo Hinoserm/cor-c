@@ -8,8 +8,9 @@ namespace Corsac.Lang.X86;
 ///
 /// Liveness comes from a dataflow pass over the machine CFG, because the IR
 /// is not SSA and a virtual register may be defined in several places. Each
-/// virtual register gets one interval, the hull of every position it is
-/// live at; the physical registers the selector named (EAX around a
+/// virtual register gets one interval, the exact ranges of positions it is
+/// live at, holes and all: another interval may share its register in the
+/// holes. The physical registers the selector named (EAX around a
 /// divide, ECX for a shift count, the caller-saved three at every call) are
 /// not intervals but fixed busy positions that no interval may overlap.
 ///
@@ -25,7 +26,12 @@ namespace Corsac.Lang.X86;
 /// reloads from it, and each such read or write is a short interval of its
 /// own covering just that instruction, which the scan allocates like any
 /// other. Where the instruction accepts a memory operand the slot is used
-/// in place and no register is needed at all.
+/// in place and no register is needed at all. Three things keep that from
+/// costing a load per read: reads before the spill point keep the register
+/// when nothing after it flows back to them; an interval about to be
+/// spilled keeps a register up to its first conflict in its first block;
+/// and a reload's register carries the value on to the following reads in
+/// the same straight run of blocks while it stays free.
 /// </summary>
 internal sealed class Allocator
 {
@@ -598,8 +604,16 @@ internal sealed class Allocator
         {
             return false;
         }
-        List<(int S, int E)> ra = a.Ranges ?? new() { (a.Start, a.End) };
-        List<(int S, int E)> rb = b.Ranges ?? new() { (b.Start, b.End) };
+        if (a.Ranges is null)
+        {
+            return b.Ranges is null || Touches(b.Ranges, a.Start, a.End);
+        }
+        if (b.Ranges is null)
+        {
+            return Touches(a.Ranges, b.Start, b.End);
+        }
+        List<(int S, int E)> ra = a.Ranges;
+        List<(int S, int E)> rb = b.Ranges;
         int x = 0, y = 0;
         while (x < ra.Count && y < rb.Count)
         {
@@ -617,6 +631,18 @@ internal sealed class Allocator
             }
         }
         return false;
+    }
+
+    /// <summary>Whether sorted ranges meet the positions start..end.</summary>
+    private static bool Touches(List<(int S, int E)> ranges, int start, int end)
+    {
+        int lo = 0, hi = ranges.Count;
+        while (lo < hi)
+        {
+            int mid = (lo + hi) / 2;
+            if (ranges[mid].E < start) lo = mid + 1; else hi = mid;
+        }
+        return lo < ranges.Count && ranges[lo].S <= end;
     }
 
     /// <summary>Whether a register is taken by any placed interval live where this one is.</summary>
