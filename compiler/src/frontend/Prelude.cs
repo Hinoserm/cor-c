@@ -1,8 +1,6 @@
 #nullable enable
 namespace Corsac.Lang;
 
-
-
 /// <summary>
 /// The built-in surface a program can reach without any library. Deliberately
 /// tiny: it exists so a compiled program can prove it ran, and everything else
@@ -12,7 +10,6 @@ public static class Prelude
 {
     public const string TypeName = "Sys";
     public const string MathType = "Math";
-    public const string MachineType = "Machine";
     public const string Raw0 = "Raw0";
     public const string Raw1 = "Raw1";
     public const string Raw2 = "Raw2";
@@ -478,9 +475,6 @@ public static class Prelude
             public static int StringFind(string s, int at, int value, int count) { return 0; }
             public static int StringFindReverse(string s, int at, int value, int count) { return 0; }
             public static int StringSearch(string s, int at, string what, int whatAt, int count) { return 0; }
-            public static int StringSpan(string s, int at, int count, long bitmap) { return 0; }
-            public static int StringBreak(string s, int at, int count, long bitmap) { return 0; }
-            public static int StringTranslate(string s, int at, int count, long table) { return 0; }
             public static int StringLower(string s, int at, int count) { return 0; }
             public static int StringUpper(string s, int at, int count) { return 0; }
             public static long StringNumber(string s, int at, int count) { return 0; }
@@ -491,38 +485,8 @@ public static class Prelude
             // a reference, which is how an allocator hands back what it found.
             public static long Peek(long at) { return 0; }
             public static void Poke(long at, long value) { }
-            public static long LoadIndexed(long baseAddress, long index) { return 0; }
-            public static long LoadAcquire(long address) { return 0; }
-            public static long LoadUnsignedByte(long address) { return 0; }
-            public static long LoadUnsignedHalf(long address) { return 0; }
-            public static long LoadUnsignedWord(long address) { return 0; }
-            public static long LoadAcquireUnsignedByte(long address) { return 0; }
-            public static long LoadAcquireUnsignedHalf(long address) { return 0; }
-            public static long LoadAcquireUnsignedWord(long address) { return 0; }
-            public static void StoreRelease(long address, long value) { }
-            public static void Prefetch(long address) { }
-            public static void PrefetchWrite(long address) { }
-            public static long LoadIndexedUnsignedByte(long baseAddress, long index) { return 0; }
-            public static long LoadIndexedUnsignedHalf(long baseAddress, long index) { return 0; }
-            public static long LoadIndexedUnsignedWord(long baseAddress, long index) { return 0; }
-            public static void StoreIndexedByte(long baseAddress, long index, long value) { }
-            public static void StoreIndexedHalf(long baseAddress, long index, long value) { }
-            public static void StoreIndexedWord(long baseAddress, long index, long value) { }
-            public static void StoreIndexed(long baseAddress, long index, long value) { }
             public static void MemoryCopy(long dst, long src, long count) { }
-            public static void MemoryCopyNoCache(long destination, long source, long count) { }
-            public static long CacheFlush(long address, long byteCount) { return 0; }
-            public static long CacheInvalidate(long address, long byteCount) { return 0; }
-            public static long CacheFlushInvalidate(long address, long byteCount) { return 0; }
-            public static long CacheZero(long address, long byteCount) { return 0; }
-            public static long InstructionCacheInvalidate(long address, long byteCount) { return 0; }
-            public static void CacheFlushAll() { }
             public static long Allocate(long byteCount) { return 0; }
-            public static long ProbeDevice(long selector) { return 0; }
-            public static long HaltIo(long channel) { return 0; }
-            public static long ReadStringRegister(int selector) { return 0; }
-            public static long ReadIoStatus(long channel) { return 0; }
-            public static void WriteIoStatus(long channel, long value) { }
             public static long ProbeRange(long address, long byteCount, long permissions, out long status) { status = 0; return 0; }
             public static long PageProbe(long address, out long status) { status = 0; return 0; }
             public static long PageWalk(long address, out long status) { status = 0; return 0; }
@@ -531,18 +495,7 @@ public static class Prelude
             public static long PageUnmap(long address, out long status) { status = 0; return 0; }
             public static void PageCopy(ref long destination, ref long source, ref long pages, ref long status) { }
             public static void CrossAddressCopy(ref long primary, ref long secondary, ref long bytes, ref long status) { }
-            public static long LoadPhysicalProtection(long descriptor, long count) { return 0; }
-            public static void LockPhysicalProtection() { }
-            public static void EnterGate(long selector) { }
-            public static void ReturnGate() { }
-            public static void ReturnInterrupt() { }
-            public static void ReturnMachineCheck() { }
-            public static long TraceMarker(long marker) { return 0; }
             public static void TraceRead(out long source, out long destination, out long kind, out long valid) { source = 0; destination = 0; kind = 0; valid = 0; }
-            public static long ArmWatchpoint(long slot, long address, long control) { return 0; }
-            public static long DisarmWatchpoint(long slot) { return 0; }
-            public static long ContextSave(long descriptor, long groups, long generation) { return 0; }
-            public static long ContextLoad(long descriptor, long groups, long generation) { return 0; }
             public static void MemorySet(long dst, long value, long count) { }
 
             // Mandatory core arithmetic and bit operations. MultiplyHigh is
@@ -551,17 +504,12 @@ public static class Prelude
             public static long MultiplyHigh(long left, long right) { return 0; }
             public static long MultiplyHighUnsigned(long left, long right) { return 0; }
             public static long ReverseBits(long value) { return 0; }
-            public static long ReverseBitsByte(long value) { return 0; }
-            public static long ReverseBitsHalf(long value) { return 0; }
-            public static long ReverseBitsWord(long value) { return 0; }
             public static long PopulationCount(long value) { return 0; }
             public static long LeadingZeroCount(long value) { return 0; }
             public static long TrailingZeroCount(long value) { return 0; }
             public static long ByteSwap(long value) { return 0; }
             public static long RotateLeft(long value, long count) { return 0; }
             public static long RotateRight(long value, long count) { return 0; }
-            public static long RotateLeftWord(long value, long count) { return 0; }
-            public static long RotateRightWord(long value, long count) { return 0; }
             public static ulong MinUnsigned(ulong left, ulong right) { return 0; }
             public static ulong MaxUnsigned(ulong left, ulong right) { return 0; }
             public static long Max(long left, long right) { return 0; }
@@ -569,36 +517,15 @@ public static class Prelude
             public static long ClearBit(long value, long bit) { return 0; }
             public static bool TestBit(long value, long bit) { return false; }
             public static long LowBitMask(int bits) { return 0; }
-            public static long Parity(long value) { return 0; }
-            public static long BitFieldInsert(long original, long value, int position, int length) { return 0; }
-            public static long BitFieldExtract(long value, int position, int length) { return 0; }
-            public static long BitDeposit(long value, long mask) { return 0; }
-            public static long BitExtract(long value, long mask) { return 0; }
-            public static long Interleave(long x, long y) { return 0; }
-            public static long Deinterleave(long value, bool odd) { return 0; }
-            public static long ConstantTimeSelect(long selected, long alternate, bool condition) { return 0; }
             public static long CarrylessMultiply(long left, long right, out long high) { high = 0; return 0; }
             public static long GaloisFieldMultiply(long left, long right) { return 0; }
             public static long MultiplyAccumulate(long left, long right, long carry, out long high) { high = 0; return 0; }
-            public static bool TryDesKey(long key, int keyRegisterBase) { return false; }
             public static bool TryDesEncrypt(long block, int keyRegisterBase, out long result) { result = 0; return false; }
             public static bool TryDesDecrypt(long block, int keyRegisterBase, out long result) { result = 0; return false; }
-            public static bool TryHashBlock(long stateAddress, long blockAddress, int bits) { return false; }
-            public static bool TryChaCha20Block(long outputAddress, long stateAddress) { return false; }
-            public static bool TryField25519Multiply(long output, long left, long right) { return false; }
-            public static bool TryField25519Square(long output, long input) { return false; }
-            public static bool TryField25519Reduce(long output, long input) { return false; }
-            public static bool TryPoly1305Block(long accumulator, long r, long block, bool complete) { return false; }
-            public static bool TryGHashBlock(long state, long block, long h) { return false; }
             public static bool TryAesEncryptBlock(long state, long roundKeys, int rounds) { return false; }
             public static bool TryAesDecryptBlock(long state, long roundKeys, int rounds) { return false; }
             public static bool TryAesKey128Next(long output, long previous, int roundConstant) { return false; }
             public static bool TryAesKey256Next(long output, long earlier, long recent, int control) { return false; }
-            public static long CryptoAssistCapabilities() { return 0; }
-            public static bool TryHashInitialize(int algorithm) { return false; }
-            public static bool TryHashMd5Block(long blockAddress) { return false; }
-            public static bool TryHashSha1Block(long blockAddress) { return false; }
-            public static bool TryHashSha2Block(long blockAddress, int bits) { return false; }
             public static bool TryHashFinish(ref long outputCursor, long partialAddress, long partialBytes, long totalBytes) { return false; }
             public static bool TryRandom(out long value) { value = 0; return false; }
             public static bool TryModReduce(long high, long low, int hashRegister, out long result) { result = 0; return false; }
@@ -610,30 +537,11 @@ public static class Prelude
             public static bool TryBitFlush(ref long address, ref long cursor, ref long progress, int option) { return false; }
             public static bool TryBitMatrixTranspose(long destinationDescriptor, long sourceDescriptor, ref long row, ref long state) { return false; }
             public static bool TryBitMatrixMultiply(long destinationDescriptor, long leftDescriptor, long rightDescriptor, ref long state) { return false; }
-            public static bool TryMoveToDecimal(int register, long low, long high) { return false; }
             public static bool TryMoveFromDecimal(int register, out long low, out long high) { low = 0; high = 0; return false; }
-            public static bool TryMoveToVectorLane(int register, long value, long lane, int vectorBits, int elementBits) { return false; }
             public static bool TryMoveFromVectorLane(int register, long lane, int vectorBits, int elementBits, out long value) { value = 0; return false; }
-            public static bool TryWriteCompressionRegister(int register, long value) { return false; }
             public static bool TryReadCompressionRegister(int register, out long value) { value = 0; return false; }
-            public static bool TryDecimalNegate(int destination, int source) { return false; }
-            public static bool TryDecimalAbsolute(int destination, int source) { return false; }
-            public static bool TryDecimalLoad(int register, long address) { return false; }
-            public static bool TryDecimalStore(int register, long address) { return false; }
-            public static bool TryDecimalFromInteger(int register, long value) { return false; }
             public static bool TryDecimalToInteger(int register, out long value) { value = 0; return false; }
             public static bool TryDecimalCompare(int left, int right, out long result) { result = 0; return false; }
-            public static bool TryDecimalAdd(int destination, int left, int right) { return false; }
-            public static bool TryDecimalSubtract(int destination, int left, int right) { return false; }
-            public static bool TryDecimalMultiply(int destination, int left, int right) { return false; }
-            public static bool TryDecimalDivide(int destination, int left, int right) { return false; }
-            public static bool TryDecimalRemainder(int destination, int left, int right) { return false; }
-            public static bool TryDecimalTruncate(int destination, int source) { return false; }
-            public static bool TryDecimalFloor(int destination, int source) { return false; }
-            public static bool TryDecimalCeiling(int destination, int source) { return false; }
-            public static bool TryDecimalRound(int destination, int source, int scale, int mode) { return false; }
-            public static bool TryDecimalScale(int destination, int source, int scale, int mode) { return false; }
-            public static bool TryDecimalFromFloat(int register, double value) { return false; }
             public static bool TryDecimalToFloat(int register, out double value) { value = 0.0; return false; }
             public static bool TryDecimalPack(int register, long descriptor, ref long progress, out long status) { status = 0; return false; }
             public static bool TryDecimalUnpack(int register, ref long sourceCursor, long descriptor, ref long status) { return false; }
@@ -672,18 +580,7 @@ public static class Prelude
             public static bool TryInterfaceDispatch(long objectAddress, long interfaceDescriptor, long cacheDescriptor, out long target) { target = 0; return false; }
             public static bool TryVirtualDispatch(long objectAddress, long classDescriptor, long slot, out long target) { target = 0; return false; }
             public static bool TryUnwind(ref long cursor, long exceptionObject, long targetDescriptor, ref long state) { return false; }
-            public static bool TrySetVectorLength(long count, int vectorBits) { return false; }
-            public static bool TryVectorSplat(int register, long value, int vectorBits, int elementBits) { return false; }
-            public static bool TryVectorSelect(int destination, int selected, int alternate, long mask, int vectorBits, int elementBits) { return false; }
-            public static bool TryVectorShuffle(int destination, int source, int indexes, long mask, int vectorBits, int elementBits) { return false; }
-            public static bool TryVectorCompare(int maskRegister, int left, int right, long control, int vectorBits, int elementBits) { return false; }
             public static bool TryVectorReduce(int source, long mask, long reduction, int vectorBits, int elementBits, out long value) { value = 0; return false; }
-            public static bool TryVectorLoad(int register, long address, int mask, int vectorBits, int elementBits) { return false; }
-            public static bool TryVectorStore(int register, long address, int mask, int vectorBits, int elementBits) { return false; }
-            public static bool TryVectorLoadStrided(int register, long address, long stride, int mask, int vectorBits, int elementBits) { return false; }
-            public static bool TryVectorStoreStrided(int register, long address, long stride, int mask, int vectorBits, int elementBits) { return false; }
-            public static bool TryVectorGather(int register, long address, int indexes, long mask, int vectorBits, int elementBits) { return false; }
-            public static bool TryVectorScatter(int register, long address, int indexes, long mask, int vectorBits, int elementBits) { return false; }
 
             // A byte, a half word and a word, because that is what a structure
             // written down by somebody else is made of. Reading them out of a
@@ -698,25 +595,16 @@ public static class Prelude
             public static long PeekHalf(long at) { return 0; }
             public static long PeekWord(long at) { return 0; }
             public static void PokeByte(long at, long value) { }
+            // A USE OF A REFERENCE, and nothing else: the collector counts the
+            // object reachable up to here. What GC.KeepAlive is, for an object
+            // whose address was handed somewhere the collector does not look
+            // -- a request block, a system call -- and whose last use in the
+            // code is therefore before the callee is done with it.
+            public static void KeepAlive(object? value) { }
             public static void PokeHalf(long at, long value) { }
             public static void PokeWord(long at, long value) { }
 
-            // Where the stack is now, and the arena bounds this program was
-            // given. A heap has to know which memory is its to hand out.
-            // Re-enters a method that suspended: its frame becomes the frame
-            // pointer again and execution continues where it stopped. The
-            // method's own epilogue returns here, because the link register
-            // saved on the way in is this call's.
-            public static void Resume(long frame, long at) { }
-
             public static long Stack() { return 0; }
-
-            // Puts every register on the stack and takes them off again. A
-            // collector that scans the stack for things pointing into the heap
-            // has to scan the registers too, and the stack is the only place it
-            // can look at them.
-            public static void Spill() { }
-            public static void Unspill() { }
 
             // The whole of what makes anything written in this language safe
             // for more than one processor. Without these a read, a change and a
@@ -752,21 +640,6 @@ public static class Prelude
             public static long AtomicXorRelease(long at, long value) { return 0; }
             public static long AtomicXorSequential(long at, long value) { return 0; }
             public static long AtomicSwap(long at, long value) { return 0; }
-            public static long AtomicSwapRelaxed(long at, long value) { return 0; }
-            public static long AtomicSwapAcquire(long at, long value) { return 0; }
-            public static long AtomicSwapRelease(long at, long value) { return 0; }
-            public static long AtomicSwapSequential(long at, long value) { return 0; }
-            public static long AtomicMin(long at, long value) { return 0; }
-            public static long AtomicMinRelaxed(long at, long value) { return 0; }
-            public static long AtomicMinAcquire(long at, long value) { return 0; }
-            public static long AtomicMinRelease(long at, long value) { return 0; }
-            public static long AtomicMinSequential(long at, long value) { return 0; }
-            public static long AtomicMax(long at, long value) { return 0; }
-            public static long AtomicMaxRelaxed(long at, long value) { return 0; }
-            public static long AtomicMaxAcquire(long at, long value) { return 0; }
-            public static long AtomicMaxRelease(long at, long value) { return 0; }
-            public static long AtomicMaxSequential(long at, long value) { return 0; }
-            public static int AtomicClaim(long at, long eligible, int direction) { return 0; }
 
             // Golden unit-0x01 bulk-memory surface. These work on raw memory;
             // safe array and string operations remain in their libraries.
@@ -780,36 +653,11 @@ public static class Prelude
             // on a single card and the difference between working and working
             // most of the time on several.
             public static void Fence() { }
-            public static void Drain() { }
             public static void Breakpoint(long detail) { }
-            public static void SingleStep() { }
-            public static long ReadIoByte(long address) { return 0; }
-            public static long ReadIoHalf(long address) { return 0; }
-            public static long ReadIoWord(long address) { return 0; }
-            public static long ReadIo(long address) { return 0; }
-            public static void WriteIoByte(long address, long value) { }
-            public static void WriteIoHalf(long address, long value) { }
-            public static void WriteIoWord(long address, long value) { }
-            public static void WriteIo(long address, long value) { }
-
-            // Atomically checks a coherent word, registers its CFC watch, and
-            // parks while it still equals expect. Deadline is an absolute CFC
-            // TIME_COUNT value in microseconds, or zero for no deadline. The
-            // returned reason never replaces rechecking the watched word.
-            public static long WaitEq(long at, long expect, long deadline) { return 0; }
 
             // Says this processor is spinning and getting nowhere, so the
             // machine may let somebody else make progress.
             public static void Pause() { }
-
-            // The block of memory firmware gave THIS processor and no other.
-            // Where anything per-processor has to live, because statics are
-            // shared by definition.
-            public static long Self() { return 0; }
-            public static long FirmwareTable() { return 0; }
-            public static long FirmwareTableBytes() { return 0; }
-            public static long BootStackBase() { return 0; }
-            public static long BootStackBytes() { return 0; }
 
             // Where a method IS, so it can be handed to something that will
             // call it later: firmware starting a processor, a handler installed
@@ -843,71 +691,6 @@ public static class Prelude
             public static long CallNative(long fn, long a, long b, long c, long d, long e) { return 0; }
             public static long CallNative(long fn, long a, long b, long c, long d, long e, long f) { return 0; }
             public static long CallNative(long fn, long a, long b, long c, long d, long e, long f, long g) { return 0; }
-
-            // Five arguments, for calling a routine somebody else designed --
-            // a card driver takes slot, block, address, count and position.
-            public static long Call5(long fn, long a, long b, long c, long d, long e) { return 0; }
-
-            // Calls one native OPCF version-1 entry. The frame is exactly
-            // 0x60 bytes, stackTop names the top of the caller-owned private
-            // option-ROM stack, and countAt receives the callee's r2 result.
-            public static long CallOption(long fn, long frame, long stackTop, long countAt) { return 0; }
-            public static long Arena() { return 0; }
-            public static long ArenaEnd() { return 0; }
-            public static long StaticBase() { return 0; }
-            public static long StaticTop() { return 0; }
-
-            // Where THIS PROCESSOR takes memory from. A kernel has to be able
-            // to write them, because the arena is a fact about the program
-            // running and the register is a fact about the processor: move a
-            // program to another processor without carrying its arena and its
-            // next allocation is refused, on a machine with plenty of memory.
-            public static void SetArena(long at) { }
-            public static void SetArenaEnd(long at) { }
-
-            // ---- the two stacks a program has ----------------------------
-            //
-            // A trap from user mode is taken on the KERNEL's stack, and the
-            // program's own is put aside so it can be handed back. The machine
-            // does the swapping; these are how a kernel takes part in it.
-            //
-            // SetKernelSp says where the next trap from user mode is to be
-            // taken -- which is a fact about the program a processor is
-            // running, so it is written on every switch. UserSp reads back the
-            // stack the program was on, to be written down with the rest of
-            // its registers; SetUserSp is how a kernel resuming a DIFFERENT
-            // program says which stack that one should come back to.
-            public static long UserSp() { return 0; }
-            public static long StackPointer() { return 0; }
-            public static void SetUserSp(long at) { }
-            public static void SetKernelSp(long at) { }
-
-            // The architectural current-context software pointer. The system
-            // profile currently leaves it on the firmware-assigned processor
-            // block so protected entry can find its kernel dispatch state.
-            public static long Mine() { return 0; }
-            public static void SetMine(long at) { }
-
-            // ---- driving a card ------------------------------------------
-            //
-            // A command block is a little program for one device: a header, a
-            // list of operations, and somewhere to put the answers. These two
-            // hand one to a card, and the difference between them is the whole
-            // of what asynchrony is on this machine.
-            //
-            // Io waits. The answer is in the register before the instruction
-            // finishes, and nothing needs to be told about it afterwards.
-            //
-            // StartIo does not. It answers with what the card said AT THE TIME,
-            // which for a card that takes time is "in flight" -- and the caller
-            // is expected to go away and do something else. What brings it back
-            // is the interrupt the card raises when it is really finished, and
-            // the answer waits in the channel register until somebody reads it
-            // with IoStatus, because the register StartIo named belongs to
-            // whatever that code went on to do next.
-            public static long Io(long selector, long block) { return 0; }
-            public static long StartIo(long selector, long block) { return 0; }
-            public static long IoStatus(long selector) { return 0; }
 
             // ---- the x86 I/O space and the privileged instructions ---------
             //
@@ -982,27 +765,6 @@ public static class Prelude
             public static long ReadTsc() { return 0; }
             // swapgs: the kernel's GS base for the user's, on x86-64.
             public static void SwapGs() { }
-
-            // Stops this processor until an interrupt arrives.
-            //
-            // Not a spin. A processor here costs nothing and takes no time from
-            // the ones that are working, which is the difference between a
-            // program that waits and a program that is merely not finished.
-            public static void Idle() { }
-
-            // How many times this processor has actually stopped.
-            //
-            // Not the same as how many times a program decided to wait: Idle
-            // returns immediately when something has already happened, so
-            // counting the decisions counts intentions. This counts events, and
-            // it is what a kernel uses to know how busy a processor really is.
-            public static long Idles() { return 0; }
-
-            // How many instructions this processor has retired. The only way a
-            // program can measure itself, and readable by anybody for the same
-            // reason RDTSC is: knowing how long your own loop took is not a
-            // privilege.
-            public static long Cycles() { return 0; }
 
             // Asks the kernel for something. The one door between a program and
             // the system it runs on: the number says which service, and what
@@ -1094,132 +856,9 @@ public static class Prelude
             public static long DataStart() { return 0; }
             public static long DataEnd() { return 0; }
 
-            // ---- what a handler is standing in the middle of ---------------
-            //
-            // These reach the CURRENT interrupt or trap frame, which is banked
-            // per priority, so a handler reads what IT was given rather than
-            // what the thing it interrupted was given.
-            //
-            // Elr is where the interrupted code will resume, and writing it is
-            // how a handler decides otherwise: stepping over a faulting
-            // instruction, or -- with a different register frame -- resuming an
-            // entirely different program. That is a context switch.
-            // Which processor this is, geographically. Firmware copied this
-            // card-owned CFC fact into the current processor block; CpuId is
-            // deliberately reserved for CPU-owned capability leaves.
-            public static long CpuId() { return 0; }
-
-            public static long Elr() { return 0; }
-            public static void SetElr(long at) { }
-            public static long Cause() { return 0; }
-            public static long Detail() { return 0; }
-
-            // What privilege reti hands back. Only the kernel can write it,
-            // which is the whole reason authority cannot be taken.
-            public static void SetSavedRing(long ring) { }
-
-            // ---- translation ---------------------------------------------
-            //
-            // How much authority the running code has: 0 for the kernel, 1 for
-            // a program. Readable by anybody, because a thread asking what it
-            // is allowed to do is not a threat, and a library that adapts
-            // rather than faulting has to be able to ask -- the allocator uses
-            // it to tell "there is no kernel, look at the machine" apart from
-            // "there is one, ask it".
-            public static long Ring() { return 0; }
-
-            // The priority this processor is running at, and setting it.
-            //
-            // Raising it is how kernel code shuts an interrupt out for a few
-            // instructions, and there is exactly one reason to need that: a
-            // lock taken by ordinary code AND by an interrupt handler on the
-            // same processor. The handler interrupts the holder, waits for a
-            // lock its own processor is holding, and the machine stops. Every
-            // kernel that has ever existed has this rule.
-            //
-            // Privileged, like everything else that changes how the machine
-            // dispatches. A program in user mode does not need it: nothing it
-            // wrote runs in interrupt context.
-            public static long Level() { return 0; }
-            public static void SetLevel(long to) { }
-
-            // What privilege reti will hand back to -- which, inside a handler,
-            // is what the thing it interrupted was running as.
-            //
-            // A preempting scheduler asks this before it does anything: a
-            // processor that interrupted USER code can be switched away from,
-            // and one that interrupted the KERNEL cannot, because the kernel it
-            // interrupted may be holding a lock and switching away from a
-            // processor holding one means nothing can ever take it again.
-            public static long SavedRing() { return 0; }
-
-            // ---- the interval timer ---------------------------------------
-            //
-            // Arms this processor's own timer for `ticks` instructions, pulling
-            // the line in the low bits of `config`; add 256 for periodic. It
-            // answers with what was LEFT on the timer before it was armed,
-            // which is how a scheduler finds out how much of a slice went
-            // unused. Arming for no time is what stopping is.
-            //
-            // Per processor and never near the router, which is the whole
-            // reason it is a mandatory unit: a scheduler running on any
-            // processor can always interrupt the one it is on.
-            // Where this process keeps the statics of the shared libraries it
-            // uses. Swapped by the kernel on the way into a process, because
-            // shared library code is one copy that every process runs and the
-            // instruction reaching a library static has to reach a different
-            // word depending on who is running.
-            public static long LibBase() { return 0; }
-            public static void SetLibBase(long at) { }
-
-            public static long SetTimer(long ticks, long config) { return 0; }
-
-            // One line of THIS processor's own interrupt controller: its
-            // priority, its vector and whether it is enabled, packed as the
-            // controller wants them. Answers with what the line said before.
-            public static long Lpic(long line, long config) { return 0; }
-            public static long LpicGet(long line) { return 0; }
-
-            // Which units are seated in the socket this code is executing in.
-            // The MMU is bit 6, and asking is the whole of how a kernel finds
-            // out whether the processor it is on can protect anything -- a
-            // machine may have some that can and some that cannot, and the
-            // answer differs between one instruction and the next if the
-            // scheduler has moved you.
-            public static long Units() { return 0; }
-            public static long ClockHz() { return 0; }
-
-            // The page table this processor is translating through, and the
-            // modes it translates in. Writing the root flushes every cached
-            // translation, because they all came from the old one.
-            //
-            // Privileged to READ as well as to write, which nothing else here
-            // is: everything else describes the processor a thread is already
-            // on, and this says where the kernel's tables live.
-            public static long PageTable() { return 0; }
-            public static void SetPageTable(long root) { }
-            public static long MmuCtl() { return 0; }
-            public static void SetMmuCtl(long bits) { }
-
-            // What the unit refused, and why. The address is the one that could
-            // not be translated; the status carries the reason in its low byte
-            // and what was attempted above it.
-            public static long FaultAddr() { return 0; }
-            public static long FaultStatus() { return 0; }
-
-            // Drops a cached translation: one page by address, or all of them
-            // with -1. A kernel that edits a table entry another processor may
-            // have cached has to say so to that processor too -- nothing in
-            // this hardware makes translation caches coherent, exactly as
-            // nothing does on the machines this one is pretending to be.
-            public static void TlbFlush(long at) { }
         }
 
         static class Math {
-            public static long Control() { return 0; }
-            public static void SetControl(long value) { }
-            public static long Status() { return 0; }
-            public static void ClearStatus(long mask) { }
             public static double Sqrt(double x) { return 0.0; }
             public static double Abs(double x) { return 0.0; }
             public static double Floor(double x) { return 0.0; }
@@ -1231,17 +870,5 @@ public static class Prelude
             public static double Fma(double a, double b, double c) { return 0.0; }
         }
 
-        // Every Rev. 1.6 instruction is reachable through these primitives,
-        // including optional register files that have no CORS-C# source type.
-        // `word` must be a literal complete instruction encoding.  Values are
-        // evaluated into r1 through r4, and r1 is returned after execution.
-        // Named Sys and Math intrinsics remain the normal, type-safe surface.
-        static class Machine {
-            public static long Raw0(long word) { return 0; }
-            public static long Raw1(long word, long r1) { return 0; }
-            public static long Raw2(long word, long r1, long r2) { return 0; }
-            public static long Raw3(long word, long r1, long r2, long r3) { return 0; }
-            public static long Raw4(long word, long r1, long r2, long r3, long r4) { return 0; }
-        }
         """;
 }

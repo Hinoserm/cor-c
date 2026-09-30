@@ -133,7 +133,7 @@ public static class Gir
     {
         if (bytes.Length < 8 || !bytes[..4].SequenceEqual(Magic))
         {
-            throw new AsmException(0, $"{from}: not a generic-template section");
+            throw new InvalidDataException($"{from}: not a generic-template section");
         }
 
         ushort major = BinaryPrimitives.ReadUInt16LittleEndian(bytes[4..]);
@@ -143,7 +143,7 @@ public static class Gir
         // guessed at. A tree misread is a program that compiles and is wrong.
         if (major != Major)
         {
-            throw new AsmException(0,
+            throw new InvalidDataException(
                 $"{from}: generic templates are format {major}, and this compiler reads {Major}");
         }
 
@@ -499,7 +499,7 @@ public static class Gir
                     break;
 
                 default:
-                    throw new AsmException(0, $"cannot record a {m.GetType().Name} in a template");
+                    throw new InvalidDataException($"cannot record a {m.GetType().Name} in a template");
             }
         }
 
@@ -662,7 +662,7 @@ public static class Gir
                     break;
 
                 default:
-                    throw new AsmException(0, $"cannot record a {s.GetType().Name} in a template");
+                    throw new InvalidDataException($"cannot record a {s.GetType().Name} in a template");
             }
         }
 
@@ -1031,7 +1031,7 @@ public static class Gir
                     break;
 
                 default:
-                    throw new AsmException(0, $"cannot record a {e.GetType().Name} in a template");
+                    throw new InvalidDataException($"cannot record a {e.GetType().Name} in a template");
             }
         }
     }
@@ -1060,7 +1060,7 @@ public static class Gir
         {
             if (_at + bytes > _in.Length)
             {
-                throw new AsmException(0, $"{_from}: the generic templates are truncated");
+                throw new InvalidDataException($"{_from}: the generic templates are truncated");
             }
         }
 
@@ -1140,7 +1140,7 @@ public static class Gir
             // memory rather than saying which library is damaged.
             if (n < 0 || n > _in.Length - _at)
             {
-                throw new AsmException(0, $"{_from}: the generic templates are damaged");
+                throw new InvalidDataException($"{_from}: the generic templates are damaged");
             }
             return n;
         }
@@ -1175,7 +1175,7 @@ public static class Gir
         }
 
         public TypeRef Type() => TypeOrNull()
-            ?? throw new AsmException(0, $"{_from}: a type is missing from a template");
+            ?? throw new InvalidDataException($"{_from}: a type is missing from a template");
 
         public Param Param()
         {
@@ -1313,7 +1313,7 @@ public static class Gir
 
                         for (int i = 0; i < args; i++)
                         {
-                            init.Args.Add(Expr() ?? throw new AsmException(0, $"{_from}: a damaged constructor call"));
+                            init.Args.Add(Expr() ?? throw new InvalidDataException($"{_from}: a damaged constructor call"));
                         }
                         int names = Count();
                         for (int i = 0; i < names; i++)
@@ -1372,7 +1372,7 @@ public static class Gir
                 }
 
                 default:
-                    throw new AsmException(0, $"{_from}: unknown member kind {(byte)kind} in a template");
+                    throw new InvalidDataException($"{_from}: unknown member kind {(byte)kind} in a template");
             }
         }
 
@@ -1388,7 +1388,7 @@ public static class Gir
                 case S.Block:
                 {
                     byte arithmetic = U8();
-                    if (arithmetic > 2) throw new AsmException(0, "invalid block arithmetic context");
+                    if (arithmetic > 2) throw new InvalidDataException("invalid block arithmetic context");
                     Block b = new() { ArithmeticContext = arithmetic, Iterator = Bool() };
                     int locals = Count();
                     for (int i = 0; i < locals; i++) { string name = Str(); b.GenericLocals.Add((name, Str())); }
@@ -1418,7 +1418,7 @@ public static class Gir
                     for (int i = 0; i < count; i++)
                     {
                         made.Also.Add(Stmt() as LocalDecl
-                            ?? throw new AsmException(0, $"{_from}: a damaged local declaration"));
+                            ?? throw new InvalidDataException($"{_from}: a damaged local declaration"));
                     }
                     return made;
                 }
@@ -1523,7 +1523,7 @@ public static class Gir
                 case S.Try:
                 {
                     Block body = Stmt() as Block
-                        ?? throw new AsmException(0, $"{_from}: a damaged try");
+                        ?? throw new InvalidDataException($"{_from}: a damaged try");
                     List<CatchClause> catches = new();
                     int n = Count();
 
@@ -1532,7 +1532,7 @@ public static class Gir
                         TypeRef? type = TypeOrNull();
                         string? name = StrOrNull();
                         Block caught = Stmt() as Block
-                            ?? throw new AsmException(0, $"{_from}: a damaged catch");
+                            ?? throw new InvalidDataException($"{_from}: a damaged catch");
 
                         catches.Add(new CatchClause { Type = type, Name = name, Body = caught });
                     }
@@ -1557,19 +1557,19 @@ public static class Gir
                     return new UsingDeclStmt
                     {
                         Declaration = Stmt() as LocalDecl
-                            ?? throw new AsmException(0, $"{_from}: a damaged using declaration"),
+                            ?? throw new InvalidDataException($"{_from}: a damaged using declaration"),
                     };
 
                 default:
-                    throw new AsmException(0, $"{_from}: unknown statement {(byte)kind} in a template");
+                    throw new InvalidDataException($"{_from}: unknown statement {(byte)kind} in a template");
             }
         }
 
         private Stmt NeedStmt() => Stmt()
-            ?? throw new AsmException(0, $"{_from}: a statement is missing from a template");
+            ?? throw new InvalidDataException($"{_from}: a statement is missing from a template");
 
         private Expr Need() => Expr()
-            ?? throw new AsmException(0, $"{_from}: an expression is missing from a template");
+            ?? throw new InvalidDataException($"{_from}: an expression is missing from a template");
 
         /// <summary>The names a deconstruction binds, read back as they were written.</summary>
         private List<Binding> ReadBindings()
@@ -1959,7 +1959,7 @@ public static class Gir
                 }
 
                 default:
-                    throw new AsmException(0, $"{_from}: unknown expression {(byte)kind} in a template");
+                    throw new InvalidDataException($"{_from}: unknown expression {(byte)kind} in a template");
             }
         }
     }

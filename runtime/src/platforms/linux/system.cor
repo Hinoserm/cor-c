@@ -918,7 +918,7 @@ static partial class Os
     public static int Write(int fd, string s)
     {
         byte[] bytes = Utf8Transcoder.Encode(s, 0, s.Length);
-        long at = AddressOf(bytes);
+        long at = Platform.Linear(Sys.ArrayData(bytes));
         long done = 0;
         long length = bytes.Length;
 
@@ -965,7 +965,7 @@ static partial class Os
     public static int Chdir(string path)
     {
         byte[] c = CString(path);
-        return (int)Platform.Result(Sys.Syscall(Call.Chdir, BytesOf(c), 0, 0));
+        return (int)Platform.Result(Sys.Syscall(Call.Chdir, Platform.Linear(Sys.ArrayData(c)), 0, 0));
     }
 
     // ---- descriptors ------------------------------------------------------
@@ -1026,7 +1026,7 @@ static partial class Os
         pfd[5] = (byte)(events >> 8);
         while (true)
         {
-            long r = Platform.Result(Platform.Blocking(Call.Poll, AddressOf(pfd), 1, timeoutMs));
+            long r = Platform.Result(Platform.Blocking(Call.Poll, Platform.Linear(Sys.ArrayData(pfd)), 1, timeoutMs));
             if (r == -Err.Intr || PosixSignalRegistration.Pending)
             {
                 // A signal arrived while waiting -- or just before, with
@@ -1068,7 +1068,7 @@ static partial class Os
             ready[i] = false;
         }
 
-        long r = Platform.Result(Platform.Blocking(Call.Poll, AddressOf(pfd), count, timeoutMs));
+        long r = Platform.Result(Platform.Blocking(Call.Poll, Platform.Linear(Sys.ArrayData(pfd)), count, timeoutMs));
 
         if (r == -Err.Intr || PosixSignalRegistration.Pending)
         {
@@ -1088,7 +1088,7 @@ static partial class Os
     public static int ProcessorCount()
     {
         byte[] mask = new byte[128];
-        long got = Platform.Result(Sys.Syscall(Call.SchedGetaffinity, 0, mask.Length, AddressOf(mask)));
+        long got = Platform.Result(Sys.Syscall(Call.SchedGetaffinity, 0, mask.Length, Platform.Linear(Sys.ArrayData(mask))));
         int count = 0;
         for (int i = 0; i < got && i < mask.Length; i++)
         {
@@ -1104,21 +1104,21 @@ static partial class Os
         {
             throw new IndexOutOfRangeException("getrandom range is outside its buffer");
         }
-        return Platform.Result(Sys.Syscall(Call.GetRandom, AddressOf(buffer) + at, count, 0));
+        return Platform.Result(Sys.Syscall(Call.GetRandom, Platform.Linear(Sys.ArrayData(buffer)) + at, count, 0));
     }
 
     /// rt_sigaction(2) with a 20-byte kernel sigaction (handler, flags,
     /// restorer, 64-bit mask) and no request for the old one.
     public static long SigAction(int signal, byte[] action)
     {
-        return Platform.Result(Sys.Syscall(Call.RtSigaction, signal, AddressOf(action), 0, 8, 0, 0));
+        return Platform.Result(Sys.Syscall(Call.RtSigaction, signal, Platform.Linear(Sys.ArrayData(action)), 0, 8, 0, 0));
     }
 
     /// Bytes waiting to be read on `fd` (FIONREAD), or -errno.
     public static long Available(int fd)
     {
         byte[] n = new byte[4];
-        long r = Ioctl(fd, 0x541B, AddressOf(n));
+        long r = Ioctl(fd, 0x541B, Platform.Linear(Sys.ArrayData(n)));
         return r < 0 ? r : Raw.U32(n, 0);
     }
 
@@ -1230,21 +1230,19 @@ static partial class Os
         byte[] from = CString(source);
         byte[] onto = CString(target);
         byte[] kind = CString(type);
-        long options = 0;
-        if (data != null)
-        {
-            byte[] extra = CString(data);
-            options = BytesOf(extra);
-        }
-        return (int)Platform.Result(Sys.Syscall(Call.Mount, BytesOf(from), BytesOf(onto),
-                                                BytesOf(kind), flags, options, 0));
+        // Taken here, in the block the call is in: an address taken inside
+        // the if would keep its array only to the if's end.
+        byte[]? extra = data == null ? null : CString(data);
+        long options = extra == null ? 0 : Platform.Linear(Sys.ArrayData(extra));
+        return (int)Platform.Result(Sys.Syscall(Call.Mount, Platform.Linear(Sys.ArrayData(from)), Platform.Linear(Sys.ArrayData(onto)),
+                                                Platform.Linear(Sys.ArrayData(kind)), flags, options, 0));
     }
 
     /// umount2(2). The flags are MNT_FORCE, MNT_DETACH and the rest.
     public static int Umount(string target, int flags)
     {
         byte[] c = CString(target);
-        return (int)Platform.Result(Sys.Syscall(Call.Umount2, BytesOf(c), flags, 0));
+        return (int)Platform.Result(Sys.Syscall(Call.Umount2, Platform.Linear(Sys.ArrayData(c)), flags, 0));
     }
 
     /// An array of C strings, then a null, as execve(2) wants it: the strings
@@ -1261,7 +1259,7 @@ static partial class Os
         {
             byte[] c = CString(items[i]);
             keep[at + i] = c;
-            Raw.SetWord(block, i * (int)WordSize.Bytes, BytesOf(c));
+            Raw.SetWord(block, i * (int)WordSize.Bytes, Platform.Linear(Sys.ArrayData(c)));
         }
         Raw.SetWord(block, items.Length * (int)WordSize.Bytes, 0);
         return block;
@@ -1289,9 +1287,9 @@ static partial class Os
         else
         {
             byte[] block = Vector(envp, keep, argv.Length);
-            env = AddressOf(block);
+            env = Platform.Linear(Sys.ArrayData(block));
         }
-        return (int)Platform.Result(Sys.Syscall(Call.Execve, BytesOf(c), AddressOf(args), env));
+        return (int)Platform.Result(Sys.Syscall(Call.Execve, Platform.Linear(Sys.ArrayData(c)), Platform.Linear(Sys.ArrayData(args)), env));
     }
 
     /// The common shape: the program's own path as argv[0], the caller's
@@ -1343,13 +1341,13 @@ static partial class Os
     public static int ClockGetTime(int clock, byte[] into)
     {
         TimeSpec.Check(into);
-        return (int)Platform.Result(Sys.Syscall(Call.ClockGetTime, clock, AddressOf(into), 0));
+        return (int)Platform.Result(Sys.Syscall(Call.ClockGetTime, clock, Platform.Linear(Sys.ArrayData(into)), 0));
     }
 
     public static int ClockGetRes(int clock, byte[] into)
     {
         TimeSpec.Check(into);
-        return (int)Platform.Result(Sys.Syscall(Call.ClockGetRes, clock, AddressOf(into), 0));
+        return (int)Platform.Result(Sys.Syscall(Call.ClockGetRes, clock, Platform.Linear(Sys.ArrayData(into)), 0));
     }
 
     /// A clock as ONE number of nanoseconds, which is what code that measures
@@ -1377,7 +1375,7 @@ static partial class Os
 
         while (true)
         {
-            long r = Platform.Result(Platform.Blocking(Call.NanoSleep, AddressOf(want), AddressOf(left), 0));
+            long r = Platform.Result(Platform.Blocking(Call.NanoSleep, Platform.Linear(Sys.ArrayData(want)), Platform.Linear(Sys.ArrayData(left)), 0));
 
             if (r != 0 - Err.Intr)
             {
@@ -1414,13 +1412,13 @@ static partial class Os
     public static bool IsTty(int fd)
     {
         byte[] t = Termios.Room();
-        return Ioctl(fd, Tio.GetAttributes, AddressOf(t)) >= 0;
+        return Ioctl(fd, Tio.GetAttributes, Platform.Linear(Sys.ArrayData(t))) >= 0;
     }
 
     public static long GetAttributes(int fd, byte[] into)
     {
         Termios.Check(into);
-        return Ioctl(fd, Tio.GetAttributes, AddressOf(into));
+        return Ioctl(fd, Tio.GetAttributes, Platform.Linear(Sys.ArrayData(into)));
     }
 
     /// The change takes effect at once. Tio.SetAttributesDrain is the form
@@ -1429,7 +1427,7 @@ static partial class Os
     public static long SetAttributes(int fd, byte[] from)
     {
         Termios.Check(from);
-        return Ioctl(fd, Tio.SetAttributes, AddressOf(from));
+        return Ioctl(fd, Tio.SetAttributes, Platform.Linear(Sys.ArrayData(from)));
     }
 
     /// Characters as they are typed, no echo: what a full-screen program does
@@ -1467,7 +1465,7 @@ static partial class Os
     {
         byte[] w = new byte[8];
 
-        if (Ioctl(fd, Tio.WindowSize, AddressOf(w)) < 0)
+        if (Ioctl(fd, Tio.WindowSize, Platform.Linear(Sys.ArrayData(w))) < 0)
         {
             return 0;
         }
@@ -1518,7 +1516,7 @@ static partial class Os
         Raw.SetU32(block, 12, d);
         Raw.SetU32(block, 16, e);
         Raw.SetU32(block, 20, f);
-        return Platform.Result(Platform.Blocking(Call.SocketCall, which, AddressOf(block), 0));
+        return Platform.Result(Platform.Blocking(Call.SocketCall, which, Platform.Linear(Sys.ArrayData(block)), 0));
 #endif
     }
 
@@ -1529,7 +1527,7 @@ static partial class Os
 
     public static int Bind(int fd, byte[] address)
     {
-        return (int)Sock(Call.Bind, SockCall.Bind, fd, AddressOf(address), address.Length, 0, 0, 0);
+        return (int)Sock(Call.Bind, SockCall.Bind, fd, Platform.Linear(Sys.ArrayData(address)), address.Length, 0, 0, 0);
     }
 
     public static int Listen(int fd, int backlog)
@@ -1550,12 +1548,12 @@ static partial class Os
         byte[] length = new byte[4];
 
         Raw.SetU32(length, 0, address.Length);
-        return (int)Sock(Call.Accept4, SockCall.Accept, fd, AddressOf(address), AddressOf(length), 0, 0, 0);
+        return (int)Sock(Call.Accept4, SockCall.Accept, fd, Platform.Linear(Sys.ArrayData(address)), Platform.Linear(Sys.ArrayData(length)), 0, 0, 0);
     }
 
     public static int Connect(int fd, byte[] address)
     {
-        return (int)Sock(Call.Connect, SockCall.Connect, fd, AddressOf(address), address.Length, 0, 0, 0);
+        return (int)Sock(Call.Connect, SockCall.Connect, fd, Platform.Linear(Sys.ArrayData(address)), address.Length, 0, 0, 0);
     }
 
     public static int GetSockName(int fd, byte[] address)
@@ -1563,7 +1561,7 @@ static partial class Os
         byte[] length = new byte[4];
 
         Raw.SetU32(length, 0, address.Length);
-        return (int)Sock(Call.GetSockName, SockCall.GetSockName, fd, AddressOf(address), AddressOf(length), 0, 0, 0);
+        return (int)Sock(Call.GetSockName, SockCall.GetSockName, fd, Platform.Linear(Sys.ArrayData(address)), Platform.Linear(Sys.ArrayData(length)), 0, 0, 0);
     }
 
     public static int GetPeerName(int fd, byte[] address)
@@ -1571,7 +1569,7 @@ static partial class Os
         byte[] length = new byte[4];
 
         Raw.SetU32(length, 0, address.Length);
-        return (int)Sock(Call.GetPeerName, SockCall.GetPeerName, fd, AddressOf(address), AddressOf(length), 0, 0, 0);
+        return (int)Sock(Call.GetPeerName, SockCall.GetPeerName, fd, Platform.Linear(Sys.ArrayData(address)), Platform.Linear(Sys.ArrayData(length)), 0, 0, 0);
     }
 
     /// send(2) is sendto(2) with no address, which is what the kernel makes of
@@ -1582,7 +1580,7 @@ static partial class Os
         {
             throw new IndexOutOfRangeException("send range is outside its buffer");
         }
-        return (int)Sock(Call.SendTo, SockCall.Send, fd, AddressOf(buffer) + at, count, flags, 0, 0);
+        return (int)Sock(Call.SendTo, SockCall.Send, fd, Platform.Linear(Sys.ArrayData(buffer)) + at, count, flags, 0, 0);
     }
 
     public static int Recv(int fd, byte[] buffer, int at, int count, int flags)
@@ -1591,7 +1589,7 @@ static partial class Os
         {
             throw new IndexOutOfRangeException("recv range is outside its buffer");
         }
-        return (int)Sock(Call.RecvFrom, SockCall.Recv, fd, AddressOf(buffer) + at, count, flags, 0, 0);
+        return (int)Sock(Call.RecvFrom, SockCall.Recv, fd, Platform.Linear(Sys.ArrayData(buffer)) + at, count, flags, 0, 0);
     }
 
     /// sendto(2) and recvfrom(2) with an address: a datagram's destination,
@@ -1603,8 +1601,8 @@ static partial class Os
         {
             throw new IndexOutOfRangeException("sendto range is outside its buffer");
         }
-        return (int)Sock(Call.SendTo, SockCall.SendTo, fd, AddressOf(buffer) + at, count, flags,
-            AddressOf(address), address.Length);
+        return (int)Sock(Call.SendTo, SockCall.SendTo, fd, Platform.Linear(Sys.ArrayData(buffer)) + at, count, flags,
+            Platform.Linear(Sys.ArrayData(address)), address.Length);
     }
 
     public static int RecvFrom(int fd, byte[] buffer, int at, int count, int flags, byte[] address)
@@ -1615,8 +1613,8 @@ static partial class Os
         }
         byte[] length = new byte[4];
         Raw.SetU32(length, 0, address.Length);
-        return (int)Sock(Call.RecvFrom, SockCall.RecvFrom, fd, AddressOf(buffer) + at, count, flags,
-            AddressOf(address), AddressOf(length));
+        return (int)Sock(Call.RecvFrom, SockCall.RecvFrom, fd, Platform.Linear(Sys.ArrayData(buffer)) + at, count, flags,
+            Platform.Linear(Sys.ArrayData(address)), Platform.Linear(Sys.ArrayData(length)));
     }
 
     /// recvmsg(2): a datagram AND WHAT THE KERNEL KNOWS ABOUT IT.
@@ -1649,18 +1647,18 @@ static partial class Os
         byte[] iov = new byte[16];
         byte[] message = new byte[56];
 
-        Raw.SetI64(iov, 0, AddressOf(buffer) + at);
+        Raw.SetI64(iov, 0, Platform.Linear(Sys.ArrayData(buffer)) + at);
         Raw.SetI64(iov, 8, count);
 
-        Raw.SetI64(message, 0, address == null ? 0 : AddressOf(address));
+        Raw.SetI64(message, 0, address == null ? 0 : Platform.Linear(Sys.ArrayData(address)));
         Raw.SetU32(message, 8, address == null ? 0 : address.Length);
-        Raw.SetI64(message, 16, AddressOf(iov));
+        Raw.SetI64(message, 16, Platform.Linear(Sys.ArrayData(iov)));
         Raw.SetI64(message, 24, 1);
-        Raw.SetI64(message, 32, control == null ? 0 : AddressOf(control));
+        Raw.SetI64(message, 32, control == null ? 0 : Platform.Linear(Sys.ArrayData(control)));
         Raw.SetI64(message, 40, control == null ? 0 : control.Length);
         Raw.SetU32(message, 48, 0);
 
-        int got = (int)Sock(Call.RecvMsg, SockCall.RecvMsg, fd, AddressOf(message), flags, 0, 0, 0);
+        int got = (int)Sock(Call.RecvMsg, SockCall.RecvMsg, fd, Platform.Linear(Sys.ArrayData(message)), flags, 0, 0, 0);
 
         if (got >= 0)
         {
@@ -1672,18 +1670,18 @@ static partial class Os
         byte[] iov = new byte[8];
         byte[] message = new byte[28];
 
-        Raw.SetU32(iov, 0, AddressOf(buffer) + at);
+        Raw.SetU32(iov, 0, Platform.Linear(Sys.ArrayData(buffer)) + at);
         Raw.SetU32(iov, 4, count);
 
-        Raw.SetU32(message, 0, address == null ? 0 : AddressOf(address));
+        Raw.SetU32(message, 0, address == null ? 0 : Platform.Linear(Sys.ArrayData(address)));
         Raw.SetU32(message, 4, address == null ? 0 : address.Length);
-        Raw.SetU32(message, 8, AddressOf(iov));
+        Raw.SetU32(message, 8, Platform.Linear(Sys.ArrayData(iov)));
         Raw.SetU32(message, 12, 1);
-        Raw.SetU32(message, 16, control == null ? 0 : AddressOf(control));
+        Raw.SetU32(message, 16, control == null ? 0 : Platform.Linear(Sys.ArrayData(control)));
         Raw.SetU32(message, 20, control == null ? 0 : control.Length);
         Raw.SetU32(message, 24, 0);
 
-        int got = (int)Sock(Call.RecvMsg, SockCall.RecvMsg, fd, AddressOf(message), flags, 0, 0, 0);
+        int got = (int)Sock(Call.RecvMsg, SockCall.RecvMsg, fd, Platform.Linear(Sys.ArrayData(message)), flags, 0, 0, 0);
 
         if (got >= 0)
         {
@@ -1696,7 +1694,7 @@ static partial class Os
 
     public static int SetSockOpt(int fd, int level, int option, byte[] value)
     {
-        return (int)Sock(Call.SetSockOpt, SockCall.SetSockOpt, fd, level, option, AddressOf(value), value.Length, 0);
+        return (int)Sock(Call.SetSockOpt, SockCall.SetSockOpt, fd, level, option, Platform.Linear(Sys.ArrayData(value)), value.Length, 0);
     }
 
     /// The one every server needs: SO_REUSEADDR, so a restart does not have to
@@ -1853,7 +1851,7 @@ static partial class Os
                     _readAhead = buffer;
                 }
 
-                long got = Read(Fd.In, AddressOf(buffer), ReadAheadBytes);
+                long got = Read(Fd.In, Platform.Linear(Sys.ArrayData(buffer)), ReadAheadBytes);
 
                 if (got == 0 - Err.Intr)
                 {

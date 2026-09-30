@@ -89,14 +89,14 @@ public static class Meta
 
         if (bytes.Length < HeaderBytes || !bytes[..4].SequenceEqual(Magic))
         {
-            throw new AsmException(0, $"{from}: not a type table");
+            throw new InvalidDataException($"{from}: not a type table");
         }
 
         ushort major = BinaryPrimitives.ReadUInt16LittleEndian(bytes[4..]);
 
         if (major != Major)
         {
-            throw new AsmException(0,
+            throw new InvalidDataException(
                 $"{from}: the type table is format {major}, and this toolchain reads {Major}");
         }
 
@@ -109,7 +109,7 @@ public static class Meta
         if (count < 0 || names < 0 || names > bytes.Length
             || (long)HeaderBytes + (long)count * RowBytes > bytes.Length)
         {
-            throw new AsmException(0, $"{from}: the type table claims {count} types and cannot hold them");
+            throw new InvalidDataException($"{from}: the type table claims {count} types and cannot hold them");
         }
 
         for (int i = 0; i < count; i++)
@@ -119,7 +119,7 @@ public static class Meta
 
             if (nameAt < 0 || names + nameAt >= bytes.Length)
             {
-                throw new AsmException(0, $"{from}: a type name in the table is outside it");
+                throw new InvalidDataException($"{from}: a type name in the table is outside it");
             }
 
             int end = names + nameAt;

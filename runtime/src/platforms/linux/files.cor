@@ -22,12 +22,6 @@
 
 static partial class Os
 {
-
-    private static long BytesOf(byte[] b)
-    {
-        return Platform.Linear(Sys.ArrayData(b));
-    }
-
     /// `s` as UTF-8 with a zero byte after it, which is what the kernel
     /// means by a path: a string is UTF-16 code units, and a path a Unix
     /// kernel is handed is bytes.
@@ -49,7 +43,7 @@ static partial class Os
     public static int InotifyAddWatch(int fd, string path, long mask)
     {
         byte[] c = CString(path);
-        return (int)Err.Result(Sys.Syscall(Call.InotifyAddWatch, fd, BytesOf(c), mask & 0xFFFFFFFF));
+        return (int)Err.Result(Sys.Syscall(Call.InotifyAddWatch, fd, Platform.Linear(Sys.ArrayData(c)), mask & 0xFFFFFFFF));
     }
 
     /// inotify_rm_watch(2): the watch ends, and IN_IGNORED says so.
@@ -63,7 +57,7 @@ static partial class Os
     public static int Open(string path, int flags, int mode)
     {
         byte[] c = CString(path);
-        return (int)Err.Result(Sys.Syscall(Call.Open, BytesOf(c), flags, mode));
+        return (int)Err.Result(Sys.Syscall(Call.Open, Platform.Linear(Sys.ArrayData(c)), flags, mode));
     }
 
     /// Two-argument open, with the 0644 (0x1A4) a Unix makes a file with when
@@ -88,7 +82,7 @@ static partial class Os
         {
             throw new IndexOutOfRangeException("read range is outside its buffer");
         }
-        return (int)Err.Result(Platform.Blocking(Call.Read, fd, BytesOf(buf) + at, count));
+        return (int)Err.Result(Platform.Blocking(Call.Read, fd, Platform.Linear(Sys.ArrayData(buf)) + at, count));
     }
 
     /// The raw form: an address and a count, for code that manages its own
@@ -106,20 +100,12 @@ static partial class Os
         {
             throw new IndexOutOfRangeException("write range is outside its buffer");
         }
-        return (int)Err.Result(Platform.Blocking(Call.Write, fd, BytesOf(buf) + at, count));
+        return (int)Err.Result(Platform.Blocking(Call.Write, fd, Platform.Linear(Sys.ArrayData(buf)) + at, count));
     }
 
     public static long Write(int fd, long at, long count)
     {
         return Err.Result(Platform.Blocking(Call.Write, fd, at, count));
-    }
-
-    /// The address of a byte array's first byte, as the kernel is to be
-    /// handed it. Public because the structure helpers and any program that
-    /// manages its own buffer need it.
-    public static long AddressOf(byte[] b)
-    {
-        return Platform.Linear(Sys.ArrayData(b));
     }
 
     /// `s` as UTF-8 with a zero byte after it, for the calls that take a
@@ -144,7 +130,7 @@ static partial class Os
         byte[] where = new byte[8];
         long got = Err.Result(Sys.Syscall(Call.LlSeek, fd,
             (offset >> 32) & 0xFFFFFFFF, offset & 0xFFFFFFFF,
-            AddressOf(where), whence, 0));
+            Platform.Linear(Sys.ArrayData(where)), whence, 0));
 
         if (got < 0)
         {
@@ -221,7 +207,7 @@ static partial class Os
     {
         StatBuf.Check(into);
         byte[] c = CString(path);
-        return (int)Err.Result(Sys.Syscall(Call.Stat64, BytesOf(c), AddressOf(into), 0));
+        return (int)Err.Result(Sys.Syscall(Call.Stat64, Platform.Linear(Sys.ArrayData(c)), Platform.Linear(Sys.ArrayData(into)), 0));
     }
 
     /// The link itself rather than what it points at.
@@ -229,13 +215,13 @@ static partial class Os
     {
         StatBuf.Check(into);
         byte[] c = CString(path);
-        return (int)Err.Result(Sys.Syscall(Call.Lstat64, BytesOf(c), AddressOf(into), 0));
+        return (int)Err.Result(Sys.Syscall(Call.Lstat64, Platform.Linear(Sys.ArrayData(c)), Platform.Linear(Sys.ArrayData(into)), 0));
     }
 
     public static int Fstat(int fd, byte[] into)
     {
         StatBuf.Check(into);
-        return (int)Err.Result(Sys.Syscall(Call.Fstat64, fd, AddressOf(into), 0));
+        return (int)Err.Result(Sys.Syscall(Call.Fstat64, fd, Platform.Linear(Sys.ArrayData(into)), 0));
     }
 
     /// Whether the name resolves to anything at all.
@@ -280,7 +266,7 @@ static partial class Os
     public static int Unlink(string path)
     {
         byte[] c = CString(path);
-        return (int)Err.Result(Sys.Syscall(Call.Unlink, BytesOf(c), 0, 0));
+        return (int)Err.Result(Sys.Syscall(Call.Unlink, Platform.Linear(Sys.ArrayData(c)), 0, 0));
     }
 
     /// rename(2). BOTH paths are copied before either address is taken: a
@@ -291,13 +277,13 @@ static partial class Os
     {
         byte[] a = CString(from);
         byte[] b = CString(to);
-        return (int)Err.Result(Sys.Syscall(Call.Rename, BytesOf(a), BytesOf(b), 0));
+        return (int)Err.Result(Sys.Syscall(Call.Rename, Platform.Linear(Sys.ArrayData(a)), Platform.Linear(Sys.ArrayData(b)), 0));
     }
 
     public static int Mkdir(string path, int mode)
     {
         byte[] c = CString(path);
-        return (int)Err.Result(Sys.Syscall(Call.Mkdir, BytesOf(c), mode, 0));
+        return (int)Err.Result(Sys.Syscall(Call.Mkdir, Platform.Linear(Sys.ArrayData(c)), mode, 0));
     }
 
     /// 0755, which is what mkdir(1) makes a directory with.
@@ -309,13 +295,13 @@ static partial class Os
     public static int Rmdir(string path)
     {
         byte[] c = CString(path);
-        return (int)Err.Result(Sys.Syscall(Call.Rmdir, BytesOf(c), 0, 0));
+        return (int)Err.Result(Sys.Syscall(Call.Rmdir, Platform.Linear(Sys.ArrayData(c)), 0, 0));
     }
 
     public static int Chmod(string path, int mode)
     {
         byte[] c = CString(path);
-        return (int)Err.Result(Sys.Syscall(Call.Chmod, BytesOf(c), mode, 0));
+        return (int)Err.Result(Sys.Syscall(Call.Chmod, Platform.Linear(Sys.ArrayData(c)), mode, 0));
     }
 
     /// access(2). 0 asks only whether the name resolves; 1/2/4 are execute,
@@ -323,7 +309,7 @@ static partial class Os
     public static int Access(string path, int mode)
     {
         byte[] c = CString(path);
-        return (int)Err.Result(Sys.Syscall(Call.Access, BytesOf(c), mode, 0));
+        return (int)Err.Result(Sys.Syscall(Call.Access, Platform.Linear(Sys.ArrayData(c)), mode, 0));
     }
 
     /// link(2): another directory entry for the inode `existing` already
@@ -332,14 +318,14 @@ static partial class Os
     {
         byte[] a = CString(existing);
         byte[] b = CString(name);
-        return (int)Err.Result(Sys.Syscall(Call.Link, BytesOf(a), BytesOf(b), 0));
+        return (int)Err.Result(Sys.Syscall(Call.Link, Platform.Linear(Sys.ArrayData(a)), Platform.Linear(Sys.ArrayData(b)), 0));
     }
 
     public static int Symlink(string target, string name)
     {
         byte[] a = CString(target);
         byte[] b = CString(name);
-        return (int)Err.Result(Sys.Syscall(Call.Symlink, BytesOf(a), BytesOf(b), 0));
+        return (int)Err.Result(Sys.Syscall(Call.Symlink, Platform.Linear(Sys.ArrayData(a)), Platform.Linear(Sys.ArrayData(b)), 0));
     }
 
     /// Where a symbolic link points, or null when it is not one.
@@ -347,7 +333,7 @@ static partial class Os
     {
         byte[] c = CString(path);
         byte[] room = new byte[4096];
-        int n = (int)Err.Result(Sys.Syscall(Call.Readlink, BytesOf(c), AddressOf(room), room.Length));
+        int n = (int)Err.Result(Sys.Syscall(Call.Readlink, Platform.Linear(Sys.ArrayData(c)), Platform.Linear(Sys.ArrayData(room)), room.Length));
 
         if (n < 0)
         {
@@ -361,7 +347,7 @@ static partial class Os
     public static string? Getcwd()
     {
         byte[] room = new byte[4096];
-        int n = (int)Err.Result(Sys.Syscall(Call.Getcwd, AddressOf(room), room.Length, 0));
+        int n = (int)Err.Result(Sys.Syscall(Call.Getcwd, Platform.Linear(Sys.ArrayData(room)), room.Length, 0));
 
         if (n <= 0)
         {
@@ -379,7 +365,7 @@ static partial class Os
         {
             throw new IndexOutOfRangeException("directory buffer is too small for that count");
         }
-        return (int)Err.Result(Sys.Syscall(Call.Getdents64, fd, AddressOf(into), count));
+        return (int)Err.Result(Sys.Syscall(Call.Getdents64, fd, Platform.Linear(Sys.ArrayData(into)), count));
     }
 
     /// Every name in a directory except "." and "..", or null when it cannot
@@ -435,14 +421,14 @@ static partial class Os
         for (int i = 0; i < TimeSpec.Bytes; i++) times[i] = one[i];
         TimeSpec.Set(one, mtimeSeconds < 0 ? 0 : mtimeSeconds, mtimeSeconds < 0 ? 1073741822 : mtimeNanos);
         for (int i = 0; i < TimeSpec.Bytes; i++) times[TimeSpec.Bytes + i] = one[i];
-        return (int)Err.Result(Sys.Syscall(Call.Utimensat, -100, BytesOf(CString(path)), AddressOf(times), follow ? 0 : 0x100, 0, 0));
+        return (int)Err.Result(Sys.Syscall(Call.Utimensat, -100, Platform.Linear(Sys.ArrayData(CString(path))), Platform.Linear(Sys.ArrayData(times)), follow ? 0 : 0x100, 0, 0));
     }
 
     /// chown(2), by name, following symbolic links.
     public static int Chown(string path, int uid, int gid)
     {
         byte[] c = CString(path);
-        return (int)Err.Result(Sys.Syscall(Call.Chown, BytesOf(c), uid, gid));
+        return (int)Err.Result(Sys.Syscall(Call.Chown, Platform.Linear(Sys.ArrayData(c)), uid, gid));
     }
 
     /// lchown(2): as Chown, but of a symbolic link itself rather than what
@@ -450,7 +436,7 @@ static partial class Os
     public static int Lchown(string path, int uid, int gid)
     {
         byte[] c = CString(path);
-        return (int)Err.Result(Sys.Syscall(Call.Lchown, BytesOf(c), uid, gid));
+        return (int)Err.Result(Sys.Syscall(Call.Lchown, Platform.Linear(Sys.ArrayData(c)), uid, gid));
     }
 
     /// statfs64(2): how big a filing system is and how much of it is left.
@@ -459,10 +445,10 @@ static partial class Os
         StatFs.Check(into);
         byte[] c = CString(path);
 #if TARGET_AMD64
-        return (int)Err.Result(Sys.Syscall(Call.Statfs64, BytesOf(c), BytesOf(into), 0));
+        return (int)Err.Result(Sys.Syscall(Call.Statfs64, Platform.Linear(Sys.ArrayData(c)), Platform.Linear(Sys.ArrayData(into)), 0));
 #else
-        return (int)Err.Result(Sys.Syscall(Call.Statfs64, BytesOf(c),
-                                                StatFs.Bytes, BytesOf(into)));
+        return (int)Err.Result(Sys.Syscall(Call.Statfs64, Platform.Linear(Sys.ArrayData(c)),
+                                                StatFs.Bytes, Platform.Linear(Sys.ArrayData(into))));
 #endif
     }
 
@@ -470,10 +456,10 @@ static partial class Os
     {
         StatFs.Check(into);
 #if TARGET_AMD64
-        return (int)Err.Result(Sys.Syscall(Call.Fstatfs64, fd, BytesOf(into), 0));
+        return (int)Err.Result(Sys.Syscall(Call.Fstatfs64, fd, Platform.Linear(Sys.ArrayData(into)), 0));
 #else
         return (int)Err.Result(Sys.Syscall(Call.Fstatfs64, fd,
-                                                StatFs.Bytes, BytesOf(into)));
+                                                StatFs.Bytes, Platform.Linear(Sys.ArrayData(into))));
 #endif
     }
 
@@ -500,7 +486,7 @@ static partial class Os
     {
         byte[] tv = new byte[TimeVal.Bytes];
 
-        if (Err.Result(Sys.Syscall(Call.GetTimeOfDay, AddressOf(tv), 0, 0)) < 0)
+        if (Err.Result(Sys.Syscall(Call.GetTimeOfDay, Platform.Linear(Sys.ArrayData(tv)), 0, 0)) < 0)
         {
             return 0;
         }

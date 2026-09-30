@@ -15,7 +15,7 @@ namespace Corsac.Lang;
 /// </summary>
 public sealed class Target
 {
-    /// <summary>A short name a command line can select: "x86", "corsac".</summary>
+    /// <summary>A short name a command line can select: "x86", "x86-64".</summary>
     public required string Name { get; init; }
 
     /// <summary>
@@ -103,23 +103,6 @@ public sealed class Target
     };
 
     /// <summary>
-    /// The original 64-bit CORSAC machine, kept so a backend for it can be
-    /// added back without changing anything above it.
-    /// </summary>
-    public static readonly Target Corsac = new()
-    {
-        Name = "corsac",
-        WordSize = 8,
-        NativeI64 = true,
-        ObjectHeaderBytes = 16,
-        ArrayHeaderBytes = 24,
-        ArrayCountOffset = 16,
-        DescriptorBytes = 96,
-        StaticBase = 16,
-        Align64 = 8,
-    };
-
-    /// <summary>
     /// The target of the current compilation.
     ///
     /// A process-wide setting rather than a parameter threaded through every
@@ -133,7 +116,6 @@ public sealed class Target
     {
         "x86" or "i386" or "i486" => X86,
         "x86-64" or "x86_64" or "amd64" or "x64" => X86_64,
-        "corsac" => Corsac,
         _ => null,
     };
 }

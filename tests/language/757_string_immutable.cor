@@ -1,0 +1,16 @@
+// test: string_immutable
+// expect-compile-error: 'Sys.NewChars' is inaccessible due to its protection level
+//
+// A string is immutable, as C#'s is. Sys.NewChars and Sys.SetChar build
+// String inside the runtime and the class library; anywhere else a buffer is a
+// byte[] and text being assembled a char[] or a StringBuilder.
+
+static class Program
+{
+    static int Main()
+    {
+        string s = Sys.NewChars(4);
+        Sys.SetChar(s, 0, 65);
+        return s.Length;
+    }
+}

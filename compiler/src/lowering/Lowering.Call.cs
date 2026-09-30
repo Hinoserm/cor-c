@@ -186,7 +186,7 @@ public sealed partial class Lowering
             return Fail(call, "this call did not resolve to a method");
         }
 
-        if (target.Owner.Name is Prelude.TypeName or Prelude.MathType or Prelude.MachineType
+        if (target.Owner.Name is Prelude.TypeName or Prelude.MathType
             && target.Decl?.File == "<prelude>")
         {
             return EmitIntrinsic(call, target);

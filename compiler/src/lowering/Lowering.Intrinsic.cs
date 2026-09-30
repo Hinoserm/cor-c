@@ -31,11 +31,6 @@ public sealed partial class Lowering
         IrType word = IrTypes.Word;
         IrType returns = IrTypes.Of(target.Returns);
 
-        if (target.Owner.Name == Prelude.MachineType)
-        {
-            return Fail(call, $"'{Prelude.MachineType}.{name}' is an instruction of the original CORSAC processor and does not exist on {_t.Name}");
-        }
-
         if (target.Owner.Name == Prelude.MathType)
         {
             switch (name)
@@ -76,6 +71,9 @@ public sealed partial class Lowering
                 return Void();
             case "PokeByte":
                 _e.Store(R(Address(call, target, 0)), R(ToI32(Arg(call, target, 1))), 0, 1);
+                return Void();
+            case "KeepAlive":
+                _e.Call(MachineIntrinsics.KeepAlive, IrType.Void, new RegOperand(Arg(call, target, 0)));
                 return Void();
             case "PokeHalf":
                 _e.Store(R(Address(call, target, 0)), R(ToI32(Arg(call, target, 1))), 0, 2);
@@ -395,6 +393,7 @@ public sealed partial class Lowering
                               + "encode it (Utf8Transcoder.Encode) for bytes, or use Sys.StringData for the units");
                 }
                 VReg arr = ToWord(Arg(call, target, 0));
+                Addressed(arr);
                 return Widen(_e.Binary(Opcode.Add, arr, _t.ArrayHeaderBytes));
             }
             case "SyncWord":

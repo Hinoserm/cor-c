@@ -33,6 +33,13 @@ public sealed partial class Binder
     /// </summary>
     public static Func<string, bool>? LibrarySource { get; set; }
 
+    /// <summary>Whether the code being bound is the runtime's or the class library's, which build strings.</summary>
+    private bool BuildsStrings()
+    {
+        string? path = _thisType?.Decl?.SourcePath ?? _scope?.Decl?.SourcePath;
+        return path is null || LibrarySource is null || LibrarySource(path);
+    }
+
     /// <summary>Where the library region ends: the first slot a library class's own virtuals were given.</summary>
     private int _librarySlots;
 
@@ -15541,6 +15548,22 @@ public sealed partial class Binder
         }
 
         _r.Calls[c] = called;
+
+        // A STRING IS IMMUTABLE, as C#'s is. Sys.NewChars, SetChar and the
+        // string Copy are how String itself is built, and nothing outside the
+        // runtime and the class library may use them: a string written into
+        // after it was made is a string some other holder -- an interned
+        // literal, a cached hash, a dictionary's key -- sees change. Bytes are
+        // a byte[], text being assembled a char[] or a StringBuilder.
+        if (called.Owner.Name == Prelude.TypeName && called.Owner.Decl?.File == "<prelude>"
+            && (called.Name is Prelude.NewChars or Prelude.SetChar
+                || (called.Name == "Copy" && called.Params.Count > 0 && called.Params[0].Type.Prim == Prim.String))
+            && !BuildsStrings())
+        {
+            // What C# says of an internal member (CS0122): these are the class
+            // library's own, as FastAllocateString is System.Private.CoreLib's.
+            Error(c, $"'Sys.{called.Name}' is inaccessible due to its protection level");
+        }
 
         // Calling an async method hands back a TASK, not the value: the method
         // has not finished and quite possibly has not started doing the part

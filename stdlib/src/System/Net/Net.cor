@@ -1619,7 +1619,7 @@ class Socket : IDisposable
     public int IOControl(int ioControlCode, byte[]? optionInValue, byte[]? optionOutValue)
     {
         byte[]? argument = optionInValue != null ? optionInValue : optionOutValue;
-        long r = Os.Ioctl(_fd, ioControlCode, argument == null ? 0 : Os.AddressOf(argument));
+        long r = Os.Ioctl(_fd, ioControlCode, argument == null ? 0 : Platform.Linear(Sys.ArrayData(argument)));
 
         if (r < 0)
         {

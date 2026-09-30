@@ -853,7 +853,7 @@ static class Terminal
     public static int ModemLines(int fd)
     {
         byte[] bits = new byte[4];
-        long r = Os.Ioctl(fd, 0x5415, Os.AddressOf(bits));
+        long r = Os.Ioctl(fd, 0x5415, Platform.Linear(Sys.ArrayData(bits)));
         return r < 0 ? -1 : (int)Raw.U32(bits, 0);
     }
 
@@ -864,7 +864,7 @@ static class Terminal
     {
         byte[] bits = new byte[4];
         Raw.SetU32(bits, 0, lines);
-        return Os.Ioctl(fd, Tio.SetModemLines, Os.AddressOf(bits)) >= 0;
+        return Os.Ioctl(fd, Tio.SetModemLines, Platform.Linear(Sys.ArrayData(bits))) >= 0;
     }
 
     /// HANGS THE LINE UP: the speed set to zero, which is what tells the

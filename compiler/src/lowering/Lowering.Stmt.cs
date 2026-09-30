@@ -1,5 +1,6 @@
 #nullable enable
 using Corsac.Lang.Ir;
+using Corsac.Lang.X86;
 
 namespace Corsac.Lang.Lower;
 
@@ -10,6 +11,13 @@ public sealed partial class Lowering
 {
     private void EmitStmt(Stmt s)
     {
+        // One of a block's own statements leaves the arrays it addressed to
+        // the block; anything else -- a branch or loop body written without
+        // braces -- keeps them to its own end, the last point every path
+        // through it shares.
+        bool inBlockList = _inBlockList;
+        _inBlockList = false;
+        int addressedBefore = _addressed.Count;
         // WHICH LINE THE READER IS ON. Everything this statement becomes is
         // stamped with it on its way into a block, which is what lets a stack
         // trace say `in file.cor:line N` rather than naming the function and
@@ -73,6 +81,7 @@ public sealed partial class Lowering
                         continue;
                     }
 
+                    _inBlockList = true;
                     EmitStmt(inner);
                     if (_e.Closed)
                     {
@@ -256,6 +265,10 @@ public sealed partial class Lowering
                     VReg v = EvalAs(r.Value, _returnType ?? _method.Returns);
                     _e.CopyTo(_returnValue, new RegOperand(v));
                 }
+                // `return Os.Syscall(..., Sys.ArrayData(path))`: the value is
+                // made, and the array must live until here, not only until
+                // its address was taken.
+                KeepAddressed(0, forget: false);
                 UnwindToReturn();
                 _e.Jump(_returnBlock!);
                 break;
@@ -303,6 +316,62 @@ public sealed partial class Lowering
             default:
                 Error(s, $"{s.GetType().Name} is not implemented by the lowering yet");
                 break;
+        }
+
+        if (s is AstBlock || !inBlockList) KeepAddressed(addressedBefore);
+    }
+
+    /// <summary>
+    /// The arrays whose address this block took (Sys.ArrayData), each with
+    /// the function it belongs to: a lambda lowered in the middle of a
+    /// statement has registers of its own.
+    /// </summary>
+    private readonly List<(Function Function, VReg Array)> _addressed = new();
+
+    /// <summary>
+    /// AN ADDRESS TAKEN FROM AN ARRAY KEEPS THE ARRAY ALIVE TO THE END OF THE
+    /// BLOCK IT WAS TAKEN IN, as C#'s `fixed` does for its block -- or to a
+    /// return, whichever comes first. The block and not the statement:
+    /// `long at = Sys.ArrayData(buffer);` and the call that uses `at` are
+    /// usually two statements. The address is a number,
+    /// which the collector does not follow; the array's last use as a
+    /// reference was taking it. `Os.Read(fd, Sys.ArrayData(buffer), n)` then
+    /// left the buffer unreachable for the whole of a blocking read -- while
+    /// the collector may run -- and the kernel wrote into memory that could be
+    /// someone else's by then.
+    /// </summary>
+    ///
+    /// Kept in a register of its own, zeroed where the function starts and
+    /// set where the address is taken: that may be one arm of `?:` or `&&`,
+    /// and the block's end is reached by the other arm too, where a register
+    /// set only in the first would hold whatever was there before.
+    private void Addressed(VReg array)
+    {
+        VReg keep = _f.NewReg(array.Type);
+        List<Instr> entry = _f.Entry.Instrs;
+        int first = 0;
+        while (first < entry.Count && entry[first].Op == Opcode.Phi) first++;
+        entry.Insert(first, new Instr { Op = Opcode.Copy, Dest = keep, Operands = { new ImmOperand(0, array.Type) } });
+        _e.CopyTo(keep, new RegOperand(array));
+        _addressed.Add((_f, keep));
+    }
+
+    private bool _inBlockList;
+
+    /// <summary>
+    /// Keeps alive, here, the arrays addressed since entry `from` (a block's
+    /// own), and forgets them -- or, at a return, keeps every one this
+    /// function still holds and forgets none: the paths that do not return
+    /// need them to their blocks' ends.
+    /// </summary>
+    private void KeepAddressed(int from = 0, bool forget = true)
+    {
+        if (_addressed.Count <= from) return;
+        for (int i = _addressed.Count - 1; i >= from; i--)
+        {
+            if (!ReferenceEquals(_addressed[i].Function, _f)) continue;
+            if (!_e.Closed) _e.Call(MachineIntrinsics.KeepAlive, IrType.Void, new RegOperand(_addressed[i].Array));
+            if (forget) _addressed.RemoveAt(i);
         }
     }
 

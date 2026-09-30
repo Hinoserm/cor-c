@@ -262,15 +262,6 @@ public sealed class Type : IEquatable<Type>
         ? Target.Current.WordSize
         : Target.Current.SizeOf(Prim);
 
-    public Corsac.Size Operand => IsPointer || IsNullableValue ? Corsac.Size.D : Prim switch
-    {
-        Prim.Bool or Prim.I8 or Prim.U8 => Corsac.Size.B,
-        Prim.I16 or Prim.Char or Prim.U16 => Corsac.Size.H,
-        Prim.I32 or Prim.F32 or Prim.U32 => Corsac.Size.W,
-        Prim.NInt or Prim.NUInt => Target.Current.WordSize == 4 ? Corsac.Size.W : Corsac.Size.D,
-        _ => Corsac.Size.D,
-    };
-
     public bool Equals(Type? other)
     {
         if (other is null)

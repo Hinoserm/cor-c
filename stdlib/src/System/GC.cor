@@ -77,8 +77,10 @@ public static class GC
     /// The bytes this thread has allocated since it began.
     public static long GetAllocatedBytesForCurrentThread() { return Gc.AllocatedByThread; }
 
-    /// Keeps `obj` reachable up to this call.
-    public static void KeepAlive(object? obj) { }
+    /// Keeps `obj` reachable up to this call. It was an empty method, which
+    /// kept nothing: inlined, it was no use of `obj` at all, and the collector
+    /// could take an object whose address a system call was still reading.
+    public static void KeepAlive(object? obj) { Sys.KeepAlive(obj); }
 
     public static void SuppressFinalize(object obj)
     {
