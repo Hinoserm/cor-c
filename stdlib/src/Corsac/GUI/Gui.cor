@@ -117,6 +117,13 @@ enum SeatIoctl : long
     TrayClick = 0x47550055,
     TrayBalloon = 0x47550056,
     TrayPlace = 0x47550057,
+    // The same texts as UTF-16, as the library holds them: no encoding on
+    // the way in or out.
+    Title16 = 0x47550058,
+    ListWindows16 = 0x47550059,
+    TraySet16 = 0x4755005A,
+    TrayList16 = 0x4755005B,
+    TrayBalloon16 = 0x4755005C,
 }
 
 public class Seat : IDrawingTarget
@@ -347,7 +354,7 @@ public class Seat : IDrawingTarget
         foreach (byte[] tree in trees) Ioctl(SeatIoctl.MenuSet, Sys.ArrayData(tree));
         if (watchWindows) Ioctl(SeatIoctl.WatchWindows, 0);
         if (watchPointer) Ioctl(SeatIoctl.WatchPointer, 0);
-        foreach (byte[] record in trays) Ioctl(SeatIoctl.TraySet, Sys.ArrayData(record));
+        foreach (byte[] record in trays) Ioctl(SeatIoctl.TraySet16, Sys.ArrayData(record));
 
         foreach (Kept w in mine)
         {
@@ -1044,9 +1051,9 @@ public class Seat : IDrawingTarget
 
     public void SetTitle(int handle, string title)
     {
-        byte[] bytes = new byte[64];
-        SeatText.Put(bytes, 0, 64, title);
-        Flush(); Select(handle); Ioctl(SeatIoctl.Title, Sys.ArrayData(bytes));
+        byte[] bytes = new byte[256];
+        SeatText16.Put(bytes, 0, 128, title);
+        Flush(); Select(handle); Ioctl(SeatIoctl.Title16, Sys.ArrayData(bytes));
         lock (_keep) { Kept? k = Find(handle); if (k != null) k.Title = title; }
     }
 
@@ -1059,16 +1066,19 @@ public class Seat : IDrawingTarget
     }
 
     /// Every shown window on the seat, bottom to top, whoever owns it.
+    /// ListWindows16's record: six words, then the title as 64 UTF-16 units.
+    public const int WindowRecordBytes = 24 + 128;
+
     public SeatWindowInfo[] Windows()
     {
-        byte[] records = new byte[80 * 64];
-        int n = (int)Ioctl(SeatIoctl.ListWindows, Sys.ArrayData(records));
+        byte[] records = new byte[WindowRecordBytes * 64];
+        int n = (int)Ioctl(SeatIoctl.ListWindows16, Sys.ArrayData(records));
         if (n < 0) n = 0;
         if (n > 64) n = 64;
         SeatWindowInfo[] result = new SeatWindowInfo[n];
         for (int i = 0; i < n; i++)
         {
-            int at = i * 80;
+            int at = i * WindowRecordBytes;
             SeatWindowInfo w = new SeatWindowInfo();
             w.Handle = records[at] | (records[at + 1] << 8) | (records[at + 2] << 16) | (records[at + 3] << 24);
             w.Owner = records[at + 4] | (records[at + 5] << 8) | (records[at + 6] << 16) | (records[at + 7] << 24);
@@ -1076,14 +1086,15 @@ public class Seat : IDrawingTarget
             int xy = records[at + 12] | (records[at + 13] << 8) | (records[at + 14] << 16) | (records[at + 15] << 24);
             int wh = records[at + 16] | (records[at + 17] << 8) | (records[at + 18] << 16) | (records[at + 19] << 24);
             w.Bounds = new Rectangle(LowSigned(xy), HighSigned(xy), wh & 0xFFFF, (wh >> 16) & 0xFFFF);
-            w.Title = SeatText.Get(records, at + 24, 56);
+            w.Title = SeatText16.Get(records, at + 24, 64);
             result[i] = w;
         }
         return result;
     }
 
     // --- the notification area (Windows' Shell_NotifyIcon) -------------
-    public const int TrayRecordBytes = 4 + 4 + 1024 + 64;
+    // TraySet16's record: uid, flags, 256 COLORREFs, the tip as 64 UTF-16 units.
+    public const int TrayRecordBytes = 4 + 4 + 1024 + 128;
     public const int TrayListBytes = 4 + TrayRecordBytes;
     public const int MaxTray = 32;
     class TrayKept { public long Owner; public int Uid; public byte[] Record = new byte[0]; }
@@ -1102,10 +1113,9 @@ public class Seat : IDrawingTarget
             int at = 8 + i * 4;
             record[at] = (byte)v; record[at + 1] = (byte)(v >> 8); record[at + 2] = (byte)(v >> 16); record[at + 3] = (byte)(v >> 24);
         }
-        // The tip as UTF-8, as every seat text is (TrayIcons reads it so).
-        SeatText.Put(record, 1032, 64, tip);
+        SeatText16.Put(record, 1032, 64, tip);
         Flush();
-        Ioctl(SeatIoctl.TraySet, Sys.ArrayData(record));
+        Ioctl(SeatIoctl.TraySet16, Sys.ArrayData(record));
         long me = Ioctl(SeatIoctl.Whoami, 0);
         lock (_keep)
         {
@@ -1115,7 +1125,9 @@ public class Seat : IDrawingTarget
         }
     }
 
-    public const int TrayBalloonBytes = 4 + 4 + 4 + 64 + 256;
+    // TrayBalloon16's record: uid, timeout, icon, the title as 64 UTF-16
+    // units and the text as 256, Windows 2000's szInfoTitle and szInfo.
+    public const int TrayBalloonBytes = 4 + 4 + 4 + 128 + 512;
 
     /// A balloon over this thread's icon `uid` (NIF_INFO): how long in
     /// milliseconds, its icon (ToolTipIcon's number), title and text as
@@ -1128,10 +1140,10 @@ public class Seat : IDrawingTarget
         record[0] = (byte)uid; record[1] = (byte)(uid >> 8); record[2] = (byte)(uid >> 16); record[3] = (byte)(uid >> 24);
         record[4] = (byte)timeout; record[5] = (byte)(timeout >> 8); record[6] = (byte)(timeout >> 16); record[7] = (byte)(timeout >> 24);
         record[8] = (byte)icon;
-        SeatText.Put(record, 12, 64, title);
-        SeatText.Put(record, 76, 256, text);
+        SeatText16.Put(record, 12, 64, title);
+        SeatText16.Put(record, 140, 256, text);
         Flush();
-        Ioctl(SeatIoctl.TrayBalloon, Sys.ArrayData(record));
+        Ioctl(SeatIoctl.TrayBalloon16, Sys.ArrayData(record));
     }
 
     /// Where the bar draws the notification area: its first icon's top left
@@ -1157,7 +1169,7 @@ public class Seat : IDrawingTarget
     public SeatTrayInfo[] TrayIcons()
     {
         byte[] records = new byte[TrayListBytes * MaxTray];
-        int n = (int)Ioctl(SeatIoctl.TrayList, Sys.ArrayData(records));
+        int n = (int)Ioctl(SeatIoctl.TrayList16, Sys.ArrayData(records));
         if (n < 0) n = 0;
         if (n > MaxTray) n = MaxTray;
         SeatTrayInfo[] result = new SeatTrayInfo[n];
@@ -1168,7 +1180,7 @@ public class Seat : IDrawingTarget
             t.Owner = Word(records, at);
             t.Uid = Word(records, at + 4);
             for (int p = 0; p < 256; p++) t.Pixels[p] = Word(records, at + 12 + p * 4);
-            t.Tip = SeatText.Get(records, at + 1036, 64);
+            t.Tip = SeatText16.Get(records, at + 1036, 64);
             result[i] = t;
         }
         return result;
@@ -1438,6 +1450,43 @@ public static class Shell
     internal static void RaisePointerMoved(MouseEventArgs e) { if (PointerMoved != null) PointerMoved(null!, e); }
     internal static void RaiseStartRequested() { if (StartRequested != null) StartRequested(null!, EventArgs.Empty); }
     internal static void RaiseInspected() { if (Inspected != null) Inspected(null!, EventArgs.Empty); }
+}
+
+/// TEXT IN A SEAT RECORD AS UTF-16, as the library holds it: a fixed field of
+/// `units` code units, little-endian, ended by a zero unit when shorter. No
+/// encoding either way.
+static class SeatText16
+{
+    /// `text` into block[at, at + 2 * units), cut short of a surrogate pair
+    /// it would split so that a zero unit still fits after it.
+    public static void Put(byte[] block, int at, int units, string text)
+    {
+        int take = text.Length < units - 1 ? text.Length : units - 1;
+        if (take > 0 && take < text.Length && text[take - 1] >= 0xD800 && text[take - 1] <= 0xDBFF) take = take - 1;
+        for (int i = 0; i < take; i++)
+        {
+            int c = text[i];
+            block[at + 2 * i] = (byte)c;
+            block[at + 2 * i + 1] = (byte)(c >> 8);
+        }
+        block[at + 2 * take] = 0;
+        block[at + 2 * take + 1] = 0;
+    }
+
+    /// The UTF-16 in block[from, from + 2 * units), up to its zero unit.
+    public static string Get(byte[] block, int from, int units)
+    {
+        int length = 0;
+        while (length < units && from + 2 * length + 1 < block.Length
+            && (block[from + 2 * length] | block[from + 2 * length + 1]) != 0)
+        {
+            length = length + 1;
+        }
+        if (length == 0) return "";
+        char[] chars = new char[length];
+        for (int i = 0; i < length; i++) chars[i] = (char)(block[from + 2 * i] | (block[from + 2 * i + 1] << 8));
+        return new string(chars);
+    }
 }
 
 /// TEXT IN A SEAT RECORD: a fixed field of UTF-8, ended by a zero byte when it
