@@ -9594,14 +9594,14 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
             placeOf[slot] = place;
             return;
         }
+        // Each field read once, after Tidy has made it what it will be: a
+        // local given the field twice is a join, and a join of two loads is
+        // a read the owned-field rules cannot follow.
+        if (order == null || placeOf == null || ordered == order.Length || placeOf.Length != mask + 1) {
+            Tidy();
+        }
         int[]? list = order;
         int[]? places = placeOf;
-
-        if (list == null || places == null || ordered == list.Length || places.Length != mask + 1) {
-            Tidy();
-            list = order;
-            places = placeOf;
-        }
 
         if (list != null && places != null) {
             places[slot] = ordered;
@@ -10010,12 +10010,16 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         // Twice the size only when it is the held ones that fill it.
         int size = (count + 1) * 2 > oldSize ? oldSize * 2 : oldSize;
 
-        keys = new K[size];
-        values = new V[size];
-        state = new int[size];
+        // THE NEW ARRAYS FILLED IN LOCALS, and stored only once the old ones
+        // are done with: a store that replaces an owned field frees what it
+        // held, so no old array may be read after its field is written. Read
+        // after, as this was, the fields were not owned, and every array a
+        // growing table left behind was the collector's.
+        K[] newKeys = new K[size];
+        V[] newValues = new V[size];
+        int[] newState = new int[size];
         mask = size - 1;
-        count = 0;
-        filled = 0;
+        int held = 0;
 
         // EVERY ONE IN THE PLACE IT HAD, and the freed places still free, as
         // .NET's resize copies its entries: growing changes nothing a walk,
@@ -10026,15 +10030,19 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
             int i = oldOrder![n];
             if (i < 0 || oldState[i] != 1) { list[n] = -1; continue; }
             int j = Hash(oldKeys[i]);
-            while (state[j] != 0) { j = (j + 1) & mask; }
-            keys[j] = oldKeys[i];
-            values[j] = oldValues[i];
-            state[j] = 1;
-            count = count + 1;
-            filled = filled + 1;
+            while (newState[j] != 0) { j = (j + 1) & mask; }
+            newKeys[j] = oldKeys[i];
+            newValues[j] = oldValues[i];
+            newState[j] = 1;
+            held = held + 1;
             list[n] = j;
             places[j] = n;
         }
+        keys = newKeys;
+        values = newValues;
+        state = newState;
+        count = held;
+        filled = held;
         order = list;
         placeOf = places;
         ordered = oldOrdered;
@@ -11329,14 +11337,14 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
             placeOf[slot] = place;
             return;
         }
+        // Each field read once, after Tidy has made it what it will be: a
+        // local given the field twice is a join, and a join of two loads is
+        // a read the owned-field rules cannot follow.
+        if (order == null || placeOf == null || ordered == order.Length || placeOf.Length != mask + 1) {
+            Tidy();
+        }
         int[]? list = order;
         int[]? places = placeOf;
-
-        if (list == null || places == null || ordered == list.Length || places.Length != mask + 1) {
-            Tidy();
-            list = order;
-            places = placeOf;
-        }
 
         if (list != null && places != null) {
             places[slot] = ordered;
@@ -11640,11 +11648,12 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
         // of tombstones is rehashed where it stands.
         int size = (count + 1) * 2 > oldSize ? oldSize * 2 : oldSize;
 
-        items = new T[size];
-        state = new int[size];
+        // Filled in locals and stored once the old arrays are done with, as
+        // Dictionary's Grow: an owned field's store frees what it replaces.
+        T[] newItems = new T[size];
+        int[] newState = new int[size];
         mask = size - 1;
-        count = 0;
-        filled = 0;
+        int held = 0;
 
         // Tombstones do not survive a rehash, which is the other thing growth
         // is for; every element keeps its place, and the freed places stay
@@ -11655,14 +11664,17 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
             int i = oldOrder![n];
             if (i < 0 || oldState[i] != 1) { list[n] = -1; continue; }
             int j = Hash(old[i]);
-            while (state[j] != 0) { j = (j + 1) & mask; }
-            items[j] = old[i];
-            state[j] = 1;
-            count = count + 1;
-            filled = filled + 1;
+            while (newState[j] != 0) { j = (j + 1) & mask; }
+            newItems[j] = old[i];
+            newState[j] = 1;
+            held = held + 1;
             list[n] = j;
             places[j] = n;
         }
+        items = newItems;
+        state = newState;
+        count = held;
+        filled = held;
         order = list;
         placeOf = places;
         ordered = oldOrdered;

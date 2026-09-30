@@ -371,6 +371,7 @@ public sealed partial class Escape
             if (value is not RegOperand vr) { fs.Dirty.Add(at); hint?.Dirty.Add(at); continue; }
             // Put back what was just taken from the same field.
             if (loads.Any(l => l.At == at && ReferenceEquals(l.Value, vr.Reg))) continue;
+            if (FrameObject(defs, vr.Reg)) continue;
             HashSet<Instr> putHere = new(ReferenceEqualityComparer.Instance) { st };
             Instr? origin = FreshOrigin(f, defs, vr.Reg);
             if (origin is not null && !ReferenceEquals(origin, source) && !_owned.Contains(origin) && !_ownedCalls.Contains(origin))
@@ -459,6 +460,27 @@ public sealed partial class Escape
     }
 
     /// <summary>The allocation or fresh call a register holds the result of, through copies and width changes; or null.</summary>
+    /// <summary>
+    /// Whether `r` is an object this pass put in the frame (the Copy of its
+    /// slot that promotion made): no heap block, so nothing a field holding
+    /// it must answer for -- a null, as far as rule 1 goes. A Dictionary made
+    /// in the frame stores its first arrays, frame objects too, from its
+    /// constructor; counted dirty, the fields were never freed, and nor was
+    /// any array Grow put there after.
+    /// </summary>
+    private bool FrameObject(Defs defs, VReg r)
+    {
+        for (int hops = 0; hops < 8; hops++)
+        {
+            if (!defs.IsSingle(r) || defs.Definition(r) is not Instr d) return false;
+            if (d.Op == Opcode.Copy && d.Operands.Count == 1 && d.Operands[0] is SlotOperand) return _promotedMade.Contains(d);
+            if (d.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.SExt32)
+                || d.Operands.Count != 1 || d.Operands[0] is not RegOperand from) return false;
+            r = from.Reg;
+        }
+        return false;
+    }
+
     private Instr? FreshOrigin(Function f, Defs defs, VReg r)
     {
         for (int hops = 0; hops < 8; hops++)

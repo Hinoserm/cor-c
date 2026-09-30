@@ -1,0 +1,38 @@
+// test: a Dictionary and a HashSet made in the frame own the arrays Grow gives them: the fields hold the frame's first arrays and then fresh ones, and every array is right after being freed with its table
+// expect-exit: 0
+// expect-output:
+// 49950 4950 100
+// 49950 4950 100
+using System.Collections.Generic;
+
+static class Program
+{
+    static long Table(int n)
+    {
+        var d = new Dictionary<int, int>();
+        for (int i = 0; i < n; i++) d[i] = i * 10;
+        long sum = 0;
+        foreach (var pair in d) sum += pair.Value;
+        return sum;
+    }
+
+    static long Set(int n)
+    {
+        var s = new HashSet<int>();
+        for (int i = 0; i < n; i++) s.Add(i);
+        long sum = 0;
+        foreach (int x in s) sum += x;
+        return sum + (s.Contains(n - 1) ? 0 : 1000000);
+    }
+
+    static int Main()
+    {
+        for (int round = 0; round < 2; round++)
+        {
+            long a = 0, b = 0;
+            for (int r = 0; r < 2000; r++) { a = Table(100); b = Set(100); }
+            System.Console.WriteLine(a + " " + b + " " + 100);
+        }
+        return 0;
+    }
+}

@@ -940,6 +940,14 @@ public sealed partial class Escape : IModulePass
                             if (o is ImmOperand { Value: 0 }) { if (!found.Any(x => x.Kind == SourceKind.Null)) found.Add(new Source(SourceKind.Null, 0, null)); }
                             else if (o is SymOperand) { if (!found.Any(x => x.Kind == SourceKind.Static)) found.Add(new Source(SourceKind.Static, 0, null)); }
                             else if (o is RegOperand from) work.Push(from.Reg);
+                            // AN OBJECT THIS PASS PUT IN THE FRAME is no heap
+                            // block, as static data is none: nothing to hold,
+                            // and Free, handed one, finds no block to free. A
+                            // Dictionary's first arrays, made in its
+                            // constructor, are such; refused, the field was
+                            // never owned, and every array Grow put in it after
+                            // was left to the collector.
+                            else if (o is SlotOperand && _promotedMade.Contains(w)) { if (!found.Any(x => x.Kind == SourceKind.Static)) found.Add(new Source(SourceKind.Static, 0, null)); }
                             else found.Add(new Source(SourceKind.Unknown, 0, null));
                         }
                         continue;
@@ -1094,7 +1102,7 @@ public sealed partial class Escape : IModulePass
                         && seen.FirstOrDefault(x => x.Kind == SourceKind.Unknown).Made is Instr maker
                         ? $" (from {maker.Op} {maker.Callee})" : "";
                     Refuse(st.Field!, $"stores {st.Operands[1]}, not a fresh object{from}", f, st);
-                    continue;
+continue;
                 }
             }
         }
