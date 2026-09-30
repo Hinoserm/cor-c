@@ -628,6 +628,7 @@ public static class Driver
         // position-dependent, with the link-time optimizer on, linked against
         // no shared library. Only such an object may call symbols only the
         // link defines (field sites).
+        List<Corsac.Lang.Lto.IrArchiveRecord>? linkRecords = null;
         module.NoCollector = args.Contains("--no-collector");
         module.LeavesLinkHints = (args.Contains("--obj") || library) && !args.Contains("--no-lto") && !args.Contains("--no-opt")
             && sharedLibs.Count == 0 && !(shared || args.Contains("--pic"));
@@ -636,7 +637,14 @@ public static class Driver
 #if COR_SELFHOST_BENCHMARK
             Program.BenchmarkStage("optimise");
 #endif
-            Optimise(module, Value(args, "--trace-opt"), args.Contains("--experimental-ssa"), args.Contains("--opt-size"), args.Contains("--experimental-batch"), Value(args, "--batch-without"), workers);
+            // THE IR THE LINK GETS is the module as the late passes find it,
+            // with what they read of this compile, so a link can run them
+            // again knowing the whole program (UnitBackend).
+            Action<Module>? beforeLate = !module.LeavesLinkHints ? null : m => linkRecords = Corsac.Lang.Metadata.IrUnitCodec.Snapshot(m,
+                !args.Contains("--no-stackmaps"),
+                new(true, m.NoCollector, m.CallsCollector, m.LeavesLinkHints, args.Contains("--opt-size"), args.Contains("--experimental-batch"),
+                    m.RuntimeHelpers.ToArray()));
+            Optimise(module, Value(args, "--trace-opt"), args.Contains("--experimental-ssa"), args.Contains("--opt-size"), args.Contains("--experimental-batch"), Value(args, "--batch-without"), workers, beforeLate);
             Phase("optimise");
             if (args.Contains("--dump-opt"))
             {
@@ -842,7 +850,8 @@ public static class Driver
                 // The lifetime hints first: the IR archive's integrity hash
                 // covers every other section, these included.
                 if (module.LeavesLinkHints && module.LifetimeHints is { IsEmpty: false } hints) hints.Attach(obj);
-                IrUnitCodec.Attach(obj, module, x86Backend.StackMaps);
+                if (linkRecords is not null) Corsac.Lang.Lto.IrArchive.Attach(obj, linkRecords);
+                else IrUnitCodec.Attach(obj, module, x86Backend.StackMaps);
             }
             ElfWriter.WriteObjectFile(obj, output);
             if (Value(args, "--dependency-file") is string dependencyFile) declarations!.WriteDependencies(dependencyFile);
@@ -1149,10 +1158,12 @@ public static class Driver
     /// The optimisation pipeline: one list, in order, between lowering and the
     /// backend. Heavier passes slot in here as they arrive.
     /// </summary>
-    private static void Optimise(Module module, string? traced = null, bool experimentalSsa = false, bool optimizeSize = false, bool experimentalBatch = false, string? batchWithout = null, int workers = 1)
+    private static void Optimise(Module module, string? traced = null, bool experimentalSsa = false, bool optimizeSize = false, bool experimentalBatch = false, string? batchWithout = null, int workers = 1,
+        Action<Module>? beforeLate = null)
     {
         Corsac.Lang.Opt.Pipeline pipeline = Corsac.Lang.Opt.Pipeline.Default(optimizeSize: optimizeSize, experimentalBatch: experimentalBatch);
         pipeline.Workers = workers;
+        pipeline.BeforeLate = beforeLate;
         if (batchWithout is not null)
         {
             if (!experimentalBatch || batchWithout is not ("bit-fact-simplify" or "edge-predicates"
