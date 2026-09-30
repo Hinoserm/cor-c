@@ -1982,7 +1982,7 @@ static class Gc
                     Sys.Poke(free + size - FooterBytes, size);
                     Sys.Poke(tb + Tls.ClassBytes, Sys.Peek(tb + Tls.ClassBytes) + size);
                     Sys.Poke(tb + Tls.InAlloc, 0);
-                    if (_heapCheck) CheckMade(free, "class fast path");
+                    if (_heapCheck) { CheckMade(free, "class fast path"); CheckList(Sys.Peek(slot + WordSize.Bytes), size, "class fast path"); }
                     return free + HeaderBytes;
                 }
                 Sys.Poke(tb + Tls.InAlloc, 0);
@@ -2561,7 +2561,7 @@ static class Gc
         Sys.Poke(block + size - FooterBytes, size);
         long tb = Sys.ThreadBlock();
         Sys.Poke(tb + Tls.ClassBytes, Sys.Peek(tb + Tls.ClassBytes) + size);
-        if (_heapCheck) CheckMade(block, "PopClass");
+        if (_heapCheck) { CheckMade(block, "PopClass"); CheckList(Sys.Peek(slot + WordSize.Bytes), size, "PopClass"); }
         return block + HeaderBytes;
     }
 
@@ -2646,10 +2646,50 @@ static class Gc
         }
     }
 
+    // A CLASS'S FREE LIST WALKED after each block taken from it, while the
+    // heap check is on: every node must be a free block of that class's
+    // size in a page of that class. A node that is not -- a live object on
+    // the list -- is the block that will be handed out a second time.
+    static long _listReports;
+
+    static void CheckList(long head, long size, string how)
+    {
+        if (_listReports >= 12) return;
+        long node = head;
+        for (long n = 0; node != 0 && n < 256; n++)
+        {
+            long word = Sys.Peek(node);
+            if ((word & FlagFree) == 0 || (word & SizeMask) != size || Sys.Peek(node + size - FooterBytes) != word)
+            {
+                _listReports = _listReports + 1;
+                Runtime.WriteLiteral(2, "gc owner check: a class list holds a block that is not free, by the ");
+                Runtime.WriteLiteral(2, how);
+                SayNumber(" -- node ", node);
+                SayNumber("gc owner check:   its header ", word);
+                SayNumber("gc owner check:   its footer ", Sys.Peek(node + (word & SizeMask) - FooterBytes));
+                SayNumber("gc owner check:   class size ", size);
+                SayNumber("gc owner check:   place in the list ", n);
+                Runtime.SayTrace(2, Sys.FramePointer());
+                return;
+            }
+            node = Sys.Peek(node + KindAt);
+        }
+    }
+
+    /// Called with the footer of each block of WatchSize made while the heap
+    /// check is on, when set: a kernel points a debug register at it, so the
+    /// write that later breaks it traps where it is made (GcWatchpoint).
+    public static long WatchHook;
+    public static long WatchSize;
+
     static void CheckMade(long block, string how)
     {
         CheckRecent();
         Remember(block);
+        if (WatchHook != 0 && (Sys.Peek(block) & SizeMask) == WatchSize)
+        {
+            Sys.Call(WatchHook, block + WatchSize - FooterBytes, 0, 0);
+        }
         long word = Sys.Peek(block);
         long size = word & SizeMask;
         if (size >= Smallest && Sys.Peek(block + size - FooterBytes) == word) return;
