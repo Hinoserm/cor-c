@@ -1,0 +1,9 @@
+// The other unit of 856_shared_generic_statics_across_units: a generic class with statics.
+namespace SharedStatics;
+
+public class Table<T>
+{
+    public static readonly T[] None = new T[0];
+    public static int Made = 5;
+    public static T[] Empty() => None;
+}

@@ -1066,8 +1066,9 @@ public sealed partial class Lowering
             // READING OR WRITING A STATIC TOUCHES THE TYPE, which is one of
             // the three things C# says runs its initialisers.
             TouchType(f.Owner);
-            _statics.Add(f);
-            MemPlace place = new MemPlace(new SymOperand(StaticSymbol(f)), 0, f.Type, f.Volatile, Field: f);
+            FieldSymbol store = SharedStatic(f);
+            _statics.Add(store);
+            MemPlace place = new MemPlace(new SymOperand(StaticSymbol(store)), 0, f.Type, f.Volatile, Field: store);
 
             // A STATIC STRUCT FIELD IS A VALUE TOO, zero until written; static
             // storage starts as zero bytes, which for a struct held by pointer
@@ -1080,7 +1081,7 @@ public sealed partial class Lowering
             // on one block and a field written into the loser's is not lost.
             if (!f.Boxed && !f.Initialised && IsStructValue(f.Type))
             {
-                VReg at2 = _e.Address(StaticSymbol(f));
+                VReg at2 = _e.Address(StaticSymbol(store));
                 VReg held = _e.Load(IrTypes.Word, at2, 0);
                 Block make = _f.NewBlock("szmake");
                 Block made = _f.NewBlock("szdone");

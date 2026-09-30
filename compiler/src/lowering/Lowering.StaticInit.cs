@@ -87,6 +87,7 @@ public sealed partial class Lowering
         }
 
         Require(start);
+        ready = SharedStatic(ready);
         _statics.Add(ready);
 
         Block run = _f.NewBlock("ctorun");

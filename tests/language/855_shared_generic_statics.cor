@@ -1,0 +1,22 @@
+// test: a static field of a word-shaped generic instantiation is the one its shared static initialiser wrote
+// expect-exit: 0
+// expect-output:
+// len 0
+// 7 7
+class Holder<T>
+{
+    internal static readonly int Seven = 7;
+    internal static readonly T[] None = new T[0];
+}
+
+static class Program
+{
+    static int Main()
+    {
+        string[] a = Array.Empty<string>();
+        Console.WriteLine(a == null ? "null" : "len " + a.Length);
+        object[]? o = Holder<object>.None;
+        Console.WriteLine(Holder<string>.Seven + " " + (o == null ? 0 : Holder<object>.Seven));
+        return 0;
+    }
+}
