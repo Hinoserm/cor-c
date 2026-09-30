@@ -351,6 +351,11 @@ static class Gc
     static bool _verifyGenerations;
     static long _verifyReports;
 
+    /// The major check (VerifyMajor) asked for by a program rather than the
+    /// platform: a kernel sets it from its command line (gc.verify=1). Read
+    /// at every whole collection, so it may be set after the heap started.
+    public static bool VerifyMarks;
+
     /// CORSAC_GC_VERIFY: after a minor cycle has marked, every old block is
     /// read word by word, and a word that lands on a young block this cycle
     /// did not mark -- which the sweep is about to free -- is reported: the
@@ -1970,12 +1975,14 @@ static class Gc
                 if (free != 0)
                 {
                     long size = Sys.Peek(_classSize + c * WordSize.Bytes);
+                    if (_heapCheck) CheckOutsideBuffer(free, free + size, "gc owner check: a class block inside the live buffer (fast)");
                     Sys.Poke(slot + WordSize.Bytes, Sys.Peek(free + KindAt));
                     Sys.Poke(free, size);
                     Sys.Poke(free + KindAt, kind);
                     Sys.Poke(free + size - FooterBytes, size);
                     Sys.Poke(tb + Tls.ClassBytes, Sys.Peek(tb + Tls.ClassBytes) + size);
                     Sys.Poke(tb + Tls.InAlloc, 0);
+                    if (_heapCheck) CheckMade(free, "class fast path");
                     return free + HeaderBytes;
                 }
                 Sys.Poke(tb + Tls.InAlloc, 0);
@@ -2007,6 +2014,7 @@ static class Gc
         Sys.Poke(block + KindAt, kind);
         Sys.Poke(next - FooterBytes, need);
         Sys.Poke(tb + Tls.InAlloc, 0);
+        if (_heapCheck) CheckMade(block, "bump fast path");
         return block + HeaderBytes;
     }
 
@@ -2132,6 +2140,7 @@ static class Gc
     {
         long size = ClassSize(c);
         long first = HeapChunks.First(page);
+        if (_heapCheck) CheckOutsideBuffer(page, HeapChunks.Limit(page), "gc owner check: a class page laid out over the live buffer");
         long made = LayOut(page, first, size);
         HeapChunks.SetPageFree(page, made != 0 ? first : Zero);
         HeapChunks.SetPageClass(page, c + 1);
@@ -2545,13 +2554,30 @@ static class Gc
             return 0;
         }
         long size = ClassSize(c);
+        if (_heapCheck) CheckOutsideBuffer(block, block + size, "gc owner check: a class block inside the live buffer");
         Sys.Poke(slot + WordSize.Bytes, Sys.Peek(block + KindAt));
         Sys.Poke(block, size);
         Sys.Poke(block + KindAt, kind);
         Sys.Poke(block + size - FooterBytes, size);
         long tb = Sys.ThreadBlock();
         Sys.Poke(tb + Tls.ClassBytes, Sys.Peek(tb + Tls.ClassBytes) + size);
+        if (_heapCheck) CheckMade(block, "PopClass");
         return block + HeaderBytes;
+    }
+
+    /// A block just handed out: its header and footer agree, or it is said
+    /// with the call trace (the heap check).
+    static void CheckMade(long block, string how)
+    {
+        long word = Sys.Peek(block);
+        long size = word & SizeMask;
+        if (size >= Smallest && Sys.Peek(block + size - FooterBytes) == word) return;
+        Runtime.WriteLiteral(2, "gc owner check: handed out with its footer wrong by the ");
+        Runtime.WriteLiteral(2, how);
+        SayNumber(" -- block ", block);
+        SayNumber("gc owner check:   header ", word);
+        SayNumber("gc owner check:   footer ", size >= Smallest ? Sys.Peek(block + size - FooterBytes) : 0);
+        Runtime.SayTrace(2, Sys.FramePointer());
     }
 
     /// The objects in the pages a thread owns written into the snapshot, as
@@ -2823,6 +2849,11 @@ static class Gc
         }
 
         long size = SizeOfBlock(arena);
+        if (_heapCheck)
+        {
+            long home = HeapChunks.Of(arena);
+            if (home == 0 || HeapChunks.PageClass(home) != 0) OwnerFault("gc owner check: a buffer carved outside a mixed chunk", arena, home);
+        }
 
         // NOT CHARGED HERE: what the buffer hands out is charged as it is
         // retired (Retire), so a buffer whose top block is freed and taken
@@ -3436,6 +3467,7 @@ static class Gc
                 _since = _since + SizeOfBlock(block);
                 Count(tb, SizeOfBlock(block));
                 Sys.Poke(block + KindAt, kind);
+                if (_heapCheck) CheckMade(block, "class fallback");
                 GcLock.Exit();
                 return block + HeaderBytes;
             }
@@ -3634,8 +3666,104 @@ static class Gc
         // `rep stos` are right now; the class library's heap uses it too.)
         if (to > from)
         {
+            if (_heapCheck) Journal(from, to);
             Sys.MemorySet(from, 0, to - from);
         }
+    }
+
+    // WHAT THE COLLECTOR CLEARED, while the heap check is on: every range
+    // ZeroWords clears and every boundary a merge wipes, with three return
+    // addresses, in a ring. A header or footer the check finds zeroed is
+    // looked up in it: an entry covering the word names the path that
+    // cleared it, and no entry says the allocator did not -- something
+    // wrote past the end of an object.
+    const long JournalEntries = 8192;
+    const long JournalWords = 5;
+    static long _journal;
+    static long _journalAt;
+
+    static void Journal(long from, long to)
+    {
+        if (_journal == 0)
+        {
+            _journal = Platform.Map(JournalEntries * JournalWords * WordSize.Bytes);
+            if (_journal == 0) return;
+        }
+        long e = _journal + (_journalAt % JournalEntries) * JournalWords * WordSize.Bytes;
+        _journalAt = _journalAt + 1;
+        long w = WordSize.Bytes;
+        Sys.Poke(e, from);
+        Sys.Poke(e + w, to);
+        long fp = Sys.FramePointer();
+        for (long i = 0; i < 3; i++)
+        {
+            long back = 0;
+            if (fp != 0)
+            {
+                back = Sys.Peek(fp + w) & WordSize.AddressMask;
+                long next = Sys.Peek(fp) & WordSize.AddressMask;
+                fp = next > fp ? next : 0;
+            }
+            Sys.Poke(e + (2 + i) * w, back);
+        }
+    }
+
+    // TWO OWNERS OF ONE RANGE, while the heap check is on: a class page laid
+    // out over the thread's live buffer, a buffer carved from a class page,
+    // or a top-of-buffer rewind over a block that is not the buffer's own.
+    // Said with the call trace where it happens, the first twelve.
+    static long _ownerReports;
+
+    static void OwnerFault(string what, long a, long b)
+    {
+        if (_ownerReports >= 12) return;
+        _ownerReports = _ownerReports + 1;
+        Runtime.WriteLiteral(2, what);
+        SayNumber(" -- at ", a);
+        SayNumber("gc owner check:   and ", b);
+        long tb = Sys.ThreadBlock();
+        if (tb != 0)
+        {
+            SayNumber("gc owner check:   buffer base ", Sys.Peek(tb + Tls.AllocBase));
+            SayNumber("gc owner check:   buffer pointer ", Sys.Peek(tb + Tls.AllocPtr));
+            SayNumber("gc owner check:   buffer limit ", Sys.Peek(tb + Tls.AllocLimit));
+        }
+        Runtime.SayTrace(2, Sys.FramePointer());
+    }
+
+    /// [from, to) inside this thread's live buffer: a fault.
+    static void CheckOutsideBuffer(long from, long to, string what)
+    {
+        long tb = Sys.ThreadBlock();
+        if (tb == 0) return;
+        long bas = Sys.Peek(tb + Tls.AllocBase);
+        long limit = Sys.Peek(tb + Tls.AllocLimit);
+        if (limit == 0) limit = Sys.Peek(tb + Tls.AllocSaved);
+        if (bas != 0 && from < limit && to > bas) OwnerFault(what, from, to);
+    }
+
+    /// Every journal entry covering `at`, newest first.
+    static void SayJournal(long at)
+    {
+        if (_journal == 0) return;
+        long w = WordSize.Bytes;
+        long seen = 0;
+        long n = _journalAt < JournalEntries ? _journalAt : JournalEntries;
+        for (long k = 1; k <= n && seen < 6; k++)
+        {
+            long e = _journal + ((_journalAt - k) % JournalEntries) * JournalWords * w;
+            if (Sys.Peek(e) <= at && at < Sys.Peek(e + w))
+            {
+                SayNumber("gc heap check:   cleared by an entry this many clears ago ", k);
+                SayNumber("gc heap check:     from ", Sys.Peek(e));
+                SayNumber("gc heap check:     to ", Sys.Peek(e + w));
+                SayNumber("gc heap check:     called from ", Sys.Peek(e + 2 * w));
+                SayNumber("gc heap check:     and from ", Sys.Peek(e + 3 * w));
+                SayNumber("gc heap check:     and from ", Sys.Peek(e + 4 * w));
+                seen = seen + 1;
+            }
+        }
+        if (seen == 0) SayNumber("gc heap check:   no clear by the collector covers ", at);
     }
 
     /// Under a control group's memory limit the heap is capped as .NET caps
@@ -3848,6 +3976,16 @@ static class Gc
             {
                 ReportFreedAgain(block, at);
             }
+            if (_heapCheck && !GcLock.HeldByMe())
+            {
+                GcLock.Enter();
+                long home = HeapChunks.Of(block);
+                if (home == 0 || HeapChunks.PageClass(home) != 0 || ValidAllocated(at) != block)
+                {
+                    OwnerFault("gc owner check: a top-of-buffer rewind over a block not the buffer's", block, home);
+                }
+                GcLock.Exit();
+            }
             // The fast path's one assumption is that memory above the pointer
             // has never been written; the bytes are cleared here instead.
             ZeroWords(block, ptr);
@@ -4037,6 +4175,15 @@ static class Gc
     /// p 32 poisons every block freed (and skips t and b).
     static long SkippedFreePaths;
 
+    /// The same, set by a program after the heap has started -- a kernel from
+    /// its command line (gc.freepaths=N) -- to find which path a fault needs.
+    public static void SkipFreePaths(long paths)
+    {
+        GcLock.Enter();
+        SkippedFreePaths = paths;
+        GcLock.Exit();
+    }
+
     /// Released chunks guarded rather than unmapped (CORSAC_GUARD_RELEASES).
     public static bool GuardReleases;
     const long Poison = 0xFEEEFEEE;
@@ -4047,6 +4194,22 @@ static class Gc
     static bool Verifying()
     {
         return _verify;
+    }
+
+    /// The checked mode for the compiler's frees (VerifyFree), turned on by
+    /// a program after the heap has started -- a kernel from its command
+    /// line (gc.checkfrees=1). From here on nothing freed is handed out
+    /// again: each free poisons the block and records who freed it, and a
+    /// second free of it is reported with both callers.
+    public static void CheckFrees()
+    {
+        GcLock.Enter();
+        if (!_verify)
+        {
+            _verify = true;
+            if (_quarantine == 0) StartQuarantine();
+        }
+        GcLock.Exit();
     }
 
     /// CORSAC_VERIFY_FREES=f: only field frees are checked (Runtime.FreeField).
@@ -4214,6 +4377,14 @@ static class Gc
     // process ends with 94. A diagnostic: it walks the whole heap twice a
     // collection.
     static bool _heapCheck;
+
+    /// The heap check (CheckHeap, before and after every collection) turned
+    /// on by a program after the heap has started -- a kernel from its
+    /// command line (gc.heapcheck=1).
+    public static void CheckHeapOn()
+    {
+        _heapCheck = true;
+    }
     static long _heapCheckTable;
     static long _heapCheckFaults;
 
@@ -4366,6 +4537,18 @@ static class Gc
                 }
                 if (Sys.Peek(block + size - FooterBytes) != word)
                 {
+                    SayNumber("gc heap check: header ", word);
+                    SayNumber("gc heap check:   kind ", Sys.Peek(block + KindAt));
+                    SayNumber("gc heap check:   first payload word ", Sys.Peek(block + HeaderBytes));
+                    SayNumber("gc heap check:   footer at ", block + size - FooterBytes);
+                    SayNumber("gc heap check:   page class ", HeapChunks.PageClass(chunk));
+                    SayJournal(block + size - FooterBytes);
+                    // The whole block, a word a line, for whoever reads the
+                    // log to decode: a string's units say what made it.
+                    for (long wd = block; wd < block + size && wd < block + 512; wd = wd + 4)
+                    {
+                        SayNumber("gc heap check:   word ", Sys.PeekWord(wd));
+                    }
                     CheckFault("gc heap check: a header and its footer disagree", block, Sys.Peek(block + size - FooterBytes), when);
                 }
                 if ((word & FlagFree) != 0 && !IsInPlace(block) && HeapChunks.PageClass(chunk) == 0)
@@ -4683,6 +4866,75 @@ static class Gc
         }
     }
 
+    // WRITTEN AFTER ITS FREE. The checks above find a second free and a heap
+    // object still holding a freed block; neither sees a write through a
+    // reference only a stack or a register still holds -- a local the
+    // compiler's free outlived. Unchecked, that write lands in whatever was
+    // handed the block next. So at every whole collection each block still in
+    // quarantine is read again: every word below the free's record of its
+    // callers (VerifyFree, up to six words at the end, none of them the
+    // pattern) must still be the pattern. A word that is not is said, with
+    // its offset, what it holds and who freed the block, and put back so it
+    // is said once.
+    const long WrittenMost = 24;
+    static long _writtenReports;
+
+    static void CheckQuarantine()
+    {
+        if (_quarantine == 0 || _writtenReports >= WrittenMost)
+        {
+            return;
+        }
+        for (long n = 0; n < _quarantineCount; n++)
+        {
+            long at = Sys.Peek(_quarantine + WordSize.Bytes + ((_quarantineHead + n) % _quarantineEntries) * WordSize.Bytes);
+            if (at == 0)
+            {
+                continue;
+            }
+            long block = at - HeaderBytes;
+            long end = block + (Sys.Peek(block) & SizeMask) - FooterBytes;
+            long record = end - 4;
+            long kept = 0;
+            while (kept < 6 && record >= at + 8 && Sys.PeekWord(record) != Poison)
+            {
+                record = record - 4;
+                kept = kept + 1;
+            }
+            for (long p = at; p <= record; p = p + 4)
+            {
+                long now = Sys.PeekWord(p);
+                if (now == Poison)
+                {
+                    continue;
+                }
+                SayNumber("gc: checked free: written after its free, block ", at);
+                SayNumber("gc:   at offset ", p - at);
+                SayNumber("gc:   now holding ", now);
+                SayNumber("gc:   block bytes ", end - at);
+                Runtime.WriteLiteral(2, "gc:   freed by:\n");
+                long site = end - 4;
+                while (site > record)
+                {
+                    Runtime.SayFrame(2, Sys.PeekWord(site) + 0x08000000);
+                    site = site - 4;
+                }
+                long q = at;
+                while (q <= record)
+                {
+                    Sys.PokeWord(q, Poison);
+                    q = q + 4;
+                }
+                _writtenReports = _writtenReports + 1;
+                if (_writtenReports >= WrittenMost)
+                {
+                    return;
+                }
+                break;
+            }
+        }
+    }
+
     /// Whether [payload, end) begins with the checked mode's pattern: a block
     /// VerifyFree took. Its kind word says leaf.
     static bool IsPoisoned(long payload, long end)
@@ -4969,6 +5221,7 @@ static class Gc
         {
             long nextSize = SizeOfBlock(next);
             Unlink(next);
+            if (_heapCheck) Journal(block + size - FooterBytes, next + KindAt + WordSize.Bytes);
             Sys.Poke(block + size - FooterBytes, Zero);
             Sys.Poke(next, Zero);
             Sys.Poke(next + KindAt, Zero);
@@ -4988,6 +5241,7 @@ static class Gc
 
                 Unlink(prev);
                 size = size + SizeOfBlock(prev);
+                if (_heapCheck) Journal(block - FooterBytes, block + KindAt + WordSize.Bytes);
                 Sys.Poke(block - FooterBytes, Zero);
                 Sys.Poke(block, Zero);
                 Sys.Poke(block + KindAt, Zero);
@@ -5934,8 +6188,9 @@ static class Gc
 
         MarkToEmpty();
         if (_minor && _verifyGenerations) VerifyMinor();
-        if (!_minor && _verifyGenerations) VerifyMajor();
+        if (!_minor && (_verifyGenerations || VerifyMarks)) VerifyMajor();
         HeapChunks.SetBlockAnchorsActive(false);
+        if (_verify) CheckQuarantine();
         BeginSweep();
         while (SweepNext()) { }
         FinishCycle();
@@ -6057,12 +6312,13 @@ static class Gc
         GcThreads.Round(GcThreads.Ack);
         MarkToEmpty();
         if (_minor && _verifyGenerations) VerifyMinor();
-        if (!_minor && _verifyGenerations) VerifyMajor();
+        if (!_minor && (_verifyGenerations || VerifyMarks)) VerifyMajor();
 
         GcLock.Enter();
         HeapChunks.SetBlockAnchorsActive(false);
         GcThreads.CaptureBuffers();
         GcThreads.UnmarkBuffers();
+        if (_verify) CheckQuarantine();
         BeginSweep();
         Sys.AtomicSwap(ctl + GcLock.Collector, 0);
         Sys.AtomicSwap(ctl + GcLock.Collecting, 0);

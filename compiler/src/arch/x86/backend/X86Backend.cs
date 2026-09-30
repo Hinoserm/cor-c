@@ -116,6 +116,18 @@ public sealed class X86Backend : IBackend
         Section rodata = new(".rodata", SectionKind.ReadOnlyData);
         Section data = new(".data", SectionKind.Data);
         Section relocatedConstants = new(".data.rel.ro", SectionKind.Data);
+        // Constants naming another image, which the loader writes at every
+        // start: kept together by the linker (Layout.RelocatedImports).
+        Section? importConstants = null;
+        Section ImportConstants()
+        {
+            if (importConstants is null)
+            {
+                importConstants = new Section(".data.rel.ro.import", SectionKind.Data);
+                obj.Sections.Add(importConstants);
+            }
+            return importConstants;
+        }
         Section bss = new(".bss", SectionKind.Uninitialised);
         // Writable data that holds no reference (DataItem.NoReferences), in a
         // section the linker places outside the statics read as roots.
@@ -197,6 +209,9 @@ public sealed class X86Backend : IBackend
             ? new HashSet<string>(StringComparer.Ordinal)
             : Imported;
         bool IsImported(string name) => imported.Contains(name);
+        // What this module defines: a constant naming anything else names
+        // another image, or another unit of this one (ImportConstants).
+        HashSet<string> moduleDefines = new(module.Functions.Select(f => f.Name).Concat(module.Data.Select(d => d.Name)), StringComparer.Ordinal);
 
         // A bounded window avoids retaining a whole module of machine IR.
         // Workers only read the symbol sets and each owns disjoint functions,
@@ -364,7 +379,8 @@ public sealed class X86Backend : IBackend
                 && (PositionIndependent || d.Relocs.Any(r => imported.Contains(r.Symbol)));
             // Immutable relocations need loader writes, not conservative
             // heap-root scanning. Keep them distinct from mutable statics.
-            Section s = d.Zero ? bss : d.ReadOnly ? (loaderWrites ? relocatedConstants : rodata) : d.NoReferences ? Numbers() : data;
+            bool namesImport = loaderWrites && d.Relocs.Any(r => !moduleDefines.Contains(r.Symbol));
+            Section s = d.Zero ? bss : d.ReadOnly ? (loaderWrites ? (namesImport && PositionIndependent ? ImportConstants() : relocatedConstants) : rodata) : d.NoReferences ? Numbers() : data;
             int align = Math.Max(d.Align, 1);
             long offset;
             if (d.Zero)

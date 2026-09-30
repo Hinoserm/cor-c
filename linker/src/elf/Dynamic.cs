@@ -670,6 +670,7 @@ public static partial class Linker
         layout.ReadOnly.Add(layout.ReadOnlyData);
         layout.Writable.Add(layout.Numbers);
         layout.Writable.Add(layout.RelocatedConstants);
+        layout.Writable.Add(layout.RelocatedImports);
         layout.Writable.Add(layout.Data);
         layout.Writable.Add(dyn.Got);
         layout.Writable.Add(dyn.Dynamic);

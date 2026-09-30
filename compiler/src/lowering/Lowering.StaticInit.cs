@@ -94,7 +94,11 @@ public sealed partial class Lowering
         if (ready.Type.Prim != Prim.NInt)
             throw new InvalidOperationException("obsolete static initializer state; rebuild the library/header");
         VReg state = _e.Load(IrTypes.Word, new SymOperand(StaticSymbol(ready)), 0, _t.WordSize, false);
-        _e.Emit(Opcode.Fence, null);
+        // An acquire, which x86's ordering gives every load: a barrier to the
+        // optimiser only. A full fence here -- `lock or [esp]` at every touch
+        // of another type, twice in a row in the kernel's trap path -- was
+        // a locked bus cycle for nothing, hundreds of times a trap.
+        _e.Emit(Opcode.CompilerFence, null);
         VReg done = _e.Binary(Opcode.Eq, state, 1);
         _e.Branch(done, on, run);
         _e.SetBlock(run);

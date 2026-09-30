@@ -530,6 +530,8 @@ internal sealed class Selector
             case Opcode.Fence:
                 Emit(MOp.Mfence);
                 break;
+            case Opcode.CompilerFence:
+                break;
             case Opcode.Call:
             case Opcode.CallIndirect:
                 SelectCall(i);

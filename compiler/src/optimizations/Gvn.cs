@@ -150,6 +150,7 @@ public sealed class Gvn : IPass
                 case Opcode.AtomicXor:
                 case Opcode.AtomicCas:
                 case Opcode.Fence:
+                case Opcode.CompilerFence:
                     mem.Clear();
                     continue;
             }

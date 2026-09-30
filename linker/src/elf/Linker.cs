@@ -456,6 +456,15 @@ public static partial class Linker
         public OutputSection ReadOnlyData { get; } = new(".rodata", SectionKind.ReadOnlyData);
         public OutputSection Data { get; } = new(".data", SectionKind.Data);
         public OutputSection RelocatedConstants { get; } = new(".data.rel.ro", SectionKind.Data);
+        /// <summary>
+        /// The loader-written constants that name another image -- a string
+        /// literal's descriptor, a vtable's imported interface -- apart from
+        /// the rest, and after them: the loader writes these words at every
+        /// start, which makes each page they are on the process's own, and
+        /// scattered among the others they made most of a library's
+        /// constants private in every process. Together, they are a few pages.
+        /// </summary>
+        public OutputSection RelocatedImports { get; } = new(".data.rel.ro.imports", SectionKind.Data);
 
         /// <summary>
         /// Writable data that holds no reference -- a static array of numbers --
@@ -540,6 +549,8 @@ public static partial class Linker
             // A static link resolves these addresses before execution. A
             // dynamic link keeps loader-writable constants ahead of .data,
             // outside __data_start.._end (the conservative static roots).
+            if (s.Kind == SectionKind.Data && s.Name == ".data.rel.ro.import")
+                return Dyn is null ? ReadOnlyData : RelocatedImports;
             if (s.Kind == SectionKind.Data && (s.Name == ".data.rel.ro"
                 || s.Name.StartsWith(".data.rel.ro.", StringComparison.Ordinal)))
                 return Dyn is null ? ReadOnlyData : RelocatedConstants;

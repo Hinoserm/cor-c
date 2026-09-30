@@ -125,4 +125,11 @@ public enum Opcode : byte
     ArrayLength,
     /// <summary>Initialize a newly allocated managed array's immutable length.</summary>
     InitArrayLength,
+
+    /// <summary>An acquire after a load, or a release before a store: a
+    /// barrier to the optimiser, which moves no memory access across it,
+    /// and no instruction on a machine whose loads and stores are already
+    /// ordered so (x86, x86-64: TSO). What a static initialiser's ready test
+    /// needs; Fence stays the full barrier Sys.Fence asks for.</summary>
+    CompilerFence,
 }

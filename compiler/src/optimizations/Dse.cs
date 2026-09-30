@@ -145,6 +145,7 @@ public sealed class Dse : IPass
                     case Opcode.AtomicXor:
                     case Opcode.AtomicCas:
                     case Opcode.Fence:
+                    case Opcode.CompilerFence:
                         covered.Clear();
                         slotsDead = false;
                         continue;
