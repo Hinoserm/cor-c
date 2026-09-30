@@ -546,6 +546,14 @@ internal sealed class Encoder
                 B(0xFF);
                 ModRM(2, i.Operands[0]);
                 break;
+            case MOp.CallKeep:
+            {
+                MImm stub = (MImm)i.Operands[0];
+                B(0xE8);
+                _pending.Add(new Relocation(_out.Count, stub.Symbol!, stub.Value - 4, RelocKind.Rel32));
+                D32(0);
+                break;
+            }
             case MOp.Ret:
                 B(0xC3);
                 break;

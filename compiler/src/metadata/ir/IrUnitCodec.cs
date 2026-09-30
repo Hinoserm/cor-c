@@ -8,16 +8,39 @@ namespace Corsac.Lang.Metadata;
 /// <summary>Unit settings plus independently addressable native-backend IR records.</summary>
 public static class IrUnitCodec
 {
+    /// <summary>
+    /// What a unit was compiled with that the late passes read: the link runs
+    /// them again over the unit's archived IR (version 2 archives hold the IR
+    /// from before them, IrUnitCodec.Snapshot).
+    /// </summary>
+    public sealed record Settings(bool PreLate, bool NoCollector, bool CallsCollector, bool LeavesLinkHints,
+        bool OptimizeSize, bool ExperimentalBatch, string[] RuntimeHelpers);
+
     public static void Attach(ObjectFile obj, Module module, bool stackMaps)
+        => IrArchive.Attach(obj, Snapshot(module, stackMaps, null));
+
+    /// <summary>
+    /// The unit's records as the module stands now. Taken before the late
+    /// passes (settings non-null), the link can run them over the whole
+    /// program's answers; taken after them, as version 1 was, it cannot.
+    /// </summary>
+    public static List<IrArchiveRecord> Snapshot(Module module, bool stackMaps, Settings? settings)
     {
         List<IrArchiveRecord> records = new();
         using MemoryStream stream = new();
         using (BinaryWriter writer = new(stream, IrBinary.Utf8, leaveOpen: true))
         {
-            writer.Write(1); IrBinary.Text(writer, module.Name); IrBinary.Text(writer, module.Entry);
+            writer.Write(settings is null ? 1 : 2); IrBinary.Text(writer, module.Name); IrBinary.Text(writer, module.Entry);
             writer.Write(module.NeedsHeap); writer.Write(module.PreserveExports); writer.Write(stackMaps);
             writer.Write(module.Imports.Count);
             foreach (string import in module.Imports.Order(StringComparer.Ordinal)) IrBinary.Text(writer, import);
+            if (settings is not null)
+            {
+                writer.Write(settings.NoCollector); writer.Write(settings.CallsCollector); writer.Write(settings.LeavesLinkHints);
+                writer.Write(settings.OptimizeSize); writer.Write(settings.ExperimentalBatch);
+                writer.Write(settings.RuntimeHelpers.Length);
+                foreach (string helper in settings.RuntimeHelpers.Order(StringComparer.Ordinal)) IrBinary.Text(writer, helper);
+            }
         }
         records.Add(new("M:unit", false, 0, Array.Empty<string>(), stream.ToArray()));
         HashSet<string> locals = module.Functions.Where(function => !function.Exported).Select(function => function.Name)
@@ -42,18 +65,54 @@ public static class IrUnitCodec
         foreach (DataItem item in module.Data)
             records.Add(new("D:" + item.Name, false, 0, Array.Empty<string>(), IrDataCodec.Write(item),
                 item.Relocs.Select(relocation => relocation.Symbol).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray()));
-        IrArchive.Attach(obj, records);
+        return records;
+    }
+
+    /// <summary>A unit's settings record alone, without its functions: what a link reads of every unit before it plans.</summary>
+    public static (Settings? Settings, bool StackMaps) ReadSettings(IrArchive archive)
+    {
+        using MemoryStream stream = new(archive.ReadBody("M:unit"), writable: false);
+        using BinaryReader reader = new(stream, IrBinary.Utf8);
+        IrReadBudget budget = new(1024 * 1024);
+        int version = reader.ReadInt32();
+        if (version is not (1 or 2)) throw new InvalidDataException("Unsupported IR unit version");
+        IrBinary.Name(reader, budget); IrBinary.Text(reader, budget);
+        IrBinary.Flag(reader); IrBinary.Flag(reader);
+        bool stackMaps = IrBinary.Flag(reader);
+        int imports = IrBinary.Count(reader);
+        for (int i = 0; i < imports; i++) IrBinary.Name(reader, budget);
+        return (version == 2 ? ReadSettingsTail(reader, budget) : null, stackMaps);
+    }
+
+    private static Settings ReadSettingsTail(BinaryReader reader, IrReadBudget budget)
+    {
+        bool noCollector = IrBinary.Flag(reader), callsCollector = IrBinary.Flag(reader), hints = IrBinary.Flag(reader);
+        bool size = IrBinary.Flag(reader), batch = IrBinary.Flag(reader);
+        int count = IrBinary.Count(reader);
+        budget.Charge(count, 64, "runtime helpers");
+        string[] helpers = new string[count];
+        for (int i = 0; i < count; i++) helpers[i] = IrBinary.Name(reader, budget);
+        return new(true, noCollector, callsCollector, hints, size, batch, helpers);
     }
 
     public static (Module Module, bool StackMaps, long AccountedBytes) Read(IrArchive archive, long memoryBudget = 64L * 1024 * 1024,
         IReadOnlySet<string>? retained = null, IReadOnlyDictionary<string, bool>? functionHeaders = null)
+    {
+        var (module, stackMaps, used, _) = ReadWithSettings(archive, memoryBudget, retained, functionHeaders);
+        return (module, stackMaps, used);
+    }
+
+    /// <summary>The unit and, for a version 2 archive, what it was compiled with (applied to the module too).</summary>
+    public static (Module Module, bool StackMaps, long AccountedBytes, Settings? Settings) ReadWithSettings(IrArchive archive,
+        long memoryBudget = 64L * 1024 * 1024, IReadOnlySet<string>? retained = null, IReadOnlyDictionary<string, bool>? functionHeaders = null)
     {
         IrReadBudget budget = new(memoryBudget);
         using MemoryStream stream = new(archive.ReadBody("M:unit"), writable: false);
         using BinaryReader reader = new(stream, IrBinary.Utf8);
         try
         {
-            if (reader.ReadInt32() != 1) throw new InvalidDataException("Unsupported IR unit version");
+            int version = reader.ReadInt32();
+            if (version is not (1 or 2)) throw new InvalidDataException("Unsupported IR unit version");
             budget.Charge(1024, 1, "unit settings");
             Module module = new(IrBinary.Name(reader, budget))
             { Entry = IrBinary.Text(reader, budget), NeedsHeap = IrBinary.Flag(reader), PreserveExports = IrBinary.Flag(reader) };
@@ -62,6 +121,12 @@ public static class IrUnitCodec
             budget.Charge(imports, 64, "import table");
             for (int i = 0; i < imports; i++)
                 if (!module.Imports.Add(IrBinary.Name(reader, budget))) throw new InvalidDataException("Duplicate IR import");
+            Settings? settings = version == 2 ? ReadSettingsTail(reader, budget) : null;
+            if (settings is not null)
+            {
+                module.NoCollector = settings.NoCollector; module.CallsCollector = settings.CallsCollector;
+                module.LeavesLinkHints = settings.LeavesLinkHints; module.RuntimeHelpers.UnionWith(settings.RuntimeHelpers);
+            }
             IrBinary.End(reader);
             foreach (IrArchiveEntry entry in archive.Entries.Values)
             {
@@ -90,7 +155,7 @@ public static class IrUnitCodec
                 }
                 else throw new InvalidDataException("Unknown required IR record " + entry.Key);
             }
-            return (module, stackMaps, budget.Used);
+            return (module, stackMaps, budget.Used, settings);
         }
         catch (EndOfStreamException) { throw new InvalidDataException("Truncated IR unit"); }
         catch (System.Text.DecoderFallbackException) { throw new InvalidDataException("Invalid IR UTF-8"); }

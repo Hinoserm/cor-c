@@ -1,0 +1,20 @@
+// test: File.OpenHandle and RandomAccess.Read read by offset with no position of their own
+// expect-exit: 0
+// expect-output:
+// 6 [random] 19
+// 0
+using System.IO;
+static class Program
+{
+    static int Main()
+    {
+        File.WriteAllText(Path.Combine(Path.GetTempPath(), "corc_784_random_access.txt"), "hello random access");
+        using var h = File.OpenHandle(Path.Combine(Path.GetTempPath(), "corc_784_random_access.txt"));
+        byte[] b = new byte[6];
+        int n = RandomAccess.Read(h, new System.Span<byte>(b), 6);
+        Console.WriteLine(n + " [" + System.Text.Encoding.ASCII.GetString(b, 0, n) + "] " + RandomAccess.GetLength(h));
+        n = RandomAccess.Read(h, new System.Span<byte>(b, 2, 4), 100);
+        Console.WriteLine(n);
+        return 0;
+    }
+}

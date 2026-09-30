@@ -72,7 +72,7 @@ public static class AsyncTransform
     }
 
     /// <summary>Runtime.CardMarkObject: every card of an object, from its payload address.</summary>
-    public const string CardMarkObject = "m_Runtime_CardMarkObject_1_V$I64";
+    public const string CardMarkObject = Corsac.Lang.Lto.RuntimeAbi.CardMarkObject;
 
     private static int Transform(Function f, AsyncFrame frame, int wordSize, string? cards)
     {
@@ -222,13 +222,8 @@ public static class AsyncTransform
             }
             if (cards is not null && resume.Live.Count > 0)
             {
-                // The runtime takes a long; on 32-bit the machine is a word.
-                VReg at = machine;
-                if (machine.Type != IrType.I64)
-                {
-                    at = f.NewReg(IrType.I64, "cardp");
-                    saves.Add(new Instr { Op = Opcode.ZExt32, Dest = at, Operands = { new RegOperand(machine) } });
-                }
+                // The runtime takes a machine word, which the machine's address is.
+                VReg at = Escape.Word(f, saves, machine, 0, "cardp");
                 saves.Add(new Instr { Op = Opcode.Call, Callee = cards, Operands = { new RegOperand(at) } });
             }
             saves.Add(new Instr

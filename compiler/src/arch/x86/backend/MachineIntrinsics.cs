@@ -41,6 +41,10 @@ internal static class MachineIntrinsics
     public const string WriteCr = Prefix + "writecr";
     public const string LoadSegments = Prefix + "loadsegments";
     public const string ThreadBlock = Prefix + "threadblock";
+    /// <summary>The card for a slot the generational barrier marks (CardMarks), set by the object's stub.</summary>
+    public const string CardMark = Prefix + "cardmark";
+    /// <summary>The snapshot barrier's slow path, slot and value, through the object's stub.</summary>
+    public const string Barrier = Prefix + "barrier";
     public const string SetGs = Prefix + "setgs";
     public const string GetGs = Prefix + "getgs";
     /// <summary>

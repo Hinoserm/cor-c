@@ -87,6 +87,12 @@ public sealed class X86Backend : IBackend
     /// <summary>Writable data with no references in it: outside the collector's roots.</summary>
     public const string NumbersSection = ".data.corsac.numbers";
     public const string StackMapStart = "__corsac_stackmaps";
+
+    /// <summary>Each object's card-marking stub, and the table it reads (Runtime.Cards).</summary>
+    public const string CardStub = "__corsac_cardmark", CardTable = "s_Runtime_Cards";
+
+    /// <summary>Each object's barrier stub, and the runtime routine it calls (Runtime.WriteBarrier).</summary>
+    public const string BarrierStub = "__corsac_barrier", BarrierRoutine = Corsac.Lang.Lto.RuntimeAbi.WriteBarrier;
     public const string StackMapEnd = "__corsac_stackmaps_end";
 
     /// <summary>Code bytes per function from the last Generate, in module order.</summary>
@@ -152,6 +158,7 @@ public sealed class X86Backend : IBackend
         List<FrameTable.Entry> frames = new();
         FunctionSizes.Clear();
         List<(string Function, int Return, int At, Safepoint? Map, int FrameSize, uint Saved, List<int> Objects)> maps = new();
+        bool cardStub = false, barrierStub = false;
 
         // GOTOFF is sound only for a name this object defines and does not
         // export: anything exported can be interposed at load time, and then
@@ -287,6 +294,8 @@ public sealed class X86Backend : IBackend
             {
                 continue;
             }
+            cardStub |= m.UsesCardStub;
+            barrierStub |= m.UsesBarrierStub;
             f = m.Source;
             // The gap before a function is never executed, but it is filled
             // with real no-ops rather than zeros so a disassembly reads cleanly.
@@ -408,6 +417,60 @@ public sealed class X86Backend : IBackend
             defined.Add(d.Name);
         }
 
+        if (cardStub)
+        {
+            // THE CARD STUB (MachineIntrinsics.CardMark): the slot in EAX, every
+            // register kept. No stack map and no frame entry: it calls nothing,
+            // so no walk ever finds it on a stack.
+            int gap = (FunctionAlign - text.Bytes.Count % FunctionAlign) % FunctionAlign;
+            Encoder.Nops(text.Bytes, gap);
+            int at = text.Bytes.Count;
+            text.Bytes.AddRange(new byte[] { 0x51, 0x8B, 0x0D });                  // push ecx; mov ecx, [Cards]
+            text.Relocs.Add(new Relocation(text.Bytes.Count, CardTable, 0, RelocKind.Abs32));
+            text.Bytes.AddRange(new byte[4]);
+            text.Bytes.AddRange(new byte[]
+            {
+                0x85, 0xC9,                 // test ecx, ecx
+                0x74, 0x09,                 // jz done
+                0x50,                       // push eax
+                0xC1, 0xE8, 0x0A,           // shr eax, 10
+                0xC6, 0x04, 0x01, 0x01,     // mov byte [ecx+eax], 1
+                0x58,                       // pop eax
+                0x59,                       // done: pop ecx
+                0xC3,                       // ret
+            });
+            obj.Symbols.Add(new Symbol { Name = CardStub, Section = text, Offset = at, Size = text.Bytes.Count - at, IsFunction = true, Global = false });
+            defined.Add(CardStub);
+        }
+
+        if (barrierStub)
+        {
+            // THE BARRIER STUB (MachineIntrinsics.Barrier): slot in EAX, value
+            // in EDX, every register kept; Runtime.WriteBarrier takes both as
+            // machine words. A collection while it runs finds no map for the frames
+            // above it and reads them whole, which is correct and conservative.
+            int gap = (FunctionAlign - text.Bytes.Count % FunctionAlign) % FunctionAlign;
+            Encoder.Nops(text.Bytes, gap);
+            int at = text.Bytes.Count;
+            text.Bytes.AddRange(new byte[]
+            {
+                0x51, 0x52, 0x50,           // push ecx; push edx; push eax
+                0x52,                       // push edx              (value)
+                0x50,                       // push eax              (slot)
+                0xE8,                       // call Runtime.WriteBarrier
+            });
+            text.Relocs.Add(new Relocation(text.Bytes.Count, BarrierRoutine, -4, RelocKind.Rel32));
+            text.Bytes.AddRange(new byte[4]);
+            text.Bytes.AddRange(new byte[]
+            {
+                0x83, 0xC4, 0x08,           // add esp, 8
+                0x58, 0x5A, 0x59,           // pop eax; pop edx; pop ecx
+                0xC3,                       // ret
+            });
+            obj.Symbols.Add(new Symbol { Name = BarrierStub, Section = text, Offset = at, Size = text.Bytes.Count - at, IsFunction = true, Global = false });
+            defined.Add(BarrierStub);
+        }
+
         if (StackMaps)
         {
             EmitStackMaps(obj, maps, defined, PositionIndependent);
@@ -492,6 +555,8 @@ public sealed class X86Backend : IBackend
     private MFunction? Compile(Function f, List<string> errors, Func<string, bool>? isPrivate = null, Func<string, bool>? isDefined = null, Func<string, bool>? isImported = null)
     {
         int before = errors.Count;
+        // Frame slots whose lives do not meet share their bytes (SlotShare).
+        Corsac.Lang.Opt.SlotShare.Run(f);
         MFunction m = Selector.Run(f, errors, AutomaticPacked);
         if (errors.Count > before)
         {
@@ -601,6 +666,26 @@ public sealed class X86Backend : IBackend
             pic ? SectionKind.Data : SectionKind.ReadOnlyData) { Align = 4 };
         obj.Sections.Add(s);
 
+        // VERSION 5: WHAT BELONGS TO A FUNCTION IS SAID ONCE FOR IT. Version 4
+        // gave every call site five words, three of them -- the frame size,
+        // the saved registers, the frame slots' bitmap -- the same for every
+        // call in the function: 20 bytes a site, 6.7 MB of the compiler.
+        //
+        //   header, 32 bytes: 'CSM1', 5, function count, site count, the
+        //     BASE (relocated: the first function with a call site), the
+        //     site table's offset, the code span the table covers from the
+        //     base, the bitmap pool's offset
+        //   functions, 16 bytes each, ascending: start from the base; frame
+        //     size (low 24 bits) and saved registers (top 8, by hardware
+        //     number); the frame slots' bitmap; the index of its first site
+        //   sites, 8 bytes each, by function, ascending: the return address
+        //     from the function's start (low 23 bits), bit 23 a call with no
+        //     map (its frame is read whole), the live registers in the top 8;
+        //     the live spill slots' bitmap
+        //   a BITMAP is inline when its top bit is set -- bit b the word at
+        //     EBP-4(b+1), for the thirty-one words under EBP -- zero for none,
+        //     or else the offset of a pooled one: a word of length in words,
+        //     then the words
         void Word(long v)
         {
             for (int i = 0; i < 4; i++)
@@ -609,38 +694,30 @@ public sealed class X86Backend : IBackend
             }
         }
 
-        Word(0x314d5343);       // 'CSM1'
-        // Version 4: an entry is five words -- the return offset; the live
-        // registers, the registers the prologue saves from bit 16, and bit 31
-        // for a call with no map (its frame is read whole); the live spill
-        // slots' bitmap; the frame size; and the function's IR frame slots'
-        // bitmap, the words the collector reads as they are.
-        Word(4);
-        Word(maps.Count);
-        Word(20);
-        // The base: the start of the first function that has a call site.
-        // Its section offset is that entry's offset less its return offset,
-        // which is what every later entry is measured from.
-        int baseAt = maps.Count > 0 ? maps[0].At - maps[0].Return : 0;
-        if (maps.Count > 0) s.Relocs.Add(new Relocation(s.Bytes.Count, maps[0].Function, 0, RelocKind.Abs32));
-        Word(0);
+        List<(int Start, int FrameSize, uint Saved, List<int> Objects, int First)> functions = new();
+        foreach (var site in maps)
+        {
+            int start = site.At - site.Return;
+            if (functions.Count == 0 || functions[^1].Start != start)
+                functions.Add((start, site.FrameSize, site.Saved, site.Objects, functions.Count == 0 ? 0 : -1));
+        }
+        int baseAt = functions.Count > 0 ? functions[0].Start : 0;
+        int span = maps.Count > 0 ? maps.Max(site => site.At) - baseAt + 1 : 0;
+        int functionsAt = 32, sitesAt = functionsAt + functions.Count * 16, poolAt = sitesAt + maps.Count * 8;
 
-        // The bitmaps are laid out after the fixed-size entries, one copy of
-        // each: a bit for each word under EBP, bit b the word at -4(b+1).
         List<uint[]> pool = new();
         Dictionary<string, int> shared = new(StringComparer.Ordinal);
-        int poolStart = 20 + maps.Count * 20;
         int poolWords = 0;
-        int Bitmap(List<int> slots)
+        uint Bitmap(List<int> slots)
         {
-            if (slots.Count == 0)
-            {
-                return 0;
-            }
+            if (slots.Count == 0) return 0;
             int top = 0;
-            foreach (int off in slots)
+            foreach (int off in slots) top = Math.Max(top, -off / 4);
+            if (top <= 31)
             {
-                top = Math.Max(top, -off / 4);
+                uint inline = 0x80000000;
+                foreach (int off in slots) inline |= 1u << (-off / 4 - 1);
+                return inline;
             }
             uint[] bits = new uint[(top + 31) / 32];
             foreach (int off in slots)
@@ -649,39 +726,46 @@ public sealed class X86Backend : IBackend
                 bits[bit / 32] |= 1u << (bit % 32);
             }
             string key = string.Join(',', bits);
-            if (shared.TryGetValue(key, out int existing))
-            {
-                return existing;
-            }
-            int at = poolStart + poolWords * 4;
+            if (shared.TryGetValue(key, out int existing)) return (uint)existing;
+            int at = poolAt + poolWords * 4;
             shared.Add(key, at);
             poolWords += 1 + bits.Length;
             pool.Add(bits);
-            return at;
-        }
-        int[] live = new int[maps.Count];
-        int[] objects = new int[maps.Count];
-        for (int i = 0; i < maps.Count; i++)
-        {
-            live[i] = Bitmap(maps[i].Map?.SlotOffsets ?? new List<int>());
-            objects[i] = Bitmap(maps[i].Objects);
+            return (uint)at;
         }
 
-        for (int i = 0; i < maps.Count; i++)
+        Word(0x314d5343);       // 'CSM1'
+        Word(5);
+        Word(functions.Count);
+        Word(maps.Count);
+        if (maps.Count > 0) s.Relocs.Add(new Relocation(s.Bytes.Count, maps[0].Function, 0, RelocKind.Abs32));
+        Word(0);
+        Word(sitesAt);
+        Word(span);
+        Word(poolAt);
+
+        int siteIndex = 0;
+        for (int f = 0; f < functions.Count; f++)
         {
-            Word(maps[i].At - baseAt);
-            Word((maps[i].Map is null ? 0x800000FFu : maps[i].Map!.Registers) | maps[i].Saved << 16);
-            Word(live[i]);
-            Word(maps[i].FrameSize);
-            Word(objects[i]);
+            var fn = functions[f];
+            if (fn.FrameSize > 0xFFFFFF) throw new InvalidOperationException("a frame over 16 MB has no stack map");
+            Word(fn.Start - baseAt);
+            Word((uint)fn.FrameSize | (fn.Saved & 0xFF) << 24);
+            Word(Bitmap(fn.Objects));
+            Word(siteIndex);
+            while (siteIndex < maps.Count && maps[siteIndex].At - maps[siteIndex].Return == fn.Start) siteIndex++;
+        }
+        foreach (var site in maps)
+        {
+            if (site.Return > 0x7FFFFF) throw new InvalidOperationException("a function over 8 MB has no stack map");
+            uint regs = site.Map is null ? 0xFFu : site.Map.Registers & 0xFFu;
+            Word((uint)site.Return | (site.Map is null ? 1u << 23 : 0) | regs << 24);
+            Word(Bitmap(site.Map?.SlotOffsets ?? new List<int>()));
         }
         foreach (uint[] bits in pool)
         {
             Word(bits.Length);
-            foreach (uint w in bits)
-            {
-                Word(w);
-            }
+            foreach (uint w in bits) Word(w);
         }
 
         // Each independently compiled object owns a complete table. These

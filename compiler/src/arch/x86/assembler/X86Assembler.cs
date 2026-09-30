@@ -145,6 +145,7 @@ public sealed partial class X86Assembler : ISymbols
             _sec = _sections[0];
             _decisionAt = 0;
             _bits = _defaultBits;
+            _runtimeMmx = false;
             _baseLocked = false;
             if (_pass == 1)
             {
@@ -838,6 +839,19 @@ public sealed partial class X86Assembler : ISymbols
                     throw Error(".entry takes one label");
                 }
                 _entryLabel = ops[0];
+                return;
+
+            // `.runtime mmx`: the code from here on is reached only after the
+            // program has asked the processor whether it has MMX, so MMX is
+            // assembled whatever --cpu says; `.runtime none` ends that. The
+            // check against --cpu stays for everything else, and a routine
+            // under `.runtime` is the caller's promise, not the assembler's.
+            case ".runtime":
+                if (ops.Length != 1 || (ops[0] != "mmx" && ops[0] != "none"))
+                {
+                    throw Error(".runtime takes mmx or none");
+                }
+                _runtimeMmx = ops[0] == "mmx";
                 return;
 
             case ".bits":
@@ -1705,7 +1719,7 @@ public sealed partial class X86Assembler : ISymbols
             case "not":  Unary(2, mn, a); return;
             case "neg":  Unary(3, mn, a); return;
             case "mul":  Unary(4, mn, a); return;
-            case "imul": Unary(5, mn, a); return;
+            case "imul": Imul(mn, a); return;
             case "div":  Unary(6, mn, a); return;
             case "idiv": Unary(7, mn, a); return;
 
@@ -2380,6 +2394,80 @@ public sealed partial class X86Assembler : ISymbols
         Prefixes(d.Size, MemOf(d));
         Emit(d.Size == 1 ? (byte)0xF6 : (byte)0xF7);
         EmitRM(op, d);
+    }
+
+    /// <summary>
+    /// IMUL's three shapes: one operand (F6/F7 /5, EDX:EAX = EAX times it),
+    /// two (0F AF /r, a register times a register or memory, into the
+    /// register), and three (6B /r ib or 69 /r iw/id, a register or memory
+    /// times an immediate, into a register). `imul reg, imm` is the
+    /// three-operand form with the register twice, as NASM takes it.
+    /// </summary>
+    private void Imul(string mn, string[] a)
+    {
+        if (a.Length == 1)
+        {
+            Unary(5, mn, a);
+            return;
+        }
+        if (a.Length != 2 && a.Length != 3)
+        {
+            throw Error("imul takes 1, 2 or 3 operands, got " + a.Length);
+        }
+        Operand d = P(a[0]);
+        if (d.Kind != OperandKind.Register || (d.Size != 2 && d.Size != 4 && d.Size != 8))
+        {
+            throw Error($"imul {string.Join(", ", a)}: the destination has to be a 16-, 32- or 64-bit register");
+        }
+        Operand s = P(a[1]);
+        Operand? imm = null;
+        if (a.Length == 3)
+        {
+            imm = P(a[2]);
+            if (imm.Kind != OperandKind.Immediate)
+            {
+                throw Error($"imul {string.Join(", ", a)}: the third operand has to be an immediate");
+            }
+        }
+        else if (s.Kind == OperandKind.Immediate)
+        {
+            imm = s;
+            s = d;
+        }
+        if (s.Kind is not (OperandKind.Register or OperandKind.Memory))
+        {
+            throw Error($"imul {string.Join(", ", a)}: the source has to be a register or memory");
+        }
+        if (s.Size != 0 && s.Size != d.Size)
+        {
+            throw Error($"imul {string.Join(", ", a)}: the operands are of different sizes");
+        }
+        if (imm == null)
+        {
+            Prefixes(d.Size, MemOf(s));
+            Emit(0x0F, 0xAF);
+            EmitRM(d.Reg, s);
+            return;
+        }
+        long v = Val(imm.Value);
+        int form = Decide(() =>
+        {
+            long x = Value(imm.Value, out bool ok);
+            return ok && x is >= -128 and <= 127 ? 1 : 0;
+        });
+        List<string> named = Take();
+        Prefixes(d.Size, MemOf(s));
+        if (form == 1)
+        {
+            Emit(0x6B);
+            EmitRM(d.Reg, s);
+            EmitImm(v, 1, named);
+            return;
+        }
+        CheckImm(v, d.Size, $"imul {string.Join(", ", a)}", named);
+        Emit(0x69);
+        EmitRM(d.Reg, s);
+        EmitImm(v, d.Size == 8 ? SignedImm32() : d.Size, named);
     }
 
     /// <summary>Strips a short/near/far hint, which says which encoding rather than naming an operand.</summary>

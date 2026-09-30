@@ -42,22 +42,22 @@ public sealed partial class Escape : IModulePass
     public string Name => "escape";
 
     /// <summary>The allocator every `new` calls. Its label is the runtime contract.</summary>
-    public const string Allocator = "m_Runtime_Alloc_1_V$I64";
+    public const string Allocator = Corsac.Lang.Lto.RuntimeAbi.Alloc;
 
     /// <summary>The allocator for memory that holds no references (strings, byte arrays).</summary>
-    public const string LeafAllocator = "m_Runtime_AllocLeaf_1_V$I64";
+    public const string LeafAllocator = Corsac.Lang.Lto.RuntimeAbi.AllocLeaf;
 
     /// <summary>Runtime.AllocObject: an object the caller gives its vtable next, scanned by its descriptor.</summary>
-    public const string ObjectAllocator = "m_Runtime_AllocObject_1_V$I64";
+    public const string ObjectAllocator = Corsac.Lang.Lto.RuntimeAbi.AllocObject;
 
     /// <summary>Any of the collecting allocators: every pass that follows an allocation follows all three.</summary>
     public static bool IsAllocator(string? callee) => callee == Allocator || callee == LeafAllocator || callee == ObjectAllocator;
 
     /// <summary>The write barrier compiled code calls with the slot being overwritten.</summary>
-    public const string Barrier = "m_Runtime_WriteBarrier_2_V$I64_V$I64";
+    public const string Barrier = Corsac.Lang.Lto.RuntimeAbi.WriteBarrier;
 
     /// <summary>The same told the overwritten reference itself (Runtime.WriteBarrierValues).</summary>
-    public const string ValueBarrier = "m_Runtime_WriteBarrierValues_2_V$I64_V$I64";
+    public const string ValueBarrier = Corsac.Lang.Lto.RuntimeAbi.WriteBarrierValues;
 
     /// <summary>At most this many bytes of a frame go to promoted objects.</summary>
     public int FrameBudget { get; init; } = 4096;
@@ -235,8 +235,8 @@ public sealed partial class Escape : IModulePass
     }
 
     /// <summary>The heap of a program that needs no collector: malloc, for a block and for an object.</summary>
-    public const string ManualAllocator = "m_Runtime_AllocManual_1_V$I64";
-    public const string ManualObjectAllocator = "m_Runtime_AllocManualObject_1_V$I64";
+    public const string ManualAllocator = Corsac.Lang.Lto.RuntimeAbi.AllocManual;
+    public const string ManualObjectAllocator = Corsac.Lang.Lto.RuntimeAbi.AllocManualObject;
 
     /// <summary>Its free, and whether a pointer is a live object of it (what Gc.Free and Gc.LiveObject become).</summary>
     public const string ManualFreer = "m_Runtime_FreeManual_1_V$I64";
@@ -262,7 +262,7 @@ public sealed partial class Escape : IModulePass
     /// keep it as cheap as it likes; it ignores anything that is not the
     /// payload of a live block, so freeing a zero is a no-op.
     /// </summary>
-    public const string Freer = "m_Runtime_Free_1_V$I64";
+    public const string Freer = Corsac.Lang.Lto.RuntimeAbi.Free;
 
     /// <summary>How many allocations this pass gave an explicit free rather than a frame slot.</summary>
     public int Owned { get; private set; }
@@ -442,6 +442,63 @@ public sealed partial class Escape : IModulePass
         return types;
     }
 
+    /// <summary>
+    /// ForeignThrows for a unit that is not the whole program: each throw of
+    /// something not made here, said so the link can judge it with every
+    /// unit's (LifetimeHints.Throws): unknown, read from a static, or the
+    /// result of a function only the whole program can call fresh. And every
+    /// static store's stamped type, and the statics stored outside a static
+    /// initialiser, for the same judgement and for PermanentStatics.
+    /// </summary>
+    private void ThrowHints(Module m, LifetimeHints hints)
+    {
+        foreach (Function f in m.Functions)
+        {
+            bool initialiser = f.Name.Contains("_StaticInit$", StringComparison.Ordinal);
+            Dictionary<VReg, List<Instr>> writes = Writes(f);
+            HashSet<FrameSlot> caughtSlots = new();
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                {
+                    if (i.Op == Opcode.Store && i.Operands.Count == 2 && i.Operands[0] is SlotOperand { Slot: var slot }
+                        && i.Operands[1] is RegOperand { Reg: var v } && writes.TryGetValue(v, out List<Instr>? vw)
+                        && vw.Count == 1 && vw[0] is { Op: Opcode.Call, Callee: "__exception" })
+                        caughtSlots.Add(slot);
+                    if (i.Op == Opcode.Store && i.Operands.Count == 2 && i.Operands[0] is SymOperand { Name: var into })
+                    {
+                        if (!initialiser) hints.StaticWrites.Add(into);
+                        if (i.Operands[1] is ImmOperand { Value: 0 }) continue;
+                        string? type = i.Operands[1] is RegOperand { Reg: var put } ? StampedType(f, put) : null;
+                        hints.StaticStores.Add((into, type ?? "*"));
+                    }
+                }
+            // Made here, handed on from a landing pad, or else what the link must judge.
+            string? Verdict(Operand o)
+            {
+                for (int hop = 0; hop < 8 && o is RegOperand { Reg: var r }; hop++)
+                {
+                    if (!writes.TryGetValue(r, out List<Instr>? ws) || ws.Count != 1) return "*";
+                    Instr d = ws[0];
+                    if (d.Op == Opcode.Call && (IsAllocator(d.Callee) || d.Callee is not null && _fresh.Contains(d.Callee))) return null;
+                    if (d.Op == Opcode.Call && d.Callee == "__exception") return null;
+                    if (d.Op == Opcode.Call && d.Callee is not null && !IsIntrinsic(d.Callee)) return "f:" + d.Callee;
+                    if (d.Op == Opcode.Load && d.Operands is [SlotOperand { Slot: var from }] && caughtSlots.Contains(from)) return null;
+                    if (d.Op == Opcode.Load && d.Operands is [SymOperand { Name: var named }]) return "s:" + named;
+                    if (d.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) || d.Operands.Count != 1) return "*";
+                    o = d.Operands[0];
+                }
+                return "*";
+            }
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                {
+                    Operand? thrown = i.Op == Opcode.Unwind && i.Operands.Count >= 2 ? i.Operands[1]
+                        : i.Op == Opcode.Call && i.Callee == Unhandled && i.Operands.Count == 1 ? i.Operands[0] : null;
+                    if (thrown is not null && Verdict(thrown) is string verdict) hints.Throws.Add(verdict);
+                }
+        }
+    }
+
     /// <summary>What the entry and static initialisers reach over calls, named addresses and data.</summary>
     private static HashSet<string> Reached(Module m)
     {
@@ -508,6 +565,9 @@ public sealed partial class Escape : IModulePass
     /// <summary>Whether a catch can take something thrown that was not just made (_foreignTypes).</summary>
     private bool CatchesForeign(Instr end)
     {
+        // The link's answer for a unit of a closed image (Module.ForeignCatchable).
+        if (_module is { PreserveExports: true, ForeignCatchable: { } catchable })
+            return catchable.Count > 0 && (end.DispatchType is not string taken || catchable.Contains(taken));
         if (_foreignTypes.Count == 0) return false;
         if (_foreignTypes.Contains("*") || end.DispatchType is not string caught) return true;
         Dictionary<string, DataItem> items = _items ??= _module!.Data.ToDictionary(d => d.Name, StringComparer.Ordinal);
@@ -652,7 +712,7 @@ public sealed partial class Escape : IModulePass
     }
 
     /// <summary>The runtime's free of what an owned field held before a store replaces it.</summary>
-    public const string OwnedReplacedFreer = "m_Runtime_FreeOwnedReplaced_2_V$I64_V$I64";
+    public const string OwnedReplacedFreer = Corsac.Lang.Lto.RuntimeAbi.FreeOwnedReplaced;
 
     /// <summary>The owned-field decisions, for the allocation report.</summary>
     private readonly List<string> _fieldReport = new();
@@ -1146,10 +1206,10 @@ public sealed partial class Escape : IModulePass
             Instr load = new() { Op = Opcode.Load, Dest = old, Offset = st.Offset, Size = st.Size, Line = st.Line };
             load.Operands.Add(st.Operands[0]);
             made.Add(load);
-            // Both longs, as the runtime's frees take on every target.
+            // Both machine words, as the runtime's frees take on every target.
             Instr free = new() { Op = Opcode.Call, Callee = OwnedReplacedFreer, Line = st.Line };
-            free.Operands.Add(Long(f, made, new RegOperand(old), st.Line));
-            free.Operands.Add(Long(f, made, st.Operands[1], st.Line));
+            free.Operands.Add(Word(f, made, new RegOperand(old), st.Line));
+            free.Operands.Add(Word(f, made, st.Operands[1], st.Line));
             made.Add(free);
             b.Instrs.InsertRange(at, made);
             _bookkeeping.UnionWith(made);
@@ -1880,9 +1940,66 @@ public sealed partial class Escape : IModulePass
     /// and only for the call shape just described; any other indirect call is
     /// left unresolved, and an escape, as before.
     /// </summary>
+    /// <summary>
+    /// A VIRTUAL CALL IN A UNIT THAT IS NOT THE WHOLE PROGRAM names every
+    /// override it can reach by one symbol no unit defines: its declaring type
+    /// and slot. A condition on it (EscapeHints) is a condition on each of
+    /// them together, which the link resolves from every descriptor in the
+    /// image (Lto.VirtualTargets) and answers as for any function.
+    /// </summary>
+    public const string VirtualPrefix = "__virtual:";
+
+    public static string VirtualCallee(string declaring, long slot) => VirtualPrefix + declaring + "+" + slot;
+
+    /// <summary>
+    /// The call's declaring type and slot, when it has the shape of a virtual
+    /// call: the method loaded from the object's own descriptor, the object
+    /// passed first. <paramref name="single"/> maps each register written once
+    /// to its instruction; <paramref name="many"/> holds those written more.
+    /// </summary>
+    private static (string Declaring, long Slot)? VirtualSlot(Instr i, Dictionary<VReg, Instr> single, HashSet<VReg> many)
+    {
+        if (i.Op != Opcode.CallIndirect || i.Operands.Count < 2 || i.DispatchType is not string declaring
+            || i.Operands[0] is not RegOperand { Reg: var target } || i.Operands[1] is not RegOperand { Reg: var self }
+            || many.Contains(target) || !single.TryGetValue(target, out Instr? method)
+            || method.Op != Opcode.Load || method.Operands.Count < 1 || method.Operands[0] is not RegOperand { Reg: var table }
+            || many.Contains(table) || !single.TryGetValue(table, out Instr? header)
+            || header.Op != Opcode.Load || header.Offset != 0 || header.Operands.Count < 1
+            || header.Operands[0] is not RegOperand { Reg: var from } || from != self) return null;
+        return (declaring, method.Offset);
+    }
+
+    /// <summary>
+    /// Every virtual call of a unit's functions, each to its one symbol for
+    /// all its overrides (VirtualCallee); only those <paramref name="known"/>
+    /// admits, when it is given -- the ones the link has an answer for.
+    /// </summary>
+    internal static Dictionary<Instr, string[]> VirtualCallees(IEnumerable<Function> functions, Func<string, bool>? known = null)
+    {
+        Dictionary<Instr, string[]> result = new(ReferenceEqualityComparer.Instance);
+        foreach (Function f in functions)
+        {
+            Dictionary<VReg, Instr> single = new();
+            HashSet<VReg> many = new();
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Dest is not null && !single.TryAdd(i.Dest, i)) many.Add(i.Dest);
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Op == Opcode.CallIndirect && VirtualSlot(i, single, many) is var (declaring, slot))
+                    {
+                        string name = VirtualCallee(declaring, slot);
+                        if (known is null || known(name)) result[i] = new[] { name };
+                    }
+        }
+        return result;
+    }
+
     private static Dictionary<Instr, string[]>? IndirectTargets(Module m, Dictionary<string, Function> byName)
     {
-        if (m.PreserveExports || m.Entry is null) return null;
+        // Not the whole program: each virtual call stands for its overrides
+        // under one name, for the link to answer (VirtualCallees).
+        if (m.PreserveExports || m.Entry is null) return m.PreserveExports ? VirtualCallees(m.Functions) : null;
 
         // Where in a descriptor its methods begin: the offsets objects are
         // stamped with (`store @t_Type+48` into the new object's first word).
@@ -2695,41 +2812,40 @@ public sealed partial class Escape : IModulePass
     /// <summary>The line the function's first instruction has: what code put before it is given.</summary>
     internal static int EntryLine(Function f, int otherwise) => f.Entry.Instrs.Count > 0 ? f.Entry.Instrs[0].Line : otherwise;
 
-    /// <summary>An operand as a long, for a runtime routine that takes one (a null, a symbol, a word).</summary>
-    private static Operand Long(Function f, List<Instr> output, Operand value, int line)
+    /// <summary>An operand as a machine word, for a runtime routine that takes an nint (a null, a symbol, a register).</summary>
+    internal static Operand Word(Function f, List<Instr> output, Operand value, int line)
     {
         switch (value)
         {
             case ImmOperand imm:
-                return new ImmOperand(imm.Value, IrType.I64);
-            case RegOperand { Reg.Type: IrType.I64 }:
+                return new ImmOperand(imm.Value, IrTypes.Word);
+            case RegOperand { Reg: var r } when r.Type == IrTypes.Word:
                 return value;
-            case RegOperand reg:
-            {
-                VReg wide = f.NewReg(IrType.I64);
-                output.Add(new Instr { Op = Opcode.ZExt32, Dest = wide, Operands = { reg }, Line = line });
-                return new RegOperand(wide);
-            }
+            case RegOperand { Reg.Type: IrType.I32 or IrType.I64 } reg:
+                return new RegOperand(Word(f, output, reg.Reg, line));
             default:
             {
                 VReg word = f.NewReg(IrTypes.Word);
                 output.Add(new Instr { Op = Opcode.Copy, Dest = word, Operands = { value }, Line = line });
-                return Long(f, output, new RegOperand(word), line);
+                return new RegOperand(word);
             }
         }
     }
 
+    /// <summary>A register as a machine word: itself, or widened or narrowed to one.</summary>
+    internal static VReg Word(Function f, List<Instr> output, VReg r, int line, string? name = null)
+    {
+        if (r.Type == IrTypes.Word || r.Type is not (IrType.I32 or IrType.I64)) return r;
+        VReg word = f.NewReg(IrTypes.Word, name);
+        output.Add(new Instr { Op = IrTypes.Word == IrType.I64 ? Opcode.ZExt32 : Opcode.Trunc64, Dest = word,
+            Operands = { new RegOperand(r) }, Line = line });
+        return word;
+    }
+
     private static Instr AppendFree(Function f, List<Instr> output, VReg pointer, int line)
     {
-        // Ownership slots are machine words, but Runtime.Free(long) has a
-        // language-level 64-bit ABI on every target. Never omit the high word.
-        VReg argument = pointer;
-        if (pointer.Type == IrType.I32)
-        {
-            argument = f.NewReg(IrType.I64, "freeAddress");
-            output.Add(new Instr { Op = Opcode.ZExt32, Dest = argument,
-                Operands = { new RegOperand(pointer) }, Line = line });
-        }
+        // Ownership slots are machine words, and so is Runtime.Free's parameter.
+        VReg argument = Word(f, output, pointer, line, "freeAddress");
         Instr free = new Instr { Op = Opcode.Call, Callee = Freer,
             Operands = { new RegOperand(argument) }, Line = line };
         output.Add(free);

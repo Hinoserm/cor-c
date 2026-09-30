@@ -97,4 +97,10 @@ public enum MOp : byte
     LoadCs,
     /// <summary>xor r32, r32; mov r16, gs -- the selector in GS, zero-extended on every processor.</summary>
     GetGs,
+    /// <summary>
+    /// call rel32 to one of the backend's own stubs, which keeps every
+    /// register: its operands after the target are the registers it reads,
+    /// and it destroys none, so nothing live is spilled around it.
+    /// </summary>
+    CallKeep,
 }

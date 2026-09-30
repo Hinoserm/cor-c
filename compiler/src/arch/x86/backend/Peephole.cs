@@ -24,6 +24,8 @@ internal static class Peephole
             ForwardStoreLoad(block.Instrs);
             ForwardSpillLoads(block.Instrs);
             DeadDefs(block.Instrs, liveOut[b]);
+            RepeatedStores(block.Instrs, liveOut[b]);
+            MergePops(block.Instrs);
             ZeroWithXor(block.Instrs);
             InvertJumpAroundJump(block.Instrs, next);
         }
@@ -216,6 +218,122 @@ internal static class Peephole
     /// assumed about registers at the block's end, so a value flowing out
     /// of the block is never touched.
     /// </summary>
+    /// <summary>
+    /// THE SAME CONSTANT STORED AGAIN AND AGAIN -- a struct zeroed a word at a
+    /// time, three `mov dword [ebp-2016], 0` of ten bytes each -- is put in a
+    /// register nothing needs there, once, and each store writes the register:
+    /// four bytes less on every store, and the register's load becomes `xor`
+    /// where the flags allow (ZeroWithXor, next). Only a run of such stores
+    /// with nothing between, and only a register dead before it that no store
+    /// addresses through.
+    /// </summary>
+    private static void RepeatedStores(List<MInstr> instrs, int liveOut)
+    {
+        int[] deadBefore = new int[instrs.Count];
+        int dead = ~liveOut & 0xFF & ~(1 << (int)Gpr.Esp) & ~(1 << (int)Gpr.Ebp);
+        for (int k = instrs.Count - 1; k >= 0; k--)
+        {
+            MInstr i = instrs[k];
+            if (!Understood(i)) dead = 0;
+            else
+            {
+                foreach ((MReg r, bool isDef) in Regs(i)) if (isDef && r.IsPhys) dead |= 1 << r.Id;
+                foreach (Gpr g in Roles.ImplicitDefs(i)) dead |= 1 << (int)g;
+                foreach ((MReg r, bool isDef) in Regs(i)) if (!isDef && r.IsPhys) dead &= ~(1 << r.Id);
+                foreach (Gpr g in Roles.ImplicitUses(i)) dead &= ~(1 << (int)g);
+                dead &= ~(1 << (int)Gpr.Esp) & ~(1 << (int)Gpr.Ebp);
+            }
+            deadBefore[k] = dead;
+        }
+        static bool ConstantStore(MInstr i, out long value)
+        {
+            value = 0;
+            if (i.Op != MOp.Mov || i.Width != 4 || i.Operands.Count != 2 || i.Operands[0] is not MMem
+                || i.Operands[1] is not MImm { IsPlain: true } imm) return false;
+            value = imm.Value;
+            return true;
+        }
+        // Every run first, against the unchanged indices; then each rewritten,
+        // the last first, so an inserted load moves nothing not yet done.
+        List<(int Start, int End, long Value)> runs = new();
+        for (int k = 0; k < instrs.Count; k++)
+        {
+            if (!ConstantStore(instrs[k], out long value)) continue;
+            int end = k + 1;
+            while (end < instrs.Count && ConstantStore(instrs[end], out long next) && next == value) end++;
+            if (end - k >= 2) runs.Add((k, end, value));
+            k = end - 1;
+        }
+        for (int r = runs.Count - 1; r >= 0; r--)
+        {
+            (int k, int end, long value) = runs[r];
+            int free = deadBefore[k];
+            for (int j = k; j < end; j++)
+                if (instrs[j].Operands[0] is MMem mem)
+                {
+                    if (mem.Base is { IsPhys: true } b) free &= ~(1 << b.Id);
+                    if (mem.Index is { IsPhys: true } x) free &= ~(1 << x.Id);
+                }
+            if (free == 0) continue;
+            Gpr reg = (Gpr)System.Numerics.BitOperations.TrailingZeroCount(free);
+            for (int j = k; j < end; j++) instrs[j].Operands[1] = MReg.Of(reg);
+            MInstr load = new(MOp.Mov, MReg.Of(reg), new MImm(value)) { Line = instrs[k].Line };
+            instrs.Insert(k, load);
+        }
+    }
+
+    /// <summary>
+    /// A CALL'S ARGUMENTS ARE POPPED ONCE FOR SEVERAL CALLS. Each call is
+    /// followed by `add esp, n` to drop what it was pushed; with EBP framing
+    /// nothing in between needs ESP exact -- a push, another call -- so the
+    /// drops of a run of calls are one drop, at the last of them. Each of the
+    /// others was three bytes. The last stays where it was, so the flags it
+    /// set and the stack depth after it are what they were; anything that
+    /// reads or writes ESP (or an operand based on it, or that this does not
+    /// understand) ends a run.
+    /// </summary>
+    private static void MergePops(List<MInstr> instrs)
+    {
+        static bool Pop(MInstr i, out long bytes)
+        {
+            bytes = 0;
+            if (i.Op != MOp.Add || i.Width != 4 || i.Operands.Count != 2 || i.Operands[0] is not MReg { IsPhys: true } r
+                || r.Phys != Gpr.Esp || i.Operands[1] is not MImm { IsPlain: true } imm) return false;
+            bytes = imm.Value;
+            return true;
+        }
+        static bool Neutral(MInstr i)
+        {
+            // Pushes and calls move ESP relative to itself, which is all they need.
+            if (i.Op is MOp.Push or MOp.Call or MOp.CallInd) return i.Operands.All(o => !Names(o));
+            if (!Understood(i) || i.Op is MOp.Pop or MOp.Prologue or MOp.Epilogue or MOp.Ret) return false;
+            if (i.Operands.Any(Names)) return false;
+            return !Roles.ImplicitUses(i).Contains(Gpr.Esp) && !Roles.ImplicitDefs(i).Contains(Gpr.Esp);
+        }
+        static bool Names(MOperand o) => o is MReg { IsPhys: true, Phys: Gpr.Esp }
+            || o is MMem m && (m.Base is { IsPhys: true, Phys: Gpr.Esp } || m.Index is { IsPhys: true, Phys: Gpr.Esp });
+        int pending = -1;       // the index of the run's last drop so far
+        long total = 0;
+        for (int k = 0; k < instrs.Count; k++)
+        {
+            MInstr i = instrs[k];
+            if (Pop(i, out long bytes))
+            {
+                if (pending >= 0)
+                {
+                    instrs.RemoveAt(pending);
+                    k--;
+                    total += bytes;
+                }
+                else total = bytes;
+                instrs[k] = new MInstr(MOp.Add, MReg.Of(Gpr.Esp), new MImm(total)) { Line = i.Line };
+                pending = k;
+                continue;
+            }
+            if (!Neutral(i)) pending = -1;
+        }
+    }
+
     private static void DeadDefs(List<MInstr> instrs, int liveOut)
     {
         HashSet<int> dead = new();
@@ -315,7 +433,7 @@ internal static class Peephole
     private static bool ForwardCopy(MInstr copy, MInstr user, HashSet<int> deadAfter)
     {
         if (!IsMov(copy) || copy.Operands[0] is not MReg a || copy.Operands[1] is not MReg b || a.Id == b.Id
-            || !deadAfter.Contains(a.Id) || !Understood(user) || user.Op == MOp.Xchg)
+            || !deadAfter.Contains(a.Id) || !Understood(user) || user.Op is MOp.Xchg or MOp.CallKeep)
         {
             return false;
         }
@@ -383,6 +501,9 @@ internal static class Peephole
     {
         MOp.Shl or MOp.Shr or MOp.Sar => operand == 1,
         MOp.Shld or MOp.Shrd => operand == 2,
+        // A stub's registers are its calling convention: the slot in EAX,
+        // the value in EDX (X86Backend.CardStub, BarrierStub).
+        MOp.CallKeep => operand > 0,
         _ => false,
     };
 

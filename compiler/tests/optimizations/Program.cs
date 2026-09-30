@@ -80,7 +80,7 @@ public static partial class Program
 
         Try("inline: constant branch budget preserves runtime calls and growth limits", ConstantBranchInlining);
         Try("scalar objects: widths, initialization and conservative escape barriers", ScalarObjectBoundaries);
-        Try("escape: owned allocations preserve long free-call ABI", OwnedFreeAbi);
+        Try("escape: owned allocations pass the free one machine word", OwnedFreeAbi);
         Try("escape: recursion cycles solved to their least fixed point", EscapeCycles);
         Try("escape: a fresh function's result is owned by its caller", FreshReturnOwnership);
         Try("escape: a callee-filled field dies with its owner", CalleeFilledField);
@@ -493,7 +493,7 @@ public static partial class Program
     private static void AddFreeHelpers(Module module)
     {
         Function free = new(Escape.Freer, IrType.Void);
-        free.Params.Add(free.NewReg(IrType.I64));
+        free.Params.Add(free.NewReg(IrTypes.Word));
         new Builder(free, free.NewBlock("entry")).Ret();
         module.Functions.Add(free);
         Function field = new(Escape.FieldFreer, IrType.Void);
@@ -744,7 +744,7 @@ public static partial class Program
         b.Store(new RegOperand(address), new ImmOperand(123, IrType.I64), 0, 8);
         b.Ret(new RegOperand(b.Load(IrType.I64, address, 0, 8)));
         Function free = new(Escape.Freer, IrType.Void);
-        free.Params.Add(free.NewReg(IrType.I64));
+        free.Params.Add(free.NewReg(IrTypes.Word));
         new Builder(free, free.NewBlock("entry")).Ret();
         module.Functions.Add(free);
         Escape pass = new(); pass.Run(module);
@@ -758,8 +758,8 @@ public static partial class Program
         int freeAt = body.IndexOf(calls[0]), loadAt = body.FindIndex(i => i.Op == Opcode.Load);
         Assert(freeAt > loadAt && freeAt < body.Count - 1, "the free follows the last use and precedes the return");
         Assert(f.Slots.Count == 0, "no slot for an object freed at its last use");
-        Assert(calls.All(i => i.Operands.Count == 1 && i.Operands[0].Type == IrType.I64),
-            "every compiler-inserted free receives a complete long address");
+        Assert(calls.All(i => i.Operands.Count == 1 && i.Operands[0].Type == IrTypes.Word),
+            "every compiler-inserted free receives the address as a machine word");
 
         // In a loop, used in the next block too: the slot, last time's object
         // given back before the next is made, and the last at the return.
@@ -780,14 +780,14 @@ public static partial class Program
         lb.SetBlock(done);
         lb.Ret(new RegOperand(n));
         Function loopFree = new(Escape.Freer, IrType.Void);
-        loopFree.Params.Add(loopFree.NewReg(IrType.I64));
+        loopFree.Params.Add(loopFree.NewReg(IrTypes.Word));
         new Builder(loopFree, loopFree.NewBlock("entry")).Ret();
         looped.Functions.Add(loopFree);
         Escape loopPass = new(); loopPass.Run(looped);
         Verifier.Check(g, "owned loop allocation");
         Instr[] loopCalls = g.Blocks.SelectMany(x => x.Instrs).Where(i => i.Callee == Escape.Freer).ToArray();
         Assert(loopPass.Owned == 1 && loopCalls.Length == 2, "a repeating site gives last time's back, and the last at the return");
-        Assert(loopCalls.All(i => i.Operands.Count == 1 && i.Operands[0].Type == IrType.I64), "loop frees receive a complete long address");
+        Assert(loopCalls.All(i => i.Operands.Count == 1 && i.Operands[0].Type == IrTypes.Word), "loop frees receive the address as a machine word");
     }
 
     private static void ScalarObjectBoundaries()

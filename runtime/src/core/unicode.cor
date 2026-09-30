@@ -291,9 +291,7 @@ static class Utf8Transcoder
     /// The UTF-8 in bytes[at, at + count) as a string.
     public static string Decode(byte[] bytes, int at, int count)
     {
-        string made = Sys.NewChars(Transcode(bytes, 0, at, count, null));
-        Transcode(bytes, 0, at, count, made);
-        return made;
+        return DecodeOnce(bytes, 0, at, count);
     }
 
     /// The UTF-8 in `count` bytes of memory at `address` as a string: what
@@ -301,12 +299,67 @@ static class Utf8Transcoder
     /// directory entry's name).
     public static string Decode(long address, int count)
     {
-        // Read ONCE, into bytes nobody else can reach: the memory is a
-        // program's, and another of its threads may be writing it.
+        return DecodeOnce(null, address, 0, count);
+    }
+
+    /// ONE PASS, EACH BYTE READ ONCE, INTO THE STRING IT RETURNS. UTF-8 never
+    /// makes more UTF-16 units than it has bytes (one unit from one byte, two
+    /// from four), so a string of `count` units always has room; it is made
+    /// first, filled as the bytes are read, and its length then set to what
+    /// was written -- nobody else can see it yet. Memory another thread may
+    /// be writing is read exactly once, so nothing it changes can make the
+    /// text disagree with its length, and nothing is copied or counted first.
+    /// ASCII, most of what is decoded, fills it exactly.
+    private static string DecodeOnce(byte[]? bytes, long address, int at, int count)
+    {
         if (count <= 0) return "";
-        byte[] bytes = new byte[count];
-        Sys.MemoryCopy(Sys.ArrayData(bytes), address, count);
-        return Decode(bytes, 0, count);
+        string made = Sys.NewChars(count);
+        int end = at + count;
+        int i = at;
+        int o = 0;
+        while (i < end)
+        {
+            int lead = ByteAt(bytes, address, i, end);
+            if (lead < 0x80)
+            {
+                Sys.SetChar(made, o, lead);
+                o = o + 1;
+                i = i + 1;
+                continue;
+            }
+            // The rest of the sequence, each byte read once and used for
+            // every decision made about it.
+            int b1 = ByteAt(bytes, address, i + 1, end);
+            int b2 = lead >= 0xE0 ? ByteAt(bytes, address, i + 2, end) : -1;
+            int b3 = lead >= 0xF0 ? ByteAt(bytes, address, i + 3, end) : -1;
+            int length = Sequence(lead, b1, b2, b3);
+            if (length < 0)
+            {
+                Sys.SetChar(made, o, 0xFFFD);
+                o = o + 1;
+                i = i - length;
+                continue;
+            }
+            int point;
+            if (length == 2) point = ((lead & 0x1F) << 6) | (b1 & 0x3F);
+            else if (length == 3) point = ((lead & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F);
+            else point = ((lead & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F);
+            if (point >= 0x10000)
+            {
+                Sys.SetChar(made, o, 0xD800 + ((point - 0x10000) >> 10));
+                Sys.SetChar(made, o + 1, 0xDC00 + ((point - 0x10000) & 0x3FF));
+                o = o + 2;
+            }
+            else
+            {
+                Sys.SetChar(made, o, point);
+                o = o + 1;
+            }
+            i = i + length;
+        }
+        // The length written, in the count word after the descriptor.
+        if (o < count) Sys.PokeWord(Sys.Word(made) + 2 * WordSize.Bytes, o);
+        return made;
     }
 
     /// The zero-terminated UTF-8 at `address` as a string.

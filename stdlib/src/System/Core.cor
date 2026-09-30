@@ -572,6 +572,33 @@ static class String {
     /// { Use(dir); }` the ordinary way to write the check.
     public static bool IsNullOrEmpty([NotNullWhen(false)] string? s) { return s == null || s.Length == 0; }
 
+    /// ONE COPY OF EACH TEXT, as .NET's intern pool: the first string of a
+    /// given text handed here is the one every later equal text gets back.
+    /// Held for the life of the process, as .NET holds it.
+    static Dictionary<string, string>? _interned;
+    static readonly object _internLock = new object();
+
+    public static string Intern(string str)
+    {
+        if (str == null) throw new ArgumentNullException("str");
+        lock (_internLock)
+        {
+            _interned ??= new Dictionary<string, string>();
+            if (_interned.TryGetValue(str, out string? held)) return held;
+            _interned[str] = str;
+            return str;
+        }
+    }
+
+    public static string? IsInterned(string str)
+    {
+        if (str == null) throw new ArgumentNullException("str");
+        lock (_internLock)
+        {
+            return _interned is not null && _interned.TryGetValue(str, out string? held) ? held : null;
+        }
+    }
+
     public static bool IsNullOrWhiteSpace([NotNullWhen(false)] string? s) {
         if (s == null) { return true; }
 
@@ -5650,6 +5677,9 @@ struct Span<T> {
     }
 
     public int Length => count;
+
+    internal T[] Array => items;
+    internal int Start => from;
 
     public T this[int index] {
         get { return items[from + index]; }

@@ -37,6 +37,20 @@ enum FileShare
     Inheritable = 16
 }
 
+/// How a file is opened beyond its mode and access, as .NET names it. Accepted;
+/// none changes what a read or a write does here.
+[Flags]
+enum FileOptions
+{
+    WriteThrough = unchecked((int)0x80000000),
+    None = 0,
+    Encrypted = 0x4000,
+    DeleteOnClose = 0x4000000,
+    SequentialScan = 0x8000000,
+    RandomAccess = 0x10000000,
+    Asynchronous = 0x40000000
+}
+
 enum SeekOrigin
 {
     Begin = 0,
@@ -3568,3 +3582,69 @@ static class TempNames
     }
 }
 
+
+namespace Microsoft.Win32.SafeHandles
+{
+    /// An open file, as .NET's SafeFileHandle: a descriptor closed once, when
+    /// it is disposed (File.OpenHandle, RandomAccess).
+    public sealed class SafeFileHandle : IDisposable
+    {
+        internal int Fd;
+        bool _closed;
+
+        internal SafeFileHandle(int fd) { Fd = fd; }
+
+        public bool IsClosed => _closed;
+        public bool IsInvalid => Fd < 0;
+
+        public void Dispose()
+        {
+            if (_closed) return;
+            _closed = true;
+            if (Fd >= 0) Os.Close(Fd);
+        }
+    }
+}
+
+partial static class File
+{
+    /// A handle on a file with no stream and no position of its own, as
+    /// .NET's File.OpenHandle: what RandomAccess reads and writes by offset.
+    public static Microsoft.Win32.SafeHandles.SafeFileHandle OpenHandle(string path, FileMode mode = FileMode.Open,
+        FileAccess access = FileAccess.Read, FileShare share = FileShare.Read, FileOptions options = FileOptions.None, long preallocationSize = 0)
+    {
+        if (path == null) throw new ArgumentNullException("path");
+        int flags = access == FileAccess.Read ? O.Read : access == FileAccess.Write ? O.Write : O.ReadWrite;
+        if (mode == FileMode.CreateNew) flags = flags | O.Create | O.Exclusive;
+        else if (mode == FileMode.Create) flags = flags | O.Create | O.Truncate;
+        else if (mode == FileMode.OpenOrCreate) flags = flags | O.Create;
+        else if (mode == FileMode.Truncate) flags = flags | O.Truncate;
+        else if (mode == FileMode.Append) flags = flags | O.Create | O.Append;
+        int fd = Os.Open(path, flags | O.LargeFile, 420);
+        if (fd < 0) throw Interop.GetExceptionForIoErrno(fd, path);
+        return new Microsoft.Win32.SafeHandles.SafeFileHandle(fd);
+    }
+}
+
+/// Reads and writes by offset on a file handle, as .NET's RandomAccess: no
+/// shared position, so several threads may read one file at once (pread64).
+public static class RandomAccess
+{
+    /// Up to buffer.Length bytes at fileOffset; how many were read, 0 at the end.
+    public static int Read(Microsoft.Win32.SafeHandles.SafeFileHandle handle, Span<byte> buffer, long fileOffset)
+    {
+        if (handle == null) throw new ArgumentNullException("handle");
+        if (handle.IsClosed) throw new ObjectDisposedException("handle");
+        if (fileOffset < 0) throw new ArgumentOutOfRangeException("fileOffset");
+        if (buffer.Length == 0) return 0;
+        long got = Os.Pread(handle.Fd, buffer.Array, buffer.Start, buffer.Length, fileOffset);
+        if (got < 0) throw Interop.GetExceptionForIoErrno((int)got, "");
+        return (int)got;
+    }
+
+    public static long GetLength(Microsoft.Win32.SafeHandles.SafeFileHandle handle)
+    {
+        if (handle == null) throw new ArgumentNullException("handle");
+        return Os.SizeOf(handle.Fd);
+    }
+}

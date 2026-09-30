@@ -36,26 +36,56 @@ public sealed class UnitBackend : IUnitBackend
         IrArchive archive = IrArchive.Read(original) ?? throw new InvalidDataException("Backend input has no IR archive");
         var visibility = original.Symbols.Where(symbol => symbol.IsDefined && symbol.IsFunction)
             .ToDictionary(symbol => symbol.Name, symbol => symbol.Global, StringComparer.Ordinal);
-        var unit = IrUnitCodec.Read(archive, retained: retained, functionHeaders: visibility);
+        // A VERSION 2 ARCHIVE holds the IR from before the late passes, and
+        // they run here, over the whole program's answers where the link has
+        // them. What they leave is what a version 1 archive held, and the
+        // per-function steps below go on from there as before.
+        bool preLate = IrUnitCodec.ReadSettings(archive).Settings is { PreLate: true };
+        var read = IrUnitCodec.ReadWithSettings(archive, memoryBudget: preLate ? MachineMemory.WorkBudget(64L * 1024 * 1024, 1024L * 1024 * 1024) : 64L * 1024 * 1024,
+            retained: retained, functionHeaders: preLate ? null : visibility);
+        var unit = (read.Module, StackMaps: read.StackMaps, read.AccountedBytes);
         Console.Error.WriteLine("IR backend: retained functions=" + unit.Module.Functions.Count + ", data=" + unit.Module.Data.Count
-            + ", accounted decode bytes=" + unit.AccountedBytes);
+            + ", accounted decode bytes=" + unit.AccountedBytes + (preLate ? ", late passes at link" : ""));
         Module module = unit.Module;
         module.PreserveExports = true;
+        if (preLate)
+        {
+            // The whole program's answers the late passes read, for a closed image.
+            if (facts?.ForeignCatchable is string[] catchable) module.ForeignCatchable = new(catchable, StringComparer.Ordinal);
+            foreach (Function function in module.Functions)
+                if (visibility.TryGetValue(function.Name, out bool exported) && exported != function.Exported)
+                    throw new InvalidDataException("Archived IR identity disagrees with native symbol " + function.Name);
+            Pipeline late = Pipeline.Default(optimizeSize: read.Settings!.OptimizeSize, experimentalBatch: read.Settings.ExperimentalBatch);
+            late.Workers = Math.Max(1, Math.Min(64, Environment.ProcessorCount));
+            late.RunLate(module);
+            AsyncTransform.Run(module, Target.Current.WordSize);
+            LandingPadHomes.Run(module);
+            // Only a collector reads stack maps, and a unit the late passes
+            // found needs no heap carries none, as its compile would have.
+            unit.StackMaps = unit.StackMaps && module.NeedsHeap;
+        }
         HashSet<string> originalNames = module.Functions.Select(function => function.Name).ToHashSet(StringComparer.Ordinal);
         Dictionary<string, byte[]> semantics = CoalescingContract.Read(original);
         foreach (IrImport import in imports)
             if (!originalNames.Add(import.Symbol) || import.DecodeBytes < import.Body.Length)
                 throw new InvalidDataException("Conflicting or unbounded IR import identity");
         Dictionary<string, IrImport> available = imports.ToDictionary(import => import.Symbol, StringComparer.Ordinal);
-        IrImport[] Selected(int index) => archive.Entries["F:" + module.Functions[index].Name].Calls
-            .Where(available.ContainsKey).Select(name => available[name]).ToArray();
-        long Cost(int index) => checked(3 * (archive.Entries["F:" + module.Functions[index].Name].DecodeBytes
+        // A function the late passes made has no record of its own: it calls
+        // nothing imported and costs what a small function does.
+        IrImport[] Selected(int index) => archive.Entries.TryGetValue("F:" + module.Functions[index].Name, out IrArchiveEntry? record)
+            ? record.Calls.Where(available.ContainsKey).Select(name => available[name]).ToArray() : Array.Empty<IrImport>();
+        long Cost(int index) => checked(3 * ((archive.Entries.TryGetValue("F:" + module.Functions[index].Name, out IrArchiveEntry? record) ? record.DecodeBytes : 0)
             + Selected(index).Sum(import => import.DecodeBytes)) + 512 * 1024);
         Function Load(int index)
         {
             Function header = module.Functions[index];
-            IrArchiveEntry entry = archive.Entries["F:" + header.Name];
-            Function function = IrFunctionCodec.Read(archive.ReadBody(entry.Key), new IrReadBudget(entry.DecodeBytes));
+            Function function;
+            if (preLate) function = header;
+            else
+            {
+                IrArchiveEntry entry = archive.Entries["F:" + header.Name];
+                function = IrFunctionCodec.Read(archive.ReadBody(entry.Key), new IrReadBudget(entry.DecodeBytes));
+            }
             if (function.Name != header.Name || function.Exported != header.Exported)
                 throw new InvalidDataException("Deferred IR identity disagrees with native symbol");
             // CORC_DUMP_FUNCTION=<symbol>: that function's IR as the link loads

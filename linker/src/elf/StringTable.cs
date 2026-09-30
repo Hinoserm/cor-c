@@ -48,6 +48,9 @@ internal sealed class StringTable
         {
             throw new ElfFormatException($"{what}: unterminated string at 0x{offset:x}");
         }
-        return Encoding.UTF8.GetString(rest[..end]);
+        // ONE COPY OF EACH NAME: a link reads the same runtime and library
+        // symbols from every object that calls them, and relocations name
+        // them again; kept once each, the kernel's names are not its memory.
+        return string.Intern(Encoding.UTF8.GetString(rest[..end]));
     }
 }

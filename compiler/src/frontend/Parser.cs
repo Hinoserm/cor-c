@@ -2640,7 +2640,11 @@ public sealed class Parser
             // `_` BINDS NOTHING, and has no type written before it.
             bool discard = At(Tok.Ident) && Cur.Text == "_"
                         && Ahead().Kind is Tok.Comma or Tok.RParen;
-            TypeRef? each = inferred || discard ? null : ParseTypeRef();
+            // `var` BEFORE ONE NAME infers just that one, as C# allows in a
+            // list whose other names have types: `(FrameSlot keep, var list)`.
+            bool eachInferred = !inferred && !discard && At(Tok.KwVar) && Ahead().Kind == Tok.Ident;
+            if (eachInferred) _i++;
+            TypeRef? each = inferred || discard || eachInferred ? null : ParseTypeRef();
 
             bound.Add(new Binding
             {

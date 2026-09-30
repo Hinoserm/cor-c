@@ -90,7 +90,9 @@ public static class ObjectLinkCommand
             if (full == destination) return Fail("output would overwrite input '" + path + "'");
             if (!seen.Add(full)) return Fail("object supplied twice: '" + path + "'");
             if (!File.Exists(full)) return Fail("object does not exist: '" + path + "'");
-            try { inputs.Add((path, ElfReader.ReadObject(File.ReadAllBytes(full)))); }
+            // Read so that each unit's IR stays in its file (ReadObjectFile):
+            // a link holds the objects' code and tables, never their IR.
+            try { inputs.Add((path, ElfReader.ReadObjectFile(full))); }
             catch (ElfFormatException error) { return Fail(path + ": " + error.Message); }
         }
         // Resolve every input and relocation before writing the destination.
@@ -113,6 +115,8 @@ public static class ObjectLinkCommand
             input.Item2.Sections.RemoveAll(section => section.Name == TargetContract.SectionName
                 || section.Name == X86CodeGenerationContract.SectionName
                 || section.Name == ManagedLayoutContract.SectionName);
+        // Every unit's frame table names from one pool (FramePool).
+        if (lto) FramePool.Run(inputs);
         byte[] image;
         if (flat)
         {

@@ -17,6 +17,11 @@ public sealed class LifetimeFacts
     public Dictionary<string, SolvedFields> FreshFields { get; } = new(StringComparer.Ordinal);
     /// <summary>The runtime's frees the unit may call (its hints' helpers).</summary>
     public HashSet<string> Helpers { get; } = new(StringComparer.Ordinal);
+    /// <summary>
+    /// For a unit of a closed image: every type a thrown object not just made
+    /// can be, ancestors included (Module.ForeignCatchable). Null: unknown.
+    /// </summary>
+    public string[]? ForeignCatchable { get; set; }
 }
 
 /// <summary>What the whole program does to one object's fields: the owned field rules' summary, solved.</summary>
@@ -64,11 +69,35 @@ public sealed class LifetimeSolver
     /// Units in link order; the first definition of a global name is the one
     /// every other unit's call resolves to, as in symbol resolution.
     /// </summary>
-    public LifetimeSolver(IEnumerable<LifetimeHints> units)
+    public LifetimeSolver(IEnumerable<LifetimeHints> units, IReadOnlyDictionary<string, string[]>? virtuals = null)
     {
-        foreach (LifetimeHints unit in units)
+        List<LifetimeHints> all = units.ToList();
+        foreach (LifetimeHints unit in all)
             foreach (LifetimeFunction function in unit.Functions)
                 if (function.Global) _globals.TryAdd(function.Name, function);
+        // A VIRTUAL CALL'S SYMBOL (VirtualTargets) is every override it
+        // reaches together: an argument stays put only if it does in each,
+        // which is a condition like any other -- one no unit states, so it
+        // is stated here, as wide as the widest argument any unit asks about.
+        if (virtuals is not null)
+        {
+            Dictionary<string, int> widest = new(StringComparer.Ordinal);
+            foreach (LifetimeHints unit in all)
+                foreach ((string callee, int argument) in unit.Named())
+                    if (virtuals.ContainsKey(callee))
+                        widest[callee] = Math.Max(widest.GetValueOrDefault(callee, -1), argument);
+            foreach ((string name, int top) in widest.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+            {
+                LifetimeCondition?[] parameters = new LifetimeCondition?[top + 1];
+                for (int a = 0; a <= top; a++)
+                {
+                    LifetimeCondition each = new();
+                    foreach (string target in virtuals[name]) each.Stays.Add((target, a));
+                    parameters[a] = each.Count <= LifetimeCondition.Limit ? each : null;
+                }
+                _globals.TryAdd(name, new LifetimeFunction(name, true, parameters, null));
+            }
+        }
         SolveEscapes();
         SolveFresh();
         SolveFields();

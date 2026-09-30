@@ -110,7 +110,7 @@ public static class ElfWriter
         for (int i = 0; i < obj.Sections.Count; i++)
         {
             Section s = obj.Sections[i];
-            int length = s.Bytes.Count;
+            int length = s.Size;
             addends[i] = new List<(int, uint)>();
             rels[i] = new List<(uint, uint)>();
             foreach (Relocation r in s.Relocs)
@@ -190,7 +190,8 @@ public static class ElfWriter
             uint at = b.AlignTo(align);
             if (s.Kind != SectionKind.Uninitialised)
             {
-                b.Bytes(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(s.Bytes));
+                if (s.FileBacked is not null) b.Bytes(s.Content());
+                else b.Bytes(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(s.Bytes));
                 foreach ((int offset, uint addend) in addends[i])
                 {
                     b.PatchU32(checked((int)at + offset), addend);

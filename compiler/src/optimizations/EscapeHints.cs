@@ -223,6 +223,7 @@ public sealed partial class Escape
         }
         hints.Pending.AddRange(_pending);
         hints.FieldSites.AddRange(_fieldSiteRecords);
+        ThrowHints(m, hints);
         m.KeepCalls.UnionWith(_keep);
         foreach (string helper in new[] { Freer, FieldFreer, ReplacedFreer, FieldKeeper, OwnedReplacedFreer })
             if (provided(helper)) hints.Helpers.Add(helper);
@@ -281,10 +282,16 @@ public sealed partial class Escape
         bool canFree = facts.Helpers.Contains(Freer);
         Dictionary<string, Function> byName = new(StringComparer.Ordinal) { [f.Name] = f };
         _inserted = pass._bookkeeping;
-        pass.PromoteIn(f, summaries, canFree, new OwnedFieldEscape(byName, summaries));
-        if (canFree && facts.Helpers.Contains(ReplacedFreer)) pass.OwnVariables(f, summaries);
-        if (canFree && facts.Helpers.Contains(FieldFreer)) pass.OwnFields(f, summaries);
-        _inserted = null;
+        // Its virtual calls, each as every override the image has for it,
+        // wherever the link could say (VirtualCallees; Lto.VirtualTargets).
+        _indirect = VirtualCallees(new[] { f }, summaries.ContainsKey);
+        try
+        {
+            pass.PromoteIn(f, summaries, canFree, new OwnedFieldEscape(byName, summaries));
+            if (canFree && facts.Helpers.Contains(ReplacedFreer)) pass.OwnVariables(f, summaries);
+            if (canFree && facts.Helpers.Contains(FieldFreer)) pass.OwnFields(f, summaries);
+        }
+        finally { _inserted = null; _indirect = null; }
         return pass.Promoted + pass.Owned + pass.FieldsOwned;
     }
 }

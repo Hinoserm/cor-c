@@ -3813,6 +3813,14 @@ public sealed partial class Binder
 
     private void Declare(Node at, string name, Sym sym)
     {
+        // `(_, _) => ...`: a lambda naming more than one parameter `_` has
+        // discards for all of them, as C# 9 has it. The first holds the name;
+        // the rest bind nothing.
+        if (name == "_" && at is LambdaExpr && _scopes[^1].TryGetValue(name, out Sym? had) && had is ParamSym)
+        {
+            return;
+        }
+
         if (_scopes[^1].ContainsKey(name))
         {
             Error(at, $"'{name}' is already declared in this scope");
@@ -11257,7 +11265,7 @@ public sealed partial class Binder
                     if (arm.Type is { Args.Count: 0, ArrayRank: 0, Nullable: false } bare
                         && arm.Binding is null
                         && !IsTypeName(bare.Name)
-                        && (FindConstant(_thisType, bare.Name) is not null
+                        && (FindConstant(_thisType, bare.Name) is not null || FindText(_thisType, bare.Name) is not null
                             || Lookup(bare.Name) is ConstSym))
                     {
                         arm.Value = new NameExpr { Name = bare.Name, Line = bare.Line, Col = bare.Col };
@@ -13451,7 +13459,12 @@ public sealed partial class Binder
             // shared copy of List and the names went with the argument. Ask
             // every naming of the shape instead, and answer only where they
             // cannot disagree.
-            if (which < 0 && target.Names is null)
+            // Nor are names carried through a generic's delegate always this
+            // use's: `list.RemoveAll(w => w.Call ...)` over a List of
+            // `(Block Block, Instr Call)` handed its lambda the names another
+            // `(Block, Instr)` list was declared with. A name the carried
+            // naming lacks is asked of every naming the same way.
+            if (which < 0)
             {
                 which = shaped.TupleElement(m.Name);
             }

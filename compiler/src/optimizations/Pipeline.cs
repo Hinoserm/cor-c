@@ -46,6 +46,14 @@ public sealed class Pipeline
     /// three almost always is.
     /// </summary>
     public int Rounds { get; set; } = 1;
+
+    /// <summary>
+    /// Called once, with the module as the late passes will find it: after
+    /// the function and module passes, before the lifetime rules. A unit
+    /// keeps its IR from here for the link (IrUnitCodec.Snapshot), which runs
+    /// the late passes again over the whole program's answers.
+    /// </summary>
+    public Action<Module>? BeforeLate { get; set; }
     public int Workers { get; set; } = 1;
 
     /// <summary>
@@ -176,6 +184,13 @@ public sealed class Pipeline
 #endif
             RunFunctions(m);
         }
+        BeforeLate?.Invoke(m);
+        RunLate(m);
+    }
+
+    /// <summary>The late passes alone and the cheap passes after them: what the link runs over a unit's archived IR.</summary>
+    public void RunLate(Module m)
+    {
         if (LatePasses.Count > 0)
         {
             foreach (IModulePass p in LatePasses)

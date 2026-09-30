@@ -28,10 +28,15 @@ public static class IrFunctionCodec
 
     public static byte[] Write(Function function)
     {
-        if (function.Async is { Lowered: false }) throw new InvalidDataException("Serialize IR after async lowering");
+        // An async body is written before its lowering too -- a unit's IR for
+        // the link is taken before the late passes and the async transform --
+        // with what the transform reads: whether it ran, and what a suspension
+        // hands back.
+        if (function.Async is { Lowered: false, SuspendResult: not (null or ImmOperand) })
+            throw new InvalidDataException("An async body's suspension result is not a constant");
         using MemoryStream stream = new();
         using BinaryWriter writer = new(stream, IrBinary.Utf8, leaveOpen: true);
-        writer.Write(3); IrBinary.Text(writer, function.Name); writer.Write((byte)function.Returns);
+        writer.Write(4); IrBinary.Text(writer, function.Name); writer.Write((byte)function.Returns);
         writer.Write(function.Exported); writer.Write(function.Coalescible); writer.Write(function.FromLibrary);
         writer.Write(function.NoInlining);
         IrBinary.Text(writer, function.SourceFile); writer.Write(function.Line); IrBinary.Text(writer, function.Display);
@@ -60,6 +65,9 @@ public static class IrFunctionCodec
         {
             writer.Write(frame.StateMachine.Id); writer.Write(frame.StateOffset); writer.Write(frame.FieldsStart);
             IrBinary.Text(writer, frame.SizeSymbol);
+            writer.Write(frame.Lowered);
+            writer.Write(frame.SuspendResult is ImmOperand);
+            if (frame.SuspendResult is ImmOperand result) { writer.Write(result.Value); writer.Write((byte)result.Type); }
         }
         writer.Write(function.Slots.Count);
         foreach (FrameSlot slot in function.Slots) { writer.Write(slot.Bytes); writer.Write(slot.Align); }
@@ -101,7 +109,7 @@ public static class IrFunctionCodec
         using BinaryReader reader = new(stream, IrBinary.Utf8);
         try
         {
-            if (reader.ReadInt32() != 3) throw new InvalidDataException("Unsupported IR function version");
+            if (reader.ReadInt32() != 4) throw new InvalidDataException("Unsupported IR function version");
             Function function = new(IrBinary.Name(reader, budget), IrBinary.Type(reader))
             {
                 Exported = IrBinary.Flag(reader), Coalescible = IrBinary.Flag(reader), FromLibrary = IrBinary.Flag(reader),
@@ -126,7 +134,8 @@ public static class IrFunctionCodec
                 {
                     StateMachine = machine, StateOffset = stateOffset, FieldsStart = fieldsStart,
                     SizeSymbol = IrBinary.Text(reader, budget) ?? throw new InvalidDataException("Async frame without a size symbol"),
-                    Lowered = true,
+                    Lowered = IrBinary.Flag(reader),
+                    SuspendResult = IrBinary.Flag(reader) ? new ImmOperand(reader.ReadInt64(), (IrType)reader.ReadByte()) : null,
                 };
             }
             int slotCount = IrBinary.Count(reader);

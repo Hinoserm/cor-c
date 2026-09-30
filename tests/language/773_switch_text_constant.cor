@@ -1,0 +1,18 @@
+// test: a bare text constant is a constant pattern in a switch expression
+// expect-exit: 0
+// expect-output:
+// three
+// ess
+static class Program
+{
+    public const int C = 3;
+    public const string S = "s";
+    static int Main()
+    {
+        int v = 3;
+        string t = "s";
+        Console.WriteLine(v switch { C => "three", _ => "other" });
+        Console.WriteLine(t switch { S => "ess", _ => "other" });
+        return 0;
+    }
+}

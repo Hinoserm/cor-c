@@ -1,0 +1,14 @@
+// test: a lambda naming more than one parameter _ has discards for all of them
+// expect-exit: 0
+// expect-output:
+// True 7
+static class Program
+{
+    static int Main()
+    {
+        Func<int, int, bool> both = (_, _) => true;
+        Func<int, int> one = _ => _ + 6;
+        Console.WriteLine(both(1, 2) + " " + one(1));
+        return 0;
+    }
+}

@@ -198,6 +198,8 @@ static class Platform
     /// CORSAC_ALLOC_SAMPLE=1: where the allocations come from, sampled and
     /// printed as the process ends (AllocSamples).
     public static bool AllocSample() => EnvironmentFlag("CORSAC_ALLOC_SAMPLE=");
+    /// CORSAC_GC_STATS=1: the collector's counts and pauses printed at exit (Gc.SayStats).
+    public static bool GcStats() => EnvironmentFlag("CORSAC_GC_STATS=");
 
     /// CORSAC_HEAP_CHECK=1: the heap's structure checked as every collection
     /// begins and ends -- every chunk's chain, every buffer's, and the free
@@ -393,6 +395,13 @@ static class Platform
         // Protected, every guarded chunk stayed resident, and a build ran
         // the machine out of memory.
         Sys.Syscall(Call.Mmap, at, bytes, 0, 0x22 | 0x10 | 0x4000, 0 - 1, 0);
+    }
+
+    /// The processor given up to whatever else is ready (sched_yield): a
+    /// thread spinning for a lock lets its holder run (GcLock.Enter).
+    public static void Yield()
+    {
+        Sys.Syscall(Call.Sched_Yield, 0, 0, 0);
     }
 
     /// A file mapped whole, read-only and private: its pages the page

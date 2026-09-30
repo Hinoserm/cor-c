@@ -75,8 +75,8 @@ public sealed partial class Escape
 
     internal static bool IsCollectorNote(string? callee) =>
         callee is "m_Gc_MarkAt_1_V$I64" or "m_Gc_Report_1_V$I64"
-            or "m_Runtime_WriteBarrier_2_V$I64_V$I64" or "m_Gc_Barrier_2_V$I64_V$I64"
-            or "m_Runtime_WriteBarrierValues_2_V$I64_V$I64" or "m_Gc_BarrierValues_2_V$I64_V$I64"
+            or Corsac.Lang.Lto.RuntimeAbi.WriteBarrier or "m_Gc_Barrier_2_V$I64_V$I64"
+            or Corsac.Lang.Lto.RuntimeAbi.WriteBarrierValues or "m_Gc_BarrierValues_2_V$I64_V$I64"
             or CardMarks.CardMark;
 
     /// <summary>
@@ -628,14 +628,9 @@ public sealed partial class Escape
 
     private static void AppendFieldFree(Function f, List<Instr> output, VReg owner, long offset, int line, string callee = FieldFreer)
     {
-        VReg argument = owner;
-        if (owner.Type == IrType.I32)
-        {
-            argument = f.NewReg(IrType.I64, "fieldOwner");
-            output.Add(new Instr { Op = Opcode.ZExt32, Dest = argument, Operands = { new RegOperand(owner) }, Line = line });
-        }
+        VReg argument = Word(f, output, owner, line, "fieldOwner");
         output.Add(new Instr { Op = Opcode.Call, Callee = callee,
-            Operands = { new RegOperand(argument), new ImmOperand(offset, IrType.I64) }, Line = line });
+            Operands = { new RegOperand(argument), new ImmOperand(offset, IrTypes.Word) }, Line = line });
     }
 
     /// <summary>The registers holding what the given ones hold, or an address inside it.</summary>
