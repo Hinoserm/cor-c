@@ -397,10 +397,6 @@ static class Platform
         Sys.Syscall(Call.Mmap, at, bytes, 0, 0x22 | 0x10 | 0x4000, 0 - 1, 0);
     }
 
-    /// A file mapped whole, read-only and private: its pages the page
-    /// cache's, shared by every process that maps it and given back under
-    /// pressure like any cached page. The address, and its length in
-    /// `length`; 0 when it cannot be mapped (the caller reads it instead).
     /// The processor given up to whatever else is ready (sched_yield): a
     /// thread spinning for a lock lets its holder run (GcLock.Enter).
     public static void Yield()
@@ -408,6 +404,10 @@ static class Platform
         Sys.Syscall(Call.Sched_Yield, 0, 0, 0);
     }
 
+    /// A file mapped whole, read-only and private: its pages the page
+    /// cache's, shared by every process that maps it and given back under
+    /// pressure like any cached page. The address, and its length in
+    /// `length`; 0 when it cannot be mapped (the caller reads it instead).
     public static long MapReadOnly(string path, out long length)
     {
         length = 0;
