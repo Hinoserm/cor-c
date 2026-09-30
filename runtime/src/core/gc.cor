@@ -2672,7 +2672,7 @@ static class Gc
     const long RecentBlocks = 4096;
     const long RecentSlice = 64;
     static long _recentCheck;
-    const long RecentWords = 6;
+    const long RecentWords = 7;             // block, three callers, path, serial, the allocating thread's block
     public static long AllocSerial;
     static long _recent;
     static long _recentAt;
@@ -2703,15 +2703,20 @@ static class Gc
     {
         if (_recent == 0)
         {
-            _recent = Platform.Map(RecentBlocks * RecentWords * WordSize.Bytes);
+            // The ring and, after it, the word its entries are claimed from.
+            _recent = Platform.Map(RecentBlocks * RecentWords * WordSize.Bytes + WordSize.Bytes);
             if (_recent == 0) return;
             _recentIndex = Platform.Map(RecentIndexSlots * WordSize.Bytes);
         }
         long w = WordSize.Bytes;
-        long e = _recent + (_recentAt % RecentBlocks) * RecentWords * w;
-        _recentAt = _recentAt + 1;
-        Sys.Poke(e, block);
-        if (_recentIndex != 0) Sys.Poke(RecentSlot(block), e);
+        // ONE ENTRY PER ALLOCATION ON EVERY PROCESSOR: claimed atomically, and
+        // its block written last, so a reader never takes a half-made entry
+        // for a block.
+        long claimed = Sys.AtomicAdd(_recent + RecentBlocks * RecentWords * w, 1);
+        long e = _recent + (claimed % RecentBlocks) * RecentWords * w;
+        _recentAt = claimed + 1;
+        Sys.Poke(e, Zero);
+        Sys.Poke(e + 6 * w, Sys.ThreadBlock());
         long fp = Sys.FramePointer();
         // Past Remember's callers inside the collector (CheckMade, the
         // allocator, Runtime's entry) to the code that asked for the block.
@@ -2734,6 +2739,8 @@ static class Gc
             }
             Sys.Poke(e + i * w, back);
         }
+        Sys.Poke(e, block);
+        if (_recentIndex != 0) Sys.Poke(RecentSlot(block), e);
     }
 
     /// Whether a block still starts at `block`: on its class's grid in a
@@ -2774,6 +2781,11 @@ static class Gc
             long e = _recent + k * RecentWords * w;
             long block = Sys.Peek(e);
             if (block == 0) continue;
+            // ONLY THIS THREAD'S: another's newest block may be being made on
+            // another processor at this moment -- its header there, its guard
+            // and footer not yet -- and it is that thread's own recheck that
+            // reads it, once it is whole.
+            if (Sys.Peek(e + 6 * w) != Sys.ThreadBlock()) continue;
             long word = Sys.Peek(block);
             long size = word & SizeMask;
             // Freed since, or taken again: no longer the block it was.
