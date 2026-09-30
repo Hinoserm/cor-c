@@ -4042,6 +4042,15 @@ static class Gc
     /// p 32 poisons every block freed (and skips t and b).
     static long SkippedFreePaths;
 
+    /// The same, set by a program after the heap has started -- a kernel from
+    /// its command line (gc.freepaths=N) -- to find which path a fault needs.
+    public static void SkipFreePaths(long paths)
+    {
+        GcLock.Enter();
+        SkippedFreePaths = paths;
+        GcLock.Exit();
+    }
+
     /// Released chunks guarded rather than unmapped (CORSAC_GUARD_RELEASES).
     public static bool GuardReleases;
     const long Poison = 0xFEEEFEEE;
@@ -4052,6 +4061,22 @@ static class Gc
     static bool Verifying()
     {
         return _verify;
+    }
+
+    /// The checked mode for the compiler's frees (VerifyFree), turned on by
+    /// a program after the heap has started -- a kernel from its command
+    /// line (gc.checkfrees=1). From here on nothing freed is handed out
+    /// again: each free poisons the block and records who freed it, and a
+    /// second free of it is reported with both callers.
+    public static void CheckFrees()
+    {
+        GcLock.Enter();
+        if (!_verify)
+        {
+            _verify = true;
+            if (_quarantine == 0) StartQuarantine();
+        }
+        GcLock.Exit();
     }
 
     /// CORSAC_VERIFY_FREES=f: only field frees are checked (Runtime.FreeField).
@@ -4219,6 +4244,14 @@ static class Gc
     // process ends with 94. A diagnostic: it walks the whole heap twice a
     // collection.
     static bool _heapCheck;
+
+    /// The heap check (CheckHeap, before and after every collection) turned
+    /// on by a program after the heap has started -- a kernel from its
+    /// command line (gc.heapcheck=1).
+    public static void CheckHeapOn()
+    {
+        _heapCheck = true;
+    }
     static long _heapCheckTable;
     static long _heapCheckFaults;
 
@@ -4685,6 +4718,75 @@ static class Gc
                 CheckDanglingField(payload, vt, payload + index * w);
             }
             index = index + 1;
+        }
+    }
+
+    // WRITTEN AFTER ITS FREE. The checks above find a second free and a heap
+    // object still holding a freed block; neither sees a write through a
+    // reference only a stack or a register still holds -- a local the
+    // compiler's free outlived. Unchecked, that write lands in whatever was
+    // handed the block next. So at every whole collection each block still in
+    // quarantine is read again: every word below the free's record of its
+    // callers (VerifyFree, up to six words at the end, none of them the
+    // pattern) must still be the pattern. A word that is not is said, with
+    // its offset, what it holds and who freed the block, and put back so it
+    // is said once.
+    const long WrittenMost = 24;
+    static long _writtenReports;
+
+    static void CheckQuarantine()
+    {
+        if (_quarantine == 0 || _writtenReports >= WrittenMost)
+        {
+            return;
+        }
+        for (long n = 0; n < _quarantineCount; n++)
+        {
+            long at = Sys.Peek(_quarantine + WordSize.Bytes + ((_quarantineHead + n) % _quarantineEntries) * WordSize.Bytes);
+            if (at == 0)
+            {
+                continue;
+            }
+            long block = at - HeaderBytes;
+            long end = block + (Sys.Peek(block) & SizeMask) - FooterBytes;
+            long record = end - 4;
+            long kept = 0;
+            while (kept < 6 && record >= at + 8 && Sys.PeekWord(record) != Poison)
+            {
+                record = record - 4;
+                kept = kept + 1;
+            }
+            for (long p = at; p <= record; p = p + 4)
+            {
+                long now = Sys.PeekWord(p);
+                if (now == Poison)
+                {
+                    continue;
+                }
+                SayNumber("gc: checked free: written after its free, block ", at);
+                SayNumber("gc:   at offset ", p - at);
+                SayNumber("gc:   now holding ", now);
+                SayNumber("gc:   block bytes ", end - at);
+                Runtime.WriteLiteral(2, "gc:   freed by:\n");
+                long site = end - 4;
+                while (site > record)
+                {
+                    Runtime.SayFrame(2, Sys.PeekWord(site) + 0x08000000);
+                    site = site - 4;
+                }
+                long q = at;
+                while (q <= record)
+                {
+                    Sys.PokeWord(q, Poison);
+                    q = q + 4;
+                }
+                _writtenReports = _writtenReports + 1;
+                if (_writtenReports >= WrittenMost)
+                {
+                    return;
+                }
+                break;
+            }
         }
     }
 
@@ -5941,6 +6043,7 @@ static class Gc
         if (_minor && _verifyGenerations) VerifyMinor();
         if (!_minor && (_verifyGenerations || VerifyMarks)) VerifyMajor();
         HeapChunks.SetBlockAnchorsActive(false);
+        if (_verify) CheckQuarantine();
         BeginSweep();
         while (SweepNext()) { }
         FinishCycle();
@@ -6068,6 +6171,7 @@ static class Gc
         HeapChunks.SetBlockAnchorsActive(false);
         GcThreads.CaptureBuffers();
         GcThreads.UnmarkBuffers();
+        if (_verify) CheckQuarantine();
         BeginSweep();
         Sys.AtomicSwap(ctl + GcLock.Collector, 0);
         Sys.AtomicSwap(ctl + GcLock.Collecting, 0);
