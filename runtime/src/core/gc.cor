@@ -2712,6 +2712,29 @@ static class Gc
         }
     }
 
+    /// Whether a block still starts at `block`: on its class's grid in a
+    /// class page, or where a walk from the chunk's nearest start anchor
+    /// lands. A walk that meets a broken size first cannot say, and answers
+    /// yes, so damage below is never taken for a stale entry.
+    static bool StillBlockStart(long block)
+    {
+        long chunk = HeapChunks.Of(block);
+        if (chunk == 0) return false;
+        long first = HeapChunks.First(chunk);
+        if (block < first || block >= HeapChunks.End(chunk)) return false;
+        long c = HeapChunks.PageClass(chunk);
+        if (c != 0) return (block - first) % ClassSize(c - 1) == 0;
+        long at = HeapChunks.MarkStart(chunk, block + HeaderBytes);
+        long end = HeapChunks.End(chunk);
+        for (long n = 0; at < block && n < 100000; n++)
+        {
+            long size = Sys.Peek(at) & SizeMask;
+            if (size < Smallest || at + size > end || Sys.Peek(at + size - FooterBytes) != Sys.Peek(at)) return true;
+            at = at + size;
+        }
+        return at == block;
+    }
+
     static void CheckRecent()
     {
         if (_recent == 0 || _recentReports >= 12) return;
@@ -2731,6 +2754,10 @@ static class Gc
             long size = word & SizeMask;
             // Freed since, or taken again: no longer the block it was.
             if ((word & FlagFree) != 0 || size < Smallest || size > 65536) { Sys.Poke(e, Zero); continue; }
+            // Or no block starts there any more: freed, folded into a free
+            // run and handed out again inside a bigger block, whose contents
+            // may look like a header at the old address.
+            if (!StillBlockStart(block)) { Sys.Poke(e, Zero); continue; }
             CheckGuard(block, "the recheck of recent blocks");
             long foot = Sys.Peek(block + size - FooterBytes);
             if (foot == word) continue;
