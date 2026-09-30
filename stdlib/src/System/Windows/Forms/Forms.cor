@@ -3377,12 +3377,15 @@ public class TrackBar : Control
     int Span { get { return Across ? Width : Height; } }
     int Depth { get { return Across ? Height : Width; } }
     int Room { get { int r = Span - ThumbShort; return r < 1 ? 1 : r; } }
-    int Offset { get { int range = _max - _min; return range <= 0 ? 0 : (int)((long)Room * (_value - _min) / range); } }
+    // A VERTICAL BAR HAS ITS MAXIMUM AT THE TOP, as .NET's does: a volume
+    // goes up as the thumb does.
+    int Offset { get { int range = _max - _min; int o = range <= 0 ? 0 : (int)((long)Room * (_value - _min) / range); return Across ? o : Room - o; } }
 
     int ValueAt(int along)
     {
         int range = _max - _min;
         if (range <= 0) { return _min; }
+        if (!Across) along = Span - along;
         int at = along - ThumbShort / 2;
         if (at < 0) at = 0;
         if (at > Room) at = Room;
@@ -3432,6 +3435,7 @@ public class TrackBar : Control
         for (int at = _min; at <= _max; at += TickFrequency)
         {
             int along = ThumbShort / 2 + (int)((long)Room * (at - _min) / range);
+            if (!Across) along = Span - along;
 
             if (Across)
             {
@@ -3543,7 +3547,7 @@ public class TrackBar : Control
         // On the thumb: drag it. Beside it: a page toward the pointer,
         // which is what a click on a track does everywhere.
         if (along >= at && along < at + ThumbShort) { _held = true; }
-        else Moved(along < at ? _value - LargeChange : _value + LargeChange);
+        else Moved((along < at) == Across ? _value - LargeChange : _value + LargeChange);
         base.OnMouseDown(e);
     }
 
@@ -5017,6 +5021,111 @@ public class MainMenu : Menu
 
 /// A menu opened where the pointer is (.NET's ContextMenu): a control's
 /// right click opens its ContextMenu, or its parent's.
+/// .NET'S NotifyIcon: an icon in the notification area beside the clock
+/// (Windows' Shell_NotifyIcon). The seat keeps it while Visible; the bar
+/// hands presses on it back as mouse messages, raised here as .NET raises
+/// them: MouseDown and MouseUp, Click and MouseClick on the release, then
+/// DoubleClick and MouseDoubleClick on a double click. A right release
+/// opens the ContextMenuStrip or ContextMenu, if there is one.
+public class NotifyIcon : IDisposable
+{
+    static List<NotifyIcon> _all = new List<NotifyIcon>();
+    static int _nextUid = 1;
+    int _uid;
+    Icon? _icon;
+    string _text = "";
+    bool _visible;
+
+    public NotifyIcon() { _uid = _nextUid++; lock (_all) _all.Add(this); }
+
+    public Icon? Icon { get { return _icon; } set { _icon = value; Update(); } }
+    /// The tip, 63 characters at most, as Windows 2000's 64.
+    public string Text
+    {
+        get { return _text; }
+        set { if (value != null && value.Length > 63) throw new ArgumentOutOfRangeException("Text"); _text = value ?? ""; Update(); }
+    }
+    public bool Visible { get { return _visible; } set { if (_visible == value) return; _visible = value; if (!value) Seat.Current.DeleteTrayIcon(_uid); else Update(); } }
+    public ContextMenuStrip? ContextMenuStrip;
+    public ContextMenu? ContextMenu;
+    public object? Tag;
+
+    public event EventHandler? Click;
+    public event EventHandler? DoubleClick;
+    public event MouseEventHandler? MouseClick;
+    public event MouseEventHandler? MouseDoubleClick;
+    public event MouseEventHandler? MouseDown;
+    public event MouseEventHandler? MouseUp;
+    public event MouseEventHandler? MouseMove;
+
+    void Update()
+    {
+        if (!_visible) return;
+        int[]? pixels = _icon != null ? _icon.SmallPixels() : null;
+        if (pixels == null) { pixels = new int[256]; for (int i = 0; i < 256; i++) pixels[i] = -1; }
+        Seat.Current.SetTrayIcon(_uid, pixels, _text);
+    }
+
+    public void Dispose()
+    {
+        Visible = false;
+        lock (_all) _all.Remove(this);
+    }
+
+    // THE WINDOW A TRAY ICON'S MENU BELONGS TO, as .NET's NotifyIcon keeps a
+    // hidden NativeWindow for it: a program living in the tray may have no
+    // form shown at all. Never shown; the chosen item comes back to the
+    // menu whatever window it names.
+    static int _menuWindow;
+
+    static void TrackMenu(MenuSource menu, int x, int y)
+    {
+        Seat seat = Seat.Current;
+        if (_menuWindow == 0)
+        {
+            _menuWindow = seat.CreateWindow(0, 0, 1, 1);
+            seat.ListOnTaskbar(_menuWindow, false);
+        }
+        SystemMenus.Send(menu);
+        seat.TrackMenu(_menuWindow, menu.RootId, x, y);
+    }
+
+    internal static void Notify(int uid, int message, int x, int y)
+    {
+        NotifyIcon? icon = null;
+        lock (_all) foreach (NotifyIcon n in _all) if (n._uid == uid) icon = n;
+        if (icon != null) icon.Raise(message, x, y);
+    }
+
+    void Raise(int message, int x, int y)
+    {
+        MouseButtons button = message >= 0x204 && message <= 0x206 ? MouseButtons.Right
+            : message >= 0x207 && message <= 0x209 ? MouseButtons.Middle
+            : message == 0x200 ? MouseButtons.None : MouseButtons.Left;
+        // .NET gives a tray icon's events the pointer's place on the screen.
+        MouseEventArgs e = new MouseEventArgs(button, message == 0x203 || message == 0x206 || message == 0x209 ? 2 : 1, x, y, 0);
+        switch (message)
+        {
+            case 0x200: if (MouseMove != null) MouseMove(this, e); break;
+            case 0x201: case 0x204: case 0x207: if (MouseDown != null) MouseDown(this, e); break;
+            case 0x202: case 0x205: case 0x208:
+                if (MouseUp != null) MouseUp(this, e);
+                if (Click != null) Click(this, EventArgs.Empty);
+                if (MouseClick != null) MouseClick(this, e);
+                if (message == 0x205)
+                {
+                    MenuSource? menu = ContextMenuStrip != null ? (MenuSource)ContextMenuStrip : ContextMenu;
+                    if (menu != null) TrackMenu(menu, x, y);
+                }
+                break;
+            case 0x203: case 0x206: case 0x209:
+                if (DoubleClick != null) DoubleClick(this, EventArgs.Empty);
+                if (MouseDoubleClick != null) MouseDoubleClick(this, e);
+                break;
+        }
+    }
+}
+
 public class ContextMenu : Menu
 {
     public event EventHandler? Popup;
@@ -5727,7 +5836,7 @@ public static class Application
         // dropped when that window has gone.
         if (f == null && m.Kind != 1 && m.Kind != 11 && m.Kind != 12 && m.Kind != 13
             && m.Kind != 14 && m.Kind != 15 && m.Kind != 16 && m.Kind != 17
-            && m.Kind != 23 && m.Kind != 24 && m.Kind != 25) return;
+            && m.Kind != 23 && m.Kind != 24 && m.Kind != 25 && m.Kind != 28) return;
         switch (m.Kind)
         {
             case 1:
@@ -5857,6 +5966,10 @@ public static class Application
             case 19:
                 // Its taskbar button, pressed while it was the active window.
                 if (f != null && f.MinimizeBox) f.WindowState = FormWindowState.Minimized;
+                break;
+            case 28:
+                // A press on one of this thread's notification-area icons.
+                NotifyIcon.Notify(m.A, m.Window, Seat.LowSigned(m.B), Seat.HighSigned(m.B));
                 break;
             case 22:
                 // WM_SYSCOMMAND: a caption button, or the caption double-clicked.
