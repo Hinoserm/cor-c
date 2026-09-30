@@ -390,6 +390,9 @@ public sealed partial class Escape : IModulePass
     /// <summary>The runtime's free of what an owned field held before a store replaces it.</summary>
     public const string OwnedReplacedFreer = "m_Runtime_FreeOwnedReplaced_2_V$I64_V$I64";
 
+    /// <summary>The owned-field decisions, for the allocation report.</summary>
+    private readonly List<string> _fieldReport = new();
+
     /// <summary>Allocations an owned field holds (OwnedFields): freed with the object that owns the field.</summary>
     private readonly HashSet<Instr> _fieldOwned = new(ReferenceEqualityComparer.Instance);
 
@@ -409,7 +412,7 @@ public sealed partial class Escape : IModulePass
     /// </summary>
     private void OwnedFields(Module m, Dictionary<string, Function> byName, Dictionary<string, bool[]> summaries)
     {
-        if (m.PreserveExports || m.Entry is null || !byName.ContainsKey(OwnedReplacedFreer)) return;
+        if (m.PreserveExports || m.Entry is null || !byName.ContainsKey(OwnedReplacedFreer) && !m.RuntimeHelpers.Contains(OwnedReplacedFreer)) return;
 
         List<(Function F, Block B, Instr I)> stores = new(), loads = new();
         foreach (Function f in m.Functions)
@@ -453,6 +456,106 @@ public sealed partial class Escape : IModulePass
             return mayWrite[field] = set;
         }
 
+        // Functions whose address is taken -- named by code or by a descriptor
+        // -- may be called where their callers cannot be seen.
+        HashSet<string> addressed = new(StringComparer.Ordinal);
+        foreach (DataItem d in m.Data) foreach (DataReloc r in d.Relocs) addressed.Add(r.Symbol);
+        foreach (Function f in m.Functions) foreach (Block b in f.Blocks) foreach (Instr i in b.Instrs)
+            foreach (Operand o in i.Operands) if (o is SymOperand sym) addressed.Add(sym.Name);
+        // Each function's direct call sites, found once.
+        Dictionary<string, List<(Function G, Block B, int At)>> sites = new(StringComparer.Ordinal);
+        foreach (Function g in m.Functions)
+            foreach (Block b in g.Blocks)
+                for (int k = 0; k < b.Instrs.Count; k++)
+                    if (b.Instrs[k] is { Op: Opcode.Call, Callee: string callee })
+                    {
+                        if (!sites.TryGetValue(callee, out var list)) sites[callee] = list = new();
+                        list.Add((g, b, k));
+                    }
+        Dictionary<Function, Dictionary<VReg, List<Instr>>> writesOf = new();
+        Dictionary<(Function, int), List<Instr>?> sinks = new();
+        Dictionary<Function, Liveness> sinkLiveness = new();
+        // WHAT EVERY CALLER HANDS OVER FOR PARAMETER `index`: the fresh objects
+        // taken over, or null when some caller does not hand one over.
+        List<Instr>? Sink(Function f, int index, int depth)
+        {
+            if (sinks.TryGetValue((f, index), out List<Instr>? known)) return known;
+            sinks[(f, index)] = null;       // in progress: not a sink, until shown one
+            if (depth > 6 || addressed.Contains(f.Name) || f == byName.GetValueOrDefault(m.Entry!)) return null;
+            List<Instr> handed = new();
+            bool any = false;
+            foreach ((Function g, Block b, int k) in sites.GetValueOrDefault(f.Name) ?? new())
+                    {
+                        Instr c = b.Instrs[k];
+                        any = true;
+                        if (index >= c.Operands.Count) return null;
+                        Operand arg = c.Operands[index];
+                        if (arg is ImmOperand { Value: 0 } or SymOperand) continue;
+                        if (arg is not RegOperand a || Sources(g, a.Reg) is not { } sources) return null;
+                        foreach (Source src in sources)
+                        {
+                            if (src.Kind is SourceKind.Null or SourceKind.Static) continue;
+                            if (src.Kind == SourceKind.Parameter)
+                            {
+                                if (Analyse(g, new[] { g.Params[src.Index] }, summaries, null, consumers: new(ReferenceEqualityComparer.Instance) { c }).Escapes
+                                    || Sink(g, src.Index, depth + 1) is not List<Instr> up) return null;
+                                handed.AddRange(up);
+                                continue;
+                            }
+                            if (src.Kind != SourceKind.Fresh || src.Made!.Dest is null) return null;
+                            // Freed by the caller already (another rule owns it):
+                            // it cannot be handed on as well.
+                            if (_owned.Contains(src.Made) || _ownedCalls.Contains(src.Made)) return null;
+                            Flow flow = Analyse(g, new[] { src.Made.Dest }, summaries, src.Made, consumers: new(ReferenceEqualityComparer.Instance) { c });
+                            if (flow.Escapes) return null;
+                            // Nothing of it read after the call that took it.
+                            if (!sinkLiveness.TryGetValue(g, out Liveness? live)) sinkLiveness[g] = live = new Liveness(g);
+                            if (flow.Derived.Any(r => !live.Tracks(r) || live.IsLiveOut(b, r))) return null;
+                            for (int after = k + 1; after < b.Instrs.Count; after++)
+                                if (b.Instrs[after].Operands.Any(o => o is RegOperand r && flow.Derived.Contains(r.Reg))) return null;
+                            handed.Add(src.Made);
+                        }
+                    }
+            return sinks[(f, index)] = any ? handed : null;
+        }
+
+        // Where a value comes from, through copies and joins.
+        Dictionary<(Function, VReg), List<Source>?> sourcesOf = new();
+        List<Source>? Sources(Function f, VReg r)
+        {
+            if (sourcesOf.TryGetValue((f, r), out List<Source>? known)) return known;
+            List<Source> found = new();
+            HashSet<VReg> seen = new();
+            Stack<VReg> work = new();
+            work.Push(r);
+            if (!writesOf.TryGetValue(f, out Dictionary<VReg, List<Instr>>? writes)) writesOf[f] = writes = Writes(f);
+            while (work.Count > 0 && found.Count < 16)
+            {
+                VReg at = work.Pop();
+                if (!seen.Add(at)) continue;
+                int param = f.Params.IndexOf(at);
+                if (param >= 0) { found.Add(new Source(SourceKind.Parameter, param, null)); continue; }
+                if (!writes.TryGetValue(at, out List<Instr>? ws)) { found.Add(new Source(SourceKind.Unknown, 0, null)); continue; }
+                foreach (Instr w in ws)
+                {
+                    if (w.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.Phi)
+                    {
+                        foreach (Operand o in w.Operands)
+                        {
+                            if (o is ImmOperand { Value: 0 }) found.Add(new Source(SourceKind.Null, 0, null));
+                            else if (o is SymOperand) found.Add(new Source(SourceKind.Static, 0, null));
+                            else if (o is RegOperand from) work.Push(from.Reg);
+                            else found.Add(new Source(SourceKind.Unknown, 0, null));
+                        }
+                        continue;
+                    }
+                    found.Add(Fresh(w) ? new Source(SourceKind.Fresh, 0, w) : new Source(SourceKind.Unknown, 0, null));
+                }
+            }
+            if (work.Count > 0) found.Add(new Source(SourceKind.Unknown, 0, null));
+            return sourcesOf[(f, r)] = found;
+        }
+
         static Instr? Origin(Dictionary<VReg, Instr> defs, VReg r)
         {
             for (int hop = 0; hop < 8 && defs.TryGetValue(r, out Instr? d); hop++)
@@ -475,10 +578,15 @@ public sealed partial class Escape : IModulePass
         bool Fresh(Instr? d) => d is { Op: Opcode.Call } && (IsAllocator(d.Callee) || IsFreshCall(d));
 
         HashSet<string> refused = new(StringComparer.Ordinal);
+        bool reporting = Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is { Length: > 0 };
+        void Refuse(string field, string why, Function f, Instr at)
+        {
+            if (refused.Add(field) && reporting) _fieldReport.Add($"{field} refused: {why} in {f.Name}:{at.Line}");
+        }
         List<(Instr Origin, Instr Store)> held = new();
         foreach ((Function f, Block b, Instr st) in stores)
         {
-            if (f.Async is not null || st.Operands.Count < 2) { refused.Add(st.Field!); continue; }
+            if (f.Async is not null || st.Operands.Count < 2) { Refuse(st.Field!, "async or odd store", f, st); continue; }
             switch (st.Operands[1])
             {
                 case ImmOperand { Value: 0 }:
@@ -488,8 +596,33 @@ public sealed partial class Escape : IModulePass
                     && !Analyse(f, new[] { made.Dest }, summaries, made, new HashSet<Instr>(ReferenceEqualityComparer.Instance) { st }).Escapes:
                     held.Add((made, st));
                     continue;
+                case RegOperand v when Sources(f, v.Reg) is { } sources && sources.All(src => src.Kind != SourceKind.Unknown):
+                {
+                    // A value from a parameter or a join: every source must be
+                    // null, static data, a fresh object this store keeps, or a
+                    // parameter every caller hands over (a sink).
+                    bool ok = true;
+                    HashSet<Instr> only = new(ReferenceEqualityComparer.Instance) { st };
+                    foreach (Source src in sources)
+                    {
+                        if (src.Kind == SourceKind.Fresh)
+                        {
+                            if (src.Made!.Dest is null || Analyse(f, new[] { src.Made.Dest }, summaries, src.Made, only).Escapes) { ok = false; break; }
+                            held.Add((src.Made, st));
+                        }
+                        else if (src.Kind == SourceKind.Parameter)
+                        {
+                            if (Analyse(f, new[] { f.Params[src.Index] }, summaries, null, only).Escapes
+                                || Sink(f, src.Index, 0) is not List<Instr> handed) { ok = false; break; }
+                            foreach (Instr h in handed) held.Add((h, st));
+                        }
+                    }
+                    if (ok) continue;
+                    Refuse(st.Field!, $"stores {st.Operands[1]}, which a caller does not hand over", f, st);
+                    continue;
+                }
                 default:
-                    refused.Add(st.Field!);
+                    Refuse(st.Field!, $"stores {st.Operands[1]}, not a fresh object", f, st);
                     continue;
             }
         }
@@ -500,12 +633,12 @@ public sealed partial class Escape : IModulePass
         {
             string field = ld.Field!;
             if (refused.Contains(field)) continue;
-            if (f.Async is not null || ld.Dest is null) { refused.Add(field); continue; }
+            if (f.Async is not null || ld.Dest is null) { Refuse(field, "async load", f, ld); continue; }
             Flow flow = Analyse(f, new[] { ld.Dest }, summaries, ld);
-            if (flow.Escapes) { refused.Add(field); continue; }
+            if (flow.Escapes) { Refuse(field, $"read escapes via {flow.Why?.Op} {flow.Why?.Callee}", f, ld); continue; }
             // Within this block, and dead before anything that could free it.
             if (!livenessOf.TryGetValue(f, out Liveness? liveness)) livenessOf[f] = liveness = new Liveness(f);
-            if (flow.Derived.Any(r => !liveness.Tracks(r) || liveness.IsLiveOut(b, r))) { refused.Add(field); continue; }
+            if (flow.Derived.Any(r => !liveness.Tracks(r) || liveness.IsLiveOut(b, r))) { Refuse(field, "read lives past its block", f, ld); continue; }
             int at = b.Instrs.IndexOf(ld), last = at;
             for (int k = at + 1; k < b.Instrs.Count; k++)
                 if (b.Instrs[k].Operands.Any(o => o is RegOperand r && flow.Derived.Contains(r.Reg))) last = k;
@@ -518,7 +651,7 @@ public sealed partial class Escape : IModulePass
                     || i.Op == Opcode.Call && (IsFreeCall(i.Callee) || IsCatchEnd(i.Callee) || i.Callee == OwnedReplacedFreer
                                                || i.Callee is not null && writers.Contains(i.Callee))
                     || i.Op == Opcode.Store && i.Field == field;
-                if (danger) { refused.Add(field); break; }
+                if (danger) { Refuse(field, $"read live across {i.Op} {i.Callee}", f, i); break; }
             }
         }
 
@@ -580,6 +713,9 @@ public sealed partial class Escape : IModulePass
             d.Relocs.Add(new DataReloc(11 * w, sym, 0));
         }
     }
+
+    private enum SourceKind { Null, Static, Parameter, Fresh, Unknown }
+    private readonly record struct Source(SourceKind Kind, int Index, Instr? Made);
 
     /// <summary>A descriptor and every descriptor its ancestry tables name, transitively.</summary>
     private static HashSet<string> Ancestry(Dictionary<string, DataItem> items, string type)
@@ -794,7 +930,7 @@ public sealed partial class Escape : IModulePass
 
     internal static Flow Analyse(Function f, IEnumerable<VReg> roots, Dictionary<string, bool[]> summaries, Instr? source,
         HashSet<Instr>? ownedStores = null, HashSet<VReg>? returnable = null, HashSet<VReg>? joinable = null,
-        Needs? needs = null, bool handOff = false)
+        Needs? needs = null, bool handOff = false, HashSet<Instr>? consumers = null)
     {
         Flow flow = new() { Source = source };
         foreach (VReg r in roots)
@@ -975,6 +1111,9 @@ public sealed partial class Escape : IModulePass
                                     if (o is RegOperand r && flow.Derived.Contains(r.Reg)) { flow.Escapes = true; flow.Why ??= i; }
                                 break;
                             }
+                            // A call that takes the object over (a sink
+                            // parameter, OwnedFields): handed on, not lost.
+                            if (consumers is not null && consumers.Contains(i)) break;
                             summaries.TryGetValue(i.Callee, out bool[]? summary);
                             for (int a = 0; a < i.Operands.Count; a++)
                             {
@@ -1047,7 +1186,8 @@ public sealed partial class Escape : IModulePass
                 {
                     bool mine = f.Params.Contains(d) is false && writes.TryGetValue(d, out List<Instr>? all) && all.All(w =>
                         w.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.SExt32 && w.Operands.Count == 1
-                        && (w.Operands[0] is ImmOperand { Value: 0 } || w.Operands[0] is RegOperand { Reg: var from } && flow.Derived.Contains(from)));
+                        && (w.Operands[0] is ImmOperand { Value: 0 } || Literal(w.Operands[0], writes)
+                            || w.Operands[0] is RegOperand { Reg: var from } && flow.Derived.Contains(from)));
                     if (!mine) continue;
                     pending.Remove(d);
                     resolved = true;
@@ -1082,6 +1222,21 @@ public sealed partial class Escape : IModulePass
                 changed = true;
             }
         }
+    }
+
+    /// <summary>
+    /// A string literal, named or through the one copy that loaded it: what
+    /// `s ?? ""` joins with. It is static data, not a heap block, and its
+    /// type owns no fields, so the frees an owner makes pass it by -- a
+    /// register that holds either the object or a literal is as much the
+    /// object's as one that holds either the object or null.
+    /// </summary>
+    private static bool Literal(Operand o, Dictionary<VReg, List<Instr>> writes)
+    {
+        if (o is RegOperand { Reg: var r } && writes.TryGetValue(r, out List<Instr>? ws) && ws.Count == 1
+            && ws[0] is { Op: Opcode.Copy, Operands.Count: 1 } load)
+            o = load.Operands[0];
+        return o is SymOperand { Name: var name } && name.StartsWith("str_", StringComparison.Ordinal);
     }
 
     /// <summary>Every instruction that writes each register.</summary>
@@ -2192,6 +2347,8 @@ public sealed partial class Escape : IModulePass
             return;
         }
         List<string> sites = CollectorSites(m, byName, entry, paths: true);
+        foreach (string line in _fieldReport.Where(l => Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is not { Length: > 1 } which || l.Contains(which, StringComparison.Ordinal)))
+            Console.Error.WriteLine("alloc report: field " + line);
         Console.Error.WriteLine($"alloc report: thrown {_thrown.Count} ({_thrownType.Count} typed), catches keeping: {(_keptCatchAll ? "everything; " : "")}{string.Join(", ", _keptCatches.Take(12))}");
         if (Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is { Length: > 1 } which)
             foreach (Function f in m.Functions.Where(f => f.Name.Contains(which, StringComparison.Ordinal)))

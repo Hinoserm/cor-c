@@ -118,6 +118,7 @@ public sealed class Inline : IParallelModulePass
             addressTaken.Add(Escape.Freer);
             addressTaken.Add(Escape.FieldFreer);
             addressTaken.Add(Escape.ReplacedFreer);
+            addressTaken.Add(Escape.OwnedReplacedFreer);
             // What a barrier on a replaced object becomes (ScalarObjects).
             addressTaken.Add(Escape.ValueBarrier);
         }
