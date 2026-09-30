@@ -9773,13 +9773,15 @@ class Exception
         _frames = frames;
     }
 
+    // Each read of _frames ends where it is made, so the exception owns its
+    // frames and they go back with it (Escape's owned fields); the array is
+    // let go of by the store of null, after the names are made from it.
     string Named()
     {
-        string? site = _site;
-        long[]? frames = _frames;
-        if (site != null && frames != null)
+        if (_site != null && _frames != null)
         {
-            string callers = Runtime.TraceOf(frames);
+            string callers = Runtime.TraceOf(_frames);
+            string site = _site;
             _trace = callers.Length == 0 ? site : String.Concat(site, String.Concat("\n", callers));
             _site = null;
             _frames = null;
