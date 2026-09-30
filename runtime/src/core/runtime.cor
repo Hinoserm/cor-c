@@ -1656,22 +1656,29 @@ static class Runtime
     const int StdErr = 2;
 
     /// ASCII text to a descriptor WITHOUT ALLOCATING, for the paths that
-    /// report the allocator's own failure. A UTF-16 unit below 0x80 has its
-    /// ASCII byte first, little end first, so each is written from where it
-    /// lies in the string -- a byte at a time, which costs a system call per
-    /// character and is fine for a message that ends a program. A unit
-    /// outside ASCII is written as '?'.
+    /// report the allocator's own failure: through a block in the frame, as
+    /// WriteText's, a unit outside ASCII written as '?'. A byte at a time, as
+    /// it was, a ring-1 kernel's log took each byte for a line of its own,
+    /// and its reports -- the out-of-memory message among them -- came out
+    /// one letter a line.
     public static void WriteLiteral(int fd, string text)
     {
-        long units = Sys.StringData(text);
-        long question = Sys.StringData("?");
-
-        for (int i = 0; i < text.Length; i++)
+        byte[] block = new byte[LiteralChunkBytes];
+        int at = 0;
+        while (at < text.Length)
         {
-            long at = Sys.GetChar(text, i) < 0x80 ? units + 2 * i : question;
-            Platform.WriteBytes(fd, at, 1);
+            int n = text.Length - at < LiteralChunkBytes ? text.Length - at : LiteralChunkBytes;
+            for (int i = 0; i < n; i++)
+            {
+                int c = Sys.GetChar(text, at + i);
+                block[i] = (byte)(c < 0x80 ? c : '?');
+            }
+            WriteBytes(fd, Sys.ArrayData(block), n);
+            at = at + n;
         }
     }
+
+    const int LiteralChunkBytes = 128;
 
     /// A string to a descriptor, as its UTF-8 -- through a fixed block that
     /// escape analysis keeps in the frame, a chunk at a time, so that printing

@@ -7984,6 +7984,19 @@ static class HeapChunks
         return 0;
     }
 
+    /// A chunk still on the list whose memory lies in [at, at + bytes), or
+    /// zero: what a platform's Unmap asks before it gives memory back, since
+    /// memory given back from under a linked chunk is a fault the next time
+    /// the list is walked or grown, far from whoever gave it back.
+    public static long LinkedWithin(long at, long bytes)
+    {
+        for (long chunk = _chunks; chunk != 0; chunk = Sys.Peek(chunk + ChunkNext))
+        {
+            if (chunk < at + bytes && Sys.Peek(chunk + ChunkLimit) > at) return chunk;
+        }
+        return 0;
+    }
+
     /// A new chunk with room for at least `need` bytes of blocks, or zero
     /// when the cap or the operating system refuses. Zeroed, page-aligned.
     public static long Take(long need, bool dedicated = false)

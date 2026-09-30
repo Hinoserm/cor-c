@@ -349,7 +349,7 @@ static class Native
         Sys.Poke(parameters, entry);
         Sys.Poke(parameters + WordSize.Bytes, argument);
 
-        long id = Platform.Result(Sys.Call(code, ThreadFlags, stackTop, parameters));
+        long id = Platform.Result(Sys.CallNative(code, ThreadFlags, stackTop, parameters));
 
         gate.Exit();
         return id;

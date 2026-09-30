@@ -523,13 +523,22 @@ public sealed partial class Lowering
             }
             case "Call":
             {
+                // AS ANY CALL OF THIS LANGUAGE'S: its arguments are longs, as
+                // Sys.Call declares them and as every method it reaches
+                // declares its own -- two words each on i386, as the kernel's
+                // entry code pushes them for Arch.TrapEntry. Words, they were
+                // read two to a long: Platform.Unmap's hook took the address
+                // and the length together as its address and none as its
+                // length, and a futex hook compared every wait against zero.
+                // Code with the machine's own convention -- a word an argument
+                // -- is reached by Sys.CallNative.
                 VReg fn = Address(call, target, 0);
                 List<Operand> args = new();
                 for (int i = 1; i < target.Params.Count; i++)
                 {
-                    args.Add(R(ToWord(Arg(call, target, i))));
+                    args.Add(R(Arg(call, target, i)));
                 }
-                return Widen(_e.CallIndirect(R(fn), word, args)!);
+                return _e.CallIndirect(R(fn), IrType.I64, args)!;
             }
             case "CallNative":
             {

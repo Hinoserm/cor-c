@@ -678,15 +678,18 @@ public static class Prelude
             public static long AddressOf(ref long value) { return 0; }
             public static long AddressOf<T>(ref T value) { return 0; }
 
-            // Calls one. The other half: an address is no use without a way to
-            // go there, and the things that hand addresses back -- a service
-            // table, a card's driver ROM -- are not methods this program
-            // declared.
+            // Calls one: a method of this program's, by its address (a hook,
+            // a chore, a callback), with this language's convention -- each
+            // argument a long, two words on i386, as the kernel's entry code
+            // pushes them. Code that takes the machine's own words -- an
+            // assembly routine, a card's driver ROM, the C library -- is
+            // reached by CallNative instead.
             public static long Call(long fn, long a, long b, long c) { return 0; }
-            // A C function by its address, with C's rules for the call: the
-            // stack sixteen-aligned on i386, the vector count in AL on
-            // x86-64. What the runtime uses for what it finds in the C
-            // library at run time -- pthread_create, exit.
+            // A C function by its address, with C's rules for the call -- a
+            // word an argument, the stack sixteen-aligned on i386, the vector
+            // count in AL on x86-64. What the runtime uses for what it finds
+            // in the C library at run time -- pthread_create, exit -- and
+            // what a kernel uses for its own assembly routines.
             public static long CallNative(long fn) { return 0; }
             public static long CallNative(long fn, long a) { return 0; }
             public static long CallNative(long fn, long a, long b) { return 0; }
