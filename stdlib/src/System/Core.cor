@@ -9966,30 +9966,20 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
     /// The key's hash before it is cut to the table: what `hashes` keeps.
     private int FullHash(K key) {
         IEqualityComparer<K>? with = by;
+        if (with != null) { return Mixed(with.GetHashCode(key)); }
+        if (Sys.IsObject(key)) { return Mixed(Sys.KeyHash(key)); }
+        return Mixed(Sys.Word(key));
+    }
 
-        if (with != null) {
-            long mixed = with.GetHashCode(key);
-            mixed = mixed ^ (mixed >> 33);
-            mixed = mixed * 8127156113;
-            mixed = mixed ^ (mixed >> 29);
-            return (int)mixed;
-        }
-
-        if (Sys.IsObject(key)) {
-            long text = Sys.KeyHash(key);
-            text = text ^ (text >> 33);
-            text = text * 8127156113;
-            text = text ^ (text >> 29);
-            return (int)text;
-        }
-
-        long h = Sys.Word(key);
-        // A cheap avalanche. Without it, sequential integer keys collide in
-        // runs and linear probing degrades to a linear scan.
-        h = h ^ (h >> 33);
-        h = h * 8127156113;
-        h = h ^ (h >> 29);
-        return (int)h;
+    /// A cheap avalanche over the hash. Without it, sequential integer keys
+    /// collide in runs and linear probing degrades to a linear scan. Each step
+    /// its own value: a word of a key reassigned was a register written twice,
+    /// which the lifetime rules cannot follow, and every key asked about --
+    /// the string a lookup had just made -- was kept for the collector.
+    private static int Mixed(long h) {
+        long spread = h ^ (h >> 33);
+        long multiplied = spread * 8127156113;
+        return (int)(multiplied ^ (multiplied >> 29));
     }
 
     // THE INDEXER, which is how a Dictionary is read and written in C#. This
@@ -11661,13 +11651,17 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
     private int FullHash(T value) {
         // The comparer's hash, or the key's own when it is an object that has
         // one, as .NET's default comparer asks: a set of strings, or of
-        // tuples, holds equal ones once.
+        // tuples, holds equal ones once. Mixed as Dictionary mixes its keys.
         IEqualityComparer<T>? with = by;
-        long h = with != null ? with.GetHashCode(value) : Sys.IsObject(value) ? Sys.KeyHash(value) : Sys.Word(value);
-        h = h ^ (h >> 33);
-        h = h * 8127156113;
-        h = h ^ (h >> 29);
-        return (int)h;
+        if (with != null) { return Mixed(with.GetHashCode(value)); }
+        if (Sys.IsObject(value)) { return Mixed(Sys.KeyHash(value)); }
+        return Mixed(Sys.Word(value));
+    }
+
+    private static int Mixed(long h) {
+        long spread = h ^ (h >> 33);
+        long multiplied = spread * 8127156113;
+        return (int)(multiplied ^ (multiplied >> 29));
     }
 
     // TRUE WHEN IT WAS NOT THERE, which is .NET's contract and the useful half:

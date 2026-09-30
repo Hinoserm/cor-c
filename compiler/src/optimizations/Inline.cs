@@ -88,6 +88,9 @@ public sealed class Inline : IParallelModulePass
 
     public void Run(Module m)
     {
+        // A body's stores as of this run: a round that inlined into it since
+        // may have given it one.
+        lock (_storesField) _storesField.Clear();
         Dictionary<string, Function> byName = new(StringComparer.Ordinal);
         foreach (Function f in m.Functions)
         {
@@ -298,6 +301,8 @@ public sealed class Inline : IParallelModulePass
                         continue;
                     }
 
+                    if (Environment.GetEnvironmentVariable("CORC_INLINE_DEBUG") is { } dbg && caller.Name.Contains(dbg, StringComparison.Ordinal))
+                        Console.Error.WriteLine($"inline debug: {callee.Name} into {caller.Name} async={caller.Async is not null} stores={StoresField(callee)}");
                     TraceDecision?.Invoke(caller, callee, $"expand: body={calleeSize} small-limit={smallBody} caller={size} single={single} constant-branch={specializesBranch} fresh-owner={exposesChildren}");
                     Expand(caller, b, i, call, callee);
                     callerDefs = null;

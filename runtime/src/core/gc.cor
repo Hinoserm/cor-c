@@ -3132,6 +3132,7 @@ static class Gc
             {
                 if ((word & FlagFree) == 0)
                 {
+                    CollectedBytes = CollectedBytes + size;
                     if (_deadCensus)
                     {
                         if (_deadAt == 0)
@@ -3965,6 +3966,28 @@ static class Gc
     static long _marksNew;
     /// Bytes the program freed itself (Free): a count, read only for the stats.
     public static long FreedBytes;
+    /// Bytes the collector's sweeps reclaimed: what the program did not free.
+    public static long CollectedBytes;
+    /// Whether the stats will be said, and so whether a chunk released whole is
+    /// walked to count what in it was the collector's (set at start-up).
+    public static bool CountingCollected;
+
+    /// The bytes of a chunk's blocks that are not free, by its chain of sizes.
+    static long UnfreedBytes(long chunk)
+    {
+        long block = HeapChunks.First(chunk);
+        long end = HeapChunks.End(chunk);
+        long total = 0;
+        while (block < end)
+        {
+            long word = Sys.Peek(block);
+            long size = word & SizeMask;
+            if (size < Smallest || block + size > end) break;
+            if ((word & FlagFree) == 0) total = total + size;
+            block = block + size;
+        }
+        return total;
+    }
 
     /// The collector's counts, pauses and sizes on standard error, when the
     /// platform asks for them (CORSAC_GC_STATS=1 on Linux). Called at exit.
@@ -3989,8 +4012,11 @@ static class Gc
         // escape analysis kept in frames never reaches the heap at all.)
         SayNumber("gc: frees ", Frees);
         SayNumber("gc: freed by the program MB ", FreedBytes / 1048576);
-        long handed = _allocatedTotal + _since + FreedBytes;
-        SayNumber("gc: freed by the program percent ", handed > 0 ? FreedBytes * 100 / handed : 0);
+        SayNumber("gc: freed by the collector MB ", CollectedBytes / 1048576);
+        // WHO GAVE BACK WHAT WAS GIVEN BACK: the program's frees against the
+        // collector's sweeps -- by the bytes each actually reclaimed.
+        long given = FreedBytes + CollectedBytes;
+        SayNumber("gc: freed by the program percent ", given > 0 ? FreedBytes * 100 / given : 0);
         SayNumber("gc: sweep visits ", SweepVisits);
         SayNumber("gc: last major live ", _majorLive);
         SayNumber("gc: live now ", _liveBytes);
@@ -4309,6 +4335,7 @@ static class Gc
         _verify = Platform.VerifyFrees();
         VerifyingFieldFrees = Platform.VerifyFieldFrees();
         IgnoredFrees = Platform.IgnoreFrees();
+        CountingCollected = Platform.GcStats();
         SkippedFreePaths = Platform.SkippedFreePaths();
         GuardReleases = Platform.GuardReleases();
         _census = Platform.GcCensus();
@@ -6972,10 +6999,17 @@ static class Gc
     static bool _workersTried;
     public static long Workers;
 
+    // WHAT A PLATFORM OFFERS FOR THEM, if it does (Linux does, at its first
+    // thread block): how many to start, starting one, and a worker's first
+    // call. Zero anywhere else -- a kernel's platform starts none.
+    public static long WorkerCountHook;
+    public static long WorkerStartHook;
+    public static long WorkerQuietHook;
+
     /// Where a worker lives, from its first instruction.
     public static void CollectorWorker(long unused)
     {
-        Platform.QuietWorker();
+        if (WorkerQuietHook != 0) Sys.Call(WorkerQuietHook, 0, 0, 0);
         long at = Sys.AddressOf(ref _workWord);
         while (true)
         {
@@ -6995,10 +7029,11 @@ static class Gc
     {
         if (_workersTried || _markAt == 0) return;
         _workersTried = true;
-        int wanted = Platform.CollectorWorkers();
-        for (int i = 0; i < wanted; i++)
+        if (WorkerCountHook == 0 || WorkerStartHook == 0) return;
+        long wanted = Sys.Call(WorkerCountHook, 0, 0, 0);
+        for (long i = 0; i < wanted; i++)
         {
-            if (!Platform.StartCollectorWorker(Sys.AddressOf(Gc.CollectorWorker))) break;
+            if (Sys.Call(WorkerStartHook, Sys.AddressOf(Gc.CollectorWorker), 0, 0) == 0) break;
             Workers = Workers + 1;
         }
     }
@@ -7951,6 +7986,9 @@ static class Gc
                 {
                     UnlinkFreeIn(chunk);
                 }
+                // What of it the program had not freed already is the
+                // collector's: walked for the count only when it is asked for.
+                if (CountingCollected) CollectedBytes = CollectedBytes + UnfreedBytes(chunk);
                 HeapChunks.Release(chunk);
                 return after != 0;
             }
@@ -8018,6 +8056,7 @@ static class Gc
                         }
                         deadBlocks = deadBlocks + 1;
                         deadSize = deadSize + size;
+                        if ((word & FlagFree) == 0) CollectedBytes = CollectedBytes + size;
                         if (_heapCheck) Forget(block);
                         if (_deadCensus && (word & FlagFree) == 0)
                         {

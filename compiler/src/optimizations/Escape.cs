@@ -1039,7 +1039,13 @@ public sealed partial class Escape : IModulePass
         List<(Instr Origin, Instr Store)> held = new();
         foreach ((Function f, Block b, Instr st) in stores)
         {
-            if (f.Async is not null || st.Operands.Count < 2) { Refuse(st.Field!, "async or odd store", f, st); continue; }
+            // AN ASYNC BODY'S STORES ARE JUDGED AS ANY OTHER'S. The analysis
+            // runs before AsyncTransform, on ordinary IR with suspension
+            // markers; a fresh object stored and dead after is handed over
+            // whether or not the body suspends later -- and refusing them
+            // refused, for every object of the type, the fields of a List
+            // whose Add was spliced into one iterator's MoveNext.
+            if (st.Operands.Count < 2) { Refuse(st.Field!, "odd store", f, st); continue; }
             switch (st.Operands[1])
             {
                 case ImmOperand { Value: 0 }:
@@ -1153,7 +1159,10 @@ continue;
                     && origins.Count > 0 && origins.All(o => o.Callee == LeafAllocator);
             }
             if (refused.Contains(field)) continue;
-            if (f.Async is not null || ld.Dest is null) { Refuse(field, "async load", f, ld); continue; }
+            // An async body's reads too: only one still held across a
+            // suspension is refused (below), where code that runs meanwhile
+            // could replace the field and free what was read.
+            if (ld.Dest is null) { Refuse(field, "odd load", f, ld); continue; }
             // Handed back again by a caller is followed too, once per function
             // (borrowing), so the chain of getters ends.
             HashSet<VReg>? back = f.Name == m.Entry ? null : Returned(f);
@@ -1213,7 +1222,8 @@ continue;
                         // free a replacement gets (below) frees the old value's
                         // own owned fields too (Runtime.FreeOwnedFields), so
                         // replacing o.A frees o.A.B -- the value read here.
-                        || i.Op == Opcode.Store && i.Field is not null && candidates.Contains(i.Field);
+                        || i.Op == Opcode.Store && i.Field is not null && candidates.Contains(i.Field)
+                        || i.Op == Opcode.Call && i.Callee == AsyncFrame.Suspend;
                     if (danger) unsafeAt = i;
                 }
                 if (unsafeAt is not null) break;
@@ -1251,6 +1261,30 @@ continue;
             made.Add(free);
             b.Instrs.InsertRange(at, made);
             _bookkeeping.UnionWith(made);
+        }
+
+        // What calls replace in each function's own objects (FreeReplacedAcrossCalls).
+        {
+            Dictionary<string, List<long>> byOwner = new(StringComparer.Ordinal);
+            foreach ((_, _, Instr st) in stores)
+                if (owned.Contains(st.Field!))
+                {
+                    string owner = "t_" + st.Field![..st.Field!.IndexOf("::", StringComparison.Ordinal)];
+                    if (!byOwner.TryGetValue(owner, out List<long>? list)) byOwner[owner] = list = new();
+                    if (!list.Contains(st.Offset)) list.Add(st.Offset);
+                }
+            Dictionary<string, DataItem> described = new(StringComparer.Ordinal);
+            foreach (DataItem d in m.Data) described[d.Name] = d;
+            Dictionary<string, List<long>> ofType = new(StringComparer.Ordinal);
+            List<long> OwnedOf(string descriptor)
+            {
+                if (ofType.TryGetValue(descriptor, out List<long>? known)) return known;
+                HashSet<string> up = described.ContainsKey(descriptor) ? Ancestry(described, descriptor) : new HashSet<string>(StringComparer.Ordinal) { descriptor };
+                return ofType[descriptor] = up.Where(byOwner.ContainsKey).SelectMany(a => byOwner[a]).Distinct().Order().ToList();
+            }
+            HashSet<string> handers = new(borrowing.Where(pair => owned.Contains(pair.Field)).Select(pair => pair.Function), StringComparer.Ordinal);
+            foreach (Function f in m.Functions)
+                if (f.Async is null) FreeReplacedAcrossCalls(f, summaries, privateOwner, OwnedOf, handers.Contains);
         }
 
         foreach ((Instr made, Instr st) in held)
@@ -1663,6 +1697,24 @@ continue;
                             // address. The loaded value is not the pointer.
                             break;
 
+                        case Opcode.ShrS:
+                        case Opcode.ShrU:
+                        case Opcode.Mul:
+                        case Opcode.Xor:
+                        case Opcode.DivS:
+                        case Opcode.DivU:
+                        case Opcode.RemS:
+                        case Opcode.RemU:
+                            // A NUMBER MADE OF THE ADDRESS -- a hash: shifted,
+                            // multiplied, mixed. Nothing in managed code turns
+                            // it back into a reference, so the object has not
+                            // gone anywhere. A Dictionary's hash of a key it
+                            // might be handed null for (Sys.Word of the key)
+                            // made every key it was asked about escape.
+                            // (And, Or and Shl stay below: masking and tagging
+                            // can leave a pointer.)
+                            break;
+
                         case Opcode.Store:
                         case Opcode.InitArrayLength:
                             // Writing INTO the object is fine; writing the
@@ -1857,6 +1909,26 @@ continue;
 
         return flow;
 
+        // Whether every use of `r` makes a number of it or compares it, through
+        // copies: shifts right, multiplies, mixes, divisions, comparisons.
+        bool NumberOnly(VReg r, int depth)
+        {
+            if (depth > 4) return false;
+            foreach (Block nb in f.Blocks)
+                foreach (Instr use in nb.Instrs)
+                {
+                    bool reads = false;
+                    foreach (Operand o in use.Operands) if (o is RegOperand q && q.Reg == r) { reads = true; break; }
+                    if (!reads) continue;
+                    if (use.Op is Opcode.ShrS or Opcode.ShrU or Opcode.Mul or Opcode.Xor or Opcode.DivS or Opcode.DivU
+                        or Opcode.RemS or Opcode.RemU || IrInfo.IsIntCompare(use.Op)) continue;
+                    if (use.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.SExt32 && use.Dest is not null
+                        && use.Dest != r && NumberOnly(use.Dest, depth + 1)) continue;
+                    return false;
+                }
+            return true;
+        }
+
         void Derive(VReg? d)
         {
             if (d is null)
@@ -1870,6 +1942,10 @@ continue;
             if (defs.GetValueOrDefault(d) > 1 && (returnable is null || !returnable.Contains(d))
                 && (joinable is null || !joinable.Contains(d)))
             {
+                // A JOIN THAT IS ONLY EVER A NUMBER -- a hash's word, the
+                // argument an inlined mixer took from each of three branches --
+                // takes nothing anywhere: no escape, and nothing to follow.
+                if (NumberOnly(d, 0)) return;
                 (pending ??= new()).Add(d);
                 return;
             }

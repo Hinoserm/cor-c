@@ -469,6 +469,10 @@ static class Platform
     {
         // The collector times its pauses by this system's clock.
         Gc.PauseClock = Sys.AddressOf(Clock.NowMicroseconds);
+        // And the collector's workers: how many, and how one is started.
+        Gc.WorkerCountHook = Sys.AddressOf(Platform.CollectorWorkers);
+        Gc.WorkerStartHook = Sys.AddressOf(Platform.StartCollectorWorker);
+        Gc.WorkerQuietHook = Sys.AddressOf(Platform.QuietWorker);
         Sys.Poke(block + Tls.Self, block);
 
 #if TARGET_AMD64
@@ -544,7 +548,7 @@ static class Platform
     /// processors this process may run on less one, at most seven, or
     /// CORSAC_GC_WORKERS. Read without the heap: the collector asks this
     /// holding its lock.
-    public static int CollectorWorkers()
+    public static long CollectorWorkers()
     {
         if (EnvironmentValue("CORSAC_GC_WORKERS=") != 0)
         {
@@ -569,11 +573,11 @@ static class Platform
 
     /// Starts one of them: `entry` on a stack of its own, with no Thread,
     /// no thread block and no signals. False when there is no room for it.
-    public static bool StartCollectorWorker(long entry)
+    public static long StartCollectorWorker(long entry)
     {
         long stack = Native.MapStack(WorkerStackBytes);
-        if (stack == 0) return false;
-        return Native.SpawnBare(entry, 0, stack, WorkerStackBytes) > 0;
+        if (stack == 0) return 0;
+        return Native.SpawnBare(entry, 0, stack, WorkerStackBytes) > 0 ? 1 : 0;
     }
 
     /// First thing a worker does: every signal blocked, so no handler of the

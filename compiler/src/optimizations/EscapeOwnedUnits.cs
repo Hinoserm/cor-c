@@ -42,6 +42,90 @@ public sealed partial class Escape
         if (_hinting && m.LifetimeHints is not null) m.LifetimeHints.Owned = OwnedFieldHintsOf(m, summaries);
     }
 
+    /// <summary>
+    /// WHAT A CALL REPLACED IN AN OBJECT THIS FUNCTION OWNS, FREED AFTER IT.
+    /// A store frees what it replaces only where its object was made (the
+    /// thread rule); a List's Grow stores into its `this`, so a List whose Grow
+    /// was not inlined left every array it grew out of to the collector. But
+    /// an object private to this function is changed only by the calls it is
+    /// handed to: around each, the object's owned fields are read before and
+    /// after, and what changed is freed (Runtime.FreeOwnedReplaced frees the
+    /// old value when it differs). The callee cannot have kept the old value --
+    /// an owned field's read never escapes -- and a callee that hands a
+    /// field's value back (a borrower) is left alone when its result is used.
+    /// </summary>
+    private void FreeReplacedAcrossCalls(Function f, Dictionary<string, bool[]> summaries, Dictionary<Instr, bool> privateOwner,
+        Func<string, List<long>> ownedOffsets, Func<string, bool> handsBack)
+    {
+        Dictionary<VReg, Instr>? defs = null;
+        Dictionary<Instr, string?> descriptorOf = new(ReferenceEqualityComparer.Instance);
+        int w = IrTypes.Word.Bytes();
+        foreach (Block b in f.Blocks)
+            for (int at = 0; at < b.Instrs.Count; at++)
+            {
+                Instr call = b.Instrs[at];
+                if (call.Op is not (Opcode.Call or Opcode.CallIndirect) || _bookkeeping.Contains(call)) continue;
+                if (call.Op == Opcode.Call && (call.Callee is null || IsAllocator(call.Callee) || IsFreeCall(call.Callee)
+                    || IsCollectorNote(call.Callee) || call.Callee == AsyncFrame.Suspend)) continue;
+                if (call.Dest is not null && (call.Op == Opcode.CallIndirect || handsBack(call.Callee!))) continue;
+                defs ??= SingleDefs(f);
+                List<(RegOperand Owner, long Offset)> watched = new();
+                HashSet<Instr> ownersSeen = new(ReferenceEqualityComparer.Instance);
+                foreach (Operand o in call.Operands)
+                {
+                    if (o is not RegOperand r || OriginOf(defs, r.Reg) is not Instr made || !ownersSeen.Add(made)
+                        || !PrivateOwner(f, made, summaries, privateOwner)) continue;
+                    if (!descriptorOf.TryGetValue(made, out string? descriptor)) descriptorOf[made] = descriptor = DescriptorStored(f, defs, made);
+                    if (descriptor is null) continue;
+                    foreach (long offset in ownedOffsets(descriptor)) watched.Add((r, offset));
+                }
+                if (watched.Count == 0) continue;
+                List<Instr> before = new();
+                List<VReg> olds = new();
+                foreach ((RegOperand owner, long offset) in watched)
+                {
+                    VReg old = f.NewReg(IrTypes.Word);
+                    Instr load = new() { Op = Opcode.Load, Dest = old, Offset = offset, Size = w, Line = call.Line };
+                    load.Operands.Add(owner);
+                    before.Add(load);
+                    olds.Add(old);
+                }
+                List<Instr> after = new();
+                for (int k = 0; k < watched.Count; k++)
+                {
+                    VReg now = f.NewReg(IrTypes.Word);
+                    Instr load = new() { Op = Opcode.Load, Dest = now, Offset = watched[k].Offset, Size = w, Line = call.Line };
+                    load.Operands.Add(watched[k].Owner);
+                    after.Add(load);
+                    Instr free = new() { Op = Opcode.Call, Callee = OwnedReplacedFreer, Line = call.Line };
+                    free.Operands.Add(Word(f, after, new RegOperand(olds[k]), call.Line));
+                    free.Operands.Add(Word(f, after, new RegOperand(now), call.Line));
+                    after.Add(free);
+                }
+                b.Instrs.InsertRange(at + 1, after);
+                b.Instrs.InsertRange(at, before);
+                _bookkeeping.UnionWith(before);
+                _bookkeeping.UnionWith(after);
+                at += before.Count + after.Count;
+            }
+    }
+
+    /// <summary>The descriptor stored into an object where it is made (`t_...`), or null.</summary>
+    private static string? DescriptorStored(Function f, Dictionary<VReg, Instr> defs, Instr made)
+    {
+        SlotOperand? slot = made is { Op: Opcode.Copy, Operands: [SlotOperand s] } ? s : null;
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+            {
+                if (i.Op != Opcode.Store || i.Offset != 0 || i.Operands.Count < 2 || i.Operands[1] is not SymOperand { Name: var name }
+                    || !name.StartsWith("t_", StringComparison.Ordinal)) continue;
+                bool mine = i.Operands[0] is RegOperand r && ReferenceEquals(OriginOf(defs, r.Reg), made)
+                    || slot is not null && i.Operands[0] is SlotOperand other && ReferenceEquals(other.Slot, slot.Slot);
+                if (mine) return name;
+            }
+        return null;
+    }
+
     /// <summary>Through copies to what made a register, where one instruction did.</summary>
     private static Instr? OriginOf(Dictionary<VReg, Instr> defs, VReg r)
     {
@@ -104,6 +188,30 @@ public sealed partial class Escape
                     _bookkeeping.UnionWith(made);
                     at += made.Count;
                 }
+        }
+
+        // What calls replace in this function's own objects (FreeReplacedAcrossCalls).
+        {
+            Dictionary<string, List<long>> byOwner = new(StringComparer.Ordinal);
+            foreach ((string field, long offset) in decided.Fields)
+            {
+                int split = field.IndexOf("::", StringComparison.Ordinal);
+                if (split <= 0) continue;
+                string owner = "t_" + field[..split];
+                if (!byOwner.TryGetValue(owner, out List<long>? list)) byOwner[owner] = list = new();
+                if (!list.Contains(offset)) list.Add(offset);
+            }
+            Dictionary<string, DataItem> described = new(StringComparer.Ordinal);
+            foreach (DataItem d in m.Data) described[d.Name] = d;
+            Dictionary<string, List<long>> ofType = new(StringComparer.Ordinal);
+            List<long> OwnedOf(string descriptor)
+            {
+                if (ofType.TryGetValue(descriptor, out List<long>? known)) return known;
+                HashSet<string> up = described.ContainsKey(descriptor) ? Ancestry(described, descriptor) : new HashSet<string>(StringComparer.Ordinal) { descriptor };
+                return ofType[descriptor] = up.Where(byOwner.ContainsKey).SelectMany(a => byOwner[a]).Distinct().Order().ToList();
+            }
+            foreach (Function f in m.Functions)
+                if (f.Async is null) FreeReplacedAcrossCalls(f, summaries, privateOwner, OwnedOf, decided.Borrowers.Contains);
         }
 
         Dictionary<string, List<long>> offsets = new(StringComparer.Ordinal);
@@ -391,7 +499,8 @@ public sealed partial class Escape
             string field = st.Field!;
             OwnedFieldRecord record = Record(field, st.Offset);
             if (record.Refused) continue;
-            if (f.Async is not null || st.Operands.Count < 2) { Refuse(record, field, "async or odd store", f, st); continue; }
+            // Judged as any other's (Escape.OwnedFields says why).
+            if (st.Operands.Count < 2) { Refuse(record, field, "odd store", f, st); continue; }
             if (st.Operands[1] is ImmOperand { Value: 0 } or SymOperand) continue;
             if (st.Operands[1] is not RegOperand v) { Refuse(record, field, "stores an odd operand", f, st); continue; }
             if (OriginOf(Defs(f), v.Reg) is Instr made && made.Dest is not null && FreshCondition(made) is LifetimeCondition madeFresh)
@@ -459,7 +568,9 @@ public sealed partial class Escape
         ReadJudgement? Judge(Function f, Block b, Instr ld, out string why)
         {
             why = "";
-            if (f.Async is not null || ld.Dest is null) { why = "async read"; return null; }
+            // An async body's read is refused only when held across a
+            // suspension (the danger walk below), as Escape.OwnedFields does.
+            if (ld.Dest is null) { why = "odd read"; return null; }
             if (UsedUpInBlock(f, b, ld)) return new ReadJudgement();
             bool FreesOwnMaking(Block x, int k)
             {
@@ -508,7 +619,8 @@ public sealed partial class Escape
                     }
                     else if (i.Op == Opcode.Call)
                     {
-                        if (IsFreeCall(i.Callee) && !FreesOwnMaking(x, k) || IsCatchEnd(i.Callee) || i.Callee == OwnedReplacedFreer)
+                        if (IsFreeCall(i.Callee) && !FreesOwnMaking(x, k) || IsCatchEnd(i.Callee) || i.Callee == OwnedReplacedFreer
+                            || i.Callee == AsyncFrame.Suspend)
                         { why = $"read live across {i.Op} {i.Callee}"; return null; }
                         if (i.Callee is not null && !NeverWritesFields(i.Callee)) judged.Danger.Add(i.Callee);
                     }
