@@ -72,6 +72,9 @@ public class Bitmap : Image
         Pixels[at] = (byte)b; Pixels[at + 1] = (byte)g; Pixels[at + 2] = (byte)r; Pixels[at + 3] = (byte)a;
     }
 
+    /// A handle Icon.FromHandle makes an icon of, as .NET's is.
+    public nint GetHicon() { return Icon.HandleOf(this); }
+
     public int AlphaAt(int x, int y) { return Pixels[(y * Width + x) * 4 + 3] & 255; }
 }
 
@@ -486,6 +489,33 @@ public class Icon
 
     Icon(IconFile file) { _file = file; }
 
+    // AN ICON DRAWN BY THE PROGRAM, .NET's way: Icon.FromHandle(bitmap.
+    // GetHicon()), what a tray icon drawn at run time is made with. The
+    // handle is the bitmap's number in _handles.
+    Bitmap? _drawn;
+    static List<Bitmap> _handles = new List<Bitmap>();
+
+    internal static nint HandleOf(Bitmap picture)
+    {
+        _handles.Add(picture);
+        return _handles.Count;
+    }
+
+    public static Icon FromHandle(nint handle)
+    {
+        if (handle < 1 || handle > _handles.Count) throw new ArgumentException("Parameter is not valid.");
+        Icon made = new Icon(new IconFile());
+        made._drawn = _handles[(int)handle - 1];
+        return made;
+    }
+
+    Bitmap? Picture(int size)
+    {
+        if (_drawn != null) return _drawn;
+        int which = _file.Best(size, Seat.Current.Colours);
+        return which < 0 ? null : _file.Decode(which);
+    }
+
     public static Icon? FromFile(string path)
     {
         IconFile? file = IconFile.Load(path);
@@ -512,9 +542,7 @@ public class Icon
         if (_known >= _ids.Length) return _ids[0];
 
         Seat seat = Seat.Current;
-        int which = _file.Best(size, seat.Colours);
-        if (which < 0) return -1;
-        Bitmap? picture = _file.Decode(which);
+        Bitmap? picture = Picture(size);
         if (picture == null) return -1;
         // AT THE SIZE ASKED FOR. A file with no image of it -- a 32-pixel
         // icon in a 16-pixel title bar -- is scaled, each pixel the average
@@ -535,9 +563,7 @@ public class Icon
     /// nothing readable.
     public int[]? SmallPixels()
     {
-        int which = _file.Best(16, Seat.Current.Colours);
-        if (which < 0) return null;
-        Bitmap? picture = _file.Decode(which);
+        Bitmap? picture = Picture(16);
         if (picture == null) return null;
         if (picture.Width != 16 || picture.Height != 16) picture = Scaled(picture, 16);
         int[] made = new int[256];

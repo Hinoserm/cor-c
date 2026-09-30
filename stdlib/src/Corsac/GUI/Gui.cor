@@ -111,6 +111,10 @@ enum SeatIoctl : long
     ClipboardSequence = 0x4755004F,
     ClipboardFormats = 0x47550050,
     ClipboardFormatName = 0x47550051,
+    TraySet = 0x47550052,
+    TrayDelete = 0x47550053,
+    TrayList = 0x47550054,
+    TrayClick = 0x47550055,
 }
 
 public class Seat : IDrawingTarget
@@ -288,6 +292,7 @@ public class Seat : IDrawingTarget
         int reserved;
         bool watchWindows, watchPointer;
         List<Kept> mine = new List<Kept>();
+        List<byte[]> trays = new List<byte[]>();
         lock (_keep)
         {
             define = _defined != start;
@@ -313,6 +318,7 @@ public class Seat : IDrawingTarget
             reserved = _reservedBottom;
             watchWindows = _watchesWindows.Contains(me);
             watchPointer = _watchesPointer.Contains(me);
+            foreach (TrayKept t in _trayKept) if (t.Owner == me) trays.Add(t.Record);
             for (int i = 0; i < _kept.Count; i++)
             {
                 Kept w = _kept[i];
@@ -339,6 +345,7 @@ public class Seat : IDrawingTarget
         foreach (byte[] tree in trees) Ioctl(SeatIoctl.MenuSet, Sys.ArrayData(tree));
         if (watchWindows) Ioctl(SeatIoctl.WatchWindows, 0);
         if (watchPointer) Ioctl(SeatIoctl.WatchPointer, 0);
+        foreach (byte[] record in trays) Ioctl(SeatIoctl.TraySet, Sys.ArrayData(record));
 
         foreach (Kept w in mine)
         {
@@ -1073,6 +1080,79 @@ public class Seat : IDrawingTarget
         return result;
     }
 
+    // --- the notification area (Windows' Shell_NotifyIcon) -------------
+    public const int TrayRecordBytes = 4 + 4 + 1024 + 64;
+    public const int TrayListBytes = 4 + TrayRecordBytes;
+    public const int MaxTray = 32;
+    class TrayKept { public long Owner; public int Uid; public byte[] Record = new byte[0]; }
+    readonly List<TrayKept> _trayKept = new List<TrayKept>();
+
+    /// Put this thread's icon `uid` in the notification area, or change it:
+    /// 16x16 COLORREFs (-1 clear) and a tip. Its presses come back as
+    /// TrayNotify events to this thread.
+    public void SetTrayIcon(int uid, int[] pixels, string tip)
+    {
+        byte[] record = new byte[TrayRecordBytes];
+        record[0] = (byte)uid; record[1] = (byte)(uid >> 8); record[2] = (byte)(uid >> 16); record[3] = (byte)(uid >> 24);
+        for (int i = 0; i < 256; i++)
+        {
+            int v = i < pixels.Length ? pixels[i] : -1;
+            int at = 8 + i * 4;
+            record[at] = (byte)v; record[at + 1] = (byte)(v >> 8); record[at + 2] = (byte)(v >> 16); record[at + 3] = (byte)(v >> 24);
+        }
+        for (int i = 0; i < 63 && i < tip.Length; i++) record[1032 + i] = (byte)(tip[i] < 256 ? tip[i] : '?');
+        Flush();
+        Ioctl(SeatIoctl.TraySet, Sys.ArrayData(record));
+        long me = Ioctl(SeatIoctl.Whoami, 0);
+        lock (_keep)
+        {
+            foreach (TrayKept t in _trayKept) if (t.Owner == me && t.Uid == uid) { t.Record = record; return; }
+            TrayKept k = new TrayKept(); k.Owner = me; k.Uid = uid; k.Record = record;
+            _trayKept.Add(k);
+        }
+    }
+
+    /// Take this thread's icon `uid` out of the notification area.
+    public void DeleteTrayIcon(int uid)
+    {
+        Ioctl(SeatIoctl.TrayDelete, uid);
+        long me = Ioctl(SeatIoctl.Whoami, 0);
+        lock (_keep)
+            for (int i = 0; i < _trayKept.Count; i++)
+                if (_trayKept[i].Owner == me && _trayKept[i].Uid == uid) { _trayKept.RemoveAt(i); break; }
+    }
+
+    /// Every icon in the notification area, oldest first (a bar draws them).
+    public SeatTrayInfo[] TrayIcons()
+    {
+        byte[] records = new byte[TrayListBytes * MaxTray];
+        int n = (int)Ioctl(SeatIoctl.TrayList, Sys.ArrayData(records));
+        if (n < 0) n = 0;
+        if (n > MaxTray) n = MaxTray;
+        SeatTrayInfo[] result = new SeatTrayInfo[n];
+        for (int i = 0; i < n; i++)
+        {
+            int at = i * TrayListBytes;
+            SeatTrayInfo t = new SeatTrayInfo();
+            t.Owner = Word(records, at);
+            t.Uid = Word(records, at + 4);
+            for (int p = 0; p < 256; p++) t.Pixels[p] = Word(records, at + 12 + p * 4);
+            t.Tip = SeatText.Get(records, at + 1036, 64);
+            result[i] = t;
+        }
+        return result;
+    }
+
+    /// Hand a press on an icon to its owner: `message` is the mouse
+    /// message (0x201 WM_LBUTTONDOWN, 0x202 UP, 0x203 DBLCLK, 0x204-0x206
+    /// the right button's, 0x200 WM_MOUSEMOVE), x and y on the screen.
+    public void TrayClick(int owner, int uid, int message, int x, int y)
+    {
+        int[] words = new int[] { owner, uid, message, (x & 0xFFFF) | (y << 16) };
+        Ioctl(SeatIoctl.TrayClick, Sys.ArrayData(words));
+    }
+
+
     /// Raise and focus any window, whoever owns it (a taskbar button).
     public void Activate(int handle) { Flush(); Ioctl(SeatIoctl.Activate, handle); }
 
@@ -1237,6 +1317,16 @@ public class Seat : IDrawingTarget
 
 
 /// One shown window on the seat, as Seat.Windows() reports it.
+/// An icon in the notification area: whose, its number, its 16x16
+/// COLORREFs (-1 clear) and its tip.
+public class SeatTrayInfo
+{
+    public int Owner;
+    public int Uid;
+    public int[] Pixels = new int[256];
+    public string Tip = "";
+}
+
 public class SeatWindowInfo
 {
     public int Handle;
