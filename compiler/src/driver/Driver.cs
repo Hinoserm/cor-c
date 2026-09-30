@@ -712,7 +712,9 @@ public static class Driver
             PositionIndependent = shared || args.Contains("--pic") || (sharedLibs.Count > 0 && args.Contains("--obj")),
             Workers = workers,
             EmitLinkSummary = !args.Contains("--no-lto") && !args.Contains("--no-opt"),
-            StackMaps = !args.Contains("--no-stackmaps"),
+            // Only a collector reads stack maps: a program found to need none
+            // (Escape) carries none.
+            StackMaps = !args.Contains("--no-stackmaps") && module.NeedsHeap,
         };
         foreach (string symbol in imported)
         {
@@ -723,7 +725,7 @@ public static class Driver
             PositionIndependent = x86Backend.PositionIndependent,
             Workers = workers,
             EmitLinkSummary = x86Backend.EmitLinkSummary,
-            StackMaps = !args.Contains("--no-stackmaps"),
+            StackMaps = x86Backend.StackMaps,
         };
         foreach (string symbol in imported)
         {

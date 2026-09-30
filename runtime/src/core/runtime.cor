@@ -589,49 +589,183 @@ static class Runtime
         return Gc.AllocObject(bytes);
     }
 
-    /// The heap for a program that needs no collector. When escape analysis
-    /// proves that no allocation reachable from the entry outlives its
-    /// function, the compiler retargets what allocation calls remain (error
-    /// paths, exception objects) here, and dead-function removal drops Gc
-    /// entirely. That only works because this shares NOTHING with Gc: its
-    /// own two statics, its own chunks from Platform.Map, no call into Gc.
-    /// A plain bump allocator, zeroed (fresh pages are), 8-aligned, and it
-    /// never gives anything back.
-    static long _bumpAt;
-    static long _bumpLimit;
+    // ---- the heap of a program that needs no collector -----------------------
+    //
+    // WHAT MALLOC AND FREE ARE. When escape analysis proves that nothing
+    // reachable from the entry is left for a collector -- every allocation is
+    // freed where the compiler proved it dead, lives until the end in a
+    // static, or is made at most once -- it retargets allocation here
+    // (AllocManual, AllocManualObject) and the collector's free and liveness
+    // test to FreeManual and ManualObject. This shares NOTHING with Gc: its
+    // own statics, its own chunks from Platform.Map, no call into Gc; so Gc,
+    // its stack maps and its barriers all go the way of unreachable code.
+    //
+    // Blocks come in sixteen-byte granules behind a two-word header: the
+    // block's size with a free bit and an object bit, then a magic word. A
+    // freed block goes on the list of its size (up to 1 KiB, one list a
+    // granule) or on the one list of larger blocks, and the next of that size
+    // takes it, zeroed; anything else is bumped from the newest chunk. Free
+    // ignores whatever is not exactly a live block of this heap -- a null, a
+    // literal, a block freed already -- as Gc.Free does, by the chunk list
+    // and the header. One lock word, since a program with no collector may
+    // still run threads.
+    static long _manualChunks;      // newest chunk: [next chunk][end] then blocks
+    static long _manualAt;
+    static long _manualLimit;
+    static long _manualBins;        // ManualBinCount list heads, then the lock word
 
-    const long BumpChunk = 262144;
+    const long ManualChunk = 262144;
+    const long ManualMagic = 0x4D48434D;   // 'MCHM'
+    const long ManualFree = 1;
+    const long ManualObjectFlag = 2;
+    const long ManualBinCount = 65;        // 0 is the list of large blocks
+    const long ManualSmall = 1024;
 
-    public static long AllocBump(long bytes)
+    public static long AllocManual(long bytes)
     {
+        return ManualTake(bytes, 0);
+    }
+
+    public static long AllocManualObject(long bytes)
+    {
+        return ManualTake(bytes, ManualObjectFlag);
+    }
+
+    static long ManualTake(long bytes, long flags)
+    {
+        long w = WordSize.Bytes;
         if (bytes < 0 || bytes > 0x7FFFFFF0)
         {
             Exit(137);
         }
-
-        long need = (bytes + 7) & (0 - 8);
-
-        if (need < 8)
+        long need = (bytes + 2 * w + 15) & (0 - 16);
+        if (_manualBins == 0)
         {
-            need = 8;
+            ManualGrow(ManualBinCount * w + w);
+            _manualBins = _manualAt;
+            _manualAt = _manualAt + ((ManualBinCount * w + w + 15) & (0 - 16));
+        }
+        long lockAt = _manualBins + ManualBinCount * w;
+        while (Sys.AtomicSwap(lockAt, 1) != 0)
+        {
+            Sys.Pause();
         }
 
-        if (_bumpAt + need > _bumpLimit)
+        long block = 0;
+        long list = need <= ManualSmall ? _manualBins + (need >> 4) * w : _manualBins;
+        long previous = 0;
+        long at = Sys.Peek(list);
+        while (at != 0)
         {
-            long ask = need > BumpChunk ? need : BumpChunk;
-            long region = Platform.Map(ask);
-
-            if (region == 0)
+            long size = Sys.Peek(at) & (0 - 16);
+            if (size == need || (need > ManualSmall && size >= need))
             {
-                Exit(137);
+                long next = Sys.Peek(at + 2 * w);
+                if (previous == 0) Sys.Poke(list, next); else Sys.Poke(previous + 2 * w, next);
+                block = at;
+                need = size;
+                long word = at + 2 * w;
+                while (word < at + size)
+                {
+                    Sys.Poke(word, 0);
+                    word = word + w;
+                }
+                break;
             }
-            _bumpAt = region;
-            _bumpLimit = region + ask;
+            if (need <= ManualSmall)
+            {
+                break;
+            }
+            previous = at;
+            at = Sys.Peek(at + 2 * w);
         }
+        if (block == 0)
+        {
+            if (_manualAt + need > _manualLimit)
+            {
+                ManualGrow(need);
+            }
+            block = _manualAt;
+            _manualAt = _manualAt + need;
+        }
+        Sys.Poke(block, need | flags);
+        Sys.Poke(block + w, ManualMagic);
+        Sys.AtomicSwap(lockAt, 0);
+        return block + 2 * w;
+    }
 
-        long block = _bumpAt;
-        _bumpAt = _bumpAt + need;
-        return block;
+    /// A new chunk big enough for `need`, linked in front of the others.
+    static void ManualGrow(long need)
+    {
+        long ask = need + 32 > ManualChunk ? need + 32 : ManualChunk;
+        long chunk = Platform.Map(ask);
+        if (chunk == 0)
+        {
+            Exit(137);
+        }
+        Sys.Poke(chunk, _manualChunks);
+        Sys.Poke(chunk + WordSize.Bytes, chunk + ask);
+        _manualChunks = chunk;
+        _manualAt = (chunk + 2 * WordSize.Bytes + 15) & (0 - 16);
+        _manualLimit = chunk + ask;
+    }
+
+    /// The header of the live block `at` is the payload of, or 0.
+    static long ManualBlock(long at)
+    {
+        long w = WordSize.Bytes;
+        long block = at - 2 * w;
+        if (at == 0 || (block & 15) != 0)
+        {
+            return 0;
+        }
+        long chunk = _manualChunks;
+        while (chunk != 0)
+        {
+            if (block >= chunk + 2 * w && block < Sys.Peek(chunk + w))
+            {
+                long word = Sys.Peek(block);
+                if (Sys.Peek(block + w) != ManualMagic || (word & ManualFree) != 0)
+                {
+                    return 0;
+                }
+                return block;
+            }
+            chunk = Sys.Peek(chunk);
+        }
+        return 0;
+    }
+
+    public static void FreeManual(long at)
+    {
+        long w = WordSize.Bytes;
+        if (_manualBins == 0)
+        {
+            return;
+        }
+        long lockAt = _manualBins + ManualBinCount * w;
+        while (Sys.AtomicSwap(lockAt, 1) != 0)
+        {
+            Sys.Pause();
+        }
+        long block = ManualBlock(at);
+        if (block != 0)
+        {
+            long size = Sys.Peek(block) & (0 - 16);
+            long list = size <= ManualSmall ? _manualBins + (size >> 4) * w : _manualBins;
+            Sys.Poke(block, size | ManualFree);
+            Sys.Poke(block + 2 * w, Sys.Peek(list));
+            Sys.Poke(list, block);
+        }
+        Sys.AtomicSwap(lockAt, 0);
+    }
+
+    /// Whether `at` is a live object of this heap, with a descriptor to read:
+    /// what Free asks before it frees the fields an object owns (Gc.LiveObject).
+    public static bool ManualObject(long at)
+    {
+        long block = ManualBlock(at);
+        return block != 0 && (Sys.Peek(block) & ManualObjectFlag) != 0;
     }
 
     /// Gives a block obtained from Runtime.Alloc back to the heap NOW.
@@ -657,10 +791,9 @@ static class Runtime
     ///     way and for the same reason that it is in C. Only the optimiser is
     ///     allowed to say it.
     ///
-    /// It exists WHETHER OR NOT THE COLLECTOR IS LINKED. When escape analysis
-    /// has retargeted allocation at AllocBump there is no heap for a pointer
-    /// to be in, the lookup finds no chunk, and this is a no-op -- which is
-    /// the correct answer for a region that is never reclaimed.
+    /// It exists WHETHER OR NOT THE COLLECTOR IS LINKED. A program that needs
+    /// none has Gc.Free and Gc.LiveObject retargeted at FreeManual and
+    /// ManualObject (Escape), and this frees into the manual heap unchanged.
     public static void Free(long at)
     {
         if (Gc.IgnoredFrees == 'p')
@@ -847,14 +980,6 @@ static class Runtime
     public static void WriteBarrierValues(long old, long value)
     {
         Gc.BarrierValues(old, value);
-    }
-
-    /// Free for a program that links no collector, so that the optimiser can
-    /// retarget Free the way it retargets Alloc and leave Gc unreachable.
-    /// A bump region records no sizes and reclaims nothing, so there is
-    /// nothing to do; the call is here to be dropped by the inliner.
-    public static void FreeBump(long at)
-    {
     }
 
     /// Tells the collector about a range of memory outside the heap that may

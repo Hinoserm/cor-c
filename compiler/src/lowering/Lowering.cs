@@ -964,10 +964,11 @@ public sealed partial class Lowering
 
         // The optimiser rewrites allocations after lowering -- an owned
         // object gains a Free, a program that needs no collector has its
-        // Alloc retargeted to AllocBump -- and the worklist only lowers what
-        // the program reaches. These are reached by the optimiser, so they
-        // are rooted here; the inliner drops whichever end up unused.
-        foreach (string helper in new[] { "AllocBump", "Free", "FreeBump" })
+        // allocation and frees retargeted to the manual heap -- and the
+        // worklist only lowers what the program reaches. These are reached by
+        // the optimiser, so they are rooted here; the inliner drops whichever
+        // end up unused.
+        foreach (string helper in new[] { "AllocManual", "AllocManualObject", "Free", "FreeManual", "ManualObject" })
         {
             if (RuntimeMethod(helper, 1) is MethodSymbol rooted)
             {

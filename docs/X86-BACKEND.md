@@ -949,8 +949,13 @@ mangled name and arity; the library provides them.
   word will name; called exactly where the compiler stores a vtable next.
   All three bump in a thread's own buffer and enter the locked slow path
   only to refill it or to collect.
-- `Runtime.AllocBump(long) : long` -- a block from a region never collected,
-  what a program without a collector links instead.
+- `Runtime.AllocManual(long)` and `Runtime.AllocManualObject(long)`,
+  `Runtime.FreeManual(long)`, `Runtime.ManualObject(long)` -- malloc and free
+  for a program that needs no collector: escape analysis retargets every
+  allocation here, and the collector's free and liveness test, when nothing
+  reachable is left for a collector; the barriers, card marks and safepoint
+  calls are dropped, no stack maps are written, and the collector goes
+  unlinked.
 - `Runtime.Free`, `Runtime.FreeReplaced`, `Runtime.FreeField` -- the frees
   the compiler inserts for tiers 1 and 2; a pointer outside the heap, or 0,
   is ignored.
@@ -1154,7 +1159,7 @@ command. The default set, in link order, is `lib/std.cor`,
 `lib/threading.cor` and `lib/sys/linux.cor`; `CORC_LIB` points the driver
 at another tree and `--no-default-libs` turns the set off.
 
-- `lib/rt/runtime.cor`: the contract methods -- `Alloc`, `AllocBump`,
+- `lib/rt/runtime.cor`: the contract methods -- `Alloc`, `AllocManual`,
   `Free`, `Print*`, `Exit`, `Unhandled`, the throw helpers
   (`IndexOutOfRange`, `DivideByZero`, `Overflow`, `NullReference`,
   `InvalidCast`), 64-bit division and remainder, the byte and string

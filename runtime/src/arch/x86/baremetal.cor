@@ -34,8 +34,8 @@
 //     knows what is already in use, so the heap is one bump region whose
 //     bounds the image is given: Platform.SetHeap, called before anything
 //     allocates, or else everything from the end of the image to a default
-//     top. Nothing is ever returned, which is what Runtime.AllocBump already
-//     assumes and what Gc's chunk list tolerates.
+//     top. Nothing is ever returned, which the manual heap
+//     (Runtime.AllocManual) and Gc's chunk list both tolerate.
 //   - NOTHING ZEROES .bss. The flat image's loader is told how many bytes
 //     follow the image and has to clear them; a program that skipped that
 //     would find its statics full of whatever was in memory.
@@ -169,8 +169,8 @@ static class Platform
     /// exhausted.
     ///
     /// A bump and nothing else. There is no operating system to take memory
-    /// back to, so nothing here ever frees; Runtime.AllocBump assumes exactly
-    /// that, and Gc's chunk list tolerates it.
+    /// back to, so nothing here ever frees; the manual heap and Gc's chunk
+    /// list both keep what they are given.
     /// Where memory comes from once there is an operating system in this
     /// image: the kernel installs the two routines (by Sys.AddressOf) that
     /// map and unmap kernel memory page by page, and from then on the bump

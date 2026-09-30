@@ -119,6 +119,16 @@ public sealed class Inline : IParallelModulePass
             addressTaken.Add(Escape.FieldFreer);
             addressTaken.Add(Escape.ReplacedFreer);
             addressTaken.Add(Escape.OwnedReplacedFreer);
+            // What a program that needs no collector allocates and frees with.
+            addressTaken.Add(Escape.ManualAllocator);
+            addressTaken.Add(Escape.ManualObjectAllocator);
+            addressTaken.Add(Escape.ManualFreer);
+            addressTaken.Add(Escape.ManualLive);
+            // And the collector's free and liveness test, which such a
+            // program's frees are retargeted from: inlined first, the calls
+            // to retarget would be gone and the collector with them kept.
+            addressTaken.Add(Escape.CollectorFreer);
+            addressTaken.Add(Escape.CollectorLive);
             // What a barrier on a replaced object becomes (ScalarObjects).
             addressTaken.Add(Escape.ValueBarrier);
         }

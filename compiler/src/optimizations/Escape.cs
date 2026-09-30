@@ -149,12 +149,17 @@ public sealed partial class Escape : IModulePass
         if (Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is { Length: > 0 }) AllocationReport(m, byName);
         LastRun = (Promoted, Owned, OwnedReturns, _fresh.Count, FieldsOwned, VariablesOwned);
 
-        // A program that needs no collector still allocates on its way to
-        // dying -- the exception object, the message it prints -- and those
-        // go to a bump allocator that never frees, which the runtime provides
-        // under this name. Then nothing calls the collecting allocator, and
-        // the collector goes the way of every unreachable function.
-        if (!m.NeedsHeap && byName.ContainsKey(BumpAllocator))
+        // A PROGRAM THAT NEEDS NO COLLECTOR STILL ALLOCATES AND FREES: what
+        // the compiler owns is given back where it dies, and what lives to
+        // the end or is made once is never given back. That is malloc and
+        // free, which the runtime provides beside the collector and sharing
+        // nothing with it (Runtime.AllocManual). Every allocation goes there,
+        // and the collector's free and its liveness test -- all the runtime's
+        // own frees reach -- become the manual heap's; then nothing calls
+        // into the collector, and it goes the way of every unreachable
+        // function, its stack maps with it (the driver asks NeedsHeap).
+        if (!m.NeedsHeap && byName.ContainsKey(ManualAllocator) && byName.ContainsKey(ManualObjectAllocator)
+            && byName.ContainsKey(ManualFreer) && byName.ContainsKey(ManualLive))
         {
             foreach (Function f in m.Functions)
             {
@@ -167,22 +172,24 @@ public sealed partial class Escape : IModulePass
                         {
                             continue;
                         }
-
-                        // An allocation this pass owns keeps the real
-                        // allocator: a bump region cannot take a block back,
-                        // and giving the block back is the whole point. Its
-                        // frees therefore keep the real free as well, which
-                        // is why nothing is retargeted when the module has
-                        // owned an allocation anywhere.
-                        string? to = null;
-                        if (IsAllocator(i.Callee) && !_owned.Contains(i))
+                        // Bookkeeping for a collector there will not be: a
+                        // barrier, a card mark, a mark, a thread's word that
+                        // it is blocking or at a safepoint. None has any other
+                        // effect, and each would keep the collector linked.
+                        if (i.Dest is null && (IsCollectorNote(i.Callee) || i.Callee is ThreadBlocking or ThreadUnblocking or ThreadSafePoint))
                         {
-                            to = BumpAllocator;
+                            b.Instrs.RemoveAt(k);
+                            k--;
+                            continue;
                         }
-                        else if (i.Callee == Freer && Owned == 0)
+                        string? to = i.Callee switch
                         {
-                            to = BumpFreer;
-                        }
+                            Allocator or LeafAllocator => ManualAllocator,
+                            ObjectAllocator => ManualObjectAllocator,
+                            CollectorFreer => ManualFreer,
+                            CollectorLive => ManualLive,
+                            _ => null,
+                        };
                         if (to is null)
                         {
                             continue;
@@ -197,8 +204,22 @@ public sealed partial class Escape : IModulePass
         }
     }
 
-    /// <summary>The allocator for a program that never collects: bump and forget.</summary>
-    public const string BumpAllocator = "m_Runtime_AllocBump_1_V$I64";
+    /// <summary>The heap of a program that needs no collector: malloc, for a block and for an object.</summary>
+    public const string ManualAllocator = "m_Runtime_AllocManual_1_V$I64";
+    public const string ManualObjectAllocator = "m_Runtime_AllocManualObject_1_V$I64";
+
+    /// <summary>Its free, and whether a pointer is a live object of it (what Gc.Free and Gc.LiveObject become).</summary>
+    public const string ManualFreer = "m_Runtime_FreeManual_1_V$I64";
+    public const string ManualLive = "m_Runtime_ManualObject_1_V$I64";
+
+    /// <summary>The collector's own free and liveness test, which the runtime's frees call.</summary>
+    public const string CollectorFreer = "m_Gc_Free_1_V$I64";
+    public const string CollectorLive = "m_Gc_LiveObject_1_V$I64";
+
+    /// <summary>A thread telling the collector it blocks, is back, or is at a safepoint.</summary>
+    public const string ThreadBlocking = "m_GcThreads_BeginBlocking_0";
+    public const string ThreadUnblocking = "m_GcThreads_EndBlocking_0";
+    public const string ThreadSafePoint = "m_GcThreads_SafePoint_1_V$I64";
 
     /// <summary>
     /// Giving a block back by hand. The compiler calls this only for an
@@ -207,9 +228,6 @@ public sealed partial class Escape : IModulePass
     /// payload of a live block, so freeing a zero is a no-op.
     /// </summary>
     public const string Freer = "m_Runtime_Free_1_V$I64";
-
-    /// <summary>Free for a program with no heap to free into: nothing to do.</summary>
-    public const string BumpFreer = "m_Runtime_FreeBump_1_V$I64";
 
     /// <summary>How many allocations this pass gave an explicit free rather than a frame slot.</summary>
     public int Owned { get; private set; }
@@ -2059,6 +2077,24 @@ public sealed partial class Escape : IModulePass
     private static HashSet<Block> Repeating(Function f)
     {
         Cfg cfg = new(f);
+        // A LANDING PAD IS ENTERED FROM WHERE ITS HANDLER WAS INSTALLED (the
+        // LabelAddr naming it), by an unwind no edge of the graph shows. With
+        // that edge added, a pad that leads back into the loop that installed
+        // it is on the loop's cycle, and one that leaves the loop is not --
+        // it runs at most once however often its handler went in.
+        Dictionary<Block, List<Block>> into = new(ReferenceEqualityComparer.Instance), from = new(ReferenceEqualityComparer.Instance);
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Op == Opcode.LabelAddr)
+                    foreach (Block pad in i.Targets)
+                    {
+                        if (!into.TryGetValue(b, out List<Block>? outs)) into[b] = outs = new();
+                        outs.Add(pad);
+                        if (!from.TryGetValue(pad, out List<Block>? ins)) from[pad] = ins = new();
+                        ins.Add(b);
+                    }
+        IEnumerable<Block> Succs(Block b) => into.TryGetValue(b, out List<Block>? extra) ? cfg.Succs(b).Concat(extra) : cfg.Succs(b);
+        IEnumerable<Block> Preds(Block b) => from.TryGetValue(b, out List<Block>? extra) ? cfg.Preds(b).Concat(extra) : cfg.Preds(b);
         // Kosaraju: finishing order on the graph, then components on its
         // reverse; a block is on a cycle if its component has two blocks or
         // it is its own successor.
@@ -2068,13 +2104,13 @@ public sealed partial class Escape : IModulePass
         {
             if (!seen.Add(root)) continue;
             Stack<(Block Block, IEnumerator<Block> Next)> stack = new();
-            stack.Push((root, cfg.Succs(root).GetEnumerator()));
+            stack.Push((root, Succs(root).GetEnumerator()));
             while (stack.Count > 0)
             {
                 (Block block, IEnumerator<Block> next) = stack.Peek();
                 if (next.MoveNext())
                 {
-                    if (seen.Add(next.Current)) stack.Push((next.Current, cfg.Succs(next.Current).GetEnumerator()));
+                    if (seen.Add(next.Current)) stack.Push((next.Current, Succs(next.Current).GetEnumerator()));
                 }
                 else { stack.Pop(); order.Add(block); }
             }
@@ -2088,9 +2124,9 @@ public sealed partial class Escape : IModulePass
             Stack<Block> work = new();
             work.Push(order[k]);
             while (work.TryPop(out Block? block))
-                foreach (Block pred in cfg.Preds(block))
+                foreach (Block pred in Preds(block))
                     if (assigned.Add(pred)) { component.Add(pred); work.Push(pred); }
-            if (component.Count > 1 || cfg.Succs(order[k]).Contains(order[k])) repeating.UnionWith(component);
+            if (component.Count > 1 || Succs(order[k]).Contains(order[k])) repeating.UnionWith(component);
         }
         return repeating;
     }
@@ -2301,6 +2337,7 @@ public sealed partial class Escape : IModulePass
 
         List<string> sites = new();
         HashSet<Instr> counted = new(ReferenceEqualityComparer.Instance);
+        OnceRun once = new(m, byName, entry);
         while (work.Count > 0)
         {
             (string name, bool unowned) = work.Pop();
@@ -2321,7 +2358,7 @@ public sealed partial class Escape : IModulePass
                 {
                     bool origin = origins is not null && origins.Contains(i);
                     if (i.Callee is not null && IsAllocator(i.Callee) && !_owned.Contains(i) && !_permanent.Contains(i) && !_fieldOwned.Contains(i)
-                        && !ThrownCovered(i, items)
+                        && !ThrownCovered(i, items) && !once.RunsOnce(f, b)
                         && (!origin || unowned) && counted.Add(i))
                     {
                         sites.Add(paths ? $"{f.Name}:{i.Line} {i.Callee}\n      reached: {Path(f.Name)}" : f.Name);
@@ -2347,6 +2384,96 @@ public sealed partial class Escape : IModulePass
             List<string> chain = new() { name };
             while (reachedFrom.TryGetValue(chain[^1], out string? up) && chain.Count < 8 && !chain.Contains(up)) chain.Add(up);
             return string.Join(" <- ", chain);
+        }
+    }
+
+    /// <summary>
+    /// WHAT RUNS AT MOST ONCE IN A RUN. An allocation made at most once needs
+    /// no collector: were it never freed, it would cost one object for the
+    /// life of the program, as a C program's tables made at start-up do --
+    /// the tables a probe makes, the message a fatal path builds. The entry
+    /// and every static initialiser run once; so does a function every direct
+    /// call to which is in a block that runs once of a function that does,
+    /// and whose address nothing takes. Found from that start outward, so a
+    /// recursive function is never among them. A block runs once when it is
+    /// on no cycle, a landing pad's entry from its handler's install counted
+    /// (Repeating).
+    /// </summary>
+    private sealed class OnceRun
+    {
+        private readonly HashSet<string> _once = new(StringComparer.Ordinal);
+        private readonly Dictionary<Function, HashSet<Block>> _blocks = new();
+
+        public OnceRun(Module m, Dictionary<string, Function> byName, Function entry)
+        {
+            HashSet<string> addressed = new(StringComparer.Ordinal);
+            foreach (DataItem d in m.Data) foreach (DataReloc r in d.Relocs) addressed.Add(r.Symbol);
+            // Only calls the program can make count against a function: a
+            // caller nothing reaches runs never, not many times. Reached over
+            // calls, named addresses and data, as widely as anything is.
+            Dictionary<string, DataItem> data = new(StringComparer.Ordinal);
+            foreach (DataItem d in m.Data) data[d.Name] = d;
+            HashSet<string> reached = new(StringComparer.Ordinal) { entry.Name };
+            Stack<string> pending = new();
+            pending.Push(entry.Name);
+            foreach (Function f in m.Functions)
+                if (f.Name.Contains("StaticInit$", StringComparison.Ordinal) && reached.Add(f.Name)) pending.Push(f.Name);
+            while (pending.TryPop(out string? name))
+            {
+                if (data.TryGetValue(name, out DataItem? item))
+                {
+                    foreach (DataReloc r in item.Relocs) if (reached.Add(r.Symbol)) pending.Push(r.Symbol);
+                    continue;
+                }
+                if (!byName.TryGetValue(name, out Function? g)) continue;
+                foreach (Block b in g.Blocks)
+                    foreach (Instr i in b.Instrs)
+                    {
+                        if (i.Callee is not null && reached.Add(i.Callee)) pending.Push(i.Callee);
+                        foreach (Operand o in i.Operands) if (o is SymOperand sym && reached.Add(sym.Name)) pending.Push(sym.Name);
+                    }
+            }
+            Dictionary<string, List<(Function F, Block B)>> calls = new(StringComparer.Ordinal);
+            foreach (Function f in m.Functions.Where(f => reached.Contains(f.Name)))
+                foreach (Block b in f.Blocks)
+                    foreach (Instr i in b.Instrs)
+                    {
+                        foreach (Operand o in i.Operands) if (o is SymOperand sym) addressed.Add(sym.Name);
+                        if (i.Op == Opcode.Call && i.Callee is not null)
+                        {
+                            if (!calls.TryGetValue(i.Callee, out var list)) calls[i.Callee] = list = new();
+                            list.Add((f, b));
+                        }
+                    }
+            _once.Add(entry.Name);
+            foreach (Function f in m.Functions)
+                if (f.Name.Contains("StaticInit$", StringComparison.Ordinal) && f.Async is null) _once.Add(f.Name);
+            bool changed = true;
+            while (changed)
+            {
+                changed = false;
+                foreach (Function f in m.Functions)
+                {
+                    if (_once.Contains(f.Name) || f.Async is not null || addressed.Contains(f.Name)
+                        || !calls.TryGetValue(f.Name, out var sites) || sites.Count == 0) continue;
+                    if (sites.All(site => _once.Contains(site.F.Name) && BlockOnce(site.F, site.B)))
+                    {
+                        _once.Add(f.Name);
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        public bool RunsOnce(Function f, Block b) => _once.Contains(f.Name) && BlockOnce(f, b);
+
+        private bool BlockOnce(Function f, Block b)
+        {
+            if (!_blocks.TryGetValue(f, out var known))
+            {
+                _blocks[f] = known = Repeating(f);
+            }
+            return !known.Contains(b);
         }
     }
 

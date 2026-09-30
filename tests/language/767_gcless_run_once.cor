@@ -1,0 +1,43 @@
+// test: gcless run once
+// expect-exit: 0
+// expect-output:
+// 4 60 heap 0
+//
+// What runs at most once in a run needs no collector: tables a probe makes
+// when the program starts are one object each for the life of the program,
+// as a C program's are. The probe below is called once, from a block of Main
+// that is on no loop, so its tables need no heap -- while the loop that reads
+// them afterwards makes nothing.
+
+static class Probe
+{
+    static long[] _ports;
+    static int[] _widths;
+
+    public static int Find()
+    {
+        _ports = new long[4];
+        _widths = new int[4];
+        for (int i = 0; i < 4; i++) { _ports[i] = 0x1F0 + i; _widths[i] = i * 5; }
+        return _ports.Length;
+    }
+
+    public static int Width(int unit) => _widths[unit & 3];
+}
+
+static class Program
+{
+    static int Main()
+    {
+        int found = Probe.Find();
+        int total = 0;
+        for (int k = 0; k < 8; k++) total += Probe.Width(k);
+        Sys.PrintInt(found);
+        Sys.Print(" ");
+        Sys.PrintInt(total);
+        Sys.Print(" heap ");
+        Sys.PrintInt(Gc.HeapBytes);
+        Sys.PrintLine();
+        return 0;
+    }
+}
