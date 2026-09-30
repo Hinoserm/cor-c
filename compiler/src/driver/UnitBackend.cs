@@ -15,6 +15,9 @@ public sealed class UnitBackend : IUnitBackend
     public int LifetimesTaken => _lifetimes;
     private int _lifetimes;
 
+    /// <summary>The most a unit whose late passes run at the link may take decoded.</summary>
+    private const long PreLateDecodeLimit = 512L * 1024 * 1024;
+
     public ObjectFile Recompile(ObjectFile original, IReadOnlyList<IrImport> imports, IReadOnlySet<string>? retained = null,
         LifetimeFacts? facts = null)
     {
@@ -41,7 +44,12 @@ public sealed class UnitBackend : IUnitBackend
         // them. What they leave is what a version 1 archive held, and the
         // per-function steps below go on from there as before.
         bool preLate = IrUnitCodec.ReadSettings(archive).Settings is { PreLate: true };
-        var read = IrUnitCodec.ReadWithSettings(archive, memoryBudget: preLate ? MachineMemory.WorkBudget(64L * 1024 * 1024, 1024L * 1024 * 1024) : 64L * 1024 * 1024,
+        // The late passes need the unit whole, so its decode is bounded by a
+        // fixed limit, the same on every machine: sized by what the machine
+        // has free (a quarter of what the process's 768 MB heap leaves), a
+        // unit holding the runtime and the standard library, 220 MB decoded,
+        // could not be linked anywhere.
+        var read = IrUnitCodec.ReadWithSettings(archive, memoryBudget: preLate ? PreLateDecodeLimit : 64L * 1024 * 1024,
             retained: retained, functionHeaders: preLate ? null : visibility);
         var unit = (read.Module, StackMaps: read.StackMaps, read.AccountedBytes);
         Console.Error.WriteLine("IR backend: retained functions=" + unit.Module.Functions.Count + ", data=" + unit.Module.Data.Count
