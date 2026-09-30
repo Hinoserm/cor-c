@@ -449,6 +449,7 @@ public sealed class Inline : IParallelModulePass
                     Offset = i.Offset,
                     Callee = i.Callee,
                     DispatchType = i.DispatchType,
+                    Field = i.Field,
                     Line = i.Line,
                     Default = i.Default is null ? null : blocks[i.Default],
                 };

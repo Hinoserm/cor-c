@@ -1515,6 +1515,12 @@ static class Runtime
     // chunk of a third as many units always fits.
     const int WriteChunkBytes = 384;
 
+    /// The end of a catch body's hold on the exception it caught, at every way
+    /// out of the body but handing the exception on. Nothing to do: the
+    /// compiler makes the call a free where the body kept the exception
+    /// nowhere else, and leaves it to the collector where it did.
+    public static void CatchEnd(object caught) { }
+
     public static void Print(string s)
     {
         WriteText(StdOut, s);

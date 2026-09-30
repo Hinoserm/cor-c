@@ -737,7 +737,31 @@ public sealed partial class Lowering
             _e.Call(CallLabel(capture), IrType.Void, R(obj), R(Widen(frame)), new SymOperand(InternString(site)));
         }
 
+        // A throw that leaves catch bodies -- no handler opened inside them
+        // since -- ends their hold on their exceptions, after the new one is
+        // made (it may carry the old one as its inner exception) and before
+        // it unwinds. Not a catch's own exception thrown again: that is
+        // handed on, not ended.
+        for (int c = _openCatches.Count - 1; c >= 0 && _openCatches[c].Depth >= _openHandlers.Count; c--)
+        {
+            if (value is NameExpr { Name: var thrown } && thrown == _openCatches[c].Clause.Name) continue;
+            EndCatch(_openCatches[c].Keep);
+        }
+
         Rethrow(obj, at);
+    }
+
+    /// <summary>
+    /// The end of a catch body's hold on its exception: Runtime.CatchEnd,
+    /// which does nothing. The escape pass makes it a free when the body let
+    /// the exception go nowhere else (Escape.OwnCaught).
+    /// </summary>
+    private void EndCatch(FrameSlot keep)
+    {
+        if (RuntimeMethod("CatchEnd", 1) is not MethodSymbol end) return;
+        Require(end);
+        VReg held = _e.Load(IrTypes.Word, new SlotOperand(keep));
+        _e.Call(CallLabel(end), IrType.Void, R(held));
     }
 
     private void Rethrow(VReg obj, Node at)
@@ -893,9 +917,12 @@ public sealed partial class Lowering
                 _e.SetBlock(accepted);
             }
 
+            _openCatches.Add((_openHandlers.Count, keep, c));
             EmitStmt(c.Body);
+            _openCatches.RemoveAt(_openCatches.Count - 1);
             if (!_e.Closed)
             {
+                EndCatch(keep);
                 _e.Jump(end);
             }
             _e.SetBlock(next);
@@ -921,6 +948,13 @@ public sealed partial class Lowering
     /// </summary>
     private void UnwindTo(int depth)
     {
+        // Out of the catch bodies this leaves, innermost first: a break,
+        // continue, return or goto ends each one's hold on its exception.
+        for (int c = _openCatches.Count - 1; c >= 0 && _openCatches[c].Depth >= depth; c--)
+        {
+            EndCatch(_openCatches[c].Keep);
+        }
+
         List<(FrameSlot Record, AstBlock? Finally)> saved = _openHandlers.ToList();
 
         for (int i = saved.Count - 1; i >= depth; i--)

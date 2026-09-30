@@ -26,6 +26,13 @@ public sealed class Instr
     /// </summary>
     public string? DispatchType { get; set; }
 
+    /// <summary>
+    /// Load or Store of a field: which one ("Type::name"). What lets a whole
+    /// program's every store into a field, and every read of it, be found
+    /// (the owned-field rules).
+    /// </summary>
+    public string? Field { get; set; }
+
     /// <summary>Jump, Branch, Switch, LabelAddr: where. Phi: the predecessor each operand comes from.</summary>
     public List<Block> Targets { get; } = new();
 

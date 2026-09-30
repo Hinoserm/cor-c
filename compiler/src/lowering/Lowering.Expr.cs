@@ -1392,7 +1392,7 @@ public sealed partial class Lowering
             }
             else
             {
-                StoreNew(obj, value, f.Offset, f.Type);
+                StoreNew(obj, value, f.Offset, f.Type, f);
             }
         }
 
@@ -1427,7 +1427,7 @@ public sealed partial class Lowering
                 {
                     v = CopyStruct(copy, v, f.Type.Symbol!);
                 }
-                StoreNew(obj, v, f.Offset, f.Type);
+                StoreNew(obj, v, f.Offset, f.Type, f);
             }
         }
 

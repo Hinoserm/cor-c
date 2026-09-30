@@ -287,6 +287,7 @@ public sealed partial class Lowering
             _e.Jump(_returnBlock);
         }
         _openHandlers.Clear();
+        _openCatches.Clear();
 
         // Completion with the result.
         _e.SetBlock(_returnBlock);

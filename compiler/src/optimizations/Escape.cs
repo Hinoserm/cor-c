@@ -134,6 +134,8 @@ public sealed partial class Escape : IModulePass
         foreach (Function f in m.Functions)
         {
             PromoteIn(f, summaries, canFree, fields);
+            if (canFree) OwnCaught(f, summaries);
+            ThrownIn(f, summaries);
             if (canFree && Provided(ReplacedFreer)) OwnVariables(f, summaries);
             if (canFreeFields) OwnFields(f, summaries);
         }
@@ -246,6 +248,94 @@ public sealed partial class Escape : IModulePass
     /// Those are the caller's to free wherever the call is owned.
     /// </summary>
     private readonly Dictionary<string, HashSet<Instr>> _freshOrigins = new(StringComparer.Ordinal);
+
+    /// <summary>The runtime's routine a catch body's end calls (Lowering.EndCatch).</summary>
+    public static bool IsCatchEnd(string? callee) => callee is not null && callee.StartsWith("m_Runtime_CatchEnd_1_", StringComparison.Ordinal);
+
+    /// <summary>The runtime's routine an exception nothing catches goes to.</summary>
+    public const string Unhandled = "m_Runtime_Unhandled_1_V$Any";
+
+    /// <summary>Some catch body keeps the exception it caught (OwnCaught): thrown objects are then the collector's.</summary>
+    private bool _catchKept;
+
+    /// <summary>Allocations whose only way out is being thrown (ThrownIn).</summary>
+    private readonly HashSet<Instr> _thrown = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>
+    /// A CAUGHT EXCEPTION IS THE CATCH'S TO FREE. Lowering ends each catch
+    /// body's hold on its exception at every way out but handing it on
+    /// (Runtime.CatchEnd). The exception is in the slot the landing pad kept
+    /// it in; if nothing the body does with it lets it go anywhere -- stored,
+    /// captured, handed to a callee that keeps it -- each end becomes a free.
+    /// Rethrowing hands it on and is not an escape. Otherwise the ends stay
+    /// calls that do nothing, and some catch is known to keep what it caught.
+    /// </summary>
+    private void OwnCaught(Function f, Dictionary<string, bool[]> summaries)
+    {
+        if (f.Async is not null)
+        {
+            if (f.Blocks.Any(b => b.Instrs.Any(i => i.Op == Opcode.Call && IsCatchEnd(i.Callee)))) _catchKept = true;
+            return;
+        }
+        Dictionary<VReg, Instr> defs = new();
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Dest is not null) defs[i.Dest] = i;
+        Dictionary<FrameSlot, List<(Block Block, Instr End)>> ends = new();
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Op == Opcode.Call && IsCatchEnd(i.Callee) && i.Operands.Count == 1 && i.Operands[0] is RegOperand held
+                    && defs.TryGetValue(held.Reg, out Instr? load) && load.Op == Opcode.Load && load.Operands.Count >= 1
+                    && load.Operands[0] is SlotOperand { Slot: var keep })
+                {
+                    if (!ends.TryGetValue(keep, out var list)) ends[keep] = list = new();
+                    list.Add((b, i));
+                }
+                else if (i.Op == Opcode.Call && IsCatchEnd(i.Callee)) _catchKept = true;
+        foreach ((FrameSlot keep, var list) in ends)
+        {
+            HashSet<VReg> roots = new();
+            HashSet<Instr> stores = new(ReferenceEqualityComparer.Instance);
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                {
+                    if (i.Op == Opcode.Load && i.Dest is not null && i.Operands.Count >= 1 && i.Operands[0] is SlotOperand { Slot: var from } && from == keep)
+                        roots.Add(i.Dest);
+                    if (i.Op == Opcode.Store && i.Operands.Count >= 2 && i.Operands[0] is SlotOperand { Slot: var into } && into == keep)
+                    {
+                        stores.Add(i);
+                        if (i.Operands[1] is RegOperand value) roots.Add(value.Reg);
+                    }
+                }
+            Flow flow = Analyse(f, roots, summaries, null, stores, handOff: true);
+            if (flow.Escapes) { _catchKept = true; continue; }
+            foreach ((Block b, Instr end) in list)
+            {
+                Instr free = new() { Op = Opcode.Call, Callee = Freer, Line = end.Line };
+                free.Operands.AddRange(end.Operands);
+                b.Instrs[b.Instrs.IndexOf(end)] = free;
+                _bookkeeping.Add(free);
+                Owned++;
+            }
+        }
+    }
+
+    /// <summary>
+    /// An allocation whose only way out of its function is being thrown: what
+    /// catches it frees it (OwnCaught), and nothing catching it is the program
+    /// ending. Covered only where no catch keeps what it caught.
+    /// </summary>
+    private void ThrownIn(Function f, Dictionary<string, bool[]> summaries)
+    {
+        if (f.Async is not null) return;
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+            {
+                if (i.Op != Opcode.Call || !IsAllocator(i.Callee) || i.Dest is null || _owned.Contains(i)) continue;
+                if (Analyse(f, new[] { i.Dest }, summaries, i).Escapes && !Analyse(f, new[] { i.Dest }, summaries, i, handOff: true).Escapes)
+                    _thrown.Add(i);
+            }
+    }
 
     /// <summary>Allocations that live until the program ends (PermanentStatics): never garbage, so no collector's.</summary>
     private readonly HashSet<Instr> _permanent = new(ReferenceEqualityComparer.Instance);
@@ -437,7 +527,7 @@ public sealed partial class Escape : IModulePass
 
     internal static Flow Analyse(Function f, IEnumerable<VReg> roots, Dictionary<string, bool[]> summaries, Instr? source,
         HashSet<Instr>? ownedStores = null, HashSet<VReg>? returnable = null, HashSet<VReg>? joinable = null,
-        Needs? needs = null)
+        Needs? needs = null, bool handOff = false)
     {
         Flow flow = new() { Source = source };
         foreach (VReg r in roots)
@@ -572,6 +662,17 @@ public sealed partial class Escape : IModulePass
                             // Joining it with another of the returned origins,
                             // or with null, on the way to the return.
                             Derive(i.Dest);
+                            break;
+
+                        case Opcode.Call when IsCatchEnd(i.Callee):
+                            // A catch body's hold on its exception ending: a
+                            // use, and the free the pass may make it.
+                            break;
+
+                        case Opcode.Unwind when handOff:
+                        case Opcode.Call when handOff && i.Callee == Unhandled:
+                            // Thrown: handed to whatever catches it, or to
+                            // the program's end. Not kept here.
                             break;
 
                         case Opcode.Call when i.Callee == Corsac.Lang.X86.MachineIntrinsics.KeepAlive:
@@ -1710,6 +1811,7 @@ public sealed partial class Escape : IModulePass
                 {
                     bool origin = origins is not null && origins.Contains(i);
                     if (i.Callee is not null && IsAllocator(i.Callee) && !_owned.Contains(i) && !_permanent.Contains(i)
+                        && !(_thrown.Contains(i) && !_catchKept)
                         && (!origin || unowned) && counted.Add(i))
                     {
                         sites.Add(paths ? $"{f.Name}:{i.Line} {i.Callee}\n      reached: {Path(f.Name)}" : f.Name);

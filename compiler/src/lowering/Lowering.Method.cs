@@ -72,6 +72,13 @@ public sealed partial class Lowering
     /// <summary>Open try blocks, innermost last: a finally to run on the way out, or null for a catch.</summary>
     private readonly List<(FrameSlot Record, AstBlock? Finally)> _openHandlers = new();
 
+    /// <summary>
+    /// The catch bodies being lowered, innermost last: how many handlers were
+    /// open around each, the slot its exception is kept in, and the clause.
+    /// Every way out of one but handing the exception on ends it (CatchEnd).
+    /// </summary>
+    private readonly List<(int Depth, FrameSlot Keep, CatchClause Clause)> _openCatches = new();
+
     private Block? _returnBlock;
     private VReg? _returnValue;
 
@@ -96,6 +103,7 @@ public sealed partial class Lowering
         _loops.Clear();
         _switchBodies.Clear();
         _openHandlers.Clear();
+        _openCatches.Clear();
         _this = null;
         _returnBlock = null;
         _returnValue = null;
@@ -642,7 +650,10 @@ public sealed partial class Lowering
     /// the bytes there ARE the struct, so its value is their address and a
     /// store copies bytes in.
     /// </summary>
-    private sealed record MemPlace(Operand Address, long Offset, Type Type, bool Volatile = false, bool Inline = false, VReg? CovariantArray = null) : Place(Type);
+    private sealed record MemPlace(Operand Address, long Offset, Type Type, bool Volatile = false, bool Inline = false, VReg? CovariantArray = null, FieldSymbol? Field = null) : Place(Type);
+
+    /// <summary>A field's name as the IR carries it on the loads and stores of it (Instr.Field).</summary>
+    private static string FieldKey(FieldSymbol f) => TypeKey(f.Owner) + "::" + f.Name;
 
     private VReg LoadPlace(Place p)
     {
@@ -666,6 +677,7 @@ public sealed partial class Lowering
             {
                 IrType it = IrTypes.Of(m.Type);
                 VReg v = _e.Load(it, m.Address, m.Offset, LoadSize(m.Type), !m.Type.IsUnsigned && m.Type.Prim != Prim.Bool);
+                if (m.Field is FieldSymbol read) _e.Block.Instrs[^1].Field = FieldKey(read);
                 if (m.Volatile)
                 {
                     _e.Emit(Opcode.Fence, null);
@@ -709,6 +721,7 @@ public sealed partial class Lowering
                 }
                 ReferenceBarrier(m, value);
                 _e.Store(m.Address, new RegOperand(value), m.Offset, LoadSize(m.Type));
+                if (m.Field is FieldSymbol written) _e.Block.Instrs[^1].Field = FieldKey(written);
                 CardMark(m, value);
                 break;
         }
@@ -872,9 +885,10 @@ public sealed partial class Lowering
     /// it old; the stores that follow are old-to-young pointers like any
     /// other, and the card is how the next minor collection hears of them.
     /// </summary>
-    private void StoreNew(VReg block, VReg value, long offset, Type type)
+    private void StoreNew(VReg block, VReg value, long offset, Type type, FieldSymbol? field = null)
     {
         _e.Store(R(block), R(value), offset, LoadSize(type));
+        if (field is not null) _e.Block.Instrs[^1].Field = FieldKey(field);
         CardMark(new MemPlace(R(block), offset, type), value);
     }
 
@@ -1047,7 +1061,7 @@ public sealed partial class Lowering
             // the three things C# says runs its initialisers.
             TouchType(f.Owner);
             _statics.Add(f);
-            MemPlace place = new MemPlace(new SymOperand(StaticSymbol(f)), 0, f.Type, f.Volatile);
+            MemPlace place = new MemPlace(new SymOperand(StaticSymbol(f)), 0, f.Type, f.Volatile, Field: f);
 
             // A STATIC STRUCT FIELD IS A VALUE TOO, zero until written; static
             // storage starts as zero bytes, which for a struct held by pointer
@@ -1084,7 +1098,7 @@ public sealed partial class Lowering
             return new MemPlace(new RegOperand(cell), 0, f.Type, f.Volatile);
         }
 
-        return new MemPlace(new RegOperand(obj), f.Offset, f.Type, f.Volatile, f.Inline);
+        return new MemPlace(new RegOperand(obj), f.Offset, f.Type, f.Volatile, f.Inline, Field: f);
     }
 
     /// <summary>The place an assignable expression denotes.</summary>
