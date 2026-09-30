@@ -2307,7 +2307,7 @@ static class NumberFormat {
 
         int made = 0;
         for (int i = 1; i < format.Length; i++) {
-            if (!Char.IsDigit(Sys.GetChar(format, i))) { throw new FormatException(format); }
+            if (!Char.IsDigit(Sys.GetChar(format, i))) { throw new FormatException("Format specifier was invalid."); }
             made = made * 10 + (Sys.GetChar(format, i) - 48);
         }
         return made;
@@ -2365,7 +2365,7 @@ static class NumberFormat {
 
         if (kind == 'g' || kind == 'G') { return String.FromInt(value); }
 
-        throw new FormatException(format);
+        throw new FormatException("Format specifier was invalid.");
     }
 
     /// The UNSIGNED form, which cannot simply widen to long: a ulong above
@@ -2389,7 +2389,7 @@ static class NumberFormat {
             if (places > 0) { body = String.Concat(body, String.Concat(".", String.Repeat('0', places))); }
             return body;
         }
-        throw new FormatException(format);
+        throw new FormatException("Format specifier was invalid.");
     }
 
     private static string Pad(string s, int width) {
@@ -2646,7 +2646,7 @@ static class DoubleFormat {
         if (format.Length > 1) {
             width = 0;
             for (int i = 1; i < format.Length; i++) {
-                if (!Char.IsDigit(Sys.GetChar(format, i))) { throw new FormatException(format); }
+                if (!Char.IsDigit(Sys.GetChar(format, i))) { throw new FormatException("Format specifier was invalid."); }
                 width = width * 10 + (Sys.GetChar(format, i) - 48);
             }
         }
@@ -2674,7 +2674,7 @@ static class DoubleFormat {
             grouped.Append(tail);
             return grouped.ToString();
         }
-        throw new FormatException(format);
+        throw new FormatException("Format specifier was invalid.");
     }
 }
 

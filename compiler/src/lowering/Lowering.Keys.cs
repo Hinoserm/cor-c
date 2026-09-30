@@ -119,7 +119,11 @@ public sealed partial class Lowering
         e.SetBlock(ask);
         VReg fn = e.Load(IrTypes.Word, vt, (long)_b.EqualsSlot * _t.WordSize);
 
-        e.Ret(new RegOperand(e.CallIndirect(R(fn), IrType.I32, new Operand[] { R(a), R(b) })!));
+        VReg answered = e.CallIndirect(R(fn), IrType.I32, new Operand[] { R(a), R(b) })!;
+
+        e.Block.Instrs[^1].DispatchType = ObjectDispatch;
+
+        e.Ret(new RegOperand(answered));
         e.SetBlock(yes);
         e.Ret(new ImmOperand(1, IrType.I32));
         e.SetBlock(no);
@@ -183,7 +187,11 @@ public sealed partial class Lowering
         e.SetBlock(ask);
         VReg fn = e.Load(IrTypes.Word, vt, (long)_b.HashSlot * _t.WordSize);
 
-        e.Ret(new RegOperand(e.CallIndirect(R(fn), IrType.I32, new Operand[] { R(a) })!));
+        VReg answered = e.CallIndirect(R(fn), IrType.I32, new Operand[] { R(a) })!;
+
+        e.Block.Instrs[^1].DispatchType = ObjectDispatch;
+
+        e.Ret(new RegOperand(answered));
         e.SetBlock(none);
         e.Ret(new ImmOperand(0, IrType.I32));
         _m.Functions.Add(f);
@@ -767,7 +775,11 @@ public sealed partial class Lowering
         e.SetBlock(ask);
         VReg fn = e.Load(IrTypes.Word, vt, (long)_b.CompareSlot * _t.WordSize);
 
-        e.Ret(new RegOperand(e.CallIndirect(R(fn), IrType.I32, new Operand[] { R(a), R(b) })!));
+        VReg answered = e.CallIndirect(R(fn), IrType.I32, new Operand[] { R(a), R(b) })!;
+
+        e.Block.Instrs[^1].DispatchType = ObjectDispatch;
+
+        e.Ret(new RegOperand(answered));
         e.SetBlock(same);
         e.Ret(new ImmOperand(0, IrType.I32));
         e.SetBlock(less);

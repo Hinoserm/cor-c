@@ -224,6 +224,9 @@ public sealed partial class Lowering
     /// </summary>
     private static bool IsLibrary(TypeSymbol? t) => t?.Decl?.FromLibrary ?? false;
 
+    /// <summary>object's descriptor, the declaring type of a call to one of object's own virtuals.</summary>
+    internal const string ObjectDispatch = "t_object";
+
     /// <summary>
     /// Whether the method says `[MethodImpl(MethodImplOptions.NoInlining)]`:
     /// by the flag's name, alone or among others, or by a number with its bit

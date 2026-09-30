@@ -3628,7 +3628,10 @@ public sealed partial class Lowering
 
         _e.SetBlock(call);
         VReg fn = _e.Load(IrTypes.Word, vt, (long)_b.ToStringSlot * _t.WordSize);
-        _e.CopyTo(result, R(_e.CallIndirect(R(fn), IrTypes.Word, new Operand[] { R(obj) })!));
+        VReg said = _e.CallIndirect(R(fn), IrTypes.Word, new Operand[] { R(obj) })!;
+        // Declared on object: every type's ToString slot (Escape.IndirectTargets).
+        _e.Block.Instrs[^1].DispatchType = ObjectDispatch;
+        _e.CopyTo(result, R(said));
         _e.Jump(end);
         _e.SetBlock(none);
         _e.CopyTo(result, R(_e.Address(InternString(""))));

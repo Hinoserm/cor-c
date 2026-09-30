@@ -136,6 +136,9 @@ public sealed class Inline : IParallelModulePass
             addressTaken.Add(Escape.ThreadRegister);
             // And the question whether there is one, answered only then.
             addressTaken.Add(Escape.CollectorQuery);
+            // A catch body's end, which that pass makes a free: an empty
+            // routine, and inlined first there would be nothing to make one.
+            addressTaken.Add(Escape.CatchEnder);
             // What a barrier on a replaced object becomes (ScalarObjects).
             addressTaken.Add(Escape.ValueBarrier);
         }
