@@ -441,6 +441,13 @@ public sealed class Inline : IParallelModulePass
         }
         site.Instrs.Add(new Instr { Op = Opcode.Jump, Targets = { blocks[callee.Entry] } });
 
+        // WHERE AN INLINED INSTRUCTION IS, for a trace: at the call, as .NET
+        // reports a method its JIT inlined -- the callee is not a frame of its
+        // own, and the caller's frame is at the line that called it. A line
+        // of the callee's would name a place in another file than the one
+        // the caller's frame gives (FrameTable names one file a function),
+        // and moving between the two lines cost the table bytes at each step.
+
         foreach (Block b in callee.Blocks)
         {
             Block into = blocks[b];
@@ -466,7 +473,7 @@ public sealed class Inline : IParallelModulePass
                     Callee = i.Callee,
                     DispatchType = i.DispatchType,
                     Field = i.Field,
-                    Line = i.Line,
+                    Line = call.Line,
                     Default = i.Default is null ? null : blocks[i.Default],
                 };
                 foreach (Operand o in i.Operands)
