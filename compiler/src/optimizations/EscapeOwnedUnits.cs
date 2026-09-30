@@ -448,6 +448,7 @@ public sealed partial class Escape
         {
             why = "";
             if (f.Async is not null || ld.Dest is null) { why = "async read"; return null; }
+            if (UsedUpInBlock(f, b, ld)) return new ReadJudgement();
             bool FreesOwnMaking(Block x, int k)
             {
                 Instr free = x.Instrs[k];
@@ -506,8 +507,71 @@ public sealed partial class Escape
             return judged;
         }
 
+        // A READ USED UP WHERE IT IS MADE: every use of it, and of copies and
+        // addresses made from it, later in its block, as a load's base, an
+        // array length, a comparison or a branch; nothing of it live out of
+        // the block or into a handler; and no call, free or store into a
+        // field before its last use. What the full judgement finds of such a
+        // read is always the same -- it keeps within, needs nothing, and is
+        // live across nothing -- and this finds it without the flow analysis.
+        bool UsedUpInBlock(Function f, Block b, Instr ld)
+        {
+            HashSet<VReg> derived = new() { ld.Dest! };
+            int at = b.Instrs.IndexOf(ld);
+            int last = at;
+            bool quiet = true;
+            for (int k = at + 1; k < b.Instrs.Count; k++)
+            {
+                Instr i = b.Instrs[k];
+                bool uses = false;
+                for (int o = 0; o < i.Operands.Count; o++)
+                    if (i.Operands[o] is RegOperand r && derived.Contains(r.Reg))
+                    {
+                        uses = true;
+                        bool fine = i.Op switch
+                        {
+                            Opcode.Load or Opcode.ArrayLength => o == 0,
+                            Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.SExt32 or Opcode.Add or Opcode.Sub => i.Dest is not null,
+                            Opcode.Eq or Opcode.Ne or Opcode.LtS or Opcode.LeS or Opcode.GtS or Opcode.GeS or Opcode.LtU or Opcode.LeU
+                                or Opcode.GtU or Opcode.GeU or Opcode.Branch => true,
+                            _ => false,
+                        };
+                        if (!fine) return false;
+                    }
+                if (uses)
+                {
+                    if (!quiet) return false;
+                    last = k;
+                    if (i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.SExt32 or Opcode.Add or Opcode.Sub) derived.Add(i.Dest!);
+                }
+                if (i.Op is Opcode.Call or Opcode.CallIndirect or Opcode.Unwind || i.Op == Opcode.Store && i.Field is not null) quiet = false;
+            }
+            Liveness liveness = LivenessOf(f);
+            HashSet<VReg> pads = PadsOf(f);
+            // Written once each: a register written elsewhere as well could
+            // carry the value out another way.
+            Dictionary<VReg, Instr> defs = Defs(f);
+            return derived.All(r => liveness.Tracks(r) && !liveness.IsLiveOut(b, r) && !pads.Contains(r) && defs.ContainsKey(r));
+        }
+
         // Reads of fields: the unit's loads, and calls of its own functions
         // that hand back what a field holds (borrowing, as in OwnedFields).
+        // Each direct call with a result, by callee, found once.
+        Dictionary<string, List<(Function G, Block B, Instr Call)>> callsTo = new(StringComparer.Ordinal);
+        List<(Function G, Block B, Instr Call, string Key)> virtualCalls = new();
+        foreach (Function g in m.Functions)
+            foreach (Block cb in g.Blocks)
+                foreach (Instr call in cb.Instrs)
+                {
+                    if (call.Dest is null) continue;
+                    if (call.Op == Opcode.Call && call.Callee is string direct)
+                    {
+                        if (!callsTo.TryGetValue(direct, out var list)) callsTo[direct] = list = new();
+                        list.Add((g, cb, call));
+                    }
+                    else if (call.Op == Opcode.CallIndirect && _indirect is not null && _indirect.TryGetValue(call, out string[]? t) && t.Length == 1)
+                        virtualCalls.Add((g, cb, call, t[0]));
+                }
         List<(Function F, Block B, Instr I, string Field)> reads = loads.Select(l => (l.F, l.B, l.I, l.I.Field!)).ToList();
         HashSet<(string Function, string Field)> borrowing = new();
         for (int n = 0; n < reads.Count; n++)
@@ -524,12 +588,8 @@ public sealed partial class Escape
             // Handed back: every call of this function reads the field -- the
             // ones here now, the other units' at the link.
             FunctionOf(f.Name).Borrows.Add(field);
-            if (borrowing.Add((f.Name, field)))
-                foreach (Function g in m.Functions)
-                    foreach (Block cb in g.Blocks)
-                        foreach (Instr call in cb.Instrs)
-                            if (call.Dest is not null && call.Op == Opcode.Call && call.Callee == f.Name)
-                                reads.Add((g, cb, call, field));
+            if (borrowing.Add((f.Name, field)) && callsTo.TryGetValue(f.Name, out var calls))
+                foreach ((Function g, Block cb, Instr call) in calls) reads.Add((g, cb, call, field));
         }
 
         // Reads of what calls return, where the callee may hand back what a
@@ -541,19 +601,20 @@ public sealed partial class Escape
         bool Relayed(string callee) => relaying.Contains(callee)
             || !_defined.Contains(callee) && !IsIntrinsic(callee) && !IsAllocator(callee) && !IsFreeCall(callee);
         HashSet<Instr> judgedCalls = new(ReferenceEqualityComparer.Instance);
+        IEnumerable<(Function G, Block B, Instr Call, string Key)> First()
+        {
+            foreach ((string callee, var list) in callsTo)
+                if (Relayed(callee)) foreach (var c in list) yield return (c.G, c.B, c.Call, callee);
+            foreach (var c in virtualCalls) yield return c;
+        }
         for (bool first = true; first || pending.Count > 0; first = false)
         {
             string? only = first ? null : pending.Dequeue();
-            foreach (Function g in m.Functions)
-                foreach (Block cb in g.Blocks)
-                    foreach (Instr call in cb.Instrs)
+            IEnumerable<(Function G, Block B, Instr Call, string Key)> batch = only is null ? First().ToList()
+                : (callsTo.GetValueOrDefault(only) ?? new()).Select(c => (c.G, c.B, c.Call, only));
+            foreach ((Function g, Block cb, Instr call, string key) in batch)
                     {
-                        if (call.Dest is null || call.Dest.Type != IrTypes.Word || judgedCalls.Contains(call)) continue;
-                        string? key = call.Op == Opcode.Call && call.Callee is string direct && (only is null ? Relayed(direct) : direct == only) ? direct
-                            : only is null && call.Op == Opcode.CallIndirect && _indirect is not null && _indirect.TryGetValue(call, out string[]? t) && t.Length == 1 ? t[0]
-                            : null;
-                        if (key is null) continue;
-                        judgedCalls.Add(call);
+                        if (call.Dest!.Type != IrTypes.Word || !judgedCalls.Add(call)) continue;
                         if (!hints.CallReads.TryGetValue(key, out OwnedCallRead? read)) hints.CallReads[key] = read = new();
                         if (read.Refused) continue;
                         if (Judge(g, cb, call, out _) is not ReadJudgement judged
