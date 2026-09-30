@@ -1,0 +1,25 @@
+// test: a deconstruction's names may mix written types and var
+// expect-exit: 0
+// expect-output:
+// a 1
+// b 2
+// 3 x
+using System.Collections.Generic;
+
+static class Program
+{
+    static int Main()
+    {
+        Dictionary<string, int> map = new() { ["a"] = 1, ["b"] = 2 };
+        List<string> keys = new(map.Keys);
+        keys.Sort();
+        foreach (string k in keys)
+        {
+            foreach ((string name, var value) in new[] { (k, map[k]) })
+                Console.WriteLine(name + " " + value);
+        }
+        (int n, var s) = (3, "x");
+        Console.WriteLine(n + " " + s);
+        return 0;
+    }
+}
