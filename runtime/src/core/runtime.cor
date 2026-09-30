@@ -1879,15 +1879,26 @@ static class Runtime
             scratch[begin] = 48;
         }
 
-        while (magnitude != (ulong)0)
+        // Past 32 bits, a digit at a time through the helper below, never
+        // `/`: this file IS where `/` on a long ends up. It answers the
+        // remainder too, so no 64-bit multiply takes it back.
+        while ((magnitude >> 32) != (ulong)0)
         {
-            // Unsigned division by ten through the helper below, never `/`:
-            // this file IS where `/` on a long ends up.
-            ulong q = UDiv(magnitude, (ulong)10);
-            int digit = (int)(magnitude - q * (ulong)10);
+            ulong left;
+            magnitude = UDivShort(magnitude, (uint)10, out left);
             begin = begin - 1;
-            scratch[begin] = (byte)(48 + digit);
-            magnitude = q;
+            scratch[begin] = (byte)(48 + (int)left);
+        }
+
+        // The rest, nearly every number there is, with the processor's own
+        // 32-bit divide.
+        uint small = (uint)magnitude;
+        while (small != (uint)0)
+        {
+            uint q = small / (uint)10;
+            begin = begin - 1;
+            scratch[begin] = (byte)(48 + (int)(small - q * (uint)10));
+            small = q;
         }
 
         if (negative)
