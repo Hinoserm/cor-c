@@ -2567,8 +2567,81 @@ static class Gc
 
     /// A block just handed out: its header and footer agree, or it is said
     /// with the call trace (the heap check).
+    // THE LAST BLOCKS HANDED OUT, each with the three calls that asked for
+    // it, read again at every allocation after: a footer that was right when
+    // the block was made and is not now was overwritten in between, and the
+    // allocation that finds it is a few steps after whatever did it.
+    const long RecentBlocks = 64;
+    const long RecentWords = 4;
+    static long _recent;
+    static long _recentAt;
+    static long _recentReports;
+
+    static void Remember(long block)
+    {
+        if (_recent == 0)
+        {
+            _recent = Platform.Map(RecentBlocks * RecentWords * WordSize.Bytes);
+            if (_recent == 0) return;
+        }
+        long w = WordSize.Bytes;
+        long e = _recent + (_recentAt % RecentBlocks) * RecentWords * w;
+        _recentAt = _recentAt + 1;
+        Sys.Poke(e, block);
+        long fp = Sys.FramePointer();
+        // Past Remember's callers inside the collector (CheckMade, the
+        // allocator, Runtime's entry) to the code that asked for the block.
+        for (long skip = 0; skip < 3 && fp != 0; skip++)
+        {
+            long next = Sys.Peek(fp) & WordSize.AddressMask;
+            fp = next > fp ? next : 0;
+        }
+        for (long i = 1; i < RecentWords; i++)
+        {
+            long back = 0;
+            if (fp != 0)
+            {
+                back = Sys.Peek(fp + w) & WordSize.AddressMask;
+                long next = Sys.Peek(fp) & WordSize.AddressMask;
+                fp = next > fp ? next : 0;
+            }
+            Sys.Poke(e + i * w, back);
+        }
+    }
+
+    static void CheckRecent()
+    {
+        if (_recent == 0 || _recentReports >= 12) return;
+        long w = WordSize.Bytes;
+        long n = _recentAt < RecentBlocks ? _recentAt : RecentBlocks;
+        for (long k = 0; k < n; k++)
+        {
+            long e = _recent + k * RecentWords * w;
+            long block = Sys.Peek(e);
+            if (block == 0) continue;
+            long word = Sys.Peek(block);
+            long size = word & SizeMask;
+            // Freed since, or taken again: no longer the block it was.
+            if ((word & FlagFree) != 0 || size < Smallest || size > 65536) { Sys.Poke(e, Zero); continue; }
+            long foot = Sys.Peek(block + size - FooterBytes);
+            if (foot == word) continue;
+            _recentReports = _recentReports + 1;
+            SayNumber("gc owner check: a footer overwritten after it was made, block ", block);
+            SayNumber("gc owner check:   header ", word);
+            SayNumber("gc owner check:   footer now ", foot);
+            SayNumber("gc owner check:   made by ", Sys.Peek(e + w));
+            SayNumber("gc owner check:   and ", Sys.Peek(e + 2 * w));
+            SayNumber("gc owner check:   and ", Sys.Peek(e + 3 * w));
+            Runtime.WriteLiteral(2, "gc owner check:   found at:\n");
+            Runtime.SayTrace(2, Sys.FramePointer());
+            Sys.Poke(e, Zero);
+        }
+    }
+
     static void CheckMade(long block, string how)
     {
+        CheckRecent();
+        Remember(block);
         long word = Sys.Peek(block);
         long size = word & SizeMask;
         if (size >= Smallest && Sys.Peek(block + size - FooterBytes) == word) return;
