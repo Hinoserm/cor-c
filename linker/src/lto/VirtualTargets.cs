@@ -34,6 +34,14 @@ public static class VirtualTargets
     /// resolved, to the functions it reaches.
     /// </summary>
     public static Dictionary<string, string[]> Resolve(List<(string Name, ObjectFile Object)> inputs, IEnumerable<string> wanted)
+        => Answer(inputs, wanted, null).Targets;
+
+    /// <summary>Every type each of <paramref name="types"/> is, itself and all its ancestors, together.</summary>
+    public static HashSet<string> Ancestry(List<(string Name, ObjectFile Object)> inputs, IEnumerable<string> types)
+        => Answer(inputs, Array.Empty<string>(), types).Ancestry!;
+
+    private static (Dictionary<string, string[]> Targets, HashSet<string>? Ancestry) Answer(List<(string Name, ObjectFile Object)> inputs,
+        IEnumerable<string> wanted, IEnumerable<string>? types)
     {
         Dictionary<string, string[]> answers = new(StringComparer.Ordinal);
         List<(string Name, string Declaring, long Slot)> calls = new();
@@ -44,7 +52,7 @@ public static class VirtualTargets
             if (plus <= Prefix.Length || !long.TryParse(name.AsSpan(plus + 1), out long slot)) continue;
             calls.Add((name, name[Prefix.Length..plus], slot));
         }
-        if (calls.Count == 0) return answers;
+        if (calls.Count == 0 && types is null) return (answers, null);
         int word = inputs.Any(input => TargetContract.IsLongMode(input.Object)) ? 8 : 4;
 
         // Every definition, the first of each global name (link order, as
@@ -116,6 +124,16 @@ public static class VirtualTargets
             return ancestry[d] = found;
         }
 
+        HashSet<string>? together = null;
+        if (types is not null)
+        {
+            together = new(StringComparer.Ordinal);
+            foreach (string type in types)
+            {
+                together.Add(type);
+                if (byName.TryGetValue(type, out int d)) together.UnionWith(Ancestors(d));
+            }
+        }
         foreach (var (name, declaring, slot) in calls)
         {
             bool everyType = declaring == "t_object";
@@ -136,6 +154,6 @@ public static class VirtualTargets
             if (!any) { answers[name] = Array.Empty<string>(); continue; }
             if (resolved && targets.Count > 0) answers[name] = targets.Order(StringComparer.Ordinal).ToArray();
         }
-        return answers;
+        return (answers, together);
     }
 }

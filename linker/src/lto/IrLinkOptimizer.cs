@@ -38,6 +38,13 @@ public static class IrLinkOptimizer
             : new(StringComparer.Ordinal);
         LifetimeSolver? lifetimes = enabled && hints.Count > 0 ? new LifetimeSolver(hintOrder, virtuals) : null;
         if (virtuals.Count > 0) Console.Error.WriteLine("LTO virtual calls resolved: " + virtuals.Count);
+        // THE WHOLE PROGRAM'S ANSWERS, for a closed image only -- a library's
+        // consumers could throw anything -- and only where every unit with
+        // IR said what it throws.
+        string[]? catchable = lifetimes is not null && closedImageEntry is not null && archives.Keys.All(hints.ContainsKey)
+            ? ForeignCatchable(inputs, hintOrder, lifetimes) : null;
+        bool programFacts = catchable is not null;
+        if (programFacts) Console.Error.WriteLine("LTO catches: " + (catchable!.Length == 0 ? "every catch frees what it caught" : catchable.Length + " types keep what they catch"));
         // A closed image keeps only what is reached, and reaching is judged
         // on the IR as the units left it. Two kinds of call are made later:
         // those a regenerated unit gains when the lifetime rules run again
@@ -61,8 +68,10 @@ public static class IrLinkOptimizer
                 HashSet<string> defined = obj.Symbols.Where(symbol => symbol.IsDefined).Select(symbol => symbol.Name).ToHashSet(StringComparer.Ordinal);
                 // A unit with an object it left to the collector only for want
                 // of what another unit does, which the whole program now says.
+                // Every unit of a closed image the whole program has answers for
+                // gains by them (its catches), whatever its pending conditions.
                 bool gains = lifetimes is not null && hints.TryGetValue(obj, out LifetimeHints? unitHints)
-                    && unitHints.Pending.Any(lifetimes.Holds);
+                    && (programFacts || unitHints.Pending.Any(lifetimes.Holds));
                 if (gains) lifetimeUnits++;
                 List<(string Symbol, IrArchive Archive, IrArchiveEntry Body)> imports = new(); int used = 0;
                 // The runtime's frees are calls such a unit is about to make.
@@ -94,6 +103,7 @@ public static class IrLinkOptimizer
                         .Concat(plan.Imports.SelectMany(import => import.Body.Calls))
                         .Concat(own.Named().Select(named => named.Callee).Where(virtuals.ContainsKey)).Distinct(StringComparer.Ordinal))
                     : null;
+                if (facts is not null) facts.ForeignCatchable = catchable;
                 ObjectFile replacement = service.Recompile(original, imports, plan.Retained, facts);
                 X86CodeGenerationContract.ValidateRegeneration(original, replacement);
                 TargetContract.Validate(new[] { ("original", original), ("regenerated", replacement) });
@@ -120,6 +130,38 @@ public static class IrLinkOptimizer
             Console.Error.WriteLine("LTO lifetimes: units with hints=" + hints.Count + ", units gaining=" + lifetimeUnits
                 + ", field sites=" + sites + " freed=" + sitesFreed);
         return replacements.Count;
+    }
+
+    /// <summary>
+    /// WHAT A CATCH MAY BE HANDED THAT WAS NOT JUST MADE, over every unit
+    /// (Escape.ForeignThrows, as a flat compile judges it): a throw of
+    /// something unnamed makes it anything; one of another function's result,
+    /// nothing if the whole program finds that function fresh; one read from
+    /// a static, whatever any unit stores there. Every such type and its
+    /// ancestors, or null when it could be anything.
+    /// </summary>
+    private static string[]? ForeignCatchable(List<(string Name, ObjectFile Object)> inputs, List<LifetimeHints> units, LifetimeSolver solver)
+    {
+        Dictionary<string, List<string>> stored = new(StringComparer.Ordinal);
+        foreach (LifetimeHints unit in units)
+            foreach ((string field, string type) in unit.StaticStores)
+            {
+                if (!stored.TryGetValue(field, out List<string>? list)) stored[field] = list = new();
+                list.Add(type);
+            }
+        SortedSet<string> types = new(StringComparer.Ordinal);
+        foreach (LifetimeHints unit in units)
+            foreach (string thrown in unit.Throws)
+            {
+                if (thrown.StartsWith("f:", StringComparison.Ordinal) && solver.IsFresh(thrown[2..])) continue;
+                if (!thrown.StartsWith("s:", StringComparison.Ordinal)) return null;
+                foreach (string type in stored.GetValueOrDefault(thrown[2..]) ?? new List<string>())
+                {
+                    if (type == "*") return null;
+                    types.Add(type);
+                }
+            }
+        return VirtualTargets.Ancestry(inputs, types).Order(StringComparer.Ordinal).ToArray();
     }
 
     /// <summary>

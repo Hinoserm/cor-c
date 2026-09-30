@@ -140,7 +140,7 @@ public sealed class LifetimeHints
     /// <summary>At most this many pending conditions per unit; a fixed bound, so the same everywhere.</summary>
     public const int PendingLimit = 4096;
     private const uint Magic = 0x46494c43; // "CLIF"
-    private const int Version = 2;
+    private const int Version = 3;
     private static readonly UTF8Encoding Utf8 = new(false, true);
 
     public List<LifetimeFunction> Functions { get; } = new();
@@ -156,7 +156,32 @@ public sealed class LifetimeHints
     /// <summary>The runtime's frees the unit may call (Module.RuntimeHelpers), by label.</summary>
     public SortedSet<string> Helpers { get; } = new(StringComparer.Ordinal);
 
-    public bool IsEmpty => Pending.Count == 0 && Functions.Count == 0 && FieldSites.Count == 0;
+    /// <summary>
+    /// WHAT THE UNIT THROWS THAT IT DID NOT JUST MAKE, for the link to judge
+    /// which catches may free what they caught (Escape.ForeignThrows over the
+    /// whole program): "*" for something it cannot name, "s:" and a static
+    /// field it read the exception from, "f:" and another unit's function
+    /// whose result it threw -- nothing, if the whole program finds that
+    /// function hands over a fresh object.
+    /// </summary>
+    public SortedSet<string> Throws { get; } = new(StringComparer.Ordinal);
+    /// <summary>What the unit stores into static fields: the field and the stamped type, "*" where it cannot say.</summary>
+    public SortedSet<(string Field, string Type)> StaticStores { get; } = new(PairOrder.Instance);
+    /// <summary>The static fields the unit stores to outside a static initialiser (Escape.PermanentStatics).</summary>
+    public SortedSet<string> StaticWrites { get; } = new(StringComparer.Ordinal);
+
+    private sealed class PairOrder : IComparer<(string, string)>
+    {
+        public static readonly PairOrder Instance = new();
+        public int Compare((string, string) x, (string, string) y)
+        {
+            int first = string.CompareOrdinal(x.Item1, y.Item1);
+            return first != 0 ? first : string.CompareOrdinal(x.Item2, y.Item2);
+        }
+    }
+
+    public bool IsEmpty => Pending.Count == 0 && Functions.Count == 0 && FieldSites.Count == 0
+        && Throws.Count == 0 && StaticStores.Count == 0 && StaticWrites.Count == 0;
 
     /// <summary>Every (function, argument) any condition here names, and every field merge: what the link must answer.</summary>
     public IEnumerable<(string Callee, int Argument)> Named()
@@ -252,6 +277,18 @@ public sealed class LifetimeHints
             Fields(fields);
             writer.Write(sites.Count);
             foreach ((string symbol, long offset) in sites) { writer.Write(index[symbol]); writer.Write(offset); }
+        }
+        writer.Write(Throws.Count);
+        foreach (string thrown in Throws) Text(thrown);
+        writer.Write(StaticStores.Count);
+        foreach ((string field, string type) in StaticStores) { Text(field); Text(type); }
+        writer.Write(StaticWrites.Count);
+        foreach (string field in StaticWrites) Text(field);
+        void Text(string text)
+        {
+            byte[] bytes = Utf8.GetBytes(text);
+            if (bytes.Length == 0 || bytes.Length > 16384 || text.Contains('\0')) throw new ElfFormatException("Invalid lifetime hint text");
+            writer.Write(bytes.Length); writer.Write(bytes);
         }
         void Condition(LifetimeCondition? condition)
         {
@@ -398,6 +435,17 @@ public sealed class LifetimeHints
                 }
                 hints.FieldSites.Add((fields, sites));
             }
+            string Text()
+            {
+                int length = reader.ReadInt32();
+                if (length < 1 || length > 16384 || length > bytes.Length - stream.Position) throw new ElfFormatException("Invalid lifetime hint text");
+                string text = Utf8.GetString(reader.ReadBytes(length));
+                if (text.Contains('\0')) throw new ElfFormatException("Invalid lifetime hint text");
+                return text;
+            }
+            for (int i = Count(5); i > 0; i--) hints.Throws.Add(Text());
+            for (int i = Count(10); i > 0; i--) { string field = Text(); hints.StaticStores.Add((field, Text())); }
+            for (int i = Count(5); i > 0; i--) hints.StaticWrites.Add(Text());
             if (stream.Position != bytes.Length) throw new ElfFormatException("Trailing lifetime hint data");
             return hints;
         }

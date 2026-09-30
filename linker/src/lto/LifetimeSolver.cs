@@ -17,6 +17,11 @@ public sealed class LifetimeFacts
     public Dictionary<string, SolvedFields> FreshFields { get; } = new(StringComparer.Ordinal);
     /// <summary>The runtime's frees the unit may call (its hints' helpers).</summary>
     public HashSet<string> Helpers { get; } = new(StringComparer.Ordinal);
+    /// <summary>
+    /// For a unit of a closed image: every type a thrown object not just made
+    /// can be, ancestors included (Module.ForeignCatchable). Null: unknown.
+    /// </summary>
+    public string[]? ForeignCatchable { get; set; }
 }
 
 /// <summary>What the whole program does to one object's fields: the owned field rules' summary, solved.</summary>

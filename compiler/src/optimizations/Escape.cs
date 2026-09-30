@@ -416,6 +416,63 @@ public sealed partial class Escape : IModulePass
         return types;
     }
 
+    /// <summary>
+    /// ForeignThrows for a unit that is not the whole program: each throw of
+    /// something not made here, said so the link can judge it with every
+    /// unit's (LifetimeHints.Throws): unknown, read from a static, or the
+    /// result of a function only the whole program can call fresh. And every
+    /// static store's stamped type, and the statics stored outside a static
+    /// initialiser, for the same judgement and for PermanentStatics.
+    /// </summary>
+    private void ThrowHints(Module m, LifetimeHints hints)
+    {
+        foreach (Function f in m.Functions)
+        {
+            bool initialiser = f.Name.Contains("_StaticInit$", StringComparison.Ordinal);
+            Dictionary<VReg, List<Instr>> writes = Writes(f);
+            HashSet<FrameSlot> caughtSlots = new();
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                {
+                    if (i.Op == Opcode.Store && i.Operands.Count == 2 && i.Operands[0] is SlotOperand { Slot: var slot }
+                        && i.Operands[1] is RegOperand { Reg: var v } && writes.TryGetValue(v, out List<Instr>? vw)
+                        && vw.Count == 1 && vw[0] is { Op: Opcode.Call, Callee: "__exception" })
+                        caughtSlots.Add(slot);
+                    if (i.Op == Opcode.Store && i.Operands.Count == 2 && i.Operands[0] is SymOperand { Name: var into })
+                    {
+                        if (!initialiser) hints.StaticWrites.Add(into);
+                        if (i.Operands[1] is ImmOperand { Value: 0 }) continue;
+                        string? type = i.Operands[1] is RegOperand { Reg: var put } ? StampedType(f, put) : null;
+                        hints.StaticStores.Add((into, type ?? "*"));
+                    }
+                }
+            // Made here, handed on from a landing pad, or else what the link must judge.
+            string? Verdict(Operand o)
+            {
+                for (int hop = 0; hop < 8 && o is RegOperand { Reg: var r }; hop++)
+                {
+                    if (!writes.TryGetValue(r, out List<Instr>? ws) || ws.Count != 1) return "*";
+                    Instr d = ws[0];
+                    if (d.Op == Opcode.Call && (IsAllocator(d.Callee) || d.Callee is not null && _fresh.Contains(d.Callee))) return null;
+                    if (d.Op == Opcode.Call && d.Callee == "__exception") return null;
+                    if (d.Op == Opcode.Call && d.Callee is not null && !IsIntrinsic(d.Callee)) return "f:" + d.Callee;
+                    if (d.Op == Opcode.Load && d.Operands is [SlotOperand { Slot: var from }] && caughtSlots.Contains(from)) return null;
+                    if (d.Op == Opcode.Load && d.Operands is [SymOperand { Name: var named }]) return "s:" + named;
+                    if (d.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) || d.Operands.Count != 1) return "*";
+                    o = d.Operands[0];
+                }
+                return "*";
+            }
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                {
+                    Operand? thrown = i.Op == Opcode.Unwind && i.Operands.Count >= 2 ? i.Operands[1]
+                        : i.Op == Opcode.Call && i.Callee == Unhandled && i.Operands.Count == 1 ? i.Operands[0] : null;
+                    if (thrown is not null && Verdict(thrown) is string verdict) hints.Throws.Add(verdict);
+                }
+        }
+    }
+
     /// <summary>What the entry and static initialisers reach over calls, named addresses and data.</summary>
     private static HashSet<string> Reached(Module m)
     {
@@ -482,6 +539,9 @@ public sealed partial class Escape : IModulePass
     /// <summary>Whether a catch can take something thrown that was not just made (_foreignTypes).</summary>
     private bool CatchesForeign(Instr end)
     {
+        // The link's answer for a unit of a closed image (Module.ForeignCatchable).
+        if (_module is { PreserveExports: true, ForeignCatchable: { } catchable })
+            return catchable.Count > 0 && (end.DispatchType is not string taken || catchable.Contains(taken));
         if (_foreignTypes.Count == 0) return false;
         if (_foreignTypes.Contains("*") || end.DispatchType is not string caught) return true;
         Dictionary<string, DataItem> items = _items ??= _module!.Data.ToDictionary(d => d.Name, StringComparer.Ordinal);

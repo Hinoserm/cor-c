@@ -63,6 +63,14 @@ public sealed class Module
     public bool CallsCollector { get; set; }
 
     /// <summary>
+    /// The link's answer, for a unit of a closed image it regenerates: every
+    /// type something thrown that was not just made can be an instance of,
+    /// ancestors included -- a catch of any other type frees what it caught.
+    /// Null where nobody could say, and then every catch keeps it.
+    /// </summary>
+    public HashSet<string>? ForeignCatchable { get; set; }
+
+    /// <summary>
     /// Call sites no inliner may fold away: the allocations the link may yet
     /// place or free (Escape's pending hints), which it must still be able
     /// to tell from any other call when it reads this module's IR back.

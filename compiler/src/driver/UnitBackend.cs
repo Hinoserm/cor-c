@@ -50,6 +50,8 @@ public sealed class UnitBackend : IUnitBackend
         module.PreserveExports = true;
         if (preLate)
         {
+            // The whole program's answers the late passes read, for a closed image.
+            if (facts?.ForeignCatchable is string[] catchable) module.ForeignCatchable = new(catchable, StringComparer.Ordinal);
             foreach (Function function in module.Functions)
                 if (visibility.TryGetValue(function.Name, out bool exported) && exported != function.Exported)
                     throw new InvalidDataException("Archived IR identity disagrees with native symbol " + function.Name);
