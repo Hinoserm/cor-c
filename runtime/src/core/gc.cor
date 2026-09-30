@@ -2117,25 +2117,25 @@ static class Gc
         return cache;
     }
 
-    /// A page laid out afresh as free blocks of class `c`, all on its list,
-    /// in address order. Its memory above the header is zero (fresh from the
-    /// operating system, or cleared by PopPool).
+    /// A page laid out afresh for class `c`: its first few kilobytes as free
+    /// blocks, on its list in address order; the rest is laid out as it is
+    /// needed (FormatMore). Its memory above the header is zero (fresh from
+    /// the operating system, or cleared by PopPool).
+    ///
+    /// A FEW KILOBYTES, NOT THE PAGE: laid out whole, every class a program
+    /// touched wrote thirty-two kilobytes, and a program that allocated a
+    /// handful of objects of each of twenty classes had most of a megabyte
+    /// of its own memory for it -- init, a getty, each with the same -- on a
+    /// machine of 64 MB. Only what is laid out is touched, and End says how
+    /// far that is, as it always has for the blocks a page holds.
     static void FormatPage(long page, long c)
     {
         long size = ClassSize(c);
         long first = HeapChunks.First(page);
-        long n = (HeapChunks.PageBlockLimit(page) - first) / size;
-        long block = first;
-        for (long i = 0; i < n; i++)
-        {
-            Stamp(block, size, FlagFree);
-            Sys.Poke(block + KindAt, i + 1 < n ? block + size : Zero);
-            block = block + size;
-        }
-        HeapChunks.SetEnd(page, block);
-        HeapChunks.SetPageFree(page, first);
+        long made = LayOut(page, first, size);
+        HeapChunks.SetPageFree(page, made != 0 ? first : Zero);
         HeapChunks.SetPageClass(page, c + 1);
-        HeapChunks.SetLargestHole(page, n * size);
+        HeapChunks.SetLargestHole(page, made * size);
         HeapChunks.SetLive(page, Zero, Zero);
         HeapChunks.SetPooled(page, false);
         // NOT THE STARTS OF WHAT WAS HERE BEFORE: an object laid where one
@@ -2282,10 +2282,48 @@ static class Gc
         // A page never formatted is as the operating system gave it: zero.
         if (HeapChunks.End(page) != HeapChunks.First(page))
         {
-            ZeroWords(HeapChunks.First(page), HeapChunks.PageBlockLimit(page));
+            // Only what was laid out was ever written (FormatPage).
+            ZeroWords(HeapChunks.First(page), HeapChunks.End(page));
         }
         FormatPage(page, c);
         return page;
+    }
+
+    /// Free blocks of `size` laid from `from` to the next 4 KB boundary past
+    /// it (one block at least, none past the page's limit), linked in address
+    /// order, the last to nothing, and End moved past them. How many.
+    static long LayOut(long page, long from, long size)
+    {
+        long limit = HeapChunks.PageBlockLimit(page);
+        long stop = (from + LayOutBytes) & ~(LayOutBytes - 1);
+        long n = 0;
+        long block = from;
+        while (block + size <= limit && (n == 0 || block + size <= stop))
+        {
+            n = n + 1;
+            block = block + size;
+        }
+        block = from;
+        for (long i = 0; i < n; i++)
+        {
+            Stamp(block, size, FlagFree);
+            Sys.Poke(block + KindAt, i + 1 < n ? block + size : Zero);
+            block = block + size;
+        }
+        HeapChunks.SetEnd(page, block);
+        return n;
+    }
+
+    const long LayOutBytes = 4096;
+
+    /// More of a page laid out, when its list has run dry: the head of the
+    /// new blocks, or 0 when the page is laid out to its limit.
+    static long FormatMore(long page, long c)
+    {
+        long size = ClassSize(c);
+        long end = HeapChunks.End(page);
+        if (end + size > HeapChunks.PageBlockLimit(page)) return Zero;
+        return LayOut(page, end, size) != 0 ? end : Zero;
     }
 
     /// This thread's cache of class `c` given free blocks: what other
@@ -2309,6 +2347,15 @@ static class Gc
                 HeapChunks.SetPageFree(page, Zero);
                 HeapChunks.SetLargestHole(page, Zero);
                 Sys.Poke(slot + WordSize.Bytes, returned);
+                return true;
+            }
+            // Its list dry: the next of its kilobytes laid out, while any
+            // are left (FormatPage). Not while stamping is open: the blocks
+            // would be laid past what the snapshot recorded for the page.
+            long more = _stamping ? Zero : FormatMore(page, c);
+            if (more != 0)
+            {
+                Sys.Poke(slot + WordSize.Bytes, more);
                 return true;
             }
             // Used up: nobody's, on no list, until a sweep finds room in it.
@@ -2384,6 +2431,18 @@ static class Gc
                 Sys.Poke(tail + KindAt, HeapChunks.PageFree(page));
                 HeapChunks.SetPageFree(page, head);
                 HeapChunks.SetLargestHole(page, HeapChunks.LargestHole(page) + unused);
+            }
+            // A page given up with its list dry but not all laid out: more
+            // laid out, so that it goes on its class's list and its room is
+            // found (FormatPage). Not while stamping is open.
+            if (HeapChunks.PageFree(page) == 0 && !_stamping)
+            {
+                long more = FormatMore(page, c);
+                if (more != 0)
+                {
+                    HeapChunks.SetPageFree(page, more);
+                    HeapChunks.SetLargestHole(page, HeapChunks.End(page) - more);
+                }
             }
             HeapChunks.SetOwner(page, Zero);
             Sys.Poke(slot, Zero);
