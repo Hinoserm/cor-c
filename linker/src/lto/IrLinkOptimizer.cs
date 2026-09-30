@@ -34,6 +34,7 @@ public static class IrLinkOptimizer
         // (VirtualTargets), from the descriptors in the objects themselves.
         Dictionary<string, string[]> virtuals = enabled && hints.Count > 0
             ? VirtualTargets.Resolve(inputs, hintOrder.SelectMany(unit => unit.Named()).Select(named => named.Callee)
+                .Concat(hintOrder.SelectMany(unit => unit.Owned?.VirtualNames() ?? Enumerable.Empty<string>()))
                 .Where(name => name.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal)))
             : new(StringComparer.Ordinal);
         LifetimeSolver? lifetimes = enabled && hints.Count > 0 ? new LifetimeSolver(hintOrder, virtuals) : null;
@@ -45,6 +46,23 @@ public static class IrLinkOptimizer
             ? ForeignCatchable(inputs, hintOrder, lifetimes) : null;
         bool programFacts = catchable is not null;
         if (programFacts) Console.Error.WriteLine("LTO catches: " + (catchable!.Length == 0 ? "every catch frees what it caught" : catchable.Length + " types keep what they catch"));
+        // FIELDS THAT OWN WHAT THEY HOLD, judged over every unit's hints as a
+        // flat compile judges them over its module (OwnedFieldSolver); every
+        // regenerated unit frees what a store replaces and gives the types it
+        // defines their owned-field maps. A body that stores into one is not
+        // imported into another unit: its copy would not free what it replaces.
+        // Every unit with IR must have said, as for catches; and every unit
+        // with hints is then regenerated, so none keeps a store that does
+        // not free what it replaces, or a type without its map.
+        OwnedFieldFacts? ownedFields = lifetimes is not null && closedImageEntry is not null && archives.Keys.All(hints.ContainsKey)
+            ? OwnedFieldSolver.Solve(hintOrder, lifetimes, virtuals, closedImageEntry,
+                Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is { Length: > 0 } which
+                    ? line => { if (which.Length == 1 || line.Contains(which, StringComparison.Ordinal)) Console.Error.WriteLine("alloc report: field " + line); } : null) : null;
+        if (ownedFields is { Fields.Count: 0 }) ownedFields = null;
+        if (ownedFields is not null)
+            Console.Error.WriteLine("LTO owned fields: " + ownedFields.Fields.Count + " of "
+                + hintOrder.SelectMany(unit => unit.Owned!.Fields.Keys).Distinct(StringComparer.Ordinal).Count()
+                + (Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is { Length: > 0 } ? ": " + string.Join(" ", ownedFields.Fields.Keys.Order(StringComparer.Ordinal)) : ""));
         // A closed image keeps only what is reached, and reaching is judged
         // on the IR as the units left it. Two kinds of call are made later:
         // those a regenerated unit gains when the lifetime rules run again
@@ -71,7 +89,7 @@ public static class IrLinkOptimizer
                 // Every unit of a closed image the whole program has answers for
                 // gains by them (its catches), whatever its pending conditions.
                 bool gains = lifetimes is not null && hints.TryGetValue(obj, out LifetimeHints? unitHints)
-                    && (programFacts || unitHints.Pending.Any(lifetimes.Holds));
+                    && (programFacts || ownedFields is not null || unitHints.Pending.Any(lifetimes.Holds));
                 if (gains) lifetimeUnits++;
                 List<(string Symbol, IrArchive Archive, IrArchiveEntry Body)> imports = new(); int used = 0;
                 // The runtime's frees are calls such a unit is about to make.
@@ -79,7 +97,7 @@ public static class IrLinkOptimizer
                 foreach (string call in archive.Entries.Values.Where(record => retained is null || retained.Contains(record.Key))
                     .SelectMany(record => record.Calls).Concat(helpers).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal))
                 {
-                    if (defined.Contains(call) || !owners.TryGetValue(call, out ObjectFile? owner) || !archives.TryGetValue(owner, out IrArchive? provider)
+                    if (defined.Contains(call) || ownedFields?.Writers.Contains(call) == true || !owners.TryGetValue(call, out ObjectFile? owner) || !archives.TryGetValue(owner, out IrArchive? provider)
                         || !provider.Entries.TryGetValue("F:" + call, out IrArchiveEntry? body) || !body.Importable
                         || body.Instructions > 160 || body.Length > importBytes - used || imports.Count >= bodyLimit) continue;
                     imports.Add((call, provider, body)); used += body.Length;
@@ -103,7 +121,7 @@ public static class IrLinkOptimizer
                         .Concat(plan.Imports.SelectMany(import => import.Body.Calls))
                         .Concat(own.Named().Select(named => named.Callee).Where(virtuals.ContainsKey)).Distinct(StringComparer.Ordinal))
                     : null;
-                if (facts is not null) facts.ForeignCatchable = catchable;
+                if (facts is not null) { facts.ForeignCatchable = catchable; facts.OwnedFields = ownedFields; }
                 ObjectFile replacement = service.Recompile(original, imports, plan.Retained, facts);
                 X86CodeGenerationContract.ValidateRegeneration(original, replacement);
                 TargetContract.Validate(new[] { ("original", original), ("regenerated", replacement) });

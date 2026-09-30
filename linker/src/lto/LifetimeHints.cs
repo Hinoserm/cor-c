@@ -140,7 +140,7 @@ public sealed class LifetimeHints
     /// <summary>At most this many pending conditions per unit; a fixed bound, so the same everywhere.</summary>
     public const int PendingLimit = 4096;
     private const uint Magic = 0x46494c43; // "CLIF"
-    private const int Version = 3;
+    private const int Version = 4;
     private static readonly UTF8Encoding Utf8 = new(false, true);
 
     public List<LifetimeFunction> Functions { get; } = new();
@@ -169,6 +169,8 @@ public sealed class LifetimeHints
     public SortedSet<(string Field, string Type)> StaticStores { get; } = new(PairOrder.Instance);
     /// <summary>The static fields the unit stores to outside a static initialiser (Escape.PermanentStatics).</summary>
     public SortedSet<string> StaticWrites { get; } = new(StringComparer.Ordinal);
+    /// <summary>What the unit knows of fields that own what they hold (OwnedFieldHints); null where it did not judge them.</summary>
+    public OwnedFieldHints? Owned { get; set; }
 
     private sealed class PairOrder : IComparer<(string, string)>
     {
@@ -181,7 +183,7 @@ public sealed class LifetimeHints
     }
 
     public bool IsEmpty => Pending.Count == 0 && Functions.Count == 0 && FieldSites.Count == 0
-        && Throws.Count == 0 && StaticStores.Count == 0 && StaticWrites.Count == 0;
+        && Throws.Count == 0 && StaticStores.Count == 0 && StaticWrites.Count == 0 && Owned is null;
 
     /// <summary>Every (function, argument) any condition here names, and every field merge: what the link must answer.</summary>
     public IEnumerable<(string Callee, int Argument)> Named()
@@ -284,6 +286,8 @@ public sealed class LifetimeHints
         foreach ((string field, string type) in StaticStores) { Text(field); Text(type); }
         writer.Write(StaticWrites.Count);
         foreach (string field in StaticWrites) Text(field);
+        writer.Write(Owned is not null);
+        Owned?.Write(writer);
         void Text(string text)
         {
             byte[] bytes = Utf8.GetBytes(text);
@@ -446,6 +450,7 @@ public sealed class LifetimeHints
             for (int i = Count(5); i > 0; i--) hints.Throws.Add(Text());
             for (int i = Count(10); i > 0; i--) { string field = Text(); hints.StaticStores.Add((field, Text())); }
             for (int i = Count(5); i > 0; i--) hints.StaticWrites.Add(Text());
+            if (reader.ReadBoolean()) hints.Owned = OwnedFieldHints.Read(reader, bytes.Length);
             if (stream.Position != bytes.Length) throw new ElfFormatException("Trailing lifetime hint data");
             return hints;
         }

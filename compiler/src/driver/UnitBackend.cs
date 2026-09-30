@@ -52,6 +52,7 @@ public sealed class UnitBackend : IUnitBackend
         {
             // The whole program's answers the late passes read, for a closed image.
             if (facts?.ForeignCatchable is string[] catchable) module.ForeignCatchable = new(catchable, StringComparer.Ordinal);
+            module.OwnedFields = facts?.OwnedFields;
             foreach (Function function in module.Functions)
                 if (visibility.TryGetValue(function.Name, out bool exported) && exported != function.Exported)
                     throw new InvalidDataException("Archived IR identity disagrees with native symbol " + function.Name);
@@ -117,7 +118,17 @@ public sealed class UnitBackend : IUnitBackend
             cleanup.Run(local);
             if (facts is not null)
             {
-                Interlocked.Add(ref _lifetimes, Escape.RunAtLink(function, link!));
+                // Kept as it was, to be taken back if a free the pass places
+                // would run under a read of an owned field (RunAtLink's -1).
+                byte[]? before = Escape.ReadsOwnedField(function, link!) ? IrFunctionCodec.Write(function) : null;
+                int taken = Escape.RunAtLink(function, link!);
+                if (taken < 0)
+                {
+                    function = IrFunctionCodec.Read(before!, new IrReadBudget(64L * 1024 * 1024));
+                    local.Functions[0] = function;
+                    taken = 0;
+                }
+                Interlocked.Add(ref _lifetimes, taken);
                 new Inline { SmallBody = 40, GrowthLimit = 1024, ConstantBranchBody = 160, FreshOwnerBody = 0 }.Run(local);
                 cleanup.Run(local);
             }

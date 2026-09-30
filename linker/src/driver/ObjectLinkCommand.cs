@@ -16,6 +16,10 @@ public static class ObjectLinkCommand
         ulong? baseAddress = null;
         ulong? physicalAddress = null;
         bool flat = false;
+        // The image is the whole program: nothing outside it calls in or
+        // throws. Flat and physically placed images are so by their nature;
+        // an executable linked against no shared library is so when asked.
+        bool closed = false;
         string? map = null;
         bool shared = false;
         bool noUndefined = false;
@@ -65,6 +69,7 @@ public static class ObjectLinkCommand
                 }
             }
             else if (arg == "--flat") flat = true;
+            else if (arg == "--closed") closed = true;
             else if (arg == "--map" && i + 1 < args.Length) map = args[++i];
             else if (arg == "--shared") shared = true;
             else if (arg == "--no-undefined") noUndefined = true;
@@ -75,8 +80,9 @@ public static class ObjectLinkCommand
             else paths.Add(arg);
         }
         if (output is null || paths.Count == 0)
-            return Fail("usage: corlink <file.o> ... -o <output> [--entry symbol] [--flat] [--base address] [--paddr address] [--no-lto]");
+            return Fail("usage: corlink <file.o> ... -o <output> [--entry symbol] [--flat] [--closed] [--base address] [--paddr address] [--no-lto]");
         if (flat && physicalAddress is not null) return Fail("--paddr is for ELF output; use --base for flat images");
+        if (closed && (shared || sharedLibraries.Count > 0)) return Fail("--closed is for an image linked against no shared library");
         if ((shared || sharedLibraries.Count > 0) && (flat || physicalAddress is not null))
             return Fail("shared libraries cannot be combined with flat output or a physical address");
         if (!shared && sharedLibraries.Count > 0 && baseAddress is not null)
@@ -102,7 +108,7 @@ public static class ObjectLinkCommand
         if (selected is not null) X86CodeGenerationContract.ValidateTarget(inputs, selected);
         ManagedLayoutContract.Validate(inputs);
         int regenerated = IrLinkOptimizer.Run(inputs, () => backend ?? new ProcessUnitBackend(backendPath), lto, importBytes,
-            closedImageEntry: flat || physicalAddress is not null ? entry : null);
+            closedImageEntry: flat || closed || physicalAddress is not null ? entry : null);
         int folded = LinkTimeOptimizer.Run(inputs, lto);
         if (selected is not null) X86CodeGenerationContract.ValidateTarget(inputs, selected);
         // Long mode is read before the notes that say so go.
