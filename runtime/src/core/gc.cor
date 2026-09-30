@@ -2640,6 +2640,7 @@ static class Gc
             SayNumber("gc owner check:   and ", Sys.Peek(e + 2 * w));
             SayNumber("gc owner check:   and ", Sys.Peek(e + 3 * w));
             SayJournal(block + size - FooterBytes);
+            if (OverwriteHook != 0) Sys.Call(OverwriteHook, block, size, 0);
             Runtime.WriteLiteral(2, "gc owner check:   found at:\n");
             Runtime.SayTrace(2, Sys.FramePointer());
             Sys.Poke(e, Zero);
@@ -2681,6 +2682,9 @@ static class Gc
     /// write that later breaks it traps where it is made (GcWatchpoint).
     public static long WatchHook;
     public static long WatchSize;
+    /// Called with each block whose footer the recheck finds overwritten:
+    /// a kernel then watches that page's writes for the next time.
+    public static long OverwriteHook;
 
     static void CheckMade(long block, string how)
     {
@@ -3904,6 +3908,26 @@ static class Gc
         GcLock.Exit();
     }
 
+    /// Whether the word at `at` is the footer of a live block of a class page
+    /// that no longer matches its header: the heap check's question for a
+    /// kernel watching one page's writes (GcWatchpoint). The block, or 0.
+    /// Reads only; takes no lock (the caller is a trap handler).
+    public static long FooterBroken(long at)
+    {
+        long chunk = HeapChunks.Of(at);
+        if (chunk == 0) return 0;
+        long c = HeapChunks.PageClass(chunk);
+        if (c <= 1) return 0;
+        long size = ClassSize(c - 1);
+        long first = HeapChunks.First(chunk);
+        if (at < first) return 0;
+        long block = first + ((at - first) / size) * size;
+        if (block + size - FooterBytes != (at & ~3L)) return 0;
+        long word = Sys.Peek(block);
+        if ((word & FlagFree) != 0 || (word & SizeMask) != size) return 0;
+        return Sys.Peek(block + size - FooterBytes) == word ? 0 : block;
+    }
+
     /// [from, to) inside this thread's live buffer: a fault.
     static void CheckOutsideBuffer(long from, long to, string what)
     {
@@ -4583,6 +4607,7 @@ static class Gc
     public static void CheckHeapOn()
     {
         _heapCheck = true;
+        HeapChunks.CheckOverlaps = true;
     }
     static long _heapCheckTable;
     static long _heapCheckFaults;
@@ -8067,6 +8092,30 @@ static class HeapChunks
         IndexAddRun(chunk, 1, 0);
     }
 
+    /// The heap check's: a range about to become heap that some chunk
+    /// already holds is memory with two owners -- the address space handed
+    /// out twice, or a chunk let go while still indexed. Said with the calls.
+    public static bool CheckOverlaps;
+    static long _overlapReports;
+
+    static void CheckNew(long raw, long bytes)
+    {
+        if (!CheckOverlaps || _overlapReports >= 8) return;
+        for (long at = raw; at < raw + bytes; at = at + 4096)
+        {
+            long holder = Of(at);
+            if (holder == 0) continue;
+            _overlapReports = _overlapReports + 1;
+            Gc.SayNumber("gc owner check: new heap memory already a chunk's, at ", at);
+            Gc.SayNumber("gc owner check:   the new range starts ", raw);
+            Gc.SayNumber("gc owner check:   bytes ", bytes);
+            Gc.SayNumber("gc owner check:   the chunk holding it ", holder);
+            Gc.SayNumber("gc owner check:   its class ", PageClass(holder));
+            Runtime.SayTrace(2, Sys.FramePointer());
+            return;
+        }
+    }
+
     /// `n` chunks at `first`, `first + step`, ... entered together: none of
     /// the index lies between them, so the entries around them move once.
     static void IndexAddRun(long first, long n, long step)
@@ -8339,6 +8388,7 @@ static class HeapChunks
             _chunks = page;
         }
         _heapBytes = _heapBytes + n * PageBytes;
+        CheckNew(raw, n * PageBytes);
         IndexAddRun(raw, n, PageBytes);
         if (_floor == 0 || raw + ChunkBytes < _floor)
         {
@@ -8592,6 +8642,7 @@ static class HeapChunks
         if (_chunks != 0) Sys.Poke(_chunks + ChunkPrevious, raw);
         _chunks = raw;
         _heapBytes = _heapBytes + ask;
+        CheckNew(raw, ask);
         IndexAdd(raw);
 
         // Most words a conservative collector looks at are integers, code
