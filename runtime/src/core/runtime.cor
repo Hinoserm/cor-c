@@ -1599,6 +1599,7 @@ static class Runtime
     public static void AtExit()
     {
         AllocSamples.Dump();
+        Gc.SayStats();
         long f = _atExit;
 
         if (f != 0)

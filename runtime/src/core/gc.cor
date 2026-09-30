@@ -332,7 +332,7 @@ static class Gc
     /// much, the live heap grown, or no generations at all.
     public static long MajorsAsked, MajorsFirst, MajorsCostly, MajorsGrown, MajorsUngenerational;
     const long CardTableBytes = 4194304;
-    const long NurseryMost = 67108864;
+    const long NurseryLeast = 1048576;
     // The blocks the stacks held: a count word, then (block, size) pairs.
     // Two tables, swapped at every cycle: what the last one held is read
     // (RescanHeld) while this one's is written (Hold).
@@ -507,25 +507,49 @@ static class Gc
 
     /// Whether the cycle about to run may be minor: there has been a major
     /// one to make the old generation, nothing has made its marks doubtful,
-    /// and the live heap has not grown past what the pacing allows since.
+    /// and the old generation has not grown past what the pacing allows
+    /// since (OldGrowth).
     static bool NextIsMinor()
     {
         return _generational && !_forceMajor && _majorLive != 0 && !_minorsCostly
-            && _liveBytes < _majorLive + NextThreshold(_majorLive);
+            && _liveBytes < _majorLive + OldGrowth(_majorLive);
+    }
+
+    // THE HEAP IS PACED BY THE LIVE SIZE, NEVER BY THE MACHINE'S FREE MEMORY.
+    // Paced by free memory, the native compiler compiling hello.cs (4.3 GB
+    // allocated, 100-140 MB live after a major) let its old generation grow
+    // to four times the last major's live size before the next major
+    // (NextThreshold's three times, a server having the room), and took a
+    // nursery of up to 64 MB on top: 890 MB of heap, 955 MB resident. None
+    // of it bought time: a minor's cost follows the bytes allocated since the
+    // last cycle -- its sweep of the young pages, the survivors it marks --
+    // not the number of cycles, so the whole-heap pace changed only how much
+    // garbage lay about between majors. Held to one live size of old growth
+    // and a nursery of one live size, the same compile took 455 MB resident
+    // and ran faster (11.8 s to about 10.4 s), with a major every 400 MB of
+    // allocation instead of every 700.
+    //
+    // A hard limit -- a cap, the 32-bit ceiling -- still bounds both
+    // (NextThreshold), so collections come sooner near it.
+
+    /// How much the old generation may grow past the last major's live size
+    /// before the next cycle is major: that live size, within what a hard
+    /// limit allows.
+    static long OldGrowth(long majorLive)
+    {
+        long bound = NextThreshold(majorLive);
+        return majorLive < bound ? majorLive : bound;
     }
 
     // PACED BY WHAT THEY COST. A minor cycle is worth running only if it
-    // costs less per byte allocated than a major one. Where most chunks
-    // have had something allocated in them -- a fragmented heap, where new
-    // objects fill the holes between old ones -- a minor walks nearly all of
-    // the heap and reads a card for nearly every old object, and costs
-    // nearly what a major does; run every 64 MB, as a nursery would be, the
-    // self-hosted compiler spent three times its old collection time. So
-    // the last minor and major cycles are timed (PauseClock), the nursery
-    // is the whole-heap threshold scaled by what a minor costs against a
-    // major, and a minor that costs as much as a major stops them until the
-    // next major, which tries one again. When collections come changes;
-    // what a program computes never does.
+    // costs less than a major one. Where most chunks have had something
+    // allocated in them -- a fragmented heap, where new objects fill the
+    // holes between old ones -- a minor walks nearly all of the heap and
+    // reads a card for nearly every old object, and costs nearly what a
+    // major does. So the last minor and major cycles are timed (PauseClock),
+    // and a minor that costs as much as a major stops them until the next
+    // major, which tries one again; the pace meanwhile is the whole-heap
+    // one. When collections come changes; what a program computes never does.
     static long _minorMicros;
     static long _majorMicros;
     // Zero-initialised, as every static of the collector must be: it runs
@@ -536,7 +560,6 @@ static class Gc
     /// The next threshold after a cycle of the kind given, its length known.
     static long Paced(long live, bool minor, long micros)
     {
-        long major = NextThreshold(live);
         if (minor)
         {
             _minorMicros = micros;
@@ -552,39 +575,34 @@ static class Gc
             _minorsCostly = false;
             return Nursery(live);
         }
-        if (minor)
-        {
-            _minorsCostly = _minorMicros >= _majorMicros;
-        }
-        else
-        {
-            // The major cycle that follows a stop to minors tries one again.
-            _minorsCostly = false;
-        }
-        if (_minorsCostly)
-        {
-            return major;
-        }
-        long scaled = _minorMicros >= _majorMicros ? major : major / _majorMicros * _minorMicros + (major % _majorMicros) * _minorMicros / _majorMicros;
-        long least = Nursery(live);
-        if (scaled < least) scaled = least;
-        return scaled < major ? scaled : major;
+        // The major cycle that follows a stop to minors tries one again.
+        _minorsCostly = minor && _minorMicros >= _majorMicros;
+        return _minorsCostly ? NextThreshold(live) : Nursery(live);
     }
 
-    /// How much a program allocates between minor collections: a quarter of
-    /// what the pacing would allow between whole-heap ones, within
-    /// [MinThreshold, 64 MB]. A small board collects its nursery often and
-    /// cheaply; a server lets it grow.
+    /// How much a program allocates between minor collections: the live
+    /// size the last major found (the current one before any), at least
+    /// NurseryLeast, and less near a hard limit (NextThreshold). A
+    /// larger nursery buys nothing -- a minor's cost follows what was
+    /// allocated, not how often it runs -- and costs its size in memory; a
+    /// smaller one reads the same old objects' cards more often.
     static long Nursery(long live)
     {
         if (_nurseryFixed != 0)
         {
             return _nurseryFixed;
         }
-        long n = NextThreshold(live) / 4;
-        if (n < MinThreshold) n = MinThreshold;
-        if (n > NurseryMost) n = NurseryMost;
-        return n;
+        long n = _majorLive != 0 && _majorLive < live ? _majorLive : live;
+        if (n < NurseryLeast) n = NurseryLeast;
+        // NEAR A HARD LIMIT a quarter of what it leaves, as before: a nursery
+        // as large as the limit allows spreads each cycle's survivors over
+        // that many fresh pages, and the holes they leave are no room for a
+        // large array -- the compile above ran out of a 192 MB cap with 60 MB
+        // of them.
+        long bound = NextThreshold(live);
+        if (n <= bound) return n;
+        n = bound / 4;
+        return n > MinThreshold ? n : MinThreshold;
     }
 
     /// The table the last cycle recorded becomes the one to read; the other
@@ -2740,7 +2758,21 @@ static class Gc
         {
             RetirePage(page);
         }
-        else if (head != 0)
+        // ONLY A PAGE AT LEAST HALF FREE IS LISTED FOR REUSE. The objects a
+        // thread puts in a listed page are young among old neighbours: the
+        // stores that fill them in mark cards the old blocks share, and the
+        // next minor cycle reads those old blocks whole and looks up every
+        // reference in them; it sweeps the whole page again too. Handed
+        // every page with a free slot, the native compiler's minor cycles
+        // read 155 million words of old blocks through cards compiling
+        // hello.cs; handed only pages half free, 50 million, and its minor
+        // cycles took 3.9 s where they took 5.3. A fuller page waits for
+        // its neighbours to die, or for the next major cycle's sweep.
+        //
+        // EXCEPT NEAR A LIMIT (_reuseEveryPage): past half a cap or of the
+        // 32-bit ceiling, or with the machine short, the slots of a fuller
+        // page are what is left.
+        else if (head != 0 && (_reuseEveryPage || freeBytes >= ((end - first) >> 1)))
         {
             if (!HeapChunks.IsListed(page)) ListPage(page);
         }
@@ -3512,6 +3544,39 @@ static class Gc
 
         Platform.WriteBytes(2, _digits + at, 24 - at);
         Runtime.WriteLiteral(2, "\n");
+    }
+
+    // The largest heap and live size any collection ended with, for SayStats.
+    static long _peakHeap;
+    static long _peakLive;
+    static long _minorPauseMicros;
+    static long _allocatedTotal;
+    static long _marksNew;
+
+    /// The collector's counts, pauses and sizes on standard error, when the
+    /// platform asks for them (CORSAC_GC_STATS=1 on Linux). Called at exit.
+    public static void SayStats()
+    {
+        if (!_ready || !Platform.GcStats()) return;
+        SayNumber("gc: collections ", Collections);
+        SayNumber("gc: minor ", MinorCollections);
+        SayNumber("gc: major ", MajorCollections);
+        SayNumber("gc: majors grown ", MajorsGrown);
+        SayNumber("gc: majors costly ", MajorsCostly);
+        SayNumber("gc: pause ms ", PauseMicros / 1000);
+        SayNumber("gc: minor pause ms ", _minorPauseMicros / 1000);
+        SayNumber("gc: marks ", MarkCalls);
+        SayNumber("gc: marks new ", _marksNew);
+        SayNumber("gc: cards taken ", TakenCards);
+        SayNumber("gc: card words ", YoungCardWords);
+        SayNumber("gc: old card words ", OldCardWords);
+        SayNumber("gc: allocated MB ", (_allocatedTotal + _since) / 1048576);
+        SayNumber("gc: sweep visits ", SweepVisits);
+        SayNumber("gc: last major live ", _majorLive);
+        SayNumber("gc: live now ", _liveBytes);
+        SayNumber("gc: peak live ", _peakLive);
+        SayNumber("gc: heap now ", HeapChunks.HeapBytes);
+        SayNumber("gc: peak heap ", _peakHeap);
     }
 
     /// A block of `need` bytes from the free list or the bump pointer, stamped
@@ -5288,6 +5353,7 @@ static class Gc
         {
             return;
         }
+        _marksNew = _marksNew + 1;
         if (_census)
         {
             _censusMarked = _censusMarked + (Sys.Peek(block) & SizeMask);
@@ -5803,6 +5869,7 @@ static class Gc
             {
                 long took = (Sys.Call(clock, 0, 0, 0) - began) & 0xFFFFFFFF;
                 PauseMicros = PauseMicros + took;
+                if (minor) _minorPauseMicros = _minorPauseMicros + took;
                 // A cycle that finished sets the pace of the next by what it
                 // cost; one given up leaves it as it was.
                 if (_generational && Collections != before)
@@ -6204,6 +6271,7 @@ static class Gc
 
         // What was allocated while the mark ran was not looked at by it and
         // still counts towards the next.
+        _allocatedTotal = _allocatedTotal + _sinceAtStop;
         _since = _since > _sinceAtStop ? _since - _sinceAtStop : Zero;
         if (_minor)
         {
@@ -6214,6 +6282,8 @@ static class Gc
             MajorCollections = MajorCollections + 1;
             _majorLive = _liveBytes > MinThreshold ? _liveBytes : MinThreshold;
         }
+        if (_liveBytes > _peakLive) _peakLive = _liveBytes;
+        if (HeapChunks.HeapBytes > _peakHeap) _peakHeap = HeapChunks.HeapBytes;
         _threshold = _generational ? Nursery(_liveBytes) : NextThreshold(_liveBytes);
         _minor = false;
         Collections = Collections + 1;
@@ -6904,6 +6974,7 @@ static class Gc
     static long _sweepCurrentEnd;   //   and where its blocks ended then
     static long _sweepLive;
     static long _sweepLiveBytes;
+    static bool _reuseEveryPage;    // this sweep lists every page with a free slot (SweepPage)
 
     static void BeginSweep()
     {
@@ -6914,6 +6985,9 @@ static class Gc
         {
             ClearBins();
         }
+        _reuseEveryPage = HeapChunks.Cap != 0 && HeapChunks.HeapBytes > HeapChunks.Cap / 2
+            || HeapCeiling != 0 && HeapChunks.HeapBytes > HeapCeiling / 2
+            || MemoryShort();
         _sweeping = true;
         _sweepAt = HeapChunks.Newest();
         _sweepCurrent = _current;

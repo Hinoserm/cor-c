@@ -202,6 +202,9 @@ static class Platform
     /// CORSAC_HEAP_CHECK=1: the heap's structure checked as every collection
     /// begins and ends -- every chunk's chain, every buffer's, and the free
     /// lists against what the walks found -- and the first faults said.
+    /// CORSAC_GC_STATS=1: the collector's counts, pauses and heap said at exit.
+    public static bool GcStats() => EnvironmentFlag("CORSAC_GC_STATS=");
+
     public static bool HeapCheck() => EnvironmentFlag("CORSAC_HEAP_CHECK=");
 
     public static bool VerifyFrees() => EnvironmentFlag("CORSAC_VERIFY_FREES=") && EnvironmentByte("CORSAC_VERIFY_FREES=") != 'f';
