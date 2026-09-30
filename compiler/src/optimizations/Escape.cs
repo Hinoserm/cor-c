@@ -519,6 +519,14 @@ public sealed partial class Escape : IModulePass
                             Derive(i.Dest);
                             break;
 
+                        case Opcode.Call when i.Callee == Corsac.Lang.X86.MachineIntrinsics.KeepAlive:
+                            // A use and nothing more: the object stays live
+                            // to here (an address taken from it, GC.KeepAlive)
+                            // and nothing gets a pointer it could keep. On a
+                            // promoted object it keeps a frame slot, which is
+                            // there until the function returns anyway.
+                            break;
+
                         case Opcode.Call when IsCollectorNote(i.Callee):
                             // The collector told of a reference (a write
                             // barrier): it keeps no pointer the program can

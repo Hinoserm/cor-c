@@ -1,0 +1,38 @@
+// test: gcless addressed buffer
+// expect-exit: 0
+// expect-output:
+// 700000 0 0
+//
+// A buffer whose address is taken (Sys.ArrayData) and read through by a
+// callee that keeps no pointer is still the frame's: taking the address keeps
+// it alive to the end of its block, which is a use and not an escape. A
+// hundred thousand of them allocate nothing and no collection runs, so the
+// code needs no collector -- and, freed with its frame, leaks nothing.
+
+static class Program
+{
+    static long Sum(long at, int n)
+    {
+        long s = 0;
+        for (int i = 0; i < n; i++) s += Sys.PeekByte(at + i);
+        return s;
+    }
+
+    static long Once(int k)
+    {
+        byte[] head = new byte[64];
+        head[3] = 7;
+        return Sum(Sys.ArrayData(head), 64);
+    }
+
+    static int Main()
+    {
+        int collections = GC.CollectionCount(0);
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        long total = 0;
+        for (int k = 0; k < 100000; k++) total += Once(k);
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        System.Console.WriteLine(total + " " + allocated + " " + (GC.CollectionCount(0) - collections));
+        return 0;
+    }
+}

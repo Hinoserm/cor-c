@@ -67,8 +67,53 @@ static class Utf8Transcoder
     /// answers how many bytes. `into` must have ByteCount's worth of room.
     public static int Encode(string s, int at, int count, byte[] into, int intoAt)
     {
-        if (intoAt + ByteCount(s, at, count) > into.Length) throw new IndexOutOfRangeException();
-        return EncodeTo(s, at, count, Sys.ArrayData(into) + intoAt);
+        int end = at + count;
+        int o = intoAt;
+        int i = at;
+
+        while (i < end)
+        {
+            int c = Sys.GetChar(s, i);
+
+            if (c < 0x80)
+            {
+                into[o] = (byte)c;
+                o = o + 1;
+                i = i + 1;
+                continue;
+            }
+            if (c < 0x800)
+            {
+                into[o] = (byte)(0xC0 | (c >> 6));
+                into[o + 1] = (byte)(0x80 | (c & 0x3F));
+                o = o + 2;
+                i = i + 1;
+                continue;
+            }
+
+            int point = CodePointAt(s, i, end);
+
+            if (point >= 0x10000)
+            {
+                into[o] = (byte)(0xF0 | (point >> 18));
+                into[o + 1] = (byte)(0x80 | ((point >> 12) & 0x3F));
+                into[o + 2] = (byte)(0x80 | ((point >> 6) & 0x3F));
+                into[o + 3] = (byte)(0x80 | (point & 0x3F));
+                o = o + 4;
+                i = i + 2;
+                continue;
+            }
+            if (point < 0)
+            {
+                point = 0xFFFD;
+            }
+            into[o] = (byte)(0xE0 | (point >> 12));
+            into[o + 1] = (byte)(0x80 | ((point >> 6) & 0x3F));
+            into[o + 2] = (byte)(0x80 | (point & 0x3F));
+            o = o + 3;
+            i = i + 1;
+        }
+        return o - intoAt;
     }
 
     /// s[at, at + count) as UTF-8, written to memory at `address`; answers
