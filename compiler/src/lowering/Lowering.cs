@@ -1142,7 +1142,7 @@ public sealed partial class Lowering
     }
 
     /// <summary>A hook the runtime library provides, found by name and arity.</summary>
-    private MethodSymbol? RuntimeMethod(string name, int arity)
+    private MethodSymbol? RuntimeMethod(string name, int arity, IReadOnlyList<ParamSymbol>? like = null)
     {
         if (!_b.Types.TryGetValue(RuntimeType, out TypeSymbol? rt))
         {
@@ -1152,6 +1152,14 @@ public sealed partial class Lowering
         // routines in plain COR-C#. Two overloads of one arity would be bound
         // to the first by luck; refuse that rather than guess.
         List<MethodSymbol> found = rt.Methods.Where(m => m.Name == name && m.Static && m.Params.Count == arity).ToList();
+        // OVERLOADS OF ONE ARITY are told apart by their parameter types when
+        // the caller has them to give: Sys.Print(string) and
+        // Sys.Print(ReadOnlySpan<byte>) fall back to the Runtime.Print that
+        // takes the same.
+        if (found.Count > 1 && like is not null)
+        {
+            found = found.Where(m => m.Params.Select(p => p.Type).SequenceEqual(like.Select(p => p.Type))).ToList();
+        }
         if (found.Count > 1)
         {
             Errors.Add(new CompileError(_in, 0, 0,

@@ -624,7 +624,7 @@ public sealed partial class Lowering
     /// </summary>
     private VReg RuntimeFallback(CallExpr call, MethodSymbol target)
     {
-        MethodSymbol? rt = RuntimeMethod(target.Name, target.Params.Count);
+        MethodSymbol? rt = RuntimeMethod(target.Name, target.Params.Count, target.Params);
         if (rt is null)
         {
             Error(call, $"'{target.Owner.Name}.{target.Name}' is not an instruction on {_t.Name}; "

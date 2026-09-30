@@ -1,0 +1,24 @@
+// test: print bytes
+// expect-exit: 0
+// expect-output:
+// boot: IDE ok
+// text too
+// 0
+//
+// Sys.Print takes bytes as well as a string: a "text"u8 literal goes to the
+// output as it is, nothing encoded and nothing allocated, beside the string
+// overload that encodes its UTF-16 to UTF-8.
+
+static class Program
+{
+    static int Main()
+    {
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        for (int i = 0; i < 1000; i++) { if (i == 999) { Sys.Print("boot: IDE "u8); Sys.Print("ok\n"u8); } }
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        Sys.Print("text too\n");
+        Sys.PrintInt(allocated);
+        Sys.PrintLine();
+        return 0;
+    }
+}

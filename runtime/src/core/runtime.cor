@@ -1520,6 +1520,14 @@ static class Runtime
         WriteText(StdOut, s);
     }
 
+    /// Bytes to the output as they are (Sys.Print of a ReadOnlySpan<byte>):
+    /// nothing encoded, nothing allocated.
+    public static void Print(ReadOnlySpan<byte> bytes)
+    {
+        if (bytes.Length == 0) return;
+        WriteBytes(StdOut, Sys.ArrayData(bytes.Items) + bytes.Start, bytes.Length);
+    }
+
     public static void PrintLine()
     {
         PrintChar(10);

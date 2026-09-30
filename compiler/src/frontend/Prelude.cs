@@ -413,6 +413,10 @@ public static class Prelude
         static class Sys {
             public static void PrintInt(long value) { }
             public static void Print(string text) { }
+            // Bytes as they are, to the same output: a "text"u8 literal or a
+            // buffer, with nothing encoded -- what .NET's Stream.Write of a
+            // ReadOnlySpan<byte> is to its console.
+            public static void Print(ReadOnlySpan<byte> bytes) { }
             public static void PrintChar(int ch) { }
             public static void PrintHex(long value) { }
             public static void PrintLine() { }

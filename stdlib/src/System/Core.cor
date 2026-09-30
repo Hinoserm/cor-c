@@ -5452,6 +5452,11 @@ struct ReadOnlySpan<T> {
 
     public int Length => count;
 
+    /// What the span reads, for the library's own code that must hand the
+    /// memory itself on (Runtime.Print of bytes), as MemoryMarshal does in .NET.
+    internal T[] Items => items;
+    internal int Start => from;
+
     public T this[int index] {
         get { return items[from + index]; }
     }
