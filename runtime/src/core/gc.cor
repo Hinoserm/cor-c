@@ -351,6 +351,11 @@ static class Gc
     static bool _verifyGenerations;
     static long _verifyReports;
 
+    /// The major check (VerifyMajor) asked for by a program rather than the
+    /// platform: a kernel sets it from its command line (gc.verify=1). Read
+    /// at every whole collection, so it may be set after the heap started.
+    public static bool VerifyMarks;
+
     /// CORSAC_GC_VERIFY: after a minor cycle has marked, every old block is
     /// read word by word, and a word that lands on a young block this cycle
     /// did not mark -- which the sweep is about to free -- is reported: the
@@ -5934,7 +5939,7 @@ static class Gc
 
         MarkToEmpty();
         if (_minor && _verifyGenerations) VerifyMinor();
-        if (!_minor && _verifyGenerations) VerifyMajor();
+        if (!_minor && (_verifyGenerations || VerifyMarks)) VerifyMajor();
         HeapChunks.SetBlockAnchorsActive(false);
         BeginSweep();
         while (SweepNext()) { }
@@ -6057,7 +6062,7 @@ static class Gc
         GcThreads.Round(GcThreads.Ack);
         MarkToEmpty();
         if (_minor && _verifyGenerations) VerifyMinor();
-        if (!_minor && _verifyGenerations) VerifyMajor();
+        if (!_minor && (_verifyGenerations || VerifyMarks)) VerifyMajor();
 
         GcLock.Enter();
         HeapChunks.SetBlockAnchorsActive(false);
