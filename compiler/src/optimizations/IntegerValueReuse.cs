@@ -6,7 +6,11 @@ namespace Corsac.Lang.Opt;
 public sealed class IntegerValueReuse : IPass
 {
     public string Name => "integer-value-reuse";
-    private sealed record Value(VReg Result, VReg[] Inputs);
+    /// <summary>A value's register and the at most two registers it was made of.</summary>
+    private readonly record struct Value(VReg Result, VReg? First, VReg? Second)
+    {
+        public bool Reads(VReg r) => First == r || Second == r;
+    }
 
     /// <summary>
     /// An expression: its operation, its type and its two operands, each a
@@ -14,25 +18,31 @@ public sealed class IntegerValueReuse : IPass
     /// spelled out of all of them, a dozen allocations for every arithmetic
     /// instruction of every function on every round.
     /// </summary>
-    private sealed record Key(Opcode Op, IrType Type, IrType FirstType, bool FirstReg, long First,
+    private readonly record struct Key(Opcode Op, IrType Type, IrType FirstType, bool FirstReg, long First,
         IrType SecondType, bool SecondReg, long Second);
 
     public void Run(Function f)
     {
         Cfg cfg = new(f);
+        // A block's table as it ends, for the successors that inherit it;
+        // one with no such successor keeps none.
         Dictionary<Corsac.Lang.Ir.Block, Dictionary<Key, Value>> atEnd = new();
-        Dictionary<VReg, VReg> aliases = new();
-        Func<VReg, Operand?> alias = r => aliases.TryGetValue(r, out VReg? source) ? new RegOperand(source) : null;
+        // ONE ALIAS TABLE, emptied per block, and the operand each alias
+        // becomes made once per alias, not once per use.
+        Dictionary<VReg, RegOperand> aliases = new();
+        Func<VReg, Operand?> alias = r => aliases.TryGetValue(r, out RegOperand? source) ? source : null;
         List<VReg> staleAliases = new();
         List<Key> staleValues = new();
         foreach (var block in cfg.ReversePostorder)
         {
-            Dictionary<Key, Value> values = new();
-            aliases = new();
+            Dictionary<Key, Value>? values = null;
+            aliases.Clear();
             var predecessors = cfg.Preds(block);
             if (!cfg.IsRoot(block) && predecessors.Count == 1 && cfg.Dominates(predecessors[0], block)
                 && atEnd.TryGetValue(predecessors[0], out var inherited))
-                values = new(inherited);
+                // The only successor takes the table itself: nobody else reads it.
+                values = cfg.Succs(predecessors[0]).Count == 1 ? inherited : new(inherited);
+            values ??= new();
             for (int k = 0; k < block.Instrs.Count; k++)
             {
                 Instr i = block.Instrs[k];
@@ -42,22 +52,22 @@ public sealed class IntegerValueReuse : IPass
                 // canonical snapshots and are invalidated on either write.
                 if (aliases.Count != 0) IrInfo.ReplaceUses(i, alias);
                 Key? key = KeyOf(i);
-                VReg? reused = null;
-                if (key is not null && values.TryGetValue(key, out Value? existing))
+                RegOperand? reused = null;
+                if (key is { } found && values.TryGetValue(found, out Value existing))
                 {
-                    reused = aliases.GetValueOrDefault(existing.Result, existing.Result);
-                    block.Instrs[k] = IrInfo.CopyOf(i, new RegOperand(reused));
+                    reused = aliases.GetValueOrDefault(existing.Result) ?? new RegOperand(existing.Result);
+                    block.Instrs[k] = IrInfo.CopyOf(i, reused);
                 }
                 if (i.Dest is not { } dest) continue;
                 aliases.Remove(dest);
                 if (aliases.Count != 0)
                 {
                     foreach (var pair in aliases)
-                        if (pair.Value == dest) staleAliases.Add(pair.Key);
+                        if (pair.Value.Reg == dest) staleAliases.Add(pair.Key);
                     foreach (VReg stale in staleAliases) aliases.Remove(stale);
                     staleAliases.Clear();
                 }
-                if (reused is not null && reused != dest)
+                if (reused is not null && reused.Reg != dest)
                 {
                     if (aliases.Count >= 256) aliases.Clear();
                     aliases[dest] = reused;
@@ -65,26 +75,26 @@ public sealed class IntegerValueReuse : IPass
                 if (values.Count != 0)
                 {
                     foreach (var pair in values)
-                        if (pair.Value.Result == dest || Array.IndexOf(pair.Value.Inputs, dest) >= 0) staleValues.Add(pair.Key);
+                        if (pair.Value.Result == dest || pair.Value.Reads(dest)) staleValues.Add(pair.Key);
                     foreach (Key stale in staleValues) values.Remove(stale);
                     staleValues.Clear();
                 }
-                if (key is not null)
+                if (key is { } made)
                 {
-                    VReg[] inputs = Inputs(i);
+                    (VReg? first, VReg? second) = Inputs(i);
                     // The key describes values before this instruction. If
                     // it overwrites an input, that key is no longer current.
-                    if (Array.IndexOf(inputs, dest) >= 0) continue;
+                    if (first == dest || second == dest) continue;
                     if (values.Count >= 128) values.Clear();
-                    values[key] = new(dest, inputs);
+                    values[made] = new(dest, first, second);
                 }
             }
-            atEnd[block] = values;
+            if (cfg.Succs(block).Any(next => cfg.Preds(next).Count == 1)) atEnd[block] = values;
         }
     }
 
     /// <summary>The registers an instruction reads, each once: at most two here.</summary>
-    private static VReg[] Inputs(Instr i)
+    private static (VReg? First, VReg? Second) Inputs(Instr i)
     {
         VReg? a = null, b = null;
         foreach (Operand o in i.Operands)
@@ -93,7 +103,7 @@ public sealed class IntegerValueReuse : IPass
             if (a is null) a = r.Reg;
             else if (r.Reg != a) b = r.Reg;
         }
-        return a is null ? Array.Empty<VReg>() : b is null ? new[] { a } : new[] { a, b };
+        return (a, b);
     }
 
     private static Key? KeyOf(Instr i)
