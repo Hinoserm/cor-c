@@ -12,6 +12,8 @@ public sealed class IrArchive
     public const string SectionName = ".corsac.ir";
     public const int MaximumBytes = 128 * 1024 * 1024;
     private static readonly UTF8Encoding Utf8 = new(false, true);
+    /// <summary>Each object file an archive is read from, opened once for the process (a link).</summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Microsoft.Win32.SafeHandles.SafeFileHandle> Handles = new(StringComparer.Ordinal);
     // The archive's bytes, read where they are: a section in memory, or --
     // a unit a link reads (ElfReader.ReadObjectFile) -- the object's file,
     // so that no unit's IR is held whole, only the record being decoded.
@@ -85,16 +87,28 @@ public sealed class IrArchive
         if (sections.Length != 1 || sections[0].Size > MaximumBytes) throw new ElfFormatException("Invalid IR archive count/size");
         Section section = sections[0];
         int size = section.Size;
-        Func<int, int, byte[]> readAt = section.FileBacked is (string path, long start, int _)
-            ? (at, length) =>
+        // A FILE OPENED ONCE, read by position: a link reads thousands of
+        // records, and opening the object again for each was a syscall pair
+        // a record. Positional reads need no shared position, so the backend
+        // workers can read one archive at once.
+        Func<int, int, byte[]> readAt;
+        if (section.FileBacked is (string path, long start, int _))
+        {
+            Microsoft.Win32.SafeHandles.SafeFileHandle handle = Handles.GetOrAdd(path, key => File.OpenHandle(key, FileMode.Open, FileAccess.Read, FileShare.Read));
+            readAt = (at, length) =>
             {
                 byte[] read = new byte[length];
-                using FileStream file = new(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-                file.Position = start + at;
-                file.ReadExactly(read);
+                int done = 0;
+                while (done < length)
+                {
+                    int got = RandomAccess.Read(handle, read.AsSpan(done), start + at + done);
+                    if (got <= 0) throw new ElfFormatException("IR archive truncated in its file");
+                    done += got;
+                }
                 return read;
-            }
-            : (at, length) => section.Bytes.GetRange(at, length).ToArray();
+            };
+        }
+        else readAt = (at, length) => section.Bytes.GetRange(at, length).ToArray();
         // The header and directory only; the bodies stay where they are.
         if (size < 84) throw new ElfFormatException("Truncated IR archive");
         int indexBytes = BinaryPrimitives.ReadInt32LittleEndian(readAt(12, 4));

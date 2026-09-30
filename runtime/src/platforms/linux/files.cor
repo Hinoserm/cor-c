@@ -85,6 +85,28 @@ static partial class Os
         return (int)Err.Result(Platform.Blocking(Call.Read, fd, Platform.Linear(Sys.ArrayData(buf)) + at, count));
     }
 
+    /// A read at an offset, which moves no file position (pread64): several
+    /// threads can read one descriptor at once (RandomAccess.Read). The
+    /// kernel's number, as a long.
+    public static long Pread(int fd, long into, long count, long offset)
+    {
+#if TARGET_AMD64
+        return Err.Result(Platform.Blocking(Call.Pread64, fd, into, count, offset));
+#else
+        return Err.Result(Platform.Blocking(Call.Pread64, fd, into, count, offset & 0xFFFFFFFF, (offset >> 32) & 0xFFFFFFFF));
+#endif
+    }
+
+    /// Pread into buf[at, at + count), checked as Read is.
+    public static long Pread(int fd, byte[] buf, int at, int count, long offset)
+    {
+        if (at < 0 || count < 0 || at > buf.Length - count)
+        {
+            throw new IndexOutOfRangeException("read range is outside its buffer");
+        }
+        return Pread(fd, Platform.Linear(Sys.ArrayData(buf)) + at, count, offset);
+    }
+
     /// The raw form: an address and a count, for code that manages its own
     /// buffer. Answers the kernel's number as a long, like user.cor's.
     public static long Read(int fd, long into, long count)

@@ -5678,6 +5678,9 @@ struct Span<T> {
 
     public int Length => count;
 
+    internal T[] Array => items;
+    internal int Start => from;
+
     public T this[int index] {
         get { return items[from + index]; }
         set { items[from + index] = value; }

@@ -21,6 +21,7 @@ static class Call
 {
     public const long Exit = 60;        // (status)
     public const long Read = 0;         // (fd, address, count) -> read, or -errno
+    public const long Pread64 = 17;     // (fd, address, count, offset) -> read, or -errno
     public const long Write = 1;        // (fd, address, count) -> written, or -errno
     public const long Open = 2;         // (path, flags, mode) -> fd, or -errno
     public const long Close = 3;        // (fd) -> 0, or -errno
@@ -142,6 +143,7 @@ static class Call
 {
     public const long Exit = 1;         // (status)
     public const long Read = 3;         // (fd, address, count) -> read, or -errno
+    public const long Pread64 = 180;    // (fd, address, count, offset low, offset high) -> read, or -errno
     public const long Write = 4;        // (fd, address, count) -> written, or -errno
     public const long Open = 5;         // (path, flags, mode) -> fd, or -errno
     public const long Close = 6;        // (fd) -> 0, or -errno
