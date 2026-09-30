@@ -1954,7 +1954,99 @@ static class Gc
         return AllocKind(bytes, KindObject);
     }
 
+    // ---- GUARDS, while the heap check is on ------------------------------
+    //
+    // Every block made has room after what was asked for: a fill of 0xCD
+    // bytes, then a magic word, the bytes asked for, and two return addresses
+    // of the code that asked. A write past the end of any object lands in
+    // the fill or the words and is found -- at the object's free, at every
+    // sweep, at every heap walk -- with the object's type and who made it.
+    const long GuardBytes = 24;
+    const long GuardMagic = 0x6A11EDC0;
+    static long _guardReports;
+
     static long AllocKind(long bytes, long kind)
+    {
+        if (!_heapCheck || bytes < 0) return AllocKindUnguarded(bytes, kind);
+        long at = AllocKindUnguarded(bytes + GuardBytes, kind);
+        if (at != 0) PaintGuard(at, bytes);
+        return at;
+    }
+
+    static void PaintGuard(long at, long bytes)
+    {
+        long block = at - HeaderBytes;
+        long size = Sys.Peek(block) & SizeMask;
+        long w = WordSize.Bytes;
+        long tail = block + size - FooterBytes;          // the footer
+        long words = tail - 4 * w;                       // magic, bytes, two callers
+        for (long p = at + bytes; p < words; p++) Sys.PokeByte(p, 0xCD);
+        Sys.Poke(words, GuardMagic);
+        Sys.Poke(words + w, bytes);
+        long fp = Sys.FramePointer();
+        long r1 = 0, r2 = 0;
+        for (long i = 0; i < 4 && fp != 0; i++)
+        {
+            long back = Sys.Peek(fp + w) & WordSize.AddressMask;
+            if (i == 2) r1 = back;
+            if (i == 3) r2 = back;
+            long next = Sys.Peek(fp) & WordSize.AddressMask;
+            fp = next > fp ? next : 0;
+        }
+        Sys.Poke(words + 2 * w, r1);
+        Sys.Poke(words + 3 * w, r2);
+    }
+
+    /// The guard of a live, guarded block intact, or said (with `where`).
+    /// Anything without the magic is a block made before the check was on.
+    public static void CheckGuard(long block, string where)
+    {
+        if (!_heapCheck || _guardReports >= 24) return;
+        long word = Sys.Peek(block);
+        if ((word & FlagFree) != 0) return;
+        long size = word & SizeMask;
+        if (size < Smallest + GuardBytes) return;
+        long w = WordSize.Bytes;
+        long tail = block + size - FooterBytes;
+        long words = tail - 4 * w;
+        long at = block + HeaderBytes;
+        long magic = Sys.Peek(words);
+        long bytes = Sys.Peek(words + w);
+        bool magicGood = magic == GuardMagic;
+        if (!magicGood)
+        {
+            // Not guarded, or the words themselves were written over: only
+            // the second if the fill before them is still the fill.
+            if (words - 1 < at || Sys.PeekByte(words - 1) != 0xCD) return;
+        }
+        long bad = -1;
+        if (magicGood && bytes >= 0 && at + bytes <= words)
+        {
+            for (long p = at + bytes; p < words; p++) if (Sys.PeekByte(p) != 0xCD) { bad = p; break; }
+        }
+        // A block the sweep folded, dead, into a run of free ones keeps its
+        // header and loses its footer; only the guard itself is evidence.
+        if (magicGood && bad < 0) return;
+        _guardReports = _guardReports + 1;
+        Runtime.WriteLiteral(2, "gc guard: an object's guard written over, found by ");
+        Runtime.WriteLiteral(2, where);
+        SayNumber(" -- block ", block);
+        SayNumber("gc guard:   size ", size);
+        SayNumber("gc guard:   bytes asked for ", bytes);
+        SayNumber("gc guard:   its type word ", Sys.Peek(at));
+        SayNumber("gc guard:   first bad byte at offset ", bad < 0 ? -1 : bad - at);
+        SayNumber("gc guard:   holding ", bad < 0 ? magic : Sys.PeekByte(bad));
+        SayNumber("gc guard:   footer ", Sys.Peek(tail));
+        Runtime.WriteLiteral(2, "gc guard:   made by:\n");
+        Runtime.SayFrame(2, Sys.Peek(words + 2 * w));
+        Runtime.SayFrame(2, Sys.Peek(words + 3 * w));
+        Runtime.WriteLiteral(2, "gc guard:   found at:\n");
+        Runtime.SayTrace(2, Sys.FramePointer());
+        // Put right, so the same damage is said once.
+        if (magicGood && bytes >= 0 && at + bytes <= words) for (long p = at + bytes; p < words; p++) Sys.PokeByte(p, 0xCD);
+    }
+
+    static long AllocKindUnguarded(long bytes, long kind)
     {
         long tb = Sys.ThreadBlock();
         long need = (bytes + Overhead + 7) & SizeMask;
@@ -2574,7 +2666,8 @@ static class Gc
     const long RecentBlocks = 4096;
     const long RecentSlice = 64;
     static long _recentCheck;
-    const long RecentWords = 5;
+    const long RecentWords = 6;
+    public static long AllocSerial;
     static long _recent;
     static long _recentAt;
     static long _recentReports;
@@ -2599,6 +2692,8 @@ static class Gc
             fp = next > fp ? next : 0;
         }
         Sys.Poke(e + 4 * w, path);
+        AllocSerial = AllocSerial + 1;
+        Sys.Poke(e + 5 * w, AllocSerial);
         for (long i = 1; i < 4; i++)
         {
             long back = 0;
@@ -2631,6 +2726,7 @@ static class Gc
             long size = word & SizeMask;
             // Freed since, or taken again: no longer the block it was.
             if ((word & FlagFree) != 0 || size < Smallest || size > 65536) { Sys.Poke(e, Zero); continue; }
+            CheckGuard(block, "the recheck of recent blocks");
             long foot = Sys.Peek(block + size - FooterBytes);
             if (foot == word) continue;
             _recentReports = _recentReports + 1;
@@ -2641,6 +2737,8 @@ static class Gc
             SayNumber("gc owner check:   and ", Sys.Peek(e + 2 * w));
             SayNumber("gc owner check:   and ", Sys.Peek(e + 3 * w));
             SayNumber("gc owner check:   made by path (1 class fast, 2 bump, 3 PopClass, 4 class fallback) ", Sys.Peek(e + 4 * w));
+            SayNumber("gc owner check:   its allocation number ", Sys.Peek(e + 5 * w));
+            SayNumber("gc owner check:   allocations made now ", AllocSerial);
             SayPage(block);
             SayJournal(block + size - FooterBytes);
             if (OverwriteHook != 0) Sys.Call(OverwriteHook, block, size, 0);
@@ -2863,6 +2961,7 @@ static class Gc
                 break;
             }
             SweepVisits = SweepVisits + 1;
+            if (_heapCheck) CheckGuard(block, "a class page's sweep");
             if ((word & FlagFree) == 0 && ((word & FlagMark) != 0 || Newcomer(page, block, word)))
             {
                 if (_verify && !_minor && (word & FlagMark) != 0)
@@ -4131,6 +4230,13 @@ static class Gc
         {
             return;
         }
+        if (_heapCheck && (at & 3) == 0)
+        {
+            long guarded = at - HeaderBytes;
+            long head = Sys.Peek(guarded);
+            long span = head & SizeMask;
+            if (span >= Smallest && span < 0x1000000 && Sys.Peek(guarded + span - FooterBytes) == head) CheckGuard(guarded, "its free");
+        }
 
         // LOGGED (CORSAC_FREE_LOG), with the two calls it came through, for
         // the fault report to look through.
@@ -4802,6 +4908,7 @@ static class Gc
                     }
                     CheckFault("gc heap check: a header and its footer disagree", block, Sys.Peek(block + size - FooterBytes), when);
                 }
+                if ((word & FlagFree) == 0) CheckGuard(block, "the heap walk");
                 if ((word & FlagFree) != 0 && !IsInPlace(block) && HeapChunks.PageClass(chunk) == 0)
                 {
                     listed = listed + 1;
@@ -7595,6 +7702,7 @@ static class Gc
                 }
                 else
                 {
+                    if (_heapCheck && (word & FlagFree) == 0) CheckGuard(block, "a chunk's sweep");
                     if ((word & FlagMark) == 0 && !Newcomer(chunk, block, word))
                     {
                         // A free block a minor sweep meets is still on the free
