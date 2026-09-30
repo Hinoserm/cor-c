@@ -173,9 +173,12 @@ static class Gc
     // next one (FitMarkQueue), as far as a thirty-second of the heap: a
     // program on a small machine keeps the small queue, and one with
     // hundreds of megabytes live gets the megabytes of queue its graph needs.
-    // A MEGABYTE TO BEGIN WITH: a compiler's heap overflowed a quarter of one
-    // in every other cycle, and each overflow is a walk of the whole heap.
-    const long MarkBytes = 1048576;
+    // SIXTY-FOUR KILOBYTES TO BEGIN WITH, the same for every program: a
+    // megabyte from the start was three times the whole heap of a ring-1
+    // kernel on a 64 MB machine, and a compiler whose graph is wider has
+    // its queue four times over within two cycles, while its heap is small
+    // and the walks an overflow costs are short.
+    const long MarkBytes = 65536;
     const long MarkShare = 32;
 
     // Exact-size doubly linked lists through 256 bytes (31 bins), then eight
@@ -248,10 +251,15 @@ static class Gc
     // new, and a ring of 16384 filled within a millisecond of a compiler's
     // stores while a thread in a long loop had not yet come to a safepoint:
     // thirty of a stage-2 compile's 173 cycles were given up for it, each
-    // one a whole mark thrown away and a major cycle forced after it. Two
-    // megabytes, mapped once, on either word size.
-    const long BarrierBytes = 2097152;
-    const long BarrierCount = BarrierBytes / (2 * WordSize.Bytes);  // places, two words each; a power of two
+    // one a whole mark thrown away and a major cycle forced after it. So a
+    // ring that fills asks the next cycle for four times the places, up to
+    // two megabytes (FitBarrier), as the mark queue does: a program whose
+    // threads store little keeps the small ring its first cycle had.
+    const long BarrierBytes = 65536;
+    const long BarrierMost = 2097152;
+    // The ring's first two words hold its count of places (a power of two,
+    // two words each), so a barrier reads a ring and its size together.
+    static long _barrierWanted;     // the ring a full one asked the next cycle for, or 0
 
     public static long ConcurrentCycles;
     public static long BarrierTaken;
@@ -3614,7 +3622,7 @@ static class Gc
         {
             OutOfMemory();
         }
-        _barrier = Platform.Map(BarrierBytes);
+        MapBarrier(BarrierBytes);
         _markAt = Platform.Map(MarkBytes);
 
         if (_markAt != 0)
@@ -5743,7 +5751,7 @@ static class Gc
         // it. The two tables the concurrent collection needs are asked for
         // again if Start could not have them; without them there is no safe
         // collection at all, and saying so is the only honest answer.
-        if (_barrier == 0) _barrier = Platform.Map(BarrierBytes);
+        if (_barrier == 0) MapBarrier(BarrierBytes);
         if (_markAt == 0)
         {
             _markAt = Platform.Map(MarkBytes);
@@ -5872,6 +5880,7 @@ static class Gc
         _sinceAtStop = _since;
         SyncEnd();
         _cycle = _cycle + 1;
+        FitBarrier();
         ResetBarrier();
 
         // 1. The barrier logs, then the snapshot of where objects start. The
@@ -6409,6 +6418,29 @@ static class Gc
     // the mark is finished the long way, with the world stopped -- which
     // reads the late writer's stack, where the missing value is.
 
+    static void MapBarrier(long bytes)
+    {
+        long ring = Platform.Map(bytes + 2 * WordSize.Bytes);
+        if (ring == 0) return;
+        Sys.Poke(ring, bytes / (2 * WordSize.Bytes));
+        Sys.Fence();
+        _barrier = ring;
+    }
+
+    /// The ring a full one asked for, taken before a mark begins. The old
+    /// ring stays mapped: a barrier stopped between claiming a place and
+    /// writing it writes it late, perhaps cycles later, into the ring it
+    /// read, and that must still be memory. Growing four times at a time up
+    /// to BarrierMost, what is left behind is under a third of the last.
+    static void FitBarrier()
+    {
+        long wanted = _barrierWanted;
+        _barrierWanted = 0;
+        if (wanted > BarrierMost) wanted = BarrierMost;
+        if (_barrier == 0 || wanted <= Sys.Peek(_barrier) * (2 * WordSize.Bytes)) return;
+        MapBarrier(wanted);
+    }
+
     static void ResetBarrier()
     {
         long ctl = GcLock.Words();
@@ -6495,16 +6527,19 @@ static class Gc
             return;
         }
 
+        long ring = _barrier;
+        long count = Sys.Peek(ring);
         long place = Sys.AtomicAdd(ctl + GcLock.BarrierTail, 1) & WordSize.AddressMask;
         long head = Sys.Peek(ctl + GcLock.BarrierHead) & WordSize.AddressMask;
 
-        if (((place - head) & WordSize.AddressMask) >= BarrierCount)
+        if (((place - head) & WordSize.AddressMask) >= count)
         {
             Sys.AtomicSwap(ctl + GcLock.BarrierLost, 1);
+            if (_barrierWanted == 0) _barrierWanted = count * (2 * WordSize.Bytes) * 4;
             return;
         }
 
-        long at = _barrier + (place & (BarrierCount - 1)) * (2 * WordSize.Bytes);
+        long at = ring + (1 + (place & (count - 1))) * (2 * WordSize.Bytes);
         Sys.Poke(at + WordSize.Bytes, value);
         Sys.AtomicSwap(at, Signature(place));
     }
@@ -6527,7 +6562,7 @@ static class Gc
 
         while (head != tail)
         {
-            long at = _barrier + (head & (BarrierCount - 1)) * (2 * WordSize.Bytes);
+            long at = _barrier + (1 + (head & (Sys.Peek(_barrier) - 1))) * (2 * WordSize.Bytes);
 
             if ((Sys.Peek(at) & WordSize.AddressMask) != Signature(head))
             {
