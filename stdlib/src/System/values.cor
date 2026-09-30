@@ -525,3 +525,53 @@ class Tuple<T1, T2, T3, T4> {
         return made.ToString();
     }
 }
+
+namespace System.ComponentModel
+{
+    /// .NET's IComponent: something a container can hold and dispose.
+    public interface IComponent : IDisposable
+    {
+    }
+
+    /// .NET's IContainer: components kept together and disposed together.
+    public interface IContainer : IDisposable
+    {
+        void Add(IComponent component);
+        void Remove(IComponent component);
+    }
+
+    /// .NET's Container: disposes what it holds, the last added first.
+    public class Container : IContainer
+    {
+        readonly List<IComponent> _components = new List<IComponent>();
+
+        public virtual void Add(IComponent component) { if (component != null && !_components.Contains(component)) _components.Add(component); }
+        public virtual void Remove(IComponent component) { _components.Remove(component); }
+
+        public void Dispose()
+        {
+            for (int i = _components.Count - 1; i >= 0; i--) _components[i].Dispose();
+            _components.Clear();
+        }
+    }
+
+    /// .NET's Component: Dispose() is Dispose(true), which a derived class
+    /// overrides, and Disposed is raised once.
+    public class Component : IComponent
+    {
+        bool _disposed;
+        public event EventHandler? Disposed;
+
+        public void Dispose()
+        {
+            Dispose(true);
+        }
+
+        protected virtual void Dispose(bool disposing)
+        {
+            if (!disposing || _disposed) return;
+            _disposed = true;
+            if (Disposed != null) Disposed(this, EventArgs.Empty);
+        }
+    }
+}
