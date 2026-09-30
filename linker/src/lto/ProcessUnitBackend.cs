@@ -30,10 +30,13 @@ public sealed class ProcessUnitBackend : IUnitBackend, IDisposable
     public ObjectFile Recompile(ObjectFile original, IReadOnlyList<IrImport> imports, IReadOnlySet<string>? retained = null,
         LifetimeFacts? facts = null)
     {
-        string input = Path.Combine(work, "input-" + sequence + ".o"), output = Path.Combine(work, "output-" + sequence++ + ".o");
+        // The unit's own file when it was read from one and is unchanged:
+        // written out again, every unit's IR passed through the link's memory.
+        bool own = original.SourcePath is not null && File.Exists(original.SourcePath);
+        string input = own ? original.SourcePath! : Path.Combine(work, "input-" + sequence + ".o"), output = Path.Combine(work, "output-" + sequence++ + ".o");
         try
         {
-            File.WriteAllBytes(input, ElfWriter.WriteObject(original));
+            if (!own) File.WriteAllBytes(input, ElfWriter.WriteObject(original));
             BackendProtocol.WriteRequest(writer, new(input, output, imports, retained, facts));
             Task response = Task.Run(() => BackendProtocol.ReadResponse(reader));
             try { response.WaitAsync(TimeSpan.FromMinutes(5)).GetAwaiter().GetResult(); }
@@ -42,7 +45,7 @@ public sealed class ProcessUnitBackend : IUnitBackend, IDisposable
             if (!File.Exists(output)) throw new IOException("Compiler backend reported success without an object");
             return ElfReader.ReadObject(File.ReadAllBytes(output));
         }
-        finally { File.Delete(input); File.Delete(output); }
+        finally { if (!own) File.Delete(input); File.Delete(output); }
     }
 
     public void Dispose()

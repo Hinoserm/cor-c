@@ -9,6 +9,8 @@ namespace Corsac.Lang.Ir;
 public sealed class ObjectFile
 {
     public List<Section> Sections { get; } = new();
+    /// <summary>The file it was read from, unchanged since (ElfReader.ReadObjectFile); null for one made in memory.</summary>
+    public string? SourcePath { get; set; }
     public List<Symbol> Symbols { get; } = new();
     internal HashSet<string> SuppressedDefinitions { get; } = new(StringComparer.Ordinal);
 

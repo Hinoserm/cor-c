@@ -12,18 +12,22 @@ public sealed class IrArchive
     public const string SectionName = ".corsac.ir";
     public const int MaximumBytes = 128 * 1024 * 1024;
     private static readonly UTF8Encoding Utf8 = new(false, true);
-    private readonly IReadOnlyList<byte> bytes;
+    // The archive's bytes, read where they are: a section in memory, or --
+    // a unit a link reads (ElfReader.ReadObjectFile) -- the object's file,
+    // so that no unit's IR is held whole, only the record being decoded.
+    private readonly Func<int, int, byte[]> readAt;
+    private readonly int total;
     public IReadOnlyDictionary<string, IrArchiveEntry> Entries { get; }
 
-    private IrArchive(IReadOnlyList<byte> bytes, Dictionary<string, IrArchiveEntry> entries)
-    { this.bytes = bytes; Entries = entries; }
+    private IrArchive(Func<int, int, byte[]> readAt, int total, Dictionary<string, IrArchiveEntry> entries)
+    { this.readAt = readAt; this.total = total; Entries = entries; }
 
     public byte[] ReadBody(string key)
     {
         if (!Entries.TryGetValue(key, out IrArchiveEntry? entry)) throw new ElfFormatException("Missing IR record: " + key);
-        if (entry.Offset > bytes.Count - entry.Length) throw new ElfFormatException("IR archive changed after validation");
-        byte[] body = new byte[entry.Length];
-        for (int i = 0; i < body.Length; i++) body[i] = bytes[entry.Offset + i];
+        if (entry.Offset > total - entry.Length) throw new ElfFormatException("IR archive changed after validation");
+        byte[] body = readAt(entry.Offset, entry.Length);
+        if (body.Length != entry.Length) throw new ElfFormatException("IR archive changed after validation");
         if (!SHA256.HashData(body).SequenceEqual(entry.Hash)) throw new ElfFormatException("IR payload integrity mismatch: " + key);
         return body;
     }
@@ -78,17 +82,33 @@ public sealed class IrArchive
     {
         Section[] sections = obj.Sections.Where(section => section.Name == SectionName).ToArray();
         if (sections.Length == 0) return null;
-        if (sections.Length != 1 || sections[0].Bytes.Count > MaximumBytes) throw new ElfFormatException("Invalid IR archive count/size");
-        IReadOnlyList<byte> bytes = sections[0].Bytes;
-        using ByteListReadStream stream = new(bytes);
+        if (sections.Length != 1 || sections[0].Size > MaximumBytes) throw new ElfFormatException("Invalid IR archive count/size");
+        Section section = sections[0];
+        int size = section.Size;
+        Func<int, int, byte[]> readAt = section.FileBacked is (string path, long start, int _)
+            ? (at, length) =>
+            {
+                byte[] read = new byte[length];
+                using FileStream file = new(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+                file.Position = start + at;
+                file.ReadExactly(read);
+                return read;
+            }
+            : (at, length) => section.Bytes.GetRange(at, length).ToArray();
+        // The header and directory only; the bodies stay where they are.
+        if (size < 84) throw new ElfFormatException("Truncated IR archive");
+        int indexBytes = BinaryPrimitives.ReadInt32LittleEndian(readAt(12, 4));
+        if (indexBytes < 0 || indexBytes > size - 84) throw new ElfFormatException("IR archive header/native integrity mismatch");
+        using MemoryStream stream = new(readAt(0, 84 + indexBytes), writable: false);
         using BinaryReader reader = new(stream, Utf8);
+        int bytesCount = size;
         try
         {
             if (reader.ReadUInt32() != 0x52494343 || reader.ReadInt32() != 3) throw new ElfFormatException("Unsupported IR archive");
             int count = reader.ReadInt32(), directoryBytes = reader.ReadInt32(), total = reader.ReadInt32();
             byte[] native = reader.ReadBytes(32);
             byte[] directoryHash = reader.ReadBytes(32);
-            if (count < 0 || count > 100000 || total != bytes.Count || directoryBytes < 0 || directoryBytes > bytes.Count - 84
+            if (count < 0 || count > 100000 || total != bytesCount || directoryBytes < 0 || directoryBytes > bytesCount - 84
                 || !NativeHash(obj).SequenceEqual(native)) throw new ElfFormatException("IR archive header/native integrity mismatch");
             if (!HashDirectory(stream, directoryBytes).SequenceEqual(directoryHash))
                 throw new ElfFormatException("IR directory integrity mismatch");
@@ -110,13 +130,13 @@ public sealed class IrArchive
                 long decodeBytes = reader.ReadInt64();
                 if (decodeBytes < 0) throw new ElfFormatException("Invalid IR decode estimate");
                 int offset = reader.ReadInt32(), length = reader.ReadInt32(); byte[] hash = reader.ReadBytes(32);
-                if (offset != next - bodyStart || length < 0 || length > bytes.Count - next || hash.Length != 32
+                if (offset != next - bodyStart || length < 0 || length > bytesCount - next || hash.Length != 32
                     || stream.Position > bodyStart || !entries.TryAdd(key, new(key, flags != 0, instructions, calls, next, length, hash, references, decodeBytes)))
                     throw new ElfFormatException("Invalid IR body directory");
                 next += length;
             }
-            if (stream.Position != bodyStart || next != bytes.Count) throw new ElfFormatException("Unclaimed IR directory/payload bytes");
-            return new(bytes, entries);
+            if (stream.Position != bodyStart || next != bytesCount) throw new ElfFormatException("Unclaimed IR directory/payload bytes");
+            return new(readAt, size, entries);
         }
         catch (EndOfStreamException) { throw new ElfFormatException("Truncated IR archive"); }
         catch (DecoderFallbackException) { throw new ElfFormatException("Invalid IR UTF-8"); }
@@ -164,6 +184,7 @@ public sealed class IrArchive
             throw new ElfFormatException("Invalid IR name length");
         string name = Utf8.GetString(reader.ReadBytes(length));
         if (name.Contains('\0')) throw new ElfFormatException("Invalid IR name");
-        return name;
+        // Every unit's directory names the same callees: one copy of each.
+        return string.Intern(name);
     }
 }

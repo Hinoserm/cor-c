@@ -18,5 +18,23 @@ public sealed class Section
         Kind = kind;
     }
 
-    public int Size => Kind == SectionKind.Uninitialised ? ZeroBytes : Bytes.Count;
+    /// <summary>
+    /// CONTENT LEFT IN THE FILE IT WAS READ FROM: a unit's IR archive, which
+    /// a link reads a record at a time and never holds whole (ElfReader.
+    /// ReadObjectFile). Bytes is empty while this is set.
+    /// </summary>
+    public (string Path, long Offset, int Length)? FileBacked { get; set; }
+
+    public int Size => Kind == SectionKind.Uninitialised ? ZeroBytes : FileBacked?.Length ?? Bytes.Count;
+
+    /// <summary>The section's content, read from its file if it was left there.</summary>
+    public byte[] Content()
+    {
+        if (FileBacked is not (string path, long offset, int length)) return Bytes.ToArray();
+        byte[] content = new byte[length];
+        using FileStream file = new(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        file.Position = offset;
+        file.ReadExactly(content);
+        return content;
+    }
 }

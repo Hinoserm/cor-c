@@ -178,6 +178,28 @@ public static class ElfReader
         return names;
     }
 
+    /// <summary>The file ReadObjectFile is reading, on this thread: its IR sections are left there.</summary>
+    [ThreadStatic] internal static string? BackingPath;
+
+    /// <summary>
+    /// An object read from a file that stays where it is while the object is
+    /// used: its IR archive is not copied into memory but read from the file
+    /// a record at a time, and the object knows its file (SourcePath), so a
+    /// link hands the file itself to the backend rather than a copy.
+    /// </summary>
+    public static ObjectFile ReadObjectFile(string path)
+    {
+        string full = Path.GetFullPath(path);
+        BackingPath = full;
+        try
+        {
+            ObjectFile obj = ReadObject(File.ReadAllBytes(full));
+            obj.SourcePath = full;
+            return obj;
+        }
+        finally { BackingPath = null; }
+    }
+
     public static ObjectFile ReadObject(byte[] bytes)
     {
         ArgumentNullException.ThrowIfNull(bytes);
@@ -264,7 +286,14 @@ public static class ElfReader
             }
             else
             {
-                s.Bytes.AddRange(Content(f, h, $"section '{names[i]}'"));
+                // A unit's IR stays in its file when the file is known: a link
+                // reads it a record at a time (IrArchive).
+                if (ElfReader.BackingPath is string backing && names[i] == Corsac.Lang.Lto.IrArchive.SectionName)
+                {
+                    Content(f, h, $"section '{names[i]}'");
+                    s.FileBacked = (backing, (long)h.Offset, checked((int)h.Size));
+                }
+                else s.Bytes.AddRange(Content(f, h, $"section '{names[i]}'"));
             }
             obj.Sections.Add(s);
             bySh[i] = s;

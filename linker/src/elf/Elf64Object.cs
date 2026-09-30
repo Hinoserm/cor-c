@@ -190,7 +190,7 @@ internal static class Elf64Object
             uint at = b.AlignTo(align);
             if (s.Kind != SectionKind.Uninitialised)
             {
-                b.Bytes(s.Bytes.ToArray());
+                b.Bytes(s.Content());
             }
             headers.Add((sectionName[i], type, flags, at, (ulong)s.Size, 0, 0, align, 0));
         }
@@ -351,7 +351,14 @@ internal static class Elf64Object
             }
             else
             {
-                s.Bytes.AddRange(Content(f, h, $"section '{names[i]}'"));
+                // A unit's IR stays in its file when the file is known: a link
+                // reads it a record at a time (IrArchive).
+                if (ElfReader.BackingPath is string backing && names[i] == Corsac.Lang.Lto.IrArchive.SectionName)
+                {
+                    Content(f, h, $"section '{names[i]}'");
+                    s.FileBacked = (backing, (long)h.Offset, checked((int)h.Size));
+                }
+                else s.Bytes.AddRange(Content(f, h, $"section '{names[i]}'"));
             }
             obj.Sections.Add(s);
             bySh[i] = s;
