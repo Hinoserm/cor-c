@@ -63,14 +63,7 @@ public sealed class Dse : IPass
                                      && reads.Any(r => r.Offset < off + i.Size && off < r.Offset + r.Size));
                             if (!dead && covered.TryGetValue(key, out List<Region>? regions))
                             {
-                                foreach (Region r in regions)
-                                {
-                                    if (r.Offset <= off && r.Offset + r.Size >= off + i.Size)
-                                    {
-                                        dead = true;
-                                        break;
-                                    }
-                                }
+                                dead = Covers(regions, off, i.Size);
                             }
                             if (dead)
                             {
@@ -112,6 +105,33 @@ public sealed class Dse : IPass
                             continue;
                         }
 
+                    // ZEROING A SLOT OR A STATIC is a store of its whole range:
+                    // gone when later stores cover all of it before anything
+                    // reads it -- a promoted object's zeroing, written over
+                    // field by field by its constructor.
+                    case Opcode.MemSet when i.Operands.Count == 3 && i.Operands[0] is SymOperand or SlotOperand
+                                            && i.Operands[2] is ImmOperand { Value: > 0 and <= int.MaxValue } count:
+                        {
+                            (string key, long off) = Key(i.Operands[0], 0);
+                            int size = (int)count.Value;
+                            bool dead = i.Operands[0] is SlotOperand && slotsDead
+                                && !(slotReads.TryGetValue(key, out List<Region>? reads)
+                                     && reads.Any(r => r.Offset < off + size && off < r.Offset + r.Size));
+                            if (!dead && covered.TryGetValue(key, out List<Region>? regions)) dead = Covers(regions, off, size);
+                            if (dead)
+                            {
+                                b.Instrs.RemoveAt(k);
+                                continue;
+                            }
+                            if (!covered.TryGetValue(key, out regions))
+                            {
+                                regions = new List<Region>();
+                                covered[key] = regions;
+                            }
+                            regions.Add(new Region(off, size));
+                            continue;
+                        }
+
                     case Opcode.Call:
                     case Opcode.CallIndirect:
                     case Opcode.Syscall:
@@ -131,6 +151,24 @@ public sealed class Dse : IPass
                 }
             }
         }
+    }
+
+    /// <summary>Whether the regions together cover [offset, offset + size).</summary>
+    private static bool Covers(List<Region> regions, long offset, int size)
+    {
+        long at = offset, end = offset + size;
+        bool moved = true;
+        while (at < end && moved)
+        {
+            moved = false;
+            foreach (Region r in regions)
+                if (r.Offset <= at && r.Offset + r.Size > at)
+                {
+                    at = r.Offset + r.Size;
+                    moved = true;
+                }
+        }
+        return at >= end;
     }
 
     private static (string Key, long Offset) Key(Operand addr, long offset) => addr switch

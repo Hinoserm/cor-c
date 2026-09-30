@@ -59,6 +59,9 @@ public sealed class Module
     /// </summary>
     public bool NoCollector { get; set; }
 
+    /// <summary>The program's own source calls a method of the collector's classes (Lowering), so it has one.</summary>
+    public bool CallsCollector { get; set; }
+
     /// <summary>
     /// Call sites no inliner may fold away: the allocations the link may yet
     /// place or free (Escape's pending hints), which it must still be able

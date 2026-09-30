@@ -1306,6 +1306,36 @@ public sealed partial class Escape : IModulePass
         return o is SymOperand { Name: var name } && name.StartsWith("str_", StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// The allocations a register written more than once joins, when every
+    /// write is one of them (through copies) or null: each made once by a
+    /// constant-sized allocation with a register of its own. Null otherwise.
+    /// </summary>
+    private List<Instr>? JoinedAllocations(Function f, VReg joined, long budget)
+    {
+        Dictionary<VReg, List<Instr>> writes = Writes(f);
+        if (!writes.TryGetValue(joined, out List<Instr>? into) || into.Count < 2 || f.Params.Contains(joined)) return null;
+        List<Instr> group = new();
+        foreach (Instr w in into)
+        {
+            if (w.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) || w.Operands.Count != 1) return null;
+            if (w.Operands[0] is ImmOperand { Value: 0 }) continue;
+            if (w.Operands[0] is not RegOperand { Reg: var from }) return null;
+            Instr? made = null;
+            for (int hop = 0; hop < 8; hop++)
+            {
+                if (!writes.TryGetValue(from, out List<Instr>? ws) || ws.Count != 1 || f.Params.Contains(from)) return null;
+                Instr d = ws[0];
+                if (d.Op == Opcode.Call && IsAllocator(d.Callee)) { made = d; break; }
+                if (d.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) || d.Operands is not [RegOperand next]) return null;
+                from = next.Reg;
+            }
+            if (made is null || !ConstantSize(f, made.Operands[0], out long size) || size <= 0 || size > ObjectLimit || size > budget) return null;
+            if (!group.Contains(made)) group.Add(made);
+        }
+        return group.Count >= 2 ? group : null;
+    }
+
     /// <summary>Every instruction that writes each register.</summary>
     private static Dictionary<VReg, List<Instr>> Writes(Function f)
     {
@@ -1658,6 +1688,16 @@ public sealed partial class Escape : IModulePass
                         flow = Analyse(f, roots, summaries, i, stores);
                     }
                 }
+                // OBJECTS JOINED ONLY WITH EACH OTHER -- `c ? new A() : new A()`,
+                // a span of one literal or another -- are one object as far as
+                // anything after the join can tell, and are judged together:
+                // if none of them escapes, each gets a slot of its own.
+                if (flow.Escapes && sized && flow.Why is { Op: Opcode.Copy, Dest: { } joined }
+                    && JoinedAllocations(f, joined, budget) is { } group && group.Contains(i))
+                {
+                    Flow together = Analyse(f, group.Select(g => g.Dest!).ToList(), summaries, i);
+                    if (!together.Escapes) flow = together;
+                }
                 if (flow.Escapes)
                 {
                     // Left to the collector: say why, for the link (EscapeHints).
@@ -1714,11 +1754,13 @@ public sealed partial class Escape : IModulePass
                 FrameSlot slot = f.NewSlot(bytes, 8, "obj");
                 VReg addr = f.NewReg(IrTypes.Word, "stackobj");
 
-                // The allocator answers zeroed memory; so does this.
+                // The allocator answers zeroed memory; so does this -- the
+                // object's own bytes, which its constructor may write over
+                // entirely (Dse then drops this), not the slot's rounding.
                 List<Instr> replacement = new()
                 {
                     new Instr { Op = Opcode.Copy, Dest = addr, Operands = { new SlotOperand(slot) }, Line = i.Line },
-                    new Instr { Op = Opcode.MemSet, Operands = { new RegOperand(addr), new ImmOperand(0, IrType.I32), new ImmOperand(bytes, IrTypes.Word) }, Line = i.Line },
+                    new Instr { Op = Opcode.MemSet, Operands = { new RegOperand(addr), new ImmOperand(0, IrType.I32), new ImmOperand(size, IrTypes.Word) }, Line = i.Line },
                 };
                 if (i.Dest.Type == IrTypes.Word)
                 {
@@ -2321,8 +2363,12 @@ public sealed partial class Escape : IModulePass
         {
             return true;        // a library: its consumers decide
         }
+        // A PROGRAM THAT TALKS TO THE COLLECTOR ITSELF has one (Lowering).
+        if (m.CallsCollector) return true;
         return CollectorSites(m, byName, entry, paths: false).Count > 0;
     }
+
+
 
     /// <summary>
     /// THE ALLOCATIONS A COLLECTOR IS STILL NEEDED FOR, reachable from the

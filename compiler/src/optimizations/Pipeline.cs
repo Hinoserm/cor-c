@@ -75,6 +75,11 @@ public sealed class Pipeline
         p.Passes.Add(new ConstantAndCopyPropagation());
         p.Passes.Add(new ArrayLengthFacts());
         p.Passes.Add(new FrameAddressFold());
+        // A struct copied for a call from a slot nothing touches again.
+        p.Passes.Add(new CopyForward());
+        // Stores nothing reads before they are written again: a promoted
+        // object's zeroing that its constructor writes over, first of all.
+        p.Passes.Add(new Dse());
         p.Passes.Add(new LocalCopies());
         p.Passes.Add(new WideProductSharing());
         p.Passes.Add(new IntegerReassociate());

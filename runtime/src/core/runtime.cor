@@ -1715,7 +1715,7 @@ static class Runtime
 
     public static void PrintLine()
     {
-        PrintChar(10);
+        Print("\n"u8);
     }
 
     // The printing routines build their text in a LOCAL block, never a
@@ -1731,9 +1731,16 @@ static class Runtime
     /// own and is written as U+FFFD, which is what .NET's encoder makes of one.
     public static void PrintChar(int c)
     {
-        string one = Sys.NewChars(1);
-        Sys.SetChar(one, 0, c);
-        Print(one);
+        // ASCII is its own UTF-8: one byte, from a frame's word, nothing made.
+        if (c >= 0 && c < 0x80)
+        {
+            long one = c;
+            WriteBytes(StdOut, Sys.AddressOf(ref one), 1);
+            return;
+        }
+        string text = Sys.NewChars(1);
+        Sys.SetChar(text, 0, c);
+        Print(text);
     }
 
     /// Decimal, signed, with long.MinValue handled: the digits are produced

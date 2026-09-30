@@ -1,0 +1,35 @@
+// test: u8 literal is data
+// expect-exit: 0
+// expect-output:
+// ab ab ab
+// 6 heap 0
+//
+// A "..."u8 literal is a ReadOnlySpan<byte> over the program's data, as C#
+// 11 has it: printing one, directly or through a method that takes the span,
+// builds no array at any evaluation. A copy of the expression made on the way
+// (a generic body instantiated, a method specialised) keeps it data too.
+
+static class Out
+{
+    public static void Put(ReadOnlySpan<byte> text) { Sys.Print(text); }
+    public static int Length<T>(T unused, ReadOnlySpan<byte> text) => text.Length;
+}
+
+static class Program
+{
+    static int Main()
+    {
+        int total = 0;
+        for (int k = 0; k < 3; k++)
+        {
+            Out.Put("ab"u8);
+            Sys.Print(k < 2 ? " "u8 : "\n"u8);
+            total += Out.Length(k, "ab"u8);
+        }
+        Sys.PrintInt(total);
+        Sys.Print(" heap "u8);
+        Sys.PrintInt(Gc.HeapBytes);
+        Sys.PrintLine();
+        return 0;
+    }
+}

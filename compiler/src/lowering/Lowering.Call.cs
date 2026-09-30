@@ -15,6 +15,12 @@ public sealed partial class Lowering
     private VReg? CallDirect(MethodSymbol m, IrType returns, List<Operand> args)
     {
         Require(m);
+        // THE PROGRAM'S OWN SOURCE CALLING INTO THE COLLECTOR -- asking its
+        // heap where a block is, collecting -- means it has one, whatever its
+        // allocations need (Escape). Reading a counter (a getter) does not.
+        if (_f is { FromLibrary: false } && m.Owner.Name is "Gc" or "HeapChunks" or "GcLock" or "GcRoots" or "GcThreads"
+            && !m.Name.StartsWith("get_", StringComparison.Ordinal))
+            _m.CallsCollector = true;
         return _e.Call(CallLabel(m), returns, args.ToArray());
     }
 

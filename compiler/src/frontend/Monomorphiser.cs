@@ -2035,6 +2035,10 @@ public sealed class Monomorphiser
                     // A collection expression stays one: the copy is made into
                     // its target's type by the checker, as the original is.
                     Collection = nw.Collection,
+                    // Constant bytes stay data (a u8 literal, a constant
+                    // byte array read as a span): a copy that forgot would
+                    // build the array at every evaluation.
+                    Utf8Bytes = nw.Utf8Bytes,
                     Line = nw.Line, Col = nw.Col,
                 };
 

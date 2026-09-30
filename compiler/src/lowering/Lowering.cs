@@ -567,7 +567,7 @@ public sealed partial class Lowering
         WriteWord(block, _t.ArrayCountOffset, text.Length);
         Array.Copy(text, 0, block, _t.ArrayHeaderBytes, text.Length);
         string sym = "u8_" + System.Convert.ToHexString(System.Security.Cryptography.SHA1.HashData(text))[..16] + "_" + _utf8Data.Count;
-        DataItem item = new(sym, block) { Align = _t.Align64, Exported = false, NoReferences = true };
+        DataItem item = new(sym, block) { Align = _t.Align64, Exported = false, NoReferences = true, ReadOnly = true };
         item.Relocs.Add(new DataReloc(0, SequenceDescriptor(ElementKey(Type.U8), 1, isString: false, elementType: Type.U8), _t.DescriptorBytes));
         _m.Data.Add(item);
         _utf8Data[key] = sym;
