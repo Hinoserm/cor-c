@@ -1696,7 +1696,7 @@ public sealed partial class Escape : IModulePass
     /// write is one of them (through copies) or null: each made once by a
     /// constant-sized allocation with a register of its own. Null otherwise.
     /// </summary>
-    private List<Instr>? JoinedAllocations(Function f, VReg joined, long budget)
+    private List<Instr>? JoinedAllocations(Function f, VReg joined, long budget, List<VReg>? promoted = null)
     {
         Dictionary<VReg, List<Instr>> writes = Writes(f);
         if (!writes.TryGetValue(joined, out List<Instr>? into) || into.Count < 2 || f.Params.Contains(joined)) return null;
@@ -1712,13 +1712,25 @@ public sealed partial class Escape : IModulePass
                 if (!writes.TryGetValue(from, out List<Instr>? ws) || ws.Count != 1 || f.Params.Contains(from)) return null;
                 Instr d = ws[0];
                 if (d.Op == Opcode.Call && IsAllocator(d.Callee)) { made = d; break; }
+                // A member already given a frame slot (an earlier turn of
+                // this): still one of the group, judged with it.
+                if (d.Op == Opcode.Copy && d.Operands is [SlotOperand { Slot.Name: "obj" }] && promoted is not null)
+                {
+                    promoted.Add(from);
+                    break;
+                }
                 if (d.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) || d.Operands is not [RegOperand next]) return null;
                 from = next.Reg;
             }
-            if (made is null || !ConstantSize(f, made.Operands[0], out long size) || size <= 0 || size > ObjectLimit || size > budget) return null;
+            if (made is null)
+            {
+                if (promoted is not null && promoted.Count > 0) continue;
+                return null;
+            }
+            if (!ConstantSize(f, made.Operands[0], out long size) || size <= 0 || size > ObjectLimit || size > budget) return null;
             if (!group.Contains(made)) group.Add(made);
         }
-        return group.Count >= 2 ? group : null;
+        return group.Count + (promoted?.Count ?? 0) >= 2 && group.Count >= 1 ? group : null;
     }
 
     /// <summary>Every instruction that writes each register.</summary>
@@ -2082,10 +2094,11 @@ public sealed partial class Escape : IModulePass
                 // a span of one literal or another -- are one object as far as
                 // anything after the join can tell, and are judged together:
                 // if none of them escapes, each gets a slot of its own.
+                List<VReg> promotedMembers = new();
                 if (flow.Escapes && sized && flow.Why is { Op: Opcode.Copy, Dest: { } joined }
-                    && JoinedAllocations(f, joined, budget) is { } group && group.Contains(i))
+                    && JoinedAllocations(f, joined, budget, promotedMembers) is { } group && group.Contains(i))
                 {
-                    Flow together = Analyse(f, group.Select(g => g.Dest!).ToList(), summaries, i);
+                    Flow together = Analyse(f, group.Select(g => g.Dest!).Concat(promotedMembers).ToList(), summaries, i);
                     if (!together.Escapes) flow = together;
                 }
                 if (flow.Escapes)
@@ -2106,7 +2119,12 @@ public sealed partial class Escape : IModulePass
                 // runs again.
                 liveness ??= new Liveness(f);
                 pads ??= PadLive(liveness);
-                if (LiveAtSelf(liveness, pads, b, i, flow.Derived))
+                // A group's members already promoted this pass hold their own
+                // slots, reached through registers made after the liveness was
+                // solved: not this slot's previous object.
+                HashSet<VReg> selfDerived = promotedMembers.Count == 0 ? flow.Derived
+                    : flow.Derived.Where(r => liveness.Tracks(r)).ToHashSet();
+                if (LiveAtSelf(liveness, pads, b, i, selfDerived))
                 {
                     continue;
                 }
