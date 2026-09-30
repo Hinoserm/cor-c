@@ -27,9 +27,6 @@ set -u
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
-corc_for_libs="${CORC:-$root/compiler/bin/managed/Release/net10.0/corc}"
-# Asked of the compiler, not kept in a list that has to match it.
-libs="${CORC_LIBS:-$("$corc_for_libs" library-sources | tr '\n' ' ')}"
 timeout_s="${TIMEOUT:-10}"
 verbose=0
 filter=""
@@ -75,6 +72,15 @@ if [ -z "${CORC:-}" ]; then
     fi
     CORC="dotnet $dll"
 fi
+
+# THE LIBRARY SOURCES, asked of the compiler that compiles the tests, not
+# kept in a list that has to match it -- and not asked of some other build of
+# it. A "// units:" test compiles its other unit with --lib, which takes the
+# library list from the compiler itself, and itself against --ref of this
+# list; a stale native corc that did not know a newer library file gave the
+# two sides different interface families, three slots apart, and the link
+# stopped with "managed layout ... conflicts".
+libs="${CORC_LIBS:-$($CORC library-sources | tr '\n' ' ')}"
 
 # The compiler answers absolute paths; CORC_LIBS may be relative to the root.
 lib_path() { case "$1" in /*) printf '%s' "$1" ;; *) printf '%s' "$root/$1" ;; esac; }
