@@ -92,6 +92,16 @@ internal sealed class Allocator
     private readonly HashSet<(int VReg, int Instr)> _noReload = new();
     /// <summary>Calls before each instruction index: a prefix count.</summary>
     private int[] _callsBefore = Array.Empty<int>();
+    /// <summary>
+    /// Spilled registers whose reads before the spill point still find the
+    /// value in the register they had: nothing from the spill point on can
+    /// flow back to them.
+    /// </summary>
+    private readonly HashSet<int> _keepBefore = new();
+    private int[] _blockFirst = Array.Empty<int>();
+    private int[] _blockOfInstr = Array.Empty<int>();
+    private int[][] _succ = Array.Empty<int[]>();
+    private BitSet[] _liveIn = Array.Empty<BitSet>();
     private int _seq;
 
     private Allocator(MFunction m)
@@ -349,6 +359,17 @@ internal sealed class Allocator
             succ[b] = _m.Successors(b).Select(s => index[s]).ToArray();
         }
 
+        _blockFirst = first;
+        _succ = succ;
+        _blockOfInstr = new int[_lin.Count];
+        for (int b = 0; b < nb; b++)
+        {
+            for (int i = first[b]; i < first[b] + count[b]; i++)
+            {
+                _blockOfInstr[i] = b;
+            }
+        }
+
         // live-out(b) = union over successors s of use(s) | (live-out(s) & ~def(s));
         // iterate backwards over the layout until nothing changes.
         BitSet tmp = new(_n);
@@ -373,6 +394,15 @@ internal sealed class Allocator
                     changed = true;
                 }
             }
+        }
+
+        _liveIn = new BitSet[nb];
+        for (int b = 0; b < nb; b++)
+        {
+            _liveIn[b] = new BitSet(_n);
+            _liveIn[b].CopyFrom(live[b]);
+            _liveIn[b].AndNot(def[b]);
+            _liveIn[b].Or(use[b]);
         }
 
         // Backward walk of each block, marking every position each register
@@ -921,6 +951,10 @@ internal sealed class Allocator
     private void Spill(int vreg, int from)
     {
         _spilledFrom[vreg] = from;
+        if (_remat[vreg] is null && NothingFlowsBack(vreg, from))
+        {
+            _keepBefore.Add(vreg);
+        }
         bool remat = _remat[vreg] is not null;
         if (_slot[vreg] == 0 && !remat)
         {
@@ -935,7 +969,10 @@ internal sealed class Allocator
                 // The defining move is gone: the constant is written where it is used instead.
                 continue;
             }
-            if (remat ? CanFoldImm(vreg, o) : CanFold(vreg, o))
+            // Before the spill point a register that keeps its value there
+            // must see every write: none may go to the slot alone.
+            bool kept = o.Instr < from && _keepBefore.Contains(vreg);
+            if (!kept && (remat ? CanFoldImm(vreg, o) : CanFold(vreg, o)))
             {
                 _folded.Add((o.Instr, o.Operand));
                 continue;
@@ -956,6 +993,31 @@ internal sealed class Allocator
         {
             EnqueueShort(vreg, lastInstr, merged);
         }
+    }
+
+    /// <summary>
+    /// Whether no edge leaves the code from `from` on for a block before it
+    /// where the register is live on entry. Then every read before `from`
+    /// is reached only by paths that stay before it, where the register it
+    /// was given still holds it, and needs no reload from the slot.
+    /// </summary>
+    private bool NothingFlowsBack(int vreg, int from)
+    {
+        if (from >= _lin.Count)
+        {
+            return true;
+        }
+        for (int b = _blockOfInstr[from]; b < _succ.Length; b++)
+        {
+            foreach (int s in _succ[b])
+            {
+                if (_blockFirst[s] < from && _liveIn[s].Get(vreg))
+                {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     /// <summary>
@@ -1150,7 +1212,8 @@ internal sealed class Allocator
             if (_spilledFrom[r.Id] != int.MaxValue && done.Add(r.Id))
             {
                 Role role = roles[r.Id];
-                bool held = _noReload.Contains((r.Id, index));
+                bool held = _noReload.Contains((r.Id, index))
+                    || (index < _spilledFrom[r.Id] && _keepBefore.Contains(r.Id));
                 if (_remat[r.Id] is MImm imm)
                 {
                     if (!held)
