@@ -5709,11 +5709,14 @@ public static class Application
     /// The loop. Block for a message, dispatch it, paint what became stale,
     /// repeat until the last form closes or Exit is called. Nothing here
     /// polls: Next blocks in the kernel until there is a message.
+    /// .NET'S Run WITH NO FORM: the loop runs until Application.Exit,
+    /// whether or not any form is open -- a program that lives in the
+    /// notification area has none most of the time.
     public static void Run()
     {
         _running = true;
         Seat seat = Seat.Current;
-        while (_running && _forms.Count > 0)
+        while (_running)
         {
             // WHAT NOBODY CAUGHT IS SHOWN, NOT SWALLOWED. An exception out of
             // a handler or a paint used to end the program with its trace
