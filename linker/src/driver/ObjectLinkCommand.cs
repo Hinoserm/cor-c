@@ -16,6 +16,7 @@ public static class ObjectLinkCommand
         ulong? baseAddress = null;
         ulong? physicalAddress = null;
         bool flat = false;
+        string? map = null;
         bool shared = false;
         bool noUndefined = false;
         bool lto = true;
@@ -64,6 +65,7 @@ public static class ObjectLinkCommand
                 }
             }
             else if (arg == "--flat") flat = true;
+            else if (arg == "--map" && i + 1 < args.Length) map = args[++i];
             else if (arg == "--shared") shared = true;
             else if (arg == "--no-undefined") noUndefined = true;
             else if (arg == "--no-lto") lto = false;
@@ -114,7 +116,7 @@ public static class ObjectLinkCommand
         byte[] image;
         if (flat)
         {
-            Linker.FlatImage linked = Linker.LinkFlat(inputs, entry, checked((uint)(baseAddress ?? 0x10000)), longMode);
+            Linker.FlatImage linked = Linker.LinkFlat(inputs, entry, checked((uint)(baseAddress ?? 0x10000)), longMode, map);
             image = linked.Bytes;
             Console.Error.WriteLine($"flat: entry=0x{linked.Entry:x} base=0x{linked.Base:x} bss={linked.BssSize} memory={linked.MemorySize}");
         }

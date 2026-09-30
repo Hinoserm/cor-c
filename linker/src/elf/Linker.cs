@@ -194,7 +194,7 @@ public static partial class Linker
     /// binary is a thing the processor would try to execute. The driver puts
     /// the entry function first for this reason.
     /// </summary>
-    public static FlatImage LinkFlat(IEnumerable<(string Name, ObjectFile Object)> objects, string entrySymbol, uint baseAddress, bool? longMode = null)
+    public static FlatImage LinkFlat(IEnumerable<(string Name, ObjectFile Object)> objects, string entrySymbol, uint baseAddress, bool? longMode = null, string? mapPath = null)
     {
         ArgumentNullException.ThrowIfNull(objects);
         ArgumentNullException.ThrowIfNull(entrySymbol);
@@ -241,6 +241,7 @@ public static partial class Linker
                 $"'{entrySymbol}' is at 0x{entry.Address:x} but a flat image is entered at its first byte, 0x{baseAddress:x}",
             });
         }
+        if (mapPath is not null) WriteMap(layout, mapPath);
 
         // .bss carries no bytes, so the file ends where the last section with
         // bytes does: .data, or the numbers ahead of it, or the constants.
@@ -382,6 +383,33 @@ public static partial class Linker
     /// Where a name resolves to. A null section is an absolute value, used
     /// for the symbols the linker itself defines.
     /// </summary>
+    /// <summary>
+    /// WHAT THE IMAGE IS MADE OF: every defined global, largest first, with
+    /// its address, its section and its size -- the distance to the next
+    /// symbol in the same section, so padding counts to what comes before it.
+    /// For seeing what a size limit is being spent on.
+    /// </summary>
+    private static void WriteMap(Layout layout, string path)
+    {
+        var placed = layout.Globals
+            .Where(g => g.Value.Section is not null)
+            .Select(g => (Name: g.Key, g.Value.Section, g.Value.Address))
+            .OrderBy(g => g.Address).ToList();
+        List<(ulong Size, string Line)> lines = new();
+        for (int i = 0; i < placed.Count; i++)
+        {
+            var g = placed[i];
+            ulong end = g.Section!.Addr + g.Section.Size;
+            for (int j = i + 1; j < placed.Count; j++)
+            {
+                if (ReferenceEquals(placed[j].Section, g.Section) && placed[j].Address > g.Address) { end = placed[j].Address; break; }
+            }
+            ulong size = end - g.Address;
+            lines.Add((size, $"{size,8} 0x{g.Address:x8} {g.Section.Name,-8} {g.Name}"));
+        }
+        File.WriteAllLines(path, lines.OrderByDescending(l => l.Size).Select(l => l.Line));
+    }
+
     private readonly record struct Definition(string Object, OutputSection? Section, ulong Offset, Symbol? Symbol)
     {
         public ulong Address => (Section?.Addr ?? 0) + Offset;
