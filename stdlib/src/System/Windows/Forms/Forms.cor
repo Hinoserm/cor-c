@@ -55,6 +55,7 @@ using System.IO;
 using System.Drawing;
 using Corsac.GUI;
 using Microsoft.Win32;
+using System.ComponentModel;
 
 namespace System.Windows.Forms;
 
@@ -5057,12 +5058,13 @@ public class MainMenu : Menu
 }
 
 /// .NET'S NotifyIcon: an icon in the notification area beside the clock
-/// (Windows' Shell_NotifyIcon). The seat keeps it while Visible; the bar
-/// hands presses on it back as mouse messages, raised here as .NET raises
-/// them: MouseDown and MouseUp, Click and MouseClick on the release, then
-/// DoubleClick and MouseDoubleClick on a double click. A right release
-/// opens the ContextMenuStrip or ContextMenu, if there is one.
-public class NotifyIcon : IDisposable
+/// (Windows' Shell_NotifyIcon), kept by the seat while Visible. Its events
+/// are raised exactly as .NET Framework 4.8's WmMouseDown and WmMouseUp raise
+/// them: never with the pointer's place (X and Y are 0), Click and DoubleClick
+/// handed the MouseEventArgs as their EventArgs, a double click's release
+/// raising no Click, and a right release opening the menu before anything is
+/// raised for it.
+public sealed class NotifyIcon : Component
 {
     static List<NotifyIcon> _all = new List<NotifyIcon>();
     static int _nextUid = 1;
@@ -5070,20 +5072,44 @@ public class NotifyIcon : IDisposable
     Icon? _icon;
     string _text = "";
     bool _visible;
+    bool _doubleClick;
+    ContextMenu? _contextMenu;
+    ContextMenuStrip? _contextMenuStrip;
+    object? _tag;
+    ToolTipIcon _balloonIcon = ToolTipIcon.None;
+    string _balloonText = "";
+    string _balloonTitle = "";
 
     public NotifyIcon() { _uid = _nextUid++; lock (_all) _all.Add(this); }
 
-    public Icon? Icon { get { return _icon; } set { _icon = value; Update(); } }
-    /// The tip, 63 characters at most, as Windows 2000's 64.
+    public NotifyIcon(IContainer container) : this()
+    {
+        if (container == null) throw new ArgumentNullException("container");
+        container.Add(this);
+    }
+
+    public Icon? Icon { get { return _icon; } set { if (_icon != value) { _icon = value; Update(); } } }
+
+    /// The tip, 63 characters at most (Windows 2000's 64 with its zero).
     public string Text
     {
         get { return _text; }
-        set { if (value != null && value.Length > 63) throw new ArgumentOutOfRangeException("Text"); _text = value ?? ""; Update(); }
+        set
+        {
+            if (value == null) value = "";
+            if (value.Length > 63) throw new ArgumentOutOfRangeException("Text", value, "Text length must be less than 64 characters long.");
+            if (value != _text) { _text = value; Update(); }
+        }
     }
+
     public bool Visible { get { return _visible; } set { if (_visible == value) return; _visible = value; if (!value) Seat.Current.DeleteTrayIcon(_uid); else Update(); } }
-    public ContextMenuStrip? ContextMenuStrip;
-    public ContextMenu? ContextMenu;
-    public object? Tag;
+    public ContextMenu? ContextMenu { get { return _contextMenu; } set { _contextMenu = value; } }
+    public ContextMenuStrip? ContextMenuStrip { get { return _contextMenuStrip; } set { _contextMenuStrip = value; } }
+    public object? Tag { get { return _tag; } set { _tag = value; } }
+
+    public ToolTipIcon BalloonTipIcon { get { return _balloonIcon; } set { _balloonIcon = value; } }
+    public string BalloonTipText { get { return _balloonText; } set { _balloonText = value ?? ""; } }
+    public string BalloonTipTitle { get { return _balloonTitle; } set { _balloonTitle = value ?? ""; } }
 
     public event EventHandler? Click;
     public event EventHandler? DoubleClick;
@@ -5092,6 +5118,20 @@ public class NotifyIcon : IDisposable
     public event MouseEventHandler? MouseDown;
     public event MouseEventHandler? MouseUp;
     public event MouseEventHandler? MouseMove;
+    public event EventHandler? BalloonTipShown;
+    public event EventHandler? BalloonTipClicked;
+    public event EventHandler? BalloonTipClosed;
+
+    public void ShowBalloonTip(int timeout) { ShowBalloonTip(timeout, _balloonTitle, _balloonText, _balloonIcon); }
+
+    /// A balloon over the icon (NIF_INFO), as .NET checks it: a negative
+    /// timeout and an empty text are refused. Only while Visible.
+    public void ShowBalloonTip(int timeout, string tipTitle, string tipText, ToolTipIcon tipIcon)
+    {
+        if (timeout < 0) throw new ArgumentOutOfRangeException("timeout", timeout, "Balloon tip timeout must be a non-negative value.");
+        if (string.IsNullOrEmpty(tipText)) throw new ArgumentException("ShowBalloonTip text must have a non-empty value.");
+        if (_visible) Seat.Current.ShowTrayBalloon(_uid, timeout, tipTitle ?? "", tipText, (int)tipIcon);
+    }
 
     void Update()
     {
@@ -5101,10 +5141,16 @@ public class NotifyIcon : IDisposable
         Seat.Current.SetTrayIcon(_uid, pixels, _text);
     }
 
-    public void Dispose()
+    protected override void Dispose(bool disposing)
     {
-        Visible = false;
-        lock (_all) _all.Remove(this);
+        if (disposing)
+        {
+            Visible = false;
+            _icon = null;
+            _text = "";
+            lock (_all) _all.Remove(this);
+        }
+        base.Dispose(disposing);
     }
 
     // THE WINDOW A TRAY ICON'S MENU BELONGS TO, as .NET's NotifyIcon keeps a
@@ -5113,52 +5159,92 @@ public class NotifyIcon : IDisposable
     // menu whatever window it names.
     static int _menuWindow;
 
-    static void TrackMenu(MenuSource menu, int x, int y)
+    /// .NET's ShowContextMenu: the ContextMenu if there is one, else the
+    /// strip, where the pointer is.
+    void ShowContextMenu()
     {
+        MenuSource? menu = _contextMenu != null ? (MenuSource)_contextMenu : _contextMenuStrip;
+        if (menu == null) return;
         Seat seat = Seat.Current;
         if (_menuWindow == 0)
         {
             _menuWindow = seat.CreateWindow(0, 0, 1, 1);
             seat.ListOnTaskbar(_menuWindow, false);
         }
+        Point at = Cursor.Position;
         SystemMenus.Send(menu);
-        seat.TrackMenu(_menuWindow, menu.RootId, x, y);
+        seat.TrackMenu(_menuWindow, menu.RootId, at.X, at.Y);
     }
 
     internal static void Notify(int uid, int message, int x, int y)
     {
         NotifyIcon? icon = null;
         lock (_all) foreach (NotifyIcon n in _all) if (n._uid == uid) icon = n;
-        if (icon != null) icon.Raise(message, x, y);
+        if (icon != null) icon.Raise(message);
     }
 
-    void Raise(int message, int x, int y)
+    // Windows' messages for them: the mouse's, and NIN_BALLOON* (WM_USER + 2 to 5).
+    const int WmMouseMove = 0x200, WmLButtonDown = 0x201, WmLButtonUp = 0x202, WmLButtonDblClk = 0x203;
+    const int WmRButtonDown = 0x204, WmRButtonUp = 0x205, WmRButtonDblClk = 0x206;
+    const int WmMButtonDown = 0x207, WmMButtonUp = 0x208, WmMButtonDblClk = 0x209;
+    const int NinBalloonShow = 0x402, NinBalloonHide = 0x403, NinBalloonTimeout = 0x404, NinBalloonUserClick = 0x405;
+
+    void Raise(int message)
     {
-        MouseButtons button = message >= 0x204 && message <= 0x206 ? MouseButtons.Right
-            : message >= 0x207 && message <= 0x209 ? MouseButtons.Middle
-            : message == 0x200 ? MouseButtons.None : MouseButtons.Left;
-        // .NET gives a tray icon's events the pointer's place on the screen.
-        MouseEventArgs e = new MouseEventArgs(button, message == 0x203 || message == 0x206 || message == 0x209 ? 2 : 1, x, y, 0);
         switch (message)
         {
-            case 0x200: if (MouseMove != null) MouseMove(this, e); break;
-            case 0x201: case 0x204: case 0x207: if (MouseDown != null) MouseDown(this, e); break;
-            case 0x202: case 0x205: case 0x208:
-                if (MouseUp != null) MouseUp(this, e);
-                if (Click != null) Click(this, EventArgs.Empty);
-                if (MouseClick != null) MouseClick(this, e);
-                if (message == 0x205)
-                {
-                    MenuSource? menu = ContextMenuStrip != null ? (MenuSource)ContextMenuStrip : ContextMenu;
-                    if (menu != null) TrackMenu(menu, x, y);
-                }
+            case WmMouseMove: if (MouseMove != null) MouseMove(this, new MouseEventArgs(MouseButtons.None, 0, 0, 0, 0)); break;
+            case WmLButtonDown: Down(MouseButtons.Left, 1); break;
+            case WmLButtonDblClk: Down(MouseButtons.Left, 2); break;
+            case WmLButtonUp: Up(MouseButtons.Left); break;
+            case WmMButtonDown: Down(MouseButtons.Middle, 1); break;
+            case WmMButtonDblClk: Down(MouseButtons.Middle, 2); break;
+            case WmMButtonUp: Up(MouseButtons.Middle); break;
+            case WmRButtonDown: Down(MouseButtons.Right, 1); break;
+            case WmRButtonDblClk: Down(MouseButtons.Right, 2); break;
+            case WmRButtonUp:
+                if (_contextMenu != null || _contextMenuStrip != null) ShowContextMenu();
+                Up(MouseButtons.Right);
                 break;
-            case 0x203: case 0x206: case 0x209:
-                if (DoubleClick != null) DoubleClick(this, EventArgs.Empty);
-                if (MouseDoubleClick != null) MouseDoubleClick(this, e);
-                break;
+            case NinBalloonShow: if (BalloonTipShown != null) BalloonTipShown(this, EventArgs.Empty); break;
+            case NinBalloonHide: case NinBalloonTimeout: if (BalloonTipClosed != null) BalloonTipClosed(this, EventArgs.Empty); break;
+            case NinBalloonUserClick: if (BalloonTipClicked != null) BalloonTipClicked(this, EventArgs.Empty); break;
         }
     }
+
+    // WmMouseDown: a double click raises DoubleClick and MouseDoubleClick,
+    // and marks the release that follows as no click; then MouseDown.
+    void Down(MouseButtons button, int clicks)
+    {
+        if (clicks == 2)
+        {
+            if (DoubleClick != null) DoubleClick(this, new MouseEventArgs(button, 2, 0, 0, 0));
+            if (MouseDoubleClick != null) MouseDoubleClick(this, new MouseEventArgs(button, 2, 0, 0, 0));
+            _doubleClick = true;
+        }
+        if (MouseDown != null) MouseDown(this, new MouseEventArgs(button, clicks, 0, 0, 0));
+    }
+
+    // WmMouseUp: MouseUp, then Click and MouseClick unless it ended a double click.
+    void Up(MouseButtons button)
+    {
+        if (MouseUp != null) MouseUp(this, new MouseEventArgs(button, 0, 0, 0, 0));
+        if (!_doubleClick)
+        {
+            if (Click != null) Click(this, new MouseEventArgs(button, 0, 0, 0, 0));
+            if (MouseClick != null) MouseClick(this, new MouseEventArgs(button, 0, 0, 0, 0));
+        }
+        _doubleClick = false;
+    }
+}
+
+/// .NET's ToolTipIcon: the picture a balloon tip carries.
+public enum ToolTipIcon
+{
+    None = 0,
+    Info = 1,
+    Warning = 2,
+    Error = 3,
 }
 
 /// A menu opened where the pointer is (.NET's ContextMenu): a control's

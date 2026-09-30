@@ -115,6 +115,7 @@ enum SeatIoctl : long
     TrayDelete = 0x47550053,
     TrayList = 0x47550054,
     TrayClick = 0x47550055,
+    TrayBalloon = 0x47550056,
 }
 
 public class Seat : IDrawingTarget
@@ -1111,6 +1112,25 @@ public class Seat : IDrawingTarget
             TrayKept k = new TrayKept(); k.Owner = me; k.Uid = uid; k.Record = record;
             _trayKept.Add(k);
         }
+    }
+
+    public const int TrayBalloonBytes = 4 + 4 + 4 + 64 + 256;
+
+    /// A balloon over this thread's icon `uid` (NIF_INFO): how long in
+    /// milliseconds, its icon (ToolTipIcon's number), title and text as
+    /// UTF-8. Its showing, closing and clicking come back as TrayNotify events
+    /// with NIN_BALLOONSHOW, NIN_BALLOONHIDE or NIN_BALLOONTIMEOUT, and
+    /// NIN_BALLOONUSERCLICK (0x402 to 0x405).
+    public void ShowTrayBalloon(int uid, int timeout, string title, string text, int icon)
+    {
+        byte[] record = new byte[TrayBalloonBytes];
+        record[0] = (byte)uid; record[1] = (byte)(uid >> 8); record[2] = (byte)(uid >> 16); record[3] = (byte)(uid >> 24);
+        record[4] = (byte)timeout; record[5] = (byte)(timeout >> 8); record[6] = (byte)(timeout >> 16); record[7] = (byte)(timeout >> 24);
+        record[8] = (byte)icon;
+        SeatText.Put(record, 12, 64, title);
+        SeatText.Put(record, 76, 256, text);
+        Flush();
+        Ioctl(SeatIoctl.TrayBalloon, Sys.ArrayData(record));
     }
 
     /// Take this thread's icon `uid` out of the notification area.
