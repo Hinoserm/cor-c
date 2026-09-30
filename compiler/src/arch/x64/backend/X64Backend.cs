@@ -384,6 +384,8 @@ public sealed class X64Backend : IBackend
     private static MFunction? Compile(Function f, List<string> errors, bool entry = false, Func<string, bool>? isExternal = null)
     {
         int before = errors.Count;
+        // Frame slots whose lives do not meet share their bytes (SlotShare).
+        Corsac.Lang.Opt.SlotShare.Run(f);
         MFunction m = Selector.Run(f, errors, isExternal);
         m.RealignsStack = entry;
         if (errors.Count > before)

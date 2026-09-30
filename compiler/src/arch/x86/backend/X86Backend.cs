@@ -492,6 +492,8 @@ public sealed class X86Backend : IBackend
     private MFunction? Compile(Function f, List<string> errors, Func<string, bool>? isPrivate = null, Func<string, bool>? isDefined = null, Func<string, bool>? isImported = null)
     {
         int before = errors.Count;
+        // Frame slots whose lives do not meet share their bytes (SlotShare).
+        Corsac.Lang.Opt.SlotShare.Run(f);
         MFunction m = Selector.Run(f, errors, AutomaticPacked);
         if (errors.Count > before)
         {
