@@ -2017,7 +2017,12 @@ static class Gc
         {
             // Not guarded, or the words themselves were written over: only
             // the second if the fill before them is still the fill.
-            if (words - 1 < at || Sys.PeekByte(words - 1) != 0xCD) return;
+            // Or zeroed whole, footer too: a live small block keeps its
+            // footer equal to its header (only a large one is ever folded,
+            // dead, into a free run), so magic, fill and footer all zero on
+            // one the header still calls live is the zeroing writer's.
+            bool zeroed = size <= ClassMax && magic == 0 && Sys.Peek(tail) == 0 && words - 1 >= at && Sys.PeekByte(words - 1) == 0;
+            if (!zeroed && (words - 1 < at || Sys.PeekByte(words - 1) != 0xCD)) return;
         }
         long bad = -1;
         if (magicGood && bytes >= 0 && at + bytes <= words)
