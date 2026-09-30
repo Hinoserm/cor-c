@@ -599,6 +599,8 @@ public sealed partial class Escape : IModulePass
                     list.Add((b, i));
                 }
                 else if (i.Op == Opcode.Call && IsCatchEnd(i.Callee)) KeepCatch(i);
+        // One liveness for the function, whatever number of catches it has.
+        Liveness? catchLiveness = null;
         foreach ((FrameSlot keep, var list) in ends)
         {
             HashSet<VReg> roots = new();
@@ -615,11 +617,13 @@ public sealed partial class Escape : IModulePass
                     }
                 }
             Flow flow = Analyse(f, roots, summaries, null, stores, handOff: true);
-            if (flow.Escapes || list.Any(e => CatchesForeign(e.End)) || UsedAfterEnd(f, keep, flow, list))
+            if (flow.Escapes || list.Any(e => CatchesForeign(e.End)) || UsedAfterEnd(f, keep, flow, list, catchLiveness ??= new Liveness(f)))
             {
                 foreach ((_, Instr end) in list) KeepCatch(end);
                 continue;
             }
+            // Frees go in below: the function's liveness is another from here.
+            catchLiveness = null;
             foreach ((Block b, Instr end) in list)
             {
                 // Runtime.Free takes a long on every target (AppendFree).
@@ -642,9 +646,8 @@ public sealed partial class Escape : IModulePass
     /// of an alias of the caught object, and a finally inside the catch that
     /// a return leaves through, both end the catch first.
     /// </summary>
-    private static bool UsedAfterEnd(Function f, FrameSlot keep, Flow flow, List<(Block Block, Instr End)> ends)
+    private static bool UsedAfterEnd(Function f, FrameSlot keep, Flow flow, List<(Block Block, Instr End)> ends, Liveness liveness)
     {
-        Liveness liveness = new(f);
         HashSet<VReg> pads = PadLive(liveness);
         if (flow.Derived.Any(r => !liveness.Tracks(r) || pads.Contains(r))) return true;
         bool ReadsKept(Instr i) => i.Operands.Any(o => o is RegOperand r && flow.Derived.Contains(r.Reg))
@@ -655,8 +658,9 @@ public sealed partial class Escape : IModulePass
             for (int k = at + 1; k < b.Instrs.Count; k++) if (ReadsKept(b.Instrs[k])) return true;
             if (b.Terminator is Instr term && ReadsKept(term)) return true;
             if (flow.Derived.Any(r => liveness.IsLiveOut(b, r))) return true;
-            foreach (Block x in f.Blocks)
-                if (Reaches(f, b, x) && (x.Instrs.Any(ReadsKept) || x.Terminator is Instr t && ReadsKept(t))) return true;
+            // Every block the end reaches, found once, not asked of each block.
+            foreach (Block x in ReachedFrom(f, b))
+                if (x.Instrs.Any(ReadsKept) || x.Terminator is Instr t && ReadsKept(t)) return true;
         }
         return false;
     }
@@ -1254,6 +1258,24 @@ public sealed partial class Escape : IModulePass
     }
 
     /// <summary>Whether control can go from block `from` to block `to` (not counting staying in `from`), unwinds included.</summary>
+    /// <summary>Every block reachable from `from` by one or more edges (as Reaches follows them), found in one walk.</summary>
+    private static HashSet<Block> ReachedFrom(Function f, Block from)
+    {
+        _reachGraphs ??= new(ReferenceEqualityComparer.Instance);
+        if (!_reachGraphs.TryGetValue(f, out Cfg? cfg) || cfg.Function != f) _reachGraphs[f] = cfg = new Cfg(f);
+        HashSet<Block> seen = new(ReferenceEqualityComparer.Instance);
+        Stack<Block> work = new();
+        void Next(Block x)
+        {
+            foreach (Block n in cfg.Succs(x)) work.Push(n);
+            foreach (Instr i in x.Instrs) if (i.Op == Opcode.LabelAddr) foreach (Block t in i.Targets) work.Push(t);
+        }
+        Next(from);
+        while (work.TryPop(out Block? x))
+            if (seen.Add(x)) Next(x);
+        return seen;
+    }
+
     private static bool Reaches(Function f, Block from, Block to)
     {
         // One graph per function for the run: a function with many stores

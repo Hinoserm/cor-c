@@ -155,31 +155,50 @@ public static class SlotShare
             }
         }
 
-        // Which slots are alive together, instruction by instruction.
+        // WHICH SLOTS ARE ALIVE TOGETHER, block by block, as intervals: in a
+        // block a slot is alive from its first use there (or the block's top,
+        // if a use before can reach it) to its last (or the block's end, if a
+        // use after is reachable); one with no use in the block is alive
+        // through it exactly when both hold. Two slots meet where their
+        // intervals do, found by a sweep -- no set per instruction.
         ulong[][] conflicts = new ulong[n][];
         for (int s = 0; s < n; s++) conflicts[s] = new ulong[words];
         ulong[] everUsed = new ulong[words];
+        Dictionary<int, (int First, int Last)> spans = new();
+        List<(int From, int To, int Slot)> intervals = new();
         foreach (Block b in f.Blocks)
         {
             int count = b.Instrs.Count;
-            ulong[][] after = new ulong[count + 1][];
-            after[count] = (ulong[])afterOut[b].Clone();
-            for (int k = count - 1; k >= 0; k--)
-            {
-                after[k] = (ulong[])after[k + 1].Clone();
-                if (uses.TryGetValue(b.Instrs[k], out ulong[]? bits)) Or(after[k], bits);
-            }
-            ulong[] before = (ulong[])beforeIn[b].Clone();
-            ulong[] live = new ulong[words];
+            spans.Clear();
             for (int k = 0; k < count; k++)
             {
-                uses.TryGetValue(b.Instrs[k], out ulong[]? here);
-                if (here is not null) { Or(before, here); Or(everUsed, here); }
-                for (int w = 0; w < words; w++) live[w] = before[w] & after[k][w];
+                if (!uses.TryGetValue(b.Instrs[k], out ulong[]? here)) continue;
+                Or(everUsed, here);
                 for (int w = 0; w < words; w++)
-                    for (ulong bits = live[w]; bits != 0; bits &= bits - 1)
-                        Or(conflicts[w * 64 + System.Numerics.BitOperations.TrailingZeroCount(bits)], live);
+                    for (ulong bits = here[w]; bits != 0; bits &= bits - 1)
+                    {
+                        int slot = w * 64 + System.Numerics.BitOperations.TrailingZeroCount(bits);
+                        spans[slot] = spans.TryGetValue(slot, out var had) ? (had.First, k) : (k, k);
+                    }
             }
+            intervals.Clear();
+            ulong[] into = beforeIn[b], outOf = afterOut[b];
+            foreach ((int slot, (int first, int last)) in spans)
+                intervals.Add((Test(into, slot) ? 0 : first, Test(outOf, slot) ? count : last, slot));
+            for (int w = 0; w < words; w++)
+                for (ulong bits = into[w] & outOf[w]; bits != 0; bits &= bits - 1)
+                {
+                    int slot = w * 64 + System.Numerics.BitOperations.TrailingZeroCount(bits);
+                    if (!spans.ContainsKey(slot)) intervals.Add((0, count, slot));
+                }
+            intervals.Sort((x, y) => x.From.CompareTo(y.From));
+            for (int i = 0; i < intervals.Count; i++)
+                for (int j = i + 1; j < intervals.Count && intervals[j].From <= intervals[i].To; j++)
+                {
+                    int x = intervals[i].Slot, y = intervals[j].Slot;
+                    conflicts[x][y / 64] |= 1UL << (y % 64);
+                    conflicts[y][x / 64] |= 1UL << (x % 64);
+                }
         }
 
         // Greedy by size: each slot joins the first group it meets no member of.

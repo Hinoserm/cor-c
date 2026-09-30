@@ -24,15 +24,15 @@ public static class FramePool
     public static void Run(List<(string Name, ObjectFile Object)> inputs)
     {
         List<byte> pool = new();
-        Dictionary<string, int> placed = new(StringComparer.Ordinal);
+        // Keyed by the bytes themselves: no text made of each name to look it up.
+        Dictionary<byte[], int> placed = new(BytesComparer.Instance);
         int Place(byte[] text)
         {
-            string key = Convert.ToBase64String(text);
-            if (placed.TryGetValue(key, out int at)) return at;
+            if (placed.TryGetValue(text, out int at)) return at;
             at = pool.Count;
             pool.AddRange(text);
             pool.Add(0);
-            placed[key] = at;
+            placed[text] = at;
             return at;
         }
         bool longMode = inputs.Any(input => TargetContract.IsLongMode(input.Object));
@@ -119,6 +119,25 @@ public static class FramePool
         }
         inputs.Add(("<frame name pool>", holder));
         Console.Error.WriteLine("frame names: " + rewritten + " tables, one pool of " + pool.Count + " bytes");
+    }
+
+    private sealed class BytesComparer : IEqualityComparer<byte[]>
+    {
+        public static readonly BytesComparer Instance = new();
+        public bool Equals(byte[]? x, byte[]? y)
+        {
+            if (x is null || y is null || x.Length != y.Length) return false;
+            for (int i = 0; i < x.Length; i++) if (x[i] != y[i]) return false;
+            return true;
+        }
+
+        // FNV-1a over the bytes.
+        public int GetHashCode(byte[] bytes)
+        {
+            uint hash = 2166136261;
+            foreach (byte b in bytes) hash = (hash ^ b) * 16777619;
+            return (int)hash;
+        }
     }
 
     private static uint U32(List<byte> b, int at) => (uint)(b[at] | b[at + 1] << 8 | b[at + 2] << 16 | b[at + 3] << 24);
