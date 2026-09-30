@@ -53,6 +53,12 @@ internal sealed class Allocator
         /// instruction it serves, its own first, with what each does to it.
         /// </summary>
         public List<(int Instr, Role Role)>? Served;
+        /// <summary>
+        /// Where a whole register's value is actually live, sorted and
+        /// disjoint, within Start..End; null for a short interval, which is
+        /// live over all of Start..End.
+        /// </summary>
+        public List<(int S, int E)>? Ranges;
     }
 
     private readonly record struct Occurrence(int Instr, int Operand, Role Role, bool InMem);
@@ -64,6 +70,8 @@ internal sealed class Allocator
     private readonly List<Occurrence>[] _occ;
     private readonly int[] _start;
     private readonly int[] _end;
+    /// <summary>The positions each virtual register is live at, as ranges.</summary>
+    private readonly List<(int S, int E)>[] _ranges;
     private readonly int[][] _busy = new int[8][];
     private readonly int[] _assigned;
     private readonly int[] _spilledFrom;
@@ -105,9 +113,11 @@ internal sealed class Allocator
         _spilledFrom = new int[_n];
         _slot = new int[_n];
         _remat = new MImm?[_n];
+        _ranges = new List<(int, int)>[_n];
         for (int v = 0; v < _n; v++)
         {
             _occ[v] = new List<Occurrence>();
+            _ranges[v] = new List<(int, int)>();
             _start[v] = int.MaxValue;
             _end[v] = -1;
             _assigned[v] = -1;
@@ -274,6 +284,17 @@ internal sealed class Allocator
         {
             _start[reg] = Math.Min(_start[reg], pos);
             _end[reg] = Math.Max(_end[reg], pos);
+            // The walk is backward within a block, marking an instruction's
+            // late pair before its early one, so a run grows downward.
+            List<(int S, int E)> list = _ranges[reg];
+            if (list.Count > 0 && pos >= list[^1].S - 2 && pos <= list[^1].E + 1)
+            {
+                list[^1] = (Math.Min(list[^1].S, pos), Math.Max(list[^1].E, pos));
+            }
+            else
+            {
+                list.Add((pos, pos));
+            }
         }
     }
 
@@ -400,6 +421,29 @@ internal sealed class Allocator
             }
         }
 
+        for (int v = 8; v < _n; v++)
+        {
+            List<(int S, int E)> list = _ranges[v];
+            if (list.Count < 2)
+            {
+                continue;
+            }
+            list.Sort();
+            List<(int S, int E)> merged = new(list.Count) { list[0] };
+            for (int k = 1; k < list.Count; k++)
+            {
+                if (list[k].S <= merged[^1].E + 1)
+                {
+                    merged[^1] = (merged[^1].S, Math.Max(merged[^1].E, list[k].E));
+                }
+                else
+                {
+                    merged.Add(list[k]);
+                }
+            }
+            _ranges[v] = merged;
+        }
+
         // Prefix sums so "is r busy anywhere in [a, b]" is a subtraction.
         for (int r = 0; r < 8; r++)
         {
@@ -433,7 +477,7 @@ internal sealed class Allocator
         {
             if (_end[v] >= 0)
             {
-                Enqueue(new Interval { VReg = v, Start = _start[v], End = _end[v] });
+                Enqueue(new Interval { VReg = v, Start = _start[v], End = _end[v], Ranges = _ranges[v] });
             }
         }
 
@@ -482,20 +526,62 @@ internal sealed class Allocator
         {
             return false;
         }
-        return !Busy(reg, iv.Start, iv.End);
+        if (iv.Ranges is null)
+        {
+            return !Busy(reg, iv.Start, iv.End);
+        }
+        foreach ((int s, int e) in iv.Ranges)
+        {
+            if (Busy(reg, s, e))
+            {
+                return false;
+            }
+        }
+        return true;
     }
+
+    /// <summary>Whether two intervals are live at a common position: a hole in one may hold the other.</summary>
+    private static bool Overlaps(Interval a, Interval b)
+    {
+        if (a.End < b.Start || b.End < a.Start)
+        {
+            return false;
+        }
+        List<(int S, int E)> ra = a.Ranges ?? new() { (a.Start, a.End) };
+        List<(int S, int E)> rb = b.Ranges ?? new() { (b.Start, b.End) };
+        int x = 0, y = 0;
+        while (x < ra.Count && y < rb.Count)
+        {
+            if (ra[x].E < rb[y].S)
+            {
+                x++;
+            }
+            else if (rb[y].E < ra[x].S)
+            {
+                y++;
+            }
+            else
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>Whether a register is taken by any placed interval live where this one is.</summary>
+    private bool Taken(int reg, Interval iv) => _active.Any(a => a != iv && a.Reg == reg && Overlaps(a, iv));
 
     private int FreeRegister(Interval iv)
     {
         int hint = Hint(iv);
-        if (hint >= 0 && Allocatable(hint, iv) && _active.All(a => a.Reg != hint))
+        if (hint >= 0 && Allocatable(hint, iv) && !Taken(hint, iv))
         {
             return hint;
         }
         foreach (Gpr g in Preference)
         {
             int r = (int)g;
-            if (Allocatable(r, iv) && _active.All(a => a.Reg != r))
+            if (Allocatable(r, iv) && !Taken(r, iv))
             {
                 return r;
             }
@@ -559,15 +645,23 @@ internal sealed class Allocator
     private int MakeRoom(Interval cur)
     {
         int at = cur.Start / 4;
-        Interval? victim = null;
+        List<Interval>? victims = null;
         int victimNext = -1;
-        foreach (Interval a in _active)
+        // A register is had by evicting everything placed in it that is
+        // live where the current interval is; the others sit in its holes.
+        foreach (Gpr g in Preference)
         {
-            if ((a.Short && a.Served is null) || !Allocatable(a.Reg, cur))
+            int r = (int)g;
+            if (!Allocatable(r, cur))
             {
                 continue;
             }
-            int next = a.Short ? NextServed(a, at) : NextUse(a.VReg, at);
+            List<Interval> group = _active.Where(a => a.Reg == r && Overlaps(a, cur)).ToList();
+            if (group.Count == 0 || group.Any(a => a.Short && a.Served is null))
+            {
+                continue;
+            }
+            int next = group.Min(a => a.Short ? NextServed(a, at) : NextUse(a.VReg, at));
             if (next <= cur.Start)
             {
                 // Used by the very instruction the current interval starts at: not evictable.
@@ -575,7 +669,7 @@ internal sealed class Allocator
             }
             if (next > victimNext)
             {
-                victim = a;
+                victims = group;
                 victimNext = next;
             }
         }
@@ -583,7 +677,7 @@ internal sealed class Allocator
         if (!cur.Short)
         {
             int curNext = NextUseAfterStart(cur);
-            if (victim is null || curNext > victimNext)
+            if (victims is null || curNext > victimNext)
             {
                 Spill(cur.VReg, at);
                 return -1;
@@ -608,11 +702,12 @@ internal sealed class Allocator
         // those appearances into memory operands and hands the register over.
         // Nothing is skipped and nothing is approximated -- the value still
         // goes where it was going, through the frame instead of a register.
-        if (victim is null)
+        if (victims is null)
         {
             foreach (Interval a in _active)
             {
-                if (a.Short || !Allocatable(a.Reg, cur) || _remat[a.VReg] is not null)
+                if (a.Short || !Allocatable(a.Reg, cur) || _remat[a.VReg] is not null || !Overlaps(a, cur)
+                    || _active.Any(b => b != a && b.Reg == a.Reg && Overlaps(b, cur)))
                 {
                     continue;
                 }
@@ -635,13 +730,13 @@ internal sealed class Allocator
 
                 if (foldable)
                 {
-                    victim = a;
+                    victims = new() { a };
                     break;
                 }
             }
         }
 
-        if (victim is null)
+        if (victims is null)
         {
             // Every register holds something read by this instruction in a
             // position that cannot be memory. No instruction the selector
@@ -650,16 +745,19 @@ internal sealed class Allocator
                 $"{_m.Source.Name}: no register for v{cur.VReg} at instruction {at}");
         }
 
-        _active.Remove(victim);
-        if (victim.Short)
+        foreach (Interval victim in victims)
         {
-            Truncate(victim, at);
+            _active.Remove(victim);
+            if (victim.Short)
+            {
+                Truncate(victim, at);
+            }
+            else
+            {
+                Spill(victim.VReg, at);
+            }
         }
-        else
-        {
-            Spill(victim.VReg, at);
-        }
-        return victim.Reg;
+        return victims[0].Reg;
     }
 
     // ---- carrying a reload on -------------------------------------------------------
@@ -706,7 +804,9 @@ internal sealed class Allocator
             {
                 continue;
             }
-            if (!_pending.TryGetValue((v, j), out Interval? next) || Busy(cur.Reg, cur.Start, next.End))
+            if (!_pending.TryGetValue((v, j), out Interval? next) || Busy(cur.Reg, cur.Start, next.End)
+                || _active.Any(a => a != cur && a.Reg == cur.Reg && a.End >= cur.Start
+                    && Overlaps(a, new Interval { Start = cur.Start, End = next.End })))
             {
                 break;
             }
