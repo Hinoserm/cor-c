@@ -12604,26 +12604,28 @@ public sealed partial class Binder
     /// binding, more than every other kernel source together, and ran alone
     /// for the last third of a parallel build because nothing else was left.
     ///
-    /// The sets returned are fresh; nothing handed back is shared with a
-    /// child's result, so a caller may take what it is given and change it.
+    /// The sets returned are READ ONLY: nothing proved is the one shared empty
+    /// set, and a set is made only where something is. Every condition the
+    /// binder checks asks this, and two new sets for each -- nearly always
+    /// empty -- were a large part of what binding allocated.
     /// </summary>
+    private static readonly HashSet<string> NoPaths = new(StringComparer.Ordinal);
+
     private (HashSet<string> WhenTrue, HashSet<string> WhenFalse) OutPaths(Expr expression)
     {
-        HashSet<string> Empty() => new(StringComparer.Ordinal);
-
         if (expression is CallExpr call && _r.Calls.TryGetValue(call, out MethodSymbol? method)
             && method.Returns.Prim == Prim.Bool)
         {
-            HashSet<string> proved = Empty();
+            HashSet<string>? proved = null;
             foreach (Expr argument in call.Args)
             {
                 if (argument is RefArgExpr { IsOut: true } output
                     && Path(output.Target) is string path)
                 {
-                    proved.Add(path);
+                    (proved ??= new(StringComparer.Ordinal)).Add(path);
                 }
             }
-            return (proved, Empty());
+            return (proved ?? NoPaths, NoPaths);
         }
 
         if (expression is UnaryExpr { Op: UnOp.Not } negated)
@@ -12636,37 +12638,41 @@ public sealed partial class Binder
         {
             (HashSet<string> leftTrue, HashSet<string> leftFalse) = OutPaths(andExpr.Left);
             (HashSet<string> rightTrue, HashSet<string> rightFalse) = OutPaths(andExpr.Right);
-
-            // True is left-true and right-true.
-            HashSet<string> whenTrue = new(leftTrue, StringComparer.Ordinal);
-            whenTrue.UnionWith(rightTrue);
-
-            // False is either left-false, or left-true/right-false.
-            HashSet<string> viaRight = new(leftTrue, StringComparer.Ordinal);
-            viaRight.UnionWith(rightFalse);
-            HashSet<string> whenFalse = new(leftFalse, StringComparer.Ordinal);
-            whenFalse.IntersectWith(viaRight);
-            return (whenTrue, whenFalse);
+            // True is left-true and right-true; false is either left-false,
+            // or left-true and right-false.
+            return (Union(leftTrue, rightTrue), Meet(leftFalse, leftTrue, rightFalse));
         }
 
         if (expression is BinaryExpr { Op: BinOp.OrElse } orExpr)
         {
             (HashSet<string> leftTrue, HashSet<string> leftFalse) = OutPaths(orExpr.Left);
             (HashSet<string> rightTrue, HashSet<string> rightFalse) = OutPaths(orExpr.Right);
-
-            // False is left-false and right-false.
-            HashSet<string> whenFalse = new(leftFalse, StringComparer.Ordinal);
-            whenFalse.UnionWith(rightFalse);
-
-            // True is either left-true, or left-false/right-true.
-            HashSet<string> viaRight = new(leftFalse, StringComparer.Ordinal);
-            viaRight.UnionWith(rightTrue);
-            HashSet<string> whenTrue = new(leftTrue, StringComparer.Ordinal);
-            whenTrue.IntersectWith(viaRight);
-            return (whenTrue, whenFalse);
+            // False is left-false and right-false; true is either left-true,
+            // or left-false and right-true.
+            return (Meet(leftTrue, leftFalse, rightTrue), Union(leftFalse, rightFalse));
         }
 
-        return (Empty(), Empty());
+        return (NoPaths, NoPaths);
+
+        // a ∪ b, made only when both hold something.
+        static HashSet<string> Union(HashSet<string> a, HashSet<string> b)
+        {
+            if (b.Count == 0) return a;
+            if (a.Count == 0) return b;
+            HashSet<string> both = new(a, StringComparer.Ordinal);
+            both.UnionWith(b);
+            return both;
+        }
+
+        // either ∩ (other ∪ then): what both ways out prove.
+        static HashSet<string> Meet(HashSet<string> either, HashSet<string> other, HashSet<string> then)
+        {
+            if (either.Count == 0 || other.Count == 0 && then.Count == 0) return NoPaths;
+            HashSet<string> met = new(StringComparer.Ordinal);
+            foreach (string path in either)
+                if (other.Contains(path) || then.Contains(path)) met.Add(path);
+            return met.Count == 0 ? NoPaths : met;
+        }
     }
 
     private void Forget(List<Sym> added)

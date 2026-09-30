@@ -276,8 +276,20 @@ public sealed class Type : IEquatable<Type>
             && PointerDepth == other.PointerDepth
             && ParamName == other.ParamName
             && Equals(Element, other.Element)
-            && Args.Count == other.Args.Count
-            && !Args.Where((a, i) => !a.Equals(other.Args[i])).Any();
+            && SameArgs(other);
+    }
+
+    // A loop, not LINQ: this is asked for every conversion the binder tries,
+    // and an iterator and a closure each time were 1.6% of what the compiler
+    // allocated.
+    private bool SameArgs(Type other)
+    {
+        if (Args.Count != other.Args.Count) return false;
+        for (int i = 0; i < Args.Count; i++)
+        {
+            if (!Args[i].Equals(other.Args[i])) return false;
+        }
+        return true;
     }
 
     public override bool Equals(object? o) => Equals(o as Type);

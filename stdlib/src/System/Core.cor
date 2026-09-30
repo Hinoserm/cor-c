@@ -9729,36 +9729,6 @@ struct KeyValuePair<K, V> {
 // .NET spells this Dictionary<K,V>.Enumerator. It walks the table itself
 // rather than copying it out, which is why it reads the private arrays: in C#
 // it is written inside the class and does exactly the same thing.
-class DictionaryEnumerator<K, V> : IEnumerator<KeyValuePair<K, V>> {
-    // The non-generic IEnumerator's members, as .NET's enumerators have them.
-    object? IEnumerator.Current => Current;
-    public void Reset() { at = -1; }
-
-    // IEnumerator<T> is an IDisposable; walking holds nothing to let go of.
-    public void Dispose() { }
-
-    private Dictionary<K, V> over;
-    private int at;
-    private int slot;
-
-    public DictionaryEnumerator(Dictionary<K, V> table) {
-        over = table;
-        at = -1;
-    }
-
-    public KeyValuePair<K, V> Current => new KeyValuePair<K, V>(over.keys[slot], over.values[slot]);
-
-    public bool MoveNext() {
-        at = at + 1;
-        slot = over.SlotAt(at);
-        while (slot == -1) {
-            at = at + 1;
-            slot = over.SlotAt(at);
-        }
-        return slot >= 0;
-    }
-}
-
 // .NET's read-only view of a table, and Dictionary implements it. What it
 // promises is that a caller cannot add to what it was handed.
 interface IReadOnlyDictionary<K, V> : IEnumerable<KeyValuePair<K, V>> {
@@ -10087,7 +10057,33 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         return false;
     }
 
-    public IEnumerator<KeyValuePair<K, V>> GetEnumerator() { return new DictionaryEnumerator<K, V>(this); }
+    /// .NET's Dictionary<TKey, TValue>.Enumerator: a struct, so that walking a
+    /// table with foreach allocates nothing, in the order things went in.
+    public struct Enumerator : IEnumerator<KeyValuePair<K, V>>, IDisposable {
+        private readonly Dictionary<K, V> over;
+        private int at;
+        private int slot;
+        internal Enumerator(Dictionary<K, V> table) { over = table; at = -1; slot = -1; }
+        public KeyValuePair<K, V> Current => new KeyValuePair<K, V>(over.keys[slot], over.values[slot]);
+        object? IEnumerator.Current => Current;
+        public bool MoveNext() {
+            at = at + 1;
+            slot = over.SlotAt(at);
+            while (slot == -1) {
+                at = at + 1;
+                slot = over.SlotAt(at);
+            }
+            return slot >= 0;
+        }
+        public void Reset() { at = -1; slot = -1; }
+        public void Dispose() { }
+    }
+
+    public Enumerator GetEnumerator() { return new Enumerator(this); }
+
+    // Through the interface, as .NET's explicit implementation: an object,
+    // since an interface's enumerator is one.
+    IEnumerator<KeyValuePair<K, V>> IEnumerable<KeyValuePair<K, V>>.GetEnumerator() { return GetEnumerator(); }
 
     // .NET answers a KeyCollection and a ValueCollection, which are views onto
     // the table; these are lists, copied out. The difference shows only if the

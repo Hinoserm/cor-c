@@ -139,6 +139,11 @@ public sealed partial class Escape : IModulePass
         _fieldSites = canFreeFields && Provided(FieldKeeper);
         _unitKey = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(m.Name)))[..16];
         OwnedFieldEscape fields = new(byName, summaries);
+        // ONLY A CATCH THE PROGRAM CAN REACH KEEPS ANYTHING: one in code nothing
+        // calls -- a Forms dispatcher storing what posted work threw, in a
+        // program with no window -- made every exception anywhere the
+        // collector's.
+        _reachedFunctions = !m.PreserveExports && m.Entry is not null ? Reached(m) : null;
         foreach (Function f in m.Functions)
         {
             PromoteIn(f, summaries, canFree, fields);
@@ -348,6 +353,15 @@ public sealed partial class Escape : IModulePass
     private readonly HashSet<string> _keptCatches = new(StringComparer.Ordinal);
     private bool _keptCatchAll;
     private void KeepCatch(Instr end) { if (end.DispatchType is string t) _keptCatches.Add(t); else _keptCatchAll = true; }
+    private void KeepCaughtIn(Function f, Instr end, string why = "")
+    {
+        if (_reachedFunctions is not null && !_reachedFunctions.Contains(f.Name)) return;
+        if (_unresolvedWhy is not null) _unresolvedWhy.Add($"catch keeping {end.DispatchType ?? "everything"} in {f.Name}:{end.Line}{(why.Length > 0 ? " (" + why + ")" : "")}");
+        KeepCatch(end);
+    }
+
+    /// <summary>What the entry reaches, in a closed program; null where anything may be called.</summary>
+    private HashSet<string>? _reachedFunctions;
 
     /// <summary>The exact type of each thrown allocation (ThrownIn): the descriptor its header is stamped with.</summary>
     private readonly Dictionary<Instr, string> _thrownType = new(ReferenceEqualityComparer.Instance);
@@ -430,8 +444,11 @@ public sealed partial class Escape : IModulePass
                     Instr d = ws[0];
                     if (d.Op == Opcode.Call && (IsAllocator(d.Callee) || d.Callee is not null && _fresh.Contains(d.Callee)))
                     {
-                        if (d.Dest is not null && Analyse(f, new[] { d.Dest }, summaries, d, handOff: true).Escapes)
+                        if (d.Dest is not null && Analyse(f, new[] { d.Dest }, summaries, d, handOff: true) is { Escapes: true } kept)
+                        {
                             types.Add(StampedType(f, d.Dest) ?? "*");
+                            _unresolvedWhy?.Add($"thrown foreign {StampedType(f, d.Dest) ?? "*"} in {f.Name}:{d.Line} (kept via {kept.Why?.Op} {kept.Why?.Callee})");
+                        }
                         return true;
                     }
                     if (d.Op == Opcode.Call && d.Callee == "__exception" || d.Op == Opcode.Load && d.Operands is [SlotOperand { Slot: var from }] && caughtSlots.Contains(from))
@@ -604,7 +621,7 @@ public sealed partial class Escape : IModulePass
     {
         if (f.Async is not null)
         {
-            foreach (Block b in f.Blocks) foreach (Instr i in b.Instrs) if (i.Op == Opcode.Call && IsCatchEnd(i.Callee)) KeepCatch(i);
+            foreach (Block b in f.Blocks) foreach (Instr i in b.Instrs) if (i.Op == Opcode.Call && IsCatchEnd(i.Callee)) KeepCaughtIn(f, i);
             return;
         }
         Dictionary<VReg, Instr> defs = new();
@@ -621,7 +638,7 @@ public sealed partial class Escape : IModulePass
                     if (!ends.TryGetValue(keep, out var list)) ends[keep] = list = new();
                     list.Add((b, i));
                 }
-                else if (i.Op == Opcode.Call && IsCatchEnd(i.Callee)) KeepCatch(i);
+                else if (i.Op == Opcode.Call && IsCatchEnd(i.Callee)) KeepCaughtIn(f, i);
         // One liveness for the function, whatever number of catches it has.
         Liveness? catchLiveness = null;
         foreach ((FrameSlot keep, var list) in ends)
@@ -644,7 +661,8 @@ public sealed partial class Escape : IModulePass
             if (!keptAnyway) catchLiveness ??= new Liveness(f);
             if (keptAnyway || UsedAfterEnd(f, keep, flow, list, catchLiveness!))
             {
-                foreach ((_, Instr end) in list) KeepCatch(end);
+                string why = flow.Escapes ? $"escapes via {flow.Why?.Op} {flow.Why?.Callee}" : keptAnyway ? "may catch something not just made" : "used after the catch ends";
+                foreach ((_, Instr end) in list) KeepCaughtIn(f, end, why);
                 continue;
             }
             // Frees go in below: the function's liveness is another from here.
@@ -1153,6 +1171,13 @@ continue;
                 Instr free = x.Instrs[k];
                 if (free.Operands.Count == 0 || free.Operands[0] is not RegOperand freed) return false;
                 Instr? made = Origin(Defs(f), freed.Reg);
+                // AN OWNED SLOT'S FREE -- what the slot held, loaded where the
+                // function leaves -- is its record's: the object it made there.
+                if (made is { Op: Opcode.Load } && _records.TryGetValue(f, out List<OwnedRecord>? recorded))
+                    foreach (OwnedRecord r in recorded)
+                        foreach (var own in r.Frees)
+                            if (ReferenceEquals(own.Free, free)) { made = r.Origin; goto judged; }
+                judged:
                 if (made is not { Op: Opcode.Call, Callee: { } callee }) return false;
                 if (callee == LeafAllocator) return true;
                 return IsFreshCall(made) && _freshOrigins.TryGetValue(callee, out HashSet<Instr>? origins)

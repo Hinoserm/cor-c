@@ -577,6 +577,13 @@ public sealed partial class Escape
                 Instr free = x.Instrs[k];
                 if (free.Operands.Count == 0 || free.Operands[0] is not RegOperand freed) return false;
                 Instr? made = OriginOf(Defs(f), freed.Reg);
+                // AN OWNED SLOT'S FREE -- what the slot held, loaded where the
+                // function leaves -- is its record's: the object it made there.
+                if (made is { Op: Opcode.Load } && _records.TryGetValue(f, out List<OwnedRecord>? recorded))
+                    foreach (OwnedRecord r in recorded)
+                        foreach (var own in r.Frees)
+                            if (ReferenceEquals(own.Free, free)) { made = r.Origin; goto judged; }
+                judged:
                 if (made is not { Op: Opcode.Call, Callee: { } callee }) return false;
                 if (callee == LeafAllocator) return true;
                 return IsFreshCall(made) && _freshOrigins.TryGetValue(callee, out HashSet<Instr>? origins)
