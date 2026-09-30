@@ -557,7 +557,7 @@ public sealed class X86Backend : IBackend
         int before = errors.Count;
         // Frame slots whose lives do not meet share their bytes (SlotShare).
         Corsac.Lang.Opt.SlotShare.Run(f);
-        MFunction m = Selector.Run(f, errors, AutomaticPacked);
+        MFunction m = Selector.Run(f, errors, AutomaticPacked, PositionIndependent);
         if (errors.Count > before)
         {
             return null;

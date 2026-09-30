@@ -43,6 +43,13 @@ internal sealed partial class Selector
     private static readonly MReg Esp = MReg.Of(Gpr.Esp);
     private static readonly MReg Ebp = MReg.Of(Gpr.Ebp);
 
+    /// <summary>
+    /// Code for a shared object: the card and barrier stubs read the card
+    /// table by its absolute address, which such code may not, so their
+    /// intrinsics are the runtime's own routines, called as any function is.
+    /// </summary>
+    private bool _positionIndependent;
+
     private Selector(Function f, List<string> errors, bool automaticPacked)
     {
         _f = f;
@@ -60,9 +67,9 @@ internal sealed partial class Selector
             }
     }
 
-    public static MFunction Run(Function f, List<string> errors, bool automaticPacked = true)
+    public static MFunction Run(Function f, List<string> errors, bool automaticPacked = true, bool positionIndependent = false)
     {
-        Selector s = new(f, errors, automaticPacked);
+        Selector s = new(f, errors, automaticPacked) { _positionIndependent = positionIndependent };
         s.Select();
         return s._m;
     }
@@ -1943,6 +1950,18 @@ internal sealed partial class Selector
             {
                 Mov(Lo(d), Eax);
             }
+            return;
+        }
+
+        if (_positionIndependent && i.Op == Opcode.Call && i.Callee is MachineIntrinsics.CardMark or MachineIntrinsics.Barrier)
+        {
+            Instr routine = new()
+            {
+                Op = Opcode.Call, Line = i.Line,
+                Callee = i.Callee == MachineIntrinsics.CardMark ? Corsac.Lang.Lto.RuntimeAbi.CardMark : Corsac.Lang.Lto.RuntimeAbi.WriteBarrier,
+            };
+            routine.Operands.AddRange(i.Operands);
+            SelectCall(routine);
             return;
         }
 
