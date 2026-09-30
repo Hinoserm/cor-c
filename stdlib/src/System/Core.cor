@@ -10242,16 +10242,7 @@ class ObjectDisposedException : InvalidOperationException
     }
 }
 
-/// What an event hands its handlers besides the sender: nothing, for an event
-/// that has nothing to say, and the base of everything that does.
-public class EventArgs
-{
-    public static readonly EventArgs Empty = new EventArgs();
-}
 
-/// An event's handler, .NET's pair: the sender and what happened.
-public delegate void EventHandler(object? sender, EventArgs e);
-public delegate void EventHandler<TEventArgs>(object? sender, TEventArgs e);
 
 /// What a switch expression throws when no arm matched its value (C# 12.11).
 /// System.Runtime.CompilerServices in .NET.

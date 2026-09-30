@@ -221,7 +221,8 @@ namespace System
         public static readonly EventArgs Empty = new EventArgs();
     }
 
-    public delegate void EventHandler(object sender, EventArgs e);
+    public delegate void EventHandler(object? sender, EventArgs e);
+    public delegate void EventHandler<TEventArgs>(object? sender, TEventArgs e);
 
     /// Major.Minor.Build.Revision, where the last two may be ABSENT rather than
     /// zero -- .NET reports -1 for a field that was never given, and "1.0" and
