@@ -138,6 +138,7 @@ public sealed partial class Escape : IModulePass
 
         m.LifetimeHints = _hinting ? Hints(m, Provided) : null;
         m.NeedsHeap = AnyAllocationReachable(m, byName);
+        if (Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is { Length: > 0 }) AllocationReport(m, byName);
         LastRun = (Promoted, Owned, OwnedReturns, _fresh.Count, FieldsOwned, VariablesOwned);
 
         // A program that needs no collector still allocates on its way to
@@ -1515,5 +1516,51 @@ public sealed partial class Escape : IModulePass
             }
         }
         return false;
+    }
+
+    /// <summary>
+    /// CORSAC_ALLOC_REPORT: every allocation a collector would still be needed
+    /// for -- reachable from the entry over code and data as
+    /// AnyAllocationReachable walks it, not promoted to the frame and not
+    /// owned -- one line each, function and source line, on stderr. What is
+    /// left between a program and needing no collector at all.
+    /// </summary>
+    private void AllocationReport(Module m, Dictionary<string, Function> byName)
+    {
+        if (m.Entry is null || !byName.TryGetValue(m.Entry, out Function? entry))
+        {
+            Console.Error.WriteLine("alloc report: " + m.Name + " has no entry; compile the whole program to see it");
+            return;
+        }
+        Dictionary<string, DataItem> data = new(StringComparer.Ordinal);
+        foreach (DataItem d in m.Data) data[d.Name] = d;
+        HashSet<string> seen = new(StringComparer.Ordinal);
+        Stack<string> work = new();
+        work.Push(entry.Name);
+        List<string> sites = new();
+        while (work.Count > 0)
+        {
+            string name = work.Pop();
+            if (!seen.Add(name)) continue;
+            if (data.TryGetValue(name, out DataItem? item))
+            {
+                foreach (DataReloc r in item.Relocs) work.Push(r.Symbol);
+                continue;
+            }
+            if (!byName.TryGetValue(name, out Function? f)) continue;
+            foreach (Block b in f.Blocks)
+            {
+                if (b.Terminator is { Op: Opcode.Unreachable }) continue;
+                foreach (Instr i in b.Instrs)
+                {
+                    if (i.Callee is not null && IsAllocator(i.Callee) && !_owned.Contains(i))
+                        sites.Add($"{f.Name}:{i.Line} {i.Callee}");
+                    if (i.Callee is not null && !_owned.Contains(i)) work.Push(i.Callee);
+                    foreach (Operand o in i.Operands) if (o is SymOperand sym) work.Push(sym.Name);
+                }
+            }
+        }
+        Console.Error.WriteLine($"alloc report: {sites.Count} allocation(s) still need a collector");
+        foreach (string site in sites.OrderBy(x => x, StringComparer.Ordinal)) Console.Error.WriteLine("  " + site);
     }
 }
