@@ -369,6 +369,7 @@ public sealed class Verifier : IPass
                 break;
 
             case Opcode.Fence:
+            case Opcode.CompilerFence:
             case Opcode.Trap:
             case Opcode.Pause:
             case Opcode.Unreachable:
