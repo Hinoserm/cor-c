@@ -30,7 +30,14 @@ public static class IrLinkOptimizer
                 owners.TryAdd(symbol.Name, input.Object);
         }
         // Every unit's lifetime summaries, solved together (LifetimeSolver).
-        LifetimeSolver? lifetimes = enabled && hints.Count > 0 ? new LifetimeSolver(hintOrder) : null;
+        // Virtual calls, each by the overrides the whole image holds for it
+        // (VirtualTargets), from the descriptors in the objects themselves.
+        Dictionary<string, string[]> virtuals = enabled && hints.Count > 0
+            ? VirtualTargets.Resolve(inputs, hintOrder.SelectMany(unit => unit.Named()).Select(named => named.Callee)
+                .Where(name => name.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal)))
+            : new(StringComparer.Ordinal);
+        LifetimeSolver? lifetimes = enabled && hints.Count > 0 ? new LifetimeSolver(hintOrder, virtuals) : null;
+        if (virtuals.Count > 0) Console.Error.WriteLine("LTO virtual calls resolved: " + virtuals.Count);
         // A closed image keeps only what is reached, and reaching is judged
         // on the IR as the units left it. Two kinds of call are made later:
         // those a regenerated unit gains when the lifetime rules run again
@@ -84,7 +91,8 @@ public static class IrLinkOptimizer
                 // those of any body imported into it.
                 LifetimeFacts? facts = lifetimes is not null && hints.TryGetValue(original, out LifetimeHints? own)
                     ? lifetimes.For(own, archives[original].Entries.Values.SelectMany(record => record.Calls)
-                        .Concat(plan.Imports.SelectMany(import => import.Body.Calls)).Distinct(StringComparer.Ordinal))
+                        .Concat(plan.Imports.SelectMany(import => import.Body.Calls))
+                        .Concat(own.Named().Select(named => named.Callee).Where(virtuals.ContainsKey)).Distinct(StringComparer.Ordinal))
                     : null;
                 ObjectFile replacement = service.Recompile(original, imports, plan.Retained, facts);
                 X86CodeGenerationContract.ValidateRegeneration(original, replacement);

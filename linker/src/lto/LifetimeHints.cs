@@ -158,6 +158,24 @@ public sealed class LifetimeHints
 
     public bool IsEmpty => Pending.Count == 0 && Functions.Count == 0 && FieldSites.Count == 0;
 
+    /// <summary>Every (function, argument) any condition here names, and every field merge: what the link must answer.</summary>
+    public IEnumerable<(string Callee, int Argument)> Named()
+    {
+        IEnumerable<(string, int)> Of(LifetimeCondition? condition)
+            => condition is null ? Enumerable.Empty<(string, int)>() : condition.Stays.Concat(condition.Fields).Concat(condition.Fresh.Select(name => (name, -1)));
+        IEnumerable<(string, int)> OfFields(LifetimeFields? fields)
+            => fields is null ? Enumerable.Empty<(string, int)>() : fields.Conditional.SelectMany(item => Of(item.Condition)).Concat(fields.Merges);
+        foreach (LifetimeFunction function in Functions)
+        {
+            foreach (LifetimeCondition? condition in function.Parameters) foreach (var named in Of(condition)) yield return named;
+            foreach (var named in Of(function.Fresh)) yield return named;
+            foreach (LifetimeFields? fields in function.ParameterFields ?? Array.Empty<LifetimeFields?>()) foreach (var named in OfFields(fields)) yield return named;
+            foreach (var named in OfFields(function.FreshFields)) yield return named;
+        }
+        foreach (LifetimeCondition condition in Pending) foreach (var named in Of(condition)) yield return named;
+        foreach (var site in FieldSites) foreach (var named in OfFields(site.Fields)) yield return named;
+    }
+
     public void Attach(ObjectFile obj)
     {
         if (obj.Sections.Any(section => section.Name == SectionName)) throw new ElfFormatException("Duplicate lifetime hints");

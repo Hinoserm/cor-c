@@ -1804,9 +1804,66 @@ public sealed partial class Escape : IModulePass
     /// and only for the call shape just described; any other indirect call is
     /// left unresolved, and an escape, as before.
     /// </summary>
+    /// <summary>
+    /// A VIRTUAL CALL IN A UNIT THAT IS NOT THE WHOLE PROGRAM names every
+    /// override it can reach by one symbol no unit defines: its declaring type
+    /// and slot. A condition on it (EscapeHints) is a condition on each of
+    /// them together, which the link resolves from every descriptor in the
+    /// image (Lto.VirtualTargets) and answers as for any function.
+    /// </summary>
+    public const string VirtualPrefix = "__virtual:";
+
+    public static string VirtualCallee(string declaring, long slot) => VirtualPrefix + declaring + "+" + slot;
+
+    /// <summary>
+    /// The call's declaring type and slot, when it has the shape of a virtual
+    /// call: the method loaded from the object's own descriptor, the object
+    /// passed first. <paramref name="single"/> maps each register written once
+    /// to its instruction; <paramref name="many"/> holds those written more.
+    /// </summary>
+    private static (string Declaring, long Slot)? VirtualSlot(Instr i, Dictionary<VReg, Instr> single, HashSet<VReg> many)
+    {
+        if (i.Op != Opcode.CallIndirect || i.Operands.Count < 2 || i.DispatchType is not string declaring
+            || i.Operands[0] is not RegOperand { Reg: var target } || i.Operands[1] is not RegOperand { Reg: var self }
+            || many.Contains(target) || !single.TryGetValue(target, out Instr? method)
+            || method.Op != Opcode.Load || method.Operands.Count < 1 || method.Operands[0] is not RegOperand { Reg: var table }
+            || many.Contains(table) || !single.TryGetValue(table, out Instr? header)
+            || header.Op != Opcode.Load || header.Offset != 0 || header.Operands.Count < 1
+            || header.Operands[0] is not RegOperand { Reg: var from } || from != self) return null;
+        return (declaring, method.Offset);
+    }
+
+    /// <summary>
+    /// Every virtual call of a unit's functions, each to its one symbol for
+    /// all its overrides (VirtualCallee); only those <paramref name="known"/>
+    /// admits, when it is given -- the ones the link has an answer for.
+    /// </summary>
+    internal static Dictionary<Instr, string[]> VirtualCallees(IEnumerable<Function> functions, Func<string, bool>? known = null)
+    {
+        Dictionary<Instr, string[]> result = new(ReferenceEqualityComparer.Instance);
+        foreach (Function f in functions)
+        {
+            Dictionary<VReg, Instr> single = new();
+            HashSet<VReg> many = new();
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Dest is not null && !single.TryAdd(i.Dest, i)) many.Add(i.Dest);
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Op == Opcode.CallIndirect && VirtualSlot(i, single, many) is var (declaring, slot))
+                    {
+                        string name = VirtualCallee(declaring, slot);
+                        if (known is null || known(name)) result[i] = new[] { name };
+                    }
+        }
+        return result;
+    }
+
     private static Dictionary<Instr, string[]>? IndirectTargets(Module m, Dictionary<string, Function> byName)
     {
-        if (m.PreserveExports || m.Entry is null) return null;
+        // Not the whole program: each virtual call stands for its overrides
+        // under one name, for the link to answer (VirtualCallees).
+        if (m.PreserveExports || m.Entry is null) return m.PreserveExports ? VirtualCallees(m.Functions) : null;
 
         // Where in a descriptor its methods begin: the offsets objects are
         // stamped with (`store @t_Type+48` into the new object's first word).
