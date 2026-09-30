@@ -163,6 +163,11 @@ static class Tls
     /// Type-initialization record this thread is currently waiting on, or 0.
     public const long TypeInitWait = 14 * WordSize.Bytes;
 
+    /// The thread's process -- its thread group -- as a kernel that hands a
+    /// ring-1 block to it writes it there with ThreadId: what a ring-1
+    /// kernel asks of every call, read here rather than asked by a trap.
+    public const long ThreadGroup = 15 * WordSize.Bytes;
+
     /// Nonzero while this thread is inside the allocator's fast path: the
     /// few instructions between reading its buffer's limit and bumping its
     /// pointer. A collector that stops threads by interrupting them (a
