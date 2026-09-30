@@ -184,7 +184,7 @@ public sealed partial class Escape : IModulePass
                         // barrier, a card mark, a mark, a thread's word that
                         // it is blocking or at a safepoint. None has any other
                         // effect, and each would keep the collector linked.
-                        if (i.Dest is null && (IsCollectorNote(i.Callee) || i.Callee is ThreadBlocking or ThreadUnblocking or ThreadSafePoint))
+                        if (i.Dest is null && (IsCollectorNote(i.Callee) || i.Callee is ThreadBlocking or ThreadUnblocking or ThreadSafePoint or ThreadRegister))
                         {
                             b.Instrs.RemoveAt(k);
                             k--;
@@ -228,6 +228,8 @@ public sealed partial class Escape : IModulePass
     public const string ThreadBlocking = "m_GcThreads_BeginBlocking_0";
     public const string ThreadUnblocking = "m_GcThreads_EndBlocking_0";
     public const string ThreadSafePoint = "m_GcThreads_SafePoint_1_V$I64";
+    /// <summary>A thread made known to the collector as it starts.</summary>
+    public const string ThreadRegister = "m_GcThreads_Register_1_V$I64";
 
     /// <summary>
     /// Giving a block back by hand. The compiler calls this only for an

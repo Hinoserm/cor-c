@@ -129,6 +129,11 @@ public sealed class Inline : IParallelModulePass
             // to retarget would be gone and the collector with them kept.
             addressTaken.Add(Escape.CollectorFreer);
             addressTaken.Add(Escape.CollectorLive);
+            // And what a thread tells the collector, which such a program drops.
+            addressTaken.Add(Escape.ThreadBlocking);
+            addressTaken.Add(Escape.ThreadUnblocking);
+            addressTaken.Add(Escape.ThreadSafePoint);
+            addressTaken.Add(Escape.ThreadRegister);
             // What a barrier on a replaced object becomes (ScalarObjects).
             addressTaken.Add(Escape.ValueBarrier);
         }
