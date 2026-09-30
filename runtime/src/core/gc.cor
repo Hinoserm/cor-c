@@ -2634,6 +2634,7 @@ static class Gc
     /// page's. The heap lock is held and no collection is under way.
     static void ClassFree(long page, long block, long size, long tb)
     {
+        if (_heapCheck) Forget(block);
         ZeroWords(block + HeaderBytes, block + size - FooterBytes);
         Stamp(block, size, FlagFree);
         long owner = HeapChunks.Owner(page);
@@ -2735,17 +2736,40 @@ static class Gc
     static long _recentAt;
     static long _recentReports;
 
+    // THE RING BY ADDRESS: a remembered block freed is forgotten there and
+    // then (Forget, from every way a block is freed), not left to be read
+    // again once its bytes are a free run or a bigger block's contents. One
+    // slot per hash; a collision only loses the older entry's recheck.
+    const long RecentIndexSlots = 8192;
+    static long _recentIndex;
+
+    static long RecentSlot(long block)
+    {
+        return _recentIndex + ((block >> 3) & (RecentIndexSlots - 1)) * WordSize.Bytes;
+    }
+
+    /// A block freed: out of the recent ring, if it is there.
+    static void Forget(long block)
+    {
+        if (_recentIndex == 0) return;
+        long slot = RecentSlot(block);
+        long e = Sys.Peek(slot);
+        if (e != 0 && Sys.Peek(e) == block) Sys.Poke(e, Zero);
+    }
+
     static void Remember(long block, long path)
     {
         if (_recent == 0)
         {
             _recent = Platform.Map(RecentBlocks * RecentWords * WordSize.Bytes);
             if (_recent == 0) return;
+            _recentIndex = Platform.Map(RecentIndexSlots * WordSize.Bytes);
         }
         long w = WordSize.Bytes;
         long e = _recent + (_recentAt % RecentBlocks) * RecentWords * w;
         _recentAt = _recentAt + 1;
         Sys.Poke(e, block);
+        if (_recentIndex != 0) Sys.Poke(RecentSlot(block), e);
         long fp = Sys.FramePointer();
         // Past Remember's callers inside the collector (CheckMade, the
         // allocator, Runtime's entry) to the code that asked for the block.
@@ -2770,6 +2794,29 @@ static class Gc
         }
     }
 
+    /// Whether a block still starts at `block`: on its class's grid in a
+    /// class page, or where a walk from the chunk's nearest start anchor
+    /// lands. A walk that meets a broken size first cannot say, and answers
+    /// yes, so damage below is never taken for a stale entry.
+    static bool StillBlockStart(long block)
+    {
+        long chunk = HeapChunks.Of(block);
+        if (chunk == 0) return false;
+        long first = HeapChunks.First(chunk);
+        if (block < first || block >= HeapChunks.End(chunk)) return false;
+        long c = HeapChunks.PageClass(chunk);
+        if (c != 0) return (block - first) % ClassSize(c - 1) == 0;
+        long at = HeapChunks.MarkStart(chunk, block + HeaderBytes);
+        long end = HeapChunks.End(chunk);
+        for (long n = 0; at < block && n < 100000; n++)
+        {
+            long size = Sys.Peek(at) & SizeMask;
+            if (size < Smallest || at + size > end || Sys.Peek(at + size - FooterBytes) != Sys.Peek(at)) return true;
+            at = at + size;
+        }
+        return at == block;
+    }
+
     static void CheckRecent()
     {
         if (_recent == 0 || _recentReports >= 12) return;
@@ -2789,6 +2836,10 @@ static class Gc
             long size = word & SizeMask;
             // Freed since, or taken again: no longer the block it was.
             if ((word & FlagFree) != 0 || size < Smallest || size > 65536) { Sys.Poke(e, Zero); continue; }
+            // Or no block starts there any more: freed, folded into a free
+            // run and handed out again inside a bigger block, whose contents
+            // may look like a header at the old address.
+            if (!StillBlockStart(block)) { Sys.Poke(e, Zero); continue; }
             CheckGuard(block, "the recheck of recent blocks");
             long foot = Sys.Peek(block + size - FooterBytes);
             if (foot == word) continue;
@@ -3059,6 +3110,7 @@ static class Gc
                         }
                         CensusInto(_deadAt, block, size);
                     }
+                    if (_heapCheck) Forget(block);
                     ZeroWords(block + HeaderBytes, block + size - FooterBytes);
                     Stamp(block, size, FlagFree);
                 }
@@ -3460,6 +3512,7 @@ static class Gc
 
     static void FreeInPlace(long block, long size)
     {
+        if (_heapCheck) Forget(block);
         Stamp(block, size, FlagFree);
         Sys.Poke(block + KindAt, InPlace);
         _inPlace = _inPlace + 1;
@@ -5630,6 +5683,7 @@ static class Gc
     /// Frees a block and coalesces it with a free neighbour on either side.
     static void Merge(long block)
     {
+        if (_heapCheck) Forget(block);
         long chunk = HeapChunks.Of(block);
 
         if (chunk == 0)
@@ -7800,6 +7854,7 @@ static class Gc
                         }
                         deadBlocks = deadBlocks + 1;
                         deadSize = deadSize + size;
+                        if (_heapCheck) Forget(block);
                         if (_deadCensus && (word & FlagFree) == 0)
                         {
                             if (_deadAt == 0)

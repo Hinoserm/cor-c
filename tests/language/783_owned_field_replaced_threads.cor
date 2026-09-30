@@ -1,0 +1,54 @@
+// test: owned field replaced threads
+// expect-exit: 0
+// expect-output:
+// tick 0
+//
+// A field of a shared object replaced under a lock on one thread, while
+// another thread holds what it read from it under the same lock: the old
+// value is the reader's still, and may not be freed by the replacement.
+
+using System;
+using System.Threading;
+
+class State { public string Status; }
+
+class Reader : Action
+{
+    public string Seen;
+    public void Invoke()
+    {
+        lock (Program.Gate) { Seen = Program.Shared.Status; }
+        Program.Read = 1;
+        while (Program.Replaced == 0) Thread.Sleep(1);
+        for (int i = 0; i < 64; i++) { string s = "tock " + i; if (s.Length == 0) Console.WriteLine("?"); }
+    }
+}
+
+class Writer : Action
+{
+    public void Invoke()
+    {
+        while (Program.Read == 0) Thread.Sleep(1);
+        for (int i = 1; i < 50; i++) lock (Program.Gate) { Program.Shared.Status = "tick " + i; }
+        Program.Replaced = 1;
+    }
+}
+
+static class Program
+{
+    public static readonly object Gate = new object();
+    public static State Shared = new State();
+    public static volatile int Read, Replaced;
+
+    static int Main()
+    {
+        Shared.Status = "tick " + 0;
+        Reader r = new Reader();
+        Thread a = Thread.Start(r);
+        Thread b = Thread.Start(new Writer());
+        a.Join();
+        b.Join();
+        Console.WriteLine(r.Seen);
+        return 0;
+    }
+}

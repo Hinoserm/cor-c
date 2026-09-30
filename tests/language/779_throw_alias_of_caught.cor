@@ -1,0 +1,40 @@
+// test: throw alias of caught
+// expect-exit: 0
+// expect-output:
+// outer y1
+// outer y2
+//
+// A catch that throws what it caught under another name -- a copy, a cast --
+// ends the catch before the throw; the object it throws is the one the catch
+// would have freed there.
+
+using System;
+
+class E : Exception { public E(string m) : base(m) { } }
+
+static class Program
+{
+    static void Churn()
+    {
+        for (int i = 0; i < 64; i++) { string s = new string('z', 8 + i % 8); if (s.Length == 0) Console.WriteLine("?"); }
+    }
+
+    static void Copy(int n)
+    {
+        try { throw new E("y" + n); }
+        catch (E e) { var x = e; Churn(); throw x; }
+    }
+
+    static void Cast(int n)
+    {
+        try { throw new E("y" + n); }
+        catch (Exception e) { Churn(); throw (E)e; }
+    }
+
+    static int Main()
+    {
+        try { Copy(1); } catch (E o) { Churn(); Console.WriteLine("outer " + o.Message); }
+        try { Cast(2); } catch (E o) { Churn(); Console.WriteLine("outer " + o.Message); }
+        return 0;
+    }
+}

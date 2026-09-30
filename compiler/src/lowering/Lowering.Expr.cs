@@ -1437,7 +1437,13 @@ public sealed partial class Lowering
             {
                 VReg v = EvalAs(given, field.Type);
                 if (field.Inline) StorePlace(new MemPlace(R(obj), field.Offset, field.Type, false, true), v);
-                else _e.Store(R(obj), R(v), field.Offset, LoadSize(field.Type));
+                else
+                {
+                    _e.Store(R(obj), R(v), field.Offset, LoadSize(field.Type));
+                    // Tagged as every other store to the field is: the field
+                    // proof must see what a `with` puts there.
+                    if (TagsField(field)) _e.Block.Instrs[^1].Field = FieldKey(field);
+                }
             }
         }
         return obj;
@@ -2546,7 +2552,13 @@ public sealed partial class Lowering
             return Fail(at, "a struct field held in line in its object (FieldSymbol.Inline) has no pointer to it to pass by reference");
         }
         VReg basis = RegOf(m.Address);
-        return m.Offset == 0 ? basis : _e.Binary(Opcode.Add, basis, m.Offset);
+        if (m.Offset == 0) return basis;
+        VReg address = _e.Binary(Opcode.Add, basis, m.Offset);
+        // A reference field's address carries the field, as its loads and
+        // stores do: whatever is written through it (ref, out, Interlocked)
+        // is seen by no field proof, and the escape pass refuses to own it.
+        if (m.Field is FieldSymbol field && TagsField(field)) _e.Block.Instrs[^1].Field = FieldKey(field);
+        return address;
     }
 
     private VReg RegOf(Operand o)

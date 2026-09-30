@@ -225,6 +225,10 @@ static class Utf8Transcoder
         int end = at + count;
         int i = at;
         int o = 0;
+        // NEVER PAST THE STRING, whatever the bytes say now: sized by a first
+        // pass over the same bytes, a string is overrun by a second pass that
+        // reads them changed (another thread's store between the two).
+        int limit = into != null ? into.Length : 0;
 
         while (i < end)
         {
@@ -232,7 +236,7 @@ static class Utf8Transcoder
 
             if (lead < 0x80)
             {
-                if (into != null) Sys.SetChar(into, o, lead);
+                if (into != null && o < limit) Sys.SetChar(into, o, lead);
                 o = o + 1;
                 i = i + 1;
                 continue;
@@ -243,7 +247,7 @@ static class Utf8Transcoder
 
             if (length < 0)
             {
-                if (into != null) Sys.SetChar(into, o, 0xFFFD);
+                if (into != null && o < limit) Sys.SetChar(into, o, 0xFFFD);
                 o = o + 1;
                 i = i - length;
                 continue;
@@ -261,7 +265,7 @@ static class Utf8Transcoder
 
             if (point >= 0x10000)
             {
-                if (into != null)
+                if (into != null && o + 1 < limit)
                 {
                     Sys.SetChar(into, o, 0xD800 + ((point - 0x10000) >> 10));
                     Sys.SetChar(into, o + 1, 0xDC00 + ((point - 0x10000) & 0x3FF));
@@ -270,7 +274,7 @@ static class Utf8Transcoder
             }
             else
             {
-                if (into != null) Sys.SetChar(into, o, point);
+                if (into != null && o < limit) Sys.SetChar(into, o, point);
                 o = o + 1;
             }
             i = i + length;
@@ -297,9 +301,12 @@ static class Utf8Transcoder
     /// directory entry's name).
     public static string Decode(long address, int count)
     {
-        string made = Sys.NewChars(Transcode(null, address, 0, count, null));
-        Transcode(null, address, 0, count, made);
-        return made;
+        // Read ONCE, into bytes nobody else can reach: the memory is a
+        // program's, and another of its threads may be writing it.
+        if (count <= 0) return "";
+        byte[] bytes = new byte[count];
+        Sys.MemoryCopy(Sys.ArrayData(bytes), address, count);
+        return Decode(bytes, 0, count);
     }
 
     /// The zero-terminated UTF-8 at `address` as a string.

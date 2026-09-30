@@ -1,0 +1,32 @@
+// test: finally in catch reads exception
+// expect-exit: 7
+// expect-output:
+// finally z3
+//
+// A return through a finally inside a catch body leaves the catch before the
+// finally runs; the finally still reads the exception.
+
+using System;
+
+static class Program
+{
+    static void Churn()
+    {
+        for (int i = 0; i < 64; i++) { string s = new string('z', 8 + i % 8); if (s.Length == 0) Console.WriteLine("?"); }
+    }
+
+    static int F(int n)
+    {
+        try { throw new InvalidOperationException("z" + n); }
+        catch (InvalidOperationException e)
+        {
+            try { return 7; }
+            finally { Churn(); Console.WriteLine("finally " + e.Message); }
+        }
+    }
+
+    static int Main()
+    {
+        return F(3);
+    }
+}
