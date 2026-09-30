@@ -51,7 +51,9 @@ public sealed partial class Lowering
             }
             VReg vt = _e.Load(IrTypes.Word, receiver, 0);
             VReg fn = _e.Load(IrTypes.Word, vt, (long)m.VtableSlot * _t.WordSize);
-            return _e.CallIndirect(R(fn), returns, args);
+            VReg? called = _e.CallIndirect(R(fn), returns, args);
+            _e.Block.Instrs[^1].DispatchType = DescriptorOf(m.Owner);
+            return called;
         }
 
         return CallDirect(m, returns, args);

@@ -19,6 +19,13 @@ public sealed class Instr
     /// <summary>Call: who.</summary>
     public string? Callee { get; init; }
 
+    /// <summary>
+    /// CallIndirect of a virtual method: the descriptor of the type that
+    /// declares it. The call reaches that type's override or a subclass's,
+    /// and nothing else (Escape.IndirectTargets).
+    /// </summary>
+    public string? DispatchType { get; set; }
+
     /// <summary>Jump, Branch, Switch, LabelAddr: where. Phi: the predecessor each operand comes from.</summary>
     public List<Block> Targets { get; } = new();
 

@@ -1,0 +1,34 @@
+// test: gcless virtual call
+// expect-exit: 0
+// expect-output:
+// 250000 0
+//
+// A virtual call is every override it can reach, and over a whole program
+// the compiler knows them all: an object handed to one that every override
+// only reads does not escape. So a local handed through a virtual call a
+// hundred thousand times is the frame's, not the heap's.
+
+sealed class Box { public int X; }
+
+abstract class Reader { public abstract int Get(Box b); }
+sealed class Plain : Reader { public override int Get(Box b) => b.X; }
+sealed class Doubled : Reader { public override int Get(Box b) => b.X * 2; }
+
+static class Program
+{
+    static int Main()
+    {
+        Reader[] readers = { new Plain(), new Doubled() };
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        long total = 0;
+        for (int k = 0; k < 100000; k++)
+        {
+            Box box = new Box();
+            box.X = 1 + (k & 1);
+            total += readers[k & 1].Get(box);
+        }
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        System.Console.WriteLine(total + " " + allocated);
+        return 0;
+    }
+}

@@ -19,6 +19,7 @@ public static class IrFunctionCodec
         {
             bytes = checked(bytes + 256 + 64L * instruction.Operands.Count + 16L * instruction.Targets.Count);
             Text(instruction.Callee);
+            Text(instruction.DispatchType);
             foreach (SymOperand address in instruction.Operands.OfType<SymOperand>()) Text(address.Name);
         }
         return bytes;
@@ -72,7 +73,7 @@ public static class IrFunctionCodec
             {
                 writer.Write((int)instruction.Op); writer.Write(instruction.Dest?.Id ?? -1);
                 writer.Write(instruction.Size); writer.Write(instruction.Signed); writer.Write(instruction.Offset);
-                IrBinary.Text(writer, instruction.Callee); writer.Write(instruction.Line);
+                IrBinary.Text(writer, instruction.Callee); IrBinary.Text(writer, instruction.DispatchType); writer.Write(instruction.Line);
                 writer.Write(instruction.Operands.Count);
                 foreach (Operand operand in instruction.Operands)
                     switch (operand)
@@ -153,7 +154,7 @@ public static class IrFunctionCodec
                     {
                         Op = opcode, Dest = destination == -1 ? null : At(registers, destination),
                         Size = reader.ReadInt32(), Signed = IrBinary.Flag(reader), Offset = reader.ReadInt64(),
-                        Callee = IrBinary.Text(reader, budget), Line = reader.ReadInt32(),
+                        Callee = IrBinary.Text(reader, budget), DispatchType = IrBinary.Text(reader, budget), Line = reader.ReadInt32(),
                     };
                     int operands = IrBinary.Count(reader);
                     budget.Charge(operands, 64, "operands");

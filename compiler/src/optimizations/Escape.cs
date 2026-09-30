@@ -73,7 +73,7 @@ public sealed partial class Escape : IModulePass
         // thread's static (_inserted); left set, it kept the last unit's IR
         // alive for as long as the thread lived.
         try { RunCore(m); }
-        finally { _inserted = null; }
+        finally { _inserted = null; _indirect = null; }
     }
 
     private void RunCore(Module m)
@@ -86,6 +86,7 @@ public sealed partial class Escape : IModulePass
         _defined.UnionWith(byName.Keys);
         _hinting = m.LeavesLinkHints;
         _inserted = _bookkeeping;
+        _indirect = IndirectTargets(m, byName);
 
         // Which parameters of which functions escape: pessimistic until a
         // function has been analysed, bottom-up over the call graph so a
@@ -623,6 +624,26 @@ public sealed partial class Escape : IModulePass
                             break;
                         }
 
+                        case Opcode.CallIndirect when _indirect is not null && _indirect.TryGetValue(i, out string[]? overrides):
+                        {
+                            // Every override it can reach, together: an
+                            // argument stays put only if it does in each.
+                            // Operand 0 is the method; the arguments follow.
+                            for (int a = 1; a < i.Operands.Count; a++)
+                            {
+                                if (i.Operands[a] is not RegOperand arg || !flow.Derived.Contains(arg.Reg)) continue;
+                                foreach (string o in overrides)
+                                {
+                                    if (summaries.TryGetValue(o, out bool[]? summary) && a - 1 < summary.Length && !summary[a - 1]) continue;
+                                    if (needs is not null && needs.Allow(o, a - 1)) continue;
+                                    flow.Escapes = true;
+                                    break;
+                                }
+                                if (flow.Escapes) break;
+                            }
+                            break;
+                        }
+
                         default:
                             // Returned, unwound, atomically exchanged, passed
                             // indirectly, or anything else: gone.
@@ -700,6 +721,111 @@ public sealed partial class Escape : IModulePass
     /// callers'; a function in no cycle is a cycle of one. Iterative, since
     /// a call chain can be deeper than a thread's stack.
     /// </summary>
+    /// <summary>
+    /// Each virtual call's possible callees (IndirectTargets), for the analyses
+    /// that are static: set for the length of a run.
+    /// </summary>
+    [ThreadStatic] private static Dictionary<Instr, string[]>? _indirect;
+
+    /// <summary>
+    /// A VIRTUAL CALL IS EVERY OVERRIDE IT CAN REACH. The call loads the
+    /// object's descriptor from its first word, the method from a slot at a
+    /// fixed offset in it, and calls that with the object first. Over a whole
+    /// program every descriptor is here, so the methods a call can reach are
+    /// the ones every descriptor holds at that slot, and its summary is theirs
+    /// together: an argument escapes if it escapes in any of them. Only for a
+    /// whole program -- a library's descriptors are not all its consumers' --
+    /// and only for the call shape just described; any other indirect call is
+    /// left unresolved, and an escape, as before.
+    /// </summary>
+    private static Dictionary<Instr, string[]>? IndirectTargets(Module m, Dictionary<string, Function> byName)
+    {
+        if (m.PreserveExports || m.Entry is null) return null;
+
+        // Where in a descriptor its methods begin: the offsets objects are
+        // stamped with (`store @t_Type+48` into the new object's first word).
+        HashSet<long> bases = new();
+        foreach (Function f in m.Functions)
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Op == Opcode.Store && i.Offset == 0 && i.Operands.Count >= 2
+                        && i.Operands[1] is SymOperand { Name: var t, Offset: var at } && t.StartsWith("t_", StringComparison.Ordinal))
+                        bases.Add(at);
+        if (bases.Count == 0) return null;
+        List<DataItem> descriptors = m.Data.Where(d => d.Name.StartsWith("t_", StringComparison.Ordinal)).ToList();
+        // A type's descriptor names its ancestors (what `is` tests read), so
+        // the descriptors of a type and its subclasses are the ones that are
+        // it or name it. Slot offsets are each hierarchy's own: the same
+        // offset is another method entirely in an unrelated class.
+        Dictionary<string, DataItem> items = new(StringComparer.Ordinal);
+        foreach (DataItem d in m.Data) items[d.Name] = d;
+        // A type's ancestry is its descriptor's `d_` table (the list `is`
+        // tests walk), naming the descriptors of the types it derives from.
+        Dictionary<string, HashSet<string>> ancestry = new(StringComparer.Ordinal);
+        HashSet<string> Ancestors(string type)
+        {
+            if (ancestry.TryGetValue(type, out HashSet<string>? known)) return known;
+            // The whole chain, not only what one table lists: a missed
+            // ancestor would drop an override from a call's targets, and the
+            // summary would then be wrong rather than cautious.
+            HashSet<string> found = new(StringComparer.Ordinal) { type };
+            Stack<string> pending = new();
+            pending.Push(type);
+            while (pending.Count > 0)
+            {
+                string at = pending.Pop();
+                if (!items.TryGetValue(at, out DataItem? t)) continue;
+                foreach (DataReloc r in t.Relocs)
+                    if (r.Symbol.StartsWith("d_", StringComparison.Ordinal) && items.TryGetValue(r.Symbol, out DataItem? table))
+                        foreach (DataReloc up in table.Relocs)
+                            if ((up.Symbol.StartsWith("t_", StringComparison.Ordinal) || up.Symbol.StartsWith("i_", StringComparison.Ordinal))
+                                && found.Add(up.Symbol))
+                                pending.Push(up.Symbol);
+            }
+            return ancestry[type] = found;
+        }
+        Dictionary<(string, long), string[]> bySlot = new();
+        string[] Slot(string declaring, long slot)
+        {
+            if (bySlot.TryGetValue((declaring, slot), out string[]? known)) return known;
+            HashSet<string> found = new(StringComparer.Ordinal);
+            foreach (DataItem d in descriptors)
+            {
+                if (!Ancestors(d.Name).Contains(declaring)) continue;
+                foreach (DataReloc r in d.Relocs)
+                    if (r.Addend == 0 && bases.Contains(r.Offset - slot)) found.Add(r.Symbol);
+            }
+            return bySlot[(declaring, slot)] = found.ToArray();
+        }
+
+        Dictionary<Instr, string[]> result = new(ReferenceEqualityComparer.Instance);
+        foreach (Function f in m.Functions)
+        {
+            Dictionary<VReg, Instr> single = new();
+            HashSet<VReg> many = new();
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Dest is not null && !single.TryAdd(i.Dest, i)) many.Add(i.Dest);
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                {
+                    if (i.Op != Opcode.CallIndirect || i.Operands.Count < 2
+                        || i.Operands[0] is not RegOperand { Reg: var target } || i.Operands[1] is not RegOperand { Reg: var self }
+                        || many.Contains(target) || !single.TryGetValue(target, out Instr? method)
+                        || method.Op != Opcode.Load || method.Operands.Count < 1 || method.Operands[0] is not RegOperand { Reg: var table }
+                        || many.Contains(table) || !single.TryGetValue(table, out Instr? header)
+                        || header.Op != Opcode.Load || header.Offset != 0 || header.Operands.Count < 1
+                        || header.Operands[0] is not RegOperand { Reg: var from } || from != self) continue;
+                    if (i.DispatchType is not string declaring) continue;
+                    string[] targets = Slot(declaring, method.Offset);
+                    // A slot no descriptor fills is not a call this knows.
+                    if (targets.Length == 0 || targets.Any(t => !byName.ContainsKey(t))) continue;
+                    result[i] = targets;
+                }
+        }
+        return result;
+    }
+
     private static List<List<Function>> CallCycles(Module m, Dictionary<string, Function> byName)
     {
         List<List<Function>> result = new();
@@ -714,8 +840,15 @@ public sealed partial class Escape : IModulePass
             HashSet<Function> seen = new();
             foreach (Block b in f.Blocks)
                 foreach (Instr i in b.Instrs)
+                {
                     if (i.Op == Opcode.Call && i.Callee is not null && byName.TryGetValue(i.Callee, out Function? c) && seen.Add(c))
                         list.Add(c);
+                    // A virtual call's overrides are its callees too, so they
+                    // are summarised before it is.
+                    else if (i.Op == Opcode.CallIndirect && _indirect is not null && _indirect.TryGetValue(i, out string[]? targets))
+                        foreach (string t in targets)
+                            if (byName.TryGetValue(t, out Function? o) && seen.Add(o)) list.Add(o);
+                }
             callees[f] = list;
         }
         foreach (Function root in m.Functions)
@@ -1530,6 +1663,17 @@ public sealed partial class Escape : IModulePass
         Dictionary<string, DataItem> data = new(StringComparer.Ordinal);
         foreach (DataItem d in m.Data) data[d.Name] = d;
 
+        // A DESCRIPTOR'S METHODS ARE REACHED BY THE CALLS THAT REACH THEM. A
+        // virtual call the pass resolved (IndirectTargets) reaches exactly its
+        // overrides, so a live type's other methods -- an exception's
+        // ToString, its trace -- are not reached just because the type is.
+        // Any virtual call left unresolved could reach any of them, and then
+        // every method of every live descriptor is reached, as before. An
+        // indirect call that is not virtual calls through an address some
+        // code or data named, which the walk follows anyway.
+        bool everyMethod = m.Functions.Any(f => f.Blocks.Any(b => b.Instrs.Any(i =>
+            i.Op == Opcode.CallIndirect && i.DispatchType is not null && (_indirect is null || !_indirect.ContainsKey(i)))));
+
         // Whether each symbol has been reached, and whether through a use
         // that does not own a fresh result (true is the stronger state).
         Dictionary<string, bool> reached = new(StringComparer.Ordinal);
@@ -1552,7 +1696,9 @@ public sealed partial class Escape : IModulePass
             if (reached[name] != unowned) continue;     // superseded by a stronger visit
             if (data.TryGetValue(name, out DataItem? item))
             {
-                foreach (DataReloc r in item.Relocs) Reach(r.Symbol, true, name);
+                bool descriptor = name.StartsWith("t_", StringComparison.Ordinal);
+                foreach (DataReloc r in item.Relocs)
+                    if (everyMethod || !descriptor || !byName.ContainsKey(r.Symbol)) Reach(r.Symbol, true, name);
                 continue;
             }
             if (!byName.TryGetValue(name, out Function? f)) continue;
@@ -1577,6 +1723,8 @@ public sealed partial class Escape : IModulePass
                         Reach(i.Callee, callUnowned, f.Name);
                     }
                     foreach (Operand o in i.Operands) if (o is SymOperand sym) Reach(sym.Name, true, f.Name);
+                    if (i.Op == Opcode.CallIndirect && _indirect is not null && _indirect.TryGetValue(i, out string[]? targets))
+                        foreach (string t in targets) Reach(t, true, f.Name);
                 }
             }
         }
@@ -1605,6 +1753,10 @@ public sealed partial class Escape : IModulePass
             return;
         }
         List<string> sites = CollectorSites(m, byName, entry, paths: true);
+        int indirect = m.Functions.Sum(f => f.Blocks.Sum(b => b.Instrs.Count(i => i.Op == Opcode.CallIndirect)));
+        Console.Error.WriteLine($"alloc report: virtual calls resolved {_indirect?.Count ?? 0} of {indirect}"
+            + string.Concat((_indirect ?? new()).Values.Where(t => Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is not "1" && t.Any(x => x.Contains(Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT")!, StringComparison.Ordinal))).Take(3).Select(t => "; [" + string.Join(", ", t) + "]"))
+            + string.Concat(m.Functions.SelectMany(f => f.Blocks.SelectMany(b => b.Instrs)).Where(i => i.Op == Opcode.CallIndirect && i.DispatchType is not null && (_indirect is null || !_indirect.ContainsKey(i))).Select(i => i.DispatchType).Distinct().Take(12).Select(t => "; unresolved " + t)));
         Console.Error.WriteLine($"alloc report: {sites.Count} allocation(s) still need a collector");
         foreach (string site in sites.OrderBy(x => x, StringComparer.Ordinal)) Console.Error.WriteLine("  " + site);
     }
