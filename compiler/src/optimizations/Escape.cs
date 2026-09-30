@@ -2448,6 +2448,27 @@ public sealed partial class Escape : IModulePass
             _once.Add(entry.Name);
             foreach (Function f in m.Functions)
                 if (f.Name.Contains("StaticInit$", StringComparison.Ordinal) && f.Async is null) _once.Add(f.Name);
+
+            // A LATCHED FUNCTION RUNS ONCE HOWEVER OFTEN IT IS CALLED: it
+            // begins `if (done) return; done = true;` on a static nothing
+            // anywhere sets to anything but true, and whose address nothing
+            // takes. Every call after the first returns at the test.
+            Dictionary<string, bool> latchOnly = new(StringComparer.Ordinal);
+            foreach (Function f in m.Functions.Where(f => reached.Contains(f.Name)))
+                foreach (Block b in f.Blocks)
+                    foreach (Instr i in b.Instrs)
+                    {
+                        if (i.Op == Opcode.Store && i.Operands.Count == 2 && i.Operands[0] is SymOperand { Name: var flag })
+                        {
+                            latchOnly[flag] = latchOnly.GetValueOrDefault(flag, true) && i.Operands[1] is ImmOperand { Value: not 0 };
+                            if (i.Operands[1] is SymOperand { Name: var stored }) latchOnly[stored] = false;
+                        }
+                        else
+                            for (int k = 0; k < i.Operands.Count; k++)
+                                if (i.Operands[k] is SymOperand { Name: var named } && !(i.Op == Opcode.Load && k == 0))
+                                    latchOnly[named] = false;
+                    }
+            _latchOnly = latchOnly;
             bool changed = true;
             while (changed)
             {
@@ -2465,7 +2486,78 @@ public sealed partial class Escape : IModulePass
             }
         }
 
-        public bool RunsOnce(Function f, Block b) => _once.Contains(f.Name) && BlockOnce(f, b);
+        public bool RunsOnce(Function f, Block b) => _once.Contains(f.Name) && BlockOnce(f, b) || LatchedBlocks(f).Contains(b);
+
+        private Dictionary<string, bool> _latchOnly = new(StringComparer.Ordinal);
+        private readonly Dictionary<Function, HashSet<Block>> _latched = new();
+
+        /// <summary>
+        /// THE BLOCKS A LATCH LETS THROUGH ONCE: `if (done) ...; done = true;`
+        /// on a static nothing sets but to true and whose address nothing
+        /// takes. The block that sets it is entered only from the test, only
+        /// while the flag is clear, and sets it before any call could come
+        /// back round -- so it runs at most once in the whole run, whoever
+        /// calls its function and however often (or from a loop the function
+        /// was inlined into). So does every block it dominates that cannot
+        /// come round to itself again without passing through it.
+        /// </summary>
+        private HashSet<Block> LatchedBlocks(Function f)
+        {
+            if (_latched.TryGetValue(f, out HashSet<Block>? known)) return known;
+            HashSet<Block> found = new(ReferenceEqualityComparer.Instance);
+            _latched[f] = found;
+            if (f.Async is not null) return found;
+            Dictionary<VReg, Instr> defs = new();
+            foreach (Block b in f.Blocks) foreach (Instr i in b.Instrs) if (i.Dest is not null) defs[i.Dest] = i;
+            Cfg? cfg = null;
+            foreach (Block test in f.Blocks)
+            {
+                if (test.Terminator is not { Op: Opcode.Branch, Operands: [RegOperand { Reg: var cond }] } branch || branch.Targets.Count != 2
+                    || !defs.TryGetValue(cond, out Instr? read)) continue;
+                Block clear = branch.Targets[1];
+                if (read is { Op: Opcode.Eq, Operands: [RegOperand { Reg: var inner }, ImmOperand { Value: 0 }] })
+                {
+                    clear = branch.Targets[0];
+                    if (!defs.TryGetValue(inner, out read)) continue;
+                }
+                if (read is not { Op: Opcode.Load, Operands: [SymOperand { Name: var flag } at] } || !_latchOnly.GetValueOrDefault(flag)
+                    || ReferenceEquals(clear, test)) continue;
+                cfg ??= new Cfg(f);
+                if (cfg.Preds(clear).Count != 1 || cfg.IsRoot(clear)) continue;
+                bool sets = false;
+                foreach (Instr i in clear.Instrs)
+                {
+                    if (i.Op is Opcode.Call or Opcode.CallIndirect) break;
+                    if (i.Op == Opcode.Store && i.Operands[0] is SymOperand { Name: var set } where && set == flag && where.Offset == at.Offset
+                        && i.Operands[1] is ImmOperand { Value: not 0 }) { sets = true; break; }
+                }
+                if (!sets) continue;
+                foreach (Block b in f.Blocks)
+                {
+                    if (!cfg.Dominates(clear, b) || found.Contains(b)) continue;
+                    if (ReferenceEquals(b, clear) || !ComesRound(cfg, b, clear)) found.Add(b);
+                }
+            }
+            return found;
+        }
+
+        /// <summary>Whether `b` can reach itself again without passing through `latch`.</summary>
+        private static bool ComesRound(Cfg cfg, Block b, Block latch)
+        {
+            // The unwind into a landing pad goes from where its handler was
+            // installed (the LabelAddr), as Repeating counts it.
+            static IEnumerable<Block> Next(Cfg cfg, Block x) =>
+                cfg.Succs(x).Concat(x.Instrs.Where(i => i.Op == Opcode.LabelAddr).SelectMany(i => i.Targets));
+            HashSet<Block> seen = new(ReferenceEqualityComparer.Instance);
+            Stack<Block> work = new(Next(cfg, b));
+            while (work.TryPop(out Block? x))
+            {
+                if (ReferenceEquals(x, b)) return true;
+                if (ReferenceEquals(x, latch) || !seen.Add(x)) continue;
+                foreach (Block next in Next(cfg, x)) work.Push(next);
+            }
+            return false;
+        }
 
         private bool BlockOnce(Function f, Block b)
         {

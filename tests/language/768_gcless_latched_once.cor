@@ -1,0 +1,51 @@
+// test: gcless latched once
+// expect-exit: 0
+// expect-output:
+// 8 24 heap 0
+//
+// A function that begins `if (done) return; done = true;`, on a flag nothing
+// ever clears, runs its body once however often it is called: here from a
+// loop. What that body makes is made once, as a table made at start-up is,
+// and needs no collector.
+
+static class Scanner
+{
+    static bool _scanned;
+    static int[] _found;
+
+    public static void Scan()
+    {
+        if (_scanned) return;
+        _scanned = true;
+        _found = new int[8];
+        for (int i = 0; i < _found.Length; i++) _found[i] = i % 4;
+    }
+
+    public static int Count => _found.Length;
+    public static int Sum()
+    {
+        int total = 0;
+        for (int i = 0; i < _found.Length; i++) total += _found[i];
+        return total;
+    }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        int total = 0;
+        for (int k = 0; k < 2; k++)
+        {
+            Scanner.Scan();
+            total += Scanner.Sum();
+        }
+        Sys.PrintInt(Scanner.Count);
+        Sys.Print(" ");
+        Sys.PrintInt(total);
+        Sys.Print(" heap ");
+        Sys.PrintInt(Gc.HeapBytes);
+        Sys.PrintLine();
+        return 0;
+    }
+}
