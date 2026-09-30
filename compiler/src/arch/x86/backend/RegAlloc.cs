@@ -45,6 +45,14 @@ internal sealed class Allocator
         public bool Short;
         public int Instr;
         public int Reg = -1;
+        /// <summary>A short interval queued but absorbed into an earlier one's reach.</summary>
+        public bool Cancelled;
+        public Role Role;
+        /// <summary>
+        /// For a short interval carried on past its own instruction: every
+        /// instruction it serves, its own first, with what each does to it.
+        /// </summary>
+        public List<(int Instr, Role Role)>? Served;
     }
 
     private readonly record struct Occurrence(int Instr, int Operand, Role Role, bool InMem);
@@ -70,6 +78,12 @@ internal sealed class Allocator
     private readonly Dictionary<int, List<int>> _liveAtCall = new();
     private readonly PriorityQueue<Interval, (int, int)> _unhandled = new();
     private readonly List<Interval> _active = new();
+    /// <summary>Short intervals queued and not yet reached by the scan.</summary>
+    private readonly Dictionary<(int VReg, int Instr), Interval> _pending = new();
+    /// <summary>Reads of a spilled register served by a register that still holds it: no reload.</summary>
+    private readonly HashSet<(int VReg, int Instr)> _noReload = new();
+    /// <summary>Calls before each instruction index: a prefix count.</summary>
+    private int[] _callsBefore = Array.Empty<int>();
     private int _seq;
 
     private Allocator(MFunction m)
@@ -410,6 +424,11 @@ internal sealed class Allocator
 
     private void Scan()
     {
+        _callsBefore = new int[_lin.Count + 1];
+        for (int i = 0; i < _lin.Count; i++)
+        {
+            _callsBefore[i + 1] = _callsBefore[i] + (_lin[i].Op is MOp.Call or MOp.CallInd ? 1 : 0);
+        }
         for (int v = 8; v < _n; v++)
         {
             if (_end[v] >= 0)
@@ -420,6 +439,14 @@ internal sealed class Allocator
 
         while (_unhandled.TryDequeue(out Interval? cur, out _))
         {
+            if (cur.Cancelled)
+            {
+                continue;
+            }
+            if (cur.Short)
+            {
+                _pending.Remove((cur.VReg, cur.Instr));
+            }
             _active.RemoveAll(a => a.End < cur.Start);
 
             int reg = FreeRegister(cur);
@@ -436,6 +463,7 @@ internal sealed class Allocator
             if (cur.Short)
             {
                 _shortReg[(cur.VReg, cur.Instr)] = reg;
+                Reach(cur);
             }
             else
             {
@@ -535,11 +563,11 @@ internal sealed class Allocator
         int victimNext = -1;
         foreach (Interval a in _active)
         {
-            if (a.Short || !Allocatable(a.Reg, cur))
+            if ((a.Short && a.Served is null) || !Allocatable(a.Reg, cur))
             {
                 continue;
             }
-            int next = NextUse(a.VReg, at);
+            int next = a.Short ? NextServed(a, at) : NextUse(a.VReg, at);
             if (next <= cur.Start)
             {
                 // Used by the very instruction the current interval starts at: not evictable.
@@ -623,8 +651,109 @@ internal sealed class Allocator
         }
 
         _active.Remove(victim);
-        Spill(victim.VReg, at);
+        if (victim.Short)
+        {
+            Truncate(victim, at);
+        }
+        else
+        {
+            Spill(victim.VReg, at);
+        }
         return victim.Reg;
+    }
+
+    // ---- carrying a reload on -------------------------------------------------------
+
+    /// <summary>
+    /// A spilled register just got a register for one instruction. While
+    /// that register stays free, keep the value in it for the register's
+    /// next reads and writes in the same block, so they need no reload: a
+    /// value read three times in a row is loaded once, not three times.
+    ///
+    /// The reach stops at the block's end, at any call (a collector may
+    /// move what the slot holds, and the stack map names only the slot),
+    /// at any fixed use of the register, and at a write folded into the
+    /// slot, which the register would not see. Every write in the reach
+    /// still stores to the slot, so the slot is always current and the
+    /// reach can be cut short again when another interval needs the
+    /// register (see Truncate).
+    /// </summary>
+    private void Reach(Interval cur)
+    {
+        int v = cur.VReg;
+        int i = cur.Instr;
+        MBlock block = _blockOf[i];
+        foreach (Occurrence o in _occ[v])
+        {
+            int j = o.Instr;
+            if (j <= i)
+            {
+                continue;
+            }
+            if (_blockOf[j] != block || _callsBefore[j] - _callsBefore[i] != 0)
+            {
+                break;
+            }
+            if (_folded.Contains((j, o.Operand)))
+            {
+                if ((o.Role & Role.Def) != 0)
+                {
+                    break;
+                }
+                continue;
+            }
+            if (cur.Served is not null && cur.Served[^1].Instr == j)
+            {
+                continue;
+            }
+            if (!_pending.TryGetValue((v, j), out Interval? next) || Busy(cur.Reg, cur.Start, next.End))
+            {
+                break;
+            }
+            _pending.Remove((v, j));
+            next.Cancelled = true;
+            cur.Served ??= new List<(int, Role)> { (i, cur.Role) };
+            cur.Served.Add((j, next.Role));
+            cur.End = next.End;
+            _shortReg[(v, j)] = cur.Reg;
+            if ((next.Role & Role.Use) != 0)
+            {
+                _noReload.Add((v, j));
+            }
+        }
+    }
+
+    private static int NextServed(Interval a, int at)
+    {
+        foreach ((int instr, _) in a.Served!)
+        {
+            if (instr >= at)
+            {
+                return instr * 4;
+            }
+        }
+        return int.MaxValue;
+    }
+
+    /// <summary>
+    /// Give a carried reload's register back from instruction `at` on:
+    /// the instructions from there are queued again as short intervals of
+    /// their own, each reloading from the slot as it would have.
+    /// </summary>
+    private void Truncate(Interval a, int at)
+    {
+        List<(int Instr, Role Role)> served = a.Served!;
+        int keep = served.FindIndex(s => s.Instr >= at);
+        for (int k = keep; k < served.Count; k++)
+        {
+            (int instr, Role role) = served[k];
+            _shortReg.Remove((a.VReg, instr));
+            _noReload.Remove((a.VReg, instr));
+            EnqueueShort(a.VReg, instr, role);
+        }
+        served.RemoveRange(keep, served.Count - keep);
+        (int lastInstr, Role lastRole) = served[^1];
+        a.End = (lastRole & Role.Def) != 0 ? lastInstr * 4 + 3 : lastInstr * 4 + 1;
     }
 
     private int NextUseAfterStart(Interval cur)
@@ -773,14 +902,17 @@ internal sealed class Allocator
     private void EnqueueShort(int vreg, int instr, Role role)
     {
         int p = instr * 4;
-        Enqueue(new Interval
+        Interval iv = new()
         {
             VReg = vreg,
             Short = true,
             Instr = instr,
+            Role = role,
             Start = (role & Role.Use) != 0 ? p : p + 2,
             End = (role & Role.Def) != 0 ? p + 3 : p + 1,
-        });
+        };
+        _pending[(vreg, instr)] = iv;
+        Enqueue(iv);
     }
 
     /// <summary>The register a virtual register occupies at an instruction, or -1 if it has none there.</summary>
@@ -918,13 +1050,15 @@ internal sealed class Allocator
             if (_spilledFrom[r.Id] != int.MaxValue && done.Add(r.Id))
             {
                 Role role = roles[r.Id];
+                bool held = _noReload.Contains((r.Id, index));
                 if (_remat[r.Id] is MImm imm)
                 {
-                    before.Add(new MInstr(MOp.Mov, new MReg(reg), imm) { Line = i.Line });
+                    if (!held)
+                        before.Add(new MInstr(MOp.Mov, new MReg(reg), imm) { Line = i.Line });
                 }
                 else
                 {
-                    if ((role & Role.Use) != 0)
+                    if ((role & Role.Use) != 0 && !held)
                     {
                         before.Add(new MInstr(MOp.Mov, new MReg(reg), MMem.Spill(_slot[r.Id])) { Line = i.Line });
                     }
