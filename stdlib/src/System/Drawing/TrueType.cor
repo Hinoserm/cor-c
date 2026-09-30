@@ -74,6 +74,33 @@ internal class TrueTypeOutline
     }
 }
 
+/// A font file's bytes: an array's, or a file's pages mapped read-only and
+/// shared (Platform.MapReadOnly). Read a byte at a time, bounds checked --
+/// a font is data, and data may point anywhere -- 0 past either end.
+sealed class FontBytes
+{
+    readonly byte[]? _array;
+    readonly long _at;
+    public readonly int Length;
+
+    public FontBytes(byte[] array) { _array = array; Length = array.Length; }
+
+    public FontBytes(long at, int length) { _at = at; Length = length; }
+
+    public int At(int i)
+    {
+        if (i < 0 || i >= Length) return 0;
+        return _array != null ? _array[i] & 255 : (int)(Sys.PeekByte(_at + i) & 255);
+    }
+
+    /// `count` bytes from `from` into `into` at `at`; past the end, zeros.
+    public void CopyTo(int from, byte[] into, int at, int count)
+    {
+        if (_array != null && from >= 0 && from + count <= Length) { Array.Copy(_array, from, into, at, count); return; }
+        for (int i = 0; i < count; i++) into[at + i] = (byte)At(from + i);
+    }
+}
+
 /// <summary>
 /// A TrueType file, opened. Everything is read out of the one byte array
 /// on demand; nothing is copied but the outlines asked for.
@@ -97,7 +124,7 @@ internal class TrueTypeFace : FontFace
         + "\u2021\u00B7\u201A\u201E\u2030\u00C2\u00CA\u00C1\u00CB\u00C8\u00CD\u00CE\u00CF\u00CC\u00D3\u00D4"
         + "\uF8FF\u00D2\u00DA\u00DB\u00D9\u0131\u02C6\u02DC\u00AF\u02D8\u02D9\u02DA\u00B8\u02DD\u02DB\u02C7";
 
-    readonly byte[] _data;
+    readonly FontBytes _data;
 
     int _cmap, _cmapFormat;
     bool _symbol;
@@ -138,7 +165,7 @@ internal class TrueTypeFace : FontFace
     public int MaxPoints, MaxContours, MaxCompositePoints, MaxCompositeContours;
     public int MaxZones, MaxTwilightPoints, MaxStorage, MaxFunctionDefs, MaxInstructionDefs, MaxStack;
 
-    public byte[] Data { get { return _data; } }
+    public FontBytes Data { get { return _data; } }
     public int FontProgramOffset { get { return _fpgm; } }
     public int FontProgramLength { get { return _fpgmLength; } }
     public int ControlProgramOffset { get { return _prep; } }
@@ -146,17 +173,26 @@ internal class TrueTypeFace : FontFace
     public int ControlValueCount { get { return _cvtLength / 2; } }
     public int ControlValue(int index) { return S16(_cvt + index * 2); }
 
-    TrueTypeFace(byte[] data) { _data = data; }
+    TrueTypeFace(FontBytes data) { _data = data; }
 
     public static TrueTypeFace? FromBytes(byte[] bytes)
     {
-        TrueTypeFace face = new TrueTypeFace(bytes);
+        TrueTypeFace face = new TrueTypeFace(new FontBytes(bytes));
+        return face.Open() ? face : null;
+    }
+
+    /// A face over a font file mapped read-only (Platform.MapReadOnly): its
+    /// pages are the page cache's, shared by every program that has it, and
+    /// none of them is copied into the program's own memory.
+    public static TrueTypeFace? FromMapped(long at, int length)
+    {
+        TrueTypeFace face = new TrueTypeFace(new FontBytes(at, length));
         return face.Open() ? face : null;
     }
 
     // --- reading, big-endian and bounds-checked ---------------------------
 
-    public int U8(int at) { return at < 0 || at >= _data.Length ? 0 : _data[at] & 255; }
+    public int U8(int at) { return _data.At(at); }
     public int U16(int at) { return (U8(at) << 8) | U8(at + 1); }
     public int S16(int at) { int v = U16(at); return v >= 0x8000 ? v - 0x10000 : v; }
     public int S8(int at) { int v = U8(at); return v >= 0x80 ? v - 0x100 : v; }
@@ -782,7 +818,7 @@ class TrueTypeHinter
     // --- the machine's state ----------------------------------------------
 
     readonly TrueTypeFace _face;
-    byte[] _data;
+    FontBytes _data;
 
     int[] _stack;
     int _top;
@@ -1142,7 +1178,7 @@ class TrueTypeHinter
 
     // --- running a program ------------------------------------------------
 
-    int U8(int at) { return at < 0 || at >= _data.Length ? 0 : _data[at] & 255; }
+    int U8(int at) { return _data.At(at); }
     int S16at(int at) { int v = (U8(at) << 8) | U8(at + 1); return v >= 0x8000 ? v - 0x10000 : v; }
 
     /// <summary>

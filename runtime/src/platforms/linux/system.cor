@@ -395,6 +395,27 @@ static class Platform
         Sys.Syscall(Call.Mmap, at, bytes, 0, 0x22 | 0x10 | 0x4000, 0 - 1, 0);
     }
 
+    /// A file mapped whole, read-only and private: its pages the page
+    /// cache's, shared by every process that maps it and given back under
+    /// pressure like any cached page. The address, and its length in
+    /// `length`; 0 when it cannot be mapped (the caller reads it instead).
+    public static long MapReadOnly(string path, out long length)
+    {
+        length = 0;
+        int fd = Os.Open(path, 0);                          // O_RDONLY
+        if (fd < 0) return 0;
+        long size = Os.SizeOf(fd);
+        long at = 0;
+        if (size > 0 && size < 0x10000000)
+        {
+            // PROT_READ = 1, MAP_PRIVATE = 2.
+            long got = Sys.Syscall(Call.Mmap, 0, size, 1, 2, fd, 0);
+            if (Result(got) > 0) { at = Result(got); length = size; }
+        }
+        Os.Close(fd);
+        return at;
+    }
+
     public static long Map(long bytes)
     {
         // PROT_READ | PROT_WRITE = 3; MAP_PRIVATE | MAP_ANONYMOUS = 0x22;

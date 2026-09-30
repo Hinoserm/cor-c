@@ -5,6 +5,7 @@
 
 using System;
 using System.IO;
+using System.Collections.Generic;
 
 namespace System.Drawing;
 
@@ -250,11 +251,30 @@ static class Installed
 
     static bool IsFont(string path) { return path.EndsWith(".ttf") || path.EndsWith(".TTF"); }
 
+    /// A face of the file, from its pages mapped read-only where the system
+    /// maps files, so every program drawing Tahoma has the one copy the page
+    /// cache holds -- read into each, the greeter and every Forms program held
+    /// most of a megabyte of each font it used, twice over for two fonts.
+    /// Mapped once a file, for the program's life.
     static TrueTypeFace? Read(string path)
     {
+        long at, length;
+        lock (_mapped)
+        {
+            if (!_mapped.TryGetValue(path, out at))
+            {
+                at = Platform.MapReadOnly(path, out length);
+                if (at != 0) { _mapped[path] = at; _mappedLength[path] = length; }
+            }
+            length = at != 0 ? _mappedLength[path] : 0;
+        }
+        if (at != 0) return TrueTypeFace.FromMapped(at, (int)length);
         try { return TrueTypeFace.FromBytes(File.ReadAllBytes(path)); }
         catch (IOException) { return null; }
     }
+
+    static readonly Dictionary<string, long> _mapped = new Dictionary<string, long>();
+    static readonly Dictionary<string, long> _mappedLength = new Dictionary<string, long>();
 
     public static FontFamily? Find(string name)
     {

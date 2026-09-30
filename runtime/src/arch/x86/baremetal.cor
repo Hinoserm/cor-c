@@ -188,6 +188,13 @@ static class Platform
         }
     }
 
+    /// No files to map here: 0, and the caller reads the file instead.
+    public static long MapReadOnly(string path, out long length)
+    {
+        length = 0;
+        return 0;
+    }
+
     public static long Map(long bytes)
     {
         if (MapHook != 0)
