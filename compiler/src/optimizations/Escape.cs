@@ -86,6 +86,7 @@ public sealed partial class Escape : IModulePass
         _defined.UnionWith(byName.Keys);
         _hinting = m.LeavesLinkHints;
         _inserted = _bookkeeping;
+        _unresolvedWhy = Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is { Length: > 0 } ? new() : null;
         _indirect = IndirectTargets(m, byName);
 
         // Which parameters of which functions escape: pessimistic until a
@@ -717,9 +718,21 @@ public sealed partial class Escape : IModulePass
     private enum SourceKind { Null, Static, Parameter, Fresh, Unknown }
     private readonly record struct Source(SourceKind Kind, int Index, Instr? Made);
 
-    /// <summary>A descriptor and every descriptor its ancestry tables name, transitively.</summary>
+    /// <summary>
+    /// A descriptor and every descriptor its ancestry tables name,
+    /// transitively: the classes of its display (word 3, what `is` walks) and
+    /// the interfaces of its interface list (word 4, the closure over its
+    /// whole chain). By position, not name: a class's tables, a box's and an
+    /// array's are named each their own way.
+    /// </summary>
+    private const int DescriptorDisplay = 3, DescriptorInterfaces = 4;
+
+    /// <summary>An object's descriptor: a class's (t_), an array's or a string's (q_), a boxed primitive's (v_) or struct's (b_).</summary>
+    private static bool IsDescriptor(string name) => name.Length > 2 && name[1] == '_' && name[0] is 't' or 'q' or 'v' or 'b';
+
     private static HashSet<string> Ancestry(Dictionary<string, DataItem> items, string type)
     {
+        int w = Target.Current.WordSize;
         HashSet<string> found = new(StringComparer.Ordinal) { type };
         Stack<string> pending = new();
         pending.Push(type);
@@ -728,7 +741,8 @@ public sealed partial class Escape : IModulePass
             string at = pending.Pop();
             if (!items.TryGetValue(at, out DataItem? t)) continue;
             foreach (DataReloc r in t.Relocs)
-                if (r.Symbol.StartsWith("d_", StringComparison.Ordinal) && items.TryGetValue(r.Symbol, out DataItem? table))
+                if ((r.Offset == DescriptorDisplay * w || r.Offset == DescriptorInterfaces * w)
+                    && items.TryGetValue(r.Symbol, out DataItem? table))
                     foreach (DataReloc up in table.Relocs)
                         if ((up.Symbol.StartsWith("t_", StringComparison.Ordinal) || up.Symbol.StartsWith("i_", StringComparison.Ordinal))
                             && found.Add(up.Symbol))
@@ -1294,6 +1308,8 @@ public sealed partial class Escape : IModulePass
     /// that are static: set for the length of a run.
     /// </summary>
     [ThreadStatic] private static Dictionary<Instr, string[]>? _indirect;
+    /// <summary>CORSAC_ALLOC_REPORT: why each virtual call it could not resolve was left.</summary>
+    [ThreadStatic] private static List<string>? _unresolvedWhy;
 
     /// <summary>
     /// A VIRTUAL CALL IS EVERY OVERRIDE IT CAN REACH. The call loads the
@@ -1317,41 +1333,26 @@ public sealed partial class Escape : IModulePass
             foreach (Block b in f.Blocks)
                 foreach (Instr i in b.Instrs)
                     if (i.Op == Opcode.Store && i.Offset == 0 && i.Operands.Count >= 2
-                        && i.Operands[1] is SymOperand { Name: var t, Offset: var at } && t.StartsWith("t_", StringComparison.Ordinal))
+                        && i.Operands[1] is SymOperand { Name: var t, Offset: var at } && IsDescriptor(t))
                         bases.Add(at);
         if (bases.Count == 0) return null;
-        List<DataItem> descriptors = m.Data.Where(d => d.Name.StartsWith("t_", StringComparison.Ordinal)).ToList();
+        // Every kind of object's descriptor: a class's, an array's or a
+        // string's, a boxed primitive's, a boxed struct's. An interface call
+        // lands on any of them that implements it.
+        List<DataItem> descriptors = m.Data.Where(d => IsDescriptor(d.Name)).ToList();
         // A type's descriptor names its ancestors (what `is` tests read), so
         // the descriptors of a type and its subclasses are the ones that are
         // it or name it. Slot offsets are each hierarchy's own: the same
         // offset is another method entirely in an unrelated class.
         Dictionary<string, DataItem> items = new(StringComparer.Ordinal);
         foreach (DataItem d in m.Data) items[d.Name] = d;
-        // A type's ancestry is its descriptor's `d_` table (the list `is`
-        // tests walk), naming the descriptors of the types it derives from.
+        // A type's ancestry: the classes and interfaces its tables name.
+        // The whole chain, not only what one table lists: a missed ancestor
+        // would drop an override from a call's targets, and the summary would
+        // then be wrong rather than cautious.
         Dictionary<string, HashSet<string>> ancestry = new(StringComparer.Ordinal);
-        HashSet<string> Ancestors(string type)
-        {
-            if (ancestry.TryGetValue(type, out HashSet<string>? known)) return known;
-            // The whole chain, not only what one table lists: a missed
-            // ancestor would drop an override from a call's targets, and the
-            // summary would then be wrong rather than cautious.
-            HashSet<string> found = new(StringComparer.Ordinal) { type };
-            Stack<string> pending = new();
-            pending.Push(type);
-            while (pending.Count > 0)
-            {
-                string at = pending.Pop();
-                if (!items.TryGetValue(at, out DataItem? t)) continue;
-                foreach (DataReloc r in t.Relocs)
-                    if (r.Symbol.StartsWith("d_", StringComparison.Ordinal) && items.TryGetValue(r.Symbol, out DataItem? table))
-                        foreach (DataReloc up in table.Relocs)
-                            if ((up.Symbol.StartsWith("t_", StringComparison.Ordinal) || up.Symbol.StartsWith("i_", StringComparison.Ordinal))
-                                && found.Add(up.Symbol))
-                                pending.Push(up.Symbol);
-            }
-            return ancestry[type] = found;
-        }
+        HashSet<string> Ancestors(string type) =>
+            ancestry.TryGetValue(type, out HashSet<string>? known) ? known : ancestry[type] = Ancestry(items, type);
         Dictionary<(string, long), string[]> bySlot = new();
         string[] Slot(string declaring, long slot)
         {
@@ -1367,6 +1368,7 @@ public sealed partial class Escape : IModulePass
         }
 
         Dictionary<Instr, string[]> result = new(ReferenceEqualityComparer.Instance);
+        Dictionary<string, bool> instantiated = new(StringComparer.Ordinal);
         foreach (Function f in m.Functions)
         {
             Dictionary<VReg, Instr> single = new();
@@ -1385,9 +1387,25 @@ public sealed partial class Escape : IModulePass
                         || header.Op != Opcode.Load || header.Offset != 0 || header.Operands.Count < 1
                         || header.Operands[0] is not RegOperand { Reg: var from } || from != self) continue;
                     if (i.DispatchType is not string declaring) continue;
+                    // NO OBJECT OF THE TYPE EXISTS: no descriptor in the
+                    // whole program is it or derives from it -- an interface
+                    // the library tests for and nothing implements -- so the
+                    // call is never made, and calls nothing.
+                    if (!instantiated.TryGetValue(declaring, out bool made))
+                        instantiated[declaring] = made = descriptors.Any(d => Ancestors(d.Name).Contains(declaring));
+                    if (!made)
+                    {
+                        result[i] = Array.Empty<string>();
+                        continue;
+                    }
                     string[] targets = Slot(declaring, method.Offset);
                     // A slot no descriptor fills is not a call this knows.
-                    if (targets.Length == 0 || targets.Any(t => !byName.ContainsKey(t))) continue;
+                    if (targets.Length == 0 || targets.Any(t => !byName.ContainsKey(t)))
+                    {
+                        _unresolvedWhy?.Add($"{f.Name} {declaring}+{method.Offset}: "
+                            + (targets.Length == 0 ? "no descriptor fills the slot" : "not code: " + string.Join(",", targets.Where(t => !byName.ContainsKey(t)).Take(4))));
+                        continue;
+                    }
                     result[i] = targets;
                 }
         }
@@ -2289,7 +2307,7 @@ public sealed partial class Escape : IModulePass
             if (reached[name] != unowned) continue;     // superseded by a stronger visit
             if (data.TryGetValue(name, out DataItem? item))
             {
-                bool descriptor = name.StartsWith("t_", StringComparison.Ordinal);
+                bool descriptor = IsDescriptor(name);
                 foreach (DataReloc r in item.Relocs)
                     if (everyMethod || !descriptor || !byName.ContainsKey(r.Symbol)) Reach(r.Symbol, true, name);
                 continue;
@@ -2361,6 +2379,7 @@ public sealed partial class Escape : IModulePass
         Console.Error.WriteLine($"alloc report: virtual calls resolved {_indirect?.Count ?? 0} of {indirect}"
             + string.Concat((_indirect ?? new()).Values.Where(t => Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is not "1" && t.Any(x => x.Contains(Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT")!, StringComparison.Ordinal))).Take(3).Select(t => "; [" + string.Join(", ", t) + "]"))
             + string.Concat(m.Functions.SelectMany(f => f.Blocks.SelectMany(b => b.Instrs)).Where(i => i.Op == Opcode.CallIndirect && i.DispatchType is not null && (_indirect is null || !_indirect.ContainsKey(i))).Select(i => i.DispatchType).Distinct().Take(12).Select(t => "; unresolved " + t)));
+        foreach (string why in _unresolvedWhy ?? new()) Console.Error.WriteLine("alloc report: unresolved " + why);
         Console.Error.WriteLine($"alloc report: {sites.Count} allocation(s) still need a collector");
         foreach (string site in sites.OrderBy(x => x, StringComparer.Ordinal)) Console.Error.WriteLine("  " + site);
     }
