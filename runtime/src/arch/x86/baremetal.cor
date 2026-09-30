@@ -199,17 +199,18 @@ static class Platform
     }
 
     /// A file mapped read-only by the hook -- a ring-1 kernel's, whose pages
-    /// are the file cache's own -- called with the path's UTF-16 units, their
-    /// count and where to write the length. No hook: 0, and the caller reads
-    /// the file instead.
+    /// are the file cache's own (Service.MapFileBytes) -- called with the
+    /// path's UTF-8 bytes, as every path is, their count and where to write
+    /// the length. No hook: 0, and the caller reads the file instead.
     public static long MapFileHook;
 
     public static long MapReadOnly(string path, out long length)
     {
         length = 0;
         if (MapFileHook == 0 || path.Length == 0) return 0;
+        byte[] name = Utf8Transcoder.Encode(path, 0, path.Length);
         long bytes = 0;
-        long at = Sys.Call(MapFileHook, Sys.StringData(path), path.Length, Sys.AddressOf(ref bytes));
+        long at = Sys.Call(MapFileHook, Sys.ArrayData(name), name.Length, Sys.AddressOf(ref bytes));
         if (at != 0) length = bytes;
         return at;
     }
