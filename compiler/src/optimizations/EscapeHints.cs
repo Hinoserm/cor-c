@@ -250,9 +250,12 @@ public sealed partial class Escape
         internal HashSet<string> Helpers { get; }
         internal Dictionary<string, FieldSummary?[]> ParameterFields { get; } = new(StringComparer.Ordinal);
         internal Dictionary<string, FieldSummary> FreshFields { get; } = new(StringComparer.Ordinal);
+        /// <summary>The fields the whole program found own what they hold, and who hands one back (OwnedFieldSolver).</summary>
+        internal OwnedFieldFacts? OwnedFields { get; }
 
         public LinkFacts(LifetimeFacts facts)
         {
+            OwnedFields = facts.OwnedFields;
             Fresh = facts.Fresh;
             Escapes = facts.Escapes;
             Helpers = facts.Helpers;
@@ -272,6 +275,7 @@ public sealed partial class Escape
 
     public static int RunAtLink(Function f, LinkFacts facts)
     {
+
         // The facts are shared by every function of the unit, on every
         // backend worker: read here, never written, never copied.
         Escape pass = new()
@@ -292,6 +296,91 @@ public sealed partial class Escape
             if (canFree && facts.Helpers.Contains(FieldFreer)) pass.OwnFields(f, summaries);
         }
         finally { _inserted = null; _indirect = null; }
+        // A READ OF AN OWNED FIELD was judged, by the unit and then the link,
+        // among the frees the function had then: a free placed now, while
+        // what was read is live, could free the field's owner under it. The
+        // caller then takes the function back as it was (-1).
+        if (facts.OwnedFields is { Fields.Count: > 0 } owned && pass._bookkeeping.Count > 0 && FreesUnderOwnedRead(f, owned, pass._bookkeeping)) return -1;
         return pass.Promoted + pass.Owned + pass.FieldsOwned;
+    }
+
+    /// <summary>Whether the link's lifetime pass could place a free a read of an owned field must be checked against.</summary>
+    public static bool ReadsOwnedField(Function f, LinkFacts facts) => facts.OwnedFields is { Fields.Count: > 0 } owned && ReadsOwned(f, owned);
+
+    /// <summary>
+    /// Whether one of the frees just placed runs while a value read from an
+    /// owned field (or handed back by a function that reads one) is live:
+    /// the stretch OwnedFields judges, found the same way.
+    /// </summary>
+    private static bool FreesUnderOwnedRead(Function f, OwnedFieldFacts owned, HashSet<Instr> placed)
+    {
+        if (!placed.Any(i => i.Op == Opcode.Call && IsFreeCall(i.Callee))) return false;
+        Liveness liveness = new(f);
+        HashSet<VReg> pads = PadLive(liveness);
+        Dictionary<Instr, string[]> virtuals = VirtualCallees(new[] { f });
+        foreach (Block b in f.Blocks)
+            foreach (Instr read in b.Instrs)
+            {
+                if (read.Dest is null) continue;
+                bool reads = read.Op == Opcode.Load && read.Field is not null && owned.Fields.ContainsKey(read.Field)
+                    || read.Op == Opcode.Call && read.Callee is not null && owned.Borrowers.Contains(read.Callee)
+                    || read.Op == Opcode.CallIndirect && owned.Borrowers.Count > 0
+                       && (!virtuals.TryGetValue(read, out string[]? targets) || targets.Any(owned.Borrowers.Contains));
+                if (!reads) continue;
+                // What was read, and every copy and address made from it.
+                HashSet<VReg> derived = new() { read.Dest };
+                for (bool grew = true; grew;)
+                {
+                    grew = false;
+                    foreach (Block x in f.Blocks)
+                        foreach (Instr i in x.Instrs)
+                            if (i.Dest is not null && !derived.Contains(i.Dest)
+                                && i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.SExt32 or Opcode.Phi or Opcode.Add or Opcode.Sub
+                                && i.Operands.Any(o => o is RegOperand r && derived.Contains(r.Reg)))
+                            { derived.Add(i.Dest); grew = true; }
+                }
+                if (derived.Any(r => !liveness.Tracks(r) || pads.Contains(r))) return true;
+                bool Uses(Instr i) => i.Operands.Any(o => o is RegOperand r && derived.Contains(r.Reg));
+                foreach (Block x in f.Blocks)
+                {
+                    bool liveIn = derived.Any(r => liveness.IsLiveIn(x, r));
+                    bool liveOut = derived.Any(r => liveness.IsLiveOut(x, r));
+                    int from = liveIn ? 0 : ReferenceEquals(x, b) ? b.Instrs.IndexOf(read) + 1 : -1;
+                    if (from < 0)
+                    {
+                        int copied = x.Instrs.FindIndex(i => i.Dest is not null && derived.Contains(i.Dest));
+                        if (copied < 0) continue;
+                        from = copied + 1;
+                    }
+                    int to = x.Instrs.Count;
+                    if (!liveOut)
+                    {
+                        to = from;
+                        for (int k = from; k < x.Instrs.Count; k++) if (Uses(x.Instrs[k])) to = k;
+                    }
+                    for (int k = from; k < to; k++)
+                        if (placed.Contains(x.Instrs[k]) && x.Instrs[k].Op == Opcode.Call && IsFreeCall(x.Instrs[k].Callee)) return true;
+                }
+            }
+        return false;
+    }
+
+    /// <summary>Whether a function reads an owned field: loads it, or calls what hands one back.</summary>
+    private static bool ReadsOwned(Function f, OwnedFieldFacts owned)
+    {
+        Dictionary<Instr, string[]>? virtuals = null;
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+            {
+                if (i.Op == Opcode.Load && i.Field is not null && owned.Fields.ContainsKey(i.Field)) return true;
+                if (i.Dest is null) continue;
+                if (i.Op == Opcode.Call && i.Callee is not null && owned.Borrowers.Contains(i.Callee)) return true;
+                if (i.Op == Opcode.CallIndirect && owned.Borrowers.Count > 0)
+                {
+                    virtuals ??= VirtualCallees(new[] { f });
+                    if (!virtuals.TryGetValue(i, out string[]? targets) || targets.Any(owned.Borrowers.Contains)) return true;
+                }
+            }
+        return false;
     }
 }

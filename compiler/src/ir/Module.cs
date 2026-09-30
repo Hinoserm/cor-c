@@ -71,6 +71,14 @@ public sealed class Module
     public HashSet<string>? ForeignCatchable { get; set; }
 
     /// <summary>
+    /// The link's answer, for a unit of a closed image it regenerates: the
+    /// fields that own what they hold over the whole program (Lto.
+    /// OwnedFieldSolver). The unit frees what a store into one replaces and
+    /// gives the types it defines their owned-field maps. Null: none.
+    /// </summary>
+    public Corsac.Lang.Lto.OwnedFieldFacts? OwnedFields { get; set; }
+
+    /// <summary>
     /// Call sites no inliner may fold away: the allocations the link may yet
     /// place or free (Escape's pending hints), which it must still be able
     /// to tell from any other call when it reads this module's IR back.

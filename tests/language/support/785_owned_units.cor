@@ -1,0 +1,38 @@
+// The other unit of 785_owned_field_across_units: a holder whose field owns
+// its buffer, a getter handing the buffer back, a function making fresh
+// arrays and one handing out an array it keeps.
+namespace OwnedUnits;
+
+public sealed class Holder
+{
+    byte[] _buffer;
+
+    public Holder(int size) { _buffer = new byte[size]; }
+
+    public void Grow(int size) { _buffer = new byte[size]; }
+
+    public int Size() { return _buffer.Length; }
+
+    public byte[] Buffer { get { return _buffer; } }
+}
+
+public static class Maker
+{
+    static byte[] _shared = Seeded();
+
+    static byte[] Seeded()
+    {
+        byte[] shared = new byte[8];
+        shared[0] = 7;
+        return shared;
+    }
+
+    public static byte[] Make(int size)
+    {
+        byte[] made = new byte[size];
+        made[0] = 1;
+        return made;
+    }
+
+    public static byte[] Shared() { return _shared; }
+}

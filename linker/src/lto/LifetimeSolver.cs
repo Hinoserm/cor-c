@@ -22,6 +22,11 @@ public sealed class LifetimeFacts
     /// can be, ancestors included (Module.ForeignCatchable). Null: unknown.
     /// </summary>
     public string[]? ForeignCatchable { get; set; }
+    /// <summary>
+    /// For a unit of a closed image: the fields the whole program found own
+    /// what they hold (OwnedFieldSolver). Null: none may be taken as owned.
+    /// </summary>
+    public OwnedFieldFacts? OwnedFields { get; set; }
 }
 
 /// <summary>What the whole program does to one object's fields: the owned field rules' summary, solved.</summary>

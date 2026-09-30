@@ -1493,6 +1493,9 @@ public sealed partial class Binder
 
     // ---- top level ------------------------------------------------------
 
+    /// <summary>CORC_DUMP_SLOTS: every interface method's slot as it is numbered, on standard error.</summary>
+    private static readonly bool DumpSlots = Environment.GetEnvironmentVariable("CORC_DUMP_SLOTS") is { Length: > 0 };
+
     private void Run(CompilationUnit unit)
     {
         _registryKeys = unit.RegistryKeys;
@@ -1903,6 +1906,7 @@ public sealed partial class Binder
                     }
 
                     t.Methods[i].VtableSlot = slot;
+                    if (DumpSlots) Console.Error.WriteLine("interface slot " + slot + " " + t.Key + "." + t.Methods[i].Name + " library=" + library);
                 }
             }
         }

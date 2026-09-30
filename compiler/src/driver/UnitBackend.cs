@@ -15,6 +15,9 @@ public sealed class UnitBackend : IUnitBackend
     public int LifetimesTaken => _lifetimes;
     private int _lifetimes;
 
+    /// <summary>The most a unit whose late passes run at the link may take decoded.</summary>
+    private const long PreLateDecodeLimit = 512L * 1024 * 1024;
+
     public ObjectFile Recompile(ObjectFile original, IReadOnlyList<IrImport> imports, IReadOnlySet<string>? retained = null,
         LifetimeFacts? facts = null)
     {
@@ -41,7 +44,12 @@ public sealed class UnitBackend : IUnitBackend
         // them. What they leave is what a version 1 archive held, and the
         // per-function steps below go on from there as before.
         bool preLate = IrUnitCodec.ReadSettings(archive).Settings is { PreLate: true };
-        var read = IrUnitCodec.ReadWithSettings(archive, memoryBudget: preLate ? MachineMemory.WorkBudget(64L * 1024 * 1024, 1024L * 1024 * 1024) : 64L * 1024 * 1024,
+        // The late passes need the unit whole, so its decode is bounded by a
+        // fixed limit, the same on every machine: sized by what the machine
+        // has free (a quarter of what the process's 768 MB heap leaves), a
+        // unit holding the runtime and the standard library, 220 MB decoded,
+        // could not be linked anywhere.
+        var read = IrUnitCodec.ReadWithSettings(archive, memoryBudget: preLate ? PreLateDecodeLimit : 64L * 1024 * 1024,
             retained: retained, functionHeaders: preLate ? null : visibility);
         var unit = (read.Module, StackMaps: read.StackMaps, read.AccountedBytes);
         Console.Error.WriteLine("IR backend: retained functions=" + unit.Module.Functions.Count + ", data=" + unit.Module.Data.Count
@@ -52,6 +60,7 @@ public sealed class UnitBackend : IUnitBackend
         {
             // The whole program's answers the late passes read, for a closed image.
             if (facts?.ForeignCatchable is string[] catchable) module.ForeignCatchable = new(catchable, StringComparer.Ordinal);
+            module.OwnedFields = facts?.OwnedFields;
             foreach (Function function in module.Functions)
                 if (visibility.TryGetValue(function.Name, out bool exported) && exported != function.Exported)
                     throw new InvalidDataException("Archived IR identity disagrees with native symbol " + function.Name);
@@ -117,7 +126,17 @@ public sealed class UnitBackend : IUnitBackend
             cleanup.Run(local);
             if (facts is not null)
             {
-                Interlocked.Add(ref _lifetimes, Escape.RunAtLink(function, link!));
+                // Kept as it was, to be taken back if a free the pass places
+                // would run under a read of an owned field (RunAtLink's -1).
+                byte[]? before = Escape.ReadsOwnedField(function, link!) ? IrFunctionCodec.Write(function) : null;
+                int taken = Escape.RunAtLink(function, link!);
+                if (taken < 0)
+                {
+                    function = IrFunctionCodec.Read(before!, new IrReadBudget(64L * 1024 * 1024));
+                    local.Functions[0] = function;
+                    taken = 0;
+                }
+                Interlocked.Add(ref _lifetimes, taken);
                 new Inline { SmallBody = 40, GrowthLimit = 1024, ConstantBranchBody = 160, FreshOwnerBody = 0 }.Run(local);
                 cleanup.Run(local);
             }

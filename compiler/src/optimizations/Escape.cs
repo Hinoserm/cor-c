@@ -151,6 +151,9 @@ public sealed partial class Escape : IModulePass
         m.LifetimeHints = _hinting ? Hints(m, Provided) : null;
         PermanentStatics(m);
         if (canFree) OwnedFields(m, byName, summaries);
+        // A unit of a larger program: its side of the same judgement, as
+        // hints, or the link's answer applied (EscapeOwnedUnits).
+        if (canFree) OwnedFieldsInUnit(m, byName, summaries);
         m.NeedsHeap = AnyAllocationReachable(m, byName);
         // A PROGRAM THAT SAID IT RUNS WITHOUT A COLLECTOR gets none: what is
         // left is named, one note each, and is never given back.
