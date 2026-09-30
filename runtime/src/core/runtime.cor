@@ -1791,11 +1791,10 @@ static class Runtime
     /// negating long.MinValue would.
     public static void PrintInt(long v)
     {
-        byte[] text = new byte[DigitsBytes];
-        string digits = Sys.NewChars(DigitsBytes);
-        int n = FormatDecimal(digits, 0, v, DigitsBytes);
-        for (int i = 0; i < n; i++) { text[i] = (byte)Sys.GetChar(digits, i); }
-        WriteBytes(StdOut, Sys.ArrayData(text), n);
+        // The digits' bytes are written as they were made: no string between.
+        byte[] scratch = new byte[DigitsBytes];
+        int begin = Digits(scratch, v);
+        WriteBytes(StdOut, Sys.ArrayData(scratch) + begin, DigitsBytes - begin);
     }
 
     /// Sixteen hex digits, zero padded, no prefix -- the shape a debugger
@@ -1835,6 +1834,23 @@ static class Runtime
             return 0;
         }
 
+        byte[] scratch = new byte[DigitsBytes];
+        int begin = Digits(scratch, value);
+        int end = DigitsBytes;
+        int length = end - begin;
+        int take = length < capacity ? length : capacity;
+
+        for (int i = 0; i < take; i++)
+        {
+            Sys.SetChar(dst, at + i, scratch[begin + i]);
+        }
+        return take;
+    }
+
+    /// The decimal text of `value` in the far end of `scratch` (DigitsBytes
+    /// long), least digit first from the top down, and where it begins.
+    private static int Digits(byte[] scratch, long value)
+    {
         // The magnitude as unsigned: negating long.MinValue as a long gives
         // long.MinValue back, but as a ulong it is exactly 2^63.
         //
@@ -1854,7 +1870,6 @@ static class Runtime
         }
 
         // Digits into a local block, least first, from the top down.
-        byte[] scratch = new byte[DigitsBytes];
         int end = DigitsBytes;
         int begin = end;
 
@@ -1881,14 +1896,7 @@ static class Runtime
             scratch[begin] = 45;
         }
 
-        int length = end - begin;
-        int take = length < capacity ? length : capacity;
-
-        for (int i = 0; i < take; i++)
-        {
-            Sys.SetChar(dst, at + i, scratch[begin + i]);
-        }
-        return take;
+        return begin;
     }
 
     // ---- enums ----------------------------------------------------------------
