@@ -1,0 +1,17 @@
+// test: string.Intern answers one copy of each text; IsInterned says whether there is one
+// expect-exit: 0
+// expect-output:
+// False
+// True
+// True
+static class Program
+{
+    static int Main()
+    {
+        string a = new string('x', 3), b = new string('x', 3);
+        Console.WriteLine((object)a == (object)b);
+        Console.WriteLine((object)string.Intern(a) == (object)string.Intern(b));
+        Console.WriteLine(string.IsInterned(new string('y', 2)) is null);
+        return 0;
+    }
+}
