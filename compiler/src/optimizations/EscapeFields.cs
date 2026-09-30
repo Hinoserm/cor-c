@@ -64,7 +64,7 @@ public sealed partial class Escape
     /// block given back is refused when its turn comes to be marked.
     /// </summary>
     internal static bool IsFreeCall(string? callee) =>
-        callee is Freer or BumpFreer or ReplacedFreer or FieldFreer or FieldKeeper
+        callee is Freer or BumpFreer or ReplacedFreer or FieldFreer or FieldKeeper or OwnedReplacedFreer
         || (callee is not null && callee.StartsWith(FieldSitePrefix, StringComparison.Ordinal));
 
     /// <summary>

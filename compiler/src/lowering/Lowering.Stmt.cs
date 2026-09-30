@@ -762,6 +762,9 @@ public sealed partial class Lowering
         Require(end);
         VReg held = _e.Load(IrTypes.Word, new SlotOperand(keep));
         _e.Call(CallLabel(end), IrType.Void, R(held));
+        // What the catch takes: the escape pass judges thrown objects by the
+        // catches their type can reach (Escape.ThrownIn); none is a catch-all.
+        _e.Block.Instrs[^1].DispatchType = _catchTypes.GetValueOrDefault(keep);
     }
 
     private void Rethrow(VReg obj, Node at)
@@ -918,6 +921,7 @@ public sealed partial class Lowering
             }
 
             _openCatches.Add((_openHandlers.Count, keep, c));
+            _catchTypes[keep] = _b.CatchType.TryGetValue(c, out TypeSymbol? caught) ? DescriptorOf(caught) : null;
             EmitStmt(c.Body);
             _openCatches.RemoveAt(_openCatches.Count - 1);
             if (!_e.Closed)
@@ -925,6 +929,7 @@ public sealed partial class Lowering
                 EndCatch(keep);
                 _e.Jump(end);
             }
+            _catchTypes.Remove(keep);
             _e.SetBlock(next);
         }
 

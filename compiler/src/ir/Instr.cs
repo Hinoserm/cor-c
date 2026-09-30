@@ -22,7 +22,8 @@ public sealed class Instr
     /// <summary>
     /// CallIndirect of a virtual method: the descriptor of the type that
     /// declares it. The call reaches that type's override or a subclass's,
-    /// and nothing else (Escape.IndirectTargets).
+    /// and nothing else (Escape.IndirectTargets). On a catch body's end
+    /// (Runtime.CatchEnd): the type the catch takes, null for every type.
     /// </summary>
     public string? DispatchType { get; set; }
 

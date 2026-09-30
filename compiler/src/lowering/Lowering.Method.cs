@@ -79,6 +79,9 @@ public sealed partial class Lowering
     /// </summary>
     private readonly List<(int Depth, FrameSlot Keep, CatchClause Clause)> _openCatches = new();
 
+    /// <summary>The descriptor of the type each open catch takes; null for a catch of everything.</summary>
+    private readonly Dictionary<FrameSlot, string?> _catchTypes = new();
+
     private Block? _returnBlock;
     private VReg? _returnValue;
 
@@ -655,6 +658,9 @@ public sealed partial class Lowering
     /// <summary>A field's name as the IR carries it on the loads and stores of it (Instr.Field).</summary>
     private static string FieldKey(FieldSymbol f) => TypeKey(f.Owner) + "::" + f.Name;
 
+    /// <summary>Whether a field's loads and stores carry it (Instr.Field): a reference, held by a class or statically.</summary>
+    private bool TagsField(FieldSymbol f) => HoldsReference(f.Type) && (f.Static || f.Owner.Kind == TypeKind.Class);
+
     private VReg LoadPlace(Place p)
     {
         switch (p)
@@ -677,7 +683,7 @@ public sealed partial class Lowering
             {
                 IrType it = IrTypes.Of(m.Type);
                 VReg v = _e.Load(it, m.Address, m.Offset, LoadSize(m.Type), !m.Type.IsUnsigned && m.Type.Prim != Prim.Bool);
-                if (m.Field is FieldSymbol read) _e.Block.Instrs[^1].Field = FieldKey(read);
+                if (m.Field is FieldSymbol read && TagsField(read)) _e.Block.Instrs[^1].Field = FieldKey(read);
                 if (m.Volatile)
                 {
                     _e.Emit(Opcode.Fence, null);
@@ -721,7 +727,7 @@ public sealed partial class Lowering
                 }
                 ReferenceBarrier(m, value);
                 _e.Store(m.Address, new RegOperand(value), m.Offset, LoadSize(m.Type));
-                if (m.Field is FieldSymbol written) _e.Block.Instrs[^1].Field = FieldKey(written);
+                if (m.Field is FieldSymbol written && TagsField(written)) _e.Block.Instrs[^1].Field = FieldKey(written);
                 CardMark(m, value);
                 break;
         }
@@ -888,7 +894,7 @@ public sealed partial class Lowering
     private void StoreNew(VReg block, VReg value, long offset, Type type, FieldSymbol? field = null)
     {
         _e.Store(R(block), R(value), offset, LoadSize(type));
-        if (field is not null) _e.Block.Instrs[^1].Field = FieldKey(field);
+        if (field is not null && TagsField(field)) _e.Block.Instrs[^1].Field = FieldKey(field);
         CardMark(new MemPlace(R(block), offset, type), value);
     }
 

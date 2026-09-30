@@ -1,0 +1,33 @@
+// test: gcless caught exceptions
+// expect-exit: 0
+// expect-output:
+// 1744445 0 True
+//
+// A catch that keeps its exception nowhere frees it when the body ends, and
+// with it what the exception owns: its message, made fresh at the throw, and
+// the trace the throw recorded. A hundred thousand throws and catches run no
+// collection and leave the heap as they found it.
+
+static class Program
+{
+    static int Check(int k)
+    {
+        if ((k & 1) == 0) throw new System.InvalidOperationException("bad value " + k);
+        return 20;
+    }
+
+    static int Main()
+    {
+        int collections = GC.CollectionCount(0);
+        long before = GC.GetTotalMemory(false);
+        long total = 0;
+        for (int k = 0; k < 100000; k++)
+        {
+            try { total += Check(k); }
+            catch (System.InvalidOperationException e) { total += e.Message.Length; }
+        }
+        long grown = GC.GetTotalMemory(false) - before;
+        System.Console.WriteLine(total + " " + (GC.CollectionCount(0) - collections) + " " + (grown < 65536));
+        return 0;
+    }
+}

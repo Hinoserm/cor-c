@@ -667,7 +667,58 @@ static class Runtime
         {
             return;
         }
+        if (at != 0)
+        {
+            FreeOwnedFields(at);
+        }
         Gc.Free(at);
+    }
+
+    /// THE FIELDS AN OBJECT OWNS GO WITH IT. A type's descriptor word 11 is its
+    /// owned-field map, in the reference map's form (a count of words, then a
+    /// bit for each): the fields the compiler proved, over the whole program,
+    /// only ever hold objects made for them and read nowhere that outlives the
+    /// object (Escape.OwnedFields) -- an exception's message and trace. Each is
+    /// cleared and freed, and whatever it owns in turn with it. Only objects
+    /// the compiler proved dead come here, so the header is theirs to read.
+    public static void FreeOwnedFields(long at)
+    {
+        long vtable = Sys.Peek(at) & WordSize.AddressMask;
+        if (vtable == 0)
+        {
+            return;
+        }
+        long map = Sys.Peek(vtable - WordSize.Bytes);
+        if (map == 0)
+        {
+            return;
+        }
+        long words = Sys.Peek(map);
+        for (long word = 0; word < words; word++)
+        {
+            long bits = Sys.PeekWord(map + WordSize.Bytes + (word / 32) * WordSize.Bytes) & 0xFFFFFFFF;
+            if ((bits & (1L << (int)(word % 32))) == 0)
+            {
+                continue;
+            }
+            long field = at + word * WordSize.Bytes;
+            long held = Sys.Peek(field);
+            if (held != 0)
+            {
+                Sys.Poke(field, 0);
+                Free(held);
+            }
+        }
+    }
+
+    /// What an owned field held before a store replaces it (Escape.OwnedFields):
+    /// freed with what it owns, unless it is what is being stored again.
+    public static void FreeOwnedReplaced(long old, long current)
+    {
+        if (old != 0 && old != current && Gc.IgnoredFrees != 'r')
+        {
+            Free(old);
+        }
     }
 
     /// Gives back what an owned variable held before it was assigned
@@ -701,6 +752,9 @@ static class Runtime
             {
                 LogFree(held, at, offset, Sys.Peek(Sys.FramePointer() + WordSize.Bytes));
             }
+            // Cleared first: the object's owned-field map (FreeOwnedFields)
+            // may name the same field, and must find it empty.
+            Sys.Poke(at + offset, 0);
             if (Gc.VerifyingFieldFrees)
             {
                 Gc.FreeFieldChecked(held);

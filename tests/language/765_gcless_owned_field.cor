@@ -1,0 +1,41 @@
+// test: gcless owned field
+// expect-exit: 0
+// expect-output:
+// 17500000 0 True
+//
+// A field every store fills with an object made for it, and every read keeps
+// within, owns what it holds: freeing the owner frees it, and a store that
+// replaces it frees the old one. Owners with a buffer each, made and dropped
+// a hundred thousand times and each given a second buffer once, run no
+// collection and leave the heap as they found it.
+
+sealed class Holder
+{
+    byte[] _buffer;
+
+    public Holder(int size) { _buffer = new byte[size]; }
+
+    public void Grow(int size) { _buffer = new byte[size]; }
+
+    public int Size() { return _buffer.Length; }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        int collections = GC.CollectionCount(0);
+        long before = GC.GetTotalMemory(false);
+        long total = 0;
+        for (int k = 0; k < 100000; k++)
+        {
+            Holder h = new Holder(64);
+            total += h.Size();
+            h.Grow(111);
+            total += h.Size();
+        }
+        long grown = GC.GetTotalMemory(false) - before;
+        System.Console.WriteLine(total + " " + (GC.CollectionCount(0) - collections) + " " + (grown < 65536));
+        return 0;
+    }
+}

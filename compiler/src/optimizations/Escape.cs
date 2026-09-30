@@ -93,6 +93,7 @@ public sealed partial class Escape : IModulePass
         // callee's answer is known before its callers ask. Cycles keep the
         // pessimistic answer.
         Dictionary<string, bool[]> summaries = new(StringComparer.Ordinal);
+        _summaries = summaries;
         foreach (List<Function> cycle in CallCycles(m, byName))
         {
             SummariseCycle(cycle, summaries);
@@ -142,6 +143,7 @@ public sealed partial class Escape : IModulePass
 
         m.LifetimeHints = _hinting ? Hints(m, Provided) : null;
         PermanentStatics(m);
+        if (canFree) OwnedFields(m, byName, summaries);
         m.NeedsHeap = AnyAllocationReachable(m, byName);
         if (Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is { Length: > 0 }) AllocationReport(m, byName);
         LastRun = (Promoted, Owned, OwnedReturns, _fresh.Count, FieldsOwned, VariablesOwned);
@@ -255,8 +257,17 @@ public sealed partial class Escape : IModulePass
     /// <summary>The runtime's routine an exception nothing catches goes to.</summary>
     public const string Unhandled = "m_Runtime_Unhandled_1_V$Any";
 
-    /// <summary>Some catch body keeps the exception it caught (OwnCaught): thrown objects are then the collector's.</summary>
-    private bool _catchKept;
+    /// <summary>
+    /// The types of the catches that keep what they caught (OwnCaught), null
+    /// for one that takes everything: a thrown object any of them can take is
+    /// the collector's.
+    /// </summary>
+    private readonly HashSet<string> _keptCatches = new(StringComparer.Ordinal);
+    private bool _keptCatchAll;
+    private void KeepCatch(Instr end) { if (end.DispatchType is string t) _keptCatches.Add(t); else _keptCatchAll = true; }
+
+    /// <summary>The exact type of each thrown allocation (ThrownIn): the descriptor its header is stamped with.</summary>
+    private readonly Dictionary<Instr, string> _thrownType = new(ReferenceEqualityComparer.Instance);
 
     /// <summary>Allocations whose only way out is being thrown (ThrownIn).</summary>
     private readonly HashSet<Instr> _thrown = new(ReferenceEqualityComparer.Instance);
@@ -274,7 +285,7 @@ public sealed partial class Escape : IModulePass
     {
         if (f.Async is not null)
         {
-            if (f.Blocks.Any(b => b.Instrs.Any(i => i.Op == Opcode.Call && IsCatchEnd(i.Callee)))) _catchKept = true;
+            foreach (Block b in f.Blocks) foreach (Instr i in b.Instrs) if (i.Op == Opcode.Call && IsCatchEnd(i.Callee)) KeepCatch(i);
             return;
         }
         Dictionary<VReg, Instr> defs = new();
@@ -291,7 +302,7 @@ public sealed partial class Escape : IModulePass
                     if (!ends.TryGetValue(keep, out var list)) ends[keep] = list = new();
                     list.Add((b, i));
                 }
-                else if (i.Op == Opcode.Call && IsCatchEnd(i.Callee)) _catchKept = true;
+                else if (i.Op == Opcode.Call && IsCatchEnd(i.Callee)) KeepCatch(i);
         foreach ((FrameSlot keep, var list) in ends)
         {
             HashSet<VReg> roots = new();
@@ -308,16 +319,41 @@ public sealed partial class Escape : IModulePass
                     }
                 }
             Flow flow = Analyse(f, roots, summaries, null, stores, handOff: true);
-            if (flow.Escapes) { _catchKept = true; continue; }
+            if (flow.Escapes) { foreach ((_, Instr end) in list) KeepCatch(end); continue; }
             foreach ((Block b, Instr end) in list)
             {
-                Instr free = new() { Op = Opcode.Call, Callee = Freer, Line = end.Line };
-                free.Operands.AddRange(end.Operands);
-                b.Instrs[b.Instrs.IndexOf(end)] = free;
-                _bookkeeping.Add(free);
+                // Runtime.Free takes a long on every target (AppendFree).
+                List<Instr> made = new();
+                Instr free = AppendFree(f, made, ((RegOperand)end.Operands[0]).Reg, end.Line);
+                int at = b.Instrs.IndexOf(end);
+                b.Instrs.RemoveAt(at);
+                b.Instrs.InsertRange(at, made);
+                _bookkeeping.UnionWith(made);
                 Owned++;
             }
         }
+    }
+
+    /// <summary>
+    /// A thrown allocation is covered if no catch that keeps what it caught can
+    /// take its type: a catch of T takes X when T is X or an ancestor of X.
+    /// </summary>
+    private bool ThrownCovered(Instr i, Dictionary<string, DataItem> items)
+    {
+        if (!_thrown.Contains(i) || _keptCatchAll || !_thrownType.TryGetValue(i, out string? type)) return false;
+        if (_keptCatches.Count == 0) return true;
+        HashSet<string> ancestors = Ancestry(items, type);
+        return !_keptCatches.Any(ancestors.Contains);
+    }
+
+    /// <summary>Whether register `into` is `made` narrowed or copied (the stamping store's address).</summary>
+    private static bool Stamped(Function f, VReg into, VReg made)
+    {
+        foreach (Block b in f.Blocks)
+            foreach (Instr d in b.Instrs)
+                if (d.Dest == into && d.Op is Opcode.Copy or Opcode.Trunc64 && d.Operands.Count == 1 && d.Operands[0] is RegOperand { Reg: var from } && from == made)
+                    return true;
+        return false;
     }
 
     /// <summary>
@@ -332,10 +368,241 @@ public sealed partial class Escape : IModulePass
             foreach (Instr i in b.Instrs)
             {
                 if (i.Op != Opcode.Call || !IsAllocator(i.Callee) || i.Dest is null || _owned.Contains(i)) continue;
+                if (Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is { Length: > 1 } which && f.Name.Contains(which, StringComparison.Ordinal))
+                {
+                    Flow why = Analyse(f, new[] { i.Dest }, summaries, i, handOff: true);
+                    Console.Error.WriteLine($"alloc report: {f.Name}:{i.Line} escapes={why.Escapes} via {why.Why?.Op} {why.Why?.Callee} {string.Join(" ", why.Why?.Operands.Select(o => o.ToString()) ?? Array.Empty<string>())}");
+                }
                 if (Analyse(f, new[] { i.Dest }, summaries, i).Escapes && !Analyse(f, new[] { i.Dest }, summaries, i, handOff: true).Escapes)
+                {
                     _thrown.Add(i);
+                    // Its exact type: the descriptor stamped into its first word.
+                    foreach (Block s2 in f.Blocks)
+                        foreach (Instr st in s2.Instrs)
+                            if (st.Op == Opcode.Store && st.Offset == 0 && st.Operands.Count >= 2 && st.Operands[1] is SymOperand { Name: var t }
+                                && t.StartsWith("t_", StringComparison.Ordinal) && st.Operands[0] is RegOperand { Reg: var into }
+                                && (into == i.Dest || Stamped(f, into, i.Dest)))
+                                _thrownType[i] = t;
+                }
             }
     }
+
+    /// <summary>The runtime's free of what an owned field held before a store replaces it.</summary>
+    public const string OwnedReplacedFreer = "m_Runtime_FreeOwnedReplaced_2_V$I64_V$I64";
+
+    /// <summary>Allocations an owned field holds (OwnedFields): freed with the object that owns the field.</summary>
+    private readonly HashSet<Instr> _fieldOwned = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>
+    /// A FIELD THAT OWNS WHAT IT HOLDS, over the whole program: every store
+    /// into it, anywhere, stores an object made for it -- a fresh allocation or
+    /// a fresh function's result that nothing else keeps -- or null or static
+    /// data; and every read of it keeps the value within the reading block,
+    /// letting it go nowhere and dead before anything that could free it (a
+    /// free, a catch's end, a call that may store into the field, a call this
+    /// pass cannot see). Then the field's objects are the owner's: a store
+    /// that may replace one frees it first (Runtime.FreeOwnedReplaced), and
+    /// freeing the owner frees them, by the owned-field map its type's
+    /// descriptor carries (word 11, read by Runtime.FreeOwnedFields) -- the
+    /// dynamic type's, so a subclass's own fields go too. Instance fields of
+    /// classes only (lowering tags no other): a struct is copied byte for byte.
+    /// </summary>
+    private void OwnedFields(Module m, Dictionary<string, Function> byName, Dictionary<string, bool[]> summaries)
+    {
+        if (m.PreserveExports || m.Entry is null || !byName.ContainsKey(OwnedReplacedFreer)) return;
+
+        List<(Function F, Block B, Instr I)> stores = new(), loads = new();
+        foreach (Function f in m.Functions)
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                {
+                    if (i.Field is null || i.Operands.Count < 1 || i.Operands[0] is SymOperand) continue;
+                    if (i.Op == Opcode.Store) stores.Add((f, b, i));
+                    else if (i.Op == Opcode.Load) loads.Add((f, b, i));
+                }
+        HashSet<string> candidates = new(stores.Select(s => s.I.Field!).Concat(loads.Select(l => l.I.Field!)), StringComparer.Ordinal);
+        if (candidates.Count == 0) return;
+
+        // Who may store into each field: the functions that do, and every
+        // function that may call one of them.
+        Dictionary<string, List<Function>> callers = new(StringComparer.Ordinal);
+        foreach (Function f in m.Functions)
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                {
+                    IEnumerable<string> callees = i.Op == Opcode.Call && i.Callee is not null ? new[] { i.Callee }
+                        : i.Op == Opcode.CallIndirect && _indirect is not null && _indirect.TryGetValue(i, out string[]? t) ? t : Array.Empty<string>();
+                    foreach (string c in callees)
+                    {
+                        if (!callers.TryGetValue(c, out List<Function>? list)) callers[c] = list = new();
+                        list.Add(f);
+                    }
+                }
+        Dictionary<string, HashSet<string>> mayWrite = new(StringComparer.Ordinal);
+        HashSet<string> MayWrite(string field)
+        {
+            if (mayWrite.TryGetValue(field, out HashSet<string>? known)) return known;
+            HashSet<string> set = new(StringComparer.Ordinal);
+            Stack<string> work = new(stores.Where(s => s.I.Field == field).Select(s => s.F.Name));
+            while (work.Count > 0)
+            {
+                string name = work.Pop();
+                if (!set.Add(name)) continue;
+                if (callers.TryGetValue(name, out List<Function>? up)) foreach (Function c in up) work.Push(c.Name);
+            }
+            return mayWrite[field] = set;
+        }
+
+        static Instr? Origin(Dictionary<VReg, Instr> defs, VReg r)
+        {
+            for (int hop = 0; hop < 8 && defs.TryGetValue(r, out Instr? d); hop++)
+            {
+                if (d.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 && d.Operands.Count == 1 && d.Operands[0] is RegOperand from) { r = from.Reg; continue; }
+                return d;
+            }
+            return null;
+        }
+        Dictionary<Function, Dictionary<VReg, Instr>> defsOf = new();
+        Dictionary<VReg, Instr> Defs(Function f)
+        {
+            if (defsOf.TryGetValue(f, out var d)) return d;
+            d = new();
+            HashSet<VReg> many = new();
+            foreach (Block b in f.Blocks) foreach (Instr i in b.Instrs) if (i.Dest is not null && !d.TryAdd(i.Dest, i)) many.Add(i.Dest);
+            foreach (VReg r in many) d.Remove(r);
+            return defsOf[f] = d;
+        }
+        bool Fresh(Instr? d) => d is { Op: Opcode.Call } && (IsAllocator(d.Callee) || IsFreshCall(d));
+
+        HashSet<string> refused = new(StringComparer.Ordinal);
+        List<(Instr Origin, Instr Store)> held = new();
+        foreach ((Function f, Block b, Instr st) in stores)
+        {
+            if (f.Async is not null || st.Operands.Count < 2) { refused.Add(st.Field!); continue; }
+            switch (st.Operands[1])
+            {
+                case ImmOperand { Value: 0 }:
+                case SymOperand:
+                    continue;
+                case RegOperand v when Origin(Defs(f), v.Reg) is Instr made && Fresh(made) && made.Dest is not null
+                    && !Analyse(f, new[] { made.Dest }, summaries, made, new HashSet<Instr>(ReferenceEqualityComparer.Instance) { st }).Escapes:
+                    held.Add((made, st));
+                    continue;
+                default:
+                    refused.Add(st.Field!);
+                    continue;
+            }
+        }
+
+        // One liveness per function, however many loads it has.
+        Dictionary<Function, Liveness> livenessOf = new();
+        foreach ((Function f, Block b, Instr ld) in loads)
+        {
+            string field = ld.Field!;
+            if (refused.Contains(field)) continue;
+            if (f.Async is not null || ld.Dest is null) { refused.Add(field); continue; }
+            Flow flow = Analyse(f, new[] { ld.Dest }, summaries, ld);
+            if (flow.Escapes) { refused.Add(field); continue; }
+            // Within this block, and dead before anything that could free it.
+            if (!livenessOf.TryGetValue(f, out Liveness? liveness)) livenessOf[f] = liveness = new Liveness(f);
+            if (flow.Derived.Any(r => !liveness.Tracks(r) || liveness.IsLiveOut(b, r))) { refused.Add(field); continue; }
+            int at = b.Instrs.IndexOf(ld), last = at;
+            for (int k = at + 1; k < b.Instrs.Count; k++)
+                if (b.Instrs[k].Operands.Any(o => o is RegOperand r && flow.Derived.Contains(r.Reg))) last = k;
+            HashSet<string> writers = MayWrite(field);
+            for (int k = at + 1; k < last; k++)
+            {
+                Instr i = b.Instrs[k];
+                bool danger = i.Op == Opcode.CallIndirect && (_indirect is null || !_indirect.TryGetValue(i, out _))
+                    || i.Op == Opcode.CallIndirect && _indirect!.TryGetValue(i, out string[]? t) && t.Any(writers.Contains)
+                    || i.Op == Opcode.Call && (IsFreeCall(i.Callee) || IsCatchEnd(i.Callee) || i.Callee == OwnedReplacedFreer
+                                               || i.Callee is not null && writers.Contains(i.Callee))
+                    || i.Op == Opcode.Store && i.Field == field;
+                if (danger) { refused.Add(field); break; }
+            }
+        }
+
+        HashSet<string> owned = new(candidates.Where(c => !refused.Contains(c)), StringComparer.Ordinal);
+        if (owned.Count == 0) return;
+
+        // Replacing a value frees it, unless the object was made right here
+        // and so held nothing.
+        foreach ((Function f, Block b, Instr st) in stores)
+        {
+            if (!owned.Contains(st.Field!)) continue;
+            if (st.Operands[0] is RegOperand baseReg && Origin(Defs(f), baseReg.Reg) is { Op: Opcode.Call } madeOwner && IsAllocator(madeOwner.Callee)) continue;
+            int at = b.Instrs.IndexOf(st);
+            List<Instr> made = new();
+            VReg old = f.NewReg(IrTypes.Word);
+            Instr load = new() { Op = Opcode.Load, Dest = old, Offset = st.Offset, Size = st.Size, Line = st.Line };
+            load.Operands.Add(st.Operands[0]);
+            made.Add(load);
+            // Both longs, as the runtime's frees take on every target.
+            Instr free = new() { Op = Opcode.Call, Callee = OwnedReplacedFreer, Line = st.Line };
+            free.Operands.Add(Long(f, made, new RegOperand(old), st.Line));
+            free.Operands.Add(Long(f, made, st.Operands[1], st.Line));
+            made.Add(free);
+            b.Instrs.InsertRange(at, made);
+            _bookkeeping.UnionWith(made);
+        }
+
+        foreach ((Instr made, Instr st) in held)
+        {
+            if (!owned.Contains(st.Field!)) continue;
+            if (IsAllocator(made.Callee)) _fieldOwned.Add(made);
+            else _ownedCalls.Add(made);
+        }
+
+        // Each class's owned-field map, its ancestors' fields included.
+        Dictionary<string, List<long>> offsets = new(StringComparer.Ordinal);
+        foreach ((_, _, Instr st) in stores)
+            if (owned.Contains(st.Field!))
+            {
+                string owner = "t_" + st.Field![..st.Field!.IndexOf("::", StringComparison.Ordinal)];
+                if (!offsets.TryGetValue(owner, out List<long>? list)) offsets[owner] = list = new();
+                if (!list.Contains(st.Offset)) list.Add(st.Offset);
+            }
+        int w = Target.Current.WordSize;
+        Dictionary<string, DataItem> items = new(StringComparer.Ordinal);
+        foreach (DataItem d in m.Data) items[d.Name] = d;
+        foreach (DataItem d in m.Data.Where(d => d.Name.StartsWith("t_", StringComparison.Ordinal)).ToList())
+        {
+            List<long> mine = Ancestry(items, d.Name).Where(offsets.ContainsKey).SelectMany(a => offsets[a]).Distinct().ToList();
+            if (mine.Count == 0 || d.Bytes.Length < 12 * w || mine.Any(o => o % w != 0)) continue;
+            int words = (int)(mine.Max() / w) + 1;
+            uint[] bits = new uint[(words + 31) / 32];
+            foreach (long o in mine) bits[(int)(o / w) / 32] |= 1u << (int)(o / w % 32);
+            byte[] block = new byte[(1 + bits.Length) * w];
+            for (int k = 0; k < w; k++) block[k] = (byte)(words >> (8 * k));
+            for (int i = 0; i < bits.Length; i++) for (int k = 0; k < 4; k++) block[(1 + i) * w + k] = (byte)(bits[i] >> (8 * k));
+            string sym = "om_" + d.Name[2..];
+            m.Data.Add(new DataItem(sym, block) { ReadOnly = true, Exported = false, Align = w });
+            d.Relocs.Add(new DataReloc(11 * w, sym, 0));
+        }
+    }
+
+    /// <summary>A descriptor and every descriptor its ancestry tables name, transitively.</summary>
+    private static HashSet<string> Ancestry(Dictionary<string, DataItem> items, string type)
+    {
+        HashSet<string> found = new(StringComparer.Ordinal) { type };
+        Stack<string> pending = new();
+        pending.Push(type);
+        while (pending.Count > 0)
+        {
+            string at = pending.Pop();
+            if (!items.TryGetValue(at, out DataItem? t)) continue;
+            foreach (DataReloc r in t.Relocs)
+                if (r.Symbol.StartsWith("d_", StringComparison.Ordinal) && items.TryGetValue(r.Symbol, out DataItem? table))
+                    foreach (DataReloc up in table.Relocs)
+                        if ((up.Symbol.StartsWith("t_", StringComparison.Ordinal) || up.Symbol.StartsWith("i_", StringComparison.Ordinal))
+                            && found.Add(up.Symbol))
+                            pending.Push(up.Symbol);
+        }
+        return found;
+    }
+
+    /// <summary>The run's parameter summaries, for the allocation report only.</summary>
+    private Dictionary<string, bool[]>? _summaries;
 
     /// <summary>Allocations that live until the program ends (PermanentStatics): never garbage, so no collector's.</summary>
     private readonly HashSet<Instr> _permanent = new(ReferenceEqualityComparer.Instance);
@@ -554,6 +821,8 @@ public sealed partial class Escape : IModulePass
             defs[p] = defs.GetValueOrDefault(p) + 1;
         }
 
+        HashSet<VReg>? pending = null;
+        Dictionary<VReg, List<Instr>>? writes = null;
         bool changed = true;
         while (changed && !flow.Escapes)
         {
@@ -763,6 +1032,35 @@ public sealed partial class Escape : IModulePass
                     break;
                 }
             }
+
+            // A REGISTER WRITTEN MORE THAN ONCE -- a variable, a joined value
+            // -- is the object's too if EVERY write puts this object in it (a
+            // copy of what is derived) or null: then it can hold nothing else.
+            // Anything else written to it and it is unknowable, which is an
+            // escape. Judged once the rest has settled, since what is derived
+            // grows as the analysis goes.
+            if (!changed && !flow.Escapes && pending is { Count: > 0 })
+            {
+                writes ??= Writes(f);
+                bool resolved = false;
+                foreach (VReg d in pending.ToList())
+                {
+                    bool mine = f.Params.Contains(d) is false && writes.TryGetValue(d, out List<Instr>? all) && all.All(w =>
+                        w.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.SExt32 && w.Operands.Count == 1
+                        && (w.Operands[0] is ImmOperand { Value: 0 } || w.Operands[0] is RegOperand { Reg: var from } && flow.Derived.Contains(from)));
+                    if (!mine) continue;
+                    pending.Remove(d);
+                    resolved = true;
+                    if (flow.Derived.Add(d)) changed = true;
+                }
+                // Still some that can hold another value, and nothing more to
+                // learn: those are the escape.
+                if (!resolved && pending.Count > 0)
+                {
+                    flow.Escapes = true;    // shared with another value; unknowable
+                    flow.Why ??= writes.TryGetValue(pending.First(), out List<Instr>? w0) ? w0[0] : null;
+                }
+            }
         }
 
         return flow;
@@ -776,7 +1074,7 @@ public sealed partial class Escape : IModulePass
             if (defs.GetValueOrDefault(d) > 1 && (returnable is null || !returnable.Contains(d))
                 && (joinable is null || !joinable.Contains(d)))
             {
-                flow.Escapes = true;    // shared with another value; unknowable
+                (pending ??= new()).Add(d);
                 return;
             }
             if (flow.Derived.Add(d))
@@ -784,6 +1082,20 @@ public sealed partial class Escape : IModulePass
                 changed = true;
             }
         }
+    }
+
+    /// <summary>Every instruction that writes each register.</summary>
+    private static Dictionary<VReg, List<Instr>> Writes(Function f)
+    {
+        Dictionary<VReg, List<Instr>> writes = new();
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Dest is not null)
+                {
+                    if (!writes.TryGetValue(i.Dest, out List<Instr>? list)) writes[i.Dest] = list = new();
+                    list.Add(i);
+                }
+        return writes;
     }
 
     // ---- recursion ---------------------------------------------------------------------
@@ -1613,6 +1925,30 @@ public sealed partial class Escape : IModulePass
     /// <summary>The line the function's first instruction has: what code put before it is given.</summary>
     internal static int EntryLine(Function f, int otherwise) => f.Entry.Instrs.Count > 0 ? f.Entry.Instrs[0].Line : otherwise;
 
+    /// <summary>An operand as a long, for a runtime routine that takes one (a null, a symbol, a word).</summary>
+    private static Operand Long(Function f, List<Instr> output, Operand value, int line)
+    {
+        switch (value)
+        {
+            case ImmOperand imm:
+                return new ImmOperand(imm.Value, IrType.I64);
+            case RegOperand { Reg.Type: IrType.I64 }:
+                return value;
+            case RegOperand reg:
+            {
+                VReg wide = f.NewReg(IrType.I64);
+                output.Add(new Instr { Op = Opcode.ZExt32, Dest = wide, Operands = { reg }, Line = line });
+                return new RegOperand(wide);
+            }
+            default:
+            {
+                VReg word = f.NewReg(IrTypes.Word);
+                output.Add(new Instr { Op = Opcode.Copy, Dest = word, Operands = { value }, Line = line });
+                return Long(f, output, new RegOperand(word), line);
+            }
+        }
+    }
+
     private static Instr AppendFree(Function f, List<Instr> output, VReg pointer, int line)
     {
         // Ownership slots are machine words, but Runtime.Free(long) has a
@@ -1772,6 +2108,7 @@ public sealed partial class Escape : IModulePass
         // every method of every live descriptor is reached, as before. An
         // indirect call that is not virtual calls through an address some
         // code or data named, which the walk follows anyway.
+        Dictionary<string, DataItem> items = data;
         bool everyMethod = m.Functions.Any(f => f.Blocks.Any(b => b.Instrs.Any(i =>
             i.Op == Opcode.CallIndirect && i.DispatchType is not null && (_indirect is null || !_indirect.ContainsKey(i)))));
 
@@ -1810,8 +2147,8 @@ public sealed partial class Escape : IModulePass
                 foreach (Instr i in b.Instrs)
                 {
                     bool origin = origins is not null && origins.Contains(i);
-                    if (i.Callee is not null && IsAllocator(i.Callee) && !_owned.Contains(i) && !_permanent.Contains(i)
-                        && !(_thrown.Contains(i) && !_catchKept)
+                    if (i.Callee is not null && IsAllocator(i.Callee) && !_owned.Contains(i) && !_permanent.Contains(i) && !_fieldOwned.Contains(i)
+                        && !ThrownCovered(i, items)
                         && (!origin || unowned) && counted.Add(i))
                     {
                         sites.Add(paths ? $"{f.Name}:{i.Line} {i.Callee}\n      reached: {Path(f.Name)}" : f.Name);
@@ -1855,6 +2192,14 @@ public sealed partial class Escape : IModulePass
             return;
         }
         List<string> sites = CollectorSites(m, byName, entry, paths: true);
+        Console.Error.WriteLine($"alloc report: thrown {_thrown.Count} ({_thrownType.Count} typed), catches keeping: {(_keptCatchAll ? "everything; " : "")}{string.Join(", ", _keptCatches.Take(12))}");
+        if (Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is { Length: > 1 } which)
+            foreach (Function f in m.Functions.Where(f => f.Name.Contains(which, StringComparison.Ordinal)))
+                for (int p2 = 0; p2 < f.Params.Count; p2++)
+                {
+                    Flow why = Analyse(f, new[] { f.Params[p2] }, _summaries ?? new(), null);
+                    Console.Error.WriteLine($"alloc report: {f.Name} param {p2} escapes={why.Escapes} via {why.Why?.Op} {why.Why?.Callee} {string.Join(" ", why.Why?.Operands.Select(o => o.ToString()) ?? Array.Empty<string>())}");
+                }
         int indirect = m.Functions.Sum(f => f.Blocks.Sum(b => b.Instrs.Count(i => i.Op == Opcode.CallIndirect)));
         Console.Error.WriteLine($"alloc report: virtual calls resolved {_indirect?.Count ?? 0} of {indirect}"
             + string.Concat((_indirect ?? new()).Values.Where(t => Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is not "1" && t.Any(x => x.Contains(Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT")!, StringComparison.Ordinal))).Take(3).Select(t => "; [" + string.Join(", ", t) + "]"))
