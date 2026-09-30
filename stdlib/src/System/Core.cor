@@ -10474,17 +10474,17 @@ class Exception
     }
 
     // Each read of _frames ends where it is made, so the exception owns its
-    // frames and they go back with it (Escape's owned fields); the array is
-    // let go of by the store of null, after the names are made from it.
+    // frames and they go back with it (Escape's owned fields). THE TEXT IS
+    // MADE WHEN IT IS ASKED FOR AND KEPT BY NOBODY, as .NET makes its
+    // StackTrace: cached here, the one store of the site's string into
+    // _trace -- a value read from another field -- refused _trace its owner,
+    // and every exception thrown and caught was the collector's.
     string Named()
     {
         if (_site != null && _frames != null)
         {
             string callers = Runtime.TraceOf(_frames);
-            string site = _site;
-            _trace = callers.Length == 0 ? site : String.Concat(site, String.Concat("\n", callers));
-            _site = null;
-            _frames = null;
+            return callers.Length == 0 ? String.Concat(_site, "") : String.Concat(_site, String.Concat("\n", callers));
         }
         return _trace;
     }

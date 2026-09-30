@@ -432,7 +432,7 @@ public sealed partial class BindResult
     public Dictionary<AwaitExpr, AwaitInfo> Awaits { get; } = new(ReferenceEqualityComparer.Instance);
     public List<CompileError> Errors { get; } = new();
     public List<CompileError> Warnings { get; } = new();
-    public Dictionary<string, TypeSymbol> Types { get; } = new(StringComparer.Ordinal);
+    public TypeTable Types { get; } = new();
     /// <summary>Bytes of static storage, including the reserved low words.</summary>
     public int StaticBytes { get; set; } = 16;
 
@@ -640,4 +640,80 @@ public sealed class GenericDispatch
     /// </summary>
     public required List<ParamSymbol> Params { get; init; }
     public required Type Returns { get; init; }
+}
+
+/// <summary>
+/// THE TYPES BY KEY, and by where they are and what they are called: a type
+/// `A.B.C` is found as ("A.B", "C") too, so the binder's walk outwards through
+/// namespaces (FindType) asks each level without spelling `at + "." + name`
+/// -- a string made and thrown away at every level of every name the binder
+/// resolved, 2% of all the compiler allocated. Kept in step by the writes the
+/// binder makes; read as the dictionary it is everywhere else.
+/// </summary>
+public sealed class TypeTable : Dictionary<string, TypeSymbol>
+{
+    private readonly Dictionary<(string Within, string Name), TypeSymbol> _split = new();
+
+    public TypeTable() : base(StringComparer.Ordinal) { }
+
+    // How many split entries the index holds, and the table's count, as of
+    // the last write it saw.
+    private int _indexed, _counted;
+
+    private void Reindex()
+    {
+        _split.Clear();
+        foreach (var (key, value) in this)
+            if (Split(key) is { } at) _split[at] = value;
+        _indexed = _split.Count;
+        _counted = Count;
+    }
+
+    private void Seen() { _indexed = _split.Count; _counted = Count; }
+
+    private static (string, string)? Split(string key)
+    {
+        int dot = key.LastIndexOf('.');
+        return dot <= 0 || dot == key.Length - 1 ? null : (key[..dot], key[(dot + 1)..]);
+    }
+
+    public new TypeSymbol this[string key]
+    {
+        get => base[key];
+        set
+        {
+            bool fresh = _split.Count == _indexed && Count == _counted;
+            base[key] = value;
+            if (Split(key) is { } at) _split[at] = value;
+            if (fresh) Seen();
+        }
+    }
+
+    public new void Add(string key, TypeSymbol value)
+    {
+        bool fresh = _split.Count == _indexed && Count == _counted;
+        base.Add(key, value);
+        if (Split(key) is { } at) _split[at] = value;
+        if (fresh) Seen();
+    }
+
+    public new bool Remove(string key)
+    {
+        bool fresh = _split.Count == _indexed && Count == _counted;
+        if (!base.Remove(key)) return false;
+        if (Split(key) is { } at) _split.Remove(at);
+        if (fresh) Seen();
+        return true;
+    }
+
+    /// <summary>The type called `name` directly within `within` (no dot in `name`).</summary>
+    public bool TryGetWithin(string within, string name, out TypeSymbol? symbol)
+    {
+        // A write that came some other way -- through the dictionary itself --
+        // shows in the count: the index is made again from what is there.
+        if (_split.Count != _indexed || Count != _counted) Reindex();
+        if (_split.TryGetValue((within, name), out TypeSymbol? found)) { symbol = found; return true; }
+        symbol = null;
+        return false;
+    }
 }

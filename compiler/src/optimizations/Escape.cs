@@ -410,26 +410,61 @@ public sealed partial class Escape : IModulePass
             Dictionary<VReg, List<Instr>> writes = Writes(f);
             // Registers holding what a landing pad received: `throw;` hands it on.
             HashSet<FrameSlot> caughtSlots = new();
+            // What a landing pad received, through the copies that may carry
+            // it to where the catch variable is stored.
+            bool Received(VReg v)
+            {
+                for (int hop = 0; hop < 8; hop++)
+                {
+                    if (!writes.TryGetValue(v, out List<Instr>? vw) || vw.Count != 1) return false;
+                    if (vw[0] is { Op: Opcode.Call, Callee: "__exception" }) return true;
+                    if (vw[0] is not { Op: Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32, Operands: [RegOperand from] }) return false;
+                    v = from.Reg;
+                }
+                return false;
+            }
             foreach (Block b in f.Blocks)
                 foreach (Instr i in b.Instrs)
                     if (i.Op == Opcode.Store && i.Operands.Count == 2 && i.Operands[0] is SlotOperand { Slot: var slot }
-                        && i.Operands[1] is RegOperand { Reg: var v } && writes.TryGetValue(v, out List<Instr>? vw)
-                        && vw.Count == 1 && vw[0] is { Op: Opcode.Call, Callee: "__exception" })
+                        && i.Operands[1] is RegOperand { Reg: var v } && Received(v))
                         caughtSlots.Add(slot);
             // WHAT A CATCH HERE KEEPS, handed on by `throw;`, is still held by
             // whatever kept it: a catch further out may not free it. Kept =
             // anything received from a landing pad escapes this function.
+            bool? onlyExceptions = null;
+            bool OnlyExceptionCatches()
+            {
+                if (onlyExceptions is bool known) return known;
+                bool any = false, all = true;
+                foreach (Block cb in f.Blocks)
+                    foreach (Instr ci in cb.Instrs)
+                        if (ci.Op == Opcode.Call && IsCatchEnd(ci.Callee))
+                        {
+                            any = true;
+                            if (ci.DispatchType != "t_Exception") all = false;
+                        }
+                return (onlyExceptions = any && all).Value;
+            }
             bool? caughtKept = null;
             bool CaughtKept()
             {
                 if (caughtKept is bool known) return known;
                 HashSet<VReg> roots = new();
+                // Into the catch variable's own slot is no escape: its loads
+                // are roots here too.
+                HashSet<Instr> intoCatch = new(ReferenceEqualityComparer.Instance);
                 foreach (Block cb in f.Blocks)
                     foreach (Instr ci in cb.Instrs)
+                    {
                         if (ci.Dest is not null && (ci.Op == Opcode.Call && ci.Callee == "__exception"
                             || ci.Op == Opcode.Load && ci.Operands is [SlotOperand { Slot: var s }] && caughtSlots.Contains(s)))
                             roots.Add(ci.Dest);
-                return (caughtKept = roots.Count > 0 && Analyse(f, roots, summaries, null, handOff: true).Escapes).Value;
+                        if (ci.Op == Opcode.Store && ci.Operands is [SlotOperand { Slot: var into }, _] && caughtSlots.Contains(into))
+                            intoCatch.Add(ci);
+                    }
+                Flow received = Analyse(f, roots, summaries, null, intoCatch, handOff: true);
+                if (received.Escapes && roots.Count > 0) _unresolvedWhy?.Add($"received kept in {f.Name} via {received.Why?.Op} {received.Why?.Callee} {string.Join(" ", received.Why?.Operands.Select(o => o.ToString()) ?? Array.Empty<string>())}");
+                return (caughtKept = roots.Count > 0 && received.Escapes).Value;
             }
             // Fresh, handed on, or read from a static (whose name is answered).
             // FRESH AND STILL ONLY THE THROW'S: an object made here but kept
@@ -453,7 +488,16 @@ public sealed partial class Escape : IModulePass
                     }
                     if (d.Op == Opcode.Call && d.Callee == "__exception" || d.Op == Opcode.Load && d.Operands is [SlotOperand { Slot: var from }] && caughtSlots.Contains(from))
                     {
-                        if (CaughtKept()) types.Add("*");
+                        // Behind catches of Exception alone, what is handed on
+                        // was caught by none of them -- and everything C#
+                        // throws is an Exception: nothing is ever handed on.
+                        // The static initialisers wrap what they catch and
+                        // keep it; counted, every catch in every program kept.
+                        if (!OnlyExceptionCatches() && CaughtKept())
+                        {
+                            types.Add("*");
+                            _unresolvedWhy?.Add($"thrown foreign * in {f.Name}:{d.Line} (what a catch here received, and kept)");
+                        }
                         return true;
                     }
                     if (d.Op == Opcode.Load && d.Operands is [SymOperand { Name: var named }]) { fromStatic = named; return false; }
@@ -661,7 +705,7 @@ public sealed partial class Escape : IModulePass
             if (!keptAnyway) catchLiveness ??= new Liveness(f);
             if (keptAnyway || UsedAfterEnd(f, keep, flow, list, catchLiveness!))
             {
-                string why = flow.Escapes ? $"escapes via {flow.Why?.Op} {flow.Why?.Callee}" : keptAnyway ? "may catch something not just made" : "used after the catch ends";
+                string why = flow.Escapes ? $"escapes via {flow.Why?.Op} {flow.Why?.Callee}" : keptAnyway ? "may catch something not just made" : "used after the catch ends: " + UsedAfterWhy;
                 foreach ((_, Instr end) in list) KeepCaughtIn(f, end, why);
                 continue;
             }
@@ -689,21 +733,48 @@ public sealed partial class Escape : IModulePass
     /// of an alias of the caught object, and a finally inside the catch that
     /// a return leaves through, both end the catch first.
     /// </summary>
+    [ThreadStatic] private static string? UsedAfterWhy;
+
     private static bool UsedAfterEnd(Function f, FrameSlot keep, Flow flow, List<(Block Block, Instr End)> ends, Liveness liveness)
     {
         HashSet<VReg> pads = PadLive(liveness);
-        if (flow.Derived.Any(r => !liveness.Tracks(r) || pads.Contains(r))) return true;
+        if (flow.Derived.Any(r => !liveness.Tracks(r) || pads.Contains(r))) { UsedAfterWhy = "held into a landing pad"; return true; }
         bool ReadsKept(Instr i) => i.Operands.Any(o => o is RegOperand r && flow.Derived.Contains(r.Reg))
             || i.Op == Opcode.Load && i.Operands.Count >= 1 && i.Operands[0] is SlotOperand { Slot: var s } && s == keep;
         foreach ((Block b, Instr end) in ends)
         {
             int at = b.Instrs.IndexOf(end);
-            for (int k = at + 1; k < b.Instrs.Count; k++) if (ReadsKept(b.Instrs[k])) return true;
-            if (b.Terminator is Instr term && ReadsKept(term)) return true;
-            if (flow.Derived.Any(r => liveness.IsLiveOut(b, r))) return true;
-            // Every block the end reaches, found once, not asked of each block.
-            foreach (Block x in ReachedFrom(f, b))
-                if (x.Instrs.Any(ReadsKept) || x.Terminator is Instr t && ReadsKept(t)) return true;
+            for (int k = at + 1; k < b.Instrs.Count; k++) if (ReadsKept(b.Instrs[k])) { UsedAfterWhy = "read after the end, in its block: " + b.Instrs[k]; return true; }
+            if (b.Terminator is Instr term && ReadsKept(term)) { UsedAfterWhy = "read by the end block's terminator"; return true; }
+            if (flow.Derived.Any(r => liveness.IsLiveOut(b, r))) { UsedAfterWhy = "live out of the end block: " + string.Join(",", flow.Derived.Where(r => liveness.IsLiveOut(b, r))); return true; }
+            // Every block the end reaches, as far as a store into the slot: past
+            // one, the slot holds the NEXT thing caught -- a catch in a loop
+            // stores each exception there and reads it back, and those reads
+            // are not of this one.
+            _reachGraphs ??= new(ReferenceEqualityComparer.Instance);
+            if (!_reachGraphs.TryGetValue(f, out Cfg? cfg) || cfg.Function != f) _reachGraphs[f] = cfg = new Cfg(f);
+            HashSet<Block> seen = new(ReferenceEqualityComparer.Instance);
+            Stack<Block> work = new();
+            void Next(Block x)
+            {
+                foreach (Block n in cfg.Succs(x)) work.Push(n);
+                foreach (Instr i in x.Instrs) if (i.Op == Opcode.LabelAddr) foreach (Block t in i.Targets) work.Push(t);
+            }
+            Next(b);
+            while (work.TryPop(out Block? x))
+            {
+                if (!seen.Add(x)) continue;
+                bool replaced = false;
+                foreach (Instr i in x.Instrs)
+                {
+                    // The slot written first: what goes in is the next catch's.
+                    if (i.Op == Opcode.Store && i.Operands is [SlotOperand { Slot: var into }, _] && into == keep) { replaced = true; break; }
+                    if (ReadsKept(i)) { UsedAfterWhy = "read later in " + x.Label + ": " + i; return true; }
+                }
+                if (replaced) continue;
+                if (x.Terminator is Instr t && ReadsKept(t)) return true;
+                Next(x);
+            }
         }
         return false;
     }
@@ -1043,8 +1114,26 @@ public sealed partial class Escape : IModulePass
         }
         // A store in a function into an object that function made is into
         // something no reader outside it had before the function ran.
+        // AND WHAT THE THROW WRITES INTO WHAT IS THROWN (Exception.Thrown$,
+        // called by the runtime's Capture at the throw): the exception's own
+        // record of where it was thrown, as much its making as a constructor's.
+        // Counted as a writer, every call that could throw could replace an
+        // exception's frames, and no exception owned its trace.
+        bool IntoThrown(Function g, VReg r)
+        {
+            if (g.Params.Count == 0 || g.Name is not ("m_Exception_Thrown$_2_V$String_A$1$V$I64" or "m_Runtime_Capture_3_V$Any_V$I64_V$String")) return false;
+            Dictionary<VReg, Instr> defs = Defs(g);
+            for (int hop = 0; hop < 8; hop++)
+            {
+                if (r == g.Params[0]) return true;
+                if (!defs.TryGetValue(r, out Instr? d) || d.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) || d.Operands is not [RegOperand from]) return false;
+                r = from.Reg;
+            }
+            return false;
+        }
         initializing = (g, st) => st.Operands[0] is RegOperand baseReg
             && (g.Params.Count > 0 && baseReg.Reg == g.Params[0] && freshThis.Contains(g.Name)
+                || IntoThrown(g, baseReg.Reg)
                 || Origin(Defs(g), baseReg.Reg) is { Op: Opcode.Call } made && IsAllocator(made.Callee));
 
         HashSet<string> refused = new(StringComparer.Ordinal);
@@ -3460,6 +3549,7 @@ continue;
             + string.Concat((_indirect ?? new()).Values.Where(t => Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is not "1" && t.Any(x => x.Contains(Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT")!, StringComparison.Ordinal))).Take(3).Select(t => "; [" + string.Join(", ", t) + "]"))
             + string.Concat(m.Functions.SelectMany(f => f.Blocks.SelectMany(b => b.Instrs)).Where(i => i.Op == Opcode.CallIndirect && i.DispatchType is not null && (_indirect is null || !_indirect.ContainsKey(i))).Select(i => i.DispatchType).Distinct().Take(12).Select(t => "; unresolved " + t)));
         foreach (string why in _unresolvedWhy ?? new()) Console.Error.WriteLine("alloc report: unresolved " + why);
+        Console.Error.WriteLine("alloc report: thrown not just made: " + string.Join(", ", (_foreignTypes ?? new HashSet<string>()).Order(StringComparer.Ordinal).Take(20)));
         Console.Error.WriteLine($"alloc report: {sites.Count} allocation(s) still need a collector");
         foreach (string site in sites.OrderBy(x => x, StringComparer.Ordinal)) Console.Error.WriteLine("  " + site);
     }

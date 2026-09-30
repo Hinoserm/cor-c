@@ -302,7 +302,7 @@ public sealed partial class Binder
         {
             for (string? at = from; at is not null; at = Enclosing(at))
             {
-                if (TypeCandidate(at + "." + name, out sym))
+                if (TypeCandidateIn(at, name, out sym))
                 {
                     return true;
                 }
@@ -470,6 +470,27 @@ public sealed partial class Binder
         || _thisType is null && _scope?.Decl is { Elsewhere: true } or { Specialised: true };
 
     private bool _namingTuples;
+
+    /// <summary>
+    /// TypeCandidate for `within + "." + name`, without making that string
+    /// unless it is needed: a dotted name, or one not there whose absence a
+    /// declaration index must hear of.
+    /// </summary>
+    private bool TypeCandidateIn(string within, string name, out TypeSymbol? symbol)
+    {
+        bool plain = name.IndexOf('.') < 0;
+        if (plain && _r.Types.TryGetWithin(within, name, out symbol))
+        {
+            if (!BindingElsewhere) symbol!.Used = true;
+            return true;
+        }
+        if (plain && _requireDeclaration is null)
+        {
+            symbol = null;
+            return false;
+        }
+        return TypeCandidate(within + "." + name, out symbol);
+    }
 
     private bool TypeCandidate(string key, out TypeSymbol? symbol)
     {
