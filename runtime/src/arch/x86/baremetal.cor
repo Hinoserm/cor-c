@@ -379,12 +379,10 @@ static class Platform
         return false;
     }
 
-    public static bool HeapCheck()
-    {
-        return false;
-    }
+    /// No environment to ask: no collector report at exit.
+    public static bool GcStats() => false;
 
-    public static bool GcStats()
+    public static bool HeapCheck()
     {
         return false;
     }

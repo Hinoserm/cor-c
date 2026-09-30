@@ -1593,8 +1593,6 @@ static class Runtime
     {
         long wait = ForegroundWait;
         if (wait != 0) Sys.Call(wait, 0, 0, 0);
-        // CORSAC_GC_STATS=1: what the collector did, as the process ends.
-        if (CollectorLinked() && Platform.GcStats()) Gc.SayStats();
         Platform.Exit(code);
     }
 
@@ -1626,6 +1624,7 @@ static class Runtime
     public static void AtExit()
     {
         AllocSamples.Dump();
+        Gc.SayStats();
         long f = _atExit;
 
         if (f != 0)
