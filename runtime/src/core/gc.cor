@@ -4210,6 +4210,31 @@ static class Gc
         long owning = HeapChunks.Of(block);
         if (owning != 0 && HeapChunks.PageClass(owning) != 0)
         {
+            // A BLOCK OFF ITS PAGE'S GRID, or not live: a pointer from before
+            // the page was laid out again for another class, or one freed
+            // already. Freed, it clears across the blocks either side and
+            // puts a block on the list that overlaps them. Refused and said
+            // while the heap check is on.
+            if (_heapCheck)
+            {
+                long grid = ClassSize(HeapChunks.PageClass(owning) - 1);
+                long first = HeapChunks.First(owning);
+                long head = Sys.Peek(block);
+                if ((block - first) % grid != 0 || (head & FlagFree) != 0 || (head & SizeMask) != grid)
+                {
+                    GcLock.Exit();
+                    if (_badFrees < 12)
+                    {
+                        _badFrees = _badFrees + 1;
+                        SayNumber("gc owner check: a free off its page's grid or not live, at ", at);
+                        SayNumber("gc owner check:   offset in the page ", block - first);
+                        SayNumber("gc owner check:   the page's class size ", grid);
+                        SayNumber("gc owner check:   header there ", head);
+                        Runtime.SayTrace(2, Sys.FramePointer());
+                    }
+                    return;
+                }
+            }
             Frees = Frees + 1;
             ClassFree(owning, block, size, tb);
             GcLock.Exit();
@@ -4550,6 +4575,7 @@ static class Gc
     // process ends with 94. A diagnostic: it walks the whole heap twice a
     // collection.
     static bool _heapCheck;
+    static long _badFrees;
 
     /// The heap check (CheckHeap, before and after every collection) turned
     /// on by a program after the heap has started -- a kernel from its
