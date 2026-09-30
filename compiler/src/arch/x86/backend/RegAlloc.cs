@@ -99,6 +99,11 @@ internal sealed class Allocator
     /// </summary>
     private readonly HashSet<int> _keepBefore = new();
     private int[] _blockFirst = Array.Empty<int>();
+    /// <summary>
+    /// The first block of the straight run each block belongs to: a block
+    /// entered only from the one laid out before it continues that one's run.
+    /// </summary>
+    private int[] _runHead = Array.Empty<int>();
     private int[] _blockOfInstr = Array.Empty<int>();
     private int[][] _succ = Array.Empty<int[]>();
     private BitSet[] _liveIn = Array.Empty<BitSet>();
@@ -361,6 +366,22 @@ internal sealed class Allocator
 
         _blockFirst = first;
         _succ = succ;
+        int[] preds = new int[nb];
+        int[] onlyPred = new int[nb];
+        for (int b = 0; b < nb; b++)
+        {
+            foreach (int s in succ[b])
+            {
+                preds[s]++;
+                onlyPred[s] = b;
+            }
+        }
+        _runHead = new int[nb];
+        for (int b = 0; b < nb; b++)
+        {
+            _runHead[b] = b > 0 && preds[b] == 1 && onlyPred[b] == b - 1 && _m.Blocks[b].Source?.IsLandingPad != true
+                ? _runHead[b - 1] : b;
+        }
         _blockOfInstr = new int[_lin.Count];
         for (int b = 0; b < nb; b++)
         {
@@ -913,10 +934,11 @@ internal sealed class Allocator
     /// <summary>
     /// A spilled register just got a register for one instruction. While
     /// that register stays free, keep the value in it for the register's
-    /// next reads and writes in the same block, so they need no reload: a
+    /// next reads and writes along the same straight run, so they need no reload: a
     /// value read three times in a row is loaded once, not three times.
     ///
-    /// The reach stops at the block's end, at any call (a collector may
+    /// The reach stops where its run of blocks ends (a block entered from
+    /// anywhere but the one before it), at any call (a collector may
     /// move what the slot holds, and the stack map names only the slot),
     /// at any fixed use of the register, and at a write folded into the
     /// slot, which the register would not see. Every write in the reach
@@ -928,7 +950,7 @@ internal sealed class Allocator
     {
         int v = cur.VReg;
         int i = cur.Instr;
-        MBlock block = _blockOf[i];
+        int run = _runHead[_blockOfInstr[i]];
         foreach (Occurrence o in _occ[v])
         {
             int j = o.Instr;
@@ -936,7 +958,7 @@ internal sealed class Allocator
             {
                 continue;
             }
-            if (_blockOf[j] != block || _callsBefore[j] - _callsBefore[i] != 0)
+            if (_runHead[_blockOfInstr[j]] != run || _callsBefore[j] - _callsBefore[i] != 0)
             {
                 break;
             }
