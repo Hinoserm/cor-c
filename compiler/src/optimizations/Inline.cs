@@ -113,36 +113,44 @@ public sealed class Inline : IParallelModulePass
             recursive = RecursiveFunctions(m, byName);
             order = BottomUp(m, byName);
         }
+        // TWO QUESTIONS, NOT ONE. Whether a body must stay -- something takes
+        // its address: a vtable slot, a delegate -- and whether a call to it
+        // may become its body. Every virtual and interface method is in a
+        // vtable, so answering the second with the first kept every direct
+        // call to List.Count, List[i], Add, TryGetValue, Equals and GetHashCode
+        // a call. Only these are never inlined: what the later passes find by
+        // name (below) and what the caller asked to keep.
+        HashSet<string> pinned = new(Keep, StringComparer.Ordinal);
         if (KeepFreeHelper)
         {
-            addressTaken.Add(Escape.Freer);
-            addressTaken.Add(Escape.FieldFreer);
-            addressTaken.Add(Escape.ReplacedFreer);
-            addressTaken.Add(Escape.OwnedReplacedFreer);
+            pinned.Add(Escape.Freer);
+            pinned.Add(Escape.FieldFreer);
+            pinned.Add(Escape.ReplacedFreer);
+            pinned.Add(Escape.OwnedReplacedFreer);
             // What a program that needs no collector allocates and frees with.
-            addressTaken.Add(Escape.ManualAllocator);
-            addressTaken.Add(Escape.ManualObjectAllocator);
-            addressTaken.Add(Escape.ManualFreer);
-            addressTaken.Add(Escape.ManualLive);
+            pinned.Add(Escape.ManualAllocator);
+            pinned.Add(Escape.ManualObjectAllocator);
+            pinned.Add(Escape.ManualFreer);
+            pinned.Add(Escape.ManualLive);
             // And the collector's free and liveness test, which such a
             // program's frees are retargeted from: inlined first, the calls
             // to retarget would be gone and the collector with them kept.
-            addressTaken.Add(Escape.CollectorFreer);
-            addressTaken.Add(Escape.CollectorLive);
+            pinned.Add(Escape.CollectorFreer);
+            pinned.Add(Escape.CollectorLive);
             // And what a thread tells the collector, which such a program drops.
-            addressTaken.Add(Escape.ThreadBlocking);
-            addressTaken.Add(Escape.ThreadUnblocking);
-            addressTaken.Add(Escape.ThreadSafePoint);
-            addressTaken.Add(Escape.ThreadRegister);
+            pinned.Add(Escape.ThreadBlocking);
+            pinned.Add(Escape.ThreadUnblocking);
+            pinned.Add(Escape.ThreadSafePoint);
+            pinned.Add(Escape.ThreadRegister);
             // And the question whether there is one, answered only then.
-            addressTaken.Add(Escape.CollectorQuery);
+            pinned.Add(Escape.CollectorQuery);
             // A catch body's end, which that pass makes a free: an empty
             // routine, and inlined first there would be nothing to make one.
-            addressTaken.Add(Escape.CatchEnder);
+            pinned.Add(Escape.CatchEnder);
             // What a barrier on a replaced object becomes (ScalarObjects).
-            addressTaken.Add(Escape.ValueBarrier);
+            pinned.Add(Escape.ValueBarrier);
         }
-        addressTaken.UnionWith(Keep);
+        addressTaken.UnionWith(pinned);
         _keepCalls = m.KeepCalls;
 
         // Bottom-up over the call graph: callees before callers, so a leaf
@@ -153,7 +161,7 @@ public sealed class Inline : IParallelModulePass
 #if COR_SELFHOST_BENCHMARK
             Corsac.Program.BenchmarkStage("inline-begin " + caller.Name + " instructions=" + Size(caller));
 #endif
-            InlineInto(caller, byName, addressTaken, callers, recursive);
+            InlineInto(caller, byName, pinned, addressTaken, callers, recursive);
 #if COR_SELFHOST_BENCHMARK
             Corsac.Program.BenchmarkStage("inline-end " + caller.Name + " instructions=" + Size(caller));
 #endif
@@ -198,7 +206,7 @@ public sealed class Inline : IParallelModulePass
     }
 
     private void InlineInto(Function caller, Dictionary<string, Function> byName,
-                            HashSet<string> addressTaken, Dictionary<string, int> callers,
+                            HashSet<string> pinned, HashSet<string> addressTaken, Dictionary<string, int> callers,
                             HashSet<Function> recursive)
     {
         int size = Size(caller);
@@ -227,7 +235,7 @@ public sealed class Inline : IParallelModulePass
                     // The collector's own notes stay calls: the escape rules
                     // know them by name, and inlined their ring store reads
                     // as the reported object escaping.
-                    if (!Inlineable(callee, addressTaken) || recursive.Contains(callee) || Escape.IsCollectorLeaf(callee.Name))
+                    if (!Inlineable(callee, pinned) || recursive.Contains(callee) || Escape.IsCollectorLeaf(callee.Name))
                     {
                         continue;
                     }
@@ -240,7 +248,9 @@ public sealed class Inline : IParallelModulePass
                     if (ConditionalBranchCost != 0)
                         ordinaryCost += ConditionalBranchCost * callee.Blocks.Sum(block =>
                             block.Instrs.Count(instruction => instruction.Op is Opcode.Branch or Opcode.Switch));
-                    bool single = callers.GetValueOrDefault(callee.Name) == 1;
+                    // One caller makes a body free to move only if it then goes:
+                    // one whose address is taken stays, and would be twice.
+                    bool single = callers.GetValueOrDefault(callee.Name) == 1 && !addressTaken.Contains(callee.Name);
                     bool specializesBranch = calleeSize <= ConstantBranchBody
                         && ConstantControlsBranch(callee, call);
                     // The context walk builds definition/CFG information. Do
@@ -318,9 +328,9 @@ public sealed class Inline : IParallelModulePass
     }
 
     /// <summary>Whether a body can be moved into a caller at all.</summary>
-    internal static bool Inlineable(Function callee, HashSet<string> addressTaken)
+    internal static bool Inlineable(Function callee, HashSet<string> pinned)
     {
-        if (callee.Blocks.Count == 0 || addressTaken.Contains(callee.Name) || callee.Async is not null || callee.NoInlining)
+        if (callee.Blocks.Count == 0 || pinned.Contains(callee.Name) || callee.Async is not null || callee.NoInlining)
         {
             return false;
         }

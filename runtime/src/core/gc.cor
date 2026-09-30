@@ -5974,6 +5974,9 @@ static class Gc
 
             if (_markAt == 0 || ((tail - head) & WordSize.AddressMask) >= _markCount)
             {
+                // Marked and not queued: counted here, as the queue's tail
+                // counts every block that was (Marked).
+                Sys.AtomicAdd(ctl + GcLock.Pushes, 1);
                 Sys.AtomicSwap(ctl + GcLock.Overflow, 1);
                 return;
             }
@@ -6107,8 +6110,17 @@ static class Gc
             return;
         }
 
-        Sys.AtomicAdd(GcLock.Words() + GcLock.Pushes, 1);
         PushGrey(block);
+    }
+
+    /// EVERY BLOCK EVER MARKED, as a count that only grows: the queue's tail,
+    /// which the compare-and-swap that queues a block advances anyway, and
+    /// the overflows that were marked without a place (PushGrey). A locked
+    /// add a mark of its own was a fifth of MarkAt's time. Termination looks
+    /// for no change in it across a round.
+    static long Marked(long ctl)
+    {
+        return Sys.Peek(ctl + GcLock.Pushes) + (Sys.Peek(ctl + GcLock.GreyTail) & WordSize.AddressMask);
     }
 
     /// Scans queued blocks until there are none ready.
@@ -6851,11 +6863,11 @@ static class Gc
         while (true)
         {
             MarkToEmpty();
-            long before = Sys.Peek(ctl + GcLock.Pushes);
+            long before = Marked(ctl);
             GcThreads.Round(GcThreads.Ack);
             MarkToEmpty();
 
-            if (Sys.Peek(ctl + GcLock.Pushes) == before)
+            if (Marked(ctl) == before)
             {
                 break;
             }
@@ -9232,7 +9244,7 @@ static class GcLock
     // pushers and many takers, nothing held.
     public const long GreyTail = 10 * WordSize.Bytes;    // places claimed
     public const long GreyHead = 11 * WordSize.Bytes;    // places taken
-    public const long Pushes = 12 * WordSize.Bytes;      // blocks ever marked: termination looks for no change
+    public const long Pushes = 12 * WordSize.Bytes;      // blocks marked with the queue full; with GreyTail, every block ever marked (Gc.Marked)
     public const long Active = 13 * WordSize.Bytes;      // threads scanning a block they took off the queue
     public const long Overflow = 14 * WordSize.Bytes;    // a push found the queue full: the rescan finds it
     public const long Abort = 15 * WordSize.Bytes;       // this cycle is being given up (a lost barrier report)

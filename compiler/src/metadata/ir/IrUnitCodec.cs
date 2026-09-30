@@ -45,7 +45,6 @@ public static class IrUnitCodec
         records.Add(new("M:unit", false, 0, Array.Empty<string>(), stream.ToArray()));
         HashSet<string> locals = module.Functions.Where(function => !function.Exported).Select(function => function.Name)
             .Concat(module.Data.Where(item => !item.Exported).Select(item => item.Name)).ToHashSet(StringComparer.Ordinal);
-        HashSet<string> addressed = Inline.AddressTaken(module);
         foreach (Function function in module.Functions)
         {
             Instr[] instructions = function.Blocks.SelectMany(block => block.Instrs).ToArray();
@@ -54,7 +53,9 @@ public static class IrUnitCodec
             // Import only bodies that do not need object-local dependencies.
             // Their original native owner remains present for calls not inlined.
             bool importable = function.Exported && function.Name != module.Entry && instructions.Length <= 160
-                && Inline.Inlineable(function, addressed)
+                // A body whose address is taken is imported as readily: the
+                // copy is the importer's, and the owner's stays in its vtable.
+                && Inline.Inlineable(function, NoneKept)
                 && !calls.Any(locals.Contains)
                 && !instructions.SelectMany(instruction => instruction.Operands).OfType<SymOperand>().Any(address => locals.Contains(address.Name));
             string[] references = calls.Concat(instructions.SelectMany(instruction => instruction.Operands).OfType<SymOperand>()
@@ -67,6 +68,8 @@ public static class IrUnitCodec
                 item.Relocs.Select(relocation => relocation.Symbol).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray()));
         return records;
     }
+
+    private static readonly HashSet<string> NoneKept = new(StringComparer.Ordinal);
 
     /// <summary>A unit's settings record alone, without its functions: what a link reads of every unit before it plans.</summary>
     public static (Settings? Settings, bool StackMaps) ReadSettings(IrArchive archive)
