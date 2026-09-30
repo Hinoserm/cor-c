@@ -224,6 +224,10 @@ public static class OwnedFieldSolver
         foreach ((string field, long offset) in offsets)
         {
             if (refused.Contains(field)) continue;
+            // Live across a virtual call no descriptor answers: it could be
+            // anything, as an unresolved indirect call is to a flat compile.
+            if (danger[field].FirstOrDefault(d => IsVirtual(d) && !virtuals.ContainsKey(d)) is string unknown)
+            { report?.Invoke(field + " refused: a read is live across " + unknown + ", which the link could not resolve"); continue; }
             if (MayWrite(field, danger[field])) { report?.Invoke(field + " refused: a read is live across a call that may store into it"); continue; }
             facts.Fields[field] = offset;
             if (stored.Contains(field)) facts.Mapped.Add(field);
