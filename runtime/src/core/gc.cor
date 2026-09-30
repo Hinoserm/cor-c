@@ -2574,12 +2574,12 @@ static class Gc
     const long RecentBlocks = 4096;
     const long RecentSlice = 64;
     static long _recentCheck;
-    const long RecentWords = 4;
+    const long RecentWords = 5;
     static long _recent;
     static long _recentAt;
     static long _recentReports;
 
-    static void Remember(long block)
+    static void Remember(long block, long path)
     {
         if (_recent == 0)
         {
@@ -2598,7 +2598,8 @@ static class Gc
             long next = Sys.Peek(fp) & WordSize.AddressMask;
             fp = next > fp ? next : 0;
         }
-        for (long i = 1; i < RecentWords; i++)
+        Sys.Poke(e + 4 * w, path);
+        for (long i = 1; i < 4; i++)
         {
             long back = 0;
             if (fp != 0)
@@ -2639,6 +2640,8 @@ static class Gc
             SayNumber("gc owner check:   made by ", Sys.Peek(e + w));
             SayNumber("gc owner check:   and ", Sys.Peek(e + 2 * w));
             SayNumber("gc owner check:   and ", Sys.Peek(e + 3 * w));
+            SayNumber("gc owner check:   made by path (1 class fast, 2 bump, 3 PopClass, 4 class fallback) ", Sys.Peek(e + 4 * w));
+            SayPage(block);
             SayJournal(block + size - FooterBytes);
             if (OverwriteHook != 0) Sys.Call(OverwriteHook, block, size, 0);
             Runtime.WriteLiteral(2, "gc owner check:   found at:\n");
@@ -2686,10 +2689,34 @@ static class Gc
     /// a kernel then watches that page's writes for the next time.
     public static long OverwriteHook;
 
+    /// The page a block is in, as the collector sees it: its class, where
+    /// its grid starts and is laid out to, and every grid slot's header.
+    static void SayPage(long block)
+    {
+        long chunk = HeapChunks.Of(block);
+        SayNumber("gc owner check:   chunk ", chunk);
+        if (chunk == 0) return;
+        long c = HeapChunks.PageClass(chunk);
+        long first = HeapChunks.First(chunk);
+        long end = HeapChunks.End(chunk);
+        SayNumber("gc owner check:   its class ", c);
+        SayNumber("gc owner check:   first ", first);
+        SayNumber("gc owner check:   end ", end);
+        SayNumber("gc owner check:   owner ", HeapChunks.Owner(chunk));
+        if (c <= 1) return;
+        long size = ClassSize(c - 1);
+        SayNumber("gc owner check:   grid ", size);
+        SayNumber("gc owner check:   block's offset from first ", block - first);
+        for (long b = first; b + size <= end && b < first + 64 * size; b = b + size)
+        {
+            SayNumber("gc owner check:     slot header ", Sys.Peek(b));
+        }
+    }
+
     static void CheckMade(long block, string how)
     {
         CheckRecent();
-        Remember(block);
+        Remember(block, how == "class fast path" ? 1 : how == "bump fast path" ? 2 : how == "PopClass" ? 3 : 4);
         if (WatchHook != 0 && (Sys.Peek(block) & SizeMask) == WatchSize)
         {
             Sys.Call(WatchHook, block + WatchSize - FooterBytes, 0, 0);
