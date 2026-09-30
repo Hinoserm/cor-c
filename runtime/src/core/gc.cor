@@ -2184,7 +2184,7 @@ static class Gc
         if (HeapChunks.IsListed(page)) UnlistPage(page);
         HeapChunks.SetLive(page, Zero, Zero);
         HeapChunks.SetYoung(page, false);
-        if (_poolBytes + HeapChunks.PageBytes <= PoolLimit() && !HeapChunks.OverCap())
+        if (_poolBytes + HeapChunks.PageBytes <= PoolLimit() && !HeapChunks.OverCap() && !MemoryShort())
         {
             HeapChunks.SetPooled(page, true);
             HeapChunks.SetPageNext(page, _pool);
@@ -2195,6 +2195,16 @@ static class Gc
         }
         ReleaseChunk(page);
         PagesReleased = PagesReleased + 1;
+    }
+
+    /// WHETHER THE MACHINE IS SHORT OF MEMORY, as its platform says
+    /// (ShortHook): then an emptied page goes back to it rather than into the
+    /// pool, and a collection ends by draining the pool. Kept for the next
+    /// cycle, they held a ring-1 kernel's heap at twice what was live while
+    /// the machine could not start another one.
+    static bool MemoryShort()
+    {
+        return ShortHook != 0 && Sys.Call(ShortHook, 0, 0, 0) != 0;
     }
 
     /// A chunk given back, with every walk that might be about to step onto
@@ -3197,7 +3207,11 @@ static class Gc
             bool later = DeferHook != 0 && _since + need < _threshold * 4
                       && Sys.Call(DeferHook, 0, 0, 0) != 0;
             if (later) Deferred = Deferred + 1;
-            else CollectLocked();
+            else
+            {
+                CollectLocked();
+                if (MemoryShort()) DrainPool();
+            }
         }
 
         if (need <= ClassMax && _classSize != 0)
@@ -5711,6 +5725,10 @@ static class Gc
         {
             SwapHeld();
         }
+        // Asked afresh at every collection: a program may be told to take
+        // the census after it started (Platform.CensusWanted).
+        _census = Platform.GcCensus();
+        _thresholdCap = Platform.GcThreshold();
         long clock = PauseClock;
         long began = clock != 0 ? Sys.Call(clock, 0, 0, 0) : 0;
         bool minor = _minor;

@@ -1656,29 +1656,30 @@ static class Runtime
     const int StdErr = 2;
 
     /// ASCII text to a descriptor WITHOUT ALLOCATING, for the paths that
-    /// report the allocator's own failure: through a block in the frame, as
-    /// WriteText's, a unit outside ASCII written as '?'. A byte at a time, as
-    /// it was, a ring-1 kernel's log took each byte for a line of its own,
-    /// and its reports -- the out-of-memory message among them -- came out
-    /// one letter a line.
+    /// report the allocator's own failure and the collector's own reports,
+    /// made with its lock held: eight characters at a time through a local
+    /// whose address is taken, so it lives in the frame and nothing is ever
+    /// allocated -- a block `new`ed for it was allocated, and the collector's
+    /// census, said with the heap lock held, waited on that lock for good. A
+    /// unit outside ASCII is written as '?'.
     public static void WriteLiteral(int fd, string text)
     {
-        byte[] block = new byte[LiteralChunkBytes];
-        int at = 0;
-        while (at < text.Length)
+        long word = 0;
+        long at = Sys.AddressOf(ref word);
+        int i = 0;
+        while (i < text.Length)
         {
-            int n = text.Length - at < LiteralChunkBytes ? text.Length - at : LiteralChunkBytes;
-            for (int i = 0; i < n; i++)
+            int n = text.Length - i < 8 ? text.Length - i : 8;
+            word = 0;
+            for (int k = 0; k < n; k++)
             {
-                int c = Sys.GetChar(text, at + i);
-                block[i] = (byte)(c < 0x80 ? c : '?');
+                int c = Sys.GetChar(text, i + k);
+                Sys.PokeByte(at + k, c < 0x80 ? c : '?');
             }
-            WriteBytes(fd, Sys.ArrayData(block), n);
-            at = at + n;
+            WriteBytes(fd, at, n);
+            i = i + n;
         }
     }
-
-    const int LiteralChunkBytes = 128;
 
     /// A string to a descriptor, as its UTF-8 -- through a fixed block that
     /// escape analysis keeps in the frame, a chunk at a time, so that printing

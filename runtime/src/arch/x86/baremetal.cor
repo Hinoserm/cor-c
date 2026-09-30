@@ -312,14 +312,25 @@ static class Platform
         return false;
     }
 
+    /// Set by a program that was asked for the collector's census of what
+    /// is live, by type, at every whole collection -- a kernel from its
+    /// command line (gui.census=1) -- and read at each collection.
+    public static bool CensusWanted;
+
     public static bool GcCensus()
     {
-        return false;
+        return CensusWanted;
     }
+
+    /// The most a collection may wait for, in bytes allocated since the last
+    /// one, or 0 for the collector's own pace: set by a kernel to a share of
+    /// the machine (Mem.Total / 32), so that on a small one the heap stays
+    /// near what is live instead of twice it. Read at every collection.
+    public static long ThresholdCap;
 
     public static long GcThreshold()
     {
-        return 0;
+        return ThresholdCap;
     }
 
     public static long GcNursery()

@@ -162,14 +162,30 @@ static class Platform
 
     /// CORSAC_GC_CENSUS=1: every whole collection counts what it found live,
     /// by type, and says the largest on standard error.
-    public static bool GcCensus() => EnvironmentFlag("CORSAC_GC_CENSUS=");
+    /// Read once: the collector asks at every collection, and by then a
+    /// program may have made its environment something else (csrss did, and
+    /// the collector read freed memory for it).
+    public static bool GcCensus()
+    {
+        if (_censusAsked == 0) _censusAsked = EnvironmentFlag("CORSAC_GC_CENSUS=") ? 2 : 1;
+        return _censusAsked == 2;
+    }
+
+    static int _censusAsked;
 
     /// CORSAC_GC_CENSUS=2: the census also counts what every sweep found dead.
     public static bool GcDeadCensus() => EnvironmentByte("CORSAC_GC_CENSUS=") == '2';
 
     /// CORSAC_GC_THRESHOLD=<bytes>: collect at least that often, whatever the
     /// pacing says -- every call site a collection may fall under, tried.
-    public static long GcThreshold() => EnvironmentNumber("CORSAC_GC_THRESHOLD=");
+    public static long GcThreshold()
+    {
+        if (!_thresholdAsked) { _threshold = EnvironmentNumber("CORSAC_GC_THRESHOLD="); _thresholdAsked = true; }
+        return _threshold;
+    }
+
+    static bool _thresholdAsked;
+    static long _threshold;
 
     /// CORSAC_GC_NURSERY=<bytes>: allocate that much between minor cycles,
     /// whatever the pacing says -- for measuring what a nursery's size costs.
