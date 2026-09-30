@@ -1,0 +1,16 @@
+// test: out _ and out var passed to a local function or through a delegate
+// expect-exit: 0
+// expect-output:
+// 14 small
+static class Program
+{
+    static int Main()
+    {
+        int Judge(int n, out string why) { why = n > 2 ? "big" : "small"; return n * 2; }
+        System.Func<int, int> f = k => Judge(k, out _);
+        int total = Judge(3, out _) + f(4);
+        Judge(1, out string said);
+        Console.WriteLine(total + " " + said);
+        return 0;
+    }
+}

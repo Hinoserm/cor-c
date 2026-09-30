@@ -14708,6 +14708,19 @@ public sealed partial class Binder
             {
                 for (int i = 0; i < args.Count; i++)
                 {
+                    // `out var x` AND `out _` take their type from the
+                    // parameter here too, as a method call's do: a local
+                    // function called `Judge(g, b, call, out _)` had nowhere
+                    // for its discard to go.
+                    if (c.Args[i] is RefArgExpr { Declare: null, Name: not null } inferred)
+                    {
+                        LocalSym made = new(NewSlot(), invoke.Params[i].Type, inferred.Name);
+                        Declare(inferred, inferred.Name, made);
+                        _assigned.Add(made);
+                        CheckExpr(inferred.Target);
+                        args[i] = invoke.Params[i].Type;
+                        continue;
+                    }
                     if (c.Args[i] is LambdaExpr invoked)
                     {
                         args[i] = CheckLambda(invoked, invoke.Params[i].Type);
