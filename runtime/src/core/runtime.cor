@@ -569,7 +569,7 @@ static class Runtime
     public static long AllocHook;
     static long _allocCount;
 
-    public static long Alloc(long bytes)
+    public static long Alloc(nint bytes)
     {
         if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes, 0);
         return Gc.Alloc(bytes);
@@ -579,7 +579,7 @@ static class Runtime
     /// array of bytes, characters or floating-point numbers: the collector
     /// marks it when it is reachable and never reads what is in it. The
     /// compiler calls this for those, and Alloc for everything else.
-    public static long AllocLeaf(long bytes)
+    public static long AllocLeaf(nint bytes)
     {
         if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes, 0);
         return Gc.AllocLeaf(bytes);
@@ -588,10 +588,23 @@ static class Runtime
     /// The same for an object whose vtable the compiler stores next -- a class
     /// instance, a box, a closure, an array: the collector reads its
     /// references from its descriptor instead of guessing them from every word.
-    public static long AllocObject(long bytes)
+    public static long AllocObject(nint bytes)
     {
         if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes, 0);
         return Gc.AllocObject(bytes);
+    }
+
+    /// THE SAME TAKING LONGS, for a program that holds sizes and addresses in
+    /// them (the collector's tests). Compiled code calls the nint forms: one
+    /// word a parameter, one push on i386 where a long was two.
+    public static long Alloc(long bytes)
+    {
+        return Alloc((nint)bytes);
+    }
+
+    public static long AllocObject(long bytes)
+    {
+        return AllocObject((nint)bytes);
     }
 
     // ---- the heap of a program that needs no collector -----------------------
@@ -626,12 +639,12 @@ static class Runtime
     const long ManualBinCount = 65;        // 0 is the list of large blocks
     const long ManualSmall = 1024;
 
-    public static long AllocManual(long bytes)
+    public static long AllocManual(nint bytes)
     {
         return ManualTake(bytes, 0);
     }
 
-    public static long AllocManualObject(long bytes)
+    public static long AllocManualObject(nint bytes)
     {
         return ManualTake(bytes, ManualObjectFlag);
     }
@@ -812,6 +825,12 @@ static class Runtime
 
     public static void Free(long at)
     {
+        Free(unchecked((nint)at));
+    }
+
+    public static void Free(nint word)
+    {
+        long at = (long)(nuint)word;
         if (Gc.IgnoredFrees == 'p')
         {
             return;
@@ -855,14 +874,14 @@ static class Runtime
             if (held != 0)
             {
                 Sys.Poke(field, 0);
-                Free(held);
+                Free((nint)held);
             }
         }
     }
 
     /// What an owned field held before a store replaces it (Escape.OwnedFields):
     /// freed with what it owns, unless it is what is being stored again.
-    public static void FreeOwnedReplaced(long old, long current)
+    public static void FreeOwnedReplaced(nint old, nint current)
     {
         if (old != 0 && old != current && Gc.IgnoredFrees != 'r')
         {
@@ -874,11 +893,11 @@ static class Runtime
     /// `current` (Escape's owned variables): nothing when it is the same
     /// object, which a variable assigned twice from one register holds; a
     /// null or a string literal, which is no heap block, is ignored by Free.
-    public static void FreeReplaced(long old, long current)
+    public static void FreeReplaced(nint old, nint current)
     {
         if (old != current && Gc.IgnoredFrees != 'r')
         {
-            Gc.Free(old);
+            Gc.Free((long)(nuint)old);
         }
     }
 
@@ -887,8 +906,9 @@ static class Runtime
     /// optimiser has proved holds only objects made for it and reachable
     /// through it alone (Escape's owned fields) -- a List's array, freed with
     /// the List. Nothing for a null object or an empty field.
-    public static void FreeField(long at, long offset)
+    public static void FreeField(nint word, nint offset)
     {
+        long at = (long)(nuint)word;
         if (at == 0 || Gc.IgnoredFrees == 'f')
         {
             return;
@@ -949,7 +969,7 @@ static class Runtime
     /// field another unit fills holds only objects made for it; it calls a
     /// symbol of its own there, and the link makes that symbol FreeField or
     /// this (Escape's field sites, the link's lifetime hints).
-    public static void KeepField(long at, long offset)
+    public static void KeepField(nint at, nint offset)
     {
     }
 
@@ -970,32 +990,32 @@ static class Runtime
 
     /// Every card of the object a payload belongs to: what a coroutine's
     /// frame is saved into at a suspension, without a barrier (AsyncTransform).
-    public static void CardMarkObject(long payload)
+    public static void CardMarkObject(nint payload)
     {
-        Gc.CardMarkObject(payload);
+        Gc.CardMarkObject((long)(nuint)payload);
     }
 
-    public static void CardMark(long slot)
+    public static void CardMark(nint slot)
     {
         long cards = Cards;
         if (cards != 0)
         {
-            Sys.PokeByte(cards + ((slot & WordSize.AddressMask) >> CardShift), 1);
+            Sys.PokeByte(cards + (((long)(nuint)slot & WordSize.AddressMask) >> CardShift), 1);
         }
     }
 
-    public static void WriteBarrier(long slot, long value)
+    public static void WriteBarrier(nint slot, nint value)
     {
-        Gc.Barrier(slot, value);
+        Gc.Barrier((long)(nuint)slot, (long)(nuint)value);
     }
 
     /// The same, told the reference being overwritten rather than where it
     /// is: what a barrier becomes when the object it guarded no longer lives
     /// in memory -- the optimiser kept its fields in registers
     /// (ScalarObjects), so the old reference is a register's value.
-    public static void WriteBarrierValues(long old, long value)
+    public static void WriteBarrierValues(nint old, nint value)
     {
-        Gc.BarrierValues(old, value);
+        Gc.BarrierValues((long)(nuint)old, (long)(nuint)value);
     }
 
     /// Tells the collector about a range of memory outside the heap that may

@@ -134,8 +134,8 @@ public sealed class LifetimeHints
 {
     public const string SectionName = ".corsac.life";
     /// <summary>The two routines a field site becomes: Runtime.FreeField and Runtime.KeepField, by label.</summary>
-    public const string FieldFreer = "m_Runtime_FreeField_2_V$I64_V$I64";
-    public const string FieldKeeper = "m_Runtime_KeepField_2_V$I64_V$I64";
+    public const string FieldFreer = RuntimeAbi.FreeField;
+    public const string FieldKeeper = RuntimeAbi.KeepField;
     public const int MaximumBytes = 16 * 1024 * 1024;
     /// <summary>At most this many pending conditions per unit; a fixed bound, so the same everywhere.</summary>
     public const int PendingLimit = 4096;

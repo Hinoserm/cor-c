@@ -28,7 +28,7 @@ public sealed class CardMarks : IModulePass
     public string Name => "card-marks";
 
     /// <summary>Runtime.CardMark: the call lowering emits.</summary>
-    public const string CardMark = "m_Runtime_CardMark_1_V$I64";
+    public const string CardMark = Corsac.Lang.Lto.RuntimeAbi.CardMark;
 
     /// <summary>Runtime.Cards: the table, 0 when the collector keeps none.</summary>
     public const string Cards = "s_Runtime_Cards";
@@ -45,7 +45,7 @@ public sealed class CardMarks : IModulePass
     }
 
     /// <summary>Runtime.WriteBarrier: the snapshot barrier's slow path, which lowering calls.</summary>
-    public const string Barrier = "m_Runtime_WriteBarrier_2_V$I64_V$I64";
+    public const string Barrier = Corsac.Lang.Lto.RuntimeAbi.WriteBarrier;
 
     /// <summary>
     /// What lowering widened to pass as the runtime's `long`: the word it
