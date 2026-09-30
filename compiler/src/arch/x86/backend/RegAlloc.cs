@@ -709,6 +709,11 @@ internal sealed class Allocator
             int curNext = NextUseAfterStart(cur);
             if (victims is null || curNext > victimNext)
             {
+                int split = SplitPrefix(cur);
+                if (split >= 0)
+                {
+                    return split;
+                }
                 Spill(cur.VReg, at);
                 return -1;
             }
@@ -788,6 +793,119 @@ internal sealed class Allocator
             }
         }
         return victims[0].Reg;
+    }
+
+    // ---- splitting ------------------------------------------------------------------
+
+    /// <summary>
+    /// The first position of an interval at which a register is not free
+    /// for it -- fixed there, or held by a placed interval -- or MaxValue.
+    /// </summary>
+    private int FreeUntil(int reg, Interval iv)
+    {
+        if (reg == (int)Gpr.Esp || reg == (int)Gpr.Ebp || (reg > (int)Gpr.Ebx && _m.ByteRegs.Contains(iv.VReg)))
+        {
+            return iv.Start;
+        }
+        int until = int.MaxValue;
+        foreach ((int s, int e) in iv.Ranges!)
+        {
+            if (Busy(reg, s, e))
+            {
+                int lo = s, hi = e;
+                while (lo < hi)
+                {
+                    int mid = (lo + hi) / 2;
+                    if (Busy(reg, s, mid)) hi = mid; else lo = mid + 1;
+                }
+                until = lo;
+                break;
+            }
+        }
+        foreach (Interval a in _active)
+        {
+            if (a.Reg != reg || a.End < iv.Start)
+            {
+                continue;
+            }
+            List<(int S, int E)> ra = a.Ranges ?? new() { (a.Start, a.End) };
+            int x = 0, y = 0;
+            while (x < ra.Count && y < iv.Ranges.Count)
+            {
+                if (ra[x].E < iv.Ranges[y].S) x++;
+                else if (iv.Ranges[y].E < ra[x].S) y++;
+                else
+                {
+                    until = Math.Min(until, Math.Max(ra[x].S, iv.Ranges[y].S));
+                    break;
+                }
+            }
+        }
+        return until;
+    }
+
+    /// <summary>
+    /// No register is free for the whole of an interval that is about to
+    /// be spilled: give it one for as long as some register stays free --
+    /// up to a call, a string move's fixed ESI/EDI/ECX, a divide's EDX --
+    /// and spill it only from there. Its reads before the split keep the
+    /// register; every write still stores, so the slot is current wherever
+    /// the frame takes over. Returns the register, or -1 if no register
+    /// covers even the interval's first instruction that touches it.
+    /// </summary>
+    private int SplitPrefix(Interval cur)
+    {
+        int first = _occ[cur.VReg].Count > 0 ? _occ[cur.VReg][0].Instr : int.MaxValue;
+        int best = -1, bestUntil = -1;
+        foreach (Gpr g in Preference)
+        {
+            int r = (int)g;
+            int until = FreeUntil(r, cur);
+            if (until > bestUntil)
+            {
+                best = r;
+                bestUntil = until;
+            }
+        }
+        if (best < 0 || bestUntil == int.MaxValue)
+        {
+            return -1;
+        }
+        // The register is needed only up to the last read or write before
+        // the conflict: the slot serves from there.
+        int from = -1;
+        foreach (Occurrence o in _occ[cur.VReg])
+        {
+            if (o.Instr >= bestUntil / 4)
+            {
+                break;
+            }
+            from = o.Instr + 1;
+        }
+        // Only within the block it starts in: a prefix carried across
+        // blocks holds its register over stretches with no use at all,
+        // and the intervals that come after pay for it.
+        if (from <= first || _blockOfInstr[from - 1] != _blockOfInstr[first])
+        {
+            return -1;
+        }
+        List<(int S, int E)> clipped = new();
+        foreach ((int s, int e) in cur.Ranges!)
+        {
+            if (s >= from * 4)
+            {
+                break;
+            }
+            clipped.Add((s, Math.Min(e, from * 4 - 1)));
+        }
+        if (clipped.Count == 0)
+        {
+            return -1;
+        }
+        cur.Ranges = clipped;
+        cur.End = clipped[^1].E;
+        Spill(cur.VReg, from);
+        return best;
     }
 
     // ---- carrying a reload on -------------------------------------------------------
@@ -950,10 +1068,19 @@ internal sealed class Allocator
     /// </summary>
     private void Spill(int vreg, int from)
     {
+        // A register split before (see SplitPrefix) may be evicted from
+        // its prefix later: only the instructions between the new spill
+        // point and the old one are left to hand to the frame.
+        int until = _spilledFrom[vreg];
+        bool again = until != int.MaxValue;
         _spilledFrom[vreg] = from;
-        if (_remat[vreg] is null && NothingFlowsBack(vreg, from))
+        if (_remat[vreg] is null && (!again || _keepBefore.Contains(vreg)) && NothingFlowsBack(vreg, from))
         {
             _keepBefore.Add(vreg);
+        }
+        else
+        {
+            _keepBefore.Remove(vreg);
         }
         bool remat = _remat[vreg] is not null;
         if (_slot[vreg] == 0 && !remat)
@@ -967,6 +1094,11 @@ internal sealed class Allocator
             if (remat && (o.Role & Role.Def) != 0)
             {
                 // The defining move is gone: the constant is written where it is used instead.
+                continue;
+            }
+            if (o.Instr >= until || (again && o.Instr < from))
+            {
+                // Settled by the earlier spill, or kept in the register as before.
                 continue;
             }
             // Before the spill point a register that keeps its value there
