@@ -120,7 +120,8 @@ public sealed partial class Lowering
         ResetMethodState();
         _method = m;
         _decl = decl;
-        _in = m.Owner.Decl?.File ?? "";
+        // The method's own file first: a partial class's methods are in several.
+        _in = m.Decl is { File.Length: > 0 } own ? own.File : m.Owner.Decl?.File ?? "";
 
         if (_moveNext.TryGetValue(m, out AsyncMethod? running))
         {
