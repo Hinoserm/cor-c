@@ -501,6 +501,9 @@ internal static class Peephole
     {
         MOp.Shl or MOp.Shr or MOp.Sar => operand == 1,
         MOp.Shld or MOp.Shrd => operand == 2,
+        // A stub's registers are its calling convention: the slot in EAX,
+        // the value in EDX (X86Backend.CardStub, BarrierStub).
+        MOp.CallKeep => operand > 0,
         _ => false,
     };
 
