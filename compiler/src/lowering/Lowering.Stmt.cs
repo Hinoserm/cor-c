@@ -56,7 +56,13 @@ public sealed partial class Lowering
                 // declarations fill them in when they are reached.
                 if (b.Statements.Any(st => st is LocalDecl { LocalFunction: true }))
                 {
-                    foreach (LocalDecl early in b.Statements.OfType<LocalDecl>()
+                    // Names a deconstruction declares are this block's too,
+                    // declared by the block the binder made of it:
+                    // `(Function f, ...) = reads[n]; bool Uses() => f...`.
+                    foreach (LocalDecl early in b.Statements
+                                                 .SelectMany(st => st is DeconstructStmt ds && _b.Lowered.TryGetValue(ds, out Stmt? apart) && apart is AstBlock made
+                                                                   ? made.Statements : Enumerable.Repeat(st, 1))
+                                                 .OfType<LocalDecl>()
                                                  .SelectMany(d => d.Also.Prepend(d)))
                     {
                         if (_b.BoxedLocals.Contains(early) && _cellsMade.Add(early))

@@ -1,0 +1,24 @@
+// test: a local function or lambda captures names a deconstruction declared in its block
+// expect-exit: 0
+// expect-output:
+// a True False
+// b True False
+using System.Collections.Generic;
+static class Program
+{
+    static int Main()
+    {
+        List<(string made, string name)> reads = new() { ("p", "a"), ("q", "b") };
+        for (int n = 0; n < reads.Count; n++)
+        {
+            (string f, string name) = reads[n];
+            bool Frees(int k)
+            {
+                string? made = k == 0 ? f : null;
+                return made is not null;
+            }
+            Console.WriteLine(name + " " + Frees(0) + " " + Frees(1));
+        }
+        return 0;
+    }
+}
