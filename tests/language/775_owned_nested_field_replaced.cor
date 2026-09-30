@@ -1,0 +1,51 @@
+// test: owned nested field replaced
+// expect-exit: 0
+// expect-output:
+// xxxxxxxx
+// wwwwwwww
+//
+// Replacing an owned field frees the old value's own owned fields too: a
+// value read out of the old one's field, still in use, must keep the field
+// from being owned -- read here, and read by a caller of what replaces it.
+
+using System;
+
+class Inner { public string B; public Inner(string b) { B = b; } }
+class Outer { public Inner A; }
+
+static class Program
+{
+    static void Churn()
+    {
+        for (int i = 0; i < 64; i++) { string s = new string('q', 8); if (s.Length == 0) Console.WriteLine("?"); }
+    }
+
+    static void Replace(Outer o) { o.A = new Inner(new string('v', 8)); }
+
+    static void Swap(Outer o)
+    {
+        string v = o.A.B;
+        o.A = new Inner(new string('y', 8));
+        Churn();
+        Console.WriteLine(v);
+    }
+
+    static void SwapByCall(Outer o)
+    {
+        string v = o.A.B;
+        Replace(o);
+        Churn();
+        Console.WriteLine(v);
+    }
+
+    static int Main()
+    {
+        var o = new Outer();
+        o.A = new Inner(new string('x', 8));
+        Swap(o);
+        var p = new Outer();
+        p.A = new Inner(new string('w', 8));
+        SwapByCall(p);
+        return 0;
+    }
+}

@@ -1,0 +1,53 @@
+// test: thrown after logged
+// expect-exit: 0
+// expect-output:
+// caught x1
+// log x1
+// caught x2
+// saved x2
+//
+// An exception kept somewhere before it is thrown -- a log, a static -- is
+// not the catch's to free: the catch that takes it may not give it back while
+// the log still holds it. The second shape keeps it in an inner catch and
+// hands it on with `throw;`; the outer catch must not free it either.
+
+using System;
+using System.Collections.Generic;
+
+class E : Exception { public E(string m) : base(m) { } }
+
+static class Program
+{
+    static List<Exception> log = new List<Exception>();
+    static Exception s_saved;
+
+    static void F(int n)
+    {
+        var e = new InvalidOperationException("x" + n);
+        log.Add(e);
+        throw e;
+    }
+
+    static void Churn()
+    {
+        // What a freed block would be handed out as next.
+        for (int i = 0; i < 64; i++) { string s = new string('z', 8 + i % 8); if (s.Length == 0) Console.WriteLine("?"); }
+    }
+
+    static void G(int n)
+    {
+        try { throw new E("x" + n); }
+        catch (E e) { s_saved = e; throw; }
+    }
+
+    static int Main()
+    {
+        try { F(1); } catch (InvalidOperationException ex) { Console.WriteLine("caught " + ex.Message); }
+        Churn();
+        Console.WriteLine("log " + log[0].Message);
+        try { G(2); } catch (E e2) { Console.WriteLine("caught " + e2.Message); }
+        Churn();
+        Console.WriteLine("saved " + s_saved.Message);
+        return 0;
+    }
+}

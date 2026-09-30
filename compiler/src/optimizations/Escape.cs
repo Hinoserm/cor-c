@@ -132,7 +132,7 @@ public sealed partial class Escape : IModulePass
 
         // What is thrown that was not just made, now that the functions
         // handing back fresh objects are known.
-        _foreignTypes = !m.PreserveExports && m.Entry is not null ? ForeignThrows(m) : new HashSet<string>(StringComparer.Ordinal) { "*" };
+        _foreignTypes = !m.PreserveExports && m.Entry is not null ? ForeignThrows(m, summaries) : new HashSet<string>(StringComparer.Ordinal) { "*" };
         bool Provided(string helper) => byName.ContainsKey(helper) || m.RuntimeHelpers.Contains(helper);
         bool canFree = Provided(Freer);
         bool canFreeFields = canFree && Provided(FieldFreer);
@@ -351,7 +351,7 @@ public sealed partial class Escape : IModulePass
     private Module? _module;
     private Dictionary<string, DataItem>? _items;
 
-    private HashSet<string> ForeignThrows(Module m)
+    private HashSet<string> ForeignThrows(Module m, Dictionary<string, bool[]> summaries)
     {
         HashSet<string> types = new(StringComparer.Ordinal);
         Dictionary<string, List<(Function F, Instr Store)>> staticStores = new(StringComparer.Ordinal);
@@ -376,7 +376,25 @@ public sealed partial class Escape : IModulePass
                         && i.Operands[1] is RegOperand { Reg: var v } && writes.TryGetValue(v, out List<Instr>? vw)
                         && vw.Count == 1 && vw[0] is { Op: Opcode.Call, Callee: "__exception" })
                         caughtSlots.Add(slot);
+            // WHAT A CATCH HERE KEEPS, handed on by `throw;`, is still held by
+            // whatever kept it: a catch further out may not free it. Kept =
+            // anything received from a landing pad escapes this function.
+            bool? caughtKept = null;
+            bool CaughtKept()
+            {
+                if (caughtKept is bool known) return known;
+                HashSet<VReg> roots = new();
+                foreach (Block cb in f.Blocks)
+                    foreach (Instr ci in cb.Instrs)
+                        if (ci.Dest is not null && (ci.Op == Opcode.Call && ci.Callee == "__exception"
+                            || ci.Op == Opcode.Load && ci.Operands is [SlotOperand { Slot: var s }] && caughtSlots.Contains(s)))
+                            roots.Add(ci.Dest);
+                return (caughtKept = roots.Count > 0 && Analyse(f, roots, summaries, null, handOff: true).Escapes).Value;
+            }
             // Fresh, handed on, or read from a static (whose name is answered).
+            // FRESH AND STILL ONLY THE THROW'S: an object made here but kept
+            // somewhere before it was thrown (a log, a static) is not the
+            // catch's to free -- its type is foreign.
             bool Fresh(Operand o, out string? fromStatic)
             {
                 fromStatic = null;
@@ -384,9 +402,17 @@ public sealed partial class Escape : IModulePass
                 {
                     if (!writes.TryGetValue(r, out List<Instr>? ws) || ws.Count != 1) return false;
                     Instr d = ws[0];
-                    if (d.Op == Opcode.Call && (IsAllocator(d.Callee) || d.Callee is not null && _fresh.Contains(d.Callee))) return true;
-                    if (d.Op == Opcode.Call && d.Callee == "__exception") return true;
-                    if (d.Op == Opcode.Load && d.Operands is [SlotOperand { Slot: var from }] && caughtSlots.Contains(from)) return true;
+                    if (d.Op == Opcode.Call && (IsAllocator(d.Callee) || d.Callee is not null && _fresh.Contains(d.Callee)))
+                    {
+                        if (d.Dest is not null && Analyse(f, new[] { d.Dest }, summaries, d, handOff: true).Escapes)
+                            types.Add(StampedType(f, d.Dest) ?? "*");
+                        return true;
+                    }
+                    if (d.Op == Opcode.Call && d.Callee == "__exception" || d.Op == Opcode.Load && d.Operands is [SlotOperand { Slot: var from }] && caughtSlots.Contains(from))
+                    {
+                        if (CaughtKept()) types.Add("*");
+                        return true;
+                    }
                     if (d.Op == Opcode.Load && d.Operands is [SymOperand { Name: var named }]) { fromStatic = named; return false; }
                     if (d.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) || d.Operands.Count != 1) return false;
                     o = d.Operands[0];
@@ -526,7 +552,11 @@ public sealed partial class Escape : IModulePass
                     }
                 }
             Flow flow = Analyse(f, roots, summaries, null, stores, handOff: true);
-            if (flow.Escapes || list.Any(e => CatchesForeign(e.End))) { foreach ((_, Instr end) in list) KeepCatch(end); continue; }
+            if (flow.Escapes || list.Any(e => CatchesForeign(e.End)) || UsedAfterEnd(f, keep, flow, list))
+            {
+                foreach ((_, Instr end) in list) KeepCatch(end);
+                continue;
+            }
             foreach ((Block b, Instr end) in list)
             {
                 // Runtime.Free takes a long on every target (AppendFree).
@@ -539,6 +569,33 @@ public sealed partial class Escape : IModulePass
                 Owned++;
             }
         }
+    }
+
+    /// <summary>
+    /// Whether what a catch holds is still used after one of its ends: a
+    /// register derived from it live past the end or into a handler, or the
+    /// catch's slot read again where the end reaches. The end is where the
+    /// free would go, and lowering does not always put it last -- `throw x;`
+    /// of an alias of the caught object, and a finally inside the catch that
+    /// a return leaves through, both end the catch first.
+    /// </summary>
+    private static bool UsedAfterEnd(Function f, FrameSlot keep, Flow flow, List<(Block Block, Instr End)> ends)
+    {
+        Liveness liveness = new(f);
+        HashSet<VReg> pads = PadLive(liveness);
+        if (flow.Derived.Any(r => !liveness.Tracks(r) || pads.Contains(r))) return true;
+        bool ReadsKept(Instr i) => i.Operands.Any(o => o is RegOperand r && flow.Derived.Contains(r.Reg))
+            || i.Op == Opcode.Load && i.Operands.Count >= 1 && i.Operands[0] is SlotOperand { Slot: var s } && s == keep;
+        foreach ((Block b, Instr end) in ends)
+        {
+            int at = b.Instrs.IndexOf(end);
+            for (int k = at + 1; k < b.Instrs.Count; k++) if (ReadsKept(b.Instrs[k])) return true;
+            if (b.Terminator is Instr term && ReadsKept(term)) return true;
+            if (flow.Derived.Any(r => liveness.IsLiveOut(b, r))) return true;
+            foreach (Block x in f.Blocks)
+                if (Reaches(f, b, x) && (x.Instrs.Any(ReadsKept) || x.Terminator is Instr t && ReadsKept(t))) return true;
+        }
+        return false;
     }
 
     /// <summary>
@@ -621,7 +678,7 @@ public sealed partial class Escape : IModulePass
     {
         if (m.PreserveExports || m.Entry is null || !byName.ContainsKey(OwnedReplacedFreer) && !m.RuntimeHelpers.Contains(OwnedReplacedFreer)) return;
 
-        List<(Function F, Block B, Instr I)> stores = new(), loads = new();
+        List<(Function F, Block B, Instr I)> stores = new(), loads = new(), fieldAddresses = new();
         foreach (Function f in m.Functions)
             foreach (Block b in f.Blocks)
                 foreach (Instr i in b.Instrs)
@@ -629,6 +686,10 @@ public sealed partial class Escape : IModulePass
                     if (i.Field is null || i.Operands.Count < 1 || i.Operands[0] is SymOperand) continue;
                     if (i.Op == Opcode.Store) stores.Add((f, b, i));
                     else if (i.Op == Opcode.Load) loads.Add((f, b, i));
+                    // A field's address taken (ref, out, Interlocked on it):
+                    // what is read and written through it is none of the
+                    // loads and stores above, and proves nothing.
+                    else fieldAddresses.Add((f, b, i));
                 }
         HashSet<string> candidates = new(stores.Select(s => s.I.Field!).Concat(loads.Select(l => l.I.Field!)), StringComparer.Ordinal);
         if (candidates.Count == 0) return;
@@ -874,6 +935,7 @@ public sealed partial class Escape : IModulePass
         {
             if (refused.Add(field) && reporting) _fieldReport.Add($"{field} refused: {why} in {f.Name}:{at.Line}");
         }
+        foreach ((Function f, _, Instr at) in fieldAddresses) Refuse(at.Field!, "its address is taken (ref, out)", f, at);
         List<(Instr Origin, Instr Store)> held = new();
         foreach ((Function f, Block b, Instr st) in stores)
         {
@@ -1047,7 +1109,11 @@ public sealed partial class Escape : IModulePass
                         || i.Op == Opcode.Call && (IsFreeCall(i.Callee) && !FreesOwnMaking(x, k)
                                                    || IsCatchEnd(i.Callee) || i.Callee == OwnedReplacedFreer
                                                    || i.Callee is not null && writers.Contains(i.Callee))
-                        || i.Op == Opcode.Store && i.Field == field;
+                        // ANY owned field's store, not only this one's: the
+                        // free a replacement gets (below) frees the old value's
+                        // own owned fields too (Runtime.FreeOwnedFields), so
+                        // replacing o.A frees o.A.B -- the value read here.
+                        || i.Op == Opcode.Store && i.Field is not null && candidates.Contains(i.Field);
                     if (danger) unsafeAt = i;
                 }
                 if (unsafeAt is not null) break;
@@ -1058,12 +1124,22 @@ public sealed partial class Escape : IModulePass
         HashSet<string> owned = new(candidates.Where(c => !refused.Contains(c)), StringComparer.Ordinal);
         if (owned.Count == 0) return;
 
-        // Replacing a value frees it, unless the object was made right here
-        // and so held nothing.
+        // Replacing a value frees it -- ONLY IN AN OBJECT NO OTHER THREAD CAN
+        // SEE: one this function made and that never escapes it. The proof
+        // above is of one thread: a field of a shared object replaced under a
+        // lock on one processor freed the value another had just read under
+        // the same lock (and an interrupt handler's the same). Anywhere else
+        // the old value is the collector's. The object's first store finds
+        // nothing there, which the freer ignores.
+        Dictionary<Instr, bool> privateOwner = new(ReferenceEqualityComparer.Instance);
         foreach ((Function f, Block b, Instr st) in stores)
         {
             if (!owned.Contains(st.Field!)) continue;
-            if (st.Operands[0] is RegOperand baseReg && Origin(Defs(f), baseReg.Reg) is { Op: Opcode.Call } madeOwner && IsAllocator(madeOwner.Callee)) continue;
+            if (st.Operands[0] is not RegOperand baseReg || Origin(Defs(f), baseReg.Reg) is not { Op: Opcode.Call, Dest: { } ownerReg } madeOwner
+                || !IsAllocator(madeOwner.Callee)) continue;
+            if (!privateOwner.TryGetValue(madeOwner, out bool kept))
+                privateOwner[madeOwner] = kept = !Analyse(f, new[] { ownerReg }, summaries, madeOwner).Escapes;
+            if (!kept) continue;
             int at = b.Instrs.IndexOf(st);
             List<Instr> made = new();
             VReg old = f.NewReg(IrTypes.Word);

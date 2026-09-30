@@ -1,0 +1,48 @@
+// test: ref to owned field
+// expect-exit: 0
+// expect-output:
+// 3
+// 3
+// 3
+//
+// What is written into a field through its address -- ref, out -- is seen
+// by no load or store of the field: a shared string put there that way must
+// not be freed with the object that holds it.
+
+using System;
+
+class Holder { public string S; }
+
+static class Program
+{
+    static readonly string shared = new string('s', 3);
+
+    static Holder Make() { var h = new Holder(); h.S = new string('a', 4); return h; }
+
+    static void Set(ref string slot, string v) { slot = v; }
+    static void Give(out string slot) { slot = shared; }
+
+    static void Churn()
+    {
+        for (int i = 0; i < 64; i++) { string s = new string('q', 3); if (s.Length == 0) Console.WriteLine("?"); }
+    }
+
+    static void Use()
+    {
+        var h = Make();
+        Set(ref h.S, shared);
+        Console.WriteLine(h.S.Length);
+        var g = Make();
+        Give(out g.S);
+        if (g.S.Length != 3) Console.WriteLine("?");
+    }
+
+    static int Main()
+    {
+        Use();
+        Churn();
+        Console.WriteLine(shared.Length);
+        Console.WriteLine(shared == "sss" ? 3 : 0);
+        return 0;
+    }
+}
