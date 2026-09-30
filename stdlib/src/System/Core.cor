@@ -9762,6 +9762,11 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
     private K[] keys;
     private V[] values;
     private int[] state;      // 0 empty, 1 used, 2 erased
+    // EACH USED SLOT'S KEY'S HASH, as .NET's entries keep theirs: growing
+    // places every key by it and asks no comparer, which is what lets the
+    // table own its arrays -- a comparer called while the old ones were held
+    // could be anything, and made every one of them the collector's.
+    private int[] hashes;
     private int filled;       // used and erased together: what a probe walks past
     private int count;
     private int mask;
@@ -9861,6 +9866,7 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         keys = new K[16];
         values = new V[16];
         state = new int[16];
+        hashes = new int[16];
         count = 0;
         mask = 15;
         by = null;
@@ -9881,6 +9887,7 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         keys = new K[size];
         values = new V[size];
         state = new int[size];
+        hashes = new int[size];
         mask = size - 1;
     }
 
@@ -9888,6 +9895,7 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         keys = new K[16];
         values = new V[16];
         state = new int[16];
+        hashes = new int[16];
         count = 0;
         mask = 15;
         by = comparer;
@@ -9953,7 +9961,10 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         return Sys.Word(a) == Sys.Word(b);
     }
 
-    private int Hash(K key) {
+    private int Hash(K key) { return FullHash(key) & mask; }
+
+    /// The key's hash before it is cut to the table: what `hashes` keeps.
+    private int FullHash(K key) {
         IEqualityComparer<K>? with = by;
 
         if (with != null) {
@@ -9961,7 +9972,7 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
             mixed = mixed ^ (mixed >> 33);
             mixed = mixed * 8127156113;
             mixed = mixed ^ (mixed >> 29);
-            return (int)mixed & mask;
+            return (int)mixed;
         }
 
         if (Sys.IsObject(key)) {
@@ -9969,7 +9980,7 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
             text = text ^ (text >> 33);
             text = text * 8127156113;
             text = text ^ (text >> 29);
-            return (int)text & mask;
+            return (int)text;
         }
 
         long h = Sys.Word(key);
@@ -9978,7 +9989,7 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         h = h ^ (h >> 33);
         h = h * 8127156113;
         h = h ^ (h >> 29);
-        return (int)h & mask;
+        return (int)h;
     }
 
     // THE INDEXER, which is how a Dictionary is read and written in C#. This
@@ -10006,7 +10017,8 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
             // probe, and a table with none empty is a search that never ends.
             if ((filled + 1) * 4 > (mask + 1) * 3) { Grow(); }
 
-            int i = Hash(key);
+            int full = FullHash(key);
+            int i = full & mask;
             int free = -1;
 
             // THE WHOLE CHAIN, past the erased ones. Stopping at the first of
@@ -10023,6 +10035,7 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
             keys[i] = key;
             values[i] = value;
             state[i] = 1;
+            hashes[i] = full;
             count = count + 1;
             Placed(i);
         }
@@ -10204,6 +10217,7 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         K[] oldKeys = keys;
         V[] oldValues = values;
         int[] oldState = state;
+        int[] oldHashes = hashes;
         int[]? oldOrder = order;
         int oldOrdered = ordered;
         int oldSize = mask + 1;
@@ -10219,6 +10233,7 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         K[] newKeys = new K[size];
         V[] newValues = new V[size];
         int[] newState = new int[size];
+        int[] newHashes = new int[size];
         mask = size - 1;
         int held = 0;
 
@@ -10230,11 +10245,12 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         for (int n = 0; n < oldOrdered; n++) {
             int i = oldOrder![n];
             if (i < 0 || oldState[i] != 1) { list[n] = -1; continue; }
-            int j = Hash(oldKeys[i]);
+            int j = oldHashes[i] & mask;
             while (newState[j] != 0) { j = (j + 1) & mask; }
             newKeys[j] = oldKeys[i];
             newValues[j] = oldValues[i];
             newState[j] = 1;
+            newHashes[j] = oldHashes[i];
             held = held + 1;
             list[n] = j;
             places[j] = n;
@@ -10242,6 +10258,7 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         keys = newKeys;
         values = newValues;
         state = newState;
+        hashes = newHashes;
         count = held;
         filled = held;
         order = list;
@@ -11512,6 +11529,8 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
     private IEqualityComparer<T>? by;
     private T[] items;
     private int[] state;      // 0 empty, 1 used, 2 erased
+    // Each used slot's hash, as Dictionary keeps them: growing asks no comparer.
+    private int[] hashes;
     private int count;
     private int filled;     // used and erased together: what a probe has to walk past
     private int mask;
@@ -11604,6 +11623,7 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
     public HashSet() {
         items = new T[16];
         state = new int[16];
+        hashes = new int[16];
         count = 0;
         filled = 0;
         mask = 15;
@@ -11636,7 +11656,9 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
 
     // The same avalanche Dictionary uses. Without it, sequential integer keys
     // collide in runs and linear probing degrades to a linear scan.
-    private int Hash(T value) {
+    private int Hash(T value) { return FullHash(value) & mask; }
+
+    private int FullHash(T value) {
         // The comparer's hash, or the key's own when it is an object that has
         // one, as .NET's default comparer asks: a set of strings, or of
         // tuples, holds equal ones once.
@@ -11645,7 +11667,7 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
         h = h ^ (h >> 33);
         h = h * 8127156113;
         h = h ^ (h >> 29);
-        return (int)h & mask;
+        return (int)h;
     }
 
     // TRUE WHEN IT WAS NOT THERE, which is .NET's contract and the useful half:
@@ -11658,7 +11680,8 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
         // one never ends. The compiler's own scopes are exactly that set.
         if ((filled + 1) * 4 > (mask + 1) * 3) { Grow(); }
 
-        int i = Hash(value);
+        int full = FullHash(value);
+        int i = full & mask;
         int free = -1;
 
         while (state[i] != 0) {
@@ -11674,6 +11697,7 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
 
         items[i] = value;
         state[i] = 1;
+        hashes[i] = full;
         count = count + 1;
         Placed(i);
         return true;
@@ -11841,6 +11865,7 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
     private void Grow() {
         T[] old = items;
         int[] oldState = state;
+        int[] oldHashes = hashes;
         int[]? oldOrder = order;
         int oldOrdered = ordered;
         int oldSize = mask + 1;
@@ -11853,6 +11878,7 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
         // Dictionary's Grow: an owned field's store frees what it replaces.
         T[] newItems = new T[size];
         int[] newState = new int[size];
+        int[] newHashes = new int[size];
         mask = size - 1;
         int held = 0;
 
@@ -11864,16 +11890,18 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
         for (int n = 0; n < oldOrdered; n++) {
             int i = oldOrder![n];
             if (i < 0 || oldState[i] != 1) { list[n] = -1; continue; }
-            int j = Hash(old[i]);
+            int j = oldHashes[i] & mask;
             while (newState[j] != 0) { j = (j + 1) & mask; }
             newItems[j] = old[i];
             newState[j] = 1;
+            newHashes[j] = oldHashes[i];
             held = held + 1;
             list[n] = j;
             places[j] = n;
         }
         items = newItems;
         state = newState;
+        hashes = newHashes;
         count = held;
         filled = held;
         order = list;
