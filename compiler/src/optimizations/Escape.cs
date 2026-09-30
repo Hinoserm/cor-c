@@ -648,6 +648,7 @@ public sealed partial class Escape : IModulePass
 
         // One liveness per function, however many loads it has.
         Dictionary<Function, Liveness> livenessOf = new();
+        Dictionary<Function, HashSet<VReg>> padsOf = new();
         foreach ((Function f, Block b, Instr ld) in loads)
         {
             string field = ld.Field!;
@@ -655,23 +656,49 @@ public sealed partial class Escape : IModulePass
             if (f.Async is not null || ld.Dest is null) { Refuse(field, "async load", f, ld); continue; }
             Flow flow = Analyse(f, new[] { ld.Dest }, summaries, ld);
             if (flow.Escapes) { Refuse(field, $"read escapes via {flow.Why?.Op} {flow.Why?.Callee}", f, ld); continue; }
-            // Within this block, and dead before anything that could free it.
+            // DEAD BEFORE ANYTHING THAT COULD FREE IT: wherever what was read
+            // is live -- in this block after the read, and in every block it
+            // is live into or out of, around a loop too -- nothing may store
+            // to the field, free, or call what might. Not into a handler,
+            // where liveness does not follow it.
             if (!livenessOf.TryGetValue(f, out Liveness? liveness)) livenessOf[f] = liveness = new Liveness(f);
-            if (flow.Derived.Any(r => !liveness.Tracks(r) || liveness.IsLiveOut(b, r))) { Refuse(field, "read lives past its block", f, ld); continue; }
-            int at = b.Instrs.IndexOf(ld), last = at;
-            for (int k = at + 1; k < b.Instrs.Count; k++)
-                if (b.Instrs[k].Operands.Any(o => o is RegOperand r && flow.Derived.Contains(r.Reg))) last = k;
+            if (!padsOf.TryGetValue(f, out HashSet<VReg>? pads)) padsOf[f] = pads = PadLive(liveness);
+            if (flow.Derived.Any(r => !liveness.Tracks(r) || pads.Contains(r))) { Refuse(field, "read lives into a handler", f, ld); continue; }
             HashSet<string> writers = MayWrite(field);
-            for (int k = at + 1; k < last; k++)
+            Instr? unsafeAt = null;
+            bool Uses(Instr i) => i.Operands.Any(o => o is RegOperand r && flow.Derived.Contains(r.Reg));
+            foreach (Block x in f.Blocks)
             {
-                Instr i = b.Instrs[k];
-                bool danger = i.Op == Opcode.CallIndirect && (_indirect is null || !_indirect.TryGetValue(i, out _))
-                    || i.Op == Opcode.CallIndirect && _indirect!.TryGetValue(i, out string[]? t) && t.Any(writers.Contains)
-                    || i.Op == Opcode.Call && (IsFreeCall(i.Callee) || IsCatchEnd(i.Callee) || i.Callee == OwnedReplacedFreer
-                                               || i.Callee is not null && writers.Contains(i.Callee))
-                    || i.Op == Opcode.Store && i.Field == field;
-                if (danger) { Refuse(field, $"read live across {i.Op} {i.Callee}", f, i); break; }
+                bool liveIn = flow.Derived.Any(r => liveness.IsLiveIn(x, r));
+                bool liveOut = flow.Derived.Any(r => liveness.IsLiveOut(x, r));
+                int from = liveIn ? 0 : ReferenceEquals(x, b) ? b.Instrs.IndexOf(ld) + 1 : -1;
+                if (from < 0)
+                {
+                    // Made here by a copy of what was read, in a block the
+                    // read is not live into: from that copy on.
+                    int made = x.Instrs.FindIndex(i => i.Dest is not null && flow.Derived.Contains(i.Dest));
+                    if (made < 0) continue;
+                    from = made + 1;
+                }
+                int to = x.Instrs.Count;
+                if (!liveOut)
+                {
+                    to = from;
+                    for (int k = from; k < x.Instrs.Count; k++) if (Uses(x.Instrs[k])) to = k;
+                }
+                for (int k = from; k < to && unsafeAt is null; k++)
+                {
+                    Instr i = x.Instrs[k];
+                    bool danger = i.Op == Opcode.CallIndirect && (_indirect is null || !_indirect.TryGetValue(i, out _))
+                        || i.Op == Opcode.CallIndirect && _indirect!.TryGetValue(i, out string[]? t) && t.Any(writers.Contains)
+                        || i.Op == Opcode.Call && (IsFreeCall(i.Callee) || IsCatchEnd(i.Callee) || i.Callee == OwnedReplacedFreer
+                                                   || i.Callee is not null && writers.Contains(i.Callee))
+                        || i.Op == Opcode.Store && i.Field == field;
+                    if (danger) unsafeAt = i;
+                }
+                if (unsafeAt is not null) break;
             }
+            if (unsafeAt is not null) Refuse(field, $"read live across {unsafeAt.Op} {unsafeAt.Callee}", f, unsafeAt);
         }
 
         HashSet<string> owned = new(candidates.Where(c => !refused.Contains(c)), StringComparer.Ordinal);
