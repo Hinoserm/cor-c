@@ -112,6 +112,7 @@ public sealed partial class Escape : IModulePass
                 if (freshHint.IsTrue)
                 {
                     _fresh.Add(f.Name);
+                    _freshOrigins[f.Name] = new HashSet<Instr>(origins!, ReferenceEqualityComparer.Instance);
                     _freshFields[f.Name] = left;
                 }
                 if (returned is not null) _freshFieldHints[f.Name] = returned;
@@ -236,6 +237,13 @@ public sealed partial class Escape : IModulePass
 
     /// <summary>Calls to fresh-returning functions whose result this pass took ownership of.</summary>
     private readonly HashSet<Instr> _ownedCalls = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>
+    /// For each function that returns a fresh object, what makes the object it
+    /// returns: its allocations and the calls to fresh callees it hands on.
+    /// Those are the caller's to free wherever the call is owned.
+    /// </summary>
+    private readonly Dictionary<string, HashSet<Instr>> _freshOrigins = new(StringComparer.Ordinal);
 
     /// <summary>How many of the owned allocations were a fresh function's result.</summary>
     public int OwnedReturns { get; private set; }
@@ -1453,77 +1461,87 @@ public sealed partial class Escape : IModulePass
         {
             return true;        // a library: its consumers decide
         }
+        return CollectorSites(m, byName, entry, paths: false).Count > 0;
+    }
 
-        // Reachability over code AND data from the entry. A function
-        // reaches what it calls and every symbol it names; a data item --
-        // a vtable, a descriptor -- reaches every symbol its relocations
-        // name. A vtable nothing live names is not live, and neither are the
-        // methods in it.
+    /// <summary>
+    /// THE ALLOCATIONS A COLLECTOR IS STILL NEEDED FOR, reachable from the
+    /// entry over code and data. A function reaches what it calls and every
+    /// symbol it names; a data item -- a vtable, a descriptor -- every symbol
+    /// its relocations name. A block that ends in a trap is the program dying,
+    /// and what it allocates on the way decides nothing.
+    ///
+    /// An allocation this pass owns is freed on every path out of its
+    /// function. So is the object a fresh function RETURNS, wherever the call
+    /// to it is owned: the caller frees it. Such an allocation counts only if
+    /// its function is reached through a call that does not own the result --
+    /// through any path at all -- and a function's other allocations count
+    /// wherever it is reached. Judging the returned object by the function
+    /// alone made every program that called a fresh helper need a collector.
+    /// </summary>
+    private List<string> CollectorSites(Module m, Dictionary<string, Function> byName, Function entry, bool paths)
+    {
         Dictionary<string, DataItem> data = new(StringComparer.Ordinal);
-        foreach (DataItem d in m.Data)
+        foreach (DataItem d in m.Data) data[d.Name] = d;
+
+        // Whether each symbol has been reached, and whether through a use
+        // that does not own a fresh result (true is the stronger state).
+        Dictionary<string, bool> reached = new(StringComparer.Ordinal);
+        Dictionary<string, string> reachedFrom = new(StringComparer.Ordinal);
+        Stack<(string Name, bool Unowned)> work = new();
+        void Reach(string name, bool unowned, string? from)
         {
-            data[d.Name] = d;
+            if (reached.TryGetValue(name, out bool was) && (was || !unowned)) return;
+            reached[name] = unowned;
+            if (from is not null) reachedFrom[name] = from;
+            work.Push((name, unowned));
         }
+        Reach(entry.Name, true, null);
 
-        HashSet<string> seen = new(StringComparer.Ordinal);
-        Stack<string> work = new();
-        work.Push(entry.Name);
-
+        List<string> sites = new();
+        HashSet<Instr> counted = new(ReferenceEqualityComparer.Instance);
         while (work.Count > 0)
         {
-            string name = work.Pop();
-            if (!seen.Add(name))
-            {
-                continue;
-            }
-            if (IsAllocator(name))
-            {
-                return true;
-            }
-
+            (string name, bool unowned) = work.Pop();
+            if (reached[name] != unowned) continue;     // superseded by a stronger visit
             if (data.TryGetValue(name, out DataItem? item))
             {
-                foreach (DataReloc r in item.Relocs)
-                {
-                    work.Push(r.Symbol);
-                }
+                foreach (DataReloc r in item.Relocs) Reach(r.Symbol, true, name);
                 continue;
             }
-
-            if (!byName.TryGetValue(name, out Function? f))
-            {
-                continue;
-            }
-
+            if (!byName.TryGetValue(name, out Function? f)) continue;
+            _freshOrigins.TryGetValue(f.Name, out HashSet<Instr>? origins);
             foreach (Block b in f.Blocks)
             {
-                // A block that ends in a trap is the program dying: a failed
-                // bounds check, an unhandled exception. What it allocates on
-                // the way is never freed by anyone, collector or not, so
-                // nothing it names decides whether a collector is needed.
-                if (b.Terminator is { Op: Opcode.Unreachable })
-                {
-                    continue;
-                }
+                if (b.Terminator is { Op: Opcode.Unreachable }) continue;
                 foreach (Instr i in b.Instrs)
                 {
-                    // An allocation the pass owns is freed on every path out
-                    // of its function, so it is tier 1 and names no heap.
+                    bool origin = origins is not null && origins.Contains(i);
+                    if (i.Callee is not null && IsAllocator(i.Callee) && !_owned.Contains(i)
+                        && (!origin || unowned) && counted.Add(i))
+                    {
+                        sites.Add(paths ? $"{f.Name}:{i.Line} {i.Callee}\n      reached: {Path(f.Name)}" : f.Name);
+                    }
                     if (i.Callee is not null && !_owned.Contains(i))
                     {
-                        work.Push(i.Callee);
+                        // The callee's returned object is freed here when the
+                        // call is owned; handed on as this function's own
+                        // result, it is owned exactly as far as this one is.
+                        bool callUnowned = _ownedCalls.Contains(i) ? false : origin ? unowned : true;
+                        Reach(i.Callee, callUnowned, f.Name);
                     }
-                    foreach (Operand o in i.Operands)
-                    {
-                        if (o is SymOperand s)
-                        {
-                            work.Push(s.Name);
-                        }
-                    }
+                    foreach (Operand o in i.Operands) if (o is SymOperand sym) Reach(sym.Name, true, f.Name);
                 }
             }
         }
-        return false;
+        return sites;
+
+        string Path(string name)
+        {
+            List<string> chain = new() { name };
+            while (reachedFrom.TryGetValue(chain[^1], out string? up) && chain.Count < 8 && !chain.Contains(up)) chain.Add(up);
+            return string.Join(" <- ", chain);
+        }
     }
 
     /// <summary>
@@ -1540,34 +1558,7 @@ public sealed partial class Escape : IModulePass
             Console.Error.WriteLine("alloc report: " + m.Name + " has no entry; compile the whole program to see it");
             return;
         }
-        Dictionary<string, DataItem> data = new(StringComparer.Ordinal);
-        foreach (DataItem d in m.Data) data[d.Name] = d;
-        HashSet<string> seen = new(StringComparer.Ordinal);
-        Stack<string> work = new();
-        work.Push(entry.Name);
-        List<string> sites = new();
-        while (work.Count > 0)
-        {
-            string name = work.Pop();
-            if (!seen.Add(name)) continue;
-            if (data.TryGetValue(name, out DataItem? item))
-            {
-                foreach (DataReloc r in item.Relocs) work.Push(r.Symbol);
-                continue;
-            }
-            if (!byName.TryGetValue(name, out Function? f)) continue;
-            foreach (Block b in f.Blocks)
-            {
-                if (b.Terminator is { Op: Opcode.Unreachable }) continue;
-                foreach (Instr i in b.Instrs)
-                {
-                    if (i.Callee is not null && IsAllocator(i.Callee) && !_owned.Contains(i))
-                        sites.Add($"{f.Name}:{i.Line} {i.Callee}");
-                    if (i.Callee is not null && !_owned.Contains(i)) work.Push(i.Callee);
-                    foreach (Operand o in i.Operands) if (o is SymOperand sym) work.Push(sym.Name);
-                }
-            }
-        }
+        List<string> sites = CollectorSites(m, byName, entry, paths: true);
         Console.Error.WriteLine($"alloc report: {sites.Count} allocation(s) still need a collector");
         foreach (string site in sites.OrderBy(x => x, StringComparer.Ordinal)) Console.Error.WriteLine("  " + site);
     }

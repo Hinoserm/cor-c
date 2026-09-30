@@ -1,0 +1,29 @@
+// test: gcless fresh result
+// expect-exit: 0
+// expect-output:
+// 488895 0 True
+//
+// A helper that returns a fresh object -- String.FromInt, here -- hands it
+// to its caller, who frees it after its last use. The allocation inside the
+// helper is then covered wherever the call is owned, so a program whose every
+// such call is owned needs no collector for it. A hundred thousand of them
+// run no collection and leave the heap as they found it: no collector, and no
+// leak for the lack of one.
+
+static class Program
+{
+    static int Main()
+    {
+        int collections = GC.CollectionCount(0);
+        long before = GC.GetTotalMemory(false);
+        long total = 0;
+        for (int p = 0; p < 100000; p++)
+        {
+            string s = String.FromInt(p + 1);
+            total += s.Length;
+        }
+        long grown = GC.GetTotalMemory(false) - before;
+        System.Console.WriteLine(total + " " + (GC.CollectionCount(0) - collections) + " " + (grown < 4096));
+        return 0;
+    }
+}
