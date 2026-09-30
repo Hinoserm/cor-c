@@ -1061,6 +1061,23 @@ public sealed class Monomorphiser
         // Only as an ARGUMENT. A bare T stays a T, so the checker can still
         // infer it at the call site and give `Pick(a, b)` the type of a rather
         // than the type of anything.
+        // A TYPE WITH NO ARGUMENTS -- most of them: int, string, Node -- is
+        // copied as it is, without the argument walk below, which for it
+        // made an empty list and asked it every question.
+        if (r.Args.Count == 0)
+        {
+            if (r.ArrayRank == 1) ArrayIsASequence(r, new List<TypeRef>());
+            return new TypeRef
+            {
+                Name = r.Name, ArrayRank = r.ArrayRank, Nullable = r.Nullable,
+                UseArgs = r.UseArgs?.Select(a => Sub(a, map)).ToList(),
+                ElementNullable = r.ElementNullable,
+                InnerNullable = r.InnerNullable,
+                PointerDepth = r.PointerDepth,
+                Line = r.Line, Col = r.Col,
+            };
+        }
+
         List<TypeRef> args = r.Args.Select(a => Sub(a, map)).ToList();
 
         // A TYPE ARGUMENT THAT IS STILL A METHOD'S TYPE PARAMETER IS LEFT
