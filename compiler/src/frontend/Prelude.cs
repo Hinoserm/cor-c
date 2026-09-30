@@ -23,6 +23,7 @@ public static class Prelude
     public const string Exit = "Exit";
     public const string Word = "Word";
     public const string FromWord = "FromWord";
+    public const string CharsOf = "CharsOf";
     public const string Bits = "Bits";
     public const string FromBits = "FromBits";
     public const string SingleBits = "SingleBits";
@@ -425,6 +426,11 @@ public static class Prelude
             // The other way: a word read out of memory, taken as the reference
             // it holds. What an atomic swap of a reference field hands back.
             public static object? FromWord(long word) { return null; }
+            // A STRING'S UNITS AS THE char[] THEY ARE LAID OUT AS: the same
+            // object -- header, count, UTF-16 units -- typed so a span can
+            // view it (string.AsSpan) without a copy. Read only: nothing may
+            // write through it.
+            public static char[] CharsOf(string s) { return null!; }
 
             // THE BITS OF A REAL, and back again. A double lives in the other
             // register bank, so reinterpreting one is a MOVE between banks --

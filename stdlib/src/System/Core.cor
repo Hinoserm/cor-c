@@ -510,25 +510,33 @@ static class String {
         return Compare(a, b) == 0;
     }
 
-    // A read-only character view. A span here is an array and a range of it,
-    // so this materialises the string's units into a char array and lets the
-    // ordinary span implementation provide slicing and indexing. It preserves
-    // the C# API and semantics; a string-backed span can remove the
-    // allocation without changing callers.
+    // A read-only character view: the string's own units, which are laid out
+    // as a char[]'s (Sys.CharsOf), so indexing, slicing and every span
+    // routine read the string in place and nothing is copied.
     public static ReadOnlySpan<char> AsSpan(string s, int start) {
-        char[] chars = new char[s.Length - start];
-        for (int i = start; i < s.Length; i++) { chars[i - start] = Sys.GetChar(s, i); }
-        return new ReadOnlySpan<char>(chars);
+        if (s == null) {
+            if (start != 0) { throw new ArgumentOutOfRangeException("start"); }
+            return default;
+        }
+        if ((uint)start > (uint)s.Length) { throw new ArgumentOutOfRangeException("start"); }
+        return new ReadOnlySpan<char>(Sys.CharsOf(s), start, s.Length - start);
     }
 
-    public static ReadOnlySpan<char> AsSpan(string s) { return AsSpan(s, 0); }
+    /// .NET's: a view of the string, not a copy -- a string and a char[] are
+    /// laid out alike, so the span reads the string's own units.
+    public static ReadOnlySpan<char> AsSpan(string s) {
+        if (s == null) { return default; }
+        return new ReadOnlySpan<char>(Sys.CharsOf(s), 0, s.Length);
+    }
 
     /// .NET's third overload: a window, not a tail.
     public static ReadOnlySpan<char> AsSpan(string s, int start, int length) {
-        char[] made = new char[length];
-
-        for (int i = 0; i < length; i++) { made[i] = s[start + i]; }
-        return new ReadOnlySpan<char>(made);
+        if (s == null) {
+            if (start != 0 || length != 0) { throw new ArgumentOutOfRangeException("start"); }
+            return default;
+        }
+        if ((uint)start > (uint)s.Length || (uint)length > (uint)(s.Length - start)) { throw new ArgumentOutOfRangeException("start"); }
+        return new ReadOnlySpan<char>(Sys.CharsOf(s), start, length);
     }
 
     // ---- the rest of the string surface --------------------------------
@@ -5836,6 +5844,13 @@ class EmptyArray<T> {
 /// an object's Equals, a value's bits. Each is written against the span's
 /// memory through Data, the one place that knows how a span holds it.
 public static class MemoryExtensions {
+    // .NET's AsSpan over a string is this extension, on `string?`: a null
+    // string is an empty span. String.AsSpan answers the same for a string
+    // known not to be null; both view the string's units, copying nothing.
+    public static ReadOnlySpan<char> AsSpan(this string? text) { return String.AsSpan(text!); }
+    public static ReadOnlySpan<char> AsSpan(this string? text, int start) { return String.AsSpan(text!, start); }
+    public static ReadOnlySpan<char> AsSpan(this string? text, int start, int length) { return String.AsSpan(text!, start, length); }
+
     // ---- trimming, comparing and splitting spans, as .NET's MemoryExtensions
     // has them: over any element type that compares itself, allocating nothing.
     // Text held as UTF-8 bytes is trimmed and split here byte by byte, which

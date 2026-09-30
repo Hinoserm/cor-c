@@ -1,0 +1,29 @@
+// test: string.AsSpan is a view of the string, not a copy -- indexing, slicing, SequenceEqual, IndexOf, StartsWith and new string(span) read its own units; a null string is an empty span, as .NET's extension on string? answers
+// expect-exit: 0
+// expect-output:
+// 12 world llo o orl
+// True 5 True llo
+// range
+// 0
+// 10000 True
+using System;
+static class Program
+{
+    static int Main()
+    {
+        string s = "Hello, world";
+        ReadOnlySpan<char> all = s.AsSpan();
+        ReadOnlySpan<char> tail = s.AsSpan(7);
+        ReadOnlySpan<char> mid = s.AsSpan(2, 3);
+        Console.WriteLine(all.Length + " " + tail.ToString() + " " + mid.ToString() + " " + all[4] + " " + tail.Slice(1, 3).ToString());
+        Console.WriteLine(tail.SequenceEqual("world".AsSpan()) + " " + all.IndexOf(',') + " " + all.StartsWith("Hell".AsSpan()) + " " + new string(mid));
+        try { s.AsSpan(13); } catch (ArgumentOutOfRangeException) { Console.WriteLine("range"); }
+        string? none = null;
+        Console.WriteLine(none.AsSpan().Length);
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        int total = 0;
+        for (int i = 0; i < 1000; i++) total += s.AsSpan(i % 5).Length;
+        Console.WriteLine(total + " " + (GC.GetAllocatedBytesForCurrentThread() - before < 1000));
+        return 0;
+    }
+}

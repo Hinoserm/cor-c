@@ -96,6 +96,9 @@ public sealed partial class Lowering
             }
             case "FromWord":
                 return ToWord(Arg(call, target, 0));
+            case "CharsOf":
+                // The string itself: its layout is a char[]'s.
+                return ToWord(Arg(call, target, 0));
 
             case "Bits":
                 return _e.Unary(Opcode.Bits, R(Arg(call, target, 0)), IrType.I64);
