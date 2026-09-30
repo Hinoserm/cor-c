@@ -7288,14 +7288,21 @@ public sealed class Parser
             {
                 _i++;
 
+                // `"text"u8` IS A ReadOnlySpan<byte> OVER DATA, as C# 11 has
+                // it: the bytes are laid down once, where the program's data
+                // is, and each evaluation allocates nothing (EmitNew, the
+                // array marked Utf8Bytes). Read-only by its type, so nothing
+                // can write the one copy every use shares.
+                byte[] encoded = System.Text.Encoding.UTF8.GetBytes(at.Text);
                 NewExpr bytes = new()
                 {
                     Type = new TypeRef { Name = "byte", Line = at.Line, Col = at.Col },
                     Elements = new List<Expr>(),
+                    Utf8Bytes = encoded,
                     Line = at.Line, Col = at.Col,
                 };
 
-                foreach (byte b in System.Text.Encoding.UTF8.GetBytes(at.Text))
+                foreach (byte b in encoded)
                 {
                     bytes.Elements.Add(new LiteralExpr
                     {
@@ -7304,7 +7311,19 @@ public sealed class Parser
                     });
                 }
 
-                return bytes;
+                NewExpr span = new()
+                {
+                    Type = new TypeRef
+                    {
+                        Name = "ReadOnlySpan",
+                        Args = { new TypeRef { Name = "byte", Line = at.Line, Col = at.Col } },
+                        Line = at.Line, Col = at.Col,
+                    },
+                    Line = at.Line, Col = at.Col,
+                };
+                span.Args.Add(bytes);
+                span.ArgNames.Add(null);
+                return span;
             }
 
             case Tok.InterpStr:

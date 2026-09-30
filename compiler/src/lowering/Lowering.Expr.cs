@@ -1067,6 +1067,11 @@ public sealed partial class Lowering
         Type type = _b.TypeOf(nw);
         TypeSymbol? sym = type.Symbol;
 
+        if (nw.Utf8Bytes is { } utf8)
+        {
+            return _e.Address(Utf8Data(utf8));
+        }
+
         if (nw.Elements is { } written)
         {
             Type element = type.Element ?? Type.I32;

@@ -27,6 +27,12 @@ public sealed class NewExpr : Expr
     public List<Expr>? Elements { get; set; }
 
     /// <summary>
+    /// The bytes of a <c>"text"u8</c> literal, whose array this is: laid down
+    /// as data rather than allocated (Lowering.Utf8Data).
+    /// </summary>
+    public byte[]? Utf8Bytes { get; init; }
+
+    /// <summary>
     /// A COLLECTION EXPRESSION, <c>[a, b, ..c]</c>: a target-typed collection
     /// whose elements are its Adds (a spread is an Add marked Spread). The
     /// checker makes it an array or a collection initializer of the type that

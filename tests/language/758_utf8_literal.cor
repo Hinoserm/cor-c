@@ -1,0 +1,26 @@
+// test: utf8 literal
+// expect-exit: 0
+// expect-output:
+// 4 84 True True 3 200000
+//
+// `"text"u8` is a ReadOnlySpan<byte> over the literal's UTF-8, as C# 11 has
+// it: laid down once as data, so taking it in a loop allocates nothing, and
+// the same literal twice is the same bytes. "é" is two bytes.
+
+static class Program
+{
+    static int Count(ReadOnlySpan<byte> s) => s.Length;
+
+    static int Main()
+    {
+        ReadOnlySpan<byte> meta = "META"u8;
+        ReadOnlySpan<byte> again = "META"u8;
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        long sum = 0;
+        for (int i = 0; i < 100000; i++) sum += Count("ab"u8);
+        long after = GC.GetAllocatedBytesForCurrentThread();
+        System.Console.WriteLine(meta.Length + " " + meta[2] + " " + (meta[0] == again[0] && meta[3] == again[3])
+            + " " + (after - before < 1000) + " " + "aé"u8.Length + " " + sum);
+        return 0;
+    }
+}

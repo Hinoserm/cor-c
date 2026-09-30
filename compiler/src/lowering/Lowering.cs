@@ -544,6 +544,30 @@ public sealed partial class Lowering
         return sym;
     }
 
+    private readonly Dictionary<string, string> _utf8Data = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// A <c>"text"u8</c> literal's bytes as a byte array object in the data
+    /// section, laid down as StaticArrayData lays one down, once for each
+    /// distinct literal: the ReadOnlySpan the literal is reads it in place.
+    /// </summary>
+    private string Utf8Data(byte[] text)
+    {
+        string key = System.Convert.ToHexString(text);
+        if (_utf8Data.TryGetValue(key, out string? known)) return known;
+        int w = _t.WordSize;
+        int bytes = (_t.ArrayHeaderBytes + text.Length + w - 1) / w * w;
+        byte[] block = new byte[Math.Max(bytes, _t.ArrayHeaderBytes + w)];
+        WriteWord(block, _t.ArrayCountOffset, text.Length);
+        Array.Copy(text, 0, block, _t.ArrayHeaderBytes, text.Length);
+        string sym = "u8_" + System.Convert.ToHexString(System.Security.Cryptography.SHA1.HashData(text))[..16] + "_" + _utf8Data.Count;
+        DataItem item = new(sym, block) { Align = _t.Align64, Exported = false, NoReferences = true };
+        item.Relocs.Add(new DataReloc(0, SequenceDescriptor(ElementKey(Type.U8), 1, isString: false, elementType: Type.U8), _t.DescriptorBytes));
+        _m.Data.Add(item);
+        _utf8Data[key] = sym;
+        return sym;
+    }
+
     /// <summary>
     /// The largest power of two that divides <paramref name="size"/>, capped
     /// at <paramref name="max"/>. Section/symbol alignment must be a power of
