@@ -93,9 +93,24 @@ public sealed partial class Lowering
         return r ?? _e.Const(0, IrTypes.Word);
     }
 
+    /// <summary>
+    /// OBJECT'S MEMBERS ON A STRUCT THAT DECLARES NONE are ValueType's, asked
+    /// of the boxed value: its descriptor's slots compare, hash and name it by
+    /// its fields, as .NET boxes a struct to call an inherited Equals.
+    /// </summary>
+    private VReg BoxedForObject(MethodSymbol target, Expr on, VReg receiver)
+    {
+        if (target.Owner.Name == "object" && !target.Static && _b.TypeOf(on) is { } of
+            && of.Symbol is { Kind: TypeKind.Struct } && !of.IsNullableValue && !of.IsPointer && !of.IsArray)
+        {
+            return BoxValue(on, receiver, of);
+        }
+        return receiver;
+    }
+
     private VReg EmitInstanceCall(MethodSymbol target, Expr on, List<Expr> argExprs, Expr? extra = null)
     {
-        VReg receiver = Eval(on);
+        VReg receiver = BoxedForObject(target, on, Eval(on));
         List<Operand> args = new() { R(receiver) };
         for (int i = 0; i < argExprs.Count; i++)
         {
@@ -221,7 +236,7 @@ public sealed partial class Lowering
                 switch (call.Target)
                 {
                     case MemberExpr m:
-                        receiver = Eval(m.Target);
+                        receiver = BoxedForObject(target, m.Target, Eval(m.Target));
                         break;
                     case NameExpr:
                         receiver = _this;

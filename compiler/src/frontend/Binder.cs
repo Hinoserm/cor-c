@@ -13828,7 +13828,11 @@ public sealed partial class Binder
         //
         // Before the extensions, because these are real members and an
         // extension must never shadow one.
-        if (owner.Kind is TypeKind.Class or TypeKind.Interface
+        // A STRUCT TOO: it derives from ValueType, whose Equals, GetHashCode
+        // and ToString answer over its fields -- the boxed value's slots,
+        // which is what a call on one becomes. `pair.Equals(other)` on a
+        // struct that declares none was 'no member Equals'.
+        if (owner.Kind is TypeKind.Class or TypeKind.Interface or TypeKind.Struct
             && Rooted().FindMethods(m.Name) is { Count: > 0 } inherited)
         {
             _r.Resolved[m] = new MethodGroupSym(inherited);

@@ -1,0 +1,20 @@
+// test: a generic method declared in another unit runs for value types of every size, as .NET specialises one per value type
+// units: tests/language/support/861_generic_methods_units.cor
+// expect-exit: 0
+// expect-output:
+// 3 30000000000 4 8 2.5
+// True False True
+// 30000000000 2.5 4
+using GenericUnits;
+
+static class Program
+{
+    static int Main()
+    {
+        uint[] a = { 1, 2, 3 }; long[] l = { 10, 20, 30000000000 }; Pair[] p = { new Pair(1, 2), new Pair(3, 4) }; ushort[] us = { 7, 8 }; double[] d = { 1.5, 2.5 };
+        Console.WriteLine(new ReadOnlySpan<uint>(a).Last() + " " + new ReadOnlySpan<long>(l).Last() + " " + new ReadOnlySpan<Pair>(p).Last().B + " " + new ReadOnlySpan<ushort>(us).Last() + " " + new ReadOnlySpan<double>(d).Last());
+        Console.WriteLine(new ReadOnlySpan<long>(l).Eq(new ReadOnlySpan<long>(l)) + " " + new ReadOnlySpan<long>(l).Eq(new ReadOnlySpan<long>(new long[] { 10, 20, 30000000001 })) + " " + new ReadOnlySpan<Pair>(p).Eq(new ReadOnlySpan<Pair>(p)));
+        Console.WriteLine(Spans.Pick(true, 30000000000L, 1L) + " " + Spans.Pick(false, 1.0, 2.5) + " " + Spans.Pick(false, p[0], p[1]).B);
+        return 0;
+    }
+}

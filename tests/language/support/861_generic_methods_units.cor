@@ -1,0 +1,21 @@
+// The other unit of 861_generic_methods_across_units: generic methods, used with value types elsewhere.
+namespace GenericUnits;
+
+public struct Pair
+{
+    public long A;
+    public long B;
+    public Pair(long a, long b) { A = a; B = b; }
+}
+
+public static class Spans
+{
+    public static T Last<T>(this ReadOnlySpan<T> a) => a[a.Length - 1];
+    public static bool Eq<T>(this ReadOnlySpan<T> a, ReadOnlySpan<T> b)
+    {
+        if (a.Length != b.Length) return false;
+        for (int i = 0; i < a.Length; i++) if (!a[i]!.Equals(b[i])) return false;
+        return true;
+    }
+    public static T Pick<T>(bool first, T a, T b) => first ? a : b;
+}

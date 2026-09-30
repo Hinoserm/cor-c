@@ -1,0 +1,16 @@
+// test: a struct that declares none answers ValueType's Equals, GetHashCode and ToString -- by its fields, and its name -- as .NET's does, the receiver boxed
+// expect-exit: 0
+// expect-output:
+// True False True True Pair
+using System;
+struct Pair { public long A; public string S; public Pair(long a, string s) { A = a; S = s; } }
+static class Program
+{
+    static int Main()
+    {
+        Pair a = new Pair(1, "x"), b = new Pair(1, "x"), c = new Pair(2, "x");
+        object boxed = b;
+        Console.WriteLine(a.Equals(b) + " " + a.Equals(c) + " " + a.Equals(boxed) + " " + (a.GetHashCode() == b.GetHashCode()) + " " + a.ToString());
+        return 0;
+    }
+}
