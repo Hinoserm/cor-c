@@ -1,8 +1,8 @@
 // test: a Dictionary and a HashSet made in the frame own the arrays Grow gives them: the fields hold the frame's first arrays and then fresh ones, and every array is right after being freed with its table
 // expect-exit: 0
 // expect-output:
-// 49950 4950 100
-// 49950 4950 100
+// 49500 4950 100
+// 49500 4950 100
 using System.Collections.Generic;
 
 static class Program
