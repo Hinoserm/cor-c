@@ -1,0 +1,69 @@
+// test: owned fields across separately compiled units
+// units: tests/language/support/777_owned_units.cor
+// expect-exit: 0
+// expect-output:
+// 45500000 0 True 7
+//
+// A field every store fills with an object made for it, and every read keeps
+// within, owns what it holds -- judged over the whole program when the
+// stores, the reads and the functions making the objects are in different
+// units, as when they are in one. Holder's buffer is filled and read in the
+// other unit and read here through its getter, directly and handed back by
+// a function of this unit; Box's array is made by the other unit's Make.
+// Freeing either owner frees its array, and a store that replaces one frees
+// the old: a hundred thousand of each, made, grown and dropped, run no
+// collection and leave the heap as they found it. Keeper's field holds the
+// array Maker shares with everybody, so it owns nothing and the shared
+// array outlives every Keeper.
+
+using OwnedUnits;
+
+sealed class Box
+{
+    byte[] _data;
+
+    public Box(int n) { _data = Maker.Make(n); }
+
+    public void Again(int n) { _data = Maker.Make(n); }
+
+    public int First() { return _data[0] + _data.Length; }
+}
+
+sealed class Keeper
+{
+    byte[] _kept;
+
+    public Keeper() { _kept = Maker.Shared(); }
+
+    public int Get() { return _kept[0]; }
+}
+
+static class Program
+{
+    static byte[] BufferOf(Holder h) { return h.Buffer; }
+
+    static int Main()
+    {
+        int small = 64, large = 111, boxed = 40, again = 50;
+        int collections = GC.CollectionCount(0);
+        long before = GC.GetTotalMemory(false);
+        long total = 0;
+        for (int k = 0; k < 100000; k++)
+        {
+            Holder h = new Holder(small);
+            total += h.Size();
+            h.Grow(large);
+            total += h.Size();
+            total += h.Buffer.Length;
+            total += BufferOf(h).Length;
+            Box b = new Box(boxed);
+            b.Again(again);
+            total += b.First();
+            Keeper keeper = new Keeper();
+            total += keeper.Get();
+        }
+        long grown = GC.GetTotalMemory(false) - before;
+        System.Console.WriteLine(total + " " + (GC.CollectionCount(0) - collections) + " " + (grown < 65536) + " " + Maker.Shared()[0]);
+        return 0;
+    }
+}

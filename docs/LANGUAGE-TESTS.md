@@ -55,6 +55,11 @@ Every test starts with a comment block the runner reads:
 - `sources` (optional) lists extra source files, relative to the repository
   root, compiled with the test, such as helpers in `tests/language/support/`.
   Kernel/driver integration fixtures belong in the OS repository.
+- `units` (optional) lists sources, relative to the repository root, compiled
+  apart from the test: they and the runtime and libraries as one object, the
+  test on its own against their declarations as another, the two linked as the
+  whole program (`corc link --closed`). For what the link decides across
+  separately compiled units.
 - `expect-exit` is the exit code `Main` must return. `nonzero` accepts any
   non-zero code, for tests of runtime failures (a bounds check, an uncaught
   exception) whose exact code is the runtime's choice.

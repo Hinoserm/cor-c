@@ -183,9 +183,34 @@ for f in "${tests[@]}"; do
     # it was written before the policy, and it may not be edited (the tests
     # are the specification). In C# a warning is not an error unless somebody
     # asks, and here nobody is asking.
+    # SEPARATELY COMPILED UNITS: "// units: path ..." compiles those sources,
+    # with the runtime and the libraries, as one object, and the test on its
+    # own against their declarations as another, and links the two as the
+    # whole program (corc link --closed) -- what the link decides across
+    # units, where one compile would decide it over everything at once.
+    unit_sources=""
+    for src in $(header_value "$f" units); do
+        unit_sources="$unit_sources $root/$src"
+    done
+    if [ -n "$unit_sources" ]; then
+        # shellcheck disable=SC2086
+        {
+            # The libraries the other unit holds, as declarations here:
+            # the ones the run names, or else the compiler's own.
+            refs=""
+            for lib in ${lib_paths:-$($CORC library-sources)}; do refs="$refs --ref $lib"; done
+            $CORC index --assembly Units $unit_sources -o "$work/$name.idx" \
+            && $CORC compile -Wno-error "${compiler_flags[@]}" $own_flags --lib $unit_sources --obj -o "$work/$name.units.o" \
+            && $CORC compile -Wno-error "${compiler_flags[@]}" $own_flags --nostdlib $refs --decl-index "$work/$name.idx" --assembly Units \
+                $extra "$f" --obj -o "$work/$name.o" \
+            && $CORC link --closed "$work/$name.o" "$work/$name.units.o" -o "$exe"
+        } >"$work/$name.compile" 2>&1
+        cc_status=$?
+    else
     # shellcheck disable=SC2086
     $CORC compile -Wno-error "${compiler_flags[@]}" $own_flags $lib_paths $extra "$f" -o "$exe" >"$work/$name.compile" 2>&1
     cc_status=$?
+    fi
     if [ "$verbose" = 1 ] && [ -s "$work/$name.compile" ]; then
         sed "s/^/    [corc] /" "$work/$name.compile"
     fi
