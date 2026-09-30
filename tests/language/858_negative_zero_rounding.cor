@@ -1,0 +1,12 @@
+// test: Math.Truncate, Ceiling, Min and Max keep the sign of a zero as .NET does
+// expect-exit: 0
+// expect-output:
+// -0 -0 0 -0 2 1
+static class Program
+{
+    static int Main()
+    {
+        System.Console.WriteLine(System.Math.Ceiling(-0.5) + " " + System.Math.Truncate(-0.25) + " " + System.Math.Max(0.0, -0.0) + " " + System.Math.Min(0.0, -0.0) + " " + System.Math.Floor(2.5) + " " + System.Math.Min(1.0, 2.0));
+        return 0;
+    }
+}

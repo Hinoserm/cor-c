@@ -3034,7 +3034,14 @@ static class Runtime
         {
             return x;
         }
-        return (double)(long)x;
+        // A negative value that truncates to zero is -0.0, as .NET's is:
+        // Math.Ceiling(-0.5) prints as -0.
+        double t = (double)(long)x;
+        if (t == 0.0 && Sys.Bits(x) < 0)
+        {
+            return Sys.FromBits(unchecked((long)0x8000000000000000));
+        }
+        return t;
     }
 
     public static double Floor(double x)
@@ -3103,6 +3110,11 @@ static class Runtime
         {
             return b;
         }
+        // Equal, one of them -0.0: .NET orders -0.0 below +0.0.
+        if (a == b)
+        {
+            return Sys.Bits(a) < 0 ? a : b;
+        }
         return a < b ? a : b;
     }
 
@@ -3115,6 +3127,10 @@ static class Runtime
         if (IsNaN(b))
         {
             return b;
+        }
+        if (a == b)
+        {
+            return Sys.Bits(a) < 0 ? b : a;
         }
         return a > b ? a : b;
     }
