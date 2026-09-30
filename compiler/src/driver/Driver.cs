@@ -205,6 +205,8 @@ public static class Driver
                                  .text, .rodata and .data contiguous from --base,
                                  no headers, and the .bss size reported so the
                                  loader knows how much to zero. Needs --freestanding
+              --map <file>       with --flat: every symbol of the image, largest
+                                 first, with its address and section
             """);
         return 0;
     }
@@ -370,7 +372,7 @@ public static class Driver
         {
             if (args[i].StartsWith('-'))
             {
-                if (args[i] is "-o" or "--target" or "--entry" or "--link-shared" or "--base" or "--tag"
+                if (args[i] is "-o" or "--target" or "--entry" or "--link-shared" or "--base" or "--tag" or "--map"
                     or "--load" or "--paddr" or "--cpu" or "--tune" or "--fpu" or "--with" or "--asm-entry"
                     or "--ref" or "--libdir" or "--runpath" or "--trace-opt" or "--batch-without"
                     or "-D" or "--define" or "--jobs" or "--decl-index" or "--assembly" or "--dependency-file" or "--main-type"
@@ -870,7 +872,8 @@ public static class Driver
             // --flat --obj. Keep the original metadata and --with objects.
             TargetContract.Validate(link);
             Corsac.Lang.Lto.LinkTimeOptimizer.Run(link, !args.Contains("--no-lto") && !args.Contains("--no-opt"));
-            Linker.FlatImage image = Linker.LinkFlat(link, entry, checked((uint)(loadBase ?? 0x10000)));
+            // --map FILE: every symbol of the image, largest first, as `corc link` writes it.
+            Linker.FlatImage image = Linker.LinkFlat(link, entry, checked((uint)(loadBase ?? 0x10000)), mapPath: Value(args, "--map"));
             File.WriteAllBytes(output, image.Bytes);
             Console.Error.WriteLine(
                 $"{output}: flat image at 0x{image.Base:x}, {image.Bytes.Length} bytes "
