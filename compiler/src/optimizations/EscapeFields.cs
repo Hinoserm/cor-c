@@ -148,6 +148,16 @@ public sealed partial class Escape
 
     private readonly Dictionary<Function, List<OwnedRecord>> _records = new();
 
+    /// <summary>What made the object an owned slot's free gives back, when `free` is one.</summary>
+    private Instr? RecordedOrigin(Function f, Instr free)
+    {
+        if (!_records.TryGetValue(f, out List<OwnedRecord>? recorded)) return null;
+        foreach (OwnedRecord r in recorded)
+            foreach (var own in r.Frees)
+                if (ReferenceEquals(own.Free, free)) return r.Origin;
+        return null;
+    }
+
     private void Record(Function f, OwnedRecord r)
     {
         if (!_records.TryGetValue(f, out List<OwnedRecord>? list)) _records[f] = list = new();

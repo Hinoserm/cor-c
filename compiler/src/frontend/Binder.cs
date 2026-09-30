@@ -62,13 +62,20 @@ public sealed partial class Binder
         // but never forbid reuse in a sibling. These are names, not bindings:
         // lookup and definite assignment retain their declaration-time rules.
         public readonly HashSet<string> NestedNames = new(StringComparer.Ordinal);
-        public readonly bool FunctionBoundary;
+        public bool FunctionBoundary;
+        /// <summary>Kept by a local function to bind its body later: never reused.</summary>
+        public bool Captured;
 
         public LocalScope(bool functionBoundary) : base(StringComparer.Ordinal)
         {
             FunctionBoundary = functionBoundary;
         }
     }
+
+    // SCOPES ARE REUSED: a block's scope, emptied when it closes, is the next
+    // block's -- two tables for every block the binder checked were most of
+    // what PushScope cost. One a local function keeps is never reused.
+    private readonly Stack<LocalScope> _spareScopes = new();
 
     /// Calls whose receiver has already been moved into the argument list. A
     /// call is checked once per generic instantiation, and inserting twice
@@ -3815,7 +3822,15 @@ public sealed partial class Binder
     }
 
     private void PushScope(bool functionBoundary = false)
-        => _scopes.Add(new LocalScope(functionBoundary));
+    {
+        if (_spareScopes.TryPop(out LocalScope? spare))
+        {
+            spare.FunctionBoundary = functionBoundary;
+            _scopes.Add(spare);
+            return;
+        }
+        _scopes.Add(new LocalScope(functionBoundary));
+    }
 
     private void PopScope()
     {
@@ -3828,12 +3843,21 @@ public sealed partial class Binder
 
         // Slots are reused across sibling scopes: a frame is as deep as the
         // deepest nesting, not as long as the method.
-        foreach (LocalSym local in _scopes[^1].Values.OfType<LocalSym>())
+        int locals = 0;
+        foreach (Sym held in closing.Values)
         {
+            if (held is not LocalSym local) continue;
             _assigned.Remove(local);
+            locals++;
         }
-        _nextSlot -= _scopes[^1].Values.OfType<LocalSym>().Count();
+        _nextSlot -= locals;
         _scopes.RemoveAt(_scopes.Count - 1);
+        if (!closing.Captured)
+        {
+            closing.Clear();
+            closing.NestedNames.Clear();
+            _spareScopes.Push(closing);
+        }
     }
 
     private void Declare(Node at, string name, Sym sym)
@@ -3957,6 +3981,7 @@ public sealed partial class Binder
             _r.LocalSymbols[local] = symbol;
             _declOf[symbol] = local;
             _hoistedFunctions[local] = symbol;
+            foreach (LocalScope kept in _scopes) kept.Captured = true;
             _localFunctionContexts[local] = new(new(_scopes), _scope, _thisType, _lexicalType, _member);
             Declare(local, local.Name, symbol);
             _assigned.Add(symbol);
