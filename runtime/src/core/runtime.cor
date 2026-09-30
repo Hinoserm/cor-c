@@ -2188,7 +2188,10 @@ static class Runtime
             long lines = Uleb(at, out at);
 
             walk = walk + delta;
-            if (address < walk || address >= walk + size) { continue; }
+            // The deltas are unsigned: every entry after one past the address
+            // starts past it too.
+            if (address < walk) { return false; }
+            if (address >= walk + size) { continue; }
 
             name = strings + said;
             file = strings + source;
