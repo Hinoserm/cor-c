@@ -105,6 +105,16 @@ public static class Program
             try { X86Assembler.Assemble("paddd mm0, mm1", "bad.asm", bits: 32); }
             catch (Corsac.Asm.AsmException) { excluded = true; }
             Check(excluded, "486 accepted MMX");
+            // `.runtime mmx`: code reached only after a CPUID check assembles
+            // MMX on a plain Pentium, and `.runtime none` ends the allowance.
+            byte[] guarded = X86Assembler.Assemble(".runtime mmx\npaddsw mm0, mm1\nemms\n.runtime none\n", "guarded.asm",
+                bits: 32, cpu: X86Cpu.Parse(["--cpu=pentium"])).Bytes;
+            Check(guarded.Length == 5 && guarded[0] == 0x0F && guarded[1] == 0xED && guarded[3] == 0x0F && guarded[4] == 0x77,
+                ".runtime mmx did not assemble paddsw and emms");
+            bool ended = false;
+            try { X86Assembler.Assemble(".runtime mmx\n.runtime none\npaddsw mm0, mm1\n", "ended.asm", bits: 32, cpu: X86Cpu.Parse(["--cpu=pentium"])); }
+            catch (Corsac.Asm.AsmException) { ended = true; }
+            Check(ended, ".runtime none did not end the MMX allowance");
             foreach (var forbidden in new[] {
                 ("386", "bswap eax"), ("386", "xadd eax, ebx"), ("386", "invlpg [eax]"),
                 ("486", "rdtsc"), ("486", "cmpxchg8b qword [eax]"), ("pentium", "emms"),

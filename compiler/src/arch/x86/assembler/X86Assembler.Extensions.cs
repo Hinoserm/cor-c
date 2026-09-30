@@ -32,6 +32,10 @@ public sealed partial class X86Assembler
         ["pfpnacc"] = 0x8e, ["pswapd"] = 0xbb,
     };
 
+    /// Set by `.runtime mmx`: MMX is allowed because the code is only
+    /// reached after a check of the processor, not because --cpu has it.
+    private bool _runtimeMmx;
+
     private void Require(bool available, string mnemonic, string feature)
     {
         // Long mode is a K8 or later, which has every one of them.
@@ -135,12 +139,12 @@ public sealed partial class X86Assembler
         }
         if (mn is "emms" or "femms")
         {
-            Require(mn == "emms" ? _cpu.Mmx : _cpu.ThreeDNow, mn, mn == "emms" ? "MMX" : "3DNow!");
+            Require(mn == "emms" ? _cpu.Mmx || _runtimeMmx : _cpu.ThreeDNow, mn, mn == "emms" ? "MMX" : "3DNow!");
             Need(a, 0, mn); Emit(0x0f, mn == "emms" ? (byte)0x77 : (byte)0x0e); return true;
         }
         if (mn is "movd" or "movq")
         {
-            Require(_cpu.Mmx, mn, "MMX"); Need(a, 2, mn);
+            Require(_cpu.Mmx || _runtimeMmx, mn, "MMX"); Need(a, 2, mn);
             Operand d = P(a[0]), s = P(a[1]);
             bool load = d.Kind == OperandKind.Mmx;
             Operand mm = load ? d : s, other = load ? s : d;
@@ -157,7 +161,7 @@ public sealed partial class X86Assembler
         bool packed = MmxOpcodes.TryGetValue(mn, out byte opcode);
         bool now = ThreeDNowOpcodes.TryGetValue(mn, out byte suffix);
         if (!packed && !now) return false;
-        Require(now ? _cpu.ThreeDNow : _cpu.Mmx, mn, now ? "3DNow!" : "MMX");
+        Require(now ? _cpu.ThreeDNow : _cpu.Mmx || _runtimeMmx, mn, now ? "3DNow!" : "MMX");
         if (mn is "pf2iw" or "pi2fw" or "pfnacc" or "pfpnacc" or "pswapd")
             Require(_cpu.ThreeDNowExtended, mn, "K6-2+/K6-III+ 3DNow! extensions");
         Need(a, 2, mn);

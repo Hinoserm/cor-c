@@ -145,6 +145,7 @@ public sealed partial class X86Assembler : ISymbols
             _sec = _sections[0];
             _decisionAt = 0;
             _bits = _defaultBits;
+            _runtimeMmx = false;
             _baseLocked = false;
             if (_pass == 1)
             {
@@ -838,6 +839,19 @@ public sealed partial class X86Assembler : ISymbols
                     throw Error(".entry takes one label");
                 }
                 _entryLabel = ops[0];
+                return;
+
+            // `.runtime mmx`: the code from here on is reached only after the
+            // program has asked the processor whether it has MMX, so MMX is
+            // assembled whatever --cpu says; `.runtime none` ends that. The
+            // check against --cpu stays for everything else, and a routine
+            // under `.runtime` is the caller's promise, not the assembler's.
+            case ".runtime":
+                if (ops.Length != 1 || (ops[0] != "mmx" && ops[0] != "none"))
+                {
+                    throw Error(".runtime takes mmx or none");
+                }
+                _runtimeMmx = ops[0] == "mmx";
                 return;
 
             case ".bits":
