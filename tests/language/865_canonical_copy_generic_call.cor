@@ -1,0 +1,27 @@
+// test: inside a generic type's canonical copy, a generic method called with the copy's own ReadOnlySpan<T> and a T binds: the span is the canonical copy of the word instantiation inferred (865)
+// expect-exit: 0
+// expect-output:
+// 2 1 1
+using System;
+
+struct Finder<T> where T : IEquatable<T>
+{
+    readonly ReadOnlySpan<T> _items;
+    readonly T _want;
+    public Finder(ReadOnlySpan<T> items, T want) { _items = items; _want = want; }
+    public int Where() => _items.IndexOf(_want);
+    public int Any(ReadOnlySpan<T> set) => _items.IndexOfAny(set);
+}
+
+static class Program
+{
+    static int Main()
+    {
+        string[] words = { "a", "b", "c" };
+        Finder<string> f = new Finder<string>(words, "c");
+        byte[] bytes = { 1, 2, 3 };
+        Finder<byte> g = new Finder<byte>(bytes, 2);
+        Console.WriteLine(f.Where() + " " + f.Any(new ReadOnlySpan<string>(new[] { "b" })) + " " + g.Where());
+        return 0;
+    }
+}

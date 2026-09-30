@@ -5414,6 +5414,16 @@ public sealed partial class Binder
             return true;
         }
 
+        // AND THE OTHER WAY, INSIDE A CANONICAL COPY: there a type parameter
+        // binds as the word it is, `object`, so a generic method called with
+        // the copy's own `ReadOnlySpan<T>` and a `T` infers T as object and
+        // asks for `ReadOnlySpan$object` -- whose canonical copy is the very
+        // `ReadOnlySpan$__canon` it was handed: one layout, one routine.
+        if (InCanonicalCopy && to.Symbol?.Decl?.Canon is string wanted && wanted == from.Symbol?.Name)
+        {
+            return true;
+        }
+
         if (from.Symbol != null && to.Symbol != null)
         {
             return from.Symbol.DerivesFrom(to.Symbol);
