@@ -1348,10 +1348,12 @@ static class Runtime
         {
             return 0;
         }
+        // Its UTF-8, which is what symbol tables hold: once, for every image.
+        byte[] bytes = Utf8Transcoder.Encode(name, 0, name.Length);
         long image = Sys.Peek(debug + WordSize.Bytes);
         while (image != 0)
         {
-            long found = SymbolIn(Sys.Peek(image + 2 * WordSize.Bytes), Sys.Peek(image), name);
+            long found = SymbolIn(Sys.Peek(image + 2 * WordSize.Bytes), Sys.Peek(image), bytes);
             if (found != 0)
             {
                 return found;
@@ -1366,7 +1368,7 @@ static class Runtime
         return value != 0 && value < bias ? value + bias : value;
     }
 
-    static long SymbolIn(long dynamic, long bias, string name)
+    static long SymbolIn(long dynamic, long bias, byte[] bytes)
     {
         if (dynamic == 0)
         {
@@ -1382,22 +1384,20 @@ static class Runtime
         long gnu = Located(Tag(dynamic, DtGnuHash), bias);
         if (gnu != 0)
         {
-            return GnuLookup(gnu, symbols, strings, versions, bias, name);
+            return GnuLookup(gnu, symbols, strings, versions, bias, bytes);
         }
         long sysv = Located(Tag(dynamic, DtHash), bias);
         if (sysv != 0)
         {
-            return SysvLookup(sysv, symbols, strings, versions, bias, name);
+            return SysvLookup(sysv, symbols, strings, versions, bias, bytes);
         }
         return 0;
     }
 
     /// GNU's hash: h * 33 + c from 5381, a bucket per hash, and a chain whose
     /// entries hold the hash with the low bit set on the last one.
-    static long GnuLookup(long table, long symbols, long strings, long versions, long bias, string name)
+    static long GnuLookup(long table, long symbols, long strings, long versions, long bias, byte[] bytes)
     {
-        // OVER THE NAME'S UTF-8, which is what the symbol table holds.
-        byte[] bytes = Utf8Transcoder.Encode(name, 0, name.Length);
         long h = 5381;
         for (int i = 0; i < bytes.Length; i++)
         {
@@ -1422,7 +1422,7 @@ static class Runtime
             long link = Sys.PeekWord(chainAt + (index - first) * 4);
             if ((link | 1) == (h | 1))
             {
-                long found = Matching(symbols, strings, versions, bias, index, name);
+                long found = Matching(symbols, strings, versions, bias, index, bytes);
                 if (found != 0)
                 {
                     return found;
@@ -1437,9 +1437,8 @@ static class Runtime
     }
 
     /// SysV's: buckets and chains of symbol indices under the ELF hash.
-    static long SysvLookup(long table, long symbols, long strings, long versions, long bias, string name)
+    static long SysvLookup(long table, long symbols, long strings, long versions, long bias, byte[] bytes)
     {
-        byte[] bytes = Utf8Transcoder.Encode(name, 0, name.Length);
         long h = 0;
         for (int i = 0; i < bytes.Length; i++)
         {
@@ -1460,7 +1459,7 @@ static class Runtime
         long index = Sys.PeekWord(table + 8 + (h % buckets) * 4);
         while (index != 0)
         {
-            long found = Matching(symbols, strings, versions, bias, index, name);
+            long found = Matching(symbols, strings, versions, bias, index, bytes);
             if (found != 0)
             {
                 return found;
@@ -1470,9 +1469,9 @@ static class Runtime
         return 0;
     }
 
-    /// Symbol `index`'s address when it is `name`, defined, and the default
+    /// Symbol `index`'s address when its name is `bytes`, defined, and the default
     /// version of it; an IFUNC's resolver is asked for the real one.
-    static long Matching(long symbols, long strings, long versions, long bias, long index, string name)
+    static long Matching(long symbols, long strings, long versions, long bias, long index, byte[] bytes)
     {
 #if TARGET_64BIT
         long symbol = symbols + index * 24;
@@ -1490,7 +1489,6 @@ static class Runtime
             return 0;
         }
         long text = strings + Sys.PeekWord(symbol);
-        byte[] bytes = Utf8Transcoder.Encode(name, 0, name.Length);
         for (int i = 0; i < bytes.Length; i++)
         {
             if (Sys.PeekByte(text + i) != bytes[i])
