@@ -15,8 +15,6 @@ public sealed class OwnedFieldFacts
     /// an owned field holds: a call to one is a read of the field.
     /// </summary>
     public HashSet<string> Borrowers { get; } = new(StringComparer.Ordinal);
-    /// <summary>Functions that store into an owned field: their bodies are not imported into other units.</summary>
-    public HashSet<string> Writers { get; } = new(StringComparer.Ordinal);
 }
 
 /// <summary>
@@ -238,9 +236,6 @@ public static class OwnedFieldSolver
             if (fields.Any(facts.Fields.ContainsKey)) facts.Borrowers.Add(function);
         foreach ((string symbol, string[] targets) in virtuals)
             if (targets.Any(facts.Borrowers.Contains)) facts.Borrowers.Add(symbol);
-        foreach (OwnedFieldHints unit in all)
-            foreach ((string name, OwnedFunctionRecord function) in unit.Functions)
-                if (function.Writes.Concat(function.InitWrites).Any(facts.Fields.ContainsKey)) facts.Writers.Add(name);
         return facts;
 
         string Describe(LifetimeCondition c)

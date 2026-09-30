@@ -278,6 +278,29 @@ public sealed partial class Escape : IModulePass
     /// </summary>
     private readonly HashSet<Instr> _owned = new(ReferenceEqualityComparer.Instance);
 
+    /// <summary>
+    /// The instructions that make a promoted object: the copy of its frame
+    /// slot's address that stands where its allocation was. Such an object
+    /// is this function's own, proved never to escape it, and zeroed where it
+    /// is made, as the allocator's memory is.
+    /// </summary>
+    private readonly HashSet<Instr> _promotedMade = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>
+    /// Whether `made` makes an object no other thread can see: a promoted
+    /// object, or an allocation of this function that never escapes it.
+    /// Replacing an owned field's value frees the old one only in such an
+    /// object (OwnedFields, ApplyOwnedFields).
+    /// </summary>
+    private bool PrivateOwner(Function f, Instr made, Dictionary<string, bool[]> summaries, Dictionary<Instr, bool> known)
+    {
+        if (_promotedMade.Contains(made)) return true;
+        if (made is not { Op: Opcode.Call, Dest: { } ownerReg } || !IsAllocator(made.Callee)) return false;
+        if (!known.TryGetValue(made, out bool isPrivate))
+            known[made] = isPrivate = !Analyse(f, new[] { ownerReg }, summaries, made).Escapes;
+        return isPrivate;
+    }
+
     // ---- fresh returns ----------------------------------------------------------------
     //
     // AN OBJECT HANDED OVER IS OWNED BY WHOEVER TAKES IT. A helper that makes
@@ -1194,7 +1217,8 @@ public sealed partial class Escape : IModulePass
         if (owned.Count == 0) return;
 
         // Replacing a value frees it -- ONLY IN AN OBJECT NO OTHER THREAD CAN
-        // SEE: one this function made and that never escapes it. The proof
+        // SEE: one this function made and that never escapes it, on the heap
+        // or promoted to its frame (zeroed where it is made). The proof
         // above is of one thread: a field of a shared object replaced under a
         // lock on one processor freed the value another had just read under
         // the same lock (and an interrupt handler's the same). Anywhere else
@@ -1204,11 +1228,8 @@ public sealed partial class Escape : IModulePass
         foreach ((Function f, Block b, Instr st) in stores)
         {
             if (!owned.Contains(st.Field!)) continue;
-            if (st.Operands[0] is not RegOperand baseReg || Origin(Defs(f), baseReg.Reg) is not { Op: Opcode.Call, Dest: { } ownerReg } madeOwner
-                || !IsAllocator(madeOwner.Callee)) continue;
-            if (!privateOwner.TryGetValue(madeOwner, out bool kept))
-                privateOwner[madeOwner] = kept = !Analyse(f, new[] { ownerReg }, summaries, madeOwner).Escapes;
-            if (!kept) continue;
+            if (st.Operands[0] is not RegOperand baseReg || Origin(Defs(f), baseReg.Reg) is not Instr madeOwner
+                || !PrivateOwner(f, madeOwner, summaries, privateOwner)) continue;
             int at = b.Instrs.IndexOf(st);
             List<Instr> made = new();
             VReg old = f.NewReg(IrTypes.Word);
@@ -2401,6 +2422,7 @@ public sealed partial class Escape : IModulePass
 
                 b.Instrs.RemoveAt(k);
                 b.Instrs.InsertRange(k, replacement);
+                _promotedMade.Add(replacement[0]);
                 Record(f, new OwnedRecord { Origin = replacement[1], Root = i.Dest, SlotAddress = addr, Slot = slot, Renew = replacement[1], Bytes = bytes });
                 k += replacement.Count - 1;
                 budget -= bytes;
