@@ -2746,11 +2746,86 @@ static class Runtime
     /// steps and a full 64-bit one costs 64. A zero divisor answers zero: the
     /// compiler checks for zero before it calls, so this cannot be reached
     /// from `/`, and the callers inside this file never pass one.
+    // A DIVISOR THAT FITS IN 32 BITS -- every time conversion, every stride
+    // and size, nearly every division there is -- goes through the
+    // processor's 32-bit DIV: the high word once, then what is left with the
+    // low word by Hacker's Delight's divlu (two 32-by-16 steps on 16-bit
+    // halves, the divisor normalized), all in uint, which the backend divides
+    // with one instruction. The walk below took up to 64 steps of 64-bit
+    // shifts, compares and subtractions; the NT shared page's clock, divided
+    // five times a round, was a fifth of a dual Pentium's time in it.
+
+    /// Leading zero bits of a 32-bit value; 32 for zero.
+    private static int Clz32(uint x)
+    {
+        if (x == (uint)0) return 32;
+        int n = 0;
+        if ((x >> 16) == (uint)0) { n = n + 16; x = x << 16; }
+        if ((x >> 24) == (uint)0) { n = n + 8; x = x << 8; }
+        if ((x >> 28) == (uint)0) { n = n + 4; x = x << 4; }
+        if ((x >> 30) == (uint)0) { n = n + 2; x = x << 2; }
+        if ((x >> 31) == (uint)0) { n = n + 1; }
+        return n;
+    }
+
+    /// (u1:u0) / v and its remainder, for u1 < v and v nonzero: the quotient
+    /// fits 32 bits. Hacker's Delight, divlu.
+    private static uint DivLU(uint u1, uint u0, uint v, out uint remainder)
+    {
+        uint b = 65536;
+        int s = Clz32(v);
+        v = v << s;
+        uint vn1 = v >> 16, vn0 = v & (uint)0xFFFF;
+        uint un32 = s == 0 ? u1 : (u1 << s) | (u0 >> (32 - s));
+        uint un10 = u0 << s;
+        uint un1 = un10 >> 16, un0 = un10 & (uint)0xFFFF;
+        uint q1 = un32 / vn1;
+        uint rhat = un32 - q1 * vn1;
+        while (q1 >= b || q1 * vn0 > b * rhat + un1)
+        {
+            q1 = q1 - 1;
+            rhat = rhat + vn1;
+            if (rhat >= b) break;
+        }
+        uint un21 = un32 * b + un1 - q1 * v;
+        uint q0 = un21 / vn1;
+        rhat = un21 - q0 * vn1;
+        while (q0 >= b || q0 * vn0 > b * rhat + un0)
+        {
+            q0 = q0 - 1;
+            rhat = rhat + vn1;
+            if (rhat >= b) break;
+        }
+        remainder = (un21 * b + un0 - q0 * v) >> s;
+        return q1 * b + q0;
+    }
+
+    /// a / b and a % b for a divisor below 2^32.
+    private static ulong UDivShort(ulong a, uint b, out ulong remainder)
+    {
+        uint hi = (uint)(a >> 32), lo = (uint)a;
+        uint qhi = 0;
+        if (hi >= b)
+        {
+            qhi = hi / b;
+            hi = hi - qhi * b;
+        }
+        uint r;
+        uint qlo = DivLU(hi, lo, b, out r);
+        remainder = (ulong)r;
+        return ((ulong)qhi << 32) | (ulong)qlo;
+    }
+
     private static ulong UDiv(ulong a, ulong b)
     {
         if (b == (ulong)0 || a < b)
         {
             return 0;
+        }
+        if ((b >> 32) == (ulong)0)
+        {
+            ulong unused;
+            return UDivShort(a, (uint)b, out unused);
         }
 
         // Shifting a 64-bit value by 64 is not defined, and b << 32 etc. above
@@ -2786,6 +2861,12 @@ static class Runtime
         if (a < b)
         {
             return a;
+        }
+        if ((b >> 32) == (ulong)0)
+        {
+            ulong left;
+            UDivShort(a, (uint)b, out left);
+            return left;
         }
 
         int shift = Clz64(b) - Clz64(a);
