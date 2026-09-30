@@ -1,0 +1,19 @@
+// test: a tuple of a class written with '?' in one unit and without in another is one type with one layout: the annotation says nothing about storage
+// units: tests/language/support/860_nullable_tuple_units.cor
+// expect-exit: 0
+// expect-output:
+// 1 2 3 0
+using NullableTuples;
+
+static class Program
+{
+    static (Reg? First, Reg? Second) Maybe(Reg a, bool both) => (a, both ? a : null);
+
+    static int Main()
+    {
+        (Reg x, Reg y) = Pairs.Both(new Reg(1), new Reg(2));
+        (Reg? f, Reg? s) = Maybe(new Reg(3), false);
+        Console.WriteLine(x.Id + " " + y.Id + " " + f!.Id + " " + (s == null ? 0 : 9));
+        return 0;
+    }
+}

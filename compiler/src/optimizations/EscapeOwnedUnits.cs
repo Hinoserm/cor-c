@@ -510,7 +510,7 @@ public sealed partial class Escape
                     {
                         if (IsFreeCall(i.Callee) && !FreesOwnMaking(x, k) || IsCatchEnd(i.Callee) || i.Callee == OwnedReplacedFreer)
                         { why = $"read live across {i.Op} {i.Callee}"; return null; }
-                        if (i.Callee is not null) judged.Danger.Add(i.Callee);
+                        if (i.Callee is not null && !NeverWritesFields(i.Callee)) judged.Danger.Add(i.Callee);
                     }
                     else if (i.Op == Opcode.Store && i.Field is not null) judged.DangerFields.Add(i.Field);
                 }

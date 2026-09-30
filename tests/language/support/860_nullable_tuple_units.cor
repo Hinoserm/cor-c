@@ -1,0 +1,13 @@
+// The other unit of 860_nullable_tuple_across_units: a class, and a tuple of it written without '?'.
+namespace NullableTuples;
+
+public sealed class Reg
+{
+    public int Id;
+    public Reg(int id) { Id = id; }
+}
+
+public static class Pairs
+{
+    public static (Reg, Reg) Both(Reg a, Reg b) => (a, b);
+}

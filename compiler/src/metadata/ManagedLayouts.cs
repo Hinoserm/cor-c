@@ -61,7 +61,8 @@ public static class ManagedLayouts
                 using BinaryWriter writer = new(stream, Encoding.UTF8, leaveOpen: true);
                 void TypeName(Type value)
                 {
-                    writer.Write(value.ToString());
+                    // As stored: a class's '?' is an annotation, not layout.
+                    writer.Write(value.LayoutText());
                     writer.Write(value.Symbol?.Key ?? "");
                 }
                 writer.Write((int)type.Kind); writer.Write(type.InstanceSize); writer.Write(type.Depth);

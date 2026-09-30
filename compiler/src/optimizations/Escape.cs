@@ -1208,7 +1208,7 @@ continue;
                         || i.Op == Opcode.CallIndirect && _indirect!.TryGetValue(i, out string[]? t) && t.Any(writers.Contains)
                         || i.Op == Opcode.Call && (IsFreeCall(i.Callee) && !FreesOwnMaking(x, k)
                                                    || IsCatchEnd(i.Callee) || i.Callee == OwnedReplacedFreer
-                                                   || i.Callee is not null && writers.Contains(i.Callee))
+                                                   || i.Callee is not null && writers.Contains(i.Callee) && !NeverWritesFields(i.Callee))
                         // ANY owned field's store, not only this one's: the
                         // free a replacement gets (below) frees the old value's
                         // own owned fields too (Runtime.FreeOwnedFields), so
@@ -1328,6 +1328,18 @@ continue;
         }
         return false;
     }
+
+    /// <summary>
+    /// A runtime routine that writes no field of the program's objects, whatever
+    /// it reaches: an allocator (the collector it may run calls no program
+    /// code -- there are no finalisers -- and its failure is a throw, which
+    /// leaves by the handlers the rules already judge), and the array store
+    /// check, which only throws. Reachable from everything through those
+    /// throws, they made every field read live across an allocation unowned:
+    /// Dictionary's order, read across the `new int[]` of its own Tidy.
+    /// </summary>
+    internal static bool NeverWritesFields(string callee) =>
+        IsAllocator(callee) || callee == "m_Runtime_ArrayStoreCheck_2_V$I64_V$I64";
 
     private enum SourceKind { Null, Static, Parameter, Fresh, Unknown }
     private readonly record struct Source(SourceKind Kind, int Index, Instr? Made);

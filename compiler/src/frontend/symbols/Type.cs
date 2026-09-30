@@ -283,10 +283,20 @@ public sealed class Type : IEquatable<Type>
     public override bool Equals(object? o) => Equals(o as Type);
     public override int GetHashCode() => HashCode.Combine((int)Prim, Symbol, Nullable, ArrayRank, ParamName);
 
-    public override string ToString()
+    public override string ToString() => Text(true);
+
+    /// <summary>
+    /// The type as its storage has it: ToString without a reference type's
+    /// '?' at any depth, which is an annotation and no part of any layout --
+    /// `(Reg?, Reg?)` and `(Reg, Reg)` are one tuple. Nullable&lt;T&gt; of a value
+    /// type keeps its '?', which is a cell.
+    /// </summary>
+    public string LayoutText() => Text(false);
+
+    private string Text(bool annotations)
     {
         string s = IsArray
-            ? Element + new string('?', 0) + string.Concat(Enumerable.Repeat("[]", ArrayRank))
+            ? Element!.Text(annotations) + string.Concat(Enumerable.Repeat("[]", ArrayRank))
             : Symbol?.Name ?? ParamName ?? Prim switch
             {
                 Prim.Void => "void", Prim.Bool => "bool",
@@ -300,10 +310,10 @@ public sealed class Type : IEquatable<Type>
 
         if (Args.Count > 0)
         {
-            s += "<" + string.Join(", ", Args) + ">";
+            s += "<" + string.Join(", ", Args.Select(a => a.Text(annotations))) + ">";
         }
 
         s += new string('*', PointerDepth);
-        return Nullable ? s + "?" : s;
+        return Nullable && (annotations || !IsReference) ? s + "?" : s;
     }
 }

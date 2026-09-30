@@ -172,6 +172,21 @@ public sealed class Inline : IParallelModulePass
 
     private IReadOnlySet<Instr> _keepCalls = new HashSet<Instr>();
 
+    private readonly Dictionary<Function, bool> _storesField = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>Whether a body stores a register into an object's field.</summary>
+    private bool StoresField(Function f)
+    {
+        lock (_storesField)
+        {
+            if (_storesField.TryGetValue(f, out bool known)) return known;
+        }
+        bool stores = f.Blocks.Any(b => b.Instrs.Any(i => i.Op == Opcode.Store && i.Field is not null
+            && i.Operands.Count >= 2 && i.Operands[1] is RegOperand));
+        lock (_storesField) _storesField[f] = stores;
+        return stores;
+    }
+
     private sealed class Analyses
     {
         public HashSet<string> Addresses = null!;
@@ -236,6 +251,17 @@ public sealed class Inline : IParallelModulePass
                     // know them by name, and inlined their ring store reads
                     // as the reported object escaping.
                     if (!Inlineable(callee, pinned) || recursive.Contains(callee) || Escape.IsCollectorLeaf(callee.Name))
+                    {
+                        continue;
+                    }
+                    // NOT INTO AN ASYNC FUNCTION OR AN ITERATOR, a body that
+                    // stores into an object's field: whose values the owned-
+                    // field rules cannot follow across a suspension, so one
+                    // such store refuses the field for every object of the
+                    // type in the program. A List.Add spliced into one
+                    // iterator's MoveNext left every List's array to the
+                    // collector. Called, the store stays in the callee.
+                    if (caller.Async is not null && StoresField(callee))
                     {
                         continue;
                     }
