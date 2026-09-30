@@ -687,7 +687,9 @@ public class Control
     internal Color EffectiveBackColor { get { return _back == Color.Transparent ? (_parent == null ? SystemColors.Control : _parent.BackColor) : _back; } }
     public Color ForeColor { get { return _fore; } set { _fore = value; Invalidate(); } }
     public Font Font { get { return _font; } set { _font = value; Invalidate(); } }
-    public bool Visible { get { return _visible; } set { _visible = value; if (_parent != null) _parent.Invalidate(Bounds); else Invalidate(); } }
+    public bool Visible { get { return _visible; } set { if (_visible == value) return; _visible = value; if (_parent != null) _parent.Invalidate(Bounds); else Invalidate(); OnVisibleChanged(EventArgs.Empty); } }
+    public event EventHandler? VisibleChanged;
+    protected virtual void OnVisibleChanged(EventArgs e) { if (VisibleChanged != null) VisibleChanged(this, e); }
     public bool Enabled { get { return _enabled; } set { _enabled = value; Invalidate(); } }
     public int Left { get { return _x; } set { SetBounds(value, _y, _width, _height); } }
     public int Top { get { return _y; } set { SetBounds(_x, value, _width, _height); } }
@@ -1313,9 +1315,43 @@ public class Form : Control
         if (_handle != 0 && moved) Seat.Current.MoveWindow(_handle, x, y);
     }
 
+    // HIDDEN, NOT GONE: Hide takes the window off the screen and the
+    // taskbar and keeps it, as ShowWindow(SW_HIDE) does; Show puts it back
+    // as it was. A popup (the tray's volume slider) is hidden and shown
+    // over and over.
+    bool _hidden;
+
+    public new bool Visible
+    {
+        get { return _shown && !_hidden && !_closed; }
+        set { if (value) Show(); else Hide(); }
+    }
+
+    public new void Hide()
+    {
+        if (!_shown || _hidden || _closed) { if (!_shown) _hidden = true; return; }
+        _hidden = true;
+        if (_handle != 0) Seat.Current.HideWindow(_handle);
+        base.Visible = false;
+    }
+
     public new void Show()
     {
-        if (_shown) return;
+        if (_shown)
+        {
+            if (!_hidden || _closed || _handle == 0) return;
+            _hidden = false;
+            Seat.Current.ShowWindow(_handle);
+            base.Visible = true;
+            Invalidate();
+            if (!ShowWithoutActivation)
+            {
+                Application.SetFocus(FirstFocusable(this) ?? this);
+                Seat.Current.FocusWindow(_handle);
+            }
+            return;
+        }
+        _hidden = false;
         Invalidate();
         Seat seat = Seat.Current;
         if (StartPosition == FormStartPosition.CenterScreen)
