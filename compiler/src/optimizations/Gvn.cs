@@ -50,6 +50,12 @@ public sealed class Gvn : IPass
     {
         _f = f;
         _cfg = new Cfg(f);
+        // The thread block is the same whenever this thread runs: read once
+        // a function, unless the function is what changes it (a switch).
+        // Not in an async body: it resumes on whichever thread completes what
+        // it awaited, and each resumption reads its own thread's block.
+        _threadBlockFixed = f.Async is null && !f.Blocks.Any(b => b.Instrs.Any(i => i.Op == Opcode.Store && i.Operands.Count > 0
+            && i.Operands[0] is SymOperand { Name: ThreadBlockSelf }));
         _leader.Clear();
         _exprs.Clear();
 
@@ -104,12 +110,44 @@ public sealed class Gvn : IPass
         }
     }
 
+    /// <summary>The freestanding thread block's home (Lowering.ThreadBlockSelf) and the intrinsic that reads it elsewhere.</summary>
+    private const string ThreadBlockSelf = "__corsac_tls_self", ThreadBlockIntrinsic = "__x86.i.threadblock";
+    private bool _threadBlockFixed;
+
+    /// <summary>
+    /// THIS THREAD'S BLOCK, read once: whatever runs between two reads -- a
+    /// call, a store, a switch to another thread and back -- this thread's
+    /// block is the one it reads, so a read another dominates is a copy of
+    /// it. The global form only in a function that does not write the global.
+    /// </summary>
+    private bool ThreadBlockRead(Block b, int k, List<(string Key, VReg? Old)> undo)
+    {
+        Instr i = b.Instrs[k];
+        bool read = i.Dest is not null && (_f.Async is null && i.Op == Opcode.Call && i.Callee == ThreadBlockIntrinsic && i.Operands.Count == 0
+            || _threadBlockFixed && i.Op == Opcode.Load && i.Offset == 0 && i.Operands.Count == 1 && i.Operands[0] is SymOperand { Name: ThreadBlockSelf, Offset: 0 });
+        if (!read) return false;
+        string key = "threadblock|" + i.Dest!.Type;
+        if (_exprs.TryGetValue(key, out VReg? existing))
+        {
+            RegOperand value = new(existing);
+            _leader[i.Dest] = value;
+            b.Instrs[k] = IrInfo.CopyOf(i, value);
+        }
+        else
+        {
+            undo.Add((key, null));
+            _exprs[key] = i.Dest;
+        }
+        return true;
+    }
+
     private void VisitBlock(Block b, List<(string Key, VReg? Old)> undo, Dictionary<string, MemEntry> mem)
     {
         for (int k = 0; k < b.Instrs.Count; k++)
         {
             Instr i = b.Instrs[k];
             IrInfo.ReplaceUses(i, r => _leader.GetValueOrDefault(r));
+            if (ThreadBlockRead(b, k, undo)) continue;
 
             switch (i.Op)
             {
