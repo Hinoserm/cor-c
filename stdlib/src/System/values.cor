@@ -575,3 +575,15 @@ namespace System.ComponentModel
         }
     }
 }
+
+namespace System
+{
+    /// .NET's IAsyncResult: an operation begun and not waited for.
+    public interface IAsyncResult
+    {
+        object? AsyncState { get; }
+        WaitHandle AsyncWaitHandle { get; }
+        bool CompletedSynchronously { get; }
+        bool IsCompleted { get; }
+    }
+}

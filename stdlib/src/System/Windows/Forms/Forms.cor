@@ -690,6 +690,44 @@ public class Control
     public Font Font { get { return _font; } set { _font = value; Invalidate(); } }
     public bool Visible { get { return _visible; } set { if (_visible == value) return; _visible = value; if (_parent != null) _parent.Invalidate(Bounds); else Invalidate(); OnVisibleChanged(EventArgs.Empty); } }
     public event EventHandler? VisibleChanged;
+
+    // ---- another thread's work, done on the one that runs the loop ------
+    //
+    // .NET's Invoke family: a thread other than the one that runs
+    // Application.Run hands a delegate to the loop, which runs it between
+    // messages (Application.Post). BeginInvoke returns at once; Invoke waits
+    // for it to have run, and throws what it threw.
+
+    /// Whether the calling thread must go through Invoke: it is not the one
+    /// running the loop.
+    public bool InvokeRequired => Application.OtherThread();
+
+    public IAsyncResult BeginInvoke(Action method) { return Application.Post(method); }
+    public IAsyncResult BeginInvoke(MethodInvoker method) { return Application.Post(() => method()); }
+
+    /// Waits for what BeginInvoke posted, and throws what it threw.
+    public object? EndInvoke(IAsyncResult asyncResult)
+    {
+        if (asyncResult is not Posted posted) throw new ArgumentException("asyncResult");
+        posted.Finish();
+        return posted.Result;
+    }
+
+    public void Invoke(Action method)
+    {
+        if (!InvokeRequired) { method(); return; }
+        Application.Post(method).Finish();
+    }
+
+    public void Invoke(MethodInvoker method) { Invoke(() => method()); }
+
+    public T Invoke<T>(Func<T> method)
+    {
+        if (!InvokeRequired) return method();
+        T answer = default!;
+        Application.Post(() => { answer = method(); }).Finish();
+        return answer;
+    }
     protected virtual void OnVisibleChanged(EventArgs e) { if (VisibleChanged != null) VisibleChanged(this, e); }
     public bool Enabled { get { return _enabled; } set { _enabled = value; Invalidate(); } }
     public int Left { get { return _x; } set { SetBounds(value, _y, _width, _height); } }
@@ -5659,6 +5697,39 @@ static class Math2
     internal static int Abs(int x) { return x < 0 ? -x : x; }
 }
 
+/// .NET's MethodInvoker: a method with no arguments and no result.
+public delegate void MethodInvoker();
+
+/// A delegate posted to the loop (Control.BeginInvoke): its IAsyncResult.
+sealed class Posted : IAsyncResult
+{
+    internal readonly Action Work;
+    readonly ManualResetEvent _done = new ManualResetEvent(false);
+    internal Exception? Failure;
+    internal object? Result;
+
+    internal Posted(Action work) { Work = work; }
+
+    public object? AsyncState => null;
+    public WaitHandle AsyncWaitHandle => _done;
+    public bool CompletedSynchronously => false;
+    public bool IsCompleted => _done.IsSet;
+
+    internal void Run()
+    {
+        try { Work(); }
+        catch (Exception e) { Failure = e; }
+        _done.Set();
+    }
+
+    /// Waits for it to have run, and throws what it threw.
+    internal void Finish()
+    {
+        _done.WaitOne();
+        if (Failure != null) throw Failure;
+    }
+}
+
 public static class Application
 {
     // THE DOUBLE-CLICK: a second press of the same button on the same
@@ -5841,10 +5912,67 @@ public static class Application
     /// .NET'S Run WITH NO FORM: the loop runs until Application.Exit,
     /// whether or not any form is open -- a program that lives in the
     /// notification area has none most of the time.
+    // ---- the posted queue (Control.BeginInvoke) ---------------------------
+    //
+    // A pipe wakes the loop: the poster writes a byte, the loop -- blocked in
+    // the seat's wait, which watches the pipe's read end with every other
+    // descriptor -- wakes, reads the bytes and runs the queue.
+    static readonly object _postLock = new object();
+    static readonly Queue<Posted> _posted = new Queue<Posted>();
+    static int _wakeRead = -1, _wakeWrite = -1;
+    static long _uiThread;
+
+    internal static bool OtherThread() { return _uiThread != 0 && Thread.CurrentId != _uiThread; }
+
+    internal static Posted Post(Action work)
+    {
+        Posted posted = new Posted(work);
+        int wake;
+        lock (_postLock) { _posted.Enqueue(posted); wake = _wakeWrite; }
+        if (wake >= 0)
+        {
+            byte[] one = new byte[1];
+            Os.Write(wake, one, 0, 1);
+        }
+        return posted;
+    }
+
+    static void RunPosted()
+    {
+        while (true)
+        {
+            Posted? next = null;
+            lock (_postLock) { if (_posted.Count > 0) next = _posted.Dequeue(); }
+            if (next == null) return;
+            next.Run();
+            if (_paintPending) PaintNow();
+        }
+    }
+
+    /// The loop's own thread and its wake pipe, once, before the first message.
+    static void StartPosting()
+    {
+        if (_uiThread != 0) return;
+        _uiThread = Thread.CurrentId;
+        int[] pair = new int[2];
+        if (Os.Pipe(pair) == 0)
+        {
+            lock (_postLock) { _wakeRead = pair[0]; _wakeWrite = pair[1]; }
+            Watch(pair[0], fd =>
+            {
+                byte[] drained = new byte[64];
+                Os.Read(fd, drained, 0, drained.Length);
+                RunPosted();
+            });
+        }
+        RunPosted();
+    }
+
     public static void Run()
     {
         _running = true;
         Seat seat = Seat.Current;
+        StartPosting();
         while (_running && (_main == null || !_main.Closed))
         {
             // WHAT NOBODY CAUGHT IS SHOWN, NOT SWALLOWED. An exception out of
