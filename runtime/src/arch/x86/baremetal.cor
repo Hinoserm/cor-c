@@ -559,6 +559,12 @@ static partial class Os
     /// One processor: a machine with no operating system runs one thread.
     public static int ProcessorCount() { return 1; }
 
+    /// No workers beside the collector here: a ring-1 kernel's threads are
+    /// its kernel's to make.
+    public static int CollectorWorkers() { return 0; }
+    public static bool StartCollectorWorker(long entry) { return false; }
+    public static void QuietWorker() { }
+
     /// Everything written goes to the console whatever the descriptor, as
     /// the string's UTF-8; answers how many bytes that was.
     public static int Write(int fd, string s)

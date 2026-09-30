@@ -6720,6 +6720,7 @@ static class Gc
         SyncEnd();
         _cycle = _cycle + 1;
         Sys.AtomicSwap(ctl + GcLock.Overflow, _markAt == 0 ? 1 : 0);
+        StartWorkers();
         BuildBlockAnchors(false);
         _rootsOnly = false;
         GcRoots.Enter();
@@ -6736,6 +6737,10 @@ static class Gc
     /// whole of a collection with one thread.
     public static void CollectInner()
     {
+        // The workers mark what the roots queue as they queue it.
+        // Not for a census, whose sums are plain additions.
+        bool helped = !_concurrent && !_rootsOnly && !_census;
+        if (helped) WorkersMark(true);
         GcRoots.ScanAll();
 
         // A MINOR CYCLE'S OTHER ROOTS, read with the ordinary ones: what old
@@ -6753,6 +6758,10 @@ static class Gc
         }
 
         MarkToEmpty();
+        // Idle, as MarkToEmpty found them: none holds a block, and the queue
+        // is empty. A worker between its check of the word and its next take
+        // finds nothing to take.
+        if (helped) WorkersMark(false);
         if (_minor && _verifyGenerations) VerifyMinor();
         if (!_minor && (_verifyGenerations || VerifyMarks)) VerifyMajor();
         HeapChunks.SetBlockAnchorsActive(false);
@@ -6931,6 +6940,66 @@ static class Gc
             // moment it was.
             Sys.Pause();
         }
+    }
+
+    // ---- the collector's workers ---------------------------------------------
+    //
+    // A PROGRAM WITH ONE THREAD STILL HAS A MACHINE OF MANY. Its collection
+    // runs with the world stopped (CollectAlone), and marking a compiler's
+    // heap on one processor was half of what the compiler did. So threads of
+    // the collector's own, started at its first collection, mark beside it:
+    // the queue was built for many markers (PushGrey, PopGrey, DrainSome) and
+    // the finish already waits for every one of them to be idle (GreyIdle).
+    //
+    // A worker is not a thread of the program. It has no thread block -- its
+    // GS is its parent's, and nothing it runs reads one -- no Thread, no
+    // signals, and it is not registered, so the program stays one thread to
+    // every other part of the collector. It sleeps on _workWord, and marks
+    // while the word is odd.
+    static long _workWord;
+    static bool _workersTried;
+    public static long Workers;
+
+    /// Where a worker lives, from its first instruction.
+    public static void CollectorWorker(long unused)
+    {
+        Platform.QuietWorker();
+        long at = Sys.AddressOf(ref _workWord);
+        while (true)
+        {
+            long word = Sys.Peek(at);
+            if ((word & 1) == 0)
+            {
+                Platform.Wait(at, word);
+                continue;
+            }
+            if (DrainSome(-1) == 0) Sys.Pause();
+        }
+    }
+
+    /// The workers, started once, at the first collection that has a queue
+    /// to share. Nothing here allocates: the heap lock is held.
+    static void StartWorkers()
+    {
+        if (_workersTried || _markAt == 0) return;
+        _workersTried = true;
+        int wanted = Platform.CollectorWorkers();
+        for (int i = 0; i < wanted; i++)
+        {
+            if (!Platform.StartCollectorWorker(Sys.AddressOf(Gc.CollectorWorker))) break;
+            Workers = Workers + 1;
+        }
+    }
+
+    /// The workers marking, and not.
+    static void WorkersMark(bool on)
+    {
+        if (Workers == 0) return;
+        long at = Sys.AddressOf(ref _workWord);
+        long word = Sys.Peek(at);
+        if (((word & 1) != 0) == on) return;
+        Sys.AtomicAdd(at, 1);
+        if (on) Platform.Wake(at, 0x7FFFFFFF);
     }
 
     /// A concurrent collection that cannot finish soundly -- a barrier

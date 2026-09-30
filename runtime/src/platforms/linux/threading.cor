@@ -229,6 +229,19 @@ static class Native
     /// itself with exit(2) when that returns.
     static long Trampoline()
     {
+        long code = TryTrampoline();
+
+        if (code == 0)
+        {
+            throw new InvalidOperationException("threading: no executable page for the thread trampoline");
+        }
+        return code;
+    }
+
+    /// The same, or 0 when there is no page for it: what the collector asks,
+    /// which may neither throw nor allocate.
+    public static long TryTrampoline()
+    {
         long code = _trampoline;
 
         if (code != 0)
@@ -240,7 +253,7 @@ static class Native
 
         if (code == 0)
         {
-            throw new InvalidOperationException("threading: no executable page for the thread trampoline");
+            return 0;
         }
 
         long at = code;
@@ -353,6 +366,23 @@ static class Native
 
         gate.Exit();
         return id;
+    }
+
+    /// A thread with no Thread of its own -- the collector's workers: entry
+    /// runs on the pages [stack, stack + bytes), whose lowest two words carry
+    /// its entry and argument to the trampoline, so no lock and no shared
+    /// page are needed and nothing is allocated. The thread id, or -errno.
+    public static long SpawnBare(long entry, long argument, long stack, long bytes)
+    {
+        long code = TryTrampoline();
+
+        if (code == 0)
+        {
+            return 0 - 12;      // ENOMEM
+        }
+        Sys.Poke(stack, entry);
+        Sys.Poke(stack + WordSize.Bytes, argument);
+        return Platform.Result(Sys.CallNative(code, ThreadFlags, stack + bytes, stack));
     }
 
     public static long CurrentThreadId()
