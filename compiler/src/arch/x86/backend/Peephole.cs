@@ -24,6 +24,7 @@ internal static class Peephole
             ForwardStoreLoad(block.Instrs);
             ForwardSpillLoads(block.Instrs);
             DeadDefs(block.Instrs, liveOut[b]);
+            RepeatedStores(block.Instrs, liveOut[b]);
             ZeroWithXor(block.Instrs);
             InvertJumpAroundJump(block.Instrs, next);
         }
@@ -216,6 +217,63 @@ internal static class Peephole
     /// assumed about registers at the block's end, so a value flowing out
     /// of the block is never touched.
     /// </summary>
+    /// <summary>
+    /// THE SAME CONSTANT STORED AGAIN AND AGAIN -- a struct zeroed a word at a
+    /// time, three `mov dword [ebp-2016], 0` of ten bytes each -- is put in a
+    /// register nothing needs there, once, and each store writes the register:
+    /// four bytes less on every store, and the register's load becomes `xor`
+    /// where the flags allow (ZeroWithXor, next). Only a run of such stores
+    /// with nothing between, and only a register dead before it that no store
+    /// addresses through.
+    /// </summary>
+    private static void RepeatedStores(List<MInstr> instrs, int liveOut)
+    {
+        int[] deadBefore = new int[instrs.Count];
+        int dead = ~liveOut & 0xFF & ~(1 << (int)Gpr.Esp) & ~(1 << (int)Gpr.Ebp);
+        for (int k = instrs.Count - 1; k >= 0; k--)
+        {
+            MInstr i = instrs[k];
+            if (!Understood(i)) dead = 0;
+            else
+            {
+                foreach ((MReg r, bool isDef) in Regs(i)) if (isDef && r.IsPhys) dead |= 1 << r.Id;
+                foreach (Gpr g in Roles.ImplicitDefs(i)) dead |= 1 << (int)g;
+                foreach ((MReg r, bool isDef) in Regs(i)) if (!isDef && r.IsPhys) dead &= ~(1 << r.Id);
+                foreach (Gpr g in Roles.ImplicitUses(i)) dead &= ~(1 << (int)g);
+                dead &= ~(1 << (int)Gpr.Esp) & ~(1 << (int)Gpr.Ebp);
+            }
+            deadBefore[k] = dead;
+        }
+        static bool ConstantStore(MInstr i, out long value)
+        {
+            value = 0;
+            if (i.Op != MOp.Mov || i.Width != 4 || i.Operands.Count != 2 || i.Operands[0] is not MMem
+                || i.Operands[1] is not MImm { IsPlain: true } imm) return false;
+            value = imm.Value;
+            return true;
+        }
+        for (int k = 0; k < instrs.Count; k++)
+        {
+            if (!ConstantStore(instrs[k], out long value)) continue;
+            int end = k + 1;
+            while (end < instrs.Count && ConstantStore(instrs[end], out long next) && next == value) end++;
+            if (end - k < 2) continue;
+            int free = deadBefore[k];
+            for (int j = k; j < end; j++)
+                if (instrs[j].Operands[0] is MMem mem)
+                {
+                    if (mem.Base is { IsPhys: true } b) free &= ~(1 << b.Id);
+                    if (mem.Index is { IsPhys: true } x) free &= ~(1 << x.Id);
+                }
+            if (free == 0) { k = end - 1; continue; }
+            Gpr reg = (Gpr)System.Numerics.BitOperations.TrailingZeroCount(free);
+            for (int j = k; j < end; j++) instrs[j].Operands[1] = MReg.Of(reg);
+            MInstr load = new(MOp.Mov, MReg.Of(reg), new MImm(value)) { Line = instrs[k].Line };
+            instrs.Insert(k, load);
+            k = end;
+        }
+    }
+
     private static void DeadDefs(List<MInstr> instrs, int liveOut)
     {
         HashSet<int> dead = new();
