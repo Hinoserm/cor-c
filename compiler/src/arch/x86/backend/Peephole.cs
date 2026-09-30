@@ -25,6 +25,7 @@ internal static class Peephole
             ForwardSpillLoads(block.Instrs);
             DeadDefs(block.Instrs, liveOut[b]);
             RepeatedStores(block.Instrs, liveOut[b]);
+            MergePops(block.Instrs);
             ZeroWithXor(block.Instrs);
             InvertJumpAroundJump(block.Instrs, next);
         }
@@ -271,6 +272,58 @@ internal static class Peephole
             MInstr load = new(MOp.Mov, MReg.Of(reg), new MImm(value)) { Line = instrs[k].Line };
             instrs.Insert(k, load);
             k = end;
+        }
+    }
+
+    /// <summary>
+    /// A CALL'S ARGUMENTS ARE POPPED ONCE FOR SEVERAL CALLS. Each call is
+    /// followed by `add esp, n` to drop what it was pushed; with EBP framing
+    /// nothing in between needs ESP exact -- a push, another call -- so the
+    /// drops of a run of calls are one drop, at the last of them. Each of the
+    /// others was three bytes. The last stays where it was, so the flags it
+    /// set and the stack depth after it are what they were; anything that
+    /// reads or writes ESP (or an operand based on it, or that this does not
+    /// understand) ends a run.
+    /// </summary>
+    private static void MergePops(List<MInstr> instrs)
+    {
+        static bool Pop(MInstr i, out long bytes)
+        {
+            bytes = 0;
+            if (i.Op != MOp.Add || i.Width != 4 || i.Operands.Count != 2 || i.Operands[0] is not MReg { IsPhys: true } r
+                || r.Phys != Gpr.Esp || i.Operands[1] is not MImm { IsPlain: true } imm) return false;
+            bytes = imm.Value;
+            return true;
+        }
+        static bool Neutral(MInstr i)
+        {
+            // Pushes and calls move ESP relative to itself, which is all they need.
+            if (i.Op is MOp.Push or MOp.Call or MOp.CallInd) return i.Operands.All(o => !Names(o));
+            if (!Understood(i) || i.Op is MOp.Pop or MOp.Prologue or MOp.Epilogue or MOp.Ret) return false;
+            if (i.Operands.Any(Names)) return false;
+            return !Roles.ImplicitUses(i).Contains(Gpr.Esp) && !Roles.ImplicitDefs(i).Contains(Gpr.Esp);
+        }
+        static bool Names(MOperand o) => o is MReg { IsPhys: true, Phys: Gpr.Esp }
+            || o is MMem m && (m.Base is { IsPhys: true, Phys: Gpr.Esp } || m.Index is { IsPhys: true, Phys: Gpr.Esp });
+        int pending = -1;       // the index of the run's last drop so far
+        long total = 0;
+        for (int k = 0; k < instrs.Count; k++)
+        {
+            MInstr i = instrs[k];
+            if (Pop(i, out long bytes))
+            {
+                if (pending >= 0)
+                {
+                    instrs.RemoveAt(pending);
+                    k--;
+                    total += bytes;
+                }
+                else total = bytes;
+                instrs[k] = new MInstr(MOp.Add, MReg.Of(Gpr.Esp), new MImm(total)) { Line = i.Line };
+                pending = k;
+                continue;
+            }
+            if (!Neutral(i)) pending = -1;
         }
     }
 
