@@ -10522,6 +10522,17 @@ public sealed partial class Binder
 
             case UnaryExpr u:
             {
+                // `-2147483648` IS AN INT (C# 6.4.5.3): the literal 2147483648
+                // right after a unary minus is int.MinValue, where on its own
+                // it would be a uint and its negation a long.
+                if (u.Op == UnOp.Neg && u.Operand is LiteralExpr { Kind: Lit.Int, IntValue: 2147483648 } minimal
+                    && minimal.Text.All(char.IsDigit) && !_r.Rewrites.ContainsKey(u))
+                {
+                    LiteralExpr least = new() { Kind = Lit.Int, Text = "-2147483648", IntValue = int.MinValue, Line = u.Line, Col = u.Col };
+                    _r.Rewrites[u] = least;
+                    return CheckExpr(least);
+                }
+
                 // `&Method`: a static method's address, as a function pointer.
                 if (u.Op == UnOp.AddressOf && AddressedMethod(u.Operand) is MethodSymbol addressed)
                 {

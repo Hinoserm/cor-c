@@ -211,7 +211,9 @@ public sealed partial class Binder
         });
         TryStmt attempt = new() { Body = guarded, Finally = cleanup };
         Block failed = new();
-        failed.Statements.Add(Assign(failure, Name(error)));
+        // Only ever a TypeInitializationException in the static: every later
+        // access throws that same object again, and a catch that can take it
+        // must keep it (Escape's foreign throws), so its type must be known.
         failed.Statements.Add(Assign(failure, new NewExpr
         {
             Type = new TypeRef { Name = "TypeInitializationException" },

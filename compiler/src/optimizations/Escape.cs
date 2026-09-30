@@ -87,6 +87,8 @@ public sealed partial class Escape : IModulePass
         _hinting = m.LeavesLinkHints;
         _inserted = _bookkeeping;
         _unresolvedWhy = Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is { Length: > 0 } ? new() : null;
+        _module = m;
+        _items = null;
         _indirect = IndirectTargets(m, byName);
         _reachGraphs = null;
 
@@ -128,6 +130,9 @@ public sealed partial class Escape : IModulePass
             }
         }
 
+        // What is thrown that was not just made, now that the functions
+        // handing back fresh objects are known.
+        _foreignTypes = !m.PreserveExports && m.Entry is not null ? ForeignThrows(m) : new HashSet<string>(StringComparer.Ordinal) { "*" };
         bool Provided(string helper) => byName.ContainsKey(helper) || m.RuntimeHelpers.Contains(helper);
         bool canFree = Provided(Freer);
         bool canFreeFields = canFree && Provided(FieldFreer);
@@ -333,6 +338,156 @@ public sealed partial class Escape : IModulePass
     /// Rethrowing hands it on and is not an escape. Otherwise the ends stay
     /// calls that do nothing, and some catch is known to keep what it caught.
     /// </summary>
+    /// <summary>
+    /// What the program throws that it did not just make: `throw error` of one
+    /// held elsewhere, a stored exception thrown again (a type initializer's
+    /// failure, ExceptionDispatchInfo). A catch frees what it caught only when
+    /// nothing held elsewhere can arrive there, so a catch that can take one
+    /// of these types keeps its exception. The types come from the static a
+    /// thrown value is read from and the objects every store puts there;
+    /// where they cannot be told, "*": every catch keeps.
+    /// </summary>
+    private HashSet<string> _foreignTypes = new(StringComparer.Ordinal);
+    private Module? _module;
+    private Dictionary<string, DataItem>? _items;
+
+    private HashSet<string> ForeignThrows(Module m)
+    {
+        HashSet<string> types = new(StringComparer.Ordinal);
+        Dictionary<string, List<(Function F, Instr Store)>> staticStores = new(StringComparer.Ordinal);
+        foreach (Function f in m.Functions)
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Op == Opcode.Store && i.Operands.Count == 2 && i.Operands[0] is SymOperand { Name: var into })
+                    {
+                        if (!staticStores.TryGetValue(into, out var list)) staticStores[into] = list = new();
+                        list.Add((f, i));
+                    }
+        // Only what the program can reach throws anything.
+        HashSet<string> reached = Reached(m);
+        foreach (Function f in m.Functions.Where(g => reached.Contains(g.Name)))
+        {
+            Dictionary<VReg, List<Instr>> writes = Writes(f);
+            // Registers holding what a landing pad received: `throw;` hands it on.
+            HashSet<FrameSlot> caughtSlots = new();
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Op == Opcode.Store && i.Operands.Count == 2 && i.Operands[0] is SlotOperand { Slot: var slot }
+                        && i.Operands[1] is RegOperand { Reg: var v } && writes.TryGetValue(v, out List<Instr>? vw)
+                        && vw.Count == 1 && vw[0] is { Op: Opcode.Call, Callee: "__exception" })
+                        caughtSlots.Add(slot);
+            // Fresh, handed on, or read from a static (whose name is answered).
+            bool Fresh(Operand o, out string? fromStatic)
+            {
+                fromStatic = null;
+                for (int hop = 0; hop < 8 && o is RegOperand { Reg: var r }; hop++)
+                {
+                    if (!writes.TryGetValue(r, out List<Instr>? ws) || ws.Count != 1) return false;
+                    Instr d = ws[0];
+                    if (d.Op == Opcode.Call && (IsAllocator(d.Callee) || d.Callee is not null && _fresh.Contains(d.Callee))) return true;
+                    if (d.Op == Opcode.Call && d.Callee == "__exception") return true;
+                    if (d.Op == Opcode.Load && d.Operands is [SlotOperand { Slot: var from }] && caughtSlots.Contains(from)) return true;
+                    if (d.Op == Opcode.Load && d.Operands is [SymOperand { Name: var named }]) { fromStatic = named; return false; }
+                    if (d.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) || d.Operands.Count != 1) return false;
+                    o = d.Operands[0];
+                }
+                return false;
+            }
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                {
+                    Operand? thrown = i.Op == Opcode.Unwind && i.Operands.Count >= 2 ? i.Operands[1]
+                        : i.Op == Opcode.Call && i.Callee == Unhandled && i.Operands.Count == 1 ? i.Operands[0] : null;
+                    if (thrown is null || Fresh(thrown, out string? stat)) continue;
+                    bool known = stat is not null && staticStores.TryGetValue(stat, out var into) && into.All(w =>
+                    {
+                        if (w.Store.Operands[1] is ImmOperand { Value: 0 }) return true;
+                        if (w.Store.Operands[1] is not RegOperand { Reg: var put }) return false;
+                        string? type = StampedType(w.F, put);
+                        if (type is null) return false;
+                        types.Add(type);
+                        return true;
+                    });
+                    if (!known) types.Add("*");
+                    if (Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is { Length: > 0 })
+                        Console.Error.WriteLine($"alloc report: {f.Name} throws what it did not make ({(known ? "from " + stat : "unknown")}); catches that can take it keep it");
+                }
+        }
+        return types;
+    }
+
+    /// <summary>What the entry and static initialisers reach over calls, named addresses and data.</summary>
+    private static HashSet<string> Reached(Module m)
+    {
+        // A descriptor's methods are reached by the calls that reach them when
+        // every virtual call is resolved (IndirectTargets), as CollectorSites
+        // walks; otherwise by the descriptor itself.
+        bool everyMethod = _indirect is null || m.Functions.Any(f => f.Blocks.Any(b => b.Instrs.Any(i =>
+            i.Op == Opcode.CallIndirect && i.DispatchType is not null && !_indirect.ContainsKey(i))));
+        Dictionary<string, Function> byName = new(StringComparer.Ordinal);
+        foreach (Function f in m.Functions) byName[f.Name] = f;
+        Dictionary<string, DataItem> data = new(StringComparer.Ordinal);
+        foreach (DataItem d in m.Data) data[d.Name] = d;
+        HashSet<string> reached = new(StringComparer.Ordinal);
+        Stack<string> pending = new();
+        void Reach(string name) { if (reached.Add(name)) pending.Push(name); }
+        if (m.Entry is not null) Reach(m.Entry);
+        foreach (Function f in m.Functions) if (f.Name.Contains("StaticInit$", StringComparison.Ordinal)) Reach(f.Name);
+        while (pending.TryPop(out string? name))
+        {
+            if (data.TryGetValue(name, out DataItem? item))
+            {
+                bool descriptor = IsDescriptor(name);
+                foreach (DataReloc r in item.Relocs)
+                    if (everyMethod || !descriptor || !byName.ContainsKey(r.Symbol)) Reach(r.Symbol);
+                continue;
+            }
+            if (!byName.TryGetValue(name, out Function? g)) continue;
+            foreach (Block b in g.Blocks)
+                foreach (Instr i in b.Instrs)
+                {
+                    if (i.Callee is not null) Reach(i.Callee);
+                    foreach (Operand o in i.Operands) if (o is SymOperand sym) Reach(sym.Name);
+                    if (i.Op == Opcode.CallIndirect && _indirect is not null && _indirect.TryGetValue(i, out string[]? targets))
+                        foreach (string t in targets) Reach(t);
+                }
+        }
+        return reached;
+    }
+
+    /// <summary>The descriptor stamped into the object an allocation made and `r` holds, or null.</summary>
+    private static string? StampedType(Function f, VReg r)
+    {
+        Dictionary<VReg, List<Instr>> writes = Writes(f);
+        VReg? made = null;
+        VReg at = r;
+        for (int hop = 0; hop < 8; hop++)
+        {
+            if (!writes.TryGetValue(at, out List<Instr>? ws) || ws.Count != 1) return null;
+            Instr d = ws[0];
+            if (d.Op == Opcode.Call && IsAllocator(d.Callee)) { made = d.Dest; break; }
+            if (d.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) || d.Operands is not [RegOperand next]) return null;
+            at = next.Reg;
+        }
+        if (made is null) return null;
+        foreach (Block b in f.Blocks)
+            foreach (Instr st in b.Instrs)
+                if (st.Op == Opcode.Store && st.Offset == 0 && st.Operands.Count >= 2 && st.Operands[1] is SymOperand { Name: var t }
+                    && t.StartsWith("t_", StringComparison.Ordinal) && st.Operands[0] is RegOperand { Reg: var into }
+                    && (into == made || Stamped(f, into, made)))
+                    return t;
+        return null;
+    }
+
+    /// <summary>Whether a catch can take something thrown that was not just made (_foreignTypes).</summary>
+    private bool CatchesForeign(Instr end)
+    {
+        if (_foreignTypes.Count == 0) return false;
+        if (_foreignTypes.Contains("*") || end.DispatchType is not string caught) return true;
+        Dictionary<string, DataItem> items = _items ??= _module!.Data.ToDictionary(d => d.Name, StringComparer.Ordinal);
+        return _foreignTypes.Any(t => Ancestry(items, t).Contains(caught));
+    }
+
     private void OwnCaught(Function f, Dictionary<string, bool[]> summaries)
     {
         if (f.Async is not null)
@@ -371,7 +526,7 @@ public sealed partial class Escape : IModulePass
                     }
                 }
             Flow flow = Analyse(f, roots, summaries, null, stores, handOff: true);
-            if (flow.Escapes) { foreach ((_, Instr end) in list) KeepCatch(end); continue; }
+            if (flow.Escapes || list.Any(e => CatchesForeign(e.End))) { foreach ((_, Instr end) in list) KeepCatch(end); continue; }
             foreach ((Block b, Instr end) in list)
             {
                 // Runtime.Free takes a long on every target (AppendFree).
@@ -586,6 +741,23 @@ public sealed partial class Escape : IModulePass
             return sinks[(f, index)] = any ? handed : null;
         }
 
+        // HANDED OVER AT THE STORE: once the field holds the object, nothing
+        // here reads it any other way -- no register of it read after the
+        // store in its block, none live out of it. A field that owns an
+        // object its maker still uses would free it under the maker.
+        bool HandedOver(Function f, Block b, Instr st, HashSet<VReg> derived)
+        {
+            if (!sinkLiveness.TryGetValue(f, out Liveness? live)) sinkLiveness[f] = live = new Liveness(f);
+            if (derived.Any(r => !live.Tracks(r) || live.IsLiveOut(b, r))) return false;
+            for (int after = b.Instrs.IndexOf(st) + 1; after < b.Instrs.Count; after++)
+            {
+                Instr i = b.Instrs[after];
+                if (_bookkeeping.Contains(i)) continue;
+                if (i.Operands.Any(o => o is RegOperand r && derived.Contains(r.Reg))) return false;
+            }
+            return true;
+        }
+
         // Where a value comes from, through copies and joins.
         Dictionary<(Function, VReg), List<Source>?> sourcesOf = new();
         List<Source>? Sources(Function f, VReg r)
@@ -712,7 +884,8 @@ public sealed partial class Escape : IModulePass
                 case SymOperand:
                     continue;
                 case RegOperand v when Origin(Defs(f), v.Reg) is Instr made && Fresh(made) && made.Dest is not null
-                    && !Analyse(f, new[] { made.Dest }, summaries, made, new HashSet<Instr>(ReferenceEqualityComparer.Instance) { st }).Escapes:
+                    && Analyse(f, new[] { made.Dest }, summaries, made, new HashSet<Instr>(ReferenceEqualityComparer.Instance) { st }) is { Escapes: false } alone:
+                    if (!HandedOver(f, b, st, alone.Derived)) { Refuse(st.Field!, $"stores {st.Operands[1]}, which is used after it is stored", f, st); continue; }
                     held.Add((made, st));
                     continue;
                 case RegOperand v when Sources(f, v.Reg) is { } sources && sources.All(src => src.Kind != SourceKind.Unknown):
@@ -736,7 +909,8 @@ public sealed partial class Escape : IModulePass
                     List<Instr> made = sources.Where(x => x.Kind == SourceKind.Fresh).Select(x => x.Made!).Distinct().ToList();
                     Flow? together = made.Count == 0 || made.Any(x => x.Dest is null) ? null
                         : Analyse(f, made.Select(x => x.Dest!).ToList(), summaries, made.Count == 1 ? made[0] : null, only);
-                    if (made.Any(x => x.Dest is null) || together is { Escapes: true })
+                    if (made.Any(x => x.Dest is null) || together is { Escapes: true }
+                        || together is not null && !HandedOver(f, b, st, together.Derived))
                     {
                         ok = false;
                     }

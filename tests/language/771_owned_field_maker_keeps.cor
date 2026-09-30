@@ -1,0 +1,32 @@
+// test: owned field maker keeps
+// expect-exit: 0
+// expect-output:
+// 42 1 42 2
+//
+// An object stored into a field is the field's only when its maker keeps no
+// other hold on it. Here the maker stores a new counter into a factory it
+// hands to a lazy value, and reads the counter itself afterwards: the lazy
+// value letting go of its factory must not take the counter with it.
+
+class Counter { public int Calls; }
+
+class Answer : Func<int>
+{
+    private Counter count;
+    public Answer(Counter into) { count = into; }
+    public int Invoke() { count.Calls = count.Calls + 1; return 42; }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Counter calls = new Counter();
+        Lazy<int> lazy = new Lazy<int>(new Answer(calls));
+        int first = lazy.Value;
+        System.Console.Write(first + " " + calls.Calls + " ");
+        Lazy<int> again = new Lazy<int>(new Answer(calls));
+        System.Console.WriteLine(again.Value + " " + calls.Calls);
+        return 0;
+    }
+}
