@@ -1,0 +1,17 @@
+// test: statics of a word-shaped generic declared in another unit are the ones its shared initialiser wrote
+// units: tests/language/support/856_shared_statics_units.cor
+// expect-exit: 0
+// expect-output:
+// 0 0 5
+using SharedStatics;
+
+static class Program
+{
+    static int Main()
+    {
+        string[] a = Table<string>.None;
+        object[] b = Table<object>.Empty();
+        Console.WriteLine((a == null ? -1 : a.Length) + " " + (b == null ? -1 : b.Length) + " " + Table<string>.Made);
+        return 0;
+    }
+}

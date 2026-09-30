@@ -224,6 +224,27 @@ public sealed partial class Lowering
     private static string StaticSymbol(FieldSymbol f) => $"s_{TypeKey(f.Owner)}_{f.Name}";
 
     /// <summary>
+    /// THE STORAGE OF A STATIC FIELD OF A WORD-SHAPED INSTANTIATION IS ITS
+    /// CANONICAL COPY'S. Every word-shaped instantiation runs the canonical
+    /// copy's code -- its StaticInit$ as much as its methods, and a shared
+    /// generic method over T reaches `Holder&lt;__canon&gt;` whatever T is --
+    /// and that code can only name the canonical copy's statics. Storage of
+    /// the instantiation's own was a word nothing ever initialised:
+    /// `EmptyArray&lt;string&gt;.Value` read null, and Array.Empty&lt;string&gt;()
+    /// handed a null to the compiler's own Target initialiser.
+    /// </summary>
+    private FieldSymbol SharedStatic(FieldSymbol f)
+    {
+        if (f.Owner.Decl?.Canon is not string canon
+            || !_b.Types.TryGetValue(canon, out TypeSymbol? owner)
+            || ReferenceEquals(owner, f.Owner))
+        {
+            return f;
+        }
+        return owner.Fields.FirstOrDefault(c => c.Static && c.Name == f.Name) ?? f;
+    }
+
+    /// <summary>
     /// Whether a type was written in the class library rather than in the
     /// program. What a shared object may supply in this compilation's place:
     /// see Module.Provided, and tests/lang/502 for the case that makes the
