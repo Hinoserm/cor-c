@@ -3099,7 +3099,17 @@ continue;
                         && !ThrownCovered(i, items) && !once.RunsOnce(f, b)
                         && (!origin || unowned) && counted.Add(i))
                     {
-                        sites.Add(paths ? $"{f.Name}:{i.Line} {i.Callee}\n      reached: {Path(f.Name)}" : f.Name);
+                        // AND WHY: the instruction the object escapes through,
+                        // which is what there is to fix.
+                        string why = "";
+                        if (paths && i.Dest is not null)
+                        {
+                            Flow flow = Analyse(f, new[] { i.Dest }, _summaries ?? new(), i);
+                            why = flow.Escapes && flow.Why is { } via
+                                ? $"\n      escapes: {via.Op} {via.Callee} {string.Join(" ", via.Operands)}{(via.Field is null ? "" : " field " + via.Field)}"
+                                : "\n      escapes: no (kept for its lifetime, not its flow)";
+                        }
+                        sites.Add(paths ? $"{f.Name}:{i.Line} {i.Callee}{why}\n      reached: {Path(f.Name)}" : f.Name);
                     }
                     if (i.Callee is not null && !_owned.Contains(i))
                     {
