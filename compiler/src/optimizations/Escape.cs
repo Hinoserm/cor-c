@@ -138,6 +138,7 @@ public sealed partial class Escape : IModulePass
         }
 
         m.LifetimeHints = _hinting ? Hints(m, Provided) : null;
+        PermanentStatics(m);
         m.NeedsHeap = AnyAllocationReachable(m, byName);
         if (Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is { Length: > 0 }) AllocationReport(m, byName);
         LastRun = (Promoted, Owned, OwnedReturns, _fresh.Count, FieldsOwned, VariablesOwned);
@@ -244,6 +245,51 @@ public sealed partial class Escape : IModulePass
     /// Those are the caller's to free wherever the call is owned.
     /// </summary>
     private readonly Dictionary<string, HashSet<Instr>> _freshOrigins = new(StringComparer.Ordinal);
+
+    /// <summary>Allocations that live until the program ends (PermanentStatics): never garbage, so no collector's.</summary>
+    private readonly HashSet<Instr> _permanent = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>
+    /// A STATIC FIELD SET ONLY BY A STATIC INITIALISER holds what it is given
+    /// until the program ends -- C#'s `static readonly`, and any static nothing
+    /// else assigns. An allocation a static initialiser makes once (not in a
+    /// loop) and stores into such a field is therefore never garbage: it needs
+    /// no collector and is never freed. Judged over the whole program only,
+    /// since another unit could assign the field; the object may be read and
+    /// handed anywhere, which changes nothing, since it is never freed.
+    /// </summary>
+    private void PermanentStatics(Module m)
+    {
+        if (m.PreserveExports || m.Entry is null) return;
+        static bool IsStaticInit(Function f) => f.Name.Contains("_StaticInit$", StringComparison.Ordinal);
+        Dictionary<string, bool> onlyInitialisers = new(StringComparer.Ordinal);
+        foreach (Function f in m.Functions)
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Op == Opcode.Store && i.Operands.Count >= 2 && i.Operands[0] is SymOperand { Name: var field } && field.StartsWith("s_", StringComparison.Ordinal))
+                        onlyInitialisers[field] = (!onlyInitialisers.TryGetValue(field, out bool was) || was) && IsStaticInit(f);
+        foreach (Function f in m.Functions)
+        {
+            if (!IsStaticInit(f)) continue;
+            HashSet<Block>? repeating = null;
+            Dictionary<VReg, Instr> made = new();
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Op == Opcode.Call && IsAllocator(i.Callee) && i.Dest is not null) made[i.Dest] = i;
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                {
+                    if (i.Op != Opcode.Store || i.Operands.Count < 2 || i.Operands[0] is not SymOperand { Name: var field }
+                        || !onlyInitialisers.TryGetValue(field, out bool only) || !only
+                        || i.Operands[1] is not RegOperand { Reg: var value } || !made.TryGetValue(value, out Instr? alloc)) continue;
+                    repeating ??= Repeating(f);
+                    if (repeating.Contains(BlockOf(f, alloc))) continue;
+                    _permanent.Add(alloc);
+                }
+        }
+
+        static Block BlockOf(Function f, Instr i) => f.Blocks.First(b => b.Instrs.Contains(i));
+    }
 
     /// <summary>How many of the owned allocations were a fresh function's result.</summary>
     public int OwnedReturns { get; private set; }
@@ -1517,7 +1563,7 @@ public sealed partial class Escape : IModulePass
                 foreach (Instr i in b.Instrs)
                 {
                     bool origin = origins is not null && origins.Contains(i);
-                    if (i.Callee is not null && IsAllocator(i.Callee) && !_owned.Contains(i)
+                    if (i.Callee is not null && IsAllocator(i.Callee) && !_owned.Contains(i) && !_permanent.Contains(i)
                         && (!origin || unowned) && counted.Add(i))
                     {
                         sites.Add(paths ? $"{f.Name}:{i.Line} {i.Callee}\n      reached: {Path(f.Name)}" : f.Name);

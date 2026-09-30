@@ -1,0 +1,42 @@
+// test: gcless static tables
+// expect-exit: 0
+// expect-output:
+// 77020 heap 0
+//
+// A static field only a static initialiser sets holds its object until the
+// program ends, as C#'s `static readonly` does: never garbage, so it needs no
+// collector and is never freed. Tables made that way, and read a thousand
+// times over, leave a program that never touches the collected heap.
+
+static class Tables
+{
+    static readonly long[] Squares = MakeSquares();
+    static readonly byte[] Scratch = new byte[256];
+
+    static long[] MakeSquares()
+    {
+        long[] made = new long[16];
+        for (int i = 0; i < made.Length; i++) made[i] = i * i;
+        return made;
+    }
+
+    public static long Use(int k)
+    {
+        Scratch[k & 255] = (byte)k;
+        return Squares[k & 15] + Scratch[k & 255] - (k & 255);
+    }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        long total = 0;
+        for (int k = 0; k < 1000; k++) total += Tables.Use(k);
+        Sys.PrintInt(total);
+        Sys.Print(" heap ");
+        Sys.PrintInt(Gc.HeapBytes);
+        Sys.PrintLine();
+        return 0;
+    }
+}
