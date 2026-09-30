@@ -1,0 +1,66 @@
+// test: System.Text.Unicode.Utf8's FromUtf16 and ToUtf16 -- each maximal ill-formed subsequence one U+FFFD, NeedMoreData for a cut-off end not final, a whole character or DestinationTooSmall -- Ascii's cross-typed casing, and new string(Span<char>), as .NET 10's (its output is this test's)
+// expect-exit: 0
+// expect-output:
+// from Done 5 10 [61 C3 A9 E2 82 AC F0 9F 98 80]
+// from Done 2 4 [61 EF BF BD]
+// from NeedMoreData 1 1 [61]
+// from InvalidData 1 1 [61]
+// from DestinationTooSmall 2 3 [61 C3 A9]
+// to Done 10 5 [0061 00E9 20AC D83D DE00]
+// to NeedMoreData 1 1 [0061]
+// to Done 3 2 [0061 FFFD]
+// to Done 3 3 [FFFD FFFD 0062]
+// to Done 4 4 [FFFD FFFD FFFD 0062]
+// to Done 4 4 [FFFD FFFD FFFD 0062]
+// to Done 4 4 [FFFD FFFD FFFD FFFD]
+// to DestinationTooSmall 0 0 []
+// to InvalidData 1 1 [0061]
+// Done ABC
+// InvalidData 2
+using System;
+using System.Buffers;
+using System.Text;
+using System.Text.Unicode;
+
+static class Program
+{
+    static string Hex(ReadOnlySpan<byte> b) { string s = ""; foreach (byte x in b) s += x.ToString("X2") + " "; return s.TrimEnd(); }
+    static string Units(ReadOnlySpan<char> c) { string s = ""; foreach (char x in c) s += ((int)x).ToString("X4") + " "; return s.TrimEnd(); }
+
+    static void From(string text, int room, bool replace, bool final)
+    {
+        Span<byte> buf = stackalloc byte[64];
+        OperationStatus st = Utf8.FromUtf16(text.AsSpan(), buf.Slice(0, room), out int read, out int written, replace, final);
+        Console.WriteLine("from " + st + " " + read + " " + written + " [" + Hex(buf.Slice(0, written)) + "]");
+    }
+
+    static void To(byte[] bytes, int room, bool replace, bool final)
+    {
+        Span<char> buf = stackalloc char[64];
+        OperationStatus st = Utf8.ToUtf16(bytes, buf.Slice(0, room), out int read, out int written, replace, final);
+        Console.WriteLine("to " + st + " " + read + " " + written + " [" + Units(buf.Slice(0, written)) + "]");
+    }
+
+    static int Main()
+    {
+        From("aé€😀", 64, true, true);
+        From("a\ud83d", 64, true, true);
+        From("a\ud83d", 64, true, false);
+        From("a\udc00b", 64, false, true);
+        From("aé€", 4, true, true);
+        To(new byte[] { 0x61, 0xC3, 0xA9, 0xE2, 0x82, 0xAC, 0xF0, 0x9F, 0x98, 0x80 }, 64, true, true);
+        To(new byte[] { 0x61, 0xE2, 0x82 }, 64, true, false);
+        To(new byte[] { 0x61, 0xE2, 0x82 }, 64, true, true);
+        To(new byte[] { 0xC0, 0xAF, 0x62 }, 64, true, true);
+        To(new byte[] { 0xE0, 0x80, 0x80, 0x62 }, 64, true, true);
+        To(new byte[] { 0xED, 0xA0, 0x80, 0x62 }, 64, true, true);
+        To(new byte[] { 0xF4, 0x90, 0x80, 0x80 }, 64, true, true);
+        To(new byte[] { 0xF0, 0x9F, 0x98, 0x80 }, 1, true, true);
+        To(new byte[] { 0x61, 0xFF }, 64, false, true);
+        Span<char> cs = stackalloc char[8];
+        Console.WriteLine(Ascii.ToUpper("abc"u8, cs, out int w) + " " + new string(cs.Slice(0, w)));
+        Span<byte> bs = stackalloc byte[8];
+        Console.WriteLine(Ascii.ToLower("ABé".AsSpan(), bs, out w) + " " + w);
+        return 0;
+    }
+}

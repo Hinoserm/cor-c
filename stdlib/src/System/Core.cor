@@ -444,6 +444,26 @@ static class String {
         return FromChars(chars, 0, chars.Length);
     }
 
+    /// `new string(span)`, .NET's string(ReadOnlySpan<char>): the chars copied.
+    public static string FromChars(ReadOnlySpan<char> chars) {
+        if (chars.Length == 0) { return ""; }
+        string made = Sys.NewChars(chars.Length);
+        for (int i = 0; i < chars.Length; i++) {
+            Sys.SetChar(made, i, chars[i]);
+        }
+        return made;
+    }
+
+    /// The same from a Span, which .NET converts to ReadOnlySpan implicitly.
+    public static string FromChars(Span<char> chars) {
+        if (chars.Length == 0) { return ""; }
+        string made = Sys.NewChars(chars.Length);
+        for (int i = 0; i < chars.Length; i++) {
+            Sys.SetChar(made, i, chars[i]);
+        }
+        return made;
+    }
+
     public static string FromChars(char[] chars, int start, int length) {
         if (chars == null) { throw new ArgumentNullException("chars"); }
         if (start < 0 || length < 0 || start + length > chars.Length) {
@@ -13934,6 +13954,38 @@ namespace System.Text
             return n < source.Length ? OperationStatus.DestinationTooSmall : OperationStatus.Done;
         }
 
+        // Between the two: ASCII bytes cased into chars, and ASCII chars into bytes.
+        public static OperationStatus ToLower(ReadOnlySpan<byte> source, Span<char> destination, out int charsWritten) { return Change(source, destination, false, out charsWritten); }
+        public static OperationStatus ToUpper(ReadOnlySpan<byte> source, Span<char> destination, out int charsWritten) { return Change(source, destination, true, out charsWritten); }
+        public static OperationStatus ToLower(ReadOnlySpan<char> source, Span<byte> destination, out int bytesWritten) { return Change(source, destination, false, out bytesWritten); }
+        public static OperationStatus ToUpper(ReadOnlySpan<char> source, Span<byte> destination, out int bytesWritten) { return Change(source, destination, true, out bytesWritten); }
+
+        static OperationStatus Change(ReadOnlySpan<byte> source, Span<char> destination, bool upper, out int written)
+        {
+            int n = source.Length < destination.Length ? source.Length : destination.Length;
+            for (int i = 0; i < n; i++)
+            {
+                int c = source[i];
+                if (c > 0x7F) { written = i; return OperationStatus.InvalidData; }
+                destination[i] = (char)(upper ? Upper(c) : Lower(c));
+            }
+            written = n;
+            return n < source.Length ? OperationStatus.DestinationTooSmall : OperationStatus.Done;
+        }
+
+        static OperationStatus Change(ReadOnlySpan<char> source, Span<byte> destination, bool upper, out int written)
+        {
+            int n = source.Length < destination.Length ? source.Length : destination.Length;
+            for (int i = 0; i < n; i++)
+            {
+                int c = source[i];
+                if (c > 0x7F) { written = i; return OperationStatus.InvalidData; }
+                destination[i] = (byte)(upper ? Upper(c) : Lower(c));
+            }
+            written = n;
+            return n < source.Length ? OperationStatus.DestinationTooSmall : OperationStatus.Done;
+        }
+
         public static OperationStatus ToLowerInPlace(Span<byte> value, out int bytesWritten) { return Change(value, value, false, out bytesWritten); }
         public static OperationStatus ToUpperInPlace(Span<byte> value, out int bytesWritten) { return Change(value, value, true, out bytesWritten); }
         public static OperationStatus ToLowerInPlace(Span<char> value, out int charsWritten) { return Change(value, value, false, out charsWritten); }
@@ -14221,6 +14273,115 @@ namespace System.Buffers.Text
             value = negative ? (long)(0UL - magnitude) : (long)magnitude;
             consumed = used + skip;
             return true;
+        }
+    }
+}
+
+namespace System.Text.Unicode
+{
+    /// .NET's Utf8: UTF-16 and UTF-8 converted into a caller's buffer, no
+    /// string made -- the one conversion at the boundary between text held as
+    /// .NET holds it and a system call that takes bytes. Invalid input is each
+    /// maximal ill-formed subsequence become one U+FFFD when replacing, and
+    /// InvalidData where it begins when not; input cut off at its end is
+    /// NeedMoreData unless this is the final block; a destination without
+    /// room stops at a whole character, DestinationTooSmall.
+    public static class Utf8
+    {
+        public static OperationStatus FromUtf16(ReadOnlySpan<char> source, Span<byte> destination, out int charsRead, out int bytesWritten, bool replaceInvalidSequences = true, bool isFinalBlock = true)
+        {
+            int i = 0, o = 0;
+            OperationStatus status = OperationStatus.Done;
+            while (i < source.Length)
+            {
+                int c = source[i];
+                int take = 1;
+                int cp = c;
+                if (c >= 0xD800 && c <= 0xDBFF)
+                {
+                    if (i + 1 >= source.Length)
+                    {
+                        if (!isFinalBlock) { status = OperationStatus.NeedMoreData; break; }
+                        cp = -1;
+                    }
+                    else if (source[i + 1] >= 0xDC00 && source[i + 1] <= 0xDFFF)
+                    {
+                        cp = 0x10000 + ((c - 0xD800) << 10) + (source[i + 1] - 0xDC00);
+                        take = 2;
+                    }
+                    else cp = -1;
+                }
+                else if (c >= 0xDC00 && c <= 0xDFFF) cp = -1;
+                if (cp < 0)
+                {
+                    if (!replaceInvalidSequences) { status = OperationStatus.InvalidData; break; }
+                    cp = 0xFFFD;
+                }
+                int need = cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
+                if (o + need > destination.Length) { status = OperationStatus.DestinationTooSmall; break; }
+                if (need == 1) destination[o] = (byte)cp;
+                else if (need == 2) { destination[o] = (byte)(0xC0 | (cp >> 6)); destination[o + 1] = (byte)(0x80 | (cp & 0x3F)); }
+                else if (need == 3) { destination[o] = (byte)(0xE0 | (cp >> 12)); destination[o + 1] = (byte)(0x80 | ((cp >> 6) & 0x3F)); destination[o + 2] = (byte)(0x80 | (cp & 0x3F)); }
+                else { destination[o] = (byte)(0xF0 | (cp >> 18)); destination[o + 1] = (byte)(0x80 | ((cp >> 12) & 0x3F)); destination[o + 2] = (byte)(0x80 | ((cp >> 6) & 0x3F)); destination[o + 3] = (byte)(0x80 | (cp & 0x3F)); }
+                o += need;
+                i += take;
+            }
+            charsRead = i;
+            bytesWritten = o;
+            return status;
+        }
+
+        public static OperationStatus ToUtf16(ReadOnlySpan<byte> source, Span<char> destination, out int bytesRead, out int charsWritten, bool replaceInvalidSequences = true, bool isFinalBlock = true)
+        {
+            int i = 0, o = 0;
+            OperationStatus status = OperationStatus.Done;
+            while (i < source.Length)
+            {
+                int b0 = source[i];
+                int cp;
+                int take;
+                if (b0 < 0x80) { cp = b0; take = 1; }
+                else
+                {
+                    // How many continuation bytes, and the range the first may take.
+                    int more, low = 0x80, high = 0xBF;
+                    if (b0 >= 0xC2 && b0 <= 0xDF) { more = 1; cp = b0 & 0x1F; }
+                    else if (b0 >= 0xE0 && b0 <= 0xEF) { more = 2; cp = b0 & 0x0F; if (b0 == 0xE0) low = 0xA0; if (b0 == 0xED) high = 0x9F; }
+                    else if (b0 >= 0xF0 && b0 <= 0xF4) { more = 3; cp = b0 & 0x07; if (b0 == 0xF0) low = 0x90; if (b0 == 0xF4) high = 0x8F; }
+                    else { more = -1; cp = 0; }
+                    take = 1;
+                    bool bad = more < 0;
+                    bool cut = false;
+                    for (int k = 0; k < more && !bad; k++)
+                    {
+                        if (i + take >= source.Length) { cut = true; break; }
+                        int b = source[i + take];
+                        if (b < low || b > high) { bad = true; break; }
+                        cp = (cp << 6) | (b & 0x3F);
+                        take++;
+                        low = 0x80; high = 0xBF;
+                    }
+                    if (cut)
+                    {
+                        if (!isFinalBlock) { status = OperationStatus.NeedMoreData; break; }
+                        bad = true;
+                    }
+                    if (bad)
+                    {
+                        if (!replaceInvalidSequences) { status = OperationStatus.InvalidData; break; }
+                        cp = 0xFFFD;
+                    }
+                }
+                int need = cp >= 0x10000 ? 2 : 1;
+                if (o + need > destination.Length) { status = OperationStatus.DestinationTooSmall; break; }
+                if (need == 1) destination[o] = (char)cp;
+                else { destination[o] = (char)(0xD800 + ((cp - 0x10000) >> 10)); destination[o + 1] = (char)(0xDC00 + ((cp - 0x10000) & 0x3FF)); }
+                o += need;
+                i += take;
+            }
+            bytesRead = i;
+            charsWritten = o;
+            return status;
         }
     }
 }
