@@ -146,6 +146,14 @@ public sealed partial class Escape : IModulePass
         PermanentStatics(m);
         if (canFree) OwnedFields(m, byName, summaries);
         m.NeedsHeap = AnyAllocationReachable(m, byName);
+        // A PROGRAM THAT SAID IT RUNS WITHOUT A COLLECTOR gets none: what is
+        // left is named, one note each, and is never given back.
+        if (m.NeedsHeap && m.NoCollector && !m.PreserveExports && m.Entry is not null && byName.TryGetValue(m.Entry, out Function? main))
+        {
+            foreach (string site in CollectorSites(m, byName, main, paths: false))
+                Console.Error.WriteLine($"note: --no-collector: an allocation in {site} is never given back");
+            m.NeedsHeap = false;
+        }
         if (Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is { Length: > 0 }) AllocationReport(m, byName);
         LastRun = (Promoted, Owned, OwnedReturns, _fresh.Count, FieldsOwned, VariablesOwned);
 

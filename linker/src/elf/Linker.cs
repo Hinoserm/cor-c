@@ -241,7 +241,7 @@ public static partial class Linker
                 $"'{entrySymbol}' is at 0x{entry.Address:x} but a flat image is entered at its first byte, 0x{baseAddress:x}",
             });
         }
-        if (mapPath is not null) WriteMap(layout, mapPath);
+        if (mapPath is not null) WriteMap(layout, inputs, mapPath);
 
         // .bss carries no bytes, so the file ends where the last section with
         // bytes does: .data, or the numbers ahead of it, or the constants.
@@ -389,11 +389,19 @@ public static partial class Linker
     /// symbol in the same section, so padding counts to what comes before it.
     /// For seeing what a size limit is being spent on.
     /// </summary>
-    private static void WriteMap(Layout layout, string path)
+    /// <summary>
+    /// Every symbol of the image, largest first: globals and each object's own
+    /// locals (a string, a type's tables), each sized to the next symbol of
+    /// its section, so what a local holds is not counted to the global before it.
+    /// </summary>
+    private static void WriteMap(Layout layout, IEnumerable<Input> inputs, string path)
     {
         var placed = layout.Globals
             .Where(g => g.Value.Section is not null)
             .Select(g => (Name: g.Key, g.Value.Section, g.Value.Address))
+            .Concat(inputs.SelectMany(input => input.Locals
+                .Where(l => l.Value.Section is not null && l.Value.Symbol is not null)
+                .Select(l => (Name: l.Key, l.Value.Section, l.Value.Address))))
             .OrderBy(g => g.Address).ToList();
         List<(ulong Size, string Line)> lines = new();
         for (int i = 0; i < placed.Count; i++)

@@ -51,6 +51,15 @@ public sealed class Module
     public bool LeavesLinkHints { get; set; }
 
     /// <summary>
+    /// The program declares it runs without a collector (--no-collector): a
+    /// loader that hands over to a kernel and is overwritten. What the
+    /// lifetime passes cannot prove is taken from the manual heap and never
+    /// given back, each such allocation named in a note, and no collector
+    /// is linked.
+    /// </summary>
+    public bool NoCollector { get; set; }
+
+    /// <summary>
     /// Call sites no inliner may fold away: the allocations the link may yet
     /// place or free (Escape's pending hints), which it must still be able
     /// to tell from any other call when it reads this module's IR back.

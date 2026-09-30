@@ -201,6 +201,9 @@ public static class Driver
               --disable-3dnow   exclude 3DNow! while retaining MMX
               --tag <text>       name and version the image carries in a
                                  .corsac.tag note, for the bootloader's menu
+              --no-collector     link no collector: what cannot be proved freed or
+                                 made once is never given back, each such
+                                 allocation named in a note
               --flat             write a flat binary rather than an ELF file:
                                  .text, .rodata and .data contiguous from --base,
                                  no headers, and the .bss size reported so the
@@ -625,6 +628,7 @@ public static class Driver
         // position-dependent, with the link-time optimizer on, linked against
         // no shared library. Only such an object may call symbols only the
         // link defines (field sites).
+        module.NoCollector = args.Contains("--no-collector");
         module.LeavesLinkHints = (args.Contains("--obj") || library) && !args.Contains("--no-lto") && !args.Contains("--no-opt")
             && sharedLibs.Count == 0 && !(shared || args.Contains("--pic"));
         if (!args.Contains("--no-opt"))
