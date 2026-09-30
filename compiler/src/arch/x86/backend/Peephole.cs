@@ -24,7 +24,7 @@ internal static class Peephole
             ForwardStoreLoad(block.Instrs);
             ForwardSpillLoads(block.Instrs);
             DeadDefs(block.Instrs, liveOut[b]);
-            RepeatedStores(block.Instrs, liveOut[b]);
+            RepeatedStores(block.Instrs, liveOut[b], Usable(m));
             MergePops(block.Instrs);
             ZeroWithXor(block.Instrs);
             InvertJumpAroundJump(block.Instrs, next);
@@ -227,7 +227,21 @@ internal static class Peephole
     /// with nothing between, and only a register dead before it that no store
     /// addresses through.
     /// </summary>
-    private static void RepeatedStores(List<MInstr> instrs, int liveOut)
+    /// <summary>
+    /// The registers a rule may take for itself after allocation: the three
+    /// the caller does not expect kept, and the callee-saved ones the prologue
+    /// already saves. Any other callee-saved register is the caller's value,
+    /// and writing it destroys that value -- `xor ebx, ebx` in String.FromChar,
+    /// which saved nothing, took the closure its caller held in EBX.
+    /// </summary>
+    private static int Usable(MFunction m)
+    {
+        int usable = 1 << (int)Gpr.Eax | 1 << (int)Gpr.Ecx | 1 << (int)Gpr.Edx;
+        foreach (Gpr g in m.SavedRegs) usable |= 1 << (int)g;
+        return usable;
+    }
+
+    private static void RepeatedStores(List<MInstr> instrs, int liveOut, int usable)
     {
         int[] deadBefore = new int[instrs.Count];
         int dead = ~liveOut & 0xFF & ~(1 << (int)Gpr.Esp) & ~(1 << (int)Gpr.Ebp);
@@ -267,7 +281,7 @@ internal static class Peephole
         for (int r = runs.Count - 1; r >= 0; r--)
         {
             (int k, int end, long value) = runs[r];
-            int free = deadBefore[k];
+            int free = deadBefore[k] & usable;
             for (int j = k; j < end; j++)
                 if (instrs[j].Operands[0] is MMem mem)
                 {

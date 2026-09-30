@@ -1,0 +1,36 @@
+// test: a block zeroed through a register after allocation never takes a callee-saved register the function did not save, so its caller's values survive the call (String.FromChar's frame array took EBX and the self-compiled compiler lost a closure)
+// expect-exit: 0
+// expect-output:
+// a1b2c3d4e5f6g7h8
+// 1 2 3 4 5 6 7 8
+using System.Runtime.CompilerServices;
+
+static class Program
+{
+    // An array in the frame, zeroed a word at a time, and nothing else: no
+    // register of its own, so any register the store run takes the prologue
+    // never saved.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string One(char c, int x, int y)
+    {
+        char[] one = new char[1];
+        one[0] = c;
+        return Make(one, x, y);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string Make(char[] chars, int x, int y) => new string(chars).Substring(0, x - y);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Id(int v) => v;
+
+    static int Main()
+    {
+        int a = Id(1), b = Id(2), c = Id(3), d = Id(4), e = Id(5), f = Id(6), g = Id(7), h = Id(8);
+        string said = One('a', a, 0) + a + One('b', a, 0) + b + One('c', a, 0) + c + One('d', a, 0) + d
+            + One('e', a, 0) + e + One('f', a, 0) + f + One('g', a, 0) + g + One('h', a, 0) + h;
+        System.Console.WriteLine(said);
+        System.Console.WriteLine(a + " " + b + " " + c + " " + d + " " + e + " " + f + " " + g + " " + h);
+        return 0;
+    }
+}
