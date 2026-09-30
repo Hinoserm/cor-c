@@ -1,0 +1,36 @@
+// test: this inside a lambda or a local function of an instance method is the instance, not the closure; SortedDictionary.TryAdd
+// expect-exit: 0
+// expect-output:
+// 15
+// True False 1
+using System.Collections.Generic;
+sealed class Needs { public Outer Owner; public Needs(Outer o) { Owner = o; } }
+public sealed class Hints
+{
+    public sealed class PairOrder : IComparer<(string, int)>
+    {
+        public static readonly PairOrder Instance = new();
+        public int Compare((string, int) x, (string, int) y) => x.Item2.CompareTo(y.Item2);
+    }
+}
+sealed class Outer
+{
+    public int Id = 7;
+    public int Run()
+    {
+        Needs Make() => new Needs(this);
+        System.Func<Needs> f = () => new(this);
+        SortedSet<(string, int)> set = new(Hints.PairOrder.Instance) { ("b", 2), ("a", 1) };
+        return Make().Owner.Id + f().Owner.Id + set.Min.Item2;
+    }
+}
+static class Program
+{
+    static int Main()
+    {
+        Console.WriteLine(new Outer().Run());
+        SortedDictionary<string, int> d = new();
+        Console.WriteLine(d.TryAdd("x", 1) + " " + d.TryAdd("x", 2) + " " + d["x"]);
+        return 0;
+    }
+}

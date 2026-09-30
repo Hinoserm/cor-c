@@ -9725,6 +9725,15 @@ public sealed partial class Binder
                 };
 
             case ThisExpr:
+                // INSIDE A LAMBDA OR A LOCAL FUNCTION `this` is still the
+                // instance the method was called on, which the closure holds in
+                // its hidden field: not the closure. `new Needs(this)` in a local
+                // function handed the closure where a Needs wanted an Escape.
+                if (_capturedThisType is not null && _capturedThisField is not null)
+                {
+                    _r.Resolved[e] = new FieldSym(_capturedThisField);
+                    return new Type { Prim = Prim.Void, Symbol = _capturedThisType };
+                }
                 if (_thisType is null || _method is { Static: true })
                 {
                     Error(e, "'this' is not available in a static method");
@@ -13407,8 +13416,12 @@ public sealed partial class Binder
         // with the type turns the whole access back into a type name, so
         // `Outer.Inner.Deeper` and `Outer.Kind.B` both work by the same rule
         // applied twice.
+        // A type another unit declares is loaded from its index only when it
+        // is asked for by name (FindType), so the nested one is asked too.
+        TypeSymbol? nested = null;
         if (_r.Resolved.TryGetValue(m.Target, out Sym? qualifier) && qualifier is TypeNameSym holder
-            && _r.Types.TryGetValue(holder.Symbol.Key + "." + m.Name, out TypeSymbol? nested))
+            && (_r.Types.TryGetValue(holder.Symbol.Key + "." + m.Name, out nested)
+                || FindType(holder.Symbol.Key + "." + m.Name, out nested) && nested is not null))
         {
             _r.Resolved[m] = new TypeNameSym(nested);
             return new Type { Prim = Prim.Void, Symbol = nested };

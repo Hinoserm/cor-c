@@ -1,0 +1,17 @@
+// test: a nested type named through its outer type, declared in another unit
+// units: tests/language/support/851_nested_units.cor
+// expect-exit: 0
+// expect-output:
+// 3 2 1
+using NestedUnits;
+using System.Collections.Generic;
+
+static class Program
+{
+    static int Main()
+    {
+        SortedSet<int> set = new(Outer.Order.Instance) { 1, 3, 2 };
+        Console.WriteLine(string.Join(" ", set));
+        return 0;
+    }
+}

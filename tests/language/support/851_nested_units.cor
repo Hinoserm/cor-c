@@ -1,0 +1,11 @@
+// The other unit of 851_nested_type_across_units: a public class with a public nested class.
+namespace NestedUnits;
+
+public sealed class Outer
+{
+    public sealed class Order : System.Collections.Generic.IComparer<int>
+    {
+        public static readonly Order Instance = new();
+        public int Compare(int x, int y) => y.CompareTo(x);
+    }
+}

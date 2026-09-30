@@ -7212,6 +7212,16 @@ static class Enumerable {
         return source.TryGetValue(key, out V? found) ? found! : fallback;
     }
 
+    /// .NET's CollectionExtensions.TryAdd, over any dictionary (a
+    /// SortedDictionary, say): adds the pair and answers true, or answers false
+    /// and leaves the dictionary alone when the key is already there.
+    public static bool TryAdd<K, V>(this IDictionary<K, V> dictionary, K key, V value) {
+        if (dictionary == null) throw new ArgumentNullException("dictionary");
+        if (dictionary.ContainsKey(key)) return false;
+        dictionary.Add(key, value);
+        return true;
+    }
+
     // ---- making sequences --------------------------------------------------
 
     public static IEnumerable<T> Empty<T>() { return Array.Empty<T>(); }

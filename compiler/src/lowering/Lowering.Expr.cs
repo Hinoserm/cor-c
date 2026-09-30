@@ -682,6 +682,9 @@ public sealed partial class Lowering
             }
 
             case ThisExpr:
+                // In a closure's body: the instance it captured, from its field.
+                if (_b.Resolved.TryGetValue(e, out Sym? captured) && captured is FieldSym { Field.Static: false } thisField && _this is not null)
+                    return LoadPlace(PlaceOfField(thisField.Field, _this, e));
                 return _this ?? Fail(e, "'this' outside an instance method");
 
             // 'base' names the same object as 'this'; only member lookup and
