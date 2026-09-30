@@ -1,0 +1,38 @@
+// test: gcless constant byte span
+// expect-exit: 0
+// expect-output:
+// 3 1 2 200
+// 2 -1 5
+// 20300000 True
+//
+// A read-only span of constant bytes is data, as Roslyn makes it: the bytes
+// sit where the program's data is, and reading them a hundred thousand times
+// allocates nothing.
+
+static class Program
+{
+    static ReadOnlySpan<byte> Table => new byte[] { 1, 2, 200 };
+    static ReadOnlySpan<sbyte> Signed => new sbyte[] { -1, 5 };
+
+    static int Sum()
+    {
+        ReadOnlySpan<byte> t = Table;
+        int sum = 0;
+        for (int i = 0; i < t.Length; i++) sum += t[i];
+        return sum;
+    }
+
+    static int Main()
+    {
+        ReadOnlySpan<byte> t = Table;
+        System.Console.WriteLine(t.Length + " " + t[0] + " " + t[1] + " " + t[2]);
+        ReadOnlySpan<sbyte> s = Signed;
+        System.Console.WriteLine(s.Length + " " + s[0] + " " + s[1]);
+        long before = GC.GetTotalMemory(false);
+        long total = 0;
+        for (int k = 0; k < 100000; k++) total += Sum();
+        long grown = GC.GetTotalMemory(false) - before;
+        System.Console.WriteLine(total + " " + (grown < 65536));
+        return 0;
+    }
+}

@@ -1827,7 +1827,11 @@ public sealed partial class Lowering
             int at = _t.DescriptorBytes + i * w;
             string? target;
 
-            if (table[i] is { } m)
+            // object's own members are symbols with no body (the binder's
+            // Rooted): a slot that still holds one -- `new object()`, or a
+            // class that overrides none of them -- gets the stub below, as a
+            // slot nobody filled does.
+            if (table[i] is { } m && !(m.Decl is null && m.Owner?.Name == "object" && m.Owner.Kind == TypeKind.Class))
             {
                 Require(m);
                 target = CallLabel(m);

@@ -667,7 +667,7 @@ static class Runtime
         {
             return;
         }
-        if (at != 0)
+        if (at != 0 && Gc.LiveObject(at))
         {
             FreeOwnedFields(at);
         }

@@ -4772,6 +4772,62 @@ static class Gc
 
     /// The header of an exact, live allocation, or zero for anything foreign,
     /// interior, malformed or already free.
+    /// WHETHER `at` IS A LIVE OBJECT'S PAYLOAD, by the checks Free makes: in
+    /// this thread's own buffer without the lock, anywhere else under it --
+    /// and an OBJECT, made with a descriptor, as the marker judges one. What
+    /// Runtime.Free asks before it reads a header to free the fields an object
+    /// owns: a pointer freed twice, one into static data and a headerless
+    /// cell (a struct's box, a captured variable) have no descriptor to read,
+    /// and Free promises to ignore the first two and give back the third.
+    public static bool LiveObject(long at)
+    {
+        if (at == 0 || (at & 7) != 0)
+        {
+            return false;
+        }
+        long block = at - HeaderBytes;
+        long tb = Sys.ThreadBlock();
+        if (tb != 0)
+        {
+            long ptr = Sys.Peek(tb + Tls.AllocPtr);
+            if (ptr != 0 && block >= Sys.Peek(tb + Tls.AllocBase) && block < ptr)
+            {
+                long word = Sys.Peek(block);
+                long size = word & SizeMask;
+                return size >= Smallest && (word & FlagFree) == 0 && block + size <= ptr
+                    && Sys.Peek(block + size - FooterBytes) == word && Described(block, at);
+            }
+            if (Sys.Peek(tb + Tls.InAlloc) != 0)
+            {
+                return false;
+            }
+        }
+        if (GcLock.HeldByMe())
+        {
+            return false;
+        }
+        GcLock.Enter();
+        bool live = ValidAllocated(at) != 0 && Described(block, at);
+        GcLock.Exit();
+        return live;
+    }
+
+    /// A block made as an object whose first word names a real descriptor.
+    static bool Described(long block, long at)
+    {
+        if (Sys.Peek(block + KindAt) != KindObject)
+        {
+            return false;
+        }
+        long vt = Sys.Peek(at) & WordSize.AddressMask;
+        if (vt == 0)
+        {
+            return false;
+        }
+        long desc = vt - DescWords * WordSize.Bytes;
+        return (Sys.Peek(desc + DescSelfWord * WordSize.Bytes) & WordSize.AddressMask) == desc;
+    }
+
     static long ValidAllocated(long at)
     {
         if ((at & 7) != 0 || at < HeaderBytes)

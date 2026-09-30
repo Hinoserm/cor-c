@@ -4739,13 +4739,39 @@ public sealed partial class Binder
             && Resolve(span.TemplateArgs[0], _thisType).Equals(held)
             && !_r.Rewrites.ContainsKey(array))
         {
+            // A READ-ONLY SPAN OF CONSTANT BYTES IS DATA, as Roslyn makes it:
+            // `ReadOnlySpan<byte> b = new byte[] { 1, 2, 3 }` reads the bytes
+            // where the program's data is and allocates nothing, the same as
+            // a u8 literal (EmitNew). Only a read-only span of one-byte
+            // elements, all of them constants: nothing can write the one copy.
+            Expr wrapped = array;
+            if (span.Template == "ReadOnlySpan" && held.Prim is Prim.U8 or Prim.I8 or Prim.Bool
+                && array is NewExpr { Elements: { Count: > 0 } items, Utf8Bytes: null, ArraySize: null } literal)
+            {
+                byte[] bytes = new byte[items.Count];
+                bool constant = true;
+                for (int i = 0; i < items.Count && constant; i++)
+                {
+                    if (ConstantValue(items[i], _thisType) is long value) bytes[i] = (byte)value;
+                    else if (items[i] is LiteralExpr { Kind: Lit.Bool } truth) bytes[i] = (byte)(truth.IntValue != 0 ? 1 : 0);
+                    else constant = false;
+                }
+                if (constant)
+                {
+                    wrapped = new NewExpr
+                    {
+                        Type = literal.Type, Elements = literal.Elements, Utf8Bytes = bytes,
+                        Line = literal.Line, Col = literal.Col,
+                    };
+                }
+            }
             NewExpr made = new()
             {
                 Type = new TypeRef { Name = spanOwner.Name, Line = at.Line, Col = at.Col },
                 Line = at.Line, Col = at.Col,
             };
 
-            made.Args.Add(array);
+            made.Args.Add(wrapped);
             _r.Rewrites[array] = made;
             CheckExpr(made);
             return;
