@@ -115,6 +115,12 @@ public static class Program
             try { X86Assembler.Assemble(".runtime mmx\n.runtime none\npaddsw mm0, mm1\n", "ended.asm", bits: 32, cpu: X86Cpu.Parse(["--cpu=pentium"])); }
             catch (Corsac.Asm.AsmException) { ended = true; }
             Check(ended, ".runtime none did not end the MMX allowance");
+            // IMUL's three shapes, hand-encoded: one operand (F7 /5), two
+            // (0F AF /r), three with a byte or a dword immediate (6B, 69).
+            byte[] imul = X86Assembler.Assemble("imul ecx\nimul edx, ecx\nimul eax, [esp + 20]\nimul eax, ebx, 10\nimul eax, 1000\n",
+                "imul.asm", bits: 32).Bytes;
+            byte[] want = { 0xF7, 0xE9, 0x0F, 0xAF, 0xD1, 0x0F, 0xAF, 0x44, 0x24, 0x14, 0x6B, 0xC3, 0x0A, 0x69, 0xC0, 0xE8, 0x03, 0x00, 0x00 };
+            Check(imul.Length == want.Length && imul.AsSpan().SequenceEqual(want), "imul's forms: " + Convert.ToHexString(imul));
             foreach (var forbidden in new[] {
                 ("386", "bswap eax"), ("386", "xadd eax, ebx"), ("386", "invlpg [eax]"),
                 ("486", "rdtsc"), ("486", "cmpxchg8b qword [eax]"), ("pentium", "emms"),
