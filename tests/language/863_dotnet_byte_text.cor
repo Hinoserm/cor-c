@@ -1,0 +1,73 @@
+// test: .NET's byte-text APIs -- Ascii, MemoryExtensions Trim/Split/SequenceCompareTo/IndexOfAny/Count, Utf8Parser, Utf8Formatter, int.TryParse/TryFormat over UTF-8, HashCode.AddBytes -- answer as .NET 10 answers (its output, run under dotnet, is this test's)
+// expect-exit: 0
+// expect-output:
+// True True False False True
+// InvalidData 5 ABC-D
+// DestinationTooSmall 2
+// [mount /dev/hda1] 3 18
+// [][usr][][lib][x.so]
+// [a][b][][c]
+// --abc-- abc a// //a
+// lt
+// gt
+// 3 3 2
+// True -12345 6
+// False 0 0
+// True 255 2
+// True True 4
+// True -42
+// True 00FF
+// True ffffffff
+// False 0
+// True 77 False 0 True -9000000000
+// True 12345
+// True False
+using System;
+using System.Buffers;
+using System.Buffers.Text;
+using System.Text;
+
+static class Program
+{
+    static string S(ReadOnlySpan<byte> b) => Encoding.UTF8.GetString(b);
+
+    static int Main()
+    {
+        ReadOnlySpan<byte> key = "Content-Type"u8;
+        Console.WriteLine(Ascii.Equals(key, "Content-Type"u8) + " " + Ascii.EqualsIgnoreCase(key, "content-type"u8) + " " + Ascii.EqualsIgnoreCase(key, "content-typ"u8) + " " + Ascii.IsValid("héllo"u8) + " " + Ascii.IsValid("hello"u8));
+        Span<byte> buf = stackalloc byte[32];
+        OperationStatus st = Ascii.ToUpper("abc-Déf"u8, buf, out int w);
+        Console.WriteLine(st + " " + w + " " + S(buf.Slice(0, w)));
+        st = Ascii.ToLower("ABC"u8, buf.Slice(0, 2), out w);
+        Console.WriteLine(st + " " + w);
+        ReadOnlySpan<byte> padded = " \t mount /dev/hda1 \r\n"u8;
+        Range r = Ascii.Trim(padded);
+        Console.WriteLine("[" + S(padded[r]) + "] " + r.Start.Value + " " + r.End.Value);
+        ReadOnlySpan<byte> path = "/usr//lib/x.so"u8;
+        string parts = "";
+        foreach (Range part in path.Split((byte)'/')) parts += "[" + S(path[part]) + "]";
+        Console.WriteLine(parts);
+        parts = "";
+        foreach (Range part in "a::b::::c"u8.Split("::"u8)) parts += "[" + S("a::b::::c"u8[part]) + "]";
+        Console.WriteLine(parts);
+        Console.WriteLine(S("xx--abc--xx"u8.Trim((byte)'x')) + " " + S("-+abc+-"u8.Trim("+-"u8)) + " " + S("//a//"u8.TrimStart((byte)'/')) + " " + S("//a//"u8.TrimEnd((byte)'/')));
+        Console.WriteLine("abc"u8.SequenceCompareTo("abd"u8) < 0 ? "lt" : "ge");
+        Console.WriteLine("abc"u8.SequenceCompareTo("ab"u8) > 0 ? "gt" : "le");
+        Console.WriteLine("key=value"u8.IndexOfAny("=:"u8) + " " + "aaab"u8.IndexOfAnyExcept("a"u8) + " " + "a/b/c"u8.Count((byte)'/'));
+        Console.WriteLine(Utf8Parser.TryParse("-12345xyz"u8, out int n, out int used) + " " + n + " " + used);
+        Console.WriteLine(Utf8Parser.TryParse("99999999999"u8, out int big, out used) + " " + big + " " + used);
+        Console.WriteLine(Utf8Parser.TryParse("ff"u8, out uint h, out used, 'X') + " " + h + " " + used);
+        Console.WriteLine(Utf8Parser.TryParse("True"u8, out bool bo, out used) + " " + bo + " " + used);
+        Console.WriteLine(Utf8Formatter.TryFormat(-42, buf, out w) + " " + S(buf.Slice(0, w)));
+        Console.WriteLine(Utf8Formatter.TryFormat(255, buf, out w, new StandardFormat('X', 4)) + " " + S(buf.Slice(0, w)));
+        Console.WriteLine(Utf8Formatter.TryFormat(-1, buf, out w, new StandardFormat('x')) + " " + S(buf.Slice(0, w)));
+        Console.WriteLine(Utf8Formatter.TryFormat(123456789L, buf.Slice(0, 4), out w) + " " + w);
+        Console.WriteLine(int.TryParse(" 77 "u8, out int t) + " " + t + " " + int.TryParse("7x"u8, out t) + " " + t + " " + long.TryParse("-9000000000"u8, out long lt) + " " + lt);
+        Console.WriteLine(12345.TryFormat(buf, out w) + " " + S(buf.Slice(0, w)));
+        HashCode a = new HashCode(); a.AddBytes("abc"u8);
+        HashCode b = new HashCode(); b.AddBytes("abc"u8);
+        HashCode c = new HashCode(); c.AddBytes("abd"u8);
+        Console.WriteLine((a.ToHashCode() == b.ToHashCode()) + " " + (a.ToHashCode() == c.ToHashCode()));
+        return 0;
+    }
+}

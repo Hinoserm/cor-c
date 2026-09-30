@@ -3754,6 +3754,20 @@ static class SByte {
 }
 
 static class Int16 {
+
+    // UTF-8 TEXT, as .NET 8's short parses and formats it (IUtf8SpanParsable,
+    // IUtf8SpanFormattable): whitespace around the number allowed on the way in.
+    public static bool TryParse(ReadOnlySpan<byte> utf8Text, out short result) {
+        Range inner = System.Text.Ascii.Trim(utf8Text);
+        ReadOnlySpan<byte> digits = utf8Text[inner];
+        if (System.Buffers.Text.Utf8Parser.TryParse(digits, out result, out int used) && used == digits.Length) { return true; }
+        result = default;
+        return false;
+    }
+
+    public static bool TryFormat(this short value, Span<byte> utf8Destination, out int bytesWritten) {
+        return System.Buffers.Text.Utf8Formatter.TryFormat(value, utf8Destination, out bytesWritten);
+    }
     // Equals and GetHashCode as Int16 overrides them: equal to its own
     // type's value only, and hashed as .NET hashes it.
     public static bool Equals(short value, short other) { return value == other; }
@@ -3789,6 +3803,20 @@ static class Int16 {
 }
 
 static class UInt16 {
+
+    // UTF-8 TEXT, as .NET 8's ushort parses and formats it (IUtf8SpanParsable,
+    // IUtf8SpanFormattable): whitespace around the number allowed on the way in.
+    public static bool TryParse(ReadOnlySpan<byte> utf8Text, out ushort result) {
+        Range inner = System.Text.Ascii.Trim(utf8Text);
+        ReadOnlySpan<byte> digits = utf8Text[inner];
+        if (System.Buffers.Text.Utf8Parser.TryParse(digits, out result, out int used) && used == digits.Length) { return true; }
+        result = default;
+        return false;
+    }
+
+    public static bool TryFormat(this ushort value, Span<byte> utf8Destination, out int bytesWritten) {
+        return System.Buffers.Text.Utf8Formatter.TryFormat(value, utf8Destination, out bytesWritten);
+    }
     // Equals and GetHashCode as UInt16 overrides them: equal to its own
     // type's value only, and hashed as .NET hashes it.
     public static bool Equals(ushort value, ushort other) { return value == other; }
@@ -3824,6 +3852,20 @@ static class UInt16 {
 }
 
 static class UInt32 {
+
+    // UTF-8 TEXT, as .NET 8's uint parses and formats it (IUtf8SpanParsable,
+    // IUtf8SpanFormattable): whitespace around the number allowed on the way in.
+    public static bool TryParse(ReadOnlySpan<byte> utf8Text, out uint result) {
+        Range inner = System.Text.Ascii.Trim(utf8Text);
+        ReadOnlySpan<byte> digits = utf8Text[inner];
+        if (System.Buffers.Text.Utf8Parser.TryParse(digits, out result, out int used) && used == digits.Length) { return true; }
+        result = default;
+        return false;
+    }
+
+    public static bool TryFormat(this uint value, Span<byte> utf8Destination, out int bytesWritten) {
+        return System.Buffers.Text.Utf8Formatter.TryFormat(value, utf8Destination, out bytesWritten);
+    }
     // Equals and GetHashCode as UInt32 overrides them: equal to its own
     // type's value only, and hashed as .NET hashes it.
     public static bool Equals(uint value, uint other) { return value == other; }
@@ -3884,6 +3926,20 @@ static class UInt32 {
 }
 
 static class Int64 {
+
+    // UTF-8 TEXT, as .NET 8's long parses and formats it (IUtf8SpanParsable,
+    // IUtf8SpanFormattable): whitespace around the number allowed on the way in.
+    public static bool TryParse(ReadOnlySpan<byte> utf8Text, out long result) {
+        Range inner = System.Text.Ascii.Trim(utf8Text);
+        ReadOnlySpan<byte> digits = utf8Text[inner];
+        if (System.Buffers.Text.Utf8Parser.TryParse(digits, out result, out int used) && used == digits.Length) { return true; }
+        result = default;
+        return false;
+    }
+
+    public static bool TryFormat(this long value, Span<byte> utf8Destination, out int bytesWritten) {
+        return System.Buffers.Text.Utf8Formatter.TryFormat(value, utf8Destination, out bytesWritten);
+    }
     // Equals and GetHashCode as Int64 overrides them: equal to its own
     // type's value only, and hashed as .NET hashes it.
     public static bool Equals(long value, long other) { return value == other; }
@@ -3986,6 +4042,20 @@ static class Int64 {
 }
 
 static class Int32 {
+
+    // UTF-8 TEXT, as .NET 8's int parses and formats it (IUtf8SpanParsable,
+    // IUtf8SpanFormattable): whitespace around the number allowed on the way in.
+    public static bool TryParse(ReadOnlySpan<byte> utf8Text, out int result) {
+        Range inner = System.Text.Ascii.Trim(utf8Text);
+        ReadOnlySpan<byte> digits = utf8Text[inner];
+        if (System.Buffers.Text.Utf8Parser.TryParse(digits, out result, out int used) && used == digits.Length) { return true; }
+        result = default;
+        return false;
+    }
+
+    public static bool TryFormat(this int value, Span<byte> utf8Destination, out int bytesWritten) {
+        return System.Buffers.Text.Utf8Formatter.TryFormat(value, utf8Destination, out bytesWritten);
+    }
     // Equals and GetHashCode as Int32 overrides them: equal to its own
     // type's value only, and hashed as .NET hashes it.
     public static bool Equals(int value, int other) { return value == other; }
@@ -4123,6 +4193,20 @@ static class UIntPtr {
 }
 
 static class UInt64 {
+
+    // UTF-8 TEXT, as .NET 8's ulong parses and formats it (IUtf8SpanParsable,
+    // IUtf8SpanFormattable): whitespace around the number allowed on the way in.
+    public static bool TryParse(ReadOnlySpan<byte> utf8Text, out ulong result) {
+        Range inner = System.Text.Ascii.Trim(utf8Text);
+        ReadOnlySpan<byte> digits = utf8Text[inner];
+        if (System.Buffers.Text.Utf8Parser.TryParse(digits, out result, out int used) && used == digits.Length) { return true; }
+        result = default;
+        return false;
+    }
+
+    public static bool TryFormat(this ulong value, Span<byte> utf8Destination, out int bytesWritten) {
+        return System.Buffers.Text.Utf8Formatter.TryFormat(value, utf8Destination, out bytesWritten);
+    }
     // Equals and GetHashCode as UInt64 overrides them: equal to its own
     // type's value only, and hashed as .NET hashes it.
     public static bool Equals(ulong value, ulong other) { return value == other; }
@@ -4194,6 +4278,20 @@ static class UInt64 {
 }
 
 static class Byte {
+
+    // UTF-8 TEXT, as .NET 8's byte parses and formats it (IUtf8SpanParsable,
+    // IUtf8SpanFormattable): whitespace around the number allowed on the way in.
+    public static bool TryParse(ReadOnlySpan<byte> utf8Text, out byte result) {
+        Range inner = System.Text.Ascii.Trim(utf8Text);
+        ReadOnlySpan<byte> digits = utf8Text[inner];
+        if (System.Buffers.Text.Utf8Parser.TryParse(digits, out result, out int used) && used == digits.Length) { return true; }
+        result = default;
+        return false;
+    }
+
+    public static bool TryFormat(this byte value, Span<byte> utf8Destination, out int bytesWritten) {
+        return System.Buffers.Text.Utf8Formatter.TryFormat(value, utf8Destination, out bytesWritten);
+    }
     // Equals and GetHashCode as Byte overrides them: equal to its own
     // type's value only, and hashed as .NET hashes it.
     public static bool Equals(byte value, byte other) { return value == other; }
@@ -5718,6 +5816,81 @@ class EmptyArray<T> {
 /// an object's Equals, a value's bits. Each is written against the span's
 /// memory through Data, the one place that knows how a span holds it.
 public static class MemoryExtensions {
+    // ---- trimming, comparing and splitting spans, as .NET's MemoryExtensions
+    // has them: over any element type that compares itself, allocating nothing.
+    // Text held as UTF-8 bytes is trimmed and split here byte by byte, which
+    // is right for all of Unicode: no byte of a multi-byte character is ASCII.
+
+    public static ReadOnlySpan<T> Trim<T>(this ReadOnlySpan<T> span, T trimElement) where T : IEquatable<T> {
+        return span.TrimStart(trimElement).TrimEnd(trimElement);
+    }
+    public static ReadOnlySpan<T> TrimStart<T>(this ReadOnlySpan<T> span, T trimElement) where T : IEquatable<T> {
+        int start = 0;
+        while (start < span.Length && span[start].Equals(trimElement)) { start++; }
+        return span.Slice(start);
+    }
+    public static ReadOnlySpan<T> TrimEnd<T>(this ReadOnlySpan<T> span, T trimElement) where T : IEquatable<T> {
+        int end = span.Length;
+        while (end > 0 && span[end - 1].Equals(trimElement)) { end--; }
+        return span.Slice(0, end);
+    }
+    public static ReadOnlySpan<T> Trim<T>(this ReadOnlySpan<T> span, ReadOnlySpan<T> trimElements) where T : IEquatable<T> {
+        return span.TrimStart(trimElements).TrimEnd(trimElements);
+    }
+    public static ReadOnlySpan<T> TrimStart<T>(this ReadOnlySpan<T> span, ReadOnlySpan<T> trimElements) where T : IEquatable<T> {
+        int start = 0;
+        while (start < span.Length && trimElements.IndexOf(span[start]) >= 0) { start++; }
+        return span.Slice(start);
+    }
+    public static ReadOnlySpan<T> TrimEnd<T>(this ReadOnlySpan<T> span, ReadOnlySpan<T> trimElements) where T : IEquatable<T> {
+        int end = span.Length;
+        while (end > 0 && trimElements.IndexOf(span[end - 1]) >= 0) { end--; }
+        return span.Slice(0, end);
+    }
+
+    /// The first element equal to any of `values`, or -1.
+    public static int IndexOfAny<T>(this ReadOnlySpan<T> span, ReadOnlySpan<T> values) where T : IEquatable<T> {
+        for (int i = 0; i < span.Length; i++) { if (values.IndexOf(span[i]) >= 0) { return i; } }
+        return -1;
+    }
+
+    /// The first element equal to none of `values`, or -1.
+    public static int IndexOfAnyExcept<T>(this ReadOnlySpan<T> span, ReadOnlySpan<T> values) where T : IEquatable<T> {
+        for (int i = 0; i < span.Length; i++) { if (values.IndexOf(span[i]) < 0) { return i; } }
+        return -1;
+    }
+
+    /// How many elements equal `value`.
+    public static int Count<T>(this ReadOnlySpan<T> span, T value) where T : IEquatable<T> {
+        int n = 0;
+        for (int i = 0; i < span.Length; i++) { if (span[i].Equals(value)) { n++; } }
+        return n;
+    }
+
+    /// The two compared element by element, then by length, as .NET orders them.
+    public static int SequenceCompareTo<T>(this ReadOnlySpan<T> span, ReadOnlySpan<T> other) where T : IComparable<T> {
+        int shorter = span.Length < other.Length ? span.Length : other.Length;
+        for (int i = 0; i < shorter; i++) {
+            int c = span[i].CompareTo(other[i]);
+            if (c != 0) { return c; }
+        }
+        return span.Length.CompareTo(other.Length);
+    }
+
+    /// .NET 9's Split: the ranges between each `separator`, walked with foreach.
+    public static SpanSplitEnumerator<T> Split<T>(this ReadOnlySpan<T> source, T separator) where T : IEquatable<T> {
+        return new SpanSplitEnumerator<T>(source, separator);
+    }
+
+    /// The same, split at every whole occurrence of `separator`.
+    public static SpanSplitEnumerator<T> Split<T>(this ReadOnlySpan<T> source, ReadOnlySpan<T> separator) where T : IEquatable<T> {
+        return new SpanSplitEnumerator<T>(source, separator, false);
+    }
+
+    /// The same, split at any one of `separators`.
+    public static SpanSplitEnumerator<T> SplitAny<T>(this ReadOnlySpan<T> source, ReadOnlySpan<T> separators) where T : IEquatable<T> {
+        return new SpanSplitEnumerator<T>(source, separators, true);
+    }
     const long Ones = 0x01010101, Highs = 0x80808080;
 
     static long Data(ReadOnlySpan<byte> s) { return s.Length == 0 ? 0 : Sys.ArrayData(s.Items) + s.Start; }
@@ -9365,6 +9538,14 @@ struct HashCode {
     public void Add<T>(T value, IEqualityComparer<T>? comparer) {
         if (comparer == null) { Add(value); return; }
         _hash = Mix(_parts == 0 ? Seed : _hash, comparer.GetHashCode(value));
+        _parts = _parts + 1;
+    }
+
+    /// .NET's AddBytes: every byte of the span mixed in, in order.
+    public void AddBytes(ReadOnlySpan<byte> value) {
+        long h = _parts == 0 ? Seed : _hash;
+        for (int i = 0; i < value.Length; i++) { h = Mix(h, value[i]); }
+        _hash = h;
         _parts = _parts + 1;
     }
 
@@ -13575,3 +13756,471 @@ namespace System.Text
     }
 }
 
+namespace System
+{
+    /// .NET 9's MemoryExtensions.SpanSplitEnumerator: the ranges of a span
+    /// between its separators, one at a time, as `foreach (Range r in
+    /// span.Split((byte)'/'))` walks them. An empty span gives one empty range,
+    /// and each separator ends one, as .NET's does.
+    public struct SpanSplitEnumerator<T> where T : IEquatable<T>
+    {
+        readonly ReadOnlySpan<T> _source;
+        readonly ReadOnlySpan<T> _separators;
+        readonly T _separator;
+        readonly int _mode;          // 0 one element, 1 a whole sequence, 2 any of several
+        int _start;
+        int _end;
+        bool _done;
+
+        internal SpanSplitEnumerator(ReadOnlySpan<T> source, T separator)
+        {
+            _source = source; _separator = separator; _separators = default; _mode = 0;
+            _start = 0; _end = -1; _done = false;
+        }
+
+        internal SpanSplitEnumerator(ReadOnlySpan<T> source, ReadOnlySpan<T> separators, bool any)
+        {
+            _source = source; _separator = default!; _separators = separators; _mode = any ? 2 : 1;
+            _start = 0; _end = -1; _done = false;
+        }
+
+        public ReadOnlySpan<T> Source => _source;
+        public Range Current => new Range(_start, _end);
+        public SpanSplitEnumerator<T> GetEnumerator() { return this; }
+
+        public bool MoveNext()
+        {
+            if (_done) { return false; }
+            int from = _end < 0 ? 0 : _end + (_mode == 1 && _separators.Length > 0 ? _separators.Length : 1);
+            if (_end < 0) { from = 0; }
+            ReadOnlySpan<T> rest = _source.Slice(from);
+            int at;
+            if (_mode == 0) { at = rest.IndexOf(_separator); }
+            else if (_mode == 2) { at = rest.IndexOfAny(_separators); }
+            else { at = _separators.Length == 0 ? -1 : IndexOfSequence(rest, _separators); }
+            _start = from;
+            if (at < 0) { _end = _source.Length; _done = true; }
+            else { _end = from + at; }
+            return true;
+        }
+
+        static int IndexOfSequence(ReadOnlySpan<T> span, ReadOnlySpan<T> value)
+        {
+            for (int i = 0; i + value.Length <= span.Length; i++)
+            {
+                int k = 0;
+                while (k < value.Length && span[i + k].Equals(value[k])) { k++; }
+                if (k == value.Length) { return i; }
+            }
+            return -1;
+        }
+    }
+}
+
+namespace System.Text
+{
+    /// .NET 8's Ascii: ASCII text as bytes or chars, compared, cased, trimmed
+    /// and converted without a string in between. Anything outside ASCII
+    /// answers as .NET's does -- not equal, not valid, InvalidData -- so this is
+    /// for protocol text (keywords, header names, configuration keys); names a
+    /// person gave, in UTF-8, are compared as bytes with SequenceEqual.
+    public static class Ascii
+    {
+        public static bool IsValid(byte value) { return value <= 0x7F; }
+        public static bool IsValid(char value) { return value <= 0x7F; }
+
+        public static bool IsValid(ReadOnlySpan<byte> value)
+        {
+            for (int i = 0; i < value.Length; i++) { if (value[i] > 0x7F) { return false; } }
+            return true;
+        }
+
+        public static bool IsValid(ReadOnlySpan<char> value)
+        {
+            for (int i = 0; i < value.Length; i++) { if (value[i] > 0x7F) { return false; } }
+            return true;
+        }
+
+        public static bool Equals(ReadOnlySpan<byte> left, ReadOnlySpan<byte> right)
+        {
+            if (left.Length != right.Length) { return false; }
+            for (int i = 0; i < left.Length; i++) { if (left[i] != right[i] || left[i] > 0x7F) { return false; } }
+            return true;
+        }
+
+        public static bool Equals(ReadOnlySpan<byte> left, ReadOnlySpan<char> right)
+        {
+            if (left.Length != right.Length) { return false; }
+            for (int i = 0; i < left.Length; i++) { if (left[i] != right[i] || left[i] > 0x7F) { return false; } }
+            return true;
+        }
+
+        public static bool Equals(ReadOnlySpan<char> left, ReadOnlySpan<byte> right) { return Equals(right, left); }
+
+        public static bool Equals(ReadOnlySpan<char> left, ReadOnlySpan<char> right)
+        {
+            if (left.Length != right.Length) { return false; }
+            for (int i = 0; i < left.Length; i++) { if (left[i] != right[i] || left[i] > 0x7F) { return false; } }
+            return true;
+        }
+
+        public static bool EqualsIgnoreCase(ReadOnlySpan<byte> left, ReadOnlySpan<byte> right)
+        {
+            if (left.Length != right.Length) { return false; }
+            for (int i = 0; i < left.Length; i++)
+            {
+                int a = left[i], b = right[i];
+                if (a > 0x7F || b > 0x7F || Lower(a) != Lower(b)) { return false; }
+            }
+            return true;
+        }
+
+        public static bool EqualsIgnoreCase(ReadOnlySpan<byte> left, ReadOnlySpan<char> right)
+        {
+            if (left.Length != right.Length) { return false; }
+            for (int i = 0; i < left.Length; i++)
+            {
+                int a = left[i], b = right[i];
+                if (a > 0x7F || b > 0x7F || Lower(a) != Lower(b)) { return false; }
+            }
+            return true;
+        }
+
+        public static bool EqualsIgnoreCase(ReadOnlySpan<char> left, ReadOnlySpan<byte> right) { return EqualsIgnoreCase(right, left); }
+
+        public static bool EqualsIgnoreCase(ReadOnlySpan<char> left, ReadOnlySpan<char> right)
+        {
+            if (left.Length != right.Length) { return false; }
+            for (int i = 0; i < left.Length; i++)
+            {
+                int a = left[i], b = right[i];
+                if (a > 0x7F || b > 0x7F || Lower(a) != Lower(b)) { return false; }
+            }
+            return true;
+        }
+
+        static int Lower(int c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; }
+        static int Upper(int c) { return c >= 'a' && c <= 'z' ? c - 32 : c; }
+
+        public static OperationStatus ToLower(ReadOnlySpan<byte> source, Span<byte> destination, out int bytesWritten) { return Change(source, destination, false, out bytesWritten); }
+        public static OperationStatus ToUpper(ReadOnlySpan<byte> source, Span<byte> destination, out int bytesWritten) { return Change(source, destination, true, out bytesWritten); }
+
+        static OperationStatus Change(ReadOnlySpan<byte> source, Span<byte> destination, bool upper, out int written)
+        {
+            int n = source.Length < destination.Length ? source.Length : destination.Length;
+            for (int i = 0; i < n; i++)
+            {
+                int c = source[i];
+                if (c > 0x7F) { written = i; return OperationStatus.InvalidData; }
+                destination[i] = (byte)(upper ? Upper(c) : Lower(c));
+            }
+            written = n;
+            return n < source.Length ? OperationStatus.DestinationTooSmall : OperationStatus.Done;
+        }
+
+        public static OperationStatus ToLower(ReadOnlySpan<char> source, Span<char> destination, out int charsWritten) { return Change(source, destination, false, out charsWritten); }
+        public static OperationStatus ToUpper(ReadOnlySpan<char> source, Span<char> destination, out int charsWritten) { return Change(source, destination, true, out charsWritten); }
+
+        static OperationStatus Change(ReadOnlySpan<char> source, Span<char> destination, bool upper, out int written)
+        {
+            int n = source.Length < destination.Length ? source.Length : destination.Length;
+            for (int i = 0; i < n; i++)
+            {
+                int c = source[i];
+                if (c > 0x7F) { written = i; return OperationStatus.InvalidData; }
+                destination[i] = (char)(upper ? Upper(c) : Lower(c));
+            }
+            written = n;
+            return n < source.Length ? OperationStatus.DestinationTooSmall : OperationStatus.Done;
+        }
+
+        public static OperationStatus ToLowerInPlace(Span<byte> value, out int bytesWritten) { return Change(value, value, false, out bytesWritten); }
+        public static OperationStatus ToUpperInPlace(Span<byte> value, out int bytesWritten) { return Change(value, value, true, out bytesWritten); }
+        public static OperationStatus ToLowerInPlace(Span<char> value, out int charsWritten) { return Change(value, value, false, out charsWritten); }
+        public static OperationStatus ToUpperInPlace(Span<char> value, out int charsWritten) { return Change(value, value, true, out charsWritten); }
+
+        // .NET's Ascii whitespace: tab, line feed, vertical tab, form feed,
+        // carriage return and space.
+        static bool White(int c) { return c == ' ' || (c >= 0x09 && c <= 0x0D); }
+
+        public static Range Trim(ReadOnlySpan<byte> value)
+        {
+            int start = 0, end = value.Length;
+            while (start < end && White(value[start])) { start++; }
+            while (end > start && White(value[end - 1])) { end--; }
+            return new Range(start, end);
+        }
+
+        public static Range TrimStart(ReadOnlySpan<byte> value)
+        {
+            int start = 0;
+            while (start < value.Length && White(value[start])) { start++; }
+            return new Range(start, value.Length);
+        }
+
+        public static Range TrimEnd(ReadOnlySpan<byte> value)
+        {
+            int end = value.Length;
+            while (end > 0 && White(value[end - 1])) { end--; }
+            return new Range(0, end);
+        }
+
+        public static Range Trim(ReadOnlySpan<char> value)
+        {
+            int start = 0, end = value.Length;
+            while (start < end && White(value[start])) { start++; }
+            while (end > start && White(value[end - 1])) { end--; }
+            return new Range(start, end);
+        }
+
+        public static Range TrimStart(ReadOnlySpan<char> value)
+        {
+            int start = 0;
+            while (start < value.Length && White(value[start])) { start++; }
+            return new Range(start, value.Length);
+        }
+
+        public static Range TrimEnd(ReadOnlySpan<char> value)
+        {
+            int end = value.Length;
+            while (end > 0 && White(value[end - 1])) { end--; }
+            return new Range(0, end);
+        }
+
+        public static OperationStatus ToUtf16(ReadOnlySpan<byte> source, Span<char> destination, out int charsWritten)
+        {
+            int n = source.Length < destination.Length ? source.Length : destination.Length;
+            for (int i = 0; i < n; i++)
+            {
+                if (source[i] > 0x7F) { charsWritten = i; return OperationStatus.InvalidData; }
+                destination[i] = (char)source[i];
+            }
+            charsWritten = n;
+            return n < source.Length ? OperationStatus.DestinationTooSmall : OperationStatus.Done;
+        }
+
+        public static OperationStatus FromUtf16(ReadOnlySpan<char> source, Span<byte> destination, out int bytesWritten)
+        {
+            int n = source.Length < destination.Length ? source.Length : destination.Length;
+            for (int i = 0; i < n; i++)
+            {
+                if (source[i] > 0x7F) { bytesWritten = i; return OperationStatus.InvalidData; }
+                destination[i] = (byte)source[i];
+            }
+            bytesWritten = n;
+            return n < source.Length ? OperationStatus.DestinationTooSmall : OperationStatus.Done;
+        }
+    }
+}
+
+namespace System.Buffers
+{
+    /// .NET's StandardFormat: a format letter and a precision, as Utf8Formatter
+    /// and Utf8Parser take them. `default` is the type's general format.
+    public readonly struct StandardFormat : IEquatable<StandardFormat>
+    {
+        public const byte NoPrecision = 255;
+        public const byte MaxPrecision = 99;
+
+        readonly byte _symbol;
+        readonly byte _precision;
+
+        public StandardFormat(char symbol, byte precision = NoPrecision)
+        {
+            if (precision != NoPrecision && precision > MaxPrecision) throw new ArgumentOutOfRangeException("precision");
+            if (symbol > 0xFF) throw new ArgumentOutOfRangeException("symbol");
+            _symbol = (byte)symbol;
+            _precision = precision;
+        }
+
+        public char Symbol => (char)_symbol;
+        public byte Precision => _precision;
+        public bool HasPrecision => _precision != NoPrecision;
+        public bool IsDefault => _symbol == 0 && _precision == 0;
+
+        public bool Equals(StandardFormat other) { return _symbol == other._symbol && _precision == other._precision; }
+        public override bool Equals(object? obj) { return obj is StandardFormat f && Equals(f); }
+        public override int GetHashCode() { return _symbol | (_precision << 8); }
+        public override string ToString() { return _symbol == 0 ? "" : _precision == NoPrecision || _precision == 0 && IsDefault ? Symbol.ToString() : Symbol.ToString() + (int)_precision; }
+    }
+}
+
+namespace System.Buffers.Text
+{
+    /// .NET's Utf8Formatter: numbers and booleans written as UTF-8 digits
+    /// straight into a span. Formats 'G' and 'D' (decimal, a precision is a
+    /// minimum digit count), 'N' is not taken, and 'X'/'x' (hexadecimal).
+    public static class Utf8Formatter
+    {
+        public static bool TryFormat(bool value, Span<byte> destination, out int bytesWritten, StandardFormat format = default)
+        {
+            bool lower = format.Symbol == 'l';
+            ReadOnlySpan<byte> text = value ? (lower ? "true"u8 : "True"u8) : (lower ? "false"u8 : "False"u8);
+            if (text.Length > destination.Length) { bytesWritten = 0; return false; }
+            for (int i = 0; i < text.Length; i++) { destination[i] = text[i]; }
+            bytesWritten = text.Length;
+            return true;
+        }
+
+        public static bool TryFormat(int value, Span<byte> destination, out int bytesWritten, StandardFormat format = default) { return Signed(value, 32, destination, out bytesWritten, format); }
+        public static bool TryFormat(long value, Span<byte> destination, out int bytesWritten, StandardFormat format = default) { return Signed(value, 64, destination, out bytesWritten, format); }
+        public static bool TryFormat(short value, Span<byte> destination, out int bytesWritten, StandardFormat format = default) { return Signed(value, 16, destination, out bytesWritten, format); }
+        public static bool TryFormat(sbyte value, Span<byte> destination, out int bytesWritten, StandardFormat format = default) { return Signed(value, 8, destination, out bytesWritten, format); }
+        public static bool TryFormat(uint value, Span<byte> destination, out int bytesWritten, StandardFormat format = default) { return Unsigned(value, destination, out bytesWritten, format); }
+        public static bool TryFormat(ulong value, Span<byte> destination, out int bytesWritten, StandardFormat format = default) { return Unsigned(value, destination, out bytesWritten, format); }
+        public static bool TryFormat(ushort value, Span<byte> destination, out int bytesWritten, StandardFormat format = default) { return Unsigned(value, destination, out bytesWritten, format); }
+        public static bool TryFormat(byte value, Span<byte> destination, out int bytesWritten, StandardFormat format = default) { return Unsigned(value, destination, out bytesWritten, format); }
+
+        // Hexadecimal of a signed value is its two's complement at its width, as .NET's.
+        static bool Signed(long value, int bits, Span<byte> destination, out int written, StandardFormat format)
+        {
+            char f = format.Symbol;
+            if (f == 'X' || f == 'x')
+            {
+                ulong bitsOf = bits == 64 ? (ulong)value : (ulong)value & ((1UL << bits) - 1);
+                return Unsigned(bitsOf, destination, out written, format);
+            }
+            if (value >= 0) { return Unsigned((ulong)value, destination, out written, format); }
+            if (destination.Length < 1) { written = 0; return false; }
+            destination[0] = (byte)'-';
+            ulong magnitude = (ulong)(0 - value);
+            if (!Unsigned(magnitude, destination.Slice(1), out int digits, format)) { written = 0; return false; }
+            written = digits + 1;
+            return true;
+        }
+
+        static bool Unsigned(ulong value, Span<byte> destination, out int written, StandardFormat format)
+        {
+            char f = format.Symbol;
+            bool hex = f == 'X' || f == 'x';
+            if (!(f == '\0' || f == 'G' || f == 'g' || f == 'D' || f == 'd' || hex)) throw new FormatException("Format specifier was invalid.");
+            int least = format.HasPrecision ? format.Precision : 1;
+            // The digits least first, then written forwards.
+            int count = 0;
+            ulong v = value;
+            ulong radix = hex ? 16UL : 10UL;
+            do { count++; v = v / radix; } while (v != 0);
+            int total = count > least ? count : least;
+            if (total > destination.Length) { written = 0; return false; }
+            v = value;
+            for (int i = total - 1; i >= 0; i--)
+            {
+                int d = (int)(v % radix);
+                v = v / radix;
+                destination[i] = (byte)(d < 10 ? '0' + d : (f == 'x' ? 'a' : 'A') + d - 10);
+            }
+            written = total;
+            return true;
+        }
+    }
+
+    /// .NET's Utf8Parser: a number or a boolean read off the front of UTF-8
+    /// text, saying how many bytes it took. No whitespace; a leading '-' or
+    /// '+' for the signed types; 'X' reads hexadecimal digits.
+    public static class Utf8Parser
+    {
+        public static bool TryParse(ReadOnlySpan<byte> source, out bool value, out int bytesConsumed, char standardFormat = '\0')
+        {
+            if (source.Length >= 4 && Ascii.EqualsIgnoreCase(source.Slice(0, 4), "true"u8)) { value = true; bytesConsumed = 4; return true; }
+            if (source.Length >= 5 && Ascii.EqualsIgnoreCase(source.Slice(0, 5), "false"u8)) { value = false; bytesConsumed = 5; return true; }
+            value = false; bytesConsumed = 0; return false;
+        }
+
+        public static bool TryParse(ReadOnlySpan<byte> source, out int value, out int bytesConsumed, char standardFormat = '\0')
+        {
+            bool ok = Signed(source, standardFormat, int.MinValue, int.MaxValue, 32, out long wide, out bytesConsumed);
+            value = ok ? (int)wide : 0; return ok;
+        }
+
+        public static bool TryParse(ReadOnlySpan<byte> source, out long value, out int bytesConsumed, char standardFormat = '\0')
+        {
+            return Signed(source, standardFormat, long.MinValue, long.MaxValue, 64, out value, out bytesConsumed);
+        }
+
+        public static bool TryParse(ReadOnlySpan<byte> source, out short value, out int bytesConsumed, char standardFormat = '\0')
+        {
+            bool ok = Signed(source, standardFormat, short.MinValue, short.MaxValue, 16, out long wide, out bytesConsumed);
+            value = ok ? (short)wide : (short)0; return ok;
+        }
+
+        public static bool TryParse(ReadOnlySpan<byte> source, out sbyte value, out int bytesConsumed, char standardFormat = '\0')
+        {
+            bool ok = Signed(source, standardFormat, sbyte.MinValue, sbyte.MaxValue, 8, out long wide, out bytesConsumed);
+            value = ok ? (sbyte)wide : (sbyte)0; return ok;
+        }
+
+        public static bool TryParse(ReadOnlySpan<byte> source, out uint value, out int bytesConsumed, char standardFormat = '\0')
+        {
+            bool ok = Unsigned(source, standardFormat, uint.MaxValue, out ulong wide, out bytesConsumed);
+            value = ok ? (uint)wide : 0U; return ok;
+        }
+
+        public static bool TryParse(ReadOnlySpan<byte> source, out ulong value, out int bytesConsumed, char standardFormat = '\0')
+        {
+            return Unsigned(source, standardFormat, ulong.MaxValue, out value, out bytesConsumed);
+        }
+
+        public static bool TryParse(ReadOnlySpan<byte> source, out ushort value, out int bytesConsumed, char standardFormat = '\0')
+        {
+            bool ok = Unsigned(source, standardFormat, ushort.MaxValue, out ulong wide, out bytesConsumed);
+            value = ok ? (ushort)wide : (ushort)0; return ok;
+        }
+
+        public static bool TryParse(ReadOnlySpan<byte> source, out byte value, out int bytesConsumed, char standardFormat = '\0')
+        {
+            bool ok = Unsigned(source, standardFormat, byte.MaxValue, out ulong wide, out bytesConsumed);
+            value = ok ? (byte)wide : (byte)0; return ok;
+        }
+
+        static int Digit(int c, bool hex)
+        {
+            if (c >= '0' && c <= '9') return c - '0';
+            if (hex && c >= 'a' && c <= 'f') return c - 'a' + 10;
+            if (hex && c >= 'A' && c <= 'F') return c - 'A' + 10;
+            return -1;
+        }
+
+        static bool Unsigned(ReadOnlySpan<byte> source, char format, ulong max, out ulong value, out int consumed)
+        {
+            bool hex = format == 'X' || format == 'x';
+            ulong radix = hex ? 16UL : 10UL;
+            int i = 0;
+            if (!hex && i < source.Length && source[i] == '+') i++;
+            int first = i;
+            ulong v = 0;
+            while (i < source.Length)
+            {
+                int d = Digit(source[i], hex);
+                if (d < 0) break;
+                // Past the type's range: the whole parse fails, as .NET's does.
+                if (v > (max - (ulong)d) / radix) { value = 0; consumed = 0; return false; }
+                v = v * radix + (ulong)d;
+                i++;
+            }
+            if (i == first) { value = 0; consumed = 0; return false; }
+            value = v; consumed = i;
+            return true;
+        }
+
+        static bool Signed(ReadOnlySpan<byte> source, char format, long min, long max, int bits, out long value, out int consumed)
+        {
+            bool hex = format == 'X' || format == 'x';
+            if (hex)
+            {
+                ulong mask = bits == 64 ? ulong.MaxValue : (1UL << bits) - 1;
+                if (!Unsigned(source, format, mask, out ulong raw, out consumed)) { value = 0; return false; }
+                // The digits are the value's two's complement at its width.
+                long signed = bits == 64 ? (long)raw : ((raw >> (bits - 1)) & 1) != 0 ? (long)raw - (1L << bits) : (long)raw;
+                value = signed;
+                return true;
+            }
+            bool negative = source.Length > 0 && source[0] == '-';
+            int skip = source.Length > 0 && (source[0] == '-' || source[0] == '+') ? 1 : 0;
+            ulong limit = negative ? (ulong)max + 1UL : (ulong)max;
+            if (!Unsigned(source.Slice(skip), format, limit, out ulong magnitude, out int used)) { value = 0; consumed = 0; return false; }
+            value = negative ? (long)(0UL - magnitude) : (long)magnitude;
+            consumed = used + skip;
+            return true;
+        }
+    }
+}
