@@ -27,7 +27,7 @@ public static class LifetimeTests
         a.Functions.Add(new("helper", false, new LifetimeCondition?[] { Stays(("Loop", 0)) }, Fresh("Make")));
         a.Pending.Add(Stays(("Read", 0)));
         a.Pending.Add(Stays(("Store", 0)));
-        a.Helpers.Add("m_Runtime_Free_1_V$I64");
+        a.Helpers.Add(RuntimeAbi.Free);
         LifetimeHints b = new();
         b.Functions.Add(new("Read", true, new LifetimeCondition?[] { new() }, null));
         b.Functions.Add(new("New", true, Array.Empty<LifetimeCondition?>(), new()));
@@ -39,7 +39,7 @@ public static class LifetimeTests
         byte[] bytes = a.Write();
         Check(bytes.AsSpan().SequenceEqual(a.Write()), "lifetime hints are not deterministic");
         LifetimeHints back = LifetimeHints.Read(bytes);
-        Check(back.Functions.Count == 5 && back.Pending.Count == 2 && back.Helpers.Single() == "m_Runtime_Free_1_V$I64", "hint round trip counts");
+        Check(back.Functions.Count == 5 && back.Pending.Count == 2 && back.Helpers.Single() == RuntimeAbi.Free, "hint round trip counts");
         LifetimeFunction lend = back.Functions.Single(f => f.Name == "Lend");
         Check(lend.Global && lend.Parameters.Single()!.Stays.Single() == ("Read", 0) && lend.Fresh is null, "hint round trip contents");
         Check(back.Functions.Single(f => f.Name == "helper") is { Global: false }, "local function survives the round trip");
@@ -69,7 +69,7 @@ public static class LifetimeTests
         LifetimeFacts facts = solver.For(a, new[] { "Read", "Store", "New", "Missing" });
         Check(!facts.Escapes["Read"][0] && facts.Escapes["Store"][0] && !facts.Escapes.ContainsKey("Missing"), "facts for the callees");
         Check(!facts.Escapes["helper"][0] && facts.Fresh.Contains("helper") && facts.Fresh.Contains("New"), "facts for the unit's own local function");
-        Check(facts.Helpers.Contains("m_Runtime_Free_1_V$I64"), "facts carry the unit's frees");
+        Check(facts.Helpers.Contains(RuntimeAbi.Free), "facts carry the unit's frees");
 
         // Solving in a different unit order changes nothing but which
         // definition a duplicated name resolves to.

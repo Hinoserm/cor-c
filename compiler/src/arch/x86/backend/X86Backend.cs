@@ -92,7 +92,7 @@ public sealed class X86Backend : IBackend
     public const string CardStub = "__corsac_cardmark", CardTable = "s_Runtime_Cards";
 
     /// <summary>Each object's barrier stub, and the runtime routine it calls (Runtime.WriteBarrier).</summary>
-    public const string BarrierStub = "__corsac_barrier", BarrierRoutine = "m_Runtime_WriteBarrier_2_V$I64_V$I64";
+    public const string BarrierStub = "__corsac_barrier", BarrierRoutine = Corsac.Lang.Lto.RuntimeAbi.WriteBarrier;
     public const string StackMapEnd = "__corsac_stackmaps_end";
 
     /// <summary>Code bytes per function from the last Generate, in module order.</summary>
@@ -447,7 +447,7 @@ public sealed class X86Backend : IBackend
         {
             // THE BARRIER STUB (MachineIntrinsics.Barrier): slot in EAX, value
             // in EDX, every register kept; Runtime.WriteBarrier takes both as
-            // longs. A collection while it runs finds no map for the frames
+            // machine words. A collection while it runs finds no map for the frames
             // above it and reads them whole, which is correct and conservative.
             int gap = (FunctionAlign - text.Bytes.Count % FunctionAlign) % FunctionAlign;
             Encoder.Nops(text.Bytes, gap);
@@ -455,15 +455,15 @@ public sealed class X86Backend : IBackend
             text.Bytes.AddRange(new byte[]
             {
                 0x51, 0x52, 0x50,           // push ecx; push edx; push eax
-                0x6A, 0x00, 0x52,           // push 0; push edx      (value)
-                0x6A, 0x00, 0x50,           // push 0; push eax      (slot)
+                0x52,                       // push edx              (value)
+                0x50,                       // push eax              (slot)
                 0xE8,                       // call Runtime.WriteBarrier
             });
             text.Relocs.Add(new Relocation(text.Bytes.Count, BarrierRoutine, -4, RelocKind.Rel32));
             text.Bytes.AddRange(new byte[4]);
             text.Bytes.AddRange(new byte[]
             {
-                0x83, 0xC4, 0x10,           // add esp, 16
+                0x83, 0xC4, 0x08,           // add esp, 8
                 0x58, 0x5A, 0x59,           // pop eax; pop edx; pop ecx
                 0xC3,                       // ret
             });

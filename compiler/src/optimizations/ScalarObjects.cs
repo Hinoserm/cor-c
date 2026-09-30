@@ -199,13 +199,7 @@ public sealed class ScalarObjects : IParallelModulePass
             else if (barriers.TryGetValue(i, out long slotAt))
             {
                 VReg field = locals[slotAt];
-                Operand old = new RegOperand(field);
-                if (field.Type == IrType.I32)
-                {
-                    VReg wide = f.NewReg(IrType.I64, "barrierold");
-                    result.Add(new Instr { Op = Opcode.ZExt32, Dest = wide, Operands = { new RegOperand(field) }, Line = i.Line });
-                    old = new RegOperand(wide);
-                }
+                Operand old = new RegOperand(Escape.Word(f, result, field, i.Line, "barrierold"));
                 result.Add(new Instr { Op = Opcode.Call, Callee = Escape.ValueBarrier, Operands = { old, i.Operands[1] }, Line = i.Line });
             }
             else if (accesses.TryGetValue(i, out long offset))

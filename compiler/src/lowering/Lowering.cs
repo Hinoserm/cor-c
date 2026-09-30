@@ -24,6 +24,13 @@ using AstBlock = Corsac.Lang.Block;
 /// </summary>
 public sealed partial class Lowering
 {
+    // The runtime helpers' labels (RuntimeAbi) spell nint as Mangle does.
+    static Lowering()
+    {
+        if (Mangle(Type.NInt) != Corsac.Lang.Lto.RuntimeAbi.Word)
+            throw new InvalidOperationException($"RuntimeAbi.Word is {Corsac.Lang.Lto.RuntimeAbi.Word}, but nint mangles as {Mangle(Type.NInt)}");
+    }
+
     private readonly BindResult _b;
     private readonly Target _t = Target.Current;
     private readonly Module _m;
@@ -1169,6 +1176,13 @@ public sealed partial class Lowering
         if (found.Count > 1 && like is not null)
         {
             found = found.Where(m => m.Params.Select(p => p.Type).SequenceEqual(like.Select(p => p.Type))).ToList();
+        }
+        // THE MACHINE-WORD FORM is the one compiled code calls: Runtime.Free(nint)
+        // beside Runtime.Free(long), which is kept for programs that hold
+        // addresses in longs. One push a word on i386 where a long was two.
+        if (found.Count > 1 && like is null && found.Where(m => m.Params.All(p => p.Type.IsNative)).ToList() is [MethodSymbol word])
+        {
+            found = [word];
         }
         if (found.Count > 1)
         {

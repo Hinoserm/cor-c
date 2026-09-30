@@ -28,7 +28,7 @@ using Block = Corsac.Lang.Ir.Block;
 public sealed partial class Escape
 {
     /// <summary>Runtime.FreeReplaced(long old, long current).</summary>
-    public const string ReplacedFreer = "m_Runtime_FreeReplaced_2_V$I64_V$I64";
+    public const string ReplacedFreer = Corsac.Lang.Lto.RuntimeAbi.FreeReplaced;
 
     /// <summary>How many reassigned variables this pass took ownership of.</summary>
     public int VariablesOwned { get; private set; }
@@ -183,11 +183,5 @@ public sealed partial class Escape
         }
     }
 
-    private static VReg Widen(Function f, List<Instr> output, VReg r, int line)
-    {
-        if (r.Type != IrType.I32) return r;
-        VReg wide = f.NewReg(IrType.I64, "freeAddress");
-        output.Add(new Instr { Op = Opcode.ZExt32, Dest = wide, Operands = { new RegOperand(r) }, Line = line });
-        return wide;
-    }
+    private static VReg Widen(Function f, List<Instr> output, VReg r, int line) => Word(f, output, r, line, "freeAddress");
 }
