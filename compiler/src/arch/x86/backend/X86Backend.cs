@@ -87,6 +87,12 @@ public sealed class X86Backend : IBackend
     /// <summary>Writable data with no references in it: outside the collector's roots.</summary>
     public const string NumbersSection = ".data.corsac.numbers";
     public const string StackMapStart = "__corsac_stackmaps";
+
+    /// <summary>Each object's card-marking stub, and the table it reads (Runtime.Cards).</summary>
+    public const string CardStub = "__corsac_cardmark", CardTable = "s_Runtime_Cards";
+
+    /// <summary>Each object's barrier stub, and the runtime routine it calls (Runtime.WriteBarrier).</summary>
+    public const string BarrierStub = "__corsac_barrier", BarrierRoutine = "m_Runtime_WriteBarrier_2_V$I64_V$I64";
     public const string StackMapEnd = "__corsac_stackmaps_end";
 
     /// <summary>Code bytes per function from the last Generate, in module order.</summary>
@@ -152,6 +158,7 @@ public sealed class X86Backend : IBackend
         List<FrameTable.Entry> frames = new();
         FunctionSizes.Clear();
         List<(string Function, int Return, int At, Safepoint? Map, int FrameSize, uint Saved, List<int> Objects)> maps = new();
+        bool cardStub = false, barrierStub = false;
 
         // GOTOFF is sound only for a name this object defines and does not
         // export: anything exported can be interposed at load time, and then
@@ -287,6 +294,8 @@ public sealed class X86Backend : IBackend
             {
                 continue;
             }
+            cardStub |= m.UsesCardStub;
+            barrierStub |= m.UsesBarrierStub;
             f = m.Source;
             // The gap before a function is never executed, but it is filled
             // with real no-ops rather than zeros so a disassembly reads cleanly.
@@ -406,6 +415,60 @@ public sealed class X86Backend : IBackend
             s.Align = Math.Max(s.Align, align);
             obj.Symbols.Add(new Symbol { Name = d.Name, Section = s, Offset = offset, Size = d.Bytes.Length, Global = d.Exported });
             defined.Add(d.Name);
+        }
+
+        if (cardStub)
+        {
+            // THE CARD STUB (MachineIntrinsics.CardMark): the slot in EAX, every
+            // register kept. No stack map and no frame entry: it calls nothing,
+            // so no walk ever finds it on a stack.
+            int gap = (FunctionAlign - text.Bytes.Count % FunctionAlign) % FunctionAlign;
+            Encoder.Nops(text.Bytes, gap);
+            int at = text.Bytes.Count;
+            text.Bytes.AddRange(new byte[] { 0x51, 0x8B, 0x0D });                  // push ecx; mov ecx, [Cards]
+            text.Relocs.Add(new Relocation(text.Bytes.Count, CardTable, 0, RelocKind.Abs32));
+            text.Bytes.AddRange(new byte[4]);
+            text.Bytes.AddRange(new byte[]
+            {
+                0x85, 0xC9,                 // test ecx, ecx
+                0x74, 0x09,                 // jz done
+                0x50,                       // push eax
+                0xC1, 0xE8, 0x0A,           // shr eax, 10
+                0xC6, 0x04, 0x01, 0x01,     // mov byte [ecx+eax], 1
+                0x58,                       // pop eax
+                0x59,                       // done: pop ecx
+                0xC3,                       // ret
+            });
+            obj.Symbols.Add(new Symbol { Name = CardStub, Section = text, Offset = at, Size = text.Bytes.Count - at, IsFunction = true, Global = false });
+            defined.Add(CardStub);
+        }
+
+        if (barrierStub)
+        {
+            // THE BARRIER STUB (MachineIntrinsics.Barrier): slot in EAX, value
+            // in EDX, every register kept; Runtime.WriteBarrier takes both as
+            // longs. A collection while it runs finds no map for the frames
+            // above it and reads them whole, which is correct and conservative.
+            int gap = (FunctionAlign - text.Bytes.Count % FunctionAlign) % FunctionAlign;
+            Encoder.Nops(text.Bytes, gap);
+            int at = text.Bytes.Count;
+            text.Bytes.AddRange(new byte[]
+            {
+                0x51, 0x52, 0x50,           // push ecx; push edx; push eax
+                0x6A, 0x00, 0x52,           // push 0; push edx      (value)
+                0x6A, 0x00, 0x50,           // push 0; push eax      (slot)
+                0xE8,                       // call Runtime.WriteBarrier
+            });
+            text.Relocs.Add(new Relocation(text.Bytes.Count, BarrierRoutine, -4, RelocKind.Rel32));
+            text.Bytes.AddRange(new byte[4]);
+            text.Bytes.AddRange(new byte[]
+            {
+                0x83, 0xC4, 0x10,           // add esp, 16
+                0x58, 0x5A, 0x59,           // pop eax; pop edx; pop ecx
+                0xC3,                       // ret
+            });
+            obj.Symbols.Add(new Symbol { Name = BarrierStub, Section = text, Offset = at, Size = text.Bytes.Count - at, IsFunction = true, Global = false });
+            defined.Add(BarrierStub);
         }
 
         if (StackMaps)

@@ -2217,6 +2217,20 @@ internal sealed partial class Selector
             case MachineIntrinsics.WriteCr:
                 Emit(MOp.MovToCr, R(i.Operands[1]), ControlRegister(i.Operands[0]));
                 return;
+            case MachineIntrinsics.CardMark:
+                // The slot's card, set by the object's stub, which keeps
+                // every register (X86Backend.CardStub): seven bytes a store
+                // where the load, test, shift and store took forty.
+                Mov(Eax, R(i.Operands[0]));
+                Emit(MOp.CallKeep, MImm.Sym(X86Backend.CardStub, 0), Eax);
+                _m.UsesCardStub = true;
+                return;
+            case MachineIntrinsics.Barrier:
+                Mov(Eax, R(i.Operands[0]));
+                Mov(Edx, R(i.Operands[1]));
+                Emit(MOp.CallKeep, MImm.Sym(X86Backend.BarrierStub, 0), Eax, Edx);
+                _m.UsesBarrierStub = true;
+                return;
             case MachineIntrinsics.ThreadBlock:
                 // The self pointer at gs:[0]. A machine intrinsic and not an
                 // ordinary load because nothing before here knows that GS is

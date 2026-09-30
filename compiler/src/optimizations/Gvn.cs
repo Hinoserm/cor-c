@@ -54,8 +54,12 @@ public sealed class Gvn : IPass
         // a function, unless the function is what changes it (a switch).
         // Not in an async body: it resumes on whichever thread completes what
         // it awaited, and each resumption reads its own thread's block.
+        // Nor where the function itself moves the block (GS set or swapped,
+        // the segments loaded): a callee that switches threads comes back on
+        // this one, with its block, but code after its own SetGs does not.
         _threadBlockFixed = f.Async is null && !f.Blocks.Any(b => b.Instrs.Any(i => i.Op == Opcode.Store && i.Operands.Count > 0
-            && i.Operands[0] is SymOperand { Name: ThreadBlockSelf }));
+            && i.Operands[0] is SymOperand { Name: ThreadBlockSelf }
+            || i.Op == Opcode.Call && i.Callee is "__x86.i.setgs" or "__x86.i.swapgs" or "__x86.i.loadsegments"));
         _leader.Clear();
         _exprs.Clear();
 
@@ -123,7 +127,7 @@ public sealed class Gvn : IPass
     private bool ThreadBlockRead(Block b, int k, List<(string Key, VReg? Old)> undo)
     {
         Instr i = b.Instrs[k];
-        bool read = i.Dest is not null && (_f.Async is null && i.Op == Opcode.Call && i.Callee == ThreadBlockIntrinsic && i.Operands.Count == 0
+        bool read = i.Dest is not null && (_threadBlockFixed && i.Op == Opcode.Call && i.Callee == ThreadBlockIntrinsic && i.Operands.Count == 0
             || _threadBlockFixed && i.Op == Opcode.Load && i.Offset == 0 && i.Operands.Count == 1 && i.Operands[0] is SymOperand { Name: ThreadBlockSelf, Offset: 0 });
         if (!read) return false;
         string key = "threadblock|" + i.Dest!.Type;

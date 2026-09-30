@@ -27,6 +27,12 @@ public sealed class MFunction
     public Frame Frame { get; }
     public int NextVReg { get; set; } = 8;
 
+    /// <summary>Whether a card mark calls the object's stub (X86Backend.CardStub).</summary>
+    public bool UsesCardStub { get; set; }
+
+    /// <summary>Whether a barrier's slow path calls the object's stub (X86Backend.BarrierStub).</summary>
+    public bool UsesBarrierStub { get; set; }
+
     /// <summary>Virtual registers that must land in a register with an 8-bit form (EAX..EBX).</summary>
     public HashSet<int> ByteRegs { get; } = new();
 
