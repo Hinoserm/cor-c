@@ -1158,16 +1158,19 @@ public sealed partial class Lowering
         return address.Type == IrType.I32 ? e.Unary(Opcode.ZExt32, address) : address;
     }
 
-    /// <summary>A hook the runtime library provides, found by name and arity.</summary>
+    /// <summary>
+    /// A hook the runtime library provides: by name and arity where that is
+    /// one routine, by full signature where the runtime overloads it.
+    /// </summary>
     private MethodSymbol? RuntimeMethod(string name, int arity, IReadOnlyList<ParamSymbol>? like = null)
     {
         if (!_b.Types.TryGetValue(RuntimeType, out TypeSymbol? rt))
         {
             return null;
         }
-        // By name and arity only, so the runtime is free to declare its
-        // routines in plain COR-C#. Two overloads of one arity would be bound
-        // to the first by luck; refuse that rather than guess.
+        // By name and arity first, so the runtime is free to declare its
+        // routines in plain COR-C#; then by parameter types, never by luck:
+        // overloads nothing below tells apart are refused.
         List<MethodSymbol> found = rt.Methods.Where(m => m.Name == name && m.Static && m.Params.Count == arity).ToList();
         // OVERLOADS OF ONE ARITY are told apart by their parameter types when
         // the caller has them to give: Sys.Print(string) and
@@ -1177,20 +1180,32 @@ public sealed partial class Lowering
         {
             found = found.Where(m => m.Params.Select(p => p.Type).SequenceEqual(like.Select(p => p.Type))).ToList();
         }
-        // THE MACHINE-WORD FORM is the one compiled code calls: Runtime.Free(nint)
-        // beside Runtime.Free(long), which is kept for programs that hold
-        // addresses in longs. One push a word on i386 where a long was two.
-        if (found.Count > 1 && like is null && found.Where(m => m.Params.All(p => p.Type.IsNative)).ToList() is [MethodSymbol word])
+        // THE HOT HELPERS are bound by their full signature, every parameter
+        // one machine word, overloaded or not: Runtime.Free(nint) beside
+        // Runtime.Free(long), which is kept for programs that hold addresses
+        // in longs. Their labels (Lto.RuntimeAbi) and every pass calling them
+        // pass words, so a declaration taking anything else is not theirs.
+        if (like is null && WordHelpers.Contains(name))
         {
-            found = [word];
+            found = found.Where(m => m.Params.All(p => p.Type.Equals(Type.NInt))).ToList();
         }
         if (found.Count > 1)
         {
             Errors.Add(new CompileError(_in, 0, 0,
-                $"{RuntimeType}.{name} with {arity} parameter(s) is declared more than once; the compiler binds runtime routines by name and arity"));
+                $"{RuntimeType}.{name} with {arity} parameter(s) has overloads of that arity the compiler cannot tell apart by signature"));
         }
         return found.Count == 0 ? null : found[0];
     }
+
+    /// <summary>
+    /// The runtime's hot helpers, bound as (nint, ...): one machine word a
+    /// parameter, as their labels in Lto.RuntimeAbi spell them.
+    /// </summary>
+    private static readonly HashSet<string> WordHelpers = new(StringComparer.Ordinal)
+    {
+        "Alloc", "AllocLeaf", "AllocObject", "AllocManual", "AllocManualObject", "Free", "FreeReplaced",
+        "FreeOwnedReplaced", "FreeField", "KeepField", "WriteBarrier", "WriteBarrierValues", "CardMark", "CardMarkObject",
+    };
 
     private MethodSymbol? RequireRuntime(Node at, string name, int arity, string because)
     {

@@ -49,9 +49,13 @@ public static class IrLinkOptimizer
         // FIELDS THAT OWN WHAT THEY HOLD, judged over every unit's hints as a
         // flat compile judges them over its module (OwnedFieldSolver); every
         // regenerated unit frees what a store replaces and gives the types it
-        // defines their owned-field maps. A body that stores into one is not
-        // imported into another unit: its copy would not free what it replaces.
-        // Every unit with IR must have said, as for catches; and every unit
+        // defines their owned-field maps. A body that stores into one may be
+        // imported into another unit like any other: the importing unit is
+        // regenerated with the same answer, and a store frees what it
+        // replaces only in an object the function made and keeps to itself
+        // (Escape.PrivateOwner), which is what inlining a constructor or a
+        // setter into the function that made the object gives it -- a
+        // Holder's Grow freeing the buffer it replaces. Every unit with IR must have said, as for catches; and every unit
         // with hints is then regenerated, so none keeps a store that does
         // not free what it replaces, or a type without its map.
         OwnedFieldFacts? ownedFields = lifetimes is not null && closedImageEntry is not null && archives.Keys.All(hints.ContainsKey)
@@ -97,7 +101,7 @@ public static class IrLinkOptimizer
                 foreach (string call in archive.Entries.Values.Where(record => retained is null || retained.Contains(record.Key))
                     .SelectMany(record => record.Calls).Concat(helpers).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal))
                 {
-                    if (defined.Contains(call) || ownedFields?.Writers.Contains(call) == true || !owners.TryGetValue(call, out ObjectFile? owner) || !archives.TryGetValue(owner, out IrArchive? provider)
+                    if (defined.Contains(call) || !owners.TryGetValue(call, out ObjectFile? owner) || !archives.TryGetValue(owner, out IrArchive? provider)
                         || !provider.Entries.TryGetValue("F:" + call, out IrArchiveEntry? body) || !body.Importable
                         || body.Instructions > 160 || body.Length > importBytes - used || imports.Count >= bodyLimit) continue;
                     imports.Add((call, provider, body)); used += body.Length;

@@ -85,14 +85,12 @@ public sealed partial class Escape
                     defs ??= SingleDefs(f);
                     // ONLY IN AN OBJECT NO OTHER THREAD CAN SEE, as OwnedFields
                     // decides it: one this function made and that never escapes
-                    // it. A field of a shared object replaced under a lock on
-                    // one processor would free what another had just read; its
-                    // old value is the collector's.
-                    if (st.Operands[0] is not RegOperand baseReg || OriginOf(defs, baseReg.Reg) is not { Op: Opcode.Call, Dest: { } ownerReg } madeOwner
-                        || !IsAllocator(madeOwner.Callee)) continue;
-                    if (!privateOwner.TryGetValue(madeOwner, out bool isPrivate))
-                        privateOwner[madeOwner] = isPrivate = !Analyse(f, new[] { ownerReg }, summaries, madeOwner).Escapes;
-                    if (!isPrivate) continue;
+                    // it, promoted to its frame or not. A field of a shared
+                    // object replaced under a lock on one processor would free
+                    // what another had just read; its old value is the
+                    // collector's.
+                    if (st.Operands[0] is not RegOperand baseReg || OriginOf(defs, baseReg.Reg) is not Instr madeOwner
+                        || !PrivateOwner(f, madeOwner, summaries, privateOwner)) continue;
                     List<Instr> made = new();
                     VReg old = f.NewReg(IrTypes.Word);
                     Instr load = new() { Op = Opcode.Load, Dest = old, Offset = st.Offset, Size = st.Size, Line = st.Line };
