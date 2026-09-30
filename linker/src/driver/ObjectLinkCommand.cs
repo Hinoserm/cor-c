@@ -115,6 +115,8 @@ public static class ObjectLinkCommand
             input.Item2.Sections.RemoveAll(section => section.Name == TargetContract.SectionName
                 || section.Name == X86CodeGenerationContract.SectionName
                 || section.Name == ManagedLayoutContract.SectionName);
+        // Every unit's frame table names from one pool (FramePool).
+        if (lto) FramePool.Run(inputs);
         byte[] image;
         if (flat)
         {

@@ -158,7 +158,7 @@ internal static class DuplicateCutter
         return offset - removed;
     }
 
-    static void Splice(ObjectFile obj, Section section, List<(long Start, long End)> cuts, HashSet<Symbol> losers)
+    internal static void Splice(ObjectFile obj, Section section, List<(long Start, long End)> cuts, HashSet<Symbol> losers)
     {
         List<byte> bytes = new(section.Bytes.Count);
         int at = 0;

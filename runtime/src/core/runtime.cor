@@ -1541,7 +1541,7 @@ static class Runtime
             return false;
         }
 
-        if (Sys.PeekWord(table) != TableMagic && Sys.PeekWord(table) != DirectoryMagic) { return false; }
+        if (Sys.PeekWord(table) != TableMagic && Sys.PeekWord(table) != PooledMagic && Sys.PeekWord(table) != DirectoryMagic) { return false; }
         for (long i = 0; i < _tableCount; i++)
         {
             if (Sys.Peek(_tables + i * WordSize.Bytes) == table) { return true; }
@@ -2044,6 +2044,9 @@ static class Runtime
     /// Spelled as the four letters rather than the number they come to, so
     /// that it cannot drift from Lang/X86/FrameTable.cs by a typing slip.
     const long TableMagic = 67 + (70 << 8) + (82 << 16) + (77 << 24);
+    /// 'CFR2': the same table, its names and files in the image's one pool,
+    /// whose address the link wrote at +12 (Lto.FramePool).
+    const long PooledMagic = 67 + (70 << 8) + (82 << 16) + (50 << 24);
     const long DirectoryMagic = 67 + (77 << 8) + (68 << 16) + (82 << 24);
 
     /// A ULEB128 at `at`, with `at` left just past it. The table is written
@@ -2105,7 +2108,7 @@ static class Runtime
     static bool LookupMetadata(long metadata, long address, out long name, out long file, out long program, out long offset) {
         name = 0; file = 0; program = 0; offset = 0;
         if (metadata == 0) { return false; }
-        if (Sys.PeekWord(metadata) == TableMagic) {
+        if (Sys.PeekWord(metadata) == TableMagic || Sys.PeekWord(metadata) == PooledMagic) {
             return LookupIn(metadata, address, out name, out file, out program, out offset);
         }
         if (Sys.PeekWord(metadata) != DirectoryMagic || Sys.PeekWord(metadata + 4) != 1 || Sys.PeekWord(metadata + 12) != 16) { return false; }
@@ -2142,11 +2145,12 @@ static class Runtime
         offset = 0;
 
         if (table == 0) { return false; }
-        if (Sys.PeekWord(table) != TableMagic) { return false; }
+        bool pooled = Sys.PeekWord(table) == PooledMagic;
+        if (!pooled && Sys.PeekWord(table) != TableMagic) { return false; }
 
         long count = Sys.PeekWord(table + 4);
         long walk = TableAddress(table + 8);
-        long strings = table + Sys.PeekWord(table + 12);
+        long strings = pooled ? TableAddress(table + 12) : table + Sys.PeekWord(table + 12);
         long at = table + 20;
 
         for (long i = 0; i < count; i++) {

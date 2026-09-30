@@ -1328,6 +1328,15 @@ public static partial class Linker
                 {
                     continue;
                 }
+                // AN EXECUTABLE NAMES ITS CODE, NOT EVERY CONSTANT: a local
+                // string, table or literal is found by address and nothing
+                // reads its name -- faults are named by the frame tables -- and
+                // they were half the compiler's symbol table. Functions, type
+                // descriptors and the runtime's own tables stay.
+                if (!sym.IsFunction && !KeepsLocalName(sym.Name))
+                {
+                    continue;
+                }
                 symbols.Add(Entry(sym.Name, d, Elf.StbLocal, strtab));
             }
         }
@@ -1346,4 +1355,9 @@ public static partial class Linker
         ushort shndx = d.Section is null || d.Section.Index == 0 ? Elf.ShnAbs : (ushort)d.Section.Index;
         return new SymbolEntry(strtab.Add(name), d.Address, size, SymbolEntry.MakeInfo(bind, type), 0, shndx);
     }
+
+    /// <summary>A local data symbol an executable's table keeps: a type's descriptor or interface table, or the runtime's own.</summary>
+    private static bool KeepsLocalName(string name)
+        => name.StartsWith("__", StringComparison.Ordinal)
+           || name.Length > 2 && name[1] == '_' && name[0] is 't' or 'i' or 'q' or 'v' or 'b';
 }
