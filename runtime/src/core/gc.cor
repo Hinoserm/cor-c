@@ -685,18 +685,22 @@ static class Gc
     // saved copy, and nothing else.
 #if !TARGET_64BIT
     const long MapMagic = 0x314D5343;       // 'CSM1'
-    const long MapVersion = 4;
-    const long MapEntryBytes = 20;
+    const long MapVersion = 5;
     const long UnknownFrame = 0x80000000;
     const long DirectoryMagic = 0x52444D43; // 'CMDR'
     const long LiveEbx = 8, LiveEsi = 64, LiveEdi = 128;
-    static long _maps;              // (return address, entry, table) records, sorted; the operating system's
+    // THE INDEX IS ONE RECORD A TABLE -- (first code address, the end of what
+    // it covers, the table), sorted -- not one a call site: the compiler's
+    // 234,000 sites were 2.8 MB of index. A return address finds its table
+    // here, its function in the table and its site in the function, each by
+    // binary search (X86Backend.EmitStackMaps, version 5).
+    static long _maps;
     const long MapRecord = 3 * WordSize.Bytes;
     static long _mapCount;
     static bool _mapsBuilt;
 
-    /// Every stack map of every registered image, indexed by return address.
-    /// Once, at the first collection, with the heap lock held.
+    /// Every stack map table of every registered image, indexed by the code
+    /// it covers. Once, at the first collection, with the heap lock held.
     static void BuildMaps()
     {
         _mapsBuilt = true;
@@ -723,26 +727,21 @@ static class Gc
                     r = r + 1;
                     long table = Sys.PeekWord(record + 8);
                     if (table == 0 || Sys.PeekWord(table) != MapMagic || Sys.PeekWord(table + 4) != MapVersion
-                        || Sys.PeekWord(table + 12) != MapEntryBytes)
+                        || Sys.PeekWord(table + 12) == 0)
                     {
                         continue;
                     }
-                    long count = Sys.PeekWord(table + 8);
-                    if (pass == 0)
+                    if (pass == 1 && filled < total)
                     {
-                        total = total + count;
-                        continue;
-                    }
-                    long basis = Sys.PeekWord(table + 16);
-                    long e = 0;
-                    while (e < count && filled < total)
-                    {
-                        long entry = table + 20 + e * MapEntryBytes;
-                        Sys.Poke(_maps + filled * MapRecord, (basis + Sys.PeekWord(entry)) & WordSize.AddressMask);
-                        Sys.Poke(_maps + filled * MapRecord + WordSize.Bytes, entry);
+                        long basis = Sys.PeekWord(table + 16) & 0xFFFFFFFF;
+                        Sys.Poke(_maps + filled * MapRecord, basis & WordSize.AddressMask);
+                        Sys.Poke(_maps + filled * MapRecord + WordSize.Bytes, (basis + (Sys.PeekWord(table + 24) & 0xFFFFFFFF)) & WordSize.AddressMask);
                         Sys.Poke(_maps + filled * MapRecord + 2 * WordSize.Bytes, table);
                         filled = filled + 1;
-                        e = e + 1;
+                    }
+                    else if (pass == 0)
+                    {
+                        total = total + 1;
                     }
                 }
             }
@@ -765,6 +764,85 @@ static class Gc
             pass = pass + 1;
         }
         SortMaps();
+    }
+
+    /// The call site a return address is, in a table of version 5: its site
+    /// record, with its function's record and its table; 0 if no table has it.
+    static long MapSite(long ret, out long function, out long table)
+    {
+        function = 0;
+        table = 0;
+        long low = 0;
+        long high = _mapCount;
+        while (low < high)
+        {
+            long middle = low + (high - low) / 2;
+            if (MapKey(middle) <= ret) low = middle + 1;
+            else high = middle;
+        }
+        if (low == 0) return 0;
+        long record = _maps + (low - 1) * MapRecord;
+        if (ret >= Sys.Peek(record + WordSize.Bytes)) return 0;
+        long t = Sys.Peek(record + 2 * WordSize.Bytes);
+        long offset = ret - Sys.Peek(record);
+        long functions = Sys.PeekWord(t + 8) & 0xFFFFFFFF;
+        long sites = Sys.PeekWord(t + 12) & 0xFFFFFFFF;
+        // The last function starting at or before the address.
+        low = 0;
+        high = functions;
+        while (low < high)
+        {
+            long middle = low + (high - low) / 2;
+            if ((Sys.PeekWord(t + 32 + middle * 16) & 0xFFFFFFFF) <= offset) low = middle + 1;
+            else high = middle;
+        }
+        if (low == 0) return 0;
+        long f = t + 32 + (low - 1) * 16;
+        long first = Sys.PeekWord(f + 12) & 0xFFFFFFFF;
+        long last = low < functions ? Sys.PeekWord(f + 16 + 12) & 0xFFFFFFFF : sites;
+        long within = offset - (Sys.PeekWord(f) & 0xFFFFFFFF);
+        long siteTable = t + (Sys.PeekWord(t + 20) & 0xFFFFFFFF);
+        low = first;
+        high = last;
+        while (low < high)
+        {
+            long middle = low + (high - low) / 2;
+            long at = Sys.PeekWord(siteTable + middle * 8) & 0x7FFFFF;
+            if (at == within)
+            {
+                function = f;
+                table = t;
+                return siteTable + middle * 8;
+            }
+            if (at < within) low = middle + 1;
+            else high = middle;
+        }
+        return 0;
+    }
+
+    /// A frame's words a bitmap names: inline (its top bit set, bit b the word
+    /// at frame - 4(b+1)) or pooled in the table. Those at or above `from` only.
+    static long KeepMap(long frame, long table, long word, long from, long copy, long at)
+    {
+        word = word & 0xFFFFFFFF;
+        if (word == 0) return at;
+        if ((word & 0x80000000) == 0) return KeepBitmap(frame, table + word, from, copy, at);
+        long bits = word & 0x7FFFFFFF;
+        long b = 0;
+        while (bits != 0)
+        {
+            if ((bits & 1) != 0)
+            {
+                long slot = frame - 4 * (b + 1);
+                if (slot >= from)
+                {
+                    at = KeepWord(Sys.Peek(slot), copy, at);
+                }
+            }
+            bits = bits >> 1;
+            b = b + 1;
+        }
+        return at;
     }
 
     static long MapKey(long i)
@@ -823,26 +901,6 @@ static class Gc
             SwapMaps(0, end);
             SiftMaps(0, end);
         }
-    }
-
-    /// The index record for a return address -- its entry at one word, its
-    /// table at two -- or 0.
-    static long MapRecordFor(long ret)
-    {
-        long low = 0;
-        long high = _mapCount;
-        while (low < high)
-        {
-            long middle = low + (high - low) / 2;
-            long key = MapKey(middle);
-            if (key == ret)
-            {
-                return _maps + middle * MapRecord;
-            }
-            if (key < ret) low = middle + 1;
-            else high = middle;
-        }
-        return 0;
     }
 
     /// Whether this thread's own stack can be read with its registers' liveness.
@@ -957,12 +1015,20 @@ static class Gc
         long frame = Sys.FramePointer() & WordSize.AddressMask;
         while (frame != 0 && frame < to)
         {
-            long record = below != 0 ? MapRecordFor(Sys.Peek(below + w) & WordSize.AddressMask) : 0;
-            long entry = record != 0 ? Sys.Peek(record + w) : 0;
-            long table = record != 0 ? Sys.Peek(record + 2 * w) : 0;
+            long function = 0;
+            long table = 0;
+            long entry = below != 0 ? MapSite(Sys.Peek(below + w) & WordSize.AddressMask, out function, out table) : 0;
             _keepingFor = below != 0 ? Sys.Peek(below + w) & WordSize.AddressMask : 0;
             long end = frame + 2 * w;
-            long regs = entry != 0 ? Sys.PeekWord(entry + 4) : 0;
+            // The site's live registers, its function's saved ones from bit
+            // 16, and a call with no map, as version 4 had them in one word.
+            long regs = 0;
+            if (entry != 0)
+            {
+                long site = Sys.PeekWord(entry) & 0xFFFFFFFF;
+                regs = ((site >> 24) & 0xFF) | (((Sys.PeekWord(function + 4) >> 24) & 0xFF) << 16);
+                if ((site & 0x800000) != 0) regs = regs | UnknownFrame;
+            }
             if (entry != 0 && (regs & UnknownFrame) == 0)
             {
                 // Its live registers at the call it is in: where the frames
@@ -971,7 +1037,7 @@ static class Gc
                 if ((regs & LiveEsi) != 0 && atEsi != 0) at = KeepWord(Sys.Peek(atEsi), copy, at);
                 if ((regs & LiveEdi) != 0 && atEdi != 0) at = KeepWord(Sys.Peek(atEdi), copy, at);
                 // Its own saves: the values of the frames outside it.
-                long slot = frame - Sys.PeekWord(entry + 12);
+                long slot = frame - (Sys.PeekWord(function + 4) & 0xFFFFFF);
                 if ((regs & (LiveEbx << 16)) != 0) { slot = slot - w; atEbx = slot; }
                 if ((regs & (LiveEsi << 16)) != 0) { slot = slot - w; atEsi = slot; }
                 if ((regs & (LiveEdi << 16)) != 0) { slot = slot - w; atEdi = slot; }
@@ -982,16 +1048,8 @@ static class Gc
                     at = KeepRange(lowest, slot < to ? slot : to, 0, 0, 0, copy, at);
                 }
                 // Its spill slots live at the call, and its IR frame slots.
-                long live = Sys.PeekWord(entry + 8);
-                if (live != 0)
-                {
-                    at = KeepBitmap(frame, table + live, from, copy, at);
-                }
-                long objects = Sys.PeekWord(entry + 16);
-                if (objects != 0)
-                {
-                    at = KeepBitmap(frame, table + objects, from, copy, at);
-                }
+                at = KeepMap(frame, table, Sys.PeekWord(entry + 4), from, copy, at);
+                at = KeepMap(frame, table, Sys.PeekWord(function + 8), from, copy, at);
             }
             else
             {

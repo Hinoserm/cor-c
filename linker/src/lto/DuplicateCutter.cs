@@ -230,6 +230,19 @@ internal static class DuplicateCutter
             List<byte> b = s.Bytes;
             if (b.Count < 20 || U32(b, 0) != StackMapMagic) { m.Unknown = true; return m; }
             uint version = U32(b, 4);
+            if (version == 5)
+            {
+                // A function record each, then a site record each (X86Backend.EmitStackMaps).
+                if (b.Count < 32) { m.Unknown = true; return m; }
+                m._v5 = true;
+                m._count = (int)U32(b, 8);
+                m._sites = (int)U32(b, 12);
+                if (m._count == 0) return null;
+                if (U32(b, 20) != 32 + m._count * 16 || U32(b, 28) != U32(b, 20) + m._sites * 8 || b.Count < U32(b, 28)) { m.Unknown = true; return m; }
+                m._base = BaseOffset(obj, s, 16, code, out bool known5);
+                if (!known5) m.Unknown = true;
+                return m;
+            }
             m._count = (int)U32(b, 8);
             m._entry = (int)U32(b, 12);
             m._pointers = (version, m._entry) switch { (4, 20) => [2, 4], (3, 16) => [2], _ => [] };
@@ -240,8 +253,56 @@ internal static class DuplicateCutter
             return m;
         }
 
+        bool _v5;
+        int _sites;
+
+        /// Version 5: functions whose code was cut go with their sites; the
+        /// rest are measured from the code's first byte (the new base), their
+        /// sites unchanged, and pooled bitmaps move down with the tables.
+        void WriteFunctions(List<(long Start, long End)> cuts)
+        {
+            List<byte> b = Section.Bytes;
+            int sitesAt = (int)U32(b, 20), poolAt = (int)U32(b, 28);
+            List<(uint Start, uint Frame, uint Objects, int First, int Last)> kept = new();
+            long span = 0;
+            for (int f = 0; f < _count; f++)
+            {
+                int at = 32 + f * 16;
+                long start = _base + U32(b, at);
+                int first = (int)U32(b, at + 12), last = f + 1 < _count ? (int)U32(b, at + 16 + 12) : _sites;
+                long to = Map(cuts, start);
+                if (to < 0) continue;
+                for (int k = first; k < last; k++) span = Math.Max(span, to + (U32(b, sitesAt + k * 8) & 0x7FFFFF) + 1);
+                kept.Add(((uint)to, U32(b, at + 4), U32(b, at + 8), first, last));
+            }
+            int keptSites = kept.Sum(k => k.Last - k.First);
+            int shift = (_count - kept.Count) * 16 + (_sites - keptSites) * 8;
+            uint Moved(uint word) => word != 0 && (word & 0x80000000) == 0 ? (uint)(word - shift) : word;
+            List<byte> table = new(b.Count);
+            Put(table, StackMapMagic); Put(table, 5); Put(table, (uint)kept.Count); Put(table, (uint)keptSites);
+            Put(table, 0);                                   // the base, relocated
+            Put(table, (uint)(32 + kept.Count * 16)); Put(table, (uint)span);
+            Put(table, (uint)(32 + kept.Count * 16 + keptSites * 8));
+            int index = 0;
+            foreach (var k in kept)
+            {
+                Put(table, k.Start); Put(table, k.Frame); Put(table, Moved(k.Objects)); Put(table, (uint)index);
+                index += k.Last - k.First;
+            }
+            foreach (var k in kept)
+                for (int site = k.First; site < k.Last; site++)
+                {
+                    Put(table, U32(b, sitesAt + site * 8));
+                    Put(table, Moved(U32(b, sitesAt + site * 8 + 4)));
+                }
+            table.AddRange(b.GetRange(poolAt, b.Count - poolAt));
+            b.Clear();
+            b.AddRange(table);
+        }
+
         public void Write(List<(long Start, long End)> cuts)
         {
+            if (_v5) { WriteFunctions(cuts); return; }
             List<byte> b = Section.Bytes;
             List<byte[]> entries = new();
             for (int i = 0; i < _count; i++)
