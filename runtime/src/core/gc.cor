@@ -3963,6 +3963,8 @@ static class Gc
     static long _minorPauseMicros;
     static long _allocatedTotal;
     static long _marksNew;
+    /// Bytes the program freed itself (Free): a count, read only for the stats.
+    public static long FreedBytes;
 
     /// The collector's counts, pauses and sizes on standard error, when the
     /// platform asks for them (CORSAC_GC_STATS=1 on Linux). Called at exit.
@@ -3982,6 +3984,13 @@ static class Gc
         SayNumber("gc: card words ", YoungCardWords);
         SayNumber("gc: old card words ", OldCardWords);
         SayNumber("gc: allocated MB ", (_allocatedTotal + _since) / 1048576);
+        // WHAT THE COMPILER GAVE BACK ITSELF, of all the heap handed out: the
+        // share of memory the program managed without the collector. (What
+        // escape analysis kept in frames never reaches the heap at all.)
+        SayNumber("gc: frees ", Frees);
+        SayNumber("gc: freed by the program MB ", FreedBytes / 1048576);
+        long handed = _allocatedTotal + _since + FreedBytes;
+        SayNumber("gc: freed by the program percent ", handed > 0 ? FreedBytes * 100 / handed : 0);
         SayNumber("gc: sweep visits ", SweepVisits);
         SayNumber("gc: last major live ", _majorLive);
         SayNumber("gc: live now ", _liveBytes);
@@ -4514,6 +4523,7 @@ static class Gc
             ZeroWords(block, ptr);
             Sys.Poke(tb + Tls.AllocPtr, block);
             Frees = Frees + 1;
+            FreedBytes = FreedBytes + size;
             Sys.Poke(tb + Tls.InAlloc, inside);
             return;
         }
@@ -4586,6 +4596,7 @@ static class Gc
                 }
             }
             Frees = Frees + 1;
+            FreedBytes = FreedBytes + size;
             ClassFree(owning, block, size, tb);
             GcLock.Exit();
             return;
@@ -4604,6 +4615,7 @@ static class Gc
             _since = 0;
         }
         Frees = Frees + 1;
+        FreedBytes = FreedBytes + size;
 
         // Dedicated arrays own their complete chunk, including page padding.
         // Return it directly rather than putting it into bins where small

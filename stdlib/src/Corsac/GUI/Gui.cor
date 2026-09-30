@@ -116,6 +116,7 @@ enum SeatIoctl : long
     TrayList = 0x47550054,
     TrayClick = 0x47550055,
     TrayBalloon = 0x47550056,
+    TrayPlace = 0x47550057,
 }
 
 public class Seat : IDrawingTarget
@@ -1131,6 +1132,15 @@ public class Seat : IDrawingTarget
         SeatText.Put(record, 76, 256, text);
         Flush();
         Ioctl(SeatIoctl.TrayBalloon, Sys.ArrayData(record));
+    }
+
+    /// Where the bar draws the notification area: its first icon's top left
+    /// on the screen and the spacing of icons, so a balloon's stem points at
+    /// the right one.
+    public void PlaceTray(int x, int y, int slot)
+    {
+        int[] words = new int[] { x, y, slot };
+        Ioctl(SeatIoctl.TrayPlace, Sys.ArrayData(words));
     }
 
     /// Take this thread's icon `uid` out of the notification area.
