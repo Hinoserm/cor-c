@@ -34,126 +34,155 @@ public static class VirtualTargets
     /// resolved, to the functions it reaches.
     /// </summary>
     public static Dictionary<string, string[]> Resolve(List<(string Name, ObjectFile Object)> inputs, IEnumerable<string> wanted)
-        => Answer(inputs, wanted, null).Targets;
-
-    /// <summary>Every type each of <paramref name="types"/> is, itself and all its ancestors, together.</summary>
-    public static HashSet<string> Ancestry(List<(string Name, ObjectFile Object)> inputs, IEnumerable<string> types)
-        => Answer(inputs, Array.Empty<string>(), types).Ancestry!;
-
-    private static (Dictionary<string, string[]> Targets, HashSet<string>? Ancestry) Answer(List<(string Name, ObjectFile Object)> inputs,
-        IEnumerable<string> wanted, IEnumerable<string>? types)
     {
         Dictionary<string, string[]> answers = new(StringComparer.Ordinal);
-        List<(string Name, string Declaring, long Slot)> calls = new();
+        Index? index = null;
         foreach (string name in wanted.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal))
         {
             if (!name.StartsWith(Prefix, StringComparison.Ordinal)) continue;
             int plus = name.LastIndexOf('+');
             if (plus <= Prefix.Length || !long.TryParse(name.AsSpan(plus + 1), out long slot)) continue;
-            calls.Add((name, name[Prefix.Length..plus], slot));
+            index ??= IndexOf(inputs);
+            if (index.Targets(name[Prefix.Length..plus], slot) is string[] targets) answers[name] = targets;
         }
-        if (calls.Count == 0 && types is null) return (answers, null);
-        int word = inputs.Any(input => TargetContract.IsLongMode(input.Object)) ? 8 : 4;
+        return answers;
+    }
 
-        // Every definition, the first of each global name (link order, as
-        // symbol resolution picks); a descriptor's relocations by offset.
+    /// <summary>Every type each of <paramref name="types"/> is, itself and all its ancestors, together.</summary>
+    public static HashSet<string> Ancestry(List<(string Name, ObjectFile Object)> inputs, IEnumerable<string> types)
+    {
+        Index index = IndexOf(inputs);
+        HashSet<string> together = new(StringComparer.Ordinal);
+        foreach (string type in types)
+        {
+            together.Add(type);
+            if (index.ByName.TryGetValue(type, out int d)) together.UnionWith(index.Ancestors(d));
+        }
+        return together;
+    }
+
+    // ONE INDEX A LINK: the descriptors, the functions and the method-table
+    // offsets read from the objects once, for every question the link asks
+    // of them (its virtual calls, then the catches' ancestry).
+    private static (List<(string Name, ObjectFile Object)> Inputs, int Count, Index Index)? _last;
+
+    private static Index IndexOf(List<(string Name, ObjectFile Object)> inputs)
+    {
+        if (_last is { } last && ReferenceEquals(last.Inputs, inputs) && last.Count == inputs.Count) return last.Index;
+        Index index = new(inputs);
+        _last = (inputs, inputs.Count, index);
+        return index;
+    }
+
+    private sealed class Index
+    {
+        private readonly int _word;
         // Every descriptor definition: each global name once, every local one
         // (a closure's type, say) as the separate descriptor it is.
-        List<(string Name, Section Section, long Offset, long Size)> descriptors = new();
-        HashSet<string> globalDescriptors = new(StringComparer.Ordinal);
-        HashSet<string> functions = new(StringComparer.Ordinal);
-        HashSet<long> bases = new();
-        foreach (var input in inputs)
-        {
-            foreach (Symbol symbol in input.Object.Symbols)
-            {
-                if (!symbol.IsDefined) continue;
-                if (symbol.IsFunction) functions.Add(symbol.Name);
-                else if (IsDescriptor(symbol.Name) && symbol.Section!.Kind is not (SectionKind.Code or SectionKind.Note)
-                    && (!symbol.Global || globalDescriptors.Add(symbol.Name)))
-                    descriptors.Add((symbol.Name, symbol.Section, symbol.Offset, symbol.Size));
-            }
-            // Where method tables begin: the addends objects are stamped with.
-            foreach (Section section in input.Object.Sections)
-                if (section.Kind == SectionKind.Code)
-                    foreach (Relocation r in section.Relocs)
-                        if (r.Addend > 0 && IsDescriptor(r.Symbol)) bases.Add(r.Addend);
-        }
-        Dictionary<string, int> byName = new(StringComparer.Ordinal);
-        for (int d = 0; d < descriptors.Count; d++) byName.TryAdd(descriptors[d].Name, d);
-        Dictionary<int, List<(long Offset, string Symbol, long Addend)>> relocsOf = new();
-        List<(long Offset, string Symbol, long Addend)> Relocs(int d)
-        {
-            if (relocsOf.TryGetValue(d, out var known)) return known;
-            List<(long, string, long)> found = new();
-            var at = descriptors[d];
-            foreach (Relocation r in at.Section.Relocs)
-                if (r.Offset >= at.Offset && (at.Size == 0 || r.Offset < at.Offset + at.Size)) found.Add((r.Offset - at.Offset, r.Symbol, r.Addend));
-            return relocsOf[d] = found;
-        }
+        private readonly List<(string Name, Section Section, long Offset, long Size)> _descriptors = new();
+        private readonly HashSet<string> _functions = new(StringComparer.Ordinal);
+        private readonly HashSet<long> _bases = new();
+        public readonly Dictionary<string, int> ByName = new(StringComparer.Ordinal);
+        private readonly Dictionary<int, List<(long Offset, string Symbol, long Addend)>> _relocs = new();
         // The tables a descriptor's display and interface list point at are
         // data symbols of their own, not descriptors: found by name anywhere.
-        Dictionary<string, (Section Section, long Offset, long Size)> tables = new(StringComparer.Ordinal);
-        foreach (var input in inputs)
-            foreach (Symbol symbol in input.Object.Symbols)
-                if (symbol.IsDefined && !symbol.IsFunction && symbol.Section!.Kind is not (SectionKind.Code or SectionKind.Note))
-                    tables.TryAdd(symbol.Name, (symbol.Section, symbol.Offset, symbol.Size));
-        IEnumerable<string> TableEntries(string table)
+        private readonly Dictionary<string, (Section Section, long Offset, long Size)> _tables = new(StringComparer.Ordinal);
+        private readonly Dictionary<int, HashSet<string>> _ancestry = new();
+        // Which descriptors are each type or derive from it: every ancestry
+        // turned round once, not every descriptor asked for every call.
+        private Dictionary<string, List<int>>? _derived;
+
+        public Index(List<(string Name, ObjectFile Object)> inputs)
         {
-            if (!tables.TryGetValue(table, out var at)) yield break;
+            _word = inputs.Any(input => TargetContract.IsLongMode(input.Object)) ? 8 : 4;
+            HashSet<string> globalDescriptors = new(StringComparer.Ordinal);
+            foreach (var input in inputs)
+            {
+                foreach (Symbol symbol in input.Object.Symbols)
+                {
+                    if (!symbol.IsDefined) continue;
+                    if (symbol.IsFunction) { _functions.Add(symbol.Name); continue; }
+                    if (symbol.Section!.Kind is SectionKind.Code or SectionKind.Note) continue;
+                    _tables.TryAdd(symbol.Name, (symbol.Section, symbol.Offset, symbol.Size));
+                    if (IsDescriptor(symbol.Name) && (!symbol.Global || globalDescriptors.Add(symbol.Name)))
+                        _descriptors.Add((symbol.Name, symbol.Section, symbol.Offset, symbol.Size));
+                }
+                // Where method tables begin: the addends objects are stamped with.
+                foreach (Section section in input.Object.Sections)
+                    if (section.Kind == SectionKind.Code)
+                        foreach (Relocation r in section.Relocs)
+                            if (r.Addend > 0 && IsDescriptor(r.Symbol)) _bases.Add(r.Addend);
+            }
+            for (int d = 0; d < _descriptors.Count; d++) ByName.TryAdd(_descriptors[d].Name, d);
+        }
+
+        private List<(long Offset, string Symbol, long Addend)> Relocs(int d)
+        {
+            if (_relocs.TryGetValue(d, out var known)) return known;
+            List<(long, string, long)> found = new();
+            var at = _descriptors[d];
+            foreach (Relocation r in at.Section.Relocs)
+                if (r.Offset >= at.Offset && (at.Size == 0 || r.Offset < at.Offset + at.Size)) found.Add((r.Offset - at.Offset, r.Symbol, r.Addend));
+            return _relocs[d] = found;
+        }
+
+        private IEnumerable<string> TableEntries(string table)
+        {
+            if (!_tables.TryGetValue(table, out var at)) yield break;
             foreach (Relocation r in at.Section.Relocs)
                 if (r.Offset >= at.Offset && (at.Size == 0 || r.Offset < at.Offset + at.Size)) yield return r.Symbol;
         }
-        Dictionary<int, HashSet<string>> ancestry = new();
-        HashSet<string> Ancestors(int d)
+
+        public HashSet<string> Ancestors(int d)
         {
-            if (ancestry.TryGetValue(d, out HashSet<string>? known)) return known;
-            HashSet<string> found = new(StringComparer.Ordinal) { descriptors[d].Name };
+            if (_ancestry.TryGetValue(d, out HashSet<string>? known)) return known;
+            HashSet<string> found = new(StringComparer.Ordinal) { _descriptors[d].Name };
             Stack<int> pending = new();
             pending.Push(d);
             while (pending.Count > 0)
             {
                 int at = pending.Pop();
                 foreach (var (offset, symbol, _) in Relocs(at))
-                    if (offset == Display * word || offset == Interfaces * word)
+                    if (offset == Display * _word || offset == Interfaces * _word)
                         foreach (string up in TableEntries(symbol))
                             if ((up.StartsWith("t_", StringComparison.Ordinal) || up.StartsWith("i_", StringComparison.Ordinal)) && found.Add(up)
-                                && byName.TryGetValue(up, out int upper))
+                                && ByName.TryGetValue(up, out int upper))
                                 pending.Push(upper);
             }
-            return ancestry[d] = found;
+            return _ancestry[d] = found;
         }
 
-        HashSet<string>? together = null;
-        if (types is not null)
+        /// <summary>The functions a virtual call reaches; empty when no object of the type exists; null when a slot is not code.</summary>
+        public string[]? Targets(string declaring, long slot)
         {
-            together = new(StringComparer.Ordinal);
-            foreach (string type in types)
+            if (_derived is null)
             {
-                together.Add(type);
-                if (byName.TryGetValue(type, out int d)) together.UnionWith(Ancestors(d));
+                _derived = new(StringComparer.Ordinal);
+                for (int d = 0; d < _descriptors.Count; d++)
+                    foreach (string type in Ancestors(d))
+                    {
+                        if (!_derived.TryGetValue(type, out List<int>? list)) _derived[type] = list = new();
+                        list.Add(d);
+                    }
             }
-        }
-        foreach (var (name, declaring, slot) in calls)
-        {
             bool everyType = declaring == "t_object";
+            IEnumerable<int> reaching = everyType ? Enumerable.Range(0, _descriptors.Count)
+                : _derived.TryGetValue(declaring, out List<int>? derived) ? derived : Enumerable.Empty<int>();
             HashSet<string> targets = new(StringComparer.Ordinal);
             bool any = everyType, resolved = true;
-            for (int descriptor = 0; descriptor < descriptors.Count; descriptor++)
+            foreach (int descriptor in reaching)
             {
-                if (!everyType && !Ancestors(descriptor).Contains(declaring)) continue;
                 any = true;
                 foreach (var (offset, symbol, addend) in Relocs(descriptor))
-                    if (addend == 0 && bases.Contains(offset - slot))
+                    if (addend == 0 && _bases.Contains(offset - slot))
                     {
-                        if (!functions.Contains(symbol)) resolved = false;
+                        if (!_functions.Contains(symbol)) resolved = false;
                         targets.Add(symbol);
                     }
             }
             // No object of the type exists: the call is never made.
-            if (!any) { answers[name] = Array.Empty<string>(); continue; }
-            if (resolved && targets.Count > 0) answers[name] = targets.Order(StringComparer.Ordinal).ToArray();
+            if (!any) return Array.Empty<string>();
+            return resolved && targets.Count > 0 ? targets.Order(StringComparer.Ordinal).ToArray() : null;
         }
-        return (answers, together);
     }
 }
