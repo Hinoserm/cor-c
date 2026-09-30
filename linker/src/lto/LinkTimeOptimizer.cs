@@ -66,7 +66,6 @@ public static class LinkTimeOptimizer
                     changes.Add((text, matches[0], value));
             }
         }
-        DefinitionCoalescer.Run(inputs);
         if (enabled) foreach (var change in changes)
         {
             int offset = change.Relocation.Offset;
@@ -74,6 +73,10 @@ public static class LinkTimeOptimizer
             for (int i = 0; i < 4; i++) change.Text.Bytes[offset + i] = (byte)((uint)change.Value >> (8 * i));
             change.Text.Relocs.Remove(change.Relocation);
         }
+        // After the calls are rewritten: coalescing cuts duplicate copies out
+        // of their sections (DuplicateCutter), which moves the relocations
+        // the changes above were found at.
+        DefinitionCoalescer.Run(inputs);
         // Summaries describe pre-link code. Do not leave stale summaries in output objects.
         foreach (var input in inputs) input.Object.Sections.RemoveAll(s => s.Name == OptimizationSummary.SectionName || s.Name == IrArchive.SectionName
             || s.Name == LifetimeHints.SectionName);

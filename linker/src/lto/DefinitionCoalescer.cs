@@ -46,7 +46,16 @@ public static class DefinitionCoalescer
             if (item.Object.Symbols.Any(other => other.Name == "__corsac_retained_" + item.Symbol.Name))
                 throw new ElfFormatException("Reserved coalescing alias collision: " + item.Symbol.Name);
         if (validateOnly) return remove.Count;
-        foreach (var item in remove)
+        // The copies are cut out of their objects where that is plainly safe
+        // (DuplicateCutter); only what it leaves stays, as dead bytes under a
+        // local name its own tables still point at.
+        List<(ObjectFile Object, Symbol Symbol)> left = new();
+        foreach (var byObject in remove.GroupBy(item => item.Object, ReferenceEqualityComparer.Instance))
+        {
+            ObjectFile obj = (ObjectFile)byObject.Key!;
+            foreach (Symbol symbol in DuplicateCutter.Cut(obj, byObject.Select(item => item.Symbol).ToList())) left.Add((obj, symbol));
+        }
+        foreach (var item in left)
         {
             ObjectFile obj = item.Object;
             Symbol symbol = item.Symbol;
