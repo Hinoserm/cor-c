@@ -198,6 +198,8 @@ static class Platform
     /// CORSAC_ALLOC_SAMPLE=1: where the allocations come from, sampled and
     /// printed as the process ends (AllocSamples).
     public static bool AllocSample() => EnvironmentFlag("CORSAC_ALLOC_SAMPLE=");
+    /// CORSAC_GC_STATS=1: the collector's counts and pauses printed at exit (Gc.SayStats).
+    public static bool GcStats() => EnvironmentFlag("CORSAC_GC_STATS=");
 
     /// CORSAC_HEAP_CHECK=1: the heap's structure checked as every collection
     /// begins and ends -- every chunk's chain, every buffer's, and the free

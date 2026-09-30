@@ -3550,6 +3550,21 @@ static class Gc
     /// the fault report (Runtime.ReportFault): a fault in a live object is
     /// most often a collection's doing, and whether one was marking or
     /// sweeping, and of which kind the last one was, says where to look.
+    /// The whole run's collections (CORSAC_GC_STATS): how many of each, the
+    /// time paused, the heap's size and the live size at the last cycle.
+    public static void SayStats()
+    {
+        SayNumber("gc stats: minor collections ", MinorCollections);
+        SayNumber("gc stats: major collections ", MajorCollections);
+        SayNumber("gc stats: concurrent cycles ", ConcurrentCycles);
+        SayNumber("gc stats: paused microseconds ", PauseMicros);
+        SayNumber("gc stats: heap bytes ", HeapChunks.HeapBytes);
+        SayNumber("gc stats: live bytes ", _liveBytes);
+        SayNumber("gc stats: threshold ", _threshold);
+        SayNumber("gc stats: minors costly ", _minorsCostly ? 1 : 0);
+        SayNumber("gc stats: generational ", _generational ? 1 : 0);
+    }
+
     public static void SayState()
     {
         SayNumber("gc: cycle ", _cycle);

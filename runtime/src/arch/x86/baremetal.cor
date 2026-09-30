@@ -374,6 +374,11 @@ static class Platform
         return false;
     }
 
+    public static bool GcStats()
+    {
+        return false;
+    }
+
     /// No process address space to speak of: a kernel's heap has its cap.
     /// No signals to report a fault through: an exception handler is the
     /// kernel's own.
