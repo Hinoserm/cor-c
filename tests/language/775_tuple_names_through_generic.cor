@@ -1,0 +1,24 @@
+// test: a tuple element is found by its name when another use of the shape named it differently
+// expect-exit: 0
+// expect-output:
+// 5
+// 1 2 7
+class Block { public int N; }
+class Instr { public int K; }
+static class Program
+{
+    static int Main()
+    {
+        List<(Block Block, Instr Call)> waiting = new();
+        Block b = new() { N = 7 };
+        waiting.Add((b, new Instr { K = 1 }));
+        waiting.Add((b, new Instr { K = 2 }));
+        waiting.RemoveAll(w => w.Call.K == 1);
+        List<(Block Block, Instr Def)> other = new();
+        other.Add((b, new Instr { K = 5 }));
+        other.RemoveAll(o => o.Def.K == 9);
+        Console.WriteLine(other[0].Def.K);
+        Console.WriteLine(waiting.Count + " " + waiting[0].Call.K + " " + waiting[0].Block.N);
+        return 0;
+    }
+}
