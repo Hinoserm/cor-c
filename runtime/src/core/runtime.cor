@@ -794,6 +794,17 @@ static class Runtime
     /// It exists WHETHER OR NOT THE COLLECTOR IS LINKED. A program that needs
     /// none has Gc.Free and Gc.LiveObject retargeted at FreeManual and
     /// ManualObject (Escape), and this frees into the manual heap unchanged.
+    /// WHETHER THIS PROGRAM HAS A COLLECTOR. True here, and the compiler
+    /// answers it for a whole program once it has decided (Escape): false
+    /// where nothing needs one. What only a collector would ever do or say --
+    /// its state in a fault report, its checks on a freed field -- is written
+    /// under `if (CollectorLinked())`, and in a program without one it folds
+    /// away, messages and all, as an #ifdef would in C.
+    public static bool CollectorLinked()
+    {
+        return true;
+    }
+
     public static void Free(long at)
     {
         if (Gc.IgnoredFrees == 'p')
@@ -877,7 +888,7 @@ static class Runtime
         {
             return;
         }
-        Gc.VerifyFieldOwner(at, offset);
+        if (CollectorLinked()) Gc.VerifyFieldOwner(at, offset);
         long held = Sys.Peek(at + offset);
         if (held != 0)
         {
@@ -888,7 +899,7 @@ static class Runtime
             // Cleared first: the object's owned-field map (FreeOwnedFields)
             // may name the same field, and must find it empty.
             Sys.Poke(at + offset, 0);
-            if (Gc.VerifyingFieldFrees)
+            if (CollectorLinked() && Gc.VerifyingFieldFrees)
             {
                 Gc.FreeFieldChecked(held);
                 return;
@@ -2335,7 +2346,7 @@ static class Runtime
             SayLiteral(StdErr, "\n");
         }
         SayTrace(StdErr, frame);
-        Gc.SayState();
+        if (CollectorLinked()) Gc.SayState();
         // AND WHETHER THE PROGRAM FREED IT (CORSAC_FREE_LOG): every register
         // and the address itself looked for among the last frees, a block
         // freed at or just below it named with the frees that took it. A

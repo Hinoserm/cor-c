@@ -27,6 +27,10 @@ public sealed class Frame
     private readonly Dictionary<FrameSlot, int> _slots = new();
     private readonly Dictionary<int, int> _floatHomes = new();
     private int _scratch;
+    private readonly List<(int Offset, int Bytes, int Align)> _allocations = new();
+
+    /// <summary>Every block of the frame handed out, as (offset, bytes, alignment).</summary>
+    public IReadOnlyList<(int Offset, int Bytes, int Align)> Allocations => _allocations;
 
     /// <summary>Bytes of locals below EBP, rounded to a word.</summary>
     public int Size => (_size + 3) & ~3;
@@ -39,7 +43,23 @@ public sealed class Frame
             align = 4;
         }
         _size = (_size + bytes + align - 1) / align * align;
+        _allocations.Add((-_size, bytes, align));
         return -_size;
+    }
+
+    /// <summary>
+    /// Moves blocks of the frame (FrameCompact): every offset that named the
+    /// start of an old block names the new one. The size does not change.
+    /// </summary>
+    public void Move(Dictionary<int, int> moved)
+    {
+        foreach (FrameSlot slot in _slots.Keys.ToList())
+            if (moved.TryGetValue(_slots[slot], out int to)) _slots[slot] = to;
+        foreach (int id in _floatHomes.Keys.ToList())
+            if (moved.TryGetValue(_floatHomes[id], out int to)) _floatHomes[id] = to;
+        if (_scratch != 0 && moved.TryGetValue(_scratch, out int scratch)) _scratch = scratch;
+        for (int i = 0; i < _allocations.Count; i++)
+            if (moved.TryGetValue(_allocations[i].Offset, out int to)) _allocations[i] = (to, _allocations[i].Bytes, _allocations[i].Align);
     }
 
     /// <summary>The offset of an IR frame slot, placing it on first use.</summary>

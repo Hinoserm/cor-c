@@ -58,6 +58,31 @@ public sealed class ReadOnlyFold : IParallelModulePass
                 for (int k = 0; k < b.Instrs.Count; k++)
                 {
                     Instr i = b.Instrs[k];
+                    // THE LENGTH OF AN ARRAY IN THE IMAGE -- a u8 literal, a
+                    // constant table -- is its count word, which is read-only.
+                    if (i.Op == Opcode.ArrayLength && i.Dest is not null && i.Operands.Count == 1)
+                    {
+                        Operand array = i.Operands[0];
+                        for (int hops = 0; hops < 8 && array is RegOperand ar && defs.IsSingle(ar.Reg)
+                             && defs.Definition(ar.Reg) is { Op: Opcode.Copy or Opcode.ZExt32 or Opcode.Trunc64 } adef; hops++)
+                        {
+                            array = adef.Operands[0];
+                        }
+                        int countAt = Target.Current.ArrayCountOffset;
+                        if (array is SymOperand { Offset: 0 } named && items.TryGetValue(named.Name, out DataItem? table)
+                            && countAt + 4 <= table.Bytes.Length
+                            && !table.Relocs.Any(rel => rel.Offset < countAt + 4 && rel.Offset + IrTypes.Word.Bytes() > countAt))
+                        {
+                            // The word as the backend loads it (Select: ArrayLength).
+                            long count = BitConverter.ToInt32(table.Bytes, countAt);
+                            b.Instrs[k] = new Instr
+                            {
+                                Op = Opcode.Copy, Dest = i.Dest, Line = i.Line,
+                                Operands = { new ImmOperand(count, i.Dest.Type) },
+                            };
+                        }
+                        continue;
+                    }
                     if (i.Op != Opcode.Load || i.Dest is null || i.Dest.Type.IsFloat())
                     {
                         continue;

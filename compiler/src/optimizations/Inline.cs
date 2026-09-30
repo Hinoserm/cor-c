@@ -134,6 +134,8 @@ public sealed class Inline : IParallelModulePass
             addressTaken.Add(Escape.ThreadUnblocking);
             addressTaken.Add(Escape.ThreadSafePoint);
             addressTaken.Add(Escape.ThreadRegister);
+            // And the question whether there is one, answered only then.
+            addressTaken.Add(Escape.CollectorQuery);
             // What a barrier on a replaced object becomes (ScalarObjects).
             addressTaken.Add(Escape.ValueBarrier);
         }

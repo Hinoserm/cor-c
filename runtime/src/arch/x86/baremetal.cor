@@ -452,10 +452,10 @@ static class Platform
         long d = _spill + 4;
         long e = _spill + 5;
         long f = _spill + 6;
-        Gc.CollectInner();
+        if (Runtime.CollectorLinked()) Gc.CollectInner();
         _spill = a + b + c + d + e + f;
 #else
-        Gc.CollectInner();
+        if (Runtime.CollectorLinked()) Gc.CollectInner();
         _spill = a + b + c;
 #endif
     }

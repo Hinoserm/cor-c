@@ -1,0 +1,41 @@
+// test: join literal and other
+// expect-exit: 0
+// expect-output:
+// [0000] [] [7] [0000] [] [7]
+//
+// A value that is either a string made here, a literal, or what another call
+// answered is not the made string's alone: it is returned, so the made
+// string must not be given back before its caller reads it. Joining the made
+// string with the literal first, and that with the call's answer after, is
+// the shape the lifetime rules once took for the made string's own.
+
+static class Program
+{
+    static string Zeros(int count)
+    {
+        if (count <= 0) { return ""; }
+        char[] made = new char[count];
+        for (int i = 0; i < count; i++) made[i] = '0';
+        return new string(made);
+    }
+
+    static string Other(int n) { return n.ToString(); }
+
+    static string Pick(int which, int count)
+    {
+        if (which == 0) { return Zeros(count); }
+        return Other(count);
+    }
+
+    static int Main()
+    {
+        for (int round = 0; round < 2; round++)
+        {
+            string a = Pick(0, 4);
+            string b = Pick(0, 0);
+            string c = Pick(1, 7);
+            System.Console.Write("[" + a + "] [" + b + "] [" + c + "]" + (round == 0 ? " " : "\n"));
+        }
+        return 0;
+    }
+}

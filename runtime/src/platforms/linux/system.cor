@@ -847,7 +847,7 @@ static class Platform
     public static void EnterCollection()
     {
         Sys.Syscall(Call.Getpid, 0, 0, 0, 0, 0, 0);
-        Gc.CollectInner();
+        if (Runtime.CollectorLinked()) Gc.CollectInner();
     }
 
     /// Ends the whole process. exit_group rather than exit, so that the day

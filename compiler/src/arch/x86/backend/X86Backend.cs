@@ -502,6 +502,7 @@ public sealed class X86Backend : IBackend
             Allocator.Run(m);
             Layout.Run(m);
             Peephole.Run(m);
+            FrameCompact.Run(m);
         }
         catch (InvalidOperationException e)
         {

@@ -157,6 +157,22 @@ public sealed partial class Escape : IModulePass
         if (Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is { Length: > 0 }) AllocationReport(m, byName);
         LastRun = (Promoted, Owned, OwnedReturns, _fresh.Count, FieldsOwned, VariablesOwned);
 
+        // THE PROGRAM'S ANSWER TO Runtime.CollectorLinked(), now that it is
+        // known: a constant, which the passes after this fold, taking what
+        // only a collector would do or say out with the branch it was under.
+        if (!m.PreserveExports && m.Entry is not null)
+        {
+            foreach (Function f in m.Functions)
+                foreach (Block b in f.Blocks)
+                    for (int k = 0; k < b.Instrs.Count; k++)
+                        if (b.Instrs[k] is { Op: Opcode.Call, Callee: CollectorQuery, Dest: { } answer } asked)
+                            b.Instrs[k] = new Instr
+                            {
+                                Op = Opcode.Copy, Dest = answer, Line = asked.Line,
+                                Operands = { new ImmOperand(m.NeedsHeap ? 1 : 0, answer.Type) },
+                            };
+        }
+
         // A PROGRAM THAT NEEDS NO COLLECTOR STILL ALLOCATES AND FREES: what
         // the compiler owns is given back where it dies, and what lives to
         // the end or is made once is never given back. That is malloc and
@@ -228,6 +244,9 @@ public sealed partial class Escape : IModulePass
     public const string ThreadBlocking = "m_GcThreads_BeginBlocking_0";
     public const string ThreadUnblocking = "m_GcThreads_EndBlocking_0";
     public const string ThreadSafePoint = "m_GcThreads_SafePoint_1_V$I64";
+    /// <summary>The runtime asking whether the program has a collector (answered here, per program).</summary>
+    public const string CollectorQuery = "m_Runtime_CollectorLinked_0";
+
     /// <summary>A thread made known to the collector as it starts.</summary>
     public const string ThreadRegister = "m_GcThreads_Register_1_V$I64";
 
@@ -1259,8 +1278,15 @@ public sealed partial class Escape : IModulePass
                             || w.Operands[0] is RegOperand { Reg: var from } && flow.Derived.Contains(from)));
                     if (!mine) continue;
                     pending.Remove(d);
-                    resolved = true;
-                    if (flow.Derived.Add(d)) changed = true;
+                    // Resolved only when it adds something: one already known
+                    // to be the object's, pended again by a later read of it,
+                    // must not stand in for progress while another pending
+                    // register -- one that holds something else -- waits.
+                    if (flow.Derived.Add(d))
+                    {
+                        resolved = true;
+                        changed = true;
+                    }
                 }
                 // Still some that can hold another value, and nothing more to
                 // learn: those are the escape.
@@ -1277,6 +1303,10 @@ public sealed partial class Escape : IModulePass
         void Derive(VReg? d)
         {
             if (d is null)
+            {
+                return;
+            }
+            if (flow.Derived.Contains(d))
             {
                 return;
             }
