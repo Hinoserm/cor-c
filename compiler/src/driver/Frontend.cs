@@ -463,7 +463,6 @@ public static class Frontend
                         twin.LocalCopy = true;
                         twin.Fresh = true;
                         shared.Members.Add(twin);
-                        shared.Expanded = false;
                         return true;
                     }
                 }
@@ -515,7 +514,6 @@ public static class Frontend
                 copy.LocalCopy = true;
                 copy.Fresh = true;
                 owner.Members.Add(copy);
-                owner.Expanded = false;
                 made = true;
             }
 
@@ -568,7 +566,6 @@ public static class Frontend
             copy.LocalCopy = true;
             copy.Fresh = true;
             owner.Members.Add(copy);
-            owner.Expanded = false;
             made = true;
             made |= CanonicalTwin(owner, template, args, wanted);
         }
@@ -610,12 +607,10 @@ public static class Frontend
             if (at >= 0)
             {
                 into.Members[at] = m;
-                into.Expanded = false;
             }
             else
             {
                 into.Members.Add(m);
-                into.Expanded = false;
             }
         }
     }

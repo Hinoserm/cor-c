@@ -546,27 +546,9 @@ public sealed class Monomorphiser
         // Concrete declarations pass through, with their bodies rewritten so
         // any generic reference inside them names a specialisation.
         Metadata.DeclarationBatch required = new();
-        //
-        // ONLY WHAT IS NEW. A type an earlier round wrote, and that no round
-        // has given a member since, names specialisations already: copied
-        // again it was the same declaration made anew -- every round of
-        // generic-method discovery re-copied the whole program, a tenth of all
-        // the compiler allocated.
         foreach (TypeDecl t in unit.Types.Where(t => t.TypeParams.Count == 0))
         {
-            // (A specialisation is written again: what it names settles with
-            // the round's copies -- its static initialiser's home among them.)
-            if (t.Expanded && !t.Specialised)
-            {
-                output.Types.Add(t);
-                continue;
-            }
-            try
-            {
-                TypeDecl written = RewriteDecl(t, new Dictionary<string, TypeRef>(StringComparer.Ordinal), t.Name);
-                written.Expanded = true;
-                output.Types.Add(written);
-            }
+            try { output.Types.Add(RewriteDecl(t, new Dictionary<string, TypeRef>(StringComparer.Ordinal), t.Name)); }
             catch (Metadata.DeclarationDemand demand) { required.Add(demand); }
         }
         foreach (string key in _templateBatch.Keys) required.Add(new Metadata.DeclarationDemand(key));
@@ -647,7 +629,6 @@ public sealed class Monomorphiser
                 made.LibSlot = job.Template.LibSlot;
             }
 
-            made.Expanded = true;
             _made[job.Name] = made;
             output.Types.Add(made);
             Specialisations++;

@@ -203,13 +203,6 @@ public sealed class TypeDecl : Node
     /// </summary>
     public bool Specialised { get; set; }
 
-    /// <summary>
-    /// Written by an expansion (Monomorphiser.Expand) and given no member
-    /// since: every generic reference in it already names a specialisation,
-    /// so the next round passes it through instead of copying it again. A
-    /// round that adds a member -- a generic method's copy -- clears it.
-    /// </summary>
-    public bool Expanded { get; set; }
 
     /// <summary>
     /// The template this was made from, and with what.
