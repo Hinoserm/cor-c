@@ -6325,7 +6325,8 @@ public sealed class Parser
                         first.Also.Add(new LocalDecl
                         {
                             Type = type, Name = next,
-                            Init = Take(Tok.Assign) ? ParseExpr() : null,
+                            // As the first: `ulong[] a = { 1 }, b = { 2 };`.
+                            Init = Take(Tok.Assign) ? Initialiser(type) : null,
                             IsConst = constant,
                             Line = where.Line, Col = where.Col,
                         });

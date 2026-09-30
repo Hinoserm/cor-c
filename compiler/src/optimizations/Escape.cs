@@ -617,7 +617,7 @@ public sealed partial class Escape : IModulePass
                     }
                 }
             Flow flow = Analyse(f, roots, summaries, null, stores, handOff: true);
-            if (flow.Escapes || list.Any(e => CatchesForeign(e.End)) || UsedAfterEnd(f, keep, flow, list, catchLiveness ??= new Liveness(f)))
+            if (flow.Escapes || list.Any(e => CatchesForeign(e.End)) || UsedAfterEnd(f, keep, flow, list, catchLiveness = catchLiveness ?? new Liveness(f)))
             {
                 foreach ((_, Instr end) in list) KeepCatch(end);
                 continue;

@@ -1,0 +1,15 @@
+// test: several variables declared at once, each with an array initialiser; span SequenceEqual over numbers, arrays and strings
+// expect-exit: 0
+// expect-output:
+// True True False 6
+using System;
+static class Program
+{
+    static int Main()
+    {
+        ulong[] a = { 1, 2, 3 }, b = { 1, 2, 3 };
+        ReadOnlySpan<char> c = "abc".AsSpan();
+        Console.WriteLine(a.AsSpan().SequenceEqual(b) + " " + c.SequenceEqual("abc") + " " + c.SequenceEqual("abd") + " " + (int)(b[0] + b[1] + b[2]));
+        return 0;
+    }
+}
