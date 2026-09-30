@@ -2567,11 +2567,13 @@ static class Gc
 
     /// A block just handed out: its header and footer agree, or it is said
     /// with the call trace (the heap check).
-    // THE LAST BLOCKS HANDED OUT, each with the three calls that asked for
+    // THE LAST BLOCKS HANDED OUT (4096 of them, a slice read each time), each with the three calls that asked for
     // it, read again at every allocation after: a footer that was right when
     // the block was made and is not now was overwritten in between, and the
     // allocation that finds it is a few steps after whatever did it.
-    const long RecentBlocks = 64;
+    const long RecentBlocks = 4096;
+    const long RecentSlice = 64;
+    static long _recentCheck;
     const long RecentWords = 4;
     static long _recent;
     static long _recentAt;
@@ -2614,8 +2616,13 @@ static class Gc
         if (_recent == 0 || _recentReports >= 12) return;
         long w = WordSize.Bytes;
         long n = _recentAt < RecentBlocks ? _recentAt : RecentBlocks;
-        for (long k = 0; k < n; k++)
+        if (n == 0) return;
+        // A slice at a time, so every remembered block is read again every
+        // RecentBlocks / RecentSlice allocations.
+        for (long j = 0; j < RecentSlice; j++)
         {
+            long k = _recentCheck % n;
+            _recentCheck = _recentCheck + 1;
             long e = _recent + k * RecentWords * w;
             long block = Sys.Peek(e);
             if (block == 0) continue;
@@ -2632,6 +2639,7 @@ static class Gc
             SayNumber("gc owner check:   made by ", Sys.Peek(e + w));
             SayNumber("gc owner check:   and ", Sys.Peek(e + 2 * w));
             SayNumber("gc owner check:   and ", Sys.Peek(e + 3 * w));
+            SayJournal(block + size - FooterBytes);
             Runtime.WriteLiteral(2, "gc owner check:   found at:\n");
             Runtime.SayTrace(2, Sys.FramePointer());
             Sys.Poke(e, Zero);
@@ -3802,6 +3810,58 @@ static class Gc
             SayNumber("gc owner check:   buffer limit ", Sys.Peek(tb + Tls.AllocLimit));
         }
         Runtime.SayTrace(2, Sys.FramePointer());
+    }
+
+    /// A write about to be made into [at, at + count), checked while the
+    /// heap check is on: it must lie inside one live block's payload, and
+    /// that block must not be a string (strings are never written once
+    /// made). Said with the call trace otherwise. For kernel code that
+    /// writes through an address it keeps (a file read into a buffer).
+    public static void CheckTarget(long at, long count)
+    {
+        if (!_heapCheck || count <= 0 || GcLock.HeldByMe()) return;
+        long stringType = Sys.Peek(Sys.Word("")) & WordSize.AddressMask;
+        GcLock.Enter();
+        long chunk = HeapChunks.Of(at);
+        long block = 0, size = 0;
+        if (chunk != 0)
+        {
+            long first = HeapChunks.First(chunk);
+            long c = HeapChunks.PageClass(chunk);
+            if (c > 1)
+            {
+                size = ClassSize(c - 1);
+                block = first + ((at - first) / size) * size;
+            }
+            else if (c == 0)
+            {
+                long end = chunk == _current ? _bump : HeapChunks.End(chunk);
+                long b = first;
+                while (b < end)
+                {
+                    long z = Sys.Peek(b) & SizeMask;
+                    if (z < Smallest) break;
+                    if (at < b + z) { block = b; size = z; break; }
+                    b = b + z;
+                }
+            }
+        }
+        if (block != 0)
+        {
+            long word = Sys.Peek(block);
+            bool free = (word & FlagFree) != 0;
+            bool outside = at < block + HeaderBytes || at + count > block + size - FooterBytes;
+            bool text = !free && (Sys.Peek(block + HeaderBytes) & WordSize.AddressMask) == stringType;
+            if (free || outside || text)
+            {
+                GcLock.Exit();
+                OwnerFault(free ? "gc owner check: a write into a free block" : outside ? "gc owner check: a write past its block" : "gc owner check: a write into a string", at, block);
+                SayNumber("gc owner check:   bytes ", count);
+                SayNumber("gc owner check:   block header ", word);
+                return;
+            }
+        }
+        GcLock.Exit();
     }
 
     /// [from, to) inside this thread's live buffer: a fault.
