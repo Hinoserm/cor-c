@@ -291,6 +291,17 @@ public static class ProjectCommand
             System.Diagnostics.ProcessStartInfo start = new() { FileName = Environment.ProcessPath!, UseShellExecute = false };
             // The same executable: its identity, hashed once here.
             start.Environment[ProjectCompile.IdentityVariable] = ProjectCompile.CompilerIdentity();
+            // ITS SHARE OF THE MACHINE FOR ITS COLLECTOR: each child marks on
+            // as many threads as the processors leave it beside its siblings,
+            // less its own. Twelve children starting seven markers each put
+            // eighty threads on thirty processors, and every pause of every
+            // child ran at a fraction of its speed. One already asked for is
+            // left as it is.
+            if (Environment.GetEnvironmentVariable("CORSAC_GC_WORKERS") is null)
+            {
+                int cores = Math.Max(1, Environment.ProcessorCount / Math.Max(1, processes));
+                start.Environment["CORSAC_GC_WORKERS"] = Math.Min(7, Math.Max(0, cores - 1)).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            }
             start.ArgumentList.Add("compile-project");
             start.ArgumentList.Add("--units"); start.ArgumentList.Add(share);
             start.ArgumentList.Add("--jobs"); start.ArgumentList.Add(each.ToString());
