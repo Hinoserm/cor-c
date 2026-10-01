@@ -1644,6 +1644,16 @@ public sealed partial class Lowering
     private string SequenceDescriptor(string element, int stride, bool isString, bool? elementsAreReferences = null, Type? elementType = null)
     {
         string key = (isString ? "string" : element) + ":" + stride;
+        // WHETHER THE COLLECTOR READS THE ELEMENTS, the same answer from
+        // every path that names the descriptor: an in-line struct's is
+        // whether the struct holds a reference, whoever asks. Left to the
+        // element's name when only `new` said otherwise, a `typeof(T[])` or a
+        // cast seen first in one unit and a `new T[]` in another laid down
+        // two descriptors the link could not take as one.
+        if (elementsAreReferences is null && !isString && elementType is not null && InlineElement(elementType))
+        {
+            elementsAreReferences = InlineHasReferences(StructOf(elementType));
+        }
         bool elemRefs = elementsAreReferences ?? (!isString && ElementNameIsReference(element));
         if (_sequenceDescriptors.TryGetValue(key, out string? sym))
         {

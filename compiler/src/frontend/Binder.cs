@@ -7083,18 +7083,19 @@ public sealed partial class Binder
             string held = $"$walked${n}";
             Expr Num(int v) => new LiteralExpr { Kind = Lit.Int, Text = v.ToString(), IntValue = v, Line = fe.Line, Col = fe.Col };
             Expr Is(int v) => new BinaryExpr { Op = BinOp.Eq, Left = Named(mode), Right = Num(v), Line = fe.Line, Col = fe.Col };
-            Expr Pick(Expr list, Expr arr, Expr other) => new ConditionalExpr
+            Expr Pick(Func<Expr> list, Expr arr, Expr other)
             {
-                Cond = Is(1), Then = list,
-                Else = new ConditionalExpr { Cond = Is(2), Then = arr, Else = other, Line = fe.Line, Col = fe.Col },
-                Line = fe.Line, Col = fe.Col,
-            };
+                Expr rest = new ConditionalExpr { Cond = Is(2), Then = arr, Else = other, Line = fe.Line, Col = fe.Col };
+                return fast is { List: not null }
+                    ? new ConditionalExpr { Cond = Is(1), Then = list(), Else = rest, Line = fe.Line, Col = fe.Col }
+                    : rest;
+            }
             Expr Current()
             {
                 if (fast is null) return On(Named(walker), "Current");
                 IndexExpr item = new() { Target = Named(array), Line = fe.Line, Col = fe.Col };
                 item.Args.Add(Named(step));
-                return Pick(On(Named(listWalker), "Current"), item, On(Named(walker), "Current"));
+                return Pick(() => On(Named(listWalker), "Current"), item, On(Named(walker), "Current"));
             }
 
             if (fe.Bindings is { } taken)
@@ -7141,7 +7142,6 @@ public sealed partial class Binder
             if (fast is { } chosen)
             {
                 TypeRef written = RefOf(seq)!;
-                TypeRef listRef = RefOf(new Type { Symbol = chosen.List })!;
                 TypeRef arrayRef = RefOf(Type.ArrayOf(chosen.Element))!;
                 Expr Exactly(TypeRef t) => new BinaryExpr
                 {
@@ -7166,23 +7166,27 @@ public sealed partial class Binder
                     {
                         Cond = new BinaryExpr { Op = BinOp.Eq, Left = Named(held), Right = Null(), Line = fe.Line, Col = fe.Col },
                         Then = Num(0),
-                        Else = new ConditionalExpr
-                        {
-                            Cond = Exactly(listRef), Then = Num(1),
-                            Else = new ConditionalExpr { Cond = Exactly(arrayRef), Then = Num(2), Else = Num(0), Line = fe.Line, Col = fe.Col },
-                            Line = fe.Line, Col = fe.Col,
-                        },
+                        Else = chosen.List is { } listed
+                            ? new ConditionalExpr
+                            {
+                                Cond = Exactly(RefOf(new Type { Symbol = listed })!), Then = Num(1),
+                                Else = new ConditionalExpr { Cond = Exactly(arrayRef), Then = Num(2), Else = Num(0), Line = fe.Line, Col = fe.Col },
+                                Line = fe.Line, Col = fe.Col,
+                            }
+                            : new ConditionalExpr { Cond = Exactly(arrayRef), Then = Num(2), Else = Num(0), Line = fe.Line, Col = fe.Col },
                         Line = fe.Line, Col = fe.Col,
                     },
                     Line = fe.Line, Col = fe.Col,
                 });
-                TypeRef listWalkerRef = RefOf(chosen.Walker)!;
-                outer.Statements.Add(new LocalDecl
+                if (chosen.Walker is { } listWalking)
                 {
-                    Type = listWalkerRef, Name = listWalker,
-                    Init = new DefaultExpr { Type = RefOf(chosen.Walker)!, Line = fe.Line, Col = fe.Col },
-                    Line = fe.Line, Col = fe.Col,
-                });
+                    outer.Statements.Add(new LocalDecl
+                    {
+                        Type = RefOf(listWalking)!, Name = listWalker,
+                        Init = new DefaultExpr { Type = RefOf(listWalking)!, Line = fe.Line, Col = fe.Col },
+                        Line = fe.Line, Col = fe.Col,
+                    });
+                }
                 outer.Statements.Add(new LocalDecl
                 {
                     Type = RefOf(Type.ArrayOf(chosen.Element).AsNullable())!, Name = array, Init = Null(), Line = fe.Line, Col = fe.Col,
@@ -7193,21 +7197,24 @@ public sealed partial class Binder
                     Type = RefOf(Close(walk.Returns, Received(seq, walk.Owner ?? had)).AsNullable())!, Name = walker, Init = Null(),
                     Line = fe.Line, Col = fe.Col,
                 });
-                outer.Statements.Add(new IfStmt
+                IfStmt notList = new()
                 {
-                    Cond = Is(1),
-                    Then = Set(listWalker, Called(new CastExpr { Type = RefOf(new Type { Symbol = chosen.List })!, Operand = Named(held), Line = fe.Line, Col = fe.Col }, "GetEnumerator")),
-                    Else = new IfStmt
-                    {
-                        Cond = Is(2),
-                        Then = Set(array, new CastExpr { Type = RefOf(Type.ArrayOf(chosen.Element))!, Operand = Named(held), Line = fe.Line, Col = fe.Col }),
-                        Else = Set(walker, Called(Named(held), "GetEnumerator")),
-                        Line = fe.Line, Col = fe.Col,
-                    },
+                    Cond = Is(2),
+                    Then = Set(array, new CastExpr { Type = RefOf(Type.ArrayOf(chosen.Element))!, Operand = Named(held), Line = fe.Line, Col = fe.Col }),
+                    Else = Set(walker, Called(Named(held), "GetEnumerator")),
                     Line = fe.Line, Col = fe.Col,
-                });
+                };
+                outer.Statements.Add(chosen.List is { } listType
+                    ? new IfStmt
+                    {
+                        Cond = Is(1),
+                        Then = Set(listWalker, Called(new CastExpr { Type = RefOf(new Type { Symbol = listType })!, Operand = Named(held), Line = fe.Line, Col = fe.Col }, "GetEnumerator")),
+                        Else = notList,
+                        Line = fe.Line, Col = fe.Col,
+                    }
+                    : notList);
                 moving = Pick(
-                    Called(Named(listWalker), "MoveNext"),
+                    () => Called(Named(listWalker), "MoveNext"),
                     new BinaryExpr
                     {
                         Op = BinOp.Lt,
@@ -7522,7 +7529,7 @@ public sealed partial class Binder
     /// List of the element is specialised here, in which case no list of it
     /// is made here either and the interface's path is all there is.
     /// </summary>
-    private (Type Element, TypeSymbol List, Type Walker)? FastSequence(TypeSymbol had)
+    private (Type Element, TypeSymbol? List, Type? Walker)? FastSequence(TypeSymbol had)
     {
         if (had.Kind != TypeKind.Interface
             || had.Decl is not { Template: "IEnumerable" or "IReadOnlyList" or "IReadOnlyCollection" or "IList" or "ICollection", TemplateArgs.Count: 1 } made)
@@ -7531,14 +7538,30 @@ public sealed partial class Binder
         }
         Type element = Resolve(made.TemplateArgs[0], _thisType);
         if (element.IsError || element.ParamName is not null || element.IsPointer || RefOf(element) is not TypeRef written
-            || !_r.Types.TryGetValue(Monomorphiser.MangledName("List", new List<TypeRef> { written }), out TypeSymbol? list)
-            || list.Decl is not { Template: "List" })
+            || RefOf(Type.ArrayOf(element)) is null)
         {
             return null;
         }
+        // THE LIST ONLY WHERE ONE UNIT COMPILES THE LOOP. A generic copy --
+        // a specialised type's member, a generic method's copy and what is
+        // inside them -- is compiled by every unit that uses it and the link
+        // keeps one, so all of them must be the same code; whether this unit
+        // has a List of the element is this unit's accident, and an array's
+        // descriptor is anybody's to lay down. LINQ's own fast paths
+        // (Enumerable) name List<T> in the template, so every copy has it.
+        bool once = _thisType?.Decl is null or { Template: null, TypeParams.Count: 0 }
+                 && _member is null or { TemplateIndex: -1, LocalCopy: false }
+                 && _member is not MethodDecl { TypeParams.Count: > 0 }
+                 && _member?.Name.Contains('$') != true;
+        if (!once
+            || !_r.Types.TryGetValue(Monomorphiser.MangledName("List", new List<TypeRef> { written }), out TypeSymbol? list)
+            || list.Decl is not { Template: "List" })
+        {
+            return (element, null, null);
+        }
         MethodSymbol? get = Reachable(list, "GetEnumerator")
             .FirstOrDefault(m => m.Params.Count == 0 && !m.Static && m.Returns.Symbol is { Kind: TypeKind.Struct });
-        return get is null || RefOf(get.Returns) is null ? null : (element, list, get.Returns);
+        return get is null || RefOf(get.Returns) is null ? (element, null, null) : (element, list, get.Returns);
     }
 
     private static List<MethodSymbol> Reachable(TypeSymbol t, string name)
