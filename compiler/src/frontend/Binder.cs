@@ -2024,6 +2024,11 @@ public sealed partial class Binder
 
         // The tuple shapes met so far take ValueTuple's interfaces now that
         // those have slots; any made from here on take them as they are made.
+        // Asked for by name, so that every unit has them -- a unit's library
+        // declarations arrive as its source names them -- and every unit
+        // gives a tuple shape the same two.
+        FindType("IComparable", out _);
+        FindType("System.Runtime.CompilerServices.ITuple", out _);
         _tupleFacesReady = true;
         foreach (TypeSymbol shape in _r.Types.Values.Where(t => t.Structural && t.Kind == TypeKind.Struct).ToList())
         {
@@ -7767,8 +7772,7 @@ public sealed partial class Binder
 
     /// <summary>
     /// The interfaces a ValueTuple implements, given to a shape and mapped to
-    /// its members: IComparable and ITuple, which it implements explicitly,
-    /// and IEquatable and IComparable of itself where the library has them.
+    /// its members: IComparable and ITuple, which it implements explicitly.
     /// What `(IComparable)(1, "a")`, a sort over boxed tuples and `t is
     /// ITuple` reach.
     /// </summary>
@@ -7784,14 +7788,10 @@ public sealed partial class Binder
         {
             if (_r.Types.TryGetValue(plain, out TypeSymbol? face) && face.Kind == TypeKind.Interface) faces.Add(face);
         }
-        if (RefOf(new Type { Prim = Prim.Void, Symbol = tuple }) is TypeRef written)
-        {
-            foreach (string generic in new[] { "IEquatable", "IComparable" })
-            {
-                if (_r.Types.TryGetValue(Monomorphiser.MangledName(generic, new List<TypeRef> { written }), out TypeSymbol? face)
-                    && face.Kind == TypeKind.Interface) faces.Add(face);
-            }
-        }
+        // NOT IEquatable OR IComparable OF ITSELF: a specialisation of those
+        // exists only in a unit whose source names it, and a shape is one
+        // type in every unit -- given them in one and not another, the link
+        // refused the pair. Its typed Equals and CompareTo are public members.
         foreach (TypeSymbol face in faces)
         {
             if (tuple.Interfaces.Contains(face)) continue;
