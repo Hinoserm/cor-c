@@ -11785,7 +11785,7 @@ public sealed partial class Binder
                 bool first = true;
                 bool exhaustive = false;
                 Coverage covered = new();
-                bool sawTrue = false, sawFalse = false;
+                bool sawTrue = false, sawFalse = false, sawNull = false, sawSome = false;
                 List<Sym> pastNull = new();
 
                 foreach (SwitchArm arm in sx.Arms)
@@ -11954,6 +11954,19 @@ public sealed partial class Binder
                             covered.Union(lengths);
                             exhaustive = exhaustive || covered.All;
                         }
+
+                        // AND `null` WITH `{ }` IS EVERYTHING: no value, and
+                        // any value at all.
+                        if (arm.Value is LiteralExpr { Kind: Lit.Null } && arm.When is null
+                            || arm.Discard && arm.When is BinaryExpr { Op: BinOp.Eq, Left: SubjectExpr { Outer: 0 }, Right: LiteralExpr { Kind: Lit.Null } })
+                        {
+                            sawNull = true;
+                        }
+                        if (arm.Discard && arm.When is BinaryExpr { Op: BinOp.Ne, PatternNullTest: true, Left: SubjectExpr { Outer: 0 }, Right: LiteralExpr { Kind: Lit.Null } })
+                        {
+                            sawSome = true;
+                        }
+                        exhaustive = exhaustive || sawNull && sawSome;
 
                         // AND `true` WITH `false` IS EVERY bool.
                         if (arm.Value is not null && arm.When is null && subject.Prim == Prim.Bool && !subject.Nullable
@@ -14118,6 +14131,22 @@ public sealed partial class Binder
 
                 _r.Rewrites[m] = once;
                 return CheckExpr(once);
+            }
+
+            // A PROPERTY PATTERN READS THE VALUE'S MEMBER, as C# reads it:
+            // `fast is { List: not null }` over a (T, U)? matches on the
+            // tuple's List once the pattern's own null test -- to its left,
+            // which is what Guarded says -- has found a value there. The
+            // subject is the pattern's hoisted one, read again for nothing.
+            if (m.Guarded && !m.NullConditional && !ReferenceEquals(m, _callee))
+            {
+                MemberExpr inside = new()
+                {
+                    Target = new MemberExpr { Target = m.Target, Name = "Value", Guarded = true, Line = m.Line, Col = m.Col },
+                    Name = m.Name, Guarded = true, Line = m.Line, Col = m.Col,
+                };
+                _r.Rewrites[m] = inside;
+                return CheckExpr(inside);
             }
 
             // ITS METHODS, when this is the one being called: the call writes

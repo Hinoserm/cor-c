@@ -1,0 +1,41 @@
+// test: nullable_property_pattern
+// expect-exit: 0
+// expect-output:
+// 0 False False none False False -
+// 1 False False one False False -
+// 2 True False named b2 True False 2
+// 3 True True named b3 False True 3
+//
+// A property pattern over a nullable value type matches the members of the
+// value, as C#'s does: `p is { B: not null }` over a (int, string?)? is no
+// match when p has no value and B's test when it has one, in an is, in a
+// switch arm and with a name bound. Output checked against .NET.
+
+using System;
+
+struct Point { public int X; public int Y; public string? Tag; }
+
+static class Program
+{
+    static (int A, string? B)? Pair(int n) => n == 0 ? null : (n, n > 1 ? "b" + n : null);
+    static Point? Pt(int n) => n == 0 ? null : new Point { X = n, Y = -n, Tag = n > 2 ? "t" : null };
+
+    static string Describe((int A, string? B)? p) => p switch
+    {
+        { A: 1 } => "one",
+        { B: not null } => "named " + p.Value.B,
+        { } => "some",
+        null => "none",
+    };
+
+    static void Main()
+    {
+        for (int n = 0; n < 4; n++)
+        {
+            var p = Pair(n);
+            var q = Pt(n);
+            Console.WriteLine(n + " " + (p is { B: not null }) + " " + (p is { A: > 1, B: "b3" }) + " " + Describe(p)
+                + " " + (q is { X: 2 }) + " " + (q is { Tag: { Length: 1 } }) + " " + (q is { Y: < -1 } pt ? pt.X.ToString() : "-"));
+        }
+    }
+}
