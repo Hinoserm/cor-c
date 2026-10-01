@@ -5140,6 +5140,41 @@ public sealed partial class Binder
         // (int, int) arm's value in the very slot of the tuple it was being
         // copied into. The real check checks the same rebuild again, and it
         // takes a slot that is its own.
+        // A TUPLE LITERAL IS TARGET-TYPED (C# 10.2.13): converted to a tuple
+        // type, each element converts on its own -- a constant by the
+        // constant conversion -- so `(8u, 3)` is a (uint, uint) and `(7u, 1, 2,
+        // 0, 0)` a (uint, byte, ushort, ulong, ulong). Checked again as a
+        // copy of itself with the target wanted, it is made in that shape.
+        // A SWITCH EXPRESSION CONVERTS TO ANY TYPE EACH ARM CONVERTS TO (C#
+        // 10.2.17), whatever type its arms have in common: `k switch { 0 =>
+        // (8u, 3), _ => (1u, 0) }` is a (uint, uint) where one is wanted. Each
+        // arm is converted, and the switch is that type from then on.
+        if (at is SwitchExpr matched && !from.IsError && !to.IsError && !from.Equals(to) && !Convertible(from, to)
+            && matched.Arms.All(arm => arm.Result is ThrowExpr || Fits(_r.TypeOf(arm.Result), to, arm.Result)))
+        {
+            foreach (SwitchArm arm in matched.Arms)
+            {
+                if (arm.Result is ThrowExpr) continue;
+                CheckAssignable(_r.TypeOf(arm.Result), to, arm.Result, what);
+            }
+            _r.ExprType[matched] = to;
+            return;
+        }
+
+        if (at is TupleExpr tupleLiteral && !_r.Rewrites.ContainsKey(tupleLiteral) && !from.Equals(to)
+            && !Convertible(from, to) && TupleLiteralFits(tupleLiteral, to))
+        {
+            TupleExpr retyped = new() { Line = tupleLiteral.Line, Col = tupleLiteral.Col, File = tupleLiteral.File };
+            retyped.Items.AddRange(tupleLiteral.Items);
+            retyped.Names.AddRange(tupleLiteral.Names);
+            _r.Rewrites[tupleLiteral] = retyped;
+            Type? outsideWanted = _wanted;
+            _wanted = to;
+            CheckExpr(retyped);
+            _wanted = outsideWanted;
+            return;
+        }
+
         if (at is Expr source && TupleRebuilt(from, to)
             && (!_r.Rewrites.TryGetValue(source, out Expr? earlier) || earlier is PatternExpr { Test: TupleExpr }))
         {
@@ -5257,7 +5292,34 @@ public sealed partial class Binder
     private bool Fits(Type had, Type want, Expr? written)
         => had.IsError || (!NullableIntoValue(had, want) && (Convertible(had, want) || Variant(had, want)))
         || (written is not null && MethodGroupFits(written, want))
-        || IntegerConstantFits(written, had, want);
+        || IntegerConstantFits(written, had, want)
+        || TupleLiteralFits(written, want);
+
+    /// <summary>
+    /// Whether a tuple literal converts to a tuple type element by element
+    /// (C# 10.2.13): each element as it would on its own -- a constant by the
+    /// constant conversion, a null or a bare default to anything that takes
+    /// one, an inner literal the same way again.
+    /// </summary>
+    private bool TupleLiteralFits(Expr? written, Type want)
+    {
+        if (written is not TupleExpr literal || want.IsNullableValue || want.IsArray
+            || want.Symbol is not { } shape || !shape.Name.StartsWith(TypeRef.Tuple + "$", StringComparison.Ordinal))
+        {
+            return false;
+        }
+        List<FieldSymbol> fields = shape.Fields.Where(f => !f.Static).ToList();
+        if (fields.Count != literal.Items.Count) return false;
+        for (int k = 0; k < fields.Count; k++)
+        {
+            Expr item = literal.Items[k];
+            Type itemType = _r.TypeOf(item);
+            Type wantedItem = fields[k].Type;
+            if (item is LiteralExpr { Kind: Lit.Null } or DefaultExpr { Type.Name.Length: 0 }) continue;
+            if (!Fits(itemType, wantedItem, item)) return false;
+        }
+        return true;
+    }
 
     /// <summary>
     /// A Nullable&lt;T&gt; where a plain value type is wanted: no implicit
@@ -5597,6 +5659,15 @@ public sealed partial class Binder
         if (from.IsNative || to.IsNative)
         {
             return NativeConvertible(from.Prim, to.Prim);
+        }
+
+        // AN ENUM IS ITSELF, whatever width either side of it was read with:
+        // the element of a tuple shape names the enum by its symbol and may
+        // carry another word than its declaration's `: byte`.
+        if (from.Symbol is { Kind: TypeKind.Enum } fromEnum && to.Symbol is { Kind: TypeKind.Enum } toEnum
+            && (ReferenceEquals(fromEnum, toEnum) || fromEnum.Key == toEnum.Key))
+        {
+            return true;
         }
 
         // Widening only. A narrowing conversion loses information and must be
@@ -10200,9 +10271,11 @@ public sealed partial class Binder
                 {
                     bool fits = true;
 
+                    // Each element as it converts on its own: a constant by the
+                    // constant conversion (Fits), as C# converts a literal's.
                     for (int i = 0; i < elements.Count; i++)
                     {
-                        fits &= Convertible(elements[i], want.Fields[i].Type);
+                        fits &= Fits(elements[i], want.Fields[i].Type, tup.Items[i]);
                     }
 
                     if (fits)
@@ -15217,6 +15290,33 @@ public sealed partial class Binder
         // as `object` or as an interface, since a word of those types is an
         // address of something that has one. A value type has no descriptor
         // to read, and is refused as before.
+        // AN ARRAY IS AN OBJECT, and answers object's ToString, Equals and
+        // GetHashCode (C#'s System.Array inherits them): asked of the array as
+        // an object, through the slots every object has.
+        if (c.Target is MemberExpr { Name: "ToString" or "Equals" or "GetHashCode" } ofArray && !_r.Rewrites.ContainsKey(c)
+            && !ofArray.NullConditional && ofArray.Target is not BaseExpr)
+        {
+            _quiet++;
+            Type arrayReceiver;
+            try { arrayReceiver = CheckExpr(ofArray.Target); }
+            finally { _quiet--; }
+            if (arrayReceiver.IsArray && !arrayReceiver.IsError)
+            {
+                CallExpr asObject = new()
+                {
+                    Target = new MemberExpr
+                    {
+                        Target = new CastExpr { Type = new TypeRef { Name = "object", Line = ofArray.Line, Col = ofArray.Col }, Operand = ofArray.Target, Line = ofArray.Line, Col = ofArray.Col },
+                        Name = ofArray.Name, Line = ofArray.Line, Col = ofArray.Col,
+                    },
+                    Line = c.Line, Col = c.Col,
+                };
+                asObject.Args.AddRange(c.Args);
+                _r.Rewrites[c] = asObject;
+                return CheckExpr(asObject);
+            }
+        }
+
         if (c.Args.Count == 0 && c.Target is MemberExpr { Name: "GetType" } asked)
         {
             Type on = CheckExpr(asked.Target);

@@ -1,0 +1,45 @@
+// test: tuple_literals_target_typed
+// expect-exit: 0
+// expect-output:
+// 0:Use 1:Def 2:Use
+// Use (8, 3) (1, 0)
+// (7, 1, 2, 0, 0) (3, 0) [1, a!],[2, b!]
+//
+// A tuple literal converts to a tuple type element by element, a constant
+// by the constant conversion -- in a return, an argument, a collection
+// initialiser and the arms of a switch expression, which converts to any
+// type every arm converts to. A byte enum read back out of a tuple is the
+// enum it was, and a KeyValuePair prints as .NET's does. Output checked
+// against .NET.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+enum Role : byte { Use = 1, Def = 2 }
+
+static class Program
+{
+    static IEnumerable<(int Reg, Role Role, bool InMem)> RegsOf(int n)
+    {
+        for (int i = 0; i < n; i++) yield return (i, i % 2 == 0 ? Role.Use : Role.Def, false);
+    }
+
+    static (uint Type, uint Flags) Kind(int k) => k switch { 0 => (8u, 3), _ => (1u, 0) };
+
+    static void Main()
+    {
+        string regs = "";
+        foreach ((int r, Role role, bool inMem) in RegsOf(3)) regs += r + ":" + role + " ";
+        Console.WriteLine(regs.TrimEnd());
+        Role last = RegsOf(1).First().Role;
+        Console.WriteLine(last + " " + Kind(0) + " " + Kind(1));
+        var list = new List<(uint A, byte B, ushort C, ulong D, ulong E)>();
+        list.Add((7u, 1, 2, 0, 0));
+        var pairs = new List<(int, ulong)> { (1, 2) };
+        pairs.Add((3, 0));
+        Dictionary<int, string> fields = new() { [1] = "a", [2] = "b" };
+        Dictionary<long, string> locals = fields.ToDictionary(p => (long)p.Key, p => p.Value + "!");
+        Console.WriteLine(list[0] + " " + pairs[1] + " " + string.Join(",", locals));
+    }
+}

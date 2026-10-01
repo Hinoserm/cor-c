@@ -10101,6 +10101,12 @@ struct KeyValuePair<K, V> {
     public K Key => key;
     public V Value => value;
 
+    /// "[key, value]", as .NET writes a pair: each part by its own ToString,
+    /// an absent one as nothing.
+    public override string ToString() {
+        return "[" + key + ", " + value + "]";
+    }
+
     // WHAT MAKES `foreach ((var k, var v) in table)` WORK, and it is not a
     // special case in the compiler: deconstruction is defined as a call to a
     // method called Deconstruct with an out per name, so anything with one
