@@ -7998,7 +7998,11 @@ class KeyComparer<T, K> : IComparer<T> {
 static class Enumerable {
     // ---- the checks every operator starts with ---------------------------
 
-    private static void NotNull(object? argument, string name) {
+    // GENERIC, so each copy is compiled in the unit that calls it, as the
+    // LINQ method calling it is: a call into the library's unit was one a
+    // separately compiled unit cannot see into, and every source and every
+    // lambda handed to LINQ escaped through its argument check.
+    private static void NotNull<T>(T? argument, string name) {
         if (argument == null) { throw new ArgumentNullException(name); }
     }
 

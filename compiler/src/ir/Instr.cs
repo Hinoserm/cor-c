@@ -42,6 +42,15 @@ public sealed class Instr
     /// </summary>
     public const string FreshStruct = "\u0001fresh-struct";
 
+    /// <summary>
+    /// A call of an interface's Invoke -- a Func, an Action, a delegate type
+    /// -- through its slot. A closure handed in as the receiver cannot be let
+    /// go by the body it runs: a lambda has no name for its own closure, and
+    /// a method group's passes on its target, not itself (Escape's invoke-only
+    /// parameters).
+    /// </summary>
+    public const string DelegateInvoke = "\u0001invoke";
+
     /// <summary>Whether this call hands back a struct made for it (FreshStruct).</summary>
     public bool ReturnsFreshStruct => Op is Opcode.Call or Opcode.CallIndirect && Field == FreshStruct;
 

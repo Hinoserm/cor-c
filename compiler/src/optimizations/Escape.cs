@@ -102,6 +102,7 @@ public sealed partial class Escape : IModulePass
         foreach (List<Function> cycle in CallCycles(m, byName))
         {
             SummariseCycle(cycle, summaries);
+            foreach (Function f in cycle) InvokeOnly(f, summaries);
             foreach (Function f in cycle)
             {
             // Whether what it returns is a fresh object it hands over: made
@@ -1518,6 +1519,36 @@ continue;
         foreach ((string name, int count) in KeepsNothing) summaries.TryAdd(name, new bool[count]);
     }
 
+    private void InvokeOnly(Function f, Dictionary<string, bool[]> summaries)
+    {
+        if (!summaries.TryGetValue(f.Name, out bool[]? escapes) || !escapes.Any(e => e)) return;
+        bool any = false;
+        foreach (Block b in f.Blocks) foreach (Instr i in b.Instrs) if (i.Field == Instr.DelegateInvoke) { any = true; break; }
+        if (!any) return;
+        _invokeOnly ??= new(StringComparer.Ordinal);
+        bool[] only = new bool[f.Params.Count];
+        for (int p = 0; p < f.Params.Count && p < escapes.Length; p++)
+            if (escapes[p]) only[p] = !Analyse(f, new[] { f.Params[p] }, summaries, null, invokeReceiverStays: true).Escapes;
+        _invokeOnly[f.Name] = only;
+    }
+
+    /// <summary>Whether `made` is a closure the compiler wrote: its vtable is a Lambda class's.</summary>
+    private static bool IsClosure(Function f, Instr made)
+    {
+        if (made.Dest is null) return false;
+        HashSet<VReg> same = new() { made.Dest };
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+            {
+                if (i.Dest is not null && i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 && i.Operands[0] is RegOperand r && same.Contains(r.Reg))
+                    same.Add(i.Dest);
+                if (i.Op == Opcode.Store && i.Offset == 0 && i.Operands.Count >= 2 && i.Operands[0] is RegOperand bas && same.Contains(bas.Reg)
+                    && i.Operands[1] is SymOperand vt && vt.Name.Contains("Lambda$", StringComparison.Ordinal))
+                    return true;
+            }
+        return false;
+    }
+
     internal static bool NeverWritesFields(string callee) =>
         IsAllocator(callee) || callee == "m_Runtime_ArrayStoreCheck_2_V$I64_V$I64";
 
@@ -1764,7 +1795,8 @@ continue;
 
     internal static Flow Analyse(Function f, IEnumerable<VReg> roots, Dictionary<string, bool[]> summaries, Instr? source,
         HashSet<Instr>? ownedStores = null, HashSet<VReg>? returnable = null, HashSet<VReg>? joinable = null,
-        Needs? needs = null, bool handOff = false, HashSet<Instr>? consumers = null)
+        Needs? needs = null, bool handOff = false, HashSet<Instr>? consumers = null,
+        bool invokeReceiverStays = false, bool closure = false)
     {
         Flow flow = new() { Source = source };
         foreach (VReg r in roots)
@@ -1975,6 +2007,8 @@ continue;
                             {
                                 if (i.Operands[a] is not RegOperand arg || !flow.Derived.Contains(arg.Reg)) continue;
                                 if (summary is not null && a < summary.Length && !summary[a]) continue;
+                                if (closure && _invokeOnly is not null && _invokeOnly.TryGetValue(i.Callee, out bool[]? only)
+                                    && a < only.Length && only[a]) continue;
                                 // Asked for the link (EscapeHints): another
                                 // unit's function, or one of this unit's whose
                                 // own answer waits on another unit, is a
@@ -1988,6 +2022,14 @@ continue;
                             // that argument.
                             break;
                         }
+
+                        case Opcode.CallIndirect when (invokeReceiverStays || closure) && i.Field == Instr.DelegateInvoke
+                            && !i.Operands.Skip(2).Any(o => o is RegOperand q && flow.Derived.Contains(q.Reg)):
+                            // The receiver of a delegate's Invoke, and nothing
+                            // derived passed as an argument: the parameter
+                            // escapes only this way (InvokeOnly), or the closure
+                            // itself is being invoked (its body cannot let it go).
+                            break;
 
                         case Opcode.CallIndirect when _indirect is not null && _indirect.TryGetValue(i, out string[]? overrides):
                         {
@@ -2241,6 +2283,15 @@ continue;
     /// that are static: set for the length of a run.
     /// </summary>
     [ThreadStatic] private static Dictionary<Instr, string[]>? _indirect;
+
+    /// <summary>
+    /// Per function, per parameter: whether it escapes only as the receiver
+    /// of a delegate's Invoke (Instr.DelegateInvoke) -- Enumerable.Any's
+    /// predicate. A closure the compiler made, handed to such a parameter,
+    /// stays: its Invoke cannot let it go. Anything else handed there may be
+    /// a class implementing the interface by hand, and escapes as before.
+    /// </summary>
+    [ThreadStatic] private static Dictionary<string, bool[]>? _invokeOnly;
     /// <summary>Flow graphs Reaches has built this run, by function.</summary>
     [ThreadStatic] private static Dictionary<Function, Cfg>? _reachGraphs;
     /// <summary>CORSAC_ALLOC_REPORT: why each virtual call it could not resolve was left.</summary>
@@ -2551,7 +2602,7 @@ continue;
                     continue;
                 }
 
-                Flow flow = Analyse(f, new[] { i.Dest }, summaries, i);
+                Flow flow = Analyse(f, new[] { i.Dest }, summaries, i, closure: IsClosure(f, i));
                 OwnedFieldEscape.Owner promotedOwner = new() { Block = b, Root = i.Dest, Bytes = size };
                 promotedOwner.Aliases.Add(i.Dest);
                 bool canAnchor = true;

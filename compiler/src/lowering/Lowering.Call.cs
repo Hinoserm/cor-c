@@ -117,6 +117,7 @@ public sealed partial class Lowering
             // Whatever implementation answers, a struct it returns other than
             // through a buffer is a copy made for this caller.
             if (!Buffered(m) && IsStructValue(m.Returns)) _e.Block.Instrs[^1].Field = Instr.FreshStruct;
+            else if (m.Name == "Invoke" && m.Owner.Kind == TypeKind.Interface) _e.Block.Instrs[^1].Field = Instr.DelegateInvoke;
             return called;
         }
 
