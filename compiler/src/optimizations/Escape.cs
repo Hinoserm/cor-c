@@ -1745,21 +1745,24 @@ continue;
 
         // A register with more than one definition may hold something else
         // at another time; anything derived through it is unknowable. Count
-        // definitions once.
-        Dictionary<VReg, int> defs = new();
+        // definitions once -- by register number, in an array the function's
+        // size: this runs for every allocation of the function, and a
+        // dictionary grown to every register each time was the pass's own
+        // largest allocation.
+        int[] defs = new int[f.RegCount];
         foreach (Block b in f.Blocks)
         {
             foreach (Instr i in b.Instrs)
             {
-                if (i.Dest is not null)
+                if (i.Dest is { } d && d.Id < defs.Length)
                 {
-                    defs[i.Dest] = defs.GetValueOrDefault(i.Dest) + 1;
+                    defs[d.Id]++;
                 }
             }
         }
         foreach (VReg p in f.Params)
         {
-            defs[p] = defs.GetValueOrDefault(p) + 1;
+            if (p.Id < defs.Length) defs[p.Id]++;
         }
 
         HashSet<VReg>? pending = null;
@@ -2065,7 +2068,7 @@ continue;
             {
                 return;
             }
-            if (defs.GetValueOrDefault(d) > 1 && (returnable is null || !returnable.Contains(d))
+            if (d.Id < defs.Length && defs[d.Id] > 1 && (returnable is null || !returnable.Contains(d))
                 && (joinable is null || !joinable.Contains(d)))
             {
                 // A JOIN THAT IS ONLY EVER A NUMBER -- a hash's word, the
