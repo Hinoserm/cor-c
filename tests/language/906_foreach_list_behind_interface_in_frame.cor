@@ -1,0 +1,40 @@
+// test: foreach_list_behind_interface_in_frame
+// expect-exit: 0
+// expect-output:
+// 39060000
+//
+// A foreach over an IReadOnlyList that holds a List walks the List with its
+// struct enumerator, kept in the frame: the walk was meant for all but
+// generic copies and had been off nearly everywhere (it asked a member's
+// TemplateIndex for -1), and its enumerator local, declared with a default
+// and assigned again, was a register the lifetime rules could not follow.
+
+using System;
+using System.Collections.Generic;
+class Block { public int Order; }
+class Cfg
+{
+    static readonly Block[] None = Array.Empty<Block>();
+    readonly List<Block>?[] _preds;
+    public Cfg(int n) { _preds = new List<Block>?[n]; for (int i = 1; i < n; i++) _preds[i] = new List<Block> { new Block { Order = i - 1 } }; }
+    public IReadOnlyList<Block> Preds(Block b) => _preds[b.Order] ?? (IReadOnlyList<Block>)None;
+    public int Walk(Block[] blocks)
+    {
+        int sum = 0;
+        foreach (Block b in blocks)
+            foreach (Block p in Preds(b)) sum += p.Order;
+        return sum;
+    }
+}
+static class P
+{
+    static void Main()
+    {
+        Cfg cfg = new(64);
+        Block[] blocks = new Block[64];
+        for (int i = 0; i < 64; i++) blocks[i] = new Block { Order = i };
+        long t = 0;
+        for (int r = 0; r < 20000; r++) t += cfg.Walk(blocks);
+        Console.WriteLine(t);
+    }
+}

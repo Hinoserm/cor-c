@@ -37,7 +37,10 @@ public sealed class Cfg
     // allocated -- a hundred and ten thousand graphs for one source.
     private readonly List<Block>?[] _preds;
     private readonly List<Block>?[] _succs;
-    private static readonly Block[] None = Array.Empty<Block>();
+    // An IReadOnlyList already: an array cast to one is wrapped where it is
+    // cast, so a cast in Preds and Succs made a wrapper on every call for a
+    // block with none.
+    private static readonly IReadOnlyList<Block> None = Array.Empty<Block>();
     private readonly bool[] _root;
     private readonly List<Block> _roots = new();
     private List<Block>? _rpo;
@@ -112,8 +115,8 @@ public sealed class Cfg
         _roots.Add(b);
     }
 
-    public IReadOnlyList<Block> Preds(Block b) => _preds[b.Order] ?? (IReadOnlyList<Block>)None;
-    public IReadOnlyList<Block> Succs(Block b) => _succs[b.Order] ?? (IReadOnlyList<Block>)None;
+    public IReadOnlyList<Block> Preds(Block b) => _preds[b.Order] ?? None;
+    public IReadOnlyList<Block> Succs(Block b) => _succs[b.Order] ?? None;
 
     /// <summary>Whether control can enter the block by something other than a branch from a predecessor.</summary>
     public bool IsRoot(Block b) => _root[b.Order];
