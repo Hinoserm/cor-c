@@ -23,6 +23,9 @@ using Block = Corsac.Lang.Ir.Block;
 public sealed class Liveness
 {
     public Cfg Cfg { get; }
+
+    /// <summary>Where each landing pad can be entered, with what it reads (Escape.PadLiveAt); made once.</summary>
+    internal Dictionary<Block, HashSet<VReg>>? PadRegions { get; set; }
     private readonly int _words;
     private readonly int _registers;
     private readonly Dictionary<Block, ulong[]> _in = new(ReferenceEqualityComparer.Instance);

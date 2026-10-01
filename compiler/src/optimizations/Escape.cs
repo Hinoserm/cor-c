@@ -3255,16 +3255,17 @@ continue;
     /// enumerator, and that made every iterator a loop walks look alive at
     /// the next one's making, so none was ever freed.
     /// </summary>
-    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Liveness, Dictionary<Block, HashSet<VReg>>> _padsAt = new();
-
     internal static HashSet<VReg> PadLiveAt(Liveness liveness, Block at)
     {
-        Dictionary<Block, HashSet<VReg>> table = _padsAt.GetValue(liveness, _ => new(ReferenceEqualityComparer.Instance));
-        lock (table)
+        // Kept with the analysis it was made from: one liveness, one function.
+        Dictionary<Block, HashSet<VReg>>? table = liveness.PadRegions;
+        if (table is null)
         {
-            if (table.Count == 0) BuildPadRegions(liveness, table);
-            return table.TryGetValue(at, out HashSet<VReg>? live) ? live : Empty;
+            table = new(ReferenceEqualityComparer.Instance);
+            BuildPadRegions(liveness, table);
+            liveness.PadRegions = table;
         }
+        return table.TryGetValue(at, out HashSet<VReg>? live) ? live : Empty;
     }
     private static readonly HashSet<VReg> Empty = new();
 

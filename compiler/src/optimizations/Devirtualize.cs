@@ -489,7 +489,7 @@ public sealed class DeadClosureThis : IModulePass
         for (int k = 0; k < escaped.Length; k++)
         {
             if (escaped[k] == '$' && k + 4 < escaped.Length + 0 && k + 5 <= escaped.Length
-                && int.TryParse(escaped.AsSpan(k + 1, 4), System.Globalization.NumberStyles.HexNumber, null, out int c))
+                && int.TryParse(escaped.Substring(k + 1, 4), System.Globalization.NumberStyles.HexNumber, null, out int c))
             {
                 sb.Append((char)c);
                 k += 4;
