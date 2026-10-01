@@ -1846,7 +1846,12 @@ public sealed partial class Lowering
 
     /// <summary>The symbol of a type's descriptor; the vtable follows it at DescriptorBytes.</summary>
     private string DescriptorOf(TypeSymbol t)
-        => t.Kind == TypeKind.Interface ? InterfaceDescriptor(t) : ClassDescriptor(t);
+        => t.Kind == TypeKind.Interface ? InterfaceDescriptor(t)
+         // A STRUCT'S OR AN ENUM'S TYPE IS ITS BOX'S, which is what an object
+         // holding one has: a class's descriptor made for one named members
+         // only a class has.
+         : t.Kind is TypeKind.Struct or TypeKind.Enum ? BoxDescriptor(new Type { Prim = t.Kind == TypeKind.Enum ? t.EnumUnderlying : Prim.Void, Symbol = t })
+         : ClassDescriptor(t);
 
     /// <summary>The address an object's first word holds: the vtable, just past the descriptor.</summary>
     private SymOperand VtableOf(TypeSymbol t) => new(ClassDescriptor(t), _t.DescriptorBytes);

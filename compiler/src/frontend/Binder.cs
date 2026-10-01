@@ -2035,7 +2035,10 @@ public sealed partial class Binder
         {
             foreach (TypeSymbol made in _r.Types.Values.Where(t => t.Decl is { Specialised: true, TemplateArgs.Count: > 0 } && t.TemplateArgTypes.Count == 0).ToList())
             {
-                foreach (TypeRef arg in made.Decl!.TemplateArgs) made.TemplateArgTypes.Add(Resolve(arg, made));
+                List<Type> args = made.Decl!.TemplateArgs.Select(arg => Resolve(arg, made)).ToList();
+                // Every argument resolved, or none kept: the name stays the
+                // specialisation's own rather than spell an error.
+                if (args.All(a => !Unresolved(a))) made.TemplateArgTypes.AddRange(args);
             }
         }
         finally { _quiet--; _namingOnly = false; }
@@ -7737,8 +7740,19 @@ public sealed partial class Binder
 
         if (_r.Types.TryGetValue(name, out TypeSymbol? already))
         {
-            Remember(already, names);
+            if (!_namingOnly) Remember(already, names);
             return already;
+        }
+
+        // LOOKED UP FOR A NAME ONLY (_namingOnly): a shape no source made is
+        // made for the name and kept nowhere -- registered, one whose items
+        // did not resolve in the scope asked was emitted as a type.
+        if (_namingOnly)
+        {
+            TypeSymbol transient = new() { Name = name, Kind = TypeKind.Struct, Structural = true };
+            for (int i = 0; i < elements.Count; i++)
+                transient.Fields.Add(new FieldSymbol { Name = "Item" + (i + 1), Type = elements[i], Owner = transient });
+            return transient;
         }
 
         // A STRUCT, as ValueTuple is: a copy of one is a copy, `u = t; u.Item1
@@ -7803,6 +7817,13 @@ public sealed partial class Binder
         Remember(tuple, names);
         return tuple;
     }
+
+    /// <summary>Whether a type did not resolve anywhere in it: itself, an element, an argument, a tuple's item.</summary>
+    private static bool Unresolved(Type t, int depth = 0)
+        => depth > 8 || t.IsError
+        || t.Element is Type e && Unresolved(e, depth + 1)
+        || t.Args.Any(a => Unresolved(a, depth + 1))
+        || t.Symbol is { Structural: true } shape && shape.Fields.Any(f => !f.Static && Unresolved(f.Type, depth + 1));
 
     /// <summary>Whether every type has its members, so a type made now can be laid out at once.</summary>
     private bool _layingOut;

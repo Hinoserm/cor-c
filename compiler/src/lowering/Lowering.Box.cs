@@ -340,11 +340,16 @@ public sealed partial class Lowering
             }
         }
 
-        item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.ToStringSlot * w, BoxToString(of, name, key), 0));
-        item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.EqualsSlot * w, BoxEquals(of, key), 0));
-        item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.HashSlot * w, BoxHash(of, key), 0));
+        // A TUPLE SHAPE NO VALUE IS MADE OF -- an item that did not resolve
+        // where it was met -- answers as an object does: its own members are
+        // never written (EmitTupleMethod), and naming them was a symbol nothing
+        // defined.
+        bool unmade = shape is not null && IsTupleShape(shape) && !ConcreteShape(shape);
+        item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.ToStringSlot * w, unmade ? ObjectToStringStub() : BoxToString(of, name, key), 0));
+        item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.EqualsSlot * w, unmade ? ObjectEqualsStub() : BoxEquals(of, key), 0));
+        item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.HashSlot * w, unmade ? ObjectHashStub() : BoxHash(of, key), 0));
         item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.CompareSlot * w,
-            BoxedBlock(of) && IsTupleShape(of.Symbol!) ? BoxTupleCompare(of.Symbol!, key) : ObjectCompareStub(), 0));
+            BoxedBlock(of) && IsTupleShape(of.Symbol!) && !unmade ? BoxTupleCompare(of.Symbol!, key) : ObjectCompareStub(), 0));
         return sym;
     }
 
