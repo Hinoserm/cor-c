@@ -298,10 +298,11 @@ static class AllocSamples
             Gc.SayNumber("alloc sample caller ", Sys.Peek(e + WordSize.Bytes));
             Gc.SayNumber("alloc sample bytes ", Sys.Peek(e + 2 * WordSize.Bytes));
             // AND THE LINE THE CALL IS ON, for a tool to read without
-            // decoding the image's line program itself: the hook is off, so
-            // what naming it allocates is not sampled.
-            string? where = Runtime.Frame((Sys.Peek(e) & ((1L << 30) - 1)) - 1);
-            if (where != null) Runtime.WriteText(2, String.Concat("alloc sample where ", String.Concat(where.Trim(), "\n")));
+            // decoding the image's line program itself -- written where the
+            // names lie, as the fault report writes them: nothing here may
+            // allocate, or every program would need a collector for the end
+            // it reaches this way.
+            Runtime.SayWhere("alloc sample where ", (Sys.Peek(e) & ((1L << 30) - 1)) - 1);
             Gc.SayNumber("alloc sample count ", Sys.Peek(e + 3 * WordSize.Bytes));
         }
         Gc.SayNumber("alloc sample lost ", _lost);
@@ -2501,6 +2502,24 @@ static class Runtime
             SayLiteral(fd, "?");
         }
         SayLiteral(fd, "\n");
+    }
+
+    /// `prefix`, the function at `address`, its file and its line, and a
+    /// newline, on standard error -- with no heap at all (AllocSamples.Dump).
+    public static void SayWhere(string prefix, long address) {
+        long name;
+        long file;
+        long program;
+        long offset;
+
+        if (!Lookup(address, out name, out file, out program, out offset)) { return; }
+        SayLiteral(StdErr, prefix);
+        SayText(StdErr, name);
+        if (Sys.PeekByte(file) != 0) {
+            SayLiteral(StdErr, " in ");
+            SayText(StdErr, file);
+        }
+        Gc.SayNumber(":line ", LineAt(program, offset));
     }
 
     /// A string the compiler laid out in the image, which is data and not an

@@ -6968,7 +6968,18 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
         count = 0;
     }
 
+    /// A collection is copied whole into an array its own size, as .NET
+    /// copies one (ICollection.CopyTo); anything else is walked and added.
     public List(IEnumerable<T> source) : this() {
+        if (source is ICollection<T> collection) {
+            int n = collection.Count;
+            if (n > 0) {
+                items = new T[n];
+                collection.CopyTo(items, 0);
+                count = n;
+            }
+            return;
+        }
         foreach (T one in source) { Add(one); }
     }
 
@@ -8463,6 +8474,12 @@ static class Enumerable {
 
     public static T[] ToArray<T>(this IEnumerable<T> source) {
         NotNull(source, "source");
+        // A collection straight into an array its size, as .NET's does.
+        if (source is ICollection<T> collection) {
+            T[] copied = new T[collection.Count];
+            if (copied.Length > 0) { collection.CopyTo(copied, 0); }
+            return copied;
+        }
         List<T> made = new List<T>(source);
         return made.ToArray();
     }

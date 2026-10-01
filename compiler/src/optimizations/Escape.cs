@@ -2458,14 +2458,15 @@ continue;
 
     private void PromoteIn(Function f, Dictionary<string, bool[]> summaries, bool canFree, OwnedFieldEscape fields)
     {
-        // An async body's frame does not outlive a suspension, and an object
-        // held across one would be gone when it resumed.
-        if (f.Async is not null)
-        {
-            return;
-        }
+        // AN ASYNC BODY'S OR AN ITERATOR'S FRAME does not outlive a
+        // suspension, and an object held across one would be gone when it
+        // resumed -- so an object that IS held across one is left alone, and
+        // one dead before every suspension is promoted or owned as anywhere
+        // else (SuspendsWhileLive). Refusing the whole body left every
+        // `yield return (a, b)` a tuple of the heap, one per element.
+        bool coroutine = f.Async is not null;
 
-        if (canFree) OwnFreshResults(f, summaries);
+        if (canFree && !coroutine) OwnFreshResults(f, summaries);
 
         int budget = FrameBudget;
         // ONE ANALYSIS FOR THE WHOLE FUNCTION. Promoting an allocation or
@@ -2588,6 +2589,10 @@ continue;
                 HashSet<VReg> selfDerived = promotedMembers.Count == 0 ? flow.Derived
                     : flow.Derived.Where(r => liveness.Tracks(r)).ToHashSet();
                 if (LiveAtSelf(liveness, pads, b, i, selfDerived))
+                {
+                    continue;
+                }
+                if (coroutine && SuspendsWhileLive(f, liveness, pads, flow.Derived))
                 {
                     continue;
                 }
@@ -3173,6 +3178,33 @@ continue;
             return false;
         }
         return true;
+    }
+
+    /// <summary>
+    /// Whether any of an object's registers is live across a suspension of a
+    /// coroutine body (AsyncFrame.Suspend): live after the suspension, so in
+    /// use when the body resumes. A register the analysis does not know, or
+    /// one a landing pad reads, is taken to be.
+    /// </summary>
+    private static bool SuspendsWhileLive(Function f, Liveness liveness, HashSet<VReg> pads, HashSet<VReg> derived)
+    {
+        foreach (VReg r in derived)
+        {
+            if (pads.Contains(r) || !liveness.Tracks(r)) return true;
+        }
+        foreach (Block b in f.Blocks)
+        {
+            if (!b.Instrs.Any(x => x.Op == Opcode.Call && x.Callee == AsyncFrame.Suspend)) continue;
+            foreach ((Instr i, ulong[] liveAfter) in liveness.WalkBackwards(b, skipNewer: true))
+            {
+                if (i.Op != Opcode.Call || i.Callee != AsyncFrame.Suspend) continue;
+                foreach (VReg r in derived)
+                {
+                    if (Liveness.Test(liveAfter, r.Id)) return true;
+                }
+            }
+        }
+        return false;
     }
 
     private static bool ConstantSize(Function f, Operand o, out long size)

@@ -1073,7 +1073,25 @@ public sealed partial class Lowering
         Block end = _f.NewBlock("qmend");
 
         // An empty Nullable when the answer is one: what `?.` gives for null.
-        _e.CopyTo(dest, result.IsNullableValue ? R(NullableEmpty(m, result)) : Imm(0, dest.Type));
+        // A ZEROED SLOT OF THIS FRAME, not a block of the heap: the answer is
+        // read, never written through -- the other arm is the member's own
+        // cell inside the object -- so a cell nobody else holds is all the
+        // null arm needs, and a heap one joined with an object's interior
+        // was a block per `x?.Flag == false` that nothing could free. In an
+        // iterator's or async body, whose frame a suspension ends, the heap.
+        if (result.IsNullableValue && _stateMachine is null)
+        {
+            TypeSymbol shape = StructOf(result);
+            int size = Math.Max(4, shape.InstanceSize);
+            FrameSlot slot = _f.NewSlot((size + 7) & ~7, Math.Min(_t.Align64, Math.Max(4, shape.InlineAlign)), "noval");
+            VReg cell = RegOf(new SlotOperand(slot));
+            _e.Emit(Opcode.MemSet, null, R(cell), new ImmOperand(0, IrType.I32), new ImmOperand(size, IrTypes.Word));
+            _e.CopyTo(dest, R(cell));
+        }
+        else
+        {
+            _e.CopyTo(dest, result.IsNullableValue ? R(NullableEmpty(m, result)) : Imm(0, dest.Type));
+        }
         _e.Branch(obj, some, end);
         _e.SetBlock(some);
 
