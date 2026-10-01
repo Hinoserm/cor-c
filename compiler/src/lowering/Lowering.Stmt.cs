@@ -488,11 +488,12 @@ public sealed partial class Lowering
 
         _e.SetBlock(body);
         // No bounds check: the loop's own test is the bound.
-        int stride = sequenceType.Prim == Prim.String ? 2 : Math.Max(1, element.Size);
+        int stride = sequenceType.Prim == Prim.String ? 2 : ElementStride(element);
         Type stored = sequenceType.Prim == Prim.String ? Type.Char : element;
         VReg scaled = stride == 1 ? index : _e.Binary(Opcode.Mul, index, stride);
         VReg addr = _e.Binary(Opcode.Add, seq, WordOf(scaled));
-        VReg value = LoadPlace(new MemPlace(new RegOperand(addr), _t.ArrayHeaderBytes, stored));
+        bool inline = sequenceType.Prim != Prim.String && InlineElement(stored);
+        VReg value = LoadPlace(new MemPlace(new RegOperand(addr), _t.ArrayHeaderBytes, stored, Inline: inline));
         // A CURSOR A LAMBDA CAPTURES is read through its cell, so the element
         // goes there -- a new cell each time round, as C# 5 has it, so each
         // lambda keeps its own iteration's value. Written to the slot, the
@@ -501,7 +502,8 @@ public sealed partial class Lowering
             && _symCells.TryGetValue(named, out VReg? cell) && cell is not null)
         {
             _e.CopyTo(cell, new RegOperand(Allocate(fe, Math.Max(_t.WordSize, Math.Max(1, element.Size)))));
-            StoreNew(cell, value, 0, element);
+            // A lambda keeps a copy of the element, not where it is in the array.
+            StoreNew(cell, inline ? CopyStruct(fe, value, stored.Symbol!) : value, 0, element);
         }
         else
         {

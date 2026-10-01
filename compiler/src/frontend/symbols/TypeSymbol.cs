@@ -42,6 +42,12 @@ public sealed class TypeSymbol
     /// </summary>
     public bool InlineDecided { get; set; }
     public int InlineAlign { get; set; } = 1;
+    /// <summary>
+    /// A struct's: whether it is held in line wherever it is held -- a field
+    /// (FieldSymbol.Inline) and an array's element alike -- its fields all
+    /// numbers, references, or structs held in line themselves.
+    /// </summary>
+    public bool HeldInline { get; set; }
     /// <summary>Compiler-created closed tuple/array adapter shape, shared only after semantic certification.</summary>
     public bool Structural { get; init; }
 

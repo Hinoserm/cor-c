@@ -187,6 +187,46 @@ public sealed partial class Lowering
         => t.Symbol is { Kind: TypeKind.Struct } && !t.IsPointer && !t.Nullable && !t.IsArray;
 
     /// <summary>
+    /// AN ARRAY'S STRUCT ELEMENTS HELD IN LINE (TypeSymbol.HeldInline): each
+    /// element is its bytes, at the stride ElementStride says, as .NET lays a
+    /// struct array out -- not a word pointing at a block of its own, which
+    /// cost an allocation for every element made, stored or copied.
+    /// </summary>
+    private static bool InlineElement(Type element) => IsStructValue(element) && element.Symbol!.HeldInline;
+
+    /// <summary>The bytes from one element of an array to the next.</summary>
+    private static int ElementStride(Type element)
+    {
+        if (!InlineElement(element)) return Math.Max(1, element.Size);
+        TypeSymbol held = element.Symbol!;
+        int align = Math.Max(1, held.InlineAlign);
+        return (Math.Max(1, held.InstanceSize) + align - 1) / align * align;
+    }
+
+    /// <summary>Whether a struct held in line has a reference anywhere in its bytes.</summary>
+    private bool InlineHasReferences(TypeSymbol held) => TracedFields(held, 0).Any(f => MayHoldReference(f.Type));
+
+    /// <summary>
+    /// An element stored into an array just made: a struct held in line is
+    /// copied in, its references' cards marked; anything else is StoreNew's.
+    /// </summary>
+    private void StoreNewElement(VReg array, long offset, Type element, VReg value)
+    {
+        if (!InlineElement(element))
+        {
+            StoreNew(array, value, offset, element);
+            return;
+        }
+        TypeSymbol held = element.Symbol!;
+        VReg into = _e.Binary(Opcode.Add, array, offset);
+        _e.Emit(Opcode.MemCopy, null, R(into), R(value), Imm(Math.Max(1, held.InstanceSize), IrTypes.Word));
+        foreach ((int at, Type type) in TracedFields(held, 0))
+        {
+            if (MayHoldReference(type)) CardMarkAt(R(into), at);
+        }
+    }
+
+    /// <summary>
     /// Whether an expression's struct result is a block nobody else can
     /// reach, so copying it again would only cost. A constructor, a call
     /// (its return already copied), a default, a `with`, a tuple.
@@ -730,7 +770,7 @@ public sealed partial class Lowering
                 return _e.Address(PrimitiveDescriptor(prim));
 
             case TypeOfExpr to when _b.ArrayTypeOfs.TryGetValue(to, out Type? element):
-                return _e.Address(SequenceDescriptor(ElementKey(element), Math.Max(1, element.Size), isString: false, elementType: element));
+                return _e.Address(SequenceDescriptor(ElementKey(element), ElementStride(element), isString: false, elementType: element));
 
             case TypeOfExpr:
                 return _e.Const(0, IrTypes.Word);
@@ -1080,11 +1120,11 @@ public sealed partial class Lowering
             Type element = type.Element ?? Type.I32;
             VReg count = _e.Const(written.Count, IrType.I32);
             VReg array = AllocateArray(nw, count, element);
+            int stride = ElementStride(element);
             for (int i = 0; i < written.Count; i++)
             {
-                VReg value = EvalAs(written[i], element);
-                int stride = Math.Max(1, element.Size);
-                StoreNew(array, value, _t.ArrayHeaderBytes + (long)i * stride, element);
+                VReg value = InlineElement(element) ? Convert(written[i], Eval(written[i]), _b.TypeOf(written[i]), element) : EvalAs(written[i], element);
+                StoreNewElement(array, _t.ArrayHeaderBytes + (long)i * stride, element, value);
             }
             return array;
         }
@@ -1183,14 +1223,22 @@ public sealed partial class Lowering
     /// <summary>An array: header, count, and count times the stride, zeroed.</summary>
     private VReg AllocateArray(Node at, VReg count, Type element)
     {
-        int stride = Math.Max(1, element.Size);
+        int stride = ElementStride(element);
         CheckArrayCount(count, stride);
         VReg bytes = stride == 1 ? count : _e.Binary(Opcode.Mul, count, stride);
         VReg total = _e.Binary(Opcode.Add, WordOf(bytes), _t.ArrayHeaderBytes);
-        VReg array = AllocateDynamic(at, total, LeafElement(element), described: true);
-        string desc = SequenceDescriptor(ElementKey(element), stride, isString: false, elementType: element);
+        bool inline = InlineElement(element);
+        bool references = inline && InlineHasReferences(element.Symbol!);
+        VReg array = AllocateDynamic(at, total, inline ? !references : LeafElement(element), described: true);
+        string desc = SequenceDescriptor(ElementKey(element), stride, isString: false, inline ? references : null, elementType: element);
         _e.Store(R(array), new SymOperand(desc, _t.DescriptorBytes), 0, _t.WordSize);
         _e.Emit(Opcode.InitArrayLength, null, R(array), R(count));
+
+        // Held in line, every element is zero already: its default.
+        if (inline)
+        {
+            return array;
+        }
 
         // AN ARRAY OF STRUCTS HOLDS VALUES, each zero until written: `arr[1].X
         // = 5` on a fresh array is legal C#. With structs as blocks that means
@@ -1621,7 +1669,7 @@ public sealed partial class Lowering
         _e.Branch(obj, some, end);
         _e.SetBlock(some);
         VReg vt = _e.Load(IrTypes.Word, obj, 0);
-        VReg wanted = _e.Address(SequenceDescriptor(ElementKey(element), Math.Max(1, element.Size), isString: false, elementType: element),
+        VReg wanted = _e.Address(SequenceDescriptor(ElementKey(element), ElementStride(element), isString: false, elementType: element),
                                  _t.DescriptorBytes);
         _e.CopyTo(result, R(_e.Binary(Opcode.Eq, R(vt), R(wanted), IrType.I32)));
         if (element.Prim == Prim.Any && element.ArrayRank == 0)

@@ -3015,9 +3015,15 @@ public sealed partial class Binder
     /// Whether a field of type `t` is held in line (FieldSymbol.Inline): a
     /// struct -- held by value, not a pointer to one or a nullable cell --
     /// every instance field of which is a number, a bool, a char, an enum, a
-    /// pointer, or a struct held in line itself. No reference anywhere in it,
-    /// so the collector has nothing to find in its bytes and a copy of it is
-    /// its bytes.
+    /// pointer, a reference, or a struct held in line itself. A copy of it is
+    /// its bytes. Its references are found where the object holding it is
+    /// described to the collector (TracedFields), and written over with the
+    /// barrier each one needs (StorePlace).
+    ///
+    /// A REFERENCE IN IT WAS ONCE REFUSED, and every struct holding one was
+    /// a block of its own wherever another held it: a KeyValuePair of a key
+    /// and a struct value, made by a dictionary's enumerator for each entry,
+    /// was a second allocation each time, and so was every copy.
     /// </summary>
     private bool InlineStruct(Type t)
     {
@@ -3025,6 +3031,17 @@ public sealed partial class Binder
         if (t.Symbol is not { Kind: TypeKind.Struct } sym) return false;
         if (t.ParamName != null) return false;
         LayOut(sym);
+        return HoldsInline(sym);
+    }
+
+    /// <summary>Whether a laid-out struct can be held in line (InlineStruct), from its fields.</summary>
+    /// <summary>How many items a tuple type has; null for anything else, a nullable tuple too.</summary>
+    private static int? TupleArity(Type t)
+        => !t.Nullable && t.Symbol is { Kind: TypeKind.Class } shape && shape.Name.StartsWith(TypeRef.Tuple + "$", StringComparison.Ordinal)
+            ? shape.Fields.Count(f => !f.Static) : null;
+
+    private static bool HoldsInline(TypeSymbol sym)
+    {
         if (sym.InlineDecided && sym.InstanceSize <= 0) return false;
         foreach (FieldSymbol f in sym.Fields.Where(f => !f.Static))
         {
@@ -3033,7 +3050,9 @@ public sealed partial class Binder
             Type ft = f.Type;
             if (ft.IsPointer) continue;
             if (ft.Symbol is { Kind: TypeKind.Enum }) continue;
-            if (ft.Symbol != null || ft.IsArray || ft.IsNullableValue || ft.Nullable || ft.ParamName != null) return false;
+            if (ft.ParamName != null || ft.IsNullableValue) return false;
+            if (ft.IsReference || ft.Prim is Prim.Any) continue;
+            if (ft.Symbol != null || ft.IsArray || ft.Nullable) return false;
             if (ft.Prim is Prim.Bool or Prim.I8 or Prim.I16 or Prim.I32 or Prim.I64 or Prim.U8 or Prim.U16 or Prim.U32 or Prim.U64
                 or Prim.NInt or Prim.NUInt or Prim.F32 or Prim.F64 or Prim.Char) continue;
             return false;
@@ -3074,7 +3093,11 @@ public sealed partial class Binder
             {
                 sym.InlineDecided = true;
                 foreach (FieldSymbol f in sym.Fields.Where(f => !f.Static)) f.Inline = !f.Boxed && InlineStruct(f.Type);
-                if (sym.Kind == TypeKind.Struct) sym.InlineAlign = InlineAlignOf(sym);
+                if (sym.Kind == TypeKind.Struct)
+                {
+                    sym.InlineAlign = InlineAlignOf(sym);
+                    sym.HeldInline = HoldsInline(sym);
+                }
             }
             if (!sym.SlotsAssigned)
             {
@@ -3159,7 +3182,11 @@ public sealed partial class Binder
         sym.InstanceSize = Math.Max(at,
             sym.Kind == TypeKind.Class ? Target.Current.ObjectHeaderBytes : 1);
 
-        if (sym.Kind == TypeKind.Struct) sym.InlineAlign = InlineAlignOf(sym);
+        if (sym.Kind == TypeKind.Struct)
+        {
+            sym.InlineAlign = InlineAlignOf(sym);
+            sym.HeldInline = HoldsInline(sym);
+        }
 
         if (sym.Kind == TypeKind.Interface)
         {
@@ -16390,6 +16417,40 @@ public sealed partial class Binder
 
                     _r.Rewrites[b] = whole;
                     return CheckExpr(whole);
+                }
+
+                // TWO TUPLES COMPARE ITEM BY ITEM (C# 12.12.11): each side
+                // evaluated once, left then right, then `==` of each pair of
+                // items in order, joined by `&&` -- `||` of `!=` for `!=`. A
+                // tuple is an object here, and compared as one it was two
+                // references: equal tuples were never `==`.
+                if (TupleArity(l) is int arity && arity > 0 && TupleArity(r) == arity)
+                {
+                    Expr? chain = null;
+                    for (int i = 1; i <= arity; i++)
+                    {
+                        BinaryExpr pair = new()
+                        {
+                            Op = b.Op,
+                            Left = new MemberExpr { Target = new SubjectExpr { Outer = 1, Line = b.Line, Col = b.Col }, Name = "Item" + i, Line = b.Line, Col = b.Col, File = b.File },
+                            Right = new MemberExpr { Target = new SubjectExpr { Outer = 0, Line = b.Line, Col = b.Col }, Name = "Item" + i, Line = b.Line, Col = b.Col, File = b.File },
+                            Line = b.Line, Col = b.Col, File = b.File,
+                        };
+                        chain = chain is null ? pair : new BinaryExpr
+                        {
+                            Op = b.Op == BinOp.Eq ? BinOp.AndAlso : BinOp.OrElse, Left = chain, Right = pair,
+                            Line = b.Line, Col = b.Col, File = b.File,
+                        };
+                    }
+                    PatternExpr items = new()
+                    {
+                        Subject = b.Left,
+                        Test = new PatternExpr { Subject = b.Right, Test = chain!, Line = b.Line, Col = b.Col, File = b.File },
+                        Line = b.Line, Col = b.Col, File = b.File,
+                    };
+                    _r.Rewrites[b] = items;
+                    CheckExpr(items);
+                    return Type.Bool;
                 }
 
                 // A CONSTANT PATTERN OVER AN `object` asks whether the value IS

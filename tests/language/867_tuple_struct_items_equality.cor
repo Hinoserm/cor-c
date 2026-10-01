@@ -1,0 +1,24 @@
+// test: two tuples compare item by item with == and != (C# 12.12.11), not as two references; a tuple's Equals and GetHashCode take a struct item by its fields, so copies holding equal strings are equal and hash alike
+// expect-exit: 0
+// expect-output:
+// True True False True True
+// True True
+// True True
+using System;
+record struct P(int X, long Y);
+record struct N(string Name, P At);
+struct Q { public int A; public string S; }
+static class Program
+{
+    static int Main()
+    {
+        var n = new N("a" + 1, new P(1, 2)); var m = new N("a1", new P(1, 2));
+        var t = (n, 3); var t2 = (m, 3);
+        Console.WriteLine(t.Equals(t2) + " " + (t == t2) + " " + (t != t2) + " " + (n == m) + " " + n.Equals(m));
+        var p = (new P(1, 2), "x"); var p2 = (new P(1, 2), "x");
+        Console.WriteLine(p.Equals(p2) + " " + (p == p2));
+        var q = (new Q { A = 1, S = "s" + 1 }, 1); var q2 = (new Q { A = 1, S = "s1" }, 1);
+        Console.WriteLine(q.Equals(q2) + " " + q.GetHashCode().Equals(q2.GetHashCode()));
+        return 0;
+    }
+}

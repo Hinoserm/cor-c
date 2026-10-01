@@ -308,10 +308,7 @@ public sealed partial class Lowering
         // first, then each of the struct's fields at its offset within it.
         if (BoxedBlock(of))
         {
-            List<(int, Type)> held = of.Symbol!.Fields
-                .Where(fd => !fd.Static)
-                .Select(fd => (_t.ObjectHeaderBytes + fd.Offset, fd.Type))
-                .ToList();
+            List<(int, Type)> held = TracedFields(of.Symbol!, _t.ObjectHeaderBytes).ToList();
             string? map = ReferenceMap("box_" + Safe(key), held,
                                        _t.ObjectHeaderBytes + BoxPayload(of));
             if (map is not null)

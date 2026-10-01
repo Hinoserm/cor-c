@@ -1,0 +1,63 @@
+// test: structs are held in line, in fields and in array elements, references and all: values copy as values (an element read, a with-copy, a lambda's captured foreach cursor), an array of them starts as defaults, ref to an element writes the element, and List, Dictionary, Resize, Reverse, OrderBy, tuples and a collection keep them right; output identical to .NET
+// expect-exit: 0
+// expect-output:
+// 0:0,5:6,7:0,0:0
+// b c 4 t
+// 2!! 10 null
+// 0,5,7,0
+// 2590 49 25
+// n7 50 1225
+// 1 9 ! True False
+// -|-|-|b|a
+// n49,n48,n47
+// True True
+// n106
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+record struct P(int X, long Y);
+record struct N(string Name, P At, object? Tag);
+struct Mut { public int A; public string? S; public void Bump() { A++; S = (S ?? "") + "!"; } }
+sealed class Box { public N Held; public Mut M; }
+
+static class Program
+{
+    static void Touch(ref Mut m) { m.A += 10; }
+    static int Main()
+    {
+        var ps = new P[4];
+        ps[1] = new P(5, 6);
+        ps[2].X = 7;
+        Console.WriteLine(string.Join(",", ps.Select(p => p.X + ":" + p.Y)));
+        var ns = new N[] { new N("a", new P(1, 2), null), new N("b", new P(3, 4), "t") };
+        var copy = ns[1];
+        copy = copy with { Name = "c" };
+        Console.WriteLine(ns[1].Name + " " + copy.Name + " " + ns[1].At.Y + " " + ns[1].Tag);
+        var ms = new Mut[3];
+        ms[0].Bump(); ms[0].Bump(); Touch(ref ms[1]);
+        Console.WriteLine(ms[0].A + ms[0].S + " " + ms[1].A + " " + (ms[2].S ?? "null"));
+        var fs = new List<Func<int>>();
+        foreach (var p in ps) fs.Add(() => p.X);
+        ps[1].X = 99;
+        Console.WriteLine(string.Join(",", fs.Select(f => f())));
+        var list = new List<N>();
+        for (int i = 0; i < 50; i++) list.Add(new N("n" + i, new P(i, i * 2), i % 2 == 0 ? null : i));
+        long sum = 0; foreach (var n in list) sum += n.At.Y + n.Name.Length;
+        Console.WriteLine(sum + " " + list[49].Tag + " " + list.Count(n => n.Tag is null));
+        var d = new Dictionary<P, N>();
+        foreach (var n in list) d[n.At] = n;
+        Console.WriteLine(d[new P(7, 14)].Name + " " + d.Count + " " + d.Values.Sum(v => v.At.X));
+        var b = new Box { Held = ns[0] }; b.M.Bump(); var b2 = b.Held; b2.At = new P(9, 9);
+        Console.WriteLine(b.Held.At.X + " " + b2.At.X + " " + b.M.S + " " + (ns[0] == b.Held) + " " + ns[0].Equals(ns[1]));
+        var arr2 = ns.ToArray(); Array.Resize(ref arr2, 5); Array.Reverse(arr2);
+        Console.WriteLine(string.Join("|", arr2.Select(x => x.Name ?? "-")));
+        var sorted = list.OrderByDescending(n => n.At.X).Take(3).Select(n => n.Name);
+        Console.WriteLine(string.Join(",", sorted));
+        var t = (ns[0], 3); var t2 = (ns[0], 3);
+        Console.WriteLine(t.Equals(t2) + " " + (t == t2));
+        GC.Collect();
+        Console.WriteLine(list[10].Name + list[3].At.Y);
+        return 0;
+    }
+}

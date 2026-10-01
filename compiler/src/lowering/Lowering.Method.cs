@@ -705,8 +705,10 @@ public sealed partial class Lowering
                 break;
             case MemPlace { Inline: true } held:
             {
-                // Its bytes copied in from the value's: no pointer stored, no
-                // barrier (nothing in it is a reference), nothing made.
+                // Its bytes copied in from the value's: no pointer stored,
+                // nothing made. Each reference in it is written over as any
+                // stored reference is: the old one reported to a marking
+                // collector first, the card marked after.
                 if (held.Volatile)
                 {
                     _e.Emit(Opcode.Fence, null);
@@ -714,7 +716,19 @@ public sealed partial class Lowering
                 VReg basis = RegOf(held.Address);
                 VReg into = held.Offset == 0 ? basis : _e.Binary(Opcode.Add, basis, held.Offset);
                 int bytes = Math.Max(1, held.Type.Symbol!.InstanceSize);
+                List<(int Offset, VReg Value)> references = new();
+                foreach ((int offset, Type type) in TracedFields(held.Type.Symbol!, 0))
+                {
+                    if (!MayHoldReference(type)) continue;
+                    VReg word = _e.Load(IrTypes.Word, value, offset);
+                    references.Add((offset, word));
+                    ReferenceBarrier(new MemPlace(R(into), offset, type), word);
+                }
                 _e.Emit(Opcode.MemCopy, null, R(into), R(value), Imm(bytes, IrTypes.Word));
+                foreach ((int offset, VReg word) in references)
+                {
+                    CardMark(new MemPlace(R(into), offset, Type.String), word);
+                }
                 break;
             }
             case MemPlace m:
@@ -839,7 +853,7 @@ public sealed partial class Lowering
         _e.Branch(value, notNull, done);
         _e.SetBlock(notNull);
         VReg vt = _e.Load(IrTypes.Word, array, 0);
-        VReg exact = _e.Address(SequenceDescriptor(ElementKey(element), Math.Max(1, element.Size), isString: false, elementType: element), _t.DescriptorBytes);
+        VReg exact = _e.Address(SequenceDescriptor(ElementKey(element), ElementStride(element), isString: false, elementType: element), _t.DescriptorBytes);
         _e.Branch(_e.Binary(Opcode.Eq, R(vt), R(exact), IrType.I32), done, slow);
         _e.SetBlock(slow);
         Require(check);
@@ -1156,7 +1170,7 @@ public sealed partial class Lowering
     /// </summary>
     private MemPlace ElementPlace(VReg basis, VReg index, Type sequence, Type element, Node at)
     {
-        int stride = Math.Max(1, sequence.Prim == Prim.String ? 2 : element.Size);
+        int stride = sequence.Prim == Prim.String ? 2 : sequence.IsPointer ? Math.Max(1, element.Size) : ElementStride(element);
         Type stored = sequence.Prim == Prim.String ? Type.Char : element;
 
         if (sequence.IsPointer)
@@ -1170,6 +1184,7 @@ public sealed partial class Lowering
         VReg scaled2 = stride == 1 ? index : _e.Binary(Opcode.Mul, index, stride);
         VReg addr2 = _e.Binary(Opcode.Add, basis, WordOf(scaled2));
         return new MemPlace(new RegOperand(addr2), _t.ArrayHeaderBytes, stored,
+            Inline: sequence.Prim != Prim.String && InlineElement(stored),
             CovariantArray: sequence.IsArray && MayBeCovariant(stored) ? basis : null);
     }
 

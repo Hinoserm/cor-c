@@ -502,13 +502,24 @@ public sealed partial class Lowering
 
                 e.Branch(e.Call(KeyEqualsStub(), IrType.I32, R(x), R(y))!, next, no);
             }
-            else if (BoxedBlock(of) || of.IsNullableValue)
+            else if (BoxedBlock(of) && !of.IsNullableValue)
             {
-                // A struct held in line is its bytes. A nullable value is a
-                // cell and is compared as the cell it is, which says equal for
-                // two empty ones and for the same one; two cells holding the
-                // same number are not yet the same key.
-                int bytes = of.IsNullableValue ? _t.WordSize : field.Inline ? Math.Max(1, of.Symbol!.InstanceSize) : Math.Max(1, of.Size);
+                // A STRUCT BY ITS FIELDS, as ValueType.Equals: one held in
+                // line is where it is, any other is the block its word points
+                // at. Compared as bytes, a struct holding a string compared
+                // two strings' addresses, and one held as a block compared
+                // two blocks' -- unequal for every pair of copies.
+                VReg x = field.Inline ? e.Binary(Opcode.Add, self, field.Offset) : e.Load(IrTypes.Word, self, field.Offset);
+                VReg y = field.Inline ? e.Binary(Opcode.Add, other, field.Offset) : e.Load(IrTypes.Word, other, field.Offset);
+                e.Branch(e.Call(StructEquals(of.Symbol!), IrType.I32, R(x), R(y))!, next, no);
+            }
+            else if (of.IsNullableValue)
+            {
+                // A nullable value is a cell and is compared as the cell it
+                // is, which says equal for two empty ones and for the same
+                // one; two cells holding the same number are not yet the
+                // same key.
+                int bytes = _t.WordSize;
 
                 for (int at = 0; at < bytes; at++)
                 {
@@ -622,9 +633,17 @@ public sealed partial class Lowering
             {
                 part = e.Call(KeyHashStub(), IrType.I32, R(e.Load(IrTypes.Word, self, field.Offset)))!;
             }
-            else if (BoxedBlock(of) || of.IsNullableValue)
+            else if (BoxedBlock(of) && !of.IsNullableValue)
             {
-                // Equal ones hash alike, which is all a hash has to promise.
+                // A struct by its fields, as TupleEquals compares it: equal
+                // ones hash alike. Its first byte was its block's address's,
+                // or a string's, for one that held one.
+                VReg at = field.Inline ? e.Binary(Opcode.Add, self, field.Offset) : e.Load(IrTypes.Word, self, field.Offset);
+                part = e.Call(StructHash(of.Symbol!), IrType.I32, R(at))!;
+            }
+            else if (of.IsNullableValue)
+            {
+                // A cell, compared as the cell it is (TupleEquals).
                 part = e.Load(IrType.I32, self, field.Offset, 1, false);
             }
             else

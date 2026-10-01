@@ -534,7 +534,7 @@ public sealed partial class Lowering
     {
         if (f.Owner.Decl is not TypeDecl owner
             || owner.Members.OfType<FieldDecl>().FirstOrDefault(d => d.Name == f.Name && d.StaticData is not null) is not { StaticData: { } table }
-            || f.Type.Element is not Type element)
+            || f.Type.Element is not Type element || InlineElement(element))
         {
             return null;
         }
@@ -1338,6 +1338,28 @@ public sealed partial class Lowering
     /// and an integer in the next, and a moving collector that guessed would
     /// relocate an integer. Precision there waits for per-instantiation maps.
     /// </summary>
+    /// <summary>
+    /// A layout's own fields as the collector's map takes them, at `at` plus
+    /// each one's offset: a struct held in line (FieldSymbol.Inline) as its
+    /// fields, at theirs, all the way down, and never as the word it starts
+    /// with. A captured local's field holds the ADDRESS of the shared cell, a
+    /// heap pointer whatever the captured type is; String stands in for "one
+    /// traced word".
+    /// </summary>
+    private static IEnumerable<(int Offset, Corsac.Lang.Type Type)> TracedFields(TypeSymbol sym, int at)
+    {
+        foreach (FieldSymbol f in sym.Fields)
+        {
+            if (f.Static) continue;
+            if (f.Inline)
+            {
+                foreach (var inner in TracedFields(f.Type.Symbol!, at + f.Offset)) yield return inner;
+                continue;
+            }
+            yield return (at + f.Offset, f.Boxed ? Corsac.Lang.Type.String : f.Type);
+        }
+    }
+
     private static bool HoldsReference(Corsac.Lang.Type ty)
         => ty.IsReference || ty.IsArray || ty.IsNullableValue
         || (!ty.IsPointer && ty.Symbol is { Kind: TypeKind.Struct });
@@ -1813,18 +1835,7 @@ public sealed partial class Lowering
             List<(int, Corsac.Lang.Type)> fields = new();
             foreach (TypeSymbol s in chain)
             {
-                foreach (FieldSymbol f in s.Fields)
-                {
-                    // A struct held in line holds no reference (FieldSymbol.Inline):
-                    // nothing of its bytes is traced.
-                    if (!f.Static && !f.Inline)
-                    {
-                        // A captured local's field holds the ADDRESS of the shared
-                        // cell, a heap pointer whatever the captured type is;
-                        // String stands in here for "one traced word".
-                        fields.Add((f.Offset, f.Boxed ? Corsac.Lang.Type.String : f.Type));
-                    }
-                }
+                fields.AddRange(TracedFields(s, 0));
             }
             string? map = ReferenceMap(TypeKey(t), fields, Math.Max(t.InstanceSize, t.Kind == TypeKind.Class ? _t.ObjectHeaderBytes : 1));
             if (map is not null)
