@@ -76,6 +76,11 @@ public static class IrLinkOptimizer
         SortedSet<string> linkRoots = new(StringComparer.Ordinal);
         if (lifetimes is not null) foreach (LifetimeHints unit in hints.Values) linkRoots.UnionWith(unit.Helpers);
         if (hints.Values.Any(unit => unit.FieldSites.Count > 0)) { linkRoots.Add(LifetimeHints.FieldFreer); linkRoots.Add(LifetimeHints.FieldKeeper); }
+        // An iterator's or an async method's card mark is a call AsyncTransform
+        // writes after the IR was archived: the archive never shows it, and a
+        // closed image without lifetime hints dropped the helper and failed
+        // to link ("undefined symbol m_Runtime_CardMarkObject").
+        linkRoots.Add(RuntimeAbi.CardMarkObject);
         Dictionary<ObjectFile, HashSet<string>>? reachability = enabled && closedImageEntry is not null
             ? IrReachability.Find(inputs, archives, owners, closedImageEntry, linkRoots) : null;
         int lifetimeUnits = 0;

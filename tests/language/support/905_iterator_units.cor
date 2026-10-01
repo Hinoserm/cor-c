@@ -1,0 +1,6 @@
+// The other unit of 905_iterator_card_mark_across_units: nothing of its own
+// the test needs, so the runtime and the libraries are all it brings.
+static class IteratorUnitHelper
+{
+    public static int One() { return 1; }
+}
