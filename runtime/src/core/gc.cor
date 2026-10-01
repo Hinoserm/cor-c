@@ -3251,7 +3251,7 @@ static class Gc
     static long _pageCount;
     static long _pageNext;
     static long _pagesDone;
-    static long _job;           // what the workers do while the word is odd: 0 mark, 1 sweep pages
+    static long _job;           // what the workers do while the word is odd: 0 mark, 1 sweep pages, 2 snapshot pages
     const long PagesTogether = 512;
 
     static void SweepPagesTogether()
@@ -7258,6 +7258,13 @@ static class Gc
                 Platform.Wait(at, word);
                 continue;
             }
+            // Snapshotting pages, the same way.
+            if (Sys.Peek(Sys.AddressOf(ref _job)) == 2)
+            {
+                SnapshotPagesSome();
+                Platform.Wait(at, word);
+                continue;
+            }
             // AN IDLE WORKER LOOKS AND DOES NOT TOUCH. Its check of the queue
             // is two plain reads; a take that found nothing was two locked
             // additions on the line every push and take of the marking thread
@@ -7907,6 +7914,13 @@ static class Gc
     {
         HeapChunks.SetBlockAnchorsActive(false);
         bool every = HeapChunks.SnapshotIndex();
+        // THE SIZE-CLASS PAGES SNAPSHOTTED TOGETHER, with the world stopped
+        // and the workers there: each page's anchors, starts and stamps are
+        // its own, and its cards are bytes set to the same value whoever
+        // sets them. Listed in the walk below, done after it (SnapshotTogether).
+        bool together = !stepping && Workers > 0 && !_census && !_heapCheck && !_verify && !_deadCensus
+                     && HeapChunks.HeapBytes >= WorkersWorthBytes && SnapshotQueue();
+        _snapCount = 0;
         long chunk = HeapChunks.Newest();
         while (chunk != 0)
         {
@@ -7932,9 +7946,18 @@ static class Gc
                     long first = HeapChunks.First(chunk);
                     long at = stepping ? GcThreads.BufferAtOrAbove(first) : GcThreads.BufferCount();
                     bool captured = at < GcThreads.BufferCount() && GcThreads.BufferBase(at) == first;
-                    if (!captured && !HeapChunks.IsPooled(chunk) && !SnapshotPage(chunk, anchors))
+                    if (!captured && !HeapChunks.IsPooled(chunk))
                     {
-                        every = false;
+                        if (together && _snapCount < _snapCap)
+                        {
+                            Sys.Poke(_snapQueue + _snapCount * 2 * WordSize.Bytes, chunk);
+                            Sys.Poke(_snapQueue + (_snapCount * 2 + 1) * WordSize.Bytes, anchors);
+                            _snapCount = _snapCount + 1;
+                        }
+                        else if (!SnapshotPage(chunk, anchors))
+                        {
+                            every = false;
+                        }
                     }
                     chunk = HeapChunks.Next(chunk);
                     continue;
@@ -7986,6 +8009,7 @@ static class Gc
             }
             chunk = HeapChunks.Next(chunk);
         }
+        if (_snapCount > 0 && !SnapshotTogether()) every = false;
         HeapChunks.SetBlockAnchorsActive(true);
         _snapshots = every;
         // THE CARDS, taken at the same stop: kept to be read by a minor cycle,
@@ -7993,6 +8017,75 @@ static class Gc
         if (_generational)
         {
             TakeCards(_minor);
+        }
+    }
+
+    static long _snapQueue;
+    static long _snapQueueBytes;
+    static long _snapCap;
+    static long _snapCount;
+    static long _snapNext;
+    static long _snapDone;
+    static long _snapBroken;
+
+    /// Room in the snapshot queue for a page of every chunk: two words each,
+    /// the page and its anchor table. False when there is none to be had.
+    static bool SnapshotQueue()
+    {
+        long w = WordSize.Bytes;
+        long chunks = 0;
+        for (long each = HeapChunks.Newest(); each != 0; each = HeapChunks.Next(each)) chunks = chunks + 1;
+        long wanted = chunks * 2 * w;
+        if (wanted > _snapQueueBytes)
+        {
+            // The smaller queue is left mapped, as the sweep's is.
+            long bytes = wanted * 2;
+            long at = Platform.Map(bytes);
+            if (at == 0) return false;
+            _snapQueue = at;
+            _snapQueueBytes = bytes;
+        }
+        _snapCap = _snapQueueBytes / (2 * w);
+        return true;
+    }
+
+    /// The queued pages snapshotted by every worker and this thread; false
+    /// when one of them was broken (SnapshotPage), as the walk would say.
+    static bool SnapshotTogether()
+    {
+        Sys.AtomicSwap(Sys.AddressOf(ref _snapNext), 0);
+        Sys.AtomicSwap(Sys.AddressOf(ref _snapDone), 0);
+        Sys.AtomicSwap(Sys.AddressOf(ref _snapBroken), 0);
+        bool helped = _snapCount >= PagesTogether;
+        if (helped)
+        {
+            Sys.AtomicSwap(Sys.AddressOf(ref _job), 2);
+            WorkersMark(true);
+        }
+        SnapshotPagesSome();
+        if (helped)
+        {
+            while (Sys.Peek(Sys.AddressOf(ref _snapDone)) < _snapCount) Sys.Pause();
+            WorkersMark(false);
+            Sys.AtomicSwap(Sys.AddressOf(ref _job), 0);
+        }
+        long broken = Sys.Peek(Sys.AddressOf(ref _snapBroken));
+        _snapCount = 0;
+        return broken == 0;
+    }
+
+    /// Queued pages taken and snapshotted until there are none.
+    static void SnapshotPagesSome()
+    {
+        long w = WordSize.Bytes;
+        while (true)
+        {
+            long i = Sys.AtomicAdd(Sys.AddressOf(ref _snapNext), 1);
+            if (i >= _snapCount) return;
+            long chunk = Sys.Peek(_snapQueue + i * 2 * w);
+            long anchors = Sys.Peek(_snapQueue + (i * 2 + 1) * w);
+            if (!SnapshotPage(chunk, anchors)) Sys.AtomicSwap(Sys.AddressOf(ref _snapBroken), 1);
+            Sys.AtomicAdd(Sys.AddressOf(ref _snapDone), 1);
         }
     }
 
