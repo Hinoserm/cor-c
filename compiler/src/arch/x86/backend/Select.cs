@@ -2065,7 +2065,9 @@ internal sealed partial class Selector
                     break;
             }
         }
-        Emit(MOp.Epilogue);
+        // The width says which of EAX and EDX carry the value out (see Roles.ImplicitUses).
+        int width = i.Operands.Count == 0 ? 0 : i.Operands[0].Type switch { IrType.I32 => 4, IrType.I64 => 8, _ => 0 };
+        Emit(new MInstr(MOp.Epilogue) { Width = width });
     }
 
     // ---- control ---------------------------------------------------------------------

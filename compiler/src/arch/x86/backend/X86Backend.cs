@@ -580,6 +580,7 @@ public sealed class X86Backend : IBackend
         }
         try
         {
+            AddressFold.Run(m);
             Allocator.Run(m);
             Layout.Run(m);
             Peephole.Run(m);

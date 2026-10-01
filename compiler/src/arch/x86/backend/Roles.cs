@@ -145,7 +145,10 @@ public static class Roles
                 return Gpr_ImplicitUses15;
             case MOp.Epilogue:
                 // The return value is already in place; keep it alive through the pops.
-                return Gpr_ImplicitUses16;
+                // Only the registers it occupies: EDX read by every return of a
+                // function that never writes it is live from entry, and busy in
+                // the whole function (EAX too, in one that returns nothing).
+                return i.Width switch { 8 => Gpr_ImplicitUses16, 4 => Gpr_ImplicitUses3, _ => NoneGpr_ };
             default:
                 return NoneGpr_;
         }
