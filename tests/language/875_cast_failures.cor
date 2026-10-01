@@ -1,0 +1,30 @@
+// test: a downcast from object asks, as from any reference (it went through unchecked, and a Dog was read as a Cat); a failed cast says what .NET says, "Unable to cast object of type 'X' to type 'Y'.", for classes, unboxing, arrays and generics, and unboxing null is a NullReferenceException; output identical to .NET
+// expect-exit: 0
+// expect-output:
+// InvalidCastException: Unable to cast object of type 'Dog' to type 'Cat'.
+// InvalidCastException: Unable to cast object of type 'System.String' to type 'System.Int32'.
+// NullReferenceException: Object reference not set to an instance of an object.
+// InvalidCastException: Unable to cast object of type 'System.Collections.Generic.List`1[System.Int32]' to type 'System.Collections.Generic.List`1[System.String]'.
+// InvalidCastException: Unable to cast object of type 'System.String' to type 'System.Int32[]'.
+// InvalidCastException: Unable to cast object of type 'Dog' to type 'System.Collections.Generic.Dictionary`2[System.Int32,System.ValueTuple`2[System.Int32,System.String]]'.
+using System;
+using System.Collections.Generic;
+class Animal { } sealed class Dog : Animal { } sealed class Cat : Animal { }
+static class Program
+{
+    static void Try(Action a) { try { a(); } catch (Exception e) { Console.WriteLine(e.GetType().Name + ": " + e.Message); } }
+    static int Main()
+    {
+        object dog = new Dog();
+        object text = "hi";
+        object list = new List<int>();
+        object nothing = null!;
+        Try(() => { var c = (Cat)dog; });
+        Try(() => { var n = (int)text; });
+        Try(() => { var n = (int)nothing; });
+        Try(() => { var l = (List<string>)list; });
+        Try(() => { var a = (int[])text; });
+        Try(() => { var d = (Dictionary<int, (int, string)>)dog; });
+        return 0;
+    }
+}

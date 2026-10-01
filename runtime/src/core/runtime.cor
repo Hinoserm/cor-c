@@ -2744,6 +2744,20 @@ static class Runtime
         throw new OutOfMemoryException("Array dimensions exceeded supported range.");
     }
 
+    /// A cast that failed, worded as .NET words it: the object's type as
+    /// Type.ToString writes it, and the type the cast wanted, written by the
+    /// compiler at the cast.
+    public static void InvalidCastTo(object o, string wanted)
+    {
+        throw new InvalidCastException("Unable to cast object of type '" + String.TypeText(o.GetType().FullName) + "' to type '" + wanted + "'.");
+    }
+
+    /// Null unboxed to a value type: .NET's NullReferenceException.
+    public static void NullUnboxed()
+    {
+        throw new NullReferenceException();
+    }
+
     public static void InvalidCast(object o)
     {
         // Rendered through the object's own ToString, which for a class with

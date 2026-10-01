@@ -125,21 +125,29 @@ public sealed partial class Lowering
         Block ok = _f.NewBlock("unbok");
         Block bad = _f.NewBlock("unbbad");
 
-        _e.Branch(obj, check, bad);
+        // NULL UNBOXED is a NullReferenceException, as .NET's; a box of
+        // another type the cast's InvalidCastException.
+        Block none = _f.NewBlock("unbnull");
+        _e.Branch(obj, check, none);
+        _e.SetBlock(none);
+        if (RuntimeMethod("NullUnboxed", 0) is MethodSymbol unboxedNull)
+        {
+            Require(unboxedNull);
+            _e.Call(CallLabel(unboxedNull), IrType.Void);
+            _e.Emit(Opcode.Trap, null);
+            _e.Unreachable();
+        }
+        else
+        {
+            _e.Jump(bad);
+        }
         _e.SetBlock(check);
         VReg vt = _e.Load(IrTypes.Word, obj, 0);
         VReg wanted = _e.Address(BoxDescriptor(want), _t.DescriptorBytes);
         _e.Branch(_e.Binary(Opcode.Eq, vt, wanted), ok, bad);
 
         _e.SetBlock(bad);
-        MethodSymbol? fail = RuntimeMethod("InvalidCast", 1);
-        if (fail is not null)
-        {
-            Require(fail);
-            _e.Call(CallLabel(fail), IrType.Void, R(obj));
-        }
-        _e.Emit(Opcode.Trap, null);
-        _e.Unreachable();
+        CastFailed(obj, want);
 
         _e.SetBlock(ok);
 

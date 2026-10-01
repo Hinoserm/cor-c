@@ -5110,6 +5110,7 @@ public sealed partial class Binder
             if (to.IsNullableValue && !from.IsNullableValue && at is Expr boxed)
             {
                 _r.Boxes.Add(boxed);
+                _r.BoxedAs[boxed] = to;
             }
 
             // AND AN ARRAY GETS ITS HELPER (ArrayBecomes). The conversion is
@@ -11380,6 +11381,7 @@ public sealed partial class Binder
                     if (whole.IsNullableValue && !had.IsNullableValue)
                     {
                         _r.Boxes.Add(arm);
+                        _r.BoxedAs[arm] = whole;
                     }
                     return whole;
                 }
@@ -11398,11 +11400,13 @@ public sealed partial class Binder
                 if (a2.IsNullableValue && !b2.IsNullableValue && Convertible(b2, a2.Underlying))
                 {
                     _r.Boxes.Add(c2.Else);
+                    _r.BoxedAs[c2.Else] = a2;
                     return a2;
                 }
                 if (b2.IsNullableValue && !a2.IsNullableValue && Convertible(a2, b2.Underlying))
                 {
                     _r.Boxes.Add(c2.Then);
+                    _r.BoxedAs[c2.Then] = b2;
                     return b2;
                 }
 
@@ -11533,6 +11537,7 @@ public sealed partial class Binder
                     && !operand.IsReference && operand.Symbol is not { Kind: TypeKind.Interface })
                 {
                     _r.Boxes.Add(cast.Operand);
+                    _r.BoxedAs[cast.Operand] = wanted;
                 }
 
                 // `(IReadOnlyList<T>)array` IS THE CONVERSION it names, and the

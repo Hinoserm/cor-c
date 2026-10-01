@@ -41,7 +41,17 @@ public sealed partial class Lowering
 
         if (_b.Boxes.Contains(e))
         {
-            v = Box(e, v, _b.TypeOf(e));
+            // Into the Nullable it is wanted as, converted first: an int
+            // argument for a ulong? is a ulong in a ulong?'s shape.
+            Type had = _b.TypeOf(e);
+            if (_b.BoxedAs.TryGetValue(e, out Type? into) && into.IsNullableValue && !into.Underlying.Equals(had.AsNonNullable()))
+            {
+                v = Box(e, Convert(e, v, had, into.Underlying), into);
+            }
+            else
+            {
+                v = Box(e, v, had);
+            }
         }
 
         if (_b.Views.TryGetValue(e, out TypeSymbol? view))
@@ -726,7 +736,11 @@ public sealed partial class Lowering
                     return v;
                 }
 
-                if (from.IsReference && to.IsReference && to.Symbol is TypeSymbol wanted
+                // A DOWNCAST ASKS, from object as from any other reference:
+                // `(Cat)o` over an object holding a Dog is InvalidCastException,
+                // not a Dog read as a Cat. object is a word here, not IsReference,
+                // and its casts went through unchecked.
+                if ((from.IsReference || from.Prim == Prim.Any) && to.IsReference && to.Symbol is TypeSymbol wanted
                     && !(from.Symbol is not null && from.Symbol.DerivesFrom(wanted)))
                 {
                     return CheckedCast(cast, v, wanted);
@@ -1820,7 +1834,7 @@ public sealed partial class Lowering
         _e.SetBlock(check);
         _e.Branch(ArrayTest(obj, array), ok, bad);
         _e.SetBlock(bad);
-        CastFailed(obj);
+        CastFailed(obj, array);
         _e.SetBlock(ok);
         return obj;
     }
@@ -1835,22 +1849,61 @@ public sealed partial class Lowering
         _e.SetBlock(check);
         _e.Branch(TypeTest(obj, want), ok, bad);
         _e.SetBlock(bad);
-        CastFailed(obj);
+        CastFailed(obj, new Type { Prim = Prim.Void, Symbol = want });
         _e.SetBlock(ok);
         return obj;
     }
 
-    /// <summary>The end of a cast that failed: InvalidCastException, and nothing after it.</summary>
-    private void CastFailed(VReg obj)
+    /// <summary>
+    /// The end of a cast that failed: InvalidCastException as .NET words it,
+    /// "Unable to cast object of type 'X' to type 'Y'." -- the object's type
+    /// read at run time, the one wanted written here -- and nothing after it.
+    /// </summary>
+    private void CastFailed(VReg obj, Type want)
     {
-        MethodSymbol? fail = RuntimeMethod("InvalidCast", 1);
-        if (fail is not null)
+        if (RuntimeMethod("InvalidCastTo", 2) is MethodSymbol named)
+        {
+            Require(named);
+            _e.Call(CallLabel(named), IrType.Void, R(obj), R(_e.Address(InternString(ShortTypeName(want)))));
+        }
+        else if (RuntimeMethod("InvalidCast", 1) is MethodSymbol fail)
         {
             Require(fail);
             _e.Call(CallLabel(fail), IrType.Void, R(obj));
         }
         _e.Emit(Opcode.Trap, null);
         _e.Unreachable();
+    }
+
+    /// <summary>A type as Type.ToString writes it: its full name, a generic's arguments without their assemblies.</summary>
+    private string ShortTypeName(Type t) => TypeText(DotNetTypeName(t));
+
+    /// <summary>The library's String.TypeText, here for names written at compile time.</summary>
+    private static string TypeText(string full)
+    {
+        int open = full.IndexOf("[[", StringComparison.Ordinal);
+        if (open < 0) return full;
+        System.Text.StringBuilder text = new(full[..open]);
+        text.Append('[');
+        int at = open + 1;
+        bool first = true;
+        while (at < full.Length && full[at] == '[')
+        {
+            int depth = 0, end = at, comma = -1;
+            for (; end < full.Length; end++)
+            {
+                char c = full[end];
+                if (c == '[') depth++;
+                else if (c == ']') { depth--; if (depth == 0) break; }
+                else if (c == ',' && depth == 1 && comma < 0) comma = end;
+            }
+            if (!first) text.Append(',');
+            text.Append(TypeText(full.Substring(at + 1, (comma >= 0 ? comma : end) - at - 1)));
+            first = false;
+            at = end + 1;
+            if (at < full.Length && full[at] == ',') at++;
+        }
+        return text.Append(']').Append(at + 1 <= full.Length ? full[(at + 1)..] : "").ToString();
     }
 
     private VReg EmitIs(IsExpr isx)

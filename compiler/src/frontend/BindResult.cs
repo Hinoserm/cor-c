@@ -105,6 +105,9 @@ public sealed partial class BindResult
 
     public HashSet<Expr> Boxes { get; } = new(ReferenceEqualityComparer.Instance);
 
+    /// <summary>The Nullable each expression in Boxes is made, when it is not its own type's: an int into a ulong?.</summary>
+    public Dictionary<Expr, Type> BoxedAs { get; } = new(ReferenceEqualityComparer.Instance);
+
     /// <summary>
     /// The class each lambda became, and what it captured.
     ///
@@ -589,6 +592,7 @@ public sealed partial class BindResult
         CopyEntries(Views, copy.Views);
         copy.ArrayViews.AddRange(ArrayViews);
         foreach (var item in Boxes) copy.Boxes.Add(item);
+        foreach (var item in BoxedAs) copy.BoxedAs[item.Key] = item.Value;
         CopyEntries(Closures, copy.Closures);
         CopyEntries(ExprType, copy.ExprType);
         CopyEntries(Resolved, copy.Resolved);

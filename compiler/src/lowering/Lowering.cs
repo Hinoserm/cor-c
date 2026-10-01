@@ -119,6 +119,21 @@ public sealed partial class Lowering
     public static bool EntryClearsBss { get; set; } = true;
     public static string? StartupObject { get; set; }
 
+    /// <summary>The program's assembly name, the same in every unit of it: what its own types are qualified with in a generic's full name.</summary>
+    public static string AssemblyName { get; set; } = "program";
+
+    /// <summary>The system library's source files, full paths: a type declared in one is in System.Private.CoreLib.</summary>
+    public static IReadOnlySet<string> SystemSources { get; set; } = new HashSet<string>();
+
+    /// <summary>
+    /// Whether a type is the system library's, as .NET's are CoreLib's: the
+    /// prelude's, or declared in one of its source files -- not merely in a
+    /// library this compile was given (a unit compiled with --lib is the
+    /// program's own assembly).
+    /// </summary>
+    private static bool SystemType(TypeSymbol t)
+        => t.Decl is TypeDecl d && (d.SourcePath is string path ? SystemSources.Contains(path) : d.FromLibrary);
+
     public List<CompileError> Errors { get; } = new();
 
     /// <summary>Method name to the address-bearing symbol, for `corc syms` and the entry table.</summary>
@@ -462,7 +477,7 @@ public sealed partial class Lowering
 
             if (m.Decl is null && m.Owner.Kind == TypeKind.Struct && IsTupleShape(m.Owner))
             {
-                EmitTupleMethod(m);
+                if (ConcreteShape(m.Owner)) EmitTupleMethod(m);
                 continue;
             }
 
@@ -686,6 +701,15 @@ public sealed partial class Lowering
     /// it is instantiated, and a word-shaped instantiation's method is the
     /// canonical copy's -- see Canonical.
     /// </summary>
+    /// <summary>
+    /// Whether values of a tuple shape can be made: no item a template's own
+    /// parameter, a pointer, or a type that did not resolve where the shape
+    /// was met. A shape over `(T, U)` has members to name and none to emit.
+    /// </summary>
+    private static bool ConcreteShape(TypeSymbol shape)
+        => shape.Fields.All(f => f.Static || !(f.Type.IsError || f.Type.ParamName is not null || f.Type.IsPointer || f.Type.Function is not null
+            || f.Type.Prim == Prim.Void && f.Type.Symbol is null && !f.Type.IsArray));
+
     private static bool Emits(MethodSymbol m)
         // AN ARRAY VIEW'S METHODS HAVE NO DECLARATION, because the view has
         // none: it is written here, in EmitArrayViewMethod, and a vtable slot
@@ -693,7 +717,7 @@ public sealed partial class Lowering
         => m.Decl is null
         && (m.Owner.Name.StartsWith("ArrayView$", StringComparison.Ordinal)
             || m.Owner.Name.StartsWith("ArrayEnumerator$", StringComparison.Ordinal)
-            || m.Owner.Kind == TypeKind.Struct && IsTupleShape(m.Owner))
+            || m.Owner.Kind == TypeKind.Struct && IsTupleShape(m.Owner) && ConcreteShape(m.Owner))
         || m.Decl?.Body != null && m.Decl.File != "<prelude>"
         && !IsExternal(m) && (m.Decl?.LocalCopy == true || (m.Decl?.OwnedImplementation ?? m.Owner.Decl?.Elsewhere != true)) && m.Owner.Decl?.Canon is null
         && m.Owner.Decl?.TypeParams.Count is null or 0
@@ -1497,7 +1521,7 @@ public sealed partial class Lowering
             && t.TemplateArgTypes.Count > 0 && t.TemplateArgTypes.All(a => !a.IsError && a.ParamName is null))
         {
             string bare = template.Contains('.') ? template[(template.LastIndexOf('.') + 1)..] : template;
-            string home = made.Namespace.Length > 0 ? made.Namespace : made.FromLibrary ? LibraryHome(bare) : "";
+            string home = made.Namespace.Length > 0 ? made.Namespace : SystemType(t) ? LibraryHome(bare) : "";
             string within = made.Outer is { Length: > 0 } o && !(home.Length > 0 && (o == home || o.StartsWith(home + ".", StringComparison.Ordinal)))
                 ? o.Replace('.', '+') + "+" : "";
             if (home.Length > 0 && made.Outer is { Length: > 0 } inside && inside.StartsWith(home + ".", StringComparison.Ordinal))
@@ -1561,14 +1585,14 @@ public sealed partial class Lowering
     /// <summary>A type as a generic argument names it: its full name and its assembly's.</summary>
     private string QualifiedName(Type t)
     {
-        bool own = t.Symbol is TypeSymbol named && !IsTupleShape(named) && named.Decl is { FromLibrary: false } && !t.IsNullableValue;
+        bool own = t.Symbol is TypeSymbol named && !IsTupleShape(named) && !SystemType(named) && named.Decl is not null && !t.IsNullableValue;
         for (Type e = t; e.IsArray && e.Element is Type inner; e = inner)
         {
-            own = inner.Symbol is TypeSymbol held && !IsTupleShape(held) && held.Decl is { FromLibrary: false };
+            own = inner.Symbol is TypeSymbol held && !IsTupleShape(held) && held.Decl is not null && !SystemType(held);
         }
         // The program's own types are in the one assembly the program is
         // (System.Reflection.Assembly): its image's name, version 0.0.0.0.
-        string assembly = own ? System.IO.Path.GetFileNameWithoutExtension(_m.Name) + ", Version=0.0.0.0, Culture=neutral, PublicKeyToken=null" : CoreLibrary;
+        string assembly = own ? AssemblyName + ", Version=0.0.0.0, Culture=neutral, PublicKeyToken=null" : CoreLibrary;
         return DotNetTypeName(t) + ", " + assembly;
     }
 

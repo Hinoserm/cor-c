@@ -438,6 +438,14 @@ public static class Driver
         Corsac.Lang.Lower.Lowering.EntryName = asmEntry ?? "_start";
         Corsac.Lang.Lower.Lowering.EntryClearsBss = asmEntry is null;
         Corsac.Lang.Lower.Lowering.StartupObject = Value(args, "--main-type");
+        // THE SYSTEM LIBRARY'S OWN SOURCES, whose types are .NET's own in
+        // System.Private.CoreLib: not every library a compile is given.
+        Corsac.Lang.Lower.Lowering.SystemSources = new HashSet<string>(
+            DefaultLibraries(Target.X86, false).Concat(DefaultLibraries(Target.X86, true)).Select(Path.GetFullPath), StringComparer.Ordinal);
+        // THE PROGRAM'S ASSEMBLY, as its types' full names qualify them: the
+        // project's, which every unit of it is told, else the image's name.
+        Corsac.Lang.Lower.Lowering.AssemblyName = Value(args, "--assembly")
+            ?? (Value(args, "-o") is string named ? Path.GetFileName(named).Split('.')[0] : "program");
 
         ulong? loadBase = null;
         if (Value(args, "--base") is { } baseText)

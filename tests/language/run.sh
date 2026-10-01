@@ -206,7 +206,7 @@ for f in "${tests[@]}"; do
             refs=""
             for lib in ${lib_paths:-$($CORC library-sources)}; do refs="$refs --ref $lib"; done
             $CORC index --assembly Units $unit_sources -o "$work/$name.idx" \
-            && $CORC compile -Wno-error "${compiler_flags[@]}" $own_flags --lib $unit_sources --obj -o "$work/$name.units.o" \
+            && $CORC compile -Wno-error "${compiler_flags[@]}" $own_flags --lib --assembly Units $unit_sources --obj -o "$work/$name.units.o" \
             && $CORC compile -Wno-error "${compiler_flags[@]}" $own_flags --nostdlib $refs --decl-index "$work/$name.idx" --assembly Units \
                 $extra "$f" --obj -o "$work/$name.o" \
             && $CORC link --closed "$work/$name.o" "$work/$name.units.o" -o "$exe"
