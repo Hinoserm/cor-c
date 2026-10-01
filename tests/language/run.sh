@@ -22,6 +22,7 @@
 #            (default: the runtime and standard-library sources in this repository)
 #   TIMEOUT  seconds a compiled test may run (default: 10)
 #   KEEP     set to 1 to keep the build directory for inspection
+#   JOBS     tests run at once (default 30, or the processors less two)
 
 set -u
 
@@ -31,18 +32,22 @@ timeout_s="${TIMEOUT:-10}"
 verbose=0
 filter=""
 compiler_flags=()
+passthrough=()
 
 for arg in "$@"; do
     case "$arg" in
         -v|--verbose)
             verbose=1
+            passthrough+=("$arg")
             ;;
         --opt-size|--experimental-batch)
             compiler_flags+=("$arg")
+            passthrough+=("$arg")
             ;;
         --target=*)
             # Every test compiled for this target: x86 (the default) or x86-64.
             compiler_flags+=("--target" "${arg#--target=}")
+            passthrough+=("$arg")
             ;;
         -h|--help)
             sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
@@ -142,7 +147,11 @@ tests=()
 for f in "$here"/*.cor; do
     [ -e "$f" ] || continue
     name="$(basename "$f" .cor)"
-    if [ -n "$filter" ] && [[ "$name" != *"$filter"* ]]; then
+    # One test exactly, when the parallel run below hands it to a copy of
+    # this script; otherwise every test whose name contains the filter.
+    if [ -n "${CORC_TEST_ONE:-}" ]; then
+        [ "$name" = "$CORC_TEST_ONE" ] || continue
+    elif [ -n "$filter" ] && [[ "$name" != *"$filter"* ]]; then
         continue
     fi
     tests+=("$f")
@@ -151,6 +160,44 @@ done
 if [ "${#tests[@]}" -eq 0 ]; then
     echo "no tests match '$filter'" >&2
     exit 2
+fi
+
+# ---- in parallel ------------------------------------------------------------
+#
+# SEVERAL TESTS RUN SEVERAL AT A TIME: each is this script again, on that test
+# alone, in its own work directory, JOBS of them at once (thirty, or as many
+# as there are processors less two where there are fewer). Their reports are
+# printed in the tests' order, as one run prints them. JOBS=1 runs them here,
+# one after another.
+jobs="${JOBS:-$(( $(nproc) - 2 > 30 ? 30 : ( $(nproc) - 2 < 1 ? 1 : $(nproc) - 2 ) ))}"
+if [ -z "${CORC_TEST_ONE:-}" ] && [ "${#tests[@]}" -gt 1 ] && [ "$jobs" -gt 1 ]; then
+    mkdir -p "$work/parallel"
+    export CORC RUN_SELF="$0" RUN_REPORTS="$work/parallel" RUN_FLAGS="${passthrough[*]:-}"
+    for f in "${tests[@]}"; do basename "$f" .cor; done \
+        | xargs -P "$jobs" -I{} bash -c 'CORC_TEST_ONE="$1" bash "$RUN_SELF" $RUN_FLAGS "$1" > "$RUN_REPORTS/$1.log" 2>&1' _ {} || true
+    for f in "${tests[@]}"; do
+        name="$(basename "$f" .cor)"
+        report="$work/parallel/$name.log"
+        if [ -s "$report" ] && grep -q "^PASS $name\$" "$report"; then
+            passed=$((passed + 1))
+            echo "PASS $name"
+        else
+            failed=$((failed + 1))
+            failed_names="$failed_names $name"
+            if [ -s "$report" ]; then
+                sed -n '/^\(PASS\|FAIL\) /,/^$/p' "$report" | sed '/^$/d'
+            else
+                echo "FAIL $name (no report)"
+            fi
+        fi
+    done
+    echo
+    echo "$passed passed, $failed failed, $((passed + failed)) total"
+    if [ "$failed" -ne 0 ]; then
+        echo "failed:$failed_names"
+        exit 1
+    fi
+    exit 0
 fi
 
 lib_paths=""
