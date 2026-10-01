@@ -108,7 +108,7 @@ public static class ObjectLinkCommand
         if (selected is not null) X86CodeGenerationContract.ValidateTarget(inputs, selected);
         ManagedLayoutContract.Validate(inputs);
         int regenerated = IrLinkOptimizer.Run(inputs, () => backend ?? new ProcessUnitBackend(backendPath), lto, importBytes,
-            closedImageEntry: flat || closed || physicalAddress is not null ? entry : null);
+            closedImageEntry: flat || closed || physicalAddress is not null ? entry : null, parallelBackends: backend is null);
         int folded = LinkTimeOptimizer.Run(inputs, lto);
         if (selected is not null) X86CodeGenerationContract.ValidateTarget(inputs, selected);
         // Long mode is read before the notes that say so go.
