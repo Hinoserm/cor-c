@@ -817,6 +817,14 @@ public sealed partial class Escape : IModulePass
     private void ThrownIn(Function f, Dictionary<string, bool[]> summaries)
     {
         if (f.Async is not null) return;
+        // The parameters' answers too, in a unit as in a whole program: what
+        // lets a callee's `this` go is what keeps every caller's object.
+        if (Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is { Length: > 1 } named && f.Name.Contains(named, StringComparison.Ordinal))
+            for (int p = 0; p < f.Params.Count; p++)
+            {
+                Flow why = Analyse(f, new[] { f.Params[p] }, summaries, null);
+                Console.Error.WriteLine($"alloc report: {f.Name} param {p} escapes={why.Escapes} via {why.Why}");
+            }
         foreach (Block b in f.Blocks)
             foreach (Instr i in b.Instrs)
             {

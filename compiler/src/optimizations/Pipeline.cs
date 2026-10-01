@@ -115,6 +115,7 @@ public sealed class Pipeline
         p.Passes.Add(new BranchSimplify());
         if (experimentalBatch) p.Passes.Add(new CommonTailMerge());
         p.ModulePasses.Add(new DeadStatics());
+        p.ModulePasses.Add(new DeadClosureThis());
         p.ModulePasses.Add(new ConstantSpecialize());
         p.ModulePasses.Add(Inliner(keepFree: true));
         // After inlining, because a literal's length is only visible once

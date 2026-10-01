@@ -309,7 +309,11 @@ public sealed class Devirtualize : IModulePass
                     { if (trace) Console.Error.WriteLine($"forward {f.Name} {l}: store not first"); continue; }
                     // The vtable word is the object's type, which nothing but its
                     // making writes: a call cannot change it, only a store could.
-                    if (at != 0 && writers.FirstOrDefault(w => Reaches(w, lb, li)) is { B: not null } bad)
+                    // Only where word 0 IS a vtable -- a symbol stored there: a
+                    // captured variable's cell keeps its value in word 0, and
+                    // the lambda writes it.
+                    bool vtableWord = at == 0 && s0.Value is SymOperand;
+                    if (!vtableWord && writers.FirstOrDefault(w => Reaches(w, lb, li)) is { B: not null } bad)
                     { if (trace) Console.Error.WriteLine($"forward {f.Name} {l}: writer {bad.B.Instrs[bad.I]}"); continue; }
                     Operand value = s0.Value switch
                     {
@@ -329,6 +333,7 @@ public sealed class Devirtualize : IModulePass
                         value = new ImmOperand(bits, l.Dest.Type);
                     }
                     else if (l.Size < word) continue;
+                    if (trace) Console.Error.WriteLine($"forward {f.Name} {l} in {lb.Label}: FORWARDED {value} from {s0.B.Instrs[s0.I]} in {s0.B.Label} alloc in {allocBlock.Label} writers [{string.Join("; ", writers.Select(w => w.B.Label + ":" + w.B.Instrs[w.I]))}]");
                     lb.Instrs[li] = new Instr { Op = Opcode.Copy, Dest = l.Dest, Line = l.Line, Operands = { value } };
                 }
         }
@@ -378,5 +383,119 @@ public sealed class LateCleanup : IModulePass
                 Console.Error.WriteLine("== after late-cleanup " + f.Name + "\n" + text);
             }
         }
+    }
+}
+
+/// <summary>
+/// A closure's `$this` that its body never reads is not stored.
+///
+/// Every lambda written in an instance method is given the instance, used or
+/// not, so that a lambda inside a lambda can reach it; a lambda that reads
+/// only its own locals then carries `this` into whatever it is handed to --
+/// a Select, a Where -- and `this` escapes there. The register allocator's
+/// `s => index[s]` kept the whole Allocator, and every array it owns, from
+/// being freed. A closure class is the unit's own, so every read of its
+/// fields is in the unit: a `$this` field nothing loads is never needed, and
+/// its stores go.
+/// </summary>
+public sealed class DeadClosureThis : IModulePass
+{
+    public string Name => "dead-closure-this";
+
+    public int Removed { get; private set; }
+
+    public void Run(Module m)
+    {
+        // The `$this` stores of closures, by field key, with the offset each writes.
+        Dictionary<string, HashSet<long>> candidates = new(StringComparer.Ordinal);
+        foreach (Function f in m.Functions)
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Op == Opcode.Store && i.Field is { } field && field.EndsWith("::$this", StringComparison.Ordinal)
+                        && field.Contains("Lambda$", StringComparison.Ordinal))
+                    {
+                        if (!candidates.TryGetValue(field, out HashSet<long>? at)) candidates[field] = at = new();
+                        at.Add(i.Offset);
+                    }
+        if (candidates.Count == 0) return;
+        HashSet<string> dead = new(StringComparer.Ordinal);
+        foreach ((string field, HashSet<long> offsets) in candidates)
+        {
+            if (offsets.Count != 1) continue;
+            long at = offsets.First();
+            // The closure's own methods, by their labels: only they are handed
+            // the closure as `this`, and only through `this` is `$this` read --
+            // by its Invoke, or to copy into a closure made inside it. None
+            // found, it is kept: nothing is known.
+            string prefix = "m_" + Decode(field[..field.IndexOf("::", StringComparison.Ordinal)]).Replace('.', '$') + "_";
+            List<Function> methods = m.Functions.Where(f => f.Name.StartsWith(prefix, StringComparison.Ordinal) && f.Params.Count > 0).ToList();
+            if (methods.Count == 0 || methods.Any(f => ReadsAt(f, at))) continue;
+            dead.Add(field);
+        }
+        if (dead.Count == 0) return;
+        foreach (Function f in m.Functions)
+            foreach (Block b in f.Blocks)
+                b.Instrs.RemoveAll(i =>
+                {
+                    bool gone = i.Op == Opcode.Store && i.Field is { } field && dead.Contains(field);
+                    if (gone) Removed++;
+                    return gone;
+                });
+    }
+
+    /// <summary>Whether anything reads the word at `at` of the method's `this`, or reads it in a way not followed.</summary>
+    private static bool ReadsAt(Function f, long at)
+    {
+        Dictionary<VReg, long> derived = new() { [f.Params[0]] = 0 };
+        bool grew = true;
+        while (grew)
+        {
+            grew = false;
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                {
+                    if (i.Dest is null || derived.ContainsKey(i.Dest) || i.Operands.Count == 0 || i.Operands[0] is not RegOperand r
+                        || !derived.TryGetValue(r.Reg, out long o)) continue;
+                    long? to = i.Op switch
+                    {
+                        Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 => o,
+                        Opcode.Add when i.Operands[1] is ImmOperand k && o >= 0 => o + k.Value,
+                        Opcode.Add => -1,
+                        _ => null,
+                    };
+                    if (to is long t) { derived[i.Dest] = t; grew = true; }
+                }
+        }
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+            {
+                if (i.Op == Opcode.Load && i.Operands[0] is RegOperand r && derived.TryGetValue(r.Reg, out long o)
+                    && (o < 0 || o + i.Offset <= at && at < o + i.Offset + i.Size))
+                    return true;
+                // Copied whole, or handed on: whatever reads it then is not seen.
+                if (i.Op is Opcode.MemCopy or Opcode.Call or Opcode.CallIndirect or Opcode.Store)
+                    foreach (Operand op in i.Operands)
+                        if (op is RegOperand q && derived.ContainsKey(q.Reg)
+                            && !(i.Op == Opcode.Store && ReferenceEquals(op, i.Operands[0])))
+                            return true;
+            }
+        return false;
+    }
+
+    /// <summary>A type key back from Lowering.TypeKey's escaped form: `$` and four hex digits a character.</summary>
+    private static string Decode(string escaped)
+    {
+        System.Text.StringBuilder sb = new();
+        for (int k = 0; k < escaped.Length; k++)
+        {
+            if (escaped[k] == '$' && k + 4 < escaped.Length + 0 && k + 5 <= escaped.Length
+                && int.TryParse(escaped.AsSpan(k + 1, 4), System.Globalization.NumberStyles.HexNumber, null, out int c))
+            {
+                sb.Append((char)c);
+                k += 4;
+            }
+            else sb.Append(escaped[k]);
+        }
+        return sb.ToString();
     }
 }
