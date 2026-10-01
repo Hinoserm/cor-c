@@ -1671,7 +1671,42 @@ class StreamReader : TextReader
 
     public override string ReadToEnd()
     {
-        StringBuilder all = new StringBuilder();
+        // A FILE READ WHOLE IS DECODED WHOLE: what is left of it read into
+        // one array its size and made a string in one decoding, rather than
+        // a string per buffer copied into a builder that doubles -- three
+        // copies of every source file a compiler reads. The byte-order mark
+        // is taken as Fill takes it; a stream that is not a file, or a
+        // reader part way through a buffer, goes the ordinary way.
+        string? whole = null;
+        if (_at >= _chars.Length && _byteCount == 0 && !_ended && _stream is FileStream file && file.CanSeek)
+        {
+            long left = file.Length - file.Position;
+            if (left > 0 && left < 0x40000000)
+            {
+                byte[] kept = _bytes;
+                byte[] read = new byte[(int)left];
+                int got = 0;
+                while (got < read.Length)
+                {
+                    int n = _stream.Read(read, got, read.Length - got);
+                    if (n <= 0) break;
+                    got = got + n;
+                }
+                _bytes = read;
+                _byteCount = got;
+                int skip = 0;
+                if (!_started)
+                {
+                    _started = true;
+                    skip = Preamble();
+                }
+                whole = got > skip ? _encoding.GetString(read, skip, got - skip) : "";
+                _bytes = kept;
+                _byteCount = 0;
+            }
+        }
+        if (whole != null && !Fill()) return whole;
+        StringBuilder all = whole != null ? new StringBuilder(whole) : new StringBuilder();
         while (Fill())
         {
             all.Append(_chars, _at, _chars.Length - _at);

@@ -1,0 +1,44 @@
+// test: params_against_generic
+// expect-exit: 0
+// expect-output:
+// abc
+// abc,d
+// x,y
+// 1,2
+// params string[1]
+// params object[1]
+// IEnumerable<Int32>
+// params
+//
+// A params method's expanded form competes with the overloads that fit as
+// written, as C# 12.6.4.3 has it: string.Join(",", "abc") is Join(string,
+// params string[]) and says "abc", a string being better served by a string
+// than by an IEnumerable<char>; the best expanded form is chosen, not the
+// first declared; and a generic overload fits as written only when its type
+// arguments can be inferred, so Pick(",", 5) is the params object[] one.
+// Output checked against .NET.
+
+using System;
+using System.Collections.Generic;
+
+static class Program
+{
+    static string Pick(string sep, params string[] values) => "params string[" + values.Length + "]";
+    static string Pick(string sep, params object[] values) => "params object[" + values.Length + "]";
+    static string Pick<T>(string sep, IEnumerable<T> values) => "IEnumerable<" + typeof(T).Name + ">";
+
+    static string One(IEnumerable<char> chars) => "chars";
+    static string One(params string[] all) => "params";
+
+    static void Main()
+    {
+        Console.WriteLine(string.Join(",", "abc"));
+        Console.WriteLine(string.Join(",", "abc", "d"));
+        Console.WriteLine(string.Join(",", new List<string> { "x", "y" }));
+        Console.WriteLine(string.Join(",", new[] { 1, 2 }));
+        Console.WriteLine(Pick(",", "abc"));
+        Console.WriteLine(Pick(",", 5));
+        Console.WriteLine(Pick(",", new List<int>()));
+        Console.WriteLine(One("abc"));
+    }
+}

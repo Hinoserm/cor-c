@@ -1,0 +1,81 @@
+// test: read_to_end_whole
+// expect-exit: 0
+// expect-output:
+// utf8 whole 10:plain\ntext utf-8
+// utf8 after 112 9:lain\ntext
+// utf8 file 10:plain\ntext
+// utf8bom whole 5:bom é utf-8
+// utf8bom after 98 4:om é
+// utf8bom file 5:bom é
+// utf16le whole 6:wide 漢 utf-16
+// utf16le after 119 5:ide 漢
+// utf16le file 6:wide 漢
+// utf16be whole 5:big 漢 utf-16BE
+// utf16be after 98 4:ig 漢
+// utf16be file 5:big 漢
+// empty whole 0: utf-8
+// empty after -1 0:
+// empty file 0:
+// bomonly whole 0: utf-8
+// bomonly after -1 0:
+// bomonly file 0:
+// big whole 9007:xxxxxx~漢😀end utf-8
+// big after 120 9006:xxxxxx~漢😀end
+// big file 9007:xxxxxx~漢😀end
+// cut whole 2:a� utf-8
+// cut after 97 1:�
+// cut file 2:a�
+//
+// StreamReader.ReadToEnd over a file decodes what is left of it in one go:
+// with a UTF-8 or UTF-16 byte-order mark or none, empty, a mark alone, past
+// a buffer's worth with characters of every width, a sequence cut short at
+// the end, and after a first character was read. Output checked against
+// .NET.
+
+using System;
+using System.IO;
+using System.Text;
+
+static class Program
+{
+    static string Show(string s) => s.Length + ":" + string.Join(",", s.ToCharArray().Length > 12 ? s.Substring(0, 6) + "~" + s.Substring(s.Length - 6) : s).Replace("\n", "\\n").Replace("\uFEFF", "<bom>");
+
+    static void Main()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "corc_rte_" + Environment.ProcessId);
+        Directory.CreateDirectory(dir);
+        string big = new string('x', 9000) + "é漢😀end";
+        var cases = new (string Name, byte[] Bytes)[]
+        {
+            ("utf8", Encoding.UTF8.GetBytes("plain\ntext")),
+            ("utf8bom", new byte[] { 0xEF, 0xBB, 0xBF }.Concat2(Encoding.UTF8.GetBytes("bom é"))),
+            ("utf16le", new byte[] { 0xFF, 0xFE }.Concat2(Encoding.Unicode.GetBytes("wide 漢"))),
+            ("utf16be", new byte[] { 0xFE, 0xFF }.Concat2(Encoding.BigEndianUnicode.GetBytes("big 漢"))),
+            ("empty", new byte[0]),
+            ("bomonly", new byte[] { 0xEF, 0xBB, 0xBF }),
+            ("big", Encoding.UTF8.GetBytes(big)),
+            ("cut", new byte[] { 0x61, 0xE6, 0xBC }),
+        };
+        foreach (var (name, bytes) in cases)
+        {
+            string path = Path.Combine(dir, name);
+            File.WriteAllBytes(path, bytes);
+            using (StreamReader r = new StreamReader(path)) Console.WriteLine(name + " whole " + Show(r.ReadToEnd()) + " " + r.CurrentEncoding.WebName);
+            using (StreamReader r = new StreamReader(path))
+            {
+                int first = r.Read();
+                Console.WriteLine(name + " after " + first + " " + Show(r.ReadToEnd()));
+            }
+            Console.WriteLine(name + " file " + Show(File.ReadAllText(path)));
+        }
+        Directory.Delete(dir, true);
+    }
+
+    static byte[] Concat2(this byte[] a, byte[] b)
+    {
+        byte[] c = new byte[a.Length + b.Length];
+        a.CopyTo(c, 0);
+        b.CopyTo(c, a.Length);
+        return c;
+    }
+}

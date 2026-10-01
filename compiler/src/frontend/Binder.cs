@@ -15390,7 +15390,32 @@ public sealed partial class Binder
 
         bool OrdinaryFits(MethodSymbol m) => m.Params.Count == args.Count
             && Enumerable.Range(0, args.Count)
-                         .All(i => WordFits(m, i) && WrittenFits(args[i], Wants(m, i), c.Args[i]));
+                         .All(i => WordFits(m, i) && WrittenFits(args[i], Wants(m, i), c.Args[i]))
+            && (m.TypeParams.Count == 0 || OrdinaryInferred(m) is not null);
+
+        // A GENERIC METHOD FITS IN ITS ORDINARY FORM WHEN ITS TYPE ARGUMENTS
+        // CAN BE INFERRED, not because an open parameter takes anything:
+        // `Pick(",", 5)` beside Pick<T>(string, IEnumerable<T>) is no fit for
+        // the generic -- an int is no sequence -- and Pick(string, params
+        // object[]) in its expanded form is the call. The inferred arguments,
+        // or null. A lambda or a method group is left to the later rounds,
+        // as everywhere: taken to fit.
+        Dictionary<string, Type>? OrdinaryInferred(MethodSymbol m)
+        {
+            Dictionary<string, Type> got = new(StringComparer.Ordinal);
+            for (int i = 0; i < args.Count && i < m.Params.Count; i++)
+            {
+                if (i < c.Args.Count && (IsFunctionSource(c.Args[i]) || c.Args[i] is RefArgExpr)) return got;
+                Type want = fromReceiver is null ? m.Params[i].Type : Close(m.Params[i].Type, fromReceiver);
+                if (!Unify(m, want, args[i], got)) return null;
+            }
+            for (int i = 0; i < args.Count && i < m.Params.Count; i++)
+            {
+                Type want = Close(Wants(m, i), got);
+                if (!Unmade(want) && !WrittenFits(args[i], want, c.Args[i])) return null;
+            }
+            return got;
+        }
 
         MethodSymbol? expandedParams = null;
 
@@ -15435,19 +15460,29 @@ public sealed partial class Binder
             return better;
         }
 
-        if (!group.Methods.Any(OrdinaryFits))
+        List<MethodSymbol> ordinaryFits = group.Methods.Where(OrdinaryFits).ToList();
         {
-            expandedParams = group.Methods.FirstOrDefault(m =>
-                m.TypeParams.Count == 0
-                && m.Params.Count > 0
-                && m.Params[^1].IsParams
-                && m.Params[^1].Type.IsArray
-                && m.Params[^1].Type.Element is Type element
-                && args.Count >= m.Params.Count - 1
-                && Enumerable.Range(0, m.Params.Count - 1)
-                             .All(i => WrittenFits(args[i], Wants(m, i), c.Args[i]))
-                && Enumerable.Range(m.Params.Count - 1, args.Count - (m.Params.Count - 1))
-                             .All(i => WrittenFits(args[i], element, c.Args[i])));
+            // THE BEST EXPANDED FORM, not the first declared: Join(",", "a")
+            // takes params string[] over params object[], a string being
+            // better served by a string than by an object.
+            foreach (MethodSymbol m in group.Methods)
+            {
+                if (m.TypeParams.Count == 0
+                    && m.Params.Count > 0
+                    && m.Params[^1].IsParams
+                    && m.Params[^1].Type.IsArray
+                    && m.Params[^1].Type.Element is Type element
+                    && args.Count >= m.Params.Count - 1
+                    && Enumerable.Range(0, m.Params.Count - 1)
+                                 .All(i => WrittenFits(args[i], Wants(m, i), c.Args[i]))
+                    && Enumerable.Range(m.Params.Count - 1, args.Count - (m.Params.Count - 1))
+                                 .All(i => WrittenFits(args[i], element, c.Args[i]))
+                    && (expandedParams is null
+                        || ExpandedBetter(m, new Dictionary<string, Type>(), element, expandedParams, expandedParams.Params[^1].Type.Element!)))
+                {
+                    expandedParams = m;
+                }
+            }
 
             // A GENERIC METHOD'S PARAMS ARRAY EXPANDS TOO, its element type
             // inferred from the arguments it gathers: `Task.WhenAll(a, b)`
@@ -15473,6 +15508,37 @@ public sealed partial class Binder
                 {
                     expandedParams = m;
                     expandedElement = closedElement;
+                }
+            }
+
+            // AND THE EXPANDED FORM COMPETES WITH THE ORDINARY ONES (C#
+            // 12.6.4.3): it is the call only when it is the better function
+            // member against every overload that fits as written, and an
+            // ordinary form wins a tie. `string.Join(",", "abc")` is Join(
+            // string, params string[]) -- a string to a string beats a string
+            // to IEnumerable<char> -- and so "abc", not "a,b,c".
+            if (expandedParams is { } challenger && ordinaryFits.Count > 0)
+            {
+                Type challengerElement = expandedElement!;
+                Dictionary<string, Type> none = new(StringComparer.Ordinal);
+                foreach (MethodSymbol ordinary in ordinaryFits)
+                {
+                    Dictionary<string, Type> inferred = ordinary.TypeParams.Count == 0 ? none : OrdinaryInferred(ordinary) ?? none;
+                    bool better = false, worse = false;
+                    for (int i = 0; i < args.Count; i++)
+                    {
+                        if (i < c.Args.Count && IsFunctionSource(c.Args[i])) continue;
+                        Type expandedWant = i < challenger.Params.Count - 1 ? Wants(challenger, i) : challengerElement;
+                        Type ordinaryWant = Close(Wants(ordinary, i), inferred);
+                        int said = BetterConversion(args[i], expandedWant, ordinaryWant);
+                        if (said > 0) better = true;
+                        if (said < 0) worse = true;
+                    }
+                    if (worse || !better)
+                    {
+                        expandedParams = null;
+                        break;
+                    }
                 }
             }
 
