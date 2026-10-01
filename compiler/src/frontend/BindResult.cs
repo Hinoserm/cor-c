@@ -76,6 +76,14 @@ public sealed partial class BindResult
     public List<(CallExpr Call, MethodDecl Template, List<TypeRef> Args)> Wanted { get; } = new();
 
     /// <summary>
+    /// The bodies a want was found in, with the type whose body each is. A
+    /// call's overload can change once the copy it asked for exists -- the
+    /// copy's return type is a specialisation the first look could not see
+    /// -- so these are checked again in the next round (Frontend).
+    /// </summary>
+    public List<(TypeSymbol? Owner, MethodDecl Body)> Wanting { get; } = new();
+
+    /// <summary>
     /// Expressions that are an ARRAY on their way to an interface an array
     /// implements.
     ///
@@ -448,6 +456,7 @@ public sealed partial class BindResult
     {
         StaticInits.Clear();
         Wanted.Clear();
+        Wanting.Clear();
         Views.Clear();
         ArrayViews.Clear();
         Boxes.Clear();
@@ -530,6 +539,7 @@ public sealed partial class BindResult
         };
         copy.StaticInits.AddRange(StaticInits);
         copy.Wanted.AddRange(Wanted);
+        copy.Wanting.AddRange(Wanting);
         CopyEntries(Views, copy.Views);
         copy.ArrayViews.AddRange(ArrayViews);
         foreach (var item in Boxes) copy.Boxes.Add(item);

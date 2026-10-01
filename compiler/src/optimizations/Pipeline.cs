@@ -159,6 +159,7 @@ public sealed class Pipeline
 #if COR_SELFHOST_BENCHMARK
         Corsac.Program.BenchmarkStage("opt-functions-initial");
 #endif
+        Dump(m, "lowered");
         RunFunctions(m);
         foreach (IModulePass p in ModulePasses)
         {
@@ -186,6 +187,20 @@ public sealed class Pipeline
         }
         BeforeLate?.Invoke(m);
         RunLate(m);
+        Dump(m, "optimised");
+    }
+
+    /// <summary>CORC_DUMP_FUNCTION=<symbol>: that function's IR as lowered and as optimised, on standard error.</summary>
+    private static void Dump(Module m, string when)
+    {
+        if (Environment.GetEnvironmentVariable("CORC_DUMP_FUNCTION") is not { Length: > 0 } wanted) return;
+        foreach (Function f in m.Functions)
+        {
+            if (f.Name != wanted) continue;
+            System.Text.StringBuilder text = new();
+            f.Dump(text);
+            Console.Error.WriteLine("== " + when + " " + f.Name + "\n" + text);
+        }
     }
 
     /// <summary>The late passes alone and the cheap passes after them: what the link runs over a unit's archived IR.</summary>

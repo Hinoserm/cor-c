@@ -247,8 +247,17 @@ static class AllocSamples
         Runtime.AllocHook = Sys.AddressOf(AllocSamples.Record);
     }
 
-    static void Record(long fp, long bytes, long unused)
+    // Bytes sampled by allocator: Alloc (a struct's block, a nullable cell,
+    // a coroutine frame), AllocLeaf, AllocObject.
+    static long _blockBytes;
+    static long _leafBytes;
+    static long _objectBytes;
+
+    static void Record(long fp, long bytes, long kind)
     {
+        if (kind == 1) _blockBytes = _blockBytes + bytes;
+        else if (kind == 2) _leafBytes = _leafBytes + bytes;
+        else _objectBytes = _objectBytes + bytes;
         long site = Sys.Peek(fp + WordSize.Bytes);
         long up = Sys.Peek(fp) & WordSize.AddressMask;
         long caller = up != 0 ? Sys.Peek(up + WordSize.Bytes) : 0;
@@ -289,6 +298,9 @@ static class AllocSamples
             Gc.SayNumber("alloc sample count ", Sys.Peek(e + 3 * WordSize.Bytes));
         }
         Gc.SayNumber("alloc sample lost ", _lost);
+        Gc.SayNumber("alloc sample block bytes ", _blockBytes);
+        Gc.SayNumber("alloc sample leaf bytes ", _leafBytes);
+        Gc.SayNumber("alloc sample object bytes ", _objectBytes);
     }
 }
 
@@ -571,7 +583,7 @@ static class Runtime
 
     public static long Alloc(nint bytes)
     {
-        if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes, 0);
+        if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes, 1);
         return Gc.Alloc(bytes);
     }
 
@@ -581,7 +593,7 @@ static class Runtime
     /// compiler calls this for those, and Alloc for everything else.
     public static long AllocLeaf(nint bytes)
     {
-        if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes, 0);
+        if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes, 2);
         return Gc.AllocLeaf(bytes);
     }
 
@@ -590,7 +602,7 @@ static class Runtime
     /// references from its descriptor instead of guessing them from every word.
     public static long AllocObject(nint bytes)
     {
-        if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes, 0);
+        if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes, 3);
         return Gc.AllocObject(bytes);
     }
 

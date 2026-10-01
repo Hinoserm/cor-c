@@ -15689,6 +15689,7 @@ public sealed partial class Binder
                 else
                 {
                     _r.Wanted.Add((c, generic, spelt));
+                    if (_member is MethodDecl body) _r.Wanting.Add((_thisType, body));
                 }
             }
         }

@@ -230,6 +230,7 @@ public static class Frontend
                     break;
                 }
                 made = true;
+                Unsettled(bound);
 
                 // The previous round is no longer an input. Keeping its maps
                 // until the replacement binding returns doubles graph pressure.
@@ -424,6 +425,30 @@ public static class Frontend
     /// added -- which is what makes the loop terminate for every program that
     /// terminates.
     /// </summary>
+    /// <summary>
+    /// THE BODIES THAT ASKED FOR A COPY ARE CHECKED AGAIN with the new ones.
+    /// What a call resolves to can change once the copy it wanted exists:
+    /// `string.Join(",", xs.OrderBy(x => x))` meets IOrderedEnumerable of int
+    /// only when OrderBy's copy brings it, and Join's own generic overload,
+    /// unreachable before, is the one chosen after. Left to the full binding
+    /// to notice, one such call cost a second full binding of everything.
+    /// Flagged before the rewrite, which carries the flag to the copies it
+    /// makes; an accessor's flag is its property's.
+    /// </summary>
+    private static void Unsettled(Lang.BindResult bound)
+    {
+        foreach ((Lang.TypeSymbol? owner, Lang.MethodDecl body) in bound.Wanting)
+        {
+            body.Fresh = true;
+            if (owner?.Decl is not Lang.TypeDecl declared || declared.Members.Contains(body)) continue;
+            foreach (Lang.PropertyDecl p in declared.Members.OfType<Lang.PropertyDecl>())
+            {
+                if (Lang.NameTable.Accessor("get_", p.Name) == body.Name || Lang.NameTable.Accessor("set_", p.Name) == body.Name)
+                    p.Fresh = true;
+            }
+        }
+    }
+
     private static bool Specialise(Lang.CompilationUnit unit, Lang.BindResult bound)
     {
         bool made = false;
