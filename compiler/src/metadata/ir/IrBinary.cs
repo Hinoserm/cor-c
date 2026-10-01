@@ -24,7 +24,33 @@ internal static class IrBinary
         if (value.Contains('\0')) throw new InvalidDataException("Invalid IR text");
         return value;
     }
-    public static string Name(BinaryReader reader, IrReadBudget? budget = null) => Text(reader, budget) ?? throw new InvalidDataException("Null IR name");
+    /// <summary>
+    /// A name: a symbol, a callee, a label. INTERNED, and read through a
+    /// buffer of this thread's: the same names stand in every unit's IR, and a
+    /// link that decoded all of them held each one a hundred times over, every
+    /// copy beside the byte array it was decoded from.
+    /// </summary>
+    public static string Name(BinaryReader reader, IrReadBudget? budget = null)
+    {
+        int length = reader.ReadInt32();
+        if (length == -1) throw new InvalidDataException("Null IR name");
+        if (length < 0 || length > 16384 || length > reader.BaseStream.Length - reader.BaseStream.Position)
+            throw new InvalidDataException("Invalid IR text length");
+        budget?.Charge(32L + 3L * length, 1, "text");
+        byte[] buffer = _nameBuffer ??= new byte[16384];
+        int got = 0;
+        while (got < length)
+        {
+            int n = reader.Read(buffer, got, length - got);
+            if (n <= 0) throw new InvalidDataException("Truncated IR name");
+            got += n;
+        }
+        string value = Utf8.GetString(buffer, 0, length);
+        if (value.Contains('\0')) throw new InvalidDataException("Invalid IR text");
+        return string.Intern(value);
+    }
+
+    [ThreadStatic] private static byte[]? _nameBuffer;
     public static bool Flag(BinaryReader reader) => reader.ReadByte() switch
     { 0 => false, 1 => true, _ => throw new InvalidDataException("Invalid IR flag") };
     public static int Count(BinaryReader reader, int maximum = 1000000)

@@ -196,7 +196,7 @@ public sealed class IrArchive
         int length = reader.ReadInt32();
         if (length < 1 || length > 16384 || length > reader.BaseStream.Length - reader.BaseStream.Position)
             throw new ElfFormatException("Invalid IR name length");
-        string name = Utf8.GetString(reader.ReadBytes(length));
+        string name = string.Intern(Utf8.GetString(reader.ReadBytes(length)));
         if (name.Contains('\0')) throw new ElfFormatException("Invalid IR name");
         // Every unit's directory names the same callees: one copy of each.
         return string.Intern(name);

@@ -354,7 +354,7 @@ public sealed class LifetimeHints
             {
                 int length = reader.ReadInt32();
                 if (length < 1 || length > 16384 || length > bytes.Length - stream.Position) throw new ElfFormatException("Invalid lifetime hint name");
-                names[i] = Utf8.GetString(reader.ReadBytes(length));
+                names[i] = string.Intern(Utf8.GetString(reader.ReadBytes(length)));
                 if (names[i].Contains('\0') || i > 0 && string.CompareOrdinal(names[i - 1], names[i]) >= 0)
                     throw new ElfFormatException("Invalid lifetime hint name table");
             }

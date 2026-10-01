@@ -5532,7 +5532,17 @@ static class Gc
         long key;
         if (kind == KindLeaf)
         {
-            key = CensusLeaf;
+            // BY ITS TYPE TOO, where its descriptor says one: a string, a
+            // byte array, an int array -- the leaves of a link were half of
+            // what it held, and one line saying "leaves" said nothing more.
+            long lvt = Sys.Peek(block + HeaderBytes) & WordSize.AddressMask;
+            long ldesc = lvt - DescWords * w;
+            // Read only where a descriptor can be: inside the image, below its
+            // end, and not in the heap -- a leaf of raw bytes has any word first.
+            long imageEnd = Sys.DataEnd();
+            bool described = lvt > DescWords * w && lvt < imageEnd && imageEnd - lvt < 0x10000000 && HeapChunks.Of(lvt) == 0
+                && (Sys.Peek(ldesc + DescSelfWord * w) & WordSize.AddressMask) == ldesc;
+            key = described ? lvt : CensusLeaf;
         }
         else if (kind == KindObject)
         {
