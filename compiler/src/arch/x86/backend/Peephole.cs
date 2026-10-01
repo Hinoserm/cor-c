@@ -527,9 +527,15 @@ internal static class Peephole
     /// frame addresses, the unwinder and the borrowed-EBP syscall rely on,
     /// whatever the liveness sets say.
     /// </remarks>
+    /// A LOAD THROUGH A REGISTER STAYS, read or not: its address may be a
+    /// null reference's, and the fault it takes there is the program's
+    /// NullReferenceException (Runtime.NullFault), as the IR's own dead-code
+    /// rule has it (IrInfo.IsPure). A frame's, a spill's or a static's is
+    /// memory the program owns, and goes with the register it fills.
     private static bool Removable(MInstr i)
         => i.Op is MOp.Mov or MOp.Lea or MOp.Movzx or MOp.Movsx
-           && i.Operands[0] is MReg { Id: not ((int)Gpr.Esp or (int)Gpr.Ebp) };
+           && i.Operands[0] is MReg { Id: not ((int)Gpr.Esp or (int)Gpr.Ebp) }
+           && (i.Op == MOp.Lea || i.Operands.Count < 2 || i.Operands[1] is not MMem { Base: { Id: not ((int)Gpr.Esp or (int)Gpr.Ebp) } });
 
     /// <summary>Whether the operand roles fully describe what the instruction reads and writes.</summary>
     private static bool Understood(MInstr i) => i.Op switch

@@ -10671,12 +10671,30 @@ class Exception
     string? _site;
     long[]? _frames;
 
+    bool _placed;
+
     /// At the throw: the site's own line and the return addresses above it.
+    /// Not when the trace was already placed (Placed$): the throw that
+    /// follows is the runtime's, and the place is the program's.
     public void Thrown$(string site, long[] frames)
     {
+        if (_placed)
+        {
+            _placed = false;
+            return;
+        }
         _trace = "";
         _site = site;
         _frames = frames;
+    }
+
+    /// A trace given before the throw, which the throw then keeps: a null
+    /// dereference is thrown by the runtime (Runtime.NullFault) on behalf of
+    /// the instruction that faulted, and the trace is that instruction's.
+    public void Placed$(string site, long[] frames)
+    {
+        Thrown$(site, frames);
+        _placed = true;
     }
 
     // Each read of _frames ends where it is made, so the exception owns its

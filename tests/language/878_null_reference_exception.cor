@@ -1,0 +1,66 @@
+// test: null_reference_exception
+// expect-exit: 0
+// expect-output:
+// unused field NRE
+// used field NRE
+// unused method NRE
+// K NRE
+// unused length NRE
+// length NRE
+// store NRE
+// S NRE
+// arr NRE
+// arrlen NRE
+// tostring NRE
+// hash NRE
+// dispose NRE
+// delegate NRE
+// deep NRE Object reference not set to an instance of an object.
+// caught 1000
+//
+// A null dereference is a NullReferenceException, as it is in .NET: a field
+// read or written, an element, a length, a virtual, interface or delegate
+// call, and a non-virtual call whose method never reads `this` (C#'s
+// callvirt checks the receiver). A read whose value is not used still
+// happens. The fault on the null page becomes the exception in the frame
+// that faulted, and a thousand of them in a loop are a thousand catches.
+// Output checked against .NET.
+
+using System;
+class C { public int F; public string? S; public int M() => F; public int K() => 5; }
+static class Program
+{
+    static C? Get(bool b) => b ? new C() : null;
+    static void Main(string[] args)
+    {
+        C c = Get(args.Length > 5)!;
+        string s = args.Length > 5 ? "x" : null!;
+        try { int x = c.F; Console.WriteLine("unused field ran"); } catch (NullReferenceException) { Console.WriteLine("unused field NRE"); }
+        try { Console.WriteLine("used field " + c.F); } catch (NullReferenceException) { Console.WriteLine("used field NRE"); }
+        try { int x = c.M(); Console.WriteLine("unused method ran"); } catch (NullReferenceException) { Console.WriteLine("unused method NRE"); }
+        try { Console.WriteLine("K " + c.K()); } catch (NullReferenceException) { Console.WriteLine("K NRE"); }
+        try { int n = s.Length; Console.WriteLine("unused length ran"); } catch (NullReferenceException) { Console.WriteLine("unused length NRE"); }
+        try { Console.WriteLine("length " + s.Length); } catch (NullReferenceException) { Console.WriteLine("length NRE"); }
+        try { c.F = 3; Console.WriteLine("store ran"); } catch (NullReferenceException) { Console.WriteLine("store NRE"); }
+        try { Console.WriteLine("S " + c.S); } catch (NullReferenceException) { Console.WriteLine("S NRE"); }
+        int[] a = args.Length > 5 ? new int[1] : null!;
+        try { Console.WriteLine("arr " + a[0]); } catch (NullReferenceException) { Console.WriteLine("arr NRE"); }
+        try { Console.WriteLine("arrlen " + a.Length); } catch (NullReferenceException) { Console.WriteLine("arrlen NRE"); }
+        object o = args.Length > 5 ? new object() : null!;
+        try { Console.WriteLine("tostring " + o.ToString()); } catch (NullReferenceException) { Console.WriteLine("tostring NRE"); }
+        try { Console.WriteLine("hash " + o.GetHashCode()); } catch (NullReferenceException) { Console.WriteLine("hash NRE"); }
+        IDisposable d = args.Length > 5 ? new System.IO.MemoryStream() : null!;
+        try { d.Dispose(); Console.WriteLine("dispose ran"); } catch (NullReferenceException) { Console.WriteLine("dispose NRE"); }
+        Func<int> f = args.Length > 5 ? () => 1 : null!;
+        try { Console.WriteLine("delegate " + f()); } catch (NullReferenceException) { Console.WriteLine("delegate NRE"); }
+        try { Deep(c, 3); } catch (NullReferenceException e) { Console.WriteLine("deep NRE " + e.Message); }
+        int caught = 0;
+        for (int i = 0; i < 1000; i++)
+        {
+            try { int x = c.F; } catch (NullReferenceException) { caught++; }
+        }
+        Console.WriteLine("caught " + caught);
+    }
+
+    static int Deep(C c, int n) => n == 0 ? c.F : Deep(c, n - 1) + 1;
+}

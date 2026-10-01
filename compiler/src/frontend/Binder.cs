@@ -7067,6 +7067,36 @@ public sealed partial class Binder
             string walker = $"$enumerator${n}";
             Block body = new() { Line = fe.Line, Col = fe.Col };
 
+            // A LIST OR AN ARRAY BEHIND A SEQUENCE INTERFACE is walked without
+            // the enumerator box the interface hands out: the sequence's exact
+            // type is asked once, and a List<E> is walked with its own struct
+            // enumerator -- the same MoveNext, the same version check, so the
+            // same answers and the same exception when it is changed under
+            // the loop -- and an E[] by index, which is what its enumerator
+            // does. Anything else, a subclass of List<E> included (it may
+            // implement the interface again), takes the interface's own
+            // enumerator as before. One loop and one body serve all three,
+            // the way taken chosen by a word per step. This is the guarded
+            // devirtualisation .NET's JIT does for the same loop.
+            var fast = FastSequence(had);
+            string mode = $"$mode${n}", listWalker = $"$list${n}", array = $"$array${n}", step = $"$at${n}";
+            string held = $"$walked${n}";
+            Expr Num(int v) => new LiteralExpr { Kind = Lit.Int, Text = v.ToString(), IntValue = v, Line = fe.Line, Col = fe.Col };
+            Expr Is(int v) => new BinaryExpr { Op = BinOp.Eq, Left = Named(mode), Right = Num(v), Line = fe.Line, Col = fe.Col };
+            Expr Pick(Expr list, Expr arr, Expr other) => new ConditionalExpr
+            {
+                Cond = Is(1), Then = list,
+                Else = new ConditionalExpr { Cond = Is(2), Then = arr, Else = other, Line = fe.Line, Col = fe.Col },
+                Line = fe.Line, Col = fe.Col,
+            };
+            Expr Current()
+            {
+                if (fast is null) return On(Named(walker), "Current");
+                IndexExpr item = new() { Target = Named(array), Line = fe.Line, Col = fe.Col };
+                item.Args.Add(Named(step));
+                return Pick(On(Named(listWalker), "Current"), item, On(Named(walker), "Current"));
+            }
+
             if (fe.Bindings is { } taken)
             {
                 string element = $"$element${n}";
@@ -7091,7 +7121,7 @@ public sealed partial class Binder
 
                 body.Statements.Add(new LocalDecl
                 {
-                    Name = element, Init = On(Named(walker), "Current"),
+                    Name = element, Init = Current(),
                     Line = fe.Line, Col = fe.Col,
                 });
                 body.Statements.AddRange(Deconstruct(fe, Named(element), taken, each));
@@ -7100,21 +7130,104 @@ public sealed partial class Binder
             {
                 body.Statements.Add(new LocalDecl
                 {
-                    Type = fe.Type, Name = fe.Name, Init = On(Named(walker), "Current"),
+                    Type = fe.Type, Name = fe.Name, Init = Current(),
                     Line = fe.Line, Col = fe.Col,
                 });
             }
 
             body.Statements.Add(fe.Body);
 
-            outer.Statements.Add(new LocalDecl
+            Expr moving = Called(Named(walker), "MoveNext");
+            if (fast is { } chosen)
             {
-                Name = walker, Init = Called(fe.Sequence, "GetEnumerator"),
-                Line = fe.Line, Col = fe.Col,
-            });
+                TypeRef written = RefOf(seq)!;
+                TypeRef listRef = RefOf(new Type { Symbol = chosen.List })!;
+                TypeRef arrayRef = RefOf(Type.ArrayOf(chosen.Element))!;
+                Expr Exactly(TypeRef t) => new BinaryExpr
+                {
+                    Op = BinOp.Eq,
+                    Left = new CallExpr { Target = On(Named(held), "GetType"), Line = fe.Line, Col = fe.Col },
+                    Right = new TypeOfExpr { Type = t, Line = fe.Line, Col = fe.Col },
+                    Line = fe.Line, Col = fe.Col,
+                };
+                Expr Null() => new LiteralExpr { Kind = Lit.Null, Text = "null", Line = fe.Line, Col = fe.Col };
+                Stmt Set(string name, Expr value) => new ExprStmt
+                {
+                    Expr = new AssignExpr { Target = Named(name), Value = value, Line = fe.Line, Col = fe.Col },
+                    Line = fe.Line, Col = fe.Col,
+                };
+
+                outer.Statements.Add(new LocalDecl { Type = written, Name = held, Init = fe.Sequence, Line = fe.Line, Col = fe.Col });
+                outer.Statements.Add(new LocalDecl
+                {
+                    Type = new TypeRef { Name = "int", Line = fe.Line, Col = fe.Col },
+                    Name = mode,
+                    Init = new ConditionalExpr
+                    {
+                        Cond = new BinaryExpr { Op = BinOp.Eq, Left = Named(held), Right = Null(), Line = fe.Line, Col = fe.Col },
+                        Then = Num(0),
+                        Else = new ConditionalExpr
+                        {
+                            Cond = Exactly(listRef), Then = Num(1),
+                            Else = new ConditionalExpr { Cond = Exactly(arrayRef), Then = Num(2), Else = Num(0), Line = fe.Line, Col = fe.Col },
+                            Line = fe.Line, Col = fe.Col,
+                        },
+                        Line = fe.Line, Col = fe.Col,
+                    },
+                    Line = fe.Line, Col = fe.Col,
+                });
+                TypeRef listWalkerRef = RefOf(chosen.Walker)!;
+                outer.Statements.Add(new LocalDecl
+                {
+                    Type = listWalkerRef, Name = listWalker,
+                    Init = new DefaultExpr { Type = RefOf(chosen.Walker)!, Line = fe.Line, Col = fe.Col },
+                    Line = fe.Line, Col = fe.Col,
+                });
+                outer.Statements.Add(new LocalDecl
+                {
+                    Type = RefOf(Type.ArrayOf(chosen.Element).AsNullable())!, Name = array, Init = Null(), Line = fe.Line, Col = fe.Col,
+                });
+                outer.Statements.Add(new LocalDecl { Type = new TypeRef { Name = "int", Line = fe.Line, Col = fe.Col }, Name = step, Init = Num(-1), Line = fe.Line, Col = fe.Col });
+                outer.Statements.Add(new LocalDecl
+                {
+                    Type = RefOf(Close(walk.Returns, Received(seq, walk.Owner ?? had)).AsNullable())!, Name = walker, Init = Null(),
+                    Line = fe.Line, Col = fe.Col,
+                });
+                outer.Statements.Add(new IfStmt
+                {
+                    Cond = Is(1),
+                    Then = Set(listWalker, Called(new CastExpr { Type = RefOf(new Type { Symbol = chosen.List })!, Operand = Named(held), Line = fe.Line, Col = fe.Col }, "GetEnumerator")),
+                    Else = new IfStmt
+                    {
+                        Cond = Is(2),
+                        Then = Set(array, new CastExpr { Type = RefOf(Type.ArrayOf(chosen.Element))!, Operand = Named(held), Line = fe.Line, Col = fe.Col }),
+                        Else = Set(walker, Called(Named(held), "GetEnumerator")),
+                        Line = fe.Line, Col = fe.Col,
+                    },
+                    Line = fe.Line, Col = fe.Col,
+                });
+                moving = Pick(
+                    Called(Named(listWalker), "MoveNext"),
+                    new BinaryExpr
+                    {
+                        Op = BinOp.Lt,
+                        Left = new UnaryExpr { Op = UnOp.PreInc, Operand = Named(step), Line = fe.Line, Col = fe.Col },
+                        Right = On(new SuppressExpr { Operand = Named(array), Line = fe.Line, Col = fe.Col }, "Length"),
+                        Line = fe.Line, Col = fe.Col,
+                    },
+                    Called(new SuppressExpr { Operand = Named(walker), Line = fe.Line, Col = fe.Col }, "MoveNext"));
+            }
+            else
+            {
+                outer.Statements.Add(new LocalDecl
+                {
+                    Name = walker, Init = Called(fe.Sequence, "GetEnumerator"),
+                    Line = fe.Line, Col = fe.Col,
+                });
+            }
             WhileStmt stepping = new()
             {
-                Cond = Called(Named(walker), "MoveNext"), Body = body,
+                Cond = moving, Body = body,
                 Line = fe.Line, Col = fe.Col,
             };
 
@@ -7173,7 +7286,9 @@ public sealed partial class Binder
                 Block guarded = new() { Line = fe.Line, Col = fe.Col };
                 guarded.Statements.Add(stepping);
                 Block finish = new() { Line = fe.Line, Col = fe.Col };
-                finish.Statements.Add(release);
+                // Only the interface's enumerator is the loop's to dispose: a
+                // List<E>'s does nothing, and an array has none.
+                finish.Statements.Add(fast is null ? release : new IfStmt { Cond = Is(0), Then = release, Line = fe.Line, Col = fe.Col });
                 outer.Statements.Add(new TryStmt { Body = guarded, Finally = finish, Line = fe.Line, Col = fe.Col });
             }
             return outer;
@@ -7400,6 +7515,32 @@ public sealed partial class Binder
     /// wrong for an interface -- an interface's members are inherited through
     /// Interfaces, not Base, so `IReadOnlyList`'s Count is invisible to it.
     /// </summary>
+    /// <summary>
+    /// For a foreach over a sequence interface (Iterate): its element, the
+    /// List of that element this unit has, and that list's struct enumerator
+    /// -- or null when the interface is not one a List implements, or no
+    /// List of the element is specialised here, in which case no list of it
+    /// is made here either and the interface's path is all there is.
+    /// </summary>
+    private (Type Element, TypeSymbol List, Type Walker)? FastSequence(TypeSymbol had)
+    {
+        if (had.Kind != TypeKind.Interface
+            || had.Decl is not { Template: "IEnumerable" or "IReadOnlyList" or "IReadOnlyCollection" or "IList" or "ICollection", TemplateArgs.Count: 1 } made)
+        {
+            return null;
+        }
+        Type element = Resolve(made.TemplateArgs[0], _thisType);
+        if (element.IsError || element.ParamName is not null || element.IsPointer || RefOf(element) is not TypeRef written
+            || !_r.Types.TryGetValue(Monomorphiser.MangledName("List", new List<TypeRef> { written }), out TypeSymbol? list)
+            || list.Decl is not { Template: "List" })
+        {
+            return null;
+        }
+        MethodSymbol? get = Reachable(list, "GetEnumerator")
+            .FirstOrDefault(m => m.Params.Count == 0 && !m.Static && m.Returns.Symbol is { Kind: TypeKind.Struct });
+        return get is null || RefOf(get.Returns) is null ? null : (element, list, get.Returns);
+    }
+
     private static List<MethodSymbol> Reachable(TypeSymbol t, string name)
     {
         List<MethodSymbol> found = new();

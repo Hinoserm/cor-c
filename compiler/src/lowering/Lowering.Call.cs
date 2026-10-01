@@ -120,6 +120,17 @@ public sealed partial class Lowering
             return called;
         }
 
+        // A CALL ON NULL THROWS AT THE CALL, as C#'s callvirt has it, whether
+        // or not the method then reads `this`: the receiver's first word is
+        // read, and on a null one that read is the NullReferenceException
+        // (Runtime.NullFault). Not on `this`, which is never null, nor on a
+        // base call, nor on a struct, whose receiver is an address of storage.
+        if (receiver is not null && !m.Static && !viaBase && m.Owner.Kind != TypeKind.Struct
+            && !ReferenceEquals(receiver, _this))
+        {
+            _e.Load(IrTypes.Word, receiver, 0);
+        }
+
         return CallDirect(m, returns, args);
     }
 

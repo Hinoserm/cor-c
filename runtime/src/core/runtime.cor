@@ -2754,6 +2754,32 @@ static class Runtime
         throw new InvalidCastException("Unable to cast object of type '" + String.TypeText(o.GetType().FullName) + "' to type '" + wanted + "'.");
     }
 
+    /// A NULL DEREFERENCE, thrown as .NET throws it. The fault handler
+    /// (Platform.Fault) makes the faulting thread call this as if from the
+    /// instruction that read or wrote the null page, with the frame it was in
+    /// and that instruction, so the trace begins where the program was.
+    public static void NullFault(long frame, long pc)
+    {
+        NullReferenceException e = new NullReferenceException();
+        string? site = Frame(pc);
+        e.Placed$(site ?? "", Frames(frame));
+        throw e;
+    }
+
+    /// Whether a fault at `address` may be a NullReferenceException: on the
+    /// null page and below it -- the first 64 KB, which Linux never maps
+    /// (vm.mmap_min_addr), so that a field or an element at an offset from a
+    /// null reference lands there too -- on a thread of this program that is
+    /// not holding the heap or collecting. A fault anywhere else, or inside
+    /// the collector, is no program's to catch and stays fatal.
+    public static bool NullFaultCatchable(long address)
+    {
+        if (address < 0 || address >= 65536) return false;
+        long me = Sys.ThreadBlock();
+        if (me == 0) return false;
+        return !GcLock.HeldByMe() && !GcLock.IsCollector(me);
+    }
+
     /// Null unboxed to a value type: .NET's NullReferenceException.
     public static void NullUnboxed()
     {

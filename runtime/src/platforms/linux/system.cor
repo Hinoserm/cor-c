@@ -680,6 +680,7 @@ static class Platform
     // again, and ends the process outright if that did not.
     static long _faultPage;
     static long _faulting;
+    static long _faultReturn;
 
     const int SignalBus = 7;
     const int SignalSegv = 11;
@@ -696,15 +697,36 @@ static class Platform
             return;
         }
         _faultPage = page;
+        // THE WAY BACK from a fault that becomes a NullReferenceException:
+        // rt_sigreturn, seven bytes on a page of their own that may run, as
+        // PosixSignalRegistration's restorer is.
+        long back = Platform.Result(Sys.Syscall(Call.Mmap, 0, 4096, 7, 0x22, 0 - 1, 0));
+        if (back > 0)
+        {
+#if TARGET_64BIT
+            Sys.PokeByte(back, 0xB8);                                 // mov eax,
+            Sys.PokeByte(back + 1, 15);                               //   15 (rt_sigreturn)
+            Sys.PokeByte(back + 5, 0x0F);                             // syscall
+            Sys.PokeByte(back + 6, 0x05);
+#else
+            Sys.PokeByte(back, 0xB8);                                 // mov eax,
+            Sys.PokeByte(back + 1, 173);                              //   173 (rt_sigreturn)
+            Sys.PokeByte(back + 5, 0xCD);                             // int 0x80
+            Sys.PokeByte(back + 6, 0x80);
+#endif
+            _faultReturn = back;
+        }
         // The kernel's sigaction: handler, flags, restorer, mask, a word
-        // each but the mask. SA_SIGINFO for the address and the registers;
-        // SA_RESTORER, which x86-64 insists on, naming the handler because
-        // nothing returns to it; SA_NODEFER and SA_RESETHAND, so a second
-        // fault inside the report ends the process instead of nesting.
+        // each but the mask. SA_SIGINFO for the address and the registers
+        // (and the modern frame, the one rt_sigreturn returns through);
+        // SA_RESTORER with the way back above; SA_NODEFER, so that a fault
+        // in the program after a NullReferenceException is caught again.
+        // A second fault inside the report finds _faulting set and ends the
+        // process.
         long handler = Sys.AddressOf(Platform.Fault);
         Sys.Poke(page, handler);
-        Sys.Poke(page + WordSize.Bytes, 0x00000004 | 0x04000000 | 0x40000000 | 0x80000000);
-        Sys.Poke(page + 2 * WordSize.Bytes, handler);
+        Sys.Poke(page + WordSize.Bytes, 0x00000004 | 0x04000000 | 0x40000000);
+        Sys.Poke(page + 2 * WordSize.Bytes, _faultReturn != 0 ? _faultReturn : handler);
         Sys.Syscall(Call.RtSigaction, SignalSegv, page, 0, 8, 0, 0);
         Sys.Syscall(Call.RtSigaction, SignalBus, page, 0, 8, 0, 0);
     }
@@ -715,6 +737,47 @@ static class Platform
     {
         long si = (long)info & WordSize.AddressMask;
         long uc = (long)context & WordSize.AddressMask;
+        // A NULL DEREFERENCE IS AN EXCEPTION, as it is in .NET: the thread is
+        // sent on, when the handler returns, into Runtime.NullFault as if the
+        // faulting instruction had called it -- its return address that
+        // instruction, its arguments the frame and the instruction -- and it
+        // throws NullReferenceException from there to whatever catches it.
+        if (_faulting == 0 && signal == SignalSegv && si != 0 && uc != 0 && _faultReturn != 0)
+        {
+#if TARGET_64BIT
+            long nullAt = Sys.Peek(si + 16);
+#else
+            long nullAt = Sys.Peek(si + 12) & WordSize.AddressMask;
+#endif
+            if (Runtime.NullFaultCatchable(nullAt))
+            {
+                long entry = Sys.AddressOf(Runtime.NullFault);
+#if TARGET_64BIT
+                // gregs from 40: RDI 8th, RSI 9th, RBP 10th, RSP 15th, RIP 16th.
+                // Past the red zone, aligned as a call leaves it.
+                long faultPc = Sys.Peek(uc + 168);
+                long faultFrame = Sys.Peek(uc + 120);
+                long sp = ((Sys.Peek(uc + 160) - 128) & ~15L) - 8;
+                Sys.Poke(sp, faultPc);
+                Sys.Poke(uc + 104, faultFrame);
+                Sys.Poke(uc + 112, faultPc);
+                Sys.Poke(uc + 160, sp);
+                Sys.Poke(uc + 168, entry);
+#else
+                // gregs from 20: EBP 7th, ESP 8th, EIP 15th; the arguments
+                // on the stack above the return address.
+                long faultPc = Sys.Peek(uc + 76) & WordSize.AddressMask;
+                long faultFrame = Sys.Peek(uc + 44) & WordSize.AddressMask;
+                long sp = ((Sys.Peek(uc + 48) & WordSize.AddressMask) - 64 & ~15L) - 4;
+                Sys.Poke(sp, faultPc);
+                Sys.Poke(sp + 4, faultFrame);
+                Sys.Poke(sp + 8, faultPc);
+                Sys.Poke(uc + 48, sp);
+                Sys.Poke(uc + 76, entry);
+#endif
+                return;
+            }
+        }
         if (_faulting == 0 && si != 0 && uc != 0)
         {
             _faulting = 1;
