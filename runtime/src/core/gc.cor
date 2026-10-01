@@ -1348,40 +1348,82 @@ static class Gc
     /// every young object a dead one pointed at would be kept, and made old.
     static void ScanTakenCards()
     {
-        long which = 0;
-        long chunk = HeapChunks.SnapshotChunk(0);
-        while (chunk != 0)
+        // ON THE WORKERS TOO, chunk by chunk, when they are marking beside
+        // this thread: each chunk's cards are its own, and what they find is
+        // marked and queued as any marker's finds are. Read here alone, the
+        // cards were most of a minor cycle's roots, and the workers waited.
+        bool shared = _cardsTogether;
+        Sys.AtomicSwap(Sys.AddressOf(ref _cardNext), 0);
+        if (shared)
         {
-            long first = HeapChunks.First(chunk);
-            long end = HeapChunks.End(chunk);
-            bool indexed = _snapshots && HeapChunks.StartsCycle(chunk) == _cycle;
-            long card = (first & WordSize.AddressMask) >> Runtime.CardShift;
-            long last = ((end - 1) & WordSize.AddressMask) >> Runtime.CardShift;
-            while (card <= last)
-            {
-                if (Sys.PeekByte(_taken + card) != 0)
-                {
-                    Sys.PokeByte(_taken + card, 0);
-                    long from = card << Runtime.CardShift;
-                    long to = from + (1 << Runtime.CardShift);
-                    if (from < first) from = first;
-                    if (to > end) to = end;
-                    TakenCards = TakenCards + 1;
-                    if (indexed)
-                    {
-                        ScanCardBlocks(chunk, from, to);
-                    }
-                    else
-                    {
-                        OldCardWords = OldCardWords + (to - from) / WordSize.Bytes;
-                        ScanRange(from, to);
-                    }
-                }
-                card = card + 1;
-            }
-            which = which + 1;
-            chunk = HeapChunks.SnapshotChunk(which);
+            Sys.AtomicSwap(Sys.AddressOf(ref _job), 3);
+            Platform.Wake(GcLock.Words() + GcLock.GreyTail, 0x7FFFFFFF);
         }
+        ScanCardsSome();
+        if (shared)
+        {
+            while (Sys.Peek(Sys.AddressOf(ref _cardBusy)) != 0) Sys.Pause();
+            Sys.AtomicSwap(Sys.AddressOf(ref _job), 0);
+        }
+    }
+
+    /// Whether the card scan is shared with the workers (CollectInner).
+    static bool _cardsTogether;
+    static long _cardNext;
+    static long _cardBusy;
+
+    /// Snapshot chunks taken and their cards read until there are none.
+    static void ScanCardsSome()
+    {
+        while (true)
+        {
+            Sys.AtomicAdd(Sys.AddressOf(ref _cardBusy), 1);
+            long which = Sys.AtomicAdd(Sys.AddressOf(ref _cardNext), 1);
+            long chunk = HeapChunks.SnapshotChunk(which);
+            if (chunk == 0)
+            {
+                Sys.AtomicAdd(Sys.AddressOf(ref _cardBusy), -1);
+                return;
+            }
+            ScanChunkCards(chunk);
+            Sys.AtomicAdd(Sys.AddressOf(ref _cardBusy), -1);
+        }
+    }
+
+    /// One chunk's taken cards, read and cleared.
+    static void ScanChunkCards(long chunk)
+    {
+        long first = HeapChunks.First(chunk);
+        long end = HeapChunks.End(chunk);
+        bool indexed = _snapshots && HeapChunks.StartsCycle(chunk) == _cycle;
+        long card = (first & WordSize.AddressMask) >> Runtime.CardShift;
+        long last = ((end - 1) & WordSize.AddressMask) >> Runtime.CardShift;
+        long taken = 0;
+        long words = 0;
+        while (card <= last)
+        {
+            if (Sys.PeekByte(_taken + card) != 0)
+            {
+                Sys.PokeByte(_taken + card, 0);
+                long from = card << Runtime.CardShift;
+                long to = from + (1 << Runtime.CardShift);
+                if (from < first) from = first;
+                if (to > end) to = end;
+                taken = taken + 1;
+                if (indexed)
+                {
+                    ScanCardBlocks(chunk, from, to);
+                }
+                else
+                {
+                    words = words + (to - from) / WordSize.Bytes;
+                    ScanRange(from, to);
+                }
+            }
+            card = card + 1;
+        }
+        if (taken != 0) Sys.AtomicAdd(Sys.AddressOf(ref TakenCards), taken);
+        if (words != 0) Sys.AtomicAdd(Sys.AddressOf(ref OldCardWords), words);
     }
 
     /// The old blocks of [from, to) in a chunk whose starts this cycle wrote,
@@ -6990,6 +7032,7 @@ static class Gc
         // whole of such a collection.
         bool helped = !_concurrent && !_rootsOnly && !_census && HeapChunks.HeapBytes >= WorkersWorthBytes;
         if (helped) WorkersMark(true);
+        _cardsTogether = helped && Workers > 0 && !_verify && !_heapCheck;
         long clock = PauseClock;
         long t0 = clock != 0 ? Sys.Call(clock, 0, 0, 0) : 0;
         GcRoots.ScanAll();
@@ -7264,6 +7307,12 @@ static class Gc
                 SnapshotPagesSome();
                 Platform.Wait(at, word);
                 continue;
+            }
+            // Reading cards, then marking with the rest: the cards' finds
+            // are on the queue the marking below takes from.
+            if (Sys.Peek(Sys.AddressOf(ref _job)) == 3)
+            {
+                ScanCardsSome();
             }
             // AN IDLE WORKER LOOKS AND DOES NOT TOUCH. Its check of the queue
             // is two plain reads; a take that found nothing was two locked
